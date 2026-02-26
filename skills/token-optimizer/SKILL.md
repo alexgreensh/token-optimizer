@@ -1,9 +1,10 @@
 ---
 name: token-optimizer
 description: |
-  Comprehensive token optimization for Claude Code. Audits setups, identifies
-  savings opportunities, implements fixes, and verifies results. Use when
-  optimizing Claude Code costs or reducing token usage.
+  Audits Claude Code setups for token waste, identifies savings, implements
+  fixes, and measures results. Use when optimizing token overhead, reducing
+  context usage, or auditing skills/MCP/config bloat. Not for general code
+  review, refactoring, or non-Claude-Code optimization.
 ---
 
 # Token Optimizer
@@ -16,19 +17,35 @@ You are a token optimization specialist. Audit a Claude Code setup, identify was
 
 ## Phase 0: Initialize
 
-1. **Backup everything first** (before touching anything):
+1. **Quick pre-check** (detect minimal setups):
+   Run `python3 ~/.claude/skills/token-optimizer/scripts/measure.py report` (or the installed path).
+   If estimated controllable tokens < 1,000 and no CLAUDE.md exists, short-circuit:
+   ```
+   [Token Optimizer] Your setup is already minimal (~X tokens overhead).
+   Focus on behavioral changes instead: /compact at 70%, /clear between topics,
+   default agents to haiku, batch requests.
+   ```
+
+2. **Backup everything first** (before touching anything):
 ```bash
 BACKUP_DIR="$HOME/.claude/_backups/token-optimizer-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$BACKUP_DIR"
+chmod 700 "$BACKUP_DIR"
 cp ~/.claude/CLAUDE.md "$BACKUP_DIR/" 2>/dev/null || true
 cp ~/.claude/settings.json "$BACKUP_DIR/" 2>/dev/null || true
 cp -r ~/.claude/commands "$BACKUP_DIR/" 2>/dev/null || true
+# Back up all project MEMORY.md files
+for memfile in ~/.claude/projects/*/memory/MEMORY.md; do
+  if [ -f "$memfile" ]; then
+    projname=$(basename "$(dirname "$(dirname "$memfile")")")
+    cp "$memfile" "$BACKUP_DIR/MEMORY-${projname}.md" 2>/dev/null || true
+  fi
+done
 ```
-Also back up MEMORY.md if it exists in the project's `.claude/` directory.
 
-2. **Create coordination folder**:
+3. **Create coordination folder**:
 ```bash
-COORD_PATH="/tmp/token-optimizer-$(date +%Y%m%d-%H%M%S)"
+COORD_PATH=$(mktemp -d /tmp/token-optimizer-XXXXXXXXXX)
 mkdir -p "$COORD_PATH"/{audit,analysis,plan,verification}
 ```
 
@@ -55,13 +72,21 @@ Dispatch 6 agents in parallel (single message, multiple Task calls):
 
 Pass `COORD_PATH` to each agent. Wait for all to complete.
 
+**Validation**: Before proceeding to Phase 2, verify all 6 audit files exist:
+```bash
+for f in claudemd.md memorymd.md skills.md mcp.md commands.md advanced.md; do
+  [ -f "$COORD_PATH/audit/$f" ] || echo "MISSING: $f"
+done
+```
+If any are missing, note it and proceed with available data. Do NOT re-dispatch failed agents.
+
 ---
 
 ## Phase 2: Analysis (Synthesis Agent)
 
 Read the **Synthesis Agent** prompt from `references/agent-prompts.md`.
 
-Dispatch with `model="opus"`. It reads all audit files and writes a prioritized plan to `{COORD_PATH}/analysis/optimization-plan.md`.
+Dispatch with `model="opus"` (fallback: `model="sonnet"` if Opus unavailable). It reads all audit files and writes a prioritized plan to `{COORD_PATH}/analysis/optimization-plan.md`.
 
 ---
 
@@ -123,7 +148,7 @@ SAVINGS ACHIEVED
 - Total: -W tokens/msg (V% reduction)
 
 NEXT STEPS (Behavioral)
-1. Use /compact at 50% context (quality degrades at 70%)
+1. Use /compact at 70% context (quality degrades past 70%)
 2. Use /clear between unrelated topics
 3. Default to haiku for data-gathering agents
 4. Use Plan Mode (Shift+Tab x2) before complex tasks
@@ -147,13 +172,24 @@ NEXT STEPS (Behavioral)
 
 ## Model Selection
 
-| Task | Model | Why |
-|------|-------|-----|
-| CLAUDE.md, MEMORY.md, Skills, MCP auditors | `sonnet` | Judgment: content structure, semantic duplicates, plugin grouping |
-| Commands, Advanced auditors | `haiku` | Data gathering: counting, presence checks |
-| Synthesis (Phase 2) | `opus` | Cross-cutting prioritization across all findings |
-| Orchestrator | Default | Coordination only |
-| Verification (Phase 5) | `haiku` | Re-measurement |
+| Task | Model | Fallback | Why |
+|------|-------|----------|-----|
+| CLAUDE.md, MEMORY.md, Skills, MCP auditors | `sonnet` | `haiku` | Judgment: content structure, semantic duplicates |
+| Commands, Advanced auditors | `haiku` | - | Data gathering: counting, presence checks |
+| Synthesis (Phase 2) | `opus` | `sonnet` | Cross-cutting prioritization across all findings |
+| Orchestrator | Default | - | Coordination only |
+| Verification (Phase 5) | `haiku` | - | Re-measurement |
+
+---
+
+## Error Handling
+
+- **Agent timeout/failure**: If an audit agent fails, note the gap and continue. Do not retry. The synthesis agent handles missing files gracefully.
+- **Model unavailable**: Fall back one tier: opus -> sonnet -> haiku. Log which model was actually used.
+- **No CLAUDE.md found**: Report 0 tokens, skip to skills audit.
+- **No skills directory**: Report 0 tokens, note as "fresh setup."
+- **measure.py not found**: Fall back to manual estimation (line count x 15 for prose, x 8 for YAML).
+- **Coordination folder write failure**: Abort and report the error. Do not proceed without audit storage.
 
 ---
 
@@ -163,5 +199,6 @@ NEXT STEPS (Behavioral)
 - Create backups before any changes (`~/.claude/_backups/`)
 - Ask user before implementing
 - Never delete files, always archive
-- Use appropriate models for each task
+- Use appropriate models (with fallbacks) for each task
 - Show before/after diffs
+- Frame savings as context budget (% of 200K), not dollar amounts

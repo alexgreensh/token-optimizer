@@ -36,7 +36,7 @@ How much this costs depends on your setup, and the measured numbers are worse th
 | Zero MCP servers | ~11,600 tokens | [GitHub #3406](https://github.com/anthropics/claude-code/issues/3406) |
 | 3 MCP servers | 42,600 tokens | [GitHub #11364](https://github.com/anthropics/claude-code/issues/11364) |
 | 7 MCP servers | 67,300 tokens (34% of context) | [GitHub #11364](https://github.com/anthropics/claude-code/issues/11364) |
-| Heavy MCP setup | 143,000 tokens (72% of context) | [Scott Spence](https://scottspence.com/posts/optimising-mcp-server-context-usage-in-claude-code) |
+| Heavy MCP setup | ~82,000 tokens (41% of context) | [Scott Spence](https://scottspence.com/posts/optimising-mcp-server-context-usage-in-claude-code) |
 
 On a 200K context window, a typical power user is spending 20-40% of their context on overhead. That's less room for actual work, faster compaction cycles, and degraded response quality as the window fills up.
 

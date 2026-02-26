@@ -5,7 +5,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/alexgreensh/token-optimizer/main/install.sh | bash
 #
 # What it does:
-#   1. Checks prerequisites (Python 3.10+, git, ~/.claude/)
+#   1. Checks prerequisites (Python 3.8+, git, ~/.claude/)
 #   2. Clones (or updates) the repo into ~/.claude/token-optimizer
 #   3. Symlinks the skill into ~/.claude/skills/token-optimizer
 #   4. Prints success + usage instructions
@@ -51,8 +51,8 @@ PY_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.versi
 PY_MAJOR=$(echo "$PY_VERSION" | cut -d. -f1)
 PY_MINOR=$(echo "$PY_VERSION" | cut -d. -f2)
 
-if [ "$PY_MAJOR" -lt 3 ] 2>/dev/null || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 10 ]; } 2>/dev/null; then
-    fail "Python ${PY_VERSION} found, but 3.10+ is required."
+if [ "$PY_MAJOR" -lt 3 ] 2>/dev/null || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 8 ]; } 2>/dev/null; then
+    fail "Python ${PY_VERSION} found, but 3.8+ is required."
 fi
 info "Python ${PY_VERSION} OK"
 
@@ -71,14 +71,20 @@ info "~/.claude/ OK"
 # ── Clone or Update ───────────────────────────────────────────
 
 clone_repo() {
-    if git clone --depth 1 "$REPO_HTTPS" "$INSTALL_DIR" 2>/dev/null; then
+    local clone_log="/tmp/token-optimizer-clone-$$.log"
+    if git clone --depth 1 "$REPO_HTTPS" "$INSTALL_DIR" 2>"$clone_log"; then
+        rm -f "$clone_log"
         return 0
     fi
-    info "HTTPS clone failed, trying SSH..."
-    if git clone --depth 1 "$REPO_SSH" "$INSTALL_DIR" 2>/dev/null; then
+    warn "HTTPS clone failed. Details: $(cat "$clone_log" 2>/dev/null)"
+    info "Trying SSH..."
+    if git clone --depth 1 "$REPO_SSH" "$INSTALL_DIR" 2>"$clone_log"; then
+        rm -f "$clone_log"
         return 0
     fi
-    fail "Could not clone repository. Check your GitHub access."
+    warn "SSH clone also failed. Details: $(cat "$clone_log" 2>/dev/null)"
+    rm -f "$clone_log"
+    fail "Could not clone repository. Check network connectivity and GitHub access."
 }
 
 if [ -d "${INSTALL_DIR}/.git" ]; then
@@ -105,7 +111,12 @@ mkdir -p "$SKILL_DIR"
 SKILL_LINK="${SKILL_DIR}/token-optimizer"
 
 if [ -L "$SKILL_LINK" ]; then
+    OLD_TARGET=$(readlink "$SKILL_LINK" 2>/dev/null || echo "unknown")
+    info "Replacing existing symlink: ${SKILL_LINK} -> ${OLD_TARGET}"
     rm "$SKILL_LINK"
+elif [ -f "$SKILL_LINK" ]; then
+    warn "Regular file exists at ${SKILL_LINK}. Moving to ${SKILL_LINK}.bak"
+    mv "$SKILL_LINK" "${SKILL_LINK}.bak"
 fi
 
 if [ -d "$SKILL_LINK" ] && [ ! -L "$SKILL_LINK" ]; then

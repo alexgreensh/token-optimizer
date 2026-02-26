@@ -12,23 +12,31 @@ When you send a message to Claude Code, this is what loads:
 MESSAGE SEND
     |
 +-----------------------------------------------------+
-| PHASE 1: Core System (FIXED, ~12,200 tokens)       |
+| PHASE 1: Core System (FIXED, ~15,000 tokens)       |
 |----------------------------------------------------|
-| - System prompt base           ~2,800 tokens        |
-| - Built-in tools (18)          ~9,400 tokens        |
-|   Read, Write, Edit, Bash, Grep, Glob, etc.        |
+| - System prompt base           ~3,000 tokens        |
+| - Built-in tools (18+)       ~12,000 tokens         |
+|   Read, Write, Edit, Bash, Grep, Glob, Task, etc.  |
+|   (Source: Piebald-AI tracking, v2.1.59)            |
 +-----------------------------------------------------+
     |
 +-----------------------------------------------------+
 | PHASE 2: MCP Tools (VARIABLE)                      |
 |----------------------------------------------------|
-| Tool Search Mode (v2.1.7+):                         |
-| - Deferred tool listings       ~100 tokens each     |
-| - Full definitions load on use                      |
+| Tool Search (default since Jan 2026):                |
+| - ToolSearch tool def           ~500 tokens          |
+| - Deferred tool names           ~15 tokens each     |
+| - Full definitions load on use only                  |
+| - 85% reduction vs pre-Tool-Search (Anthropic data) |
 |                                                     |
-| Example:                                            |
-| - 50 deferred tools = ~5,000 tokens                 |
-| - 178 deferred tools = ~17,800 tokens               |
+| WITHOUT Tool Search (old versions, <10K threshold): |
+| - Full definitions upfront     ~300-850 tokens each  |
+| - 50 tools = ~25,000-42,500 tokens                   |
+|                                                     |
+| WITH Tool Search (current default):                  |
+| - 50 deferred tools = ~1,250 tokens                  |
+| - 100 deferred tools = ~2,000 tokens                 |
+| - 178 deferred tools = ~3,170 tokens                 |
 +-----------------------------------------------------+
     |
 +-----------------------------------------------------+
@@ -82,43 +90,38 @@ RESPONSE GENERATED
 
 ## Token Budget Breakdown (Typical Setup)
 
-### Well-Optimized Setup (~15-20K baseline)
+### Well-Optimized Setup (~20K baseline, Tool Search active)
 ```
-Core system:        12,200 tokens
-MCP tools (30):      3,000 tokens
-Skills (20):         2,000 tokens
-Commands (10):         500 tokens
-CLAUDE.md:             600 tokens
-MEMORY.md:             400 tokens
-Project CLAUDE.md:     200 tokens
-System reminders:    1,000 tokens
+Core system + tools: 15,000 tokens
+MCP (ToolSearch +      1,000 tokens  (500 base + ~30 tools x 15)
+  deferred names):
+Skills (20):           2,000 tokens
+Commands (10):           500 tokens
+CLAUDE.md:               600 tokens
+MEMORY.md:               400 tokens
+Project CLAUDE.md:       200 tokens
+System reminders:      1,000 tokens
 ---------------------------------
-BASELINE:          ~19,900 tokens
-
-First message:       1,000 tokens
----------------------------------
-TOTAL:             ~20,900 tokens
+BASELINE:            ~20,700 tokens (10% of 200K)
 ```
 
-### Unoptimized Setup (~30-35K baseline)
+### Unoptimized Setup (~25K baseline, Tool Search active)
 ```
-Core system:        12,200 tokens
-MCP tools (178):    17,800 tokens
-Skills (54):         5,400 tokens
-Commands (29):       1,450 tokens
-CLAUDE.md:           1,500 tokens
-MEMORY.md:           1,400 tokens
-Project CLAUDE.md:     100 tokens
-System reminders:    2,000 tokens
+Core system + tools: 15,000 tokens
+MCP (ToolSearch +      1,700 tokens  (500 base + ~80 tools x 15)
+  deferred names):
+Skills (40):           4,000 tokens
+Commands (20):         1,000 tokens
+CLAUDE.md:             1,500 tokens
+MEMORY.md:             1,200 tokens
+Project CLAUDE.md:       200 tokens
+System reminders:      2,000 tokens
 ---------------------------------
-BASELINE:          ~41,850 tokens
-
-First message:       1,000 tokens
----------------------------------
-TOTAL:             ~42,850 tokens
+BASELINE:            ~26,600 tokens (13% of 200K)
 ```
 
-**Difference**: 21,950 tokens per message = 2.1x overhead
+**Difference**: ~5,900 tokens per message = 1.3x overhead
+**Note**: Pre-Tool-Search (2025), MCP alone could add 40-80K tokens. Tool Search (default since Jan 2026) reduced this by ~85%.
 
 ---
 
@@ -211,7 +214,7 @@ Main Session Context: 30,000 tokens
 Task(description="Research agent")
     |
 Subagent receives:
-    - Full core system (~12,200 tokens)
+    - Full core system (~15,000 tokens)
     - Full MCP tools (all deferred tool listings)
     - Full skills/commands frontmatter
     - Full CLAUDE.md
@@ -301,28 +304,41 @@ Continue until /clear or session end
 
 ---
 
-## Token Math: Cost Impact
+## Real Cost: Context Budget, Not Dollars
 
-### Per-Message Overhead
+Most Claude Code users are on Max subscriptions ($100-200/month), not per-token API pricing. The real cost of overhead is not dollars. It is context budget:
+
+### Why Overhead Hurts (Even on Subscription)
 ```
-Optimized (20K baseline):
-  20,000 tokens x $0.015 per 1M input tokens (Opus) = $0.0003/message
+1. FASTER CONTEXT FILL
+   20K overhead = 10% of context gone before you type
+   35K overhead = 18% gone. You hit compaction 18% sooner.
 
-Unoptimized (42K baseline):
-  42,000 tokens x $0.015 per 1M input tokens (Opus) = $0.00063/message
+2. MORE COMPACTION CYCLES
+   Each compaction is lossy. More compactions = more context lost.
+   A session with 35K overhead compacts ~2x more often than 20K.
 
-Difference: $0.00033/message
+3. QUALITY DEGRADATION
+   Claude's performance degrades as context fills:
+   0-50%:  Peak performance
+   50-70%: Minor degradation
+   70%+:   Noticeable quality loss, cutting corners
+   With 35K overhead, you reach 70% after fewer messages.
+
+4. BEHAVIORAL MULTIPLIER
+   Every message re-sends the overhead. 100 messages/day
+   at 35K overhead = 3.5M tokens of overhead alone.
+   At 20K overhead = 2.0M tokens. That's 1.5M tokens freed
+   for actual work content.
 ```
 
-### Monthly Impact (100 messages/day)
+### For API Users (Per-Token Pricing)
 ```
-Optimized:   100 x 30 = 3,000 messages/mo x $0.0003 = $0.90/mo
-Unoptimized: 100 x 30 = 3,000 messages/mo x $0.00063 = $1.89/mo
-
-Monthly savings: $0.99/mo (52% reduction)
+Opus input: $15 per 1M tokens
+20K overhead x 100 msgs/day x 30 days = 60M tokens/mo = $900/mo overhead
+35K overhead x 100 msgs/day x 30 days = 105M tokens/mo = $1,575/mo overhead
+Savings from optimization: ~$675/mo
 ```
-
-**Note**: This is INPUT tokens only. Output tokens add to cost. For heavy users (1,000 msg/day), savings = ~$10-20/mo.
 
 ---
 
@@ -332,57 +348,60 @@ Monthly savings: $0.99/mo (52% reduction)
 |-----------|-----------------|------------------|-----------------|
 | CLAUDE.md | 1,500 tokens | 600 tokens | HIGH x LOW |
 | MEMORY.md | 1,400 tokens | 400 tokens | HIGH x LOW |
-| MCP servers | 17,800 tokens | 5,000 tokens | HIGH x MEDIUM |
-| Skills count | 5,400 tokens | 2,000 tokens | MEDIUM x MEDIUM |
-| Commands | 1,450 tokens | 500 tokens | LOW x LOW |
+| Skills count | 4,000 tokens | 2,000 tokens | MEDIUM x MEDIUM |
+| MCP deferred tools | 1,700 tokens | 1,000 tokens | LOW x MEDIUM |
+| Commands | 1,000 tokens | 500 tokens | LOW x LOW |
 
 **Start here**: CLAUDE.md + MEMORY.md (30 min effort, ~1,900 token savings)
 
 ---
 
-## Real-World Example: Power User Setup
+## Real-World Example: Power User Setup (Tool Search Active)
 
 **Before optimization**:
 ```
-Core system:        12,200 tokens
-MCP tools (178):    17,800 tokens
-Skills (54):         5,400 tokens
-Commands (80+):      2,800 tokens
-CLAUDE.md:           1,500 tokens
-MEMORY.md:           1,400 tokens
-Project CLAUDE.md:     100 tokens
-System reminders:    2,000 tokens
+Core system + tools: 15,000 tokens (fixed, unavoidable)
+MCP (ToolSearch +     1,700 tokens (Tool Search active, ~80 tools)
+  deferred names):
+Skills (~40):         4,000 tokens
+Commands (~20):       1,000 tokens
+CLAUDE.md:            1,500 tokens
+MEMORY.md:            1,200 tokens
+Project CLAUDE.md:      200 tokens
+System reminders:     2,000 tokens
 ---------------------------------
-BASELINE:          ~43,200 tokens
+BASELINE:           ~26,600 tokens (13% of 200K)
 ```
 
-**After optimization**:
+**After config optimization**:
 ```
-Core system:        12,200 tokens (can't change)
-MCP tools (178):    17,800 tokens (action deferred)
-Skills (53):         5,300 tokens (archived 1 duplicate)
-Commands (36):         800 tokens (archived 20+ unused)
-CLAUDE.md:             950 tokens (45% reduction)
-MEMORY.md:             850 tokens (57% reduction)
-Project CLAUDE.md:     100 tokens (already minimal)
-System reminders:    2,000 tokens (can't change)
+Core system + tools: 15,000 tokens (fixed)
+MCP (ToolSearch +     1,250 tokens (removed unused servers, ~50 tools)
+  deferred names):
+Skills (~25):         2,500 tokens (archived 15)
+Commands (~10):         500 tokens (archived 10)
+CLAUDE.md:              600 tokens (progressive disclosure)
+MEMORY.md:              400 tokens (dedup'd with CLAUDE.md)
+Project CLAUDE.md:      200 tokens (unchanged)
+System reminders:     1,000 tokens (.claudeignore)
 ---------------------------------
-BASELINE:          ~40,000 tokens
+BASELINE:           ~21,450 tokens (11% of 200K)
 
-SAVINGS: ~3,200 tokens/msg (7% reduction)
+CONFIG SAVINGS: ~5,150 tokens/msg (19% reduction)
 ```
 
-**Plus behavioral changes**:
+**Plus behavioral changes** (compound across every message):
 - Agent model selection (haiku for data): 50-60% savings on automation
 - /compact at 70%: 40-82% savings on long sessions
-- qmd for local search: 60-95% savings on exploration
+- Extended thinking awareness: variable, potentially largest factor
+- Batching requests: 2-3x on multi-step tasks
 
-**Total estimated impact**: 40-50% overall cost reduction
+**Config changes shrink overhead per message. Behavioral changes multiply across every session.**
 
 ---
 
 ## Further Reading
 
 - **Official Docs**: https://docs.anthropic.com (prompt caching, context windows)
-- **Tool Search**: Introduced v2.1.7 (deferred tool loading)
+- **Tool Search**: Default since Jan 2026 (deferred tool loading, 85% MCP reduction)
 - **Community**: r/ClaudeAI, r/anthropic (optimization tips)

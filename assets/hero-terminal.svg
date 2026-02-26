@@ -84,15 +84,15 @@
       dur="16s" repeatCount="indefinite"/>
     <text fill="#bac2de" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14">
       <tspan x="28" y="264">Per-message overhead:  </tspan>
-      <tspan fill="#f38ba8" font-weight="bold">~42,000 tokens</tspan>
+      <tspan fill="#f38ba8" font-weight="bold">~67,000 tokens</tspan>
     </text>
     <text fill="#bac2de" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14">
       <tspan x="28" y="284">Context window used:   </tspan>
-      <tspan fill="#f9e2af">21% before your first message</tspan>
+      <tspan fill="#f9e2af">34% before your first message</tspan>
     </text>
     <text fill="#bac2de" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14">
       <tspan x="28" y="304">Potential savings:     </tspan>
-      <tspan fill="#a6e3a1" font-weight="bold">~18,000 tokens (43%)</tspan>
+      <tspan fill="#a6e3a1" font-weight="bold">~29,000 tokens (34% → 19%)</tspan>
     </text>
   </g>
 
@@ -112,7 +112,7 @@
       keyTimes="0;0.52;0.55;0.84;0.88;1"
       dur="16s" repeatCount="indefinite"/>
     <text fill="#bac2de" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14">
-      <tspan x="28" y="364">&#xB7; Consolidate CLAUDE.md:   </tspan><tspan fill="#a6e3a1">Save ~900 tokens/msg</tspan>
+      <tspan x="28" y="364">&#xB7; Disable 3 unused MCP:    </tspan><tspan fill="#a6e3a1">Save ~24,000 tokens/msg</tspan>
     </text>
   </g>
 
@@ -122,7 +122,7 @@
       keyTimes="0;0.56;0.59;0.84;0.88;1"
       dur="16s" repeatCount="indefinite"/>
     <text fill="#bac2de" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14">
-      <tspan x="28" y="388">&#xB7; Archive 20 commands:     </tspan><tspan fill="#a6e3a1">Save ~1,000 tokens/msg</tspan>
+      <tspan x="28" y="388">&#xB7; Consolidate CLAUDE.md:   </tspan><tspan fill="#a6e3a1">Save ~900 tokens/msg</tspan>
     </text>
   </g>
 
@@ -132,7 +132,7 @@
       keyTimes="0;0.60;0.63;0.84;0.88;1"
       dur="16s" repeatCount="indefinite"/>
     <text fill="#bac2de" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14">
-      <tspan x="28" y="412">&#xB7; Create .claudeignore:    </tspan><tspan fill="#a6e3a1">Save ~500 tokens/msg</tspan>
+      <tspan x="28" y="412">&#xB7; Archive 20 commands:     </tspan><tspan fill="#a6e3a1">Save ~1,000 tokens/msg</tspan>
     </text>
   </g>
 
@@ -143,7 +143,7 @@
       keyTimes="0;0.66;0.70;0.84;0.88;1"
       dur="16s" repeatCount="indefinite"/>
     <line x1="28" y1="428" x2="520" y2="428" stroke="#313244" stroke-width="0.5"/>
-    <text x="28" y="450" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14" font-weight="bold">Total quick win savings: ~2,400 tokens/msg (6%)</text>
+    <text x="28" y="450" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14" font-weight="bold">Total potential: ~29,000 tokens saved (34% → 19%)</text>
   </g>
 
   <!-- Blinking cursor -->
@@ -156,9 +156,9 @@
 
   <!-- Context progress bar -->
   <rect x="340" y="496" width="100" height="10" rx="5" fill="#313244"/>
-  <rect x="340" y="496" width="22" height="10" rx="5" fill="#a6e3a1"/>
-  <text x="448" y="506" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12">22%</text>
+  <rect x="340" y="496" width="34" height="10" rx="5" fill="#f9e2af"/>
+  <text x="448" y="506" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12">34%</text>
 
   <!-- Right status -->
-  <text x="786" y="506" text-anchor="end" fill="#585b70" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12">$0.08 · 156K tokens remaining</text>
+  <text x="786" y="506" text-anchor="end" fill="#585b70" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12">$0.08 · 133K tokens remaining</text>
 </svg>

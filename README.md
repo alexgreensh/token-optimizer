@@ -46,7 +46,7 @@ Nobody audits this. Nobody measures it. You just keep paying.
 
 ## What It Does
 
-![Before and after token breakdown](assets/before-after.svg)
+![Before: 34% context overhead. After: 19%. 43% saved.](assets/before-after.svg)
 
 One command. Six agents audit your setup in parallel. You get a prioritized fix list with exact token savings, sorted into Quick Wins, Medium effort, and Deep optimizations.
 

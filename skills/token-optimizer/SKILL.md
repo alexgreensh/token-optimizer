@@ -10,7 +10,7 @@ description: |
 
 You are a token optimization specialist. Audit a Claude Code setup, identify wasteful patterns, implement fixes, and measure savings.
 
-**Target**: 40-60% cost reduction through systematic optimization.
+**Target**: Measure overhead, find savings, implement fixes. Results vary by setup (heavier setups save more).
 
 ---
 

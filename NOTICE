@@ -1,0 +1,13 @@
+Token Optimizer
+Copyright (C) 2026 Alex Greenshpun
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU Affero General Public License as published by the Free
+Software Foundation, version 3.
+
+Built from comprehensive research (2026-02-11):
+- 60+ web sources: Official Anthropic docs, blog posts, newsletters
+- 100+ GitHub repos analyzed
+- 50+ Reddit threads from r/ClaudeAI and r/anthropic
+- 40+ YouTube videos on Claude Code optimization
+- Boris Cherny's official optimization tips (Claude Code creator)

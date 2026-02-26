@@ -1,0 +1,57 @@
+# .claudeignore - Block unnecessary files from Claude Code context
+#
+# Copy this file to ~/.claude/.claudeignore (global) or .claudeignore (project)
+# Prevents system reminders from injecting modified files you don't need.
+
+# Security (CRITICAL)
+**/.env
+**/.env.*
+**/credentials.json
+**/service-account*.json
+**/*secret*
+**/*password*
+**/*token*
+**/config/secrets/
+.aws/
+.ssh/
+
+# Dependencies
+**/node_modules/
+**/venv/
+**/__pycache__/
+**/vendor/
+**/.venv/
+**/dist/
+**/build/
+
+# Databases
+**/*.sqlite
+**/*.db
+**/*.sql
+**/migrations/
+
+# Media (large, high-token)
+**/*.jpg
+**/*.jpeg
+**/*.png
+**/*.gif
+**/*.mp4
+**/*.mov
+**/*.pdf
+**/*.zip
+**/*.tar.gz
+
+# Build artifacts
+**/*.log
+**/*.cache
+**/coverage/
+**/.next/
+**/.nuxt/
+
+# OS files
+**/.DS_Store
+**/Thumbs.db
+
+# Large data files
+**/*.csv
+# **/*.json  # uncomment if you have large JSON dumps

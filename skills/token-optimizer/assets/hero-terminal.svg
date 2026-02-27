@@ -2,7 +2,7 @@
   <!--
     Token Optimizer hero – Claude Code terminal running /token-optimizer.
     16s loop. Catppuccin Mocha palette. Pure SMIL animations.
-    Numbers: Post-Tool-Search (Feb 2026). ~33K tokens typical unaudited overhead.
+    Numbers: Post-Tool-Search (Feb 2026). ~43K tokens typical power user overhead.
     Sources: Anthropic Tool Search docs, /context output, community measurements.
   -->
   <defs>
@@ -86,15 +86,15 @@
       dur="16s" repeatCount="indefinite"/>
     <text fill="#bac2de" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14">
       <tspan x="28" y="260">Per-message overhead:  </tspan>
-      <tspan fill="#f38ba8" font-weight="bold">~33,000 tokens</tspan>
+      <tspan fill="#f38ba8" font-weight="bold">~43,000 tokens</tspan>
     </text>
     <text fill="#bac2de" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14">
-      <tspan x="28" y="280">Context window:        </tspan>
-      <tspan fill="#f9e2af">16% used before your first message</tspan>
+      <tspan x="28" y="280">Context unavailable:   </tspan>
+      <tspan fill="#f9e2af">38% before your first message</tspan>
     </text>
     <text fill="#bac2de" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14">
       <tspan x="28" y="300">Controllable overhead: </tspan>
-      <tspan fill="#89b4fa">~18,000 tokens (this is what you fix)</tspan>
+      <tspan fill="#89b4fa">~28,000 tokens (this is what you fix)</tspan>
     </text>
   </g>
 
@@ -114,7 +114,7 @@
       keyTimes="0;0.52;0.55;0.84;0.88;1"
       dur="16s" repeatCount="indefinite"/>
     <text fill="#bac2de" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14">
-      <tspan x="28" y="356">&#xB7; Slim CLAUDE.md:           </tspan><tspan fill="#a6e3a1">Save ~2,900 tokens/msg</tspan>
+      <tspan x="28" y="356">&#xB7; Slim CLAUDE.md + MEMORY.md: </tspan><tspan fill="#a6e3a1">Save ~5,000 tokens/msg</tspan>
     </text>
   </g>
 
@@ -124,7 +124,7 @@
       keyTimes="0;0.56;0.59;0.84;0.88;1"
       dur="16s" repeatCount="indefinite"/>
     <text fill="#bac2de" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14">
-      <tspan x="28" y="380">&#xB7; Archive 25 skills:       </tspan><tspan fill="#a6e3a1">Save ~2,500 tokens/msg</tspan>
+      <tspan x="28" y="380">&#xB7; Prune MCP + archive skills:</tspan><tspan fill="#a6e3a1"> Save ~8,000 tokens/msg</tspan>
     </text>
   </g>
 
@@ -134,7 +134,7 @@
       keyTimes="0;0.60;0.63;0.84;0.88;1"
       dur="16s" repeatCount="indefinite"/>
     <text fill="#bac2de" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14">
-      <tspan x="28" y="404">&#xB7; Add .claudeignore:       </tspan><tspan fill="#a6e3a1">Save ~2,000 tokens/msg</tspan>
+      <tspan x="28" y="404">&#xB7; Add .claudeignore + hooks: </tspan><tspan fill="#a6e3a1"> Save ~2,000 tokens/msg</tspan>
     </text>
   </g>
 
@@ -144,8 +144,8 @@
       values="0;0;1;1;0;0"
       keyTimes="0;0.66;0.70;0.84;0.88;1"
       dur="16s" repeatCount="indefinite"/>
-    <line x1="28" y1="420" x2="520" y2="420" stroke="#313244" stroke-width="0.5"/>
-    <text x="28" y="442" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14" font-weight="bold">Full config savings: ~11,300 tokens/msg (16% &#x2192; 11%)</text>
+    <line x1="28" y1="420" x2="560" y2="420" stroke="#313244" stroke-width="0.5"/>
+    <text x="28" y="442" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14" font-weight="bold">Context recovered: ~15,000 tokens/msg (38% &#x2192; 30%)</text>
   </g>
 
   <!-- Blinking cursor -->
@@ -156,11 +156,11 @@
   <!-- Status bar -->
   <text x="14" y="506" fill="#a6adc8" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12">[Opus 4.6] ~/.claude · main</text>
 
-  <!-- Context progress bar (16% fill → 11% after) -->
+  <!-- Context progress bar (38% unavailable) -->
   <rect x="340" y="496" width="100" height="10" rx="5" fill="#313244"/>
-  <rect x="340" y="496" width="16" height="10" rx="5" fill="#f9e2af"/>
-  <text x="448" y="506" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12">16%</text>
+  <rect x="340" y="496" width="38" height="10" rx="5" fill="#f9e2af"/>
+  <text x="448" y="506" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12">38%</text>
 
   <!-- Right status -->
-  <text x="786" y="506" text-anchor="end" fill="#585b70" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12">167K tokens remaining</text>
+  <text x="786" y="506" text-anchor="end" fill="#585b70" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12">124K tokens remaining</text>
 </svg>

@@ -1,11 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 540" width="800" height="540">
   <!--
     Token Optimizer: What you control, what you save.
-    Realistic "unaudited power user" baseline (~33K) vs optimized (~21K).
+    Power user baseline (~43K consumed, 38% unavailable) vs optimized (~28K, 30%).
     10s loop. Catppuccin Mocha palette. Pure SMIL animations.
     Sources: Anthropic Tool Search docs, /context output, community measurements.
     Bar widths: % of 200K context mapped to 680px track.
-    Before: 33,000/200K = 16.5% → 112px. After: 21,450/200K = 10.7% → 73px.
+    Before: 43,000/200K = 21.5% consumed → 146px. After: 28,000/200K = 14% → 95px.
   -->
 
   <!-- Background -->
@@ -20,25 +20,25 @@
   <!-- BAR 1: Current (unaudited) -->
   <g opacity="0">
     <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.06;0.10;0.84;0.92;1" dur="10s" repeatCount="indefinite"/>
-    <text x="60" y="92" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12">Before optimization (typical unaudited setup)</text>
+    <text x="60" y="92" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12">Before optimization (typical power user setup)</text>
   </g>
 
   <rect x="60" y="98" width="680" height="32" rx="6" fill="#313244" opacity="0">
     <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.06;0.10;0.84;0.92;1" dur="10s" repeatCount="indefinite"/>
   </rect>
 
-  <!-- 33,000/200K = 16.5% → 112px on 680px track -->
+  <!-- 43,000/200K = 21.5% → 146px on 680px track -->
   <rect x="60" y="98" width="0" height="32" rx="6" fill="#f9e2af" opacity="0.85">
-    <animate attributeName="width" values="0;0;0;112;112;112;0;0" keyTimes="0;0.06;0.10;0.20;0.40;0.84;0.92;1" dur="10s" repeatCount="indefinite"/>
+    <animate attributeName="width" values="0;0;0;146;146;146;0;0" keyTimes="0;0.06;0.10;0.20;0.40;0.84;0.92;1" dur="10s" repeatCount="indefinite"/>
   </rect>
 
-  <text x="116" y="119" fill="#1e1e2e" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="15" font-weight="bold" text-anchor="middle" opacity="0">
-    16%
+  <text x="133" y="119" fill="#1e1e2e" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="15" font-weight="bold" text-anchor="middle" opacity="0">
+    22%
     <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.19;0.23;0.84;0.92;1" dur="10s" repeatCount="indefinite"/>
   </text>
 
-  <text x="180" y="119" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" opacity="0">
-    33,000 tokens
+  <text x="214" y="119" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" opacity="0">
+    43,000 tokens consumed
     <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.19;0.23;0.84;0.92;1" dur="10s" repeatCount="indefinite"/>
   </text>
 
@@ -52,24 +52,24 @@
     <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.24;0.28;0.84;0.92;1" dur="10s" repeatCount="indefinite"/>
   </rect>
 
-  <!-- 21,450/200K = 10.7% → 73px -->
+  <!-- 28,000/200K = 14% → 95px -->
   <rect x="60" y="158" width="0" height="32" rx="6" fill="#a6e3a1">
-    <animate attributeName="width" values="0;0;0;73;73;0;0" keyTimes="0;0.24;0.28;0.36;0.84;0.92;1" dur="10s" repeatCount="indefinite"/>
+    <animate attributeName="width" values="0;0;0;95;95;0;0" keyTimes="0;0.24;0.28;0.36;0.84;0.92;1" dur="10s" repeatCount="indefinite"/>
   </rect>
 
   <text x="145" y="179" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="15" font-weight="bold" opacity="0">
-    11%
+    14%
     <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.35;0.39;0.84;0.92;1" dur="10s" repeatCount="indefinite"/>
   </text>
 
   <text x="193" y="179" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" opacity="0">
-    21,450 tokens
+    28,000 tokens consumed
     <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.35;0.39;0.84;0.92;1" dur="10s" repeatCount="indefinite"/>
   </text>
 
   <!-- Savings callout -->
   <text x="400" y="216" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="16" font-weight="bold" text-anchor="middle" opacity="0">
-    11,550 fewer tokens every message. Compounds across every session.
+    15,000 fewer tokens every message. Compounds across every session.
     <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.38;0.42;0.84;0.92;1" dur="10s" repeatCount="indefinite"/>
   </text>
 
@@ -91,32 +91,32 @@
     <!-- CLAUDE.md -->
     <text x="60" y="280" fill="#bac2de" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">CLAUDE.md</text>
     <text x="430" y="280" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">3,500</text>
-    <text x="540" y="280" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">600</text>
-    <text x="680" y="280" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">-2,900</text>
+    <text x="540" y="280" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">800</text>
+    <text x="680" y="280" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">-2,700</text>
 
     <!-- MEMORY.md -->
     <text x="60" y="304" fill="#bac2de" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">MEMORY.md</text>
-    <text x="430" y="304" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">2,500</text>
-    <text x="540" y="304" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">400</text>
-    <text x="680" y="304" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">-2,100</text>
+    <text x="430" y="304" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">3,500</text>
+    <text x="540" y="304" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">1,000</text>
+    <text x="680" y="304" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">-2,500</text>
 
     <!-- Skills -->
-    <text x="60" y="328" fill="#bac2de" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">Skills (50 &#x2192; 25)</text>
-    <text x="430" y="328" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">5,000</text>
-    <text x="540" y="328" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">2,500</text>
-    <text x="680" y="328" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">-2,500</text>
+    <text x="60" y="328" fill="#bac2de" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">Skills (60 &#x2192; 30)</text>
+    <text x="430" y="328" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">6,000</text>
+    <text x="540" y="328" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">3,000</text>
+    <text x="680" y="328" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">-3,000</text>
 
     <!-- Commands -->
-    <text x="60" y="352" fill="#bac2de" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">Commands (25 &#x2192; 10)</text>
-    <text x="430" y="352" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">1,250</text>
-    <text x="540" y="352" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">500</text>
-    <text x="680" y="352" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">-750</text>
+    <text x="60" y="352" fill="#bac2de" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">Commands (60 &#x2192; 25)</text>
+    <text x="430" y="352" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">3,000</text>
+    <text x="540" y="352" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">1,250</text>
+    <text x="680" y="352" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">-1,750</text>
 
-    <!-- MCP deferred tools -->
-    <text x="60" y="376" fill="#bac2de" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">MCP deferred tools</text>
-    <text x="430" y="376" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">2,500</text>
-    <text x="540" y="376" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">1,250</text>
-    <text x="680" y="376" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">-1,250</text>
+    <!-- MCP tools -->
+    <text x="60" y="376" fill="#bac2de" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">MCP tools</text>
+    <text x="430" y="376" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">12,000</text>
+    <text x="540" y="376" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">7,000</text>
+    <text x="680" y="376" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">-5,000</text>
 
     <!-- System reminders -->
     <text x="60" y="400" fill="#bac2de" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">System reminders</text>
@@ -126,27 +126,27 @@
 
     <!-- Core system (fixed) -->
     <text x="60" y="424" fill="#585b70" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">Core system</text>
-    <text x="430" y="424" fill="#585b70" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">15,200</text>
-    <text x="540" y="424" fill="#585b70" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">15,200</text>
+    <text x="430" y="424" fill="#585b70" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">12,000</text>
+    <text x="540" y="424" fill="#585b70" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">12,000</text>
     <text x="680" y="424" fill="#585b70" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">fixed</text>
 
     <!-- Table divider -->
     <line x1="60" y1="436" x2="680" y2="436" stroke="#313244" stroke-width="1"/>
 
     <!-- TOTAL -->
-    <text x="60" y="456" fill="#cdd6f4" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14" font-weight="bold">TOTAL</text>
-    <text x="430" y="456" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14" font-weight="bold" text-anchor="end">33,000</text>
-    <text x="540" y="456" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14" font-weight="bold" text-anchor="end">21,450</text>
-    <text x="680" y="456" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14" font-weight="bold" text-anchor="end">-11,550</text>
+    <text x="60" y="456" fill="#cdd6f4" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14" font-weight="bold">TOTAL CONSUMED</text>
+    <text x="430" y="456" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14" font-weight="bold" text-anchor="end">43,000</text>
+    <text x="540" y="456" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14" font-weight="bold" text-anchor="end">26,050</text>
+    <text x="680" y="456" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14" font-weight="bold" text-anchor="end">-16,950</text>
 
     <!-- Context % -->
     <text x="60" y="476" fill="#585b70" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12">% of 200K context</text>
-    <text x="430" y="476" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12" text-anchor="end">16%</text>
-    <text x="540" y="476" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12" text-anchor="end">11%</text>
-    <text x="680" y="476" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12" text-anchor="end">-5%</text>
+    <text x="430" y="476" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12" text-anchor="end">22%</text>
+    <text x="540" y="476" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12" text-anchor="end">13%</text>
+    <text x="680" y="476" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12" text-anchor="end">-9%</text>
 
     <!-- Why it matters footnote -->
-    <text x="400" y="510" fill="#585b70" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="11" text-anchor="middle">Prompt caching cuts cost 90%. But size still drives rate limits, quality, and compaction speed.</text>
-    <text x="400" y="528" fill="#585b70" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="11" text-anchor="middle">100 messages/day = 1.15M tokens of overhead saved daily.</text>
+    <text x="400" y="510" fill="#585b70" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="11" text-anchor="middle">Plus 33K autocompact buffer. Total unavailable: 38% before, 30% after optimization.</text>
+    <text x="400" y="528" fill="#585b70" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="11" text-anchor="middle">100 messages/day = 1.7M tokens of overhead saved daily.</text>
   </g>
 </svg>

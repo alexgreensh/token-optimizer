@@ -399,23 +399,26 @@ Also track with `/cost` at end of each session and `npx ccusage@latest daily` fo
 
 **Before** (unaudited power user, 3+ months of use, Tool Search active):
 - Core system + built-in tools: ~15,000 tokens (fixed)
-- MCP (ToolSearch + ~130 deferred tools): ~2,500 tokens
-- Skills (~50): ~5,000 tokens
-- Commands (~25): ~1,250 tokens
+- MCP tools: ~12,000 tokens (170 deferred tools + loaded schemas)
+- Skills (~60): ~6,000 tokens
+- Commands (~60): ~3,000 tokens
 - CLAUDE.md: ~3,500 tokens (grown organically, never trimmed)
-- MEMORY.md: ~2,500 tokens (duplicates CLAUDE.md content)
+- MEMORY.md: ~3,500 tokens (duplicates CLAUDE.md content)
 - System reminders: ~3,000 tokens (no .claudeignore)
-- **Total overhead: ~33,000 tokens/msg (16% of 200K)**
+- **Total consumed: ~43,000 tokens/msg (22% of 200K)**
+- **+ Autocompact buffer: ~33,000 tokens (16.5%, reserved)**
+- **= Total unavailable: ~76,000 tokens (38% of 200K)**
 
 **Config changes** (what the optimizer implements):
-1. CLAUDE.md: 3,500 -> 600 tokens (progressive disclosure)
-2. MEMORY.md: 2,500 -> 400 tokens (dedup with CLAUDE.md)
-3. Skills: 50 -> 25 (25 archived, ~2,500 tokens saved)
-4. Commands: 25 -> 10 (15 archived, ~750 tokens saved)
-5. MCP: removed unused servers (~1,250 tokens saved)
+1. CLAUDE.md: 3,500 -> 800 tokens (progressive disclosure)
+2. MEMORY.md: 3,500 -> 1,000 tokens (dedup with CLAUDE.md)
+3. Skills: 60 -> 30 (30 archived, ~3,000 tokens saved)
+4. Commands: 60 -> 25 (35 archived, ~1,750 tokens saved)
+5. MCP: pruned unused servers (~5,000 tokens saved)
 6. .claudeignore created (~2,000 tokens saved from system reminders)
-- **Config savings: ~11,550 tokens/msg (35% reduction in overhead)**
-- **After: ~21,450 tokens/msg (11% of 200K)**
+- **Config savings: ~15,000 tokens/msg (35% reduction in consumed overhead)**
+- **After consumed: ~28,000 tokens/msg (14% of 200K)**
+- **After unavailable (with buffer): ~61,000 tokens (30% of 200K)**
 
 **Behavioral changes** (what the optimizer teaches):
 - Agent model selection (haiku for data): 50-60% on automation

@@ -51,6 +51,8 @@ Your 200K context window gets eaten from multiple directions:
 
 A real power user's session baseline: **~43,000 tokens consumed per message** (22% of the 200K window). Add the autocompact buffer and **~38% is unavailable** before typing a single word.
 
+Every subagent you spawn gets its own 200K window and loads the same full stack. Five parallel agents means five copies of that overhead, each starting ~30% full before doing any work.
+
 ## What This Does
 
 One command. Six parallel agents audit your entire setup. You get a prioritized list of exactly what's eating your context and how to fix it.
@@ -153,7 +155,7 @@ Prompt caching cuts cost by 90%. But it doesn't shrink your context window.
 - **You hit compaction sooner** — compaction is lossy, every cycle throws away context
 - **Rate limits burn faster** — cache reads still count toward your subscription quota
 - **Quality degrades** — performance drops as context fills, especially past 70%
-- **Agents multiply it** — each subagent inherits your full overhead. [Agent teams use ~7x more tokens in plan mode](https://code.claude.com/docs/en/costs) than standard sessions
+- **Agents multiply it** — every subagent loads its own copy of your full config stack. Dispatch 5 agents and that overhead loads 5 times, each in a fresh 200K window. [Agent teams use ~7x more tokens in plan mode](https://code.claude.com/docs/en/costs) than standard sessions. Reducing per-agent overhead from 43K to 28K saves 75K tokens across those 5 agents
 
 ## Measurement Tool
 

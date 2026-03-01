@@ -250,7 +250,7 @@ Message 3: 35,000 previous + new message + response = ~50,000 total
     |
 ...context grows...
     |
-AUTO-COMPACT triggers near context limits — often too late for best quality
+AUTO-COMPACT triggers near context limits. Often too late for best quality
     |
 Context compressed (lossy)
     |

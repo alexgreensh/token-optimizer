@@ -10,7 +10,7 @@
       {
         "matcher": "Write|Edit",
         "type": "command",
-        "command": "echo 'File modified. Skip formatting explanations — the formatter handles it.'"
+        "command": "echo 'File modified. Skip formatting explanations. The formatter handles it.'"
       }
     ]
   }

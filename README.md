@@ -152,10 +152,10 @@ Right model for each job. Session folder pattern keeps agent output from floodin
 
 Prompt caching cuts cost by 90%. But it doesn't shrink your context window.
 
-- **You hit compaction sooner** — compaction is lossy, every cycle throws away context
-- **Rate limits burn faster** — cache reads still count toward your subscription quota
-- **Quality degrades** — performance drops as context fills, especially past 70%
-- **Agents multiply it** — every subagent loads its own copy of your full config stack. Dispatch 5 agents and that overhead loads 5 times, each in a fresh 200K window. [Agent teams use ~7x more tokens in plan mode](https://code.claude.com/docs/en/costs) than standard sessions. Reducing per-agent overhead from 43K to 28K saves 75K tokens across those 5 agents
+- **You hit compaction sooner.** Compaction is lossy. Every cycle throws away context.
+- **Rate limits burn faster.** Cache reads still count toward your subscription quota.
+- **Quality degrades.** Performance drops as context fills, especially past 70%.
+- **Agents multiply it.** Every subagent loads its own copy of your full config stack. Dispatch 5 agents and that overhead loads 5 times, each in a fresh 200K window. [Agent teams use ~7x more tokens in plan mode](https://code.claude.com/docs/en/costs) than standard sessions. Reducing per-agent overhead from 43K to 28K saves 75K tokens across those 5 agents.
 
 ## Measurement Tool
 

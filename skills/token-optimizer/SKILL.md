@@ -7,7 +7,7 @@ description: |
   config stack.
 ---
 
-# Token Optimizer — See Where Your Context Window Goes. Get It Back.
+# Token Optimizer: See Where Your Context Window Goes. Get It Back.
 
 Token optimization specialist. Audits a Claude Code setup, identifies context window waste, implements fixes, and measures savings.
 

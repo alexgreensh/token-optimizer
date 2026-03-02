@@ -1181,6 +1181,68 @@ def _extract_skills_and_agents_from_subagent(filepath):
     return skills, subagents
 
 
+def _clean_project_name(raw_project):
+    """Map Claude Code dashed directory names to human-readable labels.
+
+    e.g. "-Users-jane" -> "home"
+         "-Users-jane-projects-acme-api" -> "acme/api"
+         "-Users-jane-myproject" -> "myproject"
+    """
+    if not raw_project:
+        return "unknown"
+    # Strip the leading "-Users-<username>-" prefix
+    import re as _re
+    cleaned = _re.sub(r"^-Users-[^-]+-?", "", raw_project)
+    if not cleaned:
+        return "home"
+    # Split remaining path segments and take the last 1-2 meaningful ones
+    parts = cleaned.split("-")
+    # Filter out empty parts
+    parts = [p for p in parts if p]
+    if not parts:
+        return "home"
+    # If the path is long, use last 2 segments joined by /
+    if len(parts) > 2:
+        return "/".join(parts[-2:])
+    return "/".join(parts)
+
+
+def _extract_topic(text):
+    """Extract a clean topic from the first user message text.
+
+    Strips common prefixes like 'Implement the following plan:' and
+    extracts the plan title if present. Truncates to 120 chars.
+    """
+    if not text or not isinstance(text, str):
+        return None
+    # Strip leading whitespace/newlines
+    text = text.strip()
+    # Remove common prefixes
+    prefixes = [
+        "Implement the following plan:",
+        "Implement the following plan\n",
+        "Please implement the following plan:",
+        "Execute the following plan:",
+    ]
+    for prefix in prefixes:
+        if text.lower().startswith(prefix.lower()):
+            text = text[len(prefix):].strip()
+            break
+    # If it starts with a markdown heading, extract that as the topic
+    for line in text.split("\n"):
+        line = line.strip()
+        if line.startswith("#"):
+            text = line.lstrip("# ").strip()
+            break
+        if line:
+            text = line
+            break
+    # Truncate
+    if len(text) > 120:
+        text = text[:117] + "..."
+    return text or None
+
+
 def _parse_session_jsonl(filepath):
     """Parse a single JSONL session file in one streaming pass.
 
@@ -1196,6 +1258,8 @@ def _parse_session_jsonl(filepath):
     total_cache_create = 0
     model_usage = {}
     version = None
+    slug = None
+    topic = None
     first_ts = None
     last_ts = None
     message_count = 0
@@ -1215,6 +1279,12 @@ def _parse_session_jsonl(filepath):
                     if v:
                         version = v
 
+                # Extract slug (first record that has one)
+                if slug is None:
+                    s = record.get("slug")
+                    if s:
+                        slug = s
+
                 # Extract timestamp
                 ts_str = record.get("timestamp")
                 if ts_str:
@@ -1227,6 +1297,23 @@ def _parse_session_jsonl(filepath):
                         pass
 
                 rec_type = record.get("type")
+
+                # Extract topic from first user message
+                if rec_type == "user" and topic is None:
+                    msg = record.get("message", {})
+                    content = msg.get("content") if isinstance(msg, dict) else msg
+                    if isinstance(content, str):
+                        topic = _extract_topic(content)
+                    elif isinstance(content, list):
+                        for block in content:
+                            if isinstance(block, dict) and block.get("type") == "text":
+                                topic = _extract_topic(block.get("text", ""))
+                                if topic:
+                                    break
+                            elif isinstance(block, str):
+                                topic = _extract_topic(block)
+                                if topic:
+                                    break
 
                 # Count user/assistant messages
                 if rec_type in ("user", "assistant"):
@@ -1294,6 +1381,8 @@ def _parse_session_jsonl(filepath):
 
     return {
         "version": version,
+        "slug": slug,
+        "topic": topic,
         "duration_minutes": duration_minutes,
         "total_input_tokens": total_full_input,
         "total_output_tokens": total_output,
@@ -1373,6 +1462,8 @@ CREATE TABLE IF NOT EXISTS session_log (
     tool_calls_json TEXT,
     model_usage_json TEXT,
     version TEXT,
+    slug TEXT,
+    topic TEXT,
     collected_at TEXT
 );
 
@@ -1415,6 +1506,16 @@ def _init_trends_db():
     conn = sqlite3.connect(str(TRENDS_DB))
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(_SCHEMA)
+    # Migrate existing DBs: add slug/topic columns if missing
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(session_log)").fetchall()}
+        if "slug" not in cols:
+            conn.execute("ALTER TABLE session_log ADD COLUMN slug TEXT")
+        if "topic" not in cols:
+            conn.execute("ALTER TABLE session_log ADD COLUMN topic TEXT")
+        conn.commit()
+    except sqlite3.Error:
+        pass
     return conn
 
 
@@ -1467,8 +1568,8 @@ def collect_sessions(days=90, quiet=False):
                (jsonl_path, date, project, duration_minutes, input_tokens,
                 output_tokens, message_count, api_calls, cache_hit_rate,
                 skills_json, subagents_json, tool_calls_json, model_usage_json,
-                version, collected_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                version, slug, topic, collected_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 str(filepath), date, project_name,
                 parsed["duration_minutes"],
@@ -1482,6 +1583,8 @@ def collect_sessions(days=90, quiet=False):
                 json.dumps(parsed["tool_calls"]),
                 json.dumps(parsed["model_usage"]),
                 parsed["version"],
+                parsed.get("slug"),
+                parsed.get("topic"),
                 datetime.now().isoformat(),
             ),
         )
@@ -1663,7 +1766,7 @@ def _query_trends_db(conn, days):
     session_rows = conn.execute(
         """SELECT date, duration_minutes, input_tokens, output_tokens,
                   message_count, api_calls, cache_hit_rate, skills_json,
-                  subagents_json
+                  subagents_json, slug, topic, project
            FROM session_log WHERE date >= ? ORDER BY date DESC""",
         (cutoff,),
     ).fetchall()
@@ -1704,6 +1807,9 @@ def _query_trends_db(conn, days):
             "skills": list(skills.keys()),
             "subagents": list(subagents.keys()),
             "cache_hit_rate": round(sr["cache_hit_rate"] or 0, 3),
+            "slug": sr["slug"],
+            "topic": sr["topic"],
+            "project": _clean_project_name(sr["project"]),
         })
 
     daily_sorted = sorted(daily.values(), key=lambda x: x["date"], reverse=True)
@@ -1832,6 +1938,9 @@ def _collect_trends_from_jsonl(days=30):
             "skills": list(s["skills_used"].keys()),
             "subagents": list(s["subagents_used"].keys()),
             "cache_hit_rate": round(s["cache_hit_rate"], 3),
+            "slug": s.get("slug"),
+            "topic": s.get("topic"),
+            "project": _clean_project_name(s.get("project")),
         })
 
     # Sort daily by date descending
@@ -1860,6 +1969,76 @@ def _collect_trends_from_jsonl(days=30):
     }
 
 
+def _collect_git_commits(days=30):
+    """Scan known git repos for commits within the time window.
+
+    Checks project directories under ~/.claude/projects/ (reversing the
+    dashed name to a real path) and skill repos under ~/.claude/skills/.
+
+    Returns: { "2026-03-01": [{"repo": "name", "commits": ["msg1", ...]}], ... }
+    """
+    from datetime import timedelta
+    cutoff_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+
+    # Collect candidate repo paths
+    repo_paths = {}  # path -> display name
+
+    # 1. From project directories
+    projects_base = CLAUDE_DIR / "projects"
+    if projects_base.exists():
+        for project_dir in projects_base.iterdir():
+            if not project_dir.is_dir():
+                continue
+            # Reverse dashed name to real path: -Users-alex-myproject -> /Users/alex/myproject
+            real_path = "/" + project_dir.name.lstrip("-").replace("-", "/")
+            rp = Path(real_path)
+            if rp.is_dir() and (rp / ".git").exists():
+                repo_paths[str(rp)] = _clean_project_name(project_dir.name)
+
+    # 2. From skill repos
+    skills_dir = CLAUDE_DIR / "skills"
+    if skills_dir.exists():
+        for skill_dir in skills_dir.iterdir():
+            if skill_dir.is_dir() and (skill_dir / ".git").exists():
+                repo_paths[str(skill_dir)] = skill_dir.name
+
+    if not repo_paths:
+        return {}
+
+    result = {}  # date -> [{"repo": name, "commits": [msg, ...]}]
+
+    for repo_path, display_name in repo_paths.items():
+        try:
+            proc = subprocess.run(
+                ["git", "-C", repo_path, "log", "--oneline",
+                 f"--since={cutoff_date}", "--format=%ai|%s"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if proc.returncode != 0 or not proc.stdout.strip():
+                continue
+            for line in proc.stdout.strip().split("\n"):
+                if "|" not in line:
+                    continue
+                date_part, msg = line.split("|", 1)
+                date = date_part.strip()[:10]  # YYYY-MM-DD
+                if date not in result:
+                    result[date] = []
+                # Find or create repo entry for this date
+                repo_entry = None
+                for entry in result[date]:
+                    if entry["repo"] == display_name:
+                        repo_entry = entry
+                        break
+                if repo_entry is None:
+                    repo_entry = {"repo": display_name, "commits": []}
+                    result[date].append(repo_entry)
+                repo_entry["commits"].append(msg.strip())
+        except (subprocess.TimeoutExpired, OSError):
+            continue
+
+    return result
+
+
 def _collect_trends_data(days=30):
     """Collect trends data, preferring SQLite DB when available.
 
@@ -1868,9 +2047,13 @@ def _collect_trends_data(days=30):
     # Try SQLite first (faster, accumulated data)
     result = _collect_trends_from_db(days)
     if result is not None:
+        result["git_commits"] = _collect_git_commits(days)
         return result
     # Fall back to live JSONL parsing
-    return _collect_trends_from_jsonl(days)
+    result = _collect_trends_from_jsonl(days)
+    if result is not None:
+        result["git_commits"] = _collect_git_commits(days)
+    return result
 
 
 def usage_trends(days=30, as_json=False):

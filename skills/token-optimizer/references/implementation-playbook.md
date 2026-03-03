@@ -223,6 +223,40 @@ Generate and add a compact instructions section to CLAUDE.md.
 
 ---
 
+## 4L: Model Routing Setup
+
+Add or improve model routing instructions in CLAUDE.md.
+
+**Steps**:
+1. Check if CLAUDE.md already has model routing instructions:
+   - Grep for "haiku", "sonnet", "opus", "model" in CLAUDE.md
+   - If found, assess specificity (detailed table vs vague "use appropriate models")
+2. If no routing instructions exist, present the recommended snippet:
+   ```markdown
+   ## Agent Model Selection
+   Default subagents to haiku. Upgrade only when task requires judgment:
+   - haiku: file reading, data gathering, counting, scanning, formatting
+   - sonnet: analysis, code review, writing, moderate reasoning
+   - opus: architecture decisions, novel debugging, cross-cutting synthesis
+   ```
+3. If routing instructions exist, compare against actual model_mix usage:
+   - Run `measure.py trends --json --days 30` if trends DB exists
+   - Are subagents actually following the routing? (check model_mix percentages)
+   - Is the instruction specific enough? ("default to haiku" vs detailed task-to-model table)
+   - If >70% of tokens go to Opus despite routing instructions, the instructions may be too vague
+4. Present routing snippet for user approval
+5. Add to CLAUDE.md under the heading `## Agent Model Selection`. Place in the stable
+   (static) section of CLAUDE.md, not the volatile tail (routing instructions rarely change,
+   so they benefit from prompt caching). If no clear section exists, add after identity/rules.
+
+**Targets**:
+- 50-75% cost reduction on multi-agent workflows (API users)
+- Rate limit conservation: Haiku has higher throughput limits than Opus
+- Faster responses: Haiku is 3-5x faster than Opus for equivalent tasks
+- No context window impact (routing doesn't change system prompt size)
+
+---
+
 ## Quality Checklist
 
 - [ ] Coordination folder created with manifest
@@ -235,6 +269,7 @@ Generate and add a compact instructions section to CLAUDE.md.
 - [ ] Results quantified (tokens + cost)
 - [ ] Hooks configuration offered (PreCompact, PostToolUse)
 - [ ] CLAUDE.md cache structure checked (static first, volatile last)
+- [ ] Model routing instructions checked/added (4L)
 - [ ] Token monitoring tools recommended (measure.py trends + SessionEnd hook, /context, /cost)
 
 ---

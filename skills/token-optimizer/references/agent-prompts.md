@@ -380,7 +380,29 @@ Output file: {COORD_PATH}/audit/advanced.md
     - Check if CLAUDE.md has a compact instructions section
     - If missing, flag as opportunity (guides what survives compaction)
 
-13. Write findings to {COORD_PATH}/audit/advanced.md:
+13. **Model Routing Analysis**:
+    a. Check CLAUDE.md and MEMORY.md for model routing instructions
+       - Grep for "haiku", "sonnet", "opus", "model" keywords
+       - Does the user have ANY model routing guidance? (Yes/No)
+       - If yes, is it specific (task-to-model table) or vague ("use appropriate models")?
+    b. If measure.py trends DB exists (~/.claude/_backups/token-optimizer/trends.db):
+       - Run: python3 ~/.claude/skills/token-optimizer/scripts/measure.py trends --json --days 30
+       - If the command fails (non-zero exit) or output is not valid JSON (e.g., prints
+         "No session logs found"), treat as "no trends data" and skip to step (d)
+       - The JSON output has raw token counts per full model ID (e.g., "claude-3-haiku-20240307": 50000).
+         Calculate percentages from totals. Normalize model names: "claude*haiku*" -> "Haiku",
+         "claude*sonnet*" -> "Sonnet", "claude*opus*" -> "Opus"
+       - The JSON "subagents" field has spawn counts by type. Map to suggested models:
+         Explore -> haiku, general-purpose (file reads/counting) -> haiku,
+         general-purpose (analysis/synthesis) -> sonnet
+    c. Cross-reference: If >70% of tokens go to opus/sonnet AND subagent types
+       include data-gathering patterns (Explore, general-purpose for file reads),
+       flag as HIGH PRIORITY optimization.
+       If distribution is healthy (<70% to Opus/Sonnet combined, or patterns match
+       task-to-model mapping), rate as LOW and note: "Model routing is working as intended."
+    d. If no trends data available, skip (b) and (c), just report on (a)
+
+14. Write findings to {COORD_PATH}/audit/advanced.md:
    # Settings & Advanced Optimizations Audit
 
    ## Hooks Configuration
@@ -446,6 +468,26 @@ Output file: {COORD_PATH}/audit/advanced.md
    ## Compact Instructions
    **Has compact instructions section**: [Yes / No]
 
+   ## Model Routing
+   **Has routing instructions**: [Yes / No]
+   **Location**: [CLAUDE.md / MEMORY.md / Neither]
+   **Specificity**: [Detailed table / Brief mention / None]
+
+   ### Usage Pattern (from trends, last 30 days)
+   | Model | Token % | Tokens |
+   |-------|---------|--------|
+   (from model_mix data, or "No trends data available" if DB missing)
+
+   ### Subagent Types
+   | Type | Spawns | Suggested Model |
+   |------|--------|-----------------|
+   (cross-reference agent types with recommended model tier)
+
+   ### Finding
+   [HIGH/MEDIUM/LOW or N/A]
+   - [Specific recommendation based on data, e.g. "72% of tokens go to Opus.
+      45 Explore agent spawns could use Haiku (60x cheaper input)."]
+
    ## Estimated Savings
    - Hooks: ~10-20% reduction in wasted context
    - Cache optimization: Up to 90% on repeated prefix content
@@ -508,6 +550,15 @@ Output format:
 NOTE: Behavioral changes (compact timing, model selection, batching, clearing between topics)
 often save MORE than config changes over a full day of usage. Quantify in terms of daily/weekly
 impact, not just per-message.
+
+IMPORTANT: Check the "## Model Routing" section in advanced.md. Look for "### Finding"
+followed by a severity line (HIGH, MEDIUM, LOW, or N/A). If the severity is HIGH or MEDIUM,
+promote model routing to the TOP of the Behavioral Changes section. Model routing (defaulting
+subagents to Haiku) is the single highest-ROI behavioral change (50-75% savings on multi-agent
+workflows). Include the specific data from the audit: token distribution percentages, subagent
+types that could downgrade, and the cost differential (Haiku is 60x cheaper than Opus per token).
+If the severity is LOW or N/A, mention model routing briefly in Behavioral Changes but do not
+promote it to the top.
 
 ## Projected Savings
 - Config changes: X tokens/msg (Y%)

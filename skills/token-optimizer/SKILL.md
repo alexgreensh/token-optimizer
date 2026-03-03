@@ -1,10 +1,6 @@
 ---
 name: token-optimizer
-description: |
-  25-38% of your context window is gone before you type a word. Sometimes called
-  "ghost tokens" or "invisible overhead." Audits your Claude Code setup, shows
-  exactly where the tokens go, and fixes it. Use when context feels tight,
-  sessions degrade fast, or you've never audited your config stack.
+description: Find the ghost tokens. Audit Claude Code setup, see where 25-38% of your context goes, fix it. Use when context feels tight.
 ---
 
 # Token Optimizer: See Where Your Context Window Goes. Get It Back.
@@ -135,7 +131,7 @@ If missing, present the individual `audit/*.md` files directly to the user. Do n
 
 ## Phase 3: Present Findings
 
-Read the optimization plan and present:
+Read the optimization plan and present. For the MODEL ROUTING line, also read `{COORD_PATH}/audit/advanced.md` to extract the "Has routing instructions" and "Usage Pattern" data if not present in the optimization plan.
 
 ```
 [Token Optimizer Results]
@@ -147,6 +143,9 @@ Context used before first message: ~X%
 QUICK WINS (do these today)
 - [Action 1]: Save ~X tokens/msg (~Y%)
 - [Action 2]: Save ~X tokens/msg (~Y%)
+
+MODEL ROUTING
+[Has instructions: Yes/No] | [Token distribution: X% Opus, Y% Sonnet, Z% Haiku or "Not measured yet"]
 
 FULL OPTIMIZATION POTENTIAL
 If all implemented: ~X tokens/msg saved (~Y% reduction)
@@ -180,7 +179,7 @@ The terminal summary above remains for headless/terminal-only environments. Dash
 
 Read `references/implementation-playbook.md` for detailed steps.
 
-Available actions: 4A (CLAUDE.md), 4B (MEMORY.md), 4C (Skills), 4D (.claudeignore), 4E (MCP), 4F (Hooks), 4G (Cache Structure), 4H (Rules Cleanup), 4I (Settings Tuning), 4J (Skill Description Tightening), 4K (Compact Instructions Setup).
+Available actions: 4A (CLAUDE.md), 4B (MEMORY.md), 4C (Skills), 4D (.claudeignore), 4E (MCP), 4F (Hooks), 4G (Cache Structure), 4H (Rules Cleanup), 4I (Settings Tuning), 4J (Skill Description Tightening), 4K (Compact Instructions Setup), 4L (Model Routing Setup).
 
 Templates in `examples/`. Always backup before changes. Present diffs for approval.
 
@@ -212,10 +211,10 @@ SAVINGS ACHIEVED
 - Skills: -Z tokens/msg
 - Total: -W tokens/msg (V% reduction)
 
-NEXT STEPS (Behavioral)
-1. Use /compact at 70% context (quality degrades past 70%)
-2. Use /clear between unrelated topics
-3. Default to haiku for data-gathering agents
+NEXT STEPS (Behavioral, ordered by ROI)
+1. Default subagents to Haiku (60x cheaper than Opus, see Model Routing)
+2. Use /compact at 70% context (quality degrades past 70%)
+3. Use /clear between unrelated topics
 4. Use Plan Mode (Shift+Tab x2) before complex tasks
 5. Batch related requests into one message
 6. Run /context periodically to check fill level

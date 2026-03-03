@@ -371,13 +371,41 @@ Savings from optimization: ~$675/mo
 
 **With caching** (typical, 96-97% cache hit rate):
 ```
-Most overhead tokens are cache reads at 10% of base price.
-Effective cost of 20K cached overhead: ~$0.003/msg (not $0.30)
-Effective cost of 35K cached overhead: ~$0.005/msg
-Dollar savings from optimization: ~$60/mo (10x less than uncached)
+Cached reads cost 10% of base input price.
+
+Opus cached input: $1.50/1M (10% of $15)
+  20K overhead: ~$0.03/msg | 35K overhead: ~$0.05/msg
+  Savings from optimization: ~$68/mo
+
+Sonnet cached input: $0.30/1M (10% of $3)
+  20K overhead: ~$0.006/msg | 35K overhead: ~$0.011/msg
+  Savings from optimization: ~$14/mo
 ```
 
 **The honest framing**: For subscription users (Max, Pro), dollar cost is irrelevant. The real impact is context window space, rate limit quota burn, and quality degradation from fuller context.
+
+---
+
+## Model Cost Comparison (Why Routing Matters)
+
+Routing subagents to the right model tier is the highest-ROI behavioral change. The cost differentials are massive:
+
+| Model | Input $/1M | Output $/1M | Relative Cost (vs Haiku) |
+|-------|-----------|-------------|--------------------------|
+| Haiku 4.5 | $0.25 | $1.25 | 1x |
+| Sonnet 4.6 | $3.00 | $15.00 | 12x input, 12x output |
+| Opus 4.6 | $15.00 | $75.00 | 60x input, 60x output |
+
+**Worked example**: 5-agent workflow (file scanning + analysis + synthesis):
+- **All Opus**: 5 agents x (30K input x $15/1M + 5K output x $75/1M) = ~$4.13
+- **Routed** (3 Haiku + 1 Sonnet + 1 Opus): ~$1.04
+- **Savings: ~75%**
+
+For subscription users (Max plan): model routing affects rate limits, not dollars. Haiku calls consume fewer quota units and return results 3-5x faster. Routing means your session stays under rate limits longer.
+
+**What routing does NOT save**: Context window space. Subagents inherit the full system prompt regardless of model. A Haiku agent gets the same ~30K token overhead as an Opus agent. Routing saves dollars and rate limits. Config optimizations (CLAUDE.md slimming, skill archival) save context window space.
+
+See `optimization-checklist.md` for the full Model Routing Strategy section with task-to-model mapping and a ready-to-paste CLAUDE.md snippet.
 
 ---
 
@@ -445,7 +473,7 @@ TOTAL RECOVERY vs unoptimized with buffer: 38% -> 14% = 24% of context freed
 Prompt caching means the dollar savings are modest (cached tokens cost 10% of base). But the context window space savings are real: you hit compaction later, quality stays higher longer, and each subagent inherits 15,000 fewer tokens of overhead.
 
 **Plus behavioral changes** (compound across every message):
-- Agent model selection (haiku for data): 50-60% savings on automation
+- Agent model selection (haiku for data): 50-75% savings on automation
 - /compact at 50-70%: up to 18x reduction in conversation history
 - Extended thinking awareness: variable, potentially largest factor
 - Batching requests: 2-3x on multi-step tasks

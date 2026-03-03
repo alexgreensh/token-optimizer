@@ -18,21 +18,12 @@ Comprehensive checklist of ALL optimization techniques.
 
 ---
 
-### 2. Agent Model Selection Rule (5 minutes)
-**Target**: 50-60% cost reduction on automation/agents
+### 2. Check Model Routing (5 minutes)
+**Target**: Confirm you have model routing instructions in CLAUDE.md
 
-**Add to CLAUDE.md or MEMORY.md**:
-```markdown
-When dispatching subagents, ALWAYS specify model parameter:
-- haiku: file reading, data gathering, counting, scanning
-- sonnet: analysis, synthesis, writing, moderate reasoning
-- opus: architecture, novel reasoning, complex debugging
-Default to haiku. Upgrade only if task requires it.
-```
+**Quick check**: Does your CLAUDE.md tell Claude which model to use for subagents? If not, add the snippet from the Model Routing section below. One line, 50-75% savings on every multi-agent workflow.
 
-**Why quick win**: One line in CLAUDE.md, 50-60% savings on every multi-agent workflow. This saves more than most config changes combined.
-
-**Expected savings**: 50-60% on automation costs
+**Expected savings**: 50-75% on automation costs (see full breakdown below)
 
 ---
 
@@ -105,6 +96,76 @@ Copy to `~/.claude/.claudeignore` (global) or `.claudeignore` (project-level).
 - [ ] Archive to `~/.claude/_backups/commands-archived-$(date +%Y%m%d)/`
 
 **Expected savings**: ~50 tokens per command archived
+
+---
+
+## MODEL ROUTING STRATEGY (Highest-ROI Behavioral Change)
+
+Model routing is the single highest-ROI optimization for multi-agent workflows. It saves dollars (API users), rate limit quota (subscription users), and wall-clock time. One instruction in CLAUDE.md, 50-75% cost reduction on automation.
+
+### Cost Math
+
+| Model | Input $/1M | Output $/1M | Relative Cost (vs Haiku) |
+|-------|-----------|-------------|--------------------------|
+| Haiku 4.5 | $0.25 | $1.25 | 1x |
+| Sonnet 4.6 | $3.00 | $15.00 | 12x |
+| Opus 4.6 | $15.00 | $75.00 | 60x |
+
+Haiku is **12x cheaper** than Sonnet and **60x cheaper** than Opus per token. For tasks that don't require judgment or complex reasoning, every Opus call is 60x overspend.
+
+### Task-to-Model Mapping
+
+| Task Type | Model | Examples | Why |
+|-----------|-------|----------|-----|
+| Data gathering | haiku | File reading, counting, scanning, listing, presence checks | No judgment needed, pattern matching only |
+| Light analysis | haiku | Formatting, simple transforms, status checks, inventory | Structured output from structured input |
+| Moderate reasoning | sonnet | Code review, writing, synthesis, moderate debugging, content analysis | Requires judgment + coherence |
+| Complex reasoning | opus | Architecture decisions, novel problems, cross-cutting analysis, multi-file synthesis | Needs full capability, nuanced tradeoffs |
+
+### CLAUDE.md Snippet (Ready to Copy-Paste)
+
+```markdown
+## Agent Model Selection
+Default subagents to haiku. Upgrade only when task requires judgment:
+- haiku: file reading, data gathering, counting, scanning, formatting
+- sonnet: analysis, code review, writing, moderate reasoning
+- opus: architecture decisions, novel debugging, cross-cutting synthesis
+```
+
+### Worked Example: 5-Agent Workflow
+
+A typical audit workflow dispatches 5 agents to scan files, count items, analyze content, and synthesize findings.
+
+**Without routing (all Opus)**:
+Each agent uses ~30K input + ~5K output tokens.
+- 5 agents x 30K input x $15/1M = $2.25 input
+- 5 agents x 5K output x $75/1M = $1.88 output
+- **Total: ~$4.13**
+
+**With routing (3 Haiku + 1 Sonnet + 1 Opus)**:
+- 3 Haiku agents: 90K input x $0.25/1M + 15K output x $1.25/1M = $0.04
+- 1 Sonnet agent: 30K input x $3/1M + 5K output x $15/1M = $0.17
+- 1 Opus agent: 30K input x $15/1M + 5K output x $75/1M = $0.83
+- **Total: ~$1.04**
+
+**Savings: ~75% ($3.09 saved per workflow run)**
+
+For subscription users (Max plan): model routing affects rate limits, not dollars. Haiku calls consume fewer quota units and are 3-5x faster. Routing means your session stays under rate limits longer and agents return results faster.
+
+### What Routing Does NOT Save
+
+- **Context window space**: Subagents inherit the full system prompt regardless of model. A Haiku agent gets the same ~30K token system prompt as an Opus agent.
+- **System prompt overhead**: CLAUDE.md, skills, MCP tools all load for every subagent at full size.
+
+Routing saves **dollars** (API users), **rate limit quota** (subscription users), and **wall-clock time** (everyone). It does not reduce context window consumption. That's what the config optimizations (CLAUDE.md slimming, skill archival, etc.) address.
+
+### Detection: Is Your Setup Routing Efficiently?
+
+Signs of inefficient routing:
+- No model routing instructions in CLAUDE.md or MEMORY.md
+- `measure.py trends` shows >70% of tokens going to Opus/Sonnet
+- Subagent types include data-gathering patterns (Explore, general-purpose for file reads) running on Opus
+- The Settings & Advanced auditor checks this automatically (see agent-prompts.md)
 
 ---
 
@@ -230,7 +291,7 @@ These save more than config changes over a full day of usage.
 **Target**: Keep context lean, extend productive session length
 
 **Rules**:
-- [ ] Run `/compact` at 50-70% context (auto-compact default is 95%, which is too late. Greg: "Claude can run out of space before it finishes summarizing.")
+- [ ] Run `/compact` at 50-70% context (auto-compact default is ~83%, which is past the quality degradation zone)
 - [ ] Run `/compact` at natural breakpoints (after commit, after feature)
 - [ ] Run `/clear` between unrelated topics (cheaper than compact, no summary overhead)
 - [ ] Check `/context` periodically to know your fill level
@@ -422,7 +483,7 @@ Also track with `/cost` at end of each session and `measure.py trends` for histo
 - **After unavailable (with buffer): ~61,000 tokens (30% of 200K)**
 
 **Behavioral changes** (what the optimizer teaches):
-- Agent model selection (haiku for data): 50-60% on automation
+- Agent model selection (haiku for data): 50-75% on automation
 - /compact at 50-70%: up to 18x reduction in conversation history
 - Extended thinking awareness: variable, potentially largest single factor
 - Batching requests: 2-3x on multi-step tasks
@@ -547,7 +608,7 @@ These are settings that affect token usage and context behavior. The optimizer a
 - Don't add content to CLAUDE.md without asking "Can this be a skill or reference file?"
 - Don't duplicate rules between CLAUDE.md and MEMORY.md
 - Don't archive skills to subfolder inside skills/ (still loads)
-- Don't use Opus agents for file reading (haiku is 5x cheaper)
+- Don't use Opus agents for file reading (haiku is 60x cheaper, see Model Routing section)
 - Don't wait for auto-compact (do it manually at 70%)
 - Don't paste full error logs (paste relevant lines only)
 - Don't run tests through Claude (run locally, paste failures only)

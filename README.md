@@ -169,22 +169,32 @@ Every component is clickable. Expand any item to see why it matters, what the tr
 
 The dashboard auto-regenerates after every session (via the SessionEnd hook). It shows Trends and Health tabs with your latest usage data. The full audit dashboard (with optimization recommendations) requires running `/token-optimizer`.
 
-**Access it:**
+**Bookmarkable URL (macOS):**
 
 ```bash
-# Serve over HTTP (works on headless machines, remote servers, anything with a network)
+python3 $MEASURE_PY setup-daemon
+# => http://localhost:24842/
+```
+
+This installs a tiny background server (~2MB memory) that starts when you log in. Bookmark the URL and check your dashboard anytime. It always shows the latest data because the SessionEnd hook regenerates the file after every session.
+
+Only accessible from your machine (localhost). Uninstall: `python3 $MEASURE_PY setup-daemon --uninstall`
+
+**Other options:**
+
+```bash
+# Open the file directly (no server needed)
+open ~/.claude/_backups/token-optimizer/dashboard.html
+
+# Serve over HTTP (headless/remote machines)
 python3 $MEASURE_PY dashboard --serve
-# => http://localhost:8080/dashboard.html
 
-# Custom port
-python3 $MEASURE_PY dashboard --serve --port 9000
-
-# Remote access: SSH tunnel from your laptop
+# Remote access via SSH tunnel
 ssh -L 8080:localhost:8080 your-server
 # Then open http://localhost:8080/dashboard.html locally
 ```
 
-The file also lives at `~/.claude/_backups/token-optimizer/dashboard.html` if you have a local GUI. To regenerate manually: `python3 $MEASURE_PY dashboard`.
+To regenerate manually: `python3 $MEASURE_PY dashboard`.
 
 **Full audit dashboard** (after running `/token-optimizer`):
 

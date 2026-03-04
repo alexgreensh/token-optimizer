@@ -1434,13 +1434,18 @@ function parsePlan(planMd) {
     var m = line.match(/^-\s+\[\s*\]\s+\*\*(.+?)\*\*[:\s]*(.*)$/);
     if (!m) continue;
     var title = m[1], desc = m[2] || '', tokens = 0;
-    var tk = desc.match(/~([\d,]+)\s*tokens/i);
-    if (tk) tokens = parseInt(tk[1].replace(/,/g,''), 10);
     var fullDesc = desc;
     while (i + 1 < lines.length && lines[i+1].match(/^\s{2,}/) && !lines[i+1].match(/^-\s/)) {
       i++;
       fullDesc += ' ' + lines[i].trim();
-      if (!tokens) { tk = lines[i].match(/~([\d,]+)\s*tokens/i); if (tk) tokens = parseInt(tk[1].replace(/,/g,''),10); }
+    }
+    /* Prefer "~N tokens recoverable" (total savings) over inline per-item costs like "~100 tokens each" */
+    var recov = fullDesc.match(/~([\d,]+)\s*tokens(?:\/session)?\s+recoverable/i);
+    if (recov) {
+      tokens = parseInt(recov[1].replace(/,/g,''), 10);
+    } else {
+      var tk = fullDesc.match(/~([\d,]+)\s*tokens/i);
+      if (tk) tokens = parseInt(tk[1].replace(/,/g,''), 10);
     }
     if (!tokens) {
       var peek = lines.slice(i+1, Math.min(i+8, lines.length)).join(' ');

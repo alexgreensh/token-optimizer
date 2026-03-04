@@ -1447,12 +1447,14 @@ def generate_auto_recommendations(components, trends=None, days=30):
             f"Review the list and archive rarely-used commands to ~/.claude/commands/_archived/.\n"
             f"  Good archive candidates: one-time setup commands, project-specific commands for finished projects, "
             f"and commands superseded by skills. Keep: daily-use commands, automation triggers, "
-            f"and anything referenced in hooks or scripts."
+            f"and anything referenced in hooks or scripts. "
+            f"~{cmd_tokens:,} tokens recoverable."
         )
     elif cmd_count > 20:
         medium.append(
             f"**Review {cmd_count} commands ({cmd_tokens:,} tokens)**: "
-            f"Consider archiving rarely-used commands to ~/.claude/commands/_archived/ to reduce menu overhead."
+            f"Consider archiving rarely-used commands to ~/.claude/commands/_archived/ to reduce menu overhead. "
+            f"~{cmd_tokens:,} tokens recoverable."
         )
 
     # --- Rule 7: Model mix imbalance (requires trends) ---
@@ -1515,7 +1517,8 @@ def generate_auto_recommendations(components, trends=None, days=30):
             f"of which project you're in. Review whether all {always_loaded} always-loaded rules are still relevant.\n"
             f"  Add 'paths:' frontmatter to scope rules to specific directories. "
             f"Consolidate overlapping rules into fewer files. "
-            f"Archive stale rules (old project conventions, resolved style decisions)."
+            f"Archive stale rules (old project conventions, resolved style decisions). "
+            f"~{rules_tokens:,} tokens recoverable."
         )
 
     # --- Rule 11: @imports overhead ---
@@ -1529,7 +1532,8 @@ def generate_auto_recommendations(components, trends=None, days=30):
             f"  Ask for each import: does this need to load every single message? "
             f"If it's a reference doc, coding standard, or config guide, consider converting it to "
             f"a skill reference file (loaded only when invoked) or removing the @import and reading "
-            f"the file on demand. Keep imports only for content that genuinely affects every interaction."
+            f"the file on demand. Keep imports only for content that genuinely affects every interaction. "
+            f"~{imports_tokens:,} tokens recoverable."
         )
 
     # --- Rule 12: Large number of MCP tools ---
@@ -1544,7 +1548,8 @@ def generate_auto_recommendations(components, trends=None, days=30):
             f"  Review your MCP servers in settings.json. Disable servers you rarely use "
             f"(you can re-enable anytime). Check for duplicate tools across servers. "
             f"Note: ask yourself which servers you actually use in conversation before disabling. "
-            f"Some servers are used interactively even if they have no code references."
+            f"Some servers are used interactively even if they have no code references. "
+            f"~{mcp_tokens:,} tokens recoverable."
         )
 
     # --- Rule 13: Compact habits (always include) ---
@@ -3048,13 +3053,18 @@ def setup_hook(dry_run=False):
             hooks["SessionEnd"] = [{"hooks": [new_hook]}]
 
     if dry_run:
-        action = "Upgrade" if upgrading else "Install"
-        print(f"[Token Optimizer] Dry run ({action}). Proposed SessionEnd hooks:\n")
+        action = "upgrade" if upgrading else "install"
+        print(f"[Token Optimizer] Dry run. Would {action} a SessionEnd hook.\n")
+        print(f"  What it does:")
+        print(f"    When you close a Claude Code session, it automatically:")
+        print(f"    1. Saves your session stats (skills used, tokens, model mix)")
+        print(f"    2. Refreshes your dashboard with the latest data\n")
+        print(f"  Where data is stored:")
+        print(f"    {SNAPSHOT_DIR / 'trends.db'}")
+        print(f"    {DASHBOARD_PATH}\n")
+        print(f"  JSON that would be added to settings.json:")
         print(json.dumps(hooks.get("SessionEnd", []), indent=2))
-        print(f"\nThe hook will:")
-        print(f"  1. Collect session data into {SNAPSHOT_DIR / 'trends.db'}")
-        print(f"  2. Regenerate the persistent dashboard at {DASHBOARD_PATH}")
-        print(f"\nNo changes written.")
+        print(f"\n  No changes written.")
         return
 
     # Backup settings.json
@@ -3079,6 +3089,212 @@ def setup_hook(dry_run=False):
         print(f"Add this manually to your settings.json hooks.SessionEnd:\n")
         print(json.dumps({"type": "command", "command": HOOK_COMMAND}, indent=2))
         sys.exit(1)
+
+
+# ========== Persistent Dashboard Daemon ==========
+
+DAEMON_LABEL = "com.token-optimizer.dashboard"
+DAEMON_PORT = 24842  # Memorable: 2-4-8-4-2 (powers of 2 palindrome), avoids common ports
+LAUNCH_AGENTS_DIR = Path.home() / "Library" / "LaunchAgents"
+PLIST_PATH = LAUNCH_AGENTS_DIR / f"{DAEMON_LABEL}.plist"
+DAEMON_LOG_DIR = SNAPSHOT_DIR / "logs"
+
+
+def _generate_daemon_script():
+    """Generate a minimal Python HTTP server script for the dashboard daemon."""
+    return f'''#!/usr/bin/env python3
+"""Token Optimizer dashboard server daemon.
+Auto-generated by measure.py. Serves the dashboard HTML on localhost:{DAEMON_PORT}.
+The SessionEnd hook regenerates the HTML file; this daemon just serves what's on disk.
+"""
+import http.server
+import os
+import socketserver
+import sys
+
+DASHBOARD = "{DASHBOARD_PATH}"
+PORT = {DAEMON_PORT}
+
+class Handler(http.server.SimpleHTTPRequestHandler):
+    def __init__(self, *a, **kw):
+        d = os.path.dirname(DASHBOARD)
+        super().__init__(*a, directory=d, **kw)
+
+    def log_message(self, fmt, *a):
+        pass
+
+    def end_headers(self):
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Cache-Control", "no-cache")
+        super().end_headers()
+
+    def do_GET(self):
+        f = os.path.basename(DASHBOARD)
+        if self.path in ("/", ""):
+            self.send_response(302)
+            self.send_header("Location", "/" + f)
+            self.end_headers()
+            return
+        if self.path.lstrip("/").split("?")[0] != f:
+            self.send_error(403, "Forbidden")
+            return
+        super().do_GET()
+
+    def do_HEAD(self):
+        f = os.path.basename(DASHBOARD)
+        if self.path in ("/", ""):
+            self.send_response(302)
+            self.send_header("Location", "/" + f)
+            self.end_headers()
+            return
+        if self.path.lstrip("/").split("?")[0] != f:
+            self.send_error(403, "Forbidden")
+            return
+        super().do_HEAD()
+
+if not os.path.exists(DASHBOARD):
+    sys.exit(1)
+
+with socketserver.TCPServer(("127.0.0.1", PORT), Handler) as httpd:
+    httpd.serve_forever()
+'''
+
+
+def _generate_plist():
+    """Generate the launchd plist XML for the dashboard daemon."""
+    daemon_script = SNAPSHOT_DIR / "dashboard-server.py"
+    log_out = DAEMON_LOG_DIR / "stdout.log"
+    log_err = DAEMON_LOG_DIR / "stderr.log"
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{DAEMON_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>{daemon_script}</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>StandardOutPath</key>
+    <string>{log_out}</string>
+    <key>StandardErrorPath</key>
+    <string>{log_err}</string>
+</dict>
+</plist>
+"""
+
+
+def setup_daemon(dry_run=False, uninstall=False):
+    """Install or remove the persistent dashboard HTTP server daemon (launchd).
+
+    The daemon serves the dashboard HTML on localhost:{DAEMON_PORT}.
+    The SessionEnd hook regenerates the HTML file; the daemon just serves what's on disk.
+    """
+    if sys.platform != "darwin":
+        print("[Error] Dashboard daemon requires macOS (launchd). Use --serve for other platforms.")
+        sys.exit(1)
+
+    if uninstall:
+        # Stop and remove
+        if PLIST_PATH.exists():
+            subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}", str(PLIST_PATH)],
+                           capture_output=True)
+            PLIST_PATH.unlink()
+            print(f"[Token Optimizer] Dashboard daemon removed.")
+            print(f"  Deleted: {PLIST_PATH}")
+        else:
+            print("[Token Optimizer] No daemon installed. Nothing to remove.")
+        # Clean up daemon script
+        daemon_script = SNAPSHOT_DIR / "dashboard-server.py"
+        if daemon_script.exists():
+            daemon_script.unlink()
+            print(f"  Deleted: {daemon_script}")
+        return
+
+    if dry_run:
+        print(f"[Token Optimizer] Dry run. Would install:\n")
+        print(f"  A tiny web server that makes your dashboard available at:")
+        print(f"    http://localhost:{DAEMON_PORT}/\n")
+        print(f"  What it does:")
+        print(f"    - Serves your dashboard file so you can bookmark the URL")
+        print(f"    - Starts automatically when you log into your Mac")
+        print(f"    - Restarts itself if it ever stops")
+        print(f"    - Only accessible from your machine (localhost)")
+        print(f"    - Uses ~2MB of memory\n")
+        print(f"  Files it creates:")
+        print(f"    {SNAPSHOT_DIR / 'dashboard-server.py'}")
+        print(f"    {PLIST_PATH}\n")
+        print(f"  No changes written.")
+        return
+
+    # Ensure dashboard exists first
+    if not DASHBOARD_PATH.exists():
+        print("  Generating initial dashboard...")
+        generate_standalone_dashboard(quiet=True)
+
+    if not DASHBOARD_PATH.exists():
+        print("[Error] Could not generate dashboard. Run 'measure.py dashboard' first.")
+        sys.exit(1)
+
+    # Write daemon script
+    SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    DAEMON_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    daemon_script = SNAPSHOT_DIR / "dashboard-server.py"
+    daemon_script.write_text(_generate_daemon_script(), encoding="utf-8")
+    daemon_script.chmod(0o755)
+
+    # Write plist
+    LAUNCH_AGENTS_DIR.mkdir(parents=True, exist_ok=True)
+    PLIST_PATH.write_text(_generate_plist(), encoding="utf-8")
+
+    # Stop existing daemon if running
+    subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}", str(PLIST_PATH)],
+                   capture_output=True)
+
+    # Start daemon
+    result = subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(PLIST_PATH)],
+                            capture_output=True, text=True)
+
+    if result.returncode != 0:
+        print(f"[Error] Failed to start daemon: {result.stderr.strip()}")
+        print(f"  Plist written to: {PLIST_PATH}")
+        print(f"  Try manually: launchctl bootstrap gui/{os.getuid()} {PLIST_PATH}")
+        sys.exit(1)
+
+    # Verify it's actually running
+    import time
+    time.sleep(1)
+    try:
+        import socket
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(2)
+            s.connect(("127.0.0.1", DAEMON_PORT))
+        running = True
+    except (OSError, ConnectionRefusedError):
+        running = False
+
+    if running:
+        print(f"[Token Optimizer] Dashboard server installed and running.\n")
+        print(f"  Bookmark this URL:")
+        print(f"    http://localhost:{DAEMON_PORT}/\n")
+        print(f"  It updates automatically after every Claude Code session.")
+        print(f"  Starts on login, so the URL always works.\n")
+        print(f"  To remove: python3 measure.py setup-daemon --uninstall")
+    else:
+        print(f"[Token Optimizer] Server installed but still starting up.")
+        print(f"  Give it a few seconds, then try: http://localhost:{DAEMON_PORT}/")
+        print(f"  If it doesn't work, check: {DAEMON_LOG_DIR}/stderr.log")
 
 
 if __name__ == "__main__":
@@ -3142,6 +3358,10 @@ if __name__ == "__main__":
     elif args[0] == "setup-hook":
         dry = "--dry-run" in args
         setup_hook(dry_run=dry)
+    elif args[0] == "setup-daemon":
+        dry = "--dry-run" in args
+        uninstall = "--uninstall" in args
+        setup_daemon(dry_run=dry, uninstall=uninstall)
     elif args[0] == "trends":
         days = 30
         output_json = False
@@ -3183,3 +3403,6 @@ if __name__ == "__main__":
         print("  python3 measure.py check-hook           # Check if SessionEnd hook is installed")
         print("  python3 measure.py setup-hook           # Install SessionEnd hook")
         print("  python3 measure.py setup-hook --dry-run # Show what would be installed")
+        print("  python3 measure.py setup-daemon            # Install persistent dashboard server (macOS)")
+        print("  python3 measure.py setup-daemon --dry-run  # Show what would be installed")
+        print("  python3 measure.py setup-daemon --uninstall # Remove dashboard daemon")

@@ -380,7 +380,15 @@ Output file: {COORD_PATH}/audit/advanced.md
     - Check if CLAUDE.md has a compact instructions section
     - If missing, flag as opportunity (guides what survives compaction)
 
-13. **Model Routing Analysis**:
+13. **effortLevel check**:
+    - Check ~/.claude/settings.json for `effortLevel` key
+    - If set to "high": flag as optimization opportunity. "high" maximizes response quality
+      but also maximizes per-response token usage. For routine tasks (simple fixes, formatting,
+      small edits), "medium" produces adequate results at 15-25% lower output token cost.
+    - If not set: note that Claude auto-selects effort level (default behavior, usually fine)
+    - If set to "medium" or "low": note as already optimized
+
+14. **Model Routing Analysis**:
     a. Check CLAUDE.md and MEMORY.md for model routing instructions
        - Grep for "haiku", "sonnet", "opus", "model" keywords
        - Does the user have ANY model routing guidance? (Yes/No)

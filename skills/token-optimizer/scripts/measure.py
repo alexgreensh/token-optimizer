@@ -672,6 +672,7 @@ def measure_components():
         "project_exists": project_settings_local.exists(),
         "exists": settings_local.exists() or project_settings_local.exists(),
         "includeGitInstructions": _cached_settings.get("includeGitInstructions", True) if _cached_settings else True,
+        "effortLevel": _cached_settings.get("effortLevel", None) if _cached_settings else None,
     }
 
     # Skill frontmatter quality (collected during skills scan above)
@@ -1665,6 +1666,19 @@ def generate_auto_recommendations(components, trends=None, days=30):
             "while keeping them available on claude.ai."
         )
 
+    # --- Rule 16: effortLevel always set to high ---
+    effort_level = components.get("settings_local", {}).get("effortLevel")
+    if effort_level and str(effort_level).lower() == "high":
+        habits.append(
+            "**Tune `effortLevel` by task type (currently locked to \"high\")**: "
+            "Your settings.json has `effortLevel: \"high\"`, which maximizes response quality "
+            "but also maximizes token usage per response. For routine tasks (simple bug fixes, "
+            "formatting, small edits), \"medium\" produces adequate results at lower cost.\n"
+            "  Consider toggling effort level based on task complexity, or remove the setting "
+            "to let Claude auto-select. This doesn't save context tokens but reduces "
+            "per-response output tokens by 15-25% for routine work."
+        )
+
     # --- Rule 13: Compact habits (always include) ---
     habits.append(
         "**Use /compact at 50-70% context fill**: "
@@ -1946,6 +1960,19 @@ def generate_coach_data(focus=None, components=None, trends=None):
             "savings": "Minor per-skill, adds up with many skills",
         })
         score -= 3
+
+    # Check effortLevel
+    effort_level = components.get("settings_local", {}).get("effortLevel")
+    if effort_level and str(effort_level).lower() == "high":
+        patterns_bad.append({
+            "name": "Locked Effort Level",
+            "severity": "low",
+            "detail": "effortLevel: \"high\" for all tasks",
+            "fix": "Remove setting or tune per task type (\"medium\" for routine work)",
+            "savings": "15-25% output token reduction on routine tasks",
+        })
+        score -= 3
+        questions.append("Your effortLevel is locked to \"high\". Do all your tasks need maximum quality, or could routine work use \"medium\"?")
 
     # Check settings env vars for optimization opportunities
     settings_env = components.get("settings_env", {}).get("found", {})

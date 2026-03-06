@@ -75,6 +75,7 @@ Tool Search (default since Jan 2026) reduced total MCP overhead by 85-96%.
 | `CLAUDE_CODE_MAX_OUTPUT_TOKENS` | Max output tokens (higher = larger autocompact buffer) | 16,384 |
 | `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` | Override autocompact trigger percentage | ~80% |
 | `includeGitInstructions: false` (setting) | Same as DISABLE_GIT env var, in settings.json | true |
+| `effortLevel` (setting) | "high" maximizes quality + cost; "medium" saves 15-25% output tokens | auto |
 
 ## Subagent Costs
 

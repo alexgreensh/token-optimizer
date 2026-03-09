@@ -4706,12 +4706,14 @@ def compact_restore(session_id=None, cwd=None, is_compact=False, first_message=N
         print(f"[Token Optimizer] Previous session checkpoint available at {latest['path']}.")
 
 
-def generate_compact_instructions(as_json=False):
+def generate_compact_instructions(as_json=False, install=False, dry_run=False):
     """Generate project-specific Compact Instructions.
 
     Analyzes CLAUDE.md, recent session patterns, and common loss patterns
     to produce custom compaction instructions the user can add to their
     project settings.
+
+    If install=True, writes directly to ~/.claude/settings.json.
     """
     components = measure_components()
     instructions_parts = [
@@ -4756,18 +4758,54 @@ def generate_compact_instructions(as_json=False):
             "compact_instructions": instructions_text,
             "install_location": "Add to .claude/settings.json under 'compactInstructions' key, or append to project CLAUDE.md",
         }, indent=2))
-        return
+        return instructions_text
+
+    if install:
+        settings, settings_path = _read_settings_json()
+        existing = settings.get("compactInstructions", "")
+
+        if existing and "Token Optimizer" in existing:
+            if dry_run:
+                print(f"\n  [Dry run] Would update existing compact instructions in {settings_path}")
+                print(f"\n  New instructions:\n  {instructions_text}\n")
+                return instructions_text
+            settings["compactInstructions"] = instructions_text
+            _write_settings_atomic(settings)
+            print(f"[Token Optimizer] Compact Instructions updated in {settings_path}")
+            return instructions_text
+
+        if existing:
+            # User has their own instructions, append ours
+            combined = existing.rstrip() + "\n\n# Token Optimizer additions:\n" + instructions_text
+            if dry_run:
+                print(f"\n  [Dry run] Would append to existing compact instructions in {settings_path}")
+                print(f"\n  Appended:\n  {instructions_text}\n")
+                return instructions_text
+            settings["compactInstructions"] = combined
+        else:
+            if dry_run:
+                print(f"\n  [Dry run] Would install compact instructions to {settings_path}")
+                print(f"\n  Instructions:\n  {instructions_text}\n")
+                return instructions_text
+            settings["compactInstructions"] = instructions_text
+
+        _write_settings_atomic(settings)
+        print(f"[Token Optimizer] Compact Instructions installed to {settings_path}")
+        print(f"  These guide Claude on WHAT to preserve during compaction.")
+        return instructions_text
 
     print(f"\n  Generated Compact Instructions")
     print(f"  {'=' * 40}")
     print()
     print(f"  {instructions_text}")
     print()
-    print(f"  To activate, add to .claude/settings.json:")
+    print(f"  To activate automatically:")
+    print(f"    python3 measure.py compact-instructions --install")
+    print()
+    print(f"  Or manually add to .claude/settings.json:")
     print(f'    {{"compactInstructions": "<paste above>"}}')
     print()
-    print(f"  Or add to your project CLAUDE.md under a ## Compaction section.")
-    print()
+    return instructions_text
 
 
 # ========== Session Continuity Engine (v2.0) ==========
@@ -5029,11 +5067,17 @@ def setup_smart_compact(dry_run=False, uninstall=False, status_only=False):
     print(f"  Hooks added: {', '.join(installed)}")
     if skipped:
         print(f"  Already had: {', '.join(skipped)}")
+
+    # Also install compact instructions (tells Claude WHAT to preserve)
+    print()
+    generate_compact_instructions(install=True)
+
     print(f"\n  What happens now:")
-    print(f"    PreCompact:   Captures session state before compaction")
-    print(f"    SessionStart: Restores context after compaction")
-    print(f"    Stop:         Saves checkpoint when session ends normally")
-    print(f"    SessionEnd:   Saves checkpoint on /clear or termination")
+    print(f"    Compact Instructions: Guides Claude on what to preserve during compaction")
+    print(f"    PreCompact hook:      Captures structured state before compaction")
+    print(f"    SessionStart hook:    Restores what was lost after compaction")
+    print(f"    Stop hook:            Saves checkpoint when session ends normally")
+    print(f"    SessionEnd hook:      Saves checkpoint on /clear or termination")
     print(f"\n  Checkpoints stored in: {CHECKPOINT_DIR}")
     print(f"  To remove: python3 measure.py setup-smart-compact --uninstall")
 
@@ -5422,7 +5466,9 @@ if __name__ == "__main__":
         compact_restore(session_id=sid, is_compact=is_compact)
     elif args[0] == "compact-instructions":
         output_json = "--json" in args
-        generate_compact_instructions(as_json=output_json)
+        install = "--install" in args
+        dry = "--dry-run" in args
+        generate_compact_instructions(as_json=output_json, install=install, dry_run=dry)
     elif args[0] == "setup-smart-compact":
         dry = "--dry-run" in args
         uninstall = "--uninstall" in args
@@ -5520,6 +5566,8 @@ if __name__ == "__main__":
         print("  python3 measure.py compact-restore          # Restore context from checkpoint")
         print("  python3 measure.py compact-instructions      # Generate project-specific Compact Instructions")
         print("  python3 measure.py compact-instructions --json")
+        print("  python3 measure.py compact-instructions --install     # Write directly to settings.json")
+        print("  python3 measure.py compact-instructions --install --dry-run")
         print("  python3 measure.py list-checkpoints          # Show saved session checkpoints")
         print("  python3 measure.py setup-smart-compact              # Install Smart Compaction hooks")
         print("  python3 measure.py setup-smart-compact --dry-run    # Preview what would be installed")

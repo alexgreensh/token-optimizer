@@ -36,6 +36,7 @@ import glob
 import re
 import subprocess
 import sys
+import time
 import platform
 from collections import deque
 from datetime import datetime, timedelta, timezone
@@ -5037,6 +5038,256 @@ def setup_smart_compact(dry_run=False, uninstall=False, status_only=False):
     print(f"  To remove: python3 measure.py setup-smart-compact --uninstall")
 
 
+QUALITY_CACHE_DIR = CLAUDE_DIR / "token-optimizer"
+QUALITY_CACHE_PATH = QUALITY_CACHE_DIR / "quality-cache.json"
+
+
+def quality_cache(throttle_seconds=120, warn_threshold=70, quiet=False):
+    """Run quality analysis and write score to cache file for status line.
+
+    Skips analysis if cache is younger than throttle_seconds.
+    Returns the quality score, or None if skipped/failed.
+    """
+    # Throttle: skip if cache is recent enough
+    if QUALITY_CACHE_PATH.exists():
+        try:
+            age = time.time() - QUALITY_CACHE_PATH.stat().st_mtime
+            if age < throttle_seconds:
+                if not quiet:
+                    # Still read and return cached score for warn check
+                    try:
+                        cached = json.loads(QUALITY_CACHE_PATH.read_text(encoding="utf-8"))
+                        return cached.get("score")
+                    except (json.JSONDecodeError, OSError):
+                        pass
+                return None
+        except OSError:
+            pass
+
+    # Find current session JSONL
+    filepath = _find_current_session_jsonl()
+    if not filepath:
+        return None
+
+    # Run quality analysis
+    quality_data = _parse_jsonl_for_quality(filepath)
+    if not quality_data:
+        return None
+
+    result = compute_quality_score(quality_data)
+    result["total_messages"] = len(quality_data["messages"])
+    result["decisions_found"] = len(quality_data["decisions"])
+    result["timestamp"] = datetime.now(timezone.utc).isoformat()
+
+    # Write cache atomically
+    QUALITY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    import tempfile
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir=str(QUALITY_CACHE_DIR), suffix=".json")
+        with os.fdopen(fd, "w") as f:
+            json.dump(result, f)
+        os.replace(tmp_path, str(QUALITY_CACHE_PATH))
+    except OSError:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        return None
+
+    return result.get("score")
+
+
+def _get_statusline_path():
+    """Get the path to the bundled statusline.js script."""
+    return str(Path(__file__).resolve().parent / "statusline.js")
+
+
+def _is_quality_bar_installed(settings=None):
+    """Check which quality bar components are installed.
+
+    Returns dict with 'statusline' and 'hook' bools.
+    """
+    if settings is None:
+        settings, _ = _read_settings_json()
+
+    result = {"statusline": False, "hook": False}
+
+    # Check statusline
+    sl = settings.get("statusLine", {})
+    cmd = sl.get("command", "")
+    if "statusline.js" in cmd and "token-optimizer" in cmd:
+        result["statusline"] = True
+
+    # Check UserPromptSubmit hook
+    hooks = settings.get("hooks", {})
+    for group in hooks.get("UserPromptSubmit", []):
+        for hook in group.get("hooks", []):
+            if "quality-cache" in hook.get("command", ""):
+                result["hook"] = True
+                break
+
+    return result
+
+
+def setup_quality_bar(dry_run=False, uninstall=False, status_only=False):
+    """Install, uninstall, or check quality bar (status line + cache hook).
+
+    Installs:
+      1. UserPromptSubmit hook that updates quality cache every 2 min
+      2. StatusLine config pointing to bundled statusline.js
+
+    If user already has a statusLine configured, shows integration
+    instructions instead of replacing it.
+    """
+    settings, settings_path = _read_settings_json()
+    current = _is_quality_bar_installed(settings)
+    mp = _get_measure_py_path()
+    sl_path = _get_statusline_path()
+
+    if status_only:
+        print(f"\n  Quality Bar Status")
+        print(f"  {'=' * 40}")
+        print(f"    Status line:  {'installed' if current['statusline'] else 'not installed'}")
+        print(f"    Cache hook:   {'installed' if current['hook'] else 'not installed'}")
+        if current["statusline"] and current["hook"]:
+            print(f"\n  Quality Bar is fully active.")
+        else:
+            missing = []
+            if not current["statusline"]:
+                missing.append("status line")
+            if not current["hook"]:
+                missing.append("cache hook")
+            print(f"\n  Missing: {', '.join(missing)}")
+            print(f"  Run: python3 measure.py setup-quality-bar")
+        print()
+        return
+
+    if uninstall:
+        hooks = settings.get("hooks", {})
+        removed = 0
+
+        # Remove UserPromptSubmit quality-cache hooks
+        if "UserPromptSubmit" in hooks:
+            new_groups = []
+            for group in hooks["UserPromptSubmit"]:
+                new_hooks = [
+                    h for h in group.get("hooks", [])
+                    if "quality-cache" not in h.get("command", "")
+                ]
+                if new_hooks:
+                    group["hooks"] = new_hooks
+                    new_groups.append(group)
+                else:
+                    removed += 1
+            if new_groups:
+                hooks["UserPromptSubmit"] = new_groups
+            else:
+                del hooks["UserPromptSubmit"]
+
+        # Remove statusLine if it's ours
+        sl = settings.get("statusLine", {})
+        if "statusline.js" in sl.get("command", "") and "token-optimizer" in sl.get("command", ""):
+            del settings["statusLine"]
+            removed += 1
+
+        if dry_run:
+            print(f"\n  [Dry run] Would remove {removed} quality bar component(s)")
+            print(f"  Run without --dry-run to apply.\n")
+            return
+
+        settings["hooks"] = hooks
+        _write_settings_atomic(settings)
+        print(f"[Token Optimizer] Quality bar removed. {removed} component(s) removed.")
+        return
+
+    # Install
+    installed = []
+    skipped = []
+    warnings = []
+
+    # 1. UserPromptSubmit hook for quality cache
+    if current["hook"]:
+        skipped.append("cache hook")
+    else:
+        hooks = settings.setdefault("hooks", {})
+        hook_cmd = f"python3 '{mp}' quality-cache --quiet"
+        hook_entry = {"type": "command", "command": hook_cmd}
+        hook_group = {"hooks": [hook_entry]}
+        hooks.setdefault("UserPromptSubmit", []).append(hook_group)
+        installed.append("cache hook")
+
+    # 2. StatusLine
+    if current["statusline"]:
+        skipped.append("status line")
+    else:
+        existing_sl = settings.get("statusLine", {})
+        if existing_sl.get("command") or existing_sl.get("url"):
+            # User has their own status line - don't replace
+            warnings.append(
+                f"You already have a custom status line configured.\n"
+                f"  To integrate quality scoring, add this to your status line script:\n\n"
+                f"    // Read context quality score\n"
+                f"    const qFile = path.join(os.homedir(), '.claude', 'token-optimizer', 'quality-cache.json');\n"
+                f"    let qScore = '';\n"
+                f"    if (fs.existsSync(qFile)) {{\n"
+                f"      try {{\n"
+                f"        const q = JSON.parse(fs.readFileSync(qFile, 'utf8'));\n"
+                f"        const s = q.score;\n"
+                f"        if (s < 50) qScore = ' | \\x1b[31mContext Quality ' + s + '%\\x1b[0m';\n"
+                f"        else if (s < 70) qScore = ' | \\x1b[33mContext Quality ' + s + '%\\x1b[0m';\n"
+                f"        else qScore = ' | \\x1b[2mContext Quality ' + s + '%\\x1b[0m';\n"
+                f"      }} catch (e) {{}}\n"
+                f"    }}\n"
+                f"    // Append qScore to your output\n"
+            )
+            skipped.append("status line (custom detected)")
+        else:
+            settings["statusLine"] = {
+                "type": "command",
+                "command": f"node '{sl_path}'"
+            }
+            installed.append("status line")
+
+    if dry_run:
+        print(f"\n  [Dry run] Quality Bar preview")
+        print(f"  {'=' * 40}")
+        if installed:
+            print(f"  Would install: {', '.join(installed)}")
+        if skipped:
+            print(f"  Already installed / skipped: {', '.join(skipped)}")
+        if warnings:
+            print()
+            for w in warnings:
+                print(f"  Note: {w}")
+        print(f"\n  Run without --dry-run to apply.\n")
+        return
+
+    if not installed and not warnings:
+        print(f"[Token Optimizer] Quality bar already fully installed.")
+        return
+
+    _write_settings_atomic(settings)
+
+    if installed:
+        print(f"[Token Optimizer] Quality Bar installed.")
+        print(f"  Components: {', '.join(installed)}")
+        if skipped:
+            print(f"  Already had: {', '.join(skipped)}")
+        print(f"\n  What you'll see:")
+        print(f"    Status line:  model | project ████ 43% | Context Quality 74%")
+        print(f"    Quality updates every ~2 minutes during active sessions")
+        print(f"    Colors: green (85%+), dim (70-84%), yellow (50-69%), red (<50%)")
+        print(f"\n  To remove: python3 measure.py setup-quality-bar --uninstall")
+
+    if warnings:
+        print()
+        for w in warnings:
+            print(f"  {w}")
+        if "cache hook" in installed:
+            print(f"  The cache hook is installed. Quality data will be written to:")
+            print(f"    {QUALITY_CACHE_PATH}")
+
+
 if __name__ == "__main__":
     args = sys.argv[1:]
 
@@ -5177,6 +5428,33 @@ if __name__ == "__main__":
         uninstall = "--uninstall" in args
         status = "--status" in args
         setup_smart_compact(dry_run=dry, uninstall=uninstall, status_only=status)
+    elif args[0] == "quality-cache":
+        quiet = "--quiet" in args or "-q" in args
+        warn = "--warn" in args
+        throttle = 120
+        warn_threshold = 70
+        for i, a in enumerate(args):
+            if a == "--throttle" and i + 1 < len(args):
+                try:
+                    throttle = int(args[i + 1])
+                except ValueError:
+                    pass
+            if a == "--warn-threshold" and i + 1 < len(args):
+                try:
+                    warn_threshold = int(args[i + 1])
+                except ValueError:
+                    pass
+        score = quality_cache(throttle_seconds=throttle, warn_threshold=warn_threshold, quiet=quiet)
+        if warn and score is not None and score < warn_threshold:
+            if score < 50:
+                print(f"[Token Optimizer] Context quality: {score}/100 (critical). Heavy rot detected. Consider /clear with checkpoint.")
+            else:
+                print(f"[Token Optimizer] Context quality: {score}/100. Stale reads and bloated results building up. Consider /compact.")
+    elif args[0] == "setup-quality-bar":
+        dry = "--dry-run" in args
+        uninstall = "--uninstall" in args
+        status = "--status" in args
+        setup_quality_bar(dry_run=dry, uninstall=uninstall, status_only=status)
     elif args[0] == "list-checkpoints":
         cps = list_checkpoints()
         if not cps:
@@ -5247,6 +5525,13 @@ if __name__ == "__main__":
         print("  python3 measure.py setup-smart-compact --dry-run    # Preview what would be installed")
         print("  python3 measure.py setup-smart-compact --status     # Check which hooks are installed")
         print("  python3 measure.py setup-smart-compact --uninstall  # Remove Smart Compaction hooks")
+        print("  python3 measure.py quality-cache                    # Update quality cache (for status line)")
+        print("  python3 measure.py quality-cache --warn             # Update cache + warn Claude if low")
+        print("  python3 measure.py quality-cache --quiet            # Silent mode (for hooks)")
+        print("  python3 measure.py setup-quality-bar                # Install quality bar (status line + hook)")
+        print("  python3 measure.py setup-quality-bar --dry-run      # Preview what would be installed")
+        print("  python3 measure.py setup-quality-bar --status       # Check installation status")
+        print("  python3 measure.py setup-quality-bar --uninstall    # Remove quality bar")
         print("  python3 measure.py setup-daemon            # Install persistent dashboard server (macOS)")
         print("  python3 measure.py setup-daemon --dry-run  # Show what would be installed")
         print("  python3 measure.py setup-daemon --uninstall # Remove dashboard daemon")

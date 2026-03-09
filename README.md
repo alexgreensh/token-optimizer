@@ -25,14 +25,14 @@ v1.x found the ghost tokens. v2.0 protects your sessions from the inside.
 | Capability | What It Does |
 |-----------|-------------|
 | **Smart Compaction** | Checkpoints decisions, errors, and agent state before auto-compact fires. Restores what the summary dropped. Your "why" survives. |
-| **Context Quality Scoring** | Six-signal analysis (stale reads, bloated results, duplicates, compaction depth, decision density, agent efficiency). Tells you when to `/compact`, not just how full you are. |
+| **Context Quality Scoring** | Six-signal analysis (stale reads, bloated results, duplicates, compaction depth, decision density, agent efficiency). Tells you when to `/compact`, not just how full you are. Shows live in your status bar. |
 | **Session Continuity** | Automatic checkpoints on session end, `/clear`, and crashes. New sessions pick up where you left off via keyword-matched context injection. |
 
 All three work together: quality score triggers compaction advice, smart compact captures state before it fires, continuity restores it in your next session. Zero external dependencies. Plain markdown checkpoints. Setup in one command:
 
 ```bash
-python3 $MEASURE_PY setup-smart-compact
-python3 $MEASURE_PY quality current
+python3 $MEASURE_PY setup-smart-compact    # checkpoint + restore hooks
+python3 $MEASURE_PY setup-quality-bar      # live quality score in your status bar
 ```
 
 [Full v2.0 docs below.](#v20-active-session-intelligence)
@@ -524,6 +524,27 @@ Recommendation:
 
 Six weighted signals: stale reads (25%), bloated results (25%), duplicates (15%), compaction depth (15%), decision density (10%), agent efficiency (10%). Score ranges from 0-100. Quality data appears in the dashboard Health tab as an interactive gauge.
 
+### Live Quality Bar
+
+See your context quality score in the terminal status bar, updated every ~2 minutes:
+
+```
+Opus 4.6 | my-project ████████░░ 43% | Context Quality 74%
+```
+
+Colors tell the story: green (85%+, clean), dim (70-84%, fine), yellow (50-69%, compact soon), red (<50%, clear and restart).
+
+```bash
+python3 $MEASURE_PY setup-quality-bar --dry-run   # preview
+python3 $MEASURE_PY setup-quality-bar              # install
+python3 $MEASURE_PY setup-quality-bar --status     # check
+python3 $MEASURE_PY setup-quality-bar --uninstall  # remove
+```
+
+This installs two things: a status line script that displays the score, and a UserPromptSubmit hook that recalculates it every 2 minutes. If you already have a custom status line, it shows integration instructions instead of replacing yours.
+
+When quality drops below 70%, Claude also gets a warning and will proactively suggest `/compact`.
+
 ### Session Continuity
 
 When sessions end (normally, via /clear, or crash), state is checkpointed automatically. New sessions in the same project can pick up where you left off:
@@ -574,6 +595,7 @@ skills/token-optimizer/
     hooks-starter.json                 Hook configuration (v2.0: smart compact + analytics)
   scripts/
     measure.py                         Measurement, quality, smart compact, trends, health & collection
+    statusline.js                      Status line script (shows context quality live)
 skills/token-coach/
   SKILL.md                             Coaching orchestrator (quality-aware)
   references/

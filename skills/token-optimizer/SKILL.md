@@ -16,20 +16,19 @@ Token optimization specialist. Audits a Claude Code setup, identifies context wi
 0. **Resolve measure.py path** (works for both skill and plugin installs):
 ```bash
 MEASURE_PY=""
-# Check skill install first, then plugin cache
-if [ -f "$HOME/.claude/skills/token-optimizer/scripts/measure.py" ]; then
-  MEASURE_PY="$HOME/.claude/skills/token-optimizer/scripts/measure.py"
-else
-  MEASURE_PY="$(find "$HOME/.claude/plugins/cache" -path "*/token-optimizer/scripts/measure.py" 2>/dev/null | head -1)"
-fi
-[ -z "$MEASURE_PY" ] || [ ! -f "$MEASURE_PY" ] && { echo "[Error] measure.py not found. Is Token Optimizer installed?"; exit 1; }
+for f in "$HOME/.claude/skills/token-optimizer/scripts/measure.py" \
+         "$HOME/.claude/plugins/cache"/*/token-optimizer/*/skills/token-optimizer/scripts/measure.py; do
+  [ -f "$f" ] && MEASURE_PY="$f" && break
+done
+[ -z "$MEASURE_PY" ] && { echo "[Error] measure.py not found. Is Token Optimizer installed?"; exit 1; }
+echo "Using: $MEASURE_PY"
 ```
 Use `$MEASURE_PY` for all subsequent measure.py calls in this session.
 
 1. **Detect context window size**:
    Check if `TOKEN_OPTIMIZER_CONTEXT_SIZE` env var is already set. If not:
    - Check for `ANTHROPIC_API_KEY` env var (indicates API usage, possibly 1M context)
-   - If API key found, ask the user: "You appear to be using the API. Do you have 1M token context (Opus 4.6)? If so I'll calibrate for 1M instead of 200K."
+   - If API key found, ask the user: "You appear to be using the API. Do you have 1M token context (e.g. Opus)? If so I'll calibrate for 1M instead of 200K."
    - If they confirm 1M, `export TOKEN_OPTIMIZER_CONTEXT_SIZE=1000000` for this session
    - If no API key or they say no, default is 200K (no action needed)
    Keep this quick, one question max. Don't belabor it.

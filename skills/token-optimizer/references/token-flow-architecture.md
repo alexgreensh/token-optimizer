@@ -331,7 +331,7 @@ Continue until /clear or session end
 
 ## Real Cost: Context Budget, Not Dollars
 
-**Official Anthropic data** (code.claude.com/docs/en/costs): Average cost is ~$6/dev/day ($100-200/mo with Sonnet 4.6). Background token usage (hooks, auto-memory) typically under $0.04/session.
+**Official Anthropic data** (code.claude.com/docs/en/costs): Average cost is ~$6/dev/day ($100-200/mo with Sonnet). Background token usage (hooks, auto-memory) typically under $0.04/session.
 
 Most Claude Code users are on Max subscriptions ($100-200/month), not per-token API pricing. The real cost of overhead is not dollars. It is context budget:
 
@@ -392,9 +392,11 @@ Routing subagents to the right model tier is the highest-ROI behavioral change. 
 
 | Model | Input $/1M | Output $/1M | Relative Cost (vs Haiku) |
 |-------|-----------|-------------|--------------------------|
-| Haiku 4.5 | $0.25 | $1.25 | 1x |
-| Sonnet 4.6 | $3.00 | $15.00 | 12x input, 12x output |
-| Opus 4.6 | $15.00 | $75.00 | 60x input, 60x output |
+| Haiku | $0.25 | $1.25 | 1x |
+| Sonnet | $3.00 | $15.00 | 12x input, 12x output |
+| Opus | $15.00 | $75.00 | 60x input, 60x output |
+
+*Pricing from anthropic.com/pricing. Check for current rates.*
 
 **Worked example**: 5-agent workflow (file scanning + analysis + synthesis):
 - **All Opus**: 5 agents x (30K input x $15/1M + 5K output x $75/1M) = ~$4.13

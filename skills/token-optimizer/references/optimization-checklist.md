@@ -126,9 +126,11 @@ Model routing is the single highest-ROI optimization for multi-agent workflows. 
 
 | Model | Input $/1M | Output $/1M | Relative Cost (vs Haiku) |
 |-------|-----------|-------------|--------------------------|
-| Haiku 4.5 | $0.25 | $1.25 | 1x |
-| Sonnet 4.6 | $3.00 | $15.00 | 12x |
-| Opus 4.6 | $15.00 | $75.00 | 60x |
+| Haiku | $0.25 | $1.25 | 1x |
+| Sonnet | $3.00 | $15.00 | 12x |
+| Opus | $15.00 | $75.00 | 60x |
+
+*Pricing from anthropic.com/pricing. Check for current rates.*
 
 Haiku is **12x cheaper** than Sonnet and **60x cheaper** than Opus per token. For tasks that don't require judgment or complex reasoning, every Opus call is 60x overspend.
 

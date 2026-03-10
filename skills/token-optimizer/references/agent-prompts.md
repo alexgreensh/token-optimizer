@@ -201,7 +201,7 @@ Output file: {COORD_PATH}/audit/mcp.md
    - Look for ToolSearch in available tools (if present, Tool Search is active)
    - If active: MCP tool definitions are already deferred (~15 tokens per tool name in menu, not 300-850 for full definitions)
    - If NOT active: Flag as HIGH PRIORITY - user may be on old Claude Code or below 10K threshold
-   - Tool Search requires Sonnet 4+ or Opus 4+ (not Haiku)
+   - Tool Search requires Sonnet or Opus (not Haiku)
 
 2. Check MCP config:
    - Claude Code primary: ~/.claude/settings.json (mcpServers key)
@@ -397,7 +397,7 @@ Output file: {COORD_PATH}/audit/advanced.md
        - Run: python3 $MEASURE_PY trends --json --days 30
        - If the command fails (non-zero exit) or output is not valid JSON (e.g., prints
          "No session logs found"), treat as "no trends data" and skip to step (d)
-       - The JSON output has raw token counts per full model ID (e.g., "claude-3-haiku-20240307": 50000).
+       - The JSON output has raw token counts per full model ID (e.g., "claude-haiku-4-5-20251001": 50000).
          Calculate percentages from totals. Normalize model names: "claude*haiku*" -> "Haiku",
          "claude*sonnet*" -> "Sonnet", "claude*opus*" -> "Opus"
        - The JSON "subagents" field has spawn counts by type. Map to suggested models:

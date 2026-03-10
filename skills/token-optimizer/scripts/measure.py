@@ -1199,6 +1199,10 @@ def _serve_dashboard(filepath, port=8080):
             return True
 
         def do_GET(self):
+            # API health probe (lets dashboard detect our server vs generic)
+            if self.path.split("?")[0] == "/api/health":
+                self._json_response(200, {"ok": True, "server": "token-optimizer"})
+                return
             if self._redirect_root():
                 return
             if not self._check_allowed():

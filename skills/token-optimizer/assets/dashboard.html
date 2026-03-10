@@ -2806,16 +2806,17 @@ var DB = (function() {
     // How it works
     html += '<div class="card wide"><div class="card-header"><span>How It Works</span></div>' +
       '<div style="padding:var(--s-3);color:var(--c-text-dim);font-size:14px;line-height:1.6;">' +
-      'Each toggle copies a terminal command. Paste it to apply the change. Then regenerate the dashboard to see updated state: ' +
-      '<code style="background:var(--c-bg);padding:2px 6px;border-radius:4px;font-size:13px;">python3 measure.py dashboard</code>' +
+      (window.__TOKEN_API_LIVE ?
+        '<span style="color:var(--c-accent-cyan);font-weight:600;">Live mode active.</span> Toggles execute instantly.' :
+        'Toggles copy a terminal command to clipboard. For <strong style="color:var(--c-accent-cyan);">live toggles</strong>, serve the dashboard: <code style="background:var(--c-bg);padding:2px 6px;border-radius:4px;font-size:13px;">python3 measure.py dashboard --serve</code>') +
       '<br><br><strong style="color:var(--c-text-main);">Skills</strong>: Archived skills are moved to <code>~/.claude/_backups/skills-archived-DATE/</code>. Restoring moves them back to <code>~/.claude/skills/</code>.' +
       '<br><strong style="color:var(--c-text-main);">MCP Servers</strong>: Disabled servers are moved to a <code>_disabledMcpServers</code> section in settings.json. Re-enabling moves them back.' +
       '</div></div>';
 
     el.innerHTML = html;
 
-    // Bind manage toggles - live API if served over HTTP, clipboard fallback for file://
-    var isServed = window.location.protocol.indexOf('http') === 0;
+    // Bind manage toggles - live API if our custom server, clipboard fallback otherwise
+    var isServed = window.__TOKEN_API_LIVE === true;
 
     el.querySelectorAll('[data-manage-cmd]').forEach(function(input) {
       input.addEventListener('change', function(e) {
@@ -3398,7 +3399,16 @@ function getSampleData() {
 
 /* ========== INIT ========== */
 document.addEventListener('DOMContentLoaded', function() {
-  DB.init(window.__TOKEN_DATA__ || getSampleData());
+  // Probe for our custom API server before init
+  if (window.location.protocol.indexOf('http') === 0) {
+    fetch('/api/health', { method: 'GET' })
+      .then(function(r) { return r.json(); })
+      .then(function(d) { if (d && d.ok) window.__TOKEN_API_LIVE = true; })
+      .catch(function() {})
+      .finally(function() { DB.init(window.__TOKEN_DATA__ || getSampleData()); });
+  } else {
+    DB.init(window.__TOKEN_DATA__ || getSampleData());
+  }
 });
 </script>
 </body>

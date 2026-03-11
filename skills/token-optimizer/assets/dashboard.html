@@ -2419,7 +2419,9 @@ var DB = (function() {
       var qs = q.score;
       var qColor = qs >= 85 ? 'var(--c-accent-cyan)' : qs >= 70 ? '#4ecdc4' : qs >= 50 ? '#ff9f43' : '#ff6b6b';
       var qBand = qs >= 85 ? 'Excellent' : qs >= 70 ? 'Good' : qs >= 50 ? 'Degraded' : 'Critical';
+      var sessionFile = q.session_file ? q.session_file.replace(/.*\//, '') : null;
       html += '<div class="card wide"><div class="card-header"><span>Context Quality</span><span class="label">v2.0</span></div>' +
+        (sessionFile ? '<div style="padding:8px var(--s-3) 0;font-size:13px;color:var(--c-text-dim);">Session: <code style="font-family:var(--font-mono);color:var(--c-text-main);">' + esc(sessionFile) + '</code><span style="margin-left:8px;color:var(--c-text-dim);font-size:12px;">(most recently active in this project)</span></div>' : '') +
         '<div style="text-align:center;padding:var(--s-3) 0;">' +
         '<div style="font-size:56px;font-weight:700;font-family:var(--font-mono);color:' + qColor + ';text-shadow:0 0 15px ' + qColor + ';">' + qs + '</div>' +
         '<div class="label" style="font-size:16px;color:' + qColor + ';">' + qBand + '</div>' +
@@ -2446,12 +2448,12 @@ var DB = (function() {
         else if (d.compactions !== undefined) detail = d.compactions + ' compaction' + (d.compactions !== 1 ? 's' : '');
         else if (d.ratio !== undefined) detail = d.ratio;
         else if (d.detail) detail = d.detail;
-        html += '<div style="display:flex;align-items:center;gap:var(--s-2);margin-bottom:6px;font-size:13px;">' +
-          '<span style="width:140px;color:var(--c-text-dim);">' + sig.icon + ' ' + sig.label + '</span>' +
-          '<div style="flex:1;height:8px;background:var(--c-surface);border-radius:4px;overflow:hidden;">' +
-          '<div style="width:' + sigScore + '%;height:100%;background:' + barColor + ';border-radius:4px;transition:width 0.3s;"></div>' +
+        html += '<div style="display:flex;align-items:center;gap:var(--s-2);margin-bottom:10px;font-size:15px;">' +
+          '<span style="width:165px;color:var(--c-text-main);font-weight:500;">' + sig.icon + ' ' + sig.label + '</span>' +
+          '<div style="flex:1;height:10px;background:var(--c-surface);border-radius:5px;overflow:hidden;">' +
+          '<div style="width:' + sigScore + '%;height:100%;background:' + barColor + ';border-radius:5px;transition:width 0.3s;"></div>' +
           '</div>' +
-          '<span style="width:80px;text-align:right;font-family:var(--font-mono);color:var(--c-text-dim);">' + esc(String(detail)) + '</span>' +
+          '<span style="width:100px;text-align:right;font-family:var(--font-mono);font-size:14px;color:var(--c-text-dim);">' + esc(String(detail)) + '</span>' +
           '</div>';
       });
 
@@ -2685,6 +2687,32 @@ var DB = (function() {
     }
   }
 
+  function _updateManageBanner() {
+    var existing = document.getElementById('manage-restart-banner');
+    if (!existing) {
+      existing = document.createElement('div');
+      existing.id = 'manage-restart-banner';
+      existing.style.cssText = 'margin:12px 0;padding:10px 16px;border-radius:6px;font-size:13px;border:1px solid;';
+      var view = document.getElementById('view-manage');
+      if (view) view.insertBefore(existing, view.querySelector('.card'));
+    }
+    var count = (window._managePending || new Set()).size;
+    if (count > 0) {
+      existing.style.borderColor = 'var(--c-accent-cyan)';
+      existing.style.color = 'var(--c-accent-cyan)';
+      existing.style.background = 'rgba(0,255,255,0.05)';
+      existing.textContent = '\u27f3 ' + count + ' change' + (count > 1 ? 's' : '') + ' pending \u2014 restart Claude to apply';
+      existing.style.display = 'block';
+    } else {
+      existing.style.borderColor = '#2ecc71';
+      existing.style.color = '#2ecc71';
+      existing.style.background = 'rgba(46,204,113,0.05)';
+      existing.textContent = '\u2713 All changes restored \u2014 no restart needed';
+      existing.style.display = 'block';
+      setTimeout(function() { if (existing) existing.style.display = 'none'; }, 3000);
+    }
+  }
+
   function renderManage() {
     var el = document.getElementById('view-manage');
     if (!el) return;
@@ -2693,7 +2721,11 @@ var DB = (function() {
     var html = '<div class="section-header">' +
       '<div class="label">Control Panel</div>' +
       '<h1>Manage</h1>' +
-      '<p>Toggle skills and MCP servers on/off. Each toggle copies a terminal command to your clipboard.</p>' +
+      '<p id="manage-mode-desc">' +
+        (window.__TOKEN_API_LIVE
+          ? '<span style="color:var(--c-accent-cyan);font-weight:600;">Live mode</span> — toggles apply instantly to settings. <strong>Restart Claude</strong> to activate changes.'
+          : 'Open in serve mode for live toggles: <code style="background:var(--c-bg);padding:2px 5px;border-radius:4px;">python3 measure.py dashboard --serve</code>') +
+      '</p>' +
       '</div>';
 
     if (!m) {
@@ -2803,13 +2835,10 @@ var DB = (function() {
       html += '</div>';
     }
 
-    // How it works
+    // How it works (filesystem details only — mode info is now in the header)
     html += '<div class="card wide"><div class="card-header"><span>How It Works</span></div>' +
       '<div style="padding:var(--s-3);color:var(--c-text-dim);font-size:14px;line-height:1.6;">' +
-      (window.__TOKEN_API_LIVE ?
-        '<span style="color:var(--c-accent-cyan);font-weight:600;">Live mode active.</span> Toggles execute instantly.' :
-        'Toggles copy a terminal command to clipboard. For <strong style="color:var(--c-accent-cyan);">live toggles</strong>, serve the dashboard: <code style="background:var(--c-bg);padding:2px 6px;border-radius:4px;font-size:13px;">python3 measure.py dashboard --serve</code>') +
-      '<br><br><strong style="color:var(--c-text-main);">Skills</strong>: Archived skills are moved to <code>~/.claude/_backups/skills-archived-DATE/</code>. Restoring moves them back to <code>~/.claude/skills/</code>.' +
+      '<strong style="color:var(--c-text-main);">Skills</strong>: Archived skills are moved to <code>~/.claude/_backups/skills-archived-DATE/</code>. Restoring moves them back to <code>~/.claude/skills/</code>.' +
       '<br><strong style="color:var(--c-text-main);">MCP Servers</strong>: Disabled servers are moved to a <code>_disabledMcpServers</code> section in settings.json. Re-enabling moves them back.' +
       '</div></div>';
 
@@ -2844,6 +2873,13 @@ var DB = (function() {
             if (resp.ok && resp.manage) {
               data.manage = resp.manage;
               renderManage();
+              // Track pending changes
+              if (!window._managePending) window._managePending = new Set();
+              var isDisable = (mType === 'skill-off' || mType === 'mcp-off');
+              var isRestore = (mType === 'skill-on' || mType === 'mcp-on');
+              if (isDisable) window._managePending.add(mName);
+              if (isRestore) window._managePending.delete(mName);
+              _updateManageBanner();
               // Show brief success toast
               var toast = document.getElementById('hook-toast');
               if (!toast) {
@@ -2852,7 +2888,12 @@ var DB = (function() {
                 toast.className = 'hook-cmd-toast';
                 document.body.appendChild(toast);
               }
-              toast.textContent = resp.message;
+              var isOff = (mType === 'skill-off' || mType === 'mcp-off');
+              toast.textContent = isOff
+                ? 'Disabled. Restart Claude to apply.'
+                : ((window._managePending && window._managePending.size === 0)
+                    ? 'Restored. No restart needed.'
+                    : 'Enabled. Restart Claude to apply.');
               toast.classList.add('visible');
               setTimeout(function() { toast.classList.remove('visible'); }, 2000);
             } else {
@@ -2878,7 +2919,11 @@ var DB = (function() {
               var badge = document.createElement('span');
               badge.className = 'hook-pending';
               badge.style.cssText = 'font-size:11px;color:#ff9f43;margin-left:8px;display:block;margin-top:4px;';
-              badge.textContent = 'Command copied. Paste in terminal, then regenerate dashboard.';
+              var isOff = (mType === 'skill-off' || mType === 'mcp-off');
+              badge.textContent = isOff
+                ? 'Disabled — paste command in terminal to apply, then regenerate.'
+                : 'Re-enabled — paste command in terminal to confirm.';
+              badge.style.color = isOff ? '#ff9f43' : '#2ecc71';
               row.querySelector('.hook-info').appendChild(badge);
             }
           }

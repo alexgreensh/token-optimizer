@@ -2763,10 +2763,12 @@ var DB = (function() {
     }
     html += '</div>';
 
-    // Archived skills
-    if (archivedSkills.length > 0) {
-      html += '<div class="card wide"><div class="card-header"><span>Archived Skills (' + archivedSkills.length + ')</span>' +
-        '<span class="label">inactive, zero overhead</span></div>';
+    // Archived skills (always shown so users know the recovery zone exists)
+    html += '<div class="card wide"><div class="card-header"><span>Archived Skills (' + archivedSkills.length + ')</span>' +
+      '<span class="label">inactive, zero overhead</span></div>';
+    if (archivedSkills.length === 0) {
+      html += '<div class="empty-state" style="font-size:13px;">Nothing archived yet. Toggle an active skill off to move it here.</div>';
+    } else {
       html += '<div style="max-height:400px;overflow-y:auto;">';
       archivedSkills.forEach(function(sk) {
         html += '<div class="hook-row" style="padding:8px var(--s-3);opacity:0.7;">' +
@@ -2779,8 +2781,9 @@ var DB = (function() {
           '<div style="font-size:11px;color:var(--c-text-dim);margin-top:2px;">Archived: ' + esc(sk.archived_date || 'unknown') + ' &middot; ' + esc(sk.archive_dir) + '</div>' +
           '</div></div>';
       });
-      html += '</div></div>';
+      html += '</div>';
     }
+    html += '</div>';
 
     // --- MCP SECTION ---
     var activeMcps = (m.mcp_servers && m.mcp_servers.active) || [];
@@ -2803,9 +2806,12 @@ var DB = (function() {
     }
     html += '</div>';
 
-    if (disabledMcps.length > 0) {
-      html += '<div class="card wide"><div class="card-header"><span>Disabled MCP Servers (' + disabledMcps.length + ')</span>' +
-        '<span class="label">inactive</span></div>';
+    // Disabled MCPs (always shown so users know the recovery zone exists)
+    html += '<div class="card wide"><div class="card-header"><span>Disabled MCP Servers (' + disabledMcps.length + ')</span>' +
+      '<span class="label">inactive</span></div>';
+    if (disabledMcps.length === 0) {
+      html += '<div class="empty-state" style="font-size:13px;">Nothing disabled yet. Toggle an active MCP off to move it here.</div>';
+    } else {
       disabledMcps.forEach(function(srv) {
         html += '<div class="hook-row" style="padding:8px var(--s-3);opacity:0.7;">' +
           '<label class="hook-toggle">' +
@@ -2815,8 +2821,8 @@ var DB = (function() {
           '<div class="hook-label" style="font-size:14px;font-family:var(--font-mono);">' + esc(srv.name) + '</div>' +
           '</div></div>';
       });
-      html += '</div>';
     }
+    html += '</div>';
 
     // Cloud-synced MCP servers (read-only)
     var cloudMcps = (m.mcp_servers && m.mcp_servers.cloud) || [];

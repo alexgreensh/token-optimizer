@@ -1998,21 +1998,19 @@ def generate_auto_recommendations(components, trends=None, days=30):
         installed_count = trends.get("skills", {}).get("installed_count", 0)
         if len(never_used) >= 5:
             overhead = len(never_used) * _actual_avg
-            skill_list = ", ".join(sorted(never_used)[:15])
-            if len(never_used) > 15:
-                skill_list += f", ... and {len(never_used) - 15} more"
+            show_count = min(len(never_used), 8)
+            skill_list = ", ".join(sorted(never_used)[:show_count])
+            remaining = len(never_used) - show_count
             quick.append(
-                f"**Archive {len(never_used)} unused skills ({len(never_used)} of {installed_count} never used in {days} days)**: "
-                f"Each installed skill costs ~{_actual_avg} tokens in the startup menu, every session, whether you use it or not. "
-                f"These {len(never_used)} skills cost ~{overhead:,} tokens/session for zero benefit.\n"
-                f"  Skills: {skill_list}\n"
+                f"**Review {show_count} unused skills for archiving ({len(never_used)} of {installed_count} never used in {days} days)**: "
+                f"Each installed skill costs ~{_actual_avg} tokens in the startup menu, every session, whether you use it or not.\n"
+                f"  Start with these: {skill_list}"
+                + (f"\n  ({remaining} more will surface after you archive these and re-run.)" if remaining > 0 else "") +
+                f"\n  For each skill, ask: do I use this? Is it seasonal? Does anything depend on it? "
+                f"(`grep -r \"[skill-name]\" ~/.claude/CLAUDE.md ~/.claude/rules/ ~/.claude/skills/`)\n"
                 f"  Archive by moving to ~/.claude/_backups/skills-archived-$(date +%Y%m%d)/ (NOT inside skills/). "
-                f"This removes them from the menu. Restore any skill by moving it back.\n"
-                f"  ⚠️ Before archiving, check for dependencies: `grep -r \"[skill-name]\" ~/.claude/CLAUDE.md ~/.claude/rules/ ~/.claude/skills/`. "
-                f"Archiving a skill that other skills @import will break the dependent skill. "
-                f"Also keep skills that are seasonal or rarely-needed-but-critical "
-                f"(e.g., a deploy skill you only use monthly). "
-                f"~{overhead:,} tokens recoverable."
+                f"Restore any skill by moving it back. "
+                f"~{overhead:,} tokens recoverable across all {len(never_used)}."
             )
         elif len(never_used) >= 2:
             overhead = len(never_used) * _actual_avg
@@ -2041,43 +2039,14 @@ def generate_auto_recommendations(components, trends=None, days=30):
             f"~{est_savings:,} tokens recoverable."
         )
 
-    # --- Rule 3b: Aggregate skill token budget ---
-    if skill_tokens > 2500:
-        totals = calculate_totals(components)
-        ctrl = totals.get("controllable_tokens", 1)
-        pct_of_ctrl = skill_tokens / max(ctrl, 1) * 100
-        bucket = quick if skill_tokens > 4000 else medium
-        bucket.append(
-            f"**Skills consume {skill_tokens:,} tokens/session ({pct_of_ctrl:.0f}% of controllable overhead)**: "
-            f"{skill_count} skills at ~{avg_per_skill} tokens each. This loads every session whether "
-            f"you invoke these skills or not.\n"
-            f"  Review your skill inventory. Archive unused skills to ~/.claude/_backups/skills-archived/. "
-            f"Tighten verbose descriptions (target: 80 chars). "
-            f"Even trimming {skill_count // 3} skills saves ~{(skill_count // 3) * avg_per_skill:,} tokens. "
-            f"~{(skill_count // 3) * avg_per_skill:,} tokens recoverable."
-        )
+    # --- Rule 3b: Removed in v2.3.0 ---
+    # Aggregate "skills consume N tokens" was not actionable. Specific rules (Rule 3
+    # for unused skills, Rule 5 for verbose descriptions) give better guidance.
 
-    # --- Rule 0: Startup overhead as % of context window ---
-    totals_r0 = calculate_totals(components)
-    total_overhead = totals_r0.get("estimated_total", 0)
-    context_window = detect_context_window()
-    overhead_pct = total_overhead / max(context_window, 1) * 100
-    controllable_r0 = totals_r0.get("controllable_tokens", 0)
-    target_tokens = context_window // 10
-    if overhead_pct > 15:
-        quick.append(
-            f"**Startup overhead is {overhead_pct:.1f}% of context window ({total_overhead:,} of {context_window:,} tokens)**: "
-            f"Every message re-sends {total_overhead:,} tokens before your actual conversation. "
-            f"Of that, {controllable_r0:,} tokens are controllable.\n"
-            f"  Target: under 10% ({target_tokens:,} tokens). "
-            f"~{total_overhead - target_tokens:,} tokens recoverable."
-        )
-    elif overhead_pct > 10:
-        medium.append(
-            f"**Startup overhead at {overhead_pct:.1f}% of context ({total_overhead:,} tokens)**: "
-            f"Consider trimming controllable overhead ({controllable_r0:,} tokens) to get under 10%. "
-            f"~{total_overhead - target_tokens:,} tokens recoverable."
-        )
+    # --- Rule 0: Removed in v2.3.0 ---
+    # "Startup overhead is X%" just restated the bar chart with no specific action.
+    # The bar chart + component cards already show this. Specific per-component
+    # rules (CLAUDE.md, skills, commands, MCP) are the actionable counterparts.
 
     # --- Rule 4: Missing file exclusion rules ---
     exclusion = components.get("file_exclusion", {})
@@ -2151,38 +2120,38 @@ def generate_auto_recommendations(components, trends=None, days=30):
             opus_pct = model_mix.get("opus", 0) / total_tokens * 100
             haiku_pct = model_mix.get("haiku", 0) / total_tokens * 100
             if opus_pct > 50 and haiku_pct < 15:
-                # Root cause detection: hardcoded model in settings.json
-                root_cause = ""
+                # Root cause: hardcoded model in settings.json → split into Quick Win
                 if default_model and "opus" in str(default_model).lower():
-                    root_cause = (
-                        f"\n  **Root cause**: Your settings.json has `\"model\": \"{default_model}\"` "
-                        f"which sets the default model for ALL operations. Even if CLAUDE.md has "
-                        f"routing instructions, subagents may inherit this default. "
-                        f"Remove the `\"model\"` key from settings.json and instead specify models "
-                        f"per-task in CLAUDE.md routing instructions."
+                    quick.append(
+                        f"**Remove hardcoded model from settings.json (`\"model\": \"{default_model}\"`)**: "
+                        f"This forces ALL operations to use {default_model}, overriding any CLAUDE.md routing. "
+                        f"Subagents inherit this default even when Haiku would suffice.\n"
+                        f"  Fix: open ~/.claude/settings.json, delete the `\"model\"` key entirely. "
+                        f"Then add routing instructions to CLAUDE.md instead (see Behavioral Habits below). "
+                        f"This one change lets Claude auto-select appropriate models per task."
                     )
+                # Behavioral advice (always shown when mix is imbalanced)
                 habits.append(
-                    f"**Shift data-gathering work to Haiku ({opus_pct:.0f}% Opus, {haiku_pct:.0f}% Haiku)**: "
-                    f"Your model mix is heavily weighted toward Opus. For data-gathering agents "
-                    f"(file reads, counting, directory scans, grep searches), Haiku is 60x cheaper "
-                    f"and often just as accurate.\n"
+                    f"**Route subagents by task type ({opus_pct:.0f}% Opus, {haiku_pct:.0f}% Haiku)**: "
+                    f"For data-gathering agents (file reads, counting, directory scans, grep searches), "
+                    f"Haiku is 60x cheaper and often just as accurate.\n"
                     f"  Add to CLAUDE.md: 'Default subagents to model=\"haiku\" for data gathering, "
                     f"model=\"sonnet\" for analysis and judgment calls. Reserve model=\"opus\" for "
                     f"complex multi-step reasoning.' This doesn't save context tokens but significantly "
-                    f"reduces cost and rate limit consumption.{root_cause}"
+                    f"reduces cost and rate limit consumption."
                 )
 
-    # --- Rule 8: No SessionEnd hook ---
+    # --- Rule 8: No SessionEnd hook (one-time setup → Quick Win, not habit) ---
     hooks = components.get("hooks", {})
     if not hooks.get("configured") or "SessionEnd" not in hooks.get("names", []):
-        habits.append(
+        quick.append(
             "**Install SessionEnd hook for usage tracking**: "
-            "No SessionEnd hook detected. The hook auto-collects session data and regenerates "
-            "your dashboard after every session. Takes ~2 seconds, no background process.\n"
-            "  Run: python3 measure.py setup-hook\n"
+            "No SessionEnd hook detected. One-time setup, takes 10 seconds:\n"
+            "  Run: `python3 measure.py setup-hook`\n"
             "  This enables the Trends tab (which skills you actually use, model mix, daily patterns) "
             "and the Health tab (stale sessions, version checks). Without it, you only get data "
-            "from manual 'measure.py collect' runs."
+            "from manual `measure.py collect` runs. The hook runs automatically after every session "
+            "(~2 seconds, no background process)."
         )
 
     # --- Rule 9: Broken skill symlinks ---
@@ -2271,15 +2240,18 @@ def generate_auto_recommendations(components, trends=None, days=30):
         os.environ.get("ENABLE_CLAUDEAI_MCP_SERVERS", ""),
     )
     if str(claudeai_val).lower() != "false":
+        # Estimate: each cloud-synced server adds ~300-500 tokens (tool defs + instructions)
+        mcp_info = components.get("mcp_tools", {})
+        local_server_count = mcp_info.get("server_count", 0)
         medium.append(
-            "**Review claude.ai MCP servers (`ENABLE_CLAUDEAI_MCP_SERVERS`)**: "
-            "Claude Code can sync MCP servers from your claude.ai account settings. "
-            "These cloud-synced servers are separate from your local settings.json MCP servers "
-            "and may add tool definitions you don't use in the CLI.\n"
-            "  Check if you have cloud-synced MCPs: look for servers you didn't configure locally. "
-            "To opt out: add `\"ENABLE_CLAUDEAI_MCP_SERVERS\": \"false\"` to the `env` section "
-            "of your ~/.claude/settings.json. This prevents cloud MCPs from loading in CLI sessions "
-            "while keeping them available on claude.ai."
+            "**Check for cloud-synced MCP servers (~300-500 tokens each)**: "
+            f"You have {local_server_count} locally configured MCP servers, but Claude Code can also "
+            f"sync additional servers from your claude.ai account settings.\n"
+            f"  Diagnostic: run `/mcp` in Claude Code and count servers. If you see more than "
+            f"{local_server_count} (your local count), the extras are cloud-synced.\n"
+            f"  To opt out of cloud MCPs in CLI: add `\"ENABLE_CLAUDEAI_MCP_SERVERS\": \"false\"` "
+            f"to the `env` section of ~/.claude/settings.json. "
+            f"This prevents cloud MCPs from loading in CLI sessions while keeping them on claude.ai."
         )
 
     # --- Rule 16: effortLevel always set to high ---

@@ -4490,8 +4490,11 @@ def _parse_jsonl_for_quality(filepath):
                 ts = record.get("timestamp", "")
 
                 # Detect compaction boundary markers
-                if rec_type == "summary" or (
-                    rec_type == "system" and "compaction" in str(record.get("message", "")).lower()
+                # Claude Code writes: type="system", subtype="compact_boundary",
+                # with compactMetadata dict containing trigger and preTokens
+                if rec_type == "system" and (
+                    record.get("subtype") == "compact_boundary"
+                    or "compactMetadata" in record
                 ):
                     compactions += 1
                     idx += 1

@@ -17,7 +17,7 @@
 <p align="center"><em>Find the ghost tokens. Survive compaction. Track the quality decay.</em></p>
 
 <p align="center">
-Opus 4.6 drops from 93% to 76% accuracy across a 1M context window. Compaction loses 60-70% of your conversation. Token Optimizer tracks the degradation, checkpoints your decisions before compaction fires, and tells you what to fix.
+Opus 4.6 drops from 93% to 76% accuracy across a 1M context window. Compaction loses 60-70% of your conversation. Ghost tokens burn through your plan limits on every single message. Token Optimizer tracks the degradation, cuts the waste, checkpoints your decisions before compaction fires, and tells you what to fix.
 </p>
 
 <p align="center">
@@ -44,12 +44,12 @@ Then in Claude Code: `/token-optimizer`
 
 Every Claude Code session starts with invisible overhead: system prompt, tool definitions, skills, MCP servers, CLAUDE.md, MEMORY.md. A typical power user burns 50-70K tokens before typing a word.
 
-At 200K context, that's 25-35% gone. At 1M, it's "only" 5-7%, but the degradation curve is the real problem:
+At 200K context, that's 25-35% gone. At 1M, it's "only" 5-7%, but the problems compound:
 
-- **MRCR drops from 93% to 76%** as context fills from 256K to 1M
-- **Higher effort = faster context burn.** More thinking tokens per response means you hit compaction sooner.
-- **Compaction is catastrophic.** 60-70% of your conversation gone per compaction. After 2-3 compactions: 88-95% cumulative loss. Claude starts hallucinating tool calls.
-- **Sonnet 4.6 beats Opus on long-context reasoning** (GraphWalks: 73.8 vs 38.7 at 1M)
+- **Quality degrades as context fills.** MRCR drops from 93% to 76% across 256K to 1M. Your AI gets measurably dumber with every message.
+- **You hit rate limits faster.** Ghost tokens count toward your plan's usage caps on every message, cached or not. 50K overhead × 100 messages = 5M tokens burned on nothing.
+- **Compaction is catastrophic.** 60-70% of your conversation gone per compaction. After 2-3 compactions: 88-95% cumulative loss. And each compaction means re-sending all that overhead again.
+- **Higher effort = faster burn.** More thinking tokens per response means you hit compaction sooner, which means more total tokens consumed across the session.
 
 Token Optimizer tracks all of this. Quality score, degradation bands, compaction loss, drift detection. Zero context tokens consumed (runs as external Python).
 
@@ -127,9 +127,9 @@ context-mode prevents runtime floods. Token Optimizer prevents structural waste.
 
 Every message you send to Claude Code re-sends everything: system prompt, tool definitions, MCP servers, skills, commands, CLAUDE.md, MEMORY.md, and system reminders. The API is stateless. These are the ghost tokens: invisible overhead that eats your context window before you type a word.
 
-Prompt caching makes this [cheap](https://code.claude.com/docs/en/costs) (90% cost reduction). But cheap doesn't mean small. Those tokens still fill your context window, count toward rate limits, and degrade output quality.
+Prompt caching makes this [cheaper](https://code.claude.com/docs/en/costs) (90% cost reduction on cached tokens). But cheaper doesn't mean free, and it doesn't mean small. Those tokens still fill your context window, still count toward your plan's rate limits on every message, and still degrade output quality. On Claude Max or Pro, ghost tokens eat into the same usage caps you need for actual work.
 
-The more you've customized Claude Code, the worse it gets. And at 1M, the real problem isn't startup overhead, it's the degradation curve as you fill the window.
+The more you've customized Claude Code, the worse it gets. And at 1M, the real problem isn't startup overhead, it's the compounding cost: degradation as the window fills, plus rate limit burn from overhead you never see.
 
 ![What happens inside a 1M session](skills/token-optimizer/assets/user-profiles.svg)
 

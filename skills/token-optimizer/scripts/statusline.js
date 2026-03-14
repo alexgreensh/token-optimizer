@@ -41,7 +41,7 @@ process.stdin.on('end', () => {
     } catch (e) {}
 
     // Context window bar with degradation-aware colors
-    // MRCR bands: <50% = green, 50-70% = yellow, 70-80% = orange, 80%+ = red
+    // Context fill bands: <50% = green, 50-70% = yellow, 70-80% = orange, 80%+ = red
     let ctx = '';
     const used = usedPct != null
       ? Math.round(usedPct)

@@ -1025,9 +1025,6 @@ def quick_scan(as_json=False):
     ctx_window, ctx_source = detect_context_window()
     ctx_label = _fmt_context_window(ctx_window)
 
-    # Auto-remove CLAUDE_AUTOCOMPACT_PCT_OVERRIDE if set (inverted semantics, causes premature compaction)
-    _auto_remove_bad_env_vars()
-
     overhead = totals["estimated_total"]
     overhead_pct = overhead / ctx_window * 100
 
@@ -1284,20 +1281,16 @@ def doctor(as_json=False):
 
     # 9. Auto-remove harmful env vars (CLAUDE_AUTOCOMPACT_PCT_OVERRIDE etc.)
     total += 1
-    env_block = settings.get("env", {})
-    bad_found = {v: env_block.get(v) for v in BAD_ENV_VARS if v in env_block}
-    if bad_found:
-        _auto_remove_bad_env_vars()
-        # Re-read settings after removal
-        settings, _ = _read_settings_json()
-        for var, val in bad_found.items():
-            checks.append(("OK", f"Env cleanup", f"REMOVED {var}={val} (inverted semantics, caused premature compaction)"))
+    removed = _auto_remove_bad_env_vars(settings)
+    if removed:
+        for var, val in removed:
+            checks.append(("OK", "Env cleanup", f"REMOVED {var}={val} (inverted semantics, caused premature compaction)"))
         score += 1
     else:
         checks.append(("OK", "Env vars", "no harmful overrides"))
         score += 1
 
-    # 10. Broken symlinks (renumbered from 9)
+    # 10. Broken symlinks
     total += 1
     broken = []
     skills_dir = CLAUDE_DIR / "skills"
@@ -1311,7 +1304,7 @@ def doctor(as_json=False):
     else:
         checks.append(("!!", "Symlinks", f"{len(broken)} broken: {', '.join(broken[:5])}"))
 
-    # 10. Duplicate installs
+    # 11. Duplicate installs
     total += 1
     has_plugin = is_plugin
     has_skill = is_skill and not is_plugin
@@ -2352,9 +2345,9 @@ def _manage_skill(action, name):
 
 def _manage_mcp(action, name):
     """Disable or enable an MCP server by moving between mcpServers and _disabledMcpServers."""
-    settings, settings_path = _read_settings_json()
-    if not settings_path:
-        print("  Could not find settings.json")
+    settings, _ = _read_settings_json()
+    if not settings:
+        print("  settings.json not found or empty")
         return False
 
     active = settings.get("mcpServers", {})
@@ -2368,7 +2361,7 @@ def _manage_mcp(action, name):
         disabled[name] = config
         settings["_disabledMcpServers"] = disabled
         settings["mcpServers"] = active
-        _write_settings_json(settings, settings_path)
+        _write_settings_json(settings, SETTINGS_PATH)
         print(f"  Disabled MCP server: {name}")
         return True
 
@@ -2383,7 +2376,7 @@ def _manage_mcp(action, name):
             settings["_disabledMcpServers"] = disabled
         else:
             settings.pop("_disabledMcpServers", None)
-        _write_settings_json(settings, settings_path)
+        _write_settings_json(settings, SETTINGS_PATH)
         print(f"  Enabled MCP server: {name}")
         return True
     else:
@@ -4689,26 +4682,35 @@ def _write_settings_atomic(settings_data):
         raise
 
 
+# Env vars that should be auto-removed from settings.json.
+# CLAUDE_AUTOCOMPACT_PCT_OVERRIDE is undocumented and has inverted semantics
+# (value = remaining%, not used%). Setting it to 70 triggers compaction at
+# 30% used, silently destroying sessions.
 BAD_ENV_VARS = ["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"]
-"""Env vars that should be auto-removed from settings.json.
-CLAUDE_AUTOCOMPACT_PCT_OVERRIDE is undocumented and has inverted semantics
-(value = remaining%, not used%). Setting it to 70 triggers compaction at
-30% used, silently destroying sessions."""
 
 
-def _auto_remove_bad_env_vars():
-    """Auto-remove harmful env vars from settings.json."""
-    settings, _ = _read_settings_json()
-    env_block = settings.get("env", {})
+def _auto_remove_bad_env_vars(settings=None):
+    """Auto-remove harmful env vars from settings.json. Returns list of (var, val) removed.
+
+    When settings is passed, operates on a copy of the env block to avoid mutating the caller's dict.
+    """
+    if settings is None:
+        settings, _ = _read_settings_json()
+    env_block = dict(settings.get("env", {}))
     removed = []
     for var in BAD_ENV_VARS:
         if var in env_block:
             removed.append((var, env_block.pop(var)))
     if removed:
-        settings["env"] = env_block
-        _write_settings_atomic(settings)
+        settings = dict(settings, env=env_block)
+        try:
+            _write_settings_atomic(settings)
+        except (PermissionError, OSError) as e:
+            print(f"  [Token Optimizer] Warning: could not write settings.json: {e}")
+            return []
         for var, val in removed:
             print(f"  [Auto-fix] Removed {var}={val} from settings.json (inverted semantics, caused premature compaction)")
+    return removed
 
 
 def setup_hook(dry_run=False):
@@ -6211,14 +6213,13 @@ def _get_measure_py_path():
 
 def _read_settings_json():
     """Read ~/.claude/settings.json, return (data, path)."""
-    settings_path = CLAUDE_DIR / "settings.json"
-    if settings_path.exists():
+    if SETTINGS_PATH.exists():
         try:
-            with open(settings_path, "r", encoding="utf-8") as f:
-                return json.load(f), settings_path
+            with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+                return json.load(f), SETTINGS_PATH
         except (json.JSONDecodeError, PermissionError, OSError):
             pass
-    return {}, settings_path
+    return {}, SETTINGS_PATH
 
 
 def _smart_compact_hook_commands():

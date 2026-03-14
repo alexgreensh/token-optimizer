@@ -2361,7 +2361,7 @@ def _manage_mcp(action, name):
         disabled[name] = config
         settings["_disabledMcpServers"] = disabled
         settings["mcpServers"] = active
-        _write_settings_json(settings, SETTINGS_PATH)
+        _write_settings_atomic(settings)
         print(f"  Disabled MCP server: {name}")
         return True
 
@@ -2376,31 +2376,12 @@ def _manage_mcp(action, name):
             settings["_disabledMcpServers"] = disabled
         else:
             settings.pop("_disabledMcpServers", None)
-        _write_settings_json(settings, SETTINGS_PATH)
+        _write_settings_atomic(settings)
         print(f"  Enabled MCP server: {name}")
         return True
     else:
         print(f"  Unknown action: {action}")
         return False
-
-
-def _write_settings_json(settings, settings_path):
-    """Write settings.json atomically."""
-    import tempfile
-    tmp_fd, tmp_path = tempfile.mkstemp(
-        dir=str(Path(settings_path).parent), suffix=".json"
-    )
-    try:
-        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-            json.dump(settings, f, indent=2, ensure_ascii=False)
-            f.write("\n")
-        os.replace(tmp_path, settings_path)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
 
 
 def generate_standalone_dashboard(days=30, quiet=False):
@@ -6931,6 +6912,13 @@ if __name__ == "__main__":
     elif args[0] == "ensure-health":
         # Silent auto-fix of known harmful settings. Called by SessionStart hook.
         _auto_remove_bad_env_vars()
+        # Clean up orphaned temp files from interrupted atomic writes
+        for f in SETTINGS_PATH.parent.glob(".settings-*.json"):
+            try:
+                if time.time() - f.stat().st_mtime > 3600:
+                    f.unlink()
+            except OSError:
+                pass
     elif args[0] == "setup-quality-bar":
         dry = "--dry-run" in args
         uninstall = "--uninstall" in args

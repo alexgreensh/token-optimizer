@@ -4,7 +4,8 @@
 //
 // Install: python3 measure.py setup-quality-bar
 // The quality score is updated by a UserPromptSubmit hook every ~2 minutes.
-// Reads from quality-cache.json (global fallback, always updated).
+// Reads from the most recent per-session quality-cache-*.json for accuracy.
+// Falls back to quality-cache.json (global) if no per-session cache found.
 // Reads effortLevel from settings.json (not available in stdin data).
 
 const fs = require('fs');
@@ -21,6 +22,7 @@ process.stdin.on('end', () => {
     const dir = data.workspace?.current_dir || process.cwd();
     const remaining = data.context_window?.remaining_percentage;
     const usedPct = data.context_window?.used_percentage;
+    const sessionId = data.session_id;
     const DIM = '\x1b[2m';
     const RESET = '\x1b[0m';
     const SEP = ` ${DIM}|${RESET} `;
@@ -63,14 +65,43 @@ process.stdin.on('end', () => {
     }
 
     // Quality score + compaction info from quality cache
+    // Priority: per-session cache (by session_id) > most recent per-session > global fallback
     let qScore = '';
     let sessionInfo = '';
     const cacheDir = path.join(os.homedir(), '.claude', 'token-optimizer');
-    const qFile = path.join(cacheDir, 'quality-cache.json');
 
-    if (fs.existsSync(qFile)) {
-      try {
-        const q = JSON.parse(fs.readFileSync(qFile, 'utf8'));
+    let q = null;
+    try {
+      // Try per-session cache by session_id first
+      if (sessionId) {
+        const sessionCache = path.join(cacheDir, `quality-cache-${sessionId}.json`);
+        if (fs.existsSync(sessionCache)) {
+          q = JSON.parse(fs.readFileSync(sessionCache, 'utf8'));
+        }
+      }
+
+      // Fall back to most recently modified per-session cache
+      if (!q) {
+        try {
+          const files = fs.readdirSync(cacheDir)
+            .filter(f => f.startsWith('quality-cache-') && f.endsWith('.json'))
+            .map(f => ({ name: f, mtime: fs.statSync(path.join(cacheDir, f)).mtimeMs }))
+            .sort((a, b) => b.mtime - a.mtime);
+          if (files.length > 0) {
+            q = JSON.parse(fs.readFileSync(path.join(cacheDir, files[0].name), 'utf8'));
+          }
+        } catch (e) {}
+      }
+
+      // Final fallback: global cache
+      if (!q) {
+        const qFile = path.join(cacheDir, 'quality-cache.json');
+        if (fs.existsSync(qFile)) {
+          q = JSON.parse(fs.readFileSync(qFile, 'utf8'));
+        }
+      }
+
+      if (q) {
         const s = q.score;
         if (s != null) {
           const score = Math.round(s);
@@ -93,8 +124,8 @@ process.stdin.on('end', () => {
           const color = c <= 2 ? '\x1b[33m' : '\x1b[31m';
           sessionInfo = `${SEP}${color}Compacts:${c}(${loss} lost)${RESET}`;
         }
-      } catch (e) {}
-    }
+      }
+    } catch (e) {}
 
     const dirname = path.basename(dir);
     process.stdout.write(`${DIM}${model}${RESET}${effort}${SEP}${DIM}${dirname}${RESET}${ctx}${qScore}${sessionInfo}`);

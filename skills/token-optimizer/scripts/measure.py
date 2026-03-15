@@ -3795,8 +3795,9 @@ def _collect_trends_from_db(days=30):
     try:
         return _query_trends_db(conn, days)
     except (sqlite3.Error, sqlite3.DatabaseError):
-        conn.close()
         return None
+    finally:
+        conn.close()
 
 
 def _query_trends_db(conn, days):

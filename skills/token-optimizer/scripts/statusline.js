@@ -52,8 +52,12 @@ process.stdin.on('end', () => {
       ? Math.round(usedPct)
       : (remaining != null ? Math.max(0, Math.min(100, 100 - Math.round(remaining))) : null);
 
+    // Sanitize session_id for safe use in filesystem paths
+    const safeSessionId = sessionId ? sessionId.replace(/[^a-zA-Z0-9_-]/g, '') : null;
+
     if (used != null) {
-      const filled = Math.floor(used / 10);
+      const clamped = Math.max(0, Math.min(100, used));
+      const filled = Math.floor(clamped / 10);
       const bar = '\u2588'.repeat(filled) + '\u2591'.repeat(10 - filled);
 
       if (used < 50) {
@@ -68,11 +72,14 @@ process.stdin.on('end', () => {
 
       // Write live fill data for quality score to use (bridges statusline -> quality cache)
       try {
-        fs.writeFileSync(path.join(cacheDir, 'live-fill.json'), JSON.stringify({
+        const liveFillData = JSON.stringify({
           used_percentage: used,
           timestamp: Date.now(),
           session_id: sessionId || null
-        }));
+        });
+        const tmpPath = path.join(cacheDir, '.live-fill.tmp');
+        fs.writeFileSync(tmpPath, liveFillData);
+        fs.renameSync(tmpPath, path.join(cacheDir, 'live-fill.json'));
       } catch (e) {}
     }
 
@@ -84,8 +91,8 @@ process.stdin.on('end', () => {
     let q = null;
     try {
       // Try per-session cache by session_id first
-      if (sessionId) {
-        const sessionCache = path.join(cacheDir, `quality-cache-${sessionId}.json`);
+      if (safeSessionId) {
+        const sessionCache = path.join(cacheDir, `quality-cache-${safeSessionId}.json`);
         if (fs.existsSync(sessionCache)) {
           q = JSON.parse(fs.readFileSync(sessionCache, 'utf8'));
         }
@@ -93,7 +100,7 @@ process.stdin.on('end', () => {
 
       // Fall back to most recently modified per-session cache ONLY if we don't have a session_id
       // (if we have a session_id but no matching cache, the SessionStart hook will create it shortly)
-      if (!q && !sessionId) {
+      if (!q && !safeSessionId) {
         try {
           const files = fs.readdirSync(cacheDir)
             .filter(f => f.startsWith('quality-cache-') && f.endsWith('.json'))

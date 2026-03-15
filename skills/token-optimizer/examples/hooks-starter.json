@@ -52,7 +52,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 '$MEASURE_PY' collect --quiet && python3 '$MEASURE_PY' dashboard --quiet"
+            "command": "python3 '$MEASURE_PY' collect --quiet && python3 '$MEASURE_PY' dashboard --quiet",
+            "async": true
           }
         ]
       },
@@ -60,7 +61,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 '$MEASURE_PY' compact-capture --trigger end --quiet"
+            "command": "python3 '$MEASURE_PY' compact-capture --trigger end --quiet",
+            "async": true
           }
         ]
       }

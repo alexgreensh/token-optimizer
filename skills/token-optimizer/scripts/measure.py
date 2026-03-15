@@ -4718,7 +4718,7 @@ def setup_hook(dry_run=False):
     upgrading = installed and not current
 
     # Build the hook entry
-    new_hook = {"type": "command", "command": HOOK_COMMAND}
+    new_hook = {"type": "command", "command": HOOK_COMMAND, "async": True}
 
     if "hooks" not in settings:
         settings["hooks"] = {}
@@ -4786,7 +4786,7 @@ def setup_hook(dry_run=False):
     except PermissionError:
         print(f"[Error] Permission denied writing {SETTINGS_PATH}.")
         print(f"Add this manually to your settings.json hooks.SessionEnd:\n")
-        print(json.dumps({"type": "command", "command": HOOK_COMMAND}, indent=2))
+        print(json.dumps({"type": "command", "command": HOOK_COMMAND, "async": True}, indent=2))
         sys.exit(1)
 
 

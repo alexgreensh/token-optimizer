@@ -1884,7 +1884,7 @@ def _open_in_browser(filepath):
         print(f"  {url}")
 
 
-def _serve_dashboard(filepath, port=8080):
+def _serve_dashboard(filepath, port=8080, host="127.0.0.1"):
     """Serve the dashboard over HTTP for headless/remote access."""
     import http.server
     import socketserver
@@ -1898,7 +1898,7 @@ def _serve_dashboard(filepath, port=8080):
     for attempt_port in range(port, port + 20):
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.bind(("127.0.0.1", attempt_port))
+                s.bind((host, attempt_port))
             port = attempt_port
             break
         except OSError:
@@ -2021,11 +2021,14 @@ def _serve_dashboard(filepath, port=8080):
             self.send_header("Access-Control-Allow-Headers", "Content-Type")
             self.end_headers()
 
+    display_host = "localhost" if host == "127.0.0.1" else host
     print(f"\n  Serving dashboard at:")
-    print(f"    http://localhost:{port}/")
+    print(f"    http://{display_host}:{port}/")
+    if host == "0.0.0.0":
+        print(f"    (accessible from any machine on your network)")
     print(f"\n  Press Ctrl+C to stop.\n")
 
-    with socketserver.TCPServer(("127.0.0.1", port), DashboardHandler) as httpd:
+    with socketserver.TCPServer((host, port), DashboardHandler) as httpd:
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:
@@ -4859,7 +4862,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 if not os.path.exists(DASHBOARD):
     sys.exit(1)
 
-with socketserver.TCPServer(("127.0.0.1", PORT), Handler) as httpd:
+HOST = os.environ.get("TOKEN_OPTIMIZER_HOST", "127.0.0.1")
+with socketserver.TCPServer((HOST, PORT), Handler) as httpd:
     httpd.serve_forever()
 '''
 
@@ -6782,10 +6786,14 @@ if __name__ == "__main__":
         cp = None
         serve = False
         serve_port = 8080
+        serve_host = "127.0.0.1"
         for i, a in enumerate(args):
             if a == "--coord-path" and i + 1 < len(args):
                 cp = args[i + 1]
             elif a == "--serve":
+                serve = True
+            elif a == "--host" and i + 1 < len(args):
+                serve_host = args[i + 1]
                 serve = True
             elif a == "--port" and i + 1 < len(args):
                 try:
@@ -6806,13 +6814,13 @@ if __name__ == "__main__":
                         pass
             out = generate_standalone_dashboard(days=days, quiet=quiet)
             if out and serve:
-                _serve_dashboard(out, port=serve_port)
+                _serve_dashboard(out, port=serve_port, host=serve_host)
             elif out and not quiet:
                 _open_in_browser(out)
             sys.exit(0 if out else 1)
         out = generate_dashboard(cp)
         if serve:
-            _serve_dashboard(out, port=serve_port)
+            _serve_dashboard(out, port=serve_port, host=serve_host)
     elif args[0] == "collect":
         days = 90
         quiet = "--quiet" in args or "-q" in args
@@ -7028,6 +7036,7 @@ if __name__ == "__main__":
         print("  python3 measure.py dashboard                           # Standalone dashboard (Trends + Health)")
         print("  python3 measure.py dashboard --coord-path PATH         # Full dashboard (after audit)")
         print("  python3 measure.py dashboard --serve [--port 8080]     # Serve over HTTP (headless)")
+        print("  python3 measure.py dashboard --serve --host 0.0.0.0   # Serve on all interfaces (remote access)")
         print("  python3 measure.py dashboard --quiet                   # Regenerate silently (for hooks)")
         print("  python3 measure.py health               # Check running session health")
         print("  python3 measure.py trends               # Usage trends (last 30 days)")

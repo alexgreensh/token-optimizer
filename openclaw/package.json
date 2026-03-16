@@ -1,0 +1,42 @@
+{
+  "name": "token-optimizer-openclaw",
+  "version": "1.0.0",
+  "description": "Token waste auditor for OpenClaw. Detects idle burns, model misrouting, and context bloat with dollar savings.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build",
+    "scan": "node dist/cli.js scan",
+    "audit": "node dist/cli.js audit"
+  },
+  "bin": {
+    "token-optimizer": "dist/cli.js"
+  },
+  "keywords": [
+    "openclaw",
+    "token-optimizer",
+    "ai-agent",
+    "cost-optimization",
+    "context-window"
+  ],
+  "author": "Alex Greenshpun",
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/alexgreensh/token-optimizer"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "dist/",
+    "skills/",
+    "hooks/",
+    "openclaw.plugin.json",
+    "README.md"
+  ],
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  }
+}

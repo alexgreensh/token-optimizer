@@ -6,6 +6,7 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+node_modules/
 .venv/
 venv/
 snapshots/

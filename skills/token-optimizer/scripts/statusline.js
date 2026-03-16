@@ -98,9 +98,8 @@ process.stdin.on('end', () => {
         }
       }
 
-      // Fall back to most recently modified per-session cache ONLY if we don't have a session_id
-      // (if we have a session_id but no matching cache, the SessionStart hook will create it shortly)
-      if (!q && !safeSessionId) {
+      // Fallback chain: per-session -> most recent per-session -> global cache -> pending
+      if (!q) {
         try {
           const files = fs.readdirSync(cacheDir)
             .filter(f => f.startsWith('quality-cache-') && f.endsWith('.json'))
@@ -112,11 +111,10 @@ process.stdin.on('end', () => {
         } catch (e) {}
       }
 
-      // Final fallback: global cache
       if (!q) {
         const qFile = path.join(cacheDir, 'quality-cache.json');
         if (fs.existsSync(qFile)) {
-          q = JSON.parse(fs.readFileSync(qFile, 'utf8'));
+          try { q = JSON.parse(fs.readFileSync(qFile, 'utf8')); } catch (e) {}
         }
       }
 
@@ -124,9 +122,10 @@ process.stdin.on('end', () => {
         const s = q.score;
         if (s != null) {
           const score = Math.round(s);
+          // Color bands: green >=85, yellow 75-84, orange 50-74, red <50
           if (score >= 85) {
             qScore = `${SEP}\x1b[32mContextQ:${score}${RESET}`;
-          } else if (score >= 70) {
+          } else if (score >= 75) {
             qScore = `${SEP}\x1b[33mContextQ:${score}${RESET}`;
           } else if (score >= 50) {
             qScore = `${SEP}\x1b[38;5;208mContextQ:${score}${RESET}`;
@@ -147,6 +146,9 @@ process.stdin.on('end', () => {
             sessionInfo = `${SEP}\x1b[32mCompacts:0${RESET}`;
           }
         }
+      } else {
+        // No cache found anywhere. Show dim pending indicator.
+        qScore = `${SEP}${DIM}ContextQ:--${RESET}`;
       }
     } catch (e) {}
 

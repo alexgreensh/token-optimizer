@@ -35,9 +35,29 @@ export const DEFAULT_PRICING: Record<string, ModelPricing> = {
   "gemini-2.5-pro": { input: 1.25 / 1e6, output: 10.0 / 1e6,  cacheRead: 0.315 / 1e6, cacheWrite: 0 },
   "gemini-2.5-flash": { input: 0.3 / 1e6, output: 2.5 / 1e6,  cacheRead: 0,           cacheWrite: 0 },
   "gemini-flash-lite": { input: 0.1 / 1e6, output: 0.4 / 1e6, cacheRead: 0,           cacheWrite: 0 },
+  // Google Gemini 3.1
+  "gemini-3.1-pro": { input: 2.0 / 1e6,  output: 12.0 / 1e6,  cacheRead: 0,           cacheWrite: 0 },
   // DeepSeek
   "deepseek-v3":   { input: 0.28 / 1e6,  output: 0.42 / 1e6,  cacheRead: 0.028 / 1e6, cacheWrite: 0 },
   "deepseek-r1":   { input: 0.55 / 1e6,  output: 2.19 / 1e6,  cacheRead: 0,           cacheWrite: 0 },
+  // Alibaba Qwen
+  "qwen3":         { input: 0.30 / 1e6,  output: 1.20 / 1e6,  cacheRead: 0,           cacheWrite: 0 },
+  "qwen3-mini":    { input: 0.08 / 1e6,  output: 0.32 / 1e6,  cacheRead: 0,           cacheWrite: 0 },
+  "qwen-coder":    { input: 0.15 / 1e6,  output: 0.60 / 1e6,  cacheRead: 0,           cacheWrite: 0 },
+  // Moonshot Kimi
+  "kimi-k2.5":     { input: 0.50 / 1e6,  output: 2.00 / 1e6,  cacheRead: 0,           cacheWrite: 0 },
+  // MiniMax
+  "minimax-2":     { input: 0.30 / 1e6,  output: 1.10 / 1e6,  cacheRead: 0,           cacheWrite: 0 },
+  // Zhipu GLM
+  "glm-4.7":       { input: 0.48 / 1e6,  output: 0.96 / 1e6,  cacheRead: 0,           cacheWrite: 0 },
+  "glm-4.7-flash": { input: 0.04 / 1e6,  output: 0.04 / 1e6,  cacheRead: 0,           cacheWrite: 0 },
+  // Xiaomi MiMo
+  "mimo-flash":    { input: 0.20 / 1e6,  output: 0.40 / 1e6,  cacheRead: 0,           cacheWrite: 0 },
+  // Mistral
+  "mistral-large":  { input: 2.0 / 1e6,  output: 6.0 / 1e6,   cacheRead: 0,           cacheWrite: 0 },
+  "mistral-small":  { input: 0.10 / 1e6, output: 0.30 / 1e6,  cacheRead: 0,           cacheWrite: 0 },
+  // Local models (Ollama, free but track tokens)
+  "local":         { input: 0,           output: 0,            cacheRead: 0,           cacheWrite: 0 },
 };
 
 /**
@@ -143,6 +163,7 @@ export function normalizeModelName(modelId: string): string | null {
 
   // Google Gemini (specific before general)
   if (m.includes("flash-lite") || m.includes("flash_lite")) return "gemini-flash-lite";
+  if (m.includes("gemini") && m.includes("3.1") && m.includes("pro")) return "gemini-3.1-pro";
   if (m.includes("gemini") && m.includes("3") && m.includes("flash")) return "gemini-3-flash";
   if (m.includes("gemini") && m.includes("3") && m.includes("pro")) return "gemini-3-pro";
   if (m.includes("gemini") && m.includes("2.5") && m.includes("flash")) return "gemini-2.5-flash";
@@ -151,7 +172,34 @@ export function normalizeModelName(modelId: string): string | null {
   // DeepSeek
   if (m.includes("deepseek") && (m.includes("r1") || m.includes("reasoner"))) return "deepseek-r1";
   if (m.includes("deepseek") && (m.includes("v3") || m.includes("chat"))) return "deepseek-v3";
-  if (m.includes("deepseek")) return "deepseek-v3"; // default deepseek to v3
+  if (m.includes("deepseek")) return "deepseek-v3";
+
+  // Alibaba Qwen
+  if (m.includes("qwen") && m.includes("coder")) return "qwen-coder";
+  if (m.includes("qwen3") && m.includes("mini")) return "qwen3-mini";
+  if (m.includes("qwen3") || m.includes("qwen-3")) return "qwen3";
+  if (m.includes("qwen")) return "qwen3";
+
+  // Moonshot Kimi
+  if (m.includes("kimi") || m.includes("moonshot")) return "kimi-k2.5";
+
+  // MiniMax
+  if (m.includes("minimax")) return "minimax-2";
+
+  // Zhipu GLM
+  if (m.includes("glm") && m.includes("flash")) return "glm-4.7-flash";
+  if (m.includes("glm")) return "glm-4.7";
+
+  // Xiaomi MiMo
+  if (m.includes("mimo")) return "mimo-flash";
+
+  // Mistral
+  if (m.includes("mistral") && (m.includes("large") || m.includes("123"))) return "mistral-large";
+  if (m.includes("mistral") && m.includes("small")) return "mistral-small";
+  if (m.includes("mistral")) return "mistral-large";
+
+  // Local models (Ollama, LM Studio, etc.)
+  if (m.includes("ollama") || m.includes("local") || m.includes("lmstudio")) return "local";
 
   // Unknown model, return as-is for user-configured pricing lookup
   return modelId;

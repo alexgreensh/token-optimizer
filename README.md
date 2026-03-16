@@ -34,11 +34,10 @@ Token Optimizer ships native plugins for multiple AI agent systems. One repo, pe
 | **Claude Code** | Stable (v2.4.7) | `/plugin marketplace add alexgreensh/token-optimizer` |
 | **OpenClaw** | v1.0.0 | `openclaw plugins install token-optimizer-openclaw` |
 
-Each platform gets its own native plugin (Python for Claude Code, TypeScript for OpenClaw). No bridging, no shared runtime, zero cross-platform dependencies. The Fleet Auditor dashboard gives you a single view across all your agent systems:
+Each platform gets its own native plugin (Python for Claude Code, TypeScript for OpenClaw). No bridging, no shared runtime, zero cross-platform dependencies.
 
-![Fleet Auditor Dashboard](skills/token-optimizer/assets/fleet-dashboard-demo.png)
-
-*Demo data. All data stays local.*
+- **Claude Code**: Interactive dashboard, quality scoring, smart compaction, session trends
+- **OpenClaw**: CLI-first audit with waste detection, dollar savings, and fix snippets. Supports any model (Claude, GPT-5, Gemini, DeepSeek, local via Ollama) with configurable pricing.
 
 ---
 
@@ -274,7 +273,7 @@ python3 $MEASURE_PY collect              # Build usage database
 
 ## OpenClaw Plugin
 
-Native TypeScript plugin for OpenClaw agent systems. Zero Python dependency. Detects 7 waste patterns with dollar savings and actionable fix snippets.
+Native TypeScript plugin for OpenClaw agent systems. Zero Python dependency. Works with any model (Claude, GPT-5, Gemini, DeepSeek, local via Ollama). Reads your OpenClaw pricing config for accurate cost tracking, falls back to built-in rates for 20+ models.
 
 ```bash
 # Install from npm

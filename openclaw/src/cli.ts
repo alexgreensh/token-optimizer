@@ -136,7 +136,11 @@ function cmdAudit(days: number, json: boolean): void {
   console.log("=".repeat(50));
   console.log(`Sessions scanned: ${report.totalSessions}`);
   console.log(`Agents found: ${report.agentsFound.join(", ") || "none"}`);
-  console.log(`Total cost: $${report.totalCostUsd.toFixed(2)}`);
+  if (report.totalCostUsd > 0) {
+    console.log(`Total cost: $${report.totalCostUsd.toFixed(2)}`);
+  } else {
+    console.log(`Total cost: unknown (configure pricing in openclaw.json)`);
+  }
   console.log(`Total tokens: ${formatTokens(report.totalTokens)}`);
   console.log();
 

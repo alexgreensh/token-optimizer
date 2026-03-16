@@ -127,7 +127,8 @@ function parseLine(line: string): Record<string, unknown> | null {
  */
 export function parseSession(
   filePath: string,
-  agentName: string
+  agentName: string,
+  openclawDir?: string
 ): AgentRun | null {
   let content: string;
   try {
@@ -255,7 +256,7 @@ export function parseSession(
     outcome = "empty";
   }
 
-  const costUsd = calculateCost(tokens, model);
+  const costUsd = calculateCost(tokens, model, openclawDir);
 
   return {
     system: "openclaw",
@@ -290,7 +291,7 @@ export function scanAllSessions(
   for (const agent of agents) {
     const files = findSessionFiles(openclawDir, agent, days);
     for (const { filePath, agentName } of files) {
-      const run = parseSession(filePath, agentName);
+      const run = parseSession(filePath, agentName, openclawDir);
       if (run) allRuns.push(run);
     }
   }

@@ -5,6 +5,7 @@
 <p align="center">
   <a href="https://github.com/alexgreensh/token-optimizer/releases"><img src="https://img.shields.io/badge/version-2.4.1-green" alt="Version 2.4.0"></a>
   <a href="https://github.com/alexgreensh/token-optimizer"><img src="https://img.shields.io/badge/Claude_Code-Plugin-blueviolet" alt="Claude Code Plugin"></a>
+  <a href="https://github.com/alexgreensh/token-optimizer/tree/main/openclaw"><img src="https://img.shields.io/badge/OpenClaw-Plugin-brightgreen" alt="OpenClaw Plugin"></a>
   <a href="https://github.com/alexgreensh/token-optimizer/blob/main/LICENSE"><img src="https://img.shields.io/github/license/alexgreensh/token-optimizer" alt="License"></a>
   <a href="https://github.com/alexgreensh/token-optimizer/stargazers"><img src="https://img.shields.io/github/stars/alexgreensh/token-optimizer" alt="GitHub Stars"></a>
   <a href="https://github.com/alexgreensh/token-optimizer/commits/main"><img src="https://img.shields.io/github/last-commit/alexgreensh/token-optimizer" alt="Last Commit"></a>
@@ -24,7 +25,24 @@ Opus 4.6 drops from 93% to 76% accuracy across a 1M context window. Compaction l
   <img src="skills/token-optimizer/assets/hero-terminal.svg" alt="Token Optimizer Quick Scan" width="800">
 </p>
 
-## Install (3 lines)
+## Now Multi-Platform
+
+Token Optimizer ships native plugins for multiple AI agent systems. One repo, per-platform plugins, shared waste detection patterns.
+
+| Platform | Status | Install |
+|----------|--------|---------|
+| **Claude Code** | Stable (v2.4.7) | `/plugin marketplace add alexgreensh/token-optimizer` |
+| **OpenClaw** | v1.0.0 | `openclaw plugins install token-optimizer-openclaw` |
+
+Each platform gets its own native plugin (Python for Claude Code, TypeScript for OpenClaw). No bridging, no shared runtime, zero cross-platform dependencies. The Fleet Auditor dashboard gives you a single view across all your agent systems:
+
+![Fleet Auditor Dashboard](skills/token-optimizer/assets/fleet-dashboard-demo.png)
+
+*Demo data. All data stays local.*
+
+---
+
+## Install: Claude Code (3 lines)
 
 ```bash
 # Plugin (recommended, auto-updates)
@@ -115,7 +133,7 @@ python3 $MEASURE_PY setup-quality-bar      # live quality score in status bar
 | Model recommendation | Yes (Sonnet vs Opus by context) | No | No |
 | Usage trends + dashboard | SQLite + interactive HTML | No | Session stats |
 | Compaction loss tracking | Yes (cumulative % lost) | No | Partial |
-| Multi-platform | Claude Code (planned expansion) | Claude Code | 6 platforms |
+| Multi-platform | Claude Code + OpenClaw (more coming) | Claude Code | 6 platforms |
 | Context tokens consumed | 0 (Python script) | ~200 tokens | MCP overhead |
 
 `/context` shows capacity. Token Optimizer fixes the causes.
@@ -254,6 +272,29 @@ python3 $MEASURE_PY trends               # What's actually being used?
 python3 $MEASURE_PY collect              # Build usage database
 ```
 
+## OpenClaw Plugin
+
+Native TypeScript plugin for OpenClaw agent systems. Zero Python dependency. Detects 7 waste patterns with dollar savings and actionable fix snippets.
+
+```bash
+# Install from npm
+openclaw plugins install token-optimizer-openclaw
+
+# Or use the CLI directly
+npx token-optimizer scan --days 30
+npx token-optimizer audit --json
+```
+
+Inside OpenClaw, run `/token-optimizer` for a guided audit with coaching.
+
+**What it does:** Session parsing, cost calculation, waste detection (heartbeat model waste, empty runs, over-frequency, stale configs, session bloat, loops, abandoned sessions), and Smart Compaction (checkpoint/restore across compaction events).
+
+**What's different from Claude Code:** The OpenClaw plugin does not yet include context quality scoring (the 7-signal ContextQ metric). Quality scoring requires platform-specific session analysis that's being built for OpenClaw v1.1.
+
+See [`openclaw/README.md`](openclaw/README.md) for full docs.
+
+---
+
 ## What's Inside
 
 ```
@@ -277,6 +318,11 @@ skills/token-optimizer/
     statusline.js                      Status line (degradation-aware colors)
 skills/token-coach/
   SKILL.md                             Coaching orchestrator
+openclaw/                                OpenClaw native plugin (TypeScript)
+  src/                                 7 source modules (models, parser, detectors, compaction, CLI)
+  skills/token-optimizer/SKILL.md      OpenClaw skill
+  hooks/smart-compact/HOOK.md          Compaction hooks
+  openclaw.plugin.json                 Plugin manifest
 install.sh                             One-command installer
 ```
 

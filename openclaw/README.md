@@ -1,25 +1,10 @@
 # Token Optimizer for OpenClaw
 
-Find the ghost tokens. Audit your OpenClaw setup, see where your context goes, fix it.
+**Your AI is getting dumber and you can't see it.**
 
-## How Much Context Are You Losing?
+*Find the ghost tokens. Survive compaction. Track the quality decay.*
 
-Before you type a single word, your context window is already partially consumed by overhead. Real-world breakdown from a power user setup:
-
-| Component | Tokens | % of 1M window | % of 200K window |
-|-----------|--------|----------------|------------------|
-| 60 loaded skills | 142,405 | 14.2% | 71.2% |
-| System prompt | ~15,000 | 1.5% | 7.5% |
-| MCP tool definitions | ~9,000 | 0.9% | 4.5% |
-| CLAUDE.md / SOUL.md | ~5,000 | 0.5% | 2.5% |
-| MEMORY.md | ~3,000 | 0.3% | 1.5% |
-| **Total overhead** | **~174K** | **17.4%** | **87%** |
-
-On a 1M window (Opus/Sonnet since March 13, 2026), 174K overhead is manageable but still means earlier compaction and degraded output quality as context fills. On a 200K window (Haiku, GPT-4o), the same setup is nearly unusable.
-
-Token Optimizer shows you exactly where those tokens go, per-skill and per-server, and lets you trim what you don't need.
-
-For API users, overhead also translates to cost ($5-355/month depending on volume and model).
+Opus 4.6 drops from 93% to 76% accuracy across a 1M context window. Compaction loses 60-70% of your conversation. Ghost tokens burn through your plan limits on every single message. Token Optimizer tracks the degradation, cuts the waste, checkpoints your decisions before compaction fires, and tells you what to fix.
 
 ## Install
 

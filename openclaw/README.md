@@ -2,6 +2,17 @@
 
 Find the ghost tokens. Audit your OpenClaw setup, see where 25-38% of your context goes, fix it.
 
+## How Much Can It Save?
+
+Real-world example from a Claude Code power user (30 days, 2,171 sessions):
+
+- **$355/month** in detected waste from a $21K monthly spend
+- $256/mo from 60 unused skills loading 142K tokens per API call
+- $83/mo from empty heartbeat runs (loaded context, produced nothing)
+- $17/mo from abandoned sessions (started, loaded full context, left)
+
+Typical OpenClaw savings: **$5-100/month** depending on agent count, model choice, and cron frequency.
+
 ## Install
 
 ```sh
@@ -18,13 +29,13 @@ openclaw plugins install ./openclaw
 ## What It Does
 
 - **Scans** all agent sessions for token usage and cost
-- **Detects** 7 waste patterns (heartbeat model waste, empty runs, stuck loops, bloated sessions, stale configs, over-frequency, abandoned sessions)
-- **Reports** monthly $ savings with actionable fix snippets
-- **Dashboard** with 6-tab HTML visualization (Overview, Context, Quality, Waste, Agents, Daily)
-- **Context audit** showing per-component token overhead (SOUL.md, skills, tools, agents)
-- **Quality scoring** with 5 signals adapted for OpenClaw
-- **Smart Compaction v2** with intelligent extraction (decisions, errors, instructions)
-- **Drift detection** to catch config creep over time
+- **Detects** 7 waste patterns with monthly $ savings and fix snippets
+- **Dashboard** with 8-tab HTML visualization
+- **Context audit** with per-skill and per-MCP-server token breakdown
+- **Quality scoring** with 5 signals and model-aware context windows (Claude 1M, GPT-5 400K, Gemini 2M)
+- **Manage tab** to toggle skills and MCP servers on/off (accumulated clipboard commands)
+- **Smart Compaction v2** preserves decisions, errors, and user instructions during compaction
+- **Drift detection** snapshots config and diffs to catch creep
 
 ## CLI
 
@@ -43,18 +54,20 @@ npx token-optimizer drift --snapshot      # Capture current config snapshot
 
 ## Dashboard
 
-The interactive dashboard shows 6 tabs:
+The interactive dashboard has 8 tabs:
 
 | Tab | What It Shows |
 |-----|--------------|
-| Overview | Stat cards (runs, cost, quality score, savings), agent cards, waste summary |
-| Context | Per-component token breakdown (SOUL.md, skills, tools, memory, agents) |
-| Quality | 5-signal quality score with per-signal breakdown and recommendations |
-| Waste | Waste cards with severity, confidence, fix snippets with copy button |
-| Agents | Per-agent cost, model mix stacked bars, top agents table |
-| Daily | Daily cost/token and run count charts with Y-axis labels |
+| Overview | Stat cards (runs, cost, quality score, savings), agent cards, context overhead bar |
+| Context | Per-component token breakdown, individual skill bars, MCP server list, recommendations |
+| Quality | 5-signal quality score (0-100) with per-signal breakdown and recommendations |
+| Waste | Waste cards with severity, confidence, fix snippets with Copy Fix button |
+| Agents | Per-agent cost, model mix stacked bars (multi-model only), top agents table |
+| Sessions | Individual session history grouped by date with outcome, cost, and model |
+| Daily | Daily cost/token and run count charts with Y-axis labels and custom tooltips |
+| Manage | Toggle skills and MCP servers on/off. Changes accumulate, copy all at once |
 
-Dashboard auto-regenerates on session end. Open manually: `npx token-optimizer dashboard`.
+Dashboard auto-regenerates on session end. Open manually with `npx token-optimizer dashboard`.
 
 ## Waste Patterns Detected
 
@@ -72,19 +85,52 @@ Dashboard auto-regenerates on session end. Open manually: `npx token-optimizer d
 
 | Signal | Weight | What It Measures |
 |--------|--------|-----------------|
-| Context Fill | 25% | Token usage relative to 200K context window |
+| Context Fill | 25% | Token usage relative to model context window (per-model: Claude 1M, GPT-5 400K, Gemini 2M) |
 | Session Length Risk | 20% | Message count vs compaction threshold |
 | Model Routing | 20% | Expensive models used for cheap tasks |
 | Empty Run Ratio | 20% | Runs that load context but produce nothing |
 | Outcome Health | 15% | Success vs abandoned/empty/failure ratio |
 
-## Smart Compaction
+## Context Audit
 
-The plugin hooks into `session:compact:before` and `session:compact:after` to save and restore session state. v2 uses intelligent extraction to preserve decisions, errors, file changes, and user instructions in fewer tokens than v1's raw message dump.
+Scans every component OpenClaw injects into context:
+
+| Component | Source | Optimizable |
+|-----------|--------|-------------|
+| Core system prompt | Built-in | No |
+| SOUL.md | Personality/instructions | Yes |
+| MEMORY.md | Persistent memory | Yes |
+| AGENTS.md | Agent definitions | Yes |
+| TOOLS.md | MCP tool definitions | Yes |
+| Skills | Individual SKILL.md files | Yes (archive unused) |
+| Agent configs | Per-agent config.json | Yes |
+| Cron configs | cron/*.json | Yes |
+| MCP Servers | config.json mcpServers | Yes (disable unused) |
+
+## Smart Compaction v2
+
+Hooks into `session:compact:before` and `session:compact:after`. Instead of saving the last 20 raw messages (v1), v2 extracts:
+
+- **User instructions**: "always", "never", "make sure" directives
+- **Decisions**: "decided to", "going with", "switching to"
+- **Errors**: stack traces, error messages, failure patterns
+- **File changes**: write, edit, create operations
+
+Result: more relevant context in fewer tokens after compaction.
 
 ## Drift Detection
 
-Snapshot your config with `npx token-optimizer drift --snapshot`. Later, run `npx token-optimizer drift` to see what changed (skills added/removed, file sizes, model config changes).
+```sh
+npx token-optimizer drift --snapshot      # Save current state
+# ... time passes, skills added, configs changed ...
+npx token-optimizer drift                 # See what changed
+```
+
+Tracks: skill count, agent count, SOUL.md/MEMORY.md size changes, model config changes, cron configs.
+
+## Pricing
+
+Covers 30+ models with verified March 2026 rates: Claude (Opus/Sonnet/Haiku), GPT-5 family, GPT-4.1 family, o3/o4, Gemini 2.0-3.1, DeepSeek, Qwen, Mistral, Grok, and more. User-configured pricing overrides via openclaw.json.
 
 ## License
 

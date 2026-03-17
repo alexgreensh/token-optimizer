@@ -83,7 +83,7 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   local: 128_000,
 };
 
-function contextWindowForModel(model: string): number {
+export function contextWindowForModel(model: string): number {
   return MODEL_CONTEXT_WINDOWS[model] ?? 200_000;
 }
 

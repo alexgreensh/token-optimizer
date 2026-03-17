@@ -217,8 +217,8 @@ export function normalizeModelName(modelId: string): string | null {
   // Local models (Ollama, LM Studio, etc.)
   if (m.includes("ollama") || m.includes("local") || m.includes("lmstudio")) return "local";
 
-  // Unknown model, return as-is for user-configured pricing lookup
-  return modelId;
+  // Unknown model, return lowercased for consistent pricing lookup
+  return m;
 }
 
 /** Calculate USD cost. Uses user config pricing if available, then defaults. */

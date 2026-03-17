@@ -25,6 +25,13 @@ type DetectorFn = (
   config: Record<string, unknown>
 ) => WasteFinding[];
 
+/** Compute the span in days between first and last run. Min 1 day. */
+function spanDays(runs: AgentRun[]): number {
+  if (runs.length < 2) return 1;
+  const sorted = runs.map((r) => r.timestamp.getTime()).sort((a, b) => a - b);
+  return Math.max(1, (sorted[sorted.length - 1] - sorted[0]) / 86_400_000);
+}
+
 // ---------------------------------------------------------------------------
 // Tier 1: Config + heartbeat pattern analysis
 // ---------------------------------------------------------------------------
@@ -52,10 +59,7 @@ function detectHeartbeatModelWaste(
   if (expensive.length === 0) return [];
 
   const totalCost = expensive.reduce((sum, r) => sum + r.costUsd, 0);
-  const daysSpanned = Math.max(
-    1,
-    new Set(expensive.map((r) => r.timestamp.toISOString().slice(0, 10))).size
-  );
+  const daysSpanned = spanDays(expensive);
   const monthlyCost = (totalCost / daysSpanned) * 30;
 
   // Calculate savings if switched to haiku
@@ -243,10 +247,7 @@ function detectEmptyHeartbeatRuns(
   if (confirmed.length < 2) return [];
 
   const totalWasteCost = confirmed.reduce((sum, r) => sum + r.costUsd, 0);
-  const days = Math.max(
-    1,
-    new Set(confirmed.map((r) => r.timestamp.toISOString().slice(0, 10))).size
-  );
+  const days = spanDays(confirmed);
   const monthlyCost = (totalWasteCost / days) * 30;
   const monthlyTokens = confirmed.reduce(
     (sum, r) => sum + totalTokens(r.tokens),
@@ -355,10 +356,7 @@ function detectLoops(
   if (suspects.length < 2) return [];
 
   const totalWaste = suspects.reduce((sum, r) => sum + r.costUsd, 0);
-  const days = Math.max(
-    1,
-    new Set(suspects.map((r) => r.timestamp.toISOString().slice(0, 10))).size
-  );
+  const days = spanDays(suspects);
   const monthlyCost = (totalWaste / days) * 30;
 
   if (monthlyCost < 1.0) return [];
@@ -413,10 +411,7 @@ function detectAbandonedSessions(
   if (abandoned.length < 3) return [];
 
   const totalWaste = abandoned.reduce((sum, r) => sum + r.costUsd, 0);
-  const days = Math.max(
-    1,
-    new Set(abandoned.map((r) => r.timestamp.toISOString().slice(0, 10))).size
-  );
+  const days = spanDays(abandoned);
   const monthlyCost = (totalWaste / days) * 30;
 
   if (monthlyCost < 0.2) return [];

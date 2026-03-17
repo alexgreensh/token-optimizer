@@ -8,7 +8,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { AgentRun, WasteFinding, AuditReport, totalTokens, Severity } from "./models";
-import { QualityReport } from "./quality";
+import { QualityReport, contextWindowForModel } from "./quality";
 import { ContextAudit, SkillDetail, McpServer, ManageData } from "./context-audit";
 
 // ---------------------------------------------------------------------------
@@ -188,14 +188,7 @@ export function buildDashboardData(
   for (const [model, count] of modelCounts) {
     if (count > maxCount) { maxCount = count; dominantModel = model; }
   }
-  // Import context window lookup from quality.ts would create circular dep,
-  // so inline the common ones
-  const WINDOW_MAP: Record<string, number> = {
-    opus: 1_000_000, sonnet: 1_000_000, haiku: 200_000,
-    "gpt-5.4": 1_100_000, "gpt-5.2": 400_000, "gpt-5": 400_000,
-    "gpt-4.1": 1_000_000, "gpt-4o": 128_000, "gemini-2.5-pro": 2_000_000,
-  };
-  const contextWindow = WINDOW_MAP[dominantModel] ?? 200_000;
+  const contextWindow = contextWindowForModel(dominantModel);
 
   const severityCounts: Record<Severity, number> = {
     critical: 0,

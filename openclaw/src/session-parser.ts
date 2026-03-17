@@ -302,9 +302,9 @@ function loadSessionIndex(
       const id = e.id as string ?? e.sessionId as string;
       if (!id) continue;
       result.set(id, {
-        inputTokens: Number(e.inputTokens ?? 0),
-        outputTokens: Number(e.outputTokens ?? 0),
-        contextTokens: Number(e.contextTokens ?? 0),
+        inputTokens: Number(e.inputTokens) || 0,
+        outputTokens: Number(e.outputTokens) || 0,
+        contextTokens: Number(e.contextTokens) || 0,
       });
     }
   } catch {

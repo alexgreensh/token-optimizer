@@ -102,10 +102,10 @@ export function captureSnapshot(openclawDir: string): string {
     agents: agents.names,
   };
 
-  fs.mkdirSync(SNAPSHOT_DIR, { recursive: true });
+  fs.mkdirSync(SNAPSHOT_DIR, { recursive: true, mode: 0o700 });
   const filename = `snapshot-${snapshot.capturedAt.slice(0, 10)}.json`;
   const filePath = path.join(SNAPSHOT_DIR, filename);
-  fs.writeFileSync(filePath, JSON.stringify(snapshot, null, 2), "utf-8");
+  fs.writeFileSync(filePath, JSON.stringify(snapshot, null, 2), { encoding: "utf-8", mode: 0o600 });
   return filePath;
 }
 

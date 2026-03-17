@@ -20,6 +20,7 @@ import { runAllDetectors } from "./waste-detectors";
 import { captureCheckpoint, captureCheckpointV2, restoreCheckpoint, cleanupCheckpoints } from "./smart-compact";
 import { AuditReport, AgentRun, totalTokens } from "./models";
 import { buildDashboardData, writeDashboard } from "./dashboard";
+import { resetPricingCache } from "./pricing";
 import { auditContext } from "./context-audit";
 import { scoreQuality } from "./quality";
 
@@ -45,6 +46,7 @@ interface OpenClawApi {
  * Run a full audit: scan sessions, classify cron runs, detect waste.
  */
 export function audit(days: number = 30): AuditReport | null {
+  resetPricingCache();
   const openclawDir = findOpenClawDir();
   if (!openclawDir) {
     return null;
@@ -109,6 +111,7 @@ function loadConfig(openclawDir: string): Record<string, unknown> {
  * Generate the HTML dashboard, write to disk, return the file path.
  */
 export function generateDashboard(days: number = 30): string | null {
+  resetPricingCache();
   const openclawDir = findOpenClawDir();
   if (!openclawDir) return null;
 

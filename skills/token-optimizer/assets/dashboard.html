@@ -1759,8 +1759,14 @@ var DB = (function() {
     if (importsTokens > 0) vals.push(importsTokens);
     vals.push(c.mcp_tools ? c.mcp_tools.tokens : 0);
     vals.push(c.core_system ? c.core_system.tokens : 0);
-    // Scale bars against context window, not against each other
-    var ctxWindow = 200000; // Claude models: 200K (Haiku) or 1M (Opus/Sonnet)
+    // Log-scale bars: visible at all sizes, preserves ordering
+    var ctxWindow = 200000;
+    function logBar(tokens) {
+      if (tokens <= 0) return 0;
+      var logVal = Math.log10(Math.max(tokens, 1));
+      var logMax = Math.log10(ctxWindow);
+      return Math.max(2, (logVal / logMax) * 80);
+    }
     var barLabels = ['CLAUDE.md', 'MEMORY.md', 'Skills', 'Commands'];
     if (rulesTokens > 0) barLabels.push('Rules');
     if (importsTokens > 0) barLabels.push('@imports');
@@ -1768,7 +1774,7 @@ var DB = (function() {
     barLabels.push('Core System');
     var memoryExists = c.memory_md && c.memory_md.exists !== false;
     var barsHtml = vals.map(function(v, i) {
-      var w = Math.max(0.3, (v / ctxWindow) * 100);
+      var w = logBar(v);
       var fixedClass = i === vals.length - 1 ? ' fixed' : '';
       var pctText = (v / ctxWindow * 100).toFixed(1) + '%';
       var valText = (i === 1 && !memoryExists) ? '—' : fn(v) + ' (' + pctText + ')';

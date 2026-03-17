@@ -228,6 +228,17 @@ export function buildDashboardData(
 // RL2: HTML generation
 // ---------------------------------------------------------------------------
 
+/**
+ * Log-scale bar width: makes small values visible while preserving order.
+ * Maps [1, contextWindow] to [2%, 80%] on a log scale.
+ */
+function logBarPct(tokens: number, contextWindow: number): number {
+  if (tokens <= 0) return 0;
+  const logVal = Math.log10(Math.max(tokens, 1));
+  const logMax = Math.log10(contextWindow);
+  return Math.max(2, (logVal / logMax) * 80);
+}
+
 /** Escape HTML to prevent XSS */
 function esc(s: string): string {
   return s
@@ -386,10 +397,10 @@ function renderContextOverviewBar(ctx: ContextAudit): string {
   return `<div class="card">
     <div class="card-header"><span>Context Overhead</span><span style="color:var(--c-text-dim);font-family:var(--font-mono);font-size:13px">${fmtTokens(total)} of ${fmtTokens(CONTEXT_WINDOW)} (${((total / CONTEXT_WINDOW) * 100).toFixed(1)}%)</span></div>
     ${comps.map((c) => {
-      const pct = (c.tokens / CONTEXT_WINDOW) * 100;
+      const barW = logBarPct(c.tokens, CONTEXT_WINDOW);
       return `<div class="bar-row">
         <span class="bar-row-label">${esc(c.name)}</span>
-        <div class="bar-row-track"><div class="bar-row-fill" style="width:${pct}%"></div></div>
+        <div class="bar-row-track"><div class="bar-row-fill" style="width:${barW}%"></div></div>
         <span class="bar-row-value">${fmtTokens(c.tokens)}</span>
       </div>`;
     }).join("")}
@@ -459,11 +470,12 @@ function renderContext(data: DashboardData): string {
     <div class="card">
       <div class="card-header"><span>Token Breakdown by Component</span><span class="label">% of context window</span></div>
       ${ctx.components.map((c) => {
-        const pct = (c.tokens / CONTEXT_WINDOW) * 100;
+        const barW = logBarPct(c.tokens, CONTEXT_WINDOW);
+        const pctOfWindow = ((c.tokens / CONTEXT_WINDOW) * 100).toFixed(1);
         return `<div class="bar-row">
           <span class="bar-row-label">${esc(c.name)}</span>
-          <div class="bar-row-track"><div class="bar-row-fill" style="width:${pct}%"></div></div>
-          <span class="bar-row-value">${fmtTokens(c.tokens)} <span style="color:var(--c-text-dim);font-size:11px">(${pct.toFixed(1)}%)</span></span>
+          <div class="bar-row-track"><div class="bar-row-fill" style="width:${barW}%"></div></div>
+          <span class="bar-row-value">${fmtTokens(c.tokens)} <span style="color:var(--c-text-dim);font-size:11px">(${pctOfWindow}%)</span></span>
         </div>`;
       }).join("")}
     </div>
@@ -472,10 +484,10 @@ function renderContext(data: DashboardData): string {
       <div class="card">
         <div class="card-header"><span>Skills (${activeSkills.length} active)</span><span class="label">${fmtTokens(activeSkills.reduce((s, sk) => s + sk.tokens, 0))} total</span></div>
         ${activeSkills.map((sk) => {
-          const pct = (sk.tokens / CONTEXT_WINDOW) * 100;
+          const barW = logBarPct(sk.tokens, CONTEXT_WINDOW);
           return `<div class="bar-row">
             <span class="bar-row-label" title="${esc(sk.description)}">${esc(sk.name)}</span>
-            <div class="bar-row-track"><div class="bar-row-fill" style="width:${Math.max(pct, 0.3)}%"></div></div>
+            <div class="bar-row-track"><div class="bar-row-fill" style="width:${barW}%"></div></div>
             <span class="bar-row-value">${sk.tokens} tok</span>
           </div>`;
         }).join("")}

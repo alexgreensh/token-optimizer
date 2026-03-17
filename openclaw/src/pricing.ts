@@ -9,34 +9,38 @@ export interface ModelPricing {
   cacheWrite: number;
 }
 
-/** Default pricing (USD per token). March 2026 rates. */
+/** Default pricing (USD per token). Verified March 17, 2026. */
 export const DEFAULT_PRICING: Record<string, ModelPricing> = {
-  // Anthropic Claude
+  // Anthropic Claude (1M context for Opus/Sonnet as of March 13, 2026)
   opus:            { input: 5.0 / 1e6,   output: 25.0 / 1e6,  cacheRead: 0.5 / 1e6,   cacheWrite: 6.25 / 1e6 },
   sonnet:          { input: 3.0 / 1e6,   output: 15.0 / 1e6,  cacheRead: 0.3 / 1e6,   cacheWrite: 3.75 / 1e6 },
   haiku:           { input: 1.0 / 1e6,   output: 5.0 / 1e6,   cacheRead: 0.1 / 1e6,   cacheWrite: 1.25 / 1e6 },
   // OpenAI GPT-5 family
   "gpt-5.4":       { input: 2.5 / 1e6,   output: 15.0 / 1e6,  cacheRead: 0.25 / 1e6,  cacheWrite: 0 },
   "gpt-5.2":       { input: 1.75 / 1e6,  output: 14.0 / 1e6,  cacheRead: 0.175 / 1e6, cacheWrite: 0 },
+  "gpt-5.1":       { input: 1.25 / 1e6,  output: 10.0 / 1e6,  cacheRead: 0.125 / 1e6, cacheWrite: 0 },
   "gpt-5":         { input: 1.25 / 1e6,  output: 10.0 / 1e6,  cacheRead: 0.125 / 1e6, cacheWrite: 0 },
   "gpt-5-mini":    { input: 0.25 / 1e6,  output: 2.0 / 1e6,   cacheRead: 0.025 / 1e6, cacheWrite: 0 },
   "gpt-5-nano":    { input: 0.05 / 1e6,  output: 0.4 / 1e6,   cacheRead: 0.005 / 1e6, cacheWrite: 0 },
   // OpenAI GPT-4 family
   "gpt-4.1":       { input: 2.0 / 1e6,   output: 8.0 / 1e6,   cacheRead: 0.5 / 1e6,   cacheWrite: 0 },
+  "gpt-4.1-mini":  { input: 0.4 / 1e6,   output: 1.6 / 1e6,   cacheRead: 0.1 / 1e6,   cacheWrite: 0 },
+  "gpt-4.1-nano":  { input: 0.1 / 1e6,   output: 0.4 / 1e6,   cacheRead: 0.025 / 1e6, cacheWrite: 0 },
   "gpt-4o":        { input: 2.5 / 1e6,   output: 10.0 / 1e6,  cacheRead: 1.25 / 1e6,  cacheWrite: 0 },
   "gpt-4o-mini":   { input: 0.15 / 1e6,  output: 0.6 / 1e6,   cacheRead: 0.075 / 1e6, cacheWrite: 0 },
-  // OpenAI reasoning
-  "o3":            { input: 0.4 / 1e6,   output: 1.6 / 1e6,   cacheRead: 0,           cacheWrite: 0 },
+  // OpenAI reasoning (o3 is $2/$8, NOT $0.40/$1.60 which was batch pricing)
+  "o3":            { input: 2.0 / 1e6,   output: 8.0 / 1e6,   cacheRead: 0.5 / 1e6,   cacheWrite: 0 },
   "o3-mini":       { input: 1.1 / 1e6,   output: 4.4 / 1e6,   cacheRead: 0,           cacheWrite: 0 },
   "o4-mini":       { input: 1.1 / 1e6,   output: 4.4 / 1e6,   cacheRead: 0,           cacheWrite: 0 },
   // Google Gemini
   "gemini-3-pro":  { input: 2.0 / 1e6,   output: 12.0 / 1e6,  cacheRead: 0,           cacheWrite: 0 },
   "gemini-3-flash": { input: 0.5 / 1e6,  output: 3.0 / 1e6,   cacheRead: 0,           cacheWrite: 0 },
-  "gemini-2.5-pro": { input: 1.25 / 1e6, output: 10.0 / 1e6,  cacheRead: 0.315 / 1e6, cacheWrite: 0 },
-  "gemini-2.5-flash": { input: 0.3 / 1e6, output: 2.5 / 1e6,  cacheRead: 0,           cacheWrite: 0 },
-  "gemini-flash-lite": { input: 0.1 / 1e6, output: 0.4 / 1e6, cacheRead: 0,           cacheWrite: 0 },
-  // Google Gemini 3.1
   "gemini-3.1-pro": { input: 2.0 / 1e6,  output: 12.0 / 1e6,  cacheRead: 0,           cacheWrite: 0 },
+  "gemini-2.5-pro": { input: 1.25 / 1e6, output: 10.0 / 1e6,  cacheRead: 0.125 / 1e6, cacheWrite: 0 },
+  "gemini-2.5-flash": { input: 0.3 / 1e6, output: 2.5 / 1e6,  cacheRead: 0.03 / 1e6,  cacheWrite: 0 },
+  "gemini-2.0-flash": { input: 0.1 / 1e6, output: 0.4 / 1e6,  cacheRead: 0,           cacheWrite: 0 },
+  "gemini-2.0-flash-lite": { input: 0.075 / 1e6, output: 0.3 / 1e6, cacheRead: 0,     cacheWrite: 0 },
+  "gemini-flash-lite": { input: 0.1 / 1e6, output: 0.4 / 1e6, cacheRead: 0,           cacheWrite: 0 },
   // DeepSeek
   "deepseek-v3":   { input: 0.28 / 1e6,  output: 0.42 / 1e6,  cacheRead: 0.028 / 1e6, cacheWrite: 0 },
   "deepseek-r1":   { input: 0.55 / 1e6,  output: 2.19 / 1e6,  cacheRead: 0,           cacheWrite: 0 },
@@ -53,9 +57,11 @@ export const DEFAULT_PRICING: Record<string, ModelPricing> = {
   "glm-4.7-flash": { input: 0.04 / 1e6,  output: 0.04 / 1e6,  cacheRead: 0,           cacheWrite: 0 },
   // Xiaomi MiMo
   "mimo-flash":    { input: 0.20 / 1e6,  output: 0.40 / 1e6,  cacheRead: 0,           cacheWrite: 0 },
-  // Mistral
-  "mistral-large":  { input: 2.0 / 1e6,  output: 6.0 / 1e6,   cacheRead: 0,           cacheWrite: 0 },
+  // Mistral (Large 3 pricing, not legacy Large 2)
+  "mistral-large":  { input: 0.5 / 1e6,  output: 1.5 / 1e6,   cacheRead: 0,           cacheWrite: 0 },
   "mistral-small":  { input: 0.10 / 1e6, output: 0.30 / 1e6,  cacheRead: 0,           cacheWrite: 0 },
+  // xAI Grok
+  "grok-4":        { input: 3.0 / 1e6,   output: 15.0 / 1e6,  cacheRead: 0,           cacheWrite: 0 },
   // Local models (Ollama, free but track tokens)
   "local":         { input: 0,           output: 0,            cacheRead: 0,           cacheWrite: 0 },
 };
@@ -150,7 +156,12 @@ export function normalizeModelName(modelId: string): string | null {
   if (m.includes("gpt-5.2")) return "gpt-5.2";
   if (m.includes("gpt-5")) return "gpt-5";
 
+  // OpenAI GPT-5.1
+  if (m.includes("gpt-5.1")) return "gpt-5.1";
+
   // OpenAI GPT-4 family
+  if (m.includes("gpt-4.1") && m.includes("nano")) return "gpt-4.1-nano";
+  if (m.includes("gpt-4.1") && m.includes("mini")) return "gpt-4.1-mini";
   if (m.includes("gpt-4.1")) return "gpt-4.1";
   if (m.includes("gpt-4o-mini")) return "gpt-4o-mini";
   if (m.includes("gpt-4o")) return "gpt-4o";
@@ -162,6 +173,8 @@ export function normalizeModelName(modelId: string): string | null {
   if (m === "o3" || m.startsWith("o3-")) return "o3";
 
   // Google Gemini (specific before general)
+  if (m.includes("2.0") && m.includes("flash") && m.includes("lite")) return "gemini-2.0-flash-lite";
+  if (m.includes("2.0") && m.includes("flash")) return "gemini-2.0-flash";
   if (m.includes("flash-lite") || m.includes("flash_lite")) return "gemini-flash-lite";
   if (m.includes("gemini") && m.includes("3.1") && m.includes("pro")) return "gemini-3.1-pro";
   if (m.includes("gemini") && m.includes("3") && m.includes("flash")) return "gemini-3-flash";
@@ -197,6 +210,9 @@ export function normalizeModelName(modelId: string): string | null {
   if (m.includes("mistral") && (m.includes("large") || m.includes("123"))) return "mistral-large";
   if (m.includes("mistral") && m.includes("small")) return "mistral-small";
   if (m.includes("mistral")) return "mistral-large";
+
+  // xAI Grok
+  if (m.includes("grok")) return "grok-4";
 
   // Local models (Ollama, LM Studio, etc.)
   if (m.includes("ollama") || m.includes("local") || m.includes("lmstudio")) return "local";

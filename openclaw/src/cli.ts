@@ -7,9 +7,13 @@
  *   npx token-optimizer audit [--days 30] [--json]
  */
 
-import { audit, scan } from "./index";
+import { audit, scan, generateDashboard } from "./index";
 import { AgentRun, totalTokens } from "./models";
 import { findOpenClawDir } from "./session-parser";
+import { auditContext } from "./context-audit";
+import { scoreQuality } from "./quality";
+import { captureSnapshot, detectDrift } from "./drift";
+import { exec } from "child_process";
 
 const HOME = process.env.HOME ?? process.env.USERPROFILE ?? "";
 
@@ -25,23 +29,29 @@ function redactPaths(obj: unknown): unknown {
 }
 
 function printUsage(): void {
-  console.log(`Token Optimizer for OpenClaw v1.0.0
+  console.log(`Token Optimizer for OpenClaw v1.1.0
 
 Usage:
-  token-optimizer scan  [--days N] [--json]   Scan sessions and show token usage
-  token-optimizer audit [--days N] [--json]   Detect waste patterns with $ savings
-  token-optimizer detect                      Check if OpenClaw is installed
+  token-optimizer scan      [--days N] [--json]   Scan sessions and show token usage
+  token-optimizer audit     [--days N] [--json]   Detect waste patterns with $ savings
+  token-optimizer dashboard [--days N]             Generate HTML dashboard and open
+  token-optimizer context   [--json]               Show context overhead breakdown
+  token-optimizer quality   [--days N] [--json]    Show quality score breakdown
+  token-optimizer drift     [--snapshot]            Config drift detection
+  token-optimizer detect                            Check if OpenClaw is installed
 
 Options:
-  --days N   Number of days to scan (default: 30)
-  --json     Output as JSON for agent consumption`);
+  --days N      Number of days to scan (default: 30)
+  --json        Output as JSON for agent consumption
+  --snapshot    Capture current config snapshot (drift command)`);
 }
 
-function parseArgs(): { command: string; days: number; json: boolean } {
+function parseArgs(): { command: string; days: number; json: boolean; snapshot: boolean } {
   const args = process.argv.slice(2);
   let command = "help";
   let days = 30;
   let json = false;
+  let snapshot = false;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -49,13 +59,17 @@ function parseArgs(): { command: string; days: number; json: boolean } {
       days = Math.max(1, Math.min(parseInt(args[++i], 10) || 30, 365));
     } else if (arg === "--json") {
       json = true;
+    } else if (arg === "--snapshot") {
+      snapshot = true;
     } else if (!arg.startsWith("-")) {
       command = arg;
     }
   }
 
-  return { command, days, json };
+  return { command, days, json, snapshot };
 }
+
+// (parseArgs defined above with printUsage)
 
 function cmdDetect(json: boolean): void {
   const dir = findOpenClawDir();
@@ -180,11 +194,117 @@ function severityIcon(s: string): string {
   }
 }
 
+function cmdDashboard(days: number): void {
+  const filepath = generateDashboard(days);
+  if (!filepath) {
+    console.error("OpenClaw not found.");
+    process.exit(1);
+  }
+  console.log(`Dashboard written to: ${filepath}`);
+  // Open in default browser
+  const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
+  exec(`${opener} "${filepath}"`, () => { /* ignore errors */ });
+}
+
+function cmdContext(json: boolean): void {
+  const dir = findOpenClawDir();
+  if (!dir) {
+    console.error("OpenClaw not found.");
+    process.exit(1);
+  }
+
+  const result = auditContext(dir);
+
+  if (json) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  console.log(`\nContext Overhead Audit`);
+  console.log("=".repeat(50));
+  console.log(`Total overhead: ${formatTokens(result.totalOverhead)} tokens per message\n`);
+
+  for (const comp of result.components) {
+    const bar = "█".repeat(Math.min(40, Math.round((comp.tokens / result.totalOverhead) * 40)));
+    const opt = comp.isOptimizable ? "" : " (fixed)";
+    console.log(`  ${comp.name.padEnd(25)} ${formatTokens(comp.tokens).padStart(8)}  ${bar}${opt}`);
+  }
+
+  if (result.recommendations.length > 0) {
+    console.log("\nRecommendations:");
+    for (const rec of result.recommendations) {
+      console.log(`  → ${rec}`);
+    }
+  }
+}
+
+function cmdQuality(days: number, json: boolean): void {
+  const runs = scan(days);
+  if (!runs) {
+    console.error("OpenClaw not found.");
+    process.exit(1);
+  }
+
+  const dir = findOpenClawDir();
+  const ctxAudit = dir ? auditContext(dir) : undefined;
+  const report = scoreQuality(runs, ctxAudit);
+
+  if (json) {
+    console.log(JSON.stringify(report, null, 2));
+    return;
+  }
+
+  console.log(`\nQuality Score: ${report.score}/100 (${report.band})`);
+  console.log("=".repeat(50));
+
+  for (const sig of report.signals) {
+    const bar = "█".repeat(Math.round(sig.score / 2.5));
+    const pad = " ".repeat(Math.max(0, 40 - Math.round(sig.score / 2.5)));
+    console.log(`  ${sig.name.padEnd(22)} ${String(sig.score).padStart(3)}  ${bar}${pad}  (${(sig.weight * 100).toFixed(0)}%)`);
+  }
+
+  if (report.recommendations.length > 0) {
+    console.log("\nRecommendations:");
+    for (const rec of report.recommendations) {
+      console.log(`  → ${rec}`);
+    }
+  }
+}
+
+function cmdDrift(snapshot: boolean): void {
+  const dir = findOpenClawDir();
+  if (!dir) {
+    console.error("OpenClaw not found.");
+    process.exit(1);
+  }
+
+  if (snapshot) {
+    const filepath = captureSnapshot(dir);
+    console.log(`Snapshot saved: ${filepath}`);
+    return;
+  }
+
+  const report = detectDrift(dir);
+
+  if (!report.hasDrift) {
+    console.log(`No drift detected since ${report.snapshotDate}.`);
+    return;
+  }
+
+  console.log(`\nDrift detected since ${report.snapshotDate}:`);
+  console.log("=".repeat(50));
+
+  for (const change of report.changes) {
+    const icon = change.type === "added" ? "+" : change.type === "removed" ? "-" : "~";
+    console.log(`  ${icon} [${change.component}] ${change.details}`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
-const { command, days, json } = parseArgs();
+const { command, days, json, snapshot } = parseArgs();
 
 switch (command) {
   case "detect":
@@ -195,6 +315,18 @@ switch (command) {
     break;
   case "audit":
     cmdAudit(days, json);
+    break;
+  case "dashboard":
+    cmdDashboard(days);
+    break;
+  case "context":
+    cmdContext(json);
+    break;
+  case "quality":
+    cmdQuality(days, json);
+    break;
+  case "drift":
+    cmdDrift(snapshot);
     break;
   default:
     printUsage();

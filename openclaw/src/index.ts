@@ -17,8 +17,11 @@ import {
   classifyCronRuns,
 } from "./session-parser";
 import { runAllDetectors } from "./waste-detectors";
-import { captureCheckpoint, restoreCheckpoint, cleanupCheckpoints } from "./smart-compact";
+import { captureCheckpoint, captureCheckpointV2, restoreCheckpoint, cleanupCheckpoints } from "./smart-compact";
 import { AuditReport, AgentRun, totalTokens } from "./models";
+import { buildDashboardData, writeDashboard } from "./dashboard";
+import { auditContext } from "./context-audit";
+import { scoreQuality } from "./quality";
 
 // ---------------------------------------------------------------------------
 // OpenClaw Plugin API types (minimal, avoids external dependency)
@@ -102,6 +105,40 @@ function loadConfig(openclawDir: string): Record<string, unknown> {
   }
 }
 
+/**
+ * Generate the HTML dashboard, write to disk, return the file path.
+ */
+export function generateDashboard(days: number = 30): string | null {
+  const openclawDir = findOpenClawDir();
+  if (!openclawDir) return null;
+
+  const runs = scanAllSessions(openclawDir, days);
+  classifyCronRuns(openclawDir, runs);
+  const config = loadConfig(openclawDir);
+  const findings = runAllDetectors(runs, config);
+
+  const totalCost = runs.reduce((sum, r) => sum + r.costUsd, 0);
+  const totalTok = runs.reduce((sum, r) => sum + totalTokens(r.tokens), 0);
+  const monthlySavings = findings.reduce((sum, f) => sum + f.monthlyWasteUsd, 0);
+  const agents = Array.from(new Set(runs.map((r) => r.agentName)));
+
+  const report: AuditReport = {
+    scannedAt: new Date(),
+    daysScanned: days,
+    agentsFound: agents,
+    totalSessions: runs.length,
+    totalCostUsd: totalCost,
+    totalTokens: totalTok,
+    findings,
+    monthlySavingsUsd: monthlySavings,
+  };
+
+  const contextAudit = auditContext(openclawDir);
+  const qualityReport = scoreQuality(runs, contextAudit);
+  const data = buildDashboardData(runs, report, qualityReport, contextAudit);
+  return writeDashboard(data);
+}
+
 // ---------------------------------------------------------------------------
 // Plugin registration (called by OpenClaw plugin loader)
 // ---------------------------------------------------------------------------
@@ -119,6 +156,7 @@ export function activate(api: OpenClawApi): void {
   api.registerService("token-optimizer", {
     audit,
     scan,
+    generateDashboard,
   });
 
   // Log on gateway startup
@@ -145,7 +183,7 @@ export function activate(api: OpenClawApi): void {
     );
   });
 
-  // Smart Compaction: capture before compaction
+  // Smart Compaction v2: capture before compaction (intelligent extraction)
   api.on("session:compact:before", (...args: unknown[]) => {
     const session = args[0] as {
       sessionId: string;
@@ -159,7 +197,8 @@ export function activate(api: OpenClawApi): void {
       return;
     }
 
-    const filepath = captureCheckpoint(session);
+    // Try v2 (intelligent extraction), fall back to v1
+    const filepath = captureCheckpointV2(session) ?? captureCheckpoint(session);
     if (filepath) {
       api.logger.info(
         `[token-optimizer] Checkpoint saved: ${filepath}`
@@ -182,6 +221,16 @@ export function activate(api: OpenClawApi): void {
       api.logger.info(
         `[token-optimizer] Checkpoint restored for session ${session.sessionId}`
       );
+    }
+  });
+
+  // Generate dashboard silently on session end
+  api.on("session:end", () => {
+    try {
+      generateDashboard(30);
+      api.logger.info("[token-optimizer] Dashboard regenerated on session end");
+    } catch {
+      // Silent failure, dashboard generation is non-critical
     }
   });
 }

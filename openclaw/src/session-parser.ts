@@ -277,6 +277,44 @@ export function parseSession(
 }
 
 /**
+ * Load session-level token aggregates from sessions.json.
+ * OpenClaw stores authoritative totals here (inputTokens, outputTokens, contextTokens).
+ * Returns a map of sessionId -> { inputTokens, outputTokens, contextTokens }.
+ */
+function loadSessionIndex(
+  openclawDir: string,
+  agentName: string
+): Map<string, { inputTokens: number; outputTokens: number; contextTokens: number }> {
+  const result = new Map<string, { inputTokens: number; outputTokens: number; contextTokens: number }>();
+  const indexPath = path.join(openclawDir, "agents", agentName, "sessions", "sessions.json");
+
+  try {
+    if (!fs.existsSync(indexPath)) return result;
+    const stat = fs.statSync(indexPath);
+    if (stat.size > 10_000_000) return result; // Skip huge index files
+    const data = JSON.parse(fs.readFileSync(indexPath, "utf-8"));
+
+    // sessions.json can be an array or object of session entries
+    const entries = Array.isArray(data) ? data : Object.values(data);
+    for (const entry of entries) {
+      if (typeof entry !== "object" || entry === null) continue;
+      const e = entry as Record<string, unknown>;
+      const id = e.id as string ?? e.sessionId as string;
+      if (!id) continue;
+      result.set(id, {
+        inputTokens: Number(e.inputTokens ?? 0),
+        outputTokens: Number(e.outputTokens ?? 0),
+        contextTokens: Number(e.contextTokens ?? 0),
+      });
+    }
+  } catch {
+    // sessions.json not available or malformed
+  }
+
+  return result;
+}
+
+/**
  * Scan all agents and sessions within the given day window.
  *
  * Returns all parsed AgentRuns sorted by timestamp (newest first).
@@ -289,10 +327,23 @@ export function scanAllSessions(
   const allRuns: AgentRun[] = [];
 
   for (const agent of agents) {
+    const sessionIndex = loadSessionIndex(openclawDir, agent);
     const files = findSessionFiles(openclawDir, agent, days);
-    for (const { filePath, agentName } of files) {
+    for (const { filePath, agentName, sessionId } of files) {
       const run = parseSession(filePath, agentName, openclawDir);
-      if (run) allRuns.push(run);
+      if (!run) continue;
+
+      // If JSONL parsing yielded zero tokens, fall back to sessions.json
+      if (run.tokens.input === 0 && run.tokens.output === 0) {
+        const indexed = sessionIndex.get(sessionId);
+        if (indexed) {
+          run.tokens.input = indexed.inputTokens;
+          run.tokens.output = indexed.outputTokens;
+          run.costUsd = calculateCost(run.tokens, run.model, openclawDir);
+        }
+      }
+
+      allRuns.push(run);
     }
   }
 

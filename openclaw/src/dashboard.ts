@@ -857,7 +857,14 @@ function renderManage(data: DashboardData): string {
     <div class="section-header">
       <div class="label">Control Panel</div>
       <h1>Manage</h1>
-      <p>Flip a toggle to copy the command, then <strong>paste it into your agent chat</strong> so the agent can apply the change for you.</p>
+    </div>
+
+    <div class="manage-banner">
+      <div class="manage-banner-icon">&#x2398;</div>
+      <div>
+        <div class="manage-banner-title">Toggle → Copy → Paste into agent chat</div>
+        <div class="manage-banner-desc">Flipping a toggle copies a command to your clipboard. Paste it into your OpenClaw agent chat and the agent will apply it.</div>
+      </div>
     </div>
 
     <div class="card">
@@ -930,9 +937,6 @@ function renderManage(data: DashboardData): string {
       ` : ""}
     ` : ""}
 
-    <div style="font-size:13px;color:var(--c-text-dim);font-family:var(--font-mono);margin-top:var(--s-3)">
-      Flip a toggle to copy the command. Paste it into your agent chat and ask the agent to run it. The agent will apply the change and can regenerate this dashboard after.
-    </div>
   </div>`;
 }
 
@@ -1567,20 +1571,21 @@ h1, h2, h3, h4 { font-weight: 400; }
 /* TOAST */
 .toast {
   position: fixed;
-  bottom: 24px;
+  bottom: 32px;
   left: 50%;
   transform: translateX(-50%);
   background: var(--c-accent-cyan);
   color: var(--c-bg);
-  padding: 10px 20px;
-  border-radius: 8px;
+  padding: 14px 28px;
+  border-radius: 10px;
   font-family: var(--font-mono);
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 500;
   opacity: 0;
   transition: opacity 0.3s;
   pointer-events: none;
   z-index: 100;
+  box-shadow: 0 4px 24px rgba(0, 240, 255, 0.4);
 }
 .toast.visible { opacity: 1; }
 
@@ -1608,6 +1613,35 @@ h1, h2, h3, h4 { font-weight: 400; }
   white-space: nowrap;
 }
 .session-table tr:hover td { background: rgba(0,240,255,0.02); }
+
+/* MANAGE BANNER */
+.manage-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  padding: var(--s-4) var(--s-5);
+  background: linear-gradient(135deg, rgba(0, 240, 255, 0.08), rgba(0, 102, 255, 0.06));
+  border: 1px solid rgba(0, 240, 255, 0.25);
+  border-radius: 12px;
+  margin-bottom: var(--s-4);
+}
+.manage-banner-icon {
+  font-size: 36px;
+  color: var(--c-accent-cyan);
+  text-shadow: var(--glow-text);
+  flex-shrink: 0;
+}
+.manage-banner-title {
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--c-text-main);
+  margin-bottom: 4px;
+}
+.manage-banner-desc {
+  font-size: 14px;
+  color: var(--c-text-dim);
+  line-height: 1.5;
+}
 
 /* MANAGE TOGGLES */
 .manage-row {

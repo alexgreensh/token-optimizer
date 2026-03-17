@@ -152,9 +152,11 @@ process.stdin.on('end', () => {
       }
     } catch (e) {}
 
-    // Session duration - show only when quality < 75 (contextual warning)
+    // Session duration - show only when quality < 75 AND cache matches current session
+    // Without the session match check, all terminals show the same stale duration
     let duration = '';
-    if (q && q.session_start_ts && q.score != null && q.score < 75) {
+    const cacheMatchesSession = q && q.session_file && safeSessionId && q.session_file.includes(safeSessionId);
+    if (cacheMatchesSession && q.session_start_ts && q.score != null && q.score < 75) {
       const elapsed = Math.floor((Date.now() / 1000) - q.session_start_ts);
       if (elapsed > 0) {
         const h = Math.floor(elapsed / 3600);
@@ -168,7 +170,7 @@ process.stdin.on('end', () => {
     // Strip ANSI escape codes from agent data (defense-in-depth against JSONL injection)
     const stripAnsi = s => String(s).replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/[\x00-\x1f]/g, '');
     let agents = '';
-    if (q && q.active_agents && q.active_agents.length > 0) {
+    if (cacheMatchesSession && q.active_agents && q.active_agents.length > 0) {
       const running = q.active_agents.filter(a => a.status === 'running');
       if (running.length > 0) {
         const agentParts = running.slice(0, 3).map(a => {

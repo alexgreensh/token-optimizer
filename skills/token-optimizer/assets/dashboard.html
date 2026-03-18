@@ -2741,7 +2741,7 @@ var DB = (function() {
     html += '<div class="dashboard-grid">' +
       '<div class="card"><div class="card-header"><span>Startup Overhead</span></div>' +
       '<div class="mini-stat">' + fn(snap.total_overhead || 0) + '</div>' +
-      '<div class="label">' + (snap.overhead_pct || 0) + '% of ' + ((snap.context_window || 200000) / 1000) + 'K</div></div>' +
+      '<div class="label">' + (snap.overhead_pct || 0) + '% of ' + ((snap.context_window || data.snapshot.context_window || 200000) >= 1000000 ? ((snap.context_window || data.snapshot.context_window || 200000) / 1000000) + 'M' : ((snap.context_window || data.snapshot.context_window || 200000) / 1000) + 'K') + '</div></div>' +
       '<div class="card"><div class="card-header"><span>Usable Context</span></div>' +
       '<div class="mini-stat" style="color:var(--c-accent-cyan);">~' + fn(snap.usable_tokens || 0) + '</div>' +
       '<div class="label">After overhead + autocompact buffer</div></div>' +

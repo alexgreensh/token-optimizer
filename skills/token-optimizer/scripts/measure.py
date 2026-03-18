@@ -991,15 +991,15 @@ def _is_1m_model(model_str):
 
 
 def detect_context_window():
-    """Detect context window size. 200K default, 1M for eligible setups.
+    """Detect context window size. 1M default (since March 2026 GA).
 
     Detection order:
-      1. CLAUDE_CODE_DISABLE_1M_CONTEXT=1 -> 200K
+      1. CLAUDE_CODE_DISABLE_1M_CONTEXT=1 -> 200K (explicit opt-out)
       2. TOKEN_OPTIMIZER_CONTEXT_SIZE env var -> explicit override
       3. --context-size CLI flag (set via _cli_context_size) -> override
-      4. CLAUDE_MODEL / ANTHROPIC_MODEL env var -> 1M if eligible
-      5. config.json or settings.json model field -> 1M if eligible
-      6. Fallback: 200K
+      4. CLAUDE_MODEL / ANTHROPIC_MODEL env var -> check model family
+      5. config.json or settings.json model field -> check model family
+      6. Fallback: 1M (Opus 4.6 and Sonnet 4.6 are 1M GA since March 2026)
     """
     if os.environ.get("CLAUDE_CODE_DISABLE_1M_CONTEXT") == "1":
         return 200_000, "env: CLAUDE_CODE_DISABLE_1M_CONTEXT"
@@ -1017,8 +1017,11 @@ def detect_context_window():
     if not model:
         model = os.environ.get("ANTHROPIC_MODEL", "").lower()
     if model:
+        # Haiku stays at 200K
+        if "haiku" in model:
+            return 200_000, f"model: {model} (Haiku = 200K)"
         if _is_1m_model(model):
-            return 1_000_000, f"model: {model} (1M eligible)"
+            return 1_000_000, f"model: {model} (1M)"
     # Check config files for model preference
     for cfg_name in ("config.json", "settings.json"):
         cfg_path = CLAUDE_DIR / cfg_name
@@ -1027,11 +1030,17 @@ def detect_context_window():
                 with open(cfg_path, "r", encoding="utf-8") as f:
                     cfg = json.load(f)
                 m = (cfg.get("model") or cfg.get("primaryModel") or "").lower()
-                if m and _is_1m_model(m):
-                    return 1_000_000, f"{cfg_name.split('.')[0]}: {m} (1M eligible)"
+                if m:
+                    if "haiku" in m:
+                        return 200_000, f"{cfg_name.split('.')[0]}: {m} (Haiku = 200K)"
+                    if _is_1m_model(m):
+                        return 1_000_000, f"{cfg_name.split('.')[0]}: {m} (1M)"
             except (json.JSONDecodeError, PermissionError, OSError):
                 pass
-    return 200_000, "default (set TOKEN_OPTIMIZER_CONTEXT_SIZE for override)"
+    # Since March 2026: Opus 4.6 and Sonnet 4.6 have 1M context GA.
+    # Most Claude Code users are on these models. Default to 1M.
+    # Users on Haiku or older models can override with TOKEN_OPTIMIZER_CONTEXT_SIZE=200000.
+    return 1_000_000, "default (1M, Opus/Sonnet 4.6 GA. Override: TOKEN_OPTIMIZER_CONTEXT_SIZE)"
 
 
 # CLI override for context size (set by --context-size flag parsing)

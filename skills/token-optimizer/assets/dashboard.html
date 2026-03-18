@@ -2232,6 +2232,7 @@ var DB = (function() {
       // Date nav: show 7 days by default, with picker to jump to a date
       html += '<div class="card wide" id="daily-breakdown-card">' +
         '<div class="card-header"><span>Daily Breakdown</span></div>' +
+        '<div style="font-size:12px;color:var(--c-text-dim);padding:0 0 var(--s-2) 0;">Click any row to expand per-session details with cost, quality scores, and cache hit rates. Click a session for per-turn token breakdown.</div>' +
         '<div class="date-nav">' +
         '<button class="date-nav-btn active" data-range="7">7 days</button>' +
         '<button class="date-nav-btn" data-range="14">14 days</button>' +
@@ -2628,6 +2629,14 @@ var DB = (function() {
           '</tr>';
       });
       html += '</tbody></table>';
+      // Flag legend
+      html += '<div style="font-size:11px;color:var(--c-text-dim);margin-top:var(--s-2);line-height:1.6;font-family:var(--font-mono)">' +
+        '<span class="flag-badge terminal" style="font-size:10px">TERMINAL</span> = attached to a terminal tab (your active sessions) &nbsp; ' +
+        '<span class="flag-badge" style="font-size:10px;background:rgba(125,140,163,0.2);color:var(--c-text-dim)">HEADLESS</span> = no terminal (automation/background) &nbsp; ' +
+        '<span class="flag-badge stale" style="font-size:10px">STALE</span> = running 24h+ &nbsp; ' +
+        '<span class="flag-badge zombie" style="font-size:10px">ZOMBIE</span> = running 48h+ &nbsp; ' +
+        '<span class="flag-badge outdated" style="font-size:10px">OUTDATED</span> = older version than installed' +
+        '</div>';
     }
     html += '</div>';
 
@@ -2649,7 +2658,8 @@ var DB = (function() {
       var qBand = qs >= 85 ? 'Excellent' : qs >= 70 ? 'Good' : qs >= 50 ? 'Degraded' : 'Critical';
       var sessionFile = q.session_file ? q.session_file.replace(/.*\//, '') : null;
       html += '<div class="card wide"><div class="card-header"><span>Context Quality</span><span class="label">v2.0</span></div>' +
-        (sessionFile ? '<div style="padding:8px var(--s-3) 0;font-size:13px;color:var(--c-text-dim);">Session: <code style="font-family:var(--font-mono);color:var(--c-text-main);">' + esc(sessionFile) + '</code><span style="margin-left:8px;color:var(--c-text-dim);font-size:12px;">(most recently active in this project)</span></div>' : '') +
+        '<div style="padding:8px var(--s-3) 0;font-size:12px;color:var(--c-text-dim);">This score measures your most recently active session, not an average across sessions. It reflects the quality of context in that specific conversation based on 6 signals.</div>' +
+        (sessionFile ? '<div style="padding:4px var(--s-3) 0;font-size:13px;color:var(--c-text-dim);">Session: <code style="font-family:var(--font-mono);color:var(--c-text-main);">' + esc(sessionFile) + '</code><span style="margin-left:8px;color:var(--c-text-dim);font-size:12px;">(most recently active in this project)</span></div>' : '') +
         '<div style="text-align:center;padding:var(--s-3) 0;">' +
         '<div style="font-size:56px;font-weight:700;font-family:var(--font-mono);color:' + qColor + ';text-shadow:0 0 15px ' + qColor + ';">' + qs + '</div>' +
         '<div class="label" style="font-size:16px;color:' + qColor + ';">' + qBand + '</div>' +
@@ -2731,6 +2741,7 @@ var DB = (function() {
     var scoreColor = score >= 80 ? 'var(--c-accent-cyan)' : score >= 50 ? '#ff9f43' : '#ff6b6b';
     html += '<div class="card wide">' +
       '<div class="card-header"><span>Token Health Score</span></div>' +
+      '<div style="font-size:12px;color:var(--c-text-dim);padding:4px var(--s-3) 0;">How token-efficient your setup is overall. Factors in overhead size, skill count, config bloat, model routing, and usage patterns.</div>' +
       '<div style="text-align:center;padding:var(--s-4) 0;">' +
       '<div style="font-size:72px;font-weight:700;font-family:var(--font-mono);color:' + scoreColor + ';text-shadow:0 0 20px ' + scoreColor + ';">' + score + '</div>' +
       '<div class="label" style="font-size:18px;">out of 100</div>' +
@@ -2740,9 +2751,11 @@ var DB = (function() {
     var snap = c.snapshot || {};
     html += '<div class="dashboard-grid">' +
       '<div class="card"><div class="card-header"><span>Startup Overhead</span></div>' +
+      '<div style="font-size:11px;color:var(--c-text-dim);padding:0 0 4px 0;">Tokens loaded into every API call before you type. Includes CLAUDE.md, skills, MCP tools, and system prompt.</div>' +
       '<div class="mini-stat">' + fn(snap.total_overhead || 0) + '</div>' +
       '<div class="label">' + (snap.overhead_pct || 0) + '% of ' + ((snap.context_window || data.snapshot.context_window || 200000) >= 1000000 ? ((snap.context_window || data.snapshot.context_window || 200000) / 1000000) + 'M' : ((snap.context_window || data.snapshot.context_window || 200000) / 1000) + 'K') + '</div></div>' +
       '<div class="card"><div class="card-header"><span>Usable Context</span></div>' +
+      '<div style="font-size:11px;color:var(--c-text-dim);padding:0 0 4px 0;">Context window minus startup overhead and ~33K autocompact buffer. This is how much room you actually have for conversation.</div>' +
       '<div class="mini-stat" style="color:var(--c-accent-cyan);">~' + fn(snap.usable_tokens || 0) + '</div>' +
       '<div class="label">After overhead + autocompact buffer</div></div>' +
       '</div>';

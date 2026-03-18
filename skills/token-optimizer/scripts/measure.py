@@ -1311,11 +1311,14 @@ def doctor(as_json=False):
     checks.append(("OK", f"Context window", f"{ctx_label} detected ({ctx_source})"))
     score += 1
 
-    # 4. SessionEnd hook
+    # 4. SessionEnd hook (plugin hooks.json auto-installs these, so check for plugin too)
     total += 1
     settings, _ = _read_settings_json()
     if _is_hook_installed(settings):
-        checks.append(("OK", "SessionEnd hook", "active"))
+        checks.append(("OK", "SessionEnd hook", "active (settings.json)"))
+        score += 1
+    elif _is_plugin_installed():
+        checks.append(("OK", "SessionEnd hook", "active (plugin hooks.json)"))
         score += 1
     else:
         checks.append(("!!", "SessionEnd hook", "missing (fix: python3 measure.py setup-hook)"))
@@ -4981,6 +4984,27 @@ def kill_stale_sessions(threshold_hours=12, dry_run=False):
 SETTINGS_PATH = CLAUDE_DIR / "settings.json"
 MEASURE_PY_PATH = Path(__file__).resolve()
 HOOK_COMMAND = f"python3 '{MEASURE_PY_PATH}' collect --quiet && python3 '{MEASURE_PY_PATH}' dashboard --quiet"
+
+
+def _is_plugin_installed():
+    """Check if token-optimizer is installed as a Claude Code plugin.
+
+    Plugin hooks (hooks.json) auto-install all hooks, so if the plugin is
+    installed, we don't need to check settings.json for individual hooks.
+    """
+    registry = CLAUDE_DIR / "plugins" / "installed_plugins.json"
+    if not registry.exists():
+        return False
+    try:
+        with open(registry, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        plugins = data.get("plugins", {})
+        for key in plugins:
+            if "token-optimizer" in key.lower():
+                return True
+    except (json.JSONDecodeError, PermissionError, OSError):
+        pass
+    return False
 
 
 def _is_hook_installed(settings=None):

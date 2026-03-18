@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/alexgreensh/token-optimizer/releases"><img src="https://img.shields.io/badge/version-2.6.0-green" alt="Version 2.6.0"></a>
+  <a href="https://github.com/alexgreensh/token-optimizer/releases"><img src="https://img.shields.io/badge/version-2.6.2-green" alt="Version 2.6.2"></a>
   <a href="https://github.com/alexgreensh/token-optimizer"><img src="https://img.shields.io/badge/Claude_Code-Plugin-blueviolet" alt="Claude Code Plugin"></a>
   <a href="https://github.com/alexgreensh/token-optimizer/tree/main/openclaw"><img src="https://img.shields.io/badge/OpenClaw-Plugin-brightgreen" alt="OpenClaw Plugin"></a>
   <a href="https://github.com/alexgreensh/token-optimizer/blob/main/LICENSE"><img src="https://img.shields.io/github/license/alexgreensh/token-optimizer" alt="License"></a>
@@ -40,6 +40,15 @@ curl -fsSL https://raw.githubusercontent.com/alexgreensh/token-optimizer/main/in
 ```
 
 Works on Claude Code and [OpenClaw](#openclaw-plugin). Each platform gets its own native plugin (Python for Claude Code, TypeScript for OpenClaw). No bridging, no shared runtime, zero cross-platform dependencies.
+
+## What makes this different?
+
+`/context` tells you your context is 73% full. Token Optimizer tells you WHY,
+shows you which 12K tokens are wasted on skills you never use, checkpoints your
+decisions before compaction destroys them, and gives you a quality score that
+tracks how much dumber your AI is getting as the session goes on.
+
+One shows the dashboard light. The other opens the hood.
 
 ## Why install this first?
 

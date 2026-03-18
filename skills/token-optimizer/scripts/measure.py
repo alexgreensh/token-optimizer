@@ -58,7 +58,18 @@ CHARS_PER_TOKEN = 4.0
 
 HOME = Path.home()
 CLAUDE_DIR = HOME / ".claude"
-SNAPSHOT_DIR = CLAUDE_DIR / "_backups" / "token-optimizer"
+
+# Plugin-data-aware paths: prefer CLAUDE_PLUGIN_DATA if set (v2.1.78+),
+# fall back to legacy paths for symlink/script installs.
+_PLUGIN_DATA = os.environ.get("CLAUDE_PLUGIN_DATA")
+if _PLUGIN_DATA:
+    _PLUGIN_BASE = Path(_PLUGIN_DATA)
+    SNAPSHOT_DIR = _PLUGIN_BASE / "data"
+    _CONFIG_BASE = _PLUGIN_BASE / "config"
+else:
+    SNAPSHOT_DIR = CLAUDE_DIR / "_backups" / "token-optimizer"
+    _CONFIG_BASE = None  # resolved below after constants
+
 DASHBOARD_PATH = SNAPSHOT_DIR / "dashboard.html"
 
 # Tokens per skill frontmatter (loaded at startup)
@@ -115,7 +126,7 @@ PRICING_TIERS = {
     },
 }
 
-CONFIG_DIR = CLAUDE_DIR / "token-optimizer"
+CONFIG_DIR = _CONFIG_BASE if _CONFIG_BASE else CLAUDE_DIR / "token-optimizer"
 CONFIG_PATH = CONFIG_DIR / "config.json"
 
 
@@ -7570,6 +7581,27 @@ if __name__ == "__main__":
     elif args[0] == "ensure-health":
         # Silent auto-fix of known harmful settings. Called by SessionStart hook.
         _auto_remove_bad_env_vars()
+        # Migrate data to CLAUDE_PLUGIN_DATA on first run (v2.1.78+)
+        if _PLUGIN_DATA:
+            _legacy_data = CLAUDE_DIR / "_backups" / "token-optimizer"
+            _legacy_config = CLAUDE_DIR / "token-optimizer"
+            _migrated_marker = Path(_PLUGIN_DATA) / ".migrated"
+            if not _migrated_marker.exists():
+                import shutil
+                SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+                CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+                for src_dir, dst_dir in [(_legacy_data, SNAPSHOT_DIR), (_legacy_config, CONFIG_DIR)]:
+                    if src_dir.is_dir():
+                        for f in src_dir.iterdir():
+                            if f.is_file() and not (dst_dir / f.name).exists():
+                                try:
+                                    shutil.copy2(f, dst_dir / f.name)
+                                except OSError:
+                                    pass
+                try:
+                    _migrated_marker.touch()
+                except OSError:
+                    pass
         # Clean up orphaned temp files from interrupted atomic writes
         for f in SETTINGS_PATH.parent.glob(".settings-*.json"):
             try:

@@ -69,7 +69,8 @@
           {
             "type": "command",
             "command": "python3 '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/measure.py' collect --quiet && python3 '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/measure.py' dashboard --quiet",
-            "async": true
+            "async": true,
+            "timeout": 30000
           }
         ]
       },
@@ -78,7 +79,18 @@
           {
             "type": "command",
             "command": "python3 '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/measure.py' compact-capture --trigger end --quiet",
-            "async": true
+            "async": true,
+            "timeout": 30000
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/measure.py' compact-capture --trigger stop-failure --quiet"
           }
         ]
       }

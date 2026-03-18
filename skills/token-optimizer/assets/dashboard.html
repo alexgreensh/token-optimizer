@@ -2658,12 +2658,12 @@ var DB = (function() {
       // Breakdown bars
       var bd = q.breakdown || {};
       var signals = [
-        { key: 'stale_reads', label: 'Stale Reads', icon: '\uD83D\uDCC4' },
-        { key: 'bloated_results', label: 'Bloated Results', icon: '\uD83D\uDCE6' },
-        { key: 'duplicates', label: 'Duplicates', icon: '\uD83D\uDD04' },
-        { key: 'compaction_depth', label: 'Compactions', icon: '\uD83D\uDDDC' },
-        { key: 'decision_density', label: 'Decision Density', icon: '\uD83C\uDFAF' },
-        { key: 'agent_efficiency', label: 'Agent Efficiency', icon: '\u2699\uFE0F' }
+        { key: 'stale_reads', label: 'Stale Reads', icon: '\uD83D\uDCC4', tip: 'Files read earlier that have since changed. Claude may be working with outdated content.' },
+        { key: 'bloated_results', label: 'Bloated Results', icon: '\uD83D\uDCE6', tip: 'Tool outputs sitting in context that were never referenced. Wasted space.' },
+        { key: 'duplicates', label: 'Duplicates', icon: '\uD83D\uDD04', tip: 'Same system reminders or content injected multiple times. Pure waste.' },
+        { key: 'compaction_depth', label: 'Compactions', icon: '\uD83D\uDDDC', tip: 'Each compaction loses 60-70% of conversation. After 2: ~88% gone.' },
+        { key: 'decision_density', label: 'Decision Density', icon: '\uD83C\uDFAF', tip: 'Ratio of actual decisions and work vs overhead and boilerplate.' },
+        { key: 'agent_efficiency', label: 'Agent Efficiency', icon: '\u2699\uFE0F', tip: 'Whether dispatched agents produced useful output relative to their token cost.' }
       ];
       html += '<div style="padding:0 var(--s-3) var(--s-3);">';
       signals.forEach(function(sig) {
@@ -2676,8 +2676,8 @@ var DB = (function() {
         else if (d.compactions !== undefined) detail = d.compactions + ' compaction' + (d.compactions !== 1 ? 's' : '');
         else if (d.ratio !== undefined) detail = d.ratio;
         else if (d.detail) detail = d.detail;
-        html += '<div style="display:flex;align-items:center;gap:var(--s-2);margin-bottom:10px;font-size:15px;">' +
-          '<span style="width:165px;color:var(--c-text-main);font-weight:500;">' + sig.icon + ' ' + sig.label + '</span>' +
+        html += '<div style="display:flex;align-items:center;gap:var(--s-2);margin-bottom:10px;font-size:15px;" title="' + esc(sig.tip) + '">' +
+          '<span style="width:165px;color:var(--c-text-main);font-weight:500;cursor:help;">' + sig.icon + ' ' + sig.label + '</span>' +
           '<div style="flex:1;height:10px;background:var(--c-surface);border-radius:5px;overflow:hidden;">' +
           '<div style="width:' + sigScore + '%;height:100%;background:' + barColor + ';border-radius:5px;transition:width 0.3s;"></div>' +
           '</div>' +

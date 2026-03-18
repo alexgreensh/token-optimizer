@@ -7581,6 +7581,21 @@ if __name__ == "__main__":
                     f.unlink()
             except OSError:
                 pass
+        # Prune old quality-cache files (keep 10 most recent, delete files older than 7 days)
+        try:
+            cache_files = sorted(
+                QUALITY_CACHE_DIR.glob("quality-cache-*.json"),
+                key=lambda f: f.stat().st_mtime, reverse=True
+            )
+            cutoff = time.time() - 7 * 86400
+            for f in cache_files[10:]:  # Keep 10 most recent regardless of age
+                try:
+                    if f.stat().st_mtime < cutoff:
+                        f.unlink()
+                except OSError:
+                    pass
+        except (OSError, ValueError):
+            pass
         # Auto-install quality bar on first run (statusline + cache hook)
         # If no statusLine exists at all, install ours silently.
         # If statusLine exists but cache hook is missing, fix that too.

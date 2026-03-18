@@ -84,37 +84,18 @@ process.stdin.on('end', () => {
     }
 
     // Quality score + compaction info from quality cache
-    // Priority: per-session cache (by session_id) > most recent per-session > global fallback
+    // ONLY show data from the current session's cache. Never fall back to
+    // another session's data (causes stale Compacts/ContextQ on fresh sessions).
     let qScore = '';
     let sessionInfo = '';
 
     let q = null;
     try {
-      // Try per-session cache by session_id first
+      // Try per-session cache by session_id (exact match only)
       if (safeSessionId) {
         const sessionCache = path.join(cacheDir, `quality-cache-${safeSessionId}.json`);
         if (fs.existsSync(sessionCache)) {
           q = JSON.parse(fs.readFileSync(sessionCache, 'utf8'));
-        }
-      }
-
-      // Fallback chain: per-session -> most recent per-session -> global cache -> pending
-      if (!q) {
-        try {
-          const files = fs.readdirSync(cacheDir)
-            .filter(f => f.startsWith('quality-cache-') && f.endsWith('.json'))
-            .map(f => ({ name: f, mtime: fs.statSync(path.join(cacheDir, f)).mtimeMs }))
-            .sort((a, b) => b.mtime - a.mtime);
-          if (files.length > 0) {
-            q = JSON.parse(fs.readFileSync(path.join(cacheDir, files[0].name), 'utf8'));
-          }
-        } catch (e) {}
-      }
-
-      if (!q) {
-        const qFile = path.join(cacheDir, 'quality-cache.json');
-        if (fs.existsSync(qFile)) {
-          try { q = JSON.parse(fs.readFileSync(qFile, 'utf8')); } catch (e) {}
         }
       }
 
@@ -134,7 +115,7 @@ process.stdin.on('end', () => {
           }
         }
 
-        // Compaction count with cumulative loss (read from quality cache, single source of truth)
+        // Compaction count with cumulative loss
         const c = q.compactions;
         if (c != null) {
           if (c > 0) {
@@ -147,7 +128,7 @@ process.stdin.on('end', () => {
           }
         }
       } else {
-        // No cache found anywhere. Show dim pending indicator.
+        // No cache for this session yet. Show pending (SessionStart hook will create it shortly).
         qScore = `${SEP}${DIM}ContextQ:--${RESET}`;
       }
     } catch (e) {}

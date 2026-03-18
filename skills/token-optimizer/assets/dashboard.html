@@ -1896,7 +1896,7 @@ var DB = (function() {
     vals.push(c.mcp_tools ? c.mcp_tools.tokens : 0);
     vals.push(c.core_system ? c.core_system.tokens : 0);
     // Log-scale bars: visible at all sizes, preserves ordering
-    var ctxWindow = 200000;
+    var ctxWindow = (data.snapshot.context_window) || 200000;
     function logBar(tokens) {
       if (tokens <= 0) return 0;
       var logVal = Math.log10(Math.max(tokens, 1));

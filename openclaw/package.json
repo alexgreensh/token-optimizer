@@ -30,6 +30,10 @@
     "type": "git",
     "url": "https://github.com/alexgreensh/token-optimizer"
   },
+  "openclaw": {
+    "extensions": ["./dist/index.js"],
+    "hooks": ["./hooks/smart-compact"]
+  },
   "engines": {
     "node": ">=18.0.0"
   },

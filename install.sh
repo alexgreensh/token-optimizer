@@ -92,23 +92,48 @@ fi
 
 clone_repo() {
     local clone_log="/tmp/token-optimizer-clone-$$.log"
-    if git clone --depth 1 "$REPO_HTTPS" "$INSTALL_DIR" 2>"$clone_log"; then
+
+    # Sparse checkout: only pull Claude Code files, skip OpenClaw platform files
+    try_clone() {
+        local url="$1"
+        git clone --depth 1 --filter=blob:none --sparse "$url" "$INSTALL_DIR" 2>"$clone_log" || return 1
+        git -C "$INSTALL_DIR" sparse-checkout set \
+            skills/ hooks/ .claude-plugin/ \
+            install.sh README.md LICENSE NOTICE PRIVACY.md \
+            2>>"$clone_log" || true
+    }
+
+    if try_clone "$REPO_HTTPS"; then
         rm -f "$clone_log"
         return 0
     fi
     warn "HTTPS clone failed. Details: $(cat "$clone_log" 2>/dev/null)"
+    rm -rf "$INSTALL_DIR"
     info "Trying SSH..."
-    if git clone --depth 1 "$REPO_SSH" "$INSTALL_DIR" 2>"$clone_log"; then
+    if try_clone "$REPO_SSH"; then
         rm -f "$clone_log"
         return 0
     fi
     warn "SSH clone also failed. Details: $(cat "$clone_log" 2>/dev/null)"
     rm -f "$clone_log"
+    rm -rf "$INSTALL_DIR"
     fail "Could not clone repository. Check network connectivity and GitHub access."
 }
 
 if [ -d "${INSTALL_DIR}/.git" ]; then
     info "Existing install found. Updating..."
+
+    # Enable sparse checkout on existing installs (migrates full clones)
+    if ! git -C "$INSTALL_DIR" sparse-checkout list &>/dev/null || \
+       git -C "$INSTALL_DIR" sparse-checkout list 2>/dev/null | grep -q "^/$"; then
+        info "Migrating to sparse checkout (removing OpenClaw files)..."
+        git -C "$INSTALL_DIR" sparse-checkout init --cone 2>/dev/null || true
+        git -C "$INSTALL_DIR" sparse-checkout set \
+            skills/ hooks/ .claude-plugin/ \
+            install.sh README.md LICENSE NOTICE PRIVACY.md \
+            2>/dev/null || true
+    fi
+
     git -C "$INSTALL_DIR" pull --ff-only || {
         warn "git pull failed. Try: cd ${INSTALL_DIR} && git pull"
         warn "Continuing with existing version."

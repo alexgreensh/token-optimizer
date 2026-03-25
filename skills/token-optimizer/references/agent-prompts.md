@@ -383,13 +383,13 @@ Output file: {COORD_PATH}/audit/advanced.md
     - Check if CLAUDE.md has a compact instructions section
     - If missing, flag as opportunity (guides what survives compaction)
 
-13. **effortLevel check**:
+13. **effortLevel check (informational, not prescriptive)**:
     - Check ~/.claude/settings.json for `effortLevel` key
-    - If set to "high": flag as optimization opportunity. "high" maximizes response quality
-      but also maximizes per-response token usage. For routine tasks (simple fixes, formatting,
-      small edits), "medium" produces adequate results at 15-25% lower output token cost.
+    - If set to "high": report for awareness only. The user chose this deliberately.
+      Note: "high" uses ~15-25% more output tokens per response than "medium".
+      Do NOT recommend changing it. The user's effort choice reflects their intent.
     - If not set: note that Claude auto-selects effort level (default behavior, usually fine)
-    - If set to "medium" or "low": note as already optimized
+    - If set to "medium" or "low": note current setting
 
 14. **Model Routing Analysis**:
     a. Check CLAUDE.md and MEMORY.md for model routing instructions

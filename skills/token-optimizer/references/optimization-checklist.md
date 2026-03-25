@@ -331,17 +331,18 @@ Before reading files, always try `qmd search [query]` or `qmd query [question]` 
 
 These save more than config changes over a full day of usage.
 
-### 13. Extended Thinking Awareness
-**Target**: Avoid burning expensive thinking tokens unnecessarily
+### 13. Extended Thinking Awareness (Informational)
+**Target**: Understand thinking token costs (no action needed for most users)
 
-**What it is**: When extended thinking is enabled, Claude generates thousands of "thinking" tokens (output-priced, much more expensive than input). For Opus users, this can be the single largest cost factor.
+**What it is**: When extended thinking is enabled, Claude generates "thinking" tokens (output-priced, more expensive than input). Claude's built-in **adaptive thinking** automatically adjusts thinking depth based on task complexity, using more for hard problems and less for simple ones.
+
+**Why this is informational, not prescriptive**: If you chose Opus, you chose it for deep reasoning. The optimizer respects that choice. "Deep reasoning" is subjective and task-dependent, so we don't recommend disabling or manually toggling thinking. Claude's adaptive system handles this better than manual rules.
 
 **Actions**:
-- [ ] Use `/model` to check if extended thinking is on
-- [ ] Disable for simple tasks (file reading, quick edits, data gathering)
-- [ ] Reserve for complex reasoning (architecture, debugging, novel problems)
+- [ ] Use `/cost` to see thinking token breakdown (awareness only)
+- [ ] If `CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING` is set, understand it forces fixed thinking budget regardless of task complexity
 
-**Expected savings**: Potentially more than all config changes combined for heavy Opus users
+**What the optimizer does**: Reports thinking token usage for cost awareness. Does NOT recommend disabling or reducing thinking. Your model choice is your intent.
 
 ---
 
@@ -711,6 +712,6 @@ These are settings that affect token usage and context behavior. The optimizer a
 - Don't paste full error logs (paste relevant lines only)
 - Don't run tests through Claude (run locally, paste failures only)
 - Don't dump everything in global CLAUDE.md (project-specific goes in project CLAUDE.md)
-- Don't leave extended thinking on for simple tasks (output tokens cost more)
+- Be aware that extended thinking uses output-priced tokens (Claude's adaptive thinking manages depth automatically)
 - Don't assume MCP overhead is huge (Tool Search defers definitions since Jan 2026)
 - Don't quote dollar savings to subscription users (talk context budget, not money)

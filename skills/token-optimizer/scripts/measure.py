@@ -3040,17 +3040,18 @@ def generate_auto_recommendations(components, trends=None, days=30):
             f"This prevents cloud MCPs from loading in CLI sessions while keeping them on claude.ai."
         )
 
-    # --- Rule 16: effortLevel always set to high ---
+    # --- Rule 16: effortLevel reporting (informational, not prescriptive) ---
+    # User's model and effort choices reflect their intent. We report, not recommend.
     effort_level = components.get("settings_local", {}).get("effortLevel")
     if effort_level and str(effort_level).lower() == "high":
         habits.append(
-            "**Tune `effortLevel` by task type (currently locked to \"high\")**: "
-            "Your settings.json has `effortLevel: \"high\"`, which maximizes response quality "
-            "but also maximizes token usage per response. For routine tasks (simple bug fixes, "
-            "formatting, small edits), \"medium\" produces adequate results at lower cost.\n"
-            "  Consider toggling effort level based on task complexity, or remove the setting "
-            "to let Claude auto-select. This doesn't save context tokens but reduces "
-            "per-response output tokens by 15-25% for routine work."
+            "**`effortLevel` is set to \"high\" (FYI)**: "
+            "Your settings.json has `effortLevel: \"high\"`. This maximizes response quality "
+            "and thinking depth. If you chose this deliberately, no action needed, "
+            "the optimizer respects your model and effort choices.\n"
+            "  For awareness: \"high\" uses ~15-25% more output tokens per response than \"medium\". "
+            "You can check token usage with `/cost`. Claude's adaptive thinking still adjusts "
+            "within the effort level based on task complexity."
         )
 
     # --- Rule 13: Compact habits (always include) ---
@@ -3339,18 +3340,14 @@ def generate_coach_data(focus=None, components=None, trends=None):
         })
         score -= 3
 
-    # Check effortLevel
+    # Check effortLevel (informational, not a penalty)
     effort_level = components.get("settings_local", {}).get("effortLevel")
     if effort_level and str(effort_level).lower() == "high":
-        patterns_bad.append({
-            "name": "Locked Effort Level",
-            "severity": "low",
-            "detail": "effortLevel: \"high\" for all tasks",
-            "fix": "Remove setting or tune per task type (\"medium\" for routine work)",
-            "savings": "15-25% output token reduction on routine tasks",
+        patterns_good.append({
+            "name": "Effort Level Set",
+            "detail": "effortLevel: \"high\" — deliberate quality choice. Uses ~15-25% more output tokens than \"medium\".",
         })
-        score -= 3
-        questions.append("Your effortLevel is locked to \"high\". Do all your tasks need maximum quality, or could routine work use \"medium\"?")
+        # No score penalty — user's effort/model choice is intentional
 
     # Check settings env vars for optimization opportunities
     settings_env = components.get("settings_env", {}).get("found", {})

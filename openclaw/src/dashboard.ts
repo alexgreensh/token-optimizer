@@ -8,7 +8,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { AgentRun, WasteFinding, AuditReport, totalTokens, Severity } from "./models";
-import { QualityReport, contextWindowForModel, scoreSessionQuality } from "./quality";
+import { QualityReport, contextWindowForModel, scoreSessionQuality, scoreToGrade } from "./quality";
 import { ContextAudit, SkillDetail, McpServer, ManageData } from "./context-audit";
 import { loadPricingTier, PRICING_TIER_LABELS } from "./pricing";
 
@@ -81,6 +81,7 @@ interface SessionRow {
   messages: number;
   outcome: string;
   qualityScore: number;
+  qualityGrade: string;
   qualityBand: string;
 }
 
@@ -221,6 +222,7 @@ export function buildDashboardData(
       messages: r.messageCount,
       outcome: r.outcome,
       qualityScore: sq.score,
+      qualityGrade: sq.grade,
       qualityBand: sq.band,
     };
   });
@@ -335,11 +337,12 @@ function modelColor(m: string): string {
   return "#8b8fa0";
 }
 
-function qualityBand(score: number): { label: string; color: string } {
-  if (score >= 80) return { label: "Good", color: "var(--c-success)" };
-  if (score >= 60) return { label: "Fair", color: "var(--c-warning)" };
-  if (score >= 40) return { label: "Needs Work", color: "#fb923c" };
-  return { label: "Poor", color: "var(--c-danger)" };
+function qualityBand(score: number): { label: string; color: string; grade: string } {
+  const grade = scoreToGrade(score);
+  if (score >= 80) return { label: "Good", color: "var(--c-success)", grade };
+  if (score >= 60) return { label: "Fair", color: "var(--c-warning)", grade };
+  if (score >= 40) return { label: "Needs Work", color: "#fb923c", grade };
+  return { label: "Poor", color: "var(--c-danger)", grade };
 }
 
 // ---------------------------------------------------------------------------
@@ -384,9 +387,9 @@ function renderOverview(data: DashboardData): string {
     : "";
   const qualityScore = data.quality
     ? `<div class="stat-card">
-        <div class="stat-card-value" style="color:${qualityBand(data.quality.score).color}">${data.quality.score}</div>
+        <div class="stat-card-value" style="color:${qualityBand(data.quality.score).color}">${qualityBand(data.quality.score).grade}</div>
         <div class="stat-card-label">Quality Score</div>
-        <div class="stat-card-qualifier">${qualityBand(data.quality.score).label}</div>
+        <div class="stat-card-qualifier">${data.quality.score}/100 (${qualityBand(data.quality.score).label})</div>
       </div>`
     : "";
 
@@ -576,7 +579,8 @@ function renderQuality(data: DashboardData): string {
     </div>
 
     <div style="text-align:center;margin:var(--s-4) 0">
-      <div style="font-family:var(--font-mono);font-size:72px;font-weight:500;color:${band.color};text-shadow:0 0 20px ${band.color}">${q.score}</div>
+      <div style="font-family:var(--font-mono);font-size:72px;font-weight:500;color:${band.color};text-shadow:0 0 20px ${band.color}">${band.grade}</div>
+      <div style="font-size:28px;font-weight:500;font-family:var(--font-mono);color:${band.color}">${q.score}/100</div>
       <div style="font-size:16px;color:${band.color};text-transform:uppercase;letter-spacing:0.2em">${esc(band.label)}</div>
     </div>
 
@@ -888,7 +892,7 @@ function renderSessions(data: DashboardData): string {
                 <td style="color:var(--c-accent-cyan)">${fmtCost(r.cost)}</td>
                 <td>${fmtDuration(r.duration)}</td>
                 <td><span style="color:${outcomeColor(r.outcome)}">${esc(r.outcome)}</span></td>
-                <td><span style="color:${qualityBand(r.qualityScore).color}">${r.qualityScore} ${esc(r.qualityBand)}</span></td>
+                <td><span style="color:${qualityBand(r.qualityScore).color}">${r.qualityGrade} (${r.qualityScore})</span></td>
               </tr>`;
               }).join("")}
             </tbody>

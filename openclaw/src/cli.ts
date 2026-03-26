@@ -13,7 +13,9 @@ import { findOpenClawDir } from "./session-parser";
 import { auditContext } from "./context-audit";
 import { scoreQuality } from "./quality";
 import { captureSnapshot, detectDrift } from "./drift";
-import { execFile } from "child_process";
+import { execFile, execSync } from "child_process";
+import * as fs from "fs";
+import * as path from "path";
 
 const HOME = process.env.HOME ?? process.env.USERPROFILE ?? "";
 
@@ -29,16 +31,17 @@ function redactPaths(obj: unknown): unknown {
 }
 
 function printUsage(): void {
-  console.log(`Token Optimizer for OpenClaw v1.1.0
+  console.log(`Token Optimizer for OpenClaw v1.3.0
 
 Usage:
-  token-optimizer scan      [--days N] [--json]   Scan sessions and show token usage
-  token-optimizer audit     [--days N] [--json]   Detect waste patterns with $ savings
-  token-optimizer dashboard [--days N]             Generate HTML dashboard and open
-  token-optimizer context   [--json]               Show context overhead breakdown
-  token-optimizer quality   [--days N] [--json]    Show quality score breakdown
-  token-optimizer drift     [--snapshot]            Config drift detection
-  token-optimizer detect                            Check if OpenClaw is installed
+  token-optimizer scan         [--days N] [--json]   Scan sessions and show token usage
+  token-optimizer audit        [--days N] [--json]   Detect waste patterns with $ savings
+  token-optimizer dashboard    [--days N]             Generate HTML dashboard and open
+  token-optimizer context      [--json]               Show context overhead breakdown
+  token-optimizer quality      [--days N] [--json]    Show quality score breakdown
+  token-optimizer git-context  [--json]               Suggest files based on git state
+  token-optimizer drift        [--snapshot]            Config drift detection
+  token-optimizer detect                               Check if OpenClaw is installed
 
 Options:
   --days N      Number of days to scan (default: 30)
@@ -254,7 +257,7 @@ function cmdQuality(days: number, json: boolean): void {
     return;
   }
 
-  console.log(`\nQuality Score: ${report.score}/100 (${report.band})`);
+  console.log(`\nQuality Score: ${report.grade} (${report.score}/100) (${report.band})`);
   console.log("=".repeat(50));
 
   for (const sig of report.signals) {
@@ -269,6 +272,104 @@ function cmdQuality(days: number, json: boolean): void {
       console.log(`  → ${rec}`);
     }
   }
+}
+
+function cmdGitContext(json: boolean): void {
+  function runGit(...args: string[]): string {
+    try {
+      return execSync(`git ${args.join(" ")}`, { encoding: "utf-8", timeout: 10000 }).trim();
+    } catch {
+      return "";
+    }
+  }
+
+  const diffOutput = runGit("diff", "--name-only");
+  const stagedOutput = runGit("diff", "--name-only", "--cached");
+  const statusOutput = runGit("status", "--porcelain");
+
+  const modified = new Set<string>();
+  if (diffOutput) diffOutput.split("\n").forEach((f) => modified.add(f));
+  if (stagedOutput) stagedOutput.split("\n").forEach((f) => modified.add(f));
+  for (const line of (statusOutput || "").split("\n")) {
+    if (line.startsWith("??")) modified.add(line.slice(3).trim());
+  }
+
+  if (modified.size === 0) {
+    if (json) {
+      console.log(JSON.stringify({ modified: [], test_companions: [], co_changed: [], import_chain: [] }, null, 2));
+    } else {
+      console.log("\nNo modified files detected. Run this after making changes.\n");
+    }
+    return;
+  }
+
+  // Test companion mapping
+  const testCompanions: Array<{ source: string; test: string }> = [];
+  for (const f of [...modified].sort()) {
+    const ext = path.extname(f);
+    const stem = path.basename(f, ext);
+    const dir = path.dirname(f);
+    if (stem.toLowerCase().includes("test") || stem.toLowerCase().includes("spec")) continue;
+    const candidates = [
+      `test_${stem}${ext}`, `${stem}_test${ext}`, `${stem}.test${ext}`, `${stem}.spec${ext}`,
+      `tests/test_${stem}${ext}`, `__tests__/${stem}${ext}`,
+      `${dir}/test_${stem}${ext}`, `${dir}/${stem}.test${ext}`, `${dir}/${stem}.spec${ext}`,
+      `${dir}/__tests__/${stem}${ext}`,
+    ];
+    for (const c of candidates) {
+      if (fs.existsSync(c) && !modified.has(c)) {
+        testCompanions.push({ source: f, test: c });
+        break;
+      }
+    }
+  }
+
+  // Co-change analysis from last 50 commits
+  const logOutput = runGit("log", "--oneline", "--name-only", "-50", "--pretty=format:");
+  const coChanged = new Map<string, number>();
+  if (logOutput) {
+    for (const block of logOutput.split("\n\n")) {
+      const files = block.split("\n").map((l) => l.trim()).filter(Boolean);
+      for (const mf of modified) {
+        if (files.includes(mf)) {
+          for (const cf of files) {
+            if (cf !== mf && !modified.has(cf)) {
+              coChanged.set(cf, (coChanged.get(cf) ?? 0) + 1);
+            }
+          }
+        }
+      }
+    }
+  }
+  const topCo = [...coChanged.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
+
+  const result = {
+    modified: [...modified].sort(),
+    test_companions: testCompanions,
+    co_changed: topCo.map(([file, times]) => ({ file, times })),
+    import_chain: [], // Simplified for OpenClaw CLI
+  };
+
+  if (json) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  console.log(`\nGit Context Suggestions`);
+  console.log("=".repeat(50));
+  console.log(`Modified files (${modified.size}):`);
+  for (const f of [...modified].sort()) console.log(`  ${f}`);
+
+  if (testCompanions.length > 0) {
+    console.log(`\nTest companions (add to context):`);
+    for (const tc of testCompanions) console.log(`  ${tc.test}  (tests ${tc.source})`);
+  }
+
+  if (topCo.length > 0) {
+    console.log(`\nFrequently co-changed:`);
+    for (const [f, n] of topCo) console.log(`  ${f}  (${n}x in last 50 commits)`);
+  }
+  console.log();
 }
 
 function cmdDrift(snapshot: boolean): void {
@@ -324,6 +425,9 @@ switch (command) {
     break;
   case "quality":
     cmdQuality(days, json);
+    break;
+  case "git-context":
+    cmdGitContext(json);
     break;
   case "drift":
     cmdDrift(snapshot);

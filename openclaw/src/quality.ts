@@ -21,6 +21,7 @@ export interface QualitySignal {
 
 export interface QualityReport {
   score: number;
+  grade: string;
   band: string;
   signals: QualitySignal[];
   recommendations: string[];
@@ -303,6 +304,19 @@ function bandFromScore(score: number): string {
   return "Poor";
 }
 
+/**
+ * Convert a 0-100 quality score to a letter grade.
+ * S: 90-100 | A: 80-89 | B: 70-79 | C: 55-69 | D: 40-54 | F: 0-39
+ */
+export function scoreToGrade(score: number): string {
+  if (score >= 90) return "S";
+  if (score >= 80) return "A";
+  if (score >= 70) return "B";
+  if (score >= 55) return "C";
+  if (score >= 40) return "D";
+  return "F";
+}
+
 function generateQualityRecommendations(signals: QualitySignal[]): string[] {
   const recs: string[] = [];
 
@@ -351,10 +365,11 @@ export function scoreQuality(
   );
 
   const score = Math.round(Math.min(100, Math.max(0, weightedScore)));
+  const grade = scoreToGrade(score);
   const band = bandFromScore(score);
   const recommendations = generateQualityRecommendations(signals);
 
-  return { score, band, signals, recommendations };
+  return { score, grade, band, signals, recommendations };
 }
 
 // ---------------------------------------------------------------------------
@@ -371,7 +386,7 @@ export function scoreQuality(
  *   4. Output/input ratio (15%): low ratio = wasteful
  *   5. Duration risk (15%): >60min sessions = risk
  */
-export function scoreSessionQuality(run: AgentRun): { score: number; band: string } {
+export function scoreSessionQuality(run: AgentRun): { score: number; grade: string; band: string } {
   // Signal 1: Context fill (25%) - lower fill = better
   const ctxWindow = contextWindowForModel(run.model);
   const fillRatio = ctxWindow > 0 ? run.tokens.input / ctxWindow : 0;
@@ -430,7 +445,8 @@ export function scoreSessionQuality(run: AgentRun): { score: number; band: strin
     durationScore * 0.15;
 
   const score = Math.round(Math.min(100, Math.max(0, weighted)));
+  const grade = scoreToGrade(score);
   const band = bandFromScore(score);
 
-  return { score, band };
+  return { score, grade, band };
 }

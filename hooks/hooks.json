@@ -1,5 +1,16 @@
 {
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/read_cache.py' && python3 '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/read_cache.py' --quiet || true"
+          }
+        ]
+      }
+    ],
     "PreCompact": [
       {
         "hooks": [
@@ -14,6 +25,14 @@
           {
             "type": "command",
             "command": "test -f '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/measure.py' && python3 '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/measure.py' compact-capture --trigger auto --quiet || true"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/read_cache.py' && python3 '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/read_cache.py' --clear --quiet || true"
           }
         ]
       }
@@ -107,10 +126,20 @@
     ],
     "PostToolUse": [
       {
+        "matcher": "Bash|Read|Glob|Grep|Agent|mcp__.*",
         "hooks": [
           {
             "type": "command",
             "command": "test -f '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/measure.py' && python3 '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/measure.py' archive-result --quiet || true"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/read_cache.py' && python3 '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/read_cache.py' --invalidate --quiet || true"
           }
         ]
       }

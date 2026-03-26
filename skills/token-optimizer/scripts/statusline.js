@@ -103,15 +103,16 @@ process.stdin.on('end', () => {
         const s = q.score;
         if (s != null) {
           const score = Math.round(s);
+          const grade = q.grade || (score >= 90 ? 'S' : score >= 80 ? 'A' : score >= 70 ? 'B' : score >= 55 ? 'C' : score >= 40 ? 'D' : 'F');
           // Color bands: green >=85, yellow 75-84, orange 50-74, red <50
           if (score >= 85) {
-            qScore = `${SEP}\x1b[32mContextQ:${score}${RESET}`;
+            qScore = `${SEP}\x1b[32mContextQ:${grade}(${score})${RESET}`;
           } else if (score >= 75) {
-            qScore = `${SEP}\x1b[33mContextQ:${score}${RESET}`;
+            qScore = `${SEP}\x1b[33mContextQ:${grade}(${score})${RESET}`;
           } else if (score >= 50) {
-            qScore = `${SEP}\x1b[38;5;208mContextQ:${score}${RESET}`;
+            qScore = `${SEP}\x1b[38;5;208mContextQ:${grade}(${score})${RESET}`;
           } else {
-            qScore = `${SEP}\x1b[31mContextQ:${score}${RESET}`;
+            qScore = `${SEP}\x1b[31mContextQ:${grade}(${score})${RESET}`;
           }
         }
 

@@ -484,6 +484,29 @@ Backups are never automatically deleted. They accumulate in `~/.claude/_backups/
 
 ---
 
+## v3.1 Features
+
+### Efficiency Grading (S/A/B/C/D/F)
+All quality scores now include a letter grade: S (90-100), A (80-89), B (70-79), C (55-69), D (40-54), F (0-39). Shown in status line (`ContextQ:A(82)`), dashboard badges, coach tab, and CLI output.
+
+### Git-Aware Context Suggestions
+New command: `python3 $MEASURE_PY git-context [--json]`
+Analyzes git diff/status to suggest which files should be in context: modified files, test companions, co-changed files (from last 50 commits), and import chains.
+
+### PreToolUse Read-Cache
+Detects redundant file reads and optionally blocks them with structural digests.
+
+**Opt-in**: Set `TOKEN_OPTIMIZER_READ_CACHE=1` in your environment.
+**Modes**: `TOKEN_OPTIMIZER_READ_CACHE_MODE=warn` (default, suggests) or `=block` (prevents re-read).
+**Decisions log**: `~/.claude/token-optimizer/read-cache/decisions.jsonl`
+**Stats**: `python3 $MEASURE_PY read-cache-stats --session SESSION_ID`
+**Clear**: `python3 $MEASURE_PY read-cache-clear`
+
+### .contextignore
+Create `.contextignore` in project root or `~/.claude/.contextignore` (global) to block files from being read. Uses gitignore-style glob patterns (fnmatch). Hard-blocks regardless of read-cache mode.
+
+---
+
 ## Core Rules
 
 - Quantify everything (X tokens, Y%)

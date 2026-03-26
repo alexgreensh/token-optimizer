@@ -1122,6 +1122,24 @@ def _degradation_band(fill_pct):
         return "SEVERE", "red"
 
 
+def score_to_grade(score):
+    """Convert a 0-100 quality score to a letter grade.
+
+    S: 90-100 | A: 80-89 | B: 70-79 | C: 55-69 | D: 40-54 | F: 0-39
+    """
+    if score >= 90:
+        return "S"
+    if score >= 80:
+        return "A"
+    if score >= 70:
+        return "B"
+    if score >= 55:
+        return "C"
+    if score >= 40:
+        return "D"
+    return "F"
+
+
 def _estimate_messages_until_compact(ctx_window, overhead, avg_msg_tokens=5000):
     """Estimate how many messages fit before auto-compact fires (~80% fill)."""
     compact_threshold = int(ctx_window * 0.80)
@@ -1256,6 +1274,8 @@ def quick_scan(as_json=False):
     # Auto-save snapshot for drift detection
     _auto_snapshot(components, totals, ctx_window)
 
+    grade = score_to_grade(quality_est)
+
     if as_json:
         result = {
             "context_window": ctx_window,
@@ -1266,6 +1286,7 @@ def quick_scan(as_json=False):
             "messages_before_compact": msgs_before_compact,
             "fill_pct": round(fill_pct * 100, 1),
             "quality_estimate": quality_est,
+            "grade": grade,
             "degradation_band": band_name,
             "top_offenders": [
                 {"name": o[0], "count": o[1], "tokens": o[2], "detail": o[3]}
@@ -1287,7 +1308,7 @@ def quick_scan(as_json=False):
 
     print(f"\n  DEGRADATION RISK")
     print(f"    Current startup fill:  {fill_pct * 100:.0f}% ({overhead:,}) -- {band_name}")
-    print(f"    Quality estimate:      ~{quality_est}/100 (MRCR-based at this fill level)")
+    print(f"    Quality estimate:      {grade} ({quality_est}/100) (MRCR-based at this fill level)")
     next_danger = int(ctx_window * 0.50)
     print(f"    Next danger zone:      {next_danger:,} (50%, \"lost in the middle\" begins)")
     compact_at = int(ctx_window * 0.80)
@@ -1489,6 +1510,184 @@ def doctor(as_json=False):
             print(f"  Fix: {fix_cmd}")
             break
     print()
+
+
+def git_context(as_json=False):
+    """Suggest context-relevant files based on git state.
+
+    Analyzes git diff, test companions, co-change history, and import chains
+    to suggest which files should be in context for the current work.
+    """
+    import subprocess as _sp
+
+    def _run_git(*cmd):
+        try:
+            r = _sp.run(["git"] + list(cmd), capture_output=True, text=True, timeout=10)
+            return r.stdout.strip() if r.returncode == 0 else ""
+        except (FileNotFoundError, _sp.TimeoutExpired):
+            return ""
+
+    # 1. Modified files (staged + unstaged + untracked)
+    diff_output = _run_git("diff", "--name-only")
+    staged_output = _run_git("diff", "--name-only", "--cached")
+    status_output = _run_git("status", "--porcelain")
+
+    modified = set()
+    if diff_output:
+        modified.update(diff_output.splitlines())
+    if staged_output:
+        modified.update(staged_output.splitlines())
+    # Untracked new files from status
+    for line in (status_output or "").splitlines():
+        if line.startswith("??"):
+            modified.add(line[3:].strip())
+
+    if not modified:
+        result = {"modified": [], "test_companions": [], "co_changed": [], "import_chain": []}
+        if as_json:
+            print(json.dumps(result, indent=2))
+        else:
+            print("\n  GIT CONTEXT: No modified files detected.")
+            print("  Run this after making changes to get context suggestions.\n")
+        return result
+
+    # 2. Test companion mapping
+    test_companions = []
+    for f in sorted(modified):
+        base = Path(f)
+        stem = base.stem
+        parent = str(base.parent)
+        ext = base.suffix
+        if "test" in stem.lower() or "spec" in stem.lower():
+            continue  # Skip test/spec files themselves
+        candidates = [
+            f"test_{stem}{ext}",
+            f"{stem}_test{ext}",
+            f"tests/test_{stem}{ext}",
+            f"tests/{stem}_test{ext}",
+            f"{parent}/test_{stem}{ext}",
+            f"{parent}/{stem}_test{ext}",
+            f"{parent}/tests/test_{stem}{ext}",
+            # JS/TS patterns
+            f"{stem}.test{ext}",
+            f"{stem}.spec{ext}",
+            f"__tests__/{stem}{ext}",
+            f"{parent}/__tests__/{stem}{ext}",
+            f"{parent}/{stem}.test{ext}",
+            f"{parent}/{stem}.spec{ext}",
+        ]
+        for c in candidates:
+            if Path(c).exists() and c not in modified:
+                test_companions.append({"source": f, "test": c})
+                break
+
+    # 3. Co-change analysis from last 50 commits
+    co_changed = {}
+    log_output = _run_git("log", "--oneline", "--name-only", "-50", "--pretty=format:")
+    if log_output:
+        commits = log_output.split("\n\n")
+        for commit_files_str in commits:
+            commit_files = [cf.strip() for cf in commit_files_str.splitlines() if cf.strip()]
+            for mf in modified:
+                if mf in commit_files:
+                    for cf in commit_files:
+                        if cf != mf and cf not in modified:
+                            co_changed[cf] = co_changed.get(cf, 0) + 1
+    # Top 10 co-changed files, sorted by frequency
+    top_co = sorted(co_changed.items(), key=lambda x: -x[1])[:10]
+
+    # 4. Import chain for Python/JS modified files
+    import_chain = []
+    for f in sorted(modified):
+        if not Path(f).exists():
+            continue
+        ext = Path(f).suffix
+        if ext not in (".py", ".js", ".ts", ".jsx", ".tsx"):
+            continue
+        try:
+            content = Path(f).read_text(encoding="utf-8", errors="ignore")[:5000]
+        except OSError:
+            continue
+        imports = []
+        for line in content.splitlines():
+            line = line.strip()
+            if ext == ".py":
+                if line.startswith("from ") and " import " in line:
+                    mod = line.split("from ")[1].split(" import")[0].strip()
+                    if mod.startswith("."):
+                        # Relative import, resolve to file
+                        rel = mod.lstrip(".")
+                        candidate = str(Path(f).parent / rel.replace(".", "/")) + ".py"
+                        if Path(candidate).exists() and candidate not in modified:
+                            imports.append(candidate)
+                elif line.startswith("import "):
+                    mod = line.split("import ")[1].split(" as")[0].split(",")[0].strip()
+                    if "." in mod:
+                        candidate = mod.replace(".", "/") + ".py"
+                        if Path(candidate).exists() and candidate not in modified:
+                            imports.append(candidate)
+            else:
+                # JS/TS imports
+                if "from " in line and ("import " in line or "require(" in line):
+                    # Extract path from quotes
+                    for q in ('"', "'"):
+                        if q in line:
+                            parts = line.split(q)
+                            if len(parts) >= 2:
+                                imp_path = parts[1]
+                                if imp_path.startswith("."):
+                                    base_dir = str(Path(f).parent)
+                                    for try_ext in ("", ".ts", ".tsx", ".js", ".jsx"):
+                                        candidate = str(Path(base_dir) / imp_path) + try_ext
+                                        if Path(candidate).exists() and candidate not in modified:
+                                            imports.append(candidate)
+                                            break
+                                break
+        if imports:
+            import_chain.append({"source": f, "imports": imports[:5]})
+
+    result = {
+        "modified": sorted(modified),
+        "test_companions": test_companions,
+        "co_changed": [{"file": f, "times": n} for f, n in top_co],
+        "import_chain": import_chain,
+    }
+
+    if as_json:
+        print(json.dumps(result, indent=2))
+        return result
+
+    # Pretty print
+    print(f"\n  GIT CONTEXT SUGGESTIONS")
+    print(f"  {'=' * 40}")
+    print(f"  Modified files ({len(modified)}):")
+    for f in sorted(modified):
+        print(f"    {f}")
+
+    if test_companions:
+        print(f"\n  Test companions (add to context):")
+        for tc in test_companions:
+            print(f"    {tc['test']}  (tests {tc['source']})")
+
+    if top_co:
+        print(f"\n  Frequently co-changed (consider adding):")
+        for f, n in top_co:
+            print(f"    {f}  ({n}x in last 50 commits)")
+
+    if import_chain:
+        print(f"\n  Import chain (dependencies):")
+        for ic in import_chain:
+            print(f"    {ic['source']} imports:")
+            for imp in ic["imports"]:
+                print(f"      {imp}")
+
+    total_suggestions = len(test_companions) + len(top_co) + sum(len(ic["imports"]) for ic in import_chain)
+    if total_suggestions > 0:
+        print(f"\n  Total: {total_suggestions} suggested files to add to context")
+    else:
+        print(f"\n  No additional context suggestions. Modified files are self-contained.")
+    print()
+    return result
 
 
 def drift_check(as_json=False):
@@ -3880,7 +4079,7 @@ def score_session_quality(session_data):
     else:
         band = "Poor"
 
-    return {"score": final, "band": band}
+    return {"score": final, "band": band, "grade": score_to_grade(final)}
 
 
 def _normalize_model_name(model_id):
@@ -4417,6 +4616,7 @@ def _query_trends_db(conn, days):
         # Add quality score per session
         sq = score_session_quality(sd)
         sd["quality_score"] = sq["score"]
+        sd["quality_grade"] = sq["grade"]
         sd["quality_band"] = sq["band"]
         d["session_details"].append(sd)
 
@@ -4580,6 +4780,7 @@ def _collect_trends_from_jsonl(days=30):
         }
         sq = score_session_quality(sd)
         sd["quality_score"] = sq["score"]
+        sd["quality_grade"] = sq["grade"]
         sd["quality_band"] = sq["band"]
         d["session_details"].append(sd)
 
@@ -6097,6 +6298,7 @@ def compute_quality_score(quality_data):
 
     return {
         "score": round(composite, 1),
+        "grade": score_to_grade(round(composite)),
         "signals": signals,
         "breakdown": breakdown,
     }
@@ -6197,9 +6399,11 @@ def quality_analyzer(session_id=None, as_json=False):
     cfd = bd.get("context_fill_degradation", {})
     fill_band = cfd.get("band", "")
 
+    grade = result.get("grade", score_to_grade(round(score)))
+
     print(f"\n  Context Quality Report")
     print(f"  {'=' * 40}")
-    print(f"  Content quality:     {score}/100 ({band})")
+    print(f"  Content quality:     {grade} ({score}/100) ({band})")
     if fill_band:
         print(f"  Degradation band:    {fill_band} ({cfd.get('fill_pct', 0):.0f}% fill, ~{cfd.get('quality_estimate', 0)}/100 MRCR)")
     print(f"  Messages analyzed:   {result['total_messages']}")
@@ -8536,6 +8740,7 @@ def quality_cache(throttle_seconds=120, warn_threshold=70, quiet=False, session_
         # New/empty session - write a clean score to cache so stale score doesn't persist
         result = {
             "score": 100,
+            "grade": "S",
             "signals": {},
             "breakdown": {},
             "total_messages": 0,
@@ -8875,6 +9080,9 @@ if __name__ == "__main__":
     elif args[0] == "drift":
         output_json = "--json" in args
         drift_check(as_json=output_json)
+    elif args[0] == "git-context":
+        output_json = "--json" in args
+        git_context(as_json=output_json)
     elif args[0] == "snapshot" and len(args) > 1:
         take_snapshot(args[1])
     elif args[0] == "compare":
@@ -9347,6 +9555,35 @@ if __name__ == "__main__":
             sid = a
             break
         archive_cleanup(session_id=sid)
+    elif args[0] == "read-cache-clear":
+        # Clear read cache (called by PreCompact hook or manually)
+        sid = "all"
+        for i, a in enumerate(args):
+            if a == "--session" and i + 1 < len(args):
+                sid = args[i + 1]
+        quiet = "--quiet" in args or "-q" in args
+        from pathlib import Path as _P
+        rc_script = _P(__file__).resolve().parent / "read_cache.py"
+        if rc_script.exists():
+            import subprocess
+            subprocess.run(
+                [sys.executable, str(rc_script), "--clear", "--session", sid] + (["--quiet"] if quiet else []),
+                timeout=5
+            )
+    elif args[0] == "read-cache-stats":
+        # Show read cache stats
+        sid = "unknown"
+        for i, a in enumerate(args):
+            if a == "--session" and i + 1 < len(args):
+                sid = args[i + 1]
+        from pathlib import Path as _P
+        rc_script = _P(__file__).resolve().parent / "read_cache.py"
+        if rc_script.exists():
+            import subprocess
+            subprocess.run(
+                [sys.executable, str(rc_script), "--stats", "--session", sid],
+                timeout=5
+            )
     else:
         print("Usage:")
         print("  python3 measure.py quick               # Quick scan: overhead, degradation risk, top offenders")
@@ -9387,6 +9624,10 @@ if __name__ == "__main__":
         print("  python3 measure.py compact-capture          # Capture session state checkpoint")
         print("  python3 measure.py compact-restore          # Restore context from checkpoint")
         print("  python3 measure.py compact-instructions      # Generate project-specific Compact Instructions")
+        print("  python3 measure.py git-context              # Suggest files based on git state")
+        print("  python3 measure.py git-context --json       # Machine-readable git context")
+        print("  python3 measure.py read-cache-clear         # Clear read cache (all sessions)")
+        print("  python3 measure.py read-cache-stats --session ID  # Read cache stats for session")
         print("  python3 measure.py compact-instructions --json")
         print("  python3 measure.py compact-instructions --install     # Write directly to settings.json")
         print("  python3 measure.py compact-instructions --install --dry-run")

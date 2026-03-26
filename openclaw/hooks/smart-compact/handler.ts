@@ -1,4 +1,5 @@
 import { captureCheckpoint, captureCheckpointV2, restoreCheckpoint } from "../../src/smart-compact";
+import { clearCache } from "../../src/read-cache";
 
 interface HookEvent {
   type: string;
@@ -17,6 +18,8 @@ const handler = async (event: HookEvent) => {
       messages: event.messages,
     };
     captureCheckpointV2(session) ?? captureCheckpoint(session);
+    // Clear read-cache on compaction (stale context after compact)
+    clearCache("default", event.sessionId);
   }
 
   if (event.action === "compact:after" && event.sessionId) {

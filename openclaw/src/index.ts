@@ -16,6 +16,7 @@ import {
 } from "./session-parser";
 import { runAllDetectors } from "./waste-detectors";
 import { captureCheckpoint, captureCheckpointV2, restoreCheckpoint, cleanupCheckpoints } from "./smart-compact";
+import { handleReadBefore, handleWriteAfter, clearCache } from "./read-cache";
 import { AuditReport, AgentRun, totalTokens } from "./models";
 import { buildDashboardData, writeDashboard } from "./dashboard";
 import { resetPricingCache } from "./pricing";
@@ -214,6 +215,9 @@ export default definePluginEntry({
           `[token-optimizer] Checkpoint saved: ${filepath}`
         );
       }
+
+      // Clear read-cache on compaction (context is reset, cache entries are stale)
+      clearCache("default", session.sessionId);
     });
 
     // Smart Compaction: restore after compaction
@@ -232,6 +236,49 @@ export default definePluginEntry({
           `[token-optimizer] Checkpoint restored for session ${session.sessionId}`
         );
       }
+    });
+
+    // Read Cache: intercept redundant reads (PreToolUse equivalent)
+    api.on("agent:tool:before", (...args: unknown[]) => {
+      const event = args[0] as {
+        toolName?: string;
+        toolInput?: Record<string, unknown>;
+        agentId?: string;
+        sessionId?: string;
+        block?: (message: string) => void;
+      } | undefined;
+
+      if (!event?.toolName || event.toolName !== "Read") return;
+
+      const result = handleReadBefore({
+        toolName: event.toolName,
+        toolInput: (event.toolInput ?? {}) as { file_path?: string; offset?: number; limit?: number },
+        agentId: event.agentId ?? "unknown",
+        sessionId: event.sessionId ?? "unknown",
+      });
+
+      if (result?.block && event.block) {
+        event.block(result.message);
+      }
+    });
+
+    // Read Cache: invalidate on file writes (PostToolUse equivalent)
+    api.on("agent:tool:after", (...args: unknown[]) => {
+      const event = args[0] as {
+        toolName?: string;
+        toolInput?: Record<string, unknown>;
+        agentId?: string;
+        sessionId?: string;
+      } | undefined;
+
+      if (!event?.toolName) return;
+
+      handleWriteAfter({
+        toolName: event.toolName,
+        toolInput: (event.toolInput ?? {}) as { file_path?: string; offset?: number; limit?: number },
+        agentId: event.agentId ?? "unknown",
+        sessionId: event.sessionId ?? "unknown",
+      });
     });
 
     // Generate dashboard silently on session end

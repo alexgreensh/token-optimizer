@@ -2515,6 +2515,7 @@ var DB = (function() {
         var sdTopic = sd.topic || '';
         // Quality overlay
         var qs = sd.quality_score || 0;
+        var qGrade = sd.quality_grade || (qs >= 90 ? 'S' : qs >= 80 ? 'A' : qs >= 70 ? 'B' : qs >= 55 ? 'C' : qs >= 40 ? 'D' : 'F');
         var qClass = qs >= 80 ? 'quality-good' : qs >= 60 ? 'quality-fair' : qs >= 40 ? 'quality-needs-work' : 'quality-poor';
         var qBadgeClass = qs >= 80 ? 'good' : qs >= 60 ? 'fair' : qs >= 40 ? 'needs-work' : 'poor';
         var sdSlug = sd.slug || '';
@@ -2531,7 +2532,7 @@ var DB = (function() {
           '<td>' + (sd.message_count || 0) + '</td>' +
           '<td>' + ((sd.cache_hit_rate || 0) * 100).toFixed(0) + '%</td>' +
           '<td style="color:var(--c-accent-cyan);font-family:var(--font-mono);font-size:12px;">' + costStr + '</td>' +
-          '<td><span class="quality-badge ' + qBadgeClass + '">' + qs + '</span></td>' +
+          '<td><span class="quality-badge ' + qBadgeClass + '">' + qGrade + ' (' + qs + ')</span></td>' +
           '<td style="color:var(--c-text-dim);font-size:11px;">' + esc(modelStr) + '</td>' +
           '<td style="color:var(--c-text-dim);font-size:12px;" title="' + esc(sdTopic) + '">' + esc(sdTopic.length > 35 ? sdTopic.slice(0,33) + '\u2026' : sdTopic) + '</td>' +
           '</tr>';
@@ -2738,13 +2739,14 @@ var DB = (function() {
 
     // Health Score hero
     var score = c.health_score || 0;
+    var healthGrade = score >= 90 ? 'S' : score >= 80 ? 'A' : score >= 70 ? 'B' : score >= 55 ? 'C' : score >= 40 ? 'D' : 'F';
     var scoreColor = score >= 80 ? 'var(--c-accent-cyan)' : score >= 50 ? '#ff9f43' : '#ff6b6b';
     html += '<div class="card wide">' +
       '<div class="card-header"><span>Token Health Score</span></div>' +
       '<div style="font-size:12px;color:var(--c-text-dim);padding:4px var(--s-3) 0;">How token-efficient your setup is overall. Factors in overhead size, skill count, config bloat, model routing, and usage patterns.</div>' +
       '<div style="text-align:center;padding:var(--s-4) 0;">' +
-      '<div style="font-size:72px;font-weight:700;font-family:var(--font-mono);color:' + scoreColor + ';text-shadow:0 0 20px ' + scoreColor + ';">' + score + '</div>' +
-      '<div class="label" style="font-size:18px;">out of 100</div>' +
+      '<div style="font-size:72px;font-weight:700;font-family:var(--font-mono);color:' + scoreColor + ';text-shadow:0 0 20px ' + scoreColor + ';">' + healthGrade + '</div>' +
+      '<div style="font-size:28px;font-weight:500;font-family:var(--font-mono);color:' + scoreColor + ';">' + score + '/100</div>' +
       '</div></div>';
 
     // Snapshot summary

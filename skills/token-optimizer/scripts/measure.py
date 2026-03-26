@@ -537,7 +537,7 @@ def _scan_plugin_skills_and_commands():
     result = {
         "plugin_skill_count": 0, "plugin_skill_tokens": 0, "plugin_skill_names": [],
         "plugin_cmd_count": 0, "plugin_cmd_tokens": 0, "plugin_cmd_names": [],
-        "plugins_found": [],
+        "plugins_found": [], "plugins_skipped_disabled": [],
     }
     if not registry.exists():
         return result
@@ -550,11 +550,29 @@ def _scan_plugin_skills_and_commands():
     plugins = data.get("plugins") or {}
     if not isinstance(plugins, dict):
         return result
+
+    # Load enabledPlugins from settings.json to filter out disabled plugins
+    enabled_plugins = None
+    settings_path = CLAUDE_DIR / "settings.json"
+    if settings_path.exists():
+        try:
+            with open(settings_path, "r", encoding="utf-8") as f:
+                settings = json.load(f)
+            enabled_plugins = settings.get("enabledPlugins")
+        except (json.JSONDecodeError, PermissionError, OSError):
+            pass
+
     seen_paths = set()
     for plugin_key, installs in plugins.items():
         if not isinstance(installs, list):
             continue
         plugin_name = plugin_key.split("@")[0] or plugin_key
+
+        # Skip plugins not enabled in settings.json
+        if enabled_plugins is not None and not enabled_plugins.get(plugin_key, False):
+            result["plugins_skipped_disabled"].append(plugin_name)
+            continue
+
         for install in installs:
             raw_path = install.get("installPath") or ""
             if not raw_path:
@@ -795,6 +813,7 @@ def measure_components():
         "tokens": plugin_data["plugin_skill_tokens"],
         "names": plugin_data["plugin_skill_names"],
         "plugins": plugin_data["plugins_found"],
+        "disabled_plugins": plugin_data["plugins_skipped_disabled"],
     }
     components["plugin_commands"] = {
         "count": plugin_data["plugin_cmd_count"],
@@ -1912,7 +1931,9 @@ def print_snapshot_summary(snapshot):
     print(f"  {'Skills (frontmatter)':<35s} {s.get('tokens', 0):>6,} tokens  [{s.get('count', 0)} skills]")
     ps = c.get("plugin_skills", {})
     if ps.get("count", 0) > 0:
-        print(f"    {'+ Plugin skills':<33s} {ps.get('tokens', 0):>6,} tokens  [{ps.get('count', 0)} from {', '.join(ps.get('plugins', []))}]")
+        disabled = ps.get("disabled_plugins", [])
+        suffix = f", {len(disabled)} disabled" if disabled else ""
+        print(f"    {'+ Plugin skills':<33s} {ps.get('tokens', 0):>6,} tokens  [{ps.get('count', 0)} from {', '.join(ps.get('plugins', []))}{suffix}]")
 
     # Commands
     cmd = c.get("commands", {})
@@ -2489,6 +2510,17 @@ def generate_dashboard(coord_path):
     print("  Collecting savings data...")
     savings_data = _get_savings_summary(days=30)
 
+    # Fall back to auto-recommendations if LLM plan is missing
+    auto_plan_flag = False
+    if not plan:
+        print("  No LLM plan found, generating auto-recommendations...")
+        plan, rec_count = generate_auto_recommendations(components, trends=trends, days=30)
+        if plan:
+            auto_plan_flag = True
+            print(f"  Generated {rec_count} auto-recommendations as fallback")
+        else:
+            plan = None
+
     # Assemble data
     data = {
         "snapshot": snapshot,
@@ -2500,6 +2532,7 @@ def generate_dashboard(coord_path):
         "quality": quality,
         "hooks": hook_status,
         "savings": savings_data,
+        "auto_plan": auto_plan_flag,
         "generated_at": datetime.now().isoformat(),
     }
 

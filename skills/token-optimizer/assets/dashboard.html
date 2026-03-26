@@ -2046,7 +2046,14 @@ var DB = (function() {
       }
 
       if (secItems.length === 0) {
-        html += '<div class="empty-state">No items in this category.</div>';
+        if (!data.plan && !data.auto_plan) {
+          html += '<div class="empty-state" style="text-align:center;padding:2rem 1rem;">' +
+            '<div style="font-size:1.5rem;margin-bottom:0.5rem;">No optimization plan yet</div>' +
+            '<div style="color:var(--text-secondary);margin-bottom:1rem;">Run <span class="update-cmd" style="cursor:pointer">/token-optimizer</span> in Claude Code to generate personalized recommendations with toggle items here.</div>' +
+            '</div>';
+        } else {
+          html += '<div class="empty-state">No items in this category.</div>';
+        }
         el.innerHTML = html;
         return;
       }
@@ -3225,7 +3232,11 @@ var DB = (function() {
     var emptyEl = document.getElementById('empty-selected');
 
     if (count === 0) {
-      listEl.innerHTML = '<div class="empty-state">Toggle items to build your optimization prompt.</div>';
+      if (!data.plan && !data.auto_plan) {
+        listEl.innerHTML = '<div class="empty-state">Run <span class="update-cmd">/token-optimizer</span> to generate optimization items you can toggle here.</div>';
+      } else {
+        listEl.innerHTML = '<div class="empty-state">Toggle items to build your optimization prompt.</div>';
+      }
       return;
     }
 
@@ -3795,15 +3806,24 @@ function getSampleData() {
 
 /* ========== INIT ========== */
 document.addEventListener('DOMContentLoaded', function() {
+  var data = window.__TOKEN_DATA__ || getSampleData();
+
+  function startApp() { DB.init(data); }
+
   // Probe for our custom API server before init
-  if (window.location.protocol.indexOf('http') === 0) {
-    fetch('/api/health', { method: 'GET' })
-      .then(function(r) { return r.json(); })
-      .then(function(d) { if (d && d.ok) window.__TOKEN_API_LIVE = true; })
-      .catch(function() {})
-      .finally(function() { DB.init(window.__TOKEN_DATA__ || getSampleData()); });
+  if (window.location.protocol.indexOf('http') === 0 && typeof fetch === 'function') {
+    try {
+      fetch('/api/health', { method: 'GET' })
+        .then(function(r) { return r.json(); })
+        .then(function(d) { if (d && d.ok) window.__TOKEN_API_LIVE = true; })
+        .catch(function() {})
+        .finally(startApp);
+    } catch(e) {
+      // fetch threw synchronously (CSP, network block, etc.)
+      startApp();
+    }
   } else {
-    DB.init(window.__TOKEN_DATA__ || getSampleData());
+    startApp();
   }
 });
 </script>

@@ -1,6 +1,7 @@
 ---
 name: token-optimizer
 description: Find the ghost tokens. Audit Claude Code setup, see where 25-38% of your context goes, fix it. Use when context feels tight.
+effort: high
 ---
 
 # Token Optimizer: See Where Your Context Window Goes. Get It Back.

@@ -153,6 +153,16 @@
           }
         ]
       }
+    ],
+    "CwdChanged": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/read_cache.py' && python3 '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/read_cache.py' --clear --quiet || true"
+          }
+        ]
+      }
     ]
   }
 }

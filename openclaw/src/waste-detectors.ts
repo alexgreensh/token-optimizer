@@ -13,12 +13,14 @@
  * 5. SessionHistoryBloat - context growing without compaction
  * 6. LoopDetection - many messages with near-zero output
  * 7. AbandonedSessions - 1-2 messages then stopped
+ * 8. GhostTokenQJL - QJL-inspired sketch clustering for ghost run detection
  */
 
 import * as fs from "fs";
 import * as path from "path";
 import { AgentRun, WasteFinding, Severity, totalTokens } from "./models";
 import { calculateCost } from "./pricing";
+import { computeSketch, sketchSimilarity, clusterBySketch } from "./jl-sketcher";
 
 type DetectorFn = (
   runs: AgentRun[],
@@ -446,6 +448,112 @@ function detectAbandonedSessions(
 }
 
 // ---------------------------------------------------------------------------
+// Tier 3: QJL-inspired ghost token detection
+// ---------------------------------------------------------------------------
+
+/**
+ * Detect "ghost" runs using QJL-inspired 1-bit sketching.
+ *
+ * Ghost runs are sessions that load nearly identical context (high sketch
+ * similarity) but produce negligible output. By clustering runs by their
+ * message sketch similarity, we identify groups of near-duplicate runs
+ * where the agent repeatedly loads the same context without doing useful
+ * work.
+ *
+ * Inspired by TurboQuant's Quantized Johnson-Lindenstrauss technique for
+ * detecting redundant computation in attention layers.
+ */
+function detectGhostTokenQJL(
+  runs: AgentRun[],
+  _config: Record<string, unknown>
+): WasteFinding[] {
+  if (runs.length < 3) return [];
+
+  // Build a text fingerprint for each run from its metadata
+  // (model + runType + token profile acts as a proxy for message content)
+  const items = runs.map((r, idx) => ({
+    id: String(idx),
+    text: [
+      r.model,
+      r.runType,
+      r.agentName,
+      `input:${Math.round(r.tokens.input / 1000)}k`,
+      `msgs:${r.messageCount}`,
+      ...(r.toolsUsed.length > 0 ? r.toolsUsed.slice(0, 5) : ["no-tools"]),
+    ].join(" "),
+  }));
+
+  // Cluster by high similarity (threshold 0.95 = near-duplicate profiles)
+  const clusters = clusterBySketch(items, 0.95);
+
+  // Within each cluster, find ghost runs (output < 100 tokens)
+  let ghostRuns: AgentRun[] = [];
+
+  for (const cluster of clusters) {
+    if (cluster.length < 2) continue;
+
+    const clusterRuns = cluster.map((id) => runs[parseInt(id, 10)]);
+    const ghosts = clusterRuns.filter((r) => r.tokens.output < 100);
+
+    // Only flag if ghosts are a meaningful portion of the cluster
+    if (ghosts.length >= 2) {
+      ghostRuns.push(...ghosts);
+    }
+  }
+
+  if (ghostRuns.length < 2) return [];
+
+  // De-duplicate (a run could appear in multiple clusters theoretically)
+  const seen = new Set<string>();
+  ghostRuns = ghostRuns.filter((r) => {
+    const key = `${r.sessionId}-${r.timestamp.getTime()}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  if (ghostRuns.length < 2) return [];
+
+  const totalWasteCost = ghostRuns.reduce((sum, r) => sum + r.costUsd, 0);
+  const totalWasteTokens = ghostRuns.reduce(
+    (sum, r) => sum + r.tokens.input,
+    0
+  );
+  const days = spanDays(ghostRuns);
+  const monthlyCost = (totalWasteCost / days) * 30;
+
+  let severity: Severity = "medium";
+  if (monthlyCost > 10) severity = "critical";
+  else if (monthlyCost > 5) severity = "high";
+
+  return [
+    {
+      system: "openclaw",
+      agentName: ghostRuns[0].agentName,
+      wasteType: "ghost_token_qjl",
+      tier: 3,
+      severity,
+      confidence: 0.9,
+      description: `${ghostRuns.length} ghost runs detected: near-duplicate context loaded with <100 token output`,
+      monthlyWasteUsd: monthlyCost,
+      monthlyWasteTokens: Math.round((totalWasteTokens / days) * 30),
+      recommendation:
+        "These runs load similar context repeatedly without producing output. " +
+        "Add idempotency guards or cache results from prior identical runs.",
+      fixSnippet:
+        "# Add early-exit when context matches a recent successful run:\n" +
+        "# if sketch_matches_recent_run(context): return cached_result",
+      evidence: {
+        ghostRunCount: ghostRuns.length,
+        clustersWithGhosts: clusters.filter((c) => c.length >= 2).length,
+        totalInputTokensWasted: totalWasteTokens,
+        avgInputPerGhost: Math.round(totalWasteTokens / ghostRuns.length),
+      },
+    },
+  ];
+}
+
+// ---------------------------------------------------------------------------
 // Registry: all detectors in execution order
 // ---------------------------------------------------------------------------
 
@@ -465,6 +573,7 @@ export const ALL_DETECTORS: Array<{
   { name: "session_history_bloat", tier: 2, fn: detectSessionHistoryBloat },
   { name: "loop_detection", tier: 2, fn: detectLoops },
   { name: "abandoned_sessions", tier: 2, fn: detectAbandonedSessions },
+  { name: "ghost_token_qjl", tier: 3, fn: detectGhostTokenQJL },
 ];
 
 /**

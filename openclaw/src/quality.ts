@@ -1,7 +1,10 @@
 /**
  * Quality Scoring for OpenClaw.
  *
- * 5-signal quality metric adapted for OpenClaw's architecture.
+ * 7-signal two-stage quality metric adapted for OpenClaw's architecture.
+ * Stage 1: 5 coarse signals (context fill, session length, model routing, empty runs, outcomes)
+ * Stage 2: 2 TurboQuant-inspired semantic signals (message efficiency, compression opportunity)
+ * Includes distortion bounds analysis for theoretical quality ceiling.
  * Score: 0-100 with color bands (Good/Fair/Needs Work/Poor).
  */
 
@@ -21,10 +24,10 @@ export interface QualitySignal {
 
 export interface QualityReport {
   score: number;
-  grade: string;
   band: string;
   signals: QualitySignal[];
   recommendations: string[];
+  distortionBounds?: DistortionBounds;
 }
 
 // ---------------------------------------------------------------------------
@@ -89,7 +92,7 @@ export function contextWindowForModel(model: string): number {
 }
 
 /**
- * Signal 1: Context fill (25%)
+ * Signal 1: Context fill (20%)
  * How much of each model's context window is being used.
  * Uses per-model context window sizes for accurate measurement.
  */
@@ -137,21 +140,21 @@ function scoreContextFill(
 
   return {
     name: "Context Fill",
-    weight: 0.25,
+    weight: 0.20,
     score,
     description: `Average context fill: ${pctStr}% of ${windowStr} window. ${score >= 70 ? "Healthy headroom." : "Consider compaction or trimming overhead."}`,
   };
 }
 
 /**
- * Signal 2: Session length risk (20%)
+ * Signal 2: Session length risk (16%)
  * Longer sessions = higher risk of quality degradation.
  */
 function scoreSessionLength(runs: AgentRun[]): QualitySignal {
   if (runs.length === 0) {
     return {
       name: "Session Length Risk",
-      weight: 0.20,
+      weight: 0.16,
       score: 0,
       description: "Insufficient data. Run some sessions first.",
     };
@@ -170,21 +173,21 @@ function scoreSessionLength(runs: AgentRun[]): QualitySignal {
 
   return {
     name: "Session Length Risk",
-    weight: 0.20,
+    weight: 0.16,
     score,
     description: `${longPct.toFixed(0)}% of sessions exceed ${COMPACT_THRESHOLD} messages (avg: ${avgMessages.toFixed(0)}). ${score >= 70 ? "Sessions are well-managed." : "Enable auto-compaction to reduce risk."}`,
   };
 }
 
 /**
- * Signal 3: Model routing efficiency (20%)
+ * Signal 3: Model routing efficiency (16%)
  * Are expensive models used for cheap tasks?
  */
 function scoreModelRouting(runs: AgentRun[]): QualitySignal {
   if (runs.length === 0) {
     return {
       name: "Model Routing",
-      weight: 0.20,
+      weight: 0.16,
       score: 0,
       description: "Insufficient data. Run some sessions first.",
     };
@@ -197,7 +200,7 @@ function scoreModelRouting(runs: AgentRun[]): QualitySignal {
   if (heartbeats.length === 0) {
     return {
       name: "Model Routing",
-      weight: 0.20,
+      weight: 0.16,
       score: 85,
       description: "No heartbeat/cron tasks detected. Manual runs not scored for routing.",
     };
@@ -218,21 +221,21 @@ function scoreModelRouting(runs: AgentRun[]): QualitySignal {
 
   return {
     name: "Model Routing",
-    weight: 0.20,
+    weight: 0.16,
     score,
     description: `${misroutePct.toFixed(0)}% of heartbeats use expensive models. ${score >= 70 ? "Good routing." : "Route cron/heartbeat tasks to Haiku or equivalent."}`,
   };
 }
 
 /**
- * Signal 4: Empty run ratio (20%)
+ * Signal 4: Empty run ratio (16%)
  * Runs that load context but produce nothing useful.
  */
 function scoreEmptyRuns(runs: AgentRun[]): QualitySignal {
   if (runs.length === 0) {
     return {
       name: "Empty Run Ratio",
-      weight: 0.20,
+      weight: 0.16,
       score: 0,
       description: "Insufficient data. Run some sessions first.",
     };
@@ -253,21 +256,21 @@ function scoreEmptyRuns(runs: AgentRun[]): QualitySignal {
 
   return {
     name: "Empty Run Ratio",
-    weight: 0.20,
+    weight: 0.16,
     score,
     description: `${emptyPct.toFixed(0)}% of runs are empty (loaded context, produced nothing). ${score >= 70 ? "Efficient usage." : "Add guard conditions to skip idle runs."}`,
   };
 }
 
 /**
- * Signal 5: Outcome health (15%)
+ * Signal 5: Outcome health (12%)
  * Ratio of success vs abandoned/empty/failure.
  */
 function scoreOutcomeHealth(runs: AgentRun[]): QualitySignal {
   if (runs.length === 0) {
     return {
       name: "Outcome Health",
-      weight: 0.15,
+      weight: 0.12,
       score: 0,
       description: "Insufficient data. Run some sessions first.",
     };
@@ -287,9 +290,205 @@ function scoreOutcomeHealth(runs: AgentRun[]): QualitySignal {
 
   return {
     name: "Outcome Health",
-    weight: 0.15,
+    weight: 0.12,
     score,
     description: `${successPct.toFixed(0)}% success rate (${failCount} failures, ${abandonCount} abandoned). ${score >= 70 ? "Healthy outcomes." : "High failure/abandon rate, investigate root causes."}`,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Distortion bounds (TurboQuant-inspired theoretical quality ceiling)
+// ---------------------------------------------------------------------------
+
+export interface DistortionBounds {
+  /** Best possible quality score for this configuration. */
+  theoreticalMax: number;
+  /** Current achieved quality score. */
+  achievedScore: number;
+  /** Ratio of achieved to theoretical maximum (0-1). */
+  utilization: number;
+  /** Actionable recommendation based on utilization. */
+  recommendation: string;
+}
+
+/**
+ * Compute theoretical quality bounds based on TurboQuant distortion theory.
+ *
+ * At any compression ratio, there is a minimum distortion (quality loss)
+ * that cannot be avoided. For context windows, the effective capacity
+ * determines the distortion floor: larger windows relative to message
+ * size yield diminishing returns in quality improvement.
+ *
+ * @param runs - Agent runs to analyze
+ * @param modelContextWindow - Context window size in tokens for the dominant model
+ * @returns Distortion bounds with theoretical max, achieved score, and utilization
+ */
+export function computeDistortionBounds(
+  runs: AgentRun[],
+  modelContextWindow: number
+): DistortionBounds {
+  if (runs.length === 0) {
+    return {
+      theoreticalMax: 100,
+      achievedScore: 0,
+      utilization: 0,
+      recommendation: "No data available. Run some sessions to establish quality bounds.",
+    };
+  }
+
+  // Average message tokens across all runs
+  const avgMessageTokens = runs.reduce(
+    (sum, r) => sum + (r.messageCount > 0 ? totalTokens(r.tokens) / r.messageCount : 0),
+    0
+  ) / runs.length;
+
+  // Effective capacity: how many "message slots" the context window can hold
+  const effectiveCapacity = avgMessageTokens > 0
+    ? modelContextWindow / avgMessageTokens
+    : modelContextWindow / 1000; // fallback: assume 1K tokens per message
+
+  // Distortion floor: diminishing returns curve
+  const distortionFloor = 1 / Math.sqrt(Math.max(1, effectiveCapacity));
+
+  // Theoretical maximum quality score
+  const theoreticalMax = Math.round(100 * (1 - distortionFloor));
+
+  // Compute the achieved score using the existing scorer (without distortion context)
+  const signals: QualitySignal[] = [
+    scoreContextFill(runs),
+    scoreSessionLength(runs),
+    scoreModelRouting(runs),
+    scoreEmptyRuns(runs),
+    scoreOutcomeHealth(runs),
+    scoreMessageEfficiency(runs),
+    scoreCompressionOpportunity(runs),
+  ];
+  const achievedScore = Math.round(
+    Math.min(100, Math.max(0, signals.reduce((sum, sig) => sum + sig.score * sig.weight, 0)))
+  );
+
+  const utilization = theoreticalMax > 0 ? achievedScore / theoreticalMax : 0;
+
+  let recommendation: string;
+  if (utilization > 0.85) {
+    recommendation =
+      "Near optimal — structural changes needed for further gains. " +
+      "Consider model upgrades or architecture redesign.";
+  } else if (utilization > 0.7) {
+    recommendation =
+      "Good utilization. Targeted prompt optimization and caching " +
+      "can close the remaining gap.";
+  } else if (utilization >= 0.5) {
+    recommendation =
+      "Moderate room for improvement. Focus on reducing empty runs, " +
+      "enabling compaction, and optimizing model routing.";
+  } else {
+    recommendation =
+      "Significant room for improvement via signal optimization. " +
+      "Start with the lowest-scoring quality signals above.";
+  }
+
+  return {
+    theoreticalMax,
+    achievedScore,
+    utilization: Math.round(utilization * 1000) / 1000, // 3 decimal places
+    recommendation,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Stage 2 signals (TurboQuant-inspired semantic layer)
+// ---------------------------------------------------------------------------
+
+/**
+ * Signal 6: Message Efficiency (10%)
+ *
+ * Measures the ratio of output tokens to total tokens per session.
+ * Low ratios indicate sessions that consume input without producing
+ * meaningful output — analogous to low signal-to-noise ratio in
+ * quantization theory.
+ */
+function scoreMessageEfficiency(runs: AgentRun[]): QualitySignal {
+  if (runs.length === 0) {
+    return {
+      name: "Message Efficiency",
+      weight: 0.10,
+      score: 0,
+      description: "Insufficient data. Run some sessions first.",
+    };
+  }
+
+  const ratios = runs.map((r) => {
+    const total = r.tokens.input + r.tokens.output;
+    return total > 0 ? r.tokens.output / total : 0;
+  });
+  const avgRatio = ratios.reduce((a, b) => a + b, 0) / ratios.length;
+
+  let score: number;
+  if (avgRatio > 0.3) score = 100;
+  else if (avgRatio > 0.2) score = 80;
+  else if (avgRatio > 0.1) score = 50;
+  else score = 20;
+
+  return {
+    name: "Message Efficiency",
+    weight: 0.10,
+    score,
+    description: `Average output ratio: ${(avgRatio * 100).toFixed(1)}% of total tokens. ${score >= 70 ? "Good output efficiency." : "Sessions consume more input than they produce. Consider trimming system prompts."}`,
+  };
+}
+
+/**
+ * Signal 7: Compression Opportunity (10%)
+ *
+ * Estimates input redundancy by hashing the first 100 characters of each
+ * run's identifying features (model + agent + tools). High redundancy
+ * means many near-duplicate prompts are being sent, which represents
+ * compressible waste.
+ *
+ * Inspired by TurboQuant's analysis of redundant attention patterns.
+ */
+function scoreCompressionOpportunity(runs: AgentRun[]): QualitySignal {
+  if (runs.length === 0) {
+    return {
+      name: "Compression Opportunity",
+      weight: 0.10,
+      score: 0,
+      description: "Insufficient data. Run some sessions first.",
+    };
+  }
+
+  // Build a fingerprint for each run (first 100 chars of a canonical string)
+  const hashes = new Set<string>();
+  const fingerprints: string[] = [];
+
+  for (const r of runs) {
+    const raw = [
+      r.agentName,
+      r.model,
+      r.runType,
+      r.toolsUsed.sort().join(","),
+      `msgs:${r.messageCount}`,
+    ]
+      .join("|")
+      .slice(0, 100);
+    fingerprints.push(raw);
+    hashes.add(raw);
+  }
+
+  const redundancy = 1 - hashes.size / runs.length;
+
+  let score: number;
+  if (redundancy < 0.05) score = 100;
+  else if (redundancy < 0.15) score = 80;
+  else if (redundancy < 0.3) score = 50;
+  else score = 20;
+
+  return {
+    name: "Compression Opportunity",
+    weight: 0.10,
+    score,
+    description: `Message redundancy: ${(redundancy * 100).toFixed(0)}% of runs have near-duplicate profiles. ${score >= 70 ? "Low redundancy — inputs are diverse." : "High redundancy suggests repeated prompts. Consider caching or deduplication."}`,
   };
 }
 
@@ -302,19 +501,6 @@ function bandFromScore(score: number): string {
   if (score >= 60) return "Fair";
   if (score >= 40) return "Needs Work";
   return "Poor";
-}
-
-/**
- * Convert a 0-100 quality score to a letter grade.
- * S: 90-100 | A: 80-89 | B: 70-79 | C: 55-69 | D: 40-54 | F: 0-39
- */
-export function scoreToGrade(score: number): string {
-  if (score >= 90) return "S";
-  if (score >= 80) return "A";
-  if (score >= 70) return "B";
-  if (score >= 55) return "C";
-  if (score >= 40) return "D";
-  return "F";
 }
 
 function generateQualityRecommendations(signals: QualitySignal[]): string[] {
@@ -341,6 +527,12 @@ function generateQualityRecommendations(signals: QualitySignal[]): string[] {
       case "Outcome Health":
         recs.push("Investigate failed and abandoned sessions. High abandonment may indicate excessive startup overhead.");
         break;
+      case "Message Efficiency":
+        recs.push("Output ratio is low — sessions consume more input than they produce. Trim system prompts and reduce context overhead.");
+        break;
+      case "Compression Opportunity":
+        recs.push("High message redundancy detected. Cache repeated prompts or deduplicate system instructions across runs.");
+        break;
     }
   }
 
@@ -351,12 +543,16 @@ export function scoreQuality(
   runs: AgentRun[],
   contextAudit?: ContextAudit | null
 ): QualityReport {
+  // Stage 1: Original 5 coarse signals (weights adjusted to 80% total)
+  // Stage 2: 2 new TurboQuant-inspired semantic signals (20% total)
   const signals: QualitySignal[] = [
     scoreContextFill(runs, contextAudit),
     scoreSessionLength(runs),
     scoreModelRouting(runs),
     scoreEmptyRuns(runs),
     scoreOutcomeHealth(runs),
+    scoreMessageEfficiency(runs),
+    scoreCompressionOpportunity(runs),
   ];
 
   const weightedScore = signals.reduce(
@@ -365,11 +561,34 @@ export function scoreQuality(
   );
 
   const score = Math.round(Math.min(100, Math.max(0, weightedScore)));
-  const grade = scoreToGrade(score);
   const band = bandFromScore(score);
   const recommendations = generateQualityRecommendations(signals);
 
-  return { score, grade, band, signals, recommendations };
+  // Compute distortion bounds for the dominant model
+  let distortionBounds: DistortionBounds | undefined;
+  if (runs.length > 0) {
+    const modelCounts = new Map<string, number>();
+    for (const r of runs) {
+      modelCounts.set(r.model, (modelCounts.get(r.model) ?? 0) + 1);
+    }
+    let dominantModel = runs[0].model;
+    let maxCount = 0;
+    for (const [model, count] of modelCounts) {
+      if (count > maxCount) {
+        maxCount = count;
+        dominantModel = model;
+      }
+    }
+    const ctxWindow = contextWindowForModel(dominantModel);
+    distortionBounds = computeDistortionBounds(runs, ctxWindow);
+    // Override achievedScore with the actual computed score
+    distortionBounds.achievedScore = score;
+    distortionBounds.utilization = distortionBounds.theoreticalMax > 0
+      ? Math.round((score / distortionBounds.theoreticalMax) * 1000) / 1000
+      : 0;
+  }
+
+  return { score, band, signals, recommendations, distortionBounds };
 }
 
 // ---------------------------------------------------------------------------
@@ -386,7 +605,7 @@ export function scoreQuality(
  *   4. Output/input ratio (15%): low ratio = wasteful
  *   5. Duration risk (15%): >60min sessions = risk
  */
-export function scoreSessionQuality(run: AgentRun): { score: number; grade: string; band: string } {
+export function scoreSessionQuality(run: AgentRun): { score: number; band: string } {
   // Signal 1: Context fill (25%) - lower fill = better
   const ctxWindow = contextWindowForModel(run.model);
   const fillRatio = ctxWindow > 0 ? run.tokens.input / ctxWindow : 0;
@@ -445,8 +664,7 @@ export function scoreSessionQuality(run: AgentRun): { score: number; grade: stri
     durationScore * 0.15;
 
   const score = Math.round(Math.min(100, Math.max(0, weighted)));
-  const grade = scoreToGrade(score);
   const band = bandFromScore(score);
 
-  return { score, grade, band };
+  return { score, band };
 }

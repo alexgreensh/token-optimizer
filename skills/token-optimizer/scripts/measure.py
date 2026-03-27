@@ -5811,13 +5811,15 @@ CHECKPOINT_DIR = CLAUDE_DIR / "token-optimizer" / "checkpoints"
 # Quality signal weights (must sum to 1.0)
 # context_fill_degradation is the most important signal at large context windows
 _QUALITY_WEIGHTS = {
-    "context_fill_degradation": 0.20,
-    "stale_reads": 0.20,
-    "bloated_results": 0.20,
-    "duplicates": 0.10,
-    "compaction_depth": 0.15,
-    "decision_density": 0.08,
-    "agent_efficiency": 0.07,
+    "context_fill_degradation": 0.17,
+    "stale_reads": 0.17,
+    "bloated_results": 0.17,
+    "duplicates": 0.08,
+    "compaction_depth": 0.13,
+    "decision_density": 0.06,
+    "agent_efficiency": 0.06,
+    "message_efficiency": 0.08,       # New: output-to-total token ratio
+    "compression_opportunity": 0.08,  # New: input redundancy detection
 }
 
 # Configurable via env vars
@@ -6128,8 +6130,9 @@ def compute_quality_score(quality_data):
 
     Each signal is scored 0-100, then weighted per _QUALITY_WEIGHTS.
     Higher = better quality (less waste).
-    7 signals: context fill degradation, stale reads, bloated results,
-    duplicates, compaction depth, decision density, agent efficiency.
+    9 signals: context fill degradation, stale reads, bloated results,
+    duplicates, compaction depth, decision density, agent efficiency,
+    message efficiency, compression opportunity.
     """
     total_messages = len(quality_data["messages"])
     if total_messages == 0:
@@ -6214,6 +6217,46 @@ def compute_quality_score(quality_data):
     else:
         agent_score = 80  # No agents = neutral score
 
+    # 7. Message efficiency: output-to-total token ratio
+    # Measures whether sessions produce meaningful output relative to input
+    tool_results_list = quality_data["tool_results"]
+    total_result_chars = sum(rsize for _, _, rsize, _ in tool_results_list)
+    total_message_chars = sum(tlen for _, _, tlen, _ in quality_data["messages"])
+    total_chars_all = total_result_chars + total_message_chars
+    if total_chars_all > 0:
+        output_ratio = total_message_chars / total_chars_all
+        if output_ratio > 0.3:
+            msg_eff_score = 100
+        elif output_ratio > 0.2:
+            msg_eff_score = 80
+        elif output_ratio > 0.1:
+            msg_eff_score = 50
+        else:
+            msg_eff_score = 20
+    else:
+        msg_eff_score = 50  # No data = neutral
+
+    # 8. Compression opportunity: input redundancy detection
+    # Measures how many messages are near-duplicates (beyond system reminders)
+    message_fingerprints = set()
+    total_msg_count = len(quality_data["messages"])
+    for _, _, tlen, substantive_flag in quality_data["messages"]:
+        # Use text length bucket as a simple fingerprint
+        fp = f"len:{tlen // 100}"
+        message_fingerprints.add(fp)
+    if total_msg_count > 0:
+        redundancy = 1 - len(message_fingerprints) / total_msg_count
+        if redundancy < 0.05:
+            compress_score = 100
+        elif redundancy < 0.15:
+            compress_score = 80
+        elif redundancy < 0.3:
+            compress_score = 50
+        else:
+            compress_score = 20
+    else:
+        compress_score = 50  # No data = neutral
+
     signals = {
         "context_fill_degradation": round(fill_score, 1),
         "stale_reads": round(stale_score, 1),
@@ -6222,7 +6265,14 @@ def compute_quality_score(quality_data):
         "compaction_depth": round(compaction_score, 1),
         "decision_density": round(density_score, 1),
         "agent_efficiency": round(agent_score, 1),
+        "message_efficiency": round(msg_eff_score, 1),
+        "compression_opportunity": round(compress_score, 1),
     }
+
+    # Validate weights sum to 1.0 (prevents silent drift when adding signals)
+    weight_sum = sum(_QUALITY_WEIGHTS.values())
+    if abs(weight_sum - 1.0) > 0.001:
+        raise ValueError(f"Quality signal weights must sum to 1.0, got {weight_sum}")
 
     composite = sum(signals[k] * _QUALITY_WEIGHTS[k] for k in _QUALITY_WEIGHTS)
 
@@ -6292,6 +6342,24 @@ def compute_quality_score(quality_data):
             "score": signals["agent_efficiency"],
             "dispatch_count": len(dispatches),
             "detail": f"{len(dispatches)} agent dispatches" if dispatches else "No agents used",
+        },
+        "message_efficiency": {
+            "score": signals["message_efficiency"],
+            "output_ratio": round(output_ratio, 3) if total_chars_all > 0 else 0,
+            "detail": (
+                f"{round(output_ratio * 100, 1)}% output ratio"
+                if total_chars_all > 0 else "No data"
+            ),
+        },
+        "compression_opportunity": {
+            "score": signals["compression_opportunity"],
+            "redundancy": round(redundancy, 3) if total_msg_count > 0 else 0,
+            "unique_fingerprints": len(message_fingerprints),
+            "total_messages": total_msg_count,
+            "detail": (
+                f"{round(redundancy * 100)}% message redundancy"
+                if total_msg_count > 0 else "No data"
+            ),
         },
         "total_estimated_waste_tokens": total_waste,
     }

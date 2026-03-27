@@ -448,7 +448,7 @@ function detectAbandonedSessions(
 }
 
 // ---------------------------------------------------------------------------
-// Tier 3: QJL-inspired ghost token detection
+// Tier 2: QJL-inspired ghost token detection
 // ---------------------------------------------------------------------------
 
 /**
@@ -531,7 +531,7 @@ function detectGhostTokenQJL(
       system: "openclaw",
       agentName: ghostRuns[0].agentName,
       wasteType: "ghost_token_qjl",
-      tier: 3,
+      tier: 2,
       severity,
       confidence: 0.9,
       description: `${ghostRuns.length} ghost runs detected: near-duplicate context loaded with <100 token output`,
@@ -573,7 +573,7 @@ export const ALL_DETECTORS: Array<{
   { name: "session_history_bloat", tier: 2, fn: detectSessionHistoryBloat },
   { name: "loop_detection", tier: 2, fn: detectLoops },
   { name: "abandoned_sessions", tier: 2, fn: detectAbandonedSessions },
-  { name: "ghost_token_qjl", tier: 3, fn: detectGhostTokenQJL },
+  { name: "ghost_token_qjl", tier: 2, fn: detectGhostTokenQJL },
 ];
 
 /**

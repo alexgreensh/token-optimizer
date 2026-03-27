@@ -570,6 +570,11 @@ export function scoreQuality(
     scoreCompressionOpportunity(runs),
   ];
 
+  const weightSum = signals.reduce((s, sig) => s + sig.weight, 0);
+  if (Math.abs(weightSum - 1.0) > 0.001) {
+    throw new Error(`Quality signal weights must sum to 1.0, got ${weightSum}`);
+  }
+
   const weightedScore = signals.reduce(
     (sum, sig) => sum + sig.score * sig.weight,
     0

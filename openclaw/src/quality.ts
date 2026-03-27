@@ -4,7 +4,7 @@
  * 7-signal two-stage quality metric adapted for OpenClaw's architecture.
  * Stage 1: 5 coarse signals (context fill, session length, model routing, empty runs, outcomes)
  * Stage 2: 2 TurboQuant-inspired semantic signals (message efficiency, compression opportunity)
- * Includes distortion bounds analysis for theoretical quality ceiling.
+ * Includes distortion bounds analysis for estimated quality ceiling.
  * Score: 0-100 with color bands (Good/Fair/Needs Work/Poor).
  */
 
@@ -298,31 +298,30 @@ function scoreOutcomeHealth(runs: AgentRun[]): QualitySignal {
 }
 
 // ---------------------------------------------------------------------------
-// Distortion bounds (TurboQuant-inspired theoretical quality ceiling)
+// Distortion bounds (TurboQuant-inspired estimated quality ceiling)
 // ---------------------------------------------------------------------------
 
 export interface DistortionBounds {
-  /** Best possible quality score for this configuration. */
+  /** Estimated best quality score for this configuration (heuristic upper bound). */
   theoreticalMax: number;
   /** Current achieved quality score. */
   achievedScore: number;
-  /** Ratio of achieved to theoretical maximum (0-1). */
+  /** Ratio of achieved to estimated maximum (0-1). */
   utilization: number;
   /** Actionable recommendation based on utilization. */
   recommendation: string;
 }
 
 /**
- * Compute theoretical quality bounds based on TurboQuant distortion theory.
+ * Compute estimated quality bounds inspired by TurboQuant distortion concepts.
  *
- * At any compression ratio, there is a minimum distortion (quality loss)
- * that cannot be avoided. For context windows, the effective capacity
- * determines the distortion floor: larger windows relative to message
- * size yield diminishing returns in quality improvement.
+ * Uses a heuristic based on context window capacity to estimate an upper
+ * bound on achievable quality. This is a useful approximation, not a
+ * proven mathematical limit — treat it as an estimated ceiling.
  *
  * @param runs - Agent runs to analyze
  * @param modelContextWindow - Context window size in tokens for the dominant model
- * @returns Distortion bounds with theoretical max, achieved score, and utilization
+ * @returns Distortion bounds with estimated max, achieved score, and utilization
  */
 export function computeDistortionBounds(
   runs: AgentRun[],

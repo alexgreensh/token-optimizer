@@ -7,7 +7,7 @@ Three new features inspired by [TurboQuant](https://research.google/blog/turboqu
 | Enhancement | File | What It Does |
 |-------------|------|-------------|
 | QJL Ghost Token Detector | `openclaw/src/jl-sketcher.ts` (new) + `waste-detectors.ts` | Sketch-based clustering to find wasteful near-duplicate runs |
-| Distortion Bounds Metric | `openclaw/src/quality.ts` | Theoretical quality ceiling based on TurboQuant distortion theory |
+| Distortion Bounds Metric | `openclaw/src/quality.ts` | Estimated quality ceiling inspired by TurboQuant distortion concepts |
 | Two-Stage Quality Scoring | `openclaw/src/quality.ts` | 2 new signals: Message Efficiency + Compression Opportunity |
 
 ---
@@ -90,11 +90,11 @@ For each cluster with 2+ runs:
 
 ### Problem
 
-Users optimize their quality score without knowing the theoretical ceiling. If you're at 85/100 and the theoretical max for your configuration is 88, further optimization is futile — structural changes (shorter sessions, different model) are needed.
+Users optimize their quality score without knowing the estimated ceiling. If you're at 85/100 and the estimated max for your configuration is 88, further optimization is unlikely to help — structural changes (shorter sessions, different model) are needed.
 
 ### Solution
 
-`computeDistortionBounds()` calculates a theoretical quality ceiling based on TurboQuant's distortion-rate theory, adapted to context windows.
+`computeDistortionBounds()` calculates an estimated quality ceiling using a heuristic inspired by TurboQuant's distortion-rate concepts, adapted to context windows. This is a useful approximation, not a proven mathematical limit.
 
 ### API
 
@@ -119,7 +119,7 @@ theoreticalMax   = round(100 * (1 - distortionFloor))
 utilization      = achievedScore / theoreticalMax
 ```
 
-**Intuition:** A 1M context window with 5K avg messages has capacity for ~200 "slots." The distortion floor is `1/sqrt(200) = 0.071`, so the theoretical max quality is `100 * (1 - 0.071) = 93`.
+**Intuition:** A 1M context window with 5K avg messages has capacity for ~200 "slots." The distortion floor is `1/sqrt(200) = 0.071`, so the estimated max quality is `100 * (1 - 0.071) = 93`.
 
 ### Recommendations
 

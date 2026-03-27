@@ -326,7 +326,8 @@ export interface DistortionBounds {
  */
 export function computeDistortionBounds(
   runs: AgentRun[],
-  modelContextWindow: number
+  modelContextWindow: number,
+  precomputedSignals?: QualitySignal[]
 ): DistortionBounds {
   if (runs.length === 0) {
     return {
@@ -354,8 +355,8 @@ export function computeDistortionBounds(
   // Theoretical maximum quality score
   const theoreticalMax = Math.round(100 * (1 - distortionFloor));
 
-  // Compute the achieved score using the existing scorer (without distortion context)
-  const signals: QualitySignal[] = [
+  // Use pre-computed signals when available to avoid duplicate computation
+  const signals = precomputedSignals ?? [
     scoreContextFill(runs),
     scoreSessionLength(runs),
     scoreModelRouting(runs),
@@ -595,12 +596,7 @@ export function scoreQuality(
       }
     }
     const ctxWindow = contextWindowForModel(dominantModel);
-    distortionBounds = computeDistortionBounds(runs, ctxWindow);
-    // Override achievedScore with the actual computed score
-    distortionBounds.achievedScore = score;
-    distortionBounds.utilization = distortionBounds.theoreticalMax > 0
-      ? Math.round((score / distortionBounds.theoreticalMax) * 1000) / 1000
-      : 0;
+    distortionBounds = computeDistortionBounds(runs, ctxWindow, signals);
   }
 
   return { score, grade, band, signals, recommendations, distortionBounds };

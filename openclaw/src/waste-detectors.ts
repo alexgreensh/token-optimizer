@@ -13,12 +13,14 @@
  * 5. SessionHistoryBloat - context growing without compaction
  * 6. LoopDetection - many messages with near-zero output
  * 7. AbandonedSessions - 1-2 messages then stopped
+ * 8. GhostTokenQJL - QJL-inspired sketch clustering for ghost run detection
  */
 
 import * as fs from "fs";
 import * as path from "path";
 import { AgentRun, WasteFinding, Severity, totalTokens } from "./models";
 import { calculateCost } from "./pricing";
+import { computeSketch, sketchSimilarity, clusterBySketch } from "./jl-sketcher";
 
 type DetectorFn = (
   runs: AgentRun[],
@@ -446,6 +448,133 @@ function detectAbandonedSessions(
 }
 
 // ---------------------------------------------------------------------------
+// Tier 2: Ghost token detection (dual strategy: simple grouping or sketch)
+// ---------------------------------------------------------------------------
+
+/**
+ * Detect "ghost" runs — sessions that load context but produce negligible output.
+ *
+ * Two strategies are available, controlled by config.ghostDetectorStrategy:
+ *
+ *   "simple" (default) — Groups runs by (agentName, model, runType) using a Map.
+ *     Deterministic, O(n), easy to debug. Best when metadata fields are sufficient
+ *     to identify duplicate patterns.
+ *
+ *   "sketch" — Uses QJL-inspired 1-bit sketch clustering (Hamming similarity).
+ *     Catches fuzzy near-duplicates that differ slightly in token counts or tools.
+ *     O(n²) pairwise comparison. Better if you later want to sketch actual message
+ *     content for deeper similarity detection.
+ *
+ * Set config.ghostDetectorStrategy to toggle between them.
+ */
+function detectGhostTokenQJL(
+  runs: AgentRun[],
+  config: Record<string, unknown>
+): WasteFinding[] {
+  if (runs.length < 3) return [];
+
+  const strategy = (config.ghostDetectorStrategy as string) ?? "simple";
+  const clusters: AgentRun[][] =
+    strategy === "sketch"
+      ? clusterRunsBySketch(runs)
+      : clusterRunsByGroup(runs);
+
+  // Within each cluster, find ghost runs (output < 100 tokens)
+  let ghostRuns: AgentRun[] = [];
+
+  for (const cluster of clusters) {
+    if (cluster.length < 2) continue;
+
+    const ghosts = cluster.filter((r) => r.tokens.output < 100);
+
+    // Only flag if ghosts are a meaningful portion of the cluster
+    if (ghosts.length >= 2) {
+      ghostRuns.push(...ghosts);
+    }
+  }
+
+  if (ghostRuns.length < 2) return [];
+
+  // De-duplicate (a run could appear in multiple clusters with sketch strategy)
+  const seen = new Set<string>();
+  ghostRuns = ghostRuns.filter((r) => {
+    const key = `${r.sessionId}-${r.timestamp.getTime()}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  if (ghostRuns.length < 2) return [];
+
+  const totalWasteCost = ghostRuns.reduce((sum, r) => sum + r.costUsd, 0);
+  const totalWasteTokens = ghostRuns.reduce(
+    (sum, r) => sum + r.tokens.input,
+    0
+  );
+  const days = spanDays(ghostRuns);
+  const monthlyCost = (totalWasteCost / days) * 30;
+
+  let severity: Severity = "medium";
+  if (monthlyCost > 10) severity = "critical";
+  else if (monthlyCost > 5) severity = "high";
+
+  return [
+    {
+      system: "openclaw",
+      agentName: ghostRuns[0].agentName,
+      wasteType: "ghost_token_qjl",
+      tier: 2,
+      severity,
+      confidence: 0.9,
+      description: `${ghostRuns.length} ghost runs detected via ${strategy} strategy: near-duplicate context loaded with <100 token output`,
+      monthlyWasteUsd: monthlyCost,
+      monthlyWasteTokens: Math.round((totalWasteTokens / days) * 30),
+      recommendation:
+        "These runs load similar context repeatedly without producing output. " +
+        "Add idempotency guards or cache results from prior identical runs.",
+      fixSnippet:
+        "# Add early-exit when context matches a recent successful run:\n" +
+        "# if sketch_matches_recent_run(context): return cached_result",
+      evidence: {
+        strategy,
+        ghostRunCount: ghostRuns.length,
+        totalInputTokensWasted: totalWasteTokens,
+        avgInputPerGhost: Math.round(totalWasteTokens / ghostRuns.length),
+      },
+    },
+  ];
+}
+
+/** Simple O(n) grouping by (agentName, model, runType). */
+function clusterRunsByGroup(runs: AgentRun[]): AgentRun[][] {
+  const groups = new Map<string, AgentRun[]>();
+  for (const r of runs) {
+    const key = `${r.agentName}|${r.model}|${r.runType}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(r);
+  }
+  return Array.from(groups.values());
+}
+
+/** Sketch-based O(n²) clustering using QJL 1-bit similarity. */
+function clusterRunsBySketch(runs: AgentRun[]): AgentRun[][] {
+  const items = runs.map((r, idx) => ({
+    id: String(idx),
+    text: [
+      r.model,
+      r.runType,
+      r.agentName,
+      `input:${Math.round(r.tokens.input / 1000)}k`,
+      `msgs:${r.messageCount}`,
+      ...(r.toolsUsed.length > 0 ? r.toolsUsed.slice(0, 5) : ["no-tools"]),
+    ].join(" "),
+  }));
+
+  const clusters = clusterBySketch(items, 0.95);
+  return clusters.map((ids) => ids.map((id) => runs[parseInt(id, 10)]));
+}
+
+// ---------------------------------------------------------------------------
 // Registry: all detectors in execution order
 // ---------------------------------------------------------------------------
 
@@ -465,6 +594,7 @@ export const ALL_DETECTORS: Array<{
   { name: "session_history_bloat", tier: 2, fn: detectSessionHistoryBloat },
   { name: "loop_detection", tier: 2, fn: detectLoops },
   { name: "abandoned_sessions", tier: 2, fn: detectAbandonedSessions },
+  { name: "ghost_token_qjl", tier: 2, fn: detectGhostTokenQJL },
 ];
 
 /**

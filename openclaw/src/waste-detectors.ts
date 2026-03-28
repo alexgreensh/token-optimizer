@@ -8,7 +8,7 @@
  * Detectors implemented:
  * 1. HeartbeatModelWaste - expensive model for cron/heartbeat tasks
  * 2. HeartbeatOverFrequency - interval < 5 min across 3+ runs
- * 3. EmptyHeartbeatRuns - high input, near-zero output
+ * 3. EmptyRuns - high input, near-zero output
  * 4. StaleCronConfig - dead paths in cron/hook commands
  * 5. SessionHistoryBloat - context growing without compaction
  * 6. LoopDetection - many messages with near-zero output
@@ -18,7 +18,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { AgentRun, WasteFinding, Severity, totalTokens } from "./models";
+import { AgentRun, WasteFinding, Severity, totalTokens, EXPENSIVE_MODELS } from "./models";
 import { calculateCost } from "./pricing";
 import { computeSketch, sketchSimilarity, clusterBySketch } from "./jl-sketcher";
 
@@ -51,12 +51,8 @@ function detectHeartbeatModelWaste(
   );
   if (heartbeats.length === 0) return [];
 
-  const expensiveModels = new Set([
-    "opus", "sonnet", "gpt-5.4", "gpt-5.2", "gpt-5", "gpt-4.1",
-    "gpt-4o", "o3", "o3-pro", "gemini-3-pro", "gemini-2.5-pro", "grok-4",
-  ]);
   const expensive = heartbeats.filter(
-    (r) => expensiveModels.has(r.model)
+    (r) => EXPENSIVE_MODELS.has(r.model)
   );
   if (expensive.length === 0) return [];
 
@@ -227,8 +223,9 @@ function detectStaleCronConfig(
 
 /**
  * Detect runs with high input but near-zero output (the #1 waste pattern).
+ * Applies to ALL run types, not just heartbeat/cron.
  */
-function detectEmptyHeartbeatRuns(
+function detectEmptyRuns(
   runs: AgentRun[],
   _config: Record<string, unknown>
 ): WasteFinding[] {
@@ -264,7 +261,7 @@ function detectEmptyHeartbeatRuns(
     {
       system: "openclaw",
       agentName: confirmed[0].agentName,
-      wasteType: "empty_heartbeat",
+      wasteType: "empty_runs",
       tier: 2,
       severity,
       confidence: 0.85,
@@ -573,7 +570,10 @@ function clusterRunsBySketch(runs: AgentRun[]): AgentRun[][] {
   }));
 
   const clusters = clusterBySketch(items, 0.95);
-  return clusters.map((ids) => ids.map((id) => runs[parseInt(id, 10)]));
+  return clusters.map((ids) => ids
+    .map((id) => runs[parseInt(id, 10)])
+    .filter((r): r is AgentRun => r !== undefined)
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -592,7 +592,7 @@ export const ALL_DETECTORS: Array<{
     fn: detectHeartbeatOverFrequency,
   },
   { name: "stale_cron", tier: 1, fn: detectStaleCronConfig },
-  { name: "empty_heartbeat", tier: 2, fn: detectEmptyHeartbeatRuns },
+  { name: "empty_runs", tier: 2, fn: detectEmptyRuns },
   { name: "session_history_bloat", tier: 2, fn: detectSessionHistoryBloat },
   { name: "loop_detection", tier: 2, fn: detectLoops },
   { name: "abandoned_sessions", tier: 2, fn: detectAbandonedSessions },
@@ -613,8 +613,8 @@ export function runAllDetectors(
     try {
       const results = detector.fn(runs, config);
       findings.push(...results);
-    } catch {
-      // Individual detector failure should not stop the audit
+    } catch (err) {
+      console.warn(`Detector '${detector.name}' failed: ${err instanceof Error ? err.message : String(err)}`);
       continue;
     }
   }

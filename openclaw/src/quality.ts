@@ -8,7 +8,7 @@
  * Score: 0-100 with color bands (Good/Fair/Needs Work/Poor).
  */
 
-import { AgentRun, totalTokens } from "./models";
+import { AgentRun, totalTokens, EXPENSIVE_MODELS } from "./models";
 import { ContextAudit } from "./context-audit";
 
 // ---------------------------------------------------------------------------
@@ -208,8 +208,7 @@ function scoreModelRouting(runs: AgentRun[]): QualitySignal {
   }
 
   const expensiveHeartbeats = heartbeats.filter(
-    (r) => r.model === "opus" || r.model === "sonnet" ||
-           r.model.includes("gpt-5.4") || r.model.includes("gpt-5.2")
+    (r) => EXPENSIVE_MODELS.has(r.model)
   );
 
   const misroutePct = (expensiveHeartbeats.length / heartbeats.length) * 100;

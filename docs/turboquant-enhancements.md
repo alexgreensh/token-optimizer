@@ -52,8 +52,8 @@ const clusters = clusterBySketch(
 
 1. Split text into words
 2. For each word, compute FNV-1a hash (32-bit)
-3. Generate 4 rotated variants per hash (rotate by 0, 16, 32, 48 bits)
-4. XOR all variants into the sketch's bit vector
+3. For each byte of the sketch, generate a rotated variant of the hash (rotation amount = `(i * 7 + 3) % 32` where i is the byte index)
+4. XOR the low byte of each rotated variant into the corresponding sketch byte
 5. Compare sketches via Hamming similarity: `1 - hammingDistance / totalBits`
 
 ### Ghost Detection Logic

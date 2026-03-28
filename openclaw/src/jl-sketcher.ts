@@ -91,6 +91,10 @@ export function clusterBySketch(
 ): Array<Array<string>> {
   if (items.length === 0) return [];
 
+  if (items.length > 2000) {
+    console.warn(`clusterBySketch: ${items.length} items exceeds recommended maximum of 2000. Consider using simpler grouping.`);
+  }
+
   // Compute sketches for all items
   const sketches = items.map((item) => computeSketch(item.text));
 

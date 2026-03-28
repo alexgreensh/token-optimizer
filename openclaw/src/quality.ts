@@ -461,19 +461,17 @@ function scoreCompressionOpportunity(runs: AgentRun[]): QualitySignal {
 
   // Build a fingerprint for each run (first 100 chars of a canonical string)
   const hashes = new Set<string>();
-  const fingerprints: string[] = [];
 
   for (const r of runs) {
     const raw = [
       r.agentName,
       r.model,
       r.runType,
-      r.toolsUsed.sort().join(","),
+      [...r.toolsUsed].sort().join(","),
       `msgs:${r.messageCount}`,
     ]
       .join("|")
       .slice(0, 100);
-    fingerprints.push(raw);
     hashes.add(raw);
   }
 
@@ -571,7 +569,9 @@ export function scoreQuality(
 
   const weightSum = signals.reduce((s, sig) => s + sig.weight, 0);
   if (Math.abs(weightSum - 1.0) > 0.001) {
-    throw new Error(`Quality signal weights must sum to 1.0, got ${weightSum}`);
+    console.warn(`Quality signal weights sum to ${weightSum}, expected 1.0. Normalizing.`);
+    const scale = 1.0 / weightSum;
+    for (const sig of signals) sig.weight *= scale;
   }
 
   const weightedScore = signals.reduce(

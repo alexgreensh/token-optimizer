@@ -556,8 +556,10 @@ function clusterRunsByGroup(runs: AgentRun[]): AgentRun[][] {
   return Array.from(groups.values());
 }
 
-/** Sketch-based O(n²) clustering using QJL 1-bit similarity. */
+/** Sketch-based O(n²) clustering using QJL 1-bit similarity. Falls back to simple grouping above 1000 runs. */
 function clusterRunsBySketch(runs: AgentRun[]): AgentRun[][] {
+  if (runs.length > 1000) return clusterRunsByGroup(runs);
+
   const items = runs.map((r, idx) => ({
     id: String(idx),
     text: [

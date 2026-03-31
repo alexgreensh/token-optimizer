@@ -150,6 +150,7 @@ Output file: {COORD_PATH}/audit/skills.md
    - Archived skills still in skills/ (should be in _backups/)
    - Unused domain skills (e.g., 5 n8n skills but user doesn't do n8n work)
    - Plugin skill bundles where most skills go unused (plugin installs 20 skills, user uses 3)
+   - **NEW: Phantom skills from gitignored dirs** (fixed in v2.1.82): Check if any skills were discovered from node_modules/, .git/, or other gitignored directories. On older Claude Code versions, these would silently load and waste tokens.
 
 4. Write findings to {COORD_PATH}/audit/skills.md:
    # Skills Audit
@@ -214,7 +215,19 @@ Output file: {COORD_PATH}/audit/mcp.md
    - With Tool Search active: each deferred tool ~15 tokens (name only in menu)
    - Without Tool Search: each tool loads FULL definition (300-850 tokens each)
 
-4. Identify optimization targets:
+4. **NEW: Per-tool description size check** (Claude Code v2.1.84+):
+   - Claude Code caps MCP tool descriptions at 2KB since v2.1.84
+   - Descriptions over 2KB are SILENTLY TRUNCATED (context waste + broken instructions)
+   - Check for MCP server instructions (server-level) that are verbose
+   - If user is on pre-v2.1.84, oversized descriptions consume full context
+   - Flag any server with 20+ tools as high token overhead even with Tool Search
+
+5. **NEW: Suspicious MCP scope detection**:
+   - Flag `@iflow-mcp/*` scoped packages (systematic MCP server forking campaign, March 2026)
+   - Flag MCP servers installed from unverified npm scopes
+   - Check deniedMcpServers in settings for known-bad scopes
+
+6. Identify optimization targets:
    - Servers with broken auth (tools won't work anyway)
    - Rarely-used servers (>10 tools but domain-specific)
    - Duplicate tools across servers AND plugins (same tool from multiple sources)
@@ -368,6 +381,13 @@ Output file: {COORD_PATH}/audit/advanced.md
      - CLAUDE_CODE_DISABLE_AUTO_MEMORY (report if set)
      - CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING (report if set)
      - BASH_MAX_OUTPUT_LENGTH (report if set)
+     - CLAUDE_CODE_SUBPROCESS_ENV_SCRUB (v2.1.83+: strips Anthropic/cloud credentials from subprocesses. Recommend =1 for security)
+
+   **NEW: Security-relevant settings check (v2.1.82-85)**:
+   - sandbox.failIfUnavailable (v2.1.83): If not set, Claude may silently run unsandboxed. Recommend true.
+   - sandbox.enabled (v2.1.82): Check that it's not silently disabled
+   - allowedMcpServers / deniedMcpServers: Check for policy enforcement
+   - Check for bypassPermissions (CVE-2026-33068 workspace trust bypass if set in repo .claude/settings.json)
 
 10. **NEW: settings.local.json check**:
     - Check for ~/.claude/settings.local.json and .claude/settings.local.json

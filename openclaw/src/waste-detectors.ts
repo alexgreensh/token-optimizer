@@ -14,6 +14,7 @@
  * 6. LoopDetection - many messages with near-zero output
  * 7. AbandonedSessions - 1-2 messages then stopped
  * 8. GhostTokenQJL - QJL-inspired sketch clustering for ghost run detection
+ * 9. ToolLoadingOverhead - sessions loading many tools without compact view (v2026.3.24+)
  */
 
 import * as fs from "fs";
@@ -324,9 +325,9 @@ function detectSessionHistoryBloat(
       monthlyWasteUsd: 0,
       monthlyWasteTokens: Math.round((savingsTokens / days) * 30),
       recommendation:
-        "Use compaction at 50-70% context fill. Smart Compaction protects session state automatically.",
+        "Use compaction at 50-70% context fill. On v2026.3.11+, context pruning is improved natively. Smart Compaction protects session state automatically.",
       fixSnippet:
-        "# Token Optimizer's Smart Compaction hooks handle this automatically.\n# Install: openclaw plugins install token-optimizer-openclaw",
+        "# On OpenClaw v2026.3.11+, context pruning is improved.\n# Token Optimizer's Smart Compaction hooks add session state preservation.\n# Install: openclaw plugins install token-optimizer",
       evidence: {
         longSessionCount: longSessions.length,
         totalInputTokens: totalBloatTokens,
@@ -577,6 +578,59 @@ function clusterRunsBySketch(runs: AgentRun[]): AgentRun[][] {
 }
 
 // ---------------------------------------------------------------------------
+// Tier 3: Version-aware optimization opportunities
+// ---------------------------------------------------------------------------
+
+/**
+ * Detect sessions with high tool counts that could benefit from compact tool view.
+ * OpenClaw v2026.3.24 added `/tools` with compact/detailed views, reducing tool
+ * loading overhead similar to Claude Code's Tool Search.
+ */
+function detectToolLoadingOverhead(
+  runs: AgentRun[],
+  _config: Record<string, unknown>
+): WasteFinding[] {
+  // Sessions with many tools loaded suggest overhead from full tool definitions
+  const heavyToolSessions = runs.filter(
+    (r) => r.toolsUsed.length > 15 && totalTokens(r.tokens) > 200_000
+  );
+
+  if (heavyToolSessions.length < 3) return [];
+
+  const avgTools =
+    heavyToolSessions.reduce((sum, r) => sum + r.toolsUsed.length, 0) /
+    heavyToolSessions.length;
+  // Estimate: each full tool definition ~300-500 tokens, compact ~15 tokens
+  const overheadPerSession = Math.round(avgTools * 400);
+  const days = spanDays(heavyToolSessions);
+
+  return [
+    {
+      system: "openclaw",
+      agentName: "",
+      wasteType: "tool_loading_overhead",
+      tier: 3,
+      severity: "medium",
+      confidence: 0.5,
+      description: `${heavyToolSessions.length} sessions loading ${Math.round(avgTools)} tools avg. On v2026.3.24+, use /tools compact view to reduce context overhead.`,
+      monthlyWasteUsd: 0,
+      monthlyWasteTokens: Math.round(
+        (overheadPerSession * heavyToolSessions.length) / days * 30
+      ),
+      recommendation:
+        "Upgrade to OpenClaw v2026.3.24+ and use `/tools` compact view. Disable unused tool providers to reduce loading overhead.",
+      fixSnippet:
+        "# List tools in compact mode (v2026.3.24+):\nopenclaw tools --compact\n\n# Disable unused providers:\nopenclaw config set providers.unused_provider.enabled false",
+      evidence: {
+        heavySessionCount: heavyToolSessions.length,
+        avgToolsPerSession: Math.round(avgTools),
+        estimatedOverheadPerSession: overheadPerSession,
+      },
+    },
+  ];
+}
+
+// ---------------------------------------------------------------------------
 // Registry: all detectors in execution order
 // ---------------------------------------------------------------------------
 
@@ -597,6 +651,7 @@ export const ALL_DETECTORS: Array<{
   { name: "loop_detection", tier: 2, fn: detectLoops },
   { name: "abandoned_sessions", tier: 2, fn: detectAbandonedSessions },
   { name: "ghost_token_qjl", tier: 2, fn: detectGhostTokenQJL },
+  { name: "tool_loading_overhead", tier: 3, fn: detectToolLoadingOverhead },
 ];
 
 /**

@@ -150,8 +150,8 @@ Output file: {COORD_PATH}/audit/skills.md
    - Archived skills still in skills/ (should be in _backups/)
    - Unused domain skills (e.g., 5 n8n skills but user doesn't do n8n work)
    - Plugin skill bundles where most skills go unused (plugin installs 20 skills, user uses 3)
-   - **NEW: Phantom skills from gitignored dirs** (fixed in v2.1.82): Check if any skills were discovered from node_modules/, .git/, or other gitignored directories. On older Claude Code versions, these would silently load and waste tokens.
-   - **NEW: Skill description length check** (v2.1.86): Claude Code now caps skill descriptions at 250 characters in the /skills listing. Read each SKILL.md frontmatter `description` field. Flag any over 250 chars (will be truncated, wasting the extra tokens in the file without benefit).
+   - **Phantom skills from gitignored dirs** (pre-v2.1.82 only): If Claude Code version < 2.1.82, warn that skills from node_modules/, .git/, or other gitignored dirs load silently. Recommend upgrading. On v2.1.82+, skip this check (fixed).
+   - **Skill description length check** (v2.1.86+): Claude Code caps skill descriptions at 250 characters in /skills listing. Read each SKILL.md frontmatter `description` field. Flag any over 250 chars (truncated silently, wasting the extra tokens).
 
 4. Write findings to {COORD_PATH}/audit/skills.md:
    # Skills Audit
@@ -216,7 +216,7 @@ Output file: {COORD_PATH}/audit/mcp.md
    - With Tool Search active: each deferred tool ~15 tokens (name only in menu)
    - Without Tool Search: each tool loads FULL definition (300-850 tokens each)
 
-4. **NEW: Per-tool description + server instructions size check** (Claude Code v2.1.84+):
+4. **Per-tool description + server instructions size check** (v2.1.84+):
    - Claude Code caps BOTH tool descriptions AND server instructions at 2KB since v2.1.84
    - Descriptions over 2KB are SILENTLY TRUNCATED (context waste + broken instructions)
    - Server instructions (the `instructions` field in MCP config) are also capped at 2KB
@@ -224,10 +224,10 @@ Output file: {COORD_PATH}/audit/mcp.md
    - Flag any server with 20+ tools as high token overhead even with Tool Search
    - Check MCP read/search tool calls: v2.1.83+ collapses these into single-line summaries (token savings)
 
-5. **NEW: Suspicious MCP scope detection**:
-   - Flag `@iflow-mcp/*` scoped packages (systematic MCP server forking campaign, March 2026)
-   - Flag MCP servers installed from unverified npm scopes
-   - Check deniedMcpServers in settings for known-bad scopes
+5. **Forked/duplicate MCP scope detection**:
+   - Flag `@iflow-mcp/*` scoped packages (MCP server forking campaign, March 2026). These duplicate legitimate tools, inflating deferred-tool count and token overhead. Remove and use the original server.
+   - Flag MCP servers from unverified npm scopes that duplicate tools from verified servers
+   - Check deniedMcpServers in settings for already-blocked scopes (tokens saved by denial)
 
 6. Identify optimization targets:
    - Servers with broken auth (tools won't work anyway)
@@ -235,7 +235,7 @@ Output file: {COORD_PATH}/audit/mcp.md
    - Duplicate tools across servers AND plugins (same tool from multiple sources)
    - Plugin-bundled MCP servers that duplicate standalone servers
 
-5. Write findings to {COORD_PATH}/audit/mcp.md:
+7. Write findings to {COORD_PATH}/audit/mcp.md:
    # MCP Audit
 
    ## Tool Search Status
@@ -356,24 +356,24 @@ Output file: {COORD_PATH}/audit/advanced.md
    - Check if CLAUDE.md mentions plan mode / Shift+Tab
    - Plan mode = 50-70% fewer iteration cycles
 
-6. **NEW: .claude/rules/ directory scan**:
+6. **.claude/rules/ directory scan**:
    - List all files in ~/.claude/rules/ (if exists)
    - Count total files and estimate tokens from content
    - Check each rule for `paths:` frontmatter (scoped vs always-loaded)
    - Flag stale rules, duplicates, and rules that should have path scoping
    - Estimate total rules overhead
 
-7. **NEW: @imports chain detection in CLAUDE.md**:
+7. **@imports chain detection in CLAUDE.md**:
    - Grep CLAUDE.md for `@` patterns (e.g., @docs/file.md)
    - Resolve paths relative to project root
    - Estimate tokens for each imported file
    - Flag large imports that should be skills or reference files
 
-8. **NEW: CLAUDE.local.md existence check**:
+8. **CLAUDE.local.md existence check**:
    - Check for CLAUDE.local.md in current project root
    - If exists, measure tokens (adds to always-loaded overhead)
 
-9. **NEW: settings.json env block audit**:
+9. **settings.json env block audit**:
    - Read ~/.claude/settings.json and check env block for token-relevant vars:
      - CLAUDE_AUTOCOMPACT_PCT_OVERRIDE (auto-remove if set: undocumented, inverted semantics)
      - CLAUDE_CODE_MAX_THINKING_TOKENS (report value)
@@ -385,23 +385,22 @@ Output file: {COORD_PATH}/audit/advanced.md
      - BASH_MAX_OUTPUT_LENGTH (report if set)
      - CLAUDE_CODE_SUBPROCESS_ENV_SCRUB (v2.1.83+: strips Anthropic/cloud credentials from subprocesses. Recommend =1 for security)
 
-   **NEW: Security-relevant settings check (v2.1.82-85)**:
-   - sandbox.failIfUnavailable (v2.1.83): If not set, Claude may silently run unsandboxed. Recommend true.
-   - sandbox.enabled (v2.1.82): Check that it's not silently disabled
-   - allowedMcpServers / deniedMcpServers: Check for policy enforcement
-   - Check for bypassPermissions (CVE-2026-33068 workspace trust bypass if set in repo .claude/settings.json)
+   **Security settings with token impact (v2.1.82-85)**:
+   - allowedMcpServers / deniedMcpServers: Denied servers reduce deferred-tool token count. Report which servers are denied and the token savings.
+   - bypassPermissions in repo .claude/settings.json: Disables permission prompts (CVE-2026-33068). Not a token issue, but flag for user awareness with note: "See /fleet-auditor or /repo-forensics for full security audit."
+   - sandbox settings: Not token-relevant. Skip unless fleet-auditor is not installed, in which case mention once: "sandbox.failIfUnavailable not set. Not a token issue, but worth reviewing."
 
-10. **NEW: settings.local.json check**:
+10. **settings.local.json check**:
     - Check for ~/.claude/settings.local.json and .claude/settings.local.json
     - If exists, check for env overrides that affect token behavior
 
-11. **NEW: Skill frontmatter quality**:
+11. **Skill frontmatter quality**:
     - Scan ~/.claude/skills/*/SKILL.md frontmatter
     - Flag descriptions >200 chars (~50 tokens, twice the typical)
     - Report which skills have `disable-model-invocation: true` set
     - Verbose frontmatter = higher per-message menu overhead
 
-12. **NEW: Compact instructions check**:
+12. **Compact instructions check**:
     - Check if CLAUDE.md has a compact instructions section
     - If missing, flag as opportunity (guides what survives compaction)
 
@@ -435,7 +434,7 @@ Output file: {COORD_PATH}/audit/advanced.md
        task-to-model mapping), rate as LOW and note: "Model routing is working as intended."
     d. If no trends data available, skip (b) and (c), just report on (a)
 
-14. Write findings to {COORD_PATH}/audit/advanced.md:
+15. Write findings to {COORD_PATH}/audit/advanced.md:
    # Settings & Advanced Optimizations Audit
 
    ## Hooks Configuration

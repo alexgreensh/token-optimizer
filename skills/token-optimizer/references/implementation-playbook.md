@@ -295,6 +295,37 @@ Add or improve model routing instructions in CLAUDE.md.
 
 ---
 
+## 4M: Version-Aware Optimizations (v2.1.83-86)
+
+Check the user's Claude Code version and apply version-specific guidance:
+
+**v2.1.86+: Read tool native deduplication**
+- Claude Code now deduplicates unchanged re-reads natively (compact line-number format)
+- If Token Optimizer's `read_cache.py` PreToolUse hook is installed, it may be REDUNDANT
+- Check: run `measure.py` to see if read-cache is still saving tokens, or if native dedup handles it
+- If redundant: recommend disabling the read-cache hook to reduce hook overhead
+
+**v2.1.86+: @ file mentions no longer JSON-escaped**
+- Raw string content in file mentions saves tokens automatically
+- No action needed, but note in findings that this saves ~5-15% on file-heavy sessions
+
+**v2.1.84+: Idle-return /clear prompt**
+- Claude Code now prompts to /clear after 75+ min idle
+- This overlaps with Smart Compaction's session management
+- If user has Smart Compaction active, the /clear prompt may discard checkpointed state
+- Recommend: users should /compact (preserves checkpoint) instead of /clear (destroys it)
+
+**v2.1.83+: Auto-compact circuit breaker**
+- Auto-compaction stops after 3 consecutive failures
+- Smart Compaction PreCompact hook must handle this: if compaction fails 3x, the hook won't fire again until a new session
+- Check: if user reports "compaction stopped working", this is likely the circuit breaker
+
+**v2.1.85+: Conditional hooks with `if` field**
+- Token Optimizer's own hooks can use the `if` filter to reduce process spawning
+- Example: only run quality-cache hook on messages that actually use tools
+
+---
+
 ## Quality Checklist
 
 - [ ] Coordination folder created with manifest

@@ -151,6 +151,7 @@ Output file: {COORD_PATH}/audit/skills.md
    - Unused domain skills (e.g., 5 n8n skills but user doesn't do n8n work)
    - Plugin skill bundles where most skills go unused (plugin installs 20 skills, user uses 3)
    - **NEW: Phantom skills from gitignored dirs** (fixed in v2.1.82): Check if any skills were discovered from node_modules/, .git/, or other gitignored directories. On older Claude Code versions, these would silently load and waste tokens.
+   - **NEW: Skill description length check** (v2.1.86): Claude Code now caps skill descriptions at 250 characters in the /skills listing. Read each SKILL.md frontmatter `description` field. Flag any over 250 chars (will be truncated, wasting the extra tokens in the file without benefit).
 
 4. Write findings to {COORD_PATH}/audit/skills.md:
    # Skills Audit
@@ -215,12 +216,13 @@ Output file: {COORD_PATH}/audit/mcp.md
    - With Tool Search active: each deferred tool ~15 tokens (name only in menu)
    - Without Tool Search: each tool loads FULL definition (300-850 tokens each)
 
-4. **NEW: Per-tool description size check** (Claude Code v2.1.84+):
-   - Claude Code caps MCP tool descriptions at 2KB since v2.1.84
+4. **NEW: Per-tool description + server instructions size check** (Claude Code v2.1.84+):
+   - Claude Code caps BOTH tool descriptions AND server instructions at 2KB since v2.1.84
    - Descriptions over 2KB are SILENTLY TRUNCATED (context waste + broken instructions)
-   - Check for MCP server instructions (server-level) that are verbose
-   - If user is on pre-v2.1.84, oversized descriptions consume full context
+   - Server instructions (the `instructions` field in MCP config) are also capped at 2KB
+   - If user is on pre-v2.1.84, oversized descriptions consume full context uncapped
    - Flag any server with 20+ tools as high token overhead even with Tool Search
+   - Check MCP read/search tool calls: v2.1.83+ collapses these into single-line summaries (token savings)
 
 5. **NEW: Suspicious MCP scope detection**:
    - Flag `@iflow-mcp/*` scoped packages (systematic MCP server forking campaign, March 2026)

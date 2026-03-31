@@ -57,11 +57,10 @@ Parse the JSON output. Present findings ordered by severity and monthly savings.
 
 If no waste found: "Your fleet looks clean. No significant waste patterns detected."
 
-**NEW: OpenClaw Security Check** (March 2026):
-- If OpenClaw is detected, flag if version is older than 2026.3.12 (31 CVEs, including ClawJacked full agent takeover)
-- Check for skills from ClawHub that match known-malicious patterns (ClawHavoc campaign: 1,184+ malicious skills)
-- Flag if gateway password brute-force protection is not configured (CVE-2026-25253)
-- Recommend: `openclaw config set security.rateLimit.enabled true`
+**OpenClaw Security + Cost Check** (March 2026):
+- If OpenClaw is detected and version < 2026.3.12: flag as HIGH severity. 31 CVEs including ClawJacked (full agent takeover). Compromised instances run rogue agents that burn tokens undetected. Recommend immediate upgrade.
+- Check for ClawHub skills matching ClawHavoc campaign patterns (1,184+ malicious skills). These skills exfiltrate data via extra API calls, inflating token spend.
+- Flag if gateway rate limiting is disabled (CVE-2026-25253). Without it, brute-force attacks can spawn unlimited agent sessions. Recommend: `openclaw config set security.rateLimit.enabled true`
 
 ---
 

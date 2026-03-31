@@ -1,5 +1,5 @@
 {
-  "id": "token-optimizer",
+  "id": "token-optimizer-openclaw",
   "name": "Token Optimizer",
   "description": "Find the ghost tokens. Audit your OpenClaw setup, see where context goes, fix it.",
   "version": "1.3.0",

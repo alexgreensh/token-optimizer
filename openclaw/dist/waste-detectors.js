@@ -9,11 +9,13 @@
  * Detectors implemented:
  * 1. HeartbeatModelWaste - expensive model for cron/heartbeat tasks
  * 2. HeartbeatOverFrequency - interval < 5 min across 3+ runs
- * 3. EmptyHeartbeatRuns - high input, near-zero output
+ * 3. EmptyRuns - high input, near-zero output
  * 4. StaleCronConfig - dead paths in cron/hook commands
  * 5. SessionHistoryBloat - context growing without compaction
  * 6. LoopDetection - many messages with near-zero output
  * 7. AbandonedSessions - 1-2 messages then stopped
+ * 8. GhostTokenQJL - QJL-inspired sketch clustering for ghost run detection
+ * 9. ToolLoadingOverhead - sessions loading many tools without compact view (v2026.3.24+)
  */
 var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
     if (k2 === undefined) k2 = k;
@@ -54,6 +56,7 @@ exports.runAllDetectors = runAllDetectors;
 const fs = __importStar(require("fs"));
 const models_1 = require("./models");
 const pricing_1 = require("./pricing");
+const jl_sketcher_1 = require("./jl-sketcher");
 /** Compute the span in days between first and last run. Min 1 day. */
 function spanDays(runs) {
     if (runs.length < 2)
@@ -72,11 +75,7 @@ function detectHeartbeatModelWaste(runs, _config) {
     const heartbeats = runs.filter((r) => r.runType === "heartbeat" || r.runType === "cron");
     if (heartbeats.length === 0)
         return [];
-    const expensiveModels = new Set([
-        "opus", "sonnet", "gpt-5.4", "gpt-5.2", "gpt-5", "gpt-4.1",
-        "gpt-4o", "o3", "o3-pro", "gemini-3-pro", "gemini-2.5-pro", "grok-4",
-    ]);
-    const expensive = heartbeats.filter((r) => expensiveModels.has(r.model));
+    const expensive = heartbeats.filter((r) => models_1.EXPENSIVE_MODELS.has(r.model));
     if (expensive.length === 0)
         return [];
     const totalCost = expensive.reduce((sum, r) => sum + r.costUsd, 0);
@@ -215,8 +214,9 @@ function detectStaleCronConfig(_runs, config) {
 // ---------------------------------------------------------------------------
 /**
  * Detect runs with high input but near-zero output (the #1 waste pattern).
+ * Applies to ALL run types, not just heartbeat/cron.
  */
-function detectEmptyHeartbeatRuns(runs, _config) {
+function detectEmptyRuns(runs, _config) {
     const emptyRuns = runs.filter((r) => (0, models_1.totalTokens)(r.tokens) > 5000 &&
         r.tokens.output < 100 &&
         r.messageCount <= 4);
@@ -239,7 +239,7 @@ function detectEmptyHeartbeatRuns(runs, _config) {
         {
             system: "openclaw",
             agentName: confirmed[0].agentName,
-            wasteType: "empty_heartbeat",
+            wasteType: "empty_runs",
             tier: 2,
             severity,
             confidence: 0.85,
@@ -279,8 +279,8 @@ function detectSessionHistoryBloat(runs, _config) {
             description: `${longSessions.length} long sessions without apparent compaction (30+ messages, 500K+ tokens)`,
             monthlyWasteUsd: 0,
             monthlyWasteTokens: Math.round((savingsTokens / days) * 30),
-            recommendation: "Use compaction at 50-70% context fill. Smart Compaction protects session state automatically.",
-            fixSnippet: "# Token Optimizer's Smart Compaction hooks handle this automatically.\n# Install: openclaw plugins install token-optimizer-openclaw",
+            recommendation: "Use compaction at 50-70% context fill. On v2026.3.11+, context pruning is improved natively. Smart Compaction protects session state automatically.",
+            fixSnippet: "# On OpenClaw v2026.3.11+, context pruning is improved.\n# Token Optimizer's Smart Compaction hooks add session state preservation.\n# Install: openclaw plugins install token-optimizer",
             evidence: {
                 longSessionCount: longSessions.length,
                 totalInputTokens: totalBloatTokens,
@@ -364,6 +364,159 @@ function detectAbandonedSessions(runs, _config) {
     ];
 }
 // ---------------------------------------------------------------------------
+// Tier 2: Ghost token detection (dual strategy: simple grouping or sketch)
+// ---------------------------------------------------------------------------
+/**
+ * Detect "ghost" runs — sessions that load context but produce negligible output.
+ *
+ * Two strategies are available, controlled by config.ghostDetectorStrategy:
+ *
+ *   "simple" (default) — Groups runs by (agentName, model, runType) using a Map.
+ *     Deterministic, O(n), easy to debug. Best when metadata fields are sufficient
+ *     to identify duplicate patterns.
+ *
+ *   "sketch" — Uses QJL-inspired 1-bit sketch clustering (Hamming similarity).
+ *     Catches fuzzy near-duplicates that differ slightly in token counts or tools.
+ *     O(n²) pairwise comparison. Better if you later want to sketch actual message
+ *     content for deeper similarity detection.
+ *
+ * Set config.ghostDetectorStrategy to toggle between them.
+ */
+function detectGhostTokenQJL(runs, config) {
+    if (runs.length < 3)
+        return [];
+    const strategy = config.ghostDetectorStrategy ?? "simple";
+    const clusters = strategy === "sketch"
+        ? clusterRunsBySketch(runs)
+        : clusterRunsByGroup(runs);
+    // Within each cluster, find ghost runs (output < 100 tokens)
+    let ghostRuns = [];
+    for (const cluster of clusters) {
+        if (cluster.length < 2)
+            continue;
+        const ghosts = cluster.filter((r) => r.tokens.output < 100);
+        // Only flag if ghosts are a meaningful portion of the cluster
+        if (ghosts.length >= 2) {
+            ghostRuns.push(...ghosts);
+        }
+    }
+    if (ghostRuns.length < 2)
+        return [];
+    // De-duplicate (a run could appear in multiple clusters with sketch strategy)
+    const seen = new Set();
+    ghostRuns = ghostRuns.filter((r) => {
+        const key = `${r.sessionId}-${r.timestamp.getTime()}`;
+        if (seen.has(key))
+            return false;
+        seen.add(key);
+        return true;
+    });
+    if (ghostRuns.length < 2)
+        return [];
+    const totalWasteCost = ghostRuns.reduce((sum, r) => sum + r.costUsd, 0);
+    const totalWasteTokens = ghostRuns.reduce((sum, r) => sum + r.tokens.input, 0);
+    const days = spanDays(ghostRuns);
+    const monthlyCost = (totalWasteCost / days) * 30;
+    let severity = "medium";
+    if (monthlyCost > 10)
+        severity = "critical";
+    else if (monthlyCost > 5)
+        severity = "high";
+    return [
+        {
+            system: "openclaw",
+            agentName: ghostRuns[0].agentName,
+            wasteType: "ghost_token_qjl",
+            tier: 2,
+            severity,
+            confidence: 0.9,
+            description: `${ghostRuns.length} ghost runs detected via ${strategy} strategy: near-duplicate context loaded with <100 token output`,
+            monthlyWasteUsd: monthlyCost,
+            monthlyWasteTokens: Math.round((totalWasteTokens / days) * 30),
+            recommendation: "These runs load similar context repeatedly without producing output. " +
+                "Add idempotency guards or cache results from prior identical runs.",
+            fixSnippet: "# Add early-exit when context matches a recent successful run:\n" +
+                "# if sketch_matches_recent_run(context): return cached_result",
+            evidence: {
+                strategy,
+                ghostRunCount: ghostRuns.length,
+                totalInputTokensWasted: totalWasteTokens,
+                avgInputPerGhost: Math.round(totalWasteTokens / ghostRuns.length),
+            },
+        },
+    ];
+}
+/** Simple O(n) grouping by (agentName, model, runType). */
+function clusterRunsByGroup(runs) {
+    const groups = new Map();
+    for (const r of runs) {
+        const key = `${r.agentName}|${r.model}|${r.runType}`;
+        if (!groups.has(key))
+            groups.set(key, []);
+        groups.get(key).push(r);
+    }
+    return Array.from(groups.values());
+}
+/** Sketch-based O(n²) clustering using QJL 1-bit similarity. Falls back to simple grouping above 1000 runs. */
+function clusterRunsBySketch(runs) {
+    if (runs.length > 1000)
+        return clusterRunsByGroup(runs);
+    const items = runs.map((r, idx) => ({
+        id: String(idx),
+        text: [
+            r.model,
+            r.runType,
+            r.agentName,
+            `input:${Math.round(r.tokens.input / 1000)}k`,
+            `msgs:${r.messageCount}`,
+            ...(r.toolsUsed.length > 0 ? r.toolsUsed.slice(0, 5) : ["no-tools"]),
+        ].join(" "),
+    }));
+    const clusters = (0, jl_sketcher_1.clusterBySketch)(items, 0.95);
+    return clusters.map((ids) => ids
+        .map((id) => runs[parseInt(id, 10)])
+        .filter((r) => r !== undefined));
+}
+// ---------------------------------------------------------------------------
+// Tier 3: Version-aware optimization opportunities
+// ---------------------------------------------------------------------------
+/**
+ * Detect sessions with high tool counts that could benefit from compact tool view.
+ * OpenClaw v2026.3.24 added `/tools` with compact/detailed views, reducing tool
+ * loading overhead similar to Claude Code's Tool Search.
+ */
+function detectToolLoadingOverhead(runs, _config) {
+    // Sessions with many tools loaded suggest overhead from full tool definitions
+    const heavyToolSessions = runs.filter((r) => r.toolsUsed.length > 15 && (0, models_1.totalTokens)(r.tokens) > 200_000);
+    if (heavyToolSessions.length < 3)
+        return [];
+    const avgTools = heavyToolSessions.reduce((sum, r) => sum + r.toolsUsed.length, 0) /
+        heavyToolSessions.length;
+    // Estimate: each full tool definition ~300-500 tokens, compact ~15 tokens
+    const overheadPerSession = Math.round(avgTools * 400);
+    const days = spanDays(heavyToolSessions);
+    return [
+        {
+            system: "openclaw",
+            agentName: "",
+            wasteType: "tool_loading_overhead",
+            tier: 3,
+            severity: "medium",
+            confidence: 0.5,
+            description: `${heavyToolSessions.length} sessions loading ${Math.round(avgTools)} tools avg. On v2026.3.24+, use /tools compact view to reduce context overhead.`,
+            monthlyWasteUsd: 0,
+            monthlyWasteTokens: Math.round((overheadPerSession * heavyToolSessions.length) / days * 30),
+            recommendation: "Upgrade to OpenClaw v2026.3.24+ and use `/tools` compact view. Disable unused tool providers to reduce loading overhead.",
+            fixSnippet: "# List tools in compact mode (v2026.3.24+):\nopenclaw tools --compact\n\n# Disable unused providers:\nopenclaw config set providers.unused_provider.enabled false",
+            evidence: {
+                heavySessionCount: heavyToolSessions.length,
+                avgToolsPerSession: Math.round(avgTools),
+                estimatedOverheadPerSession: overheadPerSession,
+            },
+        },
+    ];
+}
+// ---------------------------------------------------------------------------
 // Registry: all detectors in execution order
 // ---------------------------------------------------------------------------
 exports.ALL_DETECTORS = [
@@ -374,10 +527,12 @@ exports.ALL_DETECTORS = [
         fn: detectHeartbeatOverFrequency,
     },
     { name: "stale_cron", tier: 1, fn: detectStaleCronConfig },
-    { name: "empty_heartbeat", tier: 2, fn: detectEmptyHeartbeatRuns },
+    { name: "empty_runs", tier: 2, fn: detectEmptyRuns },
     { name: "session_history_bloat", tier: 2, fn: detectSessionHistoryBloat },
     { name: "loop_detection", tier: 2, fn: detectLoops },
     { name: "abandoned_sessions", tier: 2, fn: detectAbandonedSessions },
+    { name: "ghost_token_qjl", tier: 2, fn: detectGhostTokenQJL },
+    { name: "tool_loading_overhead", tier: 3, fn: detectToolLoadingOverhead },
 ];
 /**
  * Run all detectors against the given runs and config.
@@ -390,8 +545,8 @@ function runAllDetectors(runs, config = {}) {
             const results = detector.fn(runs, config);
             findings.push(...results);
         }
-        catch {
-            // Individual detector failure should not stop the audit
+        catch (err) {
+            console.warn(`Detector '${detector.name}' failed: ${err instanceof Error ? err.message : String(err)}`);
             continue;
         }
     }

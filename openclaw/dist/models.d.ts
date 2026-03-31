@@ -51,6 +51,8 @@ export interface TurnData {
     toolsUsed: string[];
     costUsd: number;
 }
+/** Models considered expensive (should not be used for heartbeat/cron tasks). */
+export declare const EXPENSIVE_MODELS: Set<string>;
 export interface AuditReport {
     scannedAt: Date;
     daysScanned: number;

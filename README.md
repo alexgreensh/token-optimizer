@@ -92,7 +92,7 @@ python3 measure.py read-cache-stats --session ID   # Cache stats for a session
 python3 measure.py read-cache-clear                # Clear all caches
 ```
 
-Create `.contextignore` in your project root:
+Create `.contextignore` in your project root (provided by this plugin, not a built-in Claude Code feature):
 ```
 # Block build artifacts and lockfiles
 dist/**
@@ -383,7 +383,7 @@ Inside OpenClaw, run `/token-optimizer` for a guided audit with coaching.
 
 **What it does:** Session parsing, cost calculation, waste detection (heartbeat model waste, empty runs, over-frequency, stale configs, session bloat, loops, abandoned sessions), and Smart Compaction (checkpoint/restore across compaction events).
 
-**What's different from Claude Code:** The OpenClaw plugin does not yet include context quality scoring (the 7-signal ContextQ metric). Quality scoring requires platform-specific session analysis that's being built for OpenClaw v1.1.
+**What's different from Claude Code:** The OpenClaw plugin includes its own 7-signal ContextQ with signals native to OpenClaw's architecture (Message Efficiency, Compression Opportunity, Model Routing, etc.) rather than a direct port of Claude Code's signals. Some Claude-specific signals (Stale Reads, Compaction Depth) don't apply to OpenClaw's stateless agent model.
 
 See [`openclaw/README.md`](openclaw/README.md) for full docs.
 

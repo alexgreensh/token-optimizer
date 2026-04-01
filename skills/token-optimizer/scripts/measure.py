@@ -66,8 +66,15 @@ import tempfile
 import time
 import platform
 from collections import deque
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+try:
+    import fcntl
+    _HAS_FCNTL = True
+except ImportError:
+    _HAS_FCNTL = False  # Windows: no advisory locking
 
 CHARS_PER_TOKEN = 4.0
 
@@ -5487,25 +5494,58 @@ def check_hook():
     sys.exit(0 if _is_hook_installed() else 1)
 
 
-def _write_settings_atomic(settings_data):
-    """Write settings.json atomically using tempfile + os.replace()."""
-    tmp_fd, tmp_path = tempfile.mkstemp(
-        dir=str(SETTINGS_PATH.parent),
-        prefix=".settings-",
-        suffix=".json",
-    )
+_SETTINGS_LOCK_PATH = SETTINGS_PATH.parent / ".settings.lock"
+
+
+@contextmanager
+def _settings_lock():
+    """Advisory file lock for settings.json writes.
+
+    Prevents concurrent writes from silently overwriting each other.
+    Uses blocking flock — the kernel handles waiting and auto-releases
+    on process death. Falls back to no-op on Windows or if the lock
+    file can't be opened.
+    """
+    if not _HAS_FCNTL:
+        yield
+        return
     try:
-        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-            json.dump(settings_data, f, indent=2, ensure_ascii=False)
-            f.write("\n")
-        os.replace(tmp_path, str(SETTINGS_PATH))
-    except Exception:
-        # Clean up temp file on failure
+        fd = os.open(str(_SETTINGS_LOCK_PATH), os.O_CREAT | os.O_RDWR, 0o600)
+    except OSError:
+        yield
+        return
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
+def _write_settings_atomic(settings_data):
+    """Write settings.json atomically using tempfile + os.replace().
+
+    Acquires an advisory file lock to prevent concurrent writes from
+    clobbering each other (e.g., during SessionStart when multiple hooks
+    may modify settings.json).
+    """
+    with _settings_lock():
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            dir=str(SETTINGS_PATH.parent),
+            prefix=".settings-",
+            suffix=".json",
+        )
         try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                json.dump(settings_data, f, indent=2, ensure_ascii=False)
+                f.write("\n")
+            os.replace(tmp_path, str(SETTINGS_PATH))
+        except Exception:
+            # Clean up temp file on failure
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
 
 # Env vars that should be auto-removed from settings.json.
@@ -5554,6 +5594,15 @@ def setup_hook(dry_run=False):
     # Check if hook is installed and whether it needs upgrading
     installed = _is_hook_installed(settings)
     current = _is_hook_current(settings)
+
+    # Plugin users get this hook from hooks.json — skip writing to settings.json (GitHub #7)
+    is_plugin = _is_running_from_plugin_cache() or _is_plugin_installed()
+    if is_plugin:
+        if installed:
+            print("[Token Optimizer] SessionEnd hook active via plugin hooks.json. Nothing to do.")
+        else:
+            print("[Token Optimizer] Running as plugin. SessionEnd hook managed by hooks.json.")
+        return
 
     if installed and current:
         print("[Token Optimizer] SessionEnd hook already installed and up to date. Nothing to do.")
@@ -8478,6 +8527,16 @@ def setup_smart_compact(dry_run=False, uninstall=False, status_only=False):
         return
 
     # Install
+    # Plugin users get all smart compact hooks from hooks.json — skip settings.json (GitHub #7)
+    is_plugin = _is_running_from_plugin_cache() or _is_plugin_installed()
+    if is_plugin:
+        all_active = all(current_status.values())
+        if all_active:
+            print("[Token Optimizer] Smart Compaction active via plugin hooks.json. Nothing to do.")
+        else:
+            print("[Token Optimizer] Smart Compaction managed by plugin hooks.json.")
+        return
+
     hooks = settings.setdefault("hooks", {})
     installed = []
     skipped = []
@@ -8828,12 +8887,77 @@ def quality_cache(throttle_seconds=120, warn_threshold=70, quiet=False, session_
 def _get_statusline_path():
     """Get the path to the bundled statusline.js script.
 
-    Uses ${CLAUDE_PLUGIN_ROOT} when running from plugin cache, same as
-    _get_measure_py_path().
+    Always returns an absolute path. Unlike hook commands in hooks.json,
+    settings.json statusLine may not resolve ${CLAUDE_PLUGIN_ROOT}.
+    The self-healing _fix_stale_settings_paths() handles version upgrades.
     """
-    if _is_running_from_plugin_cache():
-        return "${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/statusline.js"
     return str(Path(__file__).resolve().parent / "statusline.js")
+
+
+def _fix_stale_settings_paths():
+    """Detect and fix stale versioned plugin cache paths in settings.json.
+
+    When a plugin updates (e.g., 3.0.0 -> 3.1.0), any hooks or statusLine
+    entries written to settings.json with the old versioned path break silently.
+
+    Since this runs from ensure-health (called at SessionStart via the NEW
+    version's hooks.json), Path(__file__).resolve() gives us the current
+    version's path. We find any old versioned paths and rewrite them.
+
+    Works by replacing paths in the serialized JSON, which handles all keys
+    (hooks, statusLine, and any future settings) without key-specific iteration.
+
+    Note: This rewrites old versioned paths to the current version's absolute
+    path, not to ${CLAUDE_PLUGIN_ROOT}. The variable may not be resolved in
+    settings.json. This creates a self-healing loop (3.0.0 → 3.1.0, then
+    3.1.0 → 3.2.0 on next upgrade). The loop is intentional and cheap
+    (runs every SessionStart, takes milliseconds).
+
+    Returns number of stale roots replaced, or 0 on failure/no-op.
+    """
+    if not _is_running_from_plugin_cache():
+        return 0
+    try:
+        settings, _ = _read_settings_json()
+        if not settings:
+            return 0
+    except Exception:
+        return 0
+
+    settings_text = json.dumps(settings)
+    if "/plugins/cache/" not in settings_text or "token-optimizer" not in settings_text:
+        return 0
+
+    # Our current plugin root (e.g., /home/user/.claude/plugins/cache/org/token-optimizer/3.1.0)
+    current_root = str(Path(__file__).resolve().parent.parent.parent.parent)
+
+    # Find all versioned token-optimizer plugin cache paths that differ from ours
+    stale_roots = set()
+    for m in re.finditer(r'(/[^"\'\\]+/plugins/cache/[^/]+/token-optimizer/[^/]+)', settings_text):
+        found_root = m.group(1)
+        if found_root != current_root:
+            stale_roots.add(found_root)
+
+    if not stale_roots:
+        return 0
+
+    # Replace stale roots directly in the serialized JSON, then parse back.
+    # This avoids mutating the original dict (no partial-state on write failure)
+    # and covers all keys without key-specific iteration.
+    new_text = settings_text
+    for stale_root in stale_roots:
+        new_text = new_text.replace(stale_root, current_root)
+
+    if new_text == settings_text:
+        return 0
+
+    try:
+        new_settings = json.loads(new_text)
+        _write_settings_atomic(new_settings)
+    except Exception:
+        return 0
+
+    return len(stale_roots)
 
 
 def _is_quality_bar_installed(settings=None):
@@ -8847,18 +8971,35 @@ def _is_quality_bar_installed(settings=None):
     result = {"statusline": False, "hook": False}
 
     # Check statusline
-    sl = settings.get("statusLine", {})
+    sl = (settings.get("statusLine") or {})
     cmd = sl.get("command", "")
     if "statusline.js" in cmd and "token-optimizer" in cmd:
         result["statusline"] = True
 
-    # Check UserPromptSubmit hook
-    hooks = settings.get("hooks", {})
-    for group in hooks.get("UserPromptSubmit", []):
-        for hook in group.get("hooks", []):
-            if "quality-cache" in hook.get("command", ""):
+    # Check UserPromptSubmit hook (settings.json)
+    hooks = (settings.get("hooks") or {})
+    for group in (hooks.get("UserPromptSubmit") or []):
+        for hook in (group.get("hooks") or []):
+            if "quality-cache" in (hook.get("command") or ""):
                 result["hook"] = True
                 break
+
+    # Also check plugin cache hooks (matching _is_smart_compact_installed pattern)
+    if not result["hook"]:
+        plugin_cache = CLAUDE_DIR / "plugins" / "cache"
+        if plugin_cache.exists():
+            import glob as globmod
+            for hooks_file in globmod.glob(str(plugin_cache / "*" / "token-optimizer" / "*" / "hooks" / "hooks.json")):
+                try:
+                    with open(hooks_file, "r", encoding="utf-8") as f:
+                        plugin_hooks = json.load(f).get("hooks", {})
+                    for group in (plugin_hooks.get("UserPromptSubmit") or []):
+                        for hook in (group.get("hooks") or []):
+                            if "quality-cache" in (hook.get("command") or ""):
+                                result["hook"] = True
+                                break
+                except (json.JSONDecodeError, PermissionError, OSError):
+                    continue
 
     return result
 
@@ -8938,9 +9079,16 @@ def setup_quality_bar(dry_run=False, uninstall=False, status_only=False):
     installed = []
     skipped = []
     warnings = []
+    is_plugin = _is_running_from_plugin_cache() or _is_plugin_installed()
 
     # 1. UserPromptSubmit hook for quality cache
-    if current["hook"]:
+    # Skip when running as a plugin — hooks.json already provides this hook,
+    # and writing it to settings.json creates a stale-path risk (GitHub #7).
+    if is_plugin and current["hook"]:
+        skipped.append("cache hook (plugin hooks.json; settings.json entry is redundant)")
+    elif is_plugin:
+        skipped.append("cache hook (plugin hooks.json)")
+    elif current["hook"]:
         skipped.append("cache hook")
     else:
         hooks = settings.setdefault("hooks", {})
@@ -9000,7 +9148,8 @@ def setup_quality_bar(dry_run=False, uninstall=False, status_only=False):
         print(f"[Token Optimizer] Quality bar already fully installed.")
         return
 
-    _write_settings_atomic(settings)
+    if installed:
+        _write_settings_atomic(settings)
 
     if installed:
         print(f"[Token Optimizer] Quality Bar installed.")
@@ -9395,6 +9544,14 @@ if __name__ == "__main__":
     elif args[0] == "ensure-health":
         # Silent auto-fix of known harmful settings. Called by SessionStart hook.
         _auto_remove_bad_env_vars()
+        # Fix stale versioned plugin cache paths in settings.json (GitHub #7).
+        # When a plugin updates, hardcoded version paths break silently.
+        try:
+            _stale_fixed = _fix_stale_settings_paths()
+            if _stale_fixed:
+                print(f"  [Token Optimizer] Fixed {_stale_fixed} stale plugin path(s) in settings.json")
+        except Exception as _e:
+            print(f"  [Token Optimizer] stale path fix failed: {_e}", file=sys.stderr)
         # Migrate data to CLAUDE_PLUGIN_DATA on first run (v2.1.78+)
         if _PLUGIN_DATA:
             _legacy_data = CLAUDE_DIR / "_backups" / "token-optimizer"
@@ -9417,6 +9574,8 @@ if __name__ == "__main__":
                 except OSError:
                     pass
         # Clean up orphaned temp files from interrupted atomic writes
+        # Note: .settings.lock is NOT cleaned up (zero-byte sentinel, not a leak;
+        # deleting it while held could break the advisory lock for other processes)
         for f in SETTINGS_PATH.parent.glob(".settings-*.json"):
             try:
                 if time.time() - f.stat().st_mtime > 3600:

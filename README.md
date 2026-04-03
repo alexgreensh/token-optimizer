@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/alexgreensh/token-optimizer/releases"><img src="https://img.shields.io/badge/version-3.2.0-green" alt="Version 3.2.0"></a>
+  <a href="https://github.com/alexgreensh/token-optimizer/releases"><img src="https://img.shields.io/badge/version-3.4.1-green" alt="Version 3.4.1"></a>
   <a href="https://github.com/alexgreensh/token-optimizer"><img src="https://img.shields.io/badge/Claude_Code-Plugin-blueviolet" alt="Claude Code Plugin"></a>
   <a href="https://github.com/alexgreensh/token-optimizer/tree/main/openclaw"><img src="https://img.shields.io/badge/OpenClaw-Plugin-brightgreen" alt="OpenClaw Plugin"></a>
   <a href="https://github.com/alexgreensh/token-optimizer/blob/main/LICENSE"><img src="https://img.shields.io/github/license/alexgreensh/token-optimizer" alt="License"></a>
@@ -105,11 +105,28 @@ yarn.lock
 
 ---
 
+### v3.4.1: Combined Checkpoint Policy + Local Telemetry
+
+| Feature | What You Get |
+|---------|-------------|
+| **Combined Checkpoints** | Captures session state at `20%`, `35%`, `50%`, `65%`, and `80%` fill, plus first quality drops below `80`, `70`, `50`, and `40`. Also snapshots before agent fan-out and after big edit batches. |
+| **Background Guards** | One-shot threshold capture, cooldown suppression, and deterministic checkpoint extraction. No LLM calls in the checkpoint path. |
+| **Local Checkpoint Telemetry** | Optional, local-only telemetry. Enable with `TOKEN_OPTIMIZER_CHECKPOINT_TELEMETRY=1` to see whether checkpoints are firing, which triggers are active, and the last captured event. No external analytics. |
+| **OpenClaw Doctor** | OpenClaw now includes checkpoint health plus recent-event visibility through `token-optimizer doctor` and `token-optimizer checkpoint-stats`. |
+| **Restore Hardening** | Automatic restore and cleanup reject symlinked checkpoint files and out-of-root paths. |
+
+```bash
+TOKEN_OPTIMIZER_CHECKPOINT_TELEMETRY=1 python3 measure.py checkpoint-stats --days 7
+TOKEN_OPTIMIZER_CHECKPOINT_TELEMETRY=1 npx token-optimizer checkpoint-stats --days 7
+```
+
+---
+
 ### v3.0: Progressive Checkpoints, Tool Archive, Savings Tracking, JSONL Toolkit, Attention Optimizer
 
 | Feature | What You Get |
 |---------|-------------|
-| **Progressive Checkpoints** | Captures session state at 50%, 65%, and 80% context fill, not just at emergency compaction (~98%). Richer checkpoints because there's more context to extract from. Restores prefer the earliest (richest) checkpoint. |
+| **Progressive Checkpoints** | Captures session state early and restores from the richest eligible checkpoint instead of waiting for emergency compaction. |
 | **Tool Result Archive** | PostToolUse hook archives large tool results (>4KB) to disk. After compaction, use `expand <tool-use-id>` to retrieve any archived result instead of re-running the command. MCP tool results over 8KB get automatically trimmed with an expand hint. |
 | **Savings Dashboard** | Tracks cumulative dollar savings from setup optimization, checkpoint restores, and tool archiving. `savings` command shows a breakdown by category with daily averages and monthly estimates. |
 | **JSONL Toolkit** | Three utilities for session JSONL files: `jsonl-inspect` (stats, record counts, largest records), `jsonl-trim` (replace large tool results with placeholders), `jsonl-dedup` (detect and remove duplicate system reminders). All use streaming I/O and atomic writes. |
@@ -288,7 +305,7 @@ python3 measure.py setup-quality-bar      # one-time install
 
 ### Session Continuity: Pick Up Where You Left Off
 
-Sessions auto-checkpoint on end, /clear, and crashes. Start a new session on the same topic and it injects the relevant context automatically.
+Sessions auto-checkpoint on end, /clear, and crashes. On a fresh session, Token Optimizer offers a pointer to the most recent relevant checkpoint instead of auto-injecting old context.
 
 ---
 

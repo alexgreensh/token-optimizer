@@ -7,7 +7,7 @@
  *   npx token-optimizer audit [--days 30] [--json]
  */
 
-import { audit, scan, generateDashboard } from "./index";
+import { audit, scan, generateDashboard, doctor as runDoctor, checkpointTelemetry } from "./index";
 import { AgentRun, totalTokens } from "./models";
 import { findOpenClawDir } from "./session-parser";
 import { auditContext } from "./context-audit";
@@ -31,7 +31,7 @@ function redactPaths(obj: unknown): unknown {
 }
 
 function printUsage(): void {
-  console.log(`Token Optimizer for OpenClaw v1.3.0
+  console.log(`Token Optimizer for OpenClaw v1.3.1
 
 Usage:
   token-optimizer scan         [--days N] [--json]   Scan sessions and show token usage
@@ -42,6 +42,8 @@ Usage:
   token-optimizer git-context  [--json]               Suggest files based on git state
   token-optimizer drift        [--snapshot]            Config drift detection
   token-optimizer detect                               Check if OpenClaw is installed
+  token-optimizer doctor       [--json]               Check checkpoint health and plugin status
+  token-optimizer checkpoint-stats [--days N] [--json]  Summarize local checkpoint telemetry
 
 Options:
   --days N      Number of days to scan (default: 30)
@@ -90,6 +92,61 @@ function cmdDetect(json: boolean): void {
       "OpenClaw not found. Checked: ~/.openclaw, ~/.clawdbot, ~/.moltbot"
     );
     process.exit(1);
+  }
+}
+
+function cmdDoctor(json: boolean): void {
+  const report = runDoctor();
+  if (json) {
+    console.log(JSON.stringify(report, null, 2));
+    return;
+  }
+
+  console.log(`\nCheckpoint Doctor`);
+  console.log("=".repeat(50));
+  console.log(`Status: ${(report as { ok?: boolean }).ok ? "healthy" : "needs attention"}`);
+  console.log(`Checkpoint root: ${(report as { checkpointRoot?: string }).checkpointRoot ?? "unknown"}`);
+  console.log(`Sessions: ${(report as { sessionCount?: number }).sessionCount ?? 0}`);
+  console.log(`Checkpoint files: ${(report as { checkpointCount?: number }).checkpointCount ?? 0}`);
+  console.log(`Policy files: ${(report as { policyCount?: number }).policyCount ?? 0}`);
+  console.log(`Pending triggers: ${(report as { pendingCount?: number }).pendingCount ?? 0}`);
+  console.log(`Stored bytes: ${(report as { checkpointBytes?: number }).checkpointBytes ?? 0}`);
+  console.log(`Recent events (7d): ${(report as { recentCheckpointEvents?: number }).recentCheckpointEvents ?? 0}`);
+  console.log(`Last trigger: ${(report as { lastCheckpointTrigger?: string }).lastCheckpointTrigger ?? "none"}`);
+
+  const issues = (report as { issues?: string[] }).issues ?? [];
+  if (issues.length > 0) {
+    console.log("\nIssues:");
+    for (const issue of issues) {
+      console.log(`  - ${issue}`);
+    }
+  }
+}
+
+function cmdCheckpointStats(days: number, json: boolean): void {
+  const report = checkpointTelemetry(days);
+  if (json) {
+    console.log(JSON.stringify(report, null, 2));
+    return;
+  }
+
+  console.log(`\nCheckpoint Telemetry (${days}d)`);
+  console.log("=".repeat(50));
+  console.log(`Enabled: ${((report as { enabled?: boolean }).enabled ?? false) ? "yes" : "no"}`);
+  console.log(`Event log: ${(report as { eventLog?: string }).eventLog ?? "unknown"}`);
+  console.log(`Total events: ${(report as { totalEvents?: number }).totalEvents ?? 0}`);
+  console.log(`Recent events: ${(report as { recentEvents?: number }).recentEvents ?? 0}`);
+  const byTrigger = (report as { byTrigger?: Record<string, number> }).byTrigger ?? {};
+  if (Object.keys(byTrigger).length > 0) {
+    console.log("\nBy trigger:");
+    for (const [trigger, count] of Object.entries(byTrigger)) {
+      console.log(`  ${trigger}: ${count}`);
+    }
+  }
+  const lastEvent = (report as { lastEvent?: Record<string, unknown> | null }).lastEvent;
+  if (lastEvent) {
+    console.log("\nLast event:");
+    console.log(`  ${(lastEvent.timestamp as string) ?? "unknown"}  ${(lastEvent.trigger as string) ?? "unknown"}  session=${(lastEvent.sessionId as string) ?? "unknown"}`);
   }
 }
 
@@ -410,6 +467,12 @@ const { command, days, json, snapshot } = parseArgs();
 switch (command) {
   case "detect":
     cmdDetect(json);
+    break;
+  case "doctor":
+    cmdDoctor(json);
+    break;
+  case "checkpoint-stats":
+    cmdCheckpointStats(days, json);
     break;
   case "scan":
     cmdScan(days, json);

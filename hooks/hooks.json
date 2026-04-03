@@ -9,6 +9,15 @@
             "command": "test -f '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/read_cache.py' && python3 '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/read_cache.py' --quiet || true"
           }
         ]
+      },
+      {
+        "matcher": "Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/measure.py' && python3 '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/measure.py' checkpoint-trigger --milestone pre-fanout --quiet || true"
+          }
+        ]
       }
     ],
     "PreCompact": [

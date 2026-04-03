@@ -44,10 +44,11 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.audit = audit;
 exports.scan = scan;
 exports.generateDashboard = generateDashboard;
+exports.doctor = doctor;
+exports.checkpointTelemetry = checkpointTelemetry;
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const session_parser_1 = require("./session-parser");
-const waste_detectors_1 = require("./waste-detectors");
 const smart_compact_1 = require("./smart-compact");
 const read_cache_1 = require("./read-cache");
 const models_1 = require("./models");
@@ -55,6 +56,8 @@ const dashboard_1 = require("./dashboard");
 const pricing_1 = require("./pricing");
 const context_audit_1 = require("./context-audit");
 const quality_1 = require("./quality");
+const checkpoint_policy_1 = require("./checkpoint-policy");
+const waste_detectors_1 = require("./waste-detectors");
 function definePluginEntry(options) {
     return options;
 }
@@ -146,6 +149,24 @@ function generateDashboard(days = 30) {
     const data = (0, dashboard_1.buildDashboardData)(runs, report, qualityReport, contextAudit);
     return (0, dashboard_1.writeDashboard)(data);
 }
+function doctor() {
+    const health = (0, checkpoint_policy_1.getCheckpointHealth)();
+    return {
+        ok: health.issues.length === 0,
+        checkpointRoot: health.checkpointRoot,
+        sessionCount: health.sessionCount,
+        checkpointCount: health.checkpointCount,
+        policyCount: health.policyCount,
+        pendingCount: health.pendingCount,
+        checkpointBytes: health.checkpointBytes,
+        recentCheckpointEvents: health.recentEventCount,
+        lastCheckpointTrigger: health.lastTrigger,
+        issues: health.issues,
+    };
+}
+function checkpointTelemetry(days = 7) {
+    return (0, checkpoint_policy_1.getCheckpointTelemetrySummary)(days);
+}
 // ---------------------------------------------------------------------------
 // Plugin registration (called by OpenClaw plugin loader)
 // ---------------------------------------------------------------------------
@@ -155,11 +176,14 @@ exports.default = definePluginEntry({
     description: "Token waste auditor for OpenClaw. Detects idle burns, model misrouting, and context bloat.",
     register(api) {
         api.logger.info("[token-optimizer] Plugin activated");
+        const openclawDir = (0, session_parser_1.findOpenClawDir)();
+        const contextAudit = openclawDir ? (0, context_audit_1.auditContext)(openclawDir) : null;
         // Register service so other plugins/skills can call our methods
         api.registerService("token-optimizer", {
             audit,
             scan,
             generateDashboard,
+            doctor,
         });
         // Log on gateway startup
         api.on("gateway:startup", () => {
@@ -185,7 +209,13 @@ exports.default = definePluginEntry({
                 return;
             }
             // Try v2 (intelligent extraction), fall back to v1
-            const filepath = (0, smart_compact_1.captureCheckpointV2)(session) ?? (0, smart_compact_1.captureCheckpoint)(session);
+            const filepath = (0, smart_compact_1.captureCheckpointV2)(session, 10, {
+                trigger: "compact",
+                eventKind: "compact-before",
+            }) ?? (0, smart_compact_1.captureCheckpoint)(session, 20, {
+                trigger: "compact",
+                eventKind: "compact-before",
+            });
             if (filepath) {
                 api.logger.info(`[token-optimizer] Checkpoint saved: ${filepath}`);
             }
@@ -203,19 +233,36 @@ exports.default = definePluginEntry({
                 api.logger.info(`[token-optimizer] Checkpoint restored for session ${session.sessionId}`);
             }
         });
+        api.on("session:patch", (...args) => {
+            const event = args[0];
+            if (!event?.sessionId || !openclawDir)
+                return;
+            maybeCheckpointFromRuntimeSnapshot(openclawDir, contextAudit, event.agentId, event.sessionId, api, "session-patch");
+        });
         // Read Cache: intercept redundant reads (PreToolUse equivalent)
         api.on("agent:tool:before", (...args) => {
             const event = args[0];
-            if (!event?.toolName || event.toolName !== "Read")
+            if (!event?.toolName)
                 return;
-            const result = (0, read_cache_1.handleReadBefore)({
-                toolName: event.toolName,
-                toolInput: (event.toolInput ?? {}),
-                agentId: event.agentId ?? "unknown",
-                sessionId: event.sessionId ?? "unknown",
-            });
-            if (result?.block && event.block) {
-                event.block(result.message);
+            if (event.toolName === "Read") {
+                const result = (0, read_cache_1.handleReadBefore)({
+                    toolName: event.toolName,
+                    toolInput: (event.toolInput ?? {}),
+                    agentId: event.agentId ?? "unknown",
+                    sessionId: event.sessionId ?? "unknown",
+                });
+                if (result?.block && event.block) {
+                    event.block(result.message);
+                }
+            }
+            if (openclawDir &&
+                event.sessionId &&
+                (event.toolName === "Agent" || event.toolName === "Task")) {
+                const decision = (0, checkpoint_policy_1.maybeDecidePreFanoutCheckpoint)(event.sessionId);
+                const snapshot = decision
+                    ? buildRuntimeEventContext(openclawDir, contextAudit, event.agentId, event.sessionId, "tool-before", event.toolName)
+                    : null;
+                captureDecisionCheckpoint(decision, snapshot, api);
             }
         });
         // Read Cache: invalidate on file writes (PostToolUse equivalent)
@@ -229,10 +276,30 @@ exports.default = definePluginEntry({
                 agentId: event.agentId ?? "unknown",
                 sessionId: event.sessionId ?? "unknown",
             });
+            if (!openclawDir || !event.sessionId)
+                return;
+            const filePath = typeof event.toolInput?.file_path === "string"
+                ? event.toolInput.file_path
+                : undefined;
+            let milestoneSnapshot = null;
+            if (isWriteTool(event.toolName)) {
+                (0, checkpoint_policy_1.registerWriteEvent)(event.sessionId, filePath);
+                const decision = (0, checkpoint_policy_1.maybeDecideEditBatchCheckpoint)(event.sessionId);
+                if (decision) {
+                    milestoneSnapshot = buildRuntimeEventContext(openclawDir, contextAudit, event.agentId, event.sessionId, "tool-after", event.toolName);
+                }
+                captureDecisionCheckpoint(decision, milestoneSnapshot, api);
+            }
+            maybeCheckpointFromRuntimeSnapshot(openclawDir, contextAudit, event.agentId, event.sessionId, api, "tool-after", milestoneSnapshot);
         });
         // Generate dashboard silently on session end
-        api.on("session:end", () => {
+        api.on("session:end", (...args) => {
             try {
+                const event = args[0];
+                if (openclawDir && event?.sessionId) {
+                    maybeCheckpointFromRuntimeSnapshot(openclawDir, contextAudit, event.agentId, event.sessionId, api, "session-end");
+                    (0, checkpoint_policy_1.clearCheckpointState)(event.sessionId);
+                }
                 generateDashboard(30);
                 api.logger.info("[token-optimizer] Dashboard regenerated on session end");
             }
@@ -242,4 +309,90 @@ exports.default = definePluginEntry({
         });
     },
 });
+function resolveSessionFile(openclawDir, agentId, sessionId) {
+    if (agentId) {
+        const direct = path.join(openclawDir, "agents", agentId, "sessions", `${sessionId}.jsonl`);
+        if (fs.existsSync(direct))
+            return direct;
+    }
+    const agentsDir = path.join(openclawDir, "agents");
+    if (!fs.existsSync(agentsDir))
+        return null;
+    for (const entry of fs.readdirSync(agentsDir, { withFileTypes: true })) {
+        if (!entry.isDirectory())
+            continue;
+        const candidate = path.join(agentsDir, entry.name, "sessions", `${sessionId}.jsonl`);
+        if (fs.existsSync(candidate))
+            return candidate;
+    }
+    return null;
+}
+function isWriteTool(toolName) {
+    return toolName === "Edit" || toolName === "Write" || toolName === "MultiEdit" || toolName === "NotebookEdit";
+}
+function buildRuntimeEventContext(openclawDir, contextAudit, agentId, sessionId, eventKind, toolName) {
+    const sessionFile = resolveSessionFile(openclawDir, agentId, sessionId);
+    if (!sessionFile)
+        return null;
+    const agentName = agentId ?? path.basename(path.dirname(path.dirname(sessionFile)));
+    const run = (0, session_parser_1.parseSession)(sessionFile, agentName, openclawDir);
+    if (!run)
+        return null;
+    const snapshot = (0, checkpoint_policy_1.buildRuntimeSnapshot)(run, contextAudit);
+    return {
+        sessionId,
+        sessionFile,
+        fillPct: snapshot.fillPct,
+        qualityScore: snapshot.qualityScore,
+        toolName,
+        eventKind,
+        model: run.model,
+    };
+}
+function maybeCheckpointFromRuntimeSnapshot(openclawDir, contextAudit, agentId, sessionId, api, eventKind, precomputedSnapshot = null) {
+    if (!(0, checkpoint_policy_1.shouldEvaluateRuntimeState)(sessionId))
+        return;
+    const snapshot = precomputedSnapshot ??
+        buildRuntimeEventContext(openclawDir, contextAudit, agentId, sessionId, eventKind);
+    if (!snapshot)
+        return;
+    (0, checkpoint_policy_1.markEvaluated)(sessionId);
+    const decision = (0, checkpoint_policy_1.maybeDecideSnapshotCheckpoint)(sessionId, {
+        fillPct: snapshot.fillPct,
+        qualityScore: snapshot.qualityScore,
+    });
+    captureDecisionCheckpoint(decision, snapshot, api);
+}
+function captureDecisionCheckpoint(decision, snapshot, api) {
+    if (!decision || !snapshot)
+        return;
+    const enrichedDecision = {
+        ...decision,
+        fillPct: decision.fillPct ?? snapshot.fillPct,
+        qualityScore: decision.qualityScore ?? snapshot.qualityScore,
+    };
+    const session = {
+        sessionId: snapshot.sessionId,
+        messages: (0, smart_compact_1.loadMessagesFromSessionFile)(snapshot.sessionFile),
+    };
+    const filepath = (0, smart_compact_1.captureCheckpointV2)(session, 10, {
+        trigger: enrichedDecision.trigger,
+        fillPct: enrichedDecision.fillPct,
+        qualityScore: enrichedDecision.qualityScore,
+        toolName: snapshot.toolName,
+        eventKind: snapshot.eventKind,
+        model: snapshot.model,
+    }) ??
+        (0, smart_compact_1.captureCheckpoint)(session, 20, {
+            trigger: enrichedDecision.trigger,
+            fillPct: enrichedDecision.fillPct,
+            qualityScore: enrichedDecision.qualityScore,
+            toolName: snapshot.toolName,
+            eventKind: snapshot.eventKind,
+            model: snapshot.model,
+        });
+    if (filepath) {
+        api.logger.info(`[token-optimizer] Checkpoint saved (${enrichedDecision.trigger}): ${filepath}`);
+    }
+}
 //# sourceMappingURL=index.js.map

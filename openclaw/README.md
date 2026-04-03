@@ -1,5 +1,7 @@
 # Token Optimizer for OpenClaw
 
+Version: `1.3.1`
+
 **Your AI is getting dumber and you can't see it.**
 
 *Find the ghost tokens. Survive compaction. Track the quality decay.*
@@ -33,6 +35,8 @@ openclaw plugins install ./
 - **Quality scoring** with 5 signals and model-aware context windows (Claude 1M, GPT-5 400K, Gemini 2M)
 - **Manage tab** to toggle skills and MCP servers on/off (accumulated clipboard commands)
 - **Smart Compaction v2** preserves decisions, errors, and user instructions during compaction
+- **Combined checkpoint policy** fires on fill bands `20/35/50/65/80`, quality drops `80/70/50/40`, and milestones like `pre-fanout` / `edit-batch`
+- **Local checkpoint telemetry** is opt-in with `TOKEN_OPTIMIZER_CHECKPOINT_TELEMETRY=1` and shows whether the new policy is firing without sending any external analytics
 - **Drift detection** snapshots config and diffs to catch creep
 
 ## CLI
@@ -48,6 +52,8 @@ npx token-optimizer context --json        # Context audit as JSON
 npx token-optimizer quality               # Show quality score (0-100)
 npx token-optimizer drift                 # Check for config drift
 npx token-optimizer drift --snapshot      # Capture current config snapshot
+npx token-optimizer doctor --json         # Check checkpoint health, recent events, last trigger
+TOKEN_OPTIMIZER_CHECKPOINT_TELEMETRY=1 npx token-optimizer checkpoint-stats
 ```
 
 ## Dashboard
@@ -115,6 +121,13 @@ Hooks into `session:compact:before` and `session:compact:after`. Instead of savi
 - **File changes**: write, edit, create operations
 
 Result: more relevant context in fewer tokens after compaction.
+
+Checkpointing is no longer just “wait until the window is almost full.” The runtime now captures:
+
+- Fill bands at `20%`, `35%`, `50%`, `65%`, and `80%`
+- First quality drops below `80`, `70`, `50`, and `40`
+- Milestones before agent fan-out and after a meaningful edit batch
+- Optional local telemetry in `checkpoint-stats` so you can see whether the policy is firing in real sessions
 
 ## Drift Detection
 

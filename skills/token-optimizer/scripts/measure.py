@@ -5895,6 +5895,7 @@ def setup_daemon(dry_run=False, uninstall=False):
 # Pure JSONL analysis, no model calls, no hooks required.
 
 CHECKPOINT_DIR = CLAUDE_DIR / "token-optimizer" / "checkpoints"
+CHECKPOINT_EVENT_LOG = CLAUDE_DIR / "token-optimizer" / "checkpoint-events.jsonl"
 
 # Quality signal weights (must sum to 1.0)
 # context_fill_degradation is the most important signal at large context windows
@@ -5916,8 +5917,13 @@ _CHECKPOINT_RETENTION_MAX = int(os.environ.get("TOKEN_OPTIMIZER_CHECKPOINT_RETEN
 _RELEVANCE_THRESHOLD = float(os.environ.get("TOKEN_OPTIMIZER_RELEVANCE_THRESHOLD", "0.3"))
 
 # Progressive checkpoint thresholds (% fill, fires once each per session)
-_PROGRESSIVE_BANDS = [50, 65, 80]
+_PROGRESSIVE_BANDS = [20, 35, 50, 65, 80]
 _PROGRESSIVE_ENABLED = os.environ.get("TOKEN_OPTIMIZER_PROGRESSIVE_CHECKPOINTS", "1") not in ("0", "false", "no", "off")
+_QUALITY_CHECKPOINT_THRESHOLDS = [80, 70, 50, 40]
+_CHECKPOINT_COOLDOWN_SECONDS = int(os.environ.get("TOKEN_OPTIMIZER_CHECKPOINT_COOLDOWN_SECONDS", "90"))
+_EDIT_BATCH_WRITE_THRESHOLD = int(os.environ.get("TOKEN_OPTIMIZER_EDIT_BATCH_WRITE_THRESHOLD", "4"))
+_EDIT_BATCH_FILE_THRESHOLD = int(os.environ.get("TOKEN_OPTIMIZER_EDIT_BATCH_FILE_THRESHOLD", "3"))
+_CHECKPOINT_TELEMETRY_ENABLED = os.environ.get("TOKEN_OPTIMIZER_CHECKPOINT_TELEMETRY", "0").lower() in ("1", "true", "yes", "on")
 
 # Shared decision-detection regex (used by both quality analyzer and state extractor)
 _DECISION_RE = re.compile(
@@ -7931,7 +7937,7 @@ def _extract_session_state(filepath, tail_lines=500):
     }
 
 
-def compact_capture(transcript_path=None, session_id=None, trigger="auto", cwd=None, fill_pct=None):
+def compact_capture(transcript_path=None, session_id=None, trigger="auto", cwd=None, fill_pct=None, quality_score=None):
     """Capture structured session state before compaction or session end.
 
     Writes a markdown checkpoint to CHECKPOINT_DIR.
@@ -7956,17 +7962,18 @@ def compact_capture(transcript_path=None, session_id=None, trigger="auto", cwd=N
     else:
         filepath = Path(transcript_path)
 
-    # Build trigger suffix for filename (progressive checkpoints get labeled)
-    trigger_suffix = f"-{trigger}" if trigger.startswith("progressive-") else ""
+    # Build trigger suffix for filename so restore/list logic can rank all semantic checkpoints.
+    trigger_suffix = f"-{trigger}" if trigger and trigger != "auto" else ""
 
     if not filepath or not filepath.exists():
         # Write minimal checkpoint with safe permissions
         sid = _sanitize_session_id(session_id)
         checkpoint_path = CHECKPOINT_DIR / f"{sid}-{ts_file}{trigger_suffix}.md"
         fill_info = f" | Fill: {fill_pct:.0f}%" if fill_pct is not None else ""
+        quality_info = f" | Quality: {quality_score:.1f}" if quality_score is not None else ""
         content = (
             f"# Session State Checkpoint\n"
-            f"Generated: {ts} | Trigger: {trigger}{fill_info} | Note: No transcript data available\n"
+            f"Generated: {ts} | Trigger: {trigger}{fill_info}{quality_info} | Note: No transcript data available\n"
         )
         fd = os.open(str(checkpoint_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -7981,9 +7988,10 @@ def compact_capture(transcript_path=None, session_id=None, trigger="auto", cwd=N
     # Generate checkpoint markdown
     sid = _sanitize_session_id(session_id) if session_id else _sanitize_session_id(filepath.stem)
     fill_info = f" | Fill: {fill_pct:.0f}%" if fill_pct is not None else ""
+    quality_info = f" | Quality: {quality_score:.1f}" if quality_score is not None else ""
     lines = [
         f"# Session State Checkpoint",
-        f"Generated: {ts} | Trigger: {trigger}{fill_info}",
+        f"Generated: {ts} | Trigger: {trigger}{fill_info}{quality_info}",
         "",
     ]
 
@@ -8089,6 +8097,9 @@ def compact_restore(session_id=None, cwd=None, is_compact=False, new_session_onl
 
     def _print_checkpoint_body(cp_path, prefix_msg):
         """Read checkpoint, strip header, print body with injection mitigation."""
+        cp_path = _safe_checkpoint_file(cp_path)
+        if cp_path is None:
+            return
         try:
             content = cp_path.read_text(encoding="utf-8")
         except (PermissionError, OSError):
@@ -8125,7 +8136,28 @@ def compact_restore(session_id=None, cwd=None, is_compact=False, new_session_onl
         # they contain richer context than emergency checkpoints at ~98%.
         # IMPORTANT: progressive checkpoints are EXEMPT from TTL check because they
         # are created early (at 50% fill) but consumed much later (at ~98% compaction).
-        _PROGRESSIVE_RANK = {"progressive-50": 0, "progressive-65": 1, "progressive-80": 2}
+        def _checkpoint_restore_rank(trigger):
+            if trigger.startswith("progressive-"):
+                try:
+                    return int(trigger.split("-", 1)[1])
+                except (IndexError, ValueError):
+                    return 100
+            if trigger.startswith("quality-"):
+                try:
+                    return 100 + int(trigger.split("-", 1)[1])
+                except (IndexError, ValueError):
+                    return 180
+            if trigger == "milestone-pre-fanout":
+                return 220
+            if trigger == "milestone-edit-batch":
+                return 230
+            if trigger == "stop":
+                return 300
+            if trigger == "stop-failure":
+                return 310
+            if trigger == "end":
+                return 320
+            return 400
 
         session_checkpoints = []
         for cp in checkpoints:
@@ -8137,7 +8169,7 @@ def compact_restore(session_id=None, cwd=None, is_compact=False, new_session_onl
             # Progressive checkpoints skip TTL, others must be within TTL
             if not is_progressive and age_seconds >= _CHECKPOINT_TTL_SECONDS:
                 continue
-            rank = _PROGRESSIVE_RANK.get(trigger, 10)  # non-progressive = low priority (10)
+            rank = _checkpoint_restore_rank(trigger)
             session_checkpoints.append((rank, cp))
 
         if session_checkpoints:
@@ -8173,6 +8205,85 @@ def compact_restore(session_id=None, cwd=None, is_compact=False, new_session_onl
             except (OSError, KeyError):
                 pass
         return
+
+
+def checkpoint_trigger(milestone=None, session_id=None, transcript_path=None, quiet=False):
+    """Capture a milestone checkpoint from hook input with cooldown and one-shot guards."""
+    hook_input = _read_stdin_hook_input()
+    if not milestone:
+        milestone = hook_input.get("milestone", "")
+
+    if not session_id:
+        session_id = hook_input.get("session_id", "")
+
+    if not transcript_path:
+        transcript_path = (
+            hook_input.get("transcript_path")
+            or hook_input.get("session_jsonl")
+            or hook_input.get("transcript")
+        )
+
+    filepath = None
+    if transcript_path:
+        candidate = Path(transcript_path)
+        if candidate.exists():
+            filepath = candidate
+    if filepath is None and session_id:
+        filepath = _find_session_jsonl_by_id(session_id)
+    if filepath is None:
+        filepath = _find_current_session_jsonl()
+
+    if filepath is None:
+        return None
+
+    session_id = _sanitize_session_id(session_id or filepath.stem)
+    cache_path = _quality_cache_path_for(filepath)
+    result = _read_quality_cache(cache_path)
+    if not result:
+        result = {
+            "score": None,
+            "fill_pct": None,
+        }
+
+    if _checkpoint_cooldown_remaining(result) > 0:
+        return None
+
+    milestone_key = milestone or "manual"
+    captured = result.get("milestones_captured", [])
+    if milestone_key in captured:
+        return None
+
+    trigger = f"milestone-{milestone_key}"
+    cp_path = compact_capture(
+        transcript_path=str(filepath),
+        session_id=session_id,
+        trigger=trigger,
+        fill_pct=result.get("fill_pct"),
+        quality_score=result.get("score"),
+    )
+    if not cp_path:
+        return None
+
+    captured.append(milestone_key)
+    result["milestones_captured"] = sorted(set(captured))
+    milestone_log = result.get("milestone_history", [])
+    milestone_log.append({
+        "trigger": trigger,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    })
+    result["milestone_history"] = milestone_log[-10:]
+    _record_checkpoint_metadata(
+        result,
+        cache_path,
+        trigger,
+        cp_path,
+        fill_pct=result.get("fill_pct"),
+        quality_score=result.get("score"),
+    )
+
+    if not quiet:
+        print(f"[Token Optimizer] Captured {trigger} checkpoint: {cp_path}")
+    return cp_path
 
 
 def generate_compact_instructions(as_json=False, install=False, dry_run=False):
@@ -8333,23 +8444,25 @@ def list_checkpoints(max_age_minutes=None):
     checkpoints = []
     for cp_file in CHECKPOINT_DIR.glob("*.md"):
         try:
-            mtime = cp_file.stat().st_mtime
+            safe_cp = _safe_checkpoint_file(cp_file)
+            if safe_cp is None:
+                continue
+            mtime = safe_cp.stat().st_mtime
             created = datetime.fromtimestamp(mtime)
             if max_age_minutes is not None:
                 age = (datetime.now() - created).total_seconds() / 60
                 if age > max_age_minutes:
                     continue
 
-            # Parse trigger type from filename suffix
+            # Parse trigger type from filename suffix.
             trigger = "auto"
-            for t in ("progressive-50", "progressive-65", "progressive-80", "stop", "end", "stop-failure"):
-                if f"-{t}" in cp_file.name:
-                    trigger = t
-                    break
+            match = re.search(r'-\d{8}-\d{6}-(.+)\.md$', safe_cp.name)
+            if match:
+                trigger = match.group(1)
 
             checkpoints.append({
-                "path": cp_file,
-                "filename": cp_file.name,
+                "path": safe_cp,
+                "filename": safe_cp.name,
                 "created": created,
                 "trigger": trigger,
             })
@@ -8380,6 +8493,30 @@ def _cleanup_checkpoints():
                 removed += 1
             except OSError:
                 pass
+
+
+def _safe_checkpoint_file(cp_path):
+    """Return a safe checkpoint path inside CHECKPOINT_DIR, rejecting symlinks."""
+    try:
+        root = CHECKPOINT_DIR.resolve(strict=True)
+    except OSError:
+        return None
+
+    try:
+        if cp_path.is_symlink():
+            return None
+        resolved = cp_path.resolve(strict=True)
+    except OSError:
+        return None
+
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        return None
+
+    if not resolved.is_file():
+        return None
+    return resolved
 
 
 # ========== Hook Setup: Smart Compaction (v2.0) ==========
@@ -8741,10 +8878,236 @@ def _extract_active_agents(filepath):
     return running[-5:]
 
 
+def _read_quality_cache(cache_path):
+    """Read a per-session quality cache file. Returns dict or empty dict."""
+    try:
+        return json.loads(cache_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, AttributeError):
+        return {}
+
+
+def _checkpoint_cooldown_remaining(result):
+    """Return remaining cooldown seconds before another checkpoint may fire."""
+    last_epoch = result.get("last_checkpoint_epoch")
+    if not last_epoch:
+        return 0
+    try:
+        remaining = int(last_epoch + _CHECKPOINT_COOLDOWN_SECONDS - time.time())
+    except (TypeError, ValueError):
+        return 0
+    return max(0, remaining)
+
+
+def _record_checkpoint_metadata(result, cache_path, trigger, checkpoint_path, *, fill_pct=None, quality_score=None):
+    """Persist checkpoint trigger metadata back into the per-session cache."""
+    result["last_checkpoint_epoch"] = int(time.time())
+    result["last_checkpoint_trigger"] = trigger
+    result["last_checkpoint_path"] = checkpoint_path
+    if fill_pct is not None:
+        result["last_checkpoint_fill_pct"] = round(fill_pct, 1)
+    if quality_score is not None:
+        result["last_checkpoint_quality_score"] = round(quality_score, 1)
+    _write_quality_cache(cache_path, result)
+    _append_checkpoint_event(
+        session_id=Path(cache_path).stem.replace("quality-cache-", "", 1),
+        trigger=trigger,
+        checkpoint_path=checkpoint_path,
+        fill_pct=fill_pct,
+        quality_score=quality_score,
+    )
+
+
+def _append_checkpoint_event(session_id, trigger, checkpoint_path, *, fill_pct=None, quality_score=None):
+    """Append a deterministic local checkpoint event for rollout telemetry."""
+    if not _CHECKPOINT_TELEMETRY_ENABLED:
+        return
+    try:
+        CHECKPOINT_EVENT_LOG.parent.mkdir(parents=True, exist_ok=True)
+        event = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "platform": "claude-code",
+            "session_id": _sanitize_session_id(session_id),
+            "trigger": trigger,
+            "checkpoint_path": str(checkpoint_path),
+        }
+        if fill_pct is not None:
+            event["fill_pct"] = round(fill_pct, 1)
+        if quality_score is not None:
+            event["quality_score"] = round(quality_score, 1)
+        fd = os.open(str(CHECKPOINT_EVENT_LOG), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as f:
+            f.write(json.dumps(event) + "\n")
+    except OSError:
+        pass
+
+
+def checkpoint_stats(days=7, as_json=False):
+    """Summarize local checkpoint telemetry for rollout validation."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    events = []
+    if CHECKPOINT_EVENT_LOG.exists():
+        try:
+            with open(CHECKPOINT_EVENT_LOG, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    ts_raw = event.get("timestamp")
+                    try:
+                        ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00")) if isinstance(ts_raw, str) else None
+                    except ValueError:
+                        ts = None
+                    if ts is None:
+                        continue
+                    event["_ts"] = ts
+                    events.append(event)
+        except OSError:
+            events = []
+
+    recent = [e for e in events if e["_ts"] >= cutoff]
+    by_trigger = {}
+    for event in recent:
+        trigger = event.get("trigger", "unknown")
+        by_trigger[trigger] = by_trigger.get(trigger, 0) + 1
+
+    last_event = None
+    if recent:
+        recent.sort(key=lambda e: e["_ts"], reverse=True)
+        last_event = {
+            "timestamp": recent[0].get("timestamp"),
+            "session_id": recent[0].get("session_id"),
+            "trigger": recent[0].get("trigger"),
+            "fill_pct": recent[0].get("fill_pct"),
+            "quality_score": recent[0].get("quality_score"),
+        }
+
+    summary = {
+        "enabled": _CHECKPOINT_TELEMETRY_ENABLED,
+        "event_log": str(CHECKPOINT_EVENT_LOG),
+        "days": days,
+        "total_events": len(events),
+        "recent_events": len(recent),
+        "by_trigger": dict(sorted(by_trigger.items())),
+        "last_event": last_event,
+    }
+
+    if as_json:
+        print(json.dumps(summary, indent=2))
+    else:
+        print(f"\n  Checkpoint Telemetry ({days}d)")
+        print(f"  {'=' * 40}")
+        print(f"  Enabled:       {'yes' if summary['enabled'] else 'no'}")
+        print(f"  Event log:     {summary['event_log']}")
+        print(f"  Total events:  {summary['total_events']}")
+        print(f"  Recent events: {summary['recent_events']}")
+        if summary["by_trigger"]:
+            print("  By trigger:")
+            for trigger, count in summary["by_trigger"].items():
+                print(f"    {trigger:28s} {count}")
+        if last_event:
+            print("  Last event:")
+            print(f"    {last_event['timestamp']}  {last_event['trigger']}  session={last_event['session_id']}")
+    return summary
+
+
+def _current_edit_batch_stats(quality_data):
+    """Return write-count and unique modified file-count for the current context window."""
+    writes = quality_data.get("writes", [])
+    write_count = len(writes)
+    unique_file_count = len({path for _, path, _ in writes if path})
+    return {
+        "write_count": write_count,
+        "unique_file_count": unique_file_count,
+    }
+
+
+def _maybe_checkpoint_on_quality_or_milestone(quality_data, cache_path, result, filepath):
+    """Capture one-shot quality checkpoints and repeatable edit-batch milestones."""
+    if not filepath:
+        return
+
+    score = result.get("score")
+    fill_pct = result.get("fill_pct")
+    cooldown_remaining = _checkpoint_cooldown_remaining(result)
+
+    quality_captured = result.get("quality_thresholds_captured", [])
+    if score is not None and cooldown_remaining <= 0:
+        for threshold in _QUALITY_CHECKPOINT_THRESHOLDS:
+            if score < threshold and threshold not in quality_captured:
+                trigger = f"quality-{threshold}"
+                cp_path = compact_capture(
+                    transcript_path=str(filepath),
+                    session_id=Path(filepath).stem,
+                    trigger=trigger,
+                    fill_pct=fill_pct,
+                    quality_score=score,
+                )
+                if cp_path:
+                    quality_captured.append(threshold)
+                    quality_captured.sort(reverse=True)
+                    result["quality_thresholds_captured"] = quality_captured
+                    _record_checkpoint_metadata(
+                        result,
+                        cache_path,
+                        trigger,
+                        cp_path,
+                        fill_pct=fill_pct,
+                        quality_score=score,
+                    )
+                    return
+                break
+
+    edit_stats = _current_edit_batch_stats(quality_data)
+    marker = result.get("edit_batch_marker", {})
+    marker_writes = int(marker.get("write_count", 0) or 0)
+    marker_files = int(marker.get("unique_file_count", 0) or 0)
+
+    write_delta = edit_stats["write_count"] - marker_writes
+    file_delta = edit_stats["unique_file_count"] - marker_files
+
+    if (
+        cooldown_remaining <= 0
+        and (
+            write_delta >= _EDIT_BATCH_WRITE_THRESHOLD
+            or file_delta >= _EDIT_BATCH_FILE_THRESHOLD
+        )
+    ):
+        trigger = "milestone-edit-batch"
+        cp_path = compact_capture(
+            transcript_path=str(filepath),
+            session_id=Path(filepath).stem,
+            trigger=trigger,
+            fill_pct=fill_pct,
+            quality_score=score,
+        )
+        if cp_path:
+            result["edit_batch_marker"] = edit_stats
+            milestone_log = result.get("milestone_history", [])
+            milestone_log.append({
+                "trigger": trigger,
+                "write_count": edit_stats["write_count"],
+                "unique_file_count": edit_stats["unique_file_count"],
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+            result["milestone_history"] = milestone_log[-10:]
+            _record_checkpoint_metadata(
+                result,
+                cache_path,
+                trigger,
+                cp_path,
+                fill_pct=fill_pct,
+                quality_score=score,
+            )
+
+
 def _maybe_progressive_checkpoint(fill_pct, cache_path, result, filepath):
     """Create a progressive checkpoint if fill_pct crosses an uncaptured band.
 
-    Progressive checkpoints capture richer session state at 50%, 65%, and 80%
+    Progressive checkpoints capture richer session state at 20%, 35%, 50%, 65%, and 80%
     context fill, instead of only at ~98% (PreCompact). Earlier capture means
     more decisions, files, and context are preserved.
 
@@ -8754,6 +9117,9 @@ def _maybe_progressive_checkpoint(fill_pct, cache_path, result, filepath):
         return
 
     bands_captured = result.get("progressive_bands_captured", [])
+    cooldown_remaining = _checkpoint_cooldown_remaining(result)
+    if cooldown_remaining > 0:
+        return
 
     # Find the highest band crossed but not yet captured
     target_band = None
@@ -8792,9 +9158,14 @@ def _maybe_progressive_checkpoint(fill_pct, cache_path, result, filepath):
         result["progressive_bands_captured"] = bands_captured
         result["progressive_last_checkpoint"] = cp_path
         result["progressive_capture_ms"] = elapsed_ms
-
-        # Persist updated result to cache
-        _write_quality_cache(cache_path, result)
+        _record_checkpoint_metadata(
+            result,
+            cache_path,
+            f"progressive-{target_band}",
+            cp_path,
+            fill_pct=fill_pct,
+            quality_score=result.get("score"),
+        )
 
 
 def quality_cache(throttle_seconds=120, warn_threshold=70, quiet=False, session_jsonl=None, force=False):
@@ -8816,14 +9187,16 @@ def quality_cache(throttle_seconds=120, warn_threshold=70, quiet=False, session_
     # Per-session cache: each session has its own file to avoid cross-session pollution
     cache_path = _quality_cache_path_for(filepath)
 
-    # Throttle: skip if per-session cache is recent enough (unless force=True)
+    # Throttle: skip only if cache is recent AND the session transcript has not changed.
+    # This keeps latency low without missing threshold crossings on active sessions.
     if not force and cache_path.exists():
         try:
             age = time.time() - cache_path.stat().st_mtime
-            if age < throttle_seconds:
+            session_unchanged = filepath is not None and filepath.stat().st_mtime <= cache_path.stat().st_mtime
+            if age < throttle_seconds and session_unchanged:
                 if not quiet:
                     try:
-                        cached = json.loads(cache_path.read_text(encoding="utf-8"))
+                        cached = _read_quality_cache(cache_path)
                         return cached.get("score")
                     except (json.JSONDecodeError, OSError):
                         pass
@@ -8880,6 +9253,13 @@ def quality_cache(throttle_seconds=120, warn_threshold=70, quiet=False, session_
             result=result,
             filepath=filepath,
         )
+
+    _maybe_checkpoint_on_quality_or_milestone(
+        quality_data=quality_data,
+        cache_path=cache_path,
+        result=result,
+        filepath=filepath,
+    )
 
     return result.get("score")
 
@@ -9178,6 +9558,7 @@ _SAVINGS_CATEGORY_LABELS = {
     "tool_digest": "Tool digests",
     "checkpoint_restore": "Checkpoint restores",
     "tool_archive": "Tool archives",
+    "structure_map": "Structure maps",
 }
 
 
@@ -9476,6 +9857,13 @@ if __name__ == "__main__":
             # Only print for non-hook invocations (hooks should be quiet)
             if "--quiet" not in args:
                 print(f"[Token Optimizer] Checkpoint saved: {result}")
+    elif args[0] == "checkpoint-trigger":
+        quiet = "--quiet" in args or "-q" in args
+        milestone = None
+        for i, a in enumerate(args):
+            if a == "--milestone" and i + 1 < len(args):
+                milestone = args[i + 1]
+        checkpoint_trigger(milestone=milestone, quiet=quiet)
     elif args[0] == "compact-restore":
         # Called by SessionStart hook (two variants)
         hook_input = _read_stdin_hook_input()
@@ -9665,6 +10053,20 @@ if __name__ == "__main__":
                 age_str = f"{int(age.total_seconds() / 60)}m ago" if age.total_seconds() < 3600 else f"{int(age.total_seconds() / 3600)}h ago"
                 print(f"    {cp['filename']:50s} {age_str}")
             print()
+    elif args[0] == "checkpoint-stats":
+        days = 7
+        output_json = "--json" in args
+        i = 1
+        while i < len(args):
+            if args[i] == "--days" and i + 1 < len(args):
+                try:
+                    days = max(1, min(365, int(args[i + 1])))
+                except ValueError:
+                    pass
+                i += 2
+                continue
+            i += 1
+        checkpoint_stats(days=days, as_json=output_json)
     elif args[0] in ("trends", "savings"):
         # Shared --days/--json parsing for trends and savings
         days = 30
@@ -9817,6 +10219,15 @@ if __name__ == "__main__":
                 [sys.executable, str(rc_script), "--stats", "--session", sid],
                 timeout=5
             )
+    elif args[0] == "structure-proof":
+        from pathlib import Path as _P
+        proof_script = _P(__file__).resolve().parent / "structure_replay.py"
+        if not proof_script.exists():
+            print(f"[Token Optimizer] structure_replay.py not found at {proof_script}")
+            sys.exit(1)
+        import subprocess
+        result = subprocess.run([sys.executable, str(proof_script)] + args[1:])
+        sys.exit(result.returncode)
     else:
         print("Usage:")
         print("  python3 measure.py quick               # Quick scan: overhead, degradation risk, top offenders")
@@ -9841,6 +10252,9 @@ if __name__ == "__main__":
         print("  python3 measure.py savings              # Savings report (last 30 days)")
         print("  python3 measure.py savings --days 7     # Savings report (last 7 days)")
         print("  python3 measure.py savings --json       # Machine-readable savings output")
+        print("  python3 measure.py structure-proof      # Replay local sessions for structure-map proof")
+        print("  python3 measure.py structure-proof --json")
+        print("  python3 measure.py structure-proof --torture")
         print("  python3 measure.py coach                # Interactive coaching data")
         print("  python3 measure.py coach --json         # Coaching data as JSON")
         print("  python3 measure.py coach --focus skills  # Focus on skill optimization")
@@ -9855,7 +10269,9 @@ if __name__ == "__main__":
         print("  python3 measure.py setup-hook           # Install SessionEnd hook")
         print("  python3 measure.py setup-hook --dry-run # Show what would be installed")
         print("  python3 measure.py compact-capture          # Capture session state checkpoint")
+        print("  python3 measure.py checkpoint-trigger --milestone pre-fanout  # Milestone checkpoint with guards")
         print("  python3 measure.py compact-restore          # Restore context from checkpoint")
+        print("  TOKEN_OPTIMIZER_CHECKPOINT_TELEMETRY=1 python3 measure.py checkpoint-stats --days 7  # Local checkpoint telemetry summary")
         print("  python3 measure.py compact-instructions      # Generate project-specific Compact Instructions")
         print("  python3 measure.py git-context              # Suggest files based on git state")
         print("  python3 measure.py git-context --json       # Machine-readable git context")

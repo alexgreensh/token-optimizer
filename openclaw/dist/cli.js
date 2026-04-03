@@ -58,7 +58,7 @@ function redactPaths(obj) {
         : val));
 }
 function printUsage() {
-    console.log(`Token Optimizer for OpenClaw v1.3.0
+    console.log(`Token Optimizer for OpenClaw v1.3.1
 
 Usage:
   token-optimizer scan         [--days N] [--json]   Scan sessions and show token usage
@@ -69,6 +69,8 @@ Usage:
   token-optimizer git-context  [--json]               Suggest files based on git state
   token-optimizer drift        [--snapshot]            Config drift detection
   token-optimizer detect                               Check if OpenClaw is installed
+  token-optimizer doctor       [--json]               Check checkpoint health and plugin status
+  token-optimizer checkpoint-stats [--days N] [--json]  Summarize local checkpoint telemetry
 
 Options:
   --days N      Number of days to scan (default: 30)
@@ -113,6 +115,56 @@ function cmdDetect(json) {
     else {
         console.log("OpenClaw not found. Checked: ~/.openclaw, ~/.clawdbot, ~/.moltbot");
         process.exit(1);
+    }
+}
+function cmdDoctor(json) {
+    const report = (0, index_1.doctor)();
+    if (json) {
+        console.log(JSON.stringify(report, null, 2));
+        return;
+    }
+    console.log(`\nCheckpoint Doctor`);
+    console.log("=".repeat(50));
+    console.log(`Status: ${report.ok ? "healthy" : "needs attention"}`);
+    console.log(`Checkpoint root: ${report.checkpointRoot ?? "unknown"}`);
+    console.log(`Sessions: ${report.sessionCount ?? 0}`);
+    console.log(`Checkpoint files: ${report.checkpointCount ?? 0}`);
+    console.log(`Policy files: ${report.policyCount ?? 0}`);
+    console.log(`Pending triggers: ${report.pendingCount ?? 0}`);
+    console.log(`Stored bytes: ${report.checkpointBytes ?? 0}`);
+    console.log(`Recent events (7d): ${report.recentCheckpointEvents ?? 0}`);
+    console.log(`Last trigger: ${report.lastCheckpointTrigger ?? "none"}`);
+    const issues = report.issues ?? [];
+    if (issues.length > 0) {
+        console.log("\nIssues:");
+        for (const issue of issues) {
+            console.log(`  - ${issue}`);
+        }
+    }
+}
+function cmdCheckpointStats(days, json) {
+    const report = (0, index_1.checkpointTelemetry)(days);
+    if (json) {
+        console.log(JSON.stringify(report, null, 2));
+        return;
+    }
+    console.log(`\nCheckpoint Telemetry (${days}d)`);
+    console.log("=".repeat(50));
+    console.log(`Enabled: ${(report.enabled ?? false) ? "yes" : "no"}`);
+    console.log(`Event log: ${report.eventLog ?? "unknown"}`);
+    console.log(`Total events: ${report.totalEvents ?? 0}`);
+    console.log(`Recent events: ${report.recentEvents ?? 0}`);
+    const byTrigger = report.byTrigger ?? {};
+    if (Object.keys(byTrigger).length > 0) {
+        console.log("\nBy trigger:");
+        for (const [trigger, count] of Object.entries(byTrigger)) {
+            console.log(`  ${trigger}: ${count}`);
+        }
+    }
+    const lastEvent = report.lastEvent;
+    if (lastEvent) {
+        console.log("\nLast event:");
+        console.log(`  ${lastEvent.timestamp ?? "unknown"}  ${lastEvent.trigger ?? "unknown"}  session=${lastEvent.sessionId ?? "unknown"}`);
     }
 }
 function cmdScan(days, json) {
@@ -397,6 +449,12 @@ const { command, days, json, snapshot } = parseArgs();
 switch (command) {
     case "detect":
         cmdDetect(json);
+        break;
+    case "doctor":
+        cmdDoctor(json);
+        break;
+    case "checkpoint-stats":
+        cmdCheckpointStats(days, json);
         break;
     case "scan":
         cmdScan(days, json);

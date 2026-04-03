@@ -2,7 +2,8 @@
 # Token Optimizer - One-command installer
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/alexgreensh/token-optimizer/main/install.sh | bash
+#   git clone https://github.com/alexgreensh/token-optimizer.git ~/.claude/token-optimizer
+#   bash ~/.claude/token-optimizer/install.sh
 #
 # What it does:
 #   1. Checks prerequisites (Python 3.8+, git, ~/.claude/)

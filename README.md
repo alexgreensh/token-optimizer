@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/alexgreensh/token-optimizer/releases"><img src="https://img.shields.io/badge/version-3.4.1-green" alt="Version 3.4.1"></a>
+  <a href="https://github.com/alexgreensh/token-optimizer/releases"><img src="https://img.shields.io/badge/version-3.4.2-green" alt="Version 3.4.2"></a>
   <a href="https://github.com/alexgreensh/token-optimizer"><img src="https://img.shields.io/badge/Claude_Code-Plugin-blueviolet" alt="Claude Code Plugin"></a>
   <a href="https://github.com/alexgreensh/token-optimizer/tree/main/openclaw"><img src="https://img.shields.io/badge/OpenClaw-Plugin-brightgreen" alt="OpenClaw Plugin"></a>
   <a href="https://github.com/alexgreensh/token-optimizer/blob/main/LICENSE"><img src="https://img.shields.io/github/license/alexgreensh/token-optimizer" alt="License"></a>
@@ -34,11 +34,14 @@ Opus 4.6 drops from 93% to 76% accuracy across a 1M context window. Compaction l
 
 Then in Claude Code: `/token-optimizer`
 
-Also available as a script installer:
+Also available as a script install:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/alexgreensh/token-optimizer/main/install.sh | bash
+git clone https://github.com/alexgreensh/token-optimizer.git ~/.claude/token-optimizer
+bash ~/.claude/token-optimizer/install.sh
 ```
+
+That install path still keeps automatic updates, because script-installed checkouts run a daily `git pull --ff-only`.
 
 Works on Claude Code and [OpenClaw](#openclaw-plugin). Each platform gets its own native plugin (Python for Claude Code, TypeScript for OpenClaw). No bridging, no shared runtime, zero cross-platform dependencies.
 
@@ -102,6 +105,15 @@ yarn.lock
 *.min.js
 *.min.css
 ```
+
+---
+
+### v3.4.2: Security Posture Cleanup
+
+| Feature | What You Get |
+|---------|-------------|
+| **Safer Script Install Docs** | README now points to clone-and-run install steps instead of advertising `curl | bash`, while keeping auto-updates for script-installed users. |
+| **Forensics Review** | Repo-forensics review confirmed no outbound exfiltration path in the shipped plugin code; scanner noise is documented and the trust-posture concern is reduced. |
 
 ---
 

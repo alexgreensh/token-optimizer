@@ -40,8 +40,8 @@ Usage:
     python3 measure.py attention-score --json         # Machine-readable output
     python3 measure.py attention-optimize             # Dry-run: propose section reordering
     python3 measure.py attention-optimize --apply     # Apply reordering (backup + write)
-    python3 measure.py plugin-cleanup                   # Remove stale cache + deduplicate skills
-    python3 measure.py plugin-cleanup --dry-run         # Preview what would be cleaned
+    python3 measure.py plugin-cleanup                   # Detect duplicates + archive local/plugin overlaps
+    python3 measure.py plugin-cleanup --dry-run         # Preview what would change
     python3 measure.py archive-result                  # PostToolUse hook: archive large tool results
     python3 measure.py expand TOOL_USE_ID              # Retrieve archived tool result
     python3 measure.py expand --list                   # List all archived results
@@ -2788,20 +2788,22 @@ def _collect_management_data(components=None, trends=None):
 
 
 def plugin_cleanup(dry_run=False, quiet=False):
-    """Remove stale plugin cache dirs and local skills that duplicate plugin skills.
+    """Report stale plugin cache dirs and archive local/plugin skill overlaps.
 
-    Two fixes:
-    1. Stale cache: old plugin version dirs in ~/.claude/plugins/cache/ not referenced
-       by any installPath in installed_plugins.json. These can cause 3x skill loading
-       via the filesystem fallback scan (Claude Code issue #27721).
-    2. Local/plugin overlap: skills in ~/.claude/skills/ that are also installed as
-       plugin skills. Both load into context, doubling token cost for zero benefit.
+    Two actions:
+    1. Stale cache REPORTING: lists old plugin version dirs in ~/.claude/plugins/cache/
+       not referenced by installPath. Does NOT delete them because installPath is not
+       always the authoritative source (Claude Code's loader may resolve via marketplace
+       source, especially for directory-sourced plugins). Users should review manually.
+       See Claude Code issue #27721.
+    2. Local/plugin overlap: archives local skills in ~/.claude/skills/ that duplicate
+       plugin-installed skills (only bare SKILL.md; keeps skills with custom reference files).
     """
     import shutil
 
     actions_taken = []
 
-    # --- Fix 1: Stale cache version dirs ---
+    # --- Report 1: Stale cache version dirs (report only, never delete) ---
     registry = CLAUDE_DIR / "plugins" / "installed_plugins.json"
     cache_dir = CLAUDE_DIR / "plugins" / "cache"
 
@@ -2833,7 +2835,6 @@ def plugin_cleanup(dry_run=False, quiet=False):
                         continue
                     resolved = str(version_dir.resolve())
                     if resolved not in active_paths:
-                        # Check if it actually has skills (worth reporting)
                         has_skills = (version_dir / "skills").is_dir()
                         stale_dirs.append({
                             "path": version_dir,
@@ -2844,21 +2845,9 @@ def plugin_cleanup(dry_run=False, quiet=False):
     if stale_dirs:
         skills_stale = [d for d in stale_dirs if d["has_skills"]]
         if not quiet:
-            print(f"\n  Stale plugin cache: {len(stale_dirs)} dirs ({len(skills_stale)} with skills)")
-        for d in stale_dirs:
-            marker = " [has skills]" if d["has_skills"] else ""
-            if dry_run:
-                if not quiet:
-                    print(f"    [dry-run] would remove: {d['display']}{marker}")
-            else:
-                try:
-                    shutil.rmtree(d["path"])
-                    if not quiet:
-                        print(f"    removed: {d['display']}{marker}")
-                    actions_taken.append(f"removed stale cache: {d['display']}")
-                except OSError as e:
-                    if not quiet:
-                        print(f"    [error] {d['display']}: {e}")
+            print(f"\n  Stale plugin cache: {len(stale_dirs)} unreferenced dirs ({len(skills_stale)} with skills)")
+            print(f"    These are NOT auto-deleted (Claude Code's loader may still use them).")
+            print(f"    Review manually: ls ~/.claude/plugins/cache/")
     elif not quiet:
         print(f"\n  Stale plugin cache: clean")
 

@@ -3488,7 +3488,7 @@ def generate_auto_recommendations(components, trends=None, days=30):
             f"  Claude Code loads skills from EVERY registered install path, so duplicates "
             f"genuinely consume extra context tokens (Claude Code bug #27721).\n"
             f"  Fix: `python3 measure.py plugin-cleanup` (or `--dry-run` to preview). "
-            f"Also runs automatically on session start. "
+            f"Run `--dry-run` first to preview changes. "
             f"~{wasted:,} tokens recoverable."
         )
     if plugin_suspicious:
@@ -10494,13 +10494,9 @@ if __name__ == "__main__":
                 print(f"  [Token Optimizer] Fixed {_stale_fixed} stale plugin path(s) in settings.json")
         except Exception as _e:
             print(f"  [Token Optimizer] stale path fix failed: {_e}", file=sys.stderr)
-        # Auto-clean stale plugin cache dirs and local/plugin skill overlaps
-        try:
-            _cleanup_actions = plugin_cleanup(dry_run=False, quiet=True)
-            if _cleanup_actions:
-                print(f"  [Token Optimizer] Plugin cleanup: {len(_cleanup_actions)} fix(es) applied")
-        except Exception as _e:
-            print(f"  [Token Optimizer] plugin cleanup failed: {_e}", file=sys.stderr)
+        # Plugin cleanup is available as `measure.py plugin-cleanup` but NOT auto-run.
+        # Deleting cache dirs on SessionStart can break plugins that load hooks from
+        # dogfood/development paths. Users should run it manually after review.
         # Migrate data to CLAUDE_PLUGIN_DATA on first run (v2.1.78+)
         if _PLUGIN_DATA:
             _legacy_data = CLAUDE_DIR / "_backups" / "token-optimizer"

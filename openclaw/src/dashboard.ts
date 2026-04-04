@@ -83,6 +83,8 @@ interface SessionRow {
   qualityScore: number;
   qualityGrade: string;
   qualityBand: string;
+  cacheWrite1hTokens: number;
+  cacheWrite5mTokens: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -224,6 +226,8 @@ export function buildDashboardData(
       qualityScore: sq.score,
       qualityGrade: sq.grade,
       qualityBand: sq.band,
+      cacheWrite1hTokens: r.cacheWrite1hTokens ?? 0,
+      cacheWrite5mTokens: r.cacheWrite5mTokens ?? 0,
     };
   });
 
@@ -845,6 +849,13 @@ function renderSessions(data: DashboardData): string {
       default: return "var(--c-text-dim)";
     }
   };
+  const ttlMixLabel = (r: SessionRow): string => {
+    const ttlTotal = r.cacheWrite1hTokens + r.cacheWrite5mTokens;
+    if (ttlTotal <= 0) return "n/a";
+    const pct1h = Math.round((r.cacheWrite1hTokens / ttlTotal) * 100);
+    const pct5m = Math.max(0, 100 - pct1h);
+    return `${pct1h}/${pct5m} 1h/5m`;
+  };
 
   return `<div class="view" id="view-sessions">
     <div class="section-header">
@@ -869,6 +880,7 @@ function renderSessions(data: DashboardData): string {
                 <th>Model</th>
                 <th>Messages</th>
                 <th>Tokens</th>
+                <th>TTL Mix</th>
                 <th>Cost</th>
                 <th>Duration</th>
                 <th>Outcome</th>
@@ -889,6 +901,7 @@ function renderSessions(data: DashboardData): string {
                 <td>${esc(r.model)}</td>
                 <td>${r.messages}</td>
                 <td>${fmtTokens(r.tokens)}</td>
+                <td style="font-family:var(--font-mono);font-size:11px;color:var(--c-text-dim)">${esc(ttlMixLabel(r))}</td>
                 <td style="color:var(--c-accent-cyan)">${fmtCost(r.cost)}</td>
                 <td>${fmtDuration(r.duration)}</td>
                 <td><span style="color:${outcomeColor(r.outcome)}">${esc(r.outcome)}</span></td>

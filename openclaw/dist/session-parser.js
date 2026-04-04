@@ -162,6 +162,10 @@ function parseSession(filePath, agentName, openclawDir) {
     const lines = content.split("\n");
     let totalInput = 0;
     let totalOutput = 0;
+    let totalCacheRead = 0;
+    let totalCacheWrite = 0;
+    let totalCacheWrite1h = 0;
+    let totalCacheWrite5m = 0;
     let messageCount = 0;
     const modelUsage = new Map();
     const toolsUsed = new Set();
@@ -197,19 +201,39 @@ function parseSession(filePath, agentName, openclawDir) {
             const usage = msg?.usage ??
                 record.usage;
             if (usage) {
-                // OpenClaw uses inputTokens (total input, no cache split)
+                // Prefer explicit cache fields when present, but tolerate older logs
+                // that only expose input/output totals.
                 const inp = usage.inputTokens ??
                     usage.input_tokens ??
                     0;
                 const out = usage.outputTokens ??
                     usage.output_tokens ??
                     0;
+                const cacheRead = usage.cacheReadInputTokens ??
+                    usage.cache_read_input_tokens ??
+                    0;
+                const cacheCreation = usage.cacheCreation ??
+                    usage.cache_creation ??
+                    {};
+                const cacheWrite1h = cacheCreation.ephemeral_1h_input_tokens ??
+                    usage.ephemeral_1h_input_tokens ??
+                    0;
+                const cacheWrite5m = cacheCreation.ephemeral_5m_input_tokens ??
+                    usage.ephemeral_5m_input_tokens ??
+                    0;
+                const cacheWrite = usage.cacheCreationInputTokens ??
+                    usage.cache_creation_input_tokens ??
+                    (cacheWrite1h + cacheWrite5m);
                 totalInput += inp;
                 totalOutput += out;
+                totalCacheRead += cacheRead;
+                totalCacheWrite += cacheWrite;
+                totalCacheWrite1h += cacheWrite1h;
+                totalCacheWrite5m += cacheWrite5m;
                 // Track model usage
                 const modelId = msg?.model ?? record.model ?? "unknown";
                 const current = modelUsage.get(modelId) ?? 0;
-                modelUsage.set(modelId, current + inp + out);
+                modelUsage.set(modelId, current + inp + out + cacheRead + cacheWrite);
             }
             // Extract tool usage
             const msgContent = msg?.content;
@@ -246,8 +270,8 @@ function parseSession(filePath, agentName, openclawDir) {
     const tokens = {
         input: totalInput,
         output: totalOutput,
-        cacheRead: 0,
-        cacheWrite: 0,
+        cacheRead: totalCacheRead,
+        cacheWrite: totalCacheWrite,
     };
     // Determine outcome
     let outcome = "success";
@@ -273,6 +297,8 @@ function parseSession(filePath, agentName, openclawDir) {
         messageCount,
         toolsUsed: Array.from(toolsUsed).sort(),
         sourcePath: filePath,
+        cacheWrite1hTokens: totalCacheWrite1h,
+        cacheWrite5mTokens: totalCacheWrite5m,
     };
 }
 /**

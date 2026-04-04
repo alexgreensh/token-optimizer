@@ -275,7 +275,7 @@ You see diffs. You approve each fix. Nothing irreversible.
 |------|----------------|
 | **CLAUDE.md** | Content that should be skills or reference files. Duplication with MEMORY.md. [`@imports`](https://code.claude.com/docs/en/memory). Poor cache structure. |
 | **MEMORY.md** | Overlap with CLAUDE.md. Verbose entries. Content past the [200-line auto-load cap](https://code.claude.com/docs/en/memory). |
-| **Skills** | Unused skills loading frontmatter (~100 tokens each). Duplicates. Wrong directory. |
+| **Skills** | Unused skills loading frontmatter (~100 tokens each). Duplicates. Wrong directory. Stale plugin cache. Local/plugin overlaps. |
 | **MCP Servers** | Broken/unused servers. Duplicate tools. Missing [Tool Search](https://www.anthropic.com/engineering/advanced-tool-use). |
 | **Commands** | Rarely-used commands (~50 tokens each). |
 | **Rules & Advanced** | [`.claude/rules/`](https://code.claude.com/docs/en/memory) overhead. Missing `permissions.deny`. No hooks. |
@@ -340,9 +340,10 @@ Sessions auto-checkpoint on end, /clear, and crashes. On a fresh session, Token 
 **Session Health**: Catches stale sessions (24h+), zombie sessions (48h+), and outdated configurations before they cause problems.
 
 ```bash
-python3 measure.py setup-hook     # Enable session tracking (one-time)
-python3 measure.py trends         # Usage patterns over time
-python3 measure.py health         # Session hygiene check
+python3 measure.py setup-hook       # Enable session tracking (one-time)
+python3 measure.py trends           # Usage patterns over time
+python3 measure.py health           # Session hygiene check
+python3 measure.py plugin-cleanup   # Remove stale cache + deduplicate skills
 ```
 
 ## Coach Mode: Not Sure Where to Start?

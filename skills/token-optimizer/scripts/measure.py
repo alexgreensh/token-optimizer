@@ -40,6 +40,8 @@ Usage:
     python3 measure.py attention-score --json         # Machine-readable output
     python3 measure.py attention-optimize             # Dry-run: propose section reordering
     python3 measure.py attention-optimize --apply     # Apply reordering (backup + write)
+    python3 measure.py plugin-cleanup                   # Remove stale cache + deduplicate skills
+    python3 measure.py plugin-cleanup --dry-run         # Preview what would be cleaned
     python3 measure.py archive-result                  # PostToolUse hook: archive large tool results
     python3 measure.py expand TOOL_USE_ID              # Retrieve archived tool result
     python3 measure.py expand --list                   # List all archived results
@@ -571,6 +573,9 @@ def _scan_plugin_skills_and_commands():
             pass
 
     seen_paths = set()
+    # Track skill sources for duplicate detection
+    skill_sources = {}  # "plugin:skill" -> list of install paths
+    suspicious_paths = []  # paths inside node_modules or worktrees
     for plugin_key, installs in plugins.items():
         if not isinstance(installs, list):
             continue
@@ -595,6 +600,16 @@ def _scan_plugin_skills_and_commands():
             if plugin_name not in result["plugins_found"]:
                 result["plugins_found"].append(plugin_name)
 
+            # Flag suspicious install paths
+            path_str = str(resolved)
+            is_suspicious = False
+            if "/node_modules/" in path_str:
+                suspicious_paths.append({"path": path_str, "reason": "node_modules", "plugin": plugin_name})
+                is_suspicious = True
+            if "/.worktrees/" in path_str or "/worktrees/" in path_str.lower():
+                suspicious_paths.append({"path": path_str, "reason": "worktree", "plugin": plugin_name})
+                is_suspicious = True
+
             try:
                 # Skills
                 skills_dir = install_path / "skills"
@@ -603,8 +618,10 @@ def _scan_plugin_skills_and_commands():
                         skill_md = item / "SKILL.md"
                         if item.is_dir() and skill_md.exists():
                             result["plugin_skill_count"] += 1
-                            result["plugin_skill_names"].append(f"{plugin_name}:{item.name}")
+                            skill_key = f"{plugin_name}:{item.name}"
+                            result["plugin_skill_names"].append(skill_key)
                             result["plugin_skill_tokens"] += estimate_tokens_from_frontmatter(skill_md)
+                            skill_sources.setdefault(skill_key, []).append(path_str)
 
                 # Commands
                 cmds_dir = install_path / "commands"
@@ -621,6 +638,11 @@ def _scan_plugin_skills_and_commands():
                                 result["plugin_cmd_tokens"] += estimate_tokens_from_frontmatter(f)
             except OSError:
                 continue
+
+    # Identify duplicates: same skill loaded from multiple install paths
+    duplicates = {k: v for k, v in skill_sources.items() if len(v) > 1}
+    result["duplicate_skills"] = duplicates
+    result["suspicious_paths"] = suspicious_paths
     return result
 
 
@@ -822,6 +844,8 @@ def measure_components():
         "names": plugin_data["plugin_skill_names"],
         "plugins": plugin_data["plugins_found"],
         "disabled_plugins": plugin_data["plugins_skipped_disabled"],
+        "duplicate_skills": plugin_data.get("duplicate_skills", {}),
+        "suspicious_paths": plugin_data.get("suspicious_paths", []),
     }
     components["plugin_commands"] = {
         "count": plugin_data["plugin_cmd_count"],
@@ -1512,6 +1536,25 @@ def doctor(as_json=False):
         checks.append(("OK", "No duplicate installs", ""))
         score += 1
 
+    # 12. Duplicate plugin skills (worktrees / stale install paths)
+    total += 1
+    _plugin_scan = _scan_plugin_skills_and_commands()
+    plugin_dupes = _plugin_scan.get("duplicate_skills", {})
+    plugin_suspicious = _plugin_scan.get("suspicious_paths", [])
+    if plugin_dupes:
+        dupe_count = sum(len(v) - 1 for v in plugin_dupes.values())
+        dupe_names = ", ".join(list(plugin_dupes.keys())[:3])
+        checks.append(("!!", "Duplicate plugin skills",
+                       f"{dupe_count} extra copies ({dupe_names}). Likely from worktrees. "
+                       f"Clean stale entries from ~/.claude/plugins/installed_plugins.json"))
+    elif plugin_suspicious:
+        reasons = set(s["reason"] for s in plugin_suspicious)
+        checks.append(("!!", "Suspicious plugin paths",
+                       f"plugins loaded from {', '.join(reasons)} directories"))
+    else:
+        checks.append(("OK", "Plugin paths clean", "no duplicates or suspicious sources"))
+        score += 1
+
     if as_json:
         result = {
             "score": score,
@@ -1942,6 +1985,14 @@ def print_snapshot_summary(snapshot):
         disabled = ps.get("disabled_plugins", [])
         suffix = f", {len(disabled)} disabled" if disabled else ""
         print(f"    {'+ Plugin skills':<33s} {ps.get('tokens', 0):>6,} tokens  [{ps.get('count', 0)} from {', '.join(ps.get('plugins', []))}{suffix}]")
+        dupes = ps.get("duplicate_skills", {})
+        if dupes:
+            dupe_count = sum(len(v) - 1 for v in dupes.values())
+            print(f"    {'  ⚠ Duplicate skills':<33s}          [{dupe_count} extra copies from worktrees/stale installs]")
+        suspicious = ps.get("suspicious_paths", [])
+        if suspicious:
+            reasons = set(s["reason"] for s in suspicious)
+            print(f"    {'  ⚠ Suspicious paths':<33s}          [plugins loaded from: {', '.join(reasons)}]")
 
     # Commands
     cmd = c.get("commands", {})
@@ -2736,6 +2787,187 @@ def _collect_management_data(components=None, trends=None):
     }
 
 
+def plugin_cleanup(dry_run=False, quiet=False):
+    """Remove stale plugin cache dirs and local skills that duplicate plugin skills.
+
+    Two fixes:
+    1. Stale cache: old plugin version dirs in ~/.claude/plugins/cache/ not referenced
+       by any installPath in installed_plugins.json. These can cause 3x skill loading
+       via the filesystem fallback scan (Claude Code issue #27721).
+    2. Local/plugin overlap: skills in ~/.claude/skills/ that are also installed as
+       plugin skills. Both load into context, doubling token cost for zero benefit.
+    """
+    import shutil
+
+    actions_taken = []
+
+    # --- Fix 1: Stale cache version dirs ---
+    registry = CLAUDE_DIR / "plugins" / "installed_plugins.json"
+    cache_dir = CLAUDE_DIR / "plugins" / "cache"
+
+    active_paths = set()
+    if registry.exists():
+        try:
+            with open(registry, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            for plugin_key, installs in data.get("plugins", {}).items():
+                if not isinstance(installs, list):
+                    continue
+                for inst in installs:
+                    raw = inst.get("installPath", "")
+                    if raw:
+                        active_paths.add(str(Path(raw).resolve()))
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    stale_dirs = []
+    if cache_dir.exists():
+        for marketplace in sorted(cache_dir.iterdir()):
+            if not marketplace.is_dir():
+                continue
+            for plugin in sorted(marketplace.iterdir()):
+                if not plugin.is_dir():
+                    continue
+                for version_dir in sorted(plugin.iterdir()):
+                    if not version_dir.is_dir():
+                        continue
+                    resolved = str(version_dir.resolve())
+                    if resolved not in active_paths:
+                        # Check if it actually has skills (worth reporting)
+                        has_skills = (version_dir / "skills").is_dir()
+                        stale_dirs.append({
+                            "path": version_dir,
+                            "display": f"{marketplace.name}/{plugin.name}/{version_dir.name}",
+                            "has_skills": has_skills,
+                        })
+
+    if stale_dirs:
+        skills_stale = [d for d in stale_dirs if d["has_skills"]]
+        if not quiet:
+            print(f"\n  Stale plugin cache: {len(stale_dirs)} dirs ({len(skills_stale)} with skills)")
+        for d in stale_dirs:
+            marker = " [has skills]" if d["has_skills"] else ""
+            if dry_run:
+                if not quiet:
+                    print(f"    [dry-run] would remove: {d['display']}{marker}")
+            else:
+                try:
+                    shutil.rmtree(d["path"])
+                    if not quiet:
+                        print(f"    removed: {d['display']}{marker}")
+                    actions_taken.append(f"removed stale cache: {d['display']}")
+                except OSError as e:
+                    if not quiet:
+                        print(f"    [error] {d['display']}: {e}")
+    elif not quiet:
+        print(f"\n  Stale plugin cache: clean")
+
+    # --- Fix 2: Local skills that duplicate plugin skills ---
+    # Scan plugin skills to get the set of skill directory names
+    plugin_skill_names = set()
+    if registry.exists():
+        try:
+            with open(registry, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            # Load enabledPlugins to only check active plugins
+            enabled = None
+            if SETTINGS_PATH.exists():
+                try:
+                    settings = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+                    enabled = settings.get("enabledPlugins")
+                except (json.JSONDecodeError, OSError):
+                    pass
+
+            for plugin_key, installs in data.get("plugins", {}).items():
+                if not isinstance(installs, list):
+                    continue
+                if enabled is not None and not enabled.get(plugin_key, False):
+                    continue
+                for inst in installs:
+                    raw = inst.get("installPath", "")
+                    if not raw:
+                        continue
+                    install_path = Path(raw)
+                    if not install_path.exists():
+                        continue
+                    skills_path = install_path / "skills"
+                    if skills_path.is_dir():
+                        for item in skills_path.iterdir():
+                            if item.is_dir() and (item / "SKILL.md").exists():
+                                plugin_skill_names.add(item.name)
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    # Check ~/.claude/skills/ for overlaps
+    # Only archive if local skill is a plain symlink OR has no extra files beyond SKILL.md.
+    # Local skills with custom reference files (loaded on-demand) have content the plugin
+    # version lacks, so archiving them would lose functionality.
+    skills_dir = CLAUDE_DIR / "skills"
+    overlaps = []
+    if skills_dir.exists() and plugin_skill_names:
+        for item in sorted(skills_dir.iterdir()):
+            if not item.is_dir() or not (item / "SKILL.md").exists():
+                continue
+            if item.name in plugin_skill_names:
+                # Safe to archive: symlinks (just a pointer) or bare skills (only SKILL.md)
+                if item.is_symlink():
+                    overlaps.append(item)
+                else:
+                    extra_files = [f.name for f in item.iterdir()
+                                   if f.name != "SKILL.md" and not f.name.startswith(".")]
+                    if not extra_files:
+                        overlaps.append(item)
+                    elif not quiet:
+                        print(f"  [skip] {item.name}: local copy has extra files ({', '.join(extra_files[:3])}), keeping it")
+
+    backups_dir = CLAUDE_DIR / "_backups"
+    if overlaps:
+        if not quiet:
+            print(f"  Local/plugin overlaps: {len(overlaps)} skills loaded twice")
+        today = time.strftime("%Y%m%d")
+        archive_dir = backups_dir / f"skills-deduped-{today}"
+        for item in overlaps:
+            if dry_run:
+                if not quiet:
+                    print(f"    [dry-run] would archive: {item.name} (exists as plugin + local)")
+            else:
+                try:
+                    archive_dir.mkdir(parents=True, exist_ok=True)
+                    dest = archive_dir / item.name
+                    if dest.exists():
+                        if not quiet:
+                            print(f"    [skip] {item.name}: already archived today")
+                        continue
+                    # Move (handles both dirs and symlinks)
+                    if item.is_symlink():
+                        # For symlinks: record target, then remove the symlink
+                        target = os.readlink(item)
+                        dest.mkdir(parents=True, exist_ok=True)
+                        (dest / ".symlink-target").write_text(target)
+                        item.unlink()
+                    else:
+                        shutil.move(str(item), str(dest))
+                    if not quiet:
+                        print(f"    archived: {item.name} -> {archive_dir.name}/")
+                    actions_taken.append(f"archived duplicate local skill: {item.name}")
+                except OSError as e:
+                    if not quiet:
+                        print(f"    [error] {item.name}: {e}")
+    elif not quiet:
+        print(f"  Local/plugin overlaps: none")
+
+    if not quiet:
+        if actions_taken:
+            print(f"\n  {len(actions_taken)} fixes applied. Restart Claude Code to take effect.")
+            print(f"  Restore archived skills from: {backups_dir}/skills-deduped-*/")
+        elif not dry_run:
+            print(f"\n  Everything clean. No duplicates found.")
+        print()
+
+    return actions_taken
+
+
 def _manage_skill(action, name):
     """Archive or restore a skill."""
     # Validate name: prevent path traversal
@@ -3235,6 +3467,52 @@ def generate_auto_recommendations(components, trends=None, days=30):
             f"Claude Code still tries to parse them at startup, generating errors. "
             f"Safe to delete: rm {' '.join(str(skills_dir / b) for b in broken_links)}"
         )
+
+    # --- Rule 9b: Duplicate plugin skills (worktrees / node_modules) ---
+    plugin_dupes = components.get("plugin_skills", {}).get("duplicate_skills", {})
+    plugin_suspicious = components.get("plugin_skills", {}).get("suspicious_paths", [])
+    if plugin_dupes:
+        dupe_count = sum(len(v) - 1 for v in plugin_dupes.values())
+        dupe_names = list(plugin_dupes.keys())
+        # Estimate wasted tokens: each duplicate copy loads the same skill frontmatter again
+        avg_tokens = TOKENS_PER_SKILL_APPROX
+        ps_data = components.get("plugin_skills", {})
+        if ps_data.get("count", 0) > 0:
+            avg_tokens = ps_data.get("tokens", 0) // ps_data.get("count", 1)
+        wasted = dupe_count * avg_tokens
+        paths_example = list(plugin_dupes.values())[0][:2]
+        quick.append(
+            f"**Remove {dupe_count} duplicate plugin skills (likely from worktrees)**: "
+            f"These skills are loaded {len(paths_example)}+ times each because the plugin registry "
+            f"has multiple install paths: {', '.join(dupe_names[:5])}.\n"
+            f"  Claude Code loads skills from EVERY registered install path, so duplicates "
+            f"genuinely consume extra context tokens (Claude Code bug #27721).\n"
+            f"  Fix: `python3 measure.py plugin-cleanup` (or `--dry-run` to preview). "
+            f"Also runs automatically on session start. "
+            f"~{wasted:,} tokens recoverable."
+        )
+    if plugin_suspicious:
+        node_mod = [s for s in plugin_suspicious if s["reason"] == "node_modules"]
+        worktree = [s for s in plugin_suspicious if s["reason"] == "worktree"]
+        if node_mod:
+            quick.append(
+                f"**Plugin loaded from node_modules ({len(node_mod)} path{'s' if len(node_mod) > 1 else ''})**: "
+                f"Plugin '{node_mod[0]['plugin']}' has an install path inside node_modules. "
+                f"This is likely unintentional and may load skills from dependency internals.\n"
+                f"  Path: {node_mod[0]['path']}\n"
+                f"  Fix: `python3 measure.py plugin-cleanup` removes stale/suspicious paths."
+            )
+        if worktree and not plugin_dupes:
+            quick.append(
+                f"**Plugin loaded from worktree directory ({len(worktree)} path{'s' if len(worktree) > 1 else ''})**: "
+                f"Plugin '{worktree[0]['plugin']}' has install paths inside worktree directories. "
+                f"These accumulate as you create worktrees and may cause duplicate skill loading "
+                f"(Claude Code bug #27069).\n"
+                f"  Fix: 1) Remove old manual worktrees: `git worktree list` then `git worktree remove <name>` "
+                f"for unused ones. 2) Use `claude -w` instead of `git worktree add` going forward, "
+                f"the built-in flag avoids the duplication bug. "
+                f"3) `python3 measure.py plugin-cleanup` removes stale cache dirs."
+            )
 
     # --- Rule 10: Rules directory overhead ---
     rules = components.get("rules", {})
@@ -10202,6 +10480,9 @@ if __name__ == "__main__":
                 print(f"[Token Optimizer] Context quality: {score}/100 (critical). Heavy rot detected. Consider /clear with checkpoint.")
             else:
                 print(f"[Token Optimizer] Context quality: {score}/100. Stale reads and bloated results building up. Consider /compact.")
+    elif args[0] == "plugin-cleanup":
+        dry = "--dry-run" in args
+        plugin_cleanup(dry_run=dry)
     elif args[0] == "ensure-health":
         # Silent auto-fix of known harmful settings. Called by SessionStart hook.
         _auto_remove_bad_env_vars()
@@ -10213,6 +10494,13 @@ if __name__ == "__main__":
                 print(f"  [Token Optimizer] Fixed {_stale_fixed} stale plugin path(s) in settings.json")
         except Exception as _e:
             print(f"  [Token Optimizer] stale path fix failed: {_e}", file=sys.stderr)
+        # Auto-clean stale plugin cache dirs and local/plugin skill overlaps
+        try:
+            _cleanup_actions = plugin_cleanup(dry_run=False, quiet=True)
+            if _cleanup_actions:
+                print(f"  [Token Optimizer] Plugin cleanup: {len(_cleanup_actions)} fix(es) applied")
+        except Exception as _e:
+            print(f"  [Token Optimizer] plugin cleanup failed: {_e}", file=sys.stderr)
         # Migrate data to CLAUDE_PLUGIN_DATA on first run (v2.1.78+)
         if _PLUGIN_DATA:
             _legacy_data = CLAUDE_DIR / "_backups" / "token-optimizer"

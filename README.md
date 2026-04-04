@@ -433,6 +433,11 @@ See [`openclaw/README.md`](openclaw/README.md) for full docs.
 
 ## License
 
-AGPL-3.0. See [LICENSE](LICENSE).
+This software is available under a dual license:
+
+- **AGPL-3.0** for personal and open source use. If you modify this software, you must make the modified source code publicly available under the same license. See [LICENSE](LICENSE).
+- **Commercial License** for organizations that cannot comply with AGPL-3.0 terms, including internal business use and proprietary integration. See [LICENSE-COMMERCIAL](LICENSE-COMMERCIAL).
+
+For commercial licensing inquiries: me@alexgreenshpun.com
 
 Created by [Alex Greenshpun](https://linkedin.com/in/alexgreensh).

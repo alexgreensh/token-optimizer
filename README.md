@@ -343,7 +343,7 @@ Sessions auto-checkpoint on end, /clear, and crashes. On a fresh session, Token 
 python3 measure.py setup-hook       # Enable session tracking (one-time)
 python3 measure.py trends           # Usage patterns over time
 python3 measure.py health           # Session hygiene check
-python3 measure.py plugin-cleanup   # Remove stale cache + deduplicate skills
+python3 measure.py plugin-cleanup   # Detect duplicate skills + archive local/plugin overlaps
 ```
 
 ## Coach Mode: Not Sure Where to Start?

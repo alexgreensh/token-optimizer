@@ -170,6 +170,8 @@ function buildDashboardData(runs, report, quality = null, context = null) {
             qualityScore: sq.score,
             qualityGrade: sq.grade,
             qualityBand: sq.band,
+            cacheWrite1hTokens: r.cacheWrite1hTokens ?? 0,
+            cacheWrite5mTokens: r.cacheWrite5mTokens ?? 0,
         };
     });
     // Pricing tier
@@ -770,6 +772,14 @@ function renderSessions(data) {
             default: return "var(--c-text-dim)";
         }
     };
+    const ttlMixLabel = (r) => {
+        const ttlTotal = r.cacheWrite1hTokens + r.cacheWrite5mTokens;
+        if (ttlTotal <= 0)
+            return "n/a";
+        const pct1h = Math.round((r.cacheWrite1hTokens / ttlTotal) * 100);
+        const pct5m = Math.max(0, 100 - pct1h);
+        return `${pct1h}/${pct5m} 1h/5m`;
+    };
     return `<div class="view" id="view-sessions">
     <div class="section-header">
       <div class="label">Session History</div>
@@ -793,6 +803,7 @@ function renderSessions(data) {
                 <th>Model</th>
                 <th>Messages</th>
                 <th>Tokens</th>
+                <th>TTL Mix</th>
                 <th>Cost</th>
                 <th>Duration</th>
                 <th>Outcome</th>
@@ -813,6 +824,7 @@ function renderSessions(data) {
                 <td>${esc(r.model)}</td>
                 <td>${r.messages}</td>
                 <td>${fmtTokens(r.tokens)}</td>
+                <td style="font-family:var(--font-mono);font-size:11px;color:var(--c-text-dim)">${esc(ttlMixLabel(r))}</td>
                 <td style="color:var(--c-accent-cyan)">${fmtCost(r.cost)}</td>
                 <td>${fmtDuration(r.duration)}</td>
                 <td><span style="color:${outcomeColor(r.outcome)}">${esc(r.outcome)}</span></td>

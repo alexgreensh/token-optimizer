@@ -1,33 +1,41 @@
 #!/usr/bin/env python3
 """Token Optimizer - PreToolUse Read Cache (standalone entry point).
 
-Intercepts Read tool calls to detect redundant file reads.
-Default ON (warn mode). Opt out via TOKEN_OPTIMIZER_READ_CACHE=0 env var
-or config.json {"read_cache_enabled": false}.
+Conservatively intercepts Read tool calls to detect redundant file reads.
+Default behavior is production-safe structure substitution for a narrow slice:
+unchanged whole-file supported code rereads that can be replaced with a bounded
+code map.
+
+Default ON. Opt out via TOKEN_OPTIMIZER_READ_CACHE=0 or config.json
+{"read_cache_enabled": false}.
 
 Modes:
-  warn  (default) - outputs digest as suggestion, does NOT block
-  block           - blocks redundant reads with outputToolResult
-
-Security hardening:
-  - Path canonicalization via Path.resolve()
-  - 0o600 permissions on cache files
-  - mtime re-verification on every cache hit
-  - Binary file skip
-  - Cache corruption recovery
-  - Decision logging to decisions.jsonl
-  - .contextignore support (hard block)
-  - Cap at 500 entries per session, LRU prune
-  - Pattern count cap at 200 for .contextignore
+  soft_block (default) - deny eligible redundant rereads and inject structure map
+  warn                - log redundant rereads but allow the read
+  shadow              - measure-only, allow the read without warning noise
+  block               - deny all redundant rereads; only inject structure map for
+                        eligible supported code files, reason-only otherwise
 """
+
+from __future__ import annotations
 
 import json
 import os
 import re
+import sqlite3
 import sys
 import time
+from datetime import datetime
 from fnmatch import fnmatch
 from pathlib import Path
+from typing import Any, Optional
+
+from structure_map import (
+    StructureMapResult,
+    detect_structure_language,
+    is_structure_supported_file,
+    summarize_code_source,
+)
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -36,8 +44,23 @@ from pathlib import Path
 _PLUGIN_DATA = os.environ.get("CLAUDE_PLUGIN_DATA")
 SNAPSHOT_DIR = Path(_PLUGIN_DATA) / "data" if _PLUGIN_DATA else Path.home() / ".claude" / "_backups" / "token-optimizer"
 CACHE_DIR = SNAPSHOT_DIR / "read-cache"
+TRENDS_DB = SNAPSHOT_DIR / "trends.db"
 MAX_CACHE_ENTRIES = 500
 MAX_CONTEXTIGNORE_PATTERNS = 200
+READ_CACHE_MODES = frozenset({"shadow", "warn", "soft_block", "block"})
+DEFAULT_MODE = "soft_block"
+
+MIN_STRUCTURE_CONFIDENCE = 0.84
+REMINDER_TOKENS_EST = 20
+REASON_ONLY_TOKENS_EST = 10
+STRICT_CONTEXT_CAPS = {
+    "signatures": 350,
+    "top_level": 500,
+    "skeleton": 850,
+    "digest": 500,
+}
+MAX_ADDITIONAL_CONTEXT_CHARS = 1500
+STRICT_ADDITIONAL_CONTEXT_CHARS = 1000
 
 BINARY_EXTENSIONS = frozenset({
     ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp", ".svg",
@@ -49,25 +72,23 @@ BINARY_EXTENSIONS = frozenset({
     ".sqlite", ".db", ".sqlite3",
 })
 
+
 # ---------------------------------------------------------------------------
 # .contextignore
 # ---------------------------------------------------------------------------
 
-_contextignore_cache: dict = {}
+_contextignore_cache: dict[str, list[str]] = {}
 
 
-def _load_contextignore_patterns() -> list:
-    """Load .contextignore patterns from project root and global config.
+def _load_contextignore_patterns() -> list[str]:
+    """Load .contextignore patterns from project root and global config."""
 
-    Returns list of patterns. Cached per session.
-    """
     cache_key = "patterns"
     if cache_key in _contextignore_cache:
         return _contextignore_cache[cache_key]
 
-    patterns = []
+    patterns: list[str] = []
 
-    # Project-level .contextignore
     project_ignore = Path(".contextignore")
     if project_ignore.exists():
         try:
@@ -78,7 +99,6 @@ def _load_contextignore_patterns() -> list:
         except OSError:
             pass
 
-    # Global .contextignore
     global_ignore = Path.home() / ".claude" / ".contextignore"
     if global_ignore.exists():
         try:
@@ -89,7 +109,6 @@ def _load_contextignore_patterns() -> list:
         except OSError:
             pass
 
-    # Cap at MAX_CONTEXTIGNORE_PATTERNS to prevent DoS
     patterns = patterns[:MAX_CONTEXTIGNORE_PATTERNS]
     _contextignore_cache[cache_key] = patterns
     return patterns
@@ -97,6 +116,7 @@ def _load_contextignore_patterns() -> list:
 
 def _is_contextignored(file_path: str) -> bool:
     """Check if file matches any .contextignore pattern."""
+
     patterns = _load_contextignore_patterns()
     if not patterns:
         return False
@@ -107,92 +127,22 @@ def _is_contextignored(file_path: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Structural digests
-# ---------------------------------------------------------------------------
-
-def _digest_python(content: str) -> str:
-    """Extract Python structure: classes, functions, imports with line numbers."""
-    lines = content.splitlines()
-    parts = []
-    for i, line in enumerate(lines, 1):
-        stripped = line.strip()
-        if stripped.startswith("class "):
-            parts.append(f"L{i}: {stripped.split('(')[0].split(':')[0]}")
-        elif stripped.startswith("def "):
-            parts.append(f"L{i}: {stripped.split('(')[0]}")
-        elif stripped.startswith(("import ", "from ")):
-            parts.append(f"L{i}: {stripped}")
-        if len(parts) >= 50:
-            break
-    return "\n".join(parts) if parts else f"{len(lines)} lines"
-
-
-def _digest_javascript(content: str) -> str:
-    """Extract JS/TS structure: classes, functions, exports with line numbers."""
-    lines = content.splitlines()
-    parts = []
-    for i, line in enumerate(lines, 1):
-        stripped = line.strip()
-        if re.match(r'^(export\s+)?(class|interface|type|enum)\s+', stripped):
-            parts.append(f"L{i}: {stripped.split('{')[0].strip()}")
-        elif re.match(r'^(export\s+)?(async\s+)?function\s+', stripped):
-            parts.append(f"L{i}: {stripped.split('{')[0].strip()}")
-        elif re.match(r'^export\s+(default\s+)?(const|let|var)\s+', stripped):
-            parts.append(f"L{i}: {stripped.split('=')[0].strip()}")
-        if len(parts) >= 50:
-            break
-    return "\n".join(parts) if parts else f"{len(lines)} lines"
-
-
-def _digest_fallback(content: str) -> str:
-    """Fallback digest: line count + first/last 3 lines."""
-    lines = content.splitlines()
-    n = len(lines)
-    if n <= 6:
-        return f"{n} lines"
-    first = "\n".join(lines[:3])
-    last = "\n".join(lines[-3:])
-    return f"{n} lines\nFirst 3:\n{first}\nLast 3:\n{last}"
-
-
-def _generate_digest(file_path: str, content: str) -> str:
-    """Generate structural digest based on file extension."""
-    # Bail out on very large files to prevent hangs
-    lines = content.splitlines()
-    if len(lines) > 10000:
-        return f"{len(lines)} lines (too large for structural digest)"
-
-    ext = Path(file_path).suffix.lower()
-    try:
-        if ext == ".py":
-            return _digest_python(content)
-        if ext in (".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs"):
-            return _digest_javascript(content)
-        return _digest_fallback(content)
-    except Exception:
-        return _digest_fallback(content)
-
-
-# ---------------------------------------------------------------------------
 # Cache operations
 # ---------------------------------------------------------------------------
 
 def _cache_path(session_id: str) -> Path:
-    """Get cache file path for a session."""
-    safe_id = re.sub(r'[^a-zA-Z0-9_-]', '', session_id) or "unknown"
+    safe_id = re.sub(r"[^a-zA-Z0-9_-]", "", session_id) or "unknown"
     return CACHE_DIR / f"{safe_id}.json"
 
 
 def _decisions_log_path(session_id: str = "unknown") -> Path:
-    """Get per-session decisions log path."""
-    safe_id = re.sub(r'[^a-zA-Z0-9_-]', '', session_id) or "unknown"
-    d = CACHE_DIR / "decisions"
-    d.mkdir(parents=True, exist_ok=True, mode=0o700)
-    return d / f"{safe_id}.jsonl"
+    safe_id = re.sub(r"[^a-zA-Z0-9_-]", "", session_id) or "unknown"
+    decisions_dir = CACHE_DIR / "decisions"
+    decisions_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    return decisions_dir / f"{safe_id}.jsonl"
 
 
-def _load_cache(session_id: str) -> dict:
-    """Load cache for session. Recovers from corruption."""
+def _load_cache(session_id: str) -> dict[str, Any]:
     cp = _cache_path(session_id)
     if not cp.exists():
         return {"files": {}}
@@ -202,7 +152,6 @@ def _load_cache(session_id: str) -> dict:
             raise ValueError("invalid cache structure")
         return data
     except (json.JSONDecodeError, ValueError, OSError):
-        # Corruption recovery: delete and recreate
         try:
             cp.unlink()
         except OSError:
@@ -210,27 +159,53 @@ def _load_cache(session_id: str) -> dict:
         return {"files": {}}
 
 
-def _save_cache(session_id: str, cache: dict) -> None:
-    """Save cache with 0o600 permissions. LRU prune if over limit."""
+def _save_cache(session_id: str, cache: dict[str, Any]) -> None:
     files = cache.get("files", {})
     if len(files) > MAX_CACHE_ENTRIES:
-        # Prune LRU: keep most recently accessed entries
-        sorted_entries = sorted(files.items(), key=lambda x: x[1].get("last_access", 0))
+        sorted_entries = sorted(files.items(), key=lambda item: item[1].get("last_access", 0))
         to_remove = len(files) - MAX_CACHE_ENTRIES
         for key, _ in sorted_entries[:to_remove]:
             del files[key]
 
     CACHE_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
     cp = _cache_path(session_id)
-    tmp = cp.with_suffix(".tmp")
+    tmp = cp.with_suffix(f".{os.getpid()}.{time.time_ns()}.tmp")
     fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(cache, f)
-    tmp.rename(cp)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(cache, handle)
+    os.replace(tmp, cp)
 
 
-def _log_decision(decision: str, file_path: str, reason: str, session_id: str) -> None:
-    """Append decision to per-session decisions.jsonl."""
+def _reset_replacement_state(entry: dict[str, Any]) -> None:
+    entry["last_replacement_fingerprint"] = ""
+    entry["last_replacement_type"] = ""
+    entry["repeat_replacement_count"] = 0
+    entry["last_structure_reason"] = ""
+    entry["last_structure_confidence"] = 0.0
+
+
+def _ensure_entry_defaults(entry: dict[str, Any]) -> None:
+    entry.setdefault("mtime_ns", 0)
+    entry.setdefault("size_bytes", 0)
+    entry.setdefault("offset", 0)
+    entry.setdefault("limit", 0)
+    entry.setdefault("tokens_est", 0)
+    entry.setdefault("read_count", 0)
+    entry.setdefault("last_access", 0.0)
+    entry.setdefault("last_replacement_fingerprint", "")
+    entry.setdefault("last_replacement_type", "")
+    entry["repeat_replacement_count"] = int(entry.get("repeat_replacement_count", 0) or 0)
+    entry["last_structure_reason"] = entry.get("last_structure_reason", "")
+    entry["last_structure_confidence"] = float(entry.get("last_structure_confidence", 0.0) or 0.0)
+
+
+def _log_decision(
+    decision: str,
+    file_path: str,
+    reason: str,
+    session_id: str,
+    **extra: Any,
+) -> None:
     entry = {
         "ts": time.time(),
         "decision": decision,
@@ -238,169 +213,502 @@ def _log_decision(decision: str, file_path: str, reason: str, session_id: str) -
         "reason": reason,
         "session": session_id,
     }
+    entry.update(extra)
     log_path = _decisions_log_path(session_id)
     try:
         if not log_path.exists():
             fd = os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
             os.close(fd)
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry) + "\n")
+        with open(log_path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, sort_keys=True) + "\n")
     except OSError:
         pass
 
 
 # ---------------------------------------------------------------------------
+# Hook response helpers
+# ---------------------------------------------------------------------------
+
+def _emit_pretool_response(
+    permission_decision: Optional[str],
+    reason: Optional[str],
+    additional_context: Optional[str] = None,
+) -> None:
+    payload: dict[str, Any] = {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+        }
+    }
+    hook_output = payload["hookSpecificOutput"]
+    if permission_decision:
+        hook_output["permissionDecision"] = permission_decision
+    if reason:
+        hook_output["permissionDecisionReason"] = reason
+    if additional_context:
+        hook_output["additionalContext"] = additional_context
+    print(json.dumps(payload))
+
+
+def _build_structure_message(
+    file_path: str,
+    summary: StructureMapResult,
+    net_saved_tokens_est: int,
+) -> str:
+    return "\n".join(
+        [
+            f"[Token Optimizer] {Path(file_path).name} is unchanged and was already read in this session.",
+            f"Using {summary.replacement_type} view to avoid ~{net_saved_tokens_est:,} tokens.",
+            "If you truly need the full body, edit the file or request a narrower range.",
+            "",
+            summary.replacement_text,
+        ]
+    )
+
+
+def _build_repeat_reminder(
+    file_path: str,
+    replacement_type: str,
+    net_saved_tokens_est: int,
+) -> str:
+    return (
+        f"[Token Optimizer] {Path(file_path).name} is still unchanged and already summarized as "
+        f"{replacement_type}. Reusing that code map avoids ~{net_saved_tokens_est:,} tokens. "
+        "Request a narrower range or reread after the file changes if you need more detail."
+    )
+
+
+def _build_reason_only_message(file_path: str) -> str:
+    return (
+        f"[Token Optimizer] {Path(file_path).name} is unchanged, already in context, and was already "
+        "summarized in this session."
+    )
+
+
+def _hook_additional_context_saved() -> bool:
+    value = os.environ.get("CLAUDE_CODE_SAVE_HOOK_ADDITIONAL_CONTEXT", "").strip().lower()
+    return value not in ("", "0", "false", "no")
+
+
+def _additional_context_within_cap(text: str, strict: bool) -> bool:
+    cap = STRICT_ADDITIONAL_CONTEXT_CHARS if strict else MAX_ADDITIONAL_CONTEXT_CHARS
+    return len(text) <= cap
+
+
+# ---------------------------------------------------------------------------
+# Savings tracking
+# ---------------------------------------------------------------------------
+
+_SAVINGS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS savings_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    tokens_saved INTEGER DEFAULT 0,
+    cost_saved_usd REAL DEFAULT 0.0,
+    session_id TEXT,
+    detail TEXT
+);
+"""
+
+
+def _log_savings_event(event_type: str, tokens_saved: int, session_id: str, detail: str) -> None:
+    if tokens_saved <= 0:
+        return
+    conn: Optional[sqlite3.Connection] = None
+    try:
+        SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(TRENDS_DB))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.executescript(_SAVINGS_SCHEMA)
+        cost_saved = tokens_saved * 3.0 / 1_000_000
+        conn.execute(
+            "INSERT INTO savings_events (timestamp, event_type, tokens_saved, cost_saved_usd, session_id, detail) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (datetime.now().isoformat(), event_type, tokens_saved, cost_saved, session_id, detail),
+        )
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+# ---------------------------------------------------------------------------
+# Structure summarization
+# ---------------------------------------------------------------------------
+
+def _summarize_redundant_read(
+    file_path: str,
+    *,
+    offset: int,
+    limit: int,
+    file_tokens_est: int,
+) -> tuple[Optional[StructureMapResult], str]:
+    try:
+        content = Path(file_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None, "unreadable"
+
+    summary = summarize_code_source(
+        content,
+        file_path=file_path,
+        offset=offset,
+        limit=limit,
+        file_tokens_est=file_tokens_est,
+        file_size_bytes=len(content.encode("utf-8", errors="ignore")),
+    )
+    reason_code = summary.reason
+
+    if not summary.eligible:
+        return summary, reason_code
+
+    if summary.confidence < MIN_STRUCTURE_CONFIDENCE:
+        return summary, "low_confidence"
+
+    if _hook_additional_context_saved():
+        strict_cap = STRICT_CONTEXT_CAPS.get(summary.replacement_type, len(summary.replacement_text))
+        if len(summary.replacement_text) > strict_cap:
+            return summary, "hook_context_cap"
+
+    return summary, "ok"
+# ---------------------------------------------------------------------------
 # Main hook logic
 # ---------------------------------------------------------------------------
 
-def handle_read(hook_input: dict, mode: str, quiet: bool) -> None:
-    """Handle a PreToolUse Read event.
+def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
+    """Handle a PreToolUse Read event."""
 
-    Args:
-        hook_input: The hook JSON from stdin
-        mode: "warn" or "block"
-        quiet: Suppress stderr output
-    """
+    if hook_input.get("tool_name") not in ("", "Read"):
+        return
+
     tool_input = hook_input.get("tool_input", {})
     raw_path = tool_input.get("file_path", "")
     if not raw_path:
         return
 
-    # Security: canonicalize path
     file_path = str(Path(raw_path).resolve())
-    session_id = hook_input.get("session_id", "unknown")
+    session_id = str(hook_input.get("agent_id") or hook_input.get("session_id") or "unknown")
+    offset = int(tool_input.get("offset", 0) or 0)
+    limit = int(tool_input.get("limit", 0) or 0)
+    ext = Path(file_path).suffix.lower()
+    language = detect_structure_language(file_path)
+    save_hook_context_enabled = _hook_additional_context_saved()
 
-    # .contextignore check (hard block, regardless of mode)
     if _is_contextignored(file_path):
-        _log_decision("block", file_path, "contextignore", session_id)
+        reason = f"Blocked by .contextignore: {Path(file_path).name}"
+        _log_decision(
+            "block",
+            file_path,
+            "contextignore",
+            session_id,
+            mode=mode,
+            actual_substitution=False,
+            eligible=False,
+            language=language,
+            reason_code="contextignore",
+            offset=offset,
+            limit=limit,
+            replacement_type=None,
+            file_tokens_est=0,
+            replacement_tokens_est=0,
+            net_saved_tokens_est=0,
+            replacement_fingerprint=None,
+            repeat_replacement_count=0,
+            save_hook_additional_context_enabled=save_hook_context_enabled,
+        )
         if not quiet:
             print(f"[Read Cache] Blocked by .contextignore: {file_path}", file=sys.stderr)
-        output = {
-            "outputToolResult": f"[Token Optimizer] File blocked by .contextignore: {Path(file_path).name}\n"
-                                f"This file matches a pattern in .contextignore and will not be read.\n"
-                                f"Remove the pattern from .contextignore if you need access."
-        }
-        print(json.dumps(output))
+        _emit_pretool_response("deny", reason)
         return
 
-    # Skip binary files
-    ext = Path(file_path).suffix.lower()
     if ext in BINARY_EXTENSIONS:
         return
 
-    # Load cache
     cache = _load_cache(session_id)
     files = cache.get("files", {})
     entry = files.get(file_path)
 
-    offset = tool_input.get("offset", 0) or 0
-    limit = tool_input.get("limit", 0) or 0
-
     if entry is None:
-        # First read: cache it
         try:
             stat = os.stat(file_path)
-            mtime = stat.st_mtime
         except OSError:
             return
 
-        # Estimate tokens from file size
-        try:
-            size = stat.st_size
-            tokens_est = max(1, size // 4)
-        except (OSError, ValueError):
-            tokens_est = 0
-
-        files[file_path] = {
-            "mtime": mtime,
+        tokens_est = max(1, stat.st_size // 4) if stat.st_size else 0
+        entry = {
+            "mtime_ns": stat.st_mtime_ns,
+            "size_bytes": stat.st_size,
             "offset": offset,
             "limit": limit,
             "tokens_est": tokens_est,
             "read_count": 1,
             "last_access": time.time(),
-            "digest": "",
         }
+        _reset_replacement_state(entry)
+        files[file_path] = entry
         cache["files"] = files
         _save_cache(session_id, cache)
-        _log_decision("allow", file_path, "first_read", session_id)
+        _log_decision(
+            "allow",
+            file_path,
+            "first_read",
+            session_id,
+            mode=mode,
+            actual_substitution=False,
+            eligible=False,
+            language=language,
+            reason_code="first_read",
+            offset=offset,
+            limit=limit,
+            replacement_type=None,
+            file_tokens_est=tokens_est,
+            replacement_tokens_est=0,
+            net_saved_tokens_est=0,
+            replacement_fingerprint=None,
+            repeat_replacement_count=0,
+            save_hook_additional_context_enabled=save_hook_context_enabled,
+        )
         return
 
-    # Subsequent read: check staleness conditions
-    # All three must be true to trigger warn/block:
-    # 1. Same file path (already matched by cache key)
-    # 2. mtime unchanged (re-stat the real file)
-    # 3. Same offset + limit
+    _ensure_entry_defaults(entry)
 
     try:
-        current_mtime = os.stat(file_path).st_mtime
+        current_stat = os.stat(file_path)
     except OSError:
-        # File deleted or inaccessible, remove from cache
         del files[file_path]
         cache["files"] = files
         _save_cache(session_id, cache)
-        _log_decision("allow", file_path, "file_changed_or_deleted", session_id)
+        _log_decision(
+            "allow",
+            file_path,
+            "file_deleted",
+            session_id,
+            mode=mode,
+            actual_substitution=False,
+            eligible=False,
+            language=language,
+            reason_code="file_deleted",
+            offset=offset,
+            limit=limit,
+            replacement_type=None,
+            file_tokens_est=entry.get("tokens_est", 0),
+            replacement_tokens_est=0,
+            net_saved_tokens_est=0,
+            replacement_fingerprint=None,
+            repeat_replacement_count=0,
+            save_hook_additional_context_enabled=save_hook_context_enabled,
+        )
         return
 
-    mtime_match = abs(current_mtime - entry["mtime"]) < 0.001
-    range_match = (entry.get("offset", 0) == offset and entry.get("limit", 0) == limit)
+    mtime_match = int(entry.get("mtime_ns", 0) or 0) == current_stat.st_mtime_ns
+    size_match = int(entry.get("size_bytes", 0) or 0) == current_stat.st_size
+    range_match = (int(entry.get("offset", 0) or 0) == offset and int(entry.get("limit", 0) or 0) == limit)
 
-    if not (mtime_match and range_match):
-        # File changed or different range, update cache
-        entry["mtime"] = current_mtime
+    if not (mtime_match and size_match and range_match):
+        entry["mtime_ns"] = current_stat.st_mtime_ns
+        entry["size_bytes"] = current_stat.st_size
         entry["offset"] = offset
         entry["limit"] = limit
-        entry["read_count"] = entry.get("read_count", 0) + 1
+        entry["tokens_est"] = max(1, current_stat.st_size // 4) if current_stat.st_size else 0
+        entry["read_count"] = int(entry.get("read_count", 0) or 0) + 1
         entry["last_access"] = time.time()
-        entry["digest"] = ""
+        _reset_replacement_state(entry)
         _save_cache(session_id, cache)
-        _log_decision("allow", file_path, "file_modified_or_different_range", session_id)
+        _log_decision(
+            "allow",
+            file_path,
+            "file_modified_or_different_range",
+            session_id,
+            mode=mode,
+            actual_substitution=False,
+            eligible=False,
+            language=language,
+            reason_code="file_modified_or_different_range",
+            offset=offset,
+            limit=limit,
+            replacement_type=None,
+            file_tokens_est=entry.get("tokens_est", 0),
+            replacement_tokens_est=0,
+            net_saved_tokens_est=0,
+            replacement_fingerprint=None,
+            repeat_replacement_count=0,
+            save_hook_additional_context_enabled=save_hook_context_enabled,
+        )
         return
 
-    # All three conditions match: this is a redundant read
-    entry["read_count"] = entry.get("read_count", 0) + 1
+    entry["read_count"] = int(entry.get("read_count", 0) or 0) + 1
     entry["last_access"] = time.time()
+    tokens_est = int(entry.get("tokens_est", 0) or 0)
 
-    # Generate digest if not cached
-    digest = entry.get("digest", "")
-    if not digest:
-        try:
-            content = Path(file_path).read_text(encoding="utf-8", errors="ignore")
-            digest = _generate_digest(file_path, content)
-            entry["digest"] = digest
-        except OSError:
-            digest = "(unable to generate digest)"
+    summary: Optional[StructureMapResult] = None
+    reason_code = "unsupported_language"
+    if is_structure_supported_file(file_path):
+        summary, reason_code = _summarize_redundant_read(
+            file_path,
+            offset=offset,
+            limit=limit,
+            file_tokens_est=tokens_est,
+        )
+    eligible_structure = bool(summary and summary.eligible and reason_code == "ok")
 
-    _save_cache(session_id, cache)
+    if mode in {"shadow", "warn"} or (mode == "soft_block" and not eligible_structure):
+        decision = "warn" if mode == "warn" else "allow"
+        entry["last_structure_reason"] = reason_code
+        entry["last_structure_confidence"] = summary.confidence if summary else 0.0
+        _save_cache(session_id, cache)
+        _log_decision(
+            decision,
+            file_path,
+            f"redundant_read_{entry['read_count']}",
+            session_id,
+            mode=mode,
+            actual_substitution=False,
+            eligible=eligible_structure,
+            language=language,
+            reason_code=reason_code,
+            offset=offset,
+            limit=limit,
+            replacement_type=summary.replacement_type if summary else None,
+            file_tokens_est=tokens_est,
+            replacement_tokens_est=summary.replacement_tokens_est if summary else 0,
+            net_saved_tokens_est=max(0, tokens_est - (summary.replacement_tokens_est if summary else 0)),
+            replacement_fingerprint=summary.fingerprint if summary else None,
+            repeat_replacement_count=0,
+            save_hook_additional_context_enabled=save_hook_context_enabled,
+            confidence=summary.confidence if summary else 0.0,
+        )
+        if not quiet and mode == "warn":
+            print(f"[Read Cache] Redundant read allowed in warn mode: {file_path}", file=sys.stderr)
+        return
 
-    tokens_est = entry.get("tokens_est", 0)
-    read_count = entry.get("read_count", 1)
+    if eligible_structure and summary is not None:
+        same_fingerprint = summary.fingerprint == entry.get("last_replacement_fingerprint", "")
+        repeat_count = int(entry.get("repeat_replacement_count", 0) or 0) + 1 if same_fingerprint else 1
+        entry["last_replacement_fingerprint"] = summary.fingerprint
+        entry["last_replacement_type"] = summary.replacement_type
+        entry["repeat_replacement_count"] = repeat_count
+        entry["last_structure_reason"] = reason_code
+        entry["last_structure_confidence"] = summary.confidence
+        _save_cache(session_id, cache)
+
+        if repeat_count == 1:
+            replacement_tokens_est = summary.replacement_tokens_est
+            additional_context = _build_structure_message(
+                file_path,
+                summary,
+                max(0, tokens_est - summary.replacement_tokens_est),
+            )
+            if not _additional_context_within_cap(additional_context, save_hook_context_enabled):
+                additional_context = _build_repeat_reminder(
+                    file_path,
+                    summary.replacement_type,
+                    max(0, tokens_est - REMINDER_TOKENS_EST),
+                )
+                replacement_tokens_est = REMINDER_TOKENS_EST
+        elif repeat_count == 2:
+            additional_context = _build_repeat_reminder(
+                file_path,
+                summary.replacement_type,
+                max(0, tokens_est - REMINDER_TOKENS_EST),
+            )
+            replacement_tokens_est = REMINDER_TOKENS_EST
+        else:
+            additional_context = None
+            replacement_tokens_est = REASON_ONLY_TOKENS_EST
+
+        net_saved_tokens_est = max(0, tokens_est - replacement_tokens_est)
+        reason = _build_reason_only_message(file_path)
+        if repeat_count == 1:
+            reason = (
+                f"{Path(file_path).name} is unchanged and already in context; "
+                f"using {summary.replacement_type} code map instead."
+            )
+        elif repeat_count == 2:
+            reason = (
+                f"{Path(file_path).name} is unchanged and already summarized; "
+                "reusing prior structure map."
+            )
+
+        _log_decision(
+            "block",
+            file_path,
+            f"redundant_read_{entry['read_count']}",
+            session_id,
+            mode=mode,
+            actual_substitution=True,
+            eligible=True,
+            language=language,
+            reason_code=f"structure_map_repeat_{repeat_count}",
+            offset=offset,
+            limit=limit,
+            replacement_type=summary.replacement_type,
+            file_tokens_est=tokens_est,
+            replacement_tokens_est=replacement_tokens_est,
+            net_saved_tokens_est=net_saved_tokens_est,
+            replacement_fingerprint=summary.fingerprint,
+            repeat_replacement_count=repeat_count,
+            save_hook_additional_context_enabled=save_hook_context_enabled,
+            confidence=summary.confidence,
+        )
+        _log_savings_event(
+            "structure_map",
+            net_saved_tokens_est,
+            session_id,
+            f"{Path(file_path).name}:{summary.replacement_type}:repeat={repeat_count}",
+        )
+        if not quiet:
+            print(
+                f"[Read Cache] Blocked redundant read #{entry['read_count']}: {file_path} "
+                f"(mode={mode}, replacement={summary.replacement_type}, repeat={repeat_count}, "
+                f"saved~{net_saved_tokens_est:,})",
+                file=sys.stderr,
+            )
+        _emit_pretool_response("deny", reason, additional_context)
+        return
 
     if mode == "block":
-        _log_decision("block", file_path, f"redundant_read_{read_count}", session_id)
-        if not quiet:
-            print(f"[Read Cache] Blocked redundant read #{read_count}: {file_path} (~{tokens_est:,} tokens saved)", file=sys.stderr)
-        output = {
-            "outputToolResult": (
-                f"[Token Optimizer] File already in context (read #{read_count}, unchanged).\n"
-                f"Structural digest of {Path(file_path).name}:\n{digest}\n\n"
-                f"To re-read, edit the file first or use a different offset/limit."
-            )
-        }
-        print(json.dumps(output))
-    else:
-        # Warn mode: allow the read but output suggestion
-        _log_decision("warn", file_path, f"redundant_read_{read_count}", session_id)
-        if not quiet:
-            print(f"[Read Cache] Redundant read #{read_count}: {file_path} (~{tokens_est:,} tokens)", file=sys.stderr)
+        _save_cache(session_id, cache)
+        _log_decision(
+            "block",
+            file_path,
+            f"redundant_read_{entry['read_count']}",
+            session_id,
+            mode=mode,
+            actual_substitution=False,
+            eligible=False,
+            language=language,
+            reason_code=reason_code,
+            offset=offset,
+            limit=limit,
+            replacement_type=None,
+            file_tokens_est=tokens_est,
+            replacement_tokens_est=REASON_ONLY_TOKENS_EST,
+            net_saved_tokens_est=max(0, tokens_est - REASON_ONLY_TOKENS_EST),
+            replacement_fingerprint=None,
+            repeat_replacement_count=0,
+            save_hook_additional_context_enabled=save_hook_context_enabled,
+            confidence=summary.confidence if summary else 0.0,
+        )
+        reason = (
+            f"{Path(file_path).name} is unchanged and already in context; "
+            "redundant reread blocked."
+        )
+        _emit_pretool_response("deny", reason)
+        return
 
 
 def handle_clear(session_id: str, quiet: bool) -> None:
-    """Clear read cache for a session (PreCompact handler)."""
+    """Clear read cache for a session."""
+
     if session_id and session_id != "all":
         cp = _cache_path(session_id)
         if cp.exists():
             cp.unlink()
-        # Also remove per-session decisions file
         dp = _decisions_log_path(session_id)
         if dp.exists():
             try:
@@ -409,29 +717,28 @@ def handle_clear(session_id: str, quiet: bool) -> None:
                 pass
         if not quiet:
             print(f"[Read Cache] Cleared cache for session {session_id}", file=sys.stderr)
-    elif session_id == "all":
-        if CACHE_DIR.exists():
-            for f in CACHE_DIR.glob("*.json"):
-                f.unlink()
-            for f in CACHE_DIR.glob("*.tmp"):
+    elif session_id == "all" and CACHE_DIR.exists():
+        for candidate in CACHE_DIR.glob("*.json"):
+            candidate.unlink()
+        for candidate in CACHE_DIR.glob("*.tmp"):
+            try:
+                candidate.unlink()
+            except OSError:
+                pass
+        decisions_dir = CACHE_DIR / "decisions"
+        if decisions_dir.exists():
+            for candidate in decisions_dir.glob("*.jsonl"):
                 try:
-                    f.unlink()
+                    candidate.unlink()
                 except OSError:
                     pass
-            # Clear all decisions files
-            decisions_dir = CACHE_DIR / "decisions"
-            if decisions_dir.exists():
-                for f in decisions_dir.glob("*.jsonl"):
-                    try:
-                        f.unlink()
-                    except OSError:
-                        pass
-            if not quiet:
-                print("[Read Cache] Cleared all caches", file=sys.stderr)
+        if not quiet:
+            print("[Read Cache] Cleared all caches", file=sys.stderr)
 
 
-def handle_invalidate(hook_input: dict, quiet: bool) -> None:
-    """Invalidate cache entry when a file is edited/written (PostToolUse handler)."""
+def handle_invalidate(hook_input: dict[str, Any], quiet: bool) -> None:
+    """Invalidate cache entry when a file is edited/written."""
+
     tool_name = hook_input.get("tool_name", "")
     if tool_name not in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
         return
@@ -442,7 +749,7 @@ def handle_invalidate(hook_input: dict, quiet: bool) -> None:
         return
 
     file_path = str(Path(raw_path).resolve())
-    session_id = hook_input.get("session_id", "unknown")
+    session_id = str(hook_input.get("agent_id") or hook_input.get("session_id") or "unknown")
     cache = _load_cache(session_id)
     files = cache.get("files", {})
 
@@ -456,28 +763,41 @@ def handle_invalidate(hook_input: dict, quiet: bool) -> None:
 
 def handle_stats(session_id: str) -> None:
     """Print cache stats for a session."""
+
     cache = _load_cache(session_id)
     files = cache.get("files", {})
-    total_reads = sum(e.get("read_count", 0) for e in files.values())
-    total_tokens = sum(e.get("tokens_est", 0) for e in files.values())
+    total_reads = sum(int(entry.get("read_count", 0) or 0) for entry in files.values())
+    total_tokens = sum(int(entry.get("tokens_est", 0) or 0) for entry in files.values())
 
-    # Count decisions from per-session log
+    decisions: dict[str, int] = {}
+    reason_codes: dict[str, int] = {}
+    replacement_types: dict[str, int] = {}
+    eligible_events = 0
+    repeat_replacement_events = 0
+    structure_tokens_avoided = 0
+
     log_path = _decisions_log_path(session_id)
-    warns = blocks = allows = 0
     if log_path.exists():
         try:
             for line in log_path.read_text(encoding="utf-8").splitlines():
                 try:
-                    d = json.loads(line)
-                    dec = d.get("decision", "")
-                    if dec == "warn":
-                        warns += 1
-                    elif dec == "block":
-                        blocks += 1
-                    elif dec == "allow":
-                        allows += 1
+                    event = json.loads(line)
                 except json.JSONDecodeError:
-                    pass
+                    continue
+                decision = str(event.get("decision", "") or "")
+                decisions[decision] = decisions.get(decision, 0) + 1
+                reason_code = str(event.get("reason_code", "") or "")
+                if reason_code:
+                    reason_codes[reason_code] = reason_codes.get(reason_code, 0) + 1
+                replacement_type = event.get("replacement_type")
+                if replacement_type:
+                    replacement_types[str(replacement_type)] = replacement_types.get(str(replacement_type), 0) + 1
+                if bool(event.get("eligible")):
+                    eligible_events += 1
+                if int(event.get("repeat_replacement_count", 0) or 0) > 1:
+                    repeat_replacement_events += 1
+                if bool(event.get("actual_substitution")):
+                    structure_tokens_avoided += int(event.get("net_saved_tokens_est", 0) or 0)
         except OSError:
             pass
 
@@ -486,7 +806,14 @@ def handle_stats(session_id: str) -> None:
         "cached_files": len(files),
         "total_reads": total_reads,
         "total_tokens_cached": total_tokens,
-        "decisions": {"allow": allows, "warn": warns, "block": blocks},
+        "decisions": decisions,
+        "structure": {
+            "eligible_events": eligible_events,
+            "repeat_replacement_events": repeat_replacement_events,
+            "actual_tokens_avoided": structure_tokens_avoided,
+            "replacement_types": replacement_types,
+            "reason_codes": reason_codes,
+        },
     }
     print(json.dumps(result, indent=2))
 
@@ -496,16 +823,12 @@ def handle_stats(session_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 def _is_read_cache_disabled() -> bool:
-    """Check if user explicitly disabled read-cache via env var or config file.
+    """Check if user explicitly disabled read-cache via env var or config file."""
 
-    Config file fallback handles ENV_SCRUB stripping the env var.
-    """
     env_val = os.environ.get("TOKEN_OPTIMIZER_READ_CACHE")
     if env_val == "0":
         return True
     if env_val is None:
-        # Env var missing (possibly stripped by ENV_SCRUB). Check config file.
-        # Use SNAPSHOT_DIR (respects CLAUDE_PLUGIN_DATA) not just CACHE_DIR
         for config_dir in [SNAPSHOT_DIR, CACHE_DIR]:
             config_path = config_dir / "config.json"
             if config_path.exists():
@@ -522,29 +845,27 @@ def _is_read_cache_disabled() -> bool:
 # Entry point
 # ---------------------------------------------------------------------------
 
-def main():
+def main() -> None:
     args = sys.argv[1:]
     quiet = "--quiet" in args or "-q" in args
 
-    # Subcommands
     if "--clear" in args:
         session_id = "all"
-        for i, a in enumerate(args):
-            if a == "--session" and i + 1 < len(args):
-                session_id = args[i + 1]
+        for index, arg in enumerate(args):
+            if arg == "--session" and index + 1 < len(args):
+                session_id = args[index + 1]
         handle_clear(session_id, quiet)
         return
 
     if "--stats" in args:
         session_id = "unknown"
-        for i, a in enumerate(args):
-            if a == "--session" and i + 1 < len(args):
-                session_id = args[i + 1]
+        for index, arg in enumerate(args):
+            if arg == "--session" and index + 1 < len(args):
+                session_id = args[index + 1]
         handle_stats(session_id)
         return
 
     if "--invalidate" in args:
-        # PostToolUse mode: read hook input from stdin
         try:
             hook_input = json.loads(sys.stdin.read(1_000_000))
         except (json.JSONDecodeError, OSError):
@@ -552,14 +873,12 @@ def main():
         handle_invalidate(hook_input, quiet)
         return
 
-    # Default: PreToolUse Read handler
-    # Check opt-out (default ON, user opts out with env var or config)
     if _is_read_cache_disabled():
         return
 
-    mode = os.environ.get("TOKEN_OPTIMIZER_READ_CACHE_MODE", "warn").lower()
-    if mode not in ("warn", "block"):
-        mode = "warn"
+    mode = os.environ.get("TOKEN_OPTIMIZER_READ_CACHE_MODE", DEFAULT_MODE).lower()
+    if mode not in READ_CACHE_MODES:
+        mode = DEFAULT_MODE
 
     try:
         hook_input = json.loads(sys.stdin.read(1_000_000))

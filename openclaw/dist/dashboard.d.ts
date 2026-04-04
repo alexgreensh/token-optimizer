@@ -69,6 +69,8 @@ interface SessionRow {
     qualityScore: number;
     qualityGrade: string;
     qualityBand: string;
+    cacheWrite1hTokens: number;
+    cacheWrite5mTokens: number;
 }
 export declare function buildDashboardData(runs: AgentRun[], report: AuditReport, quality?: QualityReport | null, context?: ContextAudit | null): DashboardData;
 export declare function generateDashboardHtml(data: DashboardData): string;

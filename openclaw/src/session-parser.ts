@@ -143,6 +143,10 @@ export function parseSession(
 
   let totalInput = 0;
   let totalOutput = 0;
+  let totalCacheRead = 0;
+  let totalCacheWrite = 0;
+  let totalCacheWrite1h = 0;
+  let totalCacheWrite5m = 0;
   let messageCount = 0;
   const modelUsage: Map<string, number> = new Map();
   const toolsUsed: Set<string> = new Set();
@@ -182,7 +186,8 @@ export function parseSession(
         (record.usage as Record<string, unknown>);
 
       if (usage) {
-        // OpenClaw uses inputTokens (total input, no cache split)
+        // Prefer explicit cache fields when present, but tolerate older logs
+        // that only expose input/output totals.
         const inp =
           (usage.inputTokens as number) ??
           (usage.input_tokens as number) ??
@@ -191,15 +196,39 @@ export function parseSession(
           (usage.outputTokens as number) ??
           (usage.output_tokens as number) ??
           0;
+        const cacheRead =
+          (usage.cacheReadInputTokens as number) ??
+          (usage.cache_read_input_tokens as number) ??
+          0;
+        const cacheCreation =
+          (usage.cacheCreation as Record<string, unknown>) ??
+          (usage.cache_creation as Record<string, unknown>) ??
+          {};
+        const cacheWrite1h =
+          (cacheCreation.ephemeral_1h_input_tokens as number) ??
+          (usage.ephemeral_1h_input_tokens as number) ??
+          0;
+        const cacheWrite5m =
+          (cacheCreation.ephemeral_5m_input_tokens as number) ??
+          (usage.ephemeral_5m_input_tokens as number) ??
+          0;
+        const cacheWrite =
+          (usage.cacheCreationInputTokens as number) ??
+          (usage.cache_creation_input_tokens as number) ??
+          (cacheWrite1h + cacheWrite5m);
 
         totalInput += inp;
         totalOutput += out;
+        totalCacheRead += cacheRead;
+        totalCacheWrite += cacheWrite;
+        totalCacheWrite1h += cacheWrite1h;
+        totalCacheWrite5m += cacheWrite5m;
 
         // Track model usage
         const modelId =
           (msg?.model as string) ?? (record.model as string) ?? "unknown";
         const current = modelUsage.get(modelId) ?? 0;
-        modelUsage.set(modelId, current + inp + out);
+        modelUsage.set(modelId, current + inp + out + cacheRead + cacheWrite);
       }
 
       // Extract tool usage
@@ -244,8 +273,8 @@ export function parseSession(
   const tokens: TokenBreakdown = {
     input: totalInput,
     output: totalOutput,
-    cacheRead: 0,
-    cacheWrite: 0,
+    cacheRead: totalCacheRead,
+    cacheWrite: totalCacheWrite,
   };
 
   // Determine outcome
@@ -273,6 +302,8 @@ export function parseSession(
     messageCount,
     toolsUsed: Array.from(toolsUsed).sort(),
     sourcePath: filePath,
+    cacheWrite1hTokens: totalCacheWrite1h,
+    cacheWrite5mTokens: totalCacheWrite5m,
   };
 }
 

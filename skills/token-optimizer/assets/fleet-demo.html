@@ -1,0 +1,862 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fleet Auditor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;500&family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; outline: none; }
+:root {
+  --c-bg: #0a0b10;
+  --c-surface: #13151a;
+  --c-surface-hover: #1c1f26;
+  --c-accent-cyan: #00f0ff;
+  --c-accent-blue: #0066ff;
+  --c-accent-glow: rgba(0, 240, 255, 0.4);
+  --c-text-main: #ffffff;
+  --c-text-dim: #7d8ca3;
+  --c-border: rgba(255, 255, 255, 0.08);
+  --c-success: #22c55e;
+  --c-warning: #f59e0b;
+  --c-danger: #ef4444;
+  --font-sans: 'Space Grotesk', sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+  --s-1: 4px; --s-2: 8px; --s-3: 16px; --s-4: 24px; --s-5: 32px; --s-6: 64px;
+  --glow-sm: 0 0 10px var(--c-accent-glow);
+  --glow-text: 0 0 8px rgba(0, 240, 255, 0.6);
+}
+body {
+  background-color: var(--c-bg);
+  color: var(--c-text-main);
+  font-family: var(--font-sans);
+  font-weight: 300;
+  font-size: 18px;
+  line-height: 1.5;
+  min-height: 100vh;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+  background-image: radial-gradient(circle at 50% 0%, #1a253a 0%, var(--c-bg) 60%);
+}
+body::before {
+  content: "";
+  position: fixed;
+  top: 0; left: 0; width: 100%; height: 100%;
+  background-image:
+    linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
+  background-size: 40px 40px;
+  pointer-events: none;
+  z-index: 0;
+}
+h1, h2, h3, h4 { font-weight: 400; }
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: var(--c-bg); }
+::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #555; }
+
+.layout {
+  display: grid;
+  grid-template-columns: 260px 1fr 340px;
+  height: 100vh;
+  width: 100vw;
+  max-width: 1800px;
+  margin: 0 auto;
+  position: relative;
+  z-index: 1;
+}
+
+/* NAV */
+.nav-col {
+  padding: var(--s-4);
+  border-right: 1px solid var(--c-border);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  background: linear-gradient(90deg, transparent, rgba(0,0,0,0.2));
+  backdrop-filter: blur(10px);
+}
+.brand {
+  font-family: var(--font-sans);
+  font-weight: 700;
+  font-size: 24px;
+  margin-bottom: var(--s-5);
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  color: var(--c-text-main);
+  letter-spacing: -0.02em;
+}
+.brand span {
+  width: 12px; height: 12px;
+  background: var(--c-accent-cyan);
+  border-radius: 2px;
+  display: inline-block;
+  box-shadow: var(--glow-sm);
+}
+.nav-menu { display: flex; flex-direction: column; gap: 2px; }
+.nav-item {
+  padding: 12px var(--s-2);
+  cursor: pointer;
+  opacity: 0.6;
+  transition: all 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+  text-decoration: none;
+  color: var(--c-text-main);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-family: var(--font-sans);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-size: 15px;
+  border-left: 2px solid transparent;
+}
+.nav-item:hover, .nav-item.active {
+  opacity: 1;
+  background: linear-gradient(90deg, rgba(0,240,255,0.05), transparent);
+  border-left-color: var(--c-accent-cyan);
+  text-shadow: var(--glow-text);
+}
+.nav-item.active { font-weight: 600; }
+.nav-badge {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--c-accent-cyan);
+  border: 1px solid var(--c-accent-cyan);
+  padding: 0 4px;
+  border-radius: 2px;
+  text-shadow: 0 0 5px var(--c-accent-cyan);
+}
+.nav-separator {
+  height: 1px;
+  background: var(--c-border);
+  margin: var(--s-2) 0;
+}
+.nav-back {
+  opacity: 0.4;
+  font-size: 13px;
+  margin-top: var(--s-3);
+  border-left: 2px solid transparent;
+}
+.nav-back:hover { opacity: 0.8; border-left-color: var(--c-text-dim); }
+.user-profile {
+  font-size: 15px;
+  color: var(--c-text-dim);
+  border-top: 1px solid var(--c-border);
+  padding-top: var(--s-3);
+  font-family: var(--font-mono);
+}
+.user-profile i { font-style: italic; color: var(--c-accent-cyan); }
+
+/* MAIN */
+.main-col {
+  padding: var(--s-5);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-5);
+}
+.view { display: none; }
+.view.active { display: flex; flex-direction: column; gap: var(--s-5); }
+.section-header { margin-bottom: var(--s-2); }
+.label {
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  color: var(--c-text-dim);
+  font-family: var(--font-mono);
+  font-weight: 500;
+}
+.section-header h1 {
+  font-family: var(--font-sans);
+  font-weight: 300;
+  font-size: 48px;
+  margin: var(--s-2) 0;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  background: linear-gradient(180deg, #fff, #aaa);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.section-header p {
+  font-size: 12px;
+  color: var(--c-text-dim);
+  max-width: 460px;
+  line-height: 1.6;
+  font-family: var(--font-mono);
+}
+
+/* CARDS */
+.card {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: 12px;
+  padding: var(--s-4);
+  transition: border-color 0.3s;
+}
+.card:hover { border-color: rgba(255,255,255,0.15); }
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--s-3);
+  font-size: 15px;
+}
+.card-header span:first-child { font-weight: 500; }
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--s-3);
+}
+.metric-large {
+  font-family: var(--font-mono);
+  font-size: 36px;
+  font-weight: 500;
+  color: var(--c-accent-cyan);
+  text-shadow: var(--glow-text);
+  margin-bottom: var(--s-1);
+}
+.metric-sub {
+  font-size: 13px;
+  color: var(--c-text-dim);
+  font-family: var(--font-mono);
+}
+.mini-stats {
+  display: flex;
+  gap: var(--s-4);
+  margin-top: var(--s-3);
+  padding-top: var(--s-3);
+  border-top: 1px solid var(--c-border);
+}
+.mini-stat-item { display: flex; flex-direction: column; }
+.mini-val {
+  font-family: var(--font-mono);
+  font-size: 16px;
+  color: var(--c-text-main);
+}
+.mini-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--c-text-dim);
+}
+
+/* HERO STATS */
+.stat-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--s-3);
+  margin-bottom: var(--s-4);
+}
+.stat-card {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: 12px;
+  padding: var(--s-4);
+  text-align: center;
+}
+.stat-card-value {
+  font-family: var(--font-mono);
+  font-size: 32px;
+  font-weight: 500;
+  color: var(--c-accent-cyan);
+  text-shadow: var(--glow-text);
+}
+.stat-card-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  color: var(--c-text-dim);
+  margin-top: var(--s-1);
+}
+
+/* WASTE */
+.waste-card {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: 12px;
+  padding: var(--s-4);
+  margin-bottom: var(--s-3);
+  border-left: 3px solid var(--c-text-dim);
+  transition: border-color 0.3s;
+}
+.waste-card.critical { border-left-color: var(--c-danger); }
+.waste-card.high { border-left-color: var(--c-warning); }
+.waste-card.medium { border-left-color: var(--c-accent-cyan); }
+.waste-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--s-2);
+}
+.waste-severity {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  padding: 2px 8px;
+  border-radius: 3px;
+  margin-right: var(--s-2);
+}
+.waste-severity.critical { background: rgba(239,68,68,0.2); color: var(--c-danger); }
+.waste-severity.high { background: rgba(245,158,11,0.2); color: var(--c-warning); }
+.waste-severity.medium { background: rgba(0,240,255,0.1); color: var(--c-accent-cyan); }
+.waste-severity.low { background: rgba(125,140,163,0.1); color: var(--c-text-dim); }
+.waste-system { font-size: 13px; color: var(--c-text-dim); }
+.waste-desc { font-size: 16px; margin-bottom: var(--s-2); }
+.waste-rec { font-size: 14px; color: var(--c-text-dim); margin-bottom: var(--s-2); }
+.waste-savings {
+  font-family: var(--font-mono);
+  font-size: 16px;
+  color: var(--c-success);
+  text-shadow: 0 0 6px rgba(34,197,94,0.4);
+}
+.waste-fix {
+  margin-top: var(--s-2);
+  padding: var(--s-2) var(--s-3);
+  background: rgba(0,0,0,0.3);
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--c-text-dim);
+  white-space: pre-wrap;
+  line-height: 1.6;
+}
+
+/* CHART (daily cost bars) */
+.chart-container { padding: var(--s-2) 0; }
+.bar-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 120px;
+  padding-top: var(--s-2);
+}
+.bar {
+  flex: 1;
+  background: var(--c-accent-cyan);
+  border-radius: 2px 2px 0 0;
+  min-width: 4px;
+  opacity: 0.7;
+  transition: opacity 0.2s;
+  position: relative;
+}
+.bar:hover { opacity: 1; }
+.bar-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--c-text-dim);
+  font-family: var(--font-mono);
+  margin-top: var(--s-1);
+}
+
+/* PROJECTS */
+.proj-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  padding: var(--s-2) 0;
+  border-bottom: 1px solid var(--c-border);
+  font-size: 14px;
+}
+.proj-row:last-child { border-bottom: none; }
+.proj-name { flex: 1; font-weight: 400; }
+.proj-stat { color: var(--c-text-dim); font-family: var(--font-mono); font-size: 13px; min-width: 80px; text-align: right; }
+.proj-cost { font-family: var(--font-mono); font-size: 13px; color: var(--c-accent-cyan); min-width: 70px; text-align: right; }
+
+/* MODEL BAR */
+.model-bar {
+  display: flex;
+  height: 24px;
+  border-radius: 6px;
+  overflow: hidden;
+  margin-bottom: var(--s-2);
+}
+.model-segment { transition: width 0.5s; }
+.model-segment.opus { background: #a855f7; }
+.model-segment.sonnet { background: #3b82f6; }
+.model-segment.haiku { background: #22c55e; }
+.model-segment.other { background: #6b7280; }
+.model-legend {
+  display: flex;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: var(--c-text-dim);
+}
+.model-legend-item { display: flex; align-items: center; gap: 6px; }
+.model-legend-dot { width: 8px; height: 8px; border-radius: 2px; }
+.model-legend-dot.opus { background: #a855f7; }
+.model-legend-dot.sonnet { background: #3b82f6; }
+.model-legend-dot.haiku { background: #22c55e; }
+.model-legend-dot.other { background: #6b7280; }
+
+/* RIGHT PANEL */
+.config-col {
+  border-left: 1px solid var(--c-border);
+  padding: var(--s-4);
+  background: rgba(10,11,16,0.8);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+  overflow-y: auto;
+}
+.section-title {
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  margin-bottom: var(--s-3);
+  color: var(--c-text-dim);
+  padding-bottom: var(--s-1);
+  border-bottom: 1px solid var(--c-border);
+  font-family: var(--font-mono);
+}
+.summary-metric {
+  font-family: var(--font-mono);
+  font-size: 18px;
+  color: var(--c-text-dim);
+  margin-bottom: var(--s-3);
+}
+.summary-metric .num {
+  color: var(--c-accent-cyan);
+  text-shadow: var(--glow-text);
+}
+.version-footer {
+  margin-top: auto;
+  padding-top: var(--s-4);
+  border-top: 1px solid var(--c-border);
+  font-size: 13px;
+  color: var(--c-text-dim);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.version-footer a { color: var(--c-accent-cyan); text-decoration: none; }
+.social-icons { display: flex; gap: var(--s-2); }
+.social-link { color: var(--c-text-dim); transition: color 0.2s; }
+.social-link:hover { color: var(--c-accent-cyan); }
+
+.empty-state {
+  text-align: center;
+  padding: var(--s-6) var(--s-4);
+  color: var(--c-text-dim);
+  font-family: var(--font-mono);
+  font-size: 14px;
+}
+
+@media (max-width: 1100px) {
+  .layout { grid-template-columns: 1fr; height: auto; }
+  .nav-col { display: none; }
+  .config-col { display: none; }
+  .stat-row { grid-template-columns: repeat(2, 1fr); }
+}
+</style>
+</head>
+<body>
+
+<div class="layout">
+  <!-- NAV -->
+  <nav class="nav-col">
+    <div>
+      <div class="brand"><span></span> Fleet Auditor</div>
+      <div class="nav-menu">
+        <a class="nav-item active" data-view="overview">Overview</a>
+        <a class="nav-item" data-view="waste">Waste <span class="nav-badge">4</span></a>
+        <a class="nav-item" data-view="systems">Systems</a>
+        <a class="nav-item" data-view="daily">Daily</a>
+        <div class="nav-separator"></div>
+        <a class="nav-item nav-back" href="file:///Users/alexgreenshpun/.claude/_backups/token-optimizer/dashboard.html">Token Optimizer</a>
+      </div>
+    </div>
+    <div class="user-profile">generated: <i>2026-03-17 02:30</i></div>
+  </nav>
+
+  <!-- MAIN -->
+  <main class="main-col">
+    <!-- Overview -->
+    <div class="view active" id="view-overview">
+      <div class="section-header">
+        <div class="label">Fleet Token Audit</div>
+        <h1>Overview</h1>
+        <p>Cross-platform agent token usage and waste detection.</p>
+      </div>
+
+      <div class="stat-row">
+        <div class="stat-card">
+          <div class="stat-card-value">847</div>
+          <div class="stat-card-label">Total Runs</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-card-value">$127.40</div>
+          <div class="stat-card-label">Total Cost</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-card-value">2</div>
+          <div class="stat-card-label">Systems</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-card-value" style="color: var(--c-success)">$31.50/mo</div>
+          <div class="stat-card-label">Potential Savings</div>
+        </div>
+      </div>
+
+      <div class="dashboard-grid">
+      <div class="card">
+        <div class="card-header"><span>Claude Code</span><span class="label">claude</span></div>
+        <div class="metric-large">$84.20</div>
+        <div class="metric-sub">512 runs over 21 days</div>
+        <div class="mini-stats">
+          <div class="mini-stat-item"><span class="mini-val">12m</span><span class="mini-label">avg duration</span></div>
+          <div class="mini-stat-item"><span class="mini-val">34%</span><span class="mini-label">compaction rate</span></div>
+          <div class="mini-stat-item"><span class="mini-val">18</span><span class="mini-label">abandoned</span></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-header"><span>OpenClaw</span><span class="label">multi</span></div>
+        <div class="metric-large">$43.20</div>
+        <div class="metric-sub">335 runs over 21 days</div>
+        <div class="mini-stats">
+          <div class="mini-stat-item"><span class="mini-val">8m</span><span class="mini-label">avg duration</span></div>
+          <div class="mini-stat-item"><span class="mini-val">$18.40</span><span class="mini-label">heartbeat waste</span></div>
+          <div class="mini-stat-item"><span class="mini-val">9</span><span class="mini-label">abandoned</span></div>
+        </div>
+      </div>
+      </div>
+    </div>
+
+    <!-- Waste -->
+    <div class="view" id="view-waste">
+      <div class="section-header">
+        <div class="label">Waste Detection</div>
+        <h1>Findings</h1>
+        <p>Identified waste patterns with dollar savings estimates and fix snippets.</p>
+      </div>
+
+      <div class="waste-card critical">
+        <div class="waste-header">
+          <div>
+            <span class="waste-severity critical">critical</span>
+            <span class="waste-system">OpenClaw</span>
+          </div>
+          <span class="waste-savings">$18.40/mo</span>
+        </div>
+        <div class="waste-desc">127 empty heartbeat runs: deploy-bot loaded 50K+ context, produced &lt;100 tokens output</div>
+        <div class="waste-rec">Add guard conditions to skip runs when there&#x27;s nothing to deploy. Route idle checks to Haiku.</div>
+        <div class="waste-fix"># Add early-exit check in heartbeat script:
+if ! has_pending_deploys; then exit 0; fi
+# Or switch idle polling to haiku model</div>
+      </div>
+      <div class="waste-card high">
+        <div class="waste-header">
+          <div>
+            <span class="waste-severity high">high</span>
+            <span class="waste-system">OpenClaw</span>
+          </div>
+          <span class="waste-savings">$8.20/mo</span>
+        </div>
+        <div class="waste-desc">Heartbeat model waste: triage agent using Sonnet for cron scheduling tasks</div>
+        <div class="waste-rec">Switch triage-inbox heartbeat from Sonnet to Haiku. Classification tasks don&#x27;t need Sonnet-level reasoning.</div>
+        <div class="waste-fix"># In openclaw.yaml, update triage agent:
+# model: sonnet -> model: haiku
+# Saves ~$8.20/mo with no quality loss</div>
+      </div>
+      <div class="waste-card medium">
+        <div class="waste-header">
+          <div>
+            <span class="waste-severity medium">medium</span>
+            <span class="waste-system">Claude Code</span>
+          </div>
+          <span class="waste-savings">$3.80/mo</span>
+        </div>
+        <div class="waste-desc">14 sessions hit 500K+ tokens without compaction (session history bloat)</div>
+        <div class="waste-rec">Use /compact at 50-70% context fill. Set up Smart Compaction for automatic protection.</div>
+        <div class="waste-fix"># Install Smart Compaction:
+python3 measure.py setup-smart-compact</div>
+      </div>
+      <div class="waste-card medium">
+        <div class="waste-header">
+          <div>
+            <span class="waste-severity medium">medium</span>
+            <span class="waste-system">OpenClaw</span>
+          </div>
+          <span class="waste-savings">$1.10/mo</span>
+        </div>
+        <div class="waste-desc">Heartbeat over-frequency: reviewer agent averaging 90s intervals instead of recommended 5 min</div>
+        <div class="waste-rec">Increase reviewer heartbeat interval from 90s to 300s. Review cadence doesn&#x27;t need sub-2-min polling.</div>
+        <div class="waste-fix"># In openclaw.yaml, update reviewer agent:
+# heartbeat_interval: 90 -> heartbeat_interval: 300</div>
+      </div>
+    </div>
+
+    <!-- Systems -->
+    <div class="view" id="view-systems">
+      <div class="section-header">
+        <div class="label">System Breakdown</div>
+        <h1>Systems</h1>
+        <p>Per-system usage, model mix, and top projects.</p>
+      </div>
+      <div class="dashboard-grid">
+      <div class="card">
+        <div class="card-header"><span>Claude Code</span><span class="label">claude</span></div>
+        <div class="metric-large">$84.20</div>
+        <div class="metric-sub">512 runs over 21 days</div>
+        <div class="mini-stats">
+          <div class="mini-stat-item"><span class="mini-val">12m</span><span class="mini-label">avg duration</span></div>
+          <div class="mini-stat-item"><span class="mini-val">34%</span><span class="mini-label">compaction rate</span></div>
+          <div class="mini-stat-item"><span class="mini-val">18</span><span class="mini-label">abandoned</span></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-header"><span>OpenClaw</span><span class="label">multi</span></div>
+        <div class="metric-large">$43.20</div>
+        <div class="metric-sub">335 runs over 21 days</div>
+        <div class="mini-stats">
+          <div class="mini-stat-item"><span class="mini-val">8m</span><span class="mini-label">avg duration</span></div>
+          <div class="mini-stat-item"><span class="mini-val">$18.40</span><span class="mini-label">heartbeat waste</span></div>
+          <div class="mini-stat-item"><span class="mini-val">9</span><span class="mini-label">abandoned</span></div>
+        </div>
+      </div>
+      </div>
+      <div class="card" id="model-mix-card" style="margin-top: var(--s-3);">
+        <div class="card-header"><span>Model Mix</span><span class="label">Cost distribution by model</span></div>
+        <div id="model-mix-content"></div>
+      </div>
+      <div class="card" style="margin-top: var(--s-3);">
+        <div class="card-header"><span>Top Projects</span><span class="label">By total cost</span></div>
+
+        <div class="proj-row">
+          <span class="proj-name">deploy-pipeline</span>
+          <span class="proj-stat">89 runs</span>
+          <span class="proj-stat">48.2M tok</span>
+          <span class="proj-cost">$31.20</span>
+        </div>
+        <div class="proj-row">
+          <span class="proj-name">code-review</span>
+          <span class="proj-stat">67 runs</span>
+          <span class="proj-stat">38.7M tok</span>
+          <span class="proj-cost">$24.80</span>
+        </div>
+        <div class="proj-row">
+          <span class="proj-name">triage-inbox</span>
+          <span class="proj-stat">142 runs</span>
+          <span class="proj-stat">22.1M tok</span>
+          <span class="proj-cost">$18.40</span>
+        </div>
+        <div class="proj-row">
+          <span class="proj-name">docs-updater</span>
+          <span class="proj-stat">34 runs</span>
+          <span class="proj-stat">12.4M tok</span>
+          <span class="proj-cost">$8.60</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Daily -->
+    <div class="view" id="view-daily">
+      <div class="section-header">
+        <div class="label">Time Series</div>
+        <h1>Daily</h1>
+        <p>Daily cost and run count over the scan window.</p>
+      </div>
+      <div class="card">
+        <div class="card-header"><span>Daily Cost</span></div>
+        <div class="chart-container">
+          <div class="bar-chart" id="daily-chart"></div>
+          <div class="bar-label" id="daily-labels"></div>
+        </div>
+      </div>
+      <div class="card" style="margin-top: var(--s-3);">
+        <div class="card-header"><span>Daily Runs</span></div>
+        <div class="chart-container">
+          <div class="bar-chart" id="runs-chart"></div>
+          <div class="bar-label" id="runs-labels"></div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- RIGHT PANEL -->
+  <aside class="config-col">
+    <div class="section-title">Fleet Summary</div>
+    <div class="summary-metric"><span class="num">847</span> runs</div>
+    <div class="summary-metric"><span class="num">$127.40</span> total</div>
+    <div class="summary-metric"><span class="num">21</span> active days</div>
+
+    <div class="section-title">Waste Breakdown</div>
+    <div class="summary-metric" style="font-size:14px;">
+      <div style="margin-bottom:4px;"><span style="color:var(--c-danger)">1</span> critical</div><div style="margin-bottom:4px;"><span style="color:var(--c-warning)">1</span> high</div><div style="margin-bottom:4px;"><span style="color:var(--c-accent-cyan)">2</span> medium</div>
+    </div>
+    <div class="summary-metric">
+      Potential savings: <span class="num">$31.50/mo</span>
+    </div>
+
+    <div class="section-title">Quick Commands</div>
+    <div style="font-family: var(--font-mono); font-size: 12px; color: var(--c-text-dim); line-height: 2;">
+      <div>fleet.py detect</div>
+      <div>fleet.py scan --days 30</div>
+      <div>fleet.py audit --json</div>
+      <div>fleet.py report</div>
+      <div>fleet.py dashboard</div>
+    </div>
+
+    <div class="version-footer">
+      <div>Built by <a href="https://linkedin.com/in/alexgreensh" target="_blank" rel="noopener">Alex Greenshpun</a></div>
+      <div class="social-icons">
+        <a href="https://github.com/alexgreensh/token-optimizer" target="_blank" rel="noopener" title="GitHub" class="social-link">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+        </a>
+        <a href="https://linkedin.com/in/alexgreensh" target="_blank" rel="noopener" title="LinkedIn" class="social-link">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 01-2.063-2.065 2.064 2.064 0 112.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>
+        </a>
+      </div>
+    </div>
+  </aside>
+</div>
+
+<script>
+var dailyData = [
+  {"date": "2026-03-03", "system": "claude", "runs": 28, "input": 18200, "output": 42100, "cost": 4.82, "empty_hb": 0},
+  {"date": "2026-03-03", "system": "openclaw", "runs": 22, "input": 12400, "output": 28300, "cost": 2.94, "empty_hb": 3},
+  {"date": "2026-03-04", "system": "claude", "runs": 35, "input": 24800, "output": 58400, "cost": 6.41, "empty_hb": 0},
+  {"date": "2026-03-04", "system": "openclaw", "runs": 18, "input": 9800, "output": 21200, "cost": 2.18, "empty_hb": 5},
+  {"date": "2026-03-05", "system": "claude", "runs": 42, "input": 31200, "output": 71800, "cost": 7.93, "empty_hb": 0},
+  {"date": "2026-03-05", "system": "openclaw", "runs": 29, "input": 16100, "output": 34600, "cost": 3.62, "empty_hb": 8},
+  {"date": "2026-03-06", "system": "claude", "runs": 31, "input": 22600, "output": 51400, "cost": 5.74, "empty_hb": 0},
+  {"date": "2026-03-06", "system": "openclaw", "runs": 24, "input": 13200, "output": 29800, "cost": 3.08, "empty_hb": 6},
+  {"date": "2026-03-07", "system": "claude", "runs": 48, "input": 35600, "output": 82100, "cost": 9.12, "empty_hb": 0},
+  {"date": "2026-03-07", "system": "openclaw", "runs": 31, "input": 17800, "output": 38200, "cost": 4.14, "empty_hb": 10},
+  {"date": "2026-03-08", "system": "claude", "runs": 22, "input": 15400, "output": 35800, "cost": 3.91, "empty_hb": 0},
+  {"date": "2026-03-08", "system": "openclaw", "runs": 16, "input": 8900, "output": 19400, "cost": 1.98, "empty_hb": 4},
+  {"date": "2026-03-09", "system": "claude", "runs": 19, "input": 13200, "output": 30400, "cost": 3.28, "empty_hb": 0},
+  {"date": "2026-03-09", "system": "openclaw", "runs": 14, "input": 7600, "output": 16800, "cost": 1.72, "empty_hb": 2},
+  {"date": "2026-03-10", "system": "claude", "runs": 39, "input": 28400, "output": 65200, "cost": 7.18, "empty_hb": 0},
+  {"date": "2026-03-10", "system": "openclaw", "runs": 27, "input": 15200, "output": 32800, "cost": 3.44, "empty_hb": 7},
+  {"date": "2026-03-11", "system": "claude", "runs": 44, "input": 32800, "output": 76400, "cost": 8.42, "empty_hb": 0},
+  {"date": "2026-03-11", "system": "openclaw", "runs": 30, "input": 16800, "output": 36200, "cost": 3.82, "empty_hb": 9},
+  {"date": "2026-03-12", "system": "claude", "runs": 36, "input": 26200, "output": 60800, "cost": 6.68, "empty_hb": 0},
+  {"date": "2026-03-12", "system": "openclaw", "runs": 25, "input": 14000, "output": 30200, "cost": 3.16, "empty_hb": 6},
+  {"date": "2026-03-13", "system": "claude", "runs": 51, "input": 38400, "output": 88600, "cost": 9.84, "empty_hb": 0},
+  {"date": "2026-03-13", "system": "openclaw", "runs": 33, "input": 18600, "output": 40200, "cost": 4.28, "empty_hb": 11},
+  {"date": "2026-03-14", "system": "claude", "runs": 38, "input": 27800, "output": 64200, "cost": 7.06, "empty_hb": 0},
+  {"date": "2026-03-14", "system": "openclaw", "runs": 21, "input": 11600, "output": 25400, "cost": 2.64, "empty_hb": 5},
+  {"date": "2026-03-15", "system": "claude", "runs": 46, "input": 34200, "output": 79400, "cost": 8.78, "empty_hb": 0},
+  {"date": "2026-03-15", "system": "openclaw", "runs": 28, "input": 15800, "output": 34000, "cost": 3.58, "empty_hb": 8},
+  {"date": "2026-03-16", "system": "claude", "runs": 33, "input": 24000, "output": 55600, "cost": 5.03, "empty_hb": 0},
+  {"date": "2026-03-16", "system": "openclaw", "runs": 19, "input": 10600, "output": 23000, "cost": 2.38, "empty_hb": 4}
+];
+var modelData = {
+  "claude": [
+    {"model": "opus", "runs": 154, "cost": 25.26},
+    {"model": "sonnet", "runs": 282, "cost": 46.31},
+    {"model": "haiku", "runs": 76, "cost": 12.63}
+  ],
+  "openclaw": [
+    {"model": "sonnet", "runs": 134, "cost": 17.28},
+    {"model": "deepseek-v3", "runs": 117, "cost": 15.12},
+    {"model": "gemini-flash", "runs": 84, "cost": 10.80}
+  ]
+};
+
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function fmtCost(n) { return n >= 1000 ? '$' + n.toLocaleString(undefined, {maximumFractionDigits:0}) : '$' + n.toFixed(2); }
+
+// Nav switching
+document.querySelectorAll('.nav-item[data-view]').forEach(function(lnk) {
+  lnk.addEventListener('click', function(e) {
+    e.preventDefault();
+    var v = this.getAttribute('data-view');
+    document.querySelectorAll('.view').forEach(function(el) { el.classList.remove('active'); });
+    document.querySelectorAll('.nav-item').forEach(function(n) { n.classList.remove('active'); });
+    var target = document.getElementById('view-' + v);
+    if (target) target.classList.add('active');
+    this.classList.add('active');
+    document.querySelector('.main-col').scrollTop = 0;
+  });
+});
+
+// Daily cost chart
+(function() {
+  var chart = document.getElementById('daily-chart');
+  var labels = document.getElementById('daily-labels');
+  if (!chart || !dailyData.length) return;
+
+  // Aggregate by date
+  var byDate = {};
+  dailyData.forEach(function(d) {
+    byDate[d.date] = (byDate[d.date] || 0) + d.cost;
+  });
+  var dates = Object.keys(byDate).sort();
+  var maxCost = Math.max.apply(null, dates.map(function(d) { return byDate[d]; })) || 1;
+
+  dates.forEach(function(date) {
+    var bar = document.createElement('div');
+    bar.className = 'bar';
+    bar.style.height = Math.max(2, (byDate[date] / maxCost) * 100) + '%';
+    bar.title = date + ': ' + fmtCost(byDate[date]);
+    chart.appendChild(bar);
+  });
+
+  if (dates.length > 0) {
+    labels.innerHTML = '<span>' + dates[0] + '</span><span>' + dates[dates.length - 1] + '</span>';
+  }
+
+  // Runs chart
+  var runsChart = document.getElementById('runs-chart');
+  var runsLabels = document.getElementById('runs-labels');
+  if (!runsChart) return;
+  var byDateRuns = {};
+  dailyData.forEach(function(d) {
+    byDateRuns[d.date] = (byDateRuns[d.date] || 0) + d.runs;
+  });
+  var maxRuns = Math.max.apply(null, dates.map(function(d) { return byDateRuns[d] || 0; })) || 1;
+  dates.forEach(function(date) {
+    var bar = document.createElement('div');
+    bar.className = 'bar';
+    bar.style.height = Math.max(2, ((byDateRuns[date] || 0) / maxRuns) * 100) + '%';
+    bar.style.background = '#3b82f6';
+    bar.title = date + ': ' + (byDateRuns[date] || 0) + ' runs';
+    runsChart.appendChild(bar);
+  });
+  if (dates.length > 0) {
+    runsLabels.innerHTML = '<span>' + dates[0] + '</span><span>' + dates[dates.length - 1] + '</span>';
+  }
+})();
+
+// Model mix
+(function() {
+  var container = document.getElementById('model-mix-content');
+  if (!container) return;
+  var html = '';
+  var modelColors = { opus: '#a855f7', sonnet: '#3b82f6', haiku: '#22c55e' };
+
+  for (var sys in modelData) {
+    var models = modelData[sys];
+    var totalCost = 0;
+    models.forEach(function(m) { totalCost += m.cost; });
+    if (totalCost <= 0) continue;
+
+    html += '<div style="margin-bottom: var(--s-3);"><div style="font-size:13px;color:var(--c-text-dim);margin-bottom:4px;">' + esc(sys) + '</div>';
+    html += '<div class="model-bar">';
+    models.forEach(function(m) {
+      var pct = (m.cost / totalCost * 100).toFixed(1);
+      var cls = m.model.replace(/[^a-z0-9-]/g, '');
+      html += '<div class="model-segment ' + cls + '" style="width:' + pct + '%" title="' + esc(m.model) + ': ' + pct + '% (' + fmtCost(m.cost) + ')"></div>';
+    });
+    html += '</div><div class="model-legend">';
+    models.forEach(function(m) {
+      var pct = (m.cost / totalCost * 100).toFixed(0);
+      var cls = m.model.replace(/[^a-z0-9-]/g, '');
+      html += '<div class="model-legend-item"><div class="model-legend-dot ' + cls + '"></div>' + esc(m.model) + ' ' + pct + '% (' + fmtCost(m.cost) + ')</div>';
+    });
+    html += '</div></div>';
+  }
+
+  container.innerHTML = html || '<div class="empty-state" style="padding:var(--s-3);">No model data.</div>';
+})();
+</script>
+</body>
+</html>

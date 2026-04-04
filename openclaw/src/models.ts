@@ -28,6 +28,8 @@ export interface AgentRun {
   messageCount: number;
   toolsUsed: string[];
   sourcePath: string;
+  cacheWrite1hTokens?: number;
+  cacheWrite5mTokens?: number;
   errorMessage?: string;
 }
 

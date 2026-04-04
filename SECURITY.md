@@ -4,7 +4,7 @@
 
 If you discover a security vulnerability in Token Optimizer, please report it responsibly.
 
-**Email**: alex@10xcompany.co
+**Email**: me@alexgreenshpun.com
 
 Please include:
 - Description of the vulnerability

@@ -1617,6 +1617,28 @@ function parsePlan(planMd) {
 
 function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 
+function formatGap(seconds) {
+  if (seconds === null || seconds === undefined || isNaN(seconds)) return 'n/a';
+  var total = Math.max(0, Math.round(seconds));
+  if (total < 60) return total + 's';
+  if (total < 3600) {
+    var mins = Math.floor(total / 60);
+    var secs = total % 60;
+    return secs ? (mins + 'm ' + secs + 's') : (mins + 'm');
+  }
+  var hours = Math.floor(total / 3600);
+  var minsRemainder = Math.floor((total % 3600) / 60);
+  return minsRemainder ? (hours + 'h ' + minsRemainder + 'm') : (hours + 'h');
+}
+
+function ttlMixLabel(ttl1h, ttl5m) {
+  var total = ttl1h + ttl5m;
+  if (!total) return 'TTL mix unavailable';
+  if (!ttl5m) return '1h only';
+  if (!ttl1h) return '5m only';
+  return (ttl1h / total * 100).toFixed(0) + '% 1h / ' + (ttl5m / total * 100).toFixed(0) + '% 5m';
+}
+
 /* ========== AUDIT CONTENT PARSER ========== */
 function extractFindings(auditMd) {
   if (!auditMd) return { summary: '', findings: [], items: [] };
@@ -2170,22 +2192,38 @@ var DB = (function() {
       html += '</select><span class="pricing-tier-badge">costs reflect this tier</span></div>';
     }
 
-    // Compute global cache hit rate
+    // Compute global cache hit rate + cache write TTL mix
     var globalCacheRead = 0, globalCacheTotal = 0;
+    var globalTtl1h = 0, globalTtl5m = 0;
+    var globalMixedSessions = 0, globalFiveOnlySessions = 0;
     (t.daily || []).forEach(function(dd) {
       (dd.session_details || []).forEach(function(sd) {
         var chr = sd.cache_hit_rate || 0;
         if (chr > 0) { globalCacheRead += chr; globalCacheTotal++; }
+        var ttl1h = sd.cache_create_1h_tokens || 0;
+        var ttl5m = sd.cache_create_5m_tokens || 0;
+        globalTtl1h += ttl1h;
+        globalTtl5m += ttl5m;
+        if (ttl1h && ttl5m) globalMixedSessions += 1;
+        else if (ttl5m && !ttl1h) globalFiveOnlySessions += 1;
       });
     });
     var avgCacheHit = globalCacheTotal > 0 ? (globalCacheRead / globalCacheTotal * 100).toFixed(0) : 'N/A';
+    var globalTtlMix = ttlMixLabel(globalTtl1h, globalTtl5m);
+    var globalTtlSessionLabel = (globalMixedSessions || globalFiveOnlySessions)
+      ? ('Mixed sessions: ' + globalMixedSessions + ' | 5m-only: ' + globalFiveOnlySessions)
+      : 'Recent main sessions were 1h-only';
+    var ttlPeriodSummary = (data.ttl_period_summary || [])
+      .map(function(item) { return item && item.label ? item.label : ''; })
+      .filter(function(label) { return !!label; })
+      .join(' | ');
 
     // Hero stat cards
     html += '<div class="stat-row" style="grid-template-columns:repeat(4,1fr)">' +
       '<div class="stat-card"><div class="stat-card-value">' + t.session_count + '</div><div class="stat-card-label">Sessions (' + t.period_days + 'd)</div></div>' +
       '<div class="stat-card"><div class="stat-card-value">' + Math.round(t.avg_duration_minutes || 0) + 'm</div><div class="stat-card-label">Avg Duration</div></div>' +
       '<div class="stat-card"><div class="stat-card-value">' + fn(t.avg_input_tokens + t.avg_output_tokens) + '</div><div class="stat-card-label">Avg Tokens/Session</div></div>' +
-      '<div class="stat-card"><div class="stat-card-value" style="color:#22c55e">' + avgCacheHit + (avgCacheHit !== 'N/A' ? '%' : '') + '</div><div class="stat-card-label">Avg Cache Hit Rate</div><div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">Above 90% is normal for longer sessions. It means prompt caching is working well.</div></div>' +
+      '<div class="stat-card"><div class="stat-card-value" style="color:#22c55e">' + avgCacheHit + (avgCacheHit !== 'N/A' ? '%' : '') + '</div><div class="stat-card-label">Avg Cache Hit Rate</div><div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">Cache writes: ' + esc(globalTtlMix) + '</div><div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">' + esc(globalTtlSessionLabel) + '</div><div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">' + esc(ttlPeriodSummary || 'TTL period summary unavailable') + '</div><div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">Above 90% is normal for longer sessions. It means prompt caching is working well.</div></div>' +
       '</div>';
 
     // Shared data for skills sections
@@ -2239,7 +2277,7 @@ var DB = (function() {
       // Date nav: show 7 days by default, with picker to jump to a date
       html += '<div class="card wide" id="daily-breakdown-card">' +
         '<div class="card-header"><span>Daily Breakdown</span></div>' +
-        '<div style="font-size:12px;color:var(--c-text-dim);padding:0 0 var(--s-2) 0;">Click any row to expand per-session details with cost, quality scores, and cache hit rates. Click a session for per-turn token breakdown.</div>' +
+        '<div style="font-size:12px;color:var(--c-text-dim);padding:0 0 var(--s-2) 0;">Click any row to expand per-session details with cost, quality scores, cache hit rates, and cache TTL mix. Click a session for per-turn token breakdown.</div>' +
         '<div class="date-nav">' +
         '<button class="date-nav-btn active" data-range="7">7 days</button>' +
         '<button class="date-nav-btn" data-range="14">14 days</button>' +
@@ -2458,7 +2496,22 @@ var DB = (function() {
     }
   }
 
+  function fmtGap(seconds) {
+    if (seconds == null || !isFinite(seconds)) return 'n/a';
+    if (seconds < 60) return Math.round(seconds) + 's';
+    if (seconds < 3600) return (seconds / 60).toFixed(seconds < 600 ? 1 : 0) + 'm';
+    return (seconds / 3600).toFixed(seconds < 7200 ? 1 : 0) + 'h';
+  }
+
+  function gapSummary(avgGap, maxGap) {
+    if (avgGap == null && maxGap == null) return 'n/a';
+    if (avgGap == null) return 'max ' + fmtGap(maxGap);
+    if (maxGap == null) return 'avg ' + fmtGap(avgGap);
+    return 'avg ' + fmtGap(avgGap) + ' | max ' + fmtGap(maxGap);
+  }
+
   function buildDailyTable(daily, range, jumpToDate) {
+
     // Filter daily data based on range or jump-to date
     var filtered;
     if (jumpToDate) {
@@ -2516,8 +2569,21 @@ var DB = (function() {
       html += '<tr class="daily-detail" data-detail-date="' + esc(d.date) + '" style="display:none;">' +
         '<td colspan="7" style="padding:0;">' +
         '<div style="background:var(--c-surface-hover);padding:var(--s-2) var(--s-3);margin:2px 0;overflow-x:auto;">' +
-        '<table class="session-table" style="margin:0;min-width:960px;">' +
-        '<thead><tr><th>#</th><th>Duration</th><th>Input</th><th>Output</th><th>Msgs</th><th>Cache</th><th>Cost</th><th>Q</th><th>Model</th><th>Topic</th></tr></thead><tbody>';
+        '<table class="session-table" style="margin:0;min-width:1180px;">' +
+        '<thead><tr>' +
+        '<th title="Session number within this day." style="cursor:help">#</th>' +
+        '<th title="How long the session lasted from first event to last event." style="cursor:help">Duration</th>' +
+        '<th title="Total input context Claude processed in this session, including reused cache and cache writes." style="cursor:help">Input</th>' +
+        '<th title="Total output tokens Claude produced in this session." style="cursor:help">Output</th>' +
+        '<th title="How many user or assistant messages appeared in the session log." style="cursor:help">Msgs</th>' +
+        '<th title="Approximate cache hit rate. Higher means Claude reused more previously cached context instead of reprocessing it." style="cursor:help">Cache</th>' +
+        '<th title="How much of cache writing used 1-hour TTL versus 5-minute TTL. Longer TTL keeps cache reusable for longer." style="cursor:help">TTL</th>' +
+        '<th title="Time between assistant API calls in this session. Helpful for seeing whether a session was steady or stop-start." style="cursor:help">Pacing</th>' +
+        '<th title="Estimated API-equivalent cost for the session." style="cursor:help">Cost</th>' +
+        '<th title="Session quality score. Higher is healthier; lower means more context rot or risk." style="cursor:help">Q</th>' +
+        '<th title="Dominant Claude model used in the session." style="cursor:help">Model</th>' +
+        '<th title="Short topic extracted from the session so you can recognize the thread." style="cursor:help">Topic</th>' +
+        '</tr></thead><tbody>';
       (d.session_details || []).forEach(function(sd, si) {
         var sdTopic = sd.topic || '';
         // Quality overlay
@@ -2526,18 +2592,34 @@ var DB = (function() {
         var qClass = qs >= 80 ? 'quality-good' : qs >= 60 ? 'quality-fair' : qs >= 40 ? 'quality-needs-work' : 'quality-poor';
         var qBadgeClass = qs >= 80 ? 'good' : qs >= 60 ? 'fair' : qs >= 40 ? 'needs-work' : 'poor';
         var sdSlug = sd.slug || '';
-        var hasTurns = sdSlug && data.session_turns && data.session_turns[sdSlug];
+        var sessionKey = sd.session_key || '';
+        var sessionPath = sd.jsonl_path || '';
+        var preloadedTurns = sessionKey && data.session_turns && data.session_turns[sessionKey];
+        var canLoadTurns = !!preloadedTurns || (window.__TOKEN_API_LIVE === true && !!sessionPath);
+        var turnTitle = preloadedTurns
+          ? 'Click for per-turn breakdown'
+          : (window.__TOKEN_API_LIVE === true && sessionPath ? 'Click for per-turn breakdown (loads on demand)' : '');
         // Cost display
         var costVal = sd.cost_usd || 0;
         var costStr = costVal >= 1 ? '$' + costVal.toFixed(2) : costVal > 0 ? '$' + costVal.toFixed(3) : '';
         var modelStr = sd.model || '';
-        html += '<tr class="' + qClass + '"' + (sdSlug ? ' data-session-slug="' + esc(sdSlug) + '"' : '') + (hasTurns ? ' style="cursor:pointer;" title="Click for per-turn breakdown"' : '') + '>' +
+        var ttl1h = sd.cache_create_1h_tokens || 0;
+        var ttl5m = sd.cache_create_5m_tokens || 0;
+        var ttlStr = ttlMixLabel(ttl1h, ttl5m);
+        var pacingStr = gapSummary(sd.avg_call_gap_seconds, sd.max_call_gap_seconds);
+        html += '<tr class="' + qClass + '"' +
+          (sessionKey ? ' data-session-key="' + esc(sessionKey) + '"' : '') +
+          (sessionPath ? ' data-session-path="' + esc(sessionPath) + '"' : '') +
+          (sdSlug ? ' data-session-slug="' + esc(sdSlug) + '"' : '') +
+          (canLoadTurns ? ' style="cursor:pointer;" title="' + esc(turnTitle) + '"' : '') + '>' +
           '<td>' + (si + 1) + '</td>' +
           '<td>' + Math.round(sd.duration_minutes || 0) + 'm</td>' +
           '<td>' + fn(sd.input_tokens) + '</td>' +
           '<td>' + fn(sd.output_tokens) + '</td>' +
           '<td>' + (sd.message_count || 0) + '</td>' +
           '<td>' + ((sd.cache_hit_rate || 0) * 100).toFixed(0) + '%</td>' +
+          '<td style="font-family:var(--font-mono);font-size:11px;">' + esc(ttlStr) + '</td>' +
+          '<td style="font-family:var(--font-mono);font-size:11px;">' + esc(pacingStr) + '</td>' +
           '<td style="color:var(--c-accent-cyan);font-family:var(--font-mono);font-size:12px;">' + costStr + '</td>' +
           '<td><span class="quality-badge ' + qBadgeClass + '">' + qGrade + ' (' + qs + ')</span></td>' +
           '<td style="color:var(--c-text-dim);font-size:11px;">' + esc(modelStr) + '</td>' +
@@ -3352,6 +3434,110 @@ var DB = (function() {
       }
     });
 
+    function buildSessionDeepDiveRow(turns) {
+      var dr = document.createElement('tr');
+      dr.className = 'session-deep-dive';
+      var td = document.createElement('td');
+      td.colSpan = 12;
+      td.style.padding = '0';
+      var html = '<div style="background:var(--c-bg);padding:var(--s-2) var(--s-3);margin:2px 0;border-left:2px solid var(--c-accent-cyan);">' +
+        '<div style="font-size:12px;font-family:var(--font-mono);color:var(--c-accent-cyan);margin-bottom:6px;">Per-Turn Breakdown (' + turns.length + ' API calls)</div>' +
+        '<table class="session-table" style="margin:0;font-size:12px;"><thead><tr>' +
+        '<th title="Assistant API call number inside this session." style="cursor:help">#</th>' +
+        '<th title="Time since the previous assistant API call. Start means this was the first one." style="cursor:help">Gap</th>' +
+        '<th title="Fresh input tokens for this API call, before counting cache reuse." style="cursor:help">Input</th>' +
+        '<th title="Output tokens produced by Claude for this API call." style="cursor:help">Output</th>' +
+        '<th title="Cached input tokens Claude reused on this call." style="cursor:help">Cache R</th>' +
+        '<th title="New cache tokens written on this call for future reuse." style="cursor:help">Cache W</th>' +
+        '<th title="Estimated API-equivalent cost for this call." style="cursor:help">Cost</th>' +
+        '<th title="Claude model used for this call." style="cursor:help">Model</th>' +
+        '<th title="Tools Claude used during this call." style="cursor:help">Tools</th>' +
+        '</tr></thead><tbody>';
+      var prevCR = -1, prevCW = -1, prevCtx = 0;
+      turns.forEach(function(t) {
+        var ctx = t.input_tokens + t.cache_read + t.cache_creation;
+        var spike = prevCtx > 0 && ctx > prevCtx * 1.2;
+        var cls = spike ? ' class="token-spike"' : '';
+        var cost = t.cost_usd > 0 ? '$' + t.cost_usd.toFixed(4) : '$0';
+        var model = (t.model || '').replace(/^claude-/, '').slice(0, 12);
+        var tools = (t.tools_used || []).slice(0, 3).join(', ');
+        var gap = t.gap_since_prev_seconds == null ? 'start' : fmtGap(t.gap_since_prev_seconds);
+        var crChanged = prevCR !== t.cache_read;
+        var cwChanged = prevCW !== t.cache_creation;
+        var crStyle = crChanged ? 'color:#22c55e' : 'color:var(--c-text-dim);opacity:0.4';
+        var cwStyle = cwChanged ? 'color:#a855f7' : 'color:var(--c-text-dim);opacity:0.4';
+        html += '<tr' + cls + '>' +
+          '<td>' + t.turn_index + '</td>' +
+          '<td style="font-family:var(--font-mono);font-size:11px;color:var(--c-text-dim)">' + esc(gap) + '</td>' +
+          '<td>' + fn(t.input_tokens) + '</td>' +
+          '<td>' + fn(t.output_tokens) + '</td>' +
+          '<td style="' + crStyle + '">' + fn(t.cache_read) + (crChanged && prevCR >= 0 ? ' \u2191' : '') + '</td>' +
+          '<td style="' + cwStyle + '">' + fn(t.cache_creation) + (cwChanged && prevCW >= 0 ? ' \u2191' : '') + '</td>' +
+          '<td style="color:var(--c-accent-cyan)">' + cost + '</td>' +
+          '<td style="color:var(--c-text-dim)">' + esc(model) + '</td>' +
+          '<td style="color:var(--c-text-dim);font-size:11px">' + esc(tools) + '</td></tr>';
+        prevCR = t.cache_read; prevCW = t.cache_creation; prevCtx = ctx;
+      });
+      html += '</tbody></table>';
+
+      var totIn = 0, totOut = 0, totCR = 0, totCW = 0, totCW1h = 0, totCW5m = 0;
+      var gapSeconds = [];
+      var prevTurnTs = null;
+      turns.forEach(function(t) {
+        totIn += t.input_tokens;
+        totOut += t.output_tokens;
+        totCR += t.cache_read;
+        totCW += t.cache_creation;
+        totCW1h += t.cache_creation_1h || 0;
+        totCW5m += t.cache_creation_5m || 0;
+        if (t.timestamp) {
+          var parsedTs = Date.parse(t.timestamp);
+          if (!isNaN(parsedTs)) {
+            if (prevTurnTs != null && parsedTs >= prevTurnTs) {
+              gapSeconds.push((parsedTs - prevTurnTs) / 1000);
+            }
+            prevTurnTs = parsedTs;
+          }
+        }
+      });
+      var totAll = totIn + totOut + totCR + totCW || 1;
+      var pacingSummary = '';
+      if (gapSeconds.length > 0) {
+        var sortedGaps = gapSeconds.slice().sort(function(a, b) { return a - b; });
+        var avgGap = gapSeconds.reduce(function(sum, value) { return sum + value; }, 0) / gapSeconds.length;
+        var maxGap = sortedGaps[sortedGaps.length - 1];
+        var p95Gap = sortedGaps[Math.max(0, Math.ceil(sortedGaps.length * 0.95) - 1)];
+        pacingSummary = '<div style="margin-top:6px;font-size:11px;color:var(--c-text-dim);font-family:var(--font-mono);">Call pacing: avg ' +
+          esc(fmtGap(avgGap)) + ' | p95 ' + esc(fmtGap(p95Gap)) + ' | max ' + esc(fmtGap(maxGap)) + '</div>';
+      }
+      var ttlSummary = '';
+      if (totCW1h + totCW5m > 0) {
+        var ttlSummaryLabel = 'mixed';
+        if (!totCW5m) ttlSummaryLabel = '1h only';
+        else if (!totCW1h) ttlSummaryLabel = '5m only';
+        ttlSummary = '<div style="margin-top:6px;font-size:11px;color:var(--c-text-dim);font-family:var(--font-mono);">Cache write TTL mix: ' +
+          esc(ttlSummaryLabel) + ' | ' +
+          fn(totCW1h) + ' (' + (totCW1h / (totCW1h + totCW5m) * 100).toFixed(0) + '%) 1h, ' +
+          fn(totCW5m) + ' (' + (totCW5m / (totCW1h + totCW5m) * 100).toFixed(0) + '%) 5m</div>';
+      }
+      html += '<div style="margin-top:8px"><div style="font-size:11px;color:var(--c-text-dim);font-family:var(--font-mono);margin-bottom:4px">Token Distribution</div>' +
+        '<div class="cache-bar">' +
+        '<div class="cache-bar-segment cache-bar-input" style="width:' + (totIn/totAll*100).toFixed(1) + '%"></div>' +
+        '<div class="cache-bar-segment cache-bar-output" style="width:' + (totOut/totAll*100).toFixed(1) + '%"></div>' +
+        '<div class="cache-bar-segment cache-bar-read" style="width:' + (totCR/totAll*100).toFixed(1) + '%"></div>' +
+        '<div class="cache-bar-segment cache-bar-create" style="width:' + (totCW/totAll*100).toFixed(1) + '%"></div></div>' +
+        '<div class="cache-legend">' +
+        '<div class="cache-legend-item"><div class="cache-legend-dot" style="background:var(--c-accent-cyan)"></div>Input ' + fn(totIn) + '</div>' +
+        '<div class="cache-legend-item"><div class="cache-legend-dot" style="background:#3b82f6"></div>Output ' + fn(totOut) + '</div>' +
+        '<div class="cache-legend-item"><div class="cache-legend-dot" style="background:#22c55e"></div>Cache Read ' + fn(totCR) + '</div>' +
+        '<div class="cache-legend-item"><div class="cache-legend-dot" style="background:#a855f7"></div>Cache Write ' + fn(totCW) + '</div>' +
+        '</div>' + pacingSummary + ttlSummary + '</div>';
+      html += '</div>';
+      td.innerHTML = html;
+      dr.appendChild(td);
+      return dr;
+    }
+
     // Setting row expand/collapse (delegated)
     document.addEventListener('click', function(e) {
       // Stop propagation on toggle clicks so expand doesn't fire
@@ -3413,71 +3599,49 @@ var DB = (function() {
       }
 
       // Session deep-dive: click session row to show per-turn breakdown (v2.6)
-      var sessionRow = e.target.closest('.daily-detail tr[data-session-slug]');
+      var sessionRow = e.target.closest('.daily-detail tr[data-session-key], .daily-detail tr[data-session-path]');
       if (sessionRow) {
-        var slug = sessionRow.getAttribute('data-session-slug');
+        var sessionKey = sessionRow.getAttribute('data-session-key') || '';
+        var sessionPath = sessionRow.getAttribute('data-session-path') || '';
         var deepRow = sessionRow.nextElementSibling;
         if (deepRow && deepRow.classList.contains('session-deep-dive')) {
-          // Toggle existing deep dive
           deepRow.style.display = deepRow.style.display === 'none' ? '' : 'none';
         } else {
-          // Create deep dive row
-          var turns = (data.session_turns || {})[slug];
+          var turns = sessionKey ? (data.session_turns || {})[sessionKey] : null;
           if (turns && turns.length > 0) {
-            var dr = document.createElement('tr');
-            dr.className = 'session-deep-dive';
-            var td = document.createElement('td');
-            td.colSpan = 10;
-            td.style.padding = '0';
-            var html = '<div style="background:var(--c-bg);padding:var(--s-2) var(--s-3);margin:2px 0;border-left:2px solid var(--c-accent-cyan);">' +
-              '<div style="font-size:12px;font-family:var(--font-mono);color:var(--c-accent-cyan);margin-bottom:6px;">Per-Turn Breakdown (' + turns.length + ' API calls)</div>' +
-              '<table class="session-table" style="margin:0;font-size:12px;"><thead><tr>' +
-              '<th>#</th><th>Input</th><th>Output</th><th>Cache R</th><th>Cache W</th><th>Cost</th><th>Model</th><th>Tools</th></tr></thead><tbody>';
-            var prevCR = -1, prevCW = -1, prevCtx = 0;
-            turns.forEach(function(t) {
-              var ctx = t.input_tokens + t.cache_read + t.cache_creation;
-              var spike = prevCtx > 0 && ctx > prevCtx * 1.2;
-              var cls = spike ? ' class="token-spike"' : '';
-              var cost = t.cost_usd > 0 ? '$' + t.cost_usd.toFixed(4) : '$0';
-              var model = (t.model || '').replace(/^claude-/, '').slice(0, 12);
-              var tools = (t.tools_used || []).slice(0, 3).join(', ');
-              // Dim repeated cache values, highlight changes
-              var crChanged = prevCR !== t.cache_read;
-              var cwChanged = prevCW !== t.cache_creation;
-              var crStyle = crChanged ? 'color:#22c55e' : 'color:var(--c-text-dim);opacity:0.4';
-              var cwStyle = cwChanged ? 'color:#a855f7' : 'color:var(--c-text-dim);opacity:0.4';
-              html += '<tr' + cls + '>' +
-                '<td>' + t.turn_index + '</td>' +
-                '<td>' + fn(t.input_tokens) + '</td>' +
-                '<td>' + fn(t.output_tokens) + '</td>' +
-                '<td style="' + crStyle + '">' + fn(t.cache_read) + (crChanged && prevCR >= 0 ? ' \u2191' : '') + '</td>' +
-                '<td style="' + cwStyle + '">' + fn(t.cache_creation) + (cwChanged && prevCW >= 0 ? ' \u2191' : '') + '</td>' +
-                '<td style="color:var(--c-accent-cyan)">' + cost + '</td>' +
-                '<td style="color:var(--c-text-dim)">' + esc(model) + '</td>' +
-                '<td style="color:var(--c-text-dim);font-size:11px">' + esc(tools) + '</td></tr>';
-              prevCR = t.cache_read; prevCW = t.cache_creation; prevCtx = ctx;
-            });
-            html += '</tbody></table>';
-            // Cache bar visualization
-            var totIn = 0, totOut = 0, totCR = 0, totCW = 0;
-            turns.forEach(function(t) { totIn += t.input_tokens; totOut += t.output_tokens; totCR += t.cache_read; totCW += t.cache_creation; });
-            var totAll = totIn + totOut + totCR + totCW || 1;
-            html += '<div style="margin-top:8px"><div style="font-size:11px;color:var(--c-text-dim);font-family:var(--font-mono);margin-bottom:4px">Token Distribution</div>' +
-              '<div class="cache-bar">' +
-              '<div class="cache-bar-segment cache-bar-input" style="width:' + (totIn/totAll*100).toFixed(1) + '%"></div>' +
-              '<div class="cache-bar-segment cache-bar-output" style="width:' + (totOut/totAll*100).toFixed(1) + '%"></div>' +
-              '<div class="cache-bar-segment cache-bar-read" style="width:' + (totCR/totAll*100).toFixed(1) + '%"></div>' +
-              '<div class="cache-bar-segment cache-bar-create" style="width:' + (totCW/totAll*100).toFixed(1) + '%"></div></div>' +
-              '<div class="cache-legend">' +
-              '<div class="cache-legend-item"><div class="cache-legend-dot" style="background:var(--c-accent-cyan)"></div>Input ' + fn(totIn) + '</div>' +
-              '<div class="cache-legend-item"><div class="cache-legend-dot" style="background:#3b82f6"></div>Output ' + fn(totOut) + '</div>' +
-              '<div class="cache-legend-item"><div class="cache-legend-dot" style="background:#22c55e"></div>Cache Read ' + fn(totCR) + '</div>' +
-              '<div class="cache-legend-item"><div class="cache-legend-dot" style="background:#a855f7"></div>Cache Write ' + fn(totCW) + '</div>' +
-              '</div></div>';
-            html += '</div>';
-            td.innerHTML = html;
-            dr.appendChild(td);
-            sessionRow.after(dr);
+            sessionRow.after(buildSessionDeepDiveRow(turns));
+          } else if (window.__TOKEN_API_LIVE === true && sessionPath) {
+            var loadingRow = document.createElement('tr');
+            loadingRow.className = 'session-deep-dive';
+            var loadingCell = document.createElement('td');
+            loadingCell.colSpan = 12;
+            loadingCell.style.padding = '8px 12px';
+            loadingCell.style.color = 'var(--c-text-dim)';
+            loadingCell.style.fontFamily = 'var(--font-mono)';
+            loadingCell.textContent = 'Loading per-turn breakdown...';
+            loadingRow.appendChild(loadingCell);
+            sessionRow.after(loadingRow);
+            fetch('/api/session-turns', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ jsonl_path: sessionPath })
+            })
+              .then(function(r) { return r.ok ? r.json() : Promise.reject(new Error('Failed to load per-turn breakdown')); })
+              .then(function(payload) {
+                var fetchedTurns = (payload && payload.turns) || [];
+                if (!fetchedTurns.length) {
+                  loadingCell.textContent = 'No per-turn breakdown available for this session.';
+                  return;
+                }
+                if (sessionKey) {
+                  if (!data.session_turns) data.session_turns = {};
+                  data.session_turns[sessionKey] = fetchedTurns;
+                }
+                loadingRow.replaceWith(buildSessionDeepDiveRow(fetchedTurns));
+              })
+              .catch(function(err) {
+                loadingCell.textContent = (err && err.message) ? err.message : 'Failed to load per-turn breakdown.';
+              });
           }
         }
         return;

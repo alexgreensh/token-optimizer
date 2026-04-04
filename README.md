@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/alexgreensh/token-optimizer/releases"><img src="https://img.shields.io/badge/version-3.4.2-green" alt="Version 3.4.2"></a>
+  <a href="https://github.com/alexgreensh/token-optimizer/releases"><img src="https://img.shields.io/badge/version-3.4.3-green" alt="Version 3.4.3"></a>
   <a href="https://github.com/alexgreensh/token-optimizer"><img src="https://img.shields.io/badge/Claude_Code-Plugin-blueviolet" alt="Claude Code Plugin"></a>
   <a href="https://github.com/alexgreensh/token-optimizer/tree/main/openclaw"><img src="https://img.shields.io/badge/OpenClaw-Plugin-brightgreen" alt="OpenClaw Plugin"></a>
   <a href="https://github.com/alexgreensh/token-optimizer/blob/main/LICENSE"><img src="https://img.shields.io/github/license/alexgreensh/token-optimizer" alt="License"></a>
@@ -105,6 +105,18 @@ yarn.lock
 *.min.js
 *.min.css
 ```
+
+---
+
+### v3.4.3: Claude Dashboard Drill-Downs + TTL Clarity
+
+| Feature | What You Get |
+|---------|-------------|
+| **Stable Session Drill-Downs** | Session turn breakdowns now key off a stable session identity instead of fragile slugs, so the visible Claude dashboard rows expand much more consistently. |
+| **TTL Visibility** | Session tables and turn deep dives now show cache TTL mix (`1h` vs `5m`) alongside the existing cache hit metrics. |
+| **Pacing Metrics** | Session rows and per-turn breakdowns now show time between calls so users can see whether a thread was steady or stop-start. |
+| **User-First Explanations** | Hover help was added for session and turn columns so users can understand `Cache`, `TTL`, `Pacing`, `Cache R`, and `Cache W` without knowing the jargon. |
+| **Served Dashboard Fallback** | The served dashboard can now fetch older session turn breakdowns on demand, while the local static dashboard keeps the default 7-day slice preloaded for speed. |
 
 ---
 

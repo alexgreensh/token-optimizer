@@ -57,6 +57,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 import hashlib
 import heapq
 import json
+import math
 import os
 import glob
 import re
@@ -2357,6 +2358,25 @@ def _serve_dashboard(filepath, port=8080, host="127.0.0.1"):
                 except (json.JSONDecodeError, ValueError):
                     pass
 
+            if path == "/api/session-turns":
+                raw_path = body.get("jsonl_path", "")
+                if not raw_path:
+                    self._json_response(400, {"error": "Missing 'jsonl_path' field"})
+                    return
+                try:
+                    jsonl_path = Path(raw_path).resolve()
+                    allowed_root = (CLAUDE_DIR / "projects").resolve()
+                    jsonl_path.relative_to(allowed_root)
+                except (ValueError, OSError):
+                    self._json_response(403, {"error": "Forbidden: invalid session path"})
+                    return
+                if not jsonl_path.exists():
+                    self._json_response(404, {"error": "Session log not found"})
+                    return
+                turns = parse_session_turns(jsonl_path)
+                self._json_response(200, {"ok": True, "turns": turns})
+                return
+
             name = body.get("name", "")
             if not name:
                 self._json_response(400, {"error": "Missing 'name' field"})
@@ -2399,7 +2419,10 @@ def _serve_dashboard(filepath, port=8080, host="127.0.0.1"):
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             origin = self.headers.get("Origin", "")
-            if origin in (f"http://127.0.0.1:{self.server.server_port}", f"http://localhost:{self.server.server_port}"):
+            server_port = getattr(self.server, "server_port", None)
+            if server_port is None and getattr(self.server, "server_address", None):
+                server_port = self.server.server_address[1]
+            if origin in (f"http://127.0.0.1:{server_port}", f"http://localhost:{server_port}"):
                 self.send_header("Access-Control-Allow-Origin", origin)
             self.end_headers()
             self.wfile.write(body)
@@ -2408,7 +2431,10 @@ def _serve_dashboard(filepath, port=8080, host="127.0.0.1"):
             """Handle CORS preflight."""
             self.send_response(204)
             origin = self.headers.get("Origin", "")
-            if origin in (f"http://127.0.0.1:{self.server.server_port}", f"http://localhost:{self.server.server_port}"):
+            server_port = getattr(self.server, "server_port", None)
+            if server_port is None and getattr(self.server, "server_address", None):
+                server_port = self.server.server_address[1]
+            if origin in (f"http://127.0.0.1:{server_port}", f"http://localhost:{server_port}"):
                 self.send_header("Access-Control-Allow-Origin", origin)
             self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
             self.send_header("Access-Control-Allow-Headers", "Content-Type")
@@ -2877,30 +2903,38 @@ def generate_standalone_dashboard(days=30, quiet=False):
         print("  Collecting management data...")
     management = _collect_management_data(components=components, trends=trends)
 
-    # Collect per-turn data for recent sessions (deep dive feature, v2.6)
-    # Cap at 30 sessions to keep dashboard file size reasonable
+    # Collect per-turn data for the default visible 7-day table in local-file mode.
+    # Served mode can fetch older rows on demand, but the static dashboard needs a
+    # bounded preload so it stays responsive and doesn't balloon in size.
     if not quiet:
         print("  Collecting per-turn data for recent sessions...")
     session_turns = {}
     try:
-        if TRENDS_DB.exists():
-            turn_conn = sqlite3.connect(str(TRENDS_DB))
-            turn_conn.execute("PRAGMA busy_timeout=5000")
-            turn_rows = turn_conn.execute(
-                "SELECT jsonl_path, slug FROM session_log ORDER BY date DESC, collected_at DESC LIMIT 30"
-            ).fetchall()
-            for tr in turn_rows:
-                jpath = tr[0]
-                slug = tr[1] or Path(jpath).stem[:12]
-                if os.path.exists(jpath):
-                    turns = parse_session_turns(jpath)
-                    if turns:
-                        session_turns[slug] = turns
-            turn_conn.close()
+        for day in (trends or {}).get("daily", [])[:7]:
+            for session in day.get("session_details", []):
+                session_key = session.get("session_key")
+                jsonl_path = session.get("jsonl_path")
+                if not session_key or session_key in session_turns or not jsonl_path or not os.path.exists(jsonl_path):
+                    continue
+                turns = parse_session_turns(jsonl_path)
+                if turns:
+                    session_turns[session_key] = turns
     except Exception:
         pass
 
     pricing_tier = _load_pricing_tier()
+    ttl_period_summary = []
+    for period in (7, 30):
+        try:
+            ttl_period_summary.append(_build_ttl_period_summary(period))
+        except Exception:
+            ttl_period_summary.append({
+                "label": f"{period}d: unavailable",
+                "period_days": period,
+                "mixed_sessions": 0,
+                "five_only_sessions": 0,
+                "one_hour_only_sessions": 0,
+            })
     data = {
         "snapshot": snapshot,
         "audit": {},
@@ -2917,6 +2951,7 @@ def generate_standalone_dashboard(days=30, quiet=False):
         "pricing_tier": pricing_tier,
         "pricing_tier_label": PRICING_TIERS.get(pricing_tier, {}).get("label", "Anthropic API"),
         "pricing_tiers": {k: v["label"] for k, v in PRICING_TIERS.items()},
+        "ttl_period_summary": ttl_period_summary,
         "session_turns": session_turns,
     }
 
@@ -3810,12 +3845,15 @@ def _parse_session_jsonl(filepath):
     total_output = 0
     total_cache_read = 0
     total_cache_create = 0
+    total_cache_create_1h = 0
+    total_cache_create_5m = 0
     model_usage = {}
     version = None
     slug = None
     topic = None
     first_ts = None
     last_ts = None
+    api_call_timestamps = []
     message_count = 0
     api_calls = 0
 
@@ -3902,12 +3940,32 @@ def _parse_session_jsonl(filepath):
                         inp_tok = usage.get("input_tokens", 0)
                         out_tok = usage.get("output_tokens", 0)
                         cr = usage.get("cache_read_input_tokens", 0)
-                        cc = usage.get("cache_creation_input_tokens", 0)
+                        cache_creation = usage.get("cache_creation", {})
+                        if not isinstance(cache_creation, dict):
+                            cache_creation = {}
+                        cc_1h = (
+                            cache_creation.get("ephemeral_1h_input_tokens", 0)
+                            or usage.get("ephemeral_1h_input_tokens", 0)
+                            or 0
+                        )
+                        cc_5m = (
+                            cache_creation.get("ephemeral_5m_input_tokens", 0)
+                            or usage.get("ephemeral_5m_input_tokens", 0)
+                            or 0
+                        )
+                        cc = usage.get("cache_creation_input_tokens", 0) or (cc_1h + cc_5m)
                         total_input += inp_tok
                         total_output += out_tok
                         total_cache_read += cr
                         total_cache_create += cc
+                        total_cache_create_1h += cc_1h
+                        total_cache_create_5m += cc_5m
                         api_calls += 1
+                        if ts_str:
+                            try:
+                                api_call_timestamps.append(datetime.fromisoformat(ts_str.replace("Z", "+00:00")))
+                            except (ValueError, TypeError):
+                                pass
 
                         # Model usage: count all input types + output
                         model = msg.get("model", "unknown")
@@ -3932,6 +3990,7 @@ def _parse_session_jsonl(filepath):
     cache_hit_rate = 0.0
     if total_full_input > 0:
         cache_hit_rate = total_cache_read / total_full_input
+    gap_stats = _compute_call_gap_stats(api_call_timestamps)
 
     return {
         "version": version,
@@ -3942,7 +4001,12 @@ def _parse_session_jsonl(filepath):
         "total_output_tokens": total_output,
         "total_cache_read": total_cache_read,
         "total_cache_create": total_cache_create,
+        "total_cache_create_1h": total_cache_create_1h,
+        "total_cache_create_5m": total_cache_create_5m,
         "cache_hit_rate": cache_hit_rate,
+        "avg_call_gap_seconds": gap_stats["avg"],
+        "max_call_gap_seconds": gap_stats["max"],
+        "p95_call_gap_seconds": gap_stats["p95"],
         "model_usage": model_usage,
         "skills_used": skills_used,
         "subagents_used": subagents_used,
@@ -3965,6 +4029,7 @@ def parse_session_turns(filepath):
     turns = []
     turn_index = 0
     tier = _load_pricing_tier()
+    prev_call_ts = None
 
     try:
         with open(filepath, "r", encoding="utf-8", errors="replace") as f:
@@ -3986,7 +4051,20 @@ def parse_session_turns(filepath):
                 inp_tok = usage.get("input_tokens", 0)
                 out_tok = usage.get("output_tokens", 0)
                 cr = usage.get("cache_read_input_tokens", 0)
-                cc = usage.get("cache_creation_input_tokens", 0)
+                cache_creation = usage.get("cache_creation", {})
+                if not isinstance(cache_creation, dict):
+                    cache_creation = {}
+                cc_1h = (
+                    cache_creation.get("ephemeral_1h_input_tokens", 0)
+                    or usage.get("ephemeral_1h_input_tokens", 0)
+                    or 0
+                )
+                cc_5m = (
+                    cache_creation.get("ephemeral_5m_input_tokens", 0)
+                    or usage.get("ephemeral_5m_input_tokens", 0)
+                    or 0
+                )
+                cc = usage.get("cache_creation_input_tokens", 0) or (cc_1h + cc_5m)
                 model = msg.get("model", "unknown")
 
                 # Extract tools used in this turn
@@ -3998,6 +4076,15 @@ def parse_session_turns(filepath):
                             tools.append(block.get("name", ""))
 
                 ts_str = record.get("timestamp")
+                gap_since_prev_seconds = None
+                if ts_str:
+                    try:
+                        call_ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                        if prev_call_ts is not None:
+                            gap_since_prev_seconds = int(round(max(0, (call_ts - prev_call_ts).total_seconds())))
+                        prev_call_ts = call_ts
+                    except (ValueError, TypeError):
+                        pass
                 cost = _get_model_cost(model, inp_tok, out_tok, cr, cc, tier=tier)
 
                 turns.append({
@@ -4007,8 +4094,11 @@ def parse_session_turns(filepath):
                     "output_tokens": out_tok,
                     "cache_read": cr,
                     "cache_creation": cc,
+                    "cache_creation_1h": cc_1h,
+                    "cache_creation_5m": cc_5m,
                     "model": model,
                     "timestamp": ts_str,
+                    "gap_since_prev_seconds": gap_since_prev_seconds,
                     "tools_used": tools,
                     "cost_usd": round(cost, 6),
                 })
@@ -4188,6 +4278,12 @@ CREATE TABLE IF NOT EXISTS session_log (
     message_count INTEGER,
     api_calls INTEGER,
     cache_hit_rate REAL,
+    cache_create_1h_tokens INTEGER DEFAULT 0,
+    cache_create_5m_tokens INTEGER DEFAULT 0,
+    cache_ttl_scanned INTEGER DEFAULT 0,
+    avg_call_gap_seconds REAL,
+    max_call_gap_seconds REAL,
+    p95_call_gap_seconds REAL,
     skills_json TEXT,
     subagents_json TEXT,
     tool_calls_json TEXT,
@@ -4255,10 +4351,111 @@ def _init_trends_db():
             conn.execute("ALTER TABLE session_log ADD COLUMN slug TEXT")
         if "topic" not in cols:
             conn.execute("ALTER TABLE session_log ADD COLUMN topic TEXT")
+        if "cache_create_1h_tokens" not in cols:
+            conn.execute("ALTER TABLE session_log ADD COLUMN cache_create_1h_tokens INTEGER DEFAULT 0")
+        if "cache_create_5m_tokens" not in cols:
+            conn.execute("ALTER TABLE session_log ADD COLUMN cache_create_5m_tokens INTEGER DEFAULT 0")
+        if "cache_ttl_scanned" not in cols:
+            conn.execute("ALTER TABLE session_log ADD COLUMN cache_ttl_scanned INTEGER DEFAULT 0")
+        if "avg_call_gap_seconds" not in cols:
+            conn.execute("ALTER TABLE session_log ADD COLUMN avg_call_gap_seconds REAL")
+        if "max_call_gap_seconds" not in cols:
+            conn.execute("ALTER TABLE session_log ADD COLUMN max_call_gap_seconds REAL")
+        if "p95_call_gap_seconds" not in cols:
+            conn.execute("ALTER TABLE session_log ADD COLUMN p95_call_gap_seconds REAL")
         conn.commit()
     except sqlite3.Error:
         pass
     return conn
+
+
+def _compute_call_gap_stats(api_call_timestamps):
+    """Compute avg/max/p95 gaps between assistant API calls within a session."""
+    if len(api_call_timestamps) < 2:
+        return {"avg": None, "max": None, "p95": None}
+
+    gaps = []
+    prev_ts = None
+    for ts in api_call_timestamps:
+        if prev_ts is None:
+            prev_ts = ts
+            continue
+        delta = (ts - prev_ts).total_seconds()
+        if delta >= 0:
+            gaps.append(delta)
+        prev_ts = ts
+
+    if not gaps:
+        return {"avg": None, "max": None, "p95": None}
+
+    sorted_gaps = sorted(gaps)
+    p95_index = max(0, min(len(sorted_gaps) - 1, math.ceil(len(sorted_gaps) * 0.95) - 1))
+    return {
+        "avg": sum(gaps) / len(gaps),
+        "max": max(gaps),
+        "p95": sorted_gaps[p95_index],
+    }
+
+
+def _make_session_key(jsonl_path):
+    """Generate a stable opaque session key from a JSONL path."""
+    if not jsonl_path:
+        return None
+    normalized = str(Path(jsonl_path).resolve())
+    return hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:16]
+
+
+def _backfill_session_metrics(conn, days=30, limit=5000):
+    """Populate derived session metrics for rows collected before fields existed."""
+    cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    try:
+        rows = conn.execute(
+            """SELECT jsonl_path
+               FROM session_log
+               WHERE date >= ?
+                 AND (
+                       IFNULL(cache_ttl_scanned, 0) = 0
+                    OR avg_call_gap_seconds IS NULL
+                    OR max_call_gap_seconds IS NULL
+                    OR p95_call_gap_seconds IS NULL
+                 )
+               ORDER BY date DESC, collected_at DESC
+               LIMIT ?""",
+            (cutoff, limit),
+        ).fetchall()
+    except sqlite3.Error:
+        return 0
+
+    updated = 0
+    for row in rows:
+        jsonl_path = row[0]
+        ttl_1h = 0
+        ttl_5m = 0
+        avg_gap = None
+        max_gap = None
+        p95_gap = None
+        parsed = _parse_session_jsonl(jsonl_path) if jsonl_path and os.path.exists(jsonl_path) else None
+        if parsed:
+            ttl_1h = int(parsed.get("total_cache_create_1h", 0) or 0)
+            ttl_5m = int(parsed.get("total_cache_create_5m", 0) or 0)
+            avg_gap = parsed.get("avg_call_gap_seconds")
+            max_gap = parsed.get("max_call_gap_seconds")
+            p95_gap = parsed.get("p95_call_gap_seconds")
+        conn.execute(
+            """UPDATE session_log
+               SET cache_create_1h_tokens = ?,
+                   cache_create_5m_tokens = ?,
+                   cache_ttl_scanned = 1,
+                   avg_call_gap_seconds = ?,
+                   max_call_gap_seconds = ?,
+                   p95_call_gap_seconds = ?
+               WHERE jsonl_path = ?""",
+            (ttl_1h, ttl_5m, avg_gap, max_gap, p95_gap, str(jsonl_path)),
+        )
+        updated += 1
+    if updated:
+        conn.commit()
+    return updated
 
 
 def _log_savings_event(event_type, tokens_saved, session_id=None, detail=None, model="claude-sonnet-4-20250514"):
@@ -4360,6 +4557,7 @@ def collect_sessions(days=90, quiet=False):
     new_count = 0
     for filepath, mtime, project_name in files:
         if _is_file_collected(conn, filepath):
+            _backfill_session_metrics(conn, days=days, limit=1)
             continue
 
         parsed = _parse_session_jsonl(filepath)
@@ -4383,9 +4581,11 @@ def collect_sessions(days=90, quiet=False):
             """INSERT OR IGNORE INTO session_log
                (jsonl_path, date, project, duration_minutes, input_tokens,
                 output_tokens, message_count, api_calls, cache_hit_rate,
+                cache_create_1h_tokens, cache_create_5m_tokens, cache_ttl_scanned,
+                avg_call_gap_seconds, max_call_gap_seconds, p95_call_gap_seconds,
                 skills_json, subagents_json, tool_calls_json, model_usage_json,
                 version, slug, topic, collected_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 str(filepath), date, project_name,
                 parsed["duration_minutes"],
@@ -4394,6 +4594,12 @@ def collect_sessions(days=90, quiet=False):
                 parsed["message_count"],
                 parsed.get("api_calls", 0),
                 parsed["cache_hit_rate"],
+                parsed.get("total_cache_create_1h", 0),
+                parsed.get("total_cache_create_5m", 0),
+                1,
+                parsed.get("avg_call_gap_seconds"),
+                parsed.get("max_call_gap_seconds"),
+                parsed.get("p95_call_gap_seconds"),
                 json.dumps(skills_used),
                 json.dumps(subagents_used),
                 json.dumps(parsed["tool_calls"]),
@@ -4487,8 +4693,7 @@ def _collect_trends_from_db(days=30):
         return None
 
     try:
-        conn = sqlite3.connect(str(TRENDS_DB))
-        conn.execute("PRAGMA busy_timeout=5000")
+        conn = _init_trends_db()
         conn.row_factory = sqlite3.Row
         # Verify it's a valid DB before proceeding
         conn.execute("SELECT 1 FROM session_log LIMIT 1")
@@ -4500,6 +4705,7 @@ def _collect_trends_from_db(days=30):
         return None
 
     try:
+        _backfill_session_metrics(conn, days=days)
         return _query_trends_db(conn, days)
     except (sqlite3.Error, sqlite3.DatabaseError):
         return None
@@ -4593,8 +4799,10 @@ def _query_trends_db(conn, days):
     pricing_tier = _load_pricing_tier()
     daily = {}
     session_rows = conn.execute(
-        """SELECT date, duration_minutes, input_tokens, output_tokens,
-                  message_count, api_calls, cache_hit_rate, skills_json,
+        """SELECT date, jsonl_path, duration_minutes, input_tokens, output_tokens,
+                  message_count, api_calls, cache_hit_rate,
+                  cache_create_1h_tokens, cache_create_5m_tokens,
+                  avg_call_gap_seconds, max_call_gap_seconds, p95_call_gap_seconds, skills_json,
                   subagents_json, model_usage_json, slug, topic, project
            FROM session_log WHERE date >= ? ORDER BY date DESC""",
         (cutoff,),
@@ -4632,7 +4840,10 @@ def _query_trends_db(conn, days):
         out_total = sr["output_tokens"] or 0
         chr_val = sr["cache_hit_rate"] or 0
         cache_read_est = int(inp_total * chr_val)
-        uncached_est = inp_total - cache_read_est
+        cache_create_1h = sr["cache_create_1h_tokens"] or 0
+        cache_create_5m = sr["cache_create_5m_tokens"] or 0
+        cache_create_total = cache_create_1h + cache_create_5m
+        uncached_est = max(0, inp_total - cache_read_est - cache_create_total)
 
         # Determine dominant model from model_usage_json
         try:
@@ -4642,7 +4853,8 @@ def _query_trends_db(conn, days):
             mu = {}
         dom_model = max(mu, key=mu.get) if mu else "unknown"
 
-        session_cost = _get_model_cost(dom_model, uncached_est, out_total, cache_read_est, 0, tier=pricing_tier)
+        session_cost = _get_model_cost(dom_model, uncached_est, out_total, cache_read_est, cache_create_total, tier=pricing_tier)
+        jsonl_path = sr["jsonl_path"]
 
         sd = {
             "duration_minutes": round(sr["duration_minutes"] or 0, 1),
@@ -4653,7 +4865,14 @@ def _query_trends_db(conn, days):
             "skills": list(skills.keys()),
             "subagents": list(subagents.keys()),
             "cache_hit_rate": round(chr_val, 3),
+            "cache_create_1h_tokens": cache_create_1h,
+            "cache_create_5m_tokens": cache_create_5m,
+            "avg_call_gap_seconds": sr["avg_call_gap_seconds"],
+            "max_call_gap_seconds": sr["max_call_gap_seconds"],
+            "p95_call_gap_seconds": sr["p95_call_gap_seconds"],
             "slug": sr["slug"],
+            "session_key": _make_session_key(jsonl_path),
+            "jsonl_path": jsonl_path,
             "topic": sr["topic"],
             "project": _clean_project_name(sr["project"]),
             "cost_usd": round(session_cost, 4),
@@ -4722,6 +4941,7 @@ def _collect_trends_from_jsonl(days=30):
                     parsed["subagents_used"][ag] = parsed["subagents_used"].get(ag, 0) + cnt
             parsed["project"] = project_name
             parsed["date"] = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
+            parsed["jsonl_path"] = str(filepath)
             sessions.append(parsed)
 
     if not sessions:
@@ -4807,6 +5027,7 @@ def _collect_trends_from_jsonl(days=30):
         uncached = max(0, s["total_input_tokens"] - cr - cc)
         session_cost = _get_model_cost(dom_model, uncached, s["total_output_tokens"], cr, cc, tier=pricing_tier)
 
+        jsonl_path = s.get("jsonl_path")
         sd = {
             "duration_minutes": round(s["duration_minutes"], 1),
             "input_tokens": s["total_input_tokens"],
@@ -4816,7 +5037,14 @@ def _collect_trends_from_jsonl(days=30):
             "skills": list(s["skills_used"].keys()),
             "subagents": list(s["subagents_used"].keys()),
             "cache_hit_rate": round(s["cache_hit_rate"], 3),
+            "cache_create_1h_tokens": s.get("total_cache_create_1h", 0),
+            "cache_create_5m_tokens": s.get("total_cache_create_5m", 0),
+            "avg_call_gap_seconds": s.get("avg_call_gap_seconds"),
+            "max_call_gap_seconds": s.get("max_call_gap_seconds"),
+            "p95_call_gap_seconds": s.get("p95_call_gap_seconds"),
             "slug": s.get("slug"),
+            "session_key": _make_session_key(jsonl_path),
+            "jsonl_path": jsonl_path,
             "topic": s.get("topic"),
             "project": _clean_project_name(s.get("project")),
             "cache_read_tokens": cr,
@@ -4946,6 +5174,51 @@ def _collect_trends_data(days=30):
     if result is not None:
         result["git_commits"] = _collect_git_commits(days)
     return result
+
+
+def _build_ttl_period_summary(period_days):
+    """Build a compact TTL mix summary for a given period."""
+    trends = _collect_trends_data(days=period_days)
+    if not trends:
+        return {
+            "label": f"{period_days}d: no cache-write data",
+            "period_days": period_days,
+            "mixed_sessions": 0,
+            "five_only_sessions": 0,
+            "one_hour_only_sessions": 0,
+        }
+
+    mixed_sessions = 0
+    five_only_sessions = 0
+    one_hour_only_sessions = 0
+    for day in trends.get("daily", []):
+        for session in day.get("session_details", []):
+            ttl_1h = session.get("cache_create_1h_tokens", 0) or 0
+            ttl_5m = session.get("cache_create_5m_tokens", 0) or 0
+            if ttl_1h and ttl_5m:
+                mixed_sessions += 1
+            elif ttl_5m and not ttl_1h:
+                five_only_sessions += 1
+            elif ttl_1h and not ttl_5m:
+                one_hour_only_sessions += 1
+
+    if mixed_sessions == 0 and five_only_sessions == 0:
+        label = f"{period_days}d: all 1h-only"
+    else:
+        parts = []
+        if mixed_sessions:
+            parts.append(f"{mixed_sessions} mixed")
+        if five_only_sessions:
+            parts.append(f"{five_only_sessions} 5m-only")
+        label = f"{period_days}d: " + ", ".join(parts)
+
+    return {
+        "label": label,
+        "period_days": period_days,
+        "mixed_sessions": mixed_sessions,
+        "five_only_sessions": five_only_sessions,
+        "one_hour_only_sessions": one_hour_only_sessions,
+    }
 
 
 def usage_trends(days=30, as_json=False):

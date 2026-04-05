@@ -9948,6 +9948,37 @@ def _set_quality_bar_disabled(disabled):
         pass
 
 
+def _read_config_flag(key, default=False):
+    """Read a single flag from config.json. Returns default on any error."""
+    try:
+        if not CONFIG_PATH.exists():
+            return default
+        cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        if isinstance(cfg, dict) and key in cfg:
+            return cfg[key]
+    except (json.JSONDecodeError, OSError):
+        pass
+    return default
+
+
+def _write_config_flag(key, value):
+    """Merge a single flag into config.json. Non-fatal on I/O errors."""
+    try:
+        cfg = {}
+        if CONFIG_PATH.exists():
+            try:
+                loaded = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    cfg = loaded
+            except (json.JSONDecodeError, OSError):
+                pass
+        cfg[key] = value
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        CONFIG_PATH.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
 def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=False):
     """Install, uninstall, or check quality bar (status line + cache hook).
 
@@ -10637,6 +10668,32 @@ if __name__ == "__main__":
                     )
                     os.close(log_fd)
                     update_marker.touch()
+        except Exception:
+            pass
+        # One-time first-run nudge for marketplace users: Claude Code ships
+        # third-party marketplaces with auto-update off by default, and plugin
+        # authors cannot change that default. Tell the user how to flip it
+        # so they get future bug fixes automatically. Shown exactly once,
+        # suppressed if the user has opted out of the quality bar entirely,
+        # and skipped for script-install / dev-symlink users (they get their
+        # updates via the daily git pull above or via their local checkout).
+        try:
+            already_shown = _read_config_flag("autoupdate_nudge_shown", False)
+            qb_disabled = _read_config_flag("quality_bar_disabled", False)
+            if (_is_running_from_plugin_cache()
+                    and not already_shown
+                    and not qb_disabled):
+                print("")
+                print("  [Token Optimizer] First-run tip: enable auto-update for this marketplace")
+                print("  so you get bug fixes automatically. In Claude Code:")
+                print("")
+                print("      /plugin  ->  Marketplaces  ->  alexgreensh-token-optimizer")
+                print("               ->  Enable auto-update")
+                print("")
+                print("  Third-party marketplaces ship with auto-update off by default in")
+                print("  Claude Code. This is not our choice. This message will not show again.")
+                print("")
+                _write_config_flag("autoupdate_nudge_shown", True)
         except Exception:
             pass
     elif args[0] == "setup-quality-bar":

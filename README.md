@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/alexgreensh/token-optimizer/releases"><img src="https://img.shields.io/badge/version-3.5.1-green" alt="Version 3.5.1"></a>
+  <a href="https://github.com/alexgreensh/token-optimizer/releases"><img src="https://img.shields.io/badge/version-3.5.2-green" alt="Version 3.5.2"></a>
   <a href="https://github.com/alexgreensh/token-optimizer"><img src="https://img.shields.io/badge/Claude_Code-Plugin-blueviolet" alt="Claude Code Plugin"></a>
   <a href="https://github.com/alexgreensh/token-optimizer/tree/main/openclaw"><img src="https://img.shields.io/badge/OpenClaw-Plugin-brightgreen" alt="OpenClaw Plugin"></a>
   <a href="https://github.com/alexgreensh/token-optimizer/blob/main/LICENSE"><img src="https://img.shields.io/github/license/alexgreensh/token-optimizer" alt="License"></a>
@@ -35,14 +35,14 @@ Opus 4.6 drops from 93% to 76% accuracy across a 1M context window. Compaction l
 
 Then in Claude Code: `/token-optimizer`
 
-Also available as a script install:
+> **Please enable auto-update after installing.** Claude Code ships third-party marketplaces with auto-update **off by default**, and plugin authors cannot change that default. So you won't get bug fixes automatically unless you turn it on. In Claude Code: `/plugin` → **Marketplaces** tab → select `alexgreensh-token-optimizer` → **Enable auto-update**. One-time, 10 seconds, and you'll never miss a fix again. Token Optimizer also prints a one-time reminder on your first SessionStart so you don't forget.
+
+Also available as a script install, which auto-updates daily via `git pull --ff-only` with no toggles required:
 
 ```bash
 git clone https://github.com/alexgreensh/token-optimizer.git ~/.claude/token-optimizer
 bash ~/.claude/token-optimizer/install.sh
 ```
-
-That install path still keeps automatic updates, because script-installed checkouts run a daily `git pull --ff-only`.
 
 Works on Claude Code and [OpenClaw](#openclaw-plugin). Each platform gets its own native plugin (Python for Claude Code, TypeScript for OpenClaw). No bridging, no shared runtime, zero cross-platform dependencies.
 

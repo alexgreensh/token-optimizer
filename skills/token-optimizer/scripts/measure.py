@@ -10542,9 +10542,13 @@ if __name__ == "__main__":
                         pass
         except (OSError, ValueError):
             pass
-        # Auto-install quality bar on first run (statusline + cache hook)
-        # If no statusLine exists at all, install ours silently.
-        # If statusLine exists but cache hook is missing, fix that too.
+        # Auto-install quality bar on first run (statusline + cache hook).
+        # - No statusLine at all: install ours silently.
+        # - statusLine exists but cache hook is missing: fix that too.
+        # - statusLine was replaced by something else (e.g., user ran /statusline)
+        #   while our cache hook is still running: DO NOT overwrite their choice.
+        #   Quality data still flows to disk, but nothing displays it. Print a
+        #   one-line recovery hint so they can restore it on their terms.
         # Respects "quality_bar_disabled" in config.json for permanent opt-out.
         try:
             _eh_qb_disabled = False
@@ -10556,7 +10560,14 @@ if __name__ == "__main__":
                 has_statusline = bool(settings.get("statusLine"))
                 hooks = settings.get("hooks", {}).get("UserPromptSubmit", [])
                 has_cache_hook = any("quality-cache" in str(h) for h in hooks)
-                if not has_statusline or (has_statusline and not has_cache_hook):
+                statusline_cmd = (settings.get("statusLine") or {}).get("command", "") or ""
+                statusline_is_ours = "statusline.js" in statusline_cmd and "token-optimizer" in statusline_cmd
+                if has_statusline and not statusline_is_ours and has_cache_hook:
+                    print(
+                        "  [Token Optimizer] Statusline appears replaced (e.g., by /statusline). "
+                        "Restore with: measure.py setup-quality-bar"
+                    )
+                elif not has_statusline or (has_statusline and not has_cache_hook):
                     setup_quality_bar()
         except Exception:
             pass

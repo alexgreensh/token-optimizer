@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/alexgreensh/token-optimizer/releases"><img src="https://img.shields.io/badge/version-3.4.3-green" alt="Version 3.4.3"></a>
+  <a href="https://github.com/alexgreensh/token-optimizer/releases"><img src="https://img.shields.io/badge/version-3.5.1-green" alt="Version 3.5.1"></a>
   <a href="https://github.com/alexgreensh/token-optimizer"><img src="https://img.shields.io/badge/Claude_Code-Plugin-blueviolet" alt="Claude Code Plugin"></a>
   <a href="https://github.com/alexgreensh/token-optimizer/tree/main/openclaw"><img src="https://img.shields.io/badge/OpenClaw-Plugin-brightgreen" alt="OpenClaw Plugin"></a>
   <a href="https://github.com/alexgreensh/token-optimizer/blob/main/LICENSE"><img src="https://img.shields.io/github/license/alexgreensh/token-optimizer" alt="License"></a>
@@ -327,6 +327,16 @@ A glance at your terminal tells you if you're in trouble. Colors shift from gree
 ```bash
 python3 measure.py setup-quality-bar      # one-time install
 ```
+
+**My quality bar disappeared — how do I get it back?** Running Claude Code's built-in `/statusline` rewrites the `statusLine` key in `~/.claude/settings.json` and can overwrite Token Optimizer's entry. Since v3.5.1, SessionStart detects this and prints a one-line recovery hint. Restore it with:
+
+```bash
+python3 measure.py setup-quality-bar --status     # check what's missing
+python3 measure.py setup-quality-bar --dry-run    # preview the diff
+python3 measure.py setup-quality-bar              # apply
+```
+
+If you replaced the statusline on purpose, the recovery hint is idempotent and harmless — ignore it, or silence it permanently by setting `"quality_bar_disabled": true` in `~/.claude/token-optimizer/config.json`.
 
 ### Session Continuity: Pick Up Where You Left Off
 

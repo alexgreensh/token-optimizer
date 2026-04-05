@@ -54,7 +54,7 @@ def normalize_model_name(model_id: str) -> str | None:
 # JSONL streaming parser
 # ---------------------------------------------------------------------------
 
-def iter_jsonl(filepath: Path):
+def iter_jsonl(filepath: Path) -> None:
     """Yield parsed JSON objects from a JSONL file, skipping bad lines.
 
     Handles corrupted UTF-8, permission errors, and malformed JSON gracefully.
@@ -169,7 +169,7 @@ def init_sqlite_db(db_path: Path, schema: str, wal: bool = True) -> sqlite3.Conn
     return conn
 
 
-def migrate_add_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]):
+def migrate_add_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
     """Add columns to a table if they don't already exist.
 
     columns: dict of {column_name: column_type} e.g. {"slug": "TEXT", "score": "REAL"}

@@ -1141,7 +1141,7 @@ DETECTOR_REGISTRY: list[type[BaseDetector]] = [
 # COMMANDS
 # ===================================================================
 
-def cmd_detect(args: list[str]):
+def cmd_detect(args: list[str]) -> None:
     """Detect installed agent systems."""
     as_json = "--json" in args
     results = []
@@ -1175,7 +1175,7 @@ def cmd_detect(args: list[str]):
     print()
 
 
-def cmd_scan(args: list[str]):
+def cmd_scan(args: list[str]) -> None:
     """Collect agent runs into fleet.db."""
     days = 30
     target_system = None
@@ -1248,7 +1248,7 @@ def cmd_scan(args: list[str]):
         print()
 
 
-def cmd_audit(args: list[str]):
+def cmd_audit(args: list[str]) -> None:
     """Run waste detection on collected data."""
     days = 30
     target_system = None
@@ -1392,7 +1392,7 @@ def cmd_audit(args: list[str]):
     print()
 
 
-def cmd_report(args: list[str]):
+def cmd_report(args: list[str]) -> None:
     """Generate a full fleet report combining scan + audit data."""
     days = 30
     target_system = None
@@ -1515,7 +1515,7 @@ def cmd_report(args: list[str]):
     print()
 
 
-def cmd_dashboard(args: list[str]):
+def cmd_dashboard(args: list[str]) -> None:
     """Generate and open the fleet dashboard."""
     serve = "--serve" in args
     serve_port = 8080
@@ -2437,7 +2437,7 @@ def _serve_dashboard(host: str, port: int):
 # CLI ENTRY POINT
 # ===================================================================
 
-def fleet_cli(args: list[str] | None = None):
+def fleet_cli(args: list[str] | None = None) -> None:
     """Main CLI entry point. Can be called from measure.py via lazy import."""
     if args is None:
         args = sys.argv[1:]

@@ -328,15 +328,19 @@ A glance at your terminal tells you if you're in trouble. Colors shift from gree
 python3 measure.py setup-quality-bar      # one-time install
 ```
 
-**My quality bar disappeared — how do I get it back?** Running Claude Code's built-in `/statusline` rewrites the `statusLine` key in `~/.claude/settings.json` and can overwrite Token Optimizer's entry. Since v3.5.1, SessionStart detects this and prints a one-line recovery hint. Restore it with:
+**My quality bar disappeared — how do I get it back?** Running Claude Code's built-in `/statusline` rewrites the `statusLine` key in `~/.claude/settings.json` and silently overwrites Token Optimizer's entry. Since v3.5.1, SessionStart detects this and **auto-restores** the quality bar — just start a new session and it's back. You'll see a one-line notice explaining what happened.
+
+**I really don't want the quality bar anymore — how do I turn it off for good?** Run:
 
 ```bash
-python3 measure.py setup-quality-bar --status     # check what's missing
-python3 measure.py setup-quality-bar --dry-run    # preview the diff
-python3 measure.py setup-quality-bar              # apply
+python3 measure.py setup-quality-bar --uninstall
 ```
 
-If you replaced the statusline on purpose, the recovery hint is idempotent and harmless — ignore it, or silence it permanently by setting `"quality_bar_disabled": true` in `~/.claude/token-optimizer/config.json`.
+This removes the components **and** writes `quality_bar_disabled: true` to `~/.claude/token-optimizer/config.json`. The opt-out is sticky across sessions — SessionStart will not auto-restore it. You can also just tell Claude Code in natural language: _"remove the Token Optimizer statusline"_, and Claude will run the uninstall command for you.
+
+**I changed my mind, bring it back.** Run `python3 measure.py setup-quality-bar` — explicit install clears the opt-out flag automatically.
+
+**I want to keep my own custom statusline and also see the quality score.** The custom-statusline path is still respected when you run `setup-quality-bar` directly. You'll get integration instructions for reading `~/.claude/token-optimizer/quality-cache.json` from your own script instead.
 
 ### Session Continuity: Pick Up Where You Left Off
 

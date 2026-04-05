@@ -9924,15 +9924,45 @@ def _is_quality_bar_installed(settings=None):
     return result
 
 
-def setup_quality_bar(dry_run=False, uninstall=False, status_only=False):
+def _set_quality_bar_disabled(disabled):
+    """Persist the quality-bar opt-out flag in config.json.
+
+    Makes `setup-quality-bar --uninstall` sticky across SessionStart auto-
+    restore: ensure-health and quality-cache self-heal both already gate on
+    this flag, they just had no writer until now. Non-fatal on I/O errors;
+    the flag is advisory, not a security boundary.
+    """
+    try:
+        cfg = {}
+        if CONFIG_PATH.exists():
+            try:
+                loaded = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    cfg = loaded
+            except (json.JSONDecodeError, OSError):
+                pass
+        cfg["quality_bar_disabled"] = bool(disabled)
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        CONFIG_PATH.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=False):
     """Install, uninstall, or check quality bar (status line + cache hook).
 
     Installs:
       1. UserPromptSubmit hook that updates quality cache every 2 min
       2. StatusLine config pointing to bundled statusline.js
 
-    If user already has a statusLine configured, shows integration
-    instructions instead of replacing it.
+    If user already has a foreign statusLine configured, shows integration
+    instructions instead of replacing it — unless force=True, which is used
+    by the SessionStart clobber-recovery path (presence of our cache hook
+    is strong evidence the user had our full quality bar previously).
+
+    Side-effects on config.json:
+      install        -> clears "quality_bar_disabled" (explicit opt-in)
+      --uninstall    -> sets   "quality_bar_disabled" (sticky opt-out)
     """
     settings, settings_path = _read_settings_json()
     current = _is_quality_bar_installed(settings)
@@ -9992,7 +10022,10 @@ def setup_quality_bar(dry_run=False, uninstall=False, status_only=False):
 
         settings["hooks"] = hooks
         _write_settings_atomic(settings)
+        _set_quality_bar_disabled(True)
         print(f"[Token Optimizer] Quality bar removed. {removed} component(s) removed.")
+        print(f"  Opt-out is sticky: SessionStart will not auto-restore.")
+        print(f"  To re-enable later, run: python3 measure.py setup-quality-bar")
         return
 
     # Install
@@ -10023,8 +10056,11 @@ def setup_quality_bar(dry_run=False, uninstall=False, status_only=False):
         skipped.append("status line")
     else:
         existing_sl = settings.get("statusLine", {})
-        if existing_sl.get("command") or existing_sl.get("url"):
-            # User has their own status line - don't replace
+        if not force and (existing_sl.get("command") or existing_sl.get("url")):
+            # User has their own status line - don't replace (unless force=True,
+            # used by ensure-health clobber recovery when our cache hook is
+            # still present, which is strong evidence the foreign statusLine
+            # is a clobber rather than an intentional choice).
             warnings.append(
                 f"You already have a custom status line configured.\n"
                 f"  To integrate quality scoring, add this to your status line script:\n\n"
@@ -10065,11 +10101,17 @@ def setup_quality_bar(dry_run=False, uninstall=False, status_only=False):
         return
 
     if not installed and not warnings:
+        # Already fully installed — still make sure the opt-out flag is clear
+        # (handles the rare case where a user manually set the flag but also
+        # still has the components in place).
+        _set_quality_bar_disabled(False)
         print(f"[Token Optimizer] Quality bar already fully installed.")
         return
 
     if installed:
         _write_settings_atomic(settings)
+        # Explicit install is an explicit opt-in — clear any prior opt-out.
+        _set_quality_bar_disabled(False)
 
     if installed:
         print(f"[Token Optimizer] Quality Bar installed.")
@@ -10542,14 +10584,17 @@ if __name__ == "__main__":
                         pass
         except (OSError, ValueError):
             pass
-        # Auto-install quality bar on first run (statusline + cache hook).
+        # Auto-install / auto-restore quality bar on SessionStart.
         # - No statusLine at all: install ours silently.
-        # - statusLine exists but cache hook is missing: fix that too.
+        # - statusLine exists but cache hook is missing: reinstall.
         # - statusLine was replaced by something else (e.g., user ran /statusline)
-        #   while our cache hook is still running: DO NOT overwrite their choice.
-        #   Quality data still flows to disk, but nothing displays it. Print a
-        #   one-line recovery hint so they can restore it on their terms.
+        #   while our cache hook is still running: the surviving cache hook is
+        #   strong evidence the user had our full quality bar previously, so
+        #   something clobbered just the statusline. Auto-restore with force=True
+        #   and print a one-line notice explaining what happened.
         # Respects "quality_bar_disabled" in config.json for permanent opt-out.
+        # `setup-quality-bar --uninstall` writes that flag, so the user's
+        # explicit intent to remove the quality bar is sticky across sessions.
         try:
             _eh_qb_disabled = False
             if CONFIG_PATH.exists():
@@ -10564,9 +10609,10 @@ if __name__ == "__main__":
                 statusline_is_ours = "statusline.js" in statusline_cmd and "token-optimizer" in statusline_cmd
                 if has_statusline and not statusline_is_ours and has_cache_hook:
                     print(
-                        "  [Token Optimizer] Statusline appears replaced (e.g., by /statusline). "
-                        "Restore with: measure.py setup-quality-bar"
+                        "  [Token Optimizer] Statusline was replaced (e.g., by /statusline). "
+                        "Auto-restored. Opt out permanently: measure.py setup-quality-bar --uninstall"
                     )
+                    setup_quality_bar(force=True)
                 elif not has_statusline or (has_statusline and not has_cache_hook):
                     setup_quality_bar()
         except Exception:

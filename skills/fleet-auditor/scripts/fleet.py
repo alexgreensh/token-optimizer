@@ -82,7 +82,7 @@ def _load_pricing() -> dict[str, dict[str, float]]:
     override_path = FLEET_DB_DIR / "pricing.json"
     if override_path.exists():
         try:
-            with open(override_path, "r") as f:
+            with open(override_path, "r", encoding="utf-8") as f:
                 user_pricing = json.load(f)
             for model, rates in user_pricing.items():
                 pricing[model] = {**pricing.get(model, {}), **rates}
@@ -580,7 +580,7 @@ class ClaudeCodeAdapter(BaseAdapter):
         settings_path = CLAUDE_DIR / "settings.json"
         if settings_path.exists():
             try:
-                with open(settings_path, "r") as f:
+                with open(settings_path, "r", encoding="utf-8") as f:
                     settings = json.load(f)
                 mcp = settings.get("mcpServers", {})
                 config["mcp_servers"] = list(mcp.keys())

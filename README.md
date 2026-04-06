@@ -369,6 +369,39 @@ python3 measure.py plugin-cleanup   # Detect duplicate skills + archive local/pl
 
 Tell it your goal. Get back specific, prioritized fixes with exact token savings. Detects 8 named anti-patterns (The Kitchen Sink, The Hoarder, The Monolith...) and recommends multi-agent design patterns that actually save context.
 
+### Waste Detectors (v4.0+)
+
+9 automated detectors analyze your session patterns and surface actionable findings:
+
+| Detector | What it catches |
+|---|---|
+| PDF/binary ingestion | Large files consuming context (warns with token estimate) |
+| Web search overhead | Too many web results dumped into context |
+| Retry churn | Same tool retried 3+ times with errors |
+| Tool cascade | 3+ consecutive tool errors in a chain |
+| Looping | Repeated similar messages (stuck model) |
+| Overpowered model | Opus used for simple edits (with "if Sonnet: $X saved") |
+| Weak model | Haiku on complex tasks needing a stronger model |
+| Bad decomposition | Monolithic 500+ word prompts doing too much |
+| Wasteful thinking | Extended thinking >2x output for small edits |
+
+### Subagent Cost Breakdown (v4.2+)
+
+See exactly how much your subagents cost: total spend, % of combined budget, and top offenders ranked by cost. Flags when subagents consume >30% of total.
+
+### Costly Prompt Ranking (v4.2+)
+
+See which prompts cost the most: pairs each user message with the cost of the response, ranks top 5. Shows what you asked, not just totals.
+
+### CLAUDE.md Injection (v4.1+)
+
+Auto-generate model routing instructions from your actual usage data and inject them into CLAUDE.md. Claude reads these every session and routes accordingly. 48h staleness guard auto-removes stale advice.
+
+```bash
+python3 measure.py inject-routing --dry-run   # Preview
+python3 measure.py inject-routing              # Inject (with approval)
+```
+
 ---
 
 ## How It Compares
@@ -384,7 +417,12 @@ Tell it your goal. Get back specific, prioritized fixes with exact token savings
 | Dollar savings tracking | Yes (per-category breakdown) | No | No |
 | JSONL session toolkit | Inspect, trim, dedup | No | No |
 | Attention curve optimizer | Yes (CLAUDE.md reordering) | No | No |
+| Waste pattern detection | 9 automated detectors | No | No |
+| Subagent cost breakdown | Yes (ranked by $) | No | No |
+| Costly prompt ranking | Yes (top 5 by cost) | No | No |
 | Model recommendation | Yes (Sonnet vs Opus by context) | No | No |
+| CLAUDE.md advice injection | Yes (with 48h TTL) | No | No |
+| Validate optimization impact | Before/after comparison | No | No |
 | Usage trends + dashboard | SQLite + interactive HTML | No | Session stats |
 | Per-turn cost analytics | Yes (4 pricing tiers) | No | No |
 | Compaction loss tracking | Yes (cumulative % lost) | No | Partial |
@@ -405,7 +443,7 @@ Using Claude Code in the VS Code extension? Most of Token Optimizer works identi
 | Smart Compaction (checkpoint + restore) | Works | Works |
 | Quality tracking + session data | Works | Works |
 | All hooks (SessionEnd, PreCompact, etc.) | Works | Works |
-| Dashboard (localhost:24842) | Works | Works |
+| Dashboard (localhost:24842/token-optimizer) | Works | Works |
 | Status line (quality bar in terminal) | Works | Not available |
 
 **The status line is CLI-only.** The VS Code extension doesn't support Claude Code's `statusLine` setting. This is a Claude Code limitation, not a Token Optimizer limitation.

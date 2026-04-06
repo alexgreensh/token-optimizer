@@ -62,6 +62,8 @@ STRICT_CONTEXT_CAPS = {
 MAX_ADDITIONAL_CONTEXT_CHARS = 1500
 STRICT_ADDITIONAL_CONTEXT_CHARS = 1000
 
+# All binary extensions (early-return path). Token-cost warnings use the
+# narrower EXPENSIVE_BINARY subset in detectors/pdf_ingestion.py.
 BINARY_EXTENSIONS = frozenset({
     ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp", ".svg",
     ".pdf", ".wasm", ".zip", ".tar", ".gz", ".bz2", ".7z", ".rar",
@@ -427,6 +429,54 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
         return
 
     if ext in BINARY_EXTENSIONS:
+        # Warn about expensive binary ingestion (PDF, images, Office docs)
+        try:
+            binary_stat = os.stat(file_path)
+            binary_size = binary_stat.st_size
+        except OSError:
+            return
+
+        finding = None
+        try:
+            from detectors.pdf_ingestion import detect_pdf_ingestion_inline
+            finding = detect_pdf_ingestion_inline(file_path, binary_size, ext)
+        except ImportError:
+            pass
+
+        if finding:
+            size_mb = binary_size / (1024 * 1024)
+            context_msg = (
+                f"[Token Optimizer] {Path(file_path).name} is a {ext} file "
+                f"({size_mb:.1f}MB, ~{finding['savings_tokens']:,} estimated tokens). "
+                f"{finding['suggestion']}"
+            )
+            _log_decision(
+                "allow",
+                file_path,
+                "binary_ingestion_warning",
+                session_id,
+                mode=mode,
+                actual_substitution=False,
+                eligible=False,
+                language=language,
+                reason_code="binary_ingestion",
+                offset=offset,
+                limit=limit,
+                replacement_type=None,
+                file_tokens_est=finding["savings_tokens"],
+                replacement_tokens_est=0,
+                net_saved_tokens_est=0,
+                replacement_fingerprint=None,
+                repeat_replacement_count=0,
+                save_hook_additional_context_enabled=save_hook_context_enabled,
+            )
+            if not quiet:
+                print(
+                    f"[Read Cache] Binary ingestion warning: {file_path} "
+                    f"(~{finding['savings_tokens']:,} tokens)",
+                    file=sys.stderr,
+                )
+            _emit_pretool_response(None, None, context_msg)
         return
 
     cache = _load_cache(session_id)

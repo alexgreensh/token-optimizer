@@ -8,6 +8,6 @@
   "homepage": "https://github.com/alexgreensh/token-optimizer",
   "repository": "https://github.com/alexgreensh/token-optimizer",
   "version": "4.2.0",
-  "license": "AGPL-3.0-only",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "keywords": ["token", "optimization", "context", "audit", "cost", "coach"]
 }

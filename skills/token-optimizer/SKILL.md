@@ -295,7 +295,7 @@ For headless/remote servers, the user can run `python3 $MEASURE_PY dashboard --c
 
 Read `references/implementation-playbook.md` for detailed steps.
 
-Available actions: 4A (CLAUDE.md), 4B (MEMORY.md), 4C (Skills), 4D (File Exclusion), 4E (MCP), 4F (Hooks), 4G (Cache Structure), 4H (Rules Cleanup), 4I (Settings Tuning), 4J (Skill Description Tightening), 4K (Compact Instructions Setup), 4L (Model Routing Setup), 4M (Smart Compaction Setup), 4N (Context Quality Check), 4O (Version-Aware Optimizations).
+Available actions: 4A (CLAUDE.md), 4B (MEMORY.md), 4C (Skills), 4D (File Exclusion), 4E (MCP), 4F (Hooks), 4G (Cache Structure), 4H (Rules Cleanup), 4I (Settings Tuning), 4J (Skill Description Tightening), 4K (Compact Instructions Setup), 4L (Model Routing Setup), 4M (Smart Compaction Setup), 4N (Context Quality Check), 4O (Version-Aware Optimizations), 4P (Smart Model Routing Instructions).
 
 Templates in `examples/`. Always backup before changes. Present diffs for approval.
 
@@ -365,6 +365,33 @@ Score ranges:
 - <50: Critical, heavy rot, consider `/clear` with checkpoint
 
 Present the score and top issues. Recommend specific actions based on the findings.
+
+### 4P: Smart Model Routing Instructions
+
+Injects a managed model routing block into the project's CLAUDE.md based on actual usage patterns from the last 30 days.
+
+```bash
+# Preview what would be injected
+python3 $MEASURE_PY inject-routing --dry-run
+
+# Inject (user must approve the diff first)
+python3 $MEASURE_PY inject-routing
+```
+
+The block is inserted between `<!-- TOKEN_OPTIMIZER:MODEL_ROUTING -->` markers. It includes:
+- Current model usage percentages (Opus/Sonnet/Haiku split)
+- Task-to-model routing recommendations
+- Warnings if usage is heavily skewed (e.g., >70% Opus)
+
+The block has a 48h TTL: if not refreshed within 48 hours, it auto-removes to prevent stale routing advice.
+
+**Always show the user the dry-run diff and get approval before injecting.**
+
+Optional: inject a passive coaching block with session-level insights:
+```bash
+python3 $MEASURE_PY setup-coach-injection        # Inject COACH block
+python3 $MEASURE_PY setup-coach-injection --uninstall  # Remove it
+```
 
 ---
 

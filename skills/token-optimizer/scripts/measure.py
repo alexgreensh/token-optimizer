@@ -35,6 +35,9 @@ Usage:
     python3 measure.py jsonl-trim --apply           # Trim with backup + sidecar
     python3 measure.py jsonl-dedup                 # Find duplicate system reminders (dry-run)
     python3 measure.py jsonl-dedup --apply          # Remove duplicates with backup
+    python3 measure.py validate-impact                 # Compare before/after optimization metrics
+    python3 measure.py validate-impact --strategy halves # Split sessions chronologically in half
+    python3 measure.py validate-impact --days 14 --json  # Custom window, machine-readable
     python3 measure.py attention-score               # Score CLAUDE.md against attention curve
     python3 measure.py attention-score FILE           # Score any file
     python3 measure.py attention-score --json         # Machine-readable output
@@ -3902,6 +3905,24 @@ def generate_coach_data(focus=None, components=None, trends=None):
                                      os.environ.get("ENABLE_CLAUDEAI_MCP_SERVERS", ""))
     if str(claudeai_val).lower() != "false" and mcp_servers > 3:
         questions.append("Cloud-synced MCP servers from claude.ai may be adding overhead. Have you reviewed which servers are cloud-synced vs local?")
+
+    # WebSearch routing nudge (post-hoc detector)
+    if trends:
+        try:
+            from detectors.websearch_routing import detect_websearch_routing
+            ws_findings = detect_websearch_routing(trends)
+            for f in ws_findings:
+                if f.get("confidence", 0) >= 0.5:
+                    patterns_bad.append({
+                        "name": "Web Search Overhead",
+                        "severity": "medium" if f["confidence"] >= 0.7 else "low",
+                        "detail": f["evidence"],
+                        "fix": f["suggestion"],
+                        "savings": f"~{f['savings_tokens']:,} tokens across sessions",
+                    })
+                    score -= 5
+        except ImportError:
+            pass
 
     # Clamp score
     score = max(0, min(100, score))
@@ -10234,6 +10255,195 @@ def savings_report(days=30, as_json=False):
         print(f"    - Archive unused tools or skills")
 
 
+def validate_impact(strategy="auto", days=30, as_json=False):
+    """Compare session metrics before vs after an optimization event.
+
+    Strategies:
+        auto: Split at the most recent savings_event timestamp (or git tag)
+        halves: Split session history chronologically in half
+
+    Returns dict with: strategy_used, before_summary, after_summary, deltas, verdict
+    """
+    split_ts = None
+
+    if strategy == "auto":
+        # Find most recent savings event as the split point
+        if TRENDS_DB.exists():
+            try:
+                conn = sqlite3.connect(str(TRENDS_DB))
+                conn.execute("PRAGMA busy_timeout=5000")
+                row = conn.execute(
+                    "SELECT MAX(timestamp) as latest FROM savings_events"
+                ).fetchone()
+                if row and row[0]:
+                    try:
+                        split_ts = datetime.fromisoformat(row[0])
+                    except (ValueError, TypeError):
+                        pass
+                conn.close()
+            except (sqlite3.Error, OSError):
+                pass
+
+        # Fallback: try most recent git tag in the repo
+        if split_ts is None:
+            try:
+                result = subprocess.run(
+                    ["git", "log", "--tags", "--simplify-by-decoration",
+                     "--format=%ai", "-1"],
+                    capture_output=True, text=True, timeout=5,
+                    cwd=str(Path(__file__).parent),
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    tag_date = result.stdout.strip()
+                    split_ts = datetime.fromisoformat(tag_date.replace(" ", "T"))
+            except (subprocess.TimeoutExpired, OSError, ValueError):
+                pass
+
+        # If still no split point, fall back to halves
+        if split_ts is None:
+            strategy = "halves"
+
+    # Collect and parse session data
+    jsonl_files = _find_all_jsonl_files(days=days)
+    sessions = []
+    tier = _load_pricing_tier()
+    for jf, mtime, project in jsonl_files:
+        parsed = _parse_session_jsonl(str(jf))
+        if parsed and parsed.get("total_input_tokens", 0) > 0:
+            # Compute quality score and cost
+            sq = score_session_quality(parsed)
+            dom_model = max(parsed["model_usage"], key=parsed["model_usage"].get) if parsed["model_usage"] else "unknown"
+            total_input = parsed["total_input_tokens"]
+            chr_val = parsed.get("cache_hit_rate", 0)
+            cache_read_est = int(total_input * chr_val)
+            cost = _get_model_cost(
+                dom_model,
+                max(0, total_input - cache_read_est),
+                parsed["total_output_tokens"],
+                cache_read_est,
+                0,
+                tier=tier,
+            )
+            sessions.append({
+                "mtime": mtime,
+                "input_tokens": total_input,
+                "output_tokens": parsed["total_output_tokens"],
+                "cache_hit_rate": chr_val,
+                "quality_score": sq["score"],
+                "cost_usd": cost,
+                "duration_minutes": parsed.get("duration_minutes", 0),
+            })
+
+    if len(sessions) < 4:
+        result = {
+            "strategy_used": strategy,
+            "error": f"Need at least 4 sessions, found {len(sessions)} ({len(jsonl_files)} total files)",
+            "verdict": "insufficient_data",
+        }
+        if as_json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            print(f"\n  Not enough data: {len(sessions)} parseable sessions (need at least 4).")
+            print(f"  Run more sessions or try --days with a larger window.\n")
+        return result
+
+    # Sort oldest first
+    sessions.sort(key=lambda s: s["mtime"])
+
+    # Split into before/after windows
+    if strategy == "halves":
+        mid = len(sessions) // 2
+        before = sessions[:mid]
+        after = sessions[mid:]
+        split_label = f"chronological midpoint ({mid} sessions each side)"
+    else:
+        split_epoch = split_ts.timestamp() if split_ts else 0
+        before = [s for s in sessions if s["mtime"] < split_epoch]
+        after = [s for s in sessions if s["mtime"] >= split_epoch]
+        split_label = f"savings event at {split_ts.strftime('%Y-%m-%d %H:%M') if split_ts else 'unknown'}"
+
+    if len(before) < 2 or len(after) < 2:
+        # Unbalanced split, fall back to halves
+        mid = len(sessions) // 2
+        before = sessions[:mid]
+        after = sessions[mid:]
+        strategy = "halves"
+        split_label = f"chronological midpoint (auto fallback, {mid} sessions each side)"
+
+    def _summarize(window):
+        n = len(window)
+        if n == 0:
+            return {"count": 0, "avg_tokens": 0, "avg_cost": 0, "avg_quality": 0, "avg_cache_hit": 0}
+        return {
+            "count": n,
+            "avg_tokens": int(sum(s["input_tokens"] for s in window) / n),
+            "avg_cost": round(sum(s["cost_usd"] for s in window) / n, 4),
+            "avg_quality": round(sum(s["quality_score"] for s in window) / n, 1),
+            "avg_cache_hit": round(sum(s["cache_hit_rate"] for s in window) / n, 3),
+        }
+
+    before_summary = _summarize(before)
+    after_summary = _summarize(after)
+
+    # Calculate deltas (positive = improvement)
+    def _delta(metric, invert=False):
+        b = before_summary[metric]
+        a = after_summary[metric]
+        if b == 0:
+            return 0
+        raw_pct = ((a - b) / abs(b)) * 100
+        return round(-raw_pct if invert else raw_pct, 1)
+
+    deltas = {
+        "tokens_pct": _delta("avg_tokens", invert=True),    # fewer tokens = better
+        "cost_pct": _delta("avg_cost", invert=True),         # lower cost = better
+        "quality_pct": _delta("avg_quality"),                  # higher quality = better
+        "cache_hit_pct": _delta("avg_cache_hit"),              # higher cache = better
+    }
+
+    # Verdict: improved if at least 2 of 4 metrics show >10% improvement
+    improved_count = sum(1 for v in deltas.values() if v > 10)
+    regressed_count = sum(1 for v in deltas.values() if v < -10)
+
+    if improved_count >= 2:
+        verdict = "improved"
+    elif regressed_count >= 2:
+        verdict = "regressed"
+    else:
+        verdict = "no_change"
+
+    result = {
+        "strategy_used": strategy,
+        "split_label": split_label,
+        "before_summary": before_summary,
+        "after_summary": after_summary,
+        "deltas": deltas,
+        "verdict": verdict,
+    }
+
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+    else:
+        print(f"\n  VALIDATE IMPACT ({strategy} strategy)")
+        print(f"  Split: {split_label}")
+        print(f"  {'=' * 58}")
+        print(f"\n  {'Metric':<20s} {'Before':>10s} {'After':>10s} {'Change':>10s}")
+        print(f"  {'-' * 20}  {'-' * 10}  {'-' * 10}  {'-' * 10}")
+        before_cost_str = f"${before_summary['avg_cost']:.4f}"
+        after_cost_str = f"${after_summary['avg_cost']:.4f}"
+        print(f"  {'Avg tokens/session':<20s} {before_summary['avg_tokens']:>10,}  {after_summary['avg_tokens']:>10,}  {deltas['tokens_pct']:>+9.1f}%")
+        print(f"  {'Avg cost/session':<20s} {before_cost_str:>10s}  {after_cost_str:>10s}  {deltas['cost_pct']:>+9.1f}%")
+        print(f"  {'Avg quality score':<20s} {before_summary['avg_quality']:>10.1f}  {after_summary['avg_quality']:>10.1f}  {deltas['quality_pct']:>+9.1f}%")
+        print(f"  {'Avg cache hit rate':<20s} {before_summary['avg_cache_hit']:>10.3f}  {after_summary['avg_cache_hit']:>10.3f}  {deltas['cache_hit_pct']:>+9.1f}%")
+
+        verdict_emoji = {"improved": "UP", "regressed": "DOWN", "no_change": "FLAT"}
+        print(f"\n  Verdict: {verdict.upper()} ({verdict_emoji.get(verdict, '?')})")
+        print(f"  Sessions: {before_summary['count']} before, {after_summary['count']} after")
+        print()
+
+    return result
+
+
 if __name__ == "__main__":
     args = sys.argv[1:]
 
@@ -10444,6 +10654,22 @@ if __name__ == "__main__":
                 for q in data["questions"]:
                     print(f"    ? {q}")
                 print()
+    elif args[0] == "validate-impact":
+        output_json = "--json" in args
+        strat = "auto"
+        val_days = 30
+        for i, a in enumerate(args):
+            if a == "--strategy" and i + 1 < len(args):
+                strat = args[i + 1]
+            elif a == "--days" and i + 1 < len(args):
+                try:
+                    val_days = int(args[i + 1])
+                except ValueError:
+                    pass
+        if strat not in ("auto", "halves"):
+            print(f"[Error] Unknown strategy '{strat}'. Use 'auto' or 'halves'.")
+            sys.exit(1)
+        validate_impact(strategy=strat, days=val_days, as_json=output_json)
     elif args[0] == "quality":
         sid = None
         output_json = "--json" in args

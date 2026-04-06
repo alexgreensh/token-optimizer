@@ -62,8 +62,7 @@ def detect_websearch_routing(trends):
         "savings_tokens": est_tokens,
         "suggestion": (
             f"Web results consumed ~{est_tokens:,} tokens ({avg_per_session:.1f} calls/session avg). "
-            "Consider: route research to a dedicated subagent (Haiku), "
-            "use targeted queries instead of broad searches, "
-            "or extract key facts before injecting full pages."
+            "Run research in subagents so web content stays in their context (not yours). "
+            "Use search APIs (Exa, Perplexity) for focused snippets instead of full page dumps."
         ),
     }]

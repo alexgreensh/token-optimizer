@@ -4052,6 +4052,62 @@ def generate_coach_data(focus=None, components=None, trends=None):
             ],
         }
 
+    # Subagent cost breakdown + costly prompts (from recent sessions)
+    recent_files = _find_all_jsonl_files(days=7)[:5]
+    tier = _load_pricing_tier()
+
+    all_subagent_costs = []
+    all_costly_prompts = []
+    total_session_cost = 0
+    total_subagent_cost = 0
+
+    for jf, _, _ in recent_files:
+        parsed = _parse_session_jsonl(str(jf))
+        if not parsed or parsed.get("total_input_tokens", 0) == 0:
+            continue
+        dom_model = max(parsed["model_usage"], key=parsed["model_usage"].get) if parsed["model_usage"] else "unknown"
+        total_input = parsed["total_input_tokens"]
+        chr_val = parsed.get("cache_hit_rate", 0)
+        cache_read = int(total_input * chr_val)
+        session_cost = _get_model_cost(dom_model, max(0, total_input - cache_read),
+                                        parsed["total_output_tokens"], cache_read, 0, tier=tier)
+        total_session_cost += session_cost
+
+        sub_costs = _analyze_subagent_costs(str(jf), tier=tier)
+        sub_total = sum(s["cost_usd"] for s in sub_costs)
+        total_subagent_cost += sub_total
+        all_subagent_costs.extend(sub_costs)
+
+        prompts = _extract_costly_prompts(str(jf), tier=tier, top_n=3)
+        all_costly_prompts.extend(prompts)
+
+    all_subagent_costs.sort(key=lambda x: x["cost_usd"], reverse=True)
+    all_costly_prompts.sort(key=lambda x: x.get("cost_usd", 0), reverse=True)
+
+    # Subagent tokens are billed separately, not inside parent session total.
+    # Compute % against combined (session + subagent) spend.
+    combined_cost = total_session_cost + total_subagent_cost
+    if combined_cost > 0 and total_subagent_cost > 0:
+        sub_pct = round(total_subagent_cost / combined_cost * 100, 1)
+        result["subagent_costs"] = {
+            "total_usd": round(total_subagent_cost, 2),
+            "pct_of_spend": sub_pct,
+            "top_subagents": all_subagent_costs[:5],
+        }
+        if sub_pct > 30:
+            patterns_bad.append({
+                "name": "Heavy Subagent Spend",
+                "severity": "medium",
+                "detail": f"Subagents consumed ${total_subagent_cost:.2f} ({sub_pct}% of recent spend)",
+                "fix": "Route data-gathering subagents to Haiku. Reserve Opus for synthesis.",
+                "savings": f"~${total_subagent_cost * 0.6:.2f} with Haiku routing",
+            })
+            score = max(0, result["health_score"] - 5)
+            result["health_score"] = score
+
+    if all_costly_prompts:
+        result["costly_prompts"] = all_costly_prompts[:5]
+
     return result
 
 
@@ -4221,6 +4277,111 @@ def _extract_skills_and_agents_from_subagent(filepath):
     except (PermissionError, OSError):
         pass
     return skills, subagents
+
+
+def _analyze_subagent_costs(session_jsonl_path, tier=None):
+    """Parse subagent JSONL files for a session and return cost breakdown.
+
+    Returns list of dicts: [{name, tokens, cost_usd, model, file}]
+    """
+    if tier is None:
+        tier = _load_pricing_tier()
+    subagent_files = _find_subagent_jsonl_files(Path(session_jsonl_path))
+    results = []
+    for sf in subagent_files:
+        parsed = _parse_session_jsonl(str(sf))
+        if not parsed or parsed.get("total_input_tokens", 0) == 0:
+            continue
+        dom_model = max(parsed["model_usage"], key=parsed["model_usage"].get) if parsed["model_usage"] else "unknown"
+        total_input = parsed["total_input_tokens"]
+        chr_val = parsed.get("cache_hit_rate", 0)
+        cache_read = int(total_input * chr_val)
+        cost = _get_model_cost(dom_model, max(0, total_input - cache_read),
+                               parsed["total_output_tokens"], cache_read, 0, tier=tier)
+        # Extract agent type from the filename or first prompt
+        agent_name = sf.stem[:20]
+        results.append({
+            "name": agent_name,
+            "tokens": total_input + parsed["total_output_tokens"],
+            "cost_usd": round(cost, 4),
+            "model": _normalize_model_name(dom_model) or dom_model,
+            "file": str(sf),
+        })
+    results.sort(key=lambda x: x["cost_usd"], reverse=True)
+    return results
+
+
+def _extract_costly_prompts(jsonl_path, tier=None, top_n=5):
+    """Extract user prompts paired with the cost of the subsequent assistant turn.
+
+    Returns list of dicts: [{text, tokens_in, tokens_out, cost_usd, model, timestamp}]
+    sorted by cost descending, limited to top_n.
+    """
+    if tier is None:
+        tier = _load_pricing_tier()
+    prompts = []
+    pending_prompt = None
+
+    try:
+        with open(jsonl_path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                rec_type = record.get("type")
+
+                if rec_type == "user":
+                    # Check it's a real user prompt, not a tool result
+                    msg = record.get("message", {})
+                    is_sidechain = record.get("isSidechain", False)
+                    if is_sidechain:
+                        continue
+                    content = msg.get("content") if isinstance(msg, dict) else msg
+                    text = ""
+                    if isinstance(content, str):
+                        text = content
+                    elif isinstance(content, list):
+                        # Skip if all items are tool_result
+                        types = [i.get("type") for i in content if isinstance(i, dict)]
+                        if types and all(t == "tool_result" for t in types):
+                            continue
+                        for block in content:
+                            if isinstance(block, dict) and block.get("type") == "text":
+                                text = block.get("text", "")
+                                break
+                            elif isinstance(block, str):
+                                text = block
+                                break
+                    if text and len(text) > 5:
+                        pending_prompt = {
+                            "text": text[:300],
+                            "timestamp": record.get("timestamp"),
+                        }
+
+                elif rec_type == "assistant" and pending_prompt:
+                    msg = record.get("message", {})
+                    usage = msg.get("usage", {})
+                    if usage:
+                        inp = usage.get("input_tokens", 0)
+                        out = usage.get("output_tokens", 0)
+                        cr = usage.get("cache_read_input_tokens", 0)
+                        cc = usage.get("cache_creation_input_tokens", 0)
+                        model = msg.get("model", "unknown")
+                        cost = _get_model_cost(model, inp, out, cr, cc, tier=tier)
+                        pending_prompt["tokens_in"] = inp + cr + cc
+                        pending_prompt["tokens_out"] = out
+                        pending_prompt["cost_usd"] = round(cost, 4)
+                        pending_prompt["model"] = _normalize_model_name(model) or model
+                        prompts.append(pending_prompt)
+                    pending_prompt = None
+
+    except (OSError, PermissionError):
+        pass
+
+    prompts.sort(key=lambda x: x.get("cost_usd", 0), reverse=True)
+    return prompts[:top_n]
 
 
 def _clean_project_name(raw_project):
@@ -10865,6 +11026,18 @@ if __name__ == "__main__":
                 print("  Good practices:")
                 for p in data["patterns_good"]:
                     print(f"    [OK] {p['name']}: {p['detail']}")
+                print()
+            if data.get("subagent_costs"):
+                sc = data["subagent_costs"]
+                print(f"  Subagent spend: ${sc['total_usd']:.2f} ({sc['pct_of_spend']}% of recent sessions)")
+                for s in sc["top_subagents"][:3]:
+                    print(f"    {s['name']}: ${s['cost_usd']} ({s['tokens']:,} tokens, {s['model']})")
+                print()
+            if data.get("costly_prompts"):
+                print("  Most expensive prompts (last 7 days):")
+                for i, p in enumerate(data["costly_prompts"][:5], 1):
+                    preview = p["text"][:70].replace("\n", " ")
+                    print(f"    {i}. ${p['cost_usd']} ({p['tokens_in']:,} in) \"{preview}...\"")
                 print()
             if data["questions"]:
                 print("  Coaching questions:")

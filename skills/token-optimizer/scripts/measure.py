@@ -2378,18 +2378,22 @@ def _serve_dashboard(filepath, port=8080, host="127.0.0.1"):
             self.send_header("X-Frame-Options", "DENY")
             super().end_headers()
 
+        def _is_dashboard_request(self):
+            requested = self.path.lstrip("/").split("?")[0]
+            return requested in ("", "token-optimizer", filename)
+
         def _redirect_root(self):
-            if self.path in ("/", ""):
-                self.send_response(302)
-                self.send_header("Location", f"/{filename}")
-                self.end_headers()
-                return True
+            if self._is_dashboard_request():
+                if self.path.lstrip("/").split("?")[0] != filename:
+                    self.send_response(302)
+                    self.send_header("Location", f"/{filename}")
+                    self.end_headers()
+                    return True
             return False
 
         def _check_allowed(self):
             """Only serve the dashboard file itself, nothing else."""
-            requested = self.path.lstrip("/").split("?")[0]
-            if requested != filename:
+            if not self._is_dashboard_request():
                 self.send_error(403, "Forbidden")
                 return False
             return True
@@ -6442,29 +6446,24 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         super().end_headers()
 
-    def do_GET(self):
+    def _is_dashboard_request(self):
         f = os.path.basename(DASHBOARD)
-        if self.path in ("/", ""):
-            self.send_response(302)
-            self.send_header("Location", "/" + f)
-            self.end_headers()
-            return
-        if self.path.lstrip("/").split("?")[0] != f:
+        clean = self.path.lstrip("/").split("?")[0]
+        return clean in ("", "token-optimizer", f)
+
+    def _serve_or_redirect(self, method):
+        if self._is_dashboard_request():
+            # Rewrite to the actual filename for SimpleHTTPRequestHandler
+            self.path = "/" + os.path.basename(DASHBOARD)
+            getattr(super(), method)()
+        else:
             self.send_error(403, "Forbidden")
-            return
-        super().do_GET()
+
+    def do_GET(self):
+        self._serve_or_redirect("do_GET")
 
     def do_HEAD(self):
-        f = os.path.basename(DASHBOARD)
-        if self.path in ("/", ""):
-            self.send_response(302)
-            self.send_header("Location", "/" + f)
-            self.end_headers()
-            return
-        if self.path.lstrip("/").split("?")[0] != f:
-            self.send_error(403, "Forbidden")
-            return
-        super().do_HEAD()
+        self._serve_or_redirect("do_HEAD")
 
 if not os.path.exists(DASHBOARD):
     sys.exit(1)
@@ -6539,7 +6538,7 @@ def setup_daemon(dry_run=False, uninstall=False):
     if dry_run:
         print(f"[Token Optimizer] Dry run. Would install:\n")
         print(f"  A tiny web server that makes your dashboard available at:")
-        print(f"    http://localhost:{DAEMON_PORT}/\n")
+        print(f"    http://localhost:{DAEMON_PORT}/token-optimizer\n")
         print(f"  What it does:")
         print(f"    - Serves your dashboard file so you can bookmark the URL")
         print(f"    - Starts automatically when you log into your Mac")
@@ -6601,13 +6600,13 @@ def setup_daemon(dry_run=False, uninstall=False):
     if running:
         print(f"[Token Optimizer] Dashboard server installed and running.\n")
         print(f"  Bookmark this URL:")
-        print(f"    http://localhost:{DAEMON_PORT}/\n")
+        print(f"    http://localhost:{DAEMON_PORT}/token-optimizer\n")
         print(f"  It updates automatically after every Claude Code session.")
         print(f"  Starts on login, so the URL always works.\n")
         print(f"  To remove: python3 measure.py setup-daemon --uninstall")
     else:
         print(f"[Token Optimizer] Server installed but still starting up.")
-        print(f"  Give it a few seconds, then try: http://localhost:{DAEMON_PORT}/")
+        print(f"  Give it a few seconds, then try: http://localhost:{DAEMON_PORT}/token-optimizer")
         print(f"  If it doesn't work, check: {DAEMON_LOG_DIR}/stderr.log")
 
 

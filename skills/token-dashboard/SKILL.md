@@ -29,5 +29,5 @@ This collects the latest session data into the trends database, regenerates the 
 3. **Tell the user** the dashboard is open and mention direct access:
    - File: `~/.claude/_backups/token-optimizer/dashboard.html`
    - Check if the persistent daemon is running: `nc -z 127.0.0.1 24842 2>/dev/null`
-   - If running, also mention: "Bookmarkable URL: http://localhost:24842/"
+   - If running, also mention: "Bookmarkable URL: http://localhost:24842/token-optimizer"
    - If NOT running, do NOT mention the URL (it would give a connection error). Instead suggest: "Want a bookmarkable URL? Run: `python3 $MEASURE_PY setup-daemon`"

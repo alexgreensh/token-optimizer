@@ -304,7 +304,7 @@ Every component is clickable. Expand any item to see why it matters, what the tr
 The dashboard auto-regenerates after every session (via the SessionEnd hook). Bookmark it and it's always up to date.
 
 ```bash
-python3 measure.py setup-daemon     # Bookmarkable URL at http://localhost:24842/
+python3 measure.py setup-daemon     # Bookmarkable URL at http://localhost:24842/token-optimizer
 python3 measure.py dashboard --serve # One-time serve over HTTP
 ```
 
@@ -411,7 +411,7 @@ Using Claude Code in the VS Code extension? Most of Token Optimizer works identi
 **The status line is CLI-only.** The VS Code extension doesn't support Claude Code's `statusLine` setting. This is a Claude Code limitation, not a Token Optimizer limitation.
 
 **Best options for VS Code:**
-- **Dashboard**: Bookmark `http://localhost:24842/` for always-current analytics. Run `python3 measure.py setup-daemon` to enable auto-refresh after every session.
+- **Dashboard**: Bookmark `http://localhost:24842/token-optimizer` for always-current analytics. Run `python3 measure.py setup-daemon` to enable auto-refresh after every session.
 - **Integrated terminal**: Run `claude` in VS Code's built-in terminal to get the full CLI experience, including the quality bar.
 - **VS Code extension**: On the roadmap. [Follow #3](https://github.com/alexgreensh/token-optimizer/issues/3) for updates.
 

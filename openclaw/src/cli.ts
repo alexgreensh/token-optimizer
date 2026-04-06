@@ -13,7 +13,8 @@ import { findOpenClawDir } from "./session-parser";
 import { auditContext } from "./context-audit";
 import { scoreQuality } from "./quality";
 import { captureSnapshot, detectDrift } from "./drift";
-import { execFile, execSync } from "child_process";
+import { validateImpact, Strategy as ValidateStrategy } from "./validate";
+import { execFile, execFileSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -31,7 +32,7 @@ function redactPaths(obj: unknown): unknown {
 }
 
 function printUsage(): void {
-  console.log(`Token Optimizer for OpenClaw v1.3.2
+  console.log(`Token Optimizer for OpenClaw v2.0.0
 
 Usage:
   token-optimizer scan         [--days N] [--json]   Scan sessions and show token usage
@@ -41,6 +42,7 @@ Usage:
   token-optimizer quality      [--days N] [--json]    Show quality score breakdown
   token-optimizer git-context  [--json]               Suggest files based on git state
   token-optimizer drift        [--snapshot]            Config drift detection
+  token-optimizer validate     [--days N] [--strategy auto|halves] [--json]  Before/after impact comparison
   token-optimizer detect                               Check if OpenClaw is installed
   token-optimizer doctor       [--json]               Check checkpoint health and plugin status
   token-optimizer checkpoint-stats [--days N] [--json]  Summarize local checkpoint telemetry
@@ -51,12 +53,13 @@ Options:
   --snapshot    Capture current config snapshot (drift command)`);
 }
 
-function parseArgs(): { command: string; days: number; json: boolean; snapshot: boolean } {
+function parseArgs(): { command: string; days: number; json: boolean; snapshot: boolean; strategy: ValidateStrategy } {
   const args = process.argv.slice(2);
   let command = "help";
   let days = 30;
   let json = false;
   let snapshot = false;
+  let strategy: ValidateStrategy = "auto";
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -66,12 +69,15 @@ function parseArgs(): { command: string; days: number; json: boolean; snapshot: 
       json = true;
     } else if (arg === "--snapshot") {
       snapshot = true;
+    } else if (arg === "--strategy" && i + 1 < args.length) {
+      const s = args[++i];
+      if (s === "auto" || s === "halves") strategy = s;
     } else if (!arg.startsWith("-")) {
       command = arg;
     }
   }
 
-  return { command, days, json, snapshot };
+  return { command, days, json, snapshot, strategy };
 }
 
 // (parseArgs defined above with printUsage)
@@ -334,7 +340,7 @@ function cmdQuality(days: number, json: boolean): void {
 function cmdGitContext(json: boolean): void {
   function runGit(...args: string[]): string {
     try {
-      return execSync(`git ${args.join(" ")}`, { encoding: "utf-8", timeout: 10000 }).trim();
+      return execFileSync("git", args, { encoding: "utf-8", timeout: 10000 }).trim();
     } catch {
       return "";
     }
@@ -429,6 +435,35 @@ function cmdGitContext(json: boolean): void {
   console.log();
 }
 
+function cmdValidate(days: number, strategy: ValidateStrategy, json: boolean): void {
+  const runs = scan(days);
+  if (!runs) {
+    console.error("OpenClaw not found.");
+    process.exit(1);
+  }
+
+  const result = validateImpact(runs, strategy);
+
+  if (json) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  console.log(`\n  VALIDATE IMPACT (${result.strategy} strategy)`);
+  console.log(`  Split: ${result.splitLabel}`);
+  console.log("  " + "=".repeat(58));
+  console.log(`\n  ${"Metric".padEnd(20)} ${"Before".padStart(10)}  ${"After".padStart(10)}  ${"Change".padStart(10)}`);
+  console.log(`  ${"-".repeat(20)}  ${"-".repeat(10)}  ${"-".repeat(10)}  ${"-".repeat(10)}`);
+  console.log(`  ${"Avg tokens/session".padEnd(20)} ${formatTokens(result.before.avgTokens).padStart(10)}  ${formatTokens(result.after.avgTokens).padStart(10)}  ${(result.deltas.tokensPct >= 0 ? "+" : "") + result.deltas.tokensPct + "%"}`.padStart(10));
+  console.log(`  ${"Avg cost/session".padEnd(20)} ${"$" + result.before.avgCost.toFixed(4)}  ${"$" + result.after.avgCost.toFixed(4)}  ${(result.deltas.costPct >= 0 ? "+" : "") + result.deltas.costPct + "%"}`);
+  console.log(`  ${"Avg messages".padEnd(20)} ${String(result.before.avgMessages).padStart(10)}  ${String(result.after.avgMessages).padStart(10)}  ${(result.deltas.messagesPct >= 0 ? "+" : "") + result.deltas.messagesPct + "%"}`);
+  console.log(`  ${"Cache hit rate".padEnd(20)} ${result.before.avgCacheHitRate.toFixed(3).padStart(10)}  ${result.after.avgCacheHitRate.toFixed(3).padStart(10)}  ${(result.deltas.cacheHitPct >= 0 ? "+" : "") + result.deltas.cacheHitPct + "%"}`);
+
+  const verdictLabel = { improved: "UP", regressed: "DOWN", no_change: "FLAT", insufficient_data: "?" };
+  console.log(`\n  Verdict: ${result.verdict.toUpperCase()} (${verdictLabel[result.verdict]})`);
+  console.log(`  Sessions: ${result.before.count} before, ${result.after.count} after\n`);
+}
+
 function cmdDrift(snapshot: boolean): void {
   const dir = findOpenClawDir();
   if (!dir) {
@@ -462,11 +497,14 @@ function cmdDrift(snapshot: boolean): void {
 // Main
 // ---------------------------------------------------------------------------
 
-const { command, days, json, snapshot } = parseArgs();
+const { command, days, json, snapshot, strategy } = parseArgs();
 
 switch (command) {
   case "detect":
     cmdDetect(json);
+    break;
+  case "validate":
+    cmdValidate(days, strategy, json);
     break;
   case "doctor":
     cmdDoctor(json);

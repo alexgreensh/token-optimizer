@@ -1,6 +1,6 @@
 {
   "name": "token-optimizer-openclaw",
-  "version": "1.3.2",
+  "version": "2.0.0",
   "description": "Token waste auditor for OpenClaw. Detects idle burns, model misrouting, and context bloat with dollar savings.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -12,7 +12,8 @@
     "dashboard": "node dist/cli.js dashboard",
     "context": "node dist/cli.js context",
     "quality": "node dist/cli.js quality",
-    "drift": "node dist/cli.js drift"
+    "drift": "node dist/cli.js drift",
+    "validate": "node dist/cli.js validate"
   },
   "bin": {
     "token-optimizer": "dist/cli.js"

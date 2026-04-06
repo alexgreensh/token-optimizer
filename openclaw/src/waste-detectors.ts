@@ -631,6 +631,182 @@ function detectToolLoadingOverhead(
 }
 
 // ---------------------------------------------------------------------------
+// Tier 2: Behavioral waste detectors (ported from Python Sprint 2)
+// ---------------------------------------------------------------------------
+
+/** Detect sessions with many errors suggesting retry churn. */
+function detectRetryChurn(
+  runs: AgentRun[],
+  _config: Record<string, unknown>
+): WasteFinding[] {
+  const churning = runs.filter(
+    (r) => r.outcome === "failure" && r.messageCount > 10 && totalTokens(r.tokens) > 50_000
+  );
+  if (churning.length < 2) return [];
+
+  const totalWaste = churning.reduce((s, r) => s + r.costUsd, 0);
+  const days = spanDays(churning);
+  const monthlyCost = (totalWaste / days) * 30;
+  if (monthlyCost < 0.5) return [];
+
+  return [{
+    system: "openclaw",
+    agentName: "",
+    wasteType: "retry_churn",
+    tier: 2,
+    severity: monthlyCost > 5 ? "high" : "medium",
+    confidence: 0.7,
+    description: `${churning.length} sessions with 10+ messages ending in failure (retry storms)`,
+    monthlyWasteUsd: monthlyCost,
+    monthlyWasteTokens: churning.reduce((s, r) => s + totalTokens(r.tokens), 0),
+    recommendation: "Stop and diagnose after 2 failures instead of retrying. Add early-exit on repeated errors.",
+    fixSnippet: "# Add retry limit to agent config:\n\"maxRetries\": 3",
+    evidence: { churningCount: churning.length },
+  }];
+}
+
+/** Detect sessions where tool errors cascade. */
+function detectToolCascade(
+  runs: AgentRun[],
+  _config: Record<string, unknown>
+): WasteFinding[] {
+  const errorSessions = runs.filter(
+    (r) => r.outcome === "failure" && r.toolsUsed.length > 5 && totalTokens(r.tokens) > 100_000
+  );
+  if (errorSessions.length < 2) return [];
+
+  const totalWaste = errorSessions.reduce((s, r) => s + r.costUsd, 0);
+  const days = spanDays(errorSessions);
+  const monthlyCost = (totalWaste / days) * 30;
+  if (monthlyCost < 0.5) return [];
+
+  return [{
+    system: "openclaw",
+    agentName: "",
+    wasteType: "tool_cascade",
+    tier: 2,
+    severity: monthlyCost > 5 ? "high" : "medium",
+    confidence: 0.6,
+    description: `${errorSessions.length} sessions with 5+ tool calls ending in failure (error cascades)`,
+    monthlyWasteUsd: monthlyCost,
+    monthlyWasteTokens: errorSessions.reduce((s, r) => s + totalTokens(r.tokens), 0),
+    recommendation: "Break error chains early: diagnose the root cause after 2 tool failures.",
+    fixSnippet: "# Add error-break logic:\n\"breakOnConsecutiveErrors\": 3",
+    evidence: { errorSessionCount: errorSessions.length },
+  }];
+}
+
+/** Detect overpowered model usage: expensive model for simple tasks. */
+function detectOverpoweredModel(
+  runs: AgentRun[],
+  _config: Record<string, unknown>
+): WasteFinding[] {
+  const simpleOnExpensive = runs.filter((r) => {
+    if (!EXPENSIVE_MODELS.has(r.model)) return false;
+    if (r.tokens.output > 5000) return false; // not simple if lots of output
+    if (r.messageCount > 10) return false; // not simple if long session
+    if (r.toolsUsed.length > 3) return false; // not simple if many tools
+    return true;
+  });
+
+  if (simpleOnExpensive.length < 3) return [];
+
+  const totalCost = simpleOnExpensive.reduce((s, r) => s + r.costUsd, 0);
+  let haikuCost = 0;
+  for (const r of simpleOnExpensive) {
+    haikuCost += calculateCost(r.tokens, "haiku");
+  }
+  const days = spanDays(simpleOnExpensive);
+  const savings = ((totalCost - haikuCost) / days) * 30;
+  if (savings < 0.5) return [];
+
+  const models = Array.from(new Set(simpleOnExpensive.map((r) => r.model)));
+
+  return [{
+    system: "openclaw",
+    agentName: "",
+    wasteType: "overpowered_model",
+    tier: 2,
+    severity: savings > 10 ? "high" : "medium",
+    confidence: 0.6,
+    description: `${simpleOnExpensive.length} simple sessions (low output, few tools) using ${models.join("/")}`,
+    monthlyWasteUsd: savings,
+    monthlyWasteTokens: simpleOnExpensive.reduce((s, r) => s + totalTokens(r.tokens), 0),
+    recommendation: `Route simple tasks to Haiku. Saves ~$${savings.toFixed(2)}/month.`,
+    fixSnippet: `# Route simple tasks to a cheaper model:\n"model": "haiku"  # for quick checks and simple edits`,
+    evidence: { simpleCount: simpleOnExpensive.length, modelsUsed: models },
+  }];
+}
+
+/** Detect cheap model used for complex tasks. */
+function detectWeakModel(
+  runs: AgentRun[],
+  _config: Record<string, unknown>
+): WasteFinding[] {
+  const CHEAP = new Set(["haiku", "gpt-5-mini", "gpt-5-nano", "gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1-nano",
+    "gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-flash-lite", "deepseek-v3", "qwen3-mini", "local"]);
+
+  const complexOnCheap = runs.filter((r) => {
+    if (!CHEAP.has(r.model)) return false;
+    if (totalTokens(r.tokens) < 100_000) return false;
+    if (r.toolsUsed.length < 10) return false;
+    return true;
+  });
+
+  if (complexOnCheap.length < 2) return [];
+
+  return [{
+    system: "openclaw",
+    agentName: "",
+    wasteType: "weak_model",
+    tier: 2,
+    severity: "low",
+    confidence: 0.5,
+    description: `${complexOnCheap.length} complex sessions (100K+ tokens, 10+ tools) using cheap models`,
+    monthlyWasteUsd: 0,
+    monthlyWasteTokens: 0,
+    recommendation: "Consider Sonnet for complex sessions to reduce errors and retries.",
+    fixSnippet: "# Upgrade model for complex tasks:\n\"model\": \"sonnet\"  # better for multi-tool sessions",
+    evidence: { complexCount: complexOnCheap.length },
+  }];
+}
+
+/** Detect sessions with very high message count relative to output (bad decomposition). */
+function detectBadDecomposition(
+  runs: AgentRun[],
+  _config: Record<string, unknown>
+): WasteFinding[] {
+  // High message count + high input + low output ratio = monolithic prompts causing confusion
+  const monolithic = runs.filter((r) => {
+    if (r.messageCount < 30) return false;
+    if (totalTokens(r.tokens) < 200_000) return false;
+    const ratio = r.tokens.output / Math.max(r.tokens.input, 1);
+    return ratio < 0.02; // less than 2% output
+  });
+
+  if (monolithic.length < 2) return [];
+
+  const totalWaste = monolithic.reduce((s, r) => s + r.costUsd, 0);
+  const days = spanDays(monolithic);
+  const monthlyCost = (totalWaste / days) * 30;
+
+  return [{
+    system: "openclaw",
+    agentName: "",
+    wasteType: "bad_decomposition",
+    tier: 2,
+    severity: "medium",
+    confidence: 0.5,
+    description: `${monolithic.length} sessions with 30+ messages but <2% output ratio (potential monolithic prompts)`,
+    monthlyWasteUsd: monthlyCost,
+    monthlyWasteTokens: monolithic.reduce((s, r) => s + totalTokens(r.tokens), 0),
+    recommendation: "Break large requests into sequential steps: one task per message improves accuracy.",
+    fixSnippet: "# Split monolithic prompts:\n# Instead of one long prompt, chain smaller tasks",
+    evidence: { monolithicCount: monolithic.length },
+  }];
+}
+
+// ---------------------------------------------------------------------------
 // Registry: all detectors in execution order
 // ---------------------------------------------------------------------------
 
@@ -652,6 +828,11 @@ export const ALL_DETECTORS: Array<{
   { name: "abandoned_sessions", tier: 2, fn: detectAbandonedSessions },
   { name: "ghost_token_qjl", tier: 2, fn: detectGhostTokenQJL },
   { name: "tool_loading_overhead", tier: 3, fn: detectToolLoadingOverhead },
+  { name: "retry_churn", tier: 2, fn: detectRetryChurn },
+  { name: "tool_cascade", tier: 2, fn: detectToolCascade },
+  { name: "overpowered_model", tier: 2, fn: detectOverpoweredModel },
+  { name: "weak_model", tier: 2, fn: detectWeakModel },
+  { name: "bad_decomposition", tier: 2, fn: detectBadDecomposition },
 ];
 
 /**

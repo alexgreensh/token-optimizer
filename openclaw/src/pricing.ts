@@ -271,6 +271,28 @@ export function normalizeModelName(modelId: string): string | null {
   return m;
 }
 
+/**
+ * Estimate cost delta if a different model was used.
+ * Returns savings in USD and percentage.
+ */
+export function simulateModelSwitch(
+  tokens: TokenBreakdown,
+  currentModel: string,
+  targetModel: string,
+  openclawDir?: string
+): { currentCost: number; targetCost: number; savingsUsd: number; savingsPct: number } {
+  const currentCost = calculateCost(tokens, currentModel, openclawDir);
+  const targetCost = calculateCost(tokens, targetModel, openclawDir);
+  const savingsUsd = Math.max(0, currentCost - targetCost);
+  const savingsPct = currentCost > 0 ? (savingsUsd / currentCost) * 100 : 0;
+  return {
+    currentCost: Math.round(currentCost * 10000) / 10000,
+    targetCost: Math.round(targetCost * 10000) / 10000,
+    savingsUsd: Math.round(savingsUsd * 10000) / 10000,
+    savingsPct: Math.round(savingsPct * 10) / 10,
+  };
+}
+
 /** Calculate USD cost. Uses user config pricing if available, then defaults. */
 export function calculateCost(
   tokens: TokenBreakdown,

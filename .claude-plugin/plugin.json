@@ -7,7 +7,7 @@
   },
   "homepage": "https://github.com/alexgreensh/token-optimizer",
   "repository": "https://github.com/alexgreensh/token-optimizer",
-  "version": "4.0.0",
+  "version": "4.1.0",
   "license": "AGPL-3.0-only",
   "keywords": ["token", "optimization", "context", "audit", "cost", "coach"]
 }

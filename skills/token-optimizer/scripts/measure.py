@@ -4051,6 +4051,96 @@ def generate_coach_data(focus=None, components=None, trends=None):
     return result
 
 
+def generate_model_routing_block(trends=None):
+    """Generate a model routing advice block from trends data.
+
+    Returns markdown string suitable for CLAUDE.md injection.
+    """
+    if trends is None:
+        try:
+            trends = _collect_trends_data(days=30)
+        except Exception:
+            return None
+
+    if not trends:
+        return None
+
+    model_mix = trends.get("model_mix", {})
+    total = sum(model_mix.values()) if model_mix else 0
+    if total == 0:
+        return None
+
+    opus_pct = round(model_mix.get("opus", 0) / total * 100)
+    sonnet_pct = round(model_mix.get("sonnet", 0) / total * 100)
+    haiku_pct = round(model_mix.get("haiku", 0) / total * 100)
+
+    lines = [
+        "## Model & Thinking Routing (by Token Optimizer)",
+        f"Based on last 30 days: {opus_pct}% Opus, {sonnet_pct}% Sonnet, {haiku_pct}% Haiku.",
+        "- Simple edits, grep, formatting: Sonnet, no extended thinking",
+        "- Architecture, debugging, synthesis: Opus with thinking",
+        "- Subagents for data gathering: Haiku",
+    ]
+
+    # Add specific advice if heavily skewed
+    if opus_pct > 70:
+        lines.append(f"- WARNING: {opus_pct}% Opus is likely overkill. Route simple tasks to Sonnet.")
+    if haiku_pct == 0:
+        lines.append("- Consider Haiku for subagents to reduce cost by 80-90%.")
+
+    return "\n".join(lines)
+
+
+def generate_coach_block(components=None, trends=None):
+    """Generate a passive coaching advice block from quality + savings data.
+
+    Returns markdown string suitable for CLAUDE.md injection.
+    """
+    if components is None:
+        components = measure_components()
+    if trends is None:
+        try:
+            trends = _collect_trends_data(days=30)
+        except Exception:
+            trends = None
+
+    lines = [
+        f"## Session Coaching (by Token Optimizer)",
+    ]
+
+    # Compaction timing
+    if trends:
+        session_count = trends.get("session_count", 0)
+        avg_duration = trends.get("avg_duration_minutes", 0)
+        if avg_duration > 20:
+            lines.append(f"- Sessions average {avg_duration:.0f} min. Use /compact proactively around the midpoint.")
+
+    # Unused skills
+    if trends:
+        # Check for unused MCP via skill analysis proxy
+        never_used = trends.get("skills", {}).get("never_used", [])
+        if len(never_used) > 5:
+            lines.append(f"- {len(never_used)} skills were never used in 30 days. Archive unused ones.")
+
+    # Cache hit rate
+    if trends:
+        daily = trends.get("daily", [])
+        if daily:
+            recent_sessions = []
+            for d in daily[:7]:
+                recent_sessions.extend(d.get("session_details", []))
+            if recent_sessions:
+                avg_chr = sum(s.get("cache_hit_rate", 0) for s in recent_sessions) / len(recent_sessions)
+                avg_chr_pct = round(avg_chr * 100)
+                if avg_chr_pct < 60:
+                    lines.append(f"- Cache hit rate: {avg_chr_pct}%. Restructure CLAUDE.md for better cache reuse.")
+
+    if len(lines) < 2:
+        return None  # No useful advice to give
+
+    return "\n".join(lines)
+
+
 def _find_all_jsonl_files(days=30):
     """Find all JSONL session files across all projects within the given day window."""
     projects_base = CLAUDE_DIR / "projects"
@@ -10689,6 +10779,64 @@ if __name__ == "__main__":
         dry = "--dry-run" in args
         uninstall = "--uninstall" in args
         setup_daemon(dry_run=dry, uninstall=uninstall)
+    elif args[0] in ("inject-routing", "inject-coach", "setup-coach-injection"):
+        from injection import inject_managed_block, remove_managed_block
+
+        def _resolve_claudemd(cli_args):
+            for i, a in enumerate(cli_args):
+                if a == "--file" and i + 1 < len(cli_args):
+                    return cli_args[i + 1]
+            cwd = Path.cwd()
+            candidates = [cwd / "CLAUDE.md", cwd / ".claude" / "CLAUDE.md"]
+            return str(next((c for c in candidates if c.exists()), candidates[0]))
+
+        if args[0] == "setup-coach-injection" and "--uninstall" in args:
+            cwd = Path.cwd()
+            for candidate in [cwd / "CLAUDE.md", cwd / ".claude" / "CLAUDE.md",
+                              HOME / ".claude" / "CLAUDE.md"]:
+                if candidate.exists():
+                    r = remove_managed_block(str(candidate), "COACH")
+                    if r["action"] == "removed":
+                        print(f"  Removed COACH block from {candidate}")
+            print("  Coach injection uninstalled.")
+        else:
+            # Determine section and generator
+            if args[0] == "inject-routing":
+                section, gen_fn, err = "MODEL_ROUTING", generate_model_routing_block, "No trends data available."
+            else:
+                section, gen_fn, err = "COACH", generate_coach_block, "No coaching data available yet."
+
+            block = gen_fn()
+            if not block:
+                print(f"[Error] {err} Run some sessions first.")
+                sys.exit(1)
+
+            target = _resolve_claudemd(args)
+            dry = "--dry-run" in args and args[0] != "setup-coach-injection"
+            result = inject_managed_block(target, section, block, dry_run=dry)
+
+            if dry:
+                print(f"\n  [DRY RUN] Would {result['action']} {section} block in {result['filepath']}")
+                print(f"\n{result['diff']}\n")
+            else:
+                print(f"\n  {result['action'].upper()} {section} block in {result['filepath']}")
+                if result["action"] != "unchanged":
+                    print(f"\n{result['diff']}\n")
+                if args[0] == "setup-coach-injection":
+                    print("  Block will auto-remove after 48h if not refreshed.")
+                    print("  Uninstall: measure.py setup-coach-injection --uninstall")
+    elif args[0] == "check-staleness":
+        from injection import check_staleness, remove_managed_block
+        section = args[1] if len(args) > 1 else "COACH"
+        cwd = Path.cwd()
+        for candidate in [cwd / "CLAUDE.md", cwd / ".claude" / "CLAUDE.md",
+                          HOME / ".claude" / "CLAUDE.md"]:
+            if candidate.exists():
+                s = check_staleness(str(candidate), section)
+                if s["exists"] and s["stale"]:
+                    remove_managed_block(str(candidate), section)
+                    print(f"[Token Optimizer] Removed stale {section} block from {candidate.name} "
+                          f"(age: {s['age_hours']:.0f}h, TTL: 48h)", file=sys.stderr)
     elif args[0] == "coach":
         focus = None
         output_json = "--json" in args

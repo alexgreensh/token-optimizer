@@ -30,7 +30,7 @@ Before making any changes, Token Optimizer creates local backups of your configu
 
 ## Open Source
 
-Token Optimizer is licensed under [AGPL-3.0](LICENSE). The full source code is available at [github.com/alexgreensh/token-optimizer](https://github.com/alexgreensh/token-optimizer) and can be audited by anyone.
+Token Optimizer is licensed under [PolyForm Noncommercial 1.0.0](LICENSE). The full source code is available at [github.com/alexgreensh/token-optimizer](https://github.com/alexgreensh/token-optimizer) and can be audited by anyone.
 
 ## Contact
 

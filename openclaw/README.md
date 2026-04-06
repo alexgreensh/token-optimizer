@@ -145,4 +145,4 @@ Covers 30+ models with verified March 2026 rates: Claude (Opus/Sonnet/Haiku), GP
 
 ## License
 
-AGPL-3.0-only
+PolyForm Noncommercial 1.0.0

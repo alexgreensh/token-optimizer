@@ -215,6 +215,31 @@ def _get_model_cost(model, input_tokens, output_tokens, cache_read=0, cache_crea
     return cost
 
 
+def _simulate_model_switch(session_data, target_model="sonnet"):
+    """Estimate cost delta if target_model was used instead of the dominant model.
+
+    Returns dict with: current_cost, target_cost, savings_usd, savings_pct.
+    """
+    model_usage = session_data.get("model_usage", {})
+    total_input = session_data.get("total_input_tokens", 0)
+    total_output = session_data.get("total_output_tokens", 0)
+    cache_hit = session_data.get("cache_hit_rate", 0)
+    cache_read = int(total_input * cache_hit)
+    uncached = max(0, total_input - cache_read)
+
+    dom_model = max(model_usage, key=model_usage.get) if model_usage else "unknown"
+    current_cost = _get_model_cost(dom_model, uncached, total_output, cache_read, 0)
+    target_cost = _get_model_cost(target_model, uncached, total_output, cache_read, 0)
+    savings = current_cost - target_cost
+
+    return {
+        "current_cost": round(current_cost, 4),
+        "target_cost": round(target_cost, 4),
+        "savings_usd": round(max(0, savings), 4),
+        "savings_pct": round(savings / current_cost * 100, 1) if current_cost > 0 else 0,
+    }
+
+
 def _fmt_context_window(size):
     """Format context window size for display (e.g., '200K', '1M')."""
     if size >= 1_000_000:
@@ -3923,6 +3948,51 @@ def generate_coach_data(focus=None, components=None, trends=None):
                     score -= 5
         except ImportError:
             pass
+
+    # Session-level detectors (run on recent sessions, aggregate findings)
+    try:
+        from detectors.registry import run_all_detectors, triage
+        recent_files = _find_all_jsonl_files(days=7)[:10]  # cap at 10 sessions
+        all_findings = []
+        for jf, _, _ in recent_files:
+            parsed = _parse_session_jsonl(str(jf))
+            if parsed and parsed.get("total_input_tokens", 0) > 0:
+                parsed["jsonl_path"] = str(jf)
+                session_findings = run_all_detectors(parsed)
+                all_findings.extend(session_findings)
+
+        # Deduplicate by detector name, keep highest confidence per type
+        best_by_name = {}
+        for f in all_findings:
+            name = f.get("name", "")
+            if name not in best_by_name or f.get("confidence", 0) > best_by_name[name].get("confidence", 0):
+                best_by_name[name] = f
+
+        triaged = triage(list(best_by_name.values()))
+        for f in triaged:
+            # Enrich overpowered findings with counterfactual
+            detail = f["evidence"]
+            if f["name"] == "overpowered" and recent_files:
+                try:
+                    latest = _parse_session_jsonl(str(recent_files[0][0]))
+                    if latest:
+                        sim = _simulate_model_switch(latest, "sonnet")
+                        if sim["savings_usd"] > 0:
+                            detail += f". If Sonnet: ~${sim['savings_usd']:.2f} saved ({sim['savings_pct']:.0f}%)"
+                except Exception:
+                    pass
+
+            severity = "medium" if f.get("confidence", 0) >= 0.7 else "low"
+            patterns_bad.append({
+                "name": f["name"].replace("_", " ").title(),
+                "severity": severity,
+                "detail": detail,
+                "fix": f["suggestion"],
+                "savings": f"~{f['savings_tokens']:,} tokens",
+            })
+            score -= 3
+    except ImportError:
+        pass
 
     # Clamp score
     score = max(0, min(100, score))

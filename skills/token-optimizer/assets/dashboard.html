@@ -2898,6 +2898,41 @@ var DB = (function() {
       html += '</div></div></div>';
     }
 
+    // Subagent cost breakdown
+    var sc = c.subagent_costs;
+    if (sc && sc.total_usd > 0) {
+      html += '<div class="card wide"><div class="card-header"><span>Subagent Spend</span><span class="label">' + sc.pct_of_spend + '% of total</span></div>';
+      html += '<div style="text-align:center;padding:var(--s-3) 0;">' +
+        '<div style="font-size:36px;font-weight:700;font-family:var(--font-mono);color:' + (sc.pct_of_spend > 30 ? '#ff9f43' : 'var(--c-accent-cyan)') + ';">$' + sc.total_usd.toFixed(2) + '</div>' +
+        '<div style="font-size:13px;color:var(--c-text-dim);">spent on subagents (last 7 days)</div>' +
+        '</div>';
+      var topSubs = sc.top_subagents || [];
+      if (topSubs.length > 0) {
+        topSubs.slice(0, 5).forEach(function(s) {
+          var nameShort = s.name.length > 20 ? s.name.slice(0, 20) + '...' : s.name;
+          html += '<div style="display:flex;justify-content:space-between;padding:8px var(--s-3);border-bottom:1px solid var(--c-border);font-size:14px;">' +
+            '<div><span style="color:var(--c-text-main);">' + esc(nameShort) + '</span> <span style="color:var(--c-text-dim);">(' + s.model + ')</span></div>' +
+            '<div style="font-family:var(--font-mono);color:var(--c-accent-cyan);">$' + s.cost_usd.toFixed(2) + '</div></div>';
+        });
+      }
+      html += '</div>';
+    }
+
+    // Costly prompts
+    var cp = c.costly_prompts;
+    if (cp && cp.length > 0) {
+      html += '<div class="card wide"><div class="card-header"><span>Most Expensive Prompts</span><span class="label">last 7 days</span></div>';
+      cp.slice(0, 5).forEach(function(p, i) {
+        var preview = (p.text || '').replace(/\n/g, ' ').slice(0, 80);
+        html += '<div style="padding:10px var(--s-3);border-bottom:1px solid var(--c-border);">' +
+          '<div style="display:flex;justify-content:space-between;margin-bottom:4px;">' +
+          '<span style="font-size:13px;color:var(--c-text-dim);">#' + (i + 1) + ' (' + fn(p.tokens_in || 0) + ' input tokens)</span>' +
+          '<span style="font-family:var(--font-mono);font-weight:500;color:' + (p.cost_usd > 1 ? '#ff6b6b' : p.cost_usd > 0.5 ? '#ff9f43' : 'var(--c-text-main)') + ';">$' + p.cost_usd.toFixed(4) + '</span></div>' +
+          '<div style="font-size:14px;color:var(--c-text-dim);font-style:italic;">"' + esc(preview) + '..."</div></div>';
+      });
+      html += '</div>';
+    }
+
     // Coaching questions
     var questions = c.questions || [];
     if (questions.length > 0) {

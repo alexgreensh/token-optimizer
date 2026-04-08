@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/alexgreensh/token-optimizer/releases"><img src="https://img.shields.io/badge/version-3.5.2-green" alt="Version 3.5.2"></a>
+  <a href="https://github.com/alexgreensh/token-optimizer/releases"><img src="https://img.shields.io/badge/version-4.2.2-green" alt="Version 4.2.2"></a>
   <a href="https://github.com/alexgreensh/token-optimizer"><img src="https://img.shields.io/badge/Claude_Code-Plugin-blueviolet" alt="Claude Code Plugin"></a>
   <a href="https://github.com/alexgreensh/token-optimizer/tree/main/openclaw"><img src="https://img.shields.io/badge/OpenClaw-Plugin-brightgreen" alt="OpenClaw Plugin"></a>
   <a href="https://github.com/alexgreensh/token-optimizer/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue.svg" alt="License: PolyForm Noncommercial"></a>
@@ -73,129 +73,7 @@ Token Optimizer tracks all of this. Quality score, degradation bands, compaction
 
 ---
 
-### NEW in v3.1: Efficiency Grading, Read-Cache, Git-Context, .contextignore
-
-| Feature | What You Get |
-|---------|-------------|
-| **Efficiency Grading** | Every quality score now shows a letter grade (S/A/B/C/D/F). Status line shows `ContextQ:A(82)`. Dashboard badges, coach tab, and CLI output all include grades. At a glance: S is peak, F means your context is rotting. |
-| **PreToolUse Read-Cache** | Detects redundant file reads and optionally blocks them with structural digests. Default ON (warn mode). Opt out: `TOKEN_OPTIMIZER_READ_CACHE=0` or config `{"read_cache_enabled": false}`. Upgrade to `TOKEN_OPTIMIZER_READ_CACHE_MODE=block` after gaining confidence. Saves 8-30% tokens from read deduplication. |
-| **Git-Aware Context** | `git-context` command analyzes your working tree to suggest files that should be in context: test companions, frequently co-changed files from last 50 commits, and import chains for Python/JS/TS. |
-| **.contextignore** | Block files from being read with gitignore-style patterns. Project root `.contextignore` + global `~/.claude/.contextignore`. Hard block regardless of read-cache mode. |
-| **Performance** | PostToolUse archive-result extracted to standalone script (~40ms, saves 13-18s per session). Read-cache default ON. Per-session decision logs. |
-
-```bash
-# Read-cache is ON by default (warn mode). To disable:
-export TOKEN_OPTIMIZER_READ_CACHE=0               # Disable
-export TOKEN_OPTIMIZER_READ_CACHE_MODE=block       # Upgrade to block mode
-
-# Git context suggestions
-python3 measure.py git-context                     # Suggest files for current changes
-python3 measure.py git-context --json              # Machine-readable output
-
-# Read-cache management
-python3 measure.py read-cache-stats --session ID   # Cache stats for a session
-python3 measure.py read-cache-clear                # Clear all caches
-```
-
-Create `.contextignore` in your project root (provided by this plugin, not a built-in Claude Code feature):
-```
-# Block build artifacts and lockfiles
-dist/**
-node_modules/**
-package-lock.json
-yarn.lock
-*.min.js
-*.min.css
-```
-
----
-
-### v3.4.3: Claude Dashboard Drill-Downs + TTL Clarity
-
-| Feature | What You Get |
-|---------|-------------|
-| **Stable Session Drill-Downs** | Session turn breakdowns now key off a stable session identity instead of fragile slugs, so the visible Claude dashboard rows expand much more consistently. |
-| **TTL Visibility** | Session tables and turn deep dives now show cache TTL mix (`1h` vs `5m`) alongside the existing cache hit metrics. |
-| **Pacing Metrics** | Session rows and per-turn breakdowns now show time between calls so users can see whether a thread was steady or stop-start. |
-| **User-First Explanations** | Hover help was added for session and turn columns so users can understand `Cache`, `TTL`, `Pacing`, `Cache R`, and `Cache W` without knowing the jargon. |
-| **Served Dashboard Fallback** | The served dashboard can now fetch older session turn breakdowns on demand, while the local static dashboard keeps the default 7-day slice preloaded for speed. |
-
----
-
-### v3.4.2: Security Posture Cleanup
-
-| Feature | What You Get |
-|---------|-------------|
-| **Safer Script Install Docs** | README now points to clone-and-run install steps instead of advertising `curl | bash`, while keeping auto-updates for script-installed users. |
-| **Forensics Review** | Repo-forensics review confirmed no outbound exfiltration path in the shipped plugin code; scanner noise is documented and the trust-posture concern is reduced. |
-
----
-
-### v3.4.1: Combined Checkpoint Policy + Local Telemetry
-
-| Feature | What You Get |
-|---------|-------------|
-| **Combined Checkpoints** | Captures session state at `20%`, `35%`, `50%`, `65%`, and `80%` fill, plus first quality drops below `80`, `70`, `50`, and `40`. Also snapshots before agent fan-out and after big edit batches. |
-| **Background Guards** | One-shot threshold capture, cooldown suppression, and deterministic checkpoint extraction. No LLM calls in the checkpoint path. |
-| **Local Checkpoint Telemetry** | Optional, local-only telemetry. Enable with `TOKEN_OPTIMIZER_CHECKPOINT_TELEMETRY=1` to see whether checkpoints are firing, which triggers are active, and the last captured event. No external analytics. |
-| **OpenClaw Doctor** | OpenClaw now includes checkpoint health plus recent-event visibility through `token-optimizer doctor` and `token-optimizer checkpoint-stats`. |
-| **Restore Hardening** | Automatic restore and cleanup reject symlinked checkpoint files and out-of-root paths. |
-
-```bash
-TOKEN_OPTIMIZER_CHECKPOINT_TELEMETRY=1 python3 measure.py checkpoint-stats --days 7
-TOKEN_OPTIMIZER_CHECKPOINT_TELEMETRY=1 npx token-optimizer checkpoint-stats --days 7
-```
-
----
-
-### v3.0: Progressive Checkpoints, Tool Archive, Savings Tracking, JSONL Toolkit, Attention Optimizer
-
-| Feature | What You Get |
-|---------|-------------|
-| **Progressive Checkpoints** | Captures session state early and restores from the richest eligible checkpoint instead of waiting for emergency compaction. |
-| **Tool Result Archive** | PostToolUse hook archives large tool results (>4KB) to disk. After compaction, use `expand <tool-use-id>` to retrieve any archived result instead of re-running the command. MCP tool results over 8KB get automatically trimmed with an expand hint. |
-| **Savings Dashboard** | Tracks cumulative dollar savings from setup optimization, checkpoint restores, and tool archiving. `savings` command shows a breakdown by category with daily averages and monthly estimates. |
-| **JSONL Toolkit** | Three utilities for session JSONL files: `jsonl-inspect` (stats, record counts, largest records), `jsonl-trim` (replace large tool results with placeholders), `jsonl-dedup` (detect and remove duplicate system reminders). All use streaming I/O and atomic writes. |
-| **Attention Optimizer** | Scores CLAUDE.md against the U-shaped attention curve. Flags critical rules (NEVER/ALWAYS/MUST) sitting in the low-attention zone (30-70% position). `attention-optimize` generates a reordered version that moves critical rules to high-attention zones. |
-
-```bash
-python3 measure.py savings                      # Dollar savings report (last 30 days)
-python3 measure.py attention-score               # Score CLAUDE.md attention placement
-python3 measure.py attention-optimize --dry-run  # Preview optimized section order
-python3 measure.py jsonl-inspect                 # Stats on current session JSONL
-python3 measure.py jsonl-trim --dry-run          # Preview trimming large tool results
-python3 measure.py jsonl-dedup --dry-run         # Preview removing duplicate reminders
-python3 measure.py expand --list                 # List all archived tool results
-python3 measure.py expand <tool-use-id>          # Retrieve a specific archived result
-```
-
----
-
-### v2.6: Per-Turn Analytics and Cost Intelligence
-
-| Feature | What You Get |
-|---------|-------------|
-| **Per-turn token breakdown** | Click any session to see input/output/cache per API call. Spike detection highlights context jumps. |
-| **Cost per session** | Every session shows estimated API cost. Daily totals in the trends view. |
-| **Four-tier pricing** | Anthropic API, Vertex Global, Vertex Regional (+10%), AWS Bedrock. Set once, all costs update. |
-| **Cache visualization** | Stacked bars showing input vs output vs cache-read vs cache-write split. See how well prompt caching works. |
-| **Session quality overlay** | Color-coded quality scores on every session. Green = healthy, yellow = degrading, red = trouble. |
-| **Kill stale sessions** | Terminates zombie headless sessions. Dashboard shows kill buttons with clear explanation. |
-| **Live agent tracking** | Status bar shows running subagents with model, description, and elapsed time. Spot misrouted models instantly. |
-| **Session duration warning** | Appears in the status bar only when quality drops below 75. Contextual, not noise. |
-
-```bash
-python3 measure.py conversation              # Per-turn breakdown (current session)
-python3 measure.py conversation <session-id>  # Per-turn breakdown (specific session)
-python3 measure.py pricing-tier               # View/set pricing tier
-python3 measure.py pricing-tier vertex-regional  # Switch to Vertex Regional pricing
-python3 measure.py kill-stale                 # Kill sessions running >12h
-python3 measure.py kill-stale --dry-run       # Preview without killing
-```
-
----
-
-### What questions can you ask?
+## What questions can you ask?
 
 | Command | What You Get |
 |---------|-------------|
@@ -217,7 +95,11 @@ python3 measure.py kill-stale --dry-run       # Preview without killing
 | `expand` | **"Get that result back."** Retrieves tool results archived before compaction. Never re-run a command twice. |
 | `/token-optimizer` | **"Fix it for me."** Interactive audit with 6 parallel agents. Guided fixes with diffs and backups. |
 
-### Quality Scoring (7 signals)
+---
+
+## Quality Scoring
+
+Seven signals, weighted to reflect real-world impact:
 
 | Signal | Weight | What It Means For You |
 |--------|--------|----------------|
@@ -229,7 +111,23 @@ python3 measure.py kill-stale --dry-run       # Preview without killing
 | **Decision density** | 8% | Are you having a real conversation or is it mostly overhead? |
 | **Agent efficiency** | 7% | Are your subagents pulling their weight or just burning tokens? |
 
-Degradation bands in the status bar:
+### Efficiency Grades
+
+Every quality score includes a letter grade for quick triage. The status line shows something like `ContextQ:A(82)`, and the same grade appears in the dashboard, coach tab, and CLI output.
+
+| Grade | Range | Meaning |
+|-------|-------|---------|
+| **S** | 90-100 | Peak efficiency. Everything is clean. |
+| **A** | 80-89 | Healthy. Minor optimization possible. |
+| **B** | 70-79 | Degradation starting. Worth investigating. |
+| **C** | 60-69 | Significant waste. Coach mode will help. |
+| **D** | 50-59 | Serious problems. Multiple anti-patterns likely. |
+| **F** | 0-49 | Context is rotting. Immediate action needed. |
+
+### Degradation Bands
+
+The status bar shifts color as your context fills:
+
 - Green (<50% fill): peak quality zone
 - Yellow (50-70%): degradation starting
 - Orange (70-80%): quality dropping
@@ -243,52 +141,64 @@ This is a real session. 708 messages, 2 compactions, 88% of the original context
 
 ---
 
-## The Problem
+## Smart Compaction: Don't Lose Your Work
 
-Every message you send to Claude Code re-sends everything: system prompt, tool definitions, MCP servers, skills, commands, CLAUDE.md, MEMORY.md, and system reminders. The API is stateless. These are the ghost tokens: invisible overhead that eats your context window before you type a word.
+When auto-compact fires, 60-70% of your conversation vanishes. Decisions, error-fix sequences, agent state: gone. Smart Compaction saves all of it as checkpoints before compaction, then restores what the summary dropped.
 
-Prompt caching makes this [cheaper](https://code.claude.com/docs/en/costs) (90% cost reduction on cached tokens). But cheaper doesn't mean free, and it doesn't mean small. Those tokens still fill your context window, still count toward your plan's rate limits on every message, and still degrade output quality. On Claude Max or Pro, ghost tokens eat into the same usage caps you need for actual work.
+```bash
+python3 measure.py setup-smart-compact    # checkpoint + restore hooks
+```
 
-The more you've customized Claude Code, the worse it gets. And at 1M, the real problem isn't startup overhead, it's the compounding cost: degradation as the window fills, plus rate limit burn from overhead you never see.
+### Progressive Checkpoints
 
-![What happens inside a 1M session](skills/token-optimizer/assets/user-profiles.svg)
+Rather than waiting for emergency compaction, Token Optimizer captures session state at multiple thresholds: `20%`, `35%`, `50%`, `65%`, and `80%` context fill, plus quality drops below `80`, `70`, `50`, and `40`. It also snapshots before agent fan-out and after large edit batches. On restore, it picks the richest eligible checkpoint, not just the most recent one.
 
-### Where it all goes
+Background guards handle one-shot threshold capture, cooldown suppression, and deterministic extraction. No LLM calls in the checkpoint path.
 
-**Fixed overhead** (everyone pays): System prompt (~3K tokens) plus built-in tool definitions (12-17K tokens). About 8-10% at 200K, or 1.5-2% at 1M.
+### Tool Result Archive
 
-**Autocompact buffer**: ~30-35K tokens (~16%) reserved for compaction headroom.
+The PostToolUse hook archives large tool results (>4KB) to disk. After compaction, use `expand <tool-use-id>` to retrieve any archived result instead of re-running the command. MCP tool results over 8KB get automatically trimmed with an expand hint.
 
-**MCP tools**: The biggest variable. Anthropic's team [measured 134K tokens consumed by tool definitions](https://www.anthropic.com/engineering/advanced-tool-use) before optimization. [Tool Search](https://www.anthropic.com/engineering/advanced-tool-use) reduced this by 85%, but servers still add up.
+```bash
+python3 measure.py expand --list                 # List all archived tool results
+python3 measure.py expand <tool-use-id>          # Retrieve a specific archived result
+```
 
-**Your config stack** (what this tool optimizes): CLAUDE.md that's grown organically. MEMORY.md that duplicates half of it. 50+ skills you installed and forgot. Commands you never use. [`@imports`](https://code.claude.com/docs/en/memory). [`.claude/rules/`](https://code.claude.com/docs/en/memory). No `permissions.deny` rules.
+### Session Continuity
 
-## What This Does
+Sessions auto-checkpoint on end, /clear, and crashes. On a fresh session, Token Optimizer offers a pointer to the most recent relevant checkpoint instead of auto-injecting old context.
 
-One command. Six parallel agents audit your entire setup. Prioritized fixes with exact token savings. Everything backed up before any change.
+Enable optional local-only checkpoint telemetry to see whether checkpoints are firing and which triggers are active:
 
-![How Token Optimizer works](skills/token-optimizer/assets/how-it-works.svg)
+```bash
+TOKEN_OPTIMIZER_CHECKPOINT_TELEMETRY=1 python3 measure.py checkpoint-stats --days 7
+```
 
-You see diffs. You approve each fix. Nothing irreversible.
+---
 
-### What it audits
+## Live Quality Bar: Know Before It's Too Late
 
-| Area | What It Catches |
-|------|----------------|
-| **CLAUDE.md** | Content that should be skills or reference files. Duplication with MEMORY.md. [`@imports`](https://code.claude.com/docs/en/memory). Poor cache structure. |
-| **MEMORY.md** | Overlap with CLAUDE.md. Verbose entries. Content past the [200-line auto-load cap](https://code.claude.com/docs/en/memory). |
-| **Skills** | Unused skills loading frontmatter (~100 tokens each). Duplicates. Wrong directory. Stale plugin cache. Local/plugin overlaps. |
-| **MCP Servers** | Broken/unused servers. Duplicate tools. Missing [Tool Search](https://www.anthropic.com/engineering/advanced-tool-use). |
-| **Commands** | Rarely-used commands (~50 tokens each). |
-| **Rules & Advanced** | [`.claude/rules/`](https://code.claude.com/docs/en/memory) overhead. Missing `permissions.deny`. No hooks. |
+A glance at your terminal tells you if you're in trouble. Colors shift from green to red as quality degrades. When quality drops below 75, session duration appears as a warning. Running subagents show with their model and elapsed time so you can spot misrouted models.
 
-### The fix: progressive disclosure
+![Status Bar Degradation](skills/token-optimizer/assets/status-bar.svg)
 
-| Where | Token Cost | What Goes Here |
-|-------|-----------|----------------|
-| **CLAUDE.md** | Every message (~800 token target) | Identity, critical rules, key paths |
-| **Skills & references** | ~100 tokens in menu, full when invoked | Workflows, configs, standards |
-| **Project files** | Zero until read | Guides, templates, documentation |
+```bash
+python3 measure.py setup-quality-bar      # one-time install
+```
+
+**My quality bar disappeared, how do I get it back?** Running Claude Code's built-in `/statusline` rewrites the `statusLine` key in `~/.claude/settings.json` and silently overwrites Token Optimizer's entry. SessionStart detects this and **auto-restores** the quality bar. Just start a new session and it's back. You'll see a one-line notice explaining what happened.
+
+**I really don't want the quality bar anymore, how do I turn it off for good?** Run:
+
+```bash
+python3 measure.py setup-quality-bar --uninstall
+```
+
+This removes the components **and** writes `quality_bar_disabled: true` to `~/.claude/token-optimizer/config.json`. The opt-out is sticky across sessions. SessionStart will not auto-restore it. You can also just tell Claude Code in natural language: _"remove the Token Optimizer statusline"_, and Claude will run the uninstall command for you.
+
+**I changed my mind, bring it back.** Run `python3 measure.py setup-quality-bar`. Explicit install clears the opt-out flag automatically.
+
+**I want to keep my own custom statusline and also see the quality score.** The custom-statusline path is still respected when you run `setup-quality-bar` directly. You'll get integration instructions for reading `~/.claude/token-optimizer/quality-cache.json` from your own script instead.
 
 ---
 
@@ -300,6 +210,14 @@ After the audit, you get an interactive HTML dashboard.
 
 Every component is clickable. Expand any item to see why it matters, what the trade-offs are, and what changes. Toggle the fixes you want, and copy a ready-to-paste optimization prompt.
 
+### What the Dashboard Shows
+
+Click any session to see a per-turn breakdown of input, output, and cache tokens for each API call, with spike detection highlighting context jumps. Each session shows estimated API cost across four pricing tiers (Anthropic API, Vertex Global, Vertex Regional, AWS Bedrock). Set your tier once and all costs update.
+
+Cache visualization uses stacked bars to show input vs output vs cache-read vs cache-write split, with TTL mix (`1h` vs `5m`) shown alongside hit metrics. Session rows include pacing metrics (time between calls) so you can see whether a thread was steady or stop-start. Hover help on columns explains `Cache`, `TTL`, `Pacing`, `Cache R`, and `Cache W` without jargon.
+
+Color-coded quality scores overlay every session: green for healthy, yellow for degrading, red for trouble. Session drill-downs key off stable session identity for consistent expansion.
+
 ### Persistent Dashboard
 
 The dashboard auto-regenerates after every session (via the SessionEnd hook). Bookmark it and it's always up to date.
@@ -308,44 +226,6 @@ The dashboard auto-regenerates after every session (via the SessionEnd hook). Bo
 python3 measure.py setup-daemon     # Bookmarkable URL at http://localhost:24842/token-optimizer
 python3 measure.py dashboard --serve # One-time serve over HTTP
 ```
-
----
-
-## Smart Compaction: Don't Lose Your Work
-
-When auto-compact fires, 60-70% of your conversation vanishes. Decisions, error-fix sequences, agent state: gone. Smart Compaction saves all of it as checkpoints before compaction, then restores what the summary dropped.
-
-```bash
-python3 measure.py setup-smart-compact    # checkpoint + restore hooks
-```
-
-### Live Quality Bar: Know Before It's Too Late
-
-A glance at your terminal tells you if you're in trouble. Colors shift from green to red as quality degrades. When quality drops below 75, session duration appears as a warning. Running subagents show with their model and elapsed time so you can spot misrouted models.
-
-![Status Bar Degradation](skills/token-optimizer/assets/status-bar.svg)
-
-```bash
-python3 measure.py setup-quality-bar      # one-time install
-```
-
-**My quality bar disappeared — how do I get it back?** Running Claude Code's built-in `/statusline` rewrites the `statusLine` key in `~/.claude/settings.json` and silently overwrites Token Optimizer's entry. Since v3.5.1, SessionStart detects this and **auto-restores** the quality bar — just start a new session and it's back. You'll see a one-line notice explaining what happened.
-
-**I really don't want the quality bar anymore — how do I turn it off for good?** Run:
-
-```bash
-python3 measure.py setup-quality-bar --uninstall
-```
-
-This removes the components **and** writes `quality_bar_disabled: true` to `~/.claude/token-optimizer/config.json`. The opt-out is sticky across sessions — SessionStart will not auto-restore it. You can also just tell Claude Code in natural language: _"remove the Token Optimizer statusline"_, and Claude will run the uninstall command for you.
-
-**I changed my mind, bring it back.** Run `python3 measure.py setup-quality-bar` — explicit install clears the opt-out flag automatically.
-
-**I want to keep my own custom statusline and also see the quality score.** The custom-statusline path is still respected when you run `setup-quality-bar` directly. You'll get integration instructions for reading `~/.claude/token-optimizer/quality-cache.json` from your own script instead.
-
-### Session Continuity: Pick Up Where You Left Off
-
-Sessions auto-checkpoint on end, /clear, and crashes. On a fresh session, Token Optimizer offers a pointer to the most recent relevant checkpoint instead of auto-injecting old context.
 
 ---
 
@@ -362,6 +242,8 @@ python3 measure.py health           # Session hygiene check
 python3 measure.py plugin-cleanup   # Detect duplicate skills + archive local/plugin overlaps
 ```
 
+---
+
 ## Coach Mode: Not Sure Where to Start?
 
 ```
@@ -370,7 +252,7 @@ python3 measure.py plugin-cleanup   # Detect duplicate skills + archive local/pl
 
 Tell it your goal. Get back specific, prioritized fixes with exact token savings. Detects 8 named anti-patterns (The Kitchen Sink, The Hoarder, The Monolith...) and recommends multi-agent design patterns that actually save context.
 
-### Waste Detectors (v4.0+)
+### Waste Detectors
 
 9 automated detectors analyze your session patterns and surface actionable findings:
 
@@ -386,21 +268,91 @@ Tell it your goal. Get back specific, prioritized fixes with exact token savings
 | Bad decomposition | Monolithic 500+ word prompts doing too much |
 | Wasteful thinking | Extended thinking >2x output for small edits |
 
-### Subagent Cost Breakdown (v4.2+)
+### Subagent Cost Breakdown
 
 See exactly how much your subagents cost: total spend, % of combined budget, and top offenders ranked by cost. Flags when subagents consume >30% of total.
 
-### Costly Prompt Ranking (v4.2+)
+### Costly Prompt Ranking
 
 See which prompts cost the most: pairs each user message with the cost of the response, ranks top 5. Shows what you asked, not just totals.
 
-### CLAUDE.md Injection (v4.1+)
+### CLAUDE.md Routing Injection
 
-Auto-generate model routing instructions from your actual usage data and inject them into CLAUDE.md. Claude reads these every session and routes accordingly. 48h staleness guard auto-removes stale advice.
+Auto-generate model routing instructions from your actual usage data and inject them into CLAUDE.md. Claude reads these every session and routes accordingly. A 48-hour staleness guard auto-removes stale advice.
 
 ```bash
 python3 measure.py inject-routing --dry-run   # Preview
 python3 measure.py inject-routing              # Inject (with approval)
+```
+
+---
+
+## Read-Cache and Context Tools
+
+### PreToolUse Read-Cache
+
+Detects redundant file reads and optionally blocks them with structural digests. Default ON in warn mode. Saves 8-30% tokens from read deduplication.
+
+```bash
+# Read-cache is ON by default (warn mode). To disable:
+export TOKEN_OPTIMIZER_READ_CACHE=0               # Disable
+export TOKEN_OPTIMIZER_READ_CACHE_MODE=block       # Upgrade to block mode
+
+# Read-cache management
+python3 measure.py read-cache-stats --session ID   # Cache stats for a session
+python3 measure.py read-cache-clear                # Clear all caches
+```
+
+Opt out entirely with `TOKEN_OPTIMIZER_READ_CACHE=0` or config `{"read_cache_enabled": false}`. Upgrade to `TOKEN_OPTIMIZER_READ_CACHE_MODE=block` after gaining confidence.
+
+### Git-Aware Context
+
+Analyzes your working tree to suggest files that should be in context: test companions, frequently co-changed files from last 50 commits, and import chains for Python/JS/TS.
+
+```bash
+python3 measure.py git-context                     # Suggest files for current changes
+python3 measure.py git-context --json              # Machine-readable output
+```
+
+### .contextignore
+
+Block files from being read with gitignore-style patterns. Supports project root `.contextignore` and global `~/.claude/.contextignore`. Hard block regardless of read-cache mode. This is provided by Token Optimizer, not a built-in Claude Code feature.
+
+```
+# Block build artifacts and lockfiles
+dist/**
+node_modules/**
+package-lock.json
+yarn.lock
+*.min.js
+*.min.css
+```
+
+### Attention Optimizer
+
+Scores CLAUDE.md against the U-shaped attention curve. Flags critical rules (NEVER/ALWAYS/MUST) sitting in the low-attention zone (30-70% position). Generates a reordered version that moves critical rules to high-attention zones.
+
+```bash
+python3 measure.py attention-score               # Score CLAUDE.md attention placement
+python3 measure.py attention-optimize --dry-run  # Preview optimized section order
+```
+
+### JSONL Toolkit
+
+Three utilities for session JSONL files: `jsonl-inspect` (stats, record counts, largest records), `jsonl-trim` (replace large tool results with placeholders), `jsonl-dedup` (detect and remove duplicate system reminders). All use streaming I/O and atomic writes.
+
+```bash
+python3 measure.py jsonl-inspect                 # Stats on current session JSONL
+python3 measure.py jsonl-trim --dry-run          # Preview trimming large tool results
+python3 measure.py jsonl-dedup --dry-run         # Preview removing duplicate reminders
+```
+
+### Savings Tracking
+
+Tracks cumulative dollar savings from setup optimization, checkpoint restores, and tool archiving.
+
+```bash
+python3 measure.py savings                      # Dollar savings report (last 30 days)
 ```
 
 ---

@@ -5171,6 +5171,25 @@ def _is_file_collected(conn, jsonl_path):
     return cur.fetchone() is not None
 
 
+def _needs_model_attribution_rebuild(conn):
+    """Check if DB predates the #18 model attribution fix (schema version < 2)."""
+    try:
+        ver = conn.execute("PRAGMA user_version").fetchone()[0]
+        if ver < 2:
+            # Check if there's any data to rebuild
+            row = conn.execute("SELECT COUNT(*) FROM session_log").fetchone()
+            return row and row[0] > 0
+    except sqlite3.Error:
+        pass
+    return False
+
+
+def _mark_schema_version(conn, version=2):
+    """Set schema version after migration."""
+    conn.execute(f"PRAGMA user_version = {version}")
+    conn.commit()
+
+
 def collect_sessions(days=90, quiet=False, rebuild=False):
     """Parse new JSONL files and insert into SQLite. Zero token cost.
 
@@ -5179,6 +5198,13 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
     measurement fix like #18 model attribution).
     """
     conn = _init_trends_db()
+
+    # Auto-rebuild once after updating to v4.2.1+ (fix #18: model attribution)
+    if not rebuild and _needs_model_attribution_rebuild(conn):
+        if not quiet:
+            print("[Token Optimizer] One-time rebuild for corrected model attribution (fix #18)...")
+        rebuild = True
+
     if rebuild:
         if not quiet:
             print("[Token Optimizer] Rebuilding trends DB (re-parsing all sessions)...")
@@ -5321,6 +5347,7 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
         new_count += 1
 
     conn.commit()
+    _mark_schema_version(conn, 2)
     conn.close()
 
     if not quiet:

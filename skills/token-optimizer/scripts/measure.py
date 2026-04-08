@@ -5171,12 +5171,23 @@ def _is_file_collected(conn, jsonl_path):
     return cur.fetchone() is not None
 
 
-def collect_sessions(days=90, quiet=False):
+def collect_sessions(days=90, quiet=False, rebuild=False):
     """Parse new JSONL files and insert into SQLite. Zero token cost.
 
     Skips files already collected. Safe to run repeatedly.
+    With rebuild=True, drops and re-collects all data (e.g., after a
+    measurement fix like #18 model attribution).
     """
     conn = _init_trends_db()
+    if rebuild:
+        if not quiet:
+            print("[Token Optimizer] Rebuilding trends DB (re-parsing all sessions)...")
+        conn.execute("DELETE FROM session_log")
+        conn.execute("DELETE FROM daily_stats")
+        conn.execute("DELETE FROM model_daily")
+        conn.execute("DELETE FROM skill_daily")
+        conn.execute("DELETE FROM subagent_daily")
+        conn.commit()
     files = _find_all_jsonl_files(days)
     if not files:
         if not quiet:
@@ -10967,7 +10978,8 @@ if __name__ == "__main__":
                     days = int(args[i + 1])
                 except ValueError:
                     pass
-        collect_sessions(days=days, quiet=quiet)
+        rebuild = "--rebuild" in args
+        collect_sessions(days=days, quiet=quiet, rebuild=rebuild)
     elif args[0] == "health":
         session_health()
     elif args[0] == "kill-stale":

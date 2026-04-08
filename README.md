@@ -31,6 +31,7 @@ Opus 4.6 drops from 93% to 76% accuracy across a 1M context window. Compaction l
 
 ```bash
 /plugin marketplace add alexgreensh/token-optimizer
+/plugin install token-optimizer@alexgreensh-token-optimizer
 ```
 
 Then in Claude Code: `/token-optimizer`

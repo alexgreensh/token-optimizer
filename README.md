@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/alexgreensh/token-optimizer/releases"><img src="https://img.shields.io/badge/version-4.2.2-green" alt="Version 4.2.2"></a>
+  <a href="https://github.com/alexgreensh/token-optimizer/releases"><img src="https://img.shields.io/badge/version-4.4.0-green" alt="Version 4.4.0"></a>
   <a href="https://github.com/alexgreensh/token-optimizer"><img src="https://img.shields.io/badge/Claude_Code-Plugin-blueviolet" alt="Claude Code Plugin"></a>
   <a href="https://github.com/alexgreensh/token-optimizer/tree/main/openclaw"><img src="https://img.shields.io/badge/OpenClaw-Plugin-brightgreen" alt="OpenClaw Plugin"></a>
   <a href="https://github.com/alexgreensh/token-optimizer/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue.svg" alt="License: PolyForm Noncommercial"></a>
@@ -50,7 +50,8 @@ Works on Claude Code and [OpenClaw](#openclaw-plugin). Each platform gets its ow
 ## What makes this different?
 
 `/context` tells you your context is 73% full. Token Optimizer tells you WHY,
-shows you which 12K tokens are wasted on skills you never use, checkpoints your
+shows you which 12K tokens are wasted on skills you never use, finds the 47
+orphaned topic files in your MEMORY.md that Claude can't see, checkpoints your
 decisions before compaction destroys them, and gives you a quality score that
 tracks how much dumber your AI is getting as the session goes on.
 
@@ -99,8 +100,9 @@ You see diffs. You approve each fix. Nothing irreversible.
 | `kill-stale` | **"Clean up zombies."** Terminate headless sessions running 12+ hours. |
 | `git-context` | **"What files matter right now?"** Test companions, co-changed files, import chains for your current git diff. |
 | `trends` | **"What's actually being used?"** Skill adoption, model mix, overhead trajectory over time. |
-| `coach` | **"Where do I start?"** Detects 8 named anti-patterns and recommends specific fixes. |
-| `dashboard` | **"Show me everything."** Interactive HTML dashboard with all analytics. |
+| `coach` | **"Where do I start?"** Health score with earned vs neutral signals. Detects anti-patterns, shows what's working, flags what's not. |
+| `memory-review` | **"Is my MEMORY.md broken?"** Structural audit: orphaned files, broken links, invisible entries past line 200, duplicate rules, stale content. Shows exactly what to fix and how many tokens you'd save. |
+| `dashboard` | **"Show me everything."** Interactive HTML dashboard with all analytics, CLAUDE.md/MEMORY.md health cards, staleness warnings. |
 | `savings` | **"How much have I saved?"** Cumulative dollar savings from optimizations, checkpoint restores, and archives. |
 | `attention-score` | **"Is my CLAUDE.md well-structured?"** Scores sections against the attention curve, flags critical rules in low-attention zones. |
 | `jsonl-inspect` | **"What's in this session?"** Record counts, token distribution, top 10 largest records, compaction markers. |
@@ -256,6 +258,33 @@ python3 measure.py plugin-cleanup   # Detect duplicate skills + archive local/pl
 
 ---
 
+## Memory Health: Your MEMORY.md Is Probably Broken
+
+Claude auto-loads the first 200 lines of MEMORY.md every session. Everything after line 200 is silently truncated. The tokens still count against your window, but Claude never sees the content. Most power users don't know this is happening.
+
+`memory-review` scans your MEMORY.md structurally and tells you what's wrong:
+
+- **Orphaned topic files**: files in your memory directory that nothing links to
+- **Broken links**: index entries pointing to files that don't exist
+- **Invisible entries**: content below line 200 that Claude can't see (and the topic files they point to)
+- **Inline content**: notes that should be in topic files, wasting index budget
+- **Duplicate rules**: rules already in CLAUDE.md (which loads in full regardless)
+- **Stale entries**: resolved/superseded content still taking up space
+- **Task leakage**: TODO lists and checklists that belong in a task tracker
+
+```bash
+python3 measure.py memory-review                        # Full structural audit
+python3 measure.py memory-review --json                 # Machine-readable for dashboards
+python3 measure.py memory-review --apply                # Show actionable fixes
+python3 measure.py memory-review --stale-days 90        # Custom staleness threshold
+```
+
+The dashboard shows CLAUDE.md Health and MEMORY.md Health cards on the Overview tab, with line count, orphan count, and status at a glance.
+
+For contradiction detection (two rules saying opposite things), run the audit in a Claude session. The tool extracts all NEVER/ALWAYS/MUST rules from both files. Claude reviews them semantically in context, no extra LLM call needed.
+
+---
+
 ## Coach Mode: Not Sure Where to Start?
 
 ```
@@ -387,6 +416,8 @@ python3 measure.py savings                      # Dollar savings report (last 30
 | Costly prompt ranking | Yes (top 5 by cost) | No | No |
 | Model recommendation | Yes (Sonnet vs Opus by context) | No | No |
 | CLAUDE.md advice injection | Yes (with 48h TTL) | No | No |
+| MEMORY.md structural audit | 8 detectors + fix suggestions | No | No |
+| CLAUDE.md/MEMORY.md health cards | Dashboard overview | No | No |
 | Validate optimization impact | Before/after comparison | No | No |
 | Usage trends + dashboard | SQLite + interactive HTML | No | Session stats |
 | Per-turn cost analytics | Yes (4 pricing tiers) | No | No |
@@ -441,9 +472,9 @@ openclaw plugins install ./
 
 Inside OpenClaw, run `/token-optimizer` for a guided audit with coaching.
 
-**What it does:** Session parsing, cost calculation, waste detection (heartbeat model waste, empty runs, over-frequency, stale configs, session bloat, loops, abandoned sessions), and Smart Compaction (checkpoint/restore across compaction events).
+**What it does:** Session parsing, cost calculation, waste detection (9 detectors including unused skill detection), Coach tab with health scoring, per-turn token breakdown with cache analysis, costly prompt ranking, agent cost analysis (orchestrator vs worker), topic extraction, and Smart Compaction (checkpoint/restore across compaction events).
 
-**What's different from Claude Code:** The OpenClaw plugin includes its own 7-signal ContextQ with signals native to OpenClaw's architecture (Message Efficiency, Compression Opportunity, Model Routing, etc.) rather than a direct port of Claude Code's signals. Some Claude-specific signals (Stale Reads, Compaction Depth) don't apply to OpenClaw's stateless agent model.
+**What's different from Claude Code:** The OpenClaw plugin includes its own 7-signal ContextQ with signals native to OpenClaw's architecture (Message Efficiency, Compression Opportunity, Model Routing, etc.) rather than a direct port of Claude Code's signals. The Coach tab adapts scoring to OpenClaw concepts (SOUL.md instead of CLAUDE.md, agent configs instead of hooks). Works with any model: Claude, GPT-5, Gemini, DeepSeek, local via Ollama.
 
 See [`openclaw/README.md`](openclaw/README.md) for full docs.
 

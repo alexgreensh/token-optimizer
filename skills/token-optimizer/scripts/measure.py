@@ -4389,6 +4389,9 @@ def _extract_costly_prompts(jsonl_path, tier=None, top_n=5):
                         cost = _get_model_cost(model, inp, out, cr, cc, tier=tier)
                         pending_prompt["tokens_in"] = inp + cr + cc
                         pending_prompt["tokens_out"] = out
+                        pending_prompt["fresh_input"] = inp
+                        pending_prompt["cache_read"] = cr
+                        pending_prompt["cache_create"] = cc
                         pending_prompt["cost_usd"] = round(cost, 4)
                         pending_prompt["model"] = _normalize_model_name(model) or model
                         prompts.append(pending_prompt)

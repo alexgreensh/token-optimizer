@@ -3047,9 +3047,20 @@ var DB = (function() {
       html += '<div class="card wide"><div class="card-header"><span>Most Expensive Prompts</span><span class="label">last 7 days</span></div>';
       cp.slice(0, 5).forEach(function(p, i) {
         var preview = (p.text || '').replace(/\n/g, ' ').slice(0, 80);
+        var breakdown = '';
+        if (p.cache_create && p.cache_create > 0) {
+          breakdown = fn(p.cache_create) + ' cache write';
+          if (p.cache_read && p.cache_read > 0) breakdown += ' + ' + fn(p.cache_read) + ' cache read';
+          if (p.fresh_input && p.fresh_input > 0) breakdown += ' + ' + fn(p.fresh_input) + ' fresh';
+        } else if (p.cache_read && p.cache_read > 0) {
+          breakdown = fn(p.cache_read) + ' cache read + ' + fn(p.fresh_input || 0) + ' fresh';
+        } else {
+          breakdown = fn(p.tokens_in || 0) + ' input';
+        }
+        breakdown += ' + ' + fn(p.tokens_out || 0) + ' output';
         html += '<div style="padding:10px var(--s-3);border-bottom:1px solid var(--c-border);">' +
           '<div style="display:flex;justify-content:space-between;margin-bottom:4px;">' +
-          '<span style="font-size:13px;color:var(--c-text-dim);">#' + (i + 1) + ' (' + fn(p.tokens_in || 0) + ' input tokens)</span>' +
+          '<span style="font-size:13px;color:var(--c-text-dim);">#' + (i + 1) + ' (' + breakdown + ')</span>' +
           '<span style="font-family:var(--font-mono);font-weight:500;color:' + (p.cost_usd > 1 ? '#ff6b6b' : p.cost_usd > 0.5 ? '#ff9f43' : 'var(--c-text-main)') + ';">$' + p.cost_usd.toFixed(4) + '</span></div>' +
           '<div style="font-size:14px;color:var(--c-text-dim);font-style:italic;">"' + esc(preview) + '..."</div></div>';
       });

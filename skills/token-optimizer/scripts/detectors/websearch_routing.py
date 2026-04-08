@@ -50,9 +50,14 @@ def detect_websearch_routing(trends):
         return []
 
     avg_per_session = web_calls / max(session_count, 1)
+
+    # Don't flag if average is less than 1 call per session — that's normal usage
+    if avg_per_session < 1.0:
+        return []
+
     return [{
         "name": "websearch_routing",
-        "confidence": 0.7 if web_calls >= 10 else 0.5,
+        "confidence": 0.7 if avg_per_session >= 3 else 0.5,
         "evidence": (
             f"{web_calls} web search/fetch calls across {session_count} sessions "
             f"({days}d), ~{est_tokens:,} tokens of web content"

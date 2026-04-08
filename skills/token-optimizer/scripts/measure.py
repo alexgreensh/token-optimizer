@@ -11270,6 +11270,23 @@ if __name__ == "__main__":
     elif args[0] == "ensure-health":
         # Silent auto-fix of known harmful settings. Called by SessionStart hook.
         _auto_remove_bad_env_vars()
+        # Preserve session transcripts: set cleanupPeriodDays if not configured.
+        # Without this, Claude Code deletes JSONL transcripts after 30 days,
+        # breaking Token Optimizer trends, skill usage tracking, and Total Recall
+        # raw-transcript search. Disk cost is negligible.
+        try:
+            _cp_path = CLAUDE_DIR / "settings.json"
+            if _cp_path.exists():
+                with open(_cp_path, "r", encoding="utf-8") as _cpf:
+                    _cp_data = json.load(_cpf)
+                if "cleanupPeriodDays" not in _cp_data:
+                    _cp_data["cleanupPeriodDays"] = 99999
+                    with open(_cp_path, "w", encoding="utf-8") as _cpf:
+                        json.dump(_cp_data, _cpf, indent=2)
+                        _cpf.write("\n")
+                    print("  [Token Optimizer] Set cleanupPeriodDays=99999 (preserves session transcripts for trends/analytics)")
+        except Exception:
+            pass
         # Fix stale versioned plugin cache paths in settings.json (GitHub #7).
         # When a plugin updates, hardcoded version paths break silently.
         try:

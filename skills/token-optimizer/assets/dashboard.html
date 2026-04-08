@@ -1440,6 +1440,112 @@ tr.token-spike td {
 tr.token-spike td:first-child {
   border-left: 3px solid #fb923c;
 }
+
+/* ========== PROMPT PREVIEW MODAL ========== */
+.prompt-modal-overlay {
+  display: none;
+  position: fixed;
+  top: 0; left: 0; width: 100%; height: 100%;
+  background: rgba(0, 0, 0, 0.75);
+  z-index: 500;
+  align-items: center;
+  justify-content: center;
+}
+.prompt-modal-overlay.visible {
+  display: flex;
+}
+.prompt-modal {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: 12px;
+  width: 720px;
+  max-width: 90vw;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5), 0 0 20px var(--c-accent-glow);
+}
+.prompt-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--s-3) var(--s-4);
+  border-bottom: 1px solid var(--c-border);
+}
+.prompt-modal-header h3 {
+  font-family: var(--font-sans);
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--c-text-main);
+}
+.prompt-modal-close {
+  background: none;
+  border: none;
+  color: var(--c-text-dim);
+  font-size: 20px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+.prompt-modal-close:hover {
+  color: var(--c-text-main);
+  background: var(--c-surface-hover);
+}
+.prompt-modal-body {
+  flex: 1;
+  padding: var(--s-3) var(--s-4);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.prompt-modal-body textarea {
+  flex: 1;
+  width: 100%;
+  min-height: 300px;
+  background: var(--c-bg);
+  color: var(--c-text-main);
+  border: 1px solid var(--c-border);
+  border-radius: 8px;
+  padding: var(--s-3);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.6;
+  resize: vertical;
+}
+.prompt-modal-body textarea:focus {
+  border-color: var(--c-accent-cyan);
+  box-shadow: 0 0 0 1px var(--c-accent-cyan);
+}
+.prompt-modal-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--s-3) var(--s-4);
+  border-top: 1px solid var(--c-border);
+}
+.prompt-modal-stats {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--c-text-dim);
+}
+.prompt-modal-copy {
+  background: var(--c-accent-cyan);
+  color: var(--c-bg);
+  border: none;
+  padding: 10px 24px;
+  border-radius: 8px;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: box-shadow 0.2s;
+}
+.prompt-modal-copy:hover {
+  box-shadow: var(--glow-sm);
+}
+.prompt-modal-copy.copied {
+  background: #2ecc71;
+}
 </style>
 </head>
 <body>
@@ -1557,7 +1663,7 @@ window.__TOKEN_DATA__ = null;
     <div class="section-title">Notes</div>
     <textarea class="notes-area" id="notes-input" placeholder="Keep gsd, skip n8n cluster..."></textarea>
 
-    <button class="apply-btn" id="copy-btn" disabled>Copy Prompt</button>
+    <button class="apply-btn" id="copy-btn" disabled>Preview &amp; Copy</button>
 
     <div class="version-footer">
       <div>Built by <a href="https://linkedin.com/in/alexgreensh" target="_blank" rel="noopener" style="color:var(--c-accent-cyan);text-decoration:none;opacity:1;">Alex Greenshpun</a></div>
@@ -1571,6 +1677,23 @@ window.__TOKEN_DATA__ = null;
       </div>
     </div>
   </aside>
+</div>
+
+<!-- Prompt Preview Modal -->
+<div class="prompt-modal-overlay" id="prompt-modal-overlay">
+  <div class="prompt-modal">
+    <div class="prompt-modal-header">
+      <h3>Prompt Preview</h3>
+      <button class="prompt-modal-close" id="prompt-modal-close">&times;</button>
+    </div>
+    <div class="prompt-modal-body">
+      <textarea id="prompt-modal-text" spellcheck="false"></textarea>
+    </div>
+    <div class="prompt-modal-footer">
+      <span class="prompt-modal-stats" id="prompt-modal-stats"></span>
+      <button class="prompt-modal-copy" id="prompt-modal-copy">Copy to Clipboard</button>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -1789,8 +1912,7 @@ var DB = (function() {
       it._i = i;
       it.section = groupMap[it.group] || 'habits';
     });
-    // Pre-check Quick Wins
-    items.forEach(function(it) { if (it.section === 'quick') it.checked = true; });
+    // Start clean: user builds selection intentionally (no auto-check)
 
     renderNav();
     renderOverview();
@@ -2082,6 +2204,7 @@ var DB = (function() {
 
       if (isHabits) {
         // Habits: render as recommendation cards (no toggles, always expanded)
+        html += '<div style="font-size:13px;color:var(--c-text-dim);padding:var(--s-2) 0;margin-bottom:var(--s-2);border-bottom:1px solid var(--c-border);">Behavioral recommendations are not included in the optimization prompt. These are habits to adopt over time.</div>';
         secItems.forEach(function(it) {
           html += '<div class="rec-item">' +
             '<div class="rec-title"><span class="rec-icon">&#x2B21;</span> ' + esc(it.title) + '</div>' +
@@ -2158,7 +2281,7 @@ var DB = (function() {
     return [{ heading: 'Details', text: detail }];
   }
 
-  var analyticsViews = { trends: true, health: true };
+  var analyticsViews = { trends: true, health: true, hooks: true, manage: true };
 
   function renderTrends() {
     var el = document.getElementById('view-trends');
@@ -2955,6 +3078,21 @@ var DB = (function() {
     el.innerHTML = html;
   }
 
+  function timeAgo(date) {
+    var now = new Date();
+    var diffMs = now - date;
+    if (isNaN(diffMs)) return 'unknown';
+    var diffSec = Math.floor(diffMs / 1000);
+    var diffMin = Math.floor(diffSec / 60);
+    var diffHr = Math.floor(diffMin / 60);
+    var diffDay = Math.floor(diffHr / 24);
+    if (diffMin < 1) return 'just now';
+    if (diffMin < 60) return diffMin + ' minute' + (diffMin === 1 ? '' : 's') + ' ago';
+    if (diffHr < 24) return diffHr + ' hour' + (diffHr === 1 ? '' : 's') + ' ago';
+    if (diffDay < 30) return diffDay + ' day' + (diffDay === 1 ? '' : 's') + ' ago';
+    return date.toLocaleDateString();
+  }
+
   function renderHooks() {
     var el = document.getElementById('view-hooks');
     if (!el) return;
@@ -2991,6 +3129,9 @@ var DB = (function() {
       if (hook.partial) {
         html += '<div class="hook-partial">Partially installed. Click to complete setup.</div>';
       }
+      var genTime = data.generated_at ? new Date(data.generated_at) : null;
+      var agoText = genTime ? timeAgo(genTime) : 'unknown';
+      html += '<div style="font-size:11px;color:var(--c-text-dim);margin-top:2px;">Detected ' + agoText + '. Regenerate dashboard to refresh.</div>';
       html += '</div></div>';
     });
 
@@ -3092,7 +3233,7 @@ var DB = (function() {
       bar = document.createElement('div');
       bar.id = 'manage-file-bar';
       bar.style.cssText = 'position:fixed;bottom:0;left:50%;transform:translateX(-50%) translateY(100%);background:var(--c-surface);border:1px solid var(--c-accent-cyan);border-bottom:none;border-radius:12px 12px 0 0;padding:16px 32px;display:flex;align-items:center;gap:24px;z-index:150;transition:transform 0.3s;box-shadow:0 -4px 30px rgba(0,240,255,0.15);';
-      bar.innerHTML = '<span id="mfb-count" style="font-family:var(--font-mono);font-size:16px;color:var(--c-accent-cyan);text-shadow:0 0 8px rgba(0,240,255,0.6)"></span><button id="mfb-copy" style="background:var(--c-accent-cyan);color:var(--c-bg);border:none;padding:10px 24px;border-radius:8px;font-family:var(--font-mono);font-size:15px;font-weight:500;cursor:pointer;">Copy All to Clipboard</button>';
+      bar.innerHTML = '<span id="mfb-count" style="font-family:var(--font-mono);font-size:16px;color:var(--c-accent-cyan);text-shadow:0 0 8px rgba(0,240,255,0.6)"></span><span id="mfb-warning" style="font-size:12px;color:#ff9f43;margin-left:12px;">Changes are in memory only. Copy before closing or they will be lost.</span><button id="mfb-copy" style="background:var(--c-accent-cyan);color:var(--c-bg);border:none;padding:10px 24px;border-radius:8px;font-family:var(--font-mono);font-size:15px;font-weight:500;cursor:pointer;">Copy All to Clipboard</button>';
       document.body.appendChild(bar);
       document.getElementById('mfb-copy').addEventListener('click', function() {
         var c = window._pendingManageCmds || {};
@@ -3271,15 +3412,26 @@ var DB = (function() {
           .then(function(r) { return r.json(); })
           .then(function(resp) {
             if (resp.ok && resp.manage) {
+              // Capture token count BEFORE overwriting data.manage (skill moves to archived)
+              var isDisable = (mType === 'skill-off' || mType === 'mcp-off');
+              var isRestore = (mType === 'skill-on' || mType === 'mcp-on');
+              var skillTok = 100;
+              if (isDisable) {
+                var preSkills = (data.manage && data.manage.skills && data.manage.skills.active) || [];
+                preSkills.forEach(function(sk) { if (sk.name === mName) skillTok = sk.tokens || 100; });
+              }
               data.manage = resp.manage;
               renderManage();
               // Track pending changes
               if (!window._managePending) window._managePending = new Set();
-              var isDisable = (mType === 'skill-off' || mType === 'mcp-off');
-              var isRestore = (mType === 'skill-on' || mType === 'mcp-on');
               if (isDisable) window._managePending.add(mName);
               if (isRestore) window._managePending.delete(mName);
               _updateManageBanner();
+              // Manage-to-Prompt bridge: sync synthetic items
+              if (isDisable) {
+                addManageItem(mName, 'Archived via live mode', skillTok);
+              }
+              if (isRestore) { removeManageItem(mName); }
               // Show brief success toast
               var toast = document.getElementById('hook-toast');
               if (!toast) {
@@ -3310,25 +3462,38 @@ var DB = (function() {
 
         } else {
           // File mode: accumulate changes, copy all at once
+          // Use presence in _pendingManageCmds as source of truth for reversal
           var cmd = e.target.dataset.manageCmd;
           if (!window._pendingManageCmds) window._pendingManageCmds = {};
-          var isOff = (mType === 'skill-off' || mType === 'mcp-off');
-          if (isOff) {
-            window._pendingManageCmds[mName] = cmd;
-          } else {
+          var alreadyPending = window._pendingManageCmds[mName];
+          if (alreadyPending) {
+            // Reversal: remove from queue, restore visual state
             delete window._pendingManageCmds[mName];
-          }
-          if (row) {
-            row.style.opacity = isOff ? '0.5' : '1';
-            var existing = row.querySelector('.hook-pending');
-            if (existing) existing.remove();
-            if (isOff) {
+            e.target.checked = !e.target.checked; // restore original visual state
+            if (row) {
+              row.style.opacity = '1';
+              var existing = row.querySelector('.hook-pending');
+              if (existing) existing.remove();
+            }
+            removeManageItem(mName);
+          } else {
+            // New disable: add to queue
+            window._pendingManageCmds[mName] = cmd;
+            if (row) {
+              row.style.opacity = '0.5';
+              var existingBadge = row.querySelector('.hook-pending');
+              if (existingBadge) existingBadge.remove();
               var badge = document.createElement('span');
               badge.className = 'hook-pending';
               badge.style.cssText = 'font-size:11px;color:#ff9f43;margin-left:8px;display:block;margin-top:4px;';
               badge.textContent = 'Queued for removal';
               row.querySelector('.hook-info').appendChild(badge);
             }
+            // Find token count from data
+            var skillTokens = 100;
+            var activeSkills = (data.manage && data.manage.skills && data.manage.skills.active) || [];
+            activeSkills.forEach(function(sk) { if (sk.name === mName) skillTokens = sk.tokens || 100; });
+            addManageItem(mName, cmd, skillTokens);
           }
           _updateManageFileBar();
         }
@@ -3336,8 +3501,56 @@ var DB = (function() {
     });
   }
 
+  // Manage-to-Prompt bridge: synthetic items from Manage tab toggles.
+  // Uses soft-delete (_removed flag) instead of splice to preserve array
+  // indices. The toggle handler uses items[idx] by _i, so splicing would
+  // corrupt references from DOM data-toggle attributes.
+  function addManageItem(name, cmd, tokens) {
+    // Check if already exists (idempotent: no-op if present)
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].synthetic && items[i].title === 'Archive skill: ' + name && !items[i]._removed) {
+        return; // already exists, don't toggle or duplicate
+      }
+    }
+    // Check if a soft-deleted version exists, revive it
+    for (var j = 0; j < items.length; j++) {
+      if (items[j].synthetic && items[j].title === 'Archive skill: ' + name && items[j]._removed) {
+        items[j]._removed = false;
+        items[j].checked = true;
+        items[j].fullDesc = cmd;
+        items[j].tokens = tokens || 100;
+        updateRightPanel();
+        return;
+      }
+    }
+    items.push({
+      group: 'Manage',
+      title: 'Archive skill: ' + name,
+      shortDesc: 'Toggled off in Manage tab',
+      detail: '',
+      fullDesc: cmd,
+      tokens: tokens || 100,
+      checked: true,
+      section: 'manage',
+      synthetic: true,
+      _i: items.length
+    });
+    updateRightPanel();
+  }
+
+  function removeManageItem(name) {
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].synthetic && items[i].title === 'Archive skill: ' + name && !items[i]._removed) {
+        items[i]._removed = true;
+        items[i].checked = false;
+        break;
+      }
+    }
+    updateRightPanel();
+  }
+
   function updateRightPanel() {
-    var sel = items.filter(function(it) { return it.checked && it.section !== 'habits'; });
+    var sel = items.filter(function(it) { return it.checked && !it._removed && it.section !== 'habits'; });
     var count = sel.length;
     var tok = sel.reduce(function(s, it) { return s + it.tokens; }, 0);
 
@@ -3352,14 +3565,35 @@ var DB = (function() {
       if (!data.plan && !data.auto_plan) {
         listEl.innerHTML = '<div class="empty-state">Run <span class="update-cmd">/token-optimizer</span> to generate optimization items you can toggle here.</div>';
       } else {
-        listEl.innerHTML = '<div class="empty-state">Toggle items to build your optimization prompt.</div>';
+        listEl.innerHTML = '<div class="empty-state">Toggle items in Quick Wins, Medium, or Deep to build your optimization prompt.</div>';
       }
       return;
     }
 
-    var html = '';
+    // Group selected items by section with labels
+    var groups = {};
+    var sectionOrder = ['quick', 'medium', 'deep', 'manage'];
     sel.forEach(function(it) {
-      html += '<div class="selected-item" title="' + esc(it.title) + '">' + esc(it.title) + '</div>';
+      var sec = it.section;
+      if (!groups[sec]) groups[sec] = [];
+      groups[sec].push(it);
+    });
+    var sectionLabels = { quick: 'Quick Wins', medium: 'Medium Effort', deep: 'Deep', manage: 'Manage' };
+    var html = '';
+    sectionOrder.forEach(function(sec) {
+      if (!groups[sec]) return;
+      html += '<div style="font-size:11px;color:var(--c-text-dim);margin:8px 0 4px;text-transform:uppercase;letter-spacing:0.5px;font-family:var(--font-mono);">' + (sectionLabels[sec] || sec) + ' (' + groups[sec].length + ')</div>';
+      groups[sec].forEach(function(it) {
+        html += '<div class="selected-item" title="' + esc(it.title) + '">' + esc(it.title) + '</div>';
+      });
+    });
+    // Handle any sections not in the predefined order
+    Object.keys(groups).forEach(function(sec) {
+      if (sectionOrder.indexOf(sec) >= 0) return;
+      html += '<div style="font-size:11px;color:var(--c-text-dim);margin:8px 0 4px;text-transform:uppercase;letter-spacing:0.5px;font-family:var(--font-mono);">' + (sectionLabels[sec] || sec) + ' (' + groups[sec].length + ')</div>';
+      groups[sec].forEach(function(it) {
+        html += '<div class="selected-item" title="' + esc(it.title) + '">' + esc(it.title) + '</div>';
+      });
     });
     listEl.innerHTML = html;
   }
@@ -3372,7 +3606,7 @@ var DB = (function() {
   }
 
   function buildPrompt() {
-    var sel = items.filter(function(it) { return it.checked && it.section !== 'habits'; });
+    var sel = items.filter(function(it) { return it.checked && !it._removed && it.section !== 'habits'; });
     if (!sel.length) return '';
     var out = [
       "I've reviewed my Token Optimizer dashboard and selected these optimizations to implement.",
@@ -3383,7 +3617,7 @@ var DB = (function() {
       ''
     ];
     sel.forEach(function(it, i) {
-      var tag = it.group === 'Quick Wins' ? 'QUICK WIN' : it.group === 'Medium Effort' ? 'MEDIUM' : 'DEEP';
+      var tag = it.group === 'Manage' ? 'MANAGE' : it.group === 'Quick Wins' ? 'QUICK WIN' : it.group === 'Medium Effort' ? 'MEDIUM' : 'DEEP';
       out.push('---');
       out.push((i+1) + '. [' + tag + '] ' + it.title + (it.tokens ? ' (~' + fn(it.tokens) + ' tokens)' : ''));
       if (it.fullDesc) {
@@ -3402,24 +3636,43 @@ var DB = (function() {
   function doCopy() {
     var text = buildPrompt();
     if (!text) return;
-    var btn = document.getElementById('copy-btn');
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(function(){ flash(btn); }).catch(function(){ fallback(text, btn); });
-    } else { fallback(text, btn); }
+    // Show preview modal instead of copying directly
+    var overlay = document.getElementById('prompt-modal-overlay');
+    var textarea = document.getElementById('prompt-modal-text');
+    var stats = document.getElementById('prompt-modal-stats');
+    textarea.value = text;
+    var chars = text.length;
+    var estTokens = Math.round(chars / 4);
+    stats.textContent = chars + ' chars / ~' + fn(estTokens) + ' tokens';
+    overlay.classList.add('visible');
   }
 
-  function fallback(text, btn) {
+  function doCopyFromModal() {
+    var textarea = document.getElementById('prompt-modal-text');
+    var text = textarea.value;
+    if (!text) return;
+    var copyBtn = document.getElementById('prompt-modal-copy');
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function() { flashModal(copyBtn); }).catch(function() { fallbackModal(text, copyBtn); });
+    } else { fallbackModal(text, copyBtn); }
+  }
+
+  function fallbackModal(text, btn) {
     var ta = document.createElement('textarea');
     ta.value = text; ta.style.cssText = 'position:fixed;left:-9999px';
     document.body.appendChild(ta); ta.select();
-    try { document.execCommand('copy'); flash(btn); }
-    catch(e) { btn.textContent = 'SEE CONSOLE'; console.log(text); setTimeout(function(){ btn.textContent = 'COPY PROMPT'; }, 3000); }
+    try { document.execCommand('copy'); flashModal(btn); }
+    catch(e) { btn.textContent = 'SEE CONSOLE'; console.log(text); setTimeout(function() { btn.textContent = 'Copy to Clipboard'; }, 3000); }
     document.body.removeChild(ta);
   }
 
-  function flash(btn) {
+  function flashModal(btn) {
     btn.classList.add('copied'); btn.textContent = 'COPIED!';
-    setTimeout(function(){ btn.classList.remove('copied'); btn.textContent = 'COPY PROMPT'; }, 2000);
+    setTimeout(function() { btn.classList.remove('copied'); btn.textContent = 'Copy to Clipboard'; }, 2000);
+  }
+
+  function closePromptModal() {
+    document.getElementById('prompt-modal-overlay').classList.remove('visible');
   }
 
   function bind() {
@@ -3693,8 +3946,34 @@ var DB = (function() {
       }
     });
 
-    // Copy button
+    // Copy button (opens preview modal)
     document.getElementById('copy-btn').addEventListener('click', doCopy);
+
+    // Prompt preview modal bindings
+    document.getElementById('prompt-modal-copy').addEventListener('click', doCopyFromModal);
+    document.getElementById('prompt-modal-close').addEventListener('click', closePromptModal);
+    document.getElementById('prompt-modal-overlay').addEventListener('click', function(e) {
+      if (e.target === this) closePromptModal();
+    });
+    document.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape') {
+        var overlay = document.getElementById('prompt-modal-overlay');
+        if (overlay && overlay.classList.contains('visible')) {
+          closePromptModal();
+          e.stopPropagation();
+        }
+      }
+    });
+
+    // Warn on reload if file-mode commands are pending
+    window.addEventListener('beforeunload', function(e) {
+      var cmds = window._pendingManageCmds || {};
+      if (Object.keys(cmds).length > 0) {
+        e.preventDefault();
+        e.returnValue = 'You have pending Manage tab changes that will be lost. Copy them first.';
+        return e.returnValue;
+      }
+    });
   }
 
   function fn(n) {

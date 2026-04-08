@@ -290,10 +290,10 @@ See which prompts cost the most: pairs each user message with the cost of the re
 
 ### CLAUDE.md Routing Injection
 
-Auto-generate model routing instructions from your actual usage data and inject them into CLAUDE.md. Claude reads these every session and routes accordingly. A 48-hour staleness guard auto-removes stale advice.
+Generate model routing instructions from your actual usage data and inject them into CLAUDE.md. Claude reads these every session and routes accordingly. A 48-hour staleness guard auto-removes stale advice. Run on demand when you want to update your routing guidance.
 
 ```bash
-python3 measure.py inject-routing --dry-run   # Preview
+python3 measure.py inject-routing --dry-run   # Preview what would be injected
 python3 measure.py inject-routing              # Inject (with approval)
 ```
 

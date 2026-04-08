@@ -2004,8 +2004,11 @@ var DB = (function() {
     document.getElementById('hero-sub').innerHTML =
       'tokens loaded before you type a word (' + ctxLabel + ' window). You start every session with only <span>' + fn(remaining) + '</span> left for actual conversation.';
 
-    // Last updated timestamp
+    // Last updated timestamp with staleness detection
     var ts = data.generated_at ? new Date(data.generated_at).toLocaleString() : 'unknown';
+    var staleMinutes = data.generated_at ? Math.round((Date.now() - new Date(data.generated_at).getTime()) / 60000) : 0;
+    var isStale = staleMinutes > 60;
+    var staleWarning = isStale ? ' <span style="color:#ff9f43;font-weight:500;">(data is ' + (staleMinutes > 1440 ? Math.round(staleMinutes / 1440) + 'd' : Math.round(staleMinutes / 60) + 'h') + ' old — run /token-optimizer to refresh)</span>' : '';
     var headerEl = document.querySelector('#view-overview .header');
     if (headerEl) {
       var existingTs = headerEl.querySelector('.last-updated');
@@ -2013,10 +2016,10 @@ var DB = (function() {
         var tsDiv = document.createElement('div');
         tsDiv.className = 'last-updated';
         if (data.standalone) {
-          tsDiv.innerHTML = 'Last updated: ' + esc(ts) +
+          tsDiv.innerHTML = 'Last updated: ' + esc(ts) + staleWarning +
             ' &middot; Run <span class="update-cmd">/token-optimizer</span> for a full audit with recommendations.';
         } else {
-          tsDiv.innerHTML = 'Last updated: ' + esc(ts) +
+          tsDiv.innerHTML = 'Last updated: ' + esc(ts) + staleWarning +
             ' &middot; To refresh, run <span class="update-cmd">/token-optimizer</span> again.';
         }
         headerEl.appendChild(tsDiv);
@@ -2144,6 +2147,52 @@ var DB = (function() {
     var gridEl = document.getElementById('breakdown-grid');
     gridEl.className = 'component-cards';
     gridEl.innerHTML = cardsHtml;
+
+    // Health cards: CLAUDE.md + MEMORY.md
+    var healthCardsHtml = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--s-3);margin-top:var(--s-3);">';
+
+    // CLAUDE.md Health card
+    var cmh = data.claude_md_health;
+    if (cmh) {
+      var cmColor = cmh.status === 'good' ? 'var(--c-accent-cyan)' : cmh.status === 'warning' ? '#ff9f43' : '#7d8ca3';
+      healthCardsHtml += '<div class="card"><div class="card-header"><span>CLAUDE.md Health</span></div>' +
+        '<div style="text-align:center;padding:var(--s-3) 0;">' +
+        '<div style="font-size:28px;font-weight:700;font-family:var(--font-mono);color:' + cmColor + ';">' + fn(cmh.tokens) + '</div>' +
+        '<div style="font-size:13px;color:var(--c-text-dim);">tokens (' + cmh.pct + '% of context)</div>' +
+        '</div>' +
+        '<div style="text-align:center;padding:0 0 var(--s-3) 0;font-size:13px;color:' + cmColor + ';">' +
+        (cmh.status === 'good' ? 'Lean and efficient' : cmh.status === 'warning' ? 'Consider restructuring' : 'Growing') +
+        '</div></div>';
+    }
+
+    // MEMORY.md Health card
+    var mr = data.memory_review;
+    if (mr && !mr.error) {
+      var mrOver = mr.truncated_lines || 0;
+      var mrColor = mr.severity_counts && mr.severity_counts.medium > 0 ? '#ff9f43' : mr.truncated ? '#7d8ca3' : 'var(--c-accent-cyan)';
+      var mrStatus = mr.severity_counts && mr.severity_counts.medium > 0 ? (mr.severity_counts.medium + ' warning(s)') : mr.truncated ? (mrOver + ' lines over limit') : 'Healthy';
+      var orphanCount = (mr.topic_files_count || 0) - (mr.linked_files_count || 0);
+      healthCardsHtml += '<div class="card"><div class="card-header"><span>MEMORY.md Health</span></div>' +
+        '<div style="text-align:center;padding:var(--s-3) 0;">' +
+        '<div style="font-size:28px;font-weight:700;font-family:var(--font-mono);color:' + mrColor + ';">' + (mr.total_lines || 0) + ' / 200</div>' +
+        '<div style="font-size:13px;color:var(--c-text-dim);">lines (200-line visible limit)</div>' +
+        '</div>' +
+        '<div style="padding:0 var(--s-3) var(--s-3);font-size:13px;">' +
+        '<div style="display:flex;justify-content:space-between;color:var(--c-text-dim);"><span>Entries</span><span>' + (mr.entry_count || 0) + '</span></div>' +
+        '<div style="display:flex;justify-content:space-between;color:var(--c-text-dim);"><span>Topic files</span><span>' + (mr.topic_files_count || 0) + ' (' + (mr.linked_files_count || 0) + ' linked)</span></div>' +
+        (orphanCount > 0 ? '<div style="display:flex;justify-content:space-between;color:#ff9f43;"><span>Orphaned files</span><span>' + orphanCount + '</span></div>' : '') +
+        '<div style="display:flex;justify-content:space-between;color:' + mrColor + ';margin-top:4px;font-weight:500;"><span>Status</span><span>' + esc(mrStatus) + '</span></div>' +
+        (mr.savings && mr.savings.total_tokens > 0 ? '<div style="display:flex;justify-content:space-between;color:var(--c-text-dim);margin-top:2px;"><span>Recoverable</span><span>~' + fn(mr.savings.total_tokens) + ' tokens</span></div>' : '') +
+        '</div>' +
+        '<div style="text-align:center;padding:0 0 var(--s-3);font-size:12px;color:var(--c-text-dim);">Run <code style="color:var(--c-accent-cyan)">memory-review</code> for details</div>' +
+        '</div>';
+    } else if (mr && mr.error) {
+      healthCardsHtml += '<div class="card"><div class="card-header"><span>MEMORY.md Health</span></div>' +
+        '<div class="empty-state">Not configured</div></div>';
+    }
+
+    healthCardsHtml += '</div>';
+    gridEl.insertAdjacentHTML('afterend', healthCardsHtml);
 
     // Standalone mode: CTA or auto-recommendations banner
     if (data.standalone) {

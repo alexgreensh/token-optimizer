@@ -26,6 +26,8 @@ export interface AgentRun {
     cacheWrite1hTokens?: number;
     cacheWrite5mTokens?: number;
     errorMessage?: string;
+    /** First user message topic, extracted and truncated to 120 chars. */
+    topic?: string;
 }
 export interface WasteFinding {
     system: "openclaw";
@@ -52,6 +54,26 @@ export interface TurnData {
     timestamp: string | null;
     toolsUsed: string[];
     costUsd: number;
+}
+export interface CostlyPrompt {
+    /** User prompt text, truncated to 120 characters. */
+    text: string;
+    /** Total input tokens billed for the subsequent assistant turn (fresh + cache_read + cache_write). */
+    tokensIn: number;
+    /** Output tokens for the subsequent assistant turn. */
+    tokensOut: number;
+    /** Cache-read tokens consumed by this turn. */
+    cacheRead: number;
+    /** Cache-write tokens created by this turn. */
+    cacheWrite: number;
+    /** Fresh (non-cached) input tokens: tokensIn minus cacheRead. */
+    freshInput: number;
+    /** Estimated USD cost for this turn. */
+    costUsd: number;
+    /** Normalized model name (e.g. "sonnet", "gpt-5.2"). */
+    model: string;
+    /** ISO 8601 timestamp of the turn, or null if unavailable. */
+    timestamp: string | null;
 }
 /** Models considered expensive (should not be used for heartbeat/cron tasks). */
 export declare const EXPENSIVE_MODELS: Set<string>;

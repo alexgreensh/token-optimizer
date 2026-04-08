@@ -39,6 +39,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.getSkillUsageHistory = getSkillUsageHistory;
 exports.auditContext = auditContext;
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
@@ -339,6 +340,34 @@ function generateRecommendations(components, skills, mcpServers) {
         recs.push("Context overhead looks healthy. No immediate optimizations needed.");
     }
     return recs;
+}
+// ---------------------------------------------------------------------------
+// Skill usage history (for never-used skill detection)
+// ---------------------------------------------------------------------------
+/**
+ * Scans tool calls across all provided AgentRun sessions for Skill invocations.
+ * Returns a Map of skillName -> invocation count.
+ *
+ * OpenClaw records tool calls in AgentRun.toolsUsed as an array of tool name strings.
+ * Skill invocations appear as the skill name directly (e.g. "token-optimizer") or
+ * prefixed with "skill:" or "Skill:" depending on the OpenClaw version.
+ * We normalize by stripping known prefixes and lowercasing before matching.
+ */
+function getSkillUsageHistory(sessions) {
+    const usageMap = new Map();
+    for (const run of sessions) {
+        for (const tool of run.toolsUsed) {
+            // Normalize: strip "skill:" / "Skill:" prefix, lowercase for matching
+            const normalized = tool
+                .replace(/^[Ss]kill:/i, "")
+                .trim()
+                .toLowerCase();
+            if (!normalized)
+                continue;
+            usageMap.set(normalized, (usageMap.get(normalized) ?? 0) + 1);
+        }
+    }
+    return usageMap;
 }
 // ---------------------------------------------------------------------------
 // Main audit function

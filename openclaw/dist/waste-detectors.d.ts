@@ -18,6 +18,21 @@
  */
 import { AgentRun, WasteFinding } from "./models";
 type DetectorFn = (runs: AgentRun[], config: Record<string, unknown>) => WasteFinding[];
+/**
+ * Detect installed skills that have never been invoked across recorded sessions.
+ *
+ * Severity is ratio-based: if >80% of installed skills are unused, the finding
+ * is "high". If >60% are unused, "low". Otherwise "info" (treated as "low" since
+ * Severity does not include "info"; clamped to "low").
+ *
+ * Savings estimate: each unused active skill costs ~100 tokens per message in
+ * description-loading overhead (startup cost). We report total token overhead
+ * across the unused set and $0 USD (token count is the actionable signal here).
+ *
+ * @param installed  List of active skill names (from SkillDetail.name, non-archived)
+ * @param usageMap   Map of normalized skill name -> invocation count (from getSkillUsageHistory)
+ */
+export declare function detectUnusedSkills(installed: string[], usageMap: Map<string, number>): WasteFinding[];
 export declare const ALL_DETECTORS: Array<{
     name: string;
     tier: number;

@@ -786,7 +786,7 @@ def measure_components():
                 fm_tokens = estimate_tokens_from_frontmatter(skill_md)
                 skill_tokens += fm_tokens
                 desc_len = _get_frontmatter_description_length(skill_md)
-                if desc_len > 120:
+                if desc_len > 200:
                     verbose_skills.append({
                         "name": item.name,
                         "description_chars": desc_len,

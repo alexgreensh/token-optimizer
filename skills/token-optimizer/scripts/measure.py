@@ -3771,20 +3771,19 @@ def generate_coach_data(focus=None, components=None, trends=None):
     claude_pct = claude_tokens / context_window * 100 if context_window else 0
     if claude_pct > 3:
         patterns_bad.append({
-            "name": "CLAUDE.md Novel",
-            "severity": "high",
+            "name": "CLAUDE.md Could Be Leaner",
+            "severity": "medium",
             "detail": f"CLAUDE.md chain totals {claude_tokens:,} tokens ({claude_pct:.1f}% of context)",
-            "fix": "Move workflows to skills, standards to reference files",
+            "fix": "Run /token-optimizer to restructure: moves long sections into reference files with @import pointers, keeping CLAUDE.md as a lean index",
             "savings": f"~{claude_tokens - 4500:,} tokens per message",
         })
-        score -= 10
-        questions.append("Which CLAUDE.md sections do you reference most? Could any become skills?")
+        score -= 5
     elif claude_pct > 2:
         patterns_bad.append({
-            "name": "Heavy CLAUDE.md",
-            "severity": "medium",
+            "name": "CLAUDE.md Growing",
+            "severity": "low",
             "detail": f"CLAUDE.md at {claude_tokens:,} tokens ({claude_pct:.1f}% of context)",
-            "fix": "Review for content that could move to skills",
+            "fix": "Run /token-optimizer for guided cleanup: splits verbose sections into reference files",
             "savings": f"~{claude_tokens - 4500:,} tokens per message",
         })
         score -= 5
@@ -3919,19 +3918,9 @@ def generate_coach_data(focus=None, components=None, trends=None):
                 score -= 5
                 _opus_addiction_fired = True
 
-        # Check unused skills from trends
-        never_used = trends.get("skills", {}).get("never_used", [])
-        installed_count = trends.get("skills", {}).get("installed_count", 0)
-        if len(never_used) >= 5:
-            patterns_bad.append({
-                "name": "Unused Skills",
-                "severity": "high",
-                "detail": f"{len(never_used)} of {installed_count} skills never used in 30 days",
-                "fix": "Archive to ~/.claude/skills/_archived/",
-                "savings": f"~{len(never_used) * TOKENS_PER_SKILL_APPROX:,} tokens/session",
-            })
-            if score > 70:  # Don't double-penalize with 50-Skill Trap
-                score -= 10
+        # Unused skills check is handled earlier (line ~3737) via the
+        # proportional "Unused Skill Overhead" / "Some Unused Skills" patterns.
+        # Removed duplicate check here to prevent double-penalty.
 
     # Check verbose skill descriptions
     quality = components.get("skill_frontmatter_quality", {})

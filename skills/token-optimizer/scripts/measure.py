@@ -5171,23 +5171,32 @@ def _is_file_collected(conn, jsonl_path):
     return cur.fetchone() is not None
 
 
-def _needs_model_attribution_rebuild(conn):
+def _needs_model_daily_rebuild(conn):
     """Check if DB predates the #18 model attribution fix (schema version < 2)."""
     try:
         ver = conn.execute("PRAGMA user_version").fetchone()[0]
-        if ver < 2:
-            # Check if there's any data to rebuild
-            row = conn.execute("SELECT COUNT(*) FROM session_log").fetchone()
-            return row and row[0] > 0
+        return ver < 2
+    except sqlite3.Error:
+        return False
+
+
+def _migrate_model_daily(conn, quiet=False):
+    """One-time migration for fix #18: wipe model_daily so it rebuilds correctly.
+
+    Only deletes model_daily (lightweight aggregate table). session_log is
+    preserved. New sessions collected after this get correct model attribution.
+    Users wanting full historical accuracy can run `collect --rebuild`.
+    """
+    try:
+        conn.execute("DELETE FROM model_daily")
+        conn.execute("PRAGMA user_version = 2")
+        conn.commit()
+        if not quiet:
+            print("[Token Optimizer] Migrated model_daily for corrected model attribution (fix #18).")
+            print("  New sessions will have correct model mix. For full historical accuracy:")
+            print("  python3 measure.py collect --rebuild")
     except sqlite3.Error:
         pass
-    return False
-
-
-def _mark_schema_version(conn, version=2):
-    """Set schema version after migration."""
-    conn.execute(f"PRAGMA user_version = {version}")
-    conn.commit()
 
 
 def collect_sessions(days=90, quiet=False, rebuild=False):
@@ -5199,15 +5208,15 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
     """
     conn = _init_trends_db()
 
-    # Auto-rebuild once after updating to v4.2.1+ (fix #18: model attribution)
-    if not rebuild and _needs_model_attribution_rebuild(conn):
-        if not quiet:
-            print("[Token Optimizer] One-time rebuild for corrected model attribution (fix #18)...")
-        rebuild = True
+    # One-time migration for fix #18: wipe model_daily (safe, fast, no data loss)
+    if _needs_model_daily_rebuild(conn):
+        _migrate_model_daily(conn, quiet=quiet)
 
     if rebuild:
         if not quiet:
             print("[Token Optimizer] Rebuilding trends DB (re-parsing all sessions)...")
+        # Mark version FIRST so a killed process doesn't re-trigger
+        conn.execute("PRAGMA user_version = 2")
         conn.execute("DELETE FROM session_log")
         conn.execute("DELETE FROM daily_stats")
         conn.execute("DELETE FROM model_daily")
@@ -5347,7 +5356,8 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
         new_count += 1
 
     conn.commit()
-    _mark_schema_version(conn, 2)
+    # Ensure schema version is set (idempotent, also set in migration and rebuild)
+    conn.execute("PRAGMA user_version = 2")
     conn.close()
 
     if not quiet:

@@ -807,6 +807,79 @@ function detectBadDecomposition(
 }
 
 // ---------------------------------------------------------------------------
+// Tier 3: Context composition (never-used skill detection)
+// ---------------------------------------------------------------------------
+
+/**
+ * Detect installed skills that have never been invoked across recorded sessions.
+ *
+ * Severity is ratio-based: if >80% of installed skills are unused, the finding
+ * is "high". If >60% are unused, "low". Otherwise "info" (treated as "low" since
+ * Severity does not include "info"; clamped to "low").
+ *
+ * Savings estimate: each unused active skill costs ~100 tokens per message in
+ * description-loading overhead (startup cost). We report total token overhead
+ * across the unused set and $0 USD (token count is the actionable signal here).
+ *
+ * @param installed  List of active skill names (from SkillDetail.name, non-archived)
+ * @param usageMap   Map of normalized skill name -> invocation count (from getSkillUsageHistory)
+ */
+export function detectUnusedSkills(
+  installed: string[],
+  usageMap: Map<string, number>
+): WasteFinding[] {
+  if (installed.length === 0) return [];
+
+  // Normalize installed names the same way getSkillUsageHistory normalizes tool names
+  const unused = installed.filter((name) => {
+    const key = name.toLowerCase().trim();
+    return !usageMap.has(key) || (usageMap.get(key) ?? 0) === 0;
+  });
+
+  if (unused.length === 0) return [];
+
+  const unusedRatio = unused.length / installed.length;
+  let severity: Severity;
+  if (unusedRatio > 0.8) {
+    severity = "high";
+  } else if (unusedRatio > 0.6) {
+    severity = "medium";
+  } else {
+    severity = "low"; // "info" not in Severity type; use "low" for soft signal
+  }
+
+  // ~100 tokens startup overhead per skill per message
+  const TOKENS_PER_SKILL = 100;
+  const monthlyWasteTokens = unused.length * TOKENS_PER_SKILL;
+
+  return [
+    {
+      system: "openclaw",
+      agentName: "",
+      wasteType: "unused_skills",
+      tier: 3,
+      severity,
+      confidence: 0.75,
+      description: `${unused.length} of ${installed.length} installed skills have never been invoked (${Math.round(unusedRatio * 100)}% unused)`,
+      monthlyWasteUsd: 0,
+      monthlyWasteTokens,
+      recommendation: `Archive or remove the ${unused.length} unused skill(s) to reclaim ~${monthlyWasteTokens.toLocaleString()} tokens of per-message startup overhead.`,
+      fixSnippet:
+        "# Archive unused skills to reduce context overhead:\n" +
+        "# openclaw skills archive <skill-name>\n" +
+        "# Or use /token-optimizer manage to toggle from the dashboard.",
+      evidence: {
+        unusedCount: unused.length,
+        installedCount: installed.length,
+        unusedRatioPct: Math.round(unusedRatio * 100),
+        unusedSkills: unused,
+        tokensPerSkill: TOKENS_PER_SKILL,
+      },
+    },
+  ];
+}
+
+// ---------------------------------------------------------------------------
 // Registry: all detectors in execution order
 // ---------------------------------------------------------------------------
 
@@ -833,6 +906,9 @@ export const ALL_DETECTORS: Array<{
   { name: "overpowered_model", tier: 2, fn: detectOverpoweredModel },
   { name: "weak_model", tier: 2, fn: detectWeakModel },
   { name: "bad_decomposition", tier: 2, fn: detectBadDecomposition },
+  // unused_skills is NOT in ALL_DETECTORS because it requires an external
+  // installed-skill list (not derivable from AgentRun data alone).
+  // Call detectUnusedSkills() directly, passing auditContext().skills.
 ];
 
 /**

@@ -39,6 +39,7 @@ exports.loadPricingTier = loadPricingTier;
 exports.getPricing = getPricing;
 exports.resetPricingCache = resetPricingCache;
 exports.normalizeModelName = normalizeModelName;
+exports.simulateModelSwitch = simulateModelSwitch;
 exports.calculateCost = calculateCost;
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
@@ -313,6 +314,22 @@ function normalizeModelName(modelId) {
         return "local";
     // Unknown model, return lowercased for consistent pricing lookup
     return m;
+}
+/**
+ * Estimate cost delta if a different model was used.
+ * Returns savings in USD and percentage.
+ */
+function simulateModelSwitch(tokens, currentModel, targetModel, openclawDir) {
+    const currentCost = calculateCost(tokens, currentModel, openclawDir);
+    const targetCost = calculateCost(tokens, targetModel, openclawDir);
+    const savingsUsd = Math.max(0, currentCost - targetCost);
+    const savingsPct = currentCost > 0 ? (savingsUsd / currentCost) * 100 : 0;
+    return {
+        currentCost: Math.round(currentCost * 10000) / 10000,
+        targetCost: Math.round(targetCost * 10000) / 10000,
+        savingsUsd: Math.round(savingsUsd * 10000) / 10000,
+        savingsPct: Math.round(savingsPct * 10) / 10,
+    };
 }
 /** Calculate USD cost. Uses user config pricing if available, then defaults. */
 function calculateCost(tokens, model, openclawDir) {

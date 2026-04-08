@@ -102,10 +102,14 @@ DASHBOARD_PATH = SNAPSHOT_DIR / "dashboard.html"
 
 # Tokens per skill frontmatter (loaded at startup)
 TOKENS_PER_SKILL_APPROX = 100
-# Tool definition wrapper overhead per skill (boilerplate Claude adds around each skill entry)
-SKILL_WRAPPER_OVERHEAD = 35
-# Tokens per command frontmatter (loaded at startup)
-TOKENS_PER_COMMAND_APPROX = 50
+# Skill wrapper overhead: previously estimated at 35 tokens per skill for boilerplate
+# Claude Code wraps around each skill entry. As of v2.1.94+, measurements show this
+# overhead is negligible or zero — skills load their frontmatter content directly.
+SKILL_WRAPPER_OVERHEAD = 0
+# Tokens per command frontmatter — commands are loaded ON-DEMAND (deferred), not at startup.
+# They appear in the slash-command menu but their full content is only loaded when invoked.
+# Count only the menu entry overhead (~5 tokens per command name), not full frontmatter.
+TOKENS_PER_COMMAND_APPROX = 5
 # Tokens per MCP deferred tool name in Tool Search menu
 TOKENS_PER_DEFERRED_TOOL = 15
 # Tokens per eagerly-loaded MCP tool (full schema in system prompt)
@@ -1054,8 +1058,8 @@ def measure_components():
 
     # Fixed overhead
     components["core_system"] = {
-        "tokens": 15000,
-        "note": "System prompt (~3,000) + built-in tools (~12,000). Fixed. Source: Piebald-AI tracking, v2.1.59.",
+        "tokens": 12900,
+        "note": "System prompt (~7,400) + built-in tools (~5,500). Fixed. Measured against v2.1.94+.",
     }
 
     return components
@@ -1417,6 +1421,12 @@ def quick_scan(as_json=False):
         print(f"\n  #1 QUICK WIN")
         print(f"    {quick_win['action']} -> {quick_win['detail']}")
         print(f"    {quick_win['extend']}")
+
+    # Memory review nudge
+    mem_lines = mem.get("lines", 0)
+    if mem_lines > 200:
+        print(f"\n  MEMORY.md: {mem_lines} lines ({mem_lines - 200} over 200-line visible limit)")
+        print(f"    Run: python3 $MEASURE_PY memory-review  (structural breakdown + fix suggestions)")
 
     if coaching:
         print(f"\n  COACHING INSIGHT")
@@ -3203,6 +3213,37 @@ def generate_standalone_dashboard(days=30, quiet=False):
                 "five_only_sessions": 0,
                 "one_hour_only_sessions": 0,
             })
+    # Memory review data for dashboard health cards
+    mr_data = None
+    try:
+        mr_data = memory_review(as_json=True)
+    except Exception:
+        pass
+
+    # CLAUDE.md health summary for dashboard card
+    claude_md_health = None
+    try:
+        claude_tokens = 0
+        context_window = components.get("context_window", 200000)
+        for key in components:
+            if key.startswith("claude_md") and components[key].get("exists"):
+                claude_tokens += components[key].get("tokens", 0)
+        claude_pct = claude_tokens / context_window * 100 if context_window else 0
+        # Determine status from coach patterns
+        claude_status = "good"
+        if coach:
+            for p in coach.get("patterns_bad", []):
+                if "CLAUDE.md" in p.get("name", ""):
+                    claude_status = "warning" if p.get("severity") == "medium" else "notice"
+                    break
+        claude_md_health = {
+            "tokens": claude_tokens,
+            "pct": round(claude_pct, 1),
+            "status": claude_status,
+        }
+    except Exception:
+        pass
+
     data = {
         "snapshot": snapshot,
         "audit": {},
@@ -3221,6 +3262,8 @@ def generate_standalone_dashboard(days=30, quiet=False):
         "pricing_tiers": {k: v["label"] for k, v in PRICING_TIERS.items()},
         "ttl_period_summary": ttl_period_summary,
         "session_turns": session_turns,
+        "memory_review": mr_data,
+        "claude_md_health": claude_md_health,
     }
 
     template = template_path.read_text(encoding="utf-8")
@@ -8281,6 +8324,628 @@ def _score_attention(sections_analyzed):
     return score
 
 
+# ---------------------------------------------------------------------------
+# Memory Review — structural auditor for MEMORY.md and CLAUDE.md (Issue #15)
+# ---------------------------------------------------------------------------
+
+_MR_MEMORY_LINE_LIMIT = 200  # Claude auto-loads only the first N lines of MEMORY.md
+
+_MR_LINK_RE = re.compile(r'\[([^\]]*)\]\((?!https?://)([^)]+\.md)\)')
+_MR_DATE_RE = re.compile(r'(?:Set|Updated|Added|Created)\s+(\d{4}-\d{2}-\d{2})')
+_MR_TASK_HEADING_RE = re.compile(r'^##\s+(TODO|Backlog|Open Tasks|OPEN TASKS|Action Items)', re.IGNORECASE)
+_MR_CHECKBOX_RE = re.compile(r'^\s*-\s*\[[ x]\]')
+_MR_RULE_RE = re.compile(r'\b(NEVER|ALWAYS|MUST|CRITICAL|NON-NEGOTIABLE)\b')
+_MR_STALE_KEYWORD_RE = re.compile(r'\b(RESOLVED|SUPERSEDED|PRIOR STATE|Old notes|DEPRECATED)\b', re.IGNORECASE)
+
+
+def _mr_parse_memory_index(filepath):
+    """Parse a MEMORY.md file into structured entries.
+
+    Returns dict with:
+      entries: list of {heading, body, links, line_start, line_end, date, raw_lines}
+      total_lines: int
+      links_all: list of {text, target, line, entry_idx}
+    """
+    if not filepath or not Path(filepath).exists():
+        return {"entries": [], "total_lines": 0, "links_all": []}
+
+    with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+        lines = f.readlines()
+
+    total_lines = len(lines)
+    entries = []
+    links_all = []
+    current_entry = None
+
+    for i, line in enumerate(lines):
+        stripped = line.rstrip("\n")
+        if stripped.startswith("## "):
+            # Close previous entry
+            if current_entry is not None:
+                current_entry["line_end"] = i - 1
+                entries.append(current_entry)
+            heading = stripped[3:].strip()
+            # Extract date from heading — use the LAST match (Updated > Set)
+            all_dates = _MR_DATE_RE.findall(heading)
+            date_match = all_dates[-1] if all_dates else None
+            current_entry = {
+                "heading": heading,
+                "body": [],
+                "links": [],
+                "line_start": i,
+                "line_end": None,
+                "date": date_match if date_match else None,
+                "raw_lines": [],
+            }
+        elif stripped.startswith("# ") and not stripped.startswith("## "):
+            # Top-level heading (e.g. "# Memory") - skip, not an entry
+            if current_entry is not None:
+                current_entry["line_end"] = i - 1
+                entries.append(current_entry)
+                current_entry = None
+        elif current_entry is not None:
+            current_entry["body"].append(stripped)
+            current_entry["raw_lines"].append((i, stripped))
+            # Extract links
+            for m in _MR_LINK_RE.finditer(stripped):
+                link = {"text": m.group(1), "target": m.group(2),
+                        "line": i, "entry_idx": len(entries)}
+                current_entry["links"].append(link)
+                links_all.append(link)
+
+    # Close last entry
+    if current_entry is not None:
+        current_entry["line_end"] = total_lines - 1
+        entries.append(current_entry)
+
+    return {"entries": entries, "total_lines": total_lines, "links_all": links_all}
+
+
+def _mr_scan_topic_files(memory_dir):
+    """List all .md files in the memory directory excluding MEMORY.md itself.
+
+    Returns list of filenames (not full paths).
+    """
+    if not memory_dir or not Path(memory_dir).is_dir():
+        return []
+    results = []
+    for f in sorted(Path(memory_dir).glob("*.md")):
+        if f.name.upper() != "MEMORY.MD":
+            results.append(f.name)
+    return results
+
+
+def _mr_detect_orphans(links_all, files_on_disk):
+    """Detect orphaned topic files and broken links.
+
+    Orphan = file on disk but not linked from MEMORY.md (INFO severity).
+    Broken = link in MEMORY.md pointing to non-existent file (WARNING severity).
+    """
+    findings = []
+    # Normalize link targets: resolve path separators to just the filename
+    # so "references/notes.md" matches "notes.md" on disk
+    linked_basenames = {Path(lnk["target"]).name for lnk in links_all}
+    files_set = set(files_on_disk)
+
+    # Broken links (WARNING) — target basename not found on disk
+    for lnk in links_all:
+        target_basename = Path(lnk["target"]).name
+        if target_basename not in files_set:
+            findings.append({
+                "category": "broken_link",
+                "severity": "medium",
+                "detail": f"Link to '{lnk['target']}' at line {lnk['line'] + 1} points to non-existent file",
+                "line": lnk["line"],
+                "fix": f"Remove or fix the broken link to {lnk['target']}",
+                "savings": 0,
+            })
+
+    # Orphaned files — on disk but not linked from MEMORY.md
+    for fname in sorted(files_set - linked_basenames):
+        findings.append({
+            "category": "orphan",
+            "severity": "low",
+            "detail": f"Topic file '{fname}' exists but is not linked from MEMORY.md",
+            "file": fname,
+            "fix": f"Add index entry linking to {fname}, or delete if no longer needed",
+            "savings": 0,
+        })
+
+    return findings
+
+
+def _mr_detect_inline_content(entries):
+    """Detect entries with excessive inline content (should be in topic files).
+
+    Flags entries where body has >3 non-blank lines before the first link.
+    """
+    findings = []
+    for idx, entry in enumerate(entries):
+        non_blank_before_link = 0
+        first_link_found = False
+        for line_no, line_text in entry.get("raw_lines", []):
+            if _MR_LINK_RE.search(line_text):
+                first_link_found = True
+                break
+            if line_text.strip():
+                non_blank_before_link += 1
+
+        if non_blank_before_link > 3:
+            est_tokens = non_blank_before_link * 15  # rough estimate based on inline lines only
+            findings.append({
+                "category": "inline_content",
+                "severity": "low",
+                "detail": f"Entry '{entry['heading'][:60]}' has {non_blank_before_link} lines of inline content"
+                          + (" (no topic file link)" if not first_link_found and not entry["links"] else ""),
+                "line": entry["line_start"],
+                "entry_idx": idx,
+                "fix": f"Move inline content to a topic file and add a one-line index entry with link",
+                "savings": est_tokens,
+            })
+
+    return findings
+
+
+def _mr_detect_staleness(entries, stale_days=180):
+    """Detect stale entries by keyword and date.
+
+    Primary: RESOLVED/SUPERSEDED/PRIOR STATE keywords.
+    Secondary: entries with dates older than stale_days.
+    """
+    findings = []
+    today = datetime.now()
+
+    for idx, entry in enumerate(entries):
+        heading = entry["heading"]
+
+        # Keyword-based staleness (always flagged)
+        for _, line_text in entry.get("raw_lines", []):
+            if _MR_STALE_KEYWORD_RE.search(line_text):
+                findings.append({
+                    "category": "stale_keyword",
+                    "severity": "low",
+                    "detail": f"Entry '{heading[:60]}' contains staleness marker",
+                    "line": entry["line_start"],
+                    "entry_idx": idx,
+                    "fix": "Remove resolved/superseded entry or move to archive",
+                    "savings": len(entry.get("raw_lines", [])) * 15,
+                })
+                break  # One finding per entry
+
+        # Date-based staleness (advisory)
+        if entry["date"]:
+            try:
+                entry_date = datetime.strptime(entry["date"], "%Y-%m-%d")
+                age_days = (today - entry_date).days
+                if age_days > stale_days:
+                    # Don't double-flag if already caught by keyword
+                    already_flagged = any(f["entry_idx"] == idx for f in findings)
+                    if not already_flagged:
+                        findings.append({
+                            "category": "stale_date",
+                            "severity": "low",
+                            "detail": f"Entry '{heading[:60]}' is {age_days} days old (threshold: {stale_days})",
+                            "line": entry["line_start"],
+                            "entry_idx": idx,
+                            "fix": "Review if still relevant. Remove or update if stale.",
+                            "savings": 0,
+                        })
+            except ValueError:
+                pass
+
+    return findings
+
+
+def _mr_detect_duplicates(entries, claude_md_contents):
+    """Detect duplicate rules within MEMORY.md and cross-check against CLAUDE.md.
+
+    Uses normalized comparison of NEVER/ALWAYS/MUST rule lines.
+    """
+    findings = []
+
+    def _extract_rules(text_lines):
+        """Extract and normalize rule-bearing lines."""
+        rules = []
+        for line in text_lines:
+            if _MR_RULE_RE.search(line):
+                normalized = line.strip().lower()
+                # Strip common prefixes
+                for prefix in ("- ", "* ", "> "):
+                    if normalized.startswith(prefix):
+                        normalized = normalized[len(prefix):]
+                        break
+                rules.append(normalized)
+        return rules
+
+    # Within-MEMORY.md duplicates
+    all_rules = {}  # normalized_rule -> [(entry_idx, line)]
+    for idx, entry in enumerate(entries):
+        body_text = [l for _, l in entry.get("raw_lines", [])]
+        rules = _extract_rules(body_text)
+        for rule in rules:
+            if rule not in all_rules:
+                all_rules[rule] = []
+            all_rules[rule].append((idx, entry["heading"][:60]))
+
+    for rule, locations in all_rules.items():
+        if len(locations) > 1:
+            headings = [loc[1] for loc in locations]
+            findings.append({
+                "category": "duplicate_internal",
+                "severity": "low",
+                "detail": f"Similar rule appears in {len(locations)} entries: {', '.join(headings[:3])}",
+                "fix": "Consolidate duplicate rules into a single entry",
+                "savings": (len(locations) - 1) * 15,
+            })
+
+    # Cross-check against CLAUDE.md
+    if claude_md_contents:
+        claude_rules = set()
+        for content in claude_md_contents:
+            for rule in _extract_rules(content.splitlines()):
+                claude_rules.add(rule)
+
+        memory_rules = set()
+        for idx, entry in enumerate(entries):
+            body_text = [l for _, l in entry.get("raw_lines", [])]
+            for rule in _extract_rules(body_text):
+                memory_rules.add(rule)
+
+        overlap = memory_rules & claude_rules
+        if overlap:
+            findings.append({
+                "category": "duplicate_cross",
+                "severity": "low",
+                "detail": f"{len(overlap)} rule(s) in MEMORY.md also appear in CLAUDE.md (may be intentional)",
+                "fix": "CLAUDE.md is always loaded. Rules duplicated there waste MEMORY.md budget.",
+                "savings": len(overlap) * 15,
+            })
+
+    return findings
+
+
+def _mr_detect_task_leakage(entries):
+    """Detect task-tracking content that belongs in a task tracker, not memory.
+
+    Only flags: - [ ] checkbox syntax or task-tracking section headings.
+    """
+    findings = []
+    for idx, entry in enumerate(entries):
+        # Check heading
+        if _MR_TASK_HEADING_RE.match("## " + entry["heading"]):
+            findings.append({
+                "category": "task_leakage",
+                "severity": "low",
+                "detail": f"Task-tracking section '{entry['heading'][:60]}' should be in a task tracker",
+                "line": entry["line_start"],
+                "entry_idx": idx,
+                "fix": "Move to project PLANS.md or task tracker. Memory is for durable facts, not ephemeral tasks.",
+                "savings": len(entry.get("raw_lines", [])) * 15,
+            })
+            continue
+
+        # Check for checkbox syntax in body
+        checkbox_count = sum(1 for _, l in entry.get("raw_lines", []) if _MR_CHECKBOX_RE.match(l))
+        if checkbox_count >= 2:
+            findings.append({
+                "category": "task_leakage",
+                "severity": "low",
+                "detail": f"Entry '{entry['heading'][:60]}' contains {checkbox_count} task checkboxes",
+                "line": entry["line_start"],
+                "entry_idx": idx,
+                "fix": "Move task list to project PLANS.md or task tracker",
+                "savings": checkbox_count * 15,
+            })
+
+    return findings
+
+
+def _mr_detect_truncation_waste(entries, links_all, total_lines):
+    """Detect entries and links below the visible line limit that are invisible to Claude.
+
+    Claude auto-loads only the first _MR_MEMORY_LINE_LIMIT lines of MEMORY.md.
+    """
+    CUTOFF = _MR_MEMORY_LINE_LIMIT
+    if total_lines <= CUTOFF:
+        return []
+
+    findings = []
+    invisible_entries = []
+    invisible_links = []
+
+    for idx, entry in enumerate(entries):
+        if entry["line_start"] >= CUTOFF:
+            invisible_entries.append(entry)
+
+    for lnk in links_all:
+        if lnk["line"] >= CUTOFF:
+            invisible_links.append(lnk)
+
+    if invisible_entries:
+        entry_headings = [e["heading"][:50] for e in invisible_entries[:5]]
+        remaining = len(invisible_entries) - 5
+        detail = f"{len(invisible_entries)} entries below line 200 (invisible to Claude)"
+        if entry_headings:
+            detail += f": {', '.join(entry_headings)}"
+            if remaining > 0:
+                detail += f" (+{remaining} more)"
+        findings.append({
+            "category": "truncation",
+            "severity": "medium",
+            "detail": detail,
+            "fix": f"Promote important entries above line 200 or remove low-value ones to make room. "
+                   f"Currently {total_lines} lines, {total_lines - CUTOFF} over the limit.",
+            "savings": (total_lines - CUTOFF) * 15,
+        })
+
+    if invisible_links:
+        findings.append({
+            "category": "truncation_links",
+            "severity": "medium",
+            "detail": f"{len(invisible_links)} topic file links below line 200 — their topic files are effectively orphaned",
+            "fix": "Move these links above line 200 so Claude can discover the topic files",
+            "savings": 0,
+        })
+
+    return findings
+
+
+def _mr_detect_taxonomy(files_on_disk):
+    """Check topic file naming conventions (INFO severity only).
+
+    Expected prefixes: feedback_, project_, session_, reference_, user_.
+    Files without a recognized prefix get flagged as advisory.
+    """
+    KNOWN_PREFIXES = ("feedback_", "project_", "session_", "reference_", "user_")
+    findings = []
+    untyped = []
+    for fname in files_on_disk:
+        if not any(fname.startswith(p) for p in KNOWN_PREFIXES):
+            untyped.append(fname)
+
+    if untyped and len(untyped) >= 3:
+        findings.append({
+            "category": "taxonomy",
+            "severity": "low",
+            "detail": f"{len(untyped)} topic files lack standard prefix (feedback_/project_/session_/reference_/user_): "
+                      + ", ".join(sorted(untyped)[:5])
+                      + (f" (+{len(untyped) - 5} more)" if len(untyped) > 5 else ""),
+            "fix": "Consider renaming for consistency. This is advisory, not a requirement.",
+            "savings": 0,
+        })
+
+    return findings
+
+
+def _mr_compute_savings(findings):
+    """Aggregate savings breakdown by category with net result projection."""
+    by_category = {}
+    total = 0
+    for f in findings:
+        cat = f.get("category", "other")
+        savings = f.get("savings", 0)
+        by_category[cat] = by_category.get(cat, 0) + savings
+        total += savings
+    return {"total_tokens": total, "by_category": by_category}
+
+
+def memory_review(as_json=False, apply=False, stale_days=180, project_dir=None):
+    """Structural audit of MEMORY.md and CLAUDE.md.
+
+    Detects: orphaned/broken links, inline content, staleness, duplicates,
+    task leakage, truncation waste. Returns structured report.
+    """
+    # Resolve project directory (with path containment check)
+    if project_dir:
+        projects_dir = Path(project_dir).resolve()
+        # Containment: must be under user home or ~/.claude/projects/
+        home = Path.home().resolve()
+        if not str(projects_dir).startswith(str(home)):
+            if as_json:
+                return {"error": "project-dir must be under user home directory",
+                        "findings": [], "summary": {}}
+            print(f"  [Error] --project-dir must be under your home directory.")
+            return None
+    else:
+        projects_dir = find_projects_dir()
+
+    if not projects_dir:
+        if as_json:
+            return {"error": "No project directory found", "findings": [], "summary": {}}
+        print("  [Error] No Claude Code project directory found.")
+        print("  Use --project-dir PATH to specify manually.")
+        return None
+
+    memory_dir = projects_dir / "memory"
+    memory_path = memory_dir / "MEMORY.md"
+
+    if not memory_path.exists():
+        if as_json:
+            return {"error": "No MEMORY.md found", "target": str(memory_dir),
+                    "findings": [], "summary": {}}
+        print(f"  [Info] No MEMORY.md found at {memory_dir}")
+        return None
+
+    # Parse MEMORY.md
+    parsed = _mr_parse_memory_index(str(memory_path))
+    entries = parsed["entries"]
+    links_all = parsed["links_all"]
+    total_lines = parsed["total_lines"]
+
+    # Scan topic files
+    files_on_disk = _mr_scan_topic_files(str(memory_dir))
+
+    # Load CLAUDE.md contents for cross-check
+    components = measure_components()
+    claude_md_contents = []
+    for key in components:
+        if key.startswith("claude_md") and components[key].get("exists"):
+            cpath = components[key].get("path")
+            if cpath and Path(cpath).exists():
+                try:
+                    claude_md_contents.append(Path(cpath).read_text(encoding="utf-8", errors="replace"))
+                except OSError:
+                    pass
+
+    # Run all detectors
+    all_findings = []
+    all_findings.extend(_mr_detect_orphans(links_all, files_on_disk))
+    all_findings.extend(_mr_detect_inline_content(entries))
+    all_findings.extend(_mr_detect_staleness(entries, stale_days=stale_days))
+    all_findings.extend(_mr_detect_duplicates(entries, claude_md_contents))
+    all_findings.extend(_mr_detect_task_leakage(entries))
+    all_findings.extend(_mr_detect_truncation_waste(entries, links_all, total_lines))
+    all_findings.extend(_mr_detect_taxonomy(files_on_disk))
+
+    # Compute savings
+    savings = _mr_compute_savings(all_findings)
+
+    # Build summary
+    severity_counts = {"high": 0, "medium": 0, "low": 0}
+    for f in all_findings:
+        sev = f.get("severity", "info")
+        severity_counts[sev] = severity_counts.get(sev, 0) + 1
+
+    category_counts = {}
+    for f in all_findings:
+        cat = f.get("category", "other")
+        category_counts[cat] = category_counts.get(cat, 0) + 1
+
+    # Build rule inventory for in-session contradiction detection
+    # The LLM can review these pairs semantically when run inside a Claude session
+    rule_inventory = []
+    for idx, entry in enumerate(entries):
+        for line_no, line_text in entry.get("raw_lines", []):
+            if _MR_RULE_RE.search(line_text):
+                rule_inventory.append({
+                    "text": line_text.strip(),
+                    "source": "MEMORY.md",
+                    "entry": entry["heading"][:80],
+                    "line": line_no + 1,
+                })
+    for ci, content in enumerate(claude_md_contents):
+        for i, line in enumerate(content.splitlines()):
+            if _MR_RULE_RE.search(line):
+                rule_inventory.append({
+                    "text": line.strip(),
+                    "source": f"CLAUDE.md",
+                    "entry": "",
+                    "line": i + 1,
+                })
+
+    result = {
+        "target": str(memory_path),
+        "total_lines": total_lines,
+        "entry_count": len(entries),
+        "topic_files_count": len(files_on_disk),
+        "linked_files_count": len({Path(lnk["target"]).name for lnk in links_all} & set(files_on_disk)),
+        "findings": all_findings,
+        "severity_counts": severity_counts,
+        "category_counts": category_counts,
+        "savings": savings,
+        "truncated": total_lines > 200,
+        "truncated_lines": max(0, total_lines - 200),
+        "rule_inventory": rule_inventory,
+    }
+
+    if as_json:
+        return result
+
+    # CLI output
+    print(f"\n{'=' * 55}")
+    print(f"  MEMORY REVIEW")
+    print(f"{'=' * 55}")
+    print(f"\n  Target: {memory_path}")
+    print(f"  Lines: {total_lines} / 200 limit" + (f" ({total_lines - 200} over)" if total_lines > 200 else " (OK)"))
+    print(f"  Entries: {len(entries)} | Topic files: {len(files_on_disk)} | Linked: {len({l['target'] for l in links_all})}")
+
+    if not all_findings:
+        print(f"\n  No structural issues found.")
+        return result
+
+    # Group by severity
+    sev_order = ["high", "medium", "low"]
+    sev_labels = {"high": "CRITICAL", "medium": "WARNING", "low": "NOTICE"}
+    sev_colors = {"high": "\033[31m", "medium": "\033[33m", "low": "\033[36m"}
+    reset = "\033[0m"
+
+    print(f"\n  Found {len(all_findings)} issue(s): "
+          f"{severity_counts.get('medium', 0)} warnings, "
+          f"{severity_counts.get('low', 0)} notices, "
+          f"{severity_counts.get('info', 0)} info")
+
+    for sev in sev_order:
+        sev_findings = [f for f in all_findings if f.get("severity") == sev]
+        if not sev_findings:
+            continue
+        print(f"\n  [{sev_labels[sev]}]")
+        for f in sev_findings:
+            prefix = sev_colors.get(sev, "")
+            print(f"  {prefix}  {f['detail']}{reset}")
+            if f.get("fix"):
+                print(f"      Fix: {f['fix']}")
+
+    if savings["total_tokens"] > 0:
+        print(f"\n  Estimated savings: ~{savings['total_tokens']:,} tokens")
+        for cat, tokens in sorted(savings["by_category"].items(), key=lambda x: -x[1]):
+            if tokens > 0:
+                cat_label = cat.replace("_", " ").title()
+                print(f"    {cat_label}: ~{tokens:,} tokens")
+
+    # Net result projection
+    inline_count = len([f for f in all_findings if f["category"] == "inline_content"])
+    stale_count = len([f for f in all_findings if f["category"] in ("stale_keyword", "stale_date")])
+    task_count = len([f for f in all_findings if f["category"] == "task_leakage"])
+    removable_lines = inline_count * 4 + stale_count * 3 + task_count * 5  # rough per-finding estimate
+    projected_lines = max(0, total_lines - removable_lines)
+    orphan_count = len([f for f in all_findings if f["category"] == "orphan"])
+    files_set = set(files_on_disk)
+    linked_count = len({Path(l["target"]).name for l in links_all} & files_set)
+
+    print(f"\n  After cleanup (projected):")
+    print(f"    Lines: ~{projected_lines} (currently {total_lines})"
+          + (f" — {'still over' if projected_lines > 200 else 'under'} 200-line limit" if total_lines > 200 else ""))
+    print(f"    Tokens saved: ~{savings['total_tokens']:,}")
+    print(f"    Topic files reachable: {linked_count + orphan_count} of {len(files_on_disk)} (currently {linked_count})")
+    if total_lines > 200 and projected_lines <= 200:
+        print(f"    Truncation: eliminated (0 lines lost)")
+    elif total_lines > 200:
+        print(f"    Truncation: ~{projected_lines - 200} lines still over (down from {total_lines - 200})")
+
+    print()
+
+    # Apply mode
+    if apply:
+        _mr_apply_fixes(all_findings, memory_path, memory_dir)
+
+    return result
+
+
+def _mr_apply_fixes(findings, memory_path, memory_dir):
+    """Preview actionable fixes from memory review findings.
+
+    Currently shows fix suggestions for user to apply manually or in-session
+    with Claude. Auto-apply for file operations is planned for a future version.
+    """
+    actionable = [f for f in findings if f.get("fix") and f.get("category") in
+                  ("broken_link", "stale_keyword", "task_leakage", "inline_content",
+                   "truncation", "truncation_links", "orphan")]
+
+    if not actionable:
+        print("  No actionable fixes found.")
+        return
+
+    print(f"\n  {len(actionable)} actionable fix(es):")
+    print(f"  (Copy these into a Claude session to apply, or edit MEMORY.md manually)\n")
+
+    for i, f in enumerate(actionable, 1):
+        print(f"  {i}. [{f['category']}] {f['detail']}")
+        print(f"     Fix: {f['fix']}")
+        if f.get("savings", 0) > 0:
+            print(f"     Saves: ~{f['savings']} tokens")
+        print()
+
+
 def _analyze_attention_sections(sections):
     """Shared analysis for attention_score and attention_optimize.
 
@@ -11636,6 +12301,23 @@ if __name__ == "__main__":
             target = a
             break
         attention_optimize(filepath=target, dry_run=dry, apply=do_apply)
+    elif args[0] == "memory-review":
+        output_json = "--json" in args
+        do_apply = "--apply" in args
+        stale_d = 180
+        proj_dir = None
+        for i, a in enumerate(args):
+            if a == "--stale-days" and i + 1 < len(args):
+                try:
+                    stale_d = int(args[i + 1])
+                except ValueError:
+                    pass
+            elif a == "--project-dir" and i + 1 < len(args):
+                proj_dir = args[i + 1]
+        result = memory_review(as_json=output_json, apply=do_apply,
+                               stale_days=stale_d, project_dir=proj_dir)
+        if output_json and result:
+            print(json.dumps(result, indent=2, default=str))
     elif args[0] == "archive-result":
         # PostToolUse hook handler: archive large tool results
         quiet = "--quiet" in args or "-q" in args

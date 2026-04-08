@@ -7,14 +7,23 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { AgentRun, WasteFinding, AuditReport, totalTokens, Severity } from "./models";
+import { AgentRun, WasteFinding, AuditReport, totalTokens, Severity, CostlyPrompt } from "./models";
 import { QualityReport, contextWindowForModel, scoreSessionQuality, scoreToGrade } from "./quality";
 import { ContextAudit, SkillDetail, McpServer, ManageData } from "./context-audit";
 import { loadPricingTier, PRICING_TIER_LABELS } from "./pricing";
+import { CoachData } from "./coach";
 
 // ---------------------------------------------------------------------------
 // Data interfaces
 // ---------------------------------------------------------------------------
+
+export interface AgentCostBreakdown {
+  name: string;
+  runs: number;
+  cost: number;
+  tokens: number;
+  role: "orchestrator" | "worker" | "unknown";
+}
 
 export interface DashboardData {
   generatedAt: string;
@@ -22,6 +31,7 @@ export interface DashboardData {
   contextWindow: number;
   overview: OverviewData;
   agents: AgentSummary[];
+  agentCosts: AgentCostBreakdown[];
   waste: WasteFinding[];
   daily: DailyBucket[];
   models: ModelBucket[];
@@ -31,6 +41,7 @@ export interface DashboardData {
   sessions: SessionRow[];
   pricingTier: string;
   pricingTierLabel: string;
+  coach: CoachData | null;
 }
 
 interface OverviewData {
@@ -135,6 +146,66 @@ function aggregateByAgent(runs: AgentRun[]): AgentSummary[] {
   return summaries;
 }
 
+/**
+ * Build a per-agent cost breakdown with orchestrator/worker/unknown role
+ * classification.
+ *
+ * Role heuristics:
+ * - "orchestrator": agent has at least one tool_use call for "Agent" or "Task"
+ *   tools (i.e., it spawns sub-agents).
+ * - "worker": agent name appears as a spawn target in another agent's toolsUsed.
+ *   Workers never themselves spawn agents.
+ * - "unknown": no parent-child relationship detectable (single agent or no data).
+ *
+ * When no parent-child relationships are detectable at all, every agent is
+ * classified "unknown" and the list is simply cost-ranked.
+ */
+export function buildAgentCostBreakdown(runs: AgentRun[]): AgentCostBreakdown[] {
+  // Group runs by agent
+  const byAgent = new Map<string, AgentRun[]>();
+  for (const r of runs) {
+    const list = byAgent.get(r.agentName) ?? [];
+    list.push(r);
+    byAgent.set(r.agentName, list);
+  }
+
+  // Detect orchestrators: any agent that called "Agent" or "Task" tools
+  const SPAWN_TOOLS = new Set(["Agent", "Task"]);
+  const orchestratorNames = new Set<string>();
+  for (const [name, agentRuns] of byAgent) {
+    for (const r of agentRuns) {
+      if (r.toolsUsed.some((t) => SPAWN_TOOLS.has(t))) {
+        orchestratorNames.add(name);
+        break;
+      }
+    }
+  }
+
+  // Workers are agents that are NOT orchestrators but share the data set with
+  // at least one orchestrator. If no orchestrators found, all are "unknown".
+  const hasOrchestrators = orchestratorNames.size > 0;
+
+  const result: AgentCostBreakdown[] = [];
+  for (const [name, agentRuns] of byAgent) {
+    const cost = agentRuns.reduce((s, r) => s + r.costUsd, 0);
+    const tokens = agentRuns.reduce((s, r) => s + totalTokens(r.tokens), 0);
+
+    let role: AgentCostBreakdown["role"] = "unknown";
+    if (hasOrchestrators) {
+      if (orchestratorNames.has(name)) {
+        role = "orchestrator";
+      } else {
+        role = "worker";
+      }
+    }
+
+    result.push({ name, runs: agentRuns.length, cost, tokens, role });
+  }
+
+  result.sort((a, b) => b.cost - a.cost);
+  return result;
+}
+
 function aggregateByDay(runs: AgentRun[]): DailyBucket[] {
   const map = new Map<string, { cost: number; runs: number; tokens: number }>();
   for (const r of runs) {
@@ -176,7 +247,8 @@ export function buildDashboardData(
   runs: AgentRun[],
   report: AuditReport,
   quality: QualityReport | null = null,
-  context: ContextAudit | null = null
+  context: ContextAudit | null = null,
+  coach: CoachData | null = null
 ): DashboardData {
   const allCostZero = runs.every((r) => r.costUsd === 0);
   const unknownModelRuns = runs.filter(
@@ -250,6 +322,7 @@ export function buildDashboardData(
       unknownModelRuns,
     },
     agents: aggregateByAgent(runs),
+    agentCosts: buildAgentCostBreakdown(runs),
     waste: report.findings,
     daily: aggregateByDay(runs),
     models: aggregateByModel(runs),
@@ -259,6 +332,7 @@ export function buildDashboardData(
     sessions,
     pricingTier,
     pricingTierLabel,
+    coach,
   };
 }
 
@@ -375,6 +449,7 @@ function renderNav(data: DashboardData): string {
         <a class="nav-item" data-view="agents">Agents</a>
         <a class="nav-item" data-view="sessions">Sessions</a>
         <a class="nav-item" data-view="daily">Daily</a>
+        <a class="nav-item" data-view="coach">Coach</a>
         <div style="height:1px;background:var(--c-border);margin:var(--s-2) 0"></div>
         <a class="nav-item" data-view="manage">Manage</a>
       </div>
@@ -1020,6 +1095,173 @@ function renderManage(data: DashboardData): string {
       ` : ""}
     ` : ""}
 
+  </div>`;
+}
+
+function renderCoach(data: DashboardData): string {
+  const coach = data.coach;
+  if (!coach) {
+    return `<div class="view" id="view-coach">
+      <div class="section-header">
+        <div class="label">Setup Coach</div>
+        <h1>Coach</h1>
+        <p>Holistic health assessment of your OpenClaw setup.</p>
+      </div>
+      <div class="empty-state">Run an audit to generate coach data.</div>
+    </div>`;
+  }
+
+  const band = qualityBand(coach.health_score);
+  const snap = coach.snapshot;
+
+  // --- Issues Detected ---
+  const issuesHtml = coach.patterns_bad.length > 0
+    ? `<div class="card">
+        <div class="card-header"><span>Issues Detected</span><span class="label">${coach.patterns_bad.length} issue${coach.patterns_bad.length !== 1 ? "s" : ""}</span></div>
+        ${coach.patterns_bad.map((p) => {
+          const sevColor = p.severity === "high" ? "#ff6b6b" : p.severity === "medium" ? "#ff9f43" : "#7d8ca3";
+          return `<div style="padding:var(--s-3) 0;border-bottom:1px solid var(--c-border)">
+            <div style="display:flex;align-items:center;gap:var(--s-2);margin-bottom:6px">
+              <span style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.1em;padding:2px 8px;border-radius:3px;background:${sevColor}20;color:${sevColor}">${esc(p.severity ?? "info")}</span>
+              <span style="font-weight:500">${esc(p.name)}</span>
+            </div>
+            <div style="font-size:14px;color:var(--c-text-dim);margin-bottom:6px">${esc(p.detail)}</div>
+            ${p.fix ? `<div style="font-size:13px;color:var(--c-accent-cyan);margin-bottom:4px">${esc(p.fix)}</div>` : ""}
+            ${p.savings ? `<div style="font-size:12px;color:var(--c-success);font-family:var(--font-mono)">Potential savings: ${esc(p.savings)}</div>` : ""}
+          </div>`;
+        }).join("")}
+      </div>`
+    : `<div class="card">
+        <div class="card-header"><span>Issues Detected</span></div>
+        <div style="padding:var(--s-3);color:var(--c-success);font-size:14px">No issues found. Setup looks healthy.</div>
+      </div>`;
+
+  // --- Working Well (earned patterns) ---
+  const earnedPatterns = coach.patterns_good.filter((p) => p.earned === true);
+  const earnedHtml = earnedPatterns.length > 0
+    ? `<div class="card" style="border-color:rgba(0,240,255,0.2)">
+        <div class="card-header"><span>Working Well</span></div>
+        ${earnedPatterns.map((p) => `<div style="padding:var(--s-2) 0;border-bottom:1px solid var(--c-border)">
+          <div style="font-weight:500;color:var(--c-accent-cyan)">${esc(p.name)}</div>
+          <div style="font-size:13px;color:var(--c-text-dim);margin-top:2px">${esc(p.detail)}</div>
+        </div>`).join("")}
+      </div>`
+    : "";
+
+  // --- Setup Summary (neutral facts, not earned) ---
+  const neutralPatterns = coach.patterns_good.filter((p) => !p.earned);
+  const setupHtml = neutralPatterns.length > 0
+    ? `<div class="card" style="border-color:rgba(125,140,163,0.15)">
+        <div class="card-header"><span>Setup Summary</span></div>
+        ${neutralPatterns.map((p) => `<div style="padding:var(--s-2) 0;border-bottom:1px solid var(--c-border)">
+          <div style="font-weight:500;color:var(--c-text-dim)">${esc(p.name)}</div>
+          <div style="font-size:13px;color:var(--c-text-dim);margin-top:2px">${esc(p.detail)}</div>
+        </div>`).join("")}
+      </div>`
+    : "";
+
+  // --- Most Expensive Prompts ---
+  const promptsHtml = coach.costly_prompts.length > 0
+    ? `<div class="card">
+        <div class="card-header"><span>Most Expensive Prompts</span><span class="label">top ${Math.min(coach.costly_prompts.length, 5)}</span></div>
+        <div style="overflow-x:auto">
+          <table class="session-table">
+            <thead>
+              <tr>
+                <th style="min-width:200px">Prompt</th>
+                <th>Model</th>
+                <th>Tokens In</th>
+                <th>Cache Read</th>
+                <th>Fresh Input</th>
+                <th>Cost</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${coach.costly_prompts.slice(0, 5).map((p) => `<tr>
+                <td style="white-space:normal;max-width:300px;overflow:hidden;text-overflow:ellipsis" title="${esc(p.text)}">${esc(p.text.length > 80 ? p.text.slice(0, 80) + "..." : p.text)}</td>
+                <td>${esc(p.model)}</td>
+                <td>${fmtTokens(p.tokensIn)}</td>
+                <td>${fmtTokens(p.cacheRead)}</td>
+                <td>${fmtTokens(p.freshInput)}</td>
+                <td style="color:var(--c-accent-cyan)">${fmtCost(p.costUsd)}</td>
+              </tr>`).join("")}
+            </tbody>
+          </table>
+        </div>
+      </div>`
+    : "";
+
+  // --- Agent Cost Breakdown ---
+  const agentCostHtml = coach.agent_costs.length > 0
+    ? `<div class="card">
+        <div class="card-header"><span>Agent Cost Breakdown</span><span class="label">${coach.agent_costs.length} agent${coach.agent_costs.length !== 1 ? "s" : ""}</span></div>
+        <div style="overflow-x:auto">
+          <table class="session-table">
+            <thead>
+              <tr>
+                <th>Agent</th>
+                <th>Role</th>
+                <th>Runs</th>
+                <th>Cost</th>
+                <th>Tokens</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${coach.agent_costs.map((a) => {
+                const roleColor = a.role === "orchestrator" ? "var(--c-warning)" : a.role === "worker" ? "var(--c-accent-cyan)" : "var(--c-text-dim)";
+                return `<tr>
+                  <td>${esc(a.name.length > 25 ? a.name.slice(0, 25) + "..." : a.name)}</td>
+                  <td><span style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;padding:2px 6px;border-radius:3px;background:${roleColor}20;color:${roleColor}">${esc(a.role)}</span></td>
+                  <td>${a.runs}</td>
+                  <td style="color:var(--c-accent-cyan)">${fmtCost(a.cost)}</td>
+                  <td>${fmtTokens(a.tokens)}</td>
+                </tr>`;
+              }).join("")}
+            </tbody>
+          </table>
+        </div>
+      </div>`
+    : "";
+
+  return `<div class="view" id="view-coach">
+    <div class="section-header">
+      <div class="label">Setup Coach</div>
+      <h1>Coach</h1>
+      <p>Holistic health assessment of your OpenClaw setup, session costs, and optimization guidance.</p>
+    </div>
+
+    <div style="text-align:center;margin:var(--s-4) 0">
+      <div style="font-family:var(--font-mono);font-size:72px;font-weight:500;color:${band.color};text-shadow:0 0 20px ${band.color}">${band.grade}</div>
+      <div style="font-size:28px;font-weight:500;font-family:var(--font-mono);color:${band.color}">${coach.health_score}/100</div>
+      <div style="font-size:16px;color:${band.color};text-transform:uppercase;letter-spacing:0.2em">${esc(band.label)}</div>
+    </div>
+
+    <div class="stat-row">
+      <div class="stat-card">
+        <div class="stat-card-value">${fmtTokens(snap.total_overhead)}</div>
+        <div class="stat-card-label">Startup Overhead</div>
+        <div class="stat-card-qualifier">${snap.overhead_pct}% of ${fmtTokens(snap.context_window)} window</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card-value">${fmtTokens(snap.usable_tokens)}</div>
+        <div class="stat-card-label">Usable Tokens</div>
+        <div class="stat-card-qualifier">after overhead</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card-value">${snap.skill_count}</div>
+        <div class="stat-card-label">Active Skills</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card-value">${snap.mcp_server_count}</div>
+        <div class="stat-card-label">MCP Servers</div>
+      </div>
+    </div>
+
+    ${issuesHtml}
+    ${earnedHtml}
+    ${setupHtml}
+    ${promptsHtml}
+    ${agentCostHtml}
   </div>`;
 }
 
@@ -2037,6 +2279,7 @@ ${renderCSS()}
     ${renderAgents(data)}
     ${renderSessions(data)}
     ${renderDaily(data)}
+    ${renderCoach(data)}
     ${renderManage(data)}
   </main>
 

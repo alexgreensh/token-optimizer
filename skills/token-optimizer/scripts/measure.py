@@ -3724,67 +3724,76 @@ def generate_coach_data(focus=None, components=None, trends=None):
     patterns_bad = []
     questions = []
 
-    # Score components (0-100, start at 100 and deduct)
-    score = 100
+    # Score components (0-100, start at 70 base, positive signals add up to +30)
+    # This means an unconfigured default scores 70, not 100. Active optimization
+    # earns a higher score. Deductions can push below 70 for real problems.
+    score = 70
 
-    # Check skills count
+    # Check skills count — only flag if overhead is significant relative to context
+    # and there are genuinely unused skills. Skill count alone is not a problem.
     skills = components.get("skills", {})
     skill_count = skills.get("count", 0)
     skill_tokens = skills.get("tokens", 0)
-    if skill_count > 50:
+    context_window = components.get("context_window", 200000)
+    skill_pct = skill_tokens / context_window * 100 if context_window else 0
+    unused_skills = trends.get("skills", {}).get("never_used", []) if trends else []
+    unused_count = len(unused_skills) if unused_skills else 0
+    if unused_count > 20 and skill_pct > 2:
         patterns_bad.append({
-            "name": "50-Skill Trap",
+            "name": "Unused Skill Overhead",
             "severity": "high",
-            "detail": f"{skill_count} skills installed ({skill_tokens:,} tokens startup overhead)",
+            "detail": f"{unused_count} of {skill_count} skills unused in 90 days ({skill_tokens:,} tokens, {skill_pct:.1f}% of context)",
             "fix": "Archive unused skills to ~/.claude/skills/_archived/",
-            "savings": f"~{(skill_count - 20) * TOKENS_PER_SKILL_APPROX:,} tokens if you keep 20",
+            "savings": f"~{unused_count * TOKENS_PER_SKILL_APPROX:,} tokens from unused skills",
         })
-        score -= 15
-        questions.append(f"You have {skill_count} skills. Which do you actually use daily?")
-    elif skill_count > 30:
+        score -= 10
+    elif unused_count > 10:
         patterns_bad.append({
-            "name": "Skill Sprawl",
-            "severity": "medium",
-            "detail": f"{skill_count} skills installed ({skill_tokens:,} tokens)",
-            "fix": "Review and archive unused skills",
+            "name": "Some Unused Skills",
+            "severity": "low",
+            "detail": f"{unused_count} of {skill_count} skills unused in 90 days",
+            "fix": "Review and archive skills you no longer use",
             "savings": f"~100 tokens per archived skill",
         })
-        score -= 8
+        score -= 3
     elif skill_count > 0:
         patterns_good.append({
-            "name": "Reasonable Skill Count",
-            "detail": f"{skill_count} skills ({skill_tokens:,} tokens)",
+            "name": "Active Skill Set",
+            "detail": f"{skill_count} skills ({skill_tokens:,} tokens, {skill_pct:.1f}% of context)",
         })
+        score += 5
 
-    # Check CLAUDE.md size
+    # Check CLAUDE.md size — thresholds relative to context window
     claude_tokens = 0
     for key in components:
         if key.startswith("claude_md") and components[key].get("exists"):
             claude_tokens += components[key].get("tokens", 0)
-    if claude_tokens > 6000:
+    claude_pct = claude_tokens / context_window * 100 if context_window else 0
+    if claude_pct > 3:
         patterns_bad.append({
             "name": "CLAUDE.md Novel",
             "severity": "high",
-            "detail": f"CLAUDE.md chain totals {claude_tokens:,} tokens (target: ~4,500 / ~300 lines)",
+            "detail": f"CLAUDE.md chain totals {claude_tokens:,} tokens ({claude_pct:.1f}% of context)",
             "fix": "Move workflows to skills, standards to reference files",
             "savings": f"~{claude_tokens - 4500:,} tokens per message",
         })
-        score -= 15
+        score -= 10
         questions.append("Which CLAUDE.md sections do you reference most? Could any become skills?")
-    elif claude_tokens > 5000:
+    elif claude_pct > 2:
         patterns_bad.append({
             "name": "Heavy CLAUDE.md",
             "severity": "medium",
-            "detail": f"CLAUDE.md at {claude_tokens:,} tokens (target: ~4,500 / ~300 lines)",
+            "detail": f"CLAUDE.md at {claude_tokens:,} tokens ({claude_pct:.1f}% of context)",
             "fix": "Review for content that could move to skills",
             "savings": f"~{claude_tokens - 4500:,} tokens per message",
         })
-        score -= 8
+        score -= 5
     elif claude_tokens > 0:
         patterns_good.append({
             "name": "Lean CLAUDE.md",
-            "detail": f"{claude_tokens:,} tokens (under ~4,500 target)",
+            "detail": f"{claude_tokens:,} tokens ({claude_pct:.1f}% of context)",
         })
+        score += 5
 
     # Check MEMORY.md
     mem = components.get("memory_md", {})
@@ -3812,25 +3821,24 @@ def generate_coach_data(focus=None, components=None, trends=None):
     mcp = components.get("mcp_tools", {})
     mcp_servers = mcp.get("server_count", 0)
     mcp_tokens = mcp.get("tokens", 0)
-    if mcp_servers > 10:
+    # MCP servers: with Tool Search, deferred tools cost ~15 tokens each.
+    # Only flag when token overhead is genuinely significant (>3% of context).
+    mcp_pct = mcp_tokens / context_window * 100 if context_window else 0
+    if mcp_servers > 20 and mcp_pct > 3:
         patterns_bad.append({
             "name": "MCP Sprawl",
-            "severity": "high",
-            "detail": f"{mcp_servers} MCP servers ({mcp_tokens:,} tokens)",
+            "severity": "medium",
+            "detail": f"{mcp_servers} MCP servers ({mcp_tokens:,} tokens, {mcp_pct:.1f}% of context)",
             "fix": "Disable unused servers in settings.json",
             "savings": f"~50-100 tokens per disabled server",
         })
-        score -= 12
-        questions.append(f"You have {mcp_servers} MCP servers. Which do you actually use in CLI?")
-    elif mcp_servers > 5:
-        patterns_bad.append({
-            "name": "Many MCP Servers",
-            "severity": "low",
-            "detail": f"{mcp_servers} servers ({mcp_tokens:,} tokens)",
-            "fix": "Review for unused servers",
-            "savings": "~50-100 tokens per disabled server",
-        })
         score -= 5
+    elif mcp_servers > 0:
+        patterns_good.append({
+            "name": "MCP Servers",
+            "detail": f"{mcp_servers} servers ({mcp_tokens:,} tokens, {mcp_pct:.1f}% of context)",
+        })
+        score += 3
 
     # Check file exclusion rules (permissions.deny)
     exclusion = components.get("file_exclusion", {})
@@ -3877,6 +3885,7 @@ def generate_coach_data(focus=None, components=None, trends=None):
             "name": "SessionEnd Hook Installed",
             "detail": "Usage tracking active",
         })
+        score += 5
     else:
         patterns_bad.append({
             "name": "No SessionEnd Hook",
@@ -3895,7 +3904,8 @@ def generate_coach_data(focus=None, components=None, trends=None):
         if total_model_tokens > 0:
             opus_pct = model_mix.get("opus", 0) / total_model_tokens * 100
             haiku_pct = model_mix.get("haiku", 0) / total_model_tokens * 100
-            if opus_pct > 70:
+            _opus_addiction_fired = False
+            if opus_pct > 85:
                 fix_msg = "Route data-gathering agents to Haiku, analysis to Sonnet"
                 if default_model and "opus" in str(default_model).lower():
                     fix_msg += f". Root cause: settings.json has \"model\": \"{default_model}\" which may override routing"
@@ -3906,7 +3916,8 @@ def generate_coach_data(focus=None, components=None, trends=None):
                     "fix": fix_msg,
                     "savings": "50-75% cost reduction (same context, less spend)",
                 })
-                score -= 8
+                score -= 5
+                _opus_addiction_fired = True
 
         # Check unused skills from trends
         never_used = trends.get("skills", {}).get("never_used", [])
@@ -3942,7 +3953,7 @@ def generate_coach_data(focus=None, components=None, trends=None):
             "name": "Effort Level Set",
             "detail": "effortLevel: \"high\" — deliberate quality choice. Uses ~15-25% more output tokens than \"medium\".",
         })
-        # No score penalty — user's effort/model choice is intentional
+        score += 3
 
     # Check settings env vars for optimization opportunities
     settings_env = components.get("settings_env", {}).get("found", {})
@@ -3989,7 +4000,27 @@ def generate_coach_data(focus=None, components=None, trends=None):
                 best_by_name[name] = f
 
         triaged = triage(list(best_by_name.values()))
+
+        # Calculate total messages across scanned sessions for proportional thresholds
+        total_messages_scanned = 0
+        for jf, _, _ in recent_files[:10]:
+            p = _parse_session_jsonl(str(jf))
+            if p:
+                total_messages_scanned += p.get("message_count", 0)
+
         for f in triaged:
+            # Only flag detectors when they affect a significant percentage (>5%)
+            # of messages. 7 loops out of 972 messages is noise, not a pattern.
+            occurrence_count = f.get("occurrence_count", 1)
+            if total_messages_scanned > 50:
+                pct = occurrence_count / total_messages_scanned * 100
+                if pct < 5:
+                    continue  # skip noise-level findings
+
+            # Skip overpowered detector if Opus Addiction already covers model routing
+            if f["name"] == "overpowered" and _opus_addiction_fired:
+                continue
+
             # Enrich overpowered findings with counterfactual
             detail = f["evidence"]
             if f["name"] == "overpowered" and recent_files:
@@ -4050,7 +4081,7 @@ def generate_coach_data(focus=None, components=None, trends=None):
     # Add compaction timing guide when relevant
     has_compaction_patterns = (
         claude_tokens > 5000
-        or any(p["name"] in ("50-Skill Trap", "Skill Sprawl", "Heavy CLAUDE.md", "CLAUDE.md Novel", "Oversized MEMORY.md")
+        or any(p["name"] in ("Unused Skill Overhead", "Some Unused Skills", "Unused Skills", "Heavy CLAUDE.md", "CLAUDE.md Novel", "Oversized MEMORY.md")
                for p in patterns_bad)
     )
     if has_compaction_patterns:

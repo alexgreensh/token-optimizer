@@ -77,6 +77,7 @@ def detect_retry_churn(session_data):
                     f"Stop and diagnose after 2 failures instead of retrying. "
                     f"{count} retries of {tool_name} wasted ~{est_tokens:,} tokens."
                 ),
+                "occurrence_count": count,
             })
 
     return findings

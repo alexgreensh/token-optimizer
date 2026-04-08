@@ -45,4 +45,5 @@ def detect_weak_model(session_data):
             "Consider Sonnet for sessions with >100K context and many tool calls "
             "to reduce errors and retries."
         ),
+        "occurrence_count": 1,
     }]

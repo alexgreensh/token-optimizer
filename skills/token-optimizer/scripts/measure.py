@@ -3724,10 +3724,11 @@ def generate_coach_data(focus=None, components=None, trends=None):
     patterns_bad = []
     questions = []
 
-    # Score components (0-100, start at 70 base, positive signals add up to +30)
-    # This means an unconfigured default scores 70, not 100. Active optimization
-    # earns a higher score. Deductions can push below 70 for real problems.
-    score = 70
+    # Score components (0-100, start at 75 base, earned signals add up to +15)
+    # Neutral facts (skill count, MCP count, effort level) don't affect score.
+    # Only genuinely earned items (lean CLAUDE.md, SessionEnd hook) add points.
+    # Deductions push below 75 for real problems.
+    score = 75
 
     # Check skills count — only flag if overhead is significant relative to context
     # and there are genuinely unused skills. Skill count alone is not a problem.
@@ -3738,22 +3739,25 @@ def generate_coach_data(focus=None, components=None, trends=None):
     skill_pct = skill_tokens / context_window * 100 if context_window else 0
     unused_skills = trends.get("skills", {}).get("never_used", []) if trends else []
     unused_count = len(unused_skills) if unused_skills else 0
-    if unused_count > 20 and skill_pct > 2:
+    unused_ratio = unused_count / skill_count if skill_count > 0 else 0
+    if unused_count > 20 and skill_pct > 2 and unused_ratio > 0.8:
+        # Truly excessive: >80% of skills unused AND significant token overhead
         patterns_bad.append({
             "name": "Unused Skill Overhead",
             "severity": "high",
-            "detail": f"{unused_count} of {skill_count} skills unused in 90 days ({skill_tokens:,} tokens, {skill_pct:.1f}% of context)",
-            "fix": "Archive unused skills to ~/.claude/skills/_archived/",
+            "detail": f"{unused_count} of {skill_count} skills unused in 30 days ({skill_tokens:,} tokens, {skill_pct:.1f}% of context)",
+            "fix": "Review unused skills. Some may be seasonal, but archiving truly abandoned ones saves tokens. Move to ~/.claude/skills/_archived/",
             "savings": f"~{unused_count * TOKENS_PER_SKILL_APPROX:,} tokens from unused skills",
         })
-        score -= 10
-    elif unused_count > 10:
+        score -= 7
+    elif unused_count > 15 and unused_ratio > 0.6:
+        # Moderate: many unused but could be seasonal
         patterns_bad.append({
-            "name": "Some Unused Skills",
+            "name": "Many Unused Skills",
             "severity": "low",
-            "detail": f"{unused_count} of {skill_count} skills unused in 90 days",
-            "fix": "Review and archive skills you no longer use",
-            "savings": f"~100 tokens per archived skill",
+            "detail": f"{unused_count} of {skill_count} skills unused in 30 days. Some may be seasonal.",
+            "fix": "Review for skills you've truly abandoned vs. ones you use occasionally",
+            "savings": f"~{unused_count * TOKENS_PER_SKILL_APPROX:,} tokens if archived",
         })
         score -= 3
     elif skill_count > 0:
@@ -3761,7 +3765,6 @@ def generate_coach_data(focus=None, components=None, trends=None):
             "name": "Active Skill Set",
             "detail": f"{skill_count} skills ({skill_tokens:,} tokens, {skill_pct:.1f}% of context)",
         })
-        score += 5
 
     # Check CLAUDE.md size — thresholds relative to context window
     claude_tokens = 0
@@ -3791,6 +3794,7 @@ def generate_coach_data(focus=None, components=None, trends=None):
         patterns_good.append({
             "name": "Lean CLAUDE.md",
             "detail": f"{claude_tokens:,} tokens ({claude_pct:.1f}% of context)",
+            "earned": True,
         })
         score += 5
 
@@ -3837,7 +3841,6 @@ def generate_coach_data(focus=None, components=None, trends=None):
             "name": "MCP Servers",
             "detail": f"{mcp_servers} servers ({mcp_tokens:,} tokens, {mcp_pct:.1f}% of context)",
         })
-        score += 3
 
     # Check file exclusion rules (permissions.deny)
     exclusion = components.get("file_exclusion", {})
@@ -3883,6 +3886,7 @@ def generate_coach_data(focus=None, components=None, trends=None):
         patterns_good.append({
             "name": "SessionEnd Hook Installed",
             "detail": "Usage tracking active",
+            "earned": True,
         })
         score += 5
     else:
@@ -3942,7 +3946,6 @@ def generate_coach_data(focus=None, components=None, trends=None):
             "name": "Effort Level Set",
             "detail": "effortLevel: \"high\" — deliberate quality choice. Uses ~15-25% more output tokens than \"medium\".",
         })
-        score += 3
 
     # Check settings env vars for optimization opportunities
     settings_env = components.get("settings_env", {}).get("found", {})
@@ -4316,15 +4319,45 @@ def _extract_skills_and_agents_from_subagent(filepath):
     return skills, subagents
 
 
+def _extract_agent_type(subagent_file):
+    """Extract the agent type for a subagent JSONL file.
+
+    Priority: .meta.json agentType > filename pattern > filename stem.
+    Auto-compaction agents (filename contains 'acompact') are labeled explicitly.
+    """
+    sf = Path(subagent_file) if not isinstance(subagent_file, Path) else subagent_file
+
+    # Auto-compaction agents are internal, not user-dispatched
+    if "acompact" in sf.stem:
+        return "Auto-Compaction"
+
+    # Check .meta.json (written by Claude Code for user-dispatched agents)
+    meta_path = sf.with_suffix(".meta.json")
+    if meta_path.exists():
+        try:
+            with open(meta_path, "r") as mf:
+                meta = json.load(mf)
+                agent_type = meta.get("agentType", "")
+                if agent_type:
+                    return agent_type
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    return "unknown"
+
+
 def _analyze_subagent_costs(session_jsonl_path, tier=None):
     """Parse subagent JSONL files for a session and return cost breakdown.
 
-    Returns list of dicts: [{name, tokens, cost_usd, model, file}]
+    Returns list of dicts grouped by agent type: [{name, tokens, cost_usd, model, count}]
+    Auto-compaction agents are separated from user-dispatched agents.
     """
     if tier is None:
         tier = _load_pricing_tier()
     subagent_files = _find_subagent_jsonl_files(Path(session_jsonl_path))
-    results = []
+
+    # Collect per-file costs, then group by agent type
+    by_type = {}  # {agent_type: {tokens, cost_usd, model_tokens, count}}
     for sf in subagent_files:
         parsed = _parse_session_jsonl(str(sf))
         if not parsed or parsed.get("total_input_tokens", 0) == 0:
@@ -4335,14 +4368,31 @@ def _analyze_subagent_costs(session_jsonl_path, tier=None):
         cache_read = int(total_input * chr_val)
         cost = _get_model_cost(dom_model, max(0, total_input - cache_read),
                                parsed["total_output_tokens"], cache_read, 0, tier=tier)
-        # Extract agent type from the filename or first prompt
-        agent_name = sf.stem[:20]
+
+        agent_type = _extract_agent_type(sf)
+        norm_model = _normalize_model_name(dom_model) or dom_model
+
+        if agent_type not in by_type:
+            by_type[agent_type] = {"tokens": 0, "cost_usd": 0.0, "models": {}, "count": 0}
+        entry = by_type[agent_type]
+        entry["tokens"] += total_input + parsed["total_output_tokens"]
+        entry["cost_usd"] += cost
+        entry["count"] += 1
+        entry["models"][norm_model] = entry["models"].get(norm_model, 0) + 1
+
+    results = []
+    for agent_type, data in by_type.items():
+        # Pick the most common model for this agent type
+        dominant_model = max(data["models"], key=data["models"].get) if data["models"] else "unknown"
+        label = agent_type
+        if data["count"] > 1:
+            label = f"{agent_type} ({data['count']}x)"
         results.append({
-            "name": agent_name,
-            "tokens": total_input + parsed["total_output_tokens"],
-            "cost_usd": round(cost, 4),
-            "model": _normalize_model_name(dom_model) or dom_model,
-            "file": str(sf),
+            "name": label,
+            "tokens": data["tokens"],
+            "cost_usd": round(data["cost_usd"], 4),
+            "model": dominant_model,
+            "count": data["count"],
         })
     results.sort(key=lambda x: x["cost_usd"], reverse=True)
     return results

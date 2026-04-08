@@ -2993,14 +2993,30 @@ var DB = (function() {
     }
 
     if (good.length > 0) {
-      html += '<div class="card wide"><div class="card-header"><span>Good Practices</span></div>';
-      good.forEach(function(p) {
-        html += '<div style="border-left:3px solid var(--c-accent-cyan);padding:var(--s-3);margin-bottom:var(--s-2);background:rgba(0,240,255,0.02);border-radius:0 6px 6px 0;">' +
-          '<div style="font-weight:500;color:var(--c-accent-cyan);">' + esc(p.name) + '</div>' +
-          '<div style="color:var(--c-text-dim);font-size:14px;margin-top:4px;">' + esc(p.detail) + '</div>' +
-          '</div>';
-      });
-      html += '</div>';
+      var earned = good.filter(function(p) { return p.earned; });
+      var neutral = good.filter(function(p) { return !p.earned; });
+
+      if (earned.length > 0) {
+        html += '<div class="card wide"><div class="card-header"><span>Working Well</span></div>';
+        earned.forEach(function(p) {
+          html += '<div style="border-left:3px solid var(--c-accent-cyan);padding:var(--s-3);margin-bottom:var(--s-2);background:rgba(0,240,255,0.02);border-radius:0 6px 6px 0;">' +
+            '<div style="font-weight:500;color:var(--c-accent-cyan);">' + esc(p.name) + '</div>' +
+            '<div style="color:var(--c-text-dim);font-size:14px;margin-top:4px;">' + esc(p.detail) + '</div>' +
+            '</div>';
+        });
+        html += '</div>';
+      }
+
+      if (neutral.length > 0) {
+        html += '<div class="card wide"><div class="card-header"><span>Setup Summary</span></div>';
+        neutral.forEach(function(p) {
+          html += '<div style="border-left:3px solid var(--c-border);padding:var(--s-3);margin-bottom:var(--s-2);background:rgba(255,255,255,0.015);border-radius:0 6px 6px 0;">' +
+            '<div style="font-weight:500;color:var(--c-text-main);">' + esc(p.name) + '</div>' +
+            '<div style="color:var(--c-text-dim);font-size:14px;margin-top:4px;">' + esc(p.detail) + '</div>' +
+            '</div>';
+        });
+        html += '</div>';
+      }
     }
 
     // Compaction timing guide

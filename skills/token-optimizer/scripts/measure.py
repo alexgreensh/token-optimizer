@@ -4253,8 +4253,9 @@ def _find_subagent_jsonl_files(session_jsonl_path):
 def _extract_skills_and_agents_from_subagent(filepath):
     """Parse a subagent JSONL file for Skill and Task tool calls only.
 
-    Returns (skills_dict, subagents_dict) without extracting token usage
-    (parent session already accounts for API cost).
+    Returns (skills_dict, subagents_dict) without extracting token usage.
+    Model-level token attribution is handled separately in collect_sessions()
+    via _parse_session_jsonl() on each subagent file (see fix #18).
     """
     skills = {}
     subagents = {}
@@ -5192,6 +5193,20 @@ def collect_sessions(days=90, quiet=False):
             for ag, cnt in sub_agents.items():
                 parsed["subagents_used"][ag] = parsed["subagents_used"].get(ag, 0) + cnt
 
+        # Fix #18: Extract model usage from subagent JSONL files.
+        # Subagents may run on different models (sonnet, haiku) than the
+        # parent (typically opus).  The parent JSONL does NOT include
+        # subagent token counts, so we merge them additively.
+        for sub_jf in _find_subagent_jsonl_files(filepath):
+            sub_parsed = _parse_session_jsonl(sub_jf)
+            if sub_parsed and sub_parsed.get("model_usage"):
+                for model_id, tokens in sub_parsed["model_usage"].items():
+                    if model_id.startswith("<"):  # skip synthetic IDs
+                        continue
+                    parsed["model_usage"][model_id] = (
+                        parsed["model_usage"].get(model_id, 0) + tokens
+                    )
+
         date = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
         skills_used = parsed["skills_used"]
         subagents_used = parsed["subagents_used"]
@@ -5559,6 +5574,20 @@ def _collect_trends_from_jsonl(days=30):
                     parsed["skills_used"][sk] = parsed["skills_used"].get(sk, 0) + cnt
                 for ag, cnt in sub_agents.items():
                     parsed["subagents_used"][ag] = parsed["subagents_used"].get(ag, 0) + cnt
+
+            # Fix #18: Extract model usage from subagent JSONL files.
+            # Subagents run on different models than the parent; their
+            # tokens are NOT included in the parent's usage blocks.
+            for sub_jf in _find_subagent_jsonl_files(filepath):
+                sub_parsed = _parse_session_jsonl(sub_jf)
+                if sub_parsed and sub_parsed.get("model_usage"):
+                    for model_id, tokens in sub_parsed["model_usage"].items():
+                        if model_id.startswith("<"):
+                            continue
+                        parsed["model_usage"][model_id] = (
+                            parsed["model_usage"].get(model_id, 0) + tokens
+                        )
+
             parsed["project"] = project_name
             parsed["date"] = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
             parsed["jsonl_path"] = str(filepath)

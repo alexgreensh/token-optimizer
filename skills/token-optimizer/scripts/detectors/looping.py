@@ -20,7 +20,7 @@ def _similarity(a, b):
 def detect_looping(session_data):
     """Detect sessions where user keeps asking similar things with low progress.
 
-    Scans JSONL for sequences of 3+ user messages with >60% word overlap,
+    Scans JSONL for sequences of 4+ user messages with >75% word overlap,
     indicating the model is stuck in a loop.
     """
     jsonl_path = session_data.get("jsonl_path")
@@ -65,13 +65,13 @@ def detect_looping(session_data):
     max_streak = 1
 
     for i in range(1, len(word_sets)):
-        if _similarity(word_sets[i], word_sets[i - 1]) > 0.6:
+        if _similarity(word_sets[i], word_sets[i - 1]) > 0.75:
             streak += 1
             max_streak = max(max_streak, streak)
         else:
             streak = 1
 
-    if max_streak >= 3:
+    if max_streak >= 4:
         est_tokens = max_streak * 5000
         findings.append({
             "name": "looping",
@@ -82,6 +82,7 @@ def detect_looping(session_data):
                 f"You sent {max_streak} similar messages in a row, suggesting the model was stuck. "
                 "Try: restate the problem differently, provide a concrete example, or /clear and start fresh."
             ),
+            "occurrence_count": max_streak,
         })
 
     return findings

@@ -9,8 +9,8 @@ import json
 def detect_wasteful_thinking(session_data):
     """Detect turns where thinking tokens are disproportionately high vs output.
 
-    Flags when: thinking tokens > 2x output tokens AND the turn produced
-    less than 20 lines of actual edits. Indicates overthinking on simple tasks.
+    Flags when: thinking tokens > 4x output tokens across 4+ turns.
+    Indicates overthinking on simple tasks.
     """
     jsonl_path = session_data.get("jsonl_path")
     if not jsonl_path:
@@ -47,40 +47,29 @@ def detect_wasteful_thinking(session_data):
                     continue
 
                 # Check if thinking is disproportionate
-                if thinking <= 2 * output_tokens:
+                if thinking <= 4 * output_tokens:
                     continue
 
-                # Check if output was small (proxy: few tool_use blocks with small edits)
-                content = msg.get("content", [])
-                edit_lines = 0
-                if isinstance(content, list):
-                    for block in content:
-                        if isinstance(block, dict) and block.get("type") == "tool_use":
-                            inp = block.get("input", {})
-                            # Count lines in new_string (Edit) or content (Write)
-                            text = inp.get("new_string", "") or inp.get("content", "")
-                            edit_lines += text.count("\n") + (1 if text else 0)
-
-                if edit_lines < 20:
-                    wasteful_turns += 1
-                    total_wasted += thinking - output_tokens  # excess thinking
+                wasteful_turns += 1
+                total_wasted += thinking - output_tokens  # excess thinking
 
     except (OSError, PermissionError):
         return []
 
-    if wasteful_turns >= 2:
+    if wasteful_turns >= 4:
         return [{
             "name": "wasteful_thinking",
             "confidence": 0.7,
             "evidence": (
-                f"{wasteful_turns} turns with thinking >2x output and <20 lines edited, "
+                f"{wasteful_turns} turns with thinking >4x output, "
                 f"~{total_wasted:,} excess thinking tokens"
             ),
             "savings_tokens": total_wasted,
             "suggestion": (
-                f"{wasteful_turns} turns used extended thinking heavily for small edits. "
+                f"{wasteful_turns} turns used extended thinking heavily for small output. "
                 "For simple changes, disable extended thinking or use a lighter model."
             ),
+            "occurrence_count": wasteful_turns,
         }]
 
     return []

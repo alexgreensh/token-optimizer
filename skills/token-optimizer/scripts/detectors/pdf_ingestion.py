@@ -48,4 +48,5 @@ def detect_pdf_ingestion_inline(file_path, file_size_bytes, ext):
         "evidence": f"{ext} file, {size_mb:.1f}MB, ~{est_tokens:,} estimated tokens",
         "savings_tokens": est_tokens,
         "suggestion": suggestion,
+        "occurrence_count": 1,
     }

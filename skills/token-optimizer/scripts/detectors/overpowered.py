@@ -56,4 +56,5 @@ def detect_overpowered(session_data):
             f"Sonnet would save ~{sonnet_savings:,} tokens (~60% cost reduction) "
             "for equivalent quality on these tasks."
         ),
+        "occurrence_count": 1,
     }]

@@ -4471,6 +4471,7 @@ def _parse_session_jsonl(filepath):
     skills_used = {}
     subagents_used = {}
     tool_calls = {}
+    seen_request_ids = set()
     total_input = 0
     total_output = 0
     total_cache_read = 0
@@ -4564,9 +4565,12 @@ def _parse_session_jsonl(filepath):
                                 agent_type = inp.get("subagent_type", "unknown")
                                 subagents_used[agent_type] = subagents_used.get(agent_type, 0) + 1
 
-                    # Extract usage/token data
+                    # Extract usage/token data (deduplicate by requestId)
+                    req_id = record.get("requestId")
                     usage = msg.get("usage", {})
-                    if usage:
+                    if usage and (req_id is None or req_id not in seen_request_ids):
+                        if req_id:
+                            seen_request_ids.add(req_id)
                         inp_tok = usage.get("input_tokens", 0)
                         out_tok = usage.get("output_tokens", 0)
                         cr = usage.get("cache_read_input_tokens", 0)

@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Savings Opportunity - Dashboard Mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;500;700&family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --c-bg: #0a0b10;
+  --c-surface: #13151a;
+  --c-surface-hover: #1c1f26;
+  --c-accent-cyan: #00f0ff;
+  --c-accent-blue: #0066ff;
+  --c-accent-glow: rgba(0, 240, 255, 0.4);
+  --c-text-main: #ffffff;
+  --c-text-dim: #7d8ca3;
+  --c-border: rgba(255, 255, 255, 0.08);
+  --c-red: #ff6b6b;
+  --c-orange: #ff9f43;
+  --c-green: #26de81;
+  --font-sans: 'Space Grotesk', sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+}
+
+body {
+  background: var(--c-bg);
+  color: var(--c-text-main);
+  font-family: var(--font-sans);
+  font-weight: 300;
+  font-size: 16px;
+  line-height: 1.5;
+  min-height: 100vh;
+  padding: 40px;
+  background-image: radial-gradient(circle at 50% 0%, #1a253a 0%, var(--c-bg) 60%);
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  top: 0; left: 0; width: 100%; height: 100%;
+  background-image:
+    linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
+  background-size: 40px 40px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.container {
+  max-width: 900px;
+  margin: 0 auto;
+  position: relative;
+  z-index: 1;
+}
+
+.label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--c-accent-cyan);
+  text-shadow: 0 0 8px rgba(0, 240, 255, 0.6);
+}
+
+.section-note {
+  font-size: 13px;
+  color: var(--c-text-dim);
+  margin-bottom: 24px;
+  font-style: italic;
+}
+
+h2 {
+  font-size: 28px;
+  font-weight: 400;
+  margin: 6px 0 8px;
+}
+
+.card {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: 12px;
+  padding: 24px;
+  margin-bottom: 20px;
+}
+
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+  font-weight: 500;
+  font-size: 15px;
+}
+
+/* ============ HERO: THE BIG NUMBER ============ */
+
+.savings-hero {
+  text-align: center;
+  padding: 32px 24px;
+  position: relative;
+  overflow: hidden;
+}
+
+.savings-hero::before {
+  content: "";
+  position: absolute;
+  top: -50%; left: -50%; width: 200%; height: 200%;
+  background: radial-gradient(circle at 50% 80%, rgba(0, 240, 255, 0.06) 0%, transparent 50%);
+  pointer-events: none;
+}
+
+.savings-period {
+  font-size: 13px;
+  color: var(--c-text-dim);
+  margin-bottom: 8px;
+}
+
+.savings-amount {
+  font-family: var(--font-mono);
+  font-size: 64px;
+  font-weight: 700;
+  color: var(--c-accent-cyan);
+  text-shadow: 0 0 30px rgba(0, 240, 255, 0.5);
+  line-height: 1.1;
+}
+
+.savings-subtitle {
+  font-size: 15px;
+  color: var(--c-text-dim);
+  margin-top: 8px;
+}
+
+.savings-subtitle strong {
+  color: var(--c-text-main);
+  font-weight: 500;
+}
+
+/* ============ COMPARISON BAR ============ */
+
+.comparison {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 20px;
+  padding: 20px 0 8px;
+}
+
+.comp-side {
+  text-align: center;
+}
+
+.comp-label {
+  font-size: 12px;
+  color: var(--c-text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 6px;
+}
+
+.comp-amount {
+  font-family: var(--font-mono);
+  font-size: 28px;
+  font-weight: 500;
+}
+
+.comp-amount.actual { color: var(--c-red); }
+.comp-amount.optimal { color: var(--c-green); }
+
+.comp-arrow {
+  font-size: 24px;
+  color: var(--c-text-dim);
+}
+
+.bar-track {
+  height: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 4px;
+  margin-top: 20px;
+  position: relative;
+  overflow: hidden;
+}
+
+.bar-actual {
+  position: absolute;
+  top: 0; left: 0; height: 100%;
+  background: linear-gradient(90deg, var(--c-red), var(--c-orange));
+  border-radius: 4px;
+  transition: width 0.6s ease;
+}
+
+.bar-optimal {
+  position: absolute;
+  top: 0; left: 0; height: 100%;
+  background: linear-gradient(90deg, var(--c-green), var(--c-accent-cyan));
+  border-radius: 4px;
+  opacity: 0.3;
+}
+
+.bar-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--c-text-dim);
+  margin-top: 6px;
+}
+
+/* ============ SAVINGS BUCKETS ============ */
+
+.buckets {
+  display: grid;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.bucket {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: start;
+  gap: 16px;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.02);
+  border-left: 3px solid var(--c-accent-cyan);
+  border-radius: 0 8px 8px 0;
+  transition: background 0.2s;
+}
+
+.bucket:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.bucket-title {
+  font-weight: 500;
+  font-size: 15px;
+  margin-bottom: 4px;
+}
+
+.bucket-detail {
+  font-size: 13px;
+  color: var(--c-text-dim);
+  line-height: 1.5;
+}
+
+.bucket-action {
+  font-size: 13px;
+  color: var(--c-accent-cyan);
+  margin-top: 6px;
+}
+
+.bucket-savings {
+  font-family: var(--font-mono);
+  font-size: 20px;
+  font-weight: 500;
+  color: var(--c-accent-cyan);
+  white-space: nowrap;
+  text-shadow: 0 0 10px rgba(0, 240, 255, 0.3);
+}
+
+.bucket.severity-high { border-left-color: var(--c-red); }
+.bucket.severity-high .bucket-savings { color: var(--c-red); text-shadow: 0 0 10px rgba(255, 107, 107, 0.3); }
+
+.bucket.severity-medium { border-left-color: var(--c-orange); }
+.bucket.severity-medium .bucket-savings { color: var(--c-orange); text-shadow: 0 0 10px rgba(255, 159, 67, 0.3); }
+
+/* ============ CONTEXT ANNOTATION ============ */
+
+.context-note {
+  font-size: 12px;
+  color: var(--c-text-dim);
+  padding: 12px 16px;
+  border-top: 1px solid var(--c-border);
+  margin-top: 12px;
+}
+
+.mockup-label {
+  text-align: center;
+  padding: 16px;
+  font-size: 12px;
+  color: var(--c-text-dim);
+  border-bottom: 1px solid var(--c-border);
+  margin-bottom: 32px;
+}
+</style>
+</head>
+<body>
+<div class="container">
+
+  <div class="mockup-label">MOCKUP: This panel would appear on the Overview tab, below the existing "What You'd Save" config card</div>
+
+  <!-- ============ SAVINGS OPPORTUNITY CARD ============ -->
+  <div class="card savings-hero">
+    <div class="label">Behavioral Waste Analysis</div>
+    <div class="savings-period">Last 30 days across 927 sessions</div>
+    <div class="savings-amount">$847</div>
+    <div class="savings-subtitle">could have been saved with <strong>better model routing and session habits</strong></div>
+
+    <div class="comparison">
+      <div class="comp-side">
+        <div class="comp-label">You spent</div>
+        <div class="comp-amount actual">$2,134</div>
+      </div>
+      <div class="comp-arrow">&rarr;</div>
+      <div class="comp-side">
+        <div class="comp-label">Could have been</div>
+        <div class="comp-amount optimal">$1,287</div>
+      </div>
+    </div>
+
+    <div class="bar-track">
+      <div class="bar-optimal" style="width: 100%;"></div>
+      <div class="bar-actual" style="width: 60%;"></div>
+    </div>
+    <div class="bar-labels">
+      <span>Optimal spend</span>
+      <span>40% savings potential</span>
+    </div>
+  </div>
+
+  <!-- ============ WHERE THE MONEY WENT ============ -->
+  <div class="card">
+    <div class="card-header">
+      <span>Where the Money Went</span>
+      <span class="label">3 opportunities</span>
+    </div>
+
+    <div class="buckets">
+      <div class="bucket severity-high">
+        <div>
+          <div class="bucket-title">Opus on autopilot</div>
+          <div class="bucket-detail">96% of your turns used Opus, but 77% were simple edits and file reads that Sonnet handles equally well.</div>
+          <div class="bucket-action">Fix: Add model routing to CLAUDE.md (run: measure.py inject-routing)</div>
+        </div>
+        <div class="bucket-savings">$612</div>
+      </div>
+
+      <div class="bucket severity-medium">
+        <div>
+          <div class="bucket-title">Stuck sessions</div>
+          <div class="bucket-detail">6 sessions had repeated similar messages (retry loops or unclear prompts). 30 prompts over 500 words tried to do too much at once.</div>
+          <div class="bucket-action">Fix: Break big asks into steps. Stop and restate after 2 failures.</div>
+        </div>
+        <div class="bucket-savings">$142</div>
+      </div>
+
+      <div class="bucket">
+        <div>
+          <div class="bucket-title">Web research overhead</div>
+          <div class="bucket-detail">219 web searches injected ~1M tokens of page content into context across sessions.</div>
+          <div class="bucket-action">Fix: Route research to a Haiku subagent. Extract key facts, not full pages.</div>
+        </div>
+        <div class="bucket-savings">$93</div>
+      </div>
+    </div>
+
+    <div class="context-note">
+      Based on 9 automated detectors analyzing session patterns, model usage, and tool calls. Savings are estimates using current pricing tier.
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

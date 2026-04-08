@@ -47,6 +47,9 @@ from shared import (
 )
 
 
+# Claude Code adds ~35 tokens of boilerplate wrapper per skill entry
+SKILL_WRAPPER_OVERHEAD = 35
+
 def _estimate_skill_frontmatter_tokens(skill_md: Path) -> int:
     """Estimate tokens of a skill's YAML frontmatter only.
 
@@ -55,6 +58,10 @@ def _estimate_skill_frontmatter_tokens(skill_md: Path) -> int:
     when the user invokes the skill via the Skill tool. Measuring the
     full file over-counts overhead by ~10-20x.
 
+    Adds SKILL_WRAPPER_OVERHEAD (35 tokens) for the boilerplate Claude
+    wraps around each skill entry, and enforces a minimum floor of 50
+    tokens (matching measure.py's estimate_tokens_from_frontmatter).
+
     Falls back to 100 tokens (the documented average) if frontmatter
     cannot be parsed.
     """
@@ -62,6 +69,8 @@ def _estimate_skill_frontmatter_tokens(skill_md: Path) -> int:
         text = skill_md.read_text(encoding="utf-8", errors="replace")
     except (OSError, PermissionError):
         return 100
+    # Strip UTF-8 BOM that Windows editors may insert
+    text = text.lstrip('\ufeff')
     if not text.startswith("---"):
         return 100
     # Look for the closing --- after the opening one
@@ -69,7 +78,7 @@ def _estimate_skill_frontmatter_tokens(skill_md: Path) -> int:
     if end_idx == -1:
         return 100
     frontmatter = text[: end_idx + 4]
-    return estimate_tokens_from_text(frontmatter)
+    return max(estimate_tokens_from_text(frontmatter) + SKILL_WRAPPER_OVERHEAD, 50)
 
 # ---------------------------------------------------------------------------
 # Constants

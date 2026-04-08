@@ -41,6 +41,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.detectUnusedSkills = exports.getSkillUsageHistory = exports.extractCostlyPrompts = exports.extractTopic = exports.parseSessionTurns = exports.generateCoachData = void 0;
 exports.audit = audit;
 exports.scan = scan;
 exports.generateDashboard = generateDashboard;
@@ -49,10 +50,15 @@ exports.checkpointTelemetry = checkpointTelemetry;
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const session_parser_1 = require("./session-parser");
+Object.defineProperty(exports, "parseSessionTurns", { enumerable: true, get: function () { return session_parser_1.parseSessionTurns; } });
+Object.defineProperty(exports, "extractCostlyPrompts", { enumerable: true, get: function () { return session_parser_1.extractCostlyPrompts; } });
 const smart_compact_1 = require("./smart-compact");
 const read_cache_1 = require("./read-cache");
 const models_1 = require("./models");
 const dashboard_1 = require("./dashboard");
+const coach_1 = require("./coach");
+var coach_2 = require("./coach");
+Object.defineProperty(exports, "generateCoachData", { enumerable: true, get: function () { return coach_2.generateCoachData; } });
 const pricing_1 = require("./pricing");
 const context_audit_1 = require("./context-audit");
 const quality_1 = require("./quality");
@@ -104,6 +110,8 @@ function scan(days = 30) {
     (0, session_parser_1.classifyCronRuns)(openclawDir, runs);
     return runs;
 }
+var session_parser_2 = require("./session-parser");
+Object.defineProperty(exports, "extractTopic", { enumerable: true, get: function () { return session_parser_2.extractTopic; } });
 /**
  * Load OpenClaw config for Tier 1 analysis.
  */
@@ -146,7 +154,26 @@ function generateDashboard(days = 30) {
     };
     const contextAudit = (0, context_audit_1.auditContext)(openclawDir);
     const qualityReport = (0, quality_1.scoreQuality)(runs, contextAudit);
-    const data = (0, dashboard_1.buildDashboardData)(runs, report, qualityReport, contextAudit);
+    // Build coach data
+    const activeSkillNames = contextAudit.skills
+        .filter((s) => !s.isArchived)
+        .map((s) => s.name);
+    const skillUsage = (0, context_audit_1.getSkillUsageHistory)(runs);
+    const unusedSkillFindings = (0, waste_detectors_1.detectUnusedSkills)(activeSkillNames, skillUsage);
+    const agentCosts = (0, dashboard_1.buildAgentCostBreakdown)(runs);
+    // Collect costly prompts from the 10 most recent sessions
+    const recentSessions = [...runs]
+        .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
+        .slice(0, 10);
+    const allCostlyPrompts = [];
+    for (const session of recentSessions) {
+        const prompts = (0, session_parser_1.extractCostlyPrompts)(session.sourcePath, 3, openclawDir);
+        allCostlyPrompts.push(...prompts);
+    }
+    allCostlyPrompts.sort((a, b) => b.costUsd - a.costUsd);
+    const topCostlyPrompts = allCostlyPrompts.slice(0, 5);
+    const coachData = (0, coach_1.generateCoachData)(contextAudit, runs, topCostlyPrompts, agentCosts, unusedSkillFindings);
+    const data = (0, dashboard_1.buildDashboardData)(runs, report, qualityReport, contextAudit, coachData);
     return (0, dashboard_1.writeDashboard)(data);
 }
 function doctor() {
@@ -167,6 +194,23 @@ function doctor() {
 function checkpointTelemetry(days = 7) {
     return (0, checkpoint_policy_1.getCheckpointTelemetrySummary)(days);
 }
+// ---------------------------------------------------------------------------
+// Never-used skill detection (public API)
+// ---------------------------------------------------------------------------
+/**
+ * Returns a skill-name -> invocation-count map built from tool call history
+ * across all provided sessions. Use alongside auditContext().skills to feed
+ * detectUnusedSkills().
+ */
+var context_audit_2 = require("./context-audit");
+Object.defineProperty(exports, "getSkillUsageHistory", { enumerable: true, get: function () { return context_audit_2.getSkillUsageHistory; } });
+/**
+ * Returns WasteFinding objects for installed skills that have zero invocations.
+ * Pass auditContext().skills.active.map(s => s.name) as `installed`, and
+ * getSkillUsageHistory(sessions) as `usageMap`.
+ */
+var waste_detectors_2 = require("./waste-detectors");
+Object.defineProperty(exports, "detectUnusedSkills", { enumerable: true, get: function () { return waste_detectors_2.detectUnusedSkills; } });
 // ---------------------------------------------------------------------------
 // Plugin registration (called by OpenClaw plugin loader)
 // ---------------------------------------------------------------------------

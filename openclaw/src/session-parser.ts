@@ -12,9 +12,8 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { AgentRun, TokenBreakdown, Outcome } from "./models";
-import { normalizeModelName } from "./pricing";
-import { calculateCost } from "./pricing";
+import { AgentRun, TokenBreakdown, Outcome, TurnData, CostlyPrompt } from "./models";
+import { normalizeModelName, calculateCost } from "./pricing";
 
 const HOME = process.env.HOME ?? process.env.USERPROFILE ?? "";
 const OPENCLAW_DIRS = [
@@ -117,6 +116,84 @@ function parseLine(line: string): Record<string, unknown> | null {
   }
 }
 
+/** Common prefixes to strip before extracting a topic. */
+const TOPIC_STRIP_PREFIXES = [
+  "implement the following plan:",
+  "implement the following:",
+  "implement this plan:",
+  "you are implementing unit",
+  "you are implementing",
+  "complete the following:",
+  "please implement:",
+  "task:",
+  "goal:",
+];
+
+/**
+ * Extract a short human-readable topic from raw user message text.
+ *
+ * Strategy (mirrors Python _extract_topic):
+ * 1. Strip common boilerplate prefixes (case-insensitive).
+ * 2. Return the first markdown heading (## or #) if present.
+ * 3. Otherwise return the first non-empty sentence (up to the first period/newline).
+ * 4. Truncate to 120 characters.
+ */
+export function extractTopic(text: string): string {
+  let s = text.trim();
+  if (!s) return "";
+
+  // Strip boilerplate prefixes (longest match first via sort)
+  const lower = s.toLowerCase();
+  for (const prefix of TOPIC_STRIP_PREFIXES) {
+    if (lower.startsWith(prefix)) {
+      s = s.slice(prefix.length).trimStart();
+      break;
+    }
+  }
+
+  // Look for first markdown heading
+  const headingMatch = s.match(/^#{1,2}\s+(.+)/m);
+  if (headingMatch) {
+    const heading = headingMatch[1].trim();
+    return heading.length > 120 ? heading.slice(0, 120) : heading;
+  }
+
+  // Fall back to first sentence (split on period or newline)
+  const sentenceMatch = s.match(/^([^.\n]+)/);
+  const sentence = sentenceMatch ? sentenceMatch[1].trim() : s;
+  return sentence.length > 120 ? sentence.slice(0, 120) : sentence;
+}
+
+/**
+ * Extract the text content from a user JSONL record.
+ * Handles both string content and content-block arrays.
+ */
+function extractUserMessageText(record: Record<string, unknown>): string {
+  const msg = record.message as Record<string, unknown> | undefined;
+  const content = msg?.content ?? record.content;
+
+  if (typeof content === "string") return content;
+
+  if (Array.isArray(content)) {
+    const parts: string[] = [];
+    for (const block of content) {
+      if (typeof block === "string") {
+        parts.push(block);
+      } else if (
+        typeof block === "object" &&
+        block !== null &&
+        (block as Record<string, unknown>).type === "text"
+      ) {
+        const txt = (block as Record<string, unknown>).text;
+        if (typeof txt === "string") parts.push(txt);
+      }
+    }
+    return parts.join(" ").trim();
+  }
+
+  return "";
+}
+
 /**
  * Parse a single OpenClaw session JSONL file into an AgentRun.
  *
@@ -152,6 +229,7 @@ export function parseSession(
   const toolsUsed: Set<string> = new Set();
   let firstTs: Date | null = null;
   let lastTs: Date | null = null;
+  let firstUserText: string | null = null;
 
   for (const line of lines) {
     const record = parseLine(line);
@@ -176,6 +254,12 @@ export function parseSession(
     // Count messages
     if (recType === "user" || recType === "assistant") {
       messageCount++;
+    }
+
+    // Capture first user message text for topic extraction
+    if (recType === "user" && firstUserText === null) {
+      const txt = extractUserMessageText(record);
+      if (txt) firstUserText = txt;
     }
 
     // Extract token data from assistant messages
@@ -287,6 +371,8 @@ export function parseSession(
 
   const costUsd = calculateCost(tokens, model, openclawDir);
 
+  const topic = firstUserText ? extractTopic(firstUserText) : undefined;
+
   return {
     system: "openclaw",
     sessionId: path.basename(filePath, ".jsonl"),
@@ -304,6 +390,7 @@ export function parseSession(
     sourcePath: filePath,
     cacheWrite1hTokens: totalCacheWrite1h,
     cacheWrite5mTokens: totalCacheWrite5m,
+    ...(topic ? { topic } : {}),
   };
 }
 
@@ -382,6 +469,346 @@ export function scanAllSessions(
     (a, b) => b.timestamp.getTime() - a.timestamp.getTime()
   );
   return allRuns;
+}
+
+/**
+ * Parse a single OpenClaw session JSONL file into a per-turn breakdown.
+ *
+ * Each TurnData represents one user→assistant exchange. User messages are
+ * paired with the immediately following assistant response. Turns without
+ * an assistant response (e.g. trailing user messages) are included with
+ * zero token counts.
+ *
+ * Multi-provider token field handling:
+ * - Claude (Anthropic): cache_read_input_tokens / cache_creation_input_tokens
+ * - GPT-5 / OpenAI: cached_tokens inside usage.prompt_tokens_details
+ * - Gemini / others: no cache fields, input/output only
+ *
+ * Returns TurnData[] sorted by timestamp ascending.
+ * Malformed JSONL lines are silently skipped.
+ */
+export function parseSessionTurns(
+  filePath: string,
+  openclawDir?: string
+): TurnData[] {
+  let content: string;
+  try {
+    const stat = fs.statSync(filePath);
+    if (stat.size > 50 * 1024 * 1024) return []; // Skip files >50MB to prevent OOM
+    content = fs.readFileSync(filePath, "utf-8");
+  } catch {
+    return [];
+  }
+
+  const lines = content.split("\n");
+
+  // Collect all parsed records in order
+  interface RawRecord {
+    type: string;
+    timestamp: string | null;
+    record: Record<string, unknown>;
+  }
+
+  const records: RawRecord[] = [];
+  for (const line of lines) {
+    const record = parseLine(line);
+    if (!record) continue;
+
+    const recType = record.type as string | undefined;
+    if (recType !== "user" && recType !== "assistant") continue;
+
+    // Skip sidechain messages (internal tool orchestration, not real user prompts)
+    // Must match the same filter in extractCostlyPrompts to keep turn indexes aligned.
+    if (recType === "user" && record.isSidechain === true) continue;
+
+    const tsRaw = record.timestamp as string | undefined;
+    let timestamp: string | null = null;
+    if (tsRaw) {
+      try {
+        const ts = new Date(tsRaw);
+        if (!isNaN(ts.getTime())) timestamp = ts.toISOString();
+      } catch {
+        // keep null
+      }
+    }
+
+    records.push({ type: recType, timestamp, record });
+  }
+
+  const turns: TurnData[] = [];
+  let turnIndex = 0;
+
+  for (let i = 0; i < records.length; i++) {
+    const current = records[i];
+
+    // Only start a turn on a user message
+    if (current.type !== "user") continue;
+
+    // Look ahead for the next assistant message
+    const nextAssistant = records[i + 1]?.type === "assistant"
+      ? records[i + 1]
+      : null;
+
+    if (!nextAssistant) {
+      // Trailing user message with no response yet — emit minimal turn
+      turns.push({
+        turnIndex: turnIndex++,
+        role: "user",
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheRead: 0,
+        cacheCreation: 0,
+        model: "unknown",
+        timestamp: current.timestamp,
+        toolsUsed: [],
+        costUsd: 0,
+      });
+      continue;
+    }
+
+    // Skip past the assistant message we're consuming
+    i++;
+
+    const assistantRecord = nextAssistant.record;
+    const msg = assistantRecord.message as Record<string, unknown> | undefined;
+    const usageRaw =
+      (msg?.usage as Record<string, unknown>) ??
+      (assistantRecord.usage as Record<string, unknown>) ??
+      {};
+
+    // --- Input tokens ---
+    const inputTokens =
+      (usageRaw.inputTokens as number) ??
+      (usageRaw.input_tokens as number) ??
+      0;
+
+    // --- Output tokens ---
+    const outputTokens =
+      (usageRaw.outputTokens as number) ??
+      (usageRaw.output_tokens as number) ??
+      0;
+
+    // --- Cache read ---
+    // Claude: cache_read_input_tokens
+    // OpenAI: usage.prompt_tokens_details.cached_tokens
+    const promptDetails =
+      (usageRaw.prompt_tokens_details as Record<string, unknown>) ?? {};
+    const cacheRead =
+      (usageRaw.cacheReadInputTokens as number) ??
+      (usageRaw.cache_read_input_tokens as number) ??
+      (promptDetails.cached_tokens as number) ??
+      0;
+
+    // --- Cache creation (write) ---
+    // Claude: cache_creation_input_tokens or ephemeral buckets
+    const cacheCreationObj =
+      (usageRaw.cacheCreation as Record<string, unknown>) ??
+      (usageRaw.cache_creation as Record<string, unknown>) ??
+      {};
+    const cacheWrite1h =
+      (cacheCreationObj.ephemeral_1h_input_tokens as number) ??
+      (usageRaw.ephemeral_1h_input_tokens as number) ??
+      0;
+    const cacheWrite5m =
+      (cacheCreationObj.ephemeral_5m_input_tokens as number) ??
+      (usageRaw.ephemeral_5m_input_tokens as number) ??
+      0;
+    const cacheCreation =
+      (usageRaw.cacheCreationInputTokens as number) ??
+      (usageRaw.cache_creation_input_tokens as number) ??
+      (cacheWrite1h + cacheWrite5m);
+
+    // --- Model ---
+    const modelRaw =
+      (msg?.model as string) ?? (assistantRecord.model as string) ?? "unknown";
+    const model = normalizeModelName(modelRaw) ?? modelRaw;
+
+    // --- Tools used ---
+    const toolsUsed: string[] = [];
+    const msgContent = msg?.content;
+    if (Array.isArray(msgContent)) {
+      for (const block of msgContent) {
+        if (
+          typeof block === "object" &&
+          block !== null &&
+          (block as Record<string, unknown>).type === "tool_use"
+        ) {
+          const name = (block as Record<string, unknown>).name;
+          if (typeof name === "string" && !toolsUsed.includes(name)) {
+            toolsUsed.push(name);
+          }
+        }
+      }
+    }
+
+    // --- Cost ---
+    const tokens: TokenBreakdown = {
+      input: inputTokens,
+      output: outputTokens,
+      cacheRead,
+      cacheWrite: cacheCreation,
+    };
+    const costUsd = calculateCost(tokens, model, openclawDir);
+
+    turns.push({
+      turnIndex: turnIndex++,
+      role: "assistant",
+      inputTokens,
+      outputTokens,
+      cacheRead,
+      cacheCreation,
+      model,
+      timestamp: nextAssistant.timestamp ?? current.timestamp,
+      toolsUsed: toolsUsed.sort(),
+      costUsd,
+    });
+  }
+
+  // Sort by timestamp ascending; nulls go last
+  turns.sort((a, b) => {
+    if (!a.timestamp && !b.timestamp) return a.turnIndex - b.turnIndex;
+    if (!a.timestamp) return 1;
+    if (!b.timestamp) return -1;
+    return a.timestamp < b.timestamp ? -1 : a.timestamp > b.timestamp ? 1 : 0;
+  });
+
+  return turns;
+}
+
+/**
+ * Extract the costliest user prompts from a single session JSONL file.
+ *
+ * Each entry pairs the user message text with the token/cost data from the
+ * immediately following assistant response, mirroring Python's
+ * `_extract_costly_prompts()`. Text is truncated to 120 characters.
+ *
+ * Sidechain messages and tool-result-only turns are skipped, matching the
+ * Python implementation's filtering logic.
+ *
+ * @param filePath   Path to a `.jsonl` session file.
+ * @param topN       Number of costliest prompts to return (default 5).
+ * @param openclawDir  Optional OpenClaw data root for pricing config.
+ * @returns CostlyPrompt[] sorted by costUsd descending, length <= topN.
+ */
+export function extractCostlyPrompts(
+  filePath: string,
+  topN: number = 5,
+  openclawDir?: string
+): CostlyPrompt[] {
+  // Get per-turn token/cost data from the existing parser
+  const turns = parseSessionTurns(filePath, openclawDir);
+  if (turns.length === 0) return [];
+
+  // Re-read the file to extract user message text, walking in document order
+  // so we can pair each user message with the matching turn by turnIndex.
+  let content: string;
+  try {
+    const stat = fs.statSync(filePath);
+    if (stat.size > 50 * 1024 * 1024) return [];
+    content = fs.readFileSync(filePath, "utf-8");
+  } catch {
+    return [];
+  }
+
+  const lines = content.split("\n");
+
+  // Build a turn iterator (turns are sorted ascending by timestamp/turnIndex)
+  // We walk records in document order and pair user text with the next assistant turn.
+  const turnsByIndex = new Map<number, TurnData>();
+  for (const t of turns) {
+    turnsByIndex.set(t.turnIndex, t);
+  }
+
+  // Walk document order: when we hit a user record, capture text;
+  // when we hit the following assistant record, emit a CostlyPrompt entry.
+  interface PendingPrompt {
+    text: string;
+    timestamp: string | null;
+  }
+
+  let pendingPrompt: PendingPrompt | null = null;
+  let turnIndexCounter = 0;
+  const results: CostlyPrompt[] = [];
+
+  for (const line of lines) {
+    const record = parseLine(line);
+    if (!record) continue;
+
+    const recType = record.type as string | undefined;
+
+    if (recType === "user") {
+      // Skip sidechain messages (internal tool orchestration, not real user prompts)
+      if (record.isSidechain === true) continue;
+
+      const msg = record.message as Record<string, unknown> | undefined;
+      const rawContent = (msg?.content ?? record.content) as unknown;
+
+      // Extract text from the user message content
+      let text = "";
+      if (typeof rawContent === "string") {
+        text = rawContent;
+      } else if (Array.isArray(rawContent)) {
+        const blocks = rawContent as Array<Record<string, unknown>>;
+        // Skip if all items are tool_result blocks (not a real user prompt)
+        const types = blocks
+          .filter((b) => typeof b === "object" && b !== null)
+          .map((b) => b.type as string);
+        if (types.length > 0 && types.every((t) => t === "tool_result")) {
+          continue;
+        }
+        // Find the first text block
+        for (const block of blocks) {
+          if (typeof block === "object" && block !== null) {
+            if ((block.type as string) === "text" && typeof block.text === "string") {
+              text = block.text;
+              break;
+            }
+          } else if (typeof block === "string") {
+            text = block;
+            break;
+          }
+        }
+      }
+
+      // Only track prompts with meaningful content (>5 chars, matching Python)
+      if (text.length > 5) {
+        const tsRaw = record.timestamp as string | undefined;
+        let timestamp: string | null = null;
+        if (tsRaw) {
+          try {
+            const ts = new Date(tsRaw);
+            if (!isNaN(ts.getTime())) timestamp = ts.toISOString();
+          } catch {
+            // keep null
+          }
+        }
+        pendingPrompt = { text: text.slice(0, 120), timestamp };
+      }
+    } else if (recType === "assistant" && pendingPrompt !== null) {
+      // Find the matching turn by its position in the turn sequence
+      const turn = turnsByIndex.get(turnIndexCounter);
+      turnIndexCounter++;
+
+      if (turn && turn.costUsd >= 0) {
+        const freshInput = Math.max(0, turn.inputTokens - turn.cacheRead);
+        results.push({
+          text: pendingPrompt.text,
+          tokensIn: turn.inputTokens,
+          tokensOut: turn.outputTokens,
+          cacheRead: turn.cacheRead,
+          cacheWrite: turn.cacheCreation,
+          freshInput,
+          costUsd: Math.round(turn.costUsd * 10000) / 10000,
+          model: turn.model,
+          timestamp: turn.timestamp ?? pendingPrompt.timestamp,
+        });
+      }
+      pendingPrompt = null;
+    }
+  }
+
+  results.sort((a, b) => b.costUsd - a.costUsd);
+  return results.slice(0, topN);
 }
 
 /**

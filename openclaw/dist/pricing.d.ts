@@ -28,6 +28,16 @@ export declare function resetPricingCache(): void;
  * and version suffixes (gpt-5.2-2026-03 -> gpt-5.2).
  */
 export declare function normalizeModelName(modelId: string): string | null;
+/**
+ * Estimate cost delta if a different model was used.
+ * Returns savings in USD and percentage.
+ */
+export declare function simulateModelSwitch(tokens: TokenBreakdown, currentModel: string, targetModel: string, openclawDir?: string): {
+    currentCost: number;
+    targetCost: number;
+    savingsUsd: number;
+    savingsPct: number;
+};
 /** Calculate USD cost. Uses user config pricing if available, then defaults. */
 export declare function calculateCost(tokens: TokenBreakdown, model: string, openclawDir?: string): number;
 //# sourceMappingURL=pricing.d.ts.map

@@ -14,6 +14,8 @@ import {
   scanAllSessions,
   classifyCronRuns,
   parseSession,
+  parseSessionTurns,
+  extractCostlyPrompts,
 } from "./session-parser";
 import {
   captureCheckpoint,
@@ -23,10 +25,14 @@ import {
   loadMessagesFromSessionFile,
 } from "./smart-compact";
 import { handleReadBefore, handleWriteAfter, clearCache } from "./read-cache";
-import { AuditReport, AgentRun, totalTokens } from "./models";
-import { buildDashboardData, writeDashboard } from "./dashboard";
+import { AuditReport, AgentRun, totalTokens, CostlyPrompt } from "./models";
+import { buildDashboardData, writeDashboard, buildAgentCostBreakdown } from "./dashboard";
+export type { AgentCostBreakdown, DashboardData } from "./dashboard";
+import { generateCoachData } from "./coach";
+export { generateCoachData } from "./coach";
+export type { CoachData, CoachPattern } from "./coach";
 import { resetPricingCache } from "./pricing";
-import { auditContext } from "./context-audit";
+import { auditContext, getSkillUsageHistory } from "./context-audit";
 import { scoreQuality } from "./quality";
 import {
   buildRuntimeSnapshot,
@@ -41,7 +47,7 @@ import {
   registerWriteEvent,
   shouldEvaluateRuntimeState,
 } from "./checkpoint-policy";
-import { runAllDetectors } from "./waste-detectors";
+import { runAllDetectors, detectUnusedSkills } from "./waste-detectors";
 
 // ---------------------------------------------------------------------------
 // OpenClaw Plugin API types (minimal, avoids external dependency)
@@ -123,6 +129,28 @@ export function scan(days: number = 30): AgentRun[] | null {
 }
 
 /**
+ * Parse a session JSONL file into per-turn token/cost data.
+ *
+ * Each entry in the returned array represents one user→assistant exchange,
+ * with token counts, tools called, model used, and cost for that turn.
+ * Returns an empty array if the file cannot be read or has no valid turns.
+ */
+export { parseSessionTurns };
+export { extractTopic } from "./session-parser";
+
+/**
+ * Extract the top N costliest user prompts from a session JSONL file.
+ *
+ * Pairs each user message text with the token/cost data from the subsequent
+ * assistant turn. Sidechain messages and tool-result-only turns are skipped.
+ * Text is truncated to 120 characters.
+ *
+ * Returns CostlyPrompt[] sorted by costUsd descending, length <= topN (default 5).
+ */
+export { extractCostlyPrompts };
+export type { CostlyPrompt };
+
+/**
  * Load OpenClaw config for Tier 1 analysis.
  */
 function loadConfig(openclawDir: string): Record<string, unknown> {
@@ -168,7 +196,36 @@ export function generateDashboard(days: number = 30): string | null {
 
   const contextAudit = auditContext(openclawDir);
   const qualityReport = scoreQuality(runs, contextAudit);
-  const data = buildDashboardData(runs, report, qualityReport, contextAudit);
+
+  // Build coach data
+  const activeSkillNames = contextAudit.skills
+    .filter((s) => !s.isArchived)
+    .map((s) => s.name);
+  const skillUsage = getSkillUsageHistory(runs);
+  const unusedSkillFindings = detectUnusedSkills(activeSkillNames, skillUsage);
+  const agentCosts = buildAgentCostBreakdown(runs);
+
+  // Collect costly prompts from the 10 most recent sessions
+  const recentSessions = [...runs]
+    .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
+    .slice(0, 10);
+  const allCostlyPrompts: import("./models").CostlyPrompt[] = [];
+  for (const session of recentSessions) {
+    const prompts = extractCostlyPrompts(session.sourcePath, 3, openclawDir);
+    allCostlyPrompts.push(...prompts);
+  }
+  allCostlyPrompts.sort((a, b) => b.costUsd - a.costUsd);
+  const topCostlyPrompts = allCostlyPrompts.slice(0, 5);
+
+  const coachData = generateCoachData(
+    contextAudit,
+    runs,
+    topCostlyPrompts,
+    agentCosts,
+    unusedSkillFindings
+  );
+
+  const data = buildDashboardData(runs, report, qualityReport, contextAudit, coachData);
   return writeDashboard(data);
 }
 
@@ -191,6 +248,24 @@ export function doctor(): Record<string, unknown> {
 export function checkpointTelemetry(days: number = 7): CheckpointTelemetrySummary {
   return getCheckpointTelemetrySummary(days);
 }
+
+// ---------------------------------------------------------------------------
+// Never-used skill detection (public API)
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns a skill-name -> invocation-count map built from tool call history
+ * across all provided sessions. Use alongside auditContext().skills to feed
+ * detectUnusedSkills().
+ */
+export { getSkillUsageHistory } from "./context-audit";
+
+/**
+ * Returns WasteFinding objects for installed skills that have zero invocations.
+ * Pass auditContext().skills.active.map(s => s.name) as `installed`, and
+ * getSkillUsageHistory(sessions) as `usageMap`.
+ */
+export { detectUnusedSkills } from "./waste-detectors";
 
 // ---------------------------------------------------------------------------
 // Plugin registration (called by OpenClaw plugin loader)

@@ -7,6 +7,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import { AgentRun } from "./models";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -375,6 +376,37 @@ function generateRecommendations(
   }
 
   return recs;
+}
+
+// ---------------------------------------------------------------------------
+// Skill usage history (for never-used skill detection)
+// ---------------------------------------------------------------------------
+
+/**
+ * Scans tool calls across all provided AgentRun sessions for Skill invocations.
+ * Returns a Map of skillName -> invocation count.
+ *
+ * OpenClaw records tool calls in AgentRun.toolsUsed as an array of tool name strings.
+ * Skill invocations appear as the skill name directly (e.g. "token-optimizer") or
+ * prefixed with "skill:" or "Skill:" depending on the OpenClaw version.
+ * We normalize by stripping known prefixes and lowercasing before matching.
+ */
+export function getSkillUsageHistory(sessions: AgentRun[]): Map<string, number> {
+  const usageMap = new Map<string, number>();
+
+  for (const run of sessions) {
+    for (const tool of run.toolsUsed) {
+      // Normalize: strip "skill:" / "Skill:" prefix, lowercase for matching
+      const normalized = tool
+        .replace(/^[Ss]kill:/i, "")
+        .trim()
+        .toLowerCase();
+      if (!normalized) continue;
+      usageMap.set(normalized, (usageMap.get(normalized) ?? 0) + 1);
+    }
+  }
+
+  return usageMap;
 }
 
 // ---------------------------------------------------------------------------

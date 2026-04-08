@@ -951,6 +951,8 @@ def measure_components():
     ]
     rules_count = 0
     rules_tokens = 0
+    rules_always_loaded_tokens = 0
+    rules_path_scoped_tokens = 0
     rules_files = []
     rules_always_loaded = 0
     for scope, rules_dir in rules_dirs:
@@ -961,17 +963,22 @@ def measure_components():
                     tokens = estimate_tokens_from_file(f)
                     rules_tokens += tokens
                     has_paths = _has_paths_frontmatter(f)
+                    if has_paths:
+                        rules_path_scoped_tokens += tokens
+                    else:
+                        rules_always_loaded_tokens += tokens
+                        rules_always_loaded += 1
                     rules_files.append({
                         "name": f.name,
                         "tokens": tokens,
                         "path_scoped": has_paths,
                         "scope": scope,
                     })
-                    if not has_paths:
-                        rules_always_loaded += 1
     components["rules"] = {
         "count": rules_count,
         "tokens": rules_tokens,
+        "always_loaded_tokens": rules_always_loaded_tokens,
+        "path_scoped_tokens": rules_path_scoped_tokens,
         "files": rules_files,
         "always_loaded": rules_always_loaded,
     }

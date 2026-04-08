@@ -258,10 +258,16 @@ def estimate_tokens_from_file(filepath):
 
 
 def estimate_tokens_from_frontmatter(filepath):
-    """Estimate tokens from YAML frontmatter only (between --- delimiters)."""
+    """Estimate tokens from YAML frontmatter only (between --- delimiters).
+
+    Parallel implementation exists in fleet-auditor/scripts/fleet.py
+    (_estimate_skill_frontmatter_tokens). Both must stay in sync.
+    """
     try:
         with open(filepath, "r", encoding="utf-8", errors="replace") as f:
             content = f.read()
+        # Strip UTF-8 BOM that Windows editors may insert
+        content = content.lstrip('\ufeff')
         # Extract frontmatter between first pair of ---
         if content.startswith("---"):
             end = content.find("---", 3)
@@ -461,6 +467,8 @@ def _has_paths_frontmatter(filepath):
     try:
         with open(filepath, "r", encoding="utf-8", errors="replace") as f:
             content = f.read(2048)  # Only need to check frontmatter
+        # Strip UTF-8 BOM that Windows editors may insert
+        content = content.lstrip('\ufeff')
         if content.startswith("---"):
             end = content.find("---", 3)
             if end > 0:
@@ -3547,6 +3555,7 @@ def generate_auto_recommendations(components, trends=None, days=30):
     rules_count = rules.get("count", 0)
     rules_tokens = rules.get("tokens", 0)
     always_loaded = rules.get("always_loaded", 0)
+    always_loaded_tokens = rules.get("always_loaded_tokens", rules_tokens)
     if rules_count > 5 and rules_tokens > 300:
         medium.append(
             f"**Review {rules_count} rule files ({rules_tokens:,} tokens, {always_loaded} always-loaded)**: "
@@ -3555,7 +3564,7 @@ def generate_auto_recommendations(components, trends=None, days=30):
             f"  Add 'paths:' frontmatter to scope rules to specific directories. "
             f"Consolidate overlapping rules into fewer files. "
             f"Archive stale rules (old project conventions, resolved style decisions). "
-            f"~{rules_tokens:,} tokens recoverable."
+            f"~{always_loaded_tokens:,} tokens recoverable by scoping always-loaded rules."
         )
 
     # --- Rule 11: @imports overhead ---
@@ -3845,7 +3854,7 @@ def generate_coach_data(focus=None, components=None, trends=None):
             "severity": "medium",
             "detail": f"{always_loaded} of {rules_count} rules lack paths: scoping",
             "fix": "Add paths: frontmatter to scope rules to specific directories",
-            "savings": f"~{rules.get('tokens', 0):,} tokens for path-scoped rules",
+            "savings": f"~{rules.get('always_loaded_tokens', rules.get('tokens', 0)):,} tokens recoverable by scoping always-loaded rules",
         })
         score -= 8
 
@@ -5185,26 +5194,30 @@ def collect_sessions(days=90, quiet=False):
         if not parsed:
             continue
 
-        # Scan subagent JSONL files for additional skills and agent types
-        for sub_jf in _find_subagent_jsonl_files(filepath):
+        # Scan subagent JSONL files for skills, agents, and model usage.
+        # Single pass over subagent files to avoid duplicate glob.
+        subagent_files = _find_subagent_jsonl_files(filepath)
+        for sub_jf in subagent_files:
             sub_skills, sub_agents = _extract_skills_and_agents_from_subagent(sub_jf)
             for sk, cnt in sub_skills.items():
                 parsed["skills_used"][sk] = parsed["skills_used"].get(sk, 0) + cnt
             for ag, cnt in sub_agents.items():
                 parsed["subagents_used"][ag] = parsed["subagents_used"].get(ag, 0) + cnt
 
-        # Fix #18: Extract model usage from subagent JSONL files.
-        # Subagents may run on different models (sonnet, haiku) than the
-        # parent (typically opus).  The parent JSONL does NOT include
-        # subagent token counts, so we merge them additively.
-        for sub_jf in _find_subagent_jsonl_files(filepath):
+        # Fix #18: Build combined model usage (parent + subagents) for
+        # model_daily attribution. Kept SEPARATE from parsed["model_usage"]
+        # which stays parent-only for: session_log storage, dom_model
+        # selection, and cost calculations. Merging into model_usage would
+        # flip dom_model to a cheaper subagent model, mispricing sessions.
+        all_model_usage = dict(parsed["model_usage"])
+        for sub_jf in subagent_files:
             sub_parsed = _parse_session_jsonl(sub_jf)
             if sub_parsed and sub_parsed.get("model_usage"):
                 for model_id, tokens in sub_parsed["model_usage"].items():
                     if model_id.startswith("<"):  # skip synthetic IDs
                         continue
-                    parsed["model_usage"][model_id] = (
-                        parsed["model_usage"].get(model_id, 0) + tokens
+                    all_model_usage[model_id] = (
+                        all_model_usage.get(model_id, 0) + tokens
                     )
 
         date = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
@@ -5271,8 +5284,8 @@ def collect_sessions(days=90, quiet=False):
                 (date, skill, invocations),
             )
 
-        # Upsert model_daily
-        for model_id, tokens in parsed["model_usage"].items():
+        # Upsert model_daily (uses all_model_usage which includes subagent tokens)
+        for model_id, tokens in all_model_usage.items():
             normalized = _normalize_model_name(model_id)
             if normalized is None:
                 continue
@@ -5567,26 +5580,29 @@ def _collect_trends_from_jsonl(days=30):
     for filepath, mtime, project_name in files:
         parsed = _parse_session_jsonl(filepath)
         if parsed:
-            # Scan subagent JSONL files for additional skills and agent types
-            for sub_jf in _find_subagent_jsonl_files(filepath):
+            # Scan subagent JSONL files for skills, agents, and model usage.
+            subagent_files = _find_subagent_jsonl_files(filepath)
+            for sub_jf in subagent_files:
                 sub_skills, sub_agents = _extract_skills_and_agents_from_subagent(sub_jf)
                 for sk, cnt in sub_skills.items():
                     parsed["skills_used"][sk] = parsed["skills_used"].get(sk, 0) + cnt
                 for ag, cnt in sub_agents.items():
                     parsed["subagents_used"][ag] = parsed["subagents_used"].get(ag, 0) + cnt
 
-            # Fix #18: Extract model usage from subagent JSONL files.
-            # Subagents run on different models than the parent; their
-            # tokens are NOT included in the parent's usage blocks.
-            for sub_jf in _find_subagent_jsonl_files(filepath):
+            # Fix #18: Build combined model usage for model_mix reporting.
+            # Kept separate from parsed["model_usage"] (parent-only) to
+            # preserve correct dom_model for cost calculations.
+            all_model_usage = dict(parsed["model_usage"])
+            for sub_jf in subagent_files:
                 sub_parsed = _parse_session_jsonl(sub_jf)
                 if sub_parsed and sub_parsed.get("model_usage"):
                     for model_id, tokens in sub_parsed["model_usage"].items():
                         if model_id.startswith("<"):
                             continue
-                        parsed["model_usage"][model_id] = (
-                            parsed["model_usage"].get(model_id, 0) + tokens
+                        all_model_usage[model_id] = (
+                            all_model_usage.get(model_id, 0) + tokens
                         )
+            parsed["all_model_usage"] = all_model_usage
 
             parsed["project"] = project_name
             parsed["date"] = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
@@ -5619,7 +5635,8 @@ def _collect_trends_from_jsonl(days=30):
         for tool, count in s["tool_calls"].items():
             total_tools[tool] = total_tools.get(tool, 0) + count
 
-        for model, tokens in s["model_usage"].items():
+        # Use all_model_usage (parent + subagent) for model mix reporting
+        for model, tokens in s.get("all_model_usage", s["model_usage"]).items():
             normalized = _normalize_model_name(model)
             if normalized is None:
                 continue

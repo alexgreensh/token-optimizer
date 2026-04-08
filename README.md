@@ -69,7 +69,19 @@ At 200K context, that's 25-35% gone. At 1M, it's "only" 5-7%, but the problems c
 
 Token Optimizer tracks all of this. Quality score, degradation bands, compaction loss, drift detection. Zero context tokens consumed (runs as external Python).
 
+![What happens inside a 1M session](skills/token-optimizer/assets/user-profiles.svg)
+
 > **"But doesn't removing tokens hurt the model?"** No. Token Optimizer removes structural waste (duplicate configs, unused skill frontmatter, bloated files), not useful context. It also actively *measures* quality: the 7-signal quality score tells you if your session is degrading, and Smart Compaction checkpoints your decisions before auto-compact fires. Most users see quality scores *improve* after optimization because the model has more room for real work.
+
+---
+
+## What It Does
+
+One command. Six parallel agents audit your entire setup. Prioritized fixes with exact token savings. Everything backed up before any change.
+
+![How Token Optimizer works](skills/token-optimizer/assets/how-it-works.svg)
+
+You see diffs. You approve each fix. Nothing irreversible.
 
 ---
 

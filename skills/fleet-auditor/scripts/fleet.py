@@ -43,7 +43,33 @@ from shared import (
     init_sqlite_db,
     migrate_add_columns,
     estimate_tokens_from_file,
+    estimate_tokens_from_text,
 )
+
+
+def _estimate_skill_frontmatter_tokens(skill_md: Path) -> int:
+    """Estimate tokens of a skill's YAML frontmatter only.
+
+    Claude Code loads only each skill's frontmatter (name + description)
+    into the session at startup. The SKILL.md body is loaded on demand
+    when the user invokes the skill via the Skill tool. Measuring the
+    full file over-counts overhead by ~10-20x.
+
+    Falls back to 100 tokens (the documented average) if frontmatter
+    cannot be parsed.
+    """
+    try:
+        text = skill_md.read_text(encoding="utf-8", errors="replace")
+    except (OSError, PermissionError):
+        return 100
+    if not text.startswith("---"):
+        return 100
+    # Look for the closing --- after the opening one
+    end_idx = text.find("\n---", 4)
+    if end_idx == -1:
+        return 100
+    frontmatter = text[: end_idx + 4]
+    return estimate_tokens_from_text(frontmatter)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -549,6 +575,10 @@ class ClaudeCodeAdapter(BaseAdapter):
         }
 
         # Skills
+        # Only the YAML frontmatter (name + description) is loaded into the
+        # session at startup. SKILL.md bodies load on demand when the user
+        # invokes the skill. Measuring the full file over-counts by ~10-20x
+        # and inflates skill_bloat findings. See issue #16.
         skills_dir = CLAUDE_DIR / "skills"
         if skills_dir.exists():
             for sd in skills_dir.iterdir():
@@ -557,7 +587,7 @@ class ClaudeCodeAdapter(BaseAdapter):
                     if skill_md.exists():
                         config["skills"].append({
                             "name": sd.name,
-                            "tokens": estimate_tokens_from_file(skill_md),
+                            "tokens": _estimate_skill_frontmatter_tokens(skill_md),
                         })
 
         # CLAUDE.md

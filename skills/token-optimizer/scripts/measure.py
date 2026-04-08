@@ -3116,6 +3116,16 @@ def generate_standalone_dashboard(days=30, quiet=False):
     Outputs to DASHBOARD_PATH (~/.claude/_backups/token-optimizer/dashboard.html).
     Used by the SessionEnd hook for auto-refresh and for standalone viewing.
     """
+    # Skip regeneration if dashboard was updated within the last 60 seconds
+    # (prevents rapid /clear cycles from blocking on repeated full pipelines)
+    if quiet and DASHBOARD_PATH.exists():
+        try:
+            age = time.time() - DASHBOARD_PATH.stat().st_mtime
+            if age < 60:
+                return str(DASHBOARD_PATH)
+        except OSError:
+            pass
+
     script_dir = Path(__file__).resolve().parent
     template_path = script_dir.parent / "assets" / "dashboard.html"
     if not template_path.exists():
@@ -3213,14 +3223,38 @@ def generate_standalone_dashboard(days=30, quiet=False):
                 "five_only_sessions": 0,
                 "one_hour_only_sessions": 0,
             })
-    # Memory review data for dashboard health cards
+    # Lightweight memory health for dashboard cards (reuses already-computed components,
+    # no second measure_components() call, no full detector suite)
     mr_data = None
     try:
-        mr_data = memory_review(as_json=True)
+        mem = components.get("memory_md", {})
+        if mem.get("exists") and mem.get("path"):
+            mem_path = Path(mem["path"])
+            memory_dir = mem_path.parent
+            parsed = _mr_parse_memory_index(str(mem_path))
+            files_on_disk = _mr_scan_topic_files(str(memory_dir))
+            linked_basenames = {Path(l["target"]).name for l in parsed["links_all"]}
+            files_set = set(files_on_disk)
+            orphan_count = len(files_set - linked_basenames)
+            broken_count = len([l for l in parsed["links_all"] if Path(l["target"]).name not in files_set])
+            total_lines = parsed["total_lines"]
+            sev_medium = (1 if total_lines > _MR_MEMORY_LINE_LIMIT else 0) + (1 if broken_count > 0 else 0)
+            mr_data = {
+                "target": str(mem_path),
+                "total_lines": total_lines,
+                "entry_count": len(parsed["entries"]),
+                "topic_files_count": len(files_on_disk),
+                "linked_files_count": len(linked_basenames & files_set),
+                "findings": [],  # lightweight mode skips full findings
+                "severity_counts": {"high": 0, "medium": sev_medium, "low": orphan_count},
+                "savings": {"total_tokens": max(0, total_lines - _MR_MEMORY_LINE_LIMIT) * 15, "by_category": {}},
+                "truncated": total_lines > _MR_MEMORY_LINE_LIMIT,
+                "truncated_lines": max(0, total_lines - _MR_MEMORY_LINE_LIMIT),
+            }
     except Exception:
         pass
 
-    # CLAUDE.md health summary for dashboard card
+    # CLAUDE.md health summary for dashboard card (from already-computed components)
     claude_md_health = None
     try:
         claude_tokens = 0
@@ -3229,7 +3263,6 @@ def generate_standalone_dashboard(days=30, quiet=False):
             if key.startswith("claude_md") and components[key].get("exists"):
                 claude_tokens += components[key].get("tokens", 0)
         claude_pct = claude_tokens / context_window * 100 if context_window else 0
-        # Determine status from coach patterns
         claude_status = "good"
         if coach:
             for p in coach.get("patterns_bad", []):

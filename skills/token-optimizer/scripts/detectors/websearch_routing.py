@@ -4,18 +4,16 @@ Post-hoc detector that identifies heavy web search/fetch usage across sessions
 and suggests routing through dedicated subagents or targeted queries.
 """
 
-# Tools considered web search/fetch
+# Only tools that dump full web pages into the main session context.
+# Exa, Perplexity, BrightData MCP tools return focused snippets by design
+# and are NOT overhead — they're the recommended approach.
 _WEB_TOOLS = frozenset({
     "WebSearch", "WebFetch",
-    "mcp__tavily__tavily_search", "mcp__tavily__tavily_extract",
-    "mcp__tavily__tavily_crawl", "mcp__tavily__tavily_research",
-    "mcp__exa__web_search_exa", "mcp__exa__crawling_exa",
-    "mcp__brightdata__search_engine", "mcp__brightdata__scrape_as_markdown",
+    "mcp__tavily__tavily_crawl",  # full-page crawl is expensive
 })
 
-# MCP server prefixes known to be web search providers
-_WEB_MCP_PREFIXES = ("mcp__tavily__", "mcp__exa__", "mcp__brightdata__",
-                     "mcp__claude_ai_BrightData__", "mcp__perplexity")
+# Tavily search/extract are moderate; Exa/BrightData/Perplexity are efficient
+_WEB_MCP_PREFIXES = ()  # no blanket prefix matching — too aggressive
 
 _EST_TOKENS_PER_CALL = 5000
 _MIN_CALLS = 3

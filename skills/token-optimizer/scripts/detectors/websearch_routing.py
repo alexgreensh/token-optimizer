@@ -16,7 +16,7 @@ _WEB_TOOLS = frozenset({
 _WEB_MCP_PREFIXES = ()  # no blanket prefix matching — too aggressive
 
 _EST_TOKENS_PER_CALL = 5000
-_MIN_CALLS = 3
+_MIN_CALLS = 5
 _MIN_TOKENS = 50_000
 
 
@@ -63,4 +63,5 @@ def detect_websearch_routing(trends):
             "Run research in subagents so web content stays in their context (not yours). "
             "Use search APIs (Exa, Perplexity) for focused snippets instead of full page dumps."
         ),
+        "occurrence_count": web_calls,
     }]

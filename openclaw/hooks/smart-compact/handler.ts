@@ -17,7 +17,13 @@ const handler = async (event: HookEvent) => {
       sessionId: event.sessionId,
       messages: event.messages,
     };
-    captureCheckpointV2(session) ?? captureCheckpoint(session);
+    let captured = false;
+    try {
+      if (captureCheckpointV2(session)) captured = true;
+    } catch { /* v2 threw, try v1 */ }
+    if (!captured) {
+      try { captureCheckpoint(session); } catch { /* v1 also failed */ }
+    }
     // Clear read-cache on compaction (stale context after compact)
     clearCache("default", event.sessionId);
   }

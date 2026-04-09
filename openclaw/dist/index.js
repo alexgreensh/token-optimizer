@@ -212,10 +212,23 @@ Object.defineProperty(exports, "getSkillUsageHistory", { enumerable: true, get: 
 var waste_detectors_2 = require("./waste-detectors");
 Object.defineProperty(exports, "detectUnusedSkills", { enumerable: true, get: function () { return waste_detectors_2.detectUnusedSkills; } });
 // ---------------------------------------------------------------------------
+// Safe event handler wrapper (prevents unhandled throws from crashing gateway)
+// ---------------------------------------------------------------------------
+function safeOn(api, event, handler) {
+    api.on(event, (...args) => {
+        try {
+            handler(...args);
+        }
+        catch (err) {
+            api.logger.error(`[token-optimizer] ${event} handler error: ${err}`);
+        }
+    });
+}
+// ---------------------------------------------------------------------------
 // Plugin registration (called by OpenClaw plugin loader)
 // ---------------------------------------------------------------------------
 exports.default = definePluginEntry({
-    id: "token-optimizer",
+    id: "token-optimizer-openclaw",
     name: "Token Optimizer",
     description: "Token waste auditor for OpenClaw. Detects idle burns, model misrouting, and context bloat.",
     register(api) {
@@ -230,7 +243,7 @@ exports.default = definePluginEntry({
             doctor,
         });
         // Log on gateway startup
-        api.on("gateway:startup", () => {
+        safeOn(api, "gateway:startup", () => {
             api.logger.info("[token-optimizer] Gateway started, ready to audit");
             // Clean up old checkpoints on startup
             const cleaned = (0, smart_compact_1.cleanupCheckpoints)(7);
@@ -239,14 +252,14 @@ exports.default = definePluginEntry({
             }
         });
         // Log on agent bootstrap
-        api.on("agent:bootstrap", (...args) => {
+        safeOn(api, "agent:bootstrap", (...args) => {
             const agentId = typeof args[0] === "object" && args[0] !== null
                 ? args[0].agentId
                 : undefined;
             api.logger.info(`[token-optimizer] Agent bootstrapped: ${agentId ?? "unknown"}`);
         });
         // Smart Compaction v2: capture before compaction (intelligent extraction)
-        api.on("session:compact:before", (...args) => {
+        safeOn(api, "session:compact:before", (...args) => {
             const session = args[0];
             if (!session?.sessionId) {
                 api.logger.warn("[token-optimizer] compact:before fired without session data");
@@ -267,7 +280,7 @@ exports.default = definePluginEntry({
             (0, read_cache_1.clearCache)("default", session.sessionId);
         });
         // Smart Compaction: restore after compaction
-        api.on("session:compact:after", (...args) => {
+        safeOn(api, "session:compact:after", (...args) => {
             const session = args[0];
             if (!session?.sessionId)
                 return;
@@ -277,14 +290,14 @@ exports.default = definePluginEntry({
                 api.logger.info(`[token-optimizer] Checkpoint restored for session ${session.sessionId}`);
             }
         });
-        api.on("session:patch", (...args) => {
+        safeOn(api, "session:patch", (...args) => {
             const event = args[0];
             if (!event?.sessionId || !openclawDir)
                 return;
             maybeCheckpointFromRuntimeSnapshot(openclawDir, contextAudit, event.agentId, event.sessionId, api, "session-patch");
         });
         // Read Cache: intercept redundant reads (PreToolUse equivalent)
-        api.on("agent:tool:before", (...args) => {
+        safeOn(api, "agent:tool:before", (...args) => {
             const event = args[0];
             if (!event?.toolName)
                 return;
@@ -310,7 +323,7 @@ exports.default = definePluginEntry({
             }
         });
         // Read Cache: invalidate on file writes (PostToolUse equivalent)
-        api.on("agent:tool:after", (...args) => {
+        safeOn(api, "agent:tool:after", (...args) => {
             const event = args[0];
             if (!event?.toolName)
                 return;
@@ -337,18 +350,20 @@ exports.default = definePluginEntry({
             maybeCheckpointFromRuntimeSnapshot(openclawDir, contextAudit, event.agentId, event.sessionId, api, "tool-after", milestoneSnapshot);
         });
         // Generate dashboard silently on session end
-        api.on("session:end", (...args) => {
+        safeOn(api, "session:end", (...args) => {
+            const event = args[0];
             try {
-                const event = args[0];
                 if (openclawDir && event?.sessionId) {
                     maybeCheckpointFromRuntimeSnapshot(openclawDir, contextAudit, event.agentId, event.sessionId, api, "session-end");
-                    (0, checkpoint_policy_1.clearCheckpointState)(event.sessionId);
                 }
                 generateDashboard(30);
                 api.logger.info("[token-optimizer] Dashboard regenerated on session end");
             }
-            catch {
-                // Silent failure, dashboard generation is non-critical
+            finally {
+                // Always clean up session state, even if checkpoint or dashboard fails
+                if (event?.sessionId) {
+                    (0, checkpoint_policy_1.clearCheckpointState)(event.sessionId);
+                }
             }
         });
     },

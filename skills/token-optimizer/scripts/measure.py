@@ -66,6 +66,7 @@ import math
 import os
 import glob
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -7077,6 +7078,284 @@ def _generate_plist():
 """
 
 
+_HOOKS_JSON_CANDIDATES = [
+    # Script install path (installed by install.sh to ~/.claude/token-optimizer)
+    Path.home() / ".claude" / "token-optimizer" / "hooks" / "hooks.json",
+    # Dev path (symlinked/local checkout at ~/CascadeProjects/...)
+    Path(__file__).resolve().parents[3] / "hooks" / "hooks.json",
+]
+
+
+def _find_plugin_hooks_json():
+    """Locate the plugin's hooks.json. Returns Path or None."""
+    for candidate in _HOOKS_JSON_CANDIDATES:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _resolve_hook_command(template_cmd, plugin_root):
+    """Resolve ${CLAUDE_PLUGIN_ROOT} and similar placeholders to absolute paths.
+
+    Script installs don't use Claude Code's plugin loader, so we need to
+    substitute ${CLAUDE_PLUGIN_ROOT} ourselves with the install directory.
+    """
+    if not template_cmd:
+        return template_cmd
+    resolved = template_cmd.replace("${CLAUDE_PLUGIN_ROOT}", str(plugin_root))
+    resolved = resolved.replace("$CLAUDE_PLUGIN_ROOT", str(plugin_root))
+    return resolved
+
+
+# Flags that don't distinguish functionally different hooks (output control only).
+# These are stripped when computing hook identity for dedup.
+_COSMETIC_FLAGS = frozenset({"--quiet", "-q", "--warn", "--verbose", "-v"})
+
+
+def _hook_command_identity(cmd):
+    """Extract a stable functional identity from a hook command for dedup.
+
+    Tokenizes with shlex, finds the LAST .py file (skipping `test -f ...`
+    guards), and returns: script_name + first subcommand + first mode flag,
+    ignoring cosmetic flags like --quiet/--warn/--verbose.
+
+    Examples:
+      'python3 measure.py quality-cache --warn --quiet' -> 'measure.py:quality-cache'
+      'python3 measure.py quality-cache --quiet' -> 'measure.py:quality-cache' (DEDUPS)
+      'python3 read_cache.py --quiet' -> 'read_cache.py'
+      'python3 read_cache.py --clear --quiet' -> 'read_cache.py:--clear'
+      'python3 read_cache.py --invalidate --quiet' -> 'read_cache.py:--invalidate'
+      'echo COMPACTION GUIDANCE...' -> 'echo:COMPACTION'
+    """
+    if not cmd:
+        return ""
+    try:
+        tokens = shlex.split(cmd, posix=True)
+    except ValueError:
+        return cmd[:80]
+
+    # Strip `|| true` / `&&` trailers
+    while tokens and tokens[-1] in ("||", "true", "&&"):
+        tokens.pop()
+
+    # Find the LAST .py token (skips `test -f '<path>.py'` guard)
+    py_idx = -1
+    for i, t in enumerate(tokens):
+        if t.endswith(".py"):
+            py_idx = i
+
+    if py_idx < 0:
+        # Non-python hook (echo, curl, etc). Use script name + first meaningful token.
+        for i, t in enumerate(tokens):
+            if t not in ("test", "-f", "&&", "||", "true", "python3", "python", "bash", "-c"):
+                # Found the command name -- use it + next word as identity
+                next_word = tokens[i + 1] if i + 1 < len(tokens) else ""
+                # For echo, use first word of content as discriminator
+                if t == "echo" and next_word:
+                    first_word = next_word.split()[0] if next_word.split() else ""
+                    return f"echo:{first_word[:20]}"
+                return f"{t}:{next_word[:20]}"
+        return cmd[:80]
+
+    script_name = Path(tokens[py_idx]).name
+    tail = tokens[py_idx + 1:]
+    if not tail:
+        return script_name
+
+    # First non-flag token = subcommand (e.g. "quality-cache", "compact-capture")
+    subcmd = ""
+    for t in tail:
+        if not t.startswith("-"):
+            subcmd = t
+            break
+
+    # First MODE flag (non-cosmetic) = discriminator for scripts without subcommands
+    mode_flag = ""
+    for t in tail:
+        if t.startswith("-") and t not in _COSMETIC_FLAGS:
+            mode_flag = t
+            break
+
+    # ADV-001 fix: always include mode_flag in identity when present, even if
+    # subcmd exists. This distinguishes 'measure.py compact-restore' from
+    # 'measure.py compact-restore --new-session-only' which otherwise collide.
+    if subcmd and mode_flag:
+        return f"{script_name}:{subcmd}:{mode_flag}"
+    elif subcmd:
+        return f"{script_name}:{subcmd}"
+    elif mode_flag:
+        return f"{script_name}:{mode_flag}"
+    else:
+        return script_name
+
+
+def setup_all_hooks(dry_run=False, verbose=False):
+    """Merge the plugin's hooks.json into the user's settings.json.
+
+    This is the canonical way to install all Token Optimizer hooks for
+    script-install users (install.sh) and for healing drift on existing
+    installs (called from ensure-health at SessionStart).
+
+    Returns a dict with counts: {"added": N, "skipped": N, "plugin_root": str}.
+
+    Safety:
+    - Idempotent: dedups by script identity, never adds duplicates
+    - Atomic: uses _write_settings_atomic with file lock
+    - Preserves all existing hooks (token-optimizer + third-party)
+    - Preserves all hook fields (type, command, async, timeout, etc.)
+    - Resolves ${CLAUDE_PLUGIN_ROOT} to absolute path for script installs
+    - Refuses to write if settings.json appears corrupted (non-empty file but parses to {})
+    - Rejects plugin_root containing shell metacharacters
+    """
+    hooks_json_path = _find_plugin_hooks_json()
+    if not hooks_json_path:
+        if verbose:
+            print("  [setup-all-hooks] plugin hooks.json not found")
+        return {"added": 0, "skipped": 0, "plugin_root": None, "error": "hooks.json not found"}
+
+    plugin_root = hooks_json_path.parent.parent
+    plugin_root_str = str(plugin_root)
+
+    # SEC-001 fix: reject plugin_root with shell metacharacters that would break
+    # out of single-quoted strings in hook templates or inject commands.
+    _DANGEROUS_PATH_CHARS = set("'\"`$\\;&|<>\n\r\x00")
+    if any(c in plugin_root_str for c in _DANGEROUS_PATH_CHARS):
+        msg = f"Plugin root contains unsafe characters: {plugin_root_str!r}"
+        if verbose:
+            print(f"  [setup-all-hooks] {msg}")
+        return {"added": 0, "skipped": 0, "plugin_root": plugin_root_str, "error": msg}
+
+    try:
+        plugin_hooks = json.loads(hooks_json_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        if verbose:
+            print(f"  [setup-all-hooks] could not read {hooks_json_path}: {e}")
+        return {"added": 0, "skipped": 0, "plugin_root": plugin_root_str, "error": str(e)}
+
+    desired = plugin_hooks.get("hooks", {})
+    if not desired:
+        return {"added": 0, "skipped": 0, "plugin_root": plugin_root_str}
+
+    # Read current settings
+    current, _ = _read_settings_json()
+
+    # ADV-006 fix: if settings.json exists with non-zero size but parsed as empty,
+    # it was probably corrupted by a concurrent write. Refuse to overwrite.
+    if not current:
+        try:
+            if SETTINGS_PATH.exists() and SETTINGS_PATH.stat().st_size > 0:
+                msg = "settings.json exists with non-zero size but parsed empty (possible concurrent write). Refusing to overwrite."
+                if verbose:
+                    print(f"  [setup-all-hooks] {msg}")
+                return {"added": 0, "skipped": 0, "plugin_root": plugin_root_str, "error": msg}
+        except OSError:
+            pass
+
+    current_hooks = dict(current.get("hooks", {}))
+
+    added = 0
+    skipped = 0
+
+    for event, handler_groups in desired.items():
+        if event not in current_hooks:
+            current_hooks[event] = []
+
+        # Build an index of existing command identities per matcher,
+        # and also track the path used (for stale-path detection).
+        existing_ids = {}  # matcher -> set of identity strings
+        existing_entries = {}  # matcher -> {identity -> (group, hook_dict)}
+        for group in current_hooks[event]:
+            matcher = group.get("matcher", "")
+            existing_ids.setdefault(matcher, set())
+            existing_entries.setdefault(matcher, {})
+            for h in group.get("hooks", []):
+                cmd = h.get("command", "")
+                ident = _hook_command_identity(cmd)
+                if ident:
+                    existing_ids[matcher].add(ident)
+                    existing_entries[matcher][ident] = (group, h)
+
+        for group in handler_groups:
+            matcher = group.get("matcher", "")
+            for h in group.get("hooks", []):
+                template_cmd = h.get("command", "")
+                resolved_cmd = _resolve_hook_command(template_cmd, plugin_root)
+                ident = _hook_command_identity(resolved_cmd)
+
+                if ident and ident in existing_ids.get(matcher, set()):
+                    # SEC-003 fix: check if the existing hook points to our current
+                    # plugin_root. Only applies to hooks that actually contain a path
+                    # (i.e., .py scripts). Echo/bash hooks without paths always skip.
+                    existing_group, existing_hook = existing_entries[matcher][ident]
+                    existing_cmd = existing_hook.get("command", "")
+                    has_path = ".py" in existing_cmd or ".py" in resolved_cmd
+                    if not has_path or plugin_root_str in existing_cmd:
+                        skipped += 1
+                        if verbose:
+                            print(f"  [skip] {event}[{matcher}] {ident} (already present)")
+                        continue
+                    # Stale path -- replace in place
+                    existing_hook["command"] = resolved_cmd
+                    # ADV-003 fix: preserve all fields from new hook (async, timeout, etc.)
+                    for k, v in h.items():
+                        if k != "command":
+                            existing_hook[k] = v
+                    added += 1
+                    if verbose:
+                        print(f"  [replace] {event}[{matcher}] {ident} (stale path updated)")
+                    continue
+
+                # Find or create the matcher group
+                target_group = None
+                for g in current_hooks[event]:
+                    if g.get("matcher", "") == matcher:
+                        target_group = g
+                        break
+                if target_group is None:
+                    target_group = {"hooks": []}
+                    if matcher:
+                        target_group["matcher"] = matcher
+                    current_hooks[event].append(target_group)
+
+                # ADV-003 fix: preserve all fields from source hook (async, timeout, type, etc.)
+                new_hook = dict(h)
+                new_hook["command"] = resolved_cmd
+                target_group.setdefault("hooks", []).append(new_hook)
+                existing_ids.setdefault(matcher, set()).add(ident)
+                existing_entries.setdefault(matcher, {})[ident] = (target_group, new_hook)
+                added += 1
+                if verbose:
+                    print(f"  [add]  {event}[{matcher}] {ident}")
+
+    if added == 0:
+        return {"added": 0, "skipped": skipped, "plugin_root": plugin_root_str}
+
+    if dry_run:
+        if verbose:
+            print(f"  [dry-run] would add {added} hooks, skip {skipped}")
+        return {"added": added, "skipped": skipped, "plugin_root": plugin_root_str, "dry_run": True}
+
+    # Apply the merge
+    new_settings = dict(current)
+    new_settings["hooks"] = current_hooks
+
+    try:
+        _write_settings_atomic(new_settings)
+    except (PermissionError, OSError) as e:
+        if verbose:
+            print(f"  [setup-all-hooks] could not write settings.json: {e}")
+        return {"added": 0, "skipped": skipped, "plugin_root": plugin_root_str, "error": str(e)}
+
+    # ADV-005 fix: record the heal timestamp so ensure-health's 24h throttle
+    # suppresses the redundant run after install.sh.
+    try:
+        _write_config_flag("last_hook_heal_check", int(time.time()))
+    except Exception:
+        pass
+
+    return {"added": added, "skipped": skipped, "plugin_root": plugin_root_str}
+
+
 def setup_daemon(dry_run=False, uninstall=False):
     """Install or remove the persistent dashboard HTTP server daemon (launchd).
 
@@ -12393,6 +12672,28 @@ if __name__ == "__main__":
     elif args[0] == "setup-hook":
         dry = "--dry-run" in args
         setup_hook(dry_run=dry)
+    elif args[0] == "setup-all-hooks":
+        dry = "--dry-run" in args
+        verbose = "--verbose" in args or "-v" in args
+        output_json = "--json" in args
+        result = setup_all_hooks(dry_run=dry, verbose=verbose)
+        if output_json:
+            print(json.dumps(result, indent=2))
+        else:
+            added = result.get("added", 0)
+            skipped = result.get("skipped", 0)
+            root = result.get("plugin_root", "?")
+            err = result.get("error")
+            if err:
+                print(f"  [Error] {err}")
+                sys.exit(1)
+            elif dry:
+                print(f"  [Dry-run] would add {added} hook(s), skip {skipped} (plugin root: {root})")
+            elif added == 0:
+                print(f"  [setup-all-hooks] All hooks already present. (plugin root: {root})")
+            else:
+                print(f"  [setup-all-hooks] Added {added} hook(s), skipped {skipped}. (plugin root: {root})")
+                print(f"  Restart Claude Code to activate the new hooks.")
     elif args[0] == "setup-daemon":
         dry = "--dry-run" in args
         uninstall = "--uninstall" in args
@@ -12783,6 +13084,26 @@ if __name__ == "__main__":
     elif args[0] == "ensure-health":
         # Silent auto-fix of known harmful settings. Called by SessionStart hook.
         _auto_remove_bad_env_vars()
+        # v5.0.1: Self-heal missing hooks. Script installs and older setups may be
+        # missing the v5 hooks. This merges hooks.json into settings.json idempotently.
+        # Throttled: only runs if the last check was more than 24h ago, to avoid
+        # hitting settings.json on every session start.
+        # Note: setup_all_hooks updates last_hook_heal_check on successful write,
+        # so we don't need to do it here ourselves.
+        try:
+            last_check = _read_config_flag("last_hook_heal_check", 0)
+            now = int(time.time())
+            if now - int(last_check or 0) > 86400:  # 24h
+                heal_result = setup_all_hooks(dry_run=False, verbose=False)
+                added = heal_result.get("added", 0)
+                if added > 0:
+                    print(f"  [Token Optimizer] Self-healed {added} missing hook(s) in settings.json. Restart Claude Code to activate.")
+                elif added == 0 and not heal_result.get("error"):
+                    # Still update the timestamp even if nothing was added, so we
+                    # don't keep scanning hooks.json every session for 24h.
+                    _write_config_flag("last_hook_heal_check", now)
+        except Exception:
+            pass
         # v5.1: First-run welcome. Shows once when v5 is first seen on this machine.
         try:
             if not _read_config_flag("v5_welcome_shown", False):
@@ -12794,17 +13115,14 @@ if __name__ == "__main__":
         # Without this, Claude Code deletes JSONL transcripts after 30 days,
         # breaking Token Optimizer trends, skill usage tracking, and Total Recall
         # raw-transcript search. Disk cost is negligible.
+        # ADV-002 fix: use _write_settings_atomic to avoid racing setup_all_hooks.
         try:
-            _cp_path = CLAUDE_DIR / "settings.json"
-            if _cp_path.exists():
-                with open(_cp_path, "r", encoding="utf-8") as _cpf:
-                    _cp_data = json.load(_cpf)
-                if "cleanupPeriodDays" not in _cp_data:
-                    _cp_data["cleanupPeriodDays"] = 99999
-                    with open(_cp_path, "w", encoding="utf-8") as _cpf:
-                        json.dump(_cp_data, _cpf, indent=2)
-                        _cpf.write("\n")
-                    print("  [Token Optimizer] Set cleanupPeriodDays=99999 (preserves session transcripts for trends/analytics)")
+            _cp_data, _ = _read_settings_json()
+            if _cp_data and "cleanupPeriodDays" not in _cp_data:
+                _cp_data = dict(_cp_data)
+                _cp_data["cleanupPeriodDays"] = 99999
+                _write_settings_atomic(_cp_data)
+                print("  [Token Optimizer] Set cleanupPeriodDays=99999 (preserves session transcripts for trends/analytics)")
         except Exception:
             pass
         # Fix stale versioned plugin cache paths in settings.json (GitHub #7).

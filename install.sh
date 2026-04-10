@@ -183,6 +183,28 @@ else
     warn "  python3 measure.py setup-quality-bar"
 fi
 
+# ── Setup All Hooks (v5.0.1: merge plugin hooks.json into settings.json) ────
+# Canonical way for script installs to get the full v5 hook set.
+# Idempotent: safe to re-run on every install and every `git pull`.
+# Upgrades from v4.x pick up v5 active compression hooks here.
+
+info "Installing all Token Optimizer hooks..."
+HOOK_OUTPUT=$(python3 "${INSTALL_DIR}/skills/token-optimizer/scripts/measure.py" setup-all-hooks 2>&1)
+HOOK_EXIT=$?
+if [ $HOOK_EXIT -eq 0 ]; then
+    HOOK_SUMMARY=$(echo "$HOOK_OUTPUT" | grep -E "Added [0-9]+|All hooks already present" | head -1)
+    if [ -n "$HOOK_SUMMARY" ]; then
+        info "$(echo "$HOOK_SUMMARY" | sed 's/^[[:space:]]*\[setup-all-hooks\][[:space:]]*//')"
+    else
+        info "Hooks installed"
+    fi
+    # setup_all_hooks updates last_hook_heal_check automatically on success,
+    # suppressing the redundant ensure-health run for the next 24h.
+else
+    warn "Could not auto-install hooks. Run manually:"
+    warn "  python3 ${INSTALL_DIR}/skills/token-optimizer/scripts/measure.py setup-all-hooks"
+fi
+
 # ── Summary ───────────────────────────────────────────────────
 
 COMMIT=$(git -C "$INSTALL_DIR" rev-parse --short HEAD 2>/dev/null || echo "?")

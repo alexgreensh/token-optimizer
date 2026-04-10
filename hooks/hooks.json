@@ -11,6 +11,15 @@
         ]
       },
       {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/bash_hook.py' && python3 '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/bash_hook.py' --quiet || true"
+          }
+        ]
+      },
+      {
         "matcher": "Agent|Task",
         "hooks": [
           {

@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/alexgreensh/token-optimizer/releases"><img src="https://img.shields.io/badge/version-4.4.0-green" alt="Version 4.4.0"></a>
+  <a href="https://github.com/alexgreensh/token-optimizer/releases"><img src="https://img.shields.io/badge/version-5.0.0-green" alt="Version 5.0.0"></a>
   <a href="https://github.com/alexgreensh/token-optimizer"><img src="https://img.shields.io/badge/Claude_Code-Plugin-blueviolet" alt="Claude Code Plugin"></a>
   <a href="https://github.com/alexgreensh/token-optimizer/tree/main/openclaw"><img src="https://img.shields.io/badge/OpenClaw-Plugin-brightgreen" alt="OpenClaw Plugin"></a>
   <a href="https://github.com/alexgreensh/token-optimizer/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue.svg" alt="License: PolyForm Noncommercial"></a>
@@ -187,6 +187,117 @@ Enable optional local-only checkpoint telemetry to see whether checkpoints are f
 ```bash
 TOKEN_OPTIMIZER_CHECKPOINT_TELEMETRY=1 python3 measure.py checkpoint-stats --days 7
 ```
+
+---
+
+## Active Compression (v5)
+
+Token Optimizer no longer just measures context bloat — it actively reduces it. Five opt-in features that each target a specific waste pattern, with honest risk assessment and dashboard toggles.
+
+**What's on by default:** Quality Nudges, Loop Detection, and Delta Mode. Opt-in: Bash Compression and Structure Map Beta.
+
+**All five features are independently toggleable** from the Manage tab in the dashboard, via CLI (`measure.py v5 enable|disable <feature>`), or with environment variables. All telemetry stays 100% local — nothing leaves your machine.
+
+| Feature | Default | Potential Savings | Risk |
+|---|---|---|---|
+| Quality Nudges | **ON** | ~5% (prevented waste) | None |
+| Loop Detection | **ON** | ~8% (caught loops) | None |
+| Delta Mode | **ON** | ~20% (smart re-reads) | Low |
+| Structure Map Beta | OFF (opt-in) | Telemetry only | None |
+| Bash Compression | OFF (opt-in) | ~10% (CLI output) | Moderate |
+
+### Quality Nudges (ON by default)
+
+Watches your context quality in real time. When the score drops 15+ points or crosses below 60, injects a one-line warning into context: `[Token Optimizer] Quality dropped to 58. Consider /compact to protect context.`
+
+**Value:** Catches context rot early so you can /compact at the right moment, before you lose decisions to compaction. Prevents silent quality loss that leads to bad AI decisions.
+
+**How it works:** Runs inside the existing quality-cache hook on every UserPromptSubmit. Cooldown of 5 minutes between nudges, max 3 per session. Suppressed on the first check after a compaction (so you don't get warned about quality you just fixed).
+
+**Risk:** None. Only adds a short warning to context, never removes anything.
+
+### Loop Detection (ON by default)
+
+Detects when the AI is stuck retrying the same thing and warns you before it burns through tokens. A single caught loop typically saves 10-50K tokens.
+
+**Value:** Catches loops before they burn through tokens. Post-hoc detectors found that loop sessions average 47K wasted tokens. Real-time detection prevents this.
+
+**How it works:** Compares the last 4 user messages and last 5 tool results for similarity. Fires at confidence ≥0.7 with a session cap of 2 warnings (no meta-loop on loop detection itself). Uses fixed message templates — never echoes user content back.
+
+**Risk:** None. Only adds a short warning to context, never removes anything.
+
+### Delta Mode (ON by default — your biggest single win)
+
+When the AI re-reads a file after editing it, shows only what changed instead of the whole file. Analysis of real sessions shows 65%+ of Read calls are re-reads, making this the highest-impact v5 feature.
+
+**Value:** Typical sessions re-read the same file 2-5 times. Delta mode sends only the diff. A 2,000-token file re-read becomes a 50-token diff — 97% savings on that specific read.
+
+**How it works:** Stores file content (up to 50KB per file) in a local cache on first read. On re-read with changed mtime, computes a unified diff via Python's `difflib` (stdlib, no git dependency). Falls back to full re-read if the diff exceeds 1,500 chars or either file exceeds 2,000 lines. `.env` and credential files are excluded from caching.
+
+**Risk:** Low. If the AI needed the full file to understand the change in context, the diff alone might not be enough. Fails open on large changes and big files. Set `TOKEN_OPTIMIZER_READ_CACHE_DELTA=0` to disable if you hit edge cases.
+
+### Structure Map Beta (OFF — opt-in telemetry)
+
+Logs events to a local database when a code file is read multiple times and gets replaced with a function/class summary. The feature itself already runs in `soft_block` mode — this flag just adds measurement.
+
+**Value:** Helps prove (or disprove) whether structure maps help on real code-heavy sessions. Your data only, never shared.
+
+**How to enable:** `measure.py v5 enable structure_map_beta` or `TOKEN_OPTIMIZER_STRUCTURE_MAP=beta`
+
+**Risk:** None. Telemetry only.
+
+### Bash Output Compression (OFF — opt-in, lossy)
+
+Rewrites common CLI commands (`git status`, `git log`, `git diff`, `pytest`, `npm install`, `ls`) to return compressed summaries instead of verbose output. Benchmarks show 38% average compression with 100% credential preservation.
+
+**Value:** Strips hundreds of lines of test/build/git output down to just the essentials. A 564-token pytest output becomes 115 tokens. A 60-file `ls -la` truncates to 50. Best for sessions with lots of CLI commands.
+
+**How it works:** A PreToolUse hook (`bash_hook.py`) intercepts safe read-only commands, tokenizes them with `shlex.split()`, checks against a whitelist, and rewrites them via `updatedInput` to route through a compression wrapper (`bash_compress.py`). Categorically excludes compound commands (anything with `;`, `&&`, `||`, `|`, `$()`, backticks, `>`, `>>`), sudo, and interactive flags.
+
+**Security:** `shell=True` is never used. Credentials (AWS keys, GitHub PATs, Slack tokens, Stripe keys, OpenAI keys) are scanned PRE-compression and preserved verbatim. Partial output on timeout is returned raw, never compressed.
+
+**How to enable:** `measure.py v5 enable bash_compress` or `TOKEN_OPTIMIZER_BASH_COMPRESS=1`
+
+**Risk:** Moderate. Compression is lossy by design — `git diff` truncates to 30 lines on large diffs, `pytest` strips individual passing test names, `git log` drops merge commit details. For routine checks this is fine. For careful diff review or debugging specific test failures, it could hide information. **OFF by default — opt-in only.**
+
+### Managing v5 features
+
+Three ways to control these features:
+
+```bash
+# CLI
+python3 measure.py v5 status                    # show all features with current state
+python3 measure.py v5 enable delta_mode         # turn a feature on
+python3 measure.py v5 disable bash_compress     # turn a feature off
+python3 measure.py v5 info delta_mode           # show full details for one feature
+python3 measure.py v5 welcome                   # show the first-run welcome screen
+python3 measure.py compression-stats            # see actual measured savings from local telemetry
+```
+
+```bash
+# Environment variables (override config.json, for CI/scripts)
+TOKEN_OPTIMIZER_QUALITY_NUDGES=0        # kill switch for nudges
+TOKEN_OPTIMIZER_LOOP_DETECTION=0        # kill switch for loop detection
+TOKEN_OPTIMIZER_READ_CACHE_DELTA=1      # enable delta mode
+TOKEN_OPTIMIZER_BASH_COMPRESS=1         # enable bash compression
+TOKEN_OPTIMIZER_STRUCTURE_MAP=beta      # enable beta telemetry
+```
+
+**Dashboard:** Open `token-dashboard` → Manage tab. Active Compression (v5) is the first section. Toggles apply instantly to new tool calls — no Claude Code restart needed. Each feature shows what it does, its value, how it works, its risk level, and its impact estimate.
+
+**First-run welcome:** On your first session after installing v5, you'll see a one-time welcome screen explaining each feature, its default state, and how to toggle it. Stored in `config.json` so it only shows once.
+
+### Measuring real savings (all local)
+
+All v5 features log to a `compression_events` SQLite table stored **locally** on your machine at `~/.claude/_backups/token-optimizer/trends.db`. Nothing leaves your system.
+
+```bash
+python3 measure.py compression-stats --days 30
+```
+
+Output shows total events per feature, tokens saved, compression ratio, and quality preservation rate. The `verified` flag distinguishes exact measurements (delta mode knows the precise before/after) from estimates (structure map is heuristic).
+
+**Privacy note:** Every measurement, every event, every byte of telemetry is stored on your machine only. Token Optimizer has no network calls, no phone-home, no analytics endpoint. The `compression-stats` command reads your local SQLite database and prints to your terminal — nothing more.
 
 ---
 

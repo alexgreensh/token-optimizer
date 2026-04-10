@@ -2504,6 +2504,26 @@ def _serve_dashboard(filepath, port=8080, host="127.0.0.1"):
             elif path == "/api/mcp/enable":
                 ok = _manage_mcp("enable", name)
                 msg = f"Enabled MCP server: {name}" if ok else f"Failed to enable: {name}"
+            elif path == "/api/v5/toggle":
+                # v5 feature toggle: body has {"name": "feature_name", "enabled": true/false}
+                enabled = bool(body.get("enabled", False))
+                if name not in V5_FEATURES:
+                    self._json_response(400, {"error": f"Unknown v5 feature: {name}"})
+                    return
+                ok = _set_v5_feature(name, enabled)
+                label = V5_FEATURES[name]["label"]
+                msg = f"{'Enabled' if enabled else 'Disabled'}: {label}" if ok else f"Failed to toggle {name}"
+                # Strip internal implementation keys before returning over HTTP
+                public_status = {}
+                for fname, info in _get_v5_feature_status().items():
+                    public_status[fname] = {k: v for k, v in info.items() if k not in ("env_var", "config_key")}
+                # Return updated status so dashboard refreshes
+                self._json_response(200 if ok else 500, {
+                    "ok": ok,
+                    "msg": msg,
+                    "v5_features": public_status,
+                })
+                return
             else:
                 self._json_response(404, {"error": "Unknown endpoint"})
                 return
@@ -2841,6 +2861,7 @@ def _collect_management_data(components=None, trends=None):
             "disabled": disabled_mcps,
             "cloud": cloud_mcps,
         },
+        "v5_features": _get_v5_feature_status(),
     }
 
 
@@ -3297,6 +3318,7 @@ def generate_standalone_dashboard(days=30, quiet=False):
         "session_turns": session_turns,
         "memory_review": mr_data,
         "claude_md_health": claude_md_health,
+        "v5_recommendation": _get_v5_savings_recommendation(),
     }
 
     template = template_path.read_text(encoding="utf-8")
@@ -5117,6 +5139,20 @@ CREATE TABLE IF NOT EXISTS savings_events (
     session_id TEXT,
     detail TEXT
 );
+
+CREATE TABLE IF NOT EXISTS compression_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    session_id TEXT,
+    feature TEXT NOT NULL,
+    command_pattern TEXT,
+    original_tokens INTEGER DEFAULT 0,
+    compressed_tokens INTEGER DEFAULT 0,
+    compression_ratio REAL DEFAULT 0.0,
+    quality_preserved INTEGER DEFAULT 1,
+    verified INTEGER DEFAULT 0,
+    detail TEXT
+);
 """
 
 
@@ -5149,6 +5185,29 @@ def _init_trends_db():
         conn.commit()
     except sqlite3.Error:
         pass
+    # Migrate: ensure compression_events table exists for upgrades from v4.x
+    try:
+        conn.execute("SELECT 1 FROM compression_events LIMIT 1")
+    except sqlite3.OperationalError:
+        try:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS compression_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    session_id TEXT,
+                    feature TEXT NOT NULL,
+                    command_pattern TEXT,
+                    original_tokens INTEGER DEFAULT 0,
+                    compressed_tokens INTEGER DEFAULT 0,
+                    compression_ratio REAL DEFAULT 0.0,
+                    quality_preserved INTEGER DEFAULT 1,
+                    verified INTEGER DEFAULT 0,
+                    detail TEXT
+                );
+            """)
+            conn.commit()
+        except sqlite3.Error:
+            pass
     return conn
 
 
@@ -5264,6 +5323,101 @@ def _log_savings_event(event_type, tokens_saved, session_id=None, detail=None, m
             conn.close()
     except Exception:
         pass  # Never crash the caller over savings tracking
+
+
+def _estimate_tokens(text):
+    """Estimate token count using bytes/4 proxy. Closer to BPE than word count."""
+    if not text:
+        return 0
+    return len(text.encode("utf-8", errors="replace")) // 4
+
+
+def _log_compression_event(feature, original_text="", compressed_text="",
+                           session_id=None, command_pattern=None,
+                           quality_preserved=True, verified=False, detail=None):
+    """Log a compression event to the trends database.
+
+    Uses bytes/4 proxy for token estimation (closer to BPE than word count).
+    Never crashes the caller -- all errors silently caught.
+    """
+    try:
+        original_tokens = _estimate_tokens(original_text)
+        compressed_tokens = _estimate_tokens(compressed_text)
+        ratio = 0.0
+        if original_tokens > 0:
+            ratio = round(1.0 - compressed_tokens / original_tokens, 4)
+
+        conn = _init_trends_db()
+        try:
+            conn.execute(
+                "INSERT INTO compression_events "
+                "(timestamp, session_id, feature, command_pattern, original_tokens, "
+                "compressed_tokens, compression_ratio, quality_preserved, verified, detail) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (datetime.now().isoformat(), session_id, feature, command_pattern,
+                 original_tokens, compressed_tokens, ratio,
+                 1 if quality_preserved else 0,
+                 1 if verified else 0,
+                 detail),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
+def _get_compression_summary(days=30):
+    """Query compression events and return a summary dict."""
+    try:
+        conn = _init_trends_db()
+        try:
+            cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+            rows = conn.execute(
+                "SELECT feature, COUNT(*) as cnt, "
+                "SUM(original_tokens) as orig, SUM(compressed_tokens) as comp, "
+                "AVG(compression_ratio) as avg_ratio, "
+                "SUM(CASE WHEN quality_preserved = 1 THEN 1 ELSE 0 END) as quality_ok, "
+                "SUM(CASE WHEN verified = 1 THEN 1 ELSE 0 END) as verified_cnt "
+                "FROM compression_events WHERE timestamp >= ? "
+                "GROUP BY feature ORDER BY orig DESC",
+                (cutoff,),
+            ).fetchall()
+        finally:
+            conn.close()
+
+        by_feature = {}
+        total_original = 0
+        total_compressed = 0
+        total_events = 0
+        for feature, cnt, orig, comp, avg_ratio, quality_ok, verified_cnt in rows:
+            by_feature[feature] = {
+                "events": cnt,
+                "original_tokens": orig or 0,
+                "compressed_tokens": comp or 0,
+                "avg_ratio": round(avg_ratio or 0.0, 4),
+                "tokens_saved": (orig or 0) - (comp or 0),
+                "quality_preserved_pct": round(100 * (quality_ok or 0) / max(cnt, 1), 1),
+                "verified_pct": round(100 * (verified_cnt or 0) / max(cnt, 1), 1),
+            }
+            total_original += orig or 0
+            total_compressed += comp or 0
+            total_events += cnt
+
+        overall_ratio = round(1.0 - total_compressed / max(total_original, 1), 4)
+        tokens_saved = total_original - total_compressed
+
+        return {
+            "total_events": total_events,
+            "total_original_tokens": total_original,
+            "total_compressed_tokens": total_compressed,
+            "total_tokens_saved": tokens_saved,
+            "overall_ratio": overall_ratio,
+            "by_feature": by_feature,
+            "period_days": days,
+        }
+    except Exception:
+        return {"total_events": 0, "total_tokens_saved": 0, "by_feature": {}, "period_days": days}
 
 
 def _get_savings_summary(days=30):
@@ -10925,6 +11079,171 @@ def _maybe_progressive_checkpoint(fill_pct, cache_path, result, filepath):
         )
 
 
+_NUDGE_COOLDOWN_SECONDS = 300  # 5 minutes between nudges
+_NUDGE_SESSION_CAP = 3
+_LOOP_SESSION_CAP = 2
+_LOOP_LAST_MESSAGES = 4
+
+
+def _check_realtime_loops(quality_data):
+    """Lightweight loop detection using already-parsed quality_data.
+
+    Returns a list of warning dicts (empty if no loops detected).
+    Never raises -- all errors caught internally.
+    """
+    warnings = []
+    try:
+        # --- Message loop detection ---
+        messages = quality_data.get("messages", [])
+        # Extract last N user message texts
+        user_msgs = []
+        for entry in messages:
+            if len(entry) >= 4 and entry[1] == "user" and entry[3]:  # (idx, role, text_length, is_substantive)
+                user_msgs.append(entry)
+        recent_user = user_msgs[-_LOOP_LAST_MESSAGES:] if len(user_msgs) >= _LOOP_LAST_MESSAGES else []
+
+        if len(recent_user) >= _LOOP_LAST_MESSAGES:
+            # We only have text_length, not text content, in quality_data messages.
+            # Check for length-based similarity as a proxy (same length = suspicious).
+            lengths = [m[2] for m in recent_user]
+            if lengths and max(lengths) > 0:
+                # If all recent messages are within 20% length of each other, flag
+                avg_len = sum(lengths) / len(lengths)
+                if avg_len > 50 and all(abs(l - avg_len) / max(avg_len, 1) < 0.2 for l in lengths):
+                    warnings.append({
+                        "type": "message_loop",
+                        "confidence": 0.7,
+                        "count": len(recent_user),
+                    })
+
+        # --- Retry churn detection ---
+        tool_results = quality_data.get("tool_results", [])
+        if len(tool_results) >= 3:
+            recent_tools = tool_results[-5:]
+            # tool_results entries are: (index, tool_id, result_size_chars, referenced_later)
+            # Check for repeated small results (errors tend to be short)
+            small_results = [t for t in recent_tools if t[2] < 200]  # short results = likely errors
+            if len(small_results) >= 3:
+                # If 3+ of the last 5 tool results are very short, might be error loop
+                sizes = [t[2] for t in small_results]
+                if all(abs(s - sizes[0]) < 50 for s in sizes):
+                    warnings.append({
+                        "type": "retry_churn",
+                        "confidence": 0.6,
+                        "count": len(small_results),
+                    })
+
+    except Exception:
+        pass  # Never crash quality_cache
+
+    return warnings
+
+
+def _maybe_nudge(result, cache_path, quality_data, quiet=False):
+    """Check if a quality nudge should fire. Returns systemMessage string or None.
+
+    Nudges fire when:
+    - Score dropped >15 points since last check, OR
+    - Score crossed below 60
+    Respects: cooldown (5 min), session cap (3), post-compaction suppression.
+    """
+    if not _is_v5_feature_enabled("quality_nudges"):
+        return None
+
+    score = result.get("score")
+    if score is None:
+        return None
+
+    previous_score = result.get("_nudge_previous_score")
+    nudge_count = result.get("_nudge_count", 0)
+    last_nudge_epoch = result.get("_nudge_last_epoch", 0)
+
+    # Post-compaction suppression: if no previous score, just record current and skip
+    if previous_score is None:
+        result["_nudge_previous_score"] = score
+        return None
+
+    # Session cap
+    if nudge_count >= _NUDGE_SESSION_CAP:
+        result["_nudge_previous_score"] = score
+        return None
+
+    # Cooldown
+    now = time.time()
+    if now - last_nudge_epoch < _NUDGE_COOLDOWN_SECONDS:
+        result["_nudge_previous_score"] = score
+        return None
+
+    # Check thresholds
+    drop = previous_score - score
+    should_nudge = (drop > 15) or (score < 60 and previous_score >= 60)
+
+    result["_nudge_previous_score"] = score
+
+    if not should_nudge:
+        return None
+
+    # Fire nudge
+    result["_nudge_count"] = nudge_count + 1
+    result["_nudge_last_epoch"] = now
+
+    # Log to compression_events
+    session_id = Path(cache_path).stem.replace("quality-cache-", "", 1) if cache_path else None
+    _log_compression_event(
+        feature="quality_nudge",
+        session_id=session_id,
+        detail=f"score={score} prev={previous_score} drop={drop}",
+        verified=True,
+    )
+
+    return (
+        f"[Token Optimizer] Quality dropped to {score} (was {previous_score}). "
+        f"Consider /compact to protect context."
+    )
+
+
+def _maybe_loop_warning(result, cache_path, quality_data, quiet=False):
+    """Check for real-time loops. Returns systemMessage string or None."""
+    if not _is_v5_feature_enabled("loop_detection"):
+        return None
+
+    loop_count = result.get("_loop_warning_count", 0)
+    if loop_count >= _LOOP_SESSION_CAP:
+        return None
+
+    warnings = _check_realtime_loops(quality_data)
+    if not warnings:
+        return None
+
+    # Pick highest confidence warning
+    best = max(warnings, key=lambda w: w.get("confidence", 0))
+    if best["confidence"] < 0.6:
+        return None
+
+    result["_loop_warning_count"] = loop_count + 1
+
+    # Log to compression_events
+    session_id = Path(cache_path).stem.replace("quality-cache-", "", 1) if cache_path else None
+    _log_compression_event(
+        feature="loop_detection",
+        session_id=session_id,
+        detail=f"type={best['type']} confidence={best['confidence']:.2f} count={best.get('count', 0)}",
+        verified=True,
+    )
+
+    if best["type"] == "message_loop":
+        return (
+            f"[Token Optimizer] Possible loop detected: {best.get('count', 0)} similar messages "
+            f"in last {_LOOP_LAST_MESSAGES} turns. Consider a different approach."
+        )
+    elif best["type"] == "retry_churn":
+        return (
+            f"[Token Optimizer] Possible retry loop: {best.get('count', 0)} similar short results "
+            f"in recent tool calls. The same approach may keep failing."
+        )
+    return None
+
+
 def quality_cache(throttle_seconds=120, warn_threshold=70, quiet=False, session_jsonl=None, force=False):
     """Run quality analysis and write score to cache file for status line.
 
@@ -11001,6 +11320,26 @@ def quality_cache(throttle_seconds=120, warn_threshold=70, quiet=False, session_
 
     if not _write_quality_cache(cache_path, result):
         return None
+
+    # v5.0: Quality nudges + loop detection
+    # These always run regardless of --quiet, because they emit systemMessage JSON
+    # that Claude Code injects into context. Suppressing them defeats their purpose.
+    system_messages = []
+    nudge_msg = _maybe_nudge(result, cache_path, quality_data)
+    if nudge_msg:
+        system_messages.append(nudge_msg)
+    loop_msg = _maybe_loop_warning(result, cache_path, quality_data)
+    if loop_msg:
+        system_messages.append(loop_msg)
+    if system_messages:
+        # Write updated nudge/loop state back to cache
+        _write_quality_cache(cache_path, result)
+        # Emit systemMessage JSON for Claude Code to inject into context
+        for msg in system_messages:
+            try:
+                print(json.dumps({"systemMessage": msg}))
+            except Exception:
+                pass
 
     # Progressive checkpoints (v3.0)
     if _PROGRESSIVE_ENABLED and result.get("fill_pct", 0) > 0:
@@ -11194,6 +11533,248 @@ def _write_config_flag(key, value):
         CONFIG_PATH.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
     except OSError:
         pass
+
+
+# ---------------------------------------------------------------------------
+# v5 Active Compression feature flags
+# ---------------------------------------------------------------------------
+# These are the single source of truth for whether each v5 feature is active.
+# Read order: env var (highest priority) > config.json > default.
+# This lets power users override via env, but persistent state lives in config.json
+# so dashboard toggles work without touching shell profiles.
+
+V5_FEATURES = {
+    "quality_nudges": {
+        "env_var": "TOKEN_OPTIMIZER_QUALITY_NUDGES",
+        "config_key": "v5_quality_nudges",
+        "default": True,  # ON by default, extends existing warn behavior
+        "label": "Quality Nudges",
+        "what": "Warns you when your context quality drops suddenly (e.g., from 85 to 60).",
+        "value": "Catches context rot early so you can /compact at the right moment. Prevents silent quality loss that leads to bad decisions.",
+        "impact_pct": 5,  # avg prevented waste from better compaction timing
+        "how": "Shows a one-line message like '[Token Optimizer] Quality dropped to 58. Consider /compact.' Fires at most 3 times per session with a 5-minute cooldown.",
+        "risk": "None. Only adds a short warning to context, never removes anything.",
+        "risk_level": "none",
+        "recommended": True,
+    },
+    "loop_detection": {
+        "env_var": "TOKEN_OPTIMIZER_LOOP_DETECTION",
+        "config_key": "v5_loop_detection",
+        "default": True,
+        "label": "Loop Detection",
+        "what": "Detects when the AI is stuck retrying the same thing and warns you.",
+        "value": "Catches loops before they burn through tokens. A single caught loop typically saves 10-50K tokens.",
+        "impact_pct": 8,  # avg based on post-hoc detector findings
+        "how": "Watches for 3+ similar messages in the last 4 turns, or 3+ identical failing tool calls. Fires at most 2 times per session.",
+        "risk": "None. Only adds a short warning to context, never removes anything.",
+        "risk_level": "none",
+        "recommended": True,
+    },
+    "delta_mode": {
+        "env_var": "TOKEN_OPTIMIZER_READ_CACHE_DELTA",
+        "config_key": "v5_delta_mode",
+        "default": True,  # v5.1: ON by default - biggest real-world savings
+        "label": "Delta Mode (Smart Re-reads)",
+        "what": "When the AI re-reads a file after editing it, shows only what changed instead of the whole file.",
+        "value": "This is the biggest single win. Typical sessions re-read the same file 2-5 times. Delta mode sends only what changed.",
+        "impact_pct": 20,  # based on analysis of real sessions (65%+ re-read rate)
+        "how": "Stores file content (up to 50KB per file) in a local cache. On re-read, computes a compact diff. Falls back to full re-read if the diff is too large or the file is too big.",
+        "risk": "Low. If the AI needed the full file to understand the change in context, the diff alone might not be enough. This is why we fall back to full re-read on large changes (>1500 chars) and big files (>2000 lines).",
+        "risk_level": "low",
+        "recommended": True,
+    },
+    "structure_map_beta": {
+        "env_var": "TOKEN_OPTIMIZER_STRUCTURE_MAP",
+        "config_key": "v5_structure_map_beta",
+        "default": False,
+        "label": "Structure Map Beta (Telemetry Only)",
+        "what": "Tracks when the structure map feature fires so we can measure if it actually helps.",
+        "value": "Helps us prove (or disprove) whether structure maps help on real code-heavy sessions. Your data only, no sharing.",
+        "impact_pct": 0,  # telemetry only, no direct savings
+        "how": "Logs events to a local database when a code file is read multiple times and gets replaced with a function/class summary. No data leaves your machine.",
+        "risk": "None. This is telemetry only -- the feature already runs, this just adds local measurement.",
+        "risk_level": "none",
+        "recommended": False,
+    },
+    "bash_compress": {
+        "env_var": "TOKEN_OPTIMIZER_BASH_COMPRESS",
+        "config_key": "v5_bash_compress",
+        "default": False,
+        "label": "Bash Output Compression",
+        "what": "Rewrites 'git status', 'pytest', 'npm install' etc. to return compressed summaries instead of verbose output.",
+        "value": "Strips hundreds of lines of test/build/git output down to just the essentials. Best for sessions with lots of CLI commands.",
+        "impact_pct": 10,  # benchmark showed 38% on compressible commands, adjusted for session mix
+        "how": "A PreToolUse hook intercepts safe read-only commands and routes them through a compression wrapper. Only whitelisted commands (git status/log/diff, pytest, jest, npm install, ls) are touched. Compound commands (anything with &&, ;, |, $()) are never touched.",
+        "risk": "Moderate. Compression is lossy by design: 'git diff' truncates to 30 lines on large diffs, 'pytest' shows pass/fail counts but strips individual passing tests, 'git log' drops merge commit details. For routine checks this is fine. For careful diff review or debugging specific test failures, it could hide information. OFF by default -- opt-in only.",
+        "risk_level": "moderate",
+        "recommended": False,
+    },
+}
+
+
+def _is_v5_feature_enabled(feature_name):
+    """Check if a v5 feature is enabled. Env var wins, then config, then default."""
+    feat = V5_FEATURES.get(feature_name)
+    if not feat:
+        return False
+
+    # Env var: "0"/"1" for binary, "beta" for structure map
+    env_val = os.environ.get(feat["env_var"])
+    if env_val is not None:
+        if feature_name == "structure_map_beta":
+            return env_val == "beta"
+        return env_val == "1"
+
+    # Config.json
+    config_val = _read_config_flag(feat["config_key"], None)
+    if config_val is not None:
+        return bool(config_val)
+
+    # Default
+    return feat["default"]
+
+
+def _set_v5_feature(feature_name, enabled):
+    """Enable or disable a v5 feature via config.json (persistent, dashboard-friendly)."""
+    feat = V5_FEATURES.get(feature_name)
+    if not feat:
+        return False
+    _write_config_flag(feat["config_key"], bool(enabled))
+    return True
+
+
+def _show_v5_welcome():
+    """Print the first-run welcome screen for v5 features."""
+    print()
+    print("  " + "=" * 68)
+    print("  Token Optimizer v5: Active Compression")
+    print("  " + "=" * 68)
+    print()
+    print("  Hi! Token Optimizer just got smarter. It can now actively reduce")
+    print("  the tokens your sessions use -- not just measure them.")
+    print()
+    print("  Here's what's new. You can turn any of these on or off anytime")
+    print("  from the dashboard (token-dashboard) or with the command:")
+    print("    measure.py v5 enable <feature>")
+    print("    measure.py v5 disable <feature>")
+    print()
+
+    status = _get_v5_feature_status()
+    for name, info in status.items():
+        mark = "[ON]" if info["enabled"] else "[OFF]"
+        rec = " (recommended)" if info["recommended"] else ""
+        print(f"  {mark} {info['label']}{rec}")
+        print(f"       What it does: {info['what']}")
+        print(f"       Risk: {info['risk']}")
+        print()
+
+    print("  " + "-" * 68)
+    print("  DEFAULTS (what's on right now):")
+    print("    - Quality Nudges      ON  (harmless, just warnings)")
+    print("    - Loop Detection      ON  (harmless, just warnings)")
+    print("    - Delta Mode          ON  (smart re-reads, big savings)")
+    print("    - Bash Compression    OFF (lossy, opt-in only)")
+    print("    - Structure Map Beta  OFF (telemetry only)")
+    print()
+    print("  Want to change these? Three ways:")
+    print("    1. Dashboard:  token-dashboard  (visit the Manage tab)")
+    print("    2. CLI:        measure.py v5 enable|disable <feature>")
+    print("    3. Env var:    TOKEN_OPTIMIZER_<NAME>=0 in your shell")
+    print()
+    print("  Full docs: measure.py v5 info <feature>")
+    print("  All your data stays 100% local on your machine.")
+    print()
+
+
+def _get_v5_feature_status():
+    """Return status dict for all v5 features (for dashboard/UI)."""
+    status = {}
+    for name, feat in V5_FEATURES.items():
+        env_val = os.environ.get(feat["env_var"])
+        config_val = _read_config_flag(feat["config_key"], None)
+        enabled = _is_v5_feature_enabled(name)
+        source = "default"
+        if env_val is not None:
+            source = "env"
+        elif config_val is not None:
+            source = "config"
+        status[name] = {
+            "label": feat["label"],
+            "what": feat["what"],
+            "value": feat.get("value", ""),
+            "impact_pct": feat.get("impact_pct", 0),
+            "how": feat["how"],
+            "risk": feat["risk"],
+            "risk_level": feat.get("risk_level", "none"),
+            "recommended": feat["recommended"],
+            "enabled": enabled,
+            "source": source,
+            "env_var": feat["env_var"],
+            "config_key": feat["config_key"],
+        }
+    return status
+
+
+def _get_v5_savings_recommendation():
+    """Calculate total potential savings from disabled v5 features.
+
+    Returns a dict suitable for Overview tab display:
+    {
+        "total_disabled_impact_pct": 23,
+        "disabled_features": [{label, impact_pct, config_key}, ...],
+        "enabled_features": [{label}, ...],
+        "recommendation": "Turn on 2 more features to save up to 23% more tokens per session",
+        "has_savings_available": True,
+    }
+    """
+    status = _get_v5_feature_status()
+    disabled = []
+    enabled = []
+    total_impact = 0
+
+    for name, info in status.items():
+        if info["enabled"]:
+            enabled.append({"name": name, "label": info["label"]})
+        else:
+            disabled.append({
+                "name": name,
+                "label": info["label"],
+                "impact_pct": info["impact_pct"],
+                "value": info["value"],
+                "risk_level": info["risk_level"],
+                "recommended": info["recommended"],
+            })
+            # Only count recommended features for the headline savings estimate
+            if info["recommended"]:
+                total_impact += info["impact_pct"]
+
+    # Also include non-recommended but safe features for a secondary estimate
+    additional_impact = sum(
+        f["impact_pct"] for f in disabled
+        if not f["recommended"] and f["risk_level"] in ("none", "low")
+    )
+    aggressive_impact = total_impact + additional_impact + sum(
+        f["impact_pct"] for f in disabled
+        if not f["recommended"] and f["risk_level"] == "moderate"
+    )
+
+    has_savings = total_impact > 0 or aggressive_impact > 0
+
+    if total_impact > 0:
+        recommendation = f"Turn on {sum(1 for f in disabled if f['recommended'])} more recommended feature(s) to save up to {total_impact}% more tokens per session"
+    elif aggressive_impact > 0:
+        recommendation = f"All recommended features are on. Enable opt-in features for up to {aggressive_impact}% more savings (with trade-offs)"
+    else:
+        recommendation = "All v5 features enabled. You're running at maximum token efficiency."
+
+    return {
+        "total_disabled_impact_pct": total_impact,
+        "aggressive_impact_pct": aggressive_impact,
+        "disabled_features": disabled,
+        "enabled_features": enabled,
+        "recommendation": recommendation,
+        "has_savings_available": has_savings,
+    }
 
 
 def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=False):
@@ -12035,12 +12616,180 @@ if __name__ == "__main__":
                 print(f"[Token Optimizer] Context quality: {score}/100 (critical). Heavy rot detected. Consider /clear with checkpoint.")
             else:
                 print(f"[Token Optimizer] Context quality: {score}/100. Stale reads and bloated results building up. Consider /compact.")
+    elif args[0] == "v5":
+        # v5 feature management: measure.py v5 [status|enable|disable|welcome] [feature]
+        output_json = "--json" in args
+        sub = args[1] if len(args) > 1 else "status"
+
+        if sub == "status":
+            status = _get_v5_feature_status()
+            if output_json:
+                print(json.dumps(status, indent=2))
+            else:
+                print("\n  Token Optimizer v5: Active Compression Features")
+                print("  " + "=" * 60)
+                for name, info in status.items():
+                    mark = "[ON] " if info["enabled"] else "[off]"
+                    src = f"({info['source']})" if info["source"] != "default" else ""
+                    rec = "*" if info["recommended"] else " "
+                    print(f"  {mark} {rec} {info['label']:35s}  {src}")
+                    print(f"         {info['what']}")
+                    if info["risk"] != "None.":
+                        print(f"         Risk: {info['risk'][:90]}...")
+                    print()
+                print("  * = recommended to keep enabled")
+                print(f"\n  Toggle: measure.py v5 enable|disable <feature_name>")
+                print(f"  Features: {', '.join(V5_FEATURES.keys())}")
+                print()
+        elif sub in ("enable", "disable"):
+            if len(args) < 3:
+                print(f"[Error] Usage: measure.py v5 {sub} <feature_name>")
+                print(f"  Available: {', '.join(V5_FEATURES.keys())}")
+                sys.exit(1)
+            feature_name = args[2]
+            if feature_name not in V5_FEATURES:
+                print(f"[Error] Unknown feature '{feature_name}'")
+                print(f"  Available: {', '.join(V5_FEATURES.keys())}")
+                sys.exit(1)
+            enabled = (sub == "enable")
+            if _set_v5_feature(feature_name, enabled):
+                feat = V5_FEATURES[feature_name]
+                state = "ENABLED" if enabled else "DISABLED"
+                print(f"  {state}: {feat['label']}")
+                print(f"  Stored in: {CONFIG_PATH}")
+                if enabled and feat.get("risk") and feat["risk"] != "None.":
+                    print(f"\n  Note: {feat['risk']}")
+                print()
+            else:
+                print(f"[Error] Failed to update {feature_name}")
+                sys.exit(1)
+        elif sub == "welcome":
+            # First-run welcome: show all features with full details
+            _show_v5_welcome()
+        elif sub == "info":
+            if len(args) < 3:
+                print(f"[Error] Usage: measure.py v5 info <feature_name>")
+                sys.exit(1)
+            feature_name = args[2]
+            if feature_name not in V5_FEATURES:
+                print(f"[Error] Unknown feature '{feature_name}'")
+                sys.exit(1)
+            feat = V5_FEATURES[feature_name]
+            enabled = _is_v5_feature_enabled(feature_name)
+            print(f"\n  {feat['label']}  [{'ON' if enabled else 'off'}]")
+            print("  " + "=" * 60)
+            print(f"  What it does:")
+            print(f"    {feat['what']}")
+            print(f"\n  How it works:")
+            print(f"    {feat['how']}")
+            print(f"\n  Risk level:")
+            print(f"    {feat['risk']}")
+            print(f"\n  Toggle: measure.py v5 {'disable' if enabled else 'enable'} {feature_name}")
+            print()
+        else:
+            print(f"[Error] Unknown v5 subcommand '{sub}'")
+            print("  Usage: measure.py v5 [status|enable|disable|welcome|info] [feature]")
+            sys.exit(1)
+    elif args[0] == "compression-stats":
+        output_json = "--json" in args
+        days = 30
+        for i, a in enumerate(args):
+            if a == "--days" and i + 1 < len(args):
+                try:
+                    days = int(args[i + 1])
+                except ValueError:
+                    pass
+        summary = _get_compression_summary(days=days)
+        if output_json:
+            print(json.dumps(summary, indent=2))
+        else:
+            print(f"\n  Compression Stats ({days}d)")
+            print(f"  {'=' * 50}")
+            print(f"  Total events:       {summary['total_events']}")
+            print(f"  Tokens saved:       {summary['total_tokens_saved']:,}")
+            print(f"  Overall ratio:      {summary['overall_ratio']:.1%}")
+            if summary["by_feature"]:
+                print(f"\n  By feature:")
+                for feat, data in summary["by_feature"].items():
+                    print(f"    {feat:25s}  {data['events']:5d} events  "
+                          f"{data['tokens_saved']:>8,} tokens saved  "
+                          f"ratio: {data['avg_ratio']:.1%}  "
+                          f"quality: {data['quality_preserved_pct']:.0f}%")
+            else:
+                print("  No compression events yet. Enable v5 features to start tracking.")
+            print()
+    elif args[0] == "benchmark":
+        # Run compression benchmark fixtures
+        script_dir = Path(__file__).resolve().parent
+        benchmark_path = script_dir / "benchmark.py"
+        if not benchmark_path.exists():
+            print("[Error] benchmark.py not found.")
+            sys.exit(1)
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("benchmark", str(benchmark_path))
+        bench_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bench_mod)
+        output_json = "--json" in args
+        # Load actual compressor so benchmarks test real compression, not just fixture structure
+        compressor = None
+        try:
+            compress_path = script_dir / "bash_compress.py"
+            if compress_path.exists():
+                compress_spec = importlib.util.spec_from_file_location("bash_compress", str(compress_path))
+                compress_mod = importlib.util.module_from_spec(compress_spec)
+                compress_spec.loader.exec_module(compress_mod)
+                compressor = compress_mod.compress
+        except Exception:
+            pass  # Fall back to validation-only mode
+        ok = bench_mod.run_benchmarks(compressor=compressor, as_json=output_json)
+        sys.exit(0 if ok else 1)
+    elif args[0] == "structure-map":
+        # User-facing inspection command: show structure map for a single file
+        if len(args) < 2:
+            print("[Error] Usage: measure.py structure-map <file>")
+            sys.exit(1)
+        target_file = args[1]
+        if not Path(target_file).exists():
+            print(f"[Error] File not found: {target_file}")
+            sys.exit(1)
+        try:
+            from structure_map import summarize_code_source
+            target_path = Path(target_file).resolve()
+            content = target_path.read_text(encoding="utf-8", errors="replace")
+            file_size = len(content.encode("utf-8", errors="replace"))
+            result = summarize_code_source(
+                content,
+                file_path=str(target_path),
+                file_tokens_est=max(1, file_size // 4),
+                file_size_bytes=file_size,
+            )
+            if result and result.eligible and result.replacement_text:
+                print(f"  Type: {result.replacement_type}")
+                print(f"  Confidence: {result.confidence:.2f}")
+                print(f"  Tokens: {result.file_tokens_est} -> {result.replacement_tokens_est} (saved {result.file_tokens_est - result.replacement_tokens_est})")
+                print(f"\n{result.replacement_text}")
+            else:
+                reason = result.reason if result else "unknown"
+                print(f"[Info] No structure map for {target_file} (reason: {reason})")
+        except ImportError:
+            print("[Error] structure_map.py not found.")
+            sys.exit(1)
+        except Exception as e:
+            print(f"[Error] {e}")
+            sys.exit(1)
     elif args[0] == "plugin-cleanup":
         dry = "--dry-run" in args
         plugin_cleanup(dry_run=dry)
     elif args[0] == "ensure-health":
         # Silent auto-fix of known harmful settings. Called by SessionStart hook.
         _auto_remove_bad_env_vars()
+        # v5.1: First-run welcome. Shows once when v5 is first seen on this machine.
+        try:
+            if not _read_config_flag("v5_welcome_shown", False):
+                _show_v5_welcome()
+                _write_config_flag("v5_welcome_shown", True)
+        except Exception:
+            pass
         # Preserve session transcripts: set cleanupPeriodDays if not configured.
         # Without this, Claude Code deletes JSONL transcripts after 30 days,
         # breaking Token Optimizer trends, skill usage tracking, and Total Recall

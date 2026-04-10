@@ -45,6 +45,8 @@ Usage:
     python3 measure.py attention-optimize --apply     # Apply reordering (backup + write)
     python3 measure.py plugin-cleanup                   # Detect duplicates + archive local/plugin overlaps
     python3 measure.py plugin-cleanup --dry-run         # Preview what would change
+    python3 measure.py cleanup-duplicate-hooks          # Remove settings.json hooks the plugin already provides
+    python3 measure.py cleanup-duplicate-hooks --dry-run # Preview what would be removed
     python3 measure.py archive-result                  # PostToolUse hook: archive large tool results
     python3 measure.py expand TOOL_USE_ID              # Retrieve archived tool result
     python3 measure.py expand --list                   # List all archived results
@@ -7182,6 +7184,139 @@ def _hook_command_identity(cmd):
         return script_name
 
 
+def _cleanup_duplicate_plugin_hooks_from_settings(dry_run=False):
+    """Remove token-optimizer hook commands from settings.json that the plugin
+    already provides via its hooks.json.
+
+    Context: users who installed via install.sh before the marketplace plugin
+    existed (or alongside it) have settings.json entries AND plugin hooks.json
+    entries for the same commands. Claude Code merges both, so every hook fires
+    twice per event — wasted CPU, racy SQLite writes, undercounted savings.
+
+    This is the inverse of setup_all_hooks: when the plugin is installed, we
+    remove the duplicates from settings.json so the plugin's copy is the single
+    source of truth.
+
+    Safety:
+    - Only runs when _is_plugin_installed() is True (refuses otherwise).
+    - Only removes hooks whose (event, matcher, identity) tuple EXACTLY matches
+      an entry in plugin hooks.json. User-custom or third-party hooks are
+      preserved untouched.
+    - Identity is computed via _hook_command_identity() which normalizes
+      cosmetic flags (--quiet/--warn) so 'quality-cache --warn --quiet' and
+      'quality-cache --quiet' dedup to the same identity.
+    - Atomic: uses _write_settings_atomic with file lock.
+    - Idempotent: returns {"removed": 0} when there are no duplicates to remove.
+    - Preserves all hook fields and ordering for kept entries.
+
+    Returns: {"removed": N, "reason": str, "dry_run": bool}
+    """
+    if not _is_plugin_installed():
+        return {"removed": 0, "reason": "plugin_not_installed", "dry_run": dry_run}
+
+    hooks_json_path = _find_plugin_hooks_json()
+    if not hooks_json_path:
+        return {"removed": 0, "reason": "plugin_hooks_json_not_found", "dry_run": dry_run}
+
+    try:
+        plugin_hooks = json.loads(hooks_json_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        return {"removed": 0, "reason": f"plugin_hooks_json_read_error: {e}", "dry_run": dry_run}
+
+    desired = plugin_hooks.get("hooks", {})
+    if not desired:
+        return {"removed": 0, "reason": "plugin_hooks_empty", "dry_run": dry_run}
+
+    # Build the set of (event, matcher, identity) tuples that the plugin provides.
+    # Any settings.json hook matching one of these is a duplicate we can remove.
+    plugin_identities = set()
+    for event, handler_groups in desired.items():
+        if not isinstance(handler_groups, list):
+            continue
+        for group in handler_groups:
+            if not isinstance(group, dict):
+                continue
+            matcher = group.get("matcher", "")
+            for h in group.get("hooks", []):
+                if not isinstance(h, dict):
+                    continue
+                ident = _hook_command_identity(h.get("command", ""))
+                if ident:
+                    plugin_identities.add((event, matcher, ident))
+
+    if not plugin_identities:
+        return {"removed": 0, "reason": "no_plugin_identities", "dry_run": dry_run}
+
+    # Read current settings.
+    current, _ = _read_settings_json()
+    current_hooks = current.get("hooks") if current else None
+    if not current_hooks:
+        return {"removed": 0, "reason": "no_settings_hooks", "dry_run": dry_run}
+
+    # ADV-006-style safety: if settings.json exists non-empty but parsed empty,
+    # refuse to touch it — concurrent write may have corrupted it.
+    if not current:
+        try:
+            if SETTINGS_PATH.exists() and SETTINGS_PATH.stat().st_size > 0:
+                return {"removed": 0, "reason": "settings_corrupted", "dry_run": dry_run}
+        except OSError:
+            pass
+
+    # Walk each event and drop hooks whose identity matches the plugin.
+    # Preserve all other hooks (including non-token-optimizer ones) untouched.
+    removed = 0
+    new_hooks = {}
+    for event, handler_groups in current_hooks.items():
+        if not isinstance(handler_groups, list):
+            # Unknown shape — preserve as-is, don't touch it.
+            new_hooks[event] = handler_groups
+            continue
+        new_groups = []
+        for group in handler_groups:
+            if not isinstance(group, dict):
+                new_groups.append(group)
+                continue
+            matcher = group.get("matcher", "")
+            original_hook_list = group.get("hooks", [])
+            if not isinstance(original_hook_list, list):
+                new_groups.append(group)
+                continue
+            kept_hooks = []
+            for h in original_hook_list:
+                if not isinstance(h, dict):
+                    kept_hooks.append(h)
+                    continue
+                ident = _hook_command_identity(h.get("command", ""))
+                if ident and (event, matcher, ident) in plugin_identities:
+                    removed += 1
+                    continue
+                kept_hooks.append(h)
+            # Only keep the group if it still has hooks; an empty "hooks" array
+            # is legal but pointless, so drop the whole group in that case.
+            if kept_hooks:
+                new_group = dict(group)
+                new_group["hooks"] = kept_hooks
+                new_groups.append(new_group)
+        if new_groups:
+            new_hooks[event] = new_groups
+        # If every group in this event was removed, drop the event key too.
+
+    if removed == 0:
+        return {"removed": 0, "reason": "no_duplicates_found", "dry_run": dry_run}
+
+    if dry_run:
+        return {"removed": removed, "reason": "dry_run", "dry_run": True}
+
+    new_settings = dict(current)
+    new_settings["hooks"] = new_hooks
+    try:
+        _write_settings_atomic(new_settings)
+    except (PermissionError, OSError) as e:
+        return {"removed": 0, "reason": f"write_failed: {e}", "dry_run": False}
+
+    return {"removed": removed, "reason": "success", "dry_run": False}
+
+
 def setup_all_hooks(dry_run=False, verbose=False):
     """Merge the plugin's hooks.json into the user's settings.json.
 
@@ -12685,6 +12820,35 @@ if __name__ == "__main__":
             else:
                 print(f"  [setup-all-hooks] Added {added} hook(s), skipped {skipped}. (plugin root: {root})")
                 print(f"  Restart Claude Code to activate the new hooks.")
+    elif args[0] == "cleanup-duplicate-hooks":
+        # v5.0.2: Remove token-optimizer hooks from settings.json that the
+        # installed plugin already provides. Safe to run anytime; idempotent.
+        dry = "--dry-run" in args
+        output_json = "--json" in args
+        result = _cleanup_duplicate_plugin_hooks_from_settings(dry_run=dry)
+        if output_json:
+            print(json.dumps(result, indent=2))
+        else:
+            removed = result.get("removed", 0)
+            reason = result.get("reason", "")
+            if reason == "plugin_not_installed":
+                print("  [cleanup-duplicate-hooks] Plugin is not installed — nothing to clean up.")
+                print("  (This command only applies when the marketplace plugin is active.)")
+            elif reason == "plugin_hooks_json_not_found":
+                print("  [cleanup-duplicate-hooks] Plugin hooks.json not found. Cannot determine duplicates.")
+                sys.exit(1)
+            elif reason == "no_duplicates_found":
+                print("  [cleanup-duplicate-hooks] settings.json has no token-optimizer duplicates. All clean.")
+            elif dry:
+                print(f"  [Dry-run] Would remove {removed} duplicate hook(s) from settings.json.")
+                print("  Run without --dry-run to apply.")
+            elif reason == "success":
+                print(f"  [cleanup-duplicate-hooks] Removed {removed} duplicate hook(s) from settings.json.")
+                print("  Plugin hooks.json remains the single source of truth. Restart Claude Code to fully apply.")
+            else:
+                print(f"  [cleanup-duplicate-hooks] {reason}")
+                if "fail" in reason or "error" in reason:
+                    sys.exit(1)
     elif args[0] == "setup-daemon":
         dry = "--dry-run" in args
         uninstall = "--uninstall" in args
@@ -13075,24 +13239,41 @@ if __name__ == "__main__":
     elif args[0] == "ensure-health":
         # Silent auto-fix of known harmful settings. Called by SessionStart hook.
         _auto_remove_bad_env_vars()
-        # v5.0.1: Self-heal missing hooks. Script installs and older setups may be
-        # missing the v5 hooks. This merges hooks.json into settings.json idempotently.
-        # Throttled: only runs if the last check was more than 24h ago, to avoid
-        # hitting settings.json on every session start.
-        # Note: setup_all_hooks updates last_hook_heal_check on successful write,
-        # so we don't need to do it here ourselves.
+        # v5.0.2: Self-heal hooks with correct semantics for each install mode.
+        # Plugin users get hooks auto-loaded from plugin hooks.json by Claude Code,
+        # so settings.json copies are pure duplicates that cause every hook to fire
+        # twice (wasted CPU, racy SQLite writes, undercounted savings). For plugin
+        # users, the auto-heal INVERTS: instead of adding hooks, it removes the
+        # duplicates. Script-install users (no plugin) still get the original
+        # add-missing-hooks behavior.
+        #
+        # Throttled to once per 24h to keep SessionStart fast. Both paths update
+        # last_hook_heal_check on success so the throttle works the same way.
         try:
             last_check = _read_config_flag("last_hook_heal_check", 0)
             now = int(time.time())
             if now - int(last_check or 0) > 86400:  # 24h
-                heal_result = setup_all_hooks(dry_run=False, verbose=False)
-                added = heal_result.get("added", 0)
-                if added > 0:
-                    print(f"  [Token Optimizer] Self-healed {added} missing hook(s) in settings.json. Restart Claude Code to activate.")
-                elif added == 0 and not heal_result.get("error"):
-                    # Still update the timestamp even if nothing was added, so we
-                    # don't keep scanning hooks.json every session for 24h.
+                if _is_plugin_installed():
+                    # Plugin mode: remove duplicates the plugin already provides.
+                    cleanup_result = _cleanup_duplicate_plugin_hooks_from_settings(dry_run=False)
+                    removed = cleanup_result.get("removed", 0)
+                    if removed > 0:
+                        print(f"  [Token Optimizer] Removed {removed} duplicate hook(s) from settings.json (plugin already provides them). Restart Claude Code to fully apply.")
+                    # Update timestamp whether or not anything was removed, so we
+                    # don't re-scan on every SessionStart for the next 24h.
                     _write_config_flag("last_hook_heal_check", now)
+                else:
+                    # Script-install mode: add any missing hooks from the repo's
+                    # hooks.json. Upgrades from v4.x pick up v5 hooks here.
+                    heal_result = setup_all_hooks(dry_run=False, verbose=False)
+                    added = heal_result.get("added", 0)
+                    if added > 0:
+                        print(f"  [Token Optimizer] Self-healed {added} missing hook(s) in settings.json. Restart Claude Code to activate.")
+                    elif added == 0 and not heal_result.get("error"):
+                        # setup_all_hooks only updates the timestamp when it
+                        # actually wrote hooks. Update it here on the no-op path
+                        # so we don't re-scan every session for 24h.
+                        _write_config_flag("last_hook_heal_check", now)
         except Exception:
             pass
         # v5.1: First-run welcome. Shows once when v5 is first seen on this machine.

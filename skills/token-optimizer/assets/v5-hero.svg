@@ -1,0 +1,201 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 500" width="800" height="500">
+  <!--
+    Token Optimizer v5: Active Compression hero.
+    Shows all 5 features with their defaults, impact, and what they do.
+    12s loop. Catppuccin Mocha palette. Pure SMIL animations.
+  -->
+
+  <!-- Background -->
+  <rect width="800" height="500" rx="12" fill="#1e1e2e"/>
+
+  <!-- Grid overlay -->
+  <defs>
+    <pattern id="grid-v5" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#313244" stroke-width="0.5" opacity="0.3"/>
+    </pattern>
+  </defs>
+  <rect width="800" height="500" fill="url(#grid-v5)"/>
+
+  <!-- Title -->
+  <text x="400" y="42" fill="#cdd6f4" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="22" font-weight="bold" text-anchor="middle">v5: Active Compression</text>
+  <text x="400" y="66" fill="#a6adc8" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="middle">Stops measuring waste. Starts fixing it. All local. All optional.</text>
+
+  <!-- 5 feature cards in a grid -->
+  <!-- Row 1: Quality Nudges, Loop Detection -->
+  <!-- Row 2: Delta Mode (hero, wider), Local Measurement -->
+  <!-- Row 3: Bash Compression -->
+
+  <!-- Feature 1: Quality Nudges -->
+  <g transform="translate(30, 92)">
+    <rect width="240" height="110" rx="8" fill="#313244" stroke="#a6e3a1" stroke-width="2" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;1;1;1;1;1;1" keyTimes="0;0.05;0.12;0.20;0.30;0.50;0.70;0.85;0.95;1" dur="12s" repeatCount="indefinite"/>
+    </rect>
+    <text x="16" y="28" fill="#a6e3a1" font-family="'SF Mono','Fira Code',monospace" font-size="13" font-weight="bold" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;1;1;1;1;1" keyTimes="0;0.07;0.14;0.20;0.30;0.50;0.85;0.95;1" dur="12s" repeatCount="indefinite"/>
+      Quality Nudges
+    </text>
+    <text x="220" y="28" fill="#a6e3a1" font-family="'SF Mono','Fira Code',monospace" font-size="11" font-weight="bold" text-anchor="end" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;1;1;1;1;1" keyTimes="0;0.07;0.14;0.20;0.30;0.50;0.85;0.95;1" dur="12s" repeatCount="indefinite"/>
+      ON
+    </text>
+    <text x="16" y="50" fill="#cdd6f4" font-family="'SF Mono','Fira Code',monospace" font-size="11" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;1;1;1;1;1" keyTimes="0;0.07;0.14;0.20;0.30;0.50;0.85;0.95;1" dur="12s" repeatCount="indefinite"/>
+      Warns when context quality
+    </text>
+    <text x="16" y="66" fill="#cdd6f4" font-family="'SF Mono','Fira Code',monospace" font-size="11" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;1;1;1;1;1" keyTimes="0;0.07;0.14;0.20;0.30;0.50;0.85;0.95;1" dur="12s" repeatCount="indefinite"/>
+      drops suddenly.
+    </text>
+    <text x="16" y="92" fill="#f9e2af" font-family="'SF Mono','Fira Code',monospace" font-size="13" font-weight="bold" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;1;1;1;1;1" keyTimes="0;0.07;0.14;0.20;0.30;0.50;0.85;0.95;1" dur="12s" repeatCount="indefinite"/>
+      +5% saved
+    </text>
+    <text x="220" y="92" fill="#a6adc8" font-family="'SF Mono','Fira Code',monospace" font-size="10" text-anchor="end" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;1;1;1;1;1" keyTimes="0;0.07;0.14;0.20;0.30;0.50;0.85;0.95;1" dur="12s" repeatCount="indefinite"/>
+      no risk
+    </text>
+  </g>
+
+  <!-- Feature 2: Loop Detection -->
+  <g transform="translate(280, 92)">
+    <rect width="240" height="110" rx="8" fill="#313244" stroke="#a6e3a1" stroke-width="2" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;1;1;1" keyTimes="0;0.08;0.15;0.30;0.85;0.95;1" dur="12s" repeatCount="indefinite"/>
+    </rect>
+    <text x="16" y="28" fill="#a6e3a1" font-family="'SF Mono','Fira Code',monospace" font-size="13" font-weight="bold" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;1;1;1" keyTimes="0;0.10;0.17;0.30;0.85;0.95;1" dur="12s" repeatCount="indefinite"/>
+      Loop Detection
+    </text>
+    <text x="220" y="28" fill="#a6e3a1" font-family="'SF Mono','Fira Code',monospace" font-size="11" font-weight="bold" text-anchor="end" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;1;1;1" keyTimes="0;0.10;0.17;0.30;0.85;0.95;1" dur="12s" repeatCount="indefinite"/>
+      ON
+    </text>
+    <text x="16" y="50" fill="#cdd6f4" font-family="'SF Mono','Fira Code',monospace" font-size="11" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;1;1;1" keyTimes="0;0.10;0.17;0.30;0.85;0.95;1" dur="12s" repeatCount="indefinite"/>
+      Catches AI loops before
+    </text>
+    <text x="16" y="66" fill="#cdd6f4" font-family="'SF Mono','Fira Code',monospace" font-size="11" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;1;1;1" keyTimes="0;0.10;0.17;0.30;0.85;0.95;1" dur="12s" repeatCount="indefinite"/>
+      they burn tokens.
+    </text>
+    <text x="16" y="92" fill="#f9e2af" font-family="'SF Mono','Fira Code',monospace" font-size="13" font-weight="bold" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;1;1;1" keyTimes="0;0.10;0.17;0.30;0.85;0.95;1" dur="12s" repeatCount="indefinite"/>
+      +8% saved
+    </text>
+    <text x="220" y="92" fill="#a6adc8" font-family="'SF Mono','Fira Code',monospace" font-size="10" text-anchor="end" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;1;1;1" keyTimes="0;0.10;0.17;0.30;0.85;0.95;1" dur="12s" repeatCount="indefinite"/>
+      no risk
+    </text>
+  </g>
+
+  <!-- Feature 3: Delta Mode (HERO - highlighted) -->
+  <g transform="translate(530, 92)">
+    <rect width="240" height="110" rx="8" fill="#313244" stroke="#89dceb" stroke-width="3" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;1;1;1" keyTimes="0;0.12;0.20;0.30;0.85;0.95;1" dur="12s" repeatCount="indefinite"/>
+    </rect>
+    <text x="16" y="28" fill="#89dceb" font-family="'SF Mono','Fira Code',monospace" font-size="13" font-weight="bold" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;1;1;1" keyTimes="0;0.14;0.22;0.30;0.85;0.95;1" dur="12s" repeatCount="indefinite"/>
+      Delta Mode
+    </text>
+    <text x="220" y="28" fill="#89dceb" font-family="'SF Mono','Fira Code',monospace" font-size="11" font-weight="bold" text-anchor="end" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;1;1;1" keyTimes="0;0.14;0.22;0.30;0.85;0.95;1" dur="12s" repeatCount="indefinite"/>
+      ON
+    </text>
+    <text x="16" y="50" fill="#cdd6f4" font-family="'SF Mono','Fira Code',monospace" font-size="11" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;1;1;1" keyTimes="0;0.14;0.22;0.30;0.85;0.95;1" dur="12s" repeatCount="indefinite"/>
+      File re-read after edit?
+    </text>
+    <text x="16" y="66" fill="#cdd6f4" font-family="'SF Mono','Fira Code',monospace" font-size="11" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;1;1;1" keyTimes="0;0.14;0.22;0.30;0.85;0.95;1" dur="12s" repeatCount="indefinite"/>
+      Send only the diff.
+    </text>
+    <text x="16" y="92" fill="#89dceb" font-family="'SF Mono','Fira Code',monospace" font-size="14" font-weight="bold" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;1;1;1" keyTimes="0;0.14;0.22;0.30;0.85;0.95;1" dur="12s" repeatCount="indefinite"/>
+      +20% saved
+    </text>
+    <text x="220" y="92" fill="#a6adc8" font-family="'SF Mono','Fira Code',monospace" font-size="10" text-anchor="end" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;1;1;1" keyTimes="0;0.14;0.22;0.30;0.85;0.95;1" dur="12s" repeatCount="indefinite"/>
+      low risk
+    </text>
+  </g>
+
+  <!-- Feature 4: Local Measurement (replaces "telemetry") -->
+  <g transform="translate(30, 218)">
+    <rect width="365" height="110" rx="8" fill="#313244" stroke="#585b70" stroke-width="2" stroke-dasharray="4,3" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;1;1;1" keyTimes="0;0.16;0.24;0.30;0.85;0.95;1" dur="12s" repeatCount="indefinite"/>
+    </rect>
+    <text x="16" y="28" fill="#cdd6f4" font-family="'SF Mono','Fira Code',monospace" font-size="13" font-weight="bold" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;1;1;1" keyTimes="0;0.18;0.26;0.30;0.85;0.95;1" dur="12s" repeatCount="indefinite"/>
+      Structure Map (Local Measurement)
+    </text>
+    <text x="345" y="28" fill="#a6adc8" font-family="'SF Mono','Fira Code',monospace" font-size="11" text-anchor="end" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;1;1;1" keyTimes="0;0.18;0.26;0.30;0.85;0.95;1" dur="12s" repeatCount="indefinite"/>
+      opt-in
+    </text>
+    <text x="16" y="50" fill="#cdd6f4" font-family="'SF Mono','Fira Code',monospace" font-size="11" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;1;1;1" keyTimes="0;0.18;0.26;0.30;0.85;0.95;1" dur="12s" repeatCount="indefinite"/>
+      Writes SQLite rows on YOUR machine so YOU can measure
+    </text>
+    <text x="16" y="66" fill="#cdd6f4" font-family="'SF Mono','Fira Code',monospace" font-size="11" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;1;1;1" keyTimes="0;0.18;0.26;0.30;0.85;0.95;1" dur="12s" repeatCount="indefinite"/>
+      if the feature is helping. Nothing sent anywhere. Ever.
+    </text>
+    <text x="16" y="92" fill="#a6e3a1" font-family="'SF Mono','Fira Code',monospace" font-size="11" font-weight="bold" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;1;1;1" keyTimes="0;0.18;0.26;0.30;0.85;0.95;1" dur="12s" repeatCount="indefinite"/>
+      [OK] 100% local &#183; zero network calls
+    </text>
+  </g>
+
+  <!-- Feature 5: Bash Compression -->
+  <g transform="translate(405, 218)">
+    <rect width="365" height="110" rx="8" fill="#313244" stroke="#f9e2af" stroke-width="2" stroke-dasharray="4,3" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;1;1;1" keyTimes="0;0.20;0.28;0.30;0.85;0.95;1" dur="12s" repeatCount="indefinite"/>
+    </rect>
+    <text x="16" y="28" fill="#f9e2af" font-family="'SF Mono','Fira Code',monospace" font-size="13" font-weight="bold" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;1;1;1" keyTimes="0;0.22;0.30;0.30;0.85;0.95;1" dur="12s" repeatCount="indefinite"/>
+      Bash Output Compression
+    </text>
+    <text x="345" y="28" fill="#f9e2af" font-family="'SF Mono','Fira Code',monospace" font-size="11" text-anchor="end" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;1;1;1" keyTimes="0;0.22;0.30;0.30;0.85;0.95;1" dur="12s" repeatCount="indefinite"/>
+      opt-in
+    </text>
+    <text x="16" y="50" fill="#cdd6f4" font-family="'SF Mono','Fira Code',monospace" font-size="11" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;1;1;1" keyTimes="0;0.22;0.30;0.30;0.85;0.95;1" dur="12s" repeatCount="indefinite"/>
+      git status, pytest, npm install: verbose output
+    </text>
+    <text x="16" y="66" fill="#cdd6f4" font-family="'SF Mono','Fira Code',monospace" font-size="11" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;1;1;1" keyTimes="0;0.22;0.30;0.30;0.85;0.95;1" dur="12s" repeatCount="indefinite"/>
+      becomes compact summaries. Credentials preserved.
+    </text>
+    <text x="16" y="92" fill="#f9e2af" font-family="'SF Mono','Fira Code',monospace" font-size="13" font-weight="bold" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;1;1;1" keyTimes="0;0.22;0.30;0.30;0.85;0.95;1" dur="12s" repeatCount="indefinite"/>
+      +10% saved
+    </text>
+    <text x="345" y="92" fill="#a6adc8" font-family="'SF Mono','Fira Code',monospace" font-size="10" text-anchor="end" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;1;1;1" keyTimes="0;0.22;0.30;0.30;0.85;0.95;1" dur="12s" repeatCount="indefinite"/>
+      moderate risk &#183; lossy
+    </text>
+  </g>
+
+  <!-- Bottom summary bar -->
+  <g transform="translate(30, 356)">
+    <rect width="740" height="110" rx="8" fill="#181825" stroke="#45475a" stroke-width="1" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;1;1;1" keyTimes="0;0.30;0.40;0.50;0.85;0.95;1" dur="12s" repeatCount="indefinite"/>
+    </rect>
+    <text x="370" y="32" fill="#cdd6f4" font-family="'SF Mono','Fira Code',monospace" font-size="14" font-weight="bold" text-anchor="middle" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;1;1;1" keyTimes="0;0.32;0.42;0.50;0.85;0.95;1" dur="12s" repeatCount="indefinite"/>
+      Already ON by default: 33% potential savings
+    </text>
+    <text x="370" y="56" fill="#a6adc8" font-family="'SF Mono','Fira Code',monospace" font-size="12" text-anchor="middle" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;1;1;1" keyTimes="0;0.34;0.44;0.50;0.85;0.95;1" dur="12s" repeatCount="indefinite"/>
+      Quality Nudges + Loop Detection + Delta Mode = ready on first session
+    </text>
+    <text x="370" y="82" fill="#89dceb" font-family="'SF Mono','Fira Code',monospace" font-size="12" font-weight="bold" text-anchor="middle" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;1;1;1" keyTimes="0;0.40;0.50;0.60;0.85;0.95;1" dur="12s" repeatCount="indefinite"/>
+      token-dashboard &#8594; Manage tab &#8594; toggle anything on/off
+    </text>
+    <text x="370" y="100" fill="#a6e3a1" font-family="'SF Mono','Fira Code',monospace" font-size="11" text-anchor="middle" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;1;1;1" keyTimes="0;0.44;0.54;0.64;0.85;0.95;1" dur="12s" repeatCount="indefinite"/>
+      All local. All optional. Zero network calls. You own the data.
+    </text>
+  </g>
+</svg>

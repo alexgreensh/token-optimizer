@@ -192,19 +192,27 @@ TOKEN_OPTIMIZER_CHECKPOINT_TELEMETRY=1 python3 measure.py checkpoint-stats --day
 
 ## Active Compression (v5)
 
-Token Optimizer no longer just measures context bloat — it actively reduces it. Five opt-in features that each target a specific waste pattern, with honest risk assessment and dashboard toggles.
+Token Optimizer no longer just measures context bloat — it actively reduces it. Five features that each target a specific waste pattern, with honest risk assessment and dashboard toggles.
 
-**What's on by default:** Quality Nudges, Loop Detection, and Delta Mode. Opt-in: Bash Compression and Structure Map Beta.
+![v5 Active Compression overview](skills/token-optimizer/assets/v5-hero.svg)
 
-**All five features are independently toggleable** from the Manage tab in the dashboard, via CLI (`measure.py v5 enable|disable <feature>`), or with environment variables. All telemetry stays 100% local — nothing leaves your machine.
+**What's on by default:** Quality Nudges, Loop Detection, and Delta Mode. Opt-in: Bash Compression and Structure Map Beta (local measurement only).
+
+**All five features are independently toggleable** from the Manage tab in the dashboard, via CLI (`measure.py v5 enable|disable <feature>`), or with environment variables.
+
+> **Privacy first:** Every feature runs **100% on your machine**. Zero network calls. Zero phone-home. Zero analytics endpoint. When this doc says "measurement" or "telemetry," it means **local SQLite writes to a file you own** (`~/.claude/_backups/token-optimizer/trends.db`). You can `sqlite3` it, export it, delete it, or never look at it. It's yours.
 
 | Feature | Default | Potential Savings | Risk |
 |---|---|---|---|
 | Quality Nudges | **ON** | ~5% (prevented waste) | None |
 | Loop Detection | **ON** | ~8% (caught loops) | None |
 | Delta Mode | **ON** | ~20% (smart re-reads) | Low |
-| Structure Map Beta | OFF (opt-in) | Telemetry only | None |
+| Structure Map Beta (Local-Only Measurement) | OFF (opt-in) | Measurement only | None |
 | Bash Compression | OFF (opt-in) | ~10% (CLI output) | Moderate |
+
+> **Privacy note:** Every feature above runs 100% on your machine. Nothing is ever sent anywhere — no analytics endpoint, no phone-home, no cloud sync. "Measurement" and "beta telemetry" in this doc always mean **local-only SQLite writes to your own machine** that you can inspect, export, or delete at any time. Token Optimizer has zero network calls by design.
+
+![Quality Nudges and Loop Detection in action](skills/token-optimizer/assets/v5-nudges-loops.svg)
 
 ### Quality Nudges (ON by default)
 
@@ -226,6 +234,8 @@ Detects when the AI is stuck retrying the same thing and warns you before it bur
 
 **Risk:** None. Only adds a short warning to context, never removes anything.
 
+![Delta Mode: smart re-reads](skills/token-optimizer/assets/v5-delta-mode.svg)
+
 ### Delta Mode (ON by default — your biggest single win)
 
 When the AI re-reads a file after editing it, shows only what changed instead of the whole file. Analysis of real sessions shows 65%+ of Read calls are re-reads, making this the highest-impact v5 feature.
@@ -236,15 +246,19 @@ When the AI re-reads a file after editing it, shows only what changed instead of
 
 **Risk:** Low. If the AI needed the full file to understand the change in context, the diff alone might not be enough. Fails open on large changes and big files. Set `TOKEN_OPTIMIZER_READ_CACHE_DELTA=0` to disable if you hit edge cases.
 
-### Structure Map Beta (OFF — opt-in telemetry)
+### Structure Map Beta — Local-Only Measurement (OFF by default)
 
-Logs events to a local database when a code file is read multiple times and gets replaced with a function/class summary. The feature itself already runs in `soft_block` mode — this flag just adds measurement.
+Writes measurement events to **your local SQLite database** when a code file is read multiple times and gets replaced with a function/class summary. The feature itself already runs in `soft_block` mode — this flag just adds measurement so you can see if it actually helped on your sessions.
 
-**Value:** Helps prove (or disprove) whether structure maps help on real code-heavy sessions. Your data only, never shared.
+**Not telemetry in the cloud sense.** Nothing is sent anywhere. Events land in `~/.claude/_backups/token-optimizer/trends.db` on your machine only. You can inspect with `sqlite3`, export, or delete at any time. Token Optimizer has zero network calls.
+
+**Value:** Helps you prove (or disprove) whether structure maps help on your code-heavy sessions. Run `measure.py compression-stats --days 30` after a few weeks to see.
 
 **How to enable:** `measure.py v5 enable structure_map_beta` or `TOKEN_OPTIMIZER_STRUCTURE_MAP=beta`
 
-**Risk:** None. Telemetry only.
+**Risk:** None. Adds a local SQLite row per event. Nothing else.
+
+![Bash Output Compression: git status and pytest before/after](skills/token-optimizer/assets/v5-bash-compression.svg)
 
 ### Bash Output Compression (OFF — opt-in, lossy)
 

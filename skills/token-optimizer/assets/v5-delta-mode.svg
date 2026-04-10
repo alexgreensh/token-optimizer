@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 480" width="800" height="480">
+  <!--
+    Delta Mode: show a re-read being replaced by a compact diff.
+    The AI reads a file, edits 2 lines, re-reads, and gets the diff instead.
+    10s loop. Catppuccin Mocha palette. Pure SMIL animations.
+  -->
+
+  <!-- Background -->
+  <rect width="800" height="480" rx="12" fill="#1e1e2e"/>
+
+  <!-- Title -->
+  <text x="400" y="38" fill="#89dceb" font-family="'SF Mono','Fira Code',monospace" font-size="20" font-weight="bold" text-anchor="middle">Delta Mode: Smart Re-reads</text>
+  <text x="400" y="60" fill="#a6adc8" font-family="'SF Mono','Fira Code',monospace" font-size="12" text-anchor="middle">65%+ of Read calls are re-reads. Send the diff, not the whole file.</text>
+
+  <!-- LEFT: The PROBLEM (before delta mode) -->
+  <g>
+    <text x="200" y="98" fill="#f38ba8" font-family="'SF Mono','Fira Code',monospace" font-size="13" text-anchor="middle" font-weight="bold">BEFORE: full re-read</text>
+
+    <!-- Turn 1: first read -->
+    <rect x="40" y="110" width="320" height="70" rx="6" fill="#313244"/>
+    <text x="52" y="130" fill="#a6e3a1" font-family="'SF Mono','Fira Code',monospace" font-size="11">Turn 1: Read auth.py</text>
+    <text x="52" y="148" fill="#cdd6f4" font-family="'SF Mono','Fira Code',monospace" font-size="10">287 lines &#8594; 2,100 tokens in context</text>
+    <text x="340" y="148" fill="#f9e2af" font-family="'SF Mono','Fira Code',monospace" font-size="11" font-weight="bold" text-anchor="end">+2.1K</text>
+    <text x="52" y="166" fill="#585b70" font-family="'SF Mono','Fira Code',monospace" font-size="10">(everything before the edit)</text>
+
+    <!-- Edit arrow -->
+    <text x="200" y="200" fill="#89dceb" font-family="'SF Mono','Fira Code',monospace" font-size="13" text-anchor="middle">Edit: 2 lines changed</text>
+    <path d="M 200 210 L 200 228" stroke="#89dceb" stroke-width="2"/>
+    <path d="M 195 223 L 200 232 L 205 223" stroke="#89dceb" stroke-width="2" fill="none"/>
+
+    <!-- Turn 2: re-read full -->
+    <rect x="40" y="244" width="320" height="70" rx="6" fill="#313244" stroke="#f38ba8" stroke-width="2"/>
+    <text x="52" y="264" fill="#f38ba8" font-family="'SF Mono','Fira Code',monospace" font-size="11">Turn 2: Read auth.py (again)</text>
+    <text x="52" y="282" fill="#cdd6f4" font-family="'SF Mono','Fira Code',monospace" font-size="10">287 lines &#8594; 2,100 tokens AGAIN</text>
+    <text x="340" y="282" fill="#f38ba8" font-family="'SF Mono','Fira Code',monospace" font-size="11" font-weight="bold" text-anchor="end">+2.1K</text>
+    <text x="52" y="300" fill="#f38ba8" font-family="'SF Mono','Fira Code',monospace" font-size="10">the WHOLE file re-enters context</text>
+
+    <!-- Total -->
+    <rect x="40" y="336" width="320" height="44" rx="6" fill="#181825" stroke="#f38ba8" stroke-width="1"/>
+    <text x="52" y="356" fill="#cdd6f4" font-family="'SF Mono','Fira Code',monospace" font-size="12">Total after 2 turns:</text>
+    <text x="348" y="370" fill="#f38ba8" font-family="'SF Mono','Fira Code',monospace" font-size="22" font-weight="bold" text-anchor="end">4,200</text>
+  </g>
+
+  <!-- RIGHT: The FIX (with delta mode) -->
+  <g>
+    <text x="600" y="98" fill="#a6e3a1" font-family="'SF Mono','Fira Code',monospace" font-size="13" text-anchor="middle" font-weight="bold">WITH Delta Mode</text>
+
+    <!-- Turn 1: same first read -->
+    <rect x="440" y="110" width="320" height="70" rx="6" fill="#313244"/>
+    <text x="452" y="130" fill="#a6e3a1" font-family="'SF Mono','Fira Code',monospace" font-size="11">Turn 1: Read auth.py</text>
+    <text x="452" y="148" fill="#cdd6f4" font-family="'SF Mono','Fira Code',monospace" font-size="10">287 lines &#8594; 2,100 tokens in context</text>
+    <text x="740" y="148" fill="#f9e2af" font-family="'SF Mono','Fira Code',monospace" font-size="11" font-weight="bold" text-anchor="end">+2.1K</text>
+    <text x="452" y="166" fill="#585b70" font-family="'SF Mono','Fira Code',monospace" font-size="10">(same as before, content cached)</text>
+
+    <!-- Edit arrow -->
+    <text x="600" y="200" fill="#89dceb" font-family="'SF Mono','Fira Code',monospace" font-size="13" text-anchor="middle">Edit: 2 lines changed</text>
+    <path d="M 600 210 L 600 228" stroke="#89dceb" stroke-width="2"/>
+    <path d="M 595 223 L 600 232 L 605 223" stroke="#89dceb" stroke-width="2" fill="none"/>
+
+    <!-- Turn 2: diff only -->
+    <rect x="440" y="244" width="320" height="70" rx="6" fill="#313244" stroke="#a6e3a1" stroke-width="2">
+      <animate attributeName="stroke-width" values="2;3;2" dur="2s" repeatCount="indefinite"/>
+    </rect>
+    <text x="452" y="264" fill="#a6e3a1" font-family="'SF Mono','Fira Code',monospace" font-size="11">Turn 2: Read auth.py (again)</text>
+    <text x="452" y="282" fill="#a6e3a1" font-family="'SF Mono','Fira Code',monospace" font-size="10" font-weight="bold">auth.py: 2 lines changed (+1/-1)</text>
+    <text x="740" y="282" fill="#a6e3a1" font-family="'SF Mono','Fira Code',monospace" font-size="11" font-weight="bold" text-anchor="end">+45</text>
+    <text x="452" y="300" fill="#a6adc8" font-family="'SF Mono','Fira Code',monospace" font-size="10">- return jwt(user)</text>
+    <text x="452" y="310" fill="#a6adc8" font-family="'SF Mono','Fira Code',monospace" font-size="10">+ return jwt(user, exp=ttl)</text>
+
+    <!-- Total -->
+    <rect x="440" y="336" width="320" height="44" rx="6" fill="#181825" stroke="#a6e3a1" stroke-width="1"/>
+    <text x="452" y="356" fill="#cdd6f4" font-family="'SF Mono','Fira Code',monospace" font-size="12">Total after 2 turns:</text>
+    <text x="748" y="370" fill="#a6e3a1" font-family="'SF Mono','Fira Code',monospace" font-size="22" font-weight="bold" text-anchor="end">2,145</text>
+  </g>
+
+  <!-- Savings callout -->
+  <g transform="translate(0, 400)">
+    <rect x="40" y="0" width="720" height="64" rx="8" fill="#181825" stroke="#89dceb" stroke-width="2">
+      <animate attributeName="stroke-width" values="1;3;1" dur="3s" repeatCount="indefinite"/>
+    </rect>
+    <text x="400" y="26" fill="#cdd6f4" font-family="'SF Mono','Fira Code',monospace" font-size="14" text-anchor="middle">
+      Savings on this re-read:
+      <tspan fill="#89dceb" font-weight="bold">2,055 tokens</tspan>
+      <tspan fill="#a6adc8">(</tspan><tspan fill="#89dceb" font-weight="bold">97.9%</tspan><tspan fill="#a6adc8">)</tspan>
+    </text>
+    <text x="400" y="50" fill="#a6adc8" font-family="'SF Mono','Fira Code',monospace" font-size="11" text-anchor="middle">
+      Falls back to full re-read if the diff exceeds 1500 chars or the file exceeds 2000 lines. Always safe.
+    </text>
+  </g>
+</svg>

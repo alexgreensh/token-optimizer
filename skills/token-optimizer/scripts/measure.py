@@ -11587,12 +11587,12 @@ V5_FEATURES = {
         "env_var": "TOKEN_OPTIMIZER_STRUCTURE_MAP",
         "config_key": "v5_structure_map_beta",
         "default": False,
-        "label": "Structure Map Beta (Telemetry Only)",
-        "what": "Tracks when the structure map feature fires so we can measure if it actually helps.",
-        "value": "Helps us prove (or disprove) whether structure maps help on real code-heavy sessions. Your data only, no sharing.",
-        "impact_pct": 0,  # telemetry only, no direct savings
-        "how": "Logs events to a local database when a code file is read multiple times and gets replaced with a function/class summary. No data leaves your machine.",
-        "risk": "None. This is telemetry only -- the feature already runs, this just adds local measurement.",
+        "label": "Structure Map Beta (Local Measurement)",
+        "what": "Tracks when the structure map feature fires on your machine so YOU can measure if it's helping.",
+        "value": "Writes local-only SQLite rows so you can check `measure.py compression-stats` later. Nothing sent anywhere. Helps you prove (or disprove) whether structure maps help on your code-heavy sessions.",
+        "impact_pct": 0,  # measurement only, no direct savings
+        "how": "Writes one row to your local SQLite (~/.claude/_backups/token-optimizer/trends.db) when a code file is read multiple times and gets replaced with a function/class summary. Zero network calls. You can sqlite3 the file or delete it anytime.",
+        "risk": "None. Local SQLite writes only, no external connections. Ever.",
         "risk_level": "none",
         "recommended": False,
     },

@@ -643,13 +643,10 @@ def _scan_plugin_skills_and_commands():
 
             # Flag suspicious install paths
             path_str = str(resolved)
-            is_suspicious = False
             if "/node_modules/" in path_str:
                 suspicious_paths.append({"path": path_str, "reason": "node_modules", "plugin": plugin_name})
-                is_suspicious = True
             if "/.worktrees/" in path_str or "/worktrees/" in path_str.lower():
                 suspicious_paths.append({"path": path_str, "reason": "worktree", "plugin": plugin_name})
-                is_suspicious = True
 
             try:
                 # Skills
@@ -1582,9 +1579,7 @@ def doctor(as_json=False):
 
     # 11. Duplicate installs
     total += 1
-    has_plugin = is_plugin
-    has_skill = is_skill and not is_plugin
-    if has_plugin and is_skill:
+    if is_plugin and is_skill:
         checks.append(("!!", "Duplicate installs", "both plugin and skill detected (pick one)"))
     else:
         checks.append(("OK", "No duplicate installs", ""))
@@ -2396,8 +2391,8 @@ def _serve_dashboard(filepath, port=8080, host="127.0.0.1"):
         def __init__(self, *a, **kw):
             super().__init__(*a, directory=serve_dir, **kw)
 
-        def log_message(self, format, *a):
-            pass  # suppress per-request logs
+        def log_message(self, *args):
+            pass  # suppress per-request logs (overrides BaseHTTPRequestHandler)
 
         def end_headers(self):
             self.send_header("X-Content-Type-Options", "nosniff")
@@ -2765,7 +2760,6 @@ def _collect_management_data(components=None, trends=None):
         components = measure_components()
 
     mp = str(Path(__file__).resolve())
-    skills_dir = CLAUDE_DIR / "skills"
     backups_dir = CLAUDE_DIR / "_backups"
 
     # Active skills
@@ -4308,7 +4302,6 @@ def generate_coach_block(components=None, trends=None):
 
     # Compaction timing
     if trends:
-        session_count = trends.get("session_count", 0)
         avg_duration = trends.get("avg_duration_minutes", 0)
         if avg_duration > 20:
             lines.append(f"- Sessions average {avg_duration:.0f} min. Use /compact proactively around the midpoint.")
@@ -8516,7 +8509,6 @@ def jsonl_trim(arg=None, apply=False, threshold=4000):
                     fout.write(line)
                     continue
 
-                modified = False
                 for block in content:
                     if not isinstance(block, dict):
                         continue
@@ -8538,7 +8530,6 @@ def jsonl_trim(arg=None, apply=False, threshold=4000):
 
                         # Replace content with placeholder
                         block["content"] = f"[trimmed - {len(result_text)} chars, {est_tok} tokens]"
-                        modified = True
                         trimmed_count += 1
 
                 fout.write(json.dumps(record) + "\n")

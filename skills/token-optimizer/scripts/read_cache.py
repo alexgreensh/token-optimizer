@@ -37,6 +37,45 @@ from structure_map import (
     summarize_code_source,
 )
 
+
+def _is_v5_delta_enabled():
+    """Check if delta mode is enabled. Env var > config.json > default (True in v5.1)."""
+    env_val = os.environ.get("TOKEN_OPTIMIZER_READ_CACHE_DELTA")
+    if env_val is not None:
+        return env_val == "1"
+    # Read config.json directly to avoid importing measure.py in hot path
+    try:
+        config_dir = Path(os.environ.get("CLAUDE_PLUGIN_DATA", str(Path.home() / ".claude" / "token-optimizer"))) / "config"
+        if not config_dir.exists():
+            config_dir = Path.home() / ".claude" / "token-optimizer"
+        config_path = config_dir / "config.json"
+        if config_path.exists():
+            cfg = json.loads(config_path.read_text(encoding="utf-8"))
+            if isinstance(cfg, dict) and "v5_delta_mode" in cfg:
+                return bool(cfg["v5_delta_mode"])
+    except (json.JSONDecodeError, OSError):
+        pass
+    return True  # Default: ON in v5.1
+
+
+def _is_v5_structure_map_beta():
+    """Check if structure map beta telemetry is enabled."""
+    env_val = os.environ.get("TOKEN_OPTIMIZER_STRUCTURE_MAP")
+    if env_val is not None:
+        return env_val == "beta"
+    try:
+        config_dir = Path(os.environ.get("CLAUDE_PLUGIN_DATA", str(Path.home() / ".claude" / "token-optimizer"))) / "config"
+        if not config_dir.exists():
+            config_dir = Path.home() / ".claude" / "token-optimizer"
+        config_path = config_dir / "config.json"
+        if config_path.exists():
+            cfg = json.loads(config_path.read_text(encoding="utf-8"))
+            if isinstance(cfg, dict) and "v5_structure_map_beta" in cfg:
+                return bool(cfg["v5_structure_map_beta"])
+    except (json.JSONDecodeError, OSError):
+        pass
+    return False
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -499,6 +538,17 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
             "read_count": 1,
             "last_access": time.time(),
         }
+        # v5.0: Cache content for delta diffs on first whole-file read
+        if _is_v5_delta_enabled() and offset == 0 and limit == 0:
+            try:
+                from delta_diff import is_delta_eligible, content_hash, MAX_CONTENT_CACHE_BYTES
+                if is_delta_eligible(file_path):
+                    fc = Path(file_path).read_text(encoding="utf-8", errors="replace")
+                    if len(fc.encode("utf-8", errors="replace")) <= MAX_CONTENT_CACHE_BYTES:
+                        entry["cached_content"] = fc
+                        entry["content_hash"] = content_hash(fc)
+            except Exception:
+                pass
         _reset_replacement_state(entry)
         files[file_path] = entry
         cache["files"] = files
@@ -560,6 +610,100 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
     range_match = (int(entry.get("offset", 0) or 0) == offset and int(entry.get("limit", 0) or 0) == limit)
 
     if not (mtime_match and size_match and range_match):
+        # v5.0: Delta mode -- return diff instead of allowing full re-read
+        delta_enabled = _is_v5_delta_enabled()
+        if (
+            delta_enabled
+            and offset == 0
+            and limit == 0
+            and not mtime_match
+            and entry.get("content_hash")
+            and entry.get("cached_content")
+        ):
+            try:
+                from delta_diff import compute_delta, content_hash, is_delta_eligible, MAX_CONTENT_CACHE_BYTES
+                if is_delta_eligible(file_path):
+                    new_content = Path(file_path).read_text(encoding="utf-8", errors="replace")
+                    new_hash = content_hash(new_content)
+                    if new_hash != entry.get("content_hash"):
+                        old_content = entry.get("cached_content", "")
+                        delta_text, delta_stats = compute_delta(old_content, new_content, Path(file_path).name)
+                        if delta_text is not None:
+                            # Update cache with new content
+                            entry["mtime_ns"] = current_stat.st_mtime_ns
+                            entry["size_bytes"] = current_stat.st_size
+                            entry["content_hash"] = new_hash
+                            if len(new_content.encode("utf-8", errors="replace")) <= MAX_CONTENT_CACHE_BYTES:
+                                entry["cached_content"] = new_content
+                            else:
+                                entry.pop("cached_content", None)
+                            entry["read_count"] = int(entry.get("read_count", 0) or 0) + 1
+                            entry["last_access"] = time.time()
+                            _reset_replacement_state(entry)
+                            _save_cache(session_id, cache)
+
+                            old_tokens = max(1, current_stat.st_size // 4)
+                            delta_tokens = len(delta_text.encode("utf-8", errors="replace")) // 4
+                            net_saved = max(0, old_tokens - delta_tokens)
+
+                            _log_decision(
+                                "block",
+                                file_path,
+                                f"delta_read_{entry['read_count']}",
+                                session_id,
+                                mode=mode,
+                                actual_substitution=True,
+                                eligible=True,
+                                language=language,
+                                reason_code="delta_diff",
+                                offset=offset,
+                                limit=limit,
+                                replacement_type="delta",
+                                file_tokens_est=old_tokens,
+                                replacement_tokens_est=delta_tokens,
+                                net_saved_tokens_est=net_saved,
+                                replacement_fingerprint=new_hash[:16],
+                                repeat_replacement_count=0,
+                                save_hook_additional_context_enabled=save_hook_context_enabled,
+                            )
+                            _log_savings_event("delta_read", net_saved, session_id,
+                                               f"{Path(file_path).name}:+{delta_stats['added']}/-{delta_stats['removed']}")
+                            # Log to compression_events for v5 telemetry
+                            try:
+                                sys.path.insert(0, str(Path(__file__).resolve().parent))
+                                from measure import _log_compression_event
+                                _log_compression_event(
+                                    feature="delta_read",
+                                    original_text=" " * (old_tokens * 4),  # proxy
+                                    compressed_text=delta_text,
+                                    session_id=session_id,
+                                    command_pattern=f"Read:{Path(file_path).name}",
+                                    quality_preserved=True,
+                                    verified=True,
+                                    detail=f"+{delta_stats['added']}/-{delta_stats['removed']}",
+                                )
+                            except Exception:
+                                pass
+                            if not quiet:
+                                print(
+                                    f"[Read Cache] Delta mode: {file_path} "
+                                    f"(+{delta_stats['added']}/-{delta_stats['removed']}, saved~{net_saved:,})",
+                                    file=sys.stderr,
+                                )
+                            reason = (
+                                f"{Path(file_path).name} was edited; showing diff "
+                                f"(+{delta_stats['added']}/-{delta_stats['removed']} lines) "
+                                f"instead of full re-read."
+                            )
+                            _emit_pretool_response("deny", reason, delta_text)
+                            return  # EXIT: delta handled, do NOT evaluate structure map
+                    else:
+                        # Hash unchanged despite mtime change (e.g., touch). Allow normal read.
+                        pass
+            except Exception:
+                pass  # Fail open: fall through to normal allow
+
+        # Normal path: file modified, allow full re-read
         entry["mtime_ns"] = current_stat.st_mtime_ns
         entry["size_bytes"] = current_stat.st_size
         entry["offset"] = offset
@@ -567,6 +711,17 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
         entry["tokens_est"] = max(1, current_stat.st_size // 4) if current_stat.st_size else 0
         entry["read_count"] = int(entry.get("read_count", 0) or 0) + 1
         entry["last_access"] = time.time()
+        # Cache content for future delta diffs (v5.0) - only whole-file reads
+        if delta_enabled and offset == 0 and limit == 0 and not entry.get("cached_content"):
+            try:
+                from delta_diff import is_delta_eligible, content_hash, MAX_CONTENT_CACHE_BYTES
+                if is_delta_eligible(file_path):
+                    fc = Path(file_path).read_text(encoding="utf-8", errors="replace")
+                    if len(fc.encode("utf-8", errors="replace")) <= MAX_CONTENT_CACHE_BYTES:
+                        entry["cached_content"] = fc
+                        entry["content_hash"] = content_hash(fc)
+            except Exception:
+                pass
         _reset_replacement_state(entry)
         _save_cache(session_id, cache)
         _log_decision(
@@ -711,6 +866,23 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
             session_id,
             f"{Path(file_path).name}:{summary.replacement_type}:repeat={repeat_count}",
         )
+        # v5.0: Structure map beta telemetry
+        if _is_v5_structure_map_beta():
+            try:
+                sys.path.insert(0, str(Path(__file__).resolve().parent))
+                from measure import _log_compression_event
+                _log_compression_event(
+                    feature="structure_map",
+                    original_text=" " * (tokens_est * 4),  # proxy
+                    compressed_text=summary.replacement_text if summary.replacement_text else "",
+                    session_id=session_id,
+                    command_pattern=f"Read:{Path(file_path).name}",
+                    quality_preserved=True,
+                    verified=False,  # we don't know if AI would have used full file
+                    detail=f"type={summary.replacement_type} confidence={summary.confidence:.2f} repeat={repeat_count} lang={language}",
+                )
+            except Exception:
+                pass
         if not quiet:
             print(
                 f"[Read Cache] Blocked redundant read #{entry['read_count']}: {file_path} "

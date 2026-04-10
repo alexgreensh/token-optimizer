@@ -234,7 +234,25 @@ exports.default = definePluginEntry({
     register(api) {
         api.logger.info("[token-optimizer] Plugin activated");
         const openclawDir = (0, session_parser_1.findOpenClawDir)();
-        const contextAudit = openclawDir ? (0, context_audit_1.auditContext)(openclawDir) : null;
+        // Lazy-refresh context audit (TTL-based) so long-running gateways stay current
+        let _ctxCache = null;
+        let _ctxTs = 0;
+        const CTX_TTL = 5 * 60 * 1000; // 5 minutes
+        function freshContextAudit() {
+            if (!openclawDir)
+                return null;
+            const now = Date.now();
+            if (_ctxCache && (now - _ctxTs) < CTX_TTL)
+                return _ctxCache;
+            try {
+                _ctxCache = (0, context_audit_1.auditContext)(openclawDir);
+            }
+            catch {
+                _ctxCache = null;
+            }
+            _ctxTs = now;
+            return _ctxCache;
+        }
         // Register service so other plugins/skills can call our methods
         api.registerService("token-optimizer", {
             audit,
@@ -266,13 +284,23 @@ exports.default = definePluginEntry({
                 return;
             }
             // Try v2 (intelligent extraction), fall back to v1
-            const filepath = (0, smart_compact_1.captureCheckpointV2)(session, 10, {
-                trigger: "compact",
-                eventKind: "compact-before",
-            }) ?? (0, smart_compact_1.captureCheckpoint)(session, 20, {
-                trigger: "compact",
-                eventKind: "compact-before",
-            });
+            let filepath = null;
+            try {
+                filepath = (0, smart_compact_1.captureCheckpointV2)(session, 10, {
+                    trigger: "compact",
+                    eventKind: "compact-before",
+                });
+            }
+            catch { /* v2 threw, try v1 */ }
+            if (!filepath) {
+                try {
+                    filepath = (0, smart_compact_1.captureCheckpoint)(session, 20, {
+                        trigger: "compact",
+                        eventKind: "compact-before",
+                    });
+                }
+                catch { /* v1 also failed */ }
+            }
             if (filepath) {
                 api.logger.info(`[token-optimizer] Checkpoint saved: ${filepath}`);
             }
@@ -294,7 +322,7 @@ exports.default = definePluginEntry({
             const event = args[0];
             if (!event?.sessionId || !openclawDir)
                 return;
-            maybeCheckpointFromRuntimeSnapshot(openclawDir, contextAudit, event.agentId, event.sessionId, api, "session-patch");
+            maybeCheckpointFromRuntimeSnapshot(openclawDir, freshContextAudit(), event.agentId, event.sessionId, api, "session-patch");
         });
         // Read Cache: intercept redundant reads (PreToolUse equivalent)
         safeOn(api, "agent:tool:before", (...args) => {
@@ -317,7 +345,7 @@ exports.default = definePluginEntry({
                 (event.toolName === "Agent" || event.toolName === "Task")) {
                 const decision = (0, checkpoint_policy_1.maybeDecidePreFanoutCheckpoint)(event.sessionId);
                 const snapshot = decision
-                    ? buildRuntimeEventContext(openclawDir, contextAudit, event.agentId, event.sessionId, "tool-before", event.toolName)
+                    ? buildRuntimeEventContext(openclawDir, freshContextAudit(), event.agentId, event.sessionId, "tool-before", event.toolName)
                     : null;
                 captureDecisionCheckpoint(decision, snapshot, api);
             }
@@ -343,19 +371,22 @@ exports.default = definePluginEntry({
                 (0, checkpoint_policy_1.registerWriteEvent)(event.sessionId, filePath);
                 const decision = (0, checkpoint_policy_1.maybeDecideEditBatchCheckpoint)(event.sessionId);
                 if (decision) {
-                    milestoneSnapshot = buildRuntimeEventContext(openclawDir, contextAudit, event.agentId, event.sessionId, "tool-after", event.toolName);
+                    milestoneSnapshot = buildRuntimeEventContext(openclawDir, freshContextAudit(), event.agentId, event.sessionId, "tool-after", event.toolName);
                 }
                 captureDecisionCheckpoint(decision, milestoneSnapshot, api);
             }
-            maybeCheckpointFromRuntimeSnapshot(openclawDir, contextAudit, event.agentId, event.sessionId, api, "tool-after", milestoneSnapshot);
+            maybeCheckpointFromRuntimeSnapshot(openclawDir, freshContextAudit(), event.agentId, event.sessionId, api, "tool-after", milestoneSnapshot);
         });
         // Generate dashboard silently on session end
         safeOn(api, "session:end", (...args) => {
             const event = args[0];
             try {
                 if (openclawDir && event?.sessionId) {
-                    maybeCheckpointFromRuntimeSnapshot(openclawDir, contextAudit, event.agentId, event.sessionId, api, "session-end");
+                    maybeCheckpointFromRuntimeSnapshot(openclawDir, freshContextAudit(), event.agentId, event.sessionId, api, "session-end");
                 }
+            }
+            catch { /* checkpoint failure should not block dashboard */ }
+            try {
                 generateDashboard(30);
                 api.logger.info("[token-optimizer] Dashboard regenerated on session end");
             }
@@ -375,9 +406,14 @@ function resolveSessionFile(openclawDir, agentId, sessionId) {
             return direct;
     }
     const agentsDir = path.join(openclawDir, "agents");
-    if (!fs.existsSync(agentsDir))
+    let entries;
+    try {
+        entries = fs.readdirSync(agentsDir, { withFileTypes: true });
+    }
+    catch {
         return null;
-    for (const entry of fs.readdirSync(agentsDir, { withFileTypes: true })) {
+    }
+    for (const entry of entries) {
         if (!entry.isDirectory())
             continue;
         const candidate = path.join(agentsDir, entry.name, "sessions", `${sessionId}.jsonl`);
@@ -434,15 +470,9 @@ function captureDecisionCheckpoint(decision, snapshot, api) {
         sessionId: snapshot.sessionId,
         messages: (0, smart_compact_1.loadMessagesFromSessionFile)(snapshot.sessionFile),
     };
-    const filepath = (0, smart_compact_1.captureCheckpointV2)(session, 10, {
-        trigger: enrichedDecision.trigger,
-        fillPct: enrichedDecision.fillPct,
-        qualityScore: enrichedDecision.qualityScore,
-        toolName: snapshot.toolName,
-        eventKind: snapshot.eventKind,
-        model: snapshot.model,
-    }) ??
-        (0, smart_compact_1.captureCheckpoint)(session, 20, {
+    let filepath = null;
+    try {
+        filepath = (0, smart_compact_1.captureCheckpointV2)(session, 10, {
             trigger: enrichedDecision.trigger,
             fillPct: enrichedDecision.fillPct,
             qualityScore: enrichedDecision.qualityScore,
@@ -450,6 +480,21 @@ function captureDecisionCheckpoint(decision, snapshot, api) {
             eventKind: snapshot.eventKind,
             model: snapshot.model,
         });
+    }
+    catch { /* v2 threw, try v1 */ }
+    if (!filepath) {
+        try {
+            filepath = (0, smart_compact_1.captureCheckpoint)(session, 20, {
+                trigger: enrichedDecision.trigger,
+                fillPct: enrichedDecision.fillPct,
+                qualityScore: enrichedDecision.qualityScore,
+                toolName: snapshot.toolName,
+                eventKind: snapshot.eventKind,
+                model: snapshot.model,
+            });
+        }
+        catch { /* v1 also failed */ }
+    }
     if (filepath) {
         api.logger.info(`[token-optimizer] Checkpoint saved (${enrichedDecision.trigger}): ${filepath}`);
     }

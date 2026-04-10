@@ -33,13 +33,33 @@ body {
   color: var(--c-text-main);
   font-family: var(--font-sans);
   font-weight: 300;
-  font-size: 18px;
-  line-height: 1.5;
+  font-size: 20px;
+  line-height: 1.6;
   min-height: 100vh;
   overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
   background-image: radial-gradient(circle at 50% 0%, #1a253a 0%, var(--c-bg) 60%);
 }
+
+/* v5.1: Global font size bump for readability.
+   Only BUMPS sizes -- never shrinks. Avoids overriding classes that are
+   reused for both large headers and small body text (like .label, .card-header).
+   Adversarial review caught that overly broad !important rules caused regressions. */
+.empty-state { font-size: 16px !important; }
+.bar-label { font-size: 14px !important; }
+.bar-value { font-size: 14px !important; }
+.metric-large { font-size: 72px !important; }
+.metric-sub { font-size: 20px !important; line-height: 1.6 !important; }
+.update-cmd { font-size: 15px !important; }
+.last-updated { font-size: 15px !important; }
+.nav-item { font-size: 16px !important; }
+.nav-category { font-size: 14px !important; }
+table { font-size: 15px !important; }
+th, td { padding: 10px !important; }
+.hook-label { font-size: 16px !important; }
+.hook-desc { font-size: 15px !important; line-height: 1.6 !important; }
+.section-header h1 { font-size: 36px !important; }
+.section-header p { font-size: 17px !important; line-height: 1.6 !important; }
 
 body::before {
   content: "";
@@ -1596,6 +1616,8 @@ window.__TOKEN_DATA__ = null;
         <div class="metric-sub" id="hero-sub"></div>
       </div>
 
+      <div id="v5-recommendation-card"></div>
+
       <div class="dashboard-grid">
         <div class="card" id="card-saturation">
           <div class="card-header"><span>Before You Start</span></div>
@@ -2003,6 +2025,74 @@ var DB = (function() {
     document.getElementById('hero-total').textContent = fn(total);
     document.getElementById('hero-sub').innerHTML =
       'tokens loaded before you type a word (' + ctxLabel + ' window). You start every session with only <span>' + fn(remaining) + '</span> left for actual conversation.';
+
+    // v5 Active Compression recommendation card
+    var v5rec = data.v5_recommendation;
+    var v5card = document.getElementById('v5-recommendation-card');
+    if (v5card && v5rec) {
+      var disabled = v5rec.disabled_features || [];
+      var enabled = v5rec.enabled_features || [];
+      var disabledRecs = disabled.filter(function(f) { return f.recommended; });
+      var disabledOptional = disabled.filter(function(f) { return !f.recommended; });
+
+      if (v5rec.has_savings_available) {
+        var headerClass = disabledRecs.length > 0 ? 'border-warn' : 'border-info';
+        var headerLabel = disabledRecs.length > 0 ? 'ACTION AVAILABLE' : 'OPT-IN AVAILABLE';
+        var pctBig = v5rec.total_disabled_impact_pct > 0 ? v5rec.total_disabled_impact_pct : v5rec.aggressive_impact_pct;
+
+        var cardHtml = '<div class="card wide" style="border: 2px solid ' +
+          (disabledRecs.length > 0 ? '#ff9f43' : 'var(--c-accent-cyan)') + ';margin-bottom:var(--s-3);">' +
+          '<div class="card-header" style="display:flex;justify-content:space-between;align-items:center;">' +
+          '<span style="font-size:20px;">Active Compression (v5)</span>' +
+          '<span class="label" style="background:' + (disabledRecs.length > 0 ? '#ff9f43' : 'var(--c-accent-cyan)') +
+          ';color:var(--c-bg);padding:4px 10px;border-radius:4px;font-weight:700;font-size:13px;">' + headerLabel + '</span>' +
+          '</div>' +
+          '<div style="padding: var(--s-2) var(--s-3);">' +
+          '<div style="font-size: 36px; font-weight: 800; color: var(--c-accent-cyan); line-height: 1.1; margin-bottom: 8px;">' +
+          'Save up to ' + pctBig + '% more tokens' +
+          '</div>' +
+          '<div style="font-size: 17px; color: var(--c-text); margin-bottom: var(--s-2); line-height: 1.5;">' +
+          esc(v5rec.recommendation) + '</div>';
+
+        if (disabled.length > 0) {
+          cardHtml += '<div style="margin-top: var(--s-2); display:grid;grid-template-columns:1fr;gap:12px;">';
+          disabled.forEach(function(f) {
+            var riskColor = '#4ade80';
+            var riskText = 'no risk';
+            if (f.risk_level === 'low') { riskColor = '#60a5fa'; riskText = 'low risk'; }
+            else if (f.risk_level === 'moderate') { riskColor = '#ff9f43'; riskText = 'moderate risk'; }
+            var recBadge = f.recommended
+              ? '<span style="background:#4ade80;color:#000;font-size:11px;padding:2px 7px;border-radius:3px;margin-left:8px;font-weight:700;">RECOMMENDED</span>'
+              : '<span style="background:var(--c-border);color:var(--c-text-dim);font-size:11px;padding:2px 7px;border-radius:3px;margin-left:8px;">OPT-IN</span>';
+            cardHtml += '<div style="padding:14px;background:var(--c-bg);border-radius:6px;border-left:4px solid ' + riskColor + ';">' +
+              '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;">' +
+              '<div style="font-size:17px;font-weight:600;">' + esc(f.label) + recBadge + '</div>' +
+              '<div style="font-size:20px;font-weight:700;color:var(--c-accent-cyan);">+' + f.impact_pct + '%</div>' +
+              '</div>' +
+              '<div style="font-size:14px;color:var(--c-text-dim);line-height:1.5;margin-bottom:6px;">' + esc(f.value) + '</div>' +
+              '<div style="font-size:12px;color:' + riskColor + ';font-weight:600;">' + riskText + '</div>' +
+              '</div>';
+          });
+          cardHtml += '</div>';
+        }
+
+        cardHtml += '<div style="margin-top: var(--s-2); text-align:center;">' +
+          '<a href="#" onclick="document.querySelector(\'[data-view=manage]\').click();return false;" ' +
+          'style="display:inline-block;padding:12px 24px;background:var(--c-accent-cyan);color:var(--c-bg);text-decoration:none;border-radius:6px;font-weight:700;font-size:16px;">' +
+          'Open Manage Tab to Enable &rarr;</a></div>';
+
+        cardHtml += '</div></div>';
+        v5card.innerHTML = cardHtml;
+      } else {
+        // All features enabled - show success state
+        v5card.innerHTML = '<div class="card wide" style="border: 2px solid #4ade80;margin-bottom:var(--s-3);">' +
+          '<div class="card-header"><span style="font-size:20px;">Active Compression (v5)</span>' +
+          '<span class="label" style="background:#4ade80;color:#000;padding:4px 10px;border-radius:4px;font-weight:700;font-size:13px;">MAXED OUT</span></div>' +
+          '<div style="padding: var(--s-2) var(--s-3);font-size:17px;">' +
+          '<span style="font-size:24px;">\u2713</span> ' + esc(v5rec.recommendation) +
+          '</div></div>';
+      }
+    }
 
     // Last updated timestamp with staleness detection
     var ts = data.generated_at ? new Date(data.generated_at).toLocaleString() : 'unknown';
@@ -3345,6 +3435,80 @@ var DB = (function() {
       return;
     }
 
+    // --- v5 FEATURES SECTION (Active Compression) - SHOWS FIRST ---
+    var v5Features = m.v5_features || {};
+    var v5Names = Object.keys(v5Features);
+    if (v5Names.length > 0) {
+      var onCount = 0;
+      var offRecommended = 0;
+      v5Names.forEach(function(n) {
+        if (v5Features[n].enabled) onCount++;
+        else if (v5Features[n].recommended) offRecommended++;
+      });
+
+      var headerColor = offRecommended > 0 ? '#ff9f43' : 'var(--c-accent-cyan)';
+      html += '<div class="card wide" style="border: 3px solid ' + headerColor + ';margin-bottom: var(--s-3);">' +
+        '<div class="card-header" style="padding:18px var(--s-3);">' +
+          '<span style="font-size:22px;font-weight:700;">Active Compression (v5)</span>' +
+          '<span class="label" style="font-size:14px;background:' + headerColor + ';color:var(--c-bg);padding:6px 12px;border-radius:4px;font-weight:700;">' +
+          onCount + '/' + v5Names.length + ' ON' +
+          '</span>' +
+        '</div>' +
+        '<p style="font-size:17px;color:var(--c-text);padding:0 var(--s-3) var(--s-2);line-height:1.6;">' +
+          '<strong>What these do:</strong> Actively reduce the tokens your sessions use. ' +
+          'Toggles apply instantly to new tool calls &mdash; no restart needed. ' +
+          '<span style="color:var(--c-text-dim);">All data stays 100% local on your machine.</span>' +
+        '</p>';
+
+      v5Names.forEach(function(fname) {
+        var f = v5Features[fname];
+        var riskBg = '#4ade80';
+        var riskLabel = 'NO RISK';
+        if (f.risk_level === 'low') { riskBg = '#60a5fa'; riskLabel = 'LOW RISK'; }
+        else if (f.risk_level === 'moderate') { riskBg = '#ff9f43'; riskLabel = 'MODERATE RISK'; }
+
+        var recBadge = f.recommended
+          ? '<span style="background:#4ade80;color:#000;font-size:12px;padding:3px 10px;border-radius:4px;margin-left:10px;font-weight:700;vertical-align:middle;">RECOMMENDED</span>'
+          : '<span style="background:var(--c-border);color:var(--c-text-dim);font-size:12px;padding:3px 10px;border-radius:4px;margin-left:10px;vertical-align:middle;">OPT-IN</span>';
+        var sourceBadge = f.source === 'env'
+          ? '<span style="font-size:12px;color:var(--c-text-dim);margin-left:10px;">(set via env var, cannot toggle from dashboard)</span>'
+          : '';
+        var impactPct = f.impact_pct > 0 ? '+' + f.impact_pct + '%' : '';
+        var impactBadge = impactPct
+          ? '<span style="font-size:20px;font-weight:800;color:var(--c-accent-cyan);margin-left:auto;">' + impactPct + '</span>'
+          : '';
+
+        html += '<div class="hook-row" style="padding:20px var(--s-3);align-items:flex-start;border-top:1px solid var(--c-border);">' +
+          '<label class="hook-toggle" style="margin-top:4px;transform:scale(1.2);transform-origin:left top;">' +
+          '<input type="checkbox"' + (f.enabled ? ' checked' : '') +
+            ' data-v5-name="' + esc(fname) + '"' +
+            (f.source === 'env' ? ' disabled' : '') + '>' +
+          '<span class="hook-slider"></span></label>' +
+          '<div class="hook-info" style="margin-left:8px;">' +
+          '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:10px;">' +
+          '<div style="font-size:19px;font-weight:700;">' + esc(f.label) + '</div>' +
+          recBadge + sourceBadge + impactBadge +
+          '</div>' +
+          '<div style="font-size:16px;color:var(--c-text);margin-top:8px;line-height:1.6;">' +
+          '<strong style="color:var(--c-accent-cyan);">What it does:</strong> ' + esc(f.what) +
+          '</div>' +
+          '<div style="font-size:16px;color:#4ade80;margin-top:8px;line-height:1.6;">' +
+          '<strong>Value:</strong> ' + esc(f.value) +
+          '</div>' +
+          '<div style="font-size:14px;color:var(--c-text-dim);margin-top:8px;line-height:1.6;">' +
+          '<strong>How it works:</strong> ' + esc(f.how) +
+          '</div>' +
+          '<div style="margin-top:12px;display:inline-block;padding:6px 12px;background:' + riskBg + ';color:#000;font-size:13px;font-weight:700;border-radius:4px;">' +
+          riskLabel + '</div>' +
+          '<div style="font-size:14px;color:var(--c-text-dim);margin-top:8px;line-height:1.6;font-style:italic;">' +
+          esc(f.risk) +
+          '</div>' +
+          '</div></div>';
+      });
+
+      html += '</div>';
+    }
+
     // --- SKILLS SECTION ---
     var activeSkills = (m.skills && m.skills.active) || [];
     var archivedSkills = (m.skills && m.skills.archived) || [];
@@ -3463,6 +3627,60 @@ var DB = (function() {
 
     // Bind manage toggles - live API if our custom server, clipboard fallback otherwise
     var isServed = window.__TOKEN_API_LIVE === true;
+
+    // --- v5 feature toggles ---
+    el.querySelectorAll('[data-v5-name]').forEach(function(input) {
+      input.addEventListener('change', function(e) {
+        var fname = e.target.dataset.v5Name;
+        var newState = e.target.checked;
+        var row = e.target.closest('.hook-row');
+
+        if (!isServed) {
+          // Not in serve mode -- show instructions since config can't be written via file
+          e.target.checked = !newState;
+          alert('v5 toggles require serve mode. Run:\n\npython3 measure.py dashboard --serve\n\nOr toggle via CLI:\n\npython3 measure.py v5 ' + (newState ? 'enable' : 'disable') + ' ' + fname);
+          return;
+        }
+
+        if (row) row.style.opacity = '0.5';
+
+        fetch('/api/v5/toggle', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: fname, enabled: newState })
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(resp) {
+          if (row) row.style.opacity = '1';
+          if (resp.ok) {
+            // Update local data and re-render
+            if (data.manage && resp.v5_features) {
+              data.manage.v5_features = resp.v5_features;
+            }
+            renderManage();
+            // Toast
+            var toast = document.getElementById('hook-toast');
+            if (!toast) {
+              toast = document.createElement('div');
+              toast.id = 'hook-toast';
+              toast.className = 'hook-cmd-toast';
+              document.body.appendChild(toast);
+            }
+            toast.textContent = resp.msg || (newState ? 'Enabled.' : 'Disabled.');
+            toast.classList.add('visible');
+            setTimeout(function() { toast.classList.remove('visible'); }, 2500);
+          } else {
+            e.target.checked = !newState;
+            alert('Failed: ' + (resp.error || resp.msg || 'Unknown error'));
+          }
+        })
+        .catch(function(err) {
+          if (row) row.style.opacity = '1';
+          e.target.checked = !newState;
+          alert('Network error: ' + err.message);
+        });
+      });
+    });
 
     el.querySelectorAll('[data-manage-cmd]').forEach(function(input) {
       input.addEventListener('change', function(e) {

@@ -13,6 +13,8 @@ snapshots/
 .pytest_cache/
 FIELD_NOTES.md
 private-review/
+docs/turboquant-enhancements.md
+docs/internal/
 CLAUDE.md
 skills/token-optimizer/references/roadmap.md
 signatures/

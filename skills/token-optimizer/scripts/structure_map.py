@@ -224,7 +224,7 @@ def summarize_python_file(
     if source is None:
         try:
             source = path.read_text(encoding="utf-8", errors="replace")
-        except OSError as exc:
+        except OSError:
             return _build_fallback_result(
                 file_path=str(path),
                 language=detect_structure_language(path),

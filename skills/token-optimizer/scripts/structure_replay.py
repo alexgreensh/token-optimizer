@@ -26,7 +26,6 @@ import argparse
 import glob
 import hashlib
 import json
-import os
 import re
 import sys
 import tempfile
@@ -34,11 +33,10 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from structure_map import (
     StructureMapResult,
-    detect_structure_language,
     estimate_tokens,
     is_python_file,
     is_structure_supported_file,

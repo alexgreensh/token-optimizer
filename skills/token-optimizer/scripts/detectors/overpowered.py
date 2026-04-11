@@ -1,6 +1,5 @@
 """Overpowered model detector: expensive model used for simple tasks."""
 
-import json
 
 _TOP_TIER_MODELS = ("opus", "claude-opus")
 _SIMPLE_TOOLS = frozenset({"Read", "Glob", "Grep", "Edit", "Write", "Bash"})

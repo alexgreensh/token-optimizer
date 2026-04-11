@@ -12370,17 +12370,131 @@ def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=F
 # ========== Savings Dashboard (v3.0) ==========
 
 _SAVINGS_CATEGORY_LABELS = {
+    # Legacy categories (stored in savings_events)
     "setup_optimization": "Setup optimization",
     "tool_digest": "Tool digests",
     "checkpoint_restore": "Checkpoint restores",
     "tool_archive": "Tool archives",
     "structure_map": "Structure maps",
+    # v5 Active Compression categories (stored in compression_events).
+    # Keys must match the `feature=` strings passed to _log_compression_event()
+    # from read_cache.py and measure.py v5 paths.
+    "delta_read": "Delta reads",
+    "quality_nudge": "Quality nudges",
+    "loop_detection": "Loop detection",
+    "bash_compress_git": "Bash compress (git)",
+    "bash_compress_pytest": "Bash compress (pytest)",
+    "bash_compress_jest": "Bash compress (jest)",
+    "bash_compress_npm": "Bash compress (npm)",
+    "bash_compress_ls": "Bash compress (ls)",
+    # v5.1 bash compression handlers (labels land ahead of handlers so the
+    # display renders cleanly the moment a handler starts logging events)
+    "bash_compress_lint": "Bash compress (lint)",
+    "bash_compress_logs": "Bash compress (logs)",
+    "bash_compress_tree": "Bash compress (tree)",
+    "bash_compress_progress": "Bash compress (progress)",
+    "bash_compress_list": "Bash compress (list)",
+    "bash_compress_build": "Bash compress (build)",
+    "bash_compress_test_exts": "Bash compress (test runners)",
 }
 
 
+# v5 categories live in compression_events. savings_events stays authoritative
+# for legacy categories. The dedup rule: if the same key exists in both tables
+# for some reason, savings_events wins (legacy data already has cost_saved_usd
+# stored per-row). compression_events are only merged in when their key is NOT
+# already present in savings_events.
+_V5_COMPRESSION_CATEGORIES = {
+    "delta_read",
+    "quality_nudge",
+    "loop_detection",
+    "bash_compress_git",
+    "bash_compress_pytest",
+    "bash_compress_jest",
+    "bash_compress_npm",
+    "bash_compress_ls",
+    "bash_compress_lint",
+    "bash_compress_logs",
+    "bash_compress_tree",
+    "bash_compress_progress",
+    "bash_compress_list",
+    "bash_compress_build",
+    "bash_compress_test_exts",
+}
+
+
+def _estimate_compression_cost_per_mtok():
+    """Return USD cost per million input tokens for the active pricing tier.
+
+    Used to attribute $ savings to compression_events entries, which only
+    store token counts. Falls back to Sonnet's published rate on any error.
+    """
+    try:
+        tier = _load_pricing_tier()
+        tier_data = PRICING_TIERS.get(tier, PRICING_TIERS.get("anthropic", {}))
+        rates = tier_data.get("claude_models", {}).get("sonnet", {})
+        return float(rates.get("input", 3.0))
+    except Exception:
+        return 3.0
+
+
+def _get_merged_savings(days=30):
+    """Merge savings_events and compression_events into one unified savings view.
+
+    Dedup rule: legacy categories stay authoritative in savings_events.
+    v5 categories (delta_read, quality_nudge, loop_prevention, bash_compress_*)
+    come from compression_events. If a key somehow appears in both, savings_events
+    wins — compression_events rows are skipped for that key.
+    """
+    savings = _get_savings_summary(days=days)
+    compression = _get_compression_summary(days=days)
+
+    by_category = dict(savings.get("by_category", {}))
+    total_tokens = int(savings.get("total_tokens", 0) or 0)
+    total_cost = float(savings.get("total_cost_usd", 0.0) or 0.0)
+    total_events = int(savings.get("total_events", 0) or 0)
+
+    cost_per_mtok = _estimate_compression_cost_per_mtok()
+
+    for feature, fdata in compression.get("by_feature", {}).items():
+        if feature not in _V5_COMPRESSION_CATEGORIES:
+            continue  # only merge known v5 features; experimental keys stay out
+        if feature in by_category:
+            continue  # dedup: savings_events already owns this key
+        tokens_saved = int(fdata.get("tokens_saved", 0) or 0)
+        events = int(fdata.get("events", 0) or 0)
+        if tokens_saved <= 0 and events <= 0:
+            continue
+        cost_saved = round(tokens_saved * cost_per_mtok / 1_000_000, 4)
+        by_category[feature] = {
+            "events": events,
+            "tokens_saved": tokens_saved,
+            "cost_saved_usd": cost_saved,
+        }
+        total_tokens += tokens_saved
+        total_cost += cost_saved
+        total_events += events
+
+    return {
+        "total_tokens": total_tokens,
+        "total_cost_usd": round(total_cost, 4),
+        "total_events": total_events,
+        "by_category": by_category,
+        "daily_avg_usd": round(total_cost / max(days, 1), 4),
+        "period_days": days,
+    }
+
+
 def savings_report(days=30, as_json=False):
-    """Display cumulative savings from Token Optimizer actions."""
-    summary = _get_savings_summary(days=days)
+    """Display cumulative savings from Token Optimizer actions.
+
+    Merges the legacy savings_events table (setup optimization, tool digests,
+    checkpoint restores, etc.) with v5 Active Compression entries written to
+    compression_events (delta reads, quality nudges, loop prevention, bash
+    output compression). Dedup rule: legacy categories authoritative in
+    savings_events; v5 categories authoritative in compression_events.
+    """
+    summary = _get_merged_savings(days=days)
 
     if as_json:
         print(json.dumps(summary, indent=2))

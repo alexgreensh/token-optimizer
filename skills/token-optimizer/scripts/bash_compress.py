@@ -32,6 +32,7 @@ _TOKEN_PATTERNS = [
     re.compile(r"gho_[a-zA-Z0-9]{36}"),                   # GitHub OAuth
     re.compile(r"ghs_[a-zA-Z0-9]{36}"),                   # GitHub server-to-server
     re.compile(r"ghr_[a-zA-Z0-9]{36}"),                   # GitHub refresh
+    re.compile(r"github_pat_[a-zA-Z0-9_]{80,}"),          # GitHub fine-grained PAT
     re.compile(r"npm_[a-zA-Z0-9]{36}"),                   # npm token
     re.compile(r"xoxb-[0-9]+-[a-zA-Z0-9]+"),              # Slack bot token
     re.compile(r"xoxp-[0-9]+-[a-zA-Z0-9]+"),              # Slack user token
@@ -39,7 +40,14 @@ _TOKEN_PATTERNS = [
     re.compile(r"sk_live_[a-zA-Z0-9]{24,}"),              # Stripe live
     re.compile(r"rk_live_[a-zA-Z0-9]{24,}"),              # Stripe restricted
     re.compile(r"hf_[a-zA-Z0-9]{34}"),                    # HuggingFace
-    re.compile(r"Bearer\s+[a-zA-Z0-9\-._~+/]+=*", re.I), # Generic Bearer
+    re.compile(r"Bearer\s+[a-zA-Z0-9\-._~+/]+=*", re.I),  # Generic Bearer
+    # v5.1 additions — raised by security review, common in bash compression
+    # input families (docker, lint, build, logs).
+    re.compile(r"AIza[0-9A-Za-z_\-]{35}"),                # Google API key
+    re.compile(r"ya29\.[0-9A-Za-z_\-]{20,}"),             # Google OAuth access token
+    re.compile(r"eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}"),  # JWT
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),    # PEM private key header
+    re.compile(r"(?:postgres|postgresql|mysql|mongodb|mongodb\+srv|redis)://[^:\s/]+:[^@\s]+@", re.I),  # DB URI with password
 ]
 
 # ANSI escape code pattern
@@ -47,12 +55,24 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\]8;[^\x07]*\x07[^\x1b]*\x1b\]
 
 # Stderr patterns that indicate failure even with exit code 0 (linters often
 # emit errors on stderr but exit 0 because they only reported warnings).
+# Localised error markers are included so non-English toolchains still trip
+# the tee. The patterns are case-insensitive for Latin scripts and literal
+# for CJK scripts (case folding is a no-op there).
 _ERROR_STDERR_PATTERNS = [
     re.compile(r"\berror\s*:", re.I),
     re.compile(r"\bfatal\s*:", re.I),
     re.compile(r"\bpanic\s*:", re.I),
     re.compile(r"\bFAILED\b"),
     re.compile(r"\bTraceback\b"),
+    # Localised variants:
+    re.compile(r"\bfehler\s*:", re.I),       # German
+    re.compile(r"\berreur\s*:", re.I),       # French
+    re.compile(r"\berrore\s*:", re.I),       # Italian
+    re.compile(r"\bошибка\s*:", re.I),       # Russian
+    re.compile(r"错误\s*[:：]"),              # Chinese (simplified)
+    re.compile(r"錯誤\s*[:：]"),              # Chinese (traditional)
+    re.compile(r"エラー\s*[:：]"),            # Japanese
+    re.compile(r"오류\s*[:：]"),              # Korean
 ]
 
 
@@ -193,14 +213,19 @@ def _compress_git_diff(output):
     return "\n".join(result_lines)
 
 
+_PYTEST_SUMMARY_TAIL_LINES = 40
+
+
 def _compress_pytest(output):
     """Compress pytest/cypress/playwright/mocha/karma/rspec test output.
 
-    Extracts a block of trailing summary lines (anything containing passed,
-    passing, failed, failing, error, pending, or skipped) plus the explicit
+    Extracts trailing summary lines (anything containing passed, passing,
+    failed, failing, error, pending, or skipped) plus the explicit
     FAILURES/ERRORS section when pytest emits one. Cypress and playwright
-    speak in "passing" / "failing" terms, which the reverse-scan now accepts
-    so the same handler covers all five runners.
+    speak in "passing" / "failing" terms, so the reverse-scan accepts both
+    vocabularies. The scan window is bounded by ``_PYTEST_SUMMARY_TAIL_LINES``
+    to avoid walking the whole output on pathological inputs, but is wide
+    enough to survive 15-20 trailing warning lines emitted after the summary.
     """
     lines = output.strip().splitlines()
     if not lines:
@@ -210,17 +235,26 @@ def _compress_pytest(output):
                   "pending", "skipped")
 
     # Reverse-scan the tail for a contiguous block of summary lines.
+    # Accept up to 5 non-matching lines inside the block (trailing warnings)
+    # before declaring the summary region over.
     summary_block = []
-    for line in reversed(lines[-12:]):
+    non_match_run = 0
+    MAX_NON_MATCH = 5
+    for line in reversed(lines[-_PYTEST_SUMMARY_TAIL_LINES:]):
         stripped = line.strip().lstrip("=").strip()
         if not stripped:
             if summary_block:
-                continue  # tolerate blank spacers inside the block
+                non_match_run += 1
+                if non_match_run > MAX_NON_MATCH:
+                    break
             continue
         if any(kw in stripped.lower() for kw in summary_kw):
             summary_block.append(stripped)
+            non_match_run = 0
         elif summary_block:
-            break  # left the summary block
+            non_match_run += 1
+            if non_match_run > MAX_NON_MATCH:
+                break
     summary_block.reverse()
     summary_line = "\n".join(summary_block)
 
@@ -307,21 +341,31 @@ _LINT_CODE_PATTERNS = [
     re.compile(r"\(([a-z][a-z0-9]+)\)\s*$"),                # golangci (typecheck)
 ]
 
+# Prefixes that look like lint rule codes but are not. A line like
+# "vulnerable to CVE2024" or "HTTP404 on /api" would otherwise get grouped
+# as if CVE2024 / HTTP404 were linter rules. The handler discards matches
+# whose first two letters are any of these prefixes.
+_LINT_CODE_BLOCKLIST_PREFIXES = (
+    "CVE", "RFC", "ISO", "HTTP", "ISBN", "USD", "EUR", "GBP",
+    "JPY", "SHA", "MD5", "PGP", "TCP", "UDP", "DNS",
+)
+
 
 def _compress_build(output):
     """Compress JS/TS/Go build output (tsc/webpack/esbuild/vite/next/go build).
 
     Keeps lines that look like errors, warnings, or final summary markers.
     Drops the bulk of bundler chatter (asset lists, file size tables,
-    incremental compile stats) unless there is no error/warning signal at
-    all — in which case we fall back to a short "build finished cleanly"
-    marker so the caller still knows the build ran.
+    incremental compile stats). When there is no recognisable error/warning
+    or summary signal at all, returns the raw output unchanged — the 10%
+    ratio gate in ``compress()`` then throws the compression away on its own.
+    The handler never fabricates a positive "build clean" claim.
     """
     lines = output.splitlines()
     if len(lines) < 20:
         return output
 
-    error_kw = ("error", "warning", "failed", "fatal", " tsc ", " ts(")
+    error_kw = ("error", "warning", "failed", "fatal")
     summary_kw = (
         "compiled successfully", "built in", "build finished",
         "build completed", "done in", "errors", "warnings",
@@ -345,10 +389,11 @@ def _compress_build(output):
             summaries.append(stripped)
 
     if not errors and not summaries:
-        # No recognisable signal — fall back to a tiny marker so caller
-        # still sees SOMETHING, but the compression ratio gate will reject
-        # if the raw was too short for this to be worth anything.
-        return "[build output: no errors or warnings detected; output elided]"
+        # No recognisable signal — hand the raw output back unchanged. The
+        # 10% ratio gate in compress() will see zero compression and also
+        # return raw. Do NOT fabricate a "no errors detected" marker: that
+        # would be a positive claim about build state we cannot verify.
+        return output
 
     parts = []
     if errors:
@@ -425,8 +470,10 @@ def _compress_progress(output):
     )
     # docker-buildx progress markers: `#12 DONE 0.1s`, `#12 ...`, etc.
     docker_progress_re = re.compile(r"^#\d+\s+")
-    # layer fetch progress (docker pull / buildx)
-    pull_progress_re = re.compile(r"^[a-f0-9]{12}:\s+(Pulling|Waiting|Already|Extracting|Download|Verifying)")
+    # docker pull layer fetch progress (shows up as `abc123456789: Pulling...`)
+    pull_progress_re = re.compile(
+        r"^[a-f0-9]{12}:\s+(Pulling|Waiting|Already|Extracting|Download|Verifying)"
+    )
 
     keep = []
     dropped = 0
@@ -520,14 +567,18 @@ def _compress_tree(output):
 
 
 def _compress_logs(output):
-    """Compress log-like output (tail/cat/journalctl).
+    """Compress log-like output (tail/journalctl).
 
     Detects runs of adjacent duplicate lines and collapses them to a single
     line plus a "(xN)" marker. Only activates when the duplicate rate is at
-    least 30% of the input, so normal mixed logs pass through raw. Credentials
-    appearing inside log lines are preserved through the pre-compression token
-    scan; the re-injection path also guarantees at least one verbatim copy of
-    a deduped line containing a credential survives.
+    least 30% of the input, so normal mixed logs pass through raw.
+
+    Credential safety: the collapsed line is ``<original>  (xN)``, so the
+    original line text is kept verbatim as a prefix. Any credential on the
+    line is therefore preserved by the line itself — the pre-compression
+    token scan still runs as a backstop, and its re-injection check (``if
+    preserved_line not in compressed_text``) correctly finds the credential
+    as a substring and skips adding a duplicate copy.
     """
     lines = output.splitlines()
     if len(lines) < 20:
@@ -580,7 +631,11 @@ def _compress_lint(output):
         for pat in _LINT_CODE_PATTERNS:
             m = pat.search(stripped)
             if m:
-                matched_code = m.group(1)
+                candidate = m.group(1)
+                # Reject non-lint prefixes (CVE2024, HTTP404, ISO9001, etc.)
+                if candidate.startswith(_LINT_CODE_BLOCKLIST_PREFIXES):
+                    continue
+                matched_code = candidate
                 break
         if matched_code:
             counts[matched_code] = counts.get(matched_code, 0) + 1
@@ -651,6 +706,10 @@ def _detect_pattern(command_str):
             return "git_log"
         elif subcmd in ("diff", "show"):
             return "git_diff"
+        elif subcmd in ("branch",):
+            # `git branch` lists branches — route through the list handler
+            # so long branch lists truncate with a summary.
+            return "list"
     elif cmd in ("pytest", "py.test") or (cmd in ("python", "python3") and subcmd == "-m" and
                                            cmd_start + 2 < len(tokens) and tokens[cmd_start + 2] == "pytest"):
         return "pytest"
@@ -677,6 +736,11 @@ def _detect_pattern(command_str):
         return "pytest"
     elif cmd == "npm" and subcmd in ("install", "ci"):
         return "npm_install"
+    elif cmd == "npm" and subcmd == "test":
+        # `npm test` dispatches to whatever the project wires up, usually
+        # jest/vitest/mocha. Route through the pytest handler, which
+        # understands all of them.
+        return "pytest"
     elif cmd in ("pip", "pip3") and subcmd == "install":
         return "npm_install"
     elif cmd == "cargo" and subcmd == "build":
@@ -692,10 +756,9 @@ def _detect_pattern(command_str):
         return "lint"
     elif cmd == "golangci-lint" and subcmd == "run":
         return "lint"
-    # v5.1 logs handler (read-only log inspection)
+    # v5.1 logs handler (read-only log inspection). `cat` is intentionally
+    # NOT whitelisted — only tail and journalctl, which are log-specific.
     elif cmd in ("tail", "journalctl"):
-        return "logs"
-    elif cmd == "cat" and subcmd and subcmd.endswith(".log"):
         return "logs"
     # v5.1 tree handler
     elif cmd == "tree":
@@ -824,6 +887,17 @@ def main():
         stdout = result.stdout or ""
         stderr = result.stderr or ""
         raw_output = stdout + stderr
+
+        # Memory safety: commands like `find /`, `tree /`, or `journalctl`
+        # under a large time window can emit hundreds of MB through
+        # capture_output. Compression would duplicate that payload multiple
+        # times across regex scans and rebuilt strings, so above 5MB we
+        # emit raw and skip the compression path entirely.
+        MAX_COMPRESS_BYTES = 5 * 1024 * 1024
+        if len(raw_output.encode("utf-8", errors="replace")) > MAX_COMPRESS_BYTES:
+            sys.stdout.write(raw_output)
+            sys.stdout.flush()
+            sys.exit(result.returncode)
 
         compressed = compress(
             command_str,

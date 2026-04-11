@@ -12576,26 +12576,33 @@ def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=F
 
 # ========== Savings Dashboard (v3.0) ==========
 
-_SAVINGS_CATEGORY_LABELS = {
-    # Legacy categories (stored in savings_events)
+# Legacy savings categories — stored in the savings_events table and
+# maintained across v2 / v3 / v4. Each key corresponds to an event_type
+# passed to _log_savings_event().
+_LEGACY_SAVINGS_LABELS = {
     "setup_optimization": "Setup optimization",
     "tool_digest": "Tool digests",
     "checkpoint_restore": "Checkpoint restores",
     "tool_archive": "Tool archives",
     "structure_map": "Structure maps",
-    # v5 Active Compression categories (stored in compression_events).
-    # Keys must match the `feature=` strings passed to _log_compression_event()
-    # from read_cache.py and measure.py v5 paths.
+}
+
+# v5 Active Compression categories — stored in compression_events and
+# written by read_cache.py / measure.py v5 paths. Keys must match the
+# `feature=` strings passed to _log_compression_event().
+_V5_COMPRESSION_LABELS = {
     "delta_read": "Delta reads",
     "quality_nudge": "Quality nudges",
     "loop_detection": "Loop detection",
+    # v5.0 bash compression handlers
     "bash_compress_git": "Bash compress (git)",
     "bash_compress_pytest": "Bash compress (pytest)",
     "bash_compress_jest": "Bash compress (jest)",
     "bash_compress_npm": "Bash compress (npm)",
     "bash_compress_ls": "Bash compress (ls)",
-    # v5.1 bash compression handlers (labels land ahead of handlers so the
-    # display renders cleanly the moment a handler starts logging events)
+    # v5.1 bash compression handlers (labels ship ahead of the handlers'
+    # own telemetry writers, so the display renders cleanly the moment a
+    # handler starts logging events).
     "bash_compress_lint": "Bash compress (lint)",
     "bash_compress_logs": "Bash compress (logs)",
     "bash_compress_tree": "Bash compress (tree)",
@@ -12605,29 +12612,16 @@ _SAVINGS_CATEGORY_LABELS = {
     "bash_compress_test_exts": "Bash compress (test runners)",
 }
 
+# Unified label dict used by the savings-report renderer. Legacy entries
+# are authoritative when a key ever collides (dedup rule in
+# _get_merged_savings).
+_SAVINGS_CATEGORY_LABELS = {**_LEGACY_SAVINGS_LABELS, **_V5_COMPRESSION_LABELS}
 
-# v5 categories live in compression_events. savings_events stays authoritative
-# for legacy categories. The dedup rule: if the same key exists in both tables
-# for some reason, savings_events wins (legacy data already has cost_saved_usd
-# stored per-row). compression_events are only merged in when their key is NOT
-# already present in savings_events.
-_V5_COMPRESSION_CATEGORIES = {
-    "delta_read",
-    "quality_nudge",
-    "loop_detection",
-    "bash_compress_git",
-    "bash_compress_pytest",
-    "bash_compress_jest",
-    "bash_compress_npm",
-    "bash_compress_ls",
-    "bash_compress_lint",
-    "bash_compress_logs",
-    "bash_compress_tree",
-    "bash_compress_progress",
-    "bash_compress_list",
-    "bash_compress_build",
-    "bash_compress_test_exts",
-}
+# Derived whitelist: the set of feature keys that _get_merged_savings is
+# allowed to pull out of compression_events. Deriving this from the label
+# dict keeps the two in lockstep — add a key to _V5_COMPRESSION_LABELS and
+# it automatically shows up in the merged view.
+_V5_COMPRESSION_CATEGORIES = frozenset(_V5_COMPRESSION_LABELS.keys())
 
 
 def _estimate_compression_cost_per_mtok():

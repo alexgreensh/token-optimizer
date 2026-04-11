@@ -54,6 +54,9 @@ _WHITELIST_COMPOUND = {
     ("ruff", "check"),
     ("biome", "lint"),
     ("golangci-lint", "run"),
+    # v5.1 progress handler (docker build/pull — read-only layer fetch)
+    ("docker", "build"),
+    ("docker", "pull"),
 }
 
 # Git write commands that should NOT be compressed

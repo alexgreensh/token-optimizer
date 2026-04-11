@@ -291,6 +291,65 @@ _LINT_CODE_PATTERNS = [
 ]
 
 
+def _compress_progress(output):
+    """Compress build progress output (docker build, cargo build verbose, etc.).
+
+    Drops noisy progress lines (layer staging, "Downloading", "Extracting",
+    cache hit indicators) and keeps lines that signal status, warnings,
+    errors, or final outcomes. Safe for pip install / cargo build / docker
+    build style output. Unknown lines fall through as summary context when
+    there are few enough of them to matter.
+    """
+    lines = output.splitlines()
+    if len(lines) < 20:
+        return output
+
+    noisy_prefixes = (
+        "Downloading ", "Collecting ", "Resolving ", "Building wheels ",
+        "Created wheel", "Using cached ", "Requirement already ",
+        "Extracting", "Transferring",
+    )
+    # docker-buildx progress markers: `#12 DONE 0.1s`, `#12 ...`, etc.
+    docker_progress_re = re.compile(r"^#\d+\s+")
+    # layer fetch progress (docker pull / buildx)
+    pull_progress_re = re.compile(r"^[a-f0-9]{12}:\s+(Pulling|Waiting|Already|Extracting|Download|Verifying)")
+
+    keep = []
+    dropped = 0
+    for raw in lines:
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        low = stripped.lower()
+
+        # Always keep errors, warnings, failures, and final success markers.
+        if any(kw in low for kw in ("error", "warning", "fail", "fatal",
+                                    "successfully", "built ",
+                                    "installed", "complete", "naming to",
+                                    "exporting")):
+            keep.append(stripped)
+            continue
+
+        # Drop noisy progress chatter.
+        if stripped.startswith(noisy_prefixes):
+            dropped += 1
+            continue
+        if docker_progress_re.match(stripped) and "DONE" not in stripped:
+            dropped += 1
+            continue
+        if pull_progress_re.match(stripped):
+            dropped += 1
+            continue
+
+        # Keep everything else as context.
+        keep.append(stripped)
+
+    if dropped < max(10, len(lines) // 4):
+        return output  # not noisy enough to justify compression
+
+    return "\n".join(keep)
+
+
 def _tree_line_depth(line):
     """Return the logical depth of a `tree` output line.
 
@@ -512,6 +571,9 @@ def _detect_pattern(command_str):
     # v5.1 tree handler
     elif cmd == "tree":
         return "tree"
+    # v5.1 progress handler (docker build, docker pull)
+    elif cmd == "docker" and subcmd in ("build", "pull"):
+        return "progress"
 
     return None
 
@@ -527,6 +589,7 @@ _PATTERN_HANDLERS = {
     "lint": _compress_lint,
     "logs": _compress_logs,
     "tree": _compress_tree,
+    "progress": _compress_progress,
 }
 
 

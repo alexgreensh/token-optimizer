@@ -5,12 +5,14 @@ __pycache__/
 .DS_Store
 *.egg-info/
 dist/
+!openclaw/dist/
 build/
 node_modules/
 .venv/
 venv/
 snapshots/
 .pytest_cache/
+tests/
 FIELD_NOTES.md
 compound-engineering.local.md
 private-review/

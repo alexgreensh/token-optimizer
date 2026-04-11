@@ -7,7 +7,7 @@
   },
   "homepage": "https://github.com/alexgreensh/token-optimizer",
   "repository": "https://github.com/alexgreensh/token-optimizer",
-  "version": "5.0.3",
+  "version": "5.0.4",
   "license": "PolyForm-Noncommercial-1.0.0",
   "keywords": ["token", "optimization", "context", "audit", "cost", "coach"]
 }

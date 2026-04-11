@@ -69,6 +69,7 @@ import os
 import glob
 import re
 import shlex
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -1397,14 +1398,14 @@ def quick_scan(as_json=False):
         return result
 
     # Pretty print
-    print(f"\nTOKEN OPTIMIZER: QUICK SCAN")
+    print("\nTOKEN OPTIMIZER: QUICK SCAN")
     print(f"{'=' * 40}")
     print(f"  Context window:      {ctx_window:,} tokens ({ctx_label}, {ctx_source})")
     print(f"  Startup overhead:    {overhead:,} tokens ({overhead_pct:.1f}%)")
     print(f"  Usable before degradation: ~{usable_before_degradation:,} (50% fill = peak quality zone)")
     print(f"  Messages before auto-compact: ~{msgs_before_compact} at typical message size")
 
-    print(f"\n  DEGRADATION RISK")
+    print("\n  DEGRADATION RISK")
     print(f"    Current startup fill:  {fill_pct * 100:.0f}% ({overhead:,}) -- {band_name}")
     print(f"    Quality estimate:      {grade} ({quality_est}/100) (MRCR-based at this fill level)")
     next_danger = int(ctx_window * 0.50)
@@ -1413,12 +1414,12 @@ def quick_scan(as_json=False):
     print(f"    Auto-compact fires at: ~{compact_at:,} (60-70% of context LOST per compaction)")
 
     if top_offenders:
-        print(f"\n  TOP OFFENDERS")
+        print("\n  TOP OFFENDERS")
         for i, (_, count, tokens, detail) in enumerate(top_offenders, 1):
             print(f"    {i}. {detail}: {tokens:,} tokens")
 
     if quick_win:
-        print(f"\n  #1 QUICK WIN")
+        print("\n  #1 QUICK WIN")
         print(f"    {quick_win['action']} -> {quick_win['detail']}")
         print(f"    {quick_win['extend']}")
 
@@ -1426,14 +1427,14 @@ def quick_scan(as_json=False):
     mem_lines = mem.get("lines", 0)
     if mem_lines > 200:
         print(f"\n  MEMORY.md: {mem_lines} lines ({mem_lines - 200} over 200-line visible limit)")
-        print(f"    Run: python3 $MEASURE_PY memory-review  (structural breakdown + fix suggestions)")
+        print("    Run: python3 $MEASURE_PY memory-review  (structural breakdown + fix suggestions)")
 
     if coaching:
-        print(f"\n  COACHING INSIGHT")
+        print("\n  COACHING INSIGHT")
         print(f"    {coaching}")
 
-    print(f"\n  Full audit + fixes: /token-optimizer")
-    print(f"  Health check: python3 $MEASURE_PY doctor")
+    print("\n  Full audit + fixes: /token-optimizer")
+    print("  Health check: python3 $MEASURE_PY doctor")
     print()
 
 
@@ -1476,7 +1477,7 @@ def doctor(as_json=False):
     total += 1
     ctx_window, ctx_source = detect_context_window()
     ctx_label = _fmt_context_window(ctx_window)
-    checks.append(("OK", f"Context window", f"{ctx_label} detected ({ctx_source})"))
+    checks.append(("OK", "Context window", f"{ctx_label} detected ({ctx_source})"))
     score += 1
 
     # 4. SessionEnd hook (plugin hooks.json auto-installs these, so check for plugin too)
@@ -1616,7 +1617,7 @@ def doctor(as_json=False):
         return result
 
     # Pretty print
-    print(f"\nTOKEN OPTIMIZER DOCTOR")
+    print("\nTOKEN OPTIMIZER DOCTOR")
     print(f"{'=' * 40}")
     for status, name, detail in checks:
         icon = "[OK]" if status == "OK" else "[!!]"
@@ -1779,24 +1780,24 @@ def git_context(as_json=False):
         return result
 
     # Pretty print
-    print(f"\n  GIT CONTEXT SUGGESTIONS")
+    print("\n  GIT CONTEXT SUGGESTIONS")
     print(f"  {'=' * 40}")
     print(f"  Modified files ({len(modified)}):")
     for f in sorted(modified):
         print(f"    {f}")
 
     if test_companions:
-        print(f"\n  Test companions (add to context):")
+        print("\n  Test companions (add to context):")
         for tc in test_companions:
             print(f"    {tc['test']}  (tests {tc['source']})")
 
     if top_co:
-        print(f"\n  Frequently co-changed (consider adding):")
+        print("\n  Frequently co-changed (consider adding):")
         for f, n in top_co:
             print(f"    {f}  ({n}x in last 50 commits)")
 
     if import_chain:
-        print(f"\n  Import chain (dependencies):")
+        print("\n  Import chain (dependencies):")
         for ic in import_chain:
             print(f"    {ic['source']} imports:")
             for imp in ic["imports"]:
@@ -1806,7 +1807,7 @@ def git_context(as_json=False):
     if total_suggestions > 0:
         print(f"\n  Total: {total_suggestions} suggested files to add to context")
     else:
-        print(f"\n  No additional context suggestions. Modified files are self-contained.")
+        print("\n  No additional context suggestions. Modified files are self-contained.")
     print()
     return result
 
@@ -1924,9 +1925,9 @@ def drift_check(as_json=False):
             if msgs_lost > 0:
                 print(f"          You'll hit degradation ~{msgs_lost} message{'s' if msgs_lost != 1 else ''} sooner per session.")
     else:
-        print(f"\n  No significant drift. Your setup is stable.")
+        print("\n  No significant drift. Your setup is stable.")
 
-    print(f"\n  Run /token-optimizer to fix.")
+    print("\n  Run /token-optimizer to fix.")
     print()
 
     # Auto-save new snapshot
@@ -1997,7 +1998,7 @@ def take_snapshot(label):
         json.dump(snapshot, f, indent=2, default=str)
 
     print(f"\n[Token Optimizer] Snapshot '{label}' saved to {filepath}")
-    print(f"  [Note] Snapshot contains system config details. Do not share publicly.")
+    print("  [Note] Snapshot contains system config details. Do not share publicly.")
     print_snapshot_summary(snapshot)
     return snapshot
 
@@ -2092,7 +2093,7 @@ def print_snapshot_summary(snapshot):
     if baselines:
         avg = sum(b["baseline_tokens"] for b in baselines) / len(baselines)
         print(f"\n  Real session baseline (avg of {len(baselines)}): {avg:,.0f} tokens")
-        print(f"  (includes system reminders, conversation history, etc.)")
+        print("  (includes system reminders, conversation history, etc.)")
 
     # Extras
     exclusion = c.get("file_exclusion", {})
@@ -2120,7 +2121,7 @@ def print_snapshot_summary(snapshot):
     # Settings local
     settings_local = c.get("settings_local", {})
     if settings_local.get("exists"):
-        print(f"  settings.local.json: Found")
+        print("  settings.local.json: Found")
 
     # Verbose skill descriptions
     quality = c.get("skill_frontmatter_quality", {})
@@ -2154,7 +2155,7 @@ def compare_snapshots():
             before = json.load(f)
     except (json.JSONDecodeError, OSError) as e:
         print(f"\n[Error] Cannot read 'before' snapshot: {e}")
-        print(f"  Re-run: python3 measure.py snapshot before")
+        print("  Re-run: python3 measure.py snapshot before")
         return
 
     try:
@@ -2162,7 +2163,7 @@ def compare_snapshots():
             after = json.load(f)
     except (json.JSONDecodeError, OSError) as e:
         print(f"\n[Error] Cannot read 'after' snapshot: {e}")
-        print(f"  Re-run: python3 measure.py snapshot after")
+        print("  Re-run: python3 measure.py snapshot after")
         return
 
     # Warn if 'before' snapshot is stale (>24h old)
@@ -2179,7 +2180,7 @@ def compare_snapshots():
     ac = after["components"]
 
     print(f"\n{'=' * 65}")
-    print(f"  TOKEN OPTIMIZER - BEFORE vs AFTER")
+    print("  TOKEN OPTIMIZER - BEFORE vs AFTER")
     print(f"  Before: {before['timestamp'][:16]}")
     print(f"  After:  {after['timestamp'][:16]}")
     print(f"{'=' * 65}")
@@ -2305,8 +2306,8 @@ def compare_snapshots():
         avg_after = sum(b["baseline_tokens"] for b in ab) / len(ab)
         if abs(avg_before - avg_after) < 100:
             print(f"\n  Session baselines: {avg_before:,.0f} -> {avg_after:,.0f} tokens")
-            print(f"  [Note] These are from the same recent sessions. Start new sessions")
-            print(f"         after optimizing to see real baseline changes.")
+            print("  [Note] These are from the same recent sessions. Start new sessions")
+            print("         after optimizing to see real baseline changes.")
         else:
             print(f"\n  Real session baseline: {avg_before:,.0f} -> {avg_after:,.0f} tokens")
 
@@ -2331,13 +2332,13 @@ def full_report():
     }
 
     print(f"\n{'=' * 55}")
-    print(f"  TOKEN OVERHEAD REPORT")
+    print("  TOKEN OVERHEAD REPORT")
     print(f"{'=' * 55}")
 
     print_snapshot_summary(snapshot)
 
     if baselines:
-        print(f"\n  --- Recent Session Baselines (from JSONL logs) ---")
+        print("\n  --- Recent Session Baselines (from JSONL logs) ---")
         for b in baselines:
             dt = b["date"][:16]
             print(f"    {dt}  {b['baseline_tokens']:>7,} tokens")
@@ -2360,7 +2361,7 @@ def _open_in_browser(filepath):
             raise OSError(f"Unsupported platform: {system}")
     except (subprocess.CalledProcessError, OSError, FileNotFoundError):
         url = Path(filepath).as_uri()
-        print(f"\n  Could not auto-open browser. Open manually:")
+        print("\n  Could not auto-open browser. Open manually:")
         print(f"  {url}")
 
 
@@ -2567,11 +2568,11 @@ def _serve_dashboard(filepath, port=8080, host="127.0.0.1"):
             self.end_headers()
 
     display_host = "localhost" if host == "127.0.0.1" else host
-    print(f"\n  Serving dashboard at:")
+    print("\n  Serving dashboard at:")
     print(f"    http://{display_host}:{port}/")
     if host == "0.0.0.0":
-        print(f"    (accessible from any machine on your network)")
-    print(f"\n  Press Ctrl+C to stop.\n")
+        print("    (accessible from any machine on your network)")
+    print("\n  Press Ctrl+C to stop.\n")
 
     with socketserver.TCPServer((host, port), DashboardHandler) as httpd:
         try:
@@ -2721,7 +2722,7 @@ def generate_dashboard(coord_path):
 
     # Open in browser
     _open_in_browser(out_path)
-    print(f"  Opened in browser.")
+    print("  Opened in browser.")
     return str(out_path)
 
 
@@ -2921,10 +2922,10 @@ def plugin_cleanup(dry_run=False, quiet=False):
         skills_stale = [d for d in stale_dirs if d["has_skills"]]
         if not quiet:
             print(f"\n  Stale plugin cache: {len(stale_dirs)} unreferenced dirs ({len(skills_stale)} with skills)")
-            print(f"    These are NOT auto-deleted (Claude Code's loader may still use them).")
-            print(f"    Review manually: ls ~/.claude/plugins/cache/")
+            print("    These are NOT auto-deleted (Claude Code's loader may still use them).")
+            print("    Review manually: ls ~/.claude/plugins/cache/")
     elif not quiet:
-        print(f"\n  Stale plugin cache: clean")
+        print("\n  Stale plugin cache: clean")
 
     # --- Fix 2: Local skills that duplicate plugin skills ---
     # Scan plugin skills to get the set of skill directory names
@@ -3019,14 +3020,14 @@ def plugin_cleanup(dry_run=False, quiet=False):
                     if not quiet:
                         print(f"    [error] {item.name}: {e}")
     elif not quiet:
-        print(f"  Local/plugin overlaps: none")
+        print("  Local/plugin overlaps: none")
 
     if not quiet:
         if actions_taken:
             print(f"\n  {len(actions_taken)} fixes applied. Restart Claude Code to take effect.")
             print(f"  Restore archived skills from: {backups_dir}/skills-deduped-*/")
         elif not dry_run:
-            print(f"\n  Everything clean. No duplicates found.")
+            print("\n  Everything clean. No duplicates found.")
         print()
 
     return actions_taken
@@ -3251,10 +3252,10 @@ def generate_standalone_dashboard(days=30, quiet=False):
             memory_dir = mem_path.parent
             parsed = _mr_parse_memory_index(str(mem_path))
             files_on_disk = _mr_scan_topic_files(str(memory_dir))
-            linked_basenames = {Path(l["target"]).name for l in parsed["links_all"]}
+            linked_basenames = {Path(link["target"]).name for link in parsed["links_all"]}
             files_set = set(files_on_disk)
             orphan_count = len(files_set - linked_basenames)
-            broken_count = len([l for l in parsed["links_all"] if Path(l["target"]).name not in files_set])
+            broken_count = len([link for link in parsed["links_all"] if Path(link["target"]).name not in files_set])
             total_lines = parsed["total_lines"]
             sev_medium = (1 if total_lines > _MR_MEMORY_LINE_LIMIT else 0) + (1 if broken_count > 0 else 0)
             mr_data = {
@@ -3928,7 +3929,7 @@ def generate_coach_data(focus=None, components=None, trends=None):
             "severity": "medium",
             "detail": f"{mcp_servers} MCP servers ({mcp_tokens:,} tokens, {mcp_pct:.1f}% of context)",
             "fix": "Disable unused servers in settings.json",
-            "savings": f"~50-100 tokens per disabled server",
+            "savings": "~50-100 tokens per disabled server",
         })
         score -= 5
     elif mcp_servers > 0:
@@ -4299,7 +4300,7 @@ def generate_coach_block(components=None, trends=None):
             trends = None
 
     lines = [
-        f"## Session Coaching (by Token Optimizer)",
+        "## Session Coaching (by Token Optimizer)",
     ]
 
     # Compaction timing
@@ -5062,8 +5063,6 @@ def _load_overhead_snapshots():
 
 # ========== SQLite Trends DB ==========
 # Pure Python, no Claude API. Runs standalone via `measure.py collect`.
-
-import sqlite3
 
 TRENDS_DB = SNAPSHOT_DIR / "trends.db"
 
@@ -6272,7 +6271,7 @@ def usage_trends(days=30, as_json=False):
     installed_count = trends["skills"]["installed_count"]
     never_used = trends["skills"]["never_used"]
 
-    print(f"\nSKILLS")
+    print("\nSKILLS")
     if skill_sessions:
         print(f"  Used ({len(skill_sessions)} of {installed_count} installed):")
         for skill, count in sorted(skill_sessions.items(), key=lambda x: -x[1])[:15]:
@@ -6301,14 +6300,14 @@ def usage_trends(days=30, as_json=False):
 
     total_subagents = trends["subagents"]
     if total_subagents:
-        print(f"\nSUBAGENTS")
+        print("\nSUBAGENTS")
         for agent, count in sorted(total_subagents.items(), key=lambda x: -x[1]):
             dots = "." * max(2, 30 - len(agent))
             print(f"  {agent} {dots} {count} spawned")
 
     total_model_tokens = trends["model_mix"]
     if total_model_tokens:
-        print(f"\nMODEL MIX")
+        print("\nMODEL MIX")
         grand_total = sum(total_model_tokens.values())
         for model, tokens in sorted(total_model_tokens.items(), key=lambda x: -x[1]):
             pct = tokens / grand_total * 100 if grand_total else 0
@@ -6318,7 +6317,7 @@ def usage_trends(days=30, as_json=False):
     trajectory = trends.get("trajectory", {})
     snapshots = trajectory.get("snapshots", [])
     if snapshots:
-        print(f"\nOVERHEAD TRAJECTORY (from saved snapshots)")
+        print("\nOVERHEAD TRAJECTORY (from saved snapshots)")
         for snap in snapshots:
             ts = snap["timestamp"][:10] if snap["timestamp"] else "unknown"
             label = snap["label"]
@@ -6586,16 +6585,16 @@ def session_health():
     automated = health["automated"]
     recommendations = health["recommendations"]
 
-    print(f"\nSESSION HEALTH CHECK")
+    print("\nSESSION HEALTH CHECK")
     print("=" * 55)
 
     if installed_version:
         print(f"\n  Installed version: {installed_version}")
     else:
-        print(f"\n  Installed version: unknown (could not run 'claude --version')")
+        print("\n  Installed version: unknown (could not run 'claude --version')")
 
     if not running_sessions:
-        print(f"\n  No running Claude Code CLI sessions found.")
+        print("\n  No running Claude Code CLI sessions found.")
     else:
         print(f"\nRUNNING SESSIONS ({len(running_sessions)})")
 
@@ -6607,12 +6606,12 @@ def session_health():
             print(f"             Version: {version_str}{flag_str}")
 
         if recommendations:
-            print(f"\nRECOMMENDATIONS")
+            print("\nRECOMMENDATIONS")
             for rec in recommendations:
                 print(f"  - {rec}")
 
     if automated:
-        print(f"\nAUTOMATED PROCESSES")
+        print("\nAUTOMATED PROCESSES")
         for proc in automated:
             print(f"  {proc}")
 
@@ -6654,7 +6653,7 @@ def kill_stale_sessions(threshold_hours=12, dry_run=False):
 
     if dry_run:
         print(f"\n  Dry run. Would kill {len(stale)} process{'es' if len(stale) != 1 else ''}.")
-        print(f"  Run without --dry-run to terminate them.\n")
+        print("  Run without --dry-run to terminate them.\n")
         return
 
     killed = 0
@@ -6670,7 +6669,7 @@ def kill_stale_sessions(threshold_hours=12, dry_run=False):
     print(f"\n  Terminated {killed} stale session{'s' if killed != 1 else ''}.")
     if killed > 0:
         print(f"  These were Claude Code processes running >{threshold_hours}h.")
-        print(f"  Your active terminal sessions are unaffected.\n")
+        print("  Your active terminal sessions are unaffected.\n")
 
 
 # ========== Hook Management ==========
@@ -6937,16 +6936,16 @@ def setup_hook(dry_run=False):
     if dry_run:
         action = "upgrade" if upgrading else "install"
         print(f"[Token Optimizer] Dry run. Would {action} a SessionEnd hook.\n")
-        print(f"  What it does:")
-        print(f"    When you close a Claude Code session, it automatically:")
-        print(f"    1. Saves your session stats (skills used, tokens, model mix)")
-        print(f"    2. Refreshes your dashboard with the latest data\n")
-        print(f"  Where data is stored:")
+        print("  What it does:")
+        print("    When you close a Claude Code session, it automatically:")
+        print("    1. Saves your session stats (skills used, tokens, model mix)")
+        print("    2. Refreshes your dashboard with the latest data\n")
+        print("  Where data is stored:")
         print(f"    {SNAPSHOT_DIR / 'trends.db'}")
         print(f"    {DASHBOARD_PATH}\n")
-        print(f"  JSON that would be added to settings.json:")
+        print("  JSON that would be added to settings.json:")
         print(json.dumps(hooks.get("SessionEnd", []), indent=2))
-        print(f"\n  No changes written.")
+        print("\n  No changes written.")
         return
 
     # Backup settings.json
@@ -6964,11 +6963,11 @@ def setup_hook(dry_run=False):
         action = "upgraded" if upgrading else "installed"
         print(f"[Token Optimizer] SessionEnd hook {action}.")
         print(f"  Backup: {backup_path}")
-        print(f"  Hook collects data + regenerates dashboard after each session.")
+        print("  Hook collects data + regenerates dashboard after each session.")
         print(f"  Dashboard: {DASHBOARD_PATH}")
     except PermissionError:
         print(f"[Error] Permission denied writing {SETTINGS_PATH}.")
-        print(f"Add this manually to your settings.json hooks.SessionEnd:\n")
+        print("Add this manually to your settings.json hooks.SessionEnd:\n")
         print(json.dumps({"type": "command", "command": HOOK_COMMAND, "async": True}, indent=2))
         sys.exit(1)
 
@@ -7500,7 +7499,7 @@ def setup_daemon(dry_run=False, uninstall=False):
             subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}", str(PLIST_PATH)],
                            capture_output=True)
             PLIST_PATH.unlink()
-            print(f"[Token Optimizer] Dashboard daemon removed.")
+            print("[Token Optimizer] Dashboard daemon removed.")
             print(f"  Deleted: {PLIST_PATH}")
         else:
             print("[Token Optimizer] No daemon installed. Nothing to remove.")
@@ -7512,19 +7511,19 @@ def setup_daemon(dry_run=False, uninstall=False):
         return
 
     if dry_run:
-        print(f"[Token Optimizer] Dry run. Would install:\n")
-        print(f"  A tiny web server that makes your dashboard available at:")
+        print("[Token Optimizer] Dry run. Would install:\n")
+        print("  A tiny web server that makes your dashboard available at:")
         print(f"    http://localhost:{DAEMON_PORT}/token-optimizer\n")
-        print(f"  What it does:")
-        print(f"    - Serves your dashboard file so you can bookmark the URL")
-        print(f"    - Starts automatically when you log into your Mac")
-        print(f"    - Restarts itself if it ever stops")
-        print(f"    - Only accessible from your machine (localhost)")
-        print(f"    - Uses ~2MB of memory\n")
-        print(f"  Files it creates:")
+        print("  What it does:")
+        print("    - Serves your dashboard file so you can bookmark the URL")
+        print("    - Starts automatically when you log into your Mac")
+        print("    - Restarts itself if it ever stops")
+        print("    - Only accessible from your machine (localhost)")
+        print("    - Uses ~2MB of memory\n")
+        print("  Files it creates:")
         print(f"    {SNAPSHOT_DIR / 'dashboard-server.py'}")
         print(f"    {PLIST_PATH}\n")
-        print(f"  No changes written.")
+        print("  No changes written.")
         return
 
     # Ensure dashboard exists first
@@ -7574,14 +7573,14 @@ def setup_daemon(dry_run=False, uninstall=False):
         running = False
 
     if running:
-        print(f"[Token Optimizer] Dashboard server installed and running.\n")
-        print(f"  Bookmark this URL:")
+        print("[Token Optimizer] Dashboard server installed and running.\n")
+        print("  Bookmark this URL:")
         print(f"    http://localhost:{DAEMON_PORT}/token-optimizer\n")
-        print(f"  It updates automatically after every Claude Code session.")
-        print(f"  Starts on login, so the URL always works.\n")
-        print(f"  To remove: python3 measure.py setup-daemon --uninstall")
+        print("  It updates automatically after every Claude Code session.")
+        print("  Starts on login, so the URL always works.\n")
+        print("  To remove: python3 measure.py setup-daemon --uninstall")
     else:
-        print(f"[Token Optimizer] Server installed but still starting up.")
+        print("[Token Optimizer] Server installed but still starting up.")
         print(f"  Give it a few seconds, then try: http://localhost:{DAEMON_PORT}/token-optimizer")
         print(f"  If it doesn't work, check: {DAEMON_LOG_DIR}/stderr.log")
 
@@ -8261,7 +8260,7 @@ def quality_analyzer(session_id=None, as_json=False):
 
     grade = result.get("grade", score_to_grade(round(score)))
 
-    print(f"\n  Context Quality Report")
+    print("\n  Context Quality Report")
     print(f"  {'=' * 40}")
     print(f"  Content quality:     {grade} ({score}/100) ({band})")
     if fill_band:
@@ -8298,7 +8297,7 @@ def quality_analyzer(session_id=None, as_json=False):
     # Signal-to-noise
     dd = bd["decision_density"]
     ae = bd["agent_efficiency"]
-    print(f"  Signal-to-noise:")
+    print("  Signal-to-noise:")
     print(f"    Decision density:  {dd['ratio']} ({dd['detail']})")
     print(f"    Agent efficiency:  {ae['detail']}")
     print()
@@ -8307,38 +8306,38 @@ def quality_analyzer(session_id=None, as_json=False):
     total_waste = bd["total_estimated_waste_tokens"]
     compactions = bd["compaction_depth"]["compactions"]
     if total_waste > 0:
-        print(f"  Recommendation:")
+        print("  Recommendation:")
         print(f"    /compact would free ~{total_waste:,} tokens of low-value content")
         if score < 70:
-            print(f"    Consider /clear with checkpoint if quality below 50")
+            print("    Consider /clear with checkpoint if quality below 50")
         if result["decisions_found"] > 0:
             print(f"    Smart Compact checkpoint would preserve {result['decisions_found']} decision(s)")
     elif score >= 85:
-        print(f"  Session is clean. No action needed.")
+        print("  Session is clean. No action needed.")
 
     # Cache preservation tip when compactions detected
     if compactions > 0:
-        print(f"  Cache impact:")
+        print("  Cache impact:")
         print(f"    {compactions} compaction(s) triggered full cache rebuilds this session.")
-        print(f"    Each rebuild re-bills all context at full input price (not cached 10% rate).")
+        print("    Each rebuild re-bills all context at full input price (not cached 10% rate).")
         if bd["bloated_results"]["count"] > 0:
             print(f"    {bd['bloated_results']['count']} bloated tool results detected. For API users: Anthropic's")
-            print(f"    Context Editing API (clear_tool_uses) can evict stale results WITHOUT")
-            print(f"    triggering compaction, preserving your cache prefix.")
-        print(f"    To reduce compactions: keep context lean, use Smart Compaction to")
-        print(f"    preserve state when compaction does fire.")
+            print("    Context Editing API (clear_tool_uses) can evict stale results WITHOUT")
+            print("    triggering compaction, preserving your cache prefix.")
+        print("    To reduce compactions: keep context lean, use Smart Compaction to")
+        print("    preserve state when compaction does fire.")
 
     # Phase-boundary compaction timing guide
     if compactions > 0 or (total_waste > 5000 and score < 80):
         print()
-        print(f"  When to compact (timing matters for cache preservation):")
-        print(f"    After research/exploration, before execution  -- bulky context, plan is the output")
-        print(f"    After debugging, before next feature           -- debug traces pollute unrelated work")
-        print(f"    After a failed approach, before retrying        -- clear dead-end reasoning")
-        print(f"    After completing a milestone (commit/merge)     -- natural checkpoint, fresh start")
-        print(f"    NOT mid-implementation                          -- losing file paths and partial state is costly")
-        print(f"    NOT mid-debugging                               -- losing hypothesis state forces re-investigation")
-        print(f"    NOT during multi-step operations                -- breaks continuity across related steps")
+        print("  When to compact (timing matters for cache preservation):")
+        print("    After research/exploration, before execution  -- bulky context, plan is the output")
+        print("    After debugging, before next feature           -- debug traces pollute unrelated work")
+        print("    After a failed approach, before retrying        -- clear dead-end reasoning")
+        print("    After completing a milestone (commit/merge)     -- natural checkpoint, fresh start")
+        print("    NOT mid-implementation                          -- losing file paths and partial state is costly")
+        print("    NOT mid-debugging                               -- losing hypothesis state forces re-investigation")
+        print("    NOT during multi-step operations                -- breaks continuity across related steps")
     print()
 
     return result
@@ -8562,7 +8561,7 @@ def jsonl_inspect(arg=None, as_json=False):
         return
 
     # Pretty print
-    print(f"\n  JSONL Session Inspector")
+    print("\n  JSONL Session Inspector")
     print(f"  {'=' * 50}")
     print(f"  File: {filepath}")
     print(f"  Size: {file_size:,} bytes ({file_size / 1024:.1f} KB)")
@@ -8570,12 +8569,12 @@ def jsonl_inspect(arg=None, as_json=False):
     print(f"  Estimated tokens: {est_tokens:,}")
     print()
 
-    print(f"  Record counts by type:")
+    print("  Record counts by type:")
     for rtype, count in sorted(counts_by_type.items(), key=lambda x: -x[1]):
         print(f"    {rtype:25s} {count:6,}")
     print()
 
-    print(f"  Token distribution:")
+    print("  Token distribution:")
     for label, tokens in result["token_distribution"].items():
         pct = (tokens / est_tokens * 100) if est_tokens > 0 else 0
         bar = "#" * int(pct / 2)
@@ -8589,7 +8588,7 @@ def jsonl_inspect(arg=None, as_json=False):
     print()
 
     if top10:
-        print(f"  Top 10 largest records:")
+        print("  Top 10 largest records:")
         print(f"    {'Index':>8s}  {'Type':>20s}  {'Chars':>10s}  {'~Tokens':>8s}")
         print(f"    {'-' * 8}  {'-' * 20}  {'-' * 10}  {'-' * 8}")
         for r in top10:
@@ -8660,7 +8659,7 @@ def jsonl_trim(arg=None, apply=False, threshold=4000):
 
     # Show top 5 largest trimmable
     sorted_trim = sorted(trimmable, key=lambda x: -x[2])[:5]
-    print(f"  Top trimmable records:")
+    print("  Top trimmable records:")
     print(f"    {'Line':>8s}  {'Tool ID':>20s}  {'Chars':>10s}  {'~Tokens':>8s}")
     print(f"    {'-' * 8}  {'-' * 20}  {'-' * 10}  {'-' * 8}")
     for t in sorted_trim:
@@ -8669,7 +8668,7 @@ def jsonl_trim(arg=None, apply=False, threshold=4000):
     print()
 
     if not apply:
-        print(f"  This is a dry run. Use --apply to trim.")
+        print("  This is a dry run. Use --apply to trim.")
         print()
         return
 
@@ -8817,7 +8816,7 @@ def jsonl_dedup(arg=None, apply=False):
     print()
 
     if not duplicates:
-        print(f"  No duplicate system reminders found. File is clean.")
+        print("  No duplicate system reminders found. File is clean.")
         print()
         return
 
@@ -8826,7 +8825,7 @@ def jsonl_dedup(arg=None, apply=False):
     for d in duplicates:
         dup_by_hash.setdefault(d[1], []).append(d)
 
-    print(f"  Duplicate groups:")
+    print("  Duplicate groups:")
     for h, dups in sorted(dup_by_hash.items(), key=lambda x: -sum(d[2] for d in x[1])):
         first_idx = seen_hashes[h]
         waste = sum(d[2] for d in dups)
@@ -8834,7 +8833,7 @@ def jsonl_dedup(arg=None, apply=False):
     print()
 
     if not apply:
-        print(f"  This is a dry run. Use --apply to remove duplicates.")
+        print("  This is a dry run. Use --apply to remove duplicates.")
         print()
         return
 
@@ -9141,7 +9140,7 @@ def _mr_detect_inline_content(entries):
                           + (" (no topic file link)" if not first_link_found and not entry["links"] else ""),
                 "line": entry["line_start"],
                 "entry_idx": idx,
-                "fix": f"Move inline content to a topic file and add a one-line index entry with link",
+                "fix": "Move inline content to a topic file and add a one-line index entry with link",
                 "savings": est_tokens,
             })
 
@@ -9222,7 +9221,7 @@ def _mr_detect_duplicates(entries, claude_md_contents):
     # Within-MEMORY.md duplicates
     all_rules = {}  # normalized_rule -> [(entry_idx, line)]
     for idx, entry in enumerate(entries):
-        body_text = [l for _, l in entry.get("raw_lines", [])]
+        body_text = [ln for _, ln in entry.get("raw_lines", [])]
         rules = _extract_rules(body_text)
         for rule in rules:
             if rule not in all_rules:
@@ -9249,7 +9248,7 @@ def _mr_detect_duplicates(entries, claude_md_contents):
 
         memory_rules = set()
         for idx, entry in enumerate(entries):
-            body_text = [l for _, l in entry.get("raw_lines", [])]
+            body_text = [ln for _, ln in entry.get("raw_lines", [])]
             for rule in _extract_rules(body_text):
                 memory_rules.add(rule)
 
@@ -9287,7 +9286,7 @@ def _mr_detect_task_leakage(entries):
             continue
 
         # Check for checkbox syntax in body
-        checkbox_count = sum(1 for _, l in entry.get("raw_lines", []) if _MR_CHECKBOX_RE.match(l))
+        checkbox_count = sum(1 for _, ln in entry.get("raw_lines", []) if _MR_CHECKBOX_RE.match(ln))
         if checkbox_count >= 2:
             findings.append({
                 "category": "task_leakage",
@@ -9406,7 +9405,7 @@ def memory_review(as_json=False, apply=False, stale_days=180, project_dir=None):
             if as_json:
                 return {"error": "project-dir must be under user home directory",
                         "findings": [], "summary": {}}
-            print(f"  [Error] --project-dir must be under your home directory.")
+            print("  [Error] --project-dir must be under your home directory.")
             return None
     else:
         projects_dir = find_projects_dir()
@@ -9490,7 +9489,7 @@ def memory_review(as_json=False, apply=False, stale_days=180, project_dir=None):
             if _MR_RULE_RE.search(line):
                 rule_inventory.append({
                     "text": line.strip(),
-                    "source": f"CLAUDE.md",
+                    "source": "CLAUDE.md",
                     "entry": "",
                     "line": i + 1,
                 })
@@ -9515,14 +9514,14 @@ def memory_review(as_json=False, apply=False, stale_days=180, project_dir=None):
 
     # CLI output
     print(f"\n{'=' * 55}")
-    print(f"  MEMORY REVIEW")
+    print("  MEMORY REVIEW")
     print(f"{'=' * 55}")
     print(f"\n  Target: {memory_path}")
     print(f"  Lines: {total_lines} / 200 limit" + (f" ({total_lines - 200} over)" if total_lines > 200 else " (OK)"))
-    print(f"  Entries: {len(entries)} | Topic files: {len(files_on_disk)} | Linked: {len({l['target'] for l in links_all})}")
+    print(f"  Entries: {len(entries)} | Topic files: {len(files_on_disk)} | Linked: {len({link['target'] for link in links_all})}")
 
     if not all_findings:
-        print(f"\n  No structural issues found.")
+        print("\n  No structural issues found.")
         return result
 
     # Group by severity
@@ -9562,15 +9561,15 @@ def memory_review(as_json=False, apply=False, stale_days=180, project_dir=None):
     projected_lines = max(0, total_lines - removable_lines)
     orphan_count = len([f for f in all_findings if f["category"] == "orphan"])
     files_set = set(files_on_disk)
-    linked_count = len({Path(l["target"]).name for l in links_all} & files_set)
+    linked_count = len({Path(link["target"]).name for link in links_all} & files_set)
 
-    print(f"\n  After cleanup (projected):")
+    print("\n  After cleanup (projected):")
     print(f"    Lines: ~{projected_lines} (currently {total_lines})"
           + (f" — {'still over' if projected_lines > 200 else 'under'} 200-line limit" if total_lines > 200 else ""))
     print(f"    Tokens saved: ~{savings['total_tokens']:,}")
     print(f"    Topic files reachable: {linked_count + orphan_count} of {len(files_on_disk)} (currently {linked_count})")
     if total_lines > 200 and projected_lines <= 200:
-        print(f"    Truncation: eliminated (0 lines lost)")
+        print("    Truncation: eliminated (0 lines lost)")
     elif total_lines > 200:
         print(f"    Truncation: ~{projected_lines - 200} lines still over (down from {total_lines - 200})")
 
@@ -9598,7 +9597,7 @@ def _mr_apply_fixes(findings, memory_path, memory_dir):
         return
 
     print(f"\n  {len(actionable)} actionable fix(es):")
-    print(f"  (Copy these into a Claude session to apply, or edit MEMORY.md manually)\n")
+    print("  (Copy these into a Claude session to apply, or edit MEMORY.md manually)\n")
 
     for i, f in enumerate(actionable, 1):
         print(f"  {i}. [{f['category']}] {f['detail']}")
@@ -9627,7 +9626,7 @@ def _analyze_attention_sections(sections):
         zone = _classify_zone(pos_start, pos_end)
         critical_rules = _find_critical_rules(s["lines"])
         tokens = int(section_chars / CHARS_PER_TOKEN)
-        line_count = len([l for l in s["lines"] if l.strip()])
+        line_count = len([ln for ln in s["lines"] if ln.strip()])
         density = len(critical_rules) / max(line_count, 1)
 
         analyzed.append({
@@ -9712,7 +9711,7 @@ def attention_score(filepath=None, as_json=False):
     print(f"  Sections: {len(analyzed)} | Tokens: ~{total_tokens:,}")
     print(f"  Critical rules in LOW attention zone: {low_critical_total}")
     print()
-    print(f"  Section Analysis:")
+    print("  Section Analysis:")
     print(f"    {'Position':<10} {'Zone':<6}  {'Section':<32} {'Critical':<10} {'Tokens':>6}")
     print(f"    {'--------':<10} {'------':<6}  {'----------------------------':<32} {'--------':<10} {'------':>6}")
 
@@ -9727,13 +9726,13 @@ def attention_score(filepath=None, as_json=False):
 
     if warnings:
         print()
-        print(f"  ATTENTION WARNINGS:")
+        print("  ATTENTION WARNINGS:")
         for w in warnings:
             print(f"  - \"{w['section']}\" has {w['critical_count']} critical rule{'s' if w['critical_count'] != 1 else ''} in LOW zone ({w['position']})")
             for rule in w["critical_rules"][:5]:
                 display = rule[:80] + "..." if len(rule) > 80 else rule
                 print(f"    -> {display}")
-            print(f"    -> Move to first 30% or last 30% of file")
+            print("    -> Move to first 30% or last 30% of file")
 
     print(f"\n  Overall score: {score}/100 ({low_critical_total} critical rule{'s' if low_critical_total != 1 else ''} at risk)")
     print()
@@ -9837,11 +9836,11 @@ def attention_optimize(filepath=None, dry_run=True, apply=False):
     display_name = str(fp).replace(str(HOME), "~")
 
     if dry_run and not apply:
-        print(f"\n  Attention Optimizer (DRY RUN)")
+        print("\n  Attention Optimizer (DRY RUN)")
         print(f"  {'=' * 50}")
         print(f"  File: {display_name}")
         print()
-        print(f"  Proposed reordering:")
+        print("  Proposed reordering:")
         for m in moves:
             print(f"    {m}")
         print()
@@ -9888,12 +9887,12 @@ def attention_optimize(filepath=None, dry_run=True, apply=False):
             print(f"[Error] Could not write file: {e}")
             sys.exit(1)
 
-        print(f"\n  Attention Optimizer (APPLIED)")
+        print("\n  Attention Optimizer (APPLIED)")
         print(f"  {'=' * 50}")
         print(f"  File: {display_name}")
         print(f"  Backup: {backup_path}")
         print()
-        print(f"  Reordering applied:")
+        print("  Reordering applied:")
         for m in moves:
             print(f"    {m}")
         print()
@@ -10058,7 +10057,7 @@ def expand_archived(tool_use_id=None, session_id=None, list_all=False):
         sys.exit(1)
 
     if not archive_root.is_dir():
-        print(f"[Error] No archive directory found. No results have been archived yet.", file=sys.stderr)
+        print("[Error] No archive directory found. No results have been archived yet.", file=sys.stderr)
         sys.exit(1)
 
     # Determine search scope
@@ -10376,7 +10375,7 @@ def compact_capture(transcript_path=None, session_id=None, trigger="auto", cwd=N
     fill_info = f" | Fill: {fill_pct:.0f}%" if fill_pct is not None else ""
     quality_info = f" | Quality: {quality_score:.1f}" if quality_score is not None else ""
     lines = [
-        f"# Session State Checkpoint",
+        "# Session State Checkpoint",
         f"Generated: {ts} | Trigger: {trigger}{fill_info}{quality_info}",
         "",
     ]
@@ -10492,7 +10491,7 @@ def compact_restore(session_id=None, cwd=None, is_compact=False, new_session_onl
             return
         lines = content.split("\n")
         # Skip header lines (# Session State Checkpoint + Generated: ...)
-        body = "\n".join(l for l in lines[2:] if l.strip())
+        body = "\n".join(ln for ln in lines[2:] if ln.strip())
         if not body:
             return
         # Cap content size to limit injection surface area
@@ -10757,19 +10756,19 @@ def generate_compact_instructions(as_json=False, install=False, dry_run=False):
 
         _write_settings_atomic(settings)
         print(f"[Token Optimizer] Compact Instructions installed to {settings_path}")
-        print(f"  These guide Claude on WHAT to preserve during compaction.")
+        print("  These guide Claude on WHAT to preserve during compaction.")
         return instructions_text
 
-    print(f"\n  Generated Compact Instructions")
+    print("\n  Generated Compact Instructions")
     print(f"  {'=' * 40}")
     print()
     print(f"  {instructions_text}")
     print()
-    print(f"  To activate automatically:")
-    print(f"    python3 measure.py compact-instructions --install")
+    print("  To activate automatically:")
+    print("    python3 measure.py compact-instructions --install")
     print()
-    print(f"  Or manually add to .claude/settings.json:")
-    print(f'    {{"compactInstructions": "<paste above>"}}')
+    print("  Or manually add to .claude/settings.json:")
+    print('    {"compactInstructions": "<paste above>"}')
     print()
     return instructions_text
 
@@ -11001,18 +11000,18 @@ def setup_smart_compact(dry_run=False, uninstall=False, status_only=False):
     commands = _smart_compact_hook_commands()
 
     if status_only:
-        print(f"\n  Smart Compaction Hook Status")
+        print("\n  Smart Compaction Hook Status")
         print(f"  {'=' * 40}")
         for event, installed in current_status.items():
             icon = "installed" if installed else "not installed"
             print(f"    {event:15s} {icon}")
         all_installed = all(current_status.values())
         if all_installed:
-            print(f"\n  All hooks installed. Smart Compaction is active.")
+            print("\n  All hooks installed. Smart Compaction is active.")
         else:
             missing = [e for e, v in current_status.items() if not v]
             print(f"\n  Missing: {', '.join(missing)}")
-            print(f"  Run: python3 measure.py setup-smart-compact")
+            print("  Run: python3 measure.py setup-smart-compact")
         print()
         return
 
@@ -11041,7 +11040,7 @@ def setup_smart_compact(dry_run=False, uninstall=False, status_only=False):
 
         if dry_run:
             print(f"\n  [Dry run] Would remove {removed} smart compact hook(s) from {settings_path}")
-            print(f"  Run without --dry-run to apply.\n")
+            print("  Run without --dry-run to apply.\n")
             return
 
         settings["hooks"] = hooks
@@ -11112,27 +11111,27 @@ def setup_smart_compact(dry_run=False, uninstall=False, status_only=False):
         installed.append(event)
 
     if dry_run:
-        print(f"\n  [Dry run] Smart Compaction hook preview")
+        print("\n  [Dry run] Smart Compaction hook preview")
         print(f"  {'=' * 40}")
         if installed:
             print(f"  Would install hooks for: {', '.join(installed)}")
         if skipped:
             print(f"  Already installed (skip): {', '.join(skipped)}")
         print(f"\n  Settings file: {settings_path}")
-        print(f"  Hook commands:")
+        print("  Hook commands:")
         for event in installed:
             print(f"    {event}: {commands[event]}")
-        print(f"\n  Run without --dry-run to apply.\n")
+        print("\n  Run without --dry-run to apply.\n")
         return
 
     if not installed:
-        print(f"[Token Optimizer] All smart compact hooks already installed.")
+        print("[Token Optimizer] All smart compact hooks already installed.")
         return
 
     settings["hooks"] = hooks
     _write_settings_atomic(settings)
 
-    print(f"[Token Optimizer] Smart Compaction installed.")
+    print("[Token Optimizer] Smart Compaction installed.")
     print(f"  Hooks added: {', '.join(installed)}")
     if skipped:
         print(f"  Already had: {', '.join(skipped)}")
@@ -11141,14 +11140,14 @@ def setup_smart_compact(dry_run=False, uninstall=False, status_only=False):
     print()
     generate_compact_instructions(install=True)
 
-    print(f"\n  What happens now:")
-    print(f"    Compact Instructions: Guides Claude on what to preserve during compaction")
-    print(f"    PreCompact hook:      Captures structured state before compaction")
-    print(f"    SessionStart hook:    Restores what was lost after compaction")
-    print(f"    Stop hook:            Saves checkpoint when session ends normally")
-    print(f"    SessionEnd hook:      Saves checkpoint on /clear or termination")
+    print("\n  What happens now:")
+    print("    Compact Instructions: Guides Claude on what to preserve during compaction")
+    print("    PreCompact hook:      Captures structured state before compaction")
+    print("    SessionStart hook:    Restores what was lost after compaction")
+    print("    Stop hook:            Saves checkpoint when session ends normally")
+    print("    SessionEnd hook:      Saves checkpoint on /clear or termination")
     print(f"\n  Checkpoints stored in: {CHECKPOINT_DIR}")
-    print(f"  To remove: python3 measure.py setup-smart-compact --uninstall")
+    print("  To remove: python3 measure.py setup-smart-compact --uninstall")
 
 
 QUALITY_CACHE_DIR = CLAUDE_DIR / "token-optimizer"
@@ -11584,7 +11583,7 @@ def _check_realtime_loops(quality_data):
             if lengths and max(lengths) > 0:
                 # If all recent messages are within 20% length of each other, flag
                 avg_len = sum(lengths) / len(lengths)
-                if avg_len > 50 and all(abs(l - avg_len) / max(avg_len, 1) < 0.2 for l in lengths):
+                if avg_len > 50 and all(abs(length - avg_len) / max(avg_len, 1) < 0.2 for length in lengths):
                     warnings.append({
                         "type": "message_loop",
                         "confidence": 0.7,
@@ -12274,12 +12273,12 @@ def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=F
     sl_path = _get_statusline_path()
 
     if status_only:
-        print(f"\n  Quality Bar Status")
+        print("\n  Quality Bar Status")
         print(f"  {'=' * 40}")
         print(f"    Status line:  {'installed' if current['statusline'] else 'not installed'}")
         print(f"    Cache hook:   {'installed' if current['hook'] else 'not installed'}")
         if current["statusline"] and current["hook"]:
-            print(f"\n  Quality Bar is fully active.")
+            print("\n  Quality Bar is fully active.")
         else:
             missing = []
             if not current["statusline"]:
@@ -12287,7 +12286,7 @@ def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=F
             if not current["hook"]:
                 missing.append("cache hook")
             print(f"\n  Missing: {', '.join(missing)}")
-            print(f"  Run: python3 measure.py setup-quality-bar")
+            print("  Run: python3 measure.py setup-quality-bar")
         print()
         return
 
@@ -12321,15 +12320,15 @@ def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=F
 
         if dry_run:
             print(f"\n  [Dry run] Would remove {removed} quality bar component(s)")
-            print(f"  Run without --dry-run to apply.\n")
+            print("  Run without --dry-run to apply.\n")
             return
 
         settings["hooks"] = hooks
         _write_settings_atomic(settings)
         _set_quality_bar_disabled(True)
         print(f"[Token Optimizer] Quality bar removed. {removed} component(s) removed.")
-        print(f"  Opt-out is sticky: SessionStart will not auto-restore.")
-        print(f"  To re-enable later, run: python3 measure.py setup-quality-bar")
+        print("  Opt-out is sticky: SessionStart will not auto-restore.")
+        print("  To re-enable later, run: python3 measure.py setup-quality-bar")
         return
 
     # Install
@@ -12366,21 +12365,21 @@ def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=F
             # still present, which is strong evidence the foreign statusLine
             # is a clobber rather than an intentional choice).
             warnings.append(
-                f"You already have a custom status line configured.\n"
-                f"  To integrate quality scoring, add this to your status line script:\n\n"
-                f"    // Read context quality score\n"
-                f"    const qFile = path.join(os.homedir(), '.claude', 'token-optimizer', 'quality-cache.json');\n"
-                f"    let qScore = '';\n"
-                f"    if (fs.existsSync(qFile)) {{\n"
-                f"      try {{\n"
-                f"        const q = JSON.parse(fs.readFileSync(qFile, 'utf8'));\n"
-                f"        const s = q.score;\n"
-                f"        if (s < 50) qScore = ' | \\x1b[31mContextQ:' + s + '\\x1b[0m';\n"
-                f"        else if (s < 70) qScore = ' | \\x1b[33mContextQ:' + s + '\\x1b[0m';\n"
-                f"        else qScore = ' | \\x1b[2mContextQ:' + s + '\\x1b[0m';\n"
-                f"      }} catch (e) {{}}\n"
-                f"    }}\n"
-                f"    // Append qScore to your output\n"
+                "You already have a custom status line configured.\n"
+                "  To integrate quality scoring, add this to your status line script:\n\n"
+                "    // Read context quality score\n"
+                "    const qFile = path.join(os.homedir(), '.claude', 'token-optimizer', 'quality-cache.json');\n"
+                "    let qScore = '';\n"
+                "    if (fs.existsSync(qFile)) {\n"
+                "      try {\n"
+                "        const q = JSON.parse(fs.readFileSync(qFile, 'utf8'));\n"
+                "        const s = q.score;\n"
+                "        if (s < 50) qScore = ' | \\x1b[31mContextQ:' + s + '\\x1b[0m';\n"
+                "        else if (s < 70) qScore = ' | \\x1b[33mContextQ:' + s + '\\x1b[0m';\n"
+                "        else qScore = ' | \\x1b[2mContextQ:' + s + '\\x1b[0m';\n"
+                "      } catch (e) {}\n"
+                "    }\n"
+                "    // Append qScore to your output\n"
             )
             skipped.append("status line (custom detected)")
         else:
@@ -12391,7 +12390,7 @@ def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=F
             installed.append("status line")
 
     if dry_run:
-        print(f"\n  [Dry run] Quality Bar preview")
+        print("\n  [Dry run] Quality Bar preview")
         print(f"  {'=' * 40}")
         if installed:
             print(f"  Would install: {', '.join(installed)}")
@@ -12401,7 +12400,7 @@ def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=F
             print()
             for w in warnings:
                 print(f"  Note: {w}")
-        print(f"\n  Run without --dry-run to apply.\n")
+        print("\n  Run without --dry-run to apply.\n")
         return
 
     if not installed and not warnings:
@@ -12409,7 +12408,7 @@ def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=F
         # (handles the rare case where a user manually set the flag but also
         # still has the components in place).
         _set_quality_bar_disabled(False)
-        print(f"[Token Optimizer] Quality bar already fully installed.")
+        print("[Token Optimizer] Quality bar already fully installed.")
         return
 
     if installed:
@@ -12418,22 +12417,22 @@ def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=F
         _set_quality_bar_disabled(False)
 
     if installed:
-        print(f"[Token Optimizer] Quality Bar installed.")
+        print("[Token Optimizer] Quality Bar installed.")
         print(f"  Components: {', '.join(installed)}")
         if skipped:
             print(f"  Already had: {', '.join(skipped)}")
-        print(f"\n  What you'll see:")
-        print(f"    Status line:  model | effort | project ████ 43% | ContextQ:74")
-        print(f"    Quality updates every ~2 minutes during active sessions")
-        print(f"    Colors: green (85%+), dim (70-84%), yellow (50-69%), red (<50%)")
-        print(f"\n  To remove: python3 measure.py setup-quality-bar --uninstall")
+        print("\n  What you'll see:")
+        print("    Status line:  model | effort | project ████ 43% | ContextQ:74")
+        print("    Quality updates every ~2 minutes during active sessions")
+        print("    Colors: green (85%+), dim (70-84%), yellow (50-69%), red (<50%)")
+        print("\n  To remove: python3 measure.py setup-quality-bar --uninstall")
 
     if warnings:
         print()
         for w in warnings:
             print(f"  {w}")
         if "cache hook" in installed:
-            print(f"  The cache hook is installed. Quality data will be written to:")
+            print("  The cache hook is installed. Quality data will be written to:")
             print(f"    {QUALITY_CACHE_PATH}")
 
 
@@ -12574,7 +12573,7 @@ def savings_report(days=30, as_json=False):
     start = (now - timedelta(days=days)).strftime("%Y-%m-%d")
     end = now.strftime("%Y-%m-%d")
 
-    print(f"\n  Token Optimizer Savings Report")
+    print("\n  Token Optimizer Savings Report")
     print(f"  {'=' * 58}")
     print(f"  Period: Last {days} days ({start} to {end})")
     print()
@@ -12615,10 +12614,10 @@ def savings_report(days=30, as_json=False):
 
     if total_events == 0:
         print()
-        print(f"  No savings events recorded yet. Savings are tracked when you:")
-        print(f"    - Run 'compare' after optimizing your setup")
-        print(f"    - Restore from progressive checkpoints (Smart Compaction)")
-        print(f"    - Archive unused tools or skills")
+        print("  No savings events recorded yet. Savings are tracked when you:")
+        print("    - Run 'compare' after optimizing your setup")
+        print("    - Restore from progressive checkpoints (Smart Compaction)")
+        print("    - Archive unused tools or skills")
 
 
 def validate_impact(strategy="auto", days=30, as_json=False):
@@ -12710,7 +12709,7 @@ def validate_impact(strategy="auto", days=30, as_json=False):
             print(json.dumps(result, indent=2, default=str))
         else:
             print(f"\n  Not enough data: {len(sessions)} parseable sessions (need at least 4).")
-            print(f"  Run more sessions or try --days with a larger window.\n")
+            print("  Run more sessions or try --days with a larger window.\n")
         return result
 
     # Sort oldest first
@@ -12945,11 +12944,11 @@ if __name__ == "__main__":
         else:
             current = _load_pricing_tier()
             print(f"\n  Current pricing tier: {PRICING_TIERS[current]['label']}")
-            print(f"\n  Available tiers:")
+            print("\n  Available tiers:")
             for key, val in PRICING_TIERS.items():
                 marker = " (active)" if key == current else ""
                 print(f"    {key:20s} {val['label']}{marker}")
-            print(f"\n  Set with: measure.py pricing-tier <tier-name>")
+            print("\n  Set with: measure.py pricing-tier <tier-name>")
             print()
     elif args[0] == "collect":
         days = 90
@@ -13003,7 +13002,7 @@ if __name__ == "__main__":
                 print(f"  [setup-all-hooks] All hooks already present. (plugin root: {root})")
             else:
                 print(f"  [setup-all-hooks] Added {added} hook(s), skipped {skipped}. (plugin root: {root})")
-                print(f"  Restart Claude Code to activate the new hooks.")
+                print("  Restart Claude Code to activate the new hooks.")
     elif args[0] == "cleanup-duplicate-hooks":
         # v5.0.2: Remove token-optimizer hooks from settings.json that the
         # installed plugin already provides. Safe to run anytime; idempotent.
@@ -13278,7 +13277,7 @@ if __name__ == "__main__":
                         print(f"         Risk: {info['risk'][:90]}...")
                     print()
                 print("  * = recommended to keep enabled")
-                print(f"\n  Toggle: measure.py v5 enable|disable <feature_name>")
+                print("\n  Toggle: measure.py v5 enable|disable <feature_name>")
                 print(f"  Features: {', '.join(V5_FEATURES.keys())}")
                 print()
         elif sub in ("enable", "disable"):
@@ -13308,7 +13307,7 @@ if __name__ == "__main__":
             _show_v5_welcome()
         elif sub == "info":
             if len(args) < 3:
-                print(f"[Error] Usage: measure.py v5 info <feature_name>")
+                print("[Error] Usage: measure.py v5 info <feature_name>")
                 sys.exit(1)
             feature_name = args[2]
             if feature_name not in V5_FEATURES:
@@ -13318,11 +13317,11 @@ if __name__ == "__main__":
             enabled = _is_v5_feature_enabled(feature_name)
             print(f"\n  {feat['label']}  [{'ON' if enabled else 'off'}]")
             print("  " + "=" * 60)
-            print(f"  What it does:")
+            print("  What it does:")
             print(f"    {feat['what']}")
-            print(f"\n  How it works:")
+            print("\n  How it works:")
             print(f"    {feat['how']}")
-            print(f"\n  Risk level:")
+            print("\n  Risk level:")
             print(f"    {feat['risk']}")
             print(f"\n  Toggle: measure.py v5 {'disable' if enabled else 'enable'} {feature_name}")
             print()
@@ -13349,7 +13348,7 @@ if __name__ == "__main__":
             print(f"  Tokens saved:       {summary['total_tokens_saved']:,}")
             print(f"  Overall ratio:      {summary['overall_ratio']:.1%}")
             if summary["by_feature"]:
-                print(f"\n  By feature:")
+                print("\n  By feature:")
                 for feat, data in summary["by_feature"].items():
                     print(f"    {feat:25s}  {data['events']:5d} events  "
                           f"{data['tokens_saved']:>8,} tokens saved  "

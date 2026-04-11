@@ -69,6 +69,7 @@ import os
 import glob
 import re
 import shlex
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -6816,6 +6817,12 @@ def _write_settings_atomic(settings_data):
     Acquires an advisory file lock to prevent concurrent writes from
     clobbering each other (e.g., during SessionStart when multiple hooks
     may modify settings.json).
+
+    Uses try/finally (not try/except Exception) so cleanup also runs when
+    _HookTimeout (a BaseException) fires mid-write. Setting tmp_path to
+    None after a successful os.replace prevents the finally clause from
+    unlinking the already-renamed destination. Any exception encountered
+    during the write propagates naturally after cleanup.
     """
     with _settings_lock():
         tmp_fd, tmp_path = tempfile.mkstemp(
@@ -6828,13 +6835,13 @@ def _write_settings_atomic(settings_data):
                 json.dump(settings_data, f, indent=2, ensure_ascii=False)
                 f.write("\n")
             os.replace(tmp_path, str(SETTINGS_PATH))
-        except Exception:
-            # Clean up temp file on failure
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+            tmp_path = None  # successfully replaced; do not unlink the destination
+        finally:
+            if tmp_path is not None:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
 
 
 # Env vars that should be auto-removed from settings.json.
@@ -10322,6 +10329,26 @@ def _extract_session_state(filepath, tail_lines=500):
     }
 
 
+_TRIGGER_ALLOWED_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
+
+
+def _sanitize_trigger(trigger):
+    """Validate and normalize a compact_capture trigger string.
+
+    The trigger value flows into the checkpoint filename. It must be
+    constrained to a safe character class so a future caller that passes
+    external input to compact-capture --trigger cannot construct a path
+    traversal (pathlib resolves '..' when it appears in a joined path).
+
+    Rejected values fall back to 'auto'.
+    """
+    if not isinstance(trigger, str):
+        return "auto"
+    if not _TRIGGER_ALLOWED_RE.match(trigger):
+        return "auto"
+    return trigger
+
+
 def compact_capture(transcript_path=None, session_id=None, trigger="auto", cwd=None, fill_pct=None, quality_score=None):
     """Capture structured session state before compaction or session end.
 
@@ -10331,6 +10358,10 @@ def compact_capture(transcript_path=None, session_id=None, trigger="auto", cwd=N
 
     Returns the checkpoint file path, or None on failure.
     """
+    # Validate trigger before it flows into the checkpoint filename.
+    # Rejects path traversal and other filesystem-unsafe characters.
+    trigger = _sanitize_trigger(trigger)
+
     CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
     try:
         os.chmod(str(CHECKPOINT_DIR), 0o700)
@@ -10360,9 +10391,8 @@ def compact_capture(transcript_path=None, session_id=None, trigger="auto", cwd=N
             f"# Session State Checkpoint\n"
             f"Generated: {ts} | Trigger: {trigger}{fill_info}{quality_info} | Note: No transcript data available\n"
         )
-        fd = os.open(str(checkpoint_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(content)
+        if not _write_checkpoint_atomic(checkpoint_path, content):
+            return None
         return str(checkpoint_path)
 
     # Parse session state
@@ -10452,10 +10482,10 @@ def compact_capture(transcript_path=None, session_id=None, trigger="auto", cwd=N
 
     checkpoint_content = "\n".join(lines)
     checkpoint_path = CHECKPOINT_DIR / f"{sid}-{ts_file}{trigger_suffix}.md"
-    # Write with restrictive permissions (checkpoint may contain session details)
-    fd = os.open(str(checkpoint_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(checkpoint_content)
+    # Atomic write prevents a partial checkpoint from being surfaced as
+    # authoritative recovery context if the process is interrupted mid-write.
+    if not _write_checkpoint_atomic(checkpoint_path, checkpoint_content):
+        return None
 
     # Cleanup old checkpoints
     _cleanup_checkpoints()
@@ -10828,6 +10858,13 @@ def list_checkpoints(max_age_minutes=None):
 
     checkpoints = []
     for cp_file in CHECKPOINT_DIR.glob("*.md"):
+        # Skip in-flight / orphaned atomic-write temp files. pathlib's
+        # glob("*.md") matches dotfiles on POSIX, so a partially-written
+        # .checkpoint-XXXXXXXX.md from an interrupted _write_checkpoint_atomic
+        # would otherwise be enumerated and potentially injected as
+        # authoritative recovery context by compact_restore.
+        if cp_file.name.startswith(".checkpoint-"):
+            continue
         try:
             safe_cp = _safe_checkpoint_file(cp_file)
             if safe_cp is None:
@@ -11162,28 +11199,129 @@ def _quality_cache_path_for(filepath=None):
     return QUALITY_CACHE_PATH
 
 
+def _write_checkpoint_atomic(checkpoint_path, content):
+    """Atomically write a checkpoint markdown file. Returns True on success.
+
+    Uses tempfile.mkstemp + os.replace so a process interruption during write
+    never leaves a partial checkpoint on disk. compact_restore would otherwise
+    read a truncated file cleanly and inject it as authoritative recovery
+    context, feeding the model incomplete information silently.
+
+    mkstemp creates the temp file with 0o600 by default on POSIX, and
+    os.replace preserves that permission on the final path.
+
+    Uses try/finally (not try/except OSError) so cleanup also runs when
+    _HookTimeout (a BaseException) fires mid-write. Setting tmp_path to
+    None after a successful os.replace prevents the finally clause from
+    unlinking the already-renamed final file.
+    """
+    CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(str(CHECKPOINT_DIR), 0o700)
+    except OSError:
+        pass
+    tmp_path = None
+    ok = False
+    try:
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(CHECKPOINT_DIR),
+            prefix=".checkpoint-",
+            suffix=".md",
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.replace(tmp_path, str(checkpoint_path))
+        tmp_path = None  # successfully replaced; do not unlink the destination
+        ok = True
+    except OSError:
+        ok = False
+    finally:
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+    return ok
+
+
+# --- Hook wall-clock guard ----------------------------------------------------
+# Hook handlers invoked from hooks/hooks.json exit gracefully if they exceed a
+# wall-clock budget. Prevents a slow filesystem, lock contention, or a runaway
+# code path from blocking SessionStart or UserPromptSubmit for minutes. POSIX
+# only: feature-detects SIGALRM and no-ops on platforms without it. The prior
+# SIGALRM handler is saved on install and restored on clear so test runners
+# (pytest-timeout, etc.) that rely on their own SIGALRM handler are not
+# clobbered when a hook path runs under test.
+#
+# _HookTimeout inherits from BaseException (not Exception) so inner `except
+# Exception: pass` blocks inside guarded handlers do NOT swallow it. Same
+# pattern Python uses for KeyboardInterrupt and SystemExit. The outer
+# dispatch's `except _HookTimeout` still catches it by exact type.
+
+class _HookTimeout(BaseException):
+    pass
+
+
+def _hook_timeout_handler(_signum, _frame):
+    # Parameters are required by signal.signal() API; underscore-prefixed
+    # to silence dead-code checkers.
+    raise _HookTimeout()
+
+
+def _install_hook_budget(seconds=8):
+    """Install a SIGALRM wall-clock guard. Returns the prior handler, or None
+    on platforms without SIGALRM.
+    """
+    if not hasattr(signal, "SIGALRM"):
+        return None
+    old = signal.signal(signal.SIGALRM, _hook_timeout_handler)
+    signal.alarm(seconds)
+    return old
+
+
+def _clear_hook_budget(old_handler):
+    """Clear the wall-clock guard and restore the prior SIGALRM handler."""
+    if not hasattr(signal, "SIGALRM"):
+        return
+    signal.alarm(0)
+    if old_handler is not None:
+        try:
+            signal.signal(signal.SIGALRM, old_handler)
+        except (ValueError, TypeError):
+            pass
+
+
 def _write_quality_cache(cache_path, result):
     """Atomically write result dict to per-session cache. Returns True on success.
 
     Previously also wrote a global fallback (quality-cache.json), but that caused
     cross-session data pollution. The statusline now reads only the per-session cache
     matched by session_id, so the global fallback is no longer needed.
+
+    Uses try/finally (not try/except OSError) so cleanup also runs when
+    _HookTimeout (a BaseException) fires mid-write. tmp_path is set to None
+    after a successful os.replace so the finally clause does not unlink the
+    already-renamed destination.
     """
     QUALITY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     tmp_path = None
+    ok = False
     try:
         fd, tmp_path = tempfile.mkstemp(dir=str(QUALITY_CACHE_DIR), suffix=".json")
         with os.fdopen(fd, "w") as f:
             json.dump(result, f)
         os.replace(tmp_path, str(cache_path))
-        return True
+        tmp_path = None
+        ok = True
     except OSError:
-        if tmp_path:
+        ok = False
+    finally:
+        if tmp_path is not None:
             try:
                 os.unlink(tmp_path)
             except OSError:
                 pass
-        return False
+    return ok
 
 
 def _extract_session_start_ts(filepath):
@@ -12809,6 +12947,267 @@ def validate_impact(strategy="auto", days=30, as_json=False):
     return result
 
 
+def _run_ensure_health():
+    """Body of the ensure-health subcommand. Extracted into its own function
+    so the CLI dispatch can wrap the call in a hook wall-clock guard without
+    reindenting 200 lines of logic. Called by SessionStart hook.
+
+    Side effects: writes settings.json (cleanupPeriodDays, hook heal, path
+    repair, quality bar install), writes config flags (heal timestamp,
+    welcome shown, nudge shown), creates / prunes checkpoint and cache
+    files, and may spawn a detached git pull subprocess on script-install
+    systems. All side effects are idempotent.
+
+    Task ordering matters: fast, always-safe writes (cleanupPeriodDays,
+    bad env var removal) run first so they are guaranteed to complete
+    even if a later task exhausts the wall-clock budget.
+    """
+    # Preserve session transcripts: set cleanupPeriodDays if not configured.
+    # This runs FIRST (before any slow task) so the 8s budget cannot
+    # starve it on a loaded machine. Without this setting, Claude Code
+    # deletes JSONL transcripts after 30 days, silently degrading
+    # Token Optimizer trends and Total Recall raw-transcript search.
+    # Single-key JSON write, completes in <100ms, idempotent via the
+    # "already present" guard.
+    try:
+        _cp_data, _ = _read_settings_json()
+        if _cp_data and "cleanupPeriodDays" not in _cp_data:
+            _cp_data = dict(_cp_data)
+            _cp_data["cleanupPeriodDays"] = 99999
+            _write_settings_atomic(_cp_data)
+            print("  [Token Optimizer] Set cleanupPeriodDays=99999 (preserves session transcripts for trends/analytics)")
+    except Exception:
+        pass
+    # Silent auto-fix of known harmful settings.
+    # Guarded: a corrupt settings.json would otherwise raise
+    # json.JSONDecodeError through the dispatch and crash the hook
+    # invocation. The outer dispatch only catches _HookTimeout.
+    try:
+        _auto_remove_bad_env_vars()
+    except Exception:
+        pass
+    # v5.0.2: Self-heal hooks with correct semantics for each install mode.
+    # Plugin users get hooks auto-loaded from plugin hooks.json by Claude Code,
+    # so settings.json copies are pure duplicates that cause every hook to fire
+    # twice (wasted CPU, racy SQLite writes, undercounted savings). For plugin
+    # users, the auto-heal INVERTS: instead of adding hooks, it removes the
+    # duplicates. Script-install users (no plugin) still get the original
+    # add-missing-hooks behavior.
+    #
+    # Throttled to once per 24h to keep SessionStart fast. Both paths update
+    # last_hook_heal_check on success so the throttle works the same way.
+    try:
+        last_check = _read_config_flag("last_hook_heal_check", 0)
+        now = int(time.time())
+        if now - int(last_check or 0) > 86400:  # 24h
+            if _is_plugin_installed():
+                # Plugin mode: remove duplicates the plugin already provides.
+                cleanup_result = _cleanup_duplicate_plugin_hooks_from_settings(dry_run=False)
+                removed = cleanup_result.get("removed", 0)
+                if removed > 0:
+                    print(f"  [Token Optimizer] Removed {removed} duplicate hook(s) from settings.json (plugin already provides them). Restart Claude Code to fully apply.")
+                # Update timestamp whether or not anything was removed, so we
+                # don't re-scan on every SessionStart for the next 24h.
+                _write_config_flag("last_hook_heal_check", now)
+            else:
+                # Script-install mode: add any missing hooks from the repo's
+                # hooks.json. Upgrades from v4.x pick up v5 hooks here.
+                heal_result = setup_all_hooks(dry_run=False, verbose=False)
+                added = heal_result.get("added", 0)
+                if added > 0:
+                    print(f"  [Token Optimizer] Self-healed {added} missing hook(s) in settings.json. Restart Claude Code to activate.")
+                elif added == 0 and not heal_result.get("error"):
+                    # setup_all_hooks only updates the timestamp when it
+                    # actually wrote hooks. Update it here on the no-op path
+                    # so we don't re-scan every session for 24h.
+                    _write_config_flag("last_hook_heal_check", now)
+    except Exception:
+        pass
+    # v5.1: First-run welcome. Shows once when v5 is first seen on this machine.
+    try:
+        if not _read_config_flag("v5_welcome_shown", False):
+            _show_v5_welcome()
+            _write_config_flag("v5_welcome_shown", True)
+    except Exception:
+        pass
+    # Fix stale versioned plugin cache paths in settings.json (GitHub #7).
+    # When a plugin updates, hardcoded version paths break silently.
+    try:
+        _stale_fixed = _fix_stale_settings_paths()
+        if _stale_fixed:
+            print(f"  [Token Optimizer] Fixed {_stale_fixed} stale plugin path(s) in settings.json")
+    except Exception as _e:
+        print(f"  [Token Optimizer] stale path fix failed: {_e}", file=sys.stderr)
+    # Plugin cleanup is available as `measure.py plugin-cleanup` but NOT auto-run.
+    # Deleting cache dirs on SessionStart can break plugins that load hooks from
+    # dogfood/development paths. Users should run it manually after review.
+    # Migrate data to CLAUDE_PLUGIN_DATA on first run (v2.1.78+).
+    # Idempotent per file: the "not exists" guard means a retry after
+    # partial progress copies only the missing files. The marker is
+    # written after the copy loop so a hook-budget timeout mid-copy
+    # re-enters the migration on the next SessionStart and eventually
+    # completes. Leaving the marker last preserves correctness under
+    # interrupt; the only downside is slow completion on pathologically
+    # slow filesystems, which is acceptable for a one-time path.
+    if _PLUGIN_DATA:
+        # Outer OSError guard closes a latent unhandled-exception path: if
+        # SNAPSHOT_DIR / CONFIG_DIR mkdir fails (unwritable, disk full),
+        # the OSError would otherwise propagate through _run_ensure_health
+        # and miss the outer dispatch's _HookTimeout catch.
+        try:
+            _legacy_data = CLAUDE_DIR / "_backups" / "token-optimizer"
+            _legacy_config = CLAUDE_DIR / "token-optimizer"
+            _migrated_marker = Path(_PLUGIN_DATA) / ".migrated"
+            if not _migrated_marker.exists():
+                import shutil
+                SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+                CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+                for src_dir, dst_dir in [(_legacy_data, SNAPSHOT_DIR), (_legacy_config, CONFIG_DIR)]:
+                    if src_dir.is_dir():
+                        for f in src_dir.iterdir():
+                            if f.is_file() and not (dst_dir / f.name).exists():
+                                try:
+                                    shutil.copy2(f, dst_dir / f.name)
+                                except OSError:
+                                    pass
+                try:
+                    _migrated_marker.touch()
+                except OSError:
+                    pass
+        except OSError:
+            pass
+    # Clean up orphaned temp files from interrupted atomic writes
+    # Note: .settings.lock is NOT cleaned up (zero-byte sentinel, not a leak;
+    # deleting it while held could break the advisory lock for other processes)
+    for f in SETTINGS_PATH.parent.glob(".settings-*.json"):
+        try:
+            if time.time() - f.stat().st_mtime > 3600:
+                f.unlink()
+        except OSError:
+            pass
+    # Sweep orphaned checkpoint temp files left by an interrupted atomic
+    # write in _write_checkpoint_atomic. Defensive: the helper already
+    # cleans up on OSError, but a signal interrupt between mkstemp and
+    # the tuple unpack can leave an unnamed temp file on disk (rare in
+    # CPython, but unhandled by the helper itself).
+    try:
+        for f in CHECKPOINT_DIR.glob(".checkpoint-*.md"):
+            try:
+                if time.time() - f.stat().st_mtime > 3600:
+                    f.unlink()
+            except OSError:
+                pass
+    except OSError:
+        pass
+    # Prune old quality-cache and decisions files (older than 7 days)
+    _prune_cutoff = time.time() - 7 * 86400
+    try:
+        cache_files = sorted(
+            QUALITY_CACHE_DIR.glob("quality-cache-*.json"),
+            key=lambda f: f.stat().st_mtime, reverse=True
+        )
+        for f in cache_files[10:]:  # Keep 10 most recent regardless of age
+            try:
+                if f.stat().st_mtime < _prune_cutoff:
+                    f.unlink()
+            except OSError:
+                pass
+    except (OSError, ValueError):
+        pass
+    try:
+        decisions_dir = SNAPSHOT_DIR / "read-cache" / "decisions"
+        if decisions_dir.is_dir():
+            for f in decisions_dir.glob("*.jsonl"):
+                try:
+                    if f.stat().st_mtime < _prune_cutoff:
+                        f.unlink()
+                except OSError:
+                    pass
+    except (OSError, ValueError):
+        pass
+    # Auto-install / auto-restore quality bar on SessionStart.
+    # - No statusLine at all: install ours silently.
+    # - statusLine exists but cache hook is missing: reinstall.
+    # - statusLine was replaced by something else (e.g., user ran /statusline)
+    #   while our cache hook is still running: the surviving cache hook is
+    #   strong evidence the user had our full quality bar previously, so
+    #   something clobbered just the statusline. Auto-restore with force=True
+    #   and print a one-line notice explaining what happened.
+    # Respects "quality_bar_disabled" in config.json for permanent opt-out.
+    # `setup-quality-bar --uninstall` writes that flag, so the user's
+    # explicit intent to remove the quality bar is sticky across sessions.
+    try:
+        _eh_qb_disabled = False
+        if CONFIG_PATH.exists():
+            _eh_cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+            _eh_qb_disabled = _eh_cfg.get("quality_bar_disabled", False)
+        if not _eh_qb_disabled and SETTINGS_PATH.exists():
+            settings = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+            has_statusline = bool(settings.get("statusLine"))
+            hooks = settings.get("hooks", {}).get("UserPromptSubmit", [])
+            has_cache_hook = any("quality-cache" in str(h) for h in hooks)
+            statusline_cmd = (settings.get("statusLine") or {}).get("command", "") or ""
+            statusline_is_ours = "statusline.js" in statusline_cmd and "token-optimizer" in statusline_cmd
+            if has_statusline and not statusline_is_ours and has_cache_hook:
+                print(
+                    "  [Token Optimizer] Statusline was replaced (e.g., by /statusline). "
+                    "Auto-restored. Opt out permanently: measure.py setup-quality-bar --uninstall"
+                )
+                setup_quality_bar(force=True)
+            elif not has_statusline or (has_statusline and not has_cache_hook):
+                setup_quality_bar()
+    except Exception:
+        pass
+    # Auto-update check (once per day, script-installed users only)
+    try:
+        install_dir = Path.home() / ".claude" / "token-optimizer"
+        update_marker = install_dir / ".last-update-check"
+        if (install_dir / ".git").is_dir():
+            should_check = True
+            if update_marker.exists():
+                age = time.time() - update_marker.stat().st_mtime
+                should_check = age > 86400  # Once per day
+            if should_check:
+                import subprocess
+                update_log = install_dir / ".last-update.log"
+                log_fd = os.open(str(update_log), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                subprocess.Popen(
+                    ["git", "-C", str(install_dir), "pull", "--ff-only"],
+                    stdout=log_fd, stderr=subprocess.STDOUT,
+                    start_new_session=True
+                )
+                os.close(log_fd)
+                update_marker.touch()
+    except Exception:
+        pass
+    # One-time first-run nudge for marketplace users: Claude Code ships
+    # third-party marketplaces with auto-update off by default, and plugin
+    # authors cannot change that default. Tell the user how to flip it
+    # so they get future bug fixes automatically. Shown exactly once,
+    # suppressed if the user has opted out of the quality bar entirely,
+    # and skipped for script-install / dev-symlink users (they get their
+    # updates via the daily git pull above or via their local checkout).
+    try:
+        already_shown = _read_config_flag("autoupdate_nudge_shown", False)
+        qb_disabled = _read_config_flag("quality_bar_disabled", False)
+        if (_is_running_from_plugin_cache()
+                and not already_shown
+                and not qb_disabled):
+            print("")
+            print("  [Token Optimizer] First-run tip: enable auto-update for this marketplace")
+            print("  so you get bug fixes automatically. In Claude Code:")
+            print("")
+            print("      /plugin  ->  Marketplaces  ->  alexgreensh-token-optimizer")
+            print("               ->  Enable auto-update")
+            print("")
+            print("  Third-party marketplaces ship with auto-update off by default in")
+            print("  Claude Code. This is not our choice. This message will not show again.")
+            print("")
+            _write_config_flag("autoupdate_nudge_shown", True)
+    except Exception:
+        pass
+
+
 if __name__ == "__main__":
     args = sys.argv[1:]
 
@@ -13211,50 +13610,63 @@ if __name__ == "__main__":
         status = "--status" in args
         setup_smart_compact(dry_run=dry, uninstall=uninstall, status_only=status)
     elif args[0] == "quality-cache":
-        quiet = "--quiet" in args or "-q" in args
-        warn = "--warn" in args
-        force = "--force" in args
-        throttle = 120
-        warn_threshold = 70
-        for i, a in enumerate(args):
-            if a == "--throttle" and i + 1 < len(args):
-                try:
-                    throttle = int(args[i + 1])
-                except ValueError:
-                    pass
-            if a == "--warn-threshold" and i + 1 < len(args):
-                try:
-                    warn_threshold = int(args[i + 1])
-                except ValueError:
-                    pass
-        # Self-healing: if quality-cache hook is missing from settings.json, reinstall it.
-        # Respects "quality_bar_disabled" in config.json for permanent opt-out.
+        # Hook wall-clock guard: the handler exits gracefully after 8s to
+        # keep SessionStart / UserPromptSubmit responsive even under lock
+        # contention or a pathologically slow filesystem.
+        _tok_hook_old_sig = _install_hook_budget(8)
         try:
-            _qb_disabled = False
-            if CONFIG_PATH.exists():
-                _qb_cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-                _qb_disabled = _qb_cfg.get("quality_bar_disabled", False)
-            if not _qb_disabled and SETTINGS_PATH.exists():
-                _sh_settings = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
-                _sh_hooks = _sh_settings.get("hooks", {}).get("UserPromptSubmit", [])
-                if not any("quality-cache" in str(h) for h in _sh_hooks):
-                    setup_quality_bar()
-        except Exception:
-            pass
-        # Read hook payload from stdin if available (provides exact transcript_path)
-        session_jsonl = None
-        if not sys.stdin.isatty():
+            quiet = "--quiet" in args or "-q" in args
+            warn = "--warn" in args
+            force = "--force" in args
+            throttle = 120
+            warn_threshold = 70
+            for i, a in enumerate(args):
+                if a == "--throttle" and i + 1 < len(args):
+                    try:
+                        throttle = int(args[i + 1])
+                    except ValueError:
+                        pass
+                if a == "--warn-threshold" and i + 1 < len(args):
+                    try:
+                        warn_threshold = int(args[i + 1])
+                    except ValueError:
+                        pass
+            # Self-healing: if quality-cache hook is missing from settings.json, reinstall it.
+            # Respects "quality_bar_disabled" in config.json for permanent opt-out.
             try:
-                payload = json.loads(sys.stdin.read(1_000_000))
-                session_jsonl = payload.get("transcript_path")
-            except (json.JSONDecodeError, OSError):
+                _qb_disabled = False
+                if CONFIG_PATH.exists():
+                    _qb_cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+                    _qb_disabled = _qb_cfg.get("quality_bar_disabled", False)
+                if not _qb_disabled and SETTINGS_PATH.exists():
+                    _sh_settings = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+                    _sh_hooks = _sh_settings.get("hooks", {}).get("UserPromptSubmit", [])
+                    if not any("quality-cache" in str(h) for h in _sh_hooks):
+                        setup_quality_bar()
+            except Exception:
                 pass
-        score = quality_cache(throttle_seconds=throttle, warn_threshold=warn_threshold, quiet=quiet, session_jsonl=session_jsonl, force=force)
-        if warn and score is not None and score < warn_threshold:
-            if score < 50:
-                print(f"[Token Optimizer] Context quality: {score}/100 (critical). Heavy rot detected. Consider /clear with checkpoint.")
-            else:
-                print(f"[Token Optimizer] Context quality: {score}/100. Stale reads and bloated results building up. Consider /compact.")
+            # Read hook payload from stdin if available (provides exact transcript_path)
+            session_jsonl = None
+            if not sys.stdin.isatty():
+                try:
+                    payload = json.loads(sys.stdin.read(1_000_000))
+                    session_jsonl = payload.get("transcript_path")
+                except (json.JSONDecodeError, OSError):
+                    pass
+            score = quality_cache(throttle_seconds=throttle, warn_threshold=warn_threshold, quiet=quiet, session_jsonl=session_jsonl, force=force)
+            if warn and score is not None and score < warn_threshold:
+                if score < 50:
+                    print(f"[Token Optimizer] Context quality: {score}/100 (critical). Heavy rot detected. Consider /clear with checkpoint.")
+                else:
+                    print(f"[Token Optimizer] Context quality: {score}/100. Stale reads and bloated results building up. Consider /compact.")
+        except _HookTimeout:
+            print(
+                "[Token Optimizer] hook budget exceeded; skipping quality-cache tick to keep session responsive",
+                file=sys.stderr,
+            )
+            sys.exit(0)
+        finally:
+            _clear_hook_budget(_tok_hook_old_sig)
     elif args[0] == "v5":
         # v5 feature management: measure.py v5 [status|enable|disable|welcome] [feature]
         output_json = "--json" in args
@@ -13420,214 +13832,22 @@ if __name__ == "__main__":
         dry = "--dry-run" in args
         plugin_cleanup(dry_run=dry)
     elif args[0] == "ensure-health":
-        # Silent auto-fix of known harmful settings. Called by SessionStart hook.
-        _auto_remove_bad_env_vars()
-        # v5.0.2: Self-heal hooks with correct semantics for each install mode.
-        # Plugin users get hooks auto-loaded from plugin hooks.json by Claude Code,
-        # so settings.json copies are pure duplicates that cause every hook to fire
-        # twice (wasted CPU, racy SQLite writes, undercounted savings). For plugin
-        # users, the auto-heal INVERTS: instead of adding hooks, it removes the
-        # duplicates. Script-install users (no plugin) still get the original
-        # add-missing-hooks behavior.
-        #
-        # Throttled to once per 24h to keep SessionStart fast. Both paths update
-        # last_hook_heal_check on success so the throttle works the same way.
+        # Called by SessionStart hook. Wrapped in a wall-clock guard so a
+        # pathologically slow filesystem or lock contention cannot block the
+        # new session indefinitely. Handler exits 0 gracefully on timeout;
+        # the 24h throttle on internal self-heal paths means the next
+        # SessionStart is typically a no-op anyway.
+        _tok_hook_old_sig = _install_hook_budget(8)
         try:
-            last_check = _read_config_flag("last_hook_heal_check", 0)
-            now = int(time.time())
-            if now - int(last_check or 0) > 86400:  # 24h
-                if _is_plugin_installed():
-                    # Plugin mode: remove duplicates the plugin already provides.
-                    cleanup_result = _cleanup_duplicate_plugin_hooks_from_settings(dry_run=False)
-                    removed = cleanup_result.get("removed", 0)
-                    if removed > 0:
-                        print(f"  [Token Optimizer] Removed {removed} duplicate hook(s) from settings.json (plugin already provides them). Restart Claude Code to fully apply.")
-                    # Update timestamp whether or not anything was removed, so we
-                    # don't re-scan on every SessionStart for the next 24h.
-                    _write_config_flag("last_hook_heal_check", now)
-                else:
-                    # Script-install mode: add any missing hooks from the repo's
-                    # hooks.json. Upgrades from v4.x pick up v5 hooks here.
-                    heal_result = setup_all_hooks(dry_run=False, verbose=False)
-                    added = heal_result.get("added", 0)
-                    if added > 0:
-                        print(f"  [Token Optimizer] Self-healed {added} missing hook(s) in settings.json. Restart Claude Code to activate.")
-                    elif added == 0 and not heal_result.get("error"):
-                        # setup_all_hooks only updates the timestamp when it
-                        # actually wrote hooks. Update it here on the no-op path
-                        # so we don't re-scan every session for 24h.
-                        _write_config_flag("last_hook_heal_check", now)
-        except Exception:
-            pass
-        # v5.1: First-run welcome. Shows once when v5 is first seen on this machine.
-        try:
-            if not _read_config_flag("v5_welcome_shown", False):
-                _show_v5_welcome()
-                _write_config_flag("v5_welcome_shown", True)
-        except Exception:
-            pass
-        # Preserve session transcripts: set cleanupPeriodDays if not configured.
-        # Without this, Claude Code deletes JSONL transcripts after 30 days,
-        # breaking Token Optimizer trends, skill usage tracking, and Total Recall
-        # raw-transcript search. Disk cost is negligible.
-        # ADV-002 fix: use _write_settings_atomic to avoid racing setup_all_hooks.
-        try:
-            _cp_data, _ = _read_settings_json()
-            if _cp_data and "cleanupPeriodDays" not in _cp_data:
-                _cp_data = dict(_cp_data)
-                _cp_data["cleanupPeriodDays"] = 99999
-                _write_settings_atomic(_cp_data)
-                print("  [Token Optimizer] Set cleanupPeriodDays=99999 (preserves session transcripts for trends/analytics)")
-        except Exception:
-            pass
-        # Fix stale versioned plugin cache paths in settings.json (GitHub #7).
-        # When a plugin updates, hardcoded version paths break silently.
-        try:
-            _stale_fixed = _fix_stale_settings_paths()
-            if _stale_fixed:
-                print(f"  [Token Optimizer] Fixed {_stale_fixed} stale plugin path(s) in settings.json")
-        except Exception as _e:
-            print(f"  [Token Optimizer] stale path fix failed: {_e}", file=sys.stderr)
-        # Plugin cleanup is available as `measure.py plugin-cleanup` but NOT auto-run.
-        # Deleting cache dirs on SessionStart can break plugins that load hooks from
-        # dogfood/development paths. Users should run it manually after review.
-        # Migrate data to CLAUDE_PLUGIN_DATA on first run (v2.1.78+)
-        if _PLUGIN_DATA:
-            _legacy_data = CLAUDE_DIR / "_backups" / "token-optimizer"
-            _legacy_config = CLAUDE_DIR / "token-optimizer"
-            _migrated_marker = Path(_PLUGIN_DATA) / ".migrated"
-            if not _migrated_marker.exists():
-                import shutil
-                SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
-                CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-                for src_dir, dst_dir in [(_legacy_data, SNAPSHOT_DIR), (_legacy_config, CONFIG_DIR)]:
-                    if src_dir.is_dir():
-                        for f in src_dir.iterdir():
-                            if f.is_file() and not (dst_dir / f.name).exists():
-                                try:
-                                    shutil.copy2(f, dst_dir / f.name)
-                                except OSError:
-                                    pass
-                try:
-                    _migrated_marker.touch()
-                except OSError:
-                    pass
-        # Clean up orphaned temp files from interrupted atomic writes
-        # Note: .settings.lock is NOT cleaned up (zero-byte sentinel, not a leak;
-        # deleting it while held could break the advisory lock for other processes)
-        for f in SETTINGS_PATH.parent.glob(".settings-*.json"):
-            try:
-                if time.time() - f.stat().st_mtime > 3600:
-                    f.unlink()
-            except OSError:
-                pass
-        # Prune old quality-cache and decisions files (older than 7 days)
-        _prune_cutoff = time.time() - 7 * 86400
-        try:
-            cache_files = sorted(
-                QUALITY_CACHE_DIR.glob("quality-cache-*.json"),
-                key=lambda f: f.stat().st_mtime, reverse=True
+            _run_ensure_health()
+        except _HookTimeout:
+            print(
+                "[Token Optimizer] hook budget exceeded; skipping ensure-health tick to keep session responsive",
+                file=sys.stderr,
             )
-            for f in cache_files[10:]:  # Keep 10 most recent regardless of age
-                try:
-                    if f.stat().st_mtime < _prune_cutoff:
-                        f.unlink()
-                except OSError:
-                    pass
-        except (OSError, ValueError):
-            pass
-        try:
-            decisions_dir = SNAPSHOT_DIR / "read-cache" / "decisions"
-            if decisions_dir.is_dir():
-                for f in decisions_dir.glob("*.jsonl"):
-                    try:
-                        if f.stat().st_mtime < _prune_cutoff:
-                            f.unlink()
-                    except OSError:
-                        pass
-        except (OSError, ValueError):
-            pass
-        # Auto-install / auto-restore quality bar on SessionStart.
-        # - No statusLine at all: install ours silently.
-        # - statusLine exists but cache hook is missing: reinstall.
-        # - statusLine was replaced by something else (e.g., user ran /statusline)
-        #   while our cache hook is still running: the surviving cache hook is
-        #   strong evidence the user had our full quality bar previously, so
-        #   something clobbered just the statusline. Auto-restore with force=True
-        #   and print a one-line notice explaining what happened.
-        # Respects "quality_bar_disabled" in config.json for permanent opt-out.
-        # `setup-quality-bar --uninstall` writes that flag, so the user's
-        # explicit intent to remove the quality bar is sticky across sessions.
-        try:
-            _eh_qb_disabled = False
-            if CONFIG_PATH.exists():
-                _eh_cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-                _eh_qb_disabled = _eh_cfg.get("quality_bar_disabled", False)
-            if not _eh_qb_disabled and SETTINGS_PATH.exists():
-                settings = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
-                has_statusline = bool(settings.get("statusLine"))
-                hooks = settings.get("hooks", {}).get("UserPromptSubmit", [])
-                has_cache_hook = any("quality-cache" in str(h) for h in hooks)
-                statusline_cmd = (settings.get("statusLine") or {}).get("command", "") or ""
-                statusline_is_ours = "statusline.js" in statusline_cmd and "token-optimizer" in statusline_cmd
-                if has_statusline and not statusline_is_ours and has_cache_hook:
-                    print(
-                        "  [Token Optimizer] Statusline was replaced (e.g., by /statusline). "
-                        "Auto-restored. Opt out permanently: measure.py setup-quality-bar --uninstall"
-                    )
-                    setup_quality_bar(force=True)
-                elif not has_statusline or (has_statusline and not has_cache_hook):
-                    setup_quality_bar()
-        except Exception:
-            pass
-        # Auto-update check (once per day, script-installed users only)
-        try:
-            install_dir = Path.home() / ".claude" / "token-optimizer"
-            update_marker = install_dir / ".last-update-check"
-            if (install_dir / ".git").is_dir():
-                should_check = True
-                if update_marker.exists():
-                    age = time.time() - update_marker.stat().st_mtime
-                    should_check = age > 86400  # Once per day
-                if should_check:
-                    import subprocess
-                    update_log = install_dir / ".last-update.log"
-                    log_fd = os.open(str(update_log), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-                    subprocess.Popen(
-                        ["git", "-C", str(install_dir), "pull", "--ff-only"],
-                        stdout=log_fd, stderr=subprocess.STDOUT,
-                        start_new_session=True
-                    )
-                    os.close(log_fd)
-                    update_marker.touch()
-        except Exception:
-            pass
-        # One-time first-run nudge for marketplace users: Claude Code ships
-        # third-party marketplaces with auto-update off by default, and plugin
-        # authors cannot change that default. Tell the user how to flip it
-        # so they get future bug fixes automatically. Shown exactly once,
-        # suppressed if the user has opted out of the quality bar entirely,
-        # and skipped for script-install / dev-symlink users (they get their
-        # updates via the daily git pull above or via their local checkout).
-        try:
-            already_shown = _read_config_flag("autoupdate_nudge_shown", False)
-            qb_disabled = _read_config_flag("quality_bar_disabled", False)
-            if (_is_running_from_plugin_cache()
-                    and not already_shown
-                    and not qb_disabled):
-                print("")
-                print("  [Token Optimizer] First-run tip: enable auto-update for this marketplace")
-                print("  so you get bug fixes automatically. In Claude Code:")
-                print("")
-                print("      /plugin  ->  Marketplaces  ->  alexgreensh-token-optimizer")
-                print("               ->  Enable auto-update")
-                print("")
-                print("  Third-party marketplaces ship with auto-update off by default in")
-                print("  Claude Code. This is not our choice. This message will not show again.")
-                print("")
-                _write_config_flag("autoupdate_nudge_shown", True)
-        except Exception:
-            pass
+            sys.exit(0)
+        finally:
+            _clear_hook_budget(_tok_hook_old_sig)
     elif args[0] == "setup-quality-bar":
         dry = "--dry-run" in args
         uninstall = "--uninstall" in args

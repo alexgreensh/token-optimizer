@@ -60,7 +60,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "test -f '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/measure.py' && python3 '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/measure.py' ensure-health || true"
+            "command": "test -f '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/measure.py' && python3 '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/measure.py' ensure-health || true",
+            "async": true,
+            "timeout": 15000
           }
         ]
       },

@@ -278,6 +278,83 @@ def _compress_ls(output):
     return "\n".join(result)
 
 
+# Lint rule-code patterns. Ordered by specificity so the first match wins.
+# The CAPS+digits pattern catches ruff/flake8/pylint/shellcheck/pydocstyle.
+# The trailing kebab pattern catches eslint rule names. The CamelCase/slash
+# pattern catches rubocop cops. The parenthesised trailing word catches
+# golangci-lint linter tags like `(typecheck)` or `(govet)`.
+_LINT_CODE_PATTERNS = [
+    re.compile(r"\b([A-Z]{1,4}\d{2,5})\b"),            # F401, E501, SC2086, W0611
+    re.compile(r"\s([a-z][a-z0-9]*(?:-[a-z0-9]+)+)\s*$"),  # eslint trailing kebab
+    re.compile(r"\b([A-Z][A-Za-z]+/[A-Z][A-Za-z]+)\b"),     # rubocop Style/Foo
+    re.compile(r"\(([a-z][a-z0-9]+)\)\s*$"),                # golangci (typecheck)
+]
+
+
+def _compress_lint(output):
+    """Compress lint output (eslint/ruff/flake8/rubocop/shellcheck/biome/pylint/golangci-lint).
+
+    Group findings by rule code, show top-5 codes with a single sample line,
+    preserve trailing summary lines (e.g. "Found 6 errors") verbatim. Unknown
+    lines fall through uncounted so the handler stays robust against format
+    drift — credentials are preserved via the PRE-compression token scan.
+    """
+    lines = output.splitlines()
+    if len(lines) < 10:
+        return output
+
+    counts = {}
+    samples = {}
+    summary_lines = []
+    total_findings = 0
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        matched_code = None
+        for pat in _LINT_CODE_PATTERNS:
+            m = pat.search(stripped)
+            if m:
+                matched_code = m.group(1)
+                break
+        if matched_code:
+            counts[matched_code] = counts.get(matched_code, 0) + 1
+            if matched_code not in samples:
+                sample = stripped
+                if len(sample) > 140:
+                    sample = sample[:137] + "..."
+                samples[matched_code] = sample
+            total_findings += 1
+        else:
+            # Trailing summary context: "Found 6 errors.", "✖ 12 problems", etc.
+            low = stripped.lower()
+            if any(tok in low for tok in ("found", "error", "warning", "problem",
+                                          "clean", "passed", "failed", "checked")):
+                summary_lines.append(stripped)
+
+    if total_findings < 5:
+        return output  # not worth the complexity for short lint runs
+
+    parts = [f"{total_findings} findings across {len(counts)} rule codes"]
+
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    for code, cnt in ranked[:5]:
+        sample = samples.get(code, "")
+        parts.append(f"  {code} x{cnt}: {sample}")
+
+    if len(ranked) > 5:
+        tail_count = sum(c for _, c in ranked[5:])
+        parts.append(f"  ... {len(ranked) - 5} other codes ({tail_count} findings)")
+
+    if summary_lines:
+        parts.append("")
+        for line in summary_lines[-3:]:
+            parts.append(line)
+
+    return "\n".join(parts)
+
+
 # ---------------------------------------------------------------------------
 # Pattern dispatch
 # ---------------------------------------------------------------------------
@@ -327,6 +404,15 @@ def _detect_pattern(command_str):
         return "npm_install"
     elif cmd in ("ls", "find"):
         return "ls"
+    # v5.1 lint handlers
+    elif cmd in ("eslint", "flake8", "pylint", "shellcheck", "rubocop"):
+        return "lint"
+    elif cmd == "ruff" and subcmd == "check":
+        return "lint"
+    elif cmd == "biome" and subcmd == "lint":
+        return "lint"
+    elif cmd == "golangci-lint" and subcmd == "run":
+        return "lint"
 
     return None
 
@@ -339,6 +425,7 @@ _PATTERN_HANDLERS = {
     "jest": _compress_jest,
     "npm_install": _compress_npm_install,
     "ls": _compress_ls,
+    "lint": _compress_lint,
 }
 
 

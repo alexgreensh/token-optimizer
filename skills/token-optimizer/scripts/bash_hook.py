@@ -35,6 +35,8 @@ _SAFE_ENV_VARS = frozenset({
 # Commands eligible for compression (argv[0] or argv[0:2])
 _WHITELIST_SINGLE = frozenset({
     "git", "pytest", "py.test", "jest", "vitest", "rspec", "ls", "find",
+    # v5.1 lint handlers (read-only static analysis)
+    "eslint", "flake8", "pylint", "shellcheck", "rubocop",
 })
 _WHITELIST_COMPOUND = {
     ("git", "status"), ("git", "log"), ("git", "diff"), ("git", "show"), ("git", "branch"),
@@ -44,6 +46,10 @@ _WHITELIST_COMPOUND = {
     ("pip", "install"), ("pip3", "install"),
     ("cargo", "test"), ("cargo", "build"),
     ("go", "test"),
+    # v5.1 lint handlers (multi-word lint invocations)
+    ("ruff", "check"),
+    ("biome", "lint"),
+    ("golangci-lint", "run"),
 }
 
 # Git write commands that should NOT be compressed

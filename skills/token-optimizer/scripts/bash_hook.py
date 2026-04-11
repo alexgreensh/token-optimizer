@@ -43,6 +43,8 @@ _WHITELIST_SINGLE = frozenset({
     "tree",
     # v5.1 build handler (type-check / bundler builds — read-only compile)
     "tsc", "webpack", "esbuild",
+    # v5.1 extended test runners (read-only test execution)
+    "mocha", "karma",
 })
 _WHITELIST_COMPOUND = {
     ("git", "status"), ("git", "log"), ("git", "diff"), ("git", "show"), ("git", "branch"),
@@ -69,6 +71,13 @@ _WHITELIST_COMPOUND = {
     ("vite", "build"),
     ("next", "build"),
     ("go", "build"),
+    # v5.1 extended test runners (multi-word invocations)
+    ("cypress", "run"),
+    ("playwright", "test"),
+    ("npx", "cypress"),
+    ("npx", "playwright"),
+    ("npx", "mocha"),
+    ("npx", "karma"),
 }
 
 # Git write commands that should NOT be compressed

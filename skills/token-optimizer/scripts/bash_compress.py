@@ -194,19 +194,37 @@ def _compress_git_diff(output):
 
 
 def _compress_pytest(output):
-    """Compress pytest: keep summary + failure details only."""
+    """Compress pytest/cypress/playwright/mocha/karma/rspec test output.
+
+    Extracts a block of trailing summary lines (anything containing passed,
+    passing, failed, failing, error, pending, or skipped) plus the explicit
+    FAILURES/ERRORS section when pytest emits one. Cypress and playwright
+    speak in "passing" / "failing" terms, which the reverse-scan now accepts
+    so the same handler covers all five runners.
+    """
     lines = output.strip().splitlines()
+    if not lines:
+        return output
 
-    # Find the summary line (e.g., "26 passed, 1 failed in 3.42s")
-    summary_line = ""
-    for line in reversed(lines):
-        if "passed" in line or "failed" in line or "error" in line:
-            stripped = line.strip().lstrip("=").strip()
-            if stripped:
-                summary_line = stripped
-                break
+    summary_kw = ("passed", "passing", "failed", "failing", "error",
+                  "pending", "skipped")
 
-    # Find failure section
+    # Reverse-scan the tail for a contiguous block of summary lines.
+    summary_block = []
+    for line in reversed(lines[-12:]):
+        stripped = line.strip().lstrip("=").strip()
+        if not stripped:
+            if summary_block:
+                continue  # tolerate blank spacers inside the block
+            continue
+        if any(kw in stripped.lower() for kw in summary_kw):
+            summary_block.append(stripped)
+        elif summary_block:
+            break  # left the summary block
+    summary_block.reverse()
+    summary_line = "\n".join(summary_block)
+
+    # Find failure section (pytest-native)
     failure_lines = []
     in_failures = False
     for line in lines:
@@ -219,7 +237,6 @@ def _compress_pytest(output):
             failure_lines.append(line)
 
     if failure_lines:
-        # Keep failure details but cap at 30 lines
         failure_text = "\n".join(failure_lines[:30])
         if len(failure_lines) > 30:
             failure_text += f"\n... ({len(failure_lines) - 30} more failure lines)"
@@ -641,6 +658,21 @@ def _detect_pattern(command_str):
         return "jest"
     elif cmd == "rspec":
         return "pytest"  # similar enough format
+    # v5.1 test-runner extensions (dispatch-only: cypress/playwright/mocha/
+    # karma all report in "passing/failing" terminology; the extended pytest
+    # handler now reads all five formats.)
+    elif cmd == "mocha" or (cmd == "npx" and subcmd == "mocha"):
+        return "pytest"
+    elif cmd == "karma" or (cmd == "npx" and subcmd == "karma"):
+        return "pytest"
+    elif cmd == "cypress" and subcmd == "run":
+        return "pytest"
+    elif cmd == "npx" and subcmd == "cypress":
+        return "pytest"
+    elif cmd == "playwright" and subcmd == "test":
+        return "pytest"
+    elif cmd == "npx" and subcmd == "playwright":
+        return "pytest"
     elif cmd in ("go", "cargo") and subcmd == "test":
         return "pytest"
     elif cmd == "npm" and subcmd in ("install", "ci"):

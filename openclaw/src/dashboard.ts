@@ -498,6 +498,8 @@ function renderOverview(data: DashboardData): string {
 
     ${data.context ? renderContextOverviewBar(data.context, data) : ""}
 
+    ${renderV5ActiveCompressionCard()}
+
     ${data.agents.length > 0 ? renderAgentCards(data.agents.slice(0, 6)) : ""}
 
     ${data.waste.length > 0 ? `
@@ -506,6 +508,83 @@ function renderOverview(data: DashboardData): string {
         ${data.waste.slice(0, 3).map(renderWasteCardCompact).join("")}
       </div>
     ` : ""}
+  </div>`;
+}
+
+function renderV5ActiveCompressionCard(): string {
+  // Imported lazily to keep the dashboard module loadable in environments
+  // where the v5 feature registry file is missing (older installs).
+  let features: Array<{
+    id: string;
+    label: string;
+    description: string;
+    risk: string;
+    status: string;
+    enabled: boolean;
+  }> = [];
+  let summary: {
+    total_events: number;
+    total_tokens_saved: number;
+    overall_ratio: number;
+    by_feature: Record<string, { events: number; tokens_saved: number }>;
+  } = {
+    total_events: 0,
+    total_tokens_saved: 0,
+    overall_ratio: 0,
+    by_feature: {},
+  };
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const v5 = require("./v5-features") as {
+      listV5Features: () => typeof features;
+    };
+    features = v5.listV5Features();
+  } catch {
+    return "";
+  }
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const tel = require("./telemetry") as {
+      getCompressionSummary: (days?: number) => typeof summary;
+    };
+    summary = tel.getCompressionSummary(30);
+  } catch {
+    // Telemetry read failed — render an "enabled/disabled" list only.
+  }
+
+  const featureRows = features
+    .map((f) => {
+      const stateLabel =
+        f.status === "deferred"
+          ? '<span class="v5-state v5-deferred">deferred</span>'
+          : f.enabled
+            ? '<span class="v5-state v5-on">enabled</span>'
+            : '<span class="v5-state v5-off">disabled</span>';
+      const featSavings = summary.by_feature?.[f.id];
+      const savings = featSavings
+        ? `<span class="v5-savings">${featSavings.tokens_saved.toLocaleString()} tokens saved</span>`
+        : "";
+      return `<div class="v5-feature">
+        <div class="v5-feature-head">
+          <strong>${esc(f.label)}</strong>
+          ${stateLabel}
+        </div>
+        <div class="v5-feature-desc">${esc(f.description)}</div>
+        ${savings}
+      </div>`;
+    })
+    .join("");
+
+  const totalsLine =
+    summary.total_events > 0
+      ? `<div class="v5-total">${summary.total_events.toLocaleString()} events, ${summary.total_tokens_saved.toLocaleString()} tokens saved (${(summary.overall_ratio * 100).toFixed(1)}%)</div>`
+      : '<div class="v5-total">No v5 events logged yet — toggle a feature to start tracking savings.</div>';
+
+  return `<div class="card v5-card">
+    <div class="card-header"><span>v5 Active Compression</span></div>
+    <div class="v5-features">${featureRows}</div>
+    ${totalsLine}
+    <div class="v5-hint">Toggle with <code>token-optimizer v5 enable &lt;feature-id&gt;</code></div>
   </div>`;
 }
 

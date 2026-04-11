@@ -14,6 +14,16 @@ import { auditContext } from "./context-audit";
 import { scoreQuality } from "./quality";
 import { captureSnapshot, detectDrift } from "./drift";
 import { validateImpact, Strategy as ValidateStrategy } from "./validate";
+import {
+  V5_FEATURES,
+  isV5Enabled,
+  setV5,
+  listV5Features,
+  hasSeenWelcome,
+  markWelcomeSeen,
+  type V5FeatureId,
+} from "./v5-features";
+import { getCompressionSummary } from "./telemetry";
 import { execFile, execFileSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
@@ -32,7 +42,7 @@ function redactPaths(obj: unknown): unknown {
 }
 
 function printUsage(): void {
-  console.log(`Token Optimizer for OpenClaw v2.0.0
+  console.log(`Token Optimizer for OpenClaw v2.3.0
 
 Usage:
   token-optimizer scan         [--days N] [--json]   Scan sessions and show token usage
@@ -46,11 +56,128 @@ Usage:
   token-optimizer detect                               Check if OpenClaw is installed
   token-optimizer doctor       [--json]               Check checkpoint health and plugin status
   token-optimizer checkpoint-stats [--days N] [--json]  Summarize local checkpoint telemetry
+  token-optimizer v5 status    [--json]               Show v5 Active Compression status
+  token-optimizer v5 info FEAT                         Describe a v5 feature
+  token-optimizer v5 enable FEAT                       Enable a v5 feature
+  token-optimizer v5 disable FEAT                      Disable a v5 feature
+  token-optimizer v5 welcome                           Show the v5 welcome prompt
 
 Options:
   --days N      Number of days to scan (default: 30)
   --json        Output as JSON for agent consumption
   --snapshot    Capture current config snapshot (drift command)`);
+}
+
+function cmdV5Status(json: boolean): void {
+  const features = listV5Features();
+  const summary = getCompressionSummary(30);
+  if (json) {
+    console.log(JSON.stringify({ features, summary }, null, 2));
+    return;
+  }
+
+  console.log(`\nv5 Active Compression Status`);
+  console.log("=".repeat(50));
+  for (const f of features) {
+    const state =
+      f.status === "deferred"
+        ? "deferred"
+        : f.enabled
+          ? "enabled"
+          : "disabled";
+    console.log(
+      `  ${f.label.padEnd(22)} [${state.padEnd(8)}] risk=${f.risk} status=${f.status}`
+    );
+  }
+  console.log();
+  console.log(
+    `  Last 30 days: ${summary.total_events} events, ${summary.total_tokens_saved.toLocaleString()} tokens saved (${(summary.overall_ratio * 100).toFixed(1)}%)`
+  );
+  if (Object.keys(summary.by_feature).length > 0) {
+    console.log(`\n  By feature:`);
+    for (const [id, data] of Object.entries(summary.by_feature)) {
+      console.log(
+        `    ${id.padEnd(22)} ${String(data.events).padStart(5)} events  ${data.tokens_saved.toLocaleString()} saved`
+      );
+    }
+  }
+  console.log();
+}
+
+function cmdV5Info(featureId: string): void {
+  const feature = V5_FEATURES[featureId as V5FeatureId];
+  if (!feature) {
+    console.log(
+      `Unknown v5 feature: ${featureId}\nKnown ids: ${Object.keys(V5_FEATURES).join(", ")}`
+    );
+    process.exit(1);
+  }
+  const enabled = isV5Enabled(featureId as V5FeatureId);
+  console.log(`\n${feature.label} (${feature.id})`);
+  console.log("=".repeat(50));
+  console.log(`  Status:   ${feature.status}`);
+  console.log(`  Risk:     ${feature.risk}`);
+  console.log(`  Enabled:  ${enabled}`);
+  console.log(`  Default:  ${feature.defaultEnabled}`);
+  console.log(`\n  ${feature.description}\n`);
+}
+
+function cmdV5Toggle(featureId: string, on: boolean): void {
+  const feature = V5_FEATURES[featureId as V5FeatureId];
+  if (!feature) {
+    console.log(
+      `Unknown v5 feature: ${featureId}\nKnown ids: ${Object.keys(V5_FEATURES).join(", ")}`
+    );
+    process.exit(1);
+  }
+  if (feature.status === "deferred") {
+    console.log(
+      `${feature.label} is deferred in this release and cannot be toggled.`
+    );
+    process.exit(1);
+  }
+  setV5(featureId as V5FeatureId, on);
+  console.log(`${feature.label} is now ${on ? "enabled" : "disabled"}.`);
+}
+
+function cmdV5Welcome(): void {
+  const features = listV5Features();
+  console.log(`\nWelcome to Token Optimizer v2.3.0!`);
+  console.log("=".repeat(50));
+  console.log(
+    "v5 Active Compression is now live in OpenClaw. The low-risk features ship ON by default; the rest stay opt-in until you flip them on:\n"
+  );
+  for (const f of features) {
+    const marker =
+      f.status === "deferred" ? "[ - ]" : f.enabled ? "[ON ]" : "[off]";
+    const note = f.status === "deferred" ? " (deferred — API gap)" : "";
+    console.log(`  ${marker} ${f.label}${note}`);
+    console.log(`        ${f.description}`);
+  }
+  console.log(
+    `\n  Toggle with:   token-optimizer v5 enable <feature-id>`
+  );
+  console.log(
+    `                 token-optimizer v5 disable <feature-id>`
+  );
+  console.log(
+    `  Inspect with:  token-optimizer v5 info <feature-id>`
+  );
+  console.log();
+  markWelcomeSeen("2.3.0");
+}
+
+function maybeShowWelcomeOnce(): void {
+  // Fires once on first CLI invocation after an upgrade to v2.3.0. Stays
+  // silent on every subsequent call. Any failure is ignored so a broken
+  // state file never blocks real commands.
+  try {
+    if (!hasSeenWelcome("2.3.0")) {
+      cmdV5Welcome();
+    }
+  } catch {
+    // Never crash the CLI over a welcome prompt.
+  }
 }
 
 function parseArgs(): { command: string; days: number; json: boolean; snapshot: boolean; strategy: ValidateStrategy } {
@@ -499,6 +626,13 @@ function cmdDrift(snapshot: boolean): void {
 
 const { command, days, json, snapshot, strategy } = parseArgs();
 
+// First-run welcome: shows once after upgrading to v2.3.0, then stays quiet.
+// Skipped when the command is a v5 subcommand (user already opted in) or
+// a JSON output mode (parseable output).
+if (!json && !command.startsWith("v5") && command !== "help") {
+  maybeShowWelcomeOnce();
+}
+
 switch (command) {
   case "detect":
     cmdDetect(json);
@@ -533,6 +667,46 @@ switch (command) {
   case "drift":
     cmdDrift(snapshot);
     break;
+  case "v5": {
+    // v5 subcommand — args: [v5, action, featureId?]
+    const subAction = process.argv[3] ?? "status";
+    const subFeature = process.argv[4] ?? "";
+    switch (subAction) {
+      case "status":
+        cmdV5Status(json);
+        break;
+      case "info":
+        if (!subFeature) {
+          console.log("Usage: token-optimizer v5 info <feature-id>");
+          process.exit(1);
+        }
+        cmdV5Info(subFeature);
+        break;
+      case "enable":
+        if (!subFeature) {
+          console.log("Usage: token-optimizer v5 enable <feature-id>");
+          process.exit(1);
+        }
+        cmdV5Toggle(subFeature, true);
+        break;
+      case "disable":
+        if (!subFeature) {
+          console.log("Usage: token-optimizer v5 disable <feature-id>");
+          process.exit(1);
+        }
+        cmdV5Toggle(subFeature, false);
+        break;
+      case "welcome":
+        cmdV5Welcome();
+        break;
+      default:
+        console.log(
+          `Unknown v5 subcommand: ${subAction}\nSupported: status, info, enable, disable, welcome`
+        );
+        process.exit(1);
+    }
+    break;
+  }
   default:
     printUsage();
 }

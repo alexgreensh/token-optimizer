@@ -272,7 +272,19 @@ User-configured pricing overrides via `openclaw.json`. Model switch simulation e
 
 The OpenClaw plugin includes its own 7-signal ContextQ with signals native to OpenClaw's architecture (Message Efficiency, Compression Opportunity, Model Routing, etc.) rather than a direct port of Claude Code's signals. The Coach tab adapts scoring to OpenClaw concepts (SOUL.md instead of CLAUDE.md, agent configs instead of hooks).
 
-**Not yet ported from Claude Code:** Active Compression v5 (Quality Nudges, Loop Detection, Delta Mode, Bash Compression), Live Quality Bar (status line), Memory Health audit, Attention Optimizer, JSONL trim/dedup tools, cumulative savings tracking, routing injection, tool result archive, SQLite-backed trends.
+**Ported from Claude Code in v2.3.0:** Delta Mode (line-diff on re-reads),
+Structure Map Beta (structural digests on redundant reads), v5 feature
+registry + telemetry JSONL, dashboard Overview card, first-run welcome
+prompt, and the `v5 status | info | enable | disable | welcome`
+CLI subcommand.
+
+**Still not ported from Claude Code:** Quality Nudges and Loop Detection
+(require a session-visible notification surface that the current OpenClaw
+plugin API does not expose; revisit when that lands), Bash Output
+Compression (requires a tool-result mutation hook that the OpenClaw plugin
+API does not yet provide), Live Quality Bar (status line), Memory Health
+audit, Attention Optimizer, JSONL trim/dedup tools, routing injection,
+tool result archive.
 
 ## License
 

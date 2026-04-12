@@ -1,0 +1,119 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 540" width="800" height="540">
+  <!--
+    Real Savings: horizontal bars animate in sequence showing each feature's
+    estimated monthly savings, culminating in a total counter that lands on
+    the $1,500 to $2,500 range. 12s loop. Catppuccin Mocha palette. Pure SMIL.
+  -->
+
+  <!-- Background -->
+  <rect width="800" height="540" rx="12" fill="#1e1e2e"/>
+
+  <!-- Title -->
+  <text x="400" y="38" fill="#89dceb" font-family="'SF Mono','Fira Code',monospace" font-size="20" font-weight="bold" text-anchor="middle">What Token Optimizer saves you</text>
+  <text x="400" y="60" fill="#a6adc8" font-family="'SF Mono','Fira Code',monospace" font-size="12" text-anchor="middle">Real data: 942 sessions | 6.13B input tokens | 90% Opus | 82% cache hit | 30 days</text>
+
+  <!-- Feature rows, each animates: label appears, bar grows, amount fades in -->
+  <!-- Scale: $230 = 320px wide (max bar = 320). Track starts at x=320 (label space). -->
+
+  <!-- Row 1: Smart Compaction ($230) -->
+  <g opacity="0">
+    <animate attributeName="opacity" values="0;1;1;1" dur="12s" keyTimes="0;0.08;0.92;1" repeatCount="indefinite"/>
+    <text x="310" y="108" fill="#cdd6f4" font-family="'SF Mono','Fira Code',monospace" font-size="12" text-anchor="end">Smart Compaction</text>
+    <rect x="320" y="94" width="0" height="20" rx="3" fill="#a6e3a1">
+      <animate attributeName="width" from="0" to="320" dur="0.6s" begin="0.5s" fill="freeze"/>
+    </rect>
+    <text x="660" y="108" fill="#a6e3a1" font-family="'SF Mono','Fira Code',monospace" font-size="12" font-weight="bold">$230</text>
+    <text x="700" y="108" fill="#585b70" font-family="'SF Mono','Fira Code',monospace" font-size="10">avoided restarts</text>
+  </g>
+
+  <!-- Row 2: Loop Detection ($195) -->
+  <g opacity="0">
+    <animate attributeName="opacity" values="0;0;1;1;1" dur="12s" keyTimes="0;0.12;0.16;0.92;1" repeatCount="indefinite"/>
+    <text x="310" y="140" fill="#cdd6f4" font-family="'SF Mono','Fira Code',monospace" font-size="12" text-anchor="end">Loop Detection</text>
+    <rect x="320" y="126" width="0" height="20" rx="3" fill="#89b4fa">
+      <animate attributeName="width" from="0" to="271" dur="0.6s" begin="1.5s" fill="freeze"/>
+    </rect>
+    <text x="611" y="140" fill="#89b4fa" font-family="'SF Mono','Fira Code',monospace" font-size="12" font-weight="bold">$195</text>
+    <text x="651" y="140" fill="#585b70" font-family="'SF Mono','Fira Code',monospace" font-size="10">caught loops</text>
+  </g>
+
+  <!-- Row 3: Quality Nudges ($117) -->
+  <g opacity="0">
+    <animate attributeName="opacity" values="0;0;1;1;1" dur="12s" keyTimes="0;0.2;0.24;0.92;1" repeatCount="indefinite"/>
+    <text x="310" y="172" fill="#cdd6f4" font-family="'SF Mono','Fira Code',monospace" font-size="12" text-anchor="end">Quality Nudges</text>
+    <rect x="320" y="158" width="0" height="20" rx="3" fill="#cba6f7">
+      <animate attributeName="width" from="0" to="163" dur="0.6s" begin="2.5s" fill="freeze"/>
+    </rect>
+    <text x="503" y="172" fill="#cba6f7" font-family="'SF Mono','Fira Code',monospace" font-size="12" font-weight="bold">$117</text>
+    <text x="543" y="172" fill="#585b70" font-family="'SF Mono','Fira Code',monospace" font-size="10">well-timed /compact</text>
+  </g>
+
+  <!-- Row 4: Delta Mode ($26) -->
+  <g opacity="0">
+    <animate attributeName="opacity" values="0;0;1;1;1" dur="12s" keyTimes="0;0.28;0.32;0.92;1" repeatCount="indefinite"/>
+    <text x="310" y="204" fill="#cdd6f4" font-family="'SF Mono','Fira Code',monospace" font-size="12" text-anchor="end">Delta Mode</text>
+    <rect x="320" y="190" width="0" height="20" rx="3" fill="#f9e2af">
+      <animate attributeName="width" from="0" to="36" dur="0.5s" begin="3.5s" fill="freeze"/>
+    </rect>
+    <text x="366" y="204" fill="#f9e2af" font-family="'SF Mono','Fira Code',monospace" font-size="12" font-weight="bold">$26</text>
+    <text x="400" y="204" fill="#585b70" font-family="'SF Mono','Fira Code',monospace" font-size="10">smart re-reads</text>
+  </g>
+
+  <!-- Row 5: Tool Archive ($18) -->
+  <g opacity="0">
+    <animate attributeName="opacity" values="0;0;1;1;1" dur="12s" keyTimes="0;0.35;0.4;0.92;1" repeatCount="indefinite"/>
+    <text x="310" y="236" fill="#cdd6f4" font-family="'SF Mono','Fira Code',monospace" font-size="12" text-anchor="end">Tool Archive</text>
+    <rect x="320" y="222" width="0" height="20" rx="3" fill="#f9e2af">
+      <animate attributeName="width" from="0" to="25" dur="0.5s" begin="4.3s" fill="freeze"/>
+    </rect>
+    <text x="355" y="236" fill="#f9e2af" font-family="'SF Mono','Fira Code',monospace" font-size="12" font-weight="bold">$18</text>
+    <text x="389" y="236" fill="#585b70" font-family="'SF Mono','Fira Code',monospace" font-size="10">cross-compaction recovery</text>
+  </g>
+
+  <!-- Row 6: Bash Compression ($8) -->
+  <g opacity="0">
+    <animate attributeName="opacity" values="0;0;1;1;1" dur="12s" keyTimes="0;0.42;0.48;0.92;1" repeatCount="indefinite"/>
+    <text x="310" y="268" fill="#cdd6f4" font-family="'SF Mono','Fira Code',monospace" font-size="12" text-anchor="end">Bash Compression</text>
+    <rect x="320" y="254" width="0" height="20" rx="3" fill="#f9e2af">
+      <animate attributeName="width" from="0" to="11" dur="0.5s" begin="5.1s" fill="freeze"/>
+    </rect>
+    <text x="341" y="268" fill="#f9e2af" font-family="'SF Mono','Fira Code',monospace" font-size="12" font-weight="bold">$8</text>
+    <text x="368" y="268" fill="#585b70" font-family="'SF Mono','Fira Code',monospace" font-size="10">CLI output (opt-in)</text>
+  </g>
+
+  <!-- Divider -->
+  <line x1="60" y1="306" x2="740" y2="306" stroke="#45475a" stroke-width="1" stroke-dasharray="4 4" opacity="0">
+    <animate attributeName="opacity" values="0;0;1;1" dur="12s" keyTimes="0;0.5;0.54;1" repeatCount="indefinite"/>
+  </line>
+
+  <!-- Input savings subtotal -->
+  <g opacity="0">
+    <animate attributeName="opacity" values="0;0;1;1;1" dur="12s" keyTimes="0;0.54;0.58;0.92;1" repeatCount="indefinite"/>
+    <text x="310" y="334" fill="#a6adc8" font-family="'SF Mono','Fira Code',monospace" font-size="13" text-anchor="end">Input savings</text>
+    <text x="320" y="334" fill="#cdd6f4" font-family="'SF Mono','Fira Code',monospace" font-size="13">~ $590 / month</text>
+  </g>
+
+  <!-- Output + thinking savings -->
+  <g opacity="0">
+    <animate attributeName="opacity" values="0;0;1;1;1" dur="12s" keyTimes="0;0.62;0.66;0.92;1" repeatCount="indefinite"/>
+    <text x="310" y="358" fill="#a6adc8" font-family="'SF Mono','Fira Code',monospace" font-size="13" text-anchor="end">Output + thinking</text>
+    <text x="320" y="358" fill="#cdd6f4" font-family="'SF Mono','Fira Code',monospace" font-size="13">~ $1,500 / month</text>
+    <text x="320" y="376" fill="#585b70" font-family="'SF Mono','Fira Code',monospace" font-size="10">(loops caught, /compact at the right moment, fewer rebuilds after bad compactions)</text>
+  </g>
+
+  <!-- BIG TOTAL counter -->
+  <g opacity="0">
+    <animate attributeName="opacity" values="0;0;1;1" dur="12s" keyTimes="0;0.7;0.75;1" repeatCount="indefinite"/>
+    <rect x="60" y="408" width="680" height="80" rx="10" fill="#181825" stroke="#89dceb" stroke-width="2">
+      <animate attributeName="stroke-width" values="2;3;2" dur="2.5s" repeatCount="indefinite"/>
+    </rect>
+    <text x="400" y="442" fill="#a6adc8" font-family="'SF Mono','Fira Code',monospace" font-size="13" text-anchor="middle">Realistic monthly total</text>
+    <text x="400" y="478" fill="#89dceb" font-family="'SF Mono','Fira Code',monospace" font-size="30" font-weight="bold" text-anchor="middle">$1,500  to  $2,500 / month</text>
+  </g>
+
+  <!-- Footer note -->
+  <text x="400" y="516" fill="#585b70" font-family="'SF Mono','Fira Code',monospace" font-size="11" text-anchor="middle" opacity="0">
+    Lighter users see proportional savings. Structural audit wins hit immediately regardless of volume.
+    <animate attributeName="opacity" values="0;0;1;1" dur="12s" keyTimes="0;0.78;0.82;1" repeatCount="indefinite"/>
+  </text>
+</svg>

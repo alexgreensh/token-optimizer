@@ -6450,14 +6450,258 @@ def _find_session_version_for_pid(pid):
     return None  # No confident match; don't guess (causes false OUTDATED flags)
 
 
+def _collect_posix_claude_sessions():
+    """Collect running Claude CLI sessions via `ps` on macOS/Linux.
+
+    Returns a list of session dicts. Returns None if `ps` itself raises a
+    subprocess or OS error -- the caller treats None as "health check
+    unavailable" to preserve the historical POSIX contract. A non-zero
+    `ps` exit with no sessions found returns `[]`.
+    """
+    sessions = []
+    try:
+        result = subprocess.run(
+            ["ps", "-eo", "pid,tty,lstart,etime,command"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+    if result.returncode != 0:
+        return sessions
+    for line in result.stdout.strip().split("\n")[1:]:
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split()
+        if len(parts) < 9:
+            continue
+        # Fields: PID TTY LSTART(5 fields) ETIME COMMAND...
+        tty = parts[1]
+        command = " ".join(parts[8:])
+        if not (command.strip() == "claude" or command.startswith("claude ")):
+            continue
+        try:
+            pid = int(parts[0])
+        except ValueError:
+            continue
+        lstart = " ".join(parts[2:7])
+        elapsed = parts[7]
+        elapsed_seconds = _parse_elapsed_time(elapsed)
+        has_terminal = tty not in ("??", "-", "?")
+        sessions.append({
+            "pid": pid,
+            "started": lstart,
+            "elapsed_seconds": elapsed_seconds,
+            "elapsed_human": _format_elapsed(elapsed_seconds),
+            "command": command,
+            "has_terminal": has_terminal,
+            "tty": tty if has_terminal else None,
+        })
+    return sessions
+
+
+def _parse_wmi_datetime(wmi_ts):
+    """Parse a WMI CIM_DATETIME to elapsed seconds since process start.
+
+    Format: ``YYYYMMDDHHMMSS.ffffff<sign><MMM>`` where sign is + or - and
+    MMM is minutes offset from UTC. Parses the timezone when present and
+    uses timezone-aware math so DST transitions can't flip elapsed
+    negative. Falls back to naive math if the offset is missing/garbage.
+
+    Returns {"started": human, "elapsed_seconds": int} or None.
+    """
+    if not wmi_ts or len(wmi_ts) < 14:
+        return None
+    try:
+        year = int(wmi_ts[0:4])
+        month = int(wmi_ts[4:6])
+        day = int(wmi_ts[6:8])
+        hour = int(wmi_ts[8:10])
+        minute = int(wmi_ts[10:12])
+        second = int(wmi_ts[12:14])
+    except (ValueError, TypeError):
+        return None
+
+    # Offset: position 21 is sign char, 22-25 is MMM (may be absent on short strings).
+    tz_info = None
+    if len(wmi_ts) >= 25 and wmi_ts[21] in ("+", "-"):
+        try:
+            offset_minutes = int(wmi_ts[22:25])
+            if wmi_ts[21] == "-":
+                offset_minutes = -offset_minutes
+            tz_info = timezone(timedelta(minutes=offset_minutes))
+        except (ValueError, TypeError):
+            tz_info = None
+
+    try:
+        if tz_info is not None:
+            started = datetime(year, month, day, hour, minute, second, tzinfo=tz_info)
+            elapsed = (datetime.now(timezone.utc) - started).total_seconds()
+        else:
+            started = datetime(year, month, day, hour, minute, second)
+            elapsed = (datetime.now() - started).total_seconds()
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+    return {
+        "started": started.strftime("%a %b %d %H:%M:%S %Y"),
+        "elapsed_seconds": max(0, int(elapsed)),
+    }
+
+
+def _parse_iso_process_datetime(iso_ts):
+    """Parse an ISO 8601 timestamp from PowerShell to elapsed seconds."""
+    if not iso_ts:
+        return None
+    s = iso_ts.strip()
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        started = datetime.fromisoformat(s)
+    except (ValueError, TypeError):
+        return None
+    if started.tzinfo is None:
+        elapsed = (datetime.now() - started).total_seconds()
+    else:
+        elapsed = (datetime.now(timezone.utc) - started).total_seconds()
+    return {
+        "started": started.strftime("%a %b %d %H:%M:%S %Y"),
+        "elapsed_seconds": max(0, int(elapsed)),
+    }
+
+
+def _windows_process_creation(pid):
+    """Return {"started", "elapsed_seconds"} for a Windows PID, or {}.
+
+    Tries `wmic` first (built-in back to Win7). Falls back to PowerShell
+    `Get-CimInstance` when wmic is absent (deprecated in Windows 11 24H2+).
+    All subprocess calls use errors='replace' so non-ASCII output on
+    localized Windows (ja-JP, zh-CN, ru-RU) can't raise UnicodeDecodeError.
+    """
+    try:
+        result = subprocess.run(
+            ["wmic", "process", "where", f"ProcessId={int(pid)}",
+             "get", "CreationDate", "/format:list"],
+            capture_output=True, text=True, timeout=10, errors="replace",
+        )
+        if result.returncode == 0:
+            for line in result.stdout.splitlines():
+                line = line.strip()
+                if line.startswith("CreationDate="):
+                    parsed = _parse_wmi_datetime(line[len("CreationDate="):])
+                    if parsed is not None:
+                        return parsed
+    except (subprocess.SubprocessError, OSError, FileNotFoundError):
+        pass
+
+    try:
+        ps_cmd = (
+            "(Get-CimInstance Win32_Process -Filter "
+            f"'ProcessId={int(pid)}').CreationDate "
+            "| ForEach-Object { $_.ToString('o') }"
+        )
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps_cmd],
+            capture_output=True, text=True, timeout=10, errors="replace",
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            parsed = _parse_iso_process_datetime(result.stdout.strip())
+            if parsed is not None:
+                return parsed
+    except (subprocess.SubprocessError, OSError, FileNotFoundError):
+        pass
+
+    return {}
+
+
+def _collect_windows_claude_sessions():
+    """Collect running Claude CLI sessions on Windows via tasklist + wmic.
+
+    Safety invariants (per adversarial review 2026-04-13):
+    - Only matches on the Image Name column (claude.exe / claude-*.exe).
+      Matching on Window Title would catch Chrome tabs viewing claude.ai,
+      editors with 'claude' in the filename, etc. kill_stale_sessions
+      would then TerminateProcess those apps -> unsaved-work data loss.
+      POSIX parity: ps-based match requires command == 'claude'; Windows
+      requires the same strictness.
+    - Uses Session # column (numeric) to detect service-hosted processes.
+      Services run in session 0; literal 'Services' string localizes.
+    - subprocess calls use errors='replace' so non-ASCII tasklist output
+      on localized Windows can't raise UnicodeDecodeError.
+
+    Returns a list of session dicts. On subprocess failure returns an
+    empty list (not None) so the Health tab still renders.
+    """
+    import csv as _csv
+    import io as _io
+
+    sessions = []
+    try:
+        result = subprocess.run(
+            ["tasklist", "/v", "/fo", "csv", "/nh"],
+            capture_output=True, text=True, timeout=10, errors="replace",
+        )
+    except (subprocess.SubprocessError, OSError, FileNotFoundError):
+        return sessions
+    if result.returncode != 0:
+        return sessions
+
+    try:
+        reader = list(_csv.reader(_io.StringIO(result.stdout)))
+    except (_csv.Error, ValueError):
+        return sessions
+
+    for row in reader:
+        if len(row) < 9:
+            continue
+        image_name = row[0].strip()
+        pid_str = row[1]
+        session_name = row[2].strip()
+        session_num = row[3].strip() if len(row) > 3 else ""
+        window_title = row[8].strip()
+        image_lower = image_name.lower()
+        # Strict image-name match only. See docstring invariants.
+        if not (image_lower == "claude.exe"
+                or image_lower == "claude"
+                or image_lower.startswith("claude.")
+                or image_lower.startswith("claude-")):
+            continue
+        try:
+            pid = int(pid_str.replace(",", "").strip())
+        except (ValueError, AttributeError):
+            continue
+        if pid <= 0:
+            continue
+        creation = _windows_process_creation(pid)
+        elapsed_seconds = int(creation.get("elapsed_seconds") or 0)
+        # Session # 0 is the Services session (language-independent); any
+        # other numeric value indicates a user session. Falls back to a
+        # non-empty session_name heuristic if the column is absent.
+        if session_num.isdigit():
+            has_terminal = session_num != "0"
+        else:
+            has_terminal = bool(session_name)
+        command = (image_name + " " + window_title).strip()
+        sessions.append({
+            "pid": pid,
+            "started": creation.get("started", "unknown"),
+            "elapsed_seconds": elapsed_seconds,
+            "elapsed_human": _format_elapsed(elapsed_seconds) if elapsed_seconds else "unknown",
+            "command": command,
+            "has_terminal": has_terminal,
+            "tty": session_name if has_terminal and session_name else None,
+        })
+    return sessions
+
+
 def _collect_health_data():
     """Collect session health data.
 
-    Returns a dict with health information, or None on unsupported platforms.
+    Returns a dict on macOS, Linux, and Windows. Returns None only if the
+    POSIX `ps` probe itself errors (historical contract preserved so
+    callers that short-circuit on None keep working).
     """
     system = platform.system()
-    if system == "Windows":
-        return None
 
     installed_version = None
     try:
@@ -6470,44 +6714,22 @@ def _collect_health_data():
     except (subprocess.SubprocessError, FileNotFoundError, OSError):
         pass
 
-    running_sessions = []
-    try:
-        result = subprocess.run(
-            ["ps", "-eo", "pid,tty,lstart,etime,command"],
-            capture_output=True, text=True, timeout=10,
-        )
-        if result.returncode == 0:
-            for line in result.stdout.strip().split("\n")[1:]:
-                line = line.strip()
-                if not line:
-                    continue
-                parts = line.split()
-                if len(parts) < 9:
-                    continue
-                # Fields: PID TTY LSTART(5 fields) ETIME COMMAND...
-                tty = parts[1]
-                command = " ".join(parts[8:])
-                if command.strip() == "claude" or command.startswith("claude "):
-                    pid = int(parts[0])
-                    lstart = " ".join(parts[2:7])
-                    elapsed = parts[7]
-                    elapsed_seconds = _parse_elapsed_time(elapsed)
-                    has_terminal = tty not in ("??", "-", "?")
+    if system == "Windows":
+        running_sessions = _collect_windows_claude_sessions()
+    else:
+        running_sessions = _collect_posix_claude_sessions()
+        if running_sessions is None:
+            return None
 
-                    running_sessions.append({
-                        "pid": pid,
-                        "started": lstart,
-                        "elapsed_seconds": elapsed_seconds,
-                        "elapsed_human": _format_elapsed(elapsed_seconds),
-                        "command": command,
-                        "has_terminal": has_terminal,
-                        "tty": tty if has_terminal else None,
-                    })
-    except (subprocess.SubprocessError, OSError):
-        return None
-
-    for session in running_sessions:
-        session["version"] = _find_session_version_for_pid(session["pid"])
+    # Version enrichment per session. _find_session_version_for_pid relies
+    # on POSIX /proc-style discovery, so on Windows we set version=None.
+    # Future: Windows version probe via Get-Process ProductVersion.
+    if system == "Windows":
+        for session in running_sessions:
+            session["version"] = None
+    else:
+        for session in running_sessions:
+            session["version"] = _find_session_version_for_pid(session["pid"])
 
     # Flag sessions
     for s in running_sessions:
@@ -6518,6 +6740,11 @@ def _collect_health_data():
             flags.append("ZOMBIE")
         elif s["elapsed_seconds"] > 86400:
             flags.append("STALE")
+        elif system == "Windows" and s["elapsed_seconds"] == 0:
+            # Windows without a creation-time source (wmic gone, PowerShell locked
+            # down) can't threshold STALE/ZOMBIE. Surface explicitly so the user
+            # isn't fooled into thinking all sessions are fresh.
+            flags.append("UNKNOWN_AGE")
         if s.get("has_terminal"):
             flags.append("TERMINAL")
         else:
@@ -6537,6 +6764,26 @@ def _collect_health_data():
                         automated.append(line.strip())
         except (subprocess.SubprocessError, OSError):
             pass
+    elif system == "Windows":
+        # Windows parity: surface scheduled tasks that touch claude/token-optimizer.
+        try:
+            import csv as _csv
+            import io as _io
+            result = subprocess.run(
+                ["schtasks", "/Query", "/FO", "CSV", "/NH"],
+                capture_output=True, text=True, timeout=10, errors="replace",
+            )
+            if result.returncode == 0:
+                for row in _csv.reader(_io.StringIO(result.stdout)):
+                    if not row:
+                        continue
+                    name = row[0]
+                    lname = name.lower()
+                    if any(tok in lname for tok in
+                           ("claude", "token-optimizer", "tokenoptimizer", "anthropic")):
+                        automated.append(name.strip())
+        except (subprocess.SubprocessError, OSError, FileNotFoundError):
+            pass
 
     # Build recommendations
     recommendations = []
@@ -6553,6 +6800,15 @@ def _collect_health_data():
         recommendations.append(
             f"{stale_count} session{'s' if stale_count != 1 else ''} running "
             f"24+ hours. Check if still needed, long sessions accumulate context bloat."
+        )
+    unknown_age_count = sum(1 for s in running_sessions if "UNKNOWN_AGE" in s.get("flags", []))
+    if unknown_age_count > 0 and system == "Windows":
+        recommendations.append(
+            f"{unknown_age_count} session{'s' if unknown_age_count != 1 else ''} missing "
+            "start time (wmic and PowerShell Get-CimInstance both unavailable). "
+            "Install PowerShell 7+ (winget install Microsoft.PowerShell) or use Task "
+            "Manager to identify orphaned processes; STALE/ZOMBIE detection needs a "
+            "start-time source to work."
         )
 
     # Version-specific warnings
@@ -6572,6 +6828,117 @@ def _collect_health_data():
         "automated": automated,
         "recommendations": recommendations,
     }
+
+
+def health_selfcheck():
+    """Probe the current platform's process-listing commands and parse their real output.
+
+    Designed as a lightweight smoke test for the Session Health code path.
+    Prints PASS/FAIL per probe; exits non-zero if any critical check fails.
+    Intended to be run by users (especially Windows users) after installing
+    the plugin: `python3 measure.py health-selfcheck`.
+    """
+    system = platform.system()
+    print(f"\nSESSION HEALTH SELF-CHECK  (platform: {system})")
+    print("=" * 60)
+
+    passed = 0
+    failed = 0
+
+    def check(name, ok, detail=""):
+        nonlocal passed, failed
+        mark = "PASS" if ok else "FAIL"
+        print(f"  [{mark}]  {name}")
+        if detail:
+            print(f"          {detail}")
+        if ok:
+            passed += 1
+        else:
+            failed += 1
+
+    # Parser self-tests (platform-agnostic)
+    wmi_probe = _parse_wmi_datetime("20260101120000.000000+000")
+    check("WMI datetime parser", wmi_probe is not None and wmi_probe["elapsed_seconds"] > 0)
+
+    iso_probe = _parse_iso_process_datetime("2026-01-01T12:00:00Z")
+    check("ISO-8601 datetime parser", iso_probe is not None and iso_probe["elapsed_seconds"] > 0)
+
+    # Live process-listing command
+    if system == "Windows":
+        # tasklist probe
+        try:
+            res = subprocess.run(
+                ["tasklist", "/v", "/fo", "csv", "/nh"],
+                capture_output=True, text=True, timeout=10,
+            )
+            ok = res.returncode == 0 and len(res.stdout.strip()) > 0
+            check("tasklist /v /fo csv", ok,
+                  f"exit={res.returncode}, bytes={len(res.stdout)}")
+        except (subprocess.SubprocessError, OSError, FileNotFoundError) as e:
+            check("tasklist /v /fo csv", False, f"exception: {e!r}")
+
+        # _collect_windows_claude_sessions end-to-end
+        try:
+            sessions = _collect_windows_claude_sessions()
+            check("_collect_windows_claude_sessions end-to-end", True,
+                  f"returned {len(sessions)} session(s)")
+        except Exception as e:
+            check("_collect_windows_claude_sessions end-to-end", False, f"exception: {e!r}")
+
+        # wmic probe against our own pid
+        own_pid = os.getpid()
+        try:
+            res = subprocess.run(
+                ["wmic", "process", "where", f"ProcessId={own_pid}",
+                 "get", "CreationDate", "/format:list"],
+                capture_output=True, text=True, timeout=10,
+            )
+            wmic_ok = res.returncode == 0 and "CreationDate=" in res.stdout
+            check("wmic CreationDate probe (self-pid)", wmic_ok,
+                  f"exit={res.returncode}")
+        except (subprocess.SubprocessError, OSError, FileNotFoundError) as e:
+            check("wmic CreationDate probe (self-pid)", False,
+                  f"exception: {e!r} (Win11 24H2 removes wmic; PowerShell fallback will be used)")
+    else:
+        try:
+            res = subprocess.run(
+                ["ps", "-eo", "pid,tty,lstart,etime,command"],
+                capture_output=True, text=True, timeout=10,
+            )
+            ok = res.returncode == 0 and len(res.stdout.strip().split("\n")) > 1
+            check("ps -eo pid,tty,lstart,etime,command", ok,
+                  f"exit={res.returncode}, lines={len(res.stdout.strip().split(chr(10)))}")
+        except (subprocess.SubprocessError, OSError) as e:
+            check("ps -eo pid,tty,lstart,etime,command", False, f"exception: {e!r}")
+
+        try:
+            sessions = _collect_posix_claude_sessions()
+            ok = sessions is not None
+            detail = f"returned {len(sessions) if sessions else 0} session(s)" if ok else "returned None"
+            check("_collect_posix_claude_sessions end-to-end", ok, detail)
+        except Exception as e:
+            check("_collect_posix_claude_sessions end-to-end", False, f"exception: {e!r}")
+
+    # Dispatch end-to-end
+    try:
+        health = _collect_health_data()
+        if system == "Windows":
+            # Windows must return a dict, not None, after this fix
+            ok = isinstance(health, dict) and "running_sessions" in health
+            check("_collect_health_data returns dict on Windows",
+                  ok, "this is the Bug-1 regression guard")
+        else:
+            ok = health is None or (isinstance(health, dict) and "running_sessions" in health)
+            check("_collect_health_data POSIX contract", ok)
+    except Exception as e:
+        check("_collect_health_data dispatch", False, f"exception: {e!r}")
+
+    print()
+    print(f"  Results: {passed} passed, {failed} failed")
+    print()
+    if failed > 0:
+        print("  Paste this output into the issue to help us diagnose.")
+        sys.exit(1)
 
 
 def session_health():
@@ -12980,6 +13347,24 @@ def _run_ensure_health():
         _auto_remove_bad_env_vars()
     except Exception:
         pass
+
+    # v5.2.0 migration notice for Windows users. v5.1.0 and earlier shipped
+    # a hooks.json that used POSIX shell syntax, which silently failed on
+    # Windows PowerShell -- the plugin installed but every hook was a
+    # no-op. After upgrade to v5.2.0 the wrapper-based hooks work. Surface
+    # a one-time notice so users know to re-check their dashboard and run
+    # the self-check. Shown exactly once per install (idempotent flag).
+    try:
+        if platform.system() == "Windows":
+            if not _read_config_flag("v52_windows_welcome_shown", False):
+                selfcheck_path = str(Path(__file__).resolve())
+                print("  [Token Optimizer v5.2.0] Windows support is now live.")
+                print("  v5.1.0 hooks ran via POSIX shell and failed silently on Windows;")
+                print("  v5.2.0 uses a cross-platform wrapper so everything now works.")
+                print("  Verify with: python3 \"" + selfcheck_path + "\" health-selfcheck")
+                _write_config_flag("v52_windows_welcome_shown", True)
+    except Exception:
+        pass
     # v5.0.2: Self-heal hooks with correct semantics for each install mode.
     # Plugin users get hooks auto-loaded from plugin hooks.json by Claude Code,
     # so settings.json copies are pure duplicates that cause every hook to fire
@@ -13356,6 +13741,59 @@ if __name__ == "__main__":
         collect_sessions(days=days, quiet=quiet, rebuild=rebuild)
     elif args[0] == "health":
         session_health()
+    elif args[0] == "health-selfcheck":
+        health_selfcheck()
+    elif args[0] == "session-end-flush":
+        # Single sequential entry point for the SessionEnd hook. Runs
+        # collect -> dashboard -> compact-capture in one process so the
+        # three phases can't race on trends.db (SQLite serialises within
+        # a process but locks out other processes, so three async hook
+        # entries would have corrupted the DB). Keeps exit 0 regardless.
+        try:
+            collect_sessions(days=90, quiet=True, rebuild=False)
+        except Exception:
+            pass
+        try:
+            generate_standalone_dashboard(days=30, quiet=True)
+        except Exception:
+            pass
+        try:
+            compact_capture(trigger="end")
+        except Exception:
+            pass
+        sys.exit(0)
+    elif args[0] == "daemon-status":
+        # Cross-platform probe of 127.0.0.1:24842. Tries IPv4 then IPv6
+        # (Windows Python 3.11+ may resolve "localhost" to ::1 first; the
+        # daemon binds explicitly to 127.0.0.1 so the IPv4 probe should
+        # succeed, but the IPv6 fallback avoids a false-negative if a
+        # future build binds to ::1). Replaces the bash-only `nc -z`
+        # pattern in SKILL.md. Exits 0 with "DAEMON_RUNNING" or 1 with
+        # "DAEMON_NOT_RUNNING".
+        import socket as _socket
+
+        def _probe(family, address):
+            probe_sock = _socket.socket(family, _socket.SOCK_STREAM)
+            probe_sock.settimeout(0.5)
+            try:
+                return probe_sock.connect_ex(address)
+            except OSError:
+                return 1
+            finally:
+                try:
+                    probe_sock.close()
+                except OSError:
+                    pass
+
+        rc = _probe(_socket.AF_INET, ("127.0.0.1", 24842))
+        if rc != 0:
+            rc = _probe(_socket.AF_INET6, ("::1", 24842, 0, 0))
+        if rc == 0:
+            print("DAEMON_RUNNING")
+            sys.exit(0)
+        else:
+            print("DAEMON_NOT_RUNNING")
+            sys.exit(1)
     elif args[0] == "kill-stale":
         dry = "--dry-run" in args
         hours = 12

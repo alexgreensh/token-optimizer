@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "test -f '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/read_cache.py' && python3 '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/read_cache.py' --quiet || true"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/read_cache.py --quiet"
           }
         ]
       },
@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "test -f '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/bash_hook.py' && python3 '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/bash_hook.py' --quiet || true"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/bash_hook.py --quiet"
           }
         ]
       },
@@ -24,7 +24,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "test -f '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/measure.py' && python3 '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/measure.py' checkpoint-trigger --milestone pre-fanout --quiet || true"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py checkpoint-trigger --milestone pre-fanout --quiet"
           }
         ]
       }
@@ -34,7 +34,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo 'COMPACTION GUIDANCE: Preserve code changes, key decisions, and file paths. Discard intermediate attempts, explanations, and verbose tool output.'"
+            "command": "echo COMPACTION GUIDANCE: Preserve code changes, key decisions, and file paths. Discard intermediate attempts, explanations, and verbose tool output."
           }
         ]
       },
@@ -42,7 +42,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "test -f '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/measure.py' && python3 '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/measure.py' compact-capture --trigger auto --quiet || true"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py compact-capture --trigger auto --quiet"
           }
         ]
       },
@@ -50,7 +50,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "test -f '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/read_cache.py' && python3 '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/read_cache.py' --clear --quiet || true"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/read_cache.py --clear --quiet"
           }
         ]
       }
@@ -60,7 +60,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "test -f '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/measure.py' && python3 '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/measure.py' ensure-health || true",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py ensure-health",
             "async": true,
             "timeout": 15000
           }
@@ -70,7 +70,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "test -f '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/measure.py' && python3 '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/measure.py' quality-cache --force --quiet || true"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py quality-cache --force --quiet"
           }
         ]
       },
@@ -79,7 +79,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "test -f '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/measure.py' && python3 '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/measure.py' compact-restore || true"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py compact-restore"
           }
         ]
       },
@@ -87,7 +87,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "test -f '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/measure.py' && python3 '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/measure.py' compact-restore --new-session-only || true"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py compact-restore --new-session-only"
           }
         ]
       }
@@ -97,7 +97,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "test -f '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/measure.py' && python3 '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/measure.py' compact-capture --trigger stop --quiet || true"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py compact-capture --trigger stop --quiet"
           }
         ]
       }
@@ -107,19 +107,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "test -f '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/measure.py' && python3 '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/measure.py' collect --quiet && python3 '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/measure.py' dashboard --quiet || true",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py session-end-flush",
             "async": true,
-            "timeout": 30000
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "test -f '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/measure.py' && python3 '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/measure.py' compact-capture --trigger end --quiet || true",
-            "async": true,
-            "timeout": 30000
+            "timeout": 60000
           }
         ]
       }
@@ -129,7 +119,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "test -f '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/measure.py' && python3 '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/measure.py' compact-capture --trigger stop-failure --quiet || true"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py compact-capture --trigger stop-failure --quiet"
           }
         ]
       }
@@ -139,7 +129,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "test -f '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/measure.py' && python3 '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/measure.py' quality-cache --warn --quiet || true"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py quality-cache --warn --quiet"
           }
         ]
       }
@@ -150,7 +140,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "test -f '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/archive_result.py' && python3 '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/archive_result.py' --quiet || true"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/archive_result.py --quiet"
           }
         ]
       },
@@ -159,7 +149,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "test -f '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/read_cache.py' && python3 '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/read_cache.py' --invalidate --quiet || true"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/read_cache.py --invalidate --quiet"
           }
         ]
       }
@@ -169,7 +159,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "test -f '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/measure.py' && python3 '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/measure.py' quality-cache --force --quiet || true"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py quality-cache --force --quiet"
           }
         ]
       }
@@ -179,7 +169,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "test -f '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/read_cache.py' && python3 '${CLAUDE_PLUGIN_ROOT}/skills/token-optimizer/scripts/read_cache.py' --clear --quiet || true"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/read_cache.py --clear --quiet"
           }
         ]
       }

@@ -109,7 +109,7 @@ python3 $MEASURE_PY check-hook
 
 6. **Check persistent dashboard daemon** (macOS only, first-time setup, skips silently if already running):
 ```bash
-nc -z 127.0.0.1 24842 2>/dev/null && echo "DAEMON_RUNNING" || echo "DAEMON_NOT_RUNNING"
+python3 "$MEASURE_PY" daemon-status 2>/dev/null || echo "DAEMON_NOT_RUNNING"
 ```
    - If DAEMON_RUNNING: skip entirely, it's already working.
    - If macOS and DAEMON_NOT_RUNNING: explain and offer to install:
@@ -267,7 +267,7 @@ Tell the user: "Dashboard opened in your browser. Browse findings by category, c
 
 Also mention the persistent dashboard. **Check if the daemon is actually running first**:
 ```bash
-nc -z 127.0.0.1 24842 2>/dev/null && echo "DAEMON_RUNNING" || echo "DAEMON_NOT_RUNNING"
+python3 "$MEASURE_PY" daemon-status 2>/dev/null || echo "DAEMON_NOT_RUNNING"
 ```
 
 If DAEMON_RUNNING:

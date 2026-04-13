@@ -83,7 +83,7 @@ One single-file HTML dashboard. Auto-regenerates after every session via the Ses
 - **Drift detection**: config snapshots compared across time so you catch creep before it costs you
 - **Savings tracker**: cumulative dollars saved from optimizations, checkpoint restores, and archives
 
-Nobody else gives you this. `/context` shows a capacity bar. Proxy compressors print a terminal report. Token Optimizer shows the receipts, auto-updated, at zero context cost.
+`/context` shows a capacity bar. Proxy compressors print a terminal report. Token Optimizer shows the receipts, auto-updated, at zero context cost.
 
 ### Launch it
 
@@ -199,7 +199,7 @@ Token Optimizer tracks all of this. Quality score, degradation bands, compaction
 
 ![What happens inside a 1M session](skills/token-optimizer/assets/user-profiles.svg)
 
-> **"But doesn't removing tokens hurt the model?"** No. Token Optimizer removes structural waste (duplicate configs, unused skill frontmatter, bloated files), not useful context. It also actively measures quality: the 7-signal score tells you if your session is degrading, and Smart Compaction checkpoints your decisions before auto-compact fires. Most users see quality scores improve after optimization because the model has more room for real work.
+> **"But doesn't removing tokens hurt the model?"** No. Token Optimizer only touches what's safe to touch. Structural optimization removes genuinely unused components (duplicate configs, unused skill frontmatter, orphaned memory entries), never the conversation itself. Active Compression works on new content entering your window (smart re-reads, credential-safe command summaries) and on the compaction boundary (checkpoints before auto-compact, restore after). Nothing already in your context gets edited or removed, which means your prompt cache stays intact. The 7-signal quality score tracks degradation in real time, and most users see scores improve after optimization because the model has more room for real work.
 
 ---
 
@@ -209,7 +209,7 @@ When auto-compact fires, 60-70% of your conversation vanishes. Decisions, error-
 
 Smart Compaction catches all of it as checkpoints before compaction fires, then restores what the summary dropped. Sessions pick up where you left off, even after a crash or /clear. Checkpoint history and compaction loss per session are also visible on the dashboard.
 
-This is the feature nobody else has, and it's the reason compression savings actually stick. RTK or a proxy can save tokens on `git status` all day, but if compaction destroys your working context, those savings are meaningless.
+Compression savings only stick if your session survives the compaction. Saving tokens on `git status` doesn't help if the next auto-compact wipes out the decision that made you run `git status` in the first place. Smart Compaction closes that loop.
 
 ```bash
 python3 measure.py setup-smart-compact    # checkpoint + restore hooks
@@ -474,7 +474,7 @@ Tell it your goal. Get back specific, prioritized fixes with exact token savings
 
 ### Fleet Auditor
 
-Managing multiple agent systems? Fleet Auditor scans across Claude Code, OpenClaw, and custom setups to find idle burns, model misrouting, and config bloat with dollar savings per finding. It's the only tool that audits multiple agent ecosystems from one place.
+Managing multiple agent systems? Fleet Auditor scans across Claude Code, OpenClaw, and custom setups to find idle burns, model misrouting, and config bloat with dollar savings per finding. One command, one report, every ecosystem.
 
 ### Subagent Cost Breakdown
 
@@ -529,8 +529,6 @@ Hover help on every column explains `Cache`, `TTL`, `Pacing`, `Cache R`, and `Ca
 ---
 
 ## How It Compares
-
-Most tools in this space do one thing. Token Optimizer does all of it.
 
 | Capability | Token Optimizer | `/context` | context-mode | Proxy compressors |
 |---|---|---|---|---|

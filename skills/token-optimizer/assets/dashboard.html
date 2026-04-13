@@ -1359,6 +1359,14 @@ input:checked + .slider:before {
 .hook-desc { font-size: 15px; color: var(--c-text-dim); margin-top: 2px; }
 .hook-cmd-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--c-accent-cyan); color: var(--c-bg); padding: 10px 20px; border-radius: 8px; font-size: 16px; font-weight: 500; opacity: 0; transition: opacity 0.3s; pointer-events: none; z-index: 100; }
 .hook-cmd-toast.visible { opacity: 1; }
+.cmd-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--c-bg-card); color: var(--c-text-main); padding: 16px 20px; border-radius: 10px; border: 1px solid var(--c-border); box-shadow: 0 12px 32px rgba(0,0,0,.35); z-index: 200; max-width: 640px; width: calc(100% - 48px); font-size: 14px; }
+.cmd-toast-title { font-weight: 600; font-size: 15px; margin-bottom: 6px; color: var(--c-text-main); }
+.cmd-toast-body { color: var(--c-text-dim); margin-bottom: 12px; line-height: 1.45; }
+.cmd-toast-cmd { background: var(--c-bg); border: 1px solid var(--c-border); border-radius: 6px; padding: 10px 12px; font-family: var(--font-mono); font-size: 13px; word-break: break-all; margin-bottom: 10px; color: var(--c-text-main); }
+.cmd-toast-hint { color: var(--c-muted); font-size: 12px; margin-bottom: 12px; line-height: 1.4; }
+.cmd-toast-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.cmd-toast-btn { background: var(--c-accent-cyan); color: var(--c-bg); border: 0; border-radius: 6px; padding: 8px 14px; cursor: pointer; font-size: 13px; font-weight: 500; }
+.cmd-toast-btn.secondary { background: transparent; color: var(--c-text-dim); border: 1px solid var(--c-border); }
 .hook-partial { font-size: 12px; color: #ff9f43; margin-top: 2px; }
 
 /* ========== SESSION QUALITY OVERLAY (v2.6) ========== */
@@ -1761,6 +1769,58 @@ function parsePlan(planMd) {
 }
 
 function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+
+// ========== In-dashboard toasts (replaces alert() dialogs) ==========
+// Persistent cmd-toast: title, body, monospace command, copy + dismiss.
+// Per project rule: no alert() / confirm() / prompt() dialogs anywhere.
+function showCmdToast(opts) {
+  var prev = document.getElementById('dashboard-cmd-toast');
+  if (prev && prev.parentNode) prev.parentNode.removeChild(prev);
+  var el = document.createElement('div');
+  el.id = 'dashboard-cmd-toast';
+  el.className = 'cmd-toast';
+  var titleHtml = opts.title ? '<div class="cmd-toast-title">' + esc(opts.title) + '</div>' : '';
+  var bodyHtml = opts.body ? '<div class="cmd-toast-body">' + esc(opts.body) + '</div>' : '';
+  var cmdHtml = opts.cmd ? '<div class="cmd-toast-cmd">' + esc(opts.cmd) + '</div>' : '';
+  var hintHtml = opts.hint ? '<div class="cmd-toast-hint">' + esc(opts.hint) + '</div>' : '';
+  var copyBtn = opts.cmd
+    ? '<button class="cmd-toast-btn" data-cmd-toast-copy="1">Copy command</button>'
+    : '';
+  el.innerHTML = titleHtml + bodyHtml + cmdHtml + hintHtml +
+    '<div class="cmd-toast-actions">' + copyBtn +
+    '<button class="cmd-toast-btn secondary" data-cmd-toast-close="1">Dismiss</button></div>';
+  document.body.appendChild(el);
+  el.addEventListener('click', function(ev) {
+    var tgt = ev.target;
+    if (tgt.matches('[data-cmd-toast-close]')) {
+      if (el.parentNode) el.parentNode.removeChild(el);
+      return;
+    }
+    if (tgt.matches('[data-cmd-toast-copy]') && opts.cmd) {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(opts.cmd).then(function() {
+          tgt.textContent = 'Copied';
+          setTimeout(function() {
+            if (el.parentNode) el.parentNode.removeChild(el);
+          }, 800);
+        }).catch(function() { tgt.textContent = 'Copy failed -- select text above'; });
+      }
+    }
+  });
+}
+
+// Brief error toast -- auto-dismisses after ~4s.
+function showErrorToast(message) {
+  var el = document.createElement('div');
+  el.className = 'hook-cmd-toast visible';
+  el.style.background = '#ef4444';
+  el.style.color = '#fff';
+  el.textContent = message;
+  document.body.appendChild(el);
+  setTimeout(function() {
+    if (el.parentNode) el.parentNode.removeChild(el);
+  }, 4000);
+}
 
 function formatGap(seconds) {
   if (seconds === null || seconds === undefined || isNaN(seconds)) return 'n/a';
@@ -3708,9 +3768,17 @@ var DB = (function() {
         var row = e.target.closest('.hook-row');
 
         if (!isServed) {
-          // Not in serve mode -- show instructions since config can't be written via file
+          // File:// or read-only daemon mode: can't write config from
+          // browser. Show a dashboard toast with the CLI command and a
+          // copy button instead of a blocking alert().
           e.target.checked = !newState;
-          alert('v5 toggles require serve mode. Run:\n\npython3 measure.py dashboard --serve\n\nOr toggle via CLI:\n\npython3 measure.py v5 ' + (newState ? 'enable' : 'disable') + ' ' + fname);
+          var cliCmd = 'python3 measure.py v5 ' + (newState ? 'enable' : 'disable') + ' ' + fname;
+          showCmdToast({
+            title: 'Toggling v5 features needs a terminal',
+            body: 'The read-only dashboard server can\u2019t write config. Run this in a terminal:',
+            cmd: cliCmd,
+            hint: 'Or re-open the dashboard with full API: python3 measure.py dashboard --serve'
+          });
           return;
         }
 
@@ -3743,13 +3811,13 @@ var DB = (function() {
             setTimeout(function() { toast.classList.remove('visible'); }, 2500);
           } else {
             e.target.checked = !newState;
-            alert('Failed: ' + (resp.error || resp.msg || 'Unknown error'));
+            showErrorToast('Failed: ' + (resp.error || resp.msg || 'Unknown error'));
           }
         })
         .catch(function(err) {
           if (row) row.style.opacity = '1';
           e.target.checked = !newState;
-          alert('Network error: ' + err.message);
+          showErrorToast('Network error: ' + err.message);
         });
       });
     });
@@ -3817,13 +3885,13 @@ var DB = (function() {
             } else {
               if (row) row.style.opacity = '1';
               e.target.checked = !e.target.checked;
-              alert('Failed: ' + (resp.message || 'Unknown error'));
+              showErrorToast('Failed: ' + (resp.message || 'Unknown error'));
             }
           })
           .catch(function(err) {
             if (row) row.style.opacity = '1';
             e.target.checked = !e.target.checked;
-            alert('Network error: ' + err.message);
+            showErrorToast('Network error: ' + err.message);
           });
 
         } else {

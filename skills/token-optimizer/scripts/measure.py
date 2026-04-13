@@ -8027,24 +8027,379 @@ def _uninstall_launchd_daemon():
         print("[Token Optimizer] No daemon artifacts found. Nothing to remove.")
 
 
-def _install_task_scheduler_daemon(dry_run=False):
-    """Windows: install dashboard daemon via Task Scheduler. Placeholder.
+WINDOWS_TASK_NAME = "TokenOptimizerDashboard"
+WINDOWS_LAUNCHER_NAME = "dashboard-launcher.cmd"
 
-    Not implemented in v5.3.1. Landed as a stub so the dispatcher can
-    route cleanly without branching inline, and so a user running
-    setup-daemon on Windows gets a clear "coming soon" message rather
-    than a silent failure or a macOS-only error.
+
+def _is_ms_store_python_alias(exe_path):
+    """True if sys.executable looks like a Microsoft Store App Execution Alias.
+
+    App Execution Aliases (path contains WindowsApps) only launch from
+    interactive user shell tokens. Task Scheduler's launch context
+    cannot resolve them, so pythonw would exit silently and leave the
+    user stuck in the 'wait 30s' message forever (torture HIGH-1).
     """
-    _ = dry_run
-    print("[Token Optimizer] Windows dashboard daemon ships in an upcoming release.")
-    print(f"  For now, open the file directly: {DASHBOARD_PATH.as_uri()}")
-    print("  The dashboard regenerates automatically after every session.")
+    if not exe_path:
+        return False
+    normalized = str(exe_path).replace("/", "\\").lower()
+    return "\\windowsapps\\" in normalized
+
+
+def _resolve_windows_pythonw():
+    """Best-effort path to pythonw.exe on Windows. Returns None if only
+    an MS Store alias is available -- the caller must refuse install.
+    """
+    try:
+        exe = Path(sys.executable)
+    except (TypeError, ValueError):
+        return None
+    if _is_ms_store_python_alias(exe):
+        return None
+    candidate = exe.with_name("pythonw.exe")
+    if candidate.exists() and not _is_ms_store_python_alias(candidate):
+        return str(candidate)
+    return None
+
+
+def _compose_windows_user_id():
+    """Return DOMAIN\\user when domain-joined, bare username in workgroup.
+
+    Torture HIGH-3: bare %USERNAME% in <LogonTrigger> fails to match
+    Windows' logon event on domain-joined machines because the event
+    carries the fully-qualified account name.
+    """
+    username = os.environ.get("USERNAME", "").strip()
+    if not username:
+        # Last-ditch fallback: parse the final path element of USERPROFILE.
+        username = os.environ.get("USERPROFILE", "").split("\\")[-1].strip()
+    if not username:
+        return None
+    domain = os.environ.get("USERDOMAIN", "").strip()
+    computer = os.environ.get("COMPUTERNAME", "").strip()
+    # Workgroup machines report USERDOMAIN == COMPUTERNAME -- strip it
+    # so the UserId stays bare and matches the local logon event.
+    if domain and domain.upper() != computer.upper():
+        return f"{domain}\\{username}"
+    return username
+
+
+def _generate_windows_launcher_cmd(daemon_script_path, log_dir):
+    """Generate a .cmd shim that resolves Python at runtime and redirects
+    daemon stdout/stderr so future failures leave a trail.
+
+    Rationale (torture HIGH-2, MEDIUM-4, MEDIUM-6): pointing Task
+    Scheduler directly at a versioned pythonw.exe path breaks on Python
+    upgrades and loses stdout/stderr. A .cmd wrapper dispatches via
+    `py -3` (Python Launcher, version-stable) with pythonw/python
+    fallbacks, and captures daemon output into DAEMON_LOG_DIR so port
+    conflicts and import errors no longer silently vanish.
+    """
+    return (
+        "@echo off\r\n"
+        "REM Token Optimizer dashboard daemon launcher (v5.3.2+).\r\n"
+        "REM Auto-generated. Resolves Python at runtime so interpreter upgrades\r\n"
+        "REM do not break the scheduled task.\r\n"
+        "setlocal\r\n"
+        f'set "DAEMON_SCRIPT={daemon_script_path}"\r\n'
+        f'set "STDOUT_LOG={log_dir}\\stdout.log"\r\n'
+        f'set "STDERR_LOG={log_dir}\\stderr.log"\r\n'
+        'if not exist "%DAEMON_SCRIPT%" (\r\n'
+        '  echo [%DATE% %TIME%] daemon script missing: %DAEMON_SCRIPT% >> "%STDERR_LOG%"\r\n'
+        "  exit /b 1\r\n"
+        ")\r\n"
+        "where py.exe >nul 2>&1\r\n"
+        "if %ERRORLEVEL% EQU 0 (\r\n"
+        '  py.exe -3 "%DAEMON_SCRIPT%" 1>>"%STDOUT_LOG%" 2>>"%STDERR_LOG%"\r\n'
+        "  exit /b %ERRORLEVEL%\r\n"
+        ")\r\n"
+        "where pythonw.exe >nul 2>&1\r\n"
+        "if %ERRORLEVEL% EQU 0 (\r\n"
+        '  pythonw.exe "%DAEMON_SCRIPT%" 1>>"%STDOUT_LOG%" 2>>"%STDERR_LOG%"\r\n'
+        "  exit /b %ERRORLEVEL%\r\n"
+        ")\r\n"
+        "where python.exe >nul 2>&1\r\n"
+        "if %ERRORLEVEL% EQU 0 (\r\n"
+        '  python.exe "%DAEMON_SCRIPT%" 1>>"%STDOUT_LOG%" 2>>"%STDERR_LOG%"\r\n'
+        "  exit /b %ERRORLEVEL%\r\n"
+        ")\r\n"
+        'echo [%DATE% %TIME%] No Python found on PATH -- install python.org or winget install Python.Python.3 >> "%STDERR_LOG%"\r\n'
+        "exit /b 2\r\n"
+    )
+
+
+def _probe_windows_port_owner(port):
+    """Return a human-readable string identifying the PID bound to port,
+    or None if the port is free or we can't tell.
+
+    Torture MEDIUM-4: a foreign service on 24842 would leave the user in
+    an indefinite 'wait 30s' state. Pre-install probe surfaces the
+    offending PID so the user can decide whether to reclaim the port.
+    """
+    try:
+        result = subprocess.run(
+            ["netstat", "-ano"],
+            capture_output=True, text=True, timeout=10, errors="replace",
+        )
+    except (subprocess.SubprocessError, OSError, FileNotFoundError):
+        return None
+    if result.returncode != 0:
+        return None
+    needle = f":{port}"
+    for line in result.stdout.splitlines():
+        if needle in line and "LISTENING" in line.upper():
+            parts = line.split()
+            pid = parts[-1] if parts else "?"
+            return f"pid={pid} (netstat: {line.strip()})"
+    return None
+
+
+def _generate_schtasks_xml(task_name, user_id, launcher_path):
+    """Build a Task Scheduler XML payload for the dashboard daemon.
+
+    Uses the documented Task Scheduler 1.2 schema (MS-LEARN:
+    task-scheduler-schema-reference). Key choices:
+      - LogonTrigger so the daemon starts whenever the user logs in
+        (equivalent to launchd's RunAtLoad + KeepAlive on Mac).
+      - Hidden=true keeps it out of the default Task Scheduler UI
+        filter; advanced users can still show hidden tasks.
+      - StartWhenAvailable=true so a missed logon trigger (e.g., after
+        a reboot at a login prompt timeout) still fires.
+      - ExecutionTimeLimit=PT0S = no time limit (daemon runs forever).
+      - DisallowStartIfOnBatteries=false so laptop users get their
+        bookmarkable URL on battery power too.
+    """
+    from xml.sax.saxutils import escape as _xml_escape
+
+    # Escape &, <, > plus ' and " so domain\user strings like
+    # "O'Brien & Co\\bob" survive the XML round-trip cleanly.
+    def xml_escape(s):
+        return _xml_escape(s, {"'": "&apos;", '"': "&quot;"})
+
+    _ = task_name  # kept for API symmetry; no longer embedded via <URI>
+    # No <URI> element: it is optional per the Task Scheduler 1.2 schema
+    # and creates a mismatch class when enterprise GPO relocates tasks
+    # into subfolders. /TN in the schtasks /Create call is sufficient.
+    # Two triggers: LogonTrigger for normal logins + BootTrigger so Fast
+    # Startup (hibernate-kernel wake) still fires the daemon.
+    return (
+        '<?xml version="1.0" encoding="UTF-16"?>\n'
+        '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">\n'
+        "  <RegistrationInfo>\n"
+        f"    <Description>Serves the Token Optimizer dashboard on http://localhost:{DAEMON_PORT}/token-optimizer</Description>\n"
+        "  </RegistrationInfo>\n"
+        "  <Triggers>\n"
+        "    <LogonTrigger>\n"
+        "      <Enabled>true</Enabled>\n"
+        f"      <UserId>{xml_escape(user_id)}</UserId>\n"
+        "    </LogonTrigger>\n"
+        "    <BootTrigger>\n"
+        "      <Enabled>true</Enabled>\n"
+        "    </BootTrigger>\n"
+        "  </Triggers>\n"
+        "  <Principals>\n"
+        '    <Principal id="Author">\n'
+        f"      <UserId>{xml_escape(user_id)}</UserId>\n"
+        "      <LogonType>InteractiveToken</LogonType>\n"
+        "      <RunLevel>LeastPrivilege</RunLevel>\n"
+        "    </Principal>\n"
+        "  </Principals>\n"
+        "  <Settings>\n"
+        "    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>\n"
+        "    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>\n"
+        "    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>\n"
+        "    <AllowHardTerminate>true</AllowHardTerminate>\n"
+        "    <StartWhenAvailable>true</StartWhenAvailable>\n"
+        "    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>\n"
+        "    <IdleSettings>\n"
+        "      <StopOnIdleEnd>false</StopOnIdleEnd>\n"
+        "      <RestartOnIdle>false</RestartOnIdle>\n"
+        "    </IdleSettings>\n"
+        "    <AllowStartOnDemand>true</AllowStartOnDemand>\n"
+        "    <Enabled>true</Enabled>\n"
+        "    <Hidden>true</Hidden>\n"
+        "    <RunOnlyIfIdle>false</RunOnlyIfIdle>\n"
+        "    <WakeToRun>false</WakeToRun>\n"
+        "    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>\n"
+        "    <Priority>7</Priority>\n"
+        "  </Settings>\n"
+        '  <Actions Context="Author">\n'
+        "    <Exec>\n"
+        f"      <Command>{xml_escape(launcher_path)}</Command>\n"
+        "    </Exec>\n"
+        "  </Actions>\n"
+        "</Task>\n"
+    )
+
+
+def _install_task_scheduler_daemon(dry_run=False):
+    """Windows: register a per-user Scheduled Task that runs the dashboard
+    daemon at logon, survives reboot, and stays out of the foreground.
+
+    Idempotent: schtasks /Create /F overwrites an existing task. The
+    bootout-then-bootstrap pattern from macOS maps to /End then /Create:
+    we stop any running instance before re-registering so we never
+    fight a stale process on port 24842.
+
+    Not tested on a real Windows box from the development Mac. First
+    Windows user to run this is the de facto smoke test. Full rollback
+    is one command: `measure.py setup-daemon --uninstall`.
+    """
+    if dry_run:
+        print("[Token Optimizer] Dry run (Windows). Would install:\n")
+        print("  A tiny web server that makes your dashboard available at:")
+        print(f"    http://localhost:{DAEMON_PORT}/token-optimizer\n")
+        print("  What it does:")
+        print("    - Registers a per-user Scheduled Task (no UAC / admin rights needed)")
+        print("    - Starts automatically when you log into Windows")
+        print("    - Runs with pythonw.exe so no console window appears")
+        print("    - Only accessible from your machine (localhost)")
+        print("    - Uses ~2MB of memory\n")
+        print("  Files it creates:")
+        print(f"    {SNAPSHOT_DIR / 'dashboard-server.py'}")
+        print(f"    Scheduled Task: {WINDOWS_TASK_NAME}\n")
+        print("  No changes written.")
+        return
+
+    if not _ensure_dashboard_file():
+        sys.exit(1)
+
+    # HIGH-1: Microsoft Store Python's App Execution Alias cannot be
+    # launched from Task Scheduler's service context. Refuse install
+    # with a clear remediation path rather than registering a task
+    # that will silently fail every logon.
+    if _is_ms_store_python_alias(sys.executable):
+        print("[Error] Microsoft Store Python detected (App Execution Alias).")
+        print("  Task Scheduler cannot launch Store aliases as background services,")
+        print("  so the daemon would never start. Install a real Python build instead:")
+        print("    winget install Python.Python.3.12")
+        print("  or download from python.org (make sure 'Add to PATH' is checked).")
+        print("  Then re-run: python -m measure setup-daemon")
+        sys.exit(1)
+
+    # HIGH-3: compose DOMAIN\user when domain-joined so LogonTrigger
+    # actually fires on corporate machines.
+    user_id = _compose_windows_user_id()
+    if not user_id:
+        print("[Error] Could not determine Windows username from %USERNAME%.")
+        print("  Set the USERNAME environment variable and retry.")
+        sys.exit(1)
+
+    # MEDIUM-4: surface the port owner before we try to install so the
+    # user isn't stuck in an indefinite 'wait 30s' loop if 24842 is
+    # already bound by something else.
+    owner = _probe_windows_port_owner(DAEMON_PORT)
+    if owner:
+        print(f"[Error] Port {DAEMON_PORT} is already bound: {owner}")
+        print("  Release the port (or run --uninstall if it is our own stale")
+        print("  pythonw), then re-run setup. Reclaim: taskkill /PID <pid> /F")
+        sys.exit(1)
+
+    with _daemon_install_lock():
+        SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        DAEMON_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        daemon_script = SNAPSHOT_DIR / "dashboard-server.py"
+        daemon_script.write_text(_generate_daemon_script(), encoding="utf-8")
+
+        # .cmd launcher resolves Python at runtime (py -> pythonw ->
+        # python) and redirects daemon stdout/stderr into logs so future
+        # failures leave a trail instead of vanishing.
+        launcher_path = SNAPSHOT_DIR / WINDOWS_LAUNCHER_NAME
+        launcher_path.write_text(
+            _generate_windows_launcher_cmd(str(daemon_script), str(DAEMON_LOG_DIR)),
+            encoding="utf-8",
+        )
+
+        xml_payload = _generate_schtasks_xml(
+            task_name=WINDOWS_TASK_NAME,
+            user_id=user_id,
+            launcher_path=str(launcher_path),
+        )
+        # UTF-16 LE with BOM: matches schtasks /Query native output and
+        # pins the byte order so future Python encoding defaults can't
+        # drift into BE and break schtasks XML parsing.
+        xml_path = SNAPSHOT_DIR / ".schtasks-daemon.xml"
+        xml_path.write_bytes(b"\xff\xfe" + xml_payload.encode("utf-16-le"))
+
+        # Stop any prior instance -- safe to fail if task doesn't exist.
+        subprocess.run(
+            ["schtasks", "/End", "/TN", WINDOWS_TASK_NAME],
+            capture_output=True, text=True, errors="replace",
+        )
+        # Register (or overwrite) the task.
+        create = subprocess.run(
+            ["schtasks", "/Create", "/XML", str(xml_path),
+             "/TN", WINDOWS_TASK_NAME, "/F"],
+            capture_output=True, text=True, errors="replace",
+        )
+        if create.returncode != 0:
+            print(f"[Error] schtasks /Create failed: {create.stderr.strip()}")
+            print("  Common causes: locked-down enterprise policy blocking task")
+            print("  creation, or schtasks.exe missing. Try manually with:")
+            print(f"    schtasks /Create /XML \"{xml_path}\" /TN {WINDOWS_TASK_NAME} /F")
+            sys.exit(1)
+        # Fire the task immediately so the user's first URL click works.
+        subprocess.run(
+            ["schtasks", "/Run", "/TN", WINDOWS_TASK_NAME],
+            capture_output=True, text=True, errors="replace",
+        )
+        time.sleep(1)
+        if _verify_daemon_port():
+            print("[Token Optimizer] Dashboard server installed and running.\n")
+            print("  Bookmark this URL:")
+            print(f"    http://localhost:{DAEMON_PORT}/token-optimizer\n")
+            print("  It updates automatically after every Claude Code session.")
+            print("  Starts at logon, so the URL always works.\n")
+            print("  To remove: python -m measure setup-daemon --uninstall")
+        else:
+            print("[Token Optimizer] Task registered but port not yet reachable.")
+            print(f"  Give it 30s, then open: http://localhost:{DAEMON_PORT}/token-optimizer")
+            print("  Do NOT run --uninstall while it is still coming up.")
+            print(f"  If still unreachable, check daemon logs: {DAEMON_LOG_DIR}\\stderr.log")
+            print(f"  and task status: schtasks /Query /TN {WINDOWS_TASK_NAME} /V /FO LIST")
 
 
 def _uninstall_task_scheduler_daemon():
-    """Windows: remove the scheduled task. Placeholder until the Windows
-    installer lands in a future release."""
-    print("[Token Optimizer] No Windows daemon is installed yet.")
+    """Windows: stop and remove the dashboard daemon scheduled task.
+
+    Cleans orphan XML files from any prior naming convention (torture
+    LOW-8) via glob so version drift doesn't leave artifacts behind.
+    """
+    removed = []
+    # Stop running instance (safe to fail if already stopped).
+    subprocess.run(
+        ["schtasks", "/End", "/TN", WINDOWS_TASK_NAME],
+        capture_output=True, text=True, errors="replace",
+    )
+    delete = subprocess.run(
+        ["schtasks", "/Delete", "/TN", WINDOWS_TASK_NAME, "/F"],
+        capture_output=True, text=True, errors="replace",
+    )
+    if delete.returncode == 0:
+        removed.append(f"Scheduled Task: {WINDOWS_TASK_NAME}")
+    for artifact_name in ("dashboard-server.py", WINDOWS_LAUNCHER_NAME):
+        artifact = SNAPSHOT_DIR / artifact_name
+        if artifact.exists():
+            try:
+                artifact.unlink()
+                removed.append(str(artifact))
+            except OSError:
+                pass
+    # Glob-clean any schtasks XML regardless of version-specific naming
+    # (".schtasks-daemon.xml", "schtasks-daemon.xml", etc.).
+    try:
+        for xml_path in SNAPSHOT_DIR.glob("*schtasks-daemon*.xml"):
+            try:
+                xml_path.unlink()
+            except OSError:
+                pass
+    except OSError:
+        pass
+    if removed:
+        print("[Token Optimizer] Dashboard daemon removed.")
+        for path in removed:
+            print(f"  Deleted: {path}")
+    else:
+        print("[Token Optimizer] No daemon artifacts found. Nothing to remove.")
 
 
 def _install_systemd_user_daemon(dry_run=False):

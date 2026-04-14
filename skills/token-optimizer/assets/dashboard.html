@@ -2555,23 +2555,13 @@ var DB = (function() {
   }
 
   function splitDetailSections(detail) {
-    // Try to split on sentence boundaries into WHY / TRADE-OFFS / WHAT CHANGES
-    var sentences = detail.match(/[^.]+\.(?:\s|$)/g) || [detail];
-    if (sentences.length >= 3) {
-      var mid = Math.ceil(sentences.length / 3);
-      var end = Math.ceil(2 * sentences.length / 3);
-      return [
-        { heading: 'Why This Matters', text: sentences.slice(0, mid).join(' ') },
-        { heading: 'Trade-offs', text: sentences.slice(mid, end).join(' ') },
-        { heading: 'What Changes', text: sentences.slice(end).join(' ') }
-      ];
-    }
-    if (sentences.length === 2) {
-      return [
-        { heading: 'Why This Matters', text: sentences[0] },
-        { heading: 'What Changes', text: sentences[1] }
-      ];
-    }
+    // v5.3.7: previous "split into thirds" heuristic sliced by sentence
+    // count and labeled them WHY/TRADE-OFFS/WHAT-CHANGES, which produced
+    // headings like "Why This Matters: json." when a period landed inside
+    // a code sample. The input isn't actually structured, so we stop
+    // fabricating structure. If a recommendation needs sections in the
+    // future, the generator should emit explicit markers and this
+    // function should respect them -- never guess by sentence counting.
     return [{ heading: 'Details', text: detail }];
   }
 

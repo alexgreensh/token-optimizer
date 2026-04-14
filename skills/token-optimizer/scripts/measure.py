@@ -3209,15 +3209,18 @@ def _manage_mcp(action, name):
         return False
 
 
-def generate_standalone_dashboard(days=30, quiet=False):
+def generate_standalone_dashboard(days=30, quiet=False, force=False):
     """Generate a persistent Trends + Health dashboard (no audit data needed).
 
     Outputs to DASHBOARD_PATH (~/.claude/_backups/token-optimizer/dashboard.html).
     Used by the SessionEnd hook for auto-refresh and for standalone viewing.
     """
     # Skip regeneration if dashboard was updated within the last 60 seconds
-    # (prevents rapid /clear cycles from blocking on repeated full pipelines)
-    if quiet and DASHBOARD_PATH.exists():
+    # (prevents rapid /clear cycles from blocking on repeated full pipelines).
+    # force=True bypasses the throttle -- used by ensure-health's
+    # version-mismatch regen path so a freshly-updated plugin always
+    # wins over a recently-written stale file.
+    if quiet and not force and DASHBOARD_PATH.exists():
         try:
             age = time.time() - DASHBOARD_PATH.stat().st_mtime
             if age < 60:
@@ -3564,15 +3567,17 @@ def generate_auto_recommendations(components, trends=None, days=30):
     if not exclusion.get("has_rules"):
         medium.append(
             "**Add file exclusion rules**: "
-            "No permissions.deny rules found. Without them, Claude Code may access "
-            "large or sensitive files, wasting tokens on irrelevant content.\n"
-            "  Add Read() deny patterns to .claude/settings.json (project-level, recommended) to exclude files from Claude's "
-            "context. Example: Read(./.env), Read(./build/**), Read(./dist/**), "
-            "Read(./node_modules/**), Read(./**/*.log). "
-            "See the token-optimizer examples/ directory for a starter template.\n"
-            "  ⚠️ Apply at project level first, not global. Never deny *.sqlite or *.db globally "
-            "as this breaks tools that read databases (session memory, search indexes, WhatsApp). "
-            "Credential denies (.env, *.key) are usually safe and desired."
+            "No permissions.deny rules found. Without them, Claude Code can read large "
+            "or sensitive files, wasting tokens on irrelevant content. Apply at the "
+            "project level first (.claude/settings.json in the repo), not global. "
+            "Never deny *.sqlite or *.db globally because that breaks tools that read "
+            "databases for session memory, search indexes, and WhatsApp. Credential "
+            "denies like .env and *.key are usually safe and desired. "
+            "Starter template to drop into .claude/settings.json at the project root: "
+            '{ "permissions": { "deny": [ "Read(./.env)", "Read(./.env.*)", '
+            '"Read(./build/**)", "Read(./dist/**)", "Read(./node_modules/**)", '
+            '"Read(./**/*.log)", "Read(./**/*.key)", "Read(./**/*.pem)" ] } }. '
+            "Tune the globs to match your project layout."
         )
 
     # --- Rule 5: Verbose skill descriptions ---
@@ -3788,13 +3793,13 @@ def generate_auto_recommendations(components, trends=None, days=30):
         include_git = False
     if include_git:
         deep.append(
-            "**Disable built-in git instructions (`includeGitInstructions: false`)**: "
-            "Claude Code injects ~2,000 tokens of commit/PR workflow instructions into every session. "
-            "If you don't use Claude for git operations, disable this in settings.json.\n"
-            "  Add to ~/.claude/settings.json: `\"includeGitInstructions\": false`\n"
-            "  Or set env var: CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS=1\n"
-            "  This reduces Core System overhead, the only user setting that does. "
-            "~2,000 tokens recoverable."
+            "**Disable built-in git instructions (includeGitInstructions: false)**: "
+            "Claude Code injects ~2,000 tokens of commit/PR workflow instructions into "
+            "every session. If you don't use Claude for git operations, disable them. "
+            "Two equivalent ways: add the key `\"includeGitInstructions\": false` to "
+            "the top level of ~/.claude/settings.json, or export the env var "
+            "CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS=1. This is the only user-facing "
+            "setting that reduces Core System overhead directly. ~2,000 tokens recoverable."
         )
 
     # --- Rule 15: claude.ai MCP servers ---
@@ -7434,7 +7439,7 @@ def setup_hook(dry_run=False):
 
 # ========== Persistent Dashboard Daemon ==========
 
-TOKEN_OPTIMIZER_VERSION = "5.3.8"  # Keep in sync with plugin.json + marketplace.json
+TOKEN_OPTIMIZER_VERSION = "5.3.9"  # Keep in sync with plugin.json + marketplace.json
 DAEMON_LABEL = "com.token-optimizer.dashboard"
 DAEMON_PORT = 24842  # Memorable: 2-4-8-4-2 (powers of 2 palindrome), avoids common ports
 LAUNCH_AGENTS_DIR = Path.home() / "Library" / "LaunchAgents"
@@ -14296,7 +14301,7 @@ def _run_ensure_health():
             marker = f'"version": "{TOKEN_OPTIMIZER_VERSION}"'
             if marker not in head:
                 try:
-                    generate_standalone_dashboard(quiet=True)
+                    generate_standalone_dashboard(quiet=True, force=True)
                     print(f"  [Token Optimizer] Refreshed dashboard to v{TOKEN_OPTIMIZER_VERSION}")
                 except Exception:
                     pass

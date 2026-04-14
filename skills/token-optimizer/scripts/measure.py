@@ -735,38 +735,62 @@ def measure_components():
                         "lines": count_lines(claude_md),
                     }
 
-    # MEMORY.md (check all project dirs, not just cwd match)
-    projects_dir = find_projects_dir()
+    # MEMORY.md resolution.
+    #
+    # Claude Code's auto-memory loads from the HOME project
+    # (-Users-<you>/memory/MEMORY.md) on every session regardless of
+    # cwd. Before v5.3.10 this helper only checked the cwd-matched
+    # project dir, so running /token-optimizer from a subdirectory
+    # (e.g. ~/CascadeProjects/.../PERSONAL_OS) reported
+    # "Not configured" for users whose memory actually lived in HOME.
+    #
+    # Resolution order now:
+    #   1. HOME project (~/.claude/projects/-Users-<you>/memory/MEMORY.md)
+    #      -- this is what Claude Code actually injects.
+    #   2. cwd-matched project dir -- for users who scope memory per
+    #      project instead of (or in addition to) HOME.
+    #   3. Scan-all fallback -- last resort, picks the most recently
+    #      modified project dir that has a memory/MEMORY.md.
     memory_tokens = 0
     memory_lines = 0
     memory_path_str = ""
     memory_exists = False
-    if projects_dir:
-        memory_path = projects_dir / "memory" / "MEMORY.md"
-        memory_path_str = str(memory_path)
-        memory_exists = memory_path.exists()
-        if memory_exists:
-            memory_tokens = estimate_tokens_from_file(memory_path)
-            memory_lines = count_lines(memory_path)
-    else:
-        # No cwd match, scan all project dirs for any MEMORY.md
-        projects_base = CLAUDE_DIR / "projects"
-        if projects_base.exists():
-            def _safe_mtime_mem(d):
-                try:
-                    return d.stat().st_mtime
-                except OSError:
-                    return 0
-            for pdir in sorted(projects_base.iterdir(), key=_safe_mtime_mem, reverse=True):
-                if not pdir.is_dir():
-                    continue
-                mp = pdir / "memory" / "MEMORY.md"
-                if mp.exists():
-                    memory_path_str = str(mp)
-                    memory_exists = True
-                    memory_tokens = estimate_tokens_from_file(mp)
-                    memory_lines = count_lines(mp)
-                    break
+
+    projects_base = CLAUDE_DIR / "projects"
+    home_project_name = "-" + str(HOME).replace("/", "-").replace("_", "-").lstrip("-")
+    candidate_paths = []
+    home_candidate = projects_base / home_project_name / "memory" / "MEMORY.md"
+    candidate_paths.append(home_candidate)
+
+    projects_dir = find_projects_dir()
+    if projects_dir and projects_dir.name != home_project_name:
+        candidate_paths.append(projects_dir / "memory" / "MEMORY.md")
+
+    for candidate in candidate_paths:
+        if candidate.exists():
+            memory_path_str = str(candidate)
+            memory_exists = True
+            memory_tokens = estimate_tokens_from_file(candidate)
+            memory_lines = count_lines(candidate)
+            break
+
+    if not memory_exists and projects_base.exists():
+        # Last resort: scan all project dirs, newest first.
+        def _safe_mtime_mem(d):
+            try:
+                return d.stat().st_mtime
+            except OSError:
+                return 0
+        for pdir in sorted(projects_base.iterdir(), key=_safe_mtime_mem, reverse=True):
+            if not pdir.is_dir():
+                continue
+            mp = pdir / "memory" / "MEMORY.md"
+            if mp.exists():
+                memory_path_str = str(mp)
+                memory_exists = True
+                memory_tokens = estimate_tokens_from_file(mp)
+                memory_lines = count_lines(mp)
+                break
     components["memory_md"] = {
         "path": memory_path_str,
         "exists": memory_exists,
@@ -7439,7 +7463,7 @@ def setup_hook(dry_run=False):
 
 # ========== Persistent Dashboard Daemon ==========
 
-TOKEN_OPTIMIZER_VERSION = "5.3.9"  # Keep in sync with plugin.json + marketplace.json
+TOKEN_OPTIMIZER_VERSION = "5.3.10"  # Keep in sync with plugin.json + marketplace.json
 DAEMON_LABEL = "com.token-optimizer.dashboard"
 DAEMON_PORT = 24842  # Memorable: 2-4-8-4-2 (powers of 2 palindrome), avoids common ports
 LAUNCH_AGENTS_DIR = Path.home() / "Library" / "LaunchAgents"

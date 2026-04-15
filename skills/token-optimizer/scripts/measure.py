@@ -11624,10 +11624,13 @@ def _extract_session_state(filepath, tail_lines=500):
     question_re = re.compile(r'\?|TODO|FIXME|HACK|XXX', re.IGNORECASE)
 
     active_files = []  # (path, action, line_range)
+    recent_reads = []  # paths of recently-Read files (pointer-only)
     decisions = []     # text snippets
     open_questions = []  # text snippets
     agent_state = []   # (agent_type, status_hint)
     error_context = [] # (error_text, fix_text)
+    todos = []         # last TodoWrite snapshot
+    active_plan = None  # most-recently-referenced docs/plans/*.md path
     last_user_msg = ""
     last_assistant_msg = ""
 
@@ -11704,7 +11707,7 @@ def _extract_session_state(filepath, tail_lines=500):
                         tool_name = block.get("name", "")
                         inp = block.get("input", {})
 
-                        # Track file modifications
+                        # Track file modifications + reads
                         if tool_name in ("Edit", "Write", "Read") and file_count < _CHECKPOINT_MAX_FILES:
                             path = inp.get("file_path", "")
                             if path and path not in seen_files:
@@ -11718,12 +11721,27 @@ def _extract_session_state(filepath, tail_lines=500):
                                 if action == "modified":
                                     active_files.append((path, action, line_range))
                                     file_count += 1
+                                else:
+                                    recent_reads.append(path)
+                                # Detect active plan document
+                                if "/docs/plans/" in path and path.endswith(".md"):
+                                    active_plan = path
 
                         # Track agent dispatches
                         if tool_name in ("Task", "Agent"):
                             agent_type = inp.get("subagent_type", inp.get("description", "unknown"))
                             desc = inp.get("description", "")[:100]
                             agent_state.append((agent_type, desc))
+
+                        # Track TodoWrite state (keep the latest snapshot only)
+                        if tool_name == "TodoWrite":
+                            todo_list = inp.get("todos", [])
+                            if isinstance(todo_list, list):
+                                todos = [
+                                    (t.get("content", "")[:120], t.get("status", ""))
+                                    for t in todo_list
+                                    if isinstance(t, dict)
+                                ]
 
             if assistant_text.strip():
                 last_assistant_msg = assistant_text.strip()
@@ -11739,15 +11757,34 @@ def _extract_session_state(filepath, tail_lines=500):
 
     return {
         "active_files": active_files[-_CHECKPOINT_MAX_FILES:],
+        "recent_reads": recent_reads[-_CHECKPOINT_MAX_FILES:],
         "decisions": decisions[-10:],  # Cap at 10 most recent
         "open_questions": open_questions[-5:],  # Cap at 5
         "agent_state": agent_state[-10:],
         "error_context": error_context[-5:],
+        "todos": todos,
+        "active_plan": active_plan,
         "current_step": {
             "last_user": last_user_msg[:500],
             "last_assistant": last_assistant_msg[:500],
         },
     }
+
+
+def _capture_git_state(cwd=None):
+    """Return (branch, short_sha) or (None, None). Never raises."""
+    try:
+        import subprocess
+        kw = {"capture_output": True, "text": True, "timeout": 2}
+        if cwd:
+            kw["cwd"] = cwd
+        br = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], **kw)
+        sha = subprocess.run(["git", "rev-parse", "--short", "HEAD"], **kw)
+        if br.returncode == 0 and sha.returncode == 0:
+            return br.stdout.strip() or None, sha.stdout.strip() or None
+    except Exception:
+        pass
+    return None, None
 
 
 _TRIGGER_ALLOWED_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
@@ -11825,9 +11862,13 @@ def compact_capture(transcript_path=None, session_id=None, trigger="auto", cwd=N
     sid = _sanitize_session_id(session_id) if session_id else _sanitize_session_id(filepath.stem)
     fill_info = f" | Fill: {fill_pct:.0f}%" if fill_pct is not None else ""
     quality_info = f" | Quality: {quality_score:.1f}" if quality_score is not None else ""
+    git_branch, git_sha = _capture_git_state(cwd)
+    git_line = ""
+    if git_branch or git_sha:
+        git_line = f" | Git: {git_branch or '?'}@{git_sha or '?'}"
     lines = [
         "# Session State Checkpoint",
-        f"Generated: {ts} | Trigger: {trigger}{fill_info}{quality_info}",
+        f"Generated: {ts} | Trigger: {trigger}{fill_info}{quality_info}{git_line}",
         "",
     ]
 
@@ -11835,6 +11876,20 @@ def compact_capture(transcript_path=None, session_id=None, trigger="auto", cwd=N
     if state["current_step"]["last_user"]:
         lines.append("## Active Task")
         lines.append(state["current_step"]["last_user"][:300])
+        lines.append("")
+
+    # Active plan document (pointer)
+    if state.get("active_plan"):
+        lines.append("## Active Plan")
+        lines.append(f"- {state['active_plan']}")
+        lines.append("")
+
+    # Todo list snapshot (high-signal for resumption)
+    if state.get("todos"):
+        lines.append("## Todos")
+        for content, status in state["todos"][:12]:
+            marker = {"completed": "[x]", "in_progress": "[~]", "pending": "[ ]"}.get(status, "[?]")
+            lines.append(f"- {marker} {content}")
         lines.append("")
 
     # Key decisions
@@ -11850,6 +11905,13 @@ def compact_capture(transcript_path=None, session_id=None, trigger="auto", cwd=N
         for path, action, line_range in state["active_files"]:
             suffix = f" ({line_range})" if line_range else ""
             lines.append(f"- {path}{suffix} [{action}]")
+        lines.append("")
+
+    # Recently-read files (pointer-only — Claude can Read these again if needed)
+    if state.get("recent_reads"):
+        lines.append("## Recently Read")
+        for path in state["recent_reads"][-8:]:
+            lines.append(f"- {path}")
         lines.append("")
 
     # Open questions
@@ -11907,6 +11969,34 @@ def compact_capture(transcript_path=None, session_id=None, trigger="auto", cwd=N
     # authoritative recovery context if the process is interrupted mid-write.
     if not _write_checkpoint_atomic(checkpoint_path, checkpoint_content):
         return None
+
+    # JSON sidecar: structured companion for precise recovery. The MD is for
+    # Claude to read cold; the JSON lets Claude re-hydrate exact fields on demand.
+    try:
+        sidecar = {
+            "version": 1,
+            "generated": ts,
+            "trigger": trigger,
+            "fill_pct": fill_pct,
+            "quality_score": quality_score,
+            "session_id": sid,
+            "git": {"branch": git_branch, "sha": git_sha},
+            "active_task": state["current_step"]["last_user"][:500] if state["current_step"]["last_user"] else None,
+            "active_plan": state.get("active_plan"),
+            "todos": [{"content": c, "status": s} for c, s in state.get("todos", [])],
+            "modified_files": [{"path": p, "action": a, "range": r} for p, a, r in state["active_files"]],
+            "recent_reads": list(state.get("recent_reads", [])),
+            "decisions": state["decisions"],
+            "open_questions": state["open_questions"],
+            "error_context": [{"error": e, "fix": f} for e, f in state["error_context"]],
+            "agent_state": [{"type": t, "desc": d} for t, d in state["agent_state"]],
+            "continuation": state["current_step"]["last_assistant"][:500] if state["current_step"]["last_assistant"] else None,
+        }
+        sidecar_path = checkpoint_path.with_suffix(".json")
+        _write_checkpoint_atomic(sidecar_path, json.dumps(sidecar, indent=2, default=str))
+    except Exception:
+        # Sidecar is best-effort — never block on it.
+        pass
 
     # Cleanup old checkpoints
     _cleanup_checkpoints()
@@ -12333,6 +12423,13 @@ def _cleanup_checkpoints():
         if i >= _CHECKPOINT_RETENTION_MAX or cp["created"] < cutoff:
             try:
                 cp["path"].unlink()
+                # Also delete sibling JSON sidecar if present.
+                sidecar = cp["path"].with_suffix(".json")
+                if sidecar.exists():
+                    try:
+                        sidecar.unlink()
+                    except OSError:
+                        pass
                 removed += 1
             except OSError:
                 pass

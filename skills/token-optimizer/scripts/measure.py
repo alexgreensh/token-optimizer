@@ -2900,18 +2900,18 @@ def generate_dashboard(coord_path):
         f.write(injected)
     print(f"  Dashboard written to: {out_path}")
 
-    # v5.3.6: mirror the same HTML to DASHBOARD_PATH so the live daemon
-    # serves the fresh audit content at
-    # http://localhost:24842/token-optimizer instead of a pre-audit
-    # snapshot. Without this mirror, opening the URL would show stale
-    # data and the user would never know their audit ran.
-    try:
-        SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
-        mirror_fd = os.open(str(DASHBOARD_PATH), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(mirror_fd, "w", encoding="utf-8") as f:
-            f.write(injected)
-    except OSError as e:
-        print(f"  [Warning] Could not mirror to {DASHBOARD_PATH}: {e}")
+    # v5.3.6 / v5.4.10: mirror the same HTML to BOTH dashboard paths so
+    # the daemon serves fresh audit content regardless of which path it
+    # was configured to use. Same dual-path pattern as v5.4.7 daemon script.
+    legacy_dashboard = CLAUDE_DIR / "_backups" / "token-optimizer" / "dashboard.html"
+    for mirror_path in {DASHBOARD_PATH, legacy_dashboard}:
+        try:
+            mirror_path.parent.mkdir(parents=True, exist_ok=True)
+            mirror_fd = os.open(str(mirror_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(mirror_fd, "w", encoding="utf-8") as f:
+                f.write(injected)
+        except OSError:
+            pass
 
     # Prefer the bookmarkable URL when the daemon is live; fall back to
     # the coord-path file://. This removes the v5.3.5-era UX bug where
@@ -3528,14 +3528,27 @@ def generate_standalone_dashboard(days=30, quiet=False, force=False):
             print("  [Warning] Data injection failed: placeholder not found in template.")
         return None
 
-    try:
-        SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
-        fd = os.open(str(DASHBOARD_PATH), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(injected)
-    except OSError as e:
+    # v5.4.10: dual-path write (same pattern as daemon script in v5.4.7).
+    # DASHBOARD_PATH depends on SNAPSHOT_DIR which resolves differently in
+    # plugin-hook context (CLAUDE_PLUGIN_DATA set) vs standalone CLI.
+    # The daemon script's DASHBOARD constant points to whichever path was
+    # active when setup-daemon ran. Write to BOTH so the daemon always
+    # serves current content regardless of which path it expects.
+    legacy_dashboard = CLAUDE_DIR / "_backups" / "token-optimizer" / "dashboard.html"
+    write_paths = {DASHBOARD_PATH, legacy_dashboard}
+    wrote_any = False
+    for wp in write_paths:
+        try:
+            wp.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(str(wp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(injected)
+            wrote_any = True
+        except OSError:
+            continue
+    if not wrote_any:
         if not quiet:
-            print(f"  [Error] Failed to write dashboard: {e}")
+            print(f"  [Error] Failed to write dashboard to any path")
         return None
 
     if not quiet:
@@ -7716,7 +7729,7 @@ def setup_hook(dry_run=False):
 
 # ========== Persistent Dashboard Daemon ==========
 
-TOKEN_OPTIMIZER_VERSION = "5.4.10"  # Keep in sync with plugin.json + marketplace.json
+TOKEN_OPTIMIZER_VERSION = "5.4.11"  # Keep in sync with plugin.json + marketplace.json
 DAEMON_LABEL = "com.token-optimizer.dashboard"
 DAEMON_PORT = 24842  # Memorable: 2-4-8-4-2 (powers of 2 palindrome), avoids common ports
 LAUNCH_AGENTS_DIR = Path.home() / "Library" / "LaunchAgents"

@@ -7562,7 +7562,7 @@ def setup_hook(dry_run=False):
 
 # ========== Persistent Dashboard Daemon ==========
 
-TOKEN_OPTIMIZER_VERSION = "5.4.6"  # Keep in sync with plugin.json + marketplace.json
+TOKEN_OPTIMIZER_VERSION = "5.4.7"  # Keep in sync with plugin.json + marketplace.json
 DAEMON_LABEL = "com.token-optimizer.dashboard"
 DAEMON_PORT = 24842  # Memorable: 2-4-8-4-2 (powers of 2 palindrome), avoids common ports
 LAUNCH_AGENTS_DIR = Path.home() / "Library" / "LaunchAgents"
@@ -14809,41 +14809,61 @@ def _run_ensure_health():
     # version that created it. Any mismatch against the current running version
     # triggers a regen + restart. This is version-bound, not capability-bound,
     # so every future version bump propagates the daemon refresh automatically.
+    #
+    # Path-aware write (v5.4.7+): users who ran setup-daemon BEFORE the plugin-data
+    # migration have a launchd plist / systemd unit / scheduled task pointing at
+    # the legacy path (~/.claude/_backups/token-optimizer/dashboard-server.py).
+    # Users who set it up AFTER point at the plugin-data SNAPSHOT_DIR. We write
+    # to BOTH locations so whichever one the service manager expects gets served.
     try:
-        daemon_script = SNAPSHOT_DIR / "dashboard-server.py"
-        if daemon_script.exists():
-            daemon_src = daemon_script.read_text(encoding="utf-8", errors="replace")
-            current_marker = f'TOKEN_OPTIMIZER_DAEMON_VERSION = "{TOKEN_OPTIMIZER_VERSION}"'
-            if current_marker not in daemon_src:
-                new_script = _generate_daemon_script()
+        current_marker = f'TOKEN_OPTIMIZER_DAEMON_VERSION = "{TOKEN_OPTIMIZER_VERSION}"'
+        legacy_dir = CLAUDE_DIR / "_backups" / "token-optimizer"
+        candidate_paths = {SNAPSHOT_DIR / "dashboard-server.py",
+                           legacy_dir / "dashboard-server.py"}
+        needs_refresh = False
+        for p in candidate_paths:
+            if p.exists():
                 try:
-                    daemon_script.write_text(new_script, encoding="utf-8")
-                    # Restart the daemon so the new script takes effect.
-                    import subprocess as _sp
-                    _sys = platform.system()
-                    if _sys == "Darwin":
-                        uid = _sp.run(["id", "-u"], capture_output=True, text=True).stdout.strip()
-                        _sp.run(
-                            ["launchctl", "kickstart", "-k", f"gui/{uid}/{DAEMON_LABEL}"],
-                            capture_output=True, timeout=5
-                        )
-                    elif _sys == "Linux":
-                        _sp.run(
-                            ["systemctl", "--user", "restart", SYSTEMD_UNIT_NAME],
-                            capture_output=True, timeout=10
-                        )
-                    elif _sys == "Windows":
-                        _sp.run(
-                            ["schtasks", "/End", "/TN", WINDOWS_TASK_NAME],
-                            capture_output=True, timeout=5
-                        )
-                        _sp.run(
-                            ["schtasks", "/Run", "/TN", WINDOWS_TASK_NAME],
-                            capture_output=True, timeout=5
-                        )
-                    print(f"  [Token Optimizer] Auto-updated daemon to v{TOKEN_OPTIMIZER_VERSION}")
-                except Exception:
-                    pass
+                    if current_marker not in p.read_text(encoding="utf-8", errors="replace"):
+                        needs_refresh = True
+                        break
+                except OSError:
+                    continue
+        if needs_refresh:
+            new_script = _generate_daemon_script()
+            for p in candidate_paths:
+                try:
+                    p.parent.mkdir(parents=True, exist_ok=True)
+                    p.write_text(new_script, encoding="utf-8")
+                except OSError:
+                    continue
+            # Restart the daemon so the new script takes effect.
+            try:
+                import subprocess as _sp
+                _sys = platform.system()
+                if _sys == "Darwin":
+                    uid = _sp.run(["id", "-u"], capture_output=True, text=True).stdout.strip()
+                    _sp.run(
+                        ["launchctl", "kickstart", "-k", f"gui/{uid}/{DAEMON_LABEL}"],
+                        capture_output=True, timeout=5
+                    )
+                elif _sys == "Linux":
+                    _sp.run(
+                        ["systemctl", "--user", "restart", SYSTEMD_UNIT_NAME],
+                        capture_output=True, timeout=10
+                    )
+                elif _sys == "Windows":
+                    _sp.run(
+                        ["schtasks", "/End", "/TN", WINDOWS_TASK_NAME],
+                        capture_output=True, timeout=5
+                    )
+                    _sp.run(
+                        ["schtasks", "/Run", "/TN", WINDOWS_TASK_NAME],
+                        capture_output=True, timeout=5
+                    )
+                print(f"  [Token Optimizer] Auto-updated daemon to v{TOKEN_OPTIMIZER_VERSION}")
+            except Exception:
+                pass
     except Exception:
         pass
 

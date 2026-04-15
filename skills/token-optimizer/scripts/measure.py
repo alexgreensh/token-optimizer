@@ -224,6 +224,97 @@ def _get_model_cost(model, input_tokens, output_tokens, cache_read=0, cache_crea
     return cost
 
 
+# Process-local cache for _resolve_session_model to avoid re-reading JSONL
+# files during a single measure.py invocation.
+_RESOLVED_MODEL_CACHE = {}
+
+
+def _resolve_session_model(session_id=None):
+    """Return the dominant normalized model name for cost attribution.
+
+    Resolution order:
+      1. Explicit session_id → most frequent `message.model` in that JSONL
+      2. CLAUDE_MODEL environment variable (set by Claude Code hook runner)
+      3. Most recent session's dominant model from trends DB
+      4. Fall back to "sonnet"
+
+    Never raises. Always returns a normalized name ("opus"|"sonnet"|"haiku"|"sonnet" default).
+    """
+    cache_key = session_id or "__env_or_recent__"
+    if cache_key in _RESOLVED_MODEL_CACHE:
+        return _RESOLVED_MODEL_CACHE[cache_key]
+
+    result = None
+
+    # 1. Try session JSONL
+    if session_id:
+        try:
+            projects_dir = find_projects_dir()
+            if projects_dir:
+                candidate = projects_dir / f"{session_id}.jsonl"
+                if candidate.exists():
+                    counts = {}
+                    with open(candidate, "r", encoding="utf-8", errors="replace") as f:
+                        for line in f:
+                            try:
+                                data = json.loads(line)
+                                msg = data.get("message") if isinstance(data, dict) else None
+                                if isinstance(msg, dict):
+                                    m = msg.get("model")
+                                    norm = _normalize_model_name(m) if m else None
+                                    if norm:
+                                        counts[norm] = counts.get(norm, 0) + 1
+                            except (json.JSONDecodeError, KeyError, TypeError):
+                                continue
+                    if counts:
+                        result = max(counts, key=counts.get)
+        except (OSError, PermissionError):
+            pass
+
+    # 2. Try CLAUDE_MODEL env var
+    if not result:
+        env_model = os.environ.get("CLAUDE_MODEL") or os.environ.get("ANTHROPIC_MODEL")
+        if env_model:
+            norm = _normalize_model_name(env_model)
+            if norm in ("opus", "sonnet", "haiku"):
+                result = norm
+
+    # 3. Try trends DB for most-recent dominant model
+    if not result:
+        try:
+            if TRENDS_DB.exists():
+                conn = _init_trends_db()
+                try:
+                    row = conn.execute(
+                        "SELECT model_usage_json FROM session_log "
+                        "WHERE model_usage_json IS NOT NULL AND model_usage_json != '' "
+                        "ORDER BY date DESC LIMIT 1"
+                    ).fetchone()
+                    if row and row[0]:
+                        mu = json.loads(row[0])
+                        if isinstance(mu, dict) and mu:
+                            # normalize keys and sum
+                            norm_counts = {}
+                            for k, v in mu.items():
+                                nk = _normalize_model_name(k) or k
+                                try:
+                                    norm_counts[nk] = norm_counts.get(nk, 0) + int(v)
+                                except (TypeError, ValueError):
+                                    continue
+                            if norm_counts:
+                                result = max(norm_counts, key=norm_counts.get)
+                finally:
+                    conn.close()
+        except (sqlite3.Error, json.JSONDecodeError, OSError):
+            pass
+
+    if not result or result not in ("opus", "sonnet", "haiku"):
+        result = "sonnet"
+
+    _RESOLVED_MODEL_CACHE[cache_key] = result
+    return result
+
+
 def _simulate_model_switch(session_data, target_model="sonnet"):
     """Estimate cost delta if target_model was used instead of the dominant model.
 
@@ -5411,13 +5502,21 @@ def _backfill_session_metrics(conn, days=30, limit=5000):
     return updated
 
 
-def _log_savings_event(event_type, tokens_saved, session_id=None, detail=None, model="claude-sonnet-4-20250514"):
-    """Log a savings event to the trends database."""
+def _log_savings_event(event_type, tokens_saved, session_id=None, detail=None, model=None):
+    """Log a savings event to the trends database.
+
+    Cost is calculated at the session's actual model rate. Resolution order:
+    explicit `model` arg → session JSONL (via session_id) → CLAUDE_MODEL env →
+    trends DB dominant → Sonnet fallback. See `_resolve_session_model`.
+    """
     try:
-        # Calculate cost saved using input token rate for the model
+        # Calculate cost saved using input token rate for the active model
         tier = _load_pricing_tier()
         tier_data = PRICING_TIERS.get(tier, PRICING_TIERS["anthropic"])
-        normalized = _normalize_model_name(model) if model else "sonnet"
+        if model:
+            normalized = _normalize_model_name(model) or "sonnet"
+        else:
+            normalized = _resolve_session_model(session_id)
         rates = tier_data["claude_models"].get(normalized, tier_data["claude_models"].get("sonnet", {}))
         cost_per_mtok = rates.get("input", 3.0)
         cost_saved = tokens_saved * cost_per_mtok / 1e6
@@ -13937,7 +14036,14 @@ _V5_COMPRESSION_LABELS = {
 # Unified label dict used by the savings-report renderer. Legacy entries
 # are authoritative when a key ever collides (dedup rule in
 # _get_merged_savings).
-_SAVINGS_CATEGORY_LABELS = {**_LEGACY_SAVINGS_LABELS, **_V5_COMPRESSION_LABELS}
+# Structural savings are computed at report time from baseline delta ×
+# context loads since baseline, so they live in their own label dict rather
+# than being tied to a specific event_type in savings_events.
+_STRUCTURAL_SAVINGS_LABELS = {
+    "structural_savings": "Structural (cumulative)",
+}
+
+_SAVINGS_CATEGORY_LABELS = {**_LEGACY_SAVINGS_LABELS, **_V5_COMPRESSION_LABELS, **_STRUCTURAL_SAVINGS_LABELS}
 
 # Derived whitelist: the set of feature keys that _get_merged_savings is
 # allowed to pull out of compression_events. Deriving this from the label
@@ -13946,19 +14052,190 @@ _SAVINGS_CATEGORY_LABELS = {**_LEGACY_SAVINGS_LABELS, **_V5_COMPRESSION_LABELS}
 _V5_COMPRESSION_CATEGORIES = frozenset(_V5_COMPRESSION_LABELS.keys())
 
 
-def _estimate_compression_cost_per_mtok():
+def _estimate_compression_cost_per_mtok(model=None):
     """Return USD cost per million input tokens for the active pricing tier.
 
     Used to attribute $ savings to compression_events entries, which only
-    store token counts. Falls back to Sonnet's published rate on any error.
+    store token counts. Uses the session's actual model (via _resolve_session_model
+    when model arg is None). Falls back to Sonnet's published rate on any error.
     """
     try:
         tier = _load_pricing_tier()
         tier_data = PRICING_TIERS.get(tier, PRICING_TIERS.get("anthropic", {}))
-        rates = tier_data.get("claude_models", {}).get("sonnet", {})
+        normalized = (_normalize_model_name(model) if model else None) or _resolve_session_model()
+        rates = tier_data.get("claude_models", {}).get(normalized) \
+                or tier_data.get("claude_models", {}).get("sonnet", {})
         return float(rates.get("input", 3.0))
     except Exception:
         return 3.0
+
+
+def _resolve_structural_baseline(days=30):
+    """Return baseline overhead info for structural savings, or None.
+
+    Priority: (1) snapshot labelled "before" that is <=90 days old,
+    (2) oldest session_log row within `days`, (3) None.
+
+    Returns dict with keys: source, date (ISO), baseline_tokens. The `source`
+    is "snapshot" or "first_session"; the report header uses it to tell the
+    user how the baseline was established.
+    """
+    try:
+        # 1. Explicit snapshot
+        if SNAPSHOT_DIR.exists():
+            snap_path = SNAPSHOT_DIR / "snapshot_before.json"
+            if snap_path.exists():
+                try:
+                    data = json.loads(snap_path.read_text(encoding="utf-8"))
+                    ts = data.get("timestamp")
+                    total = int(data.get("totals", {}).get("estimated_total", 0) or 0)
+                    if ts and total > 0:
+                        snap_dt = datetime.fromisoformat(ts.replace("Z", "+00:00").split("+")[0])
+                        age_days = (datetime.now() - snap_dt).days
+                        if 0 <= age_days <= 90:
+                            return {
+                                "source": "snapshot",
+                                "date": snap_dt.isoformat(),
+                                "baseline_tokens": total,
+                            }
+                except (json.JSONDecodeError, KeyError, ValueError, OSError):
+                    pass
+
+        # 2. First session in trends DB within window
+        if TRENDS_DB.exists():
+            conn = _init_trends_db()
+            try:
+                cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+                row = conn.execute(
+                    "SELECT date, input_tokens FROM session_log "
+                    "WHERE date >= ? AND input_tokens > 0 "
+                    "ORDER BY date ASC LIMIT 1",
+                    (cutoff,),
+                ).fetchone()
+                if row and row[1]:
+                    return {
+                        "source": "first_session",
+                        "date": row[0],
+                        "baseline_tokens": int(row[1]),
+                    }
+            finally:
+                conn.close()
+    except (sqlite3.Error, OSError):
+        pass
+    return None
+
+
+def _count_context_loads(days=30, since_date=None):
+    """Count total context-load events: sessions + subagent invocations.
+
+    Each session start loads the full overhead. Each subagent spawn loads it
+    again in a fresh context. Summing both gives a truer multiplier for
+    structural savings than just session count.
+    """
+    cutoff = since_date or (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    session_count = 0
+    subagent_count = 0
+    try:
+        if not TRENDS_DB.exists():
+            return 0
+        conn = _init_trends_db()
+        try:
+            session_count = conn.execute(
+                "SELECT COUNT(*) FROM session_log WHERE date >= ?",
+                (cutoff,),
+            ).fetchone()[0] or 0
+
+            rows = conn.execute(
+                "SELECT subagents_json FROM session_log "
+                "WHERE date >= ? AND subagents_json IS NOT NULL AND subagents_json != ''",
+                (cutoff,),
+            ).fetchall()
+            for (sj,) in rows:
+                try:
+                    sd = json.loads(sj) if sj else {}
+                    if isinstance(sd, dict):
+                        for v in sd.values():
+                            try:
+                                subagent_count += int(v)
+                            except (TypeError, ValueError):
+                                continue
+                except (json.JSONDecodeError, TypeError):
+                    continue
+        finally:
+            conn.close()
+    except (sqlite3.Error, OSError):
+        pass
+    return int(session_count) + int(subagent_count)
+
+
+def _compute_structural_savings(days=30):
+    """Compute continuous structural savings from baseline × context loads.
+
+    Returns dict matching the shape of other savings categories:
+      {events, tokens_saved, cost_saved_usd, baseline_source, baseline_date,
+       context_loads, overhead_delta}.
+
+    Returns zeros (with baseline_source=None) if no baseline is available.
+    Never raises.
+    """
+    zero = {
+        "events": 0,
+        "tokens_saved": 0,
+        "cost_saved_usd": 0.0,
+        "baseline_source": None,
+        "baseline_date": None,
+        "context_loads": 0,
+        "overhead_delta": 0,
+    }
+    try:
+        baseline = _resolve_structural_baseline(days=days)
+        if not baseline:
+            return zero
+
+        # Current overhead: use the latest `session_log.input_tokens` or
+        # fall back to a measured audit. For stability, use the median of
+        # the most recent 5 sessions to smooth single-session outliers.
+        current_tokens = 0
+        if TRENDS_DB.exists():
+            conn = _init_trends_db()
+            try:
+                rows = conn.execute(
+                    "SELECT input_tokens FROM session_log "
+                    "WHERE input_tokens > 0 "
+                    "ORDER BY date DESC LIMIT 5"
+                ).fetchall()
+                vals = sorted(int(r[0]) for r in rows if r[0])
+                if vals:
+                    current_tokens = vals[len(vals) // 2]
+            finally:
+                conn.close()
+
+        if current_tokens <= 0:
+            return zero
+
+        overhead_delta = max(0, int(baseline["baseline_tokens"]) - current_tokens)
+        if overhead_delta <= 0:
+            return {**zero, "baseline_source": baseline["source"], "baseline_date": baseline["date"]}
+
+        context_loads = _count_context_loads(days=days, since_date=baseline["date"][:10])
+        if context_loads <= 0:
+            return {**zero, "baseline_source": baseline["source"], "baseline_date": baseline["date"]}
+
+        tokens_saved = overhead_delta * context_loads
+        cost_per_mtok = _estimate_compression_cost_per_mtok()
+        cost_saved = tokens_saved * cost_per_mtok / 1_000_000
+
+        return {
+            "events": context_loads,
+            "tokens_saved": int(tokens_saved),
+            "cost_saved_usd": round(cost_saved, 4),
+            "baseline_source": baseline["source"],
+            "baseline_date": baseline["date"],
+            "context_loads": context_loads,
+            "overhead_delta": overhead_delta,
+        }
+    except Exception:
+        return zero
 
 
 def _get_merged_savings(days=30):
@@ -13998,6 +14275,30 @@ def _get_merged_savings(days=30):
         total_cost += cost_saved
         total_events += events
 
+    # Structural (cumulative) savings — baseline delta × context loads since.
+    structural = _compute_structural_savings(days=days)
+    struct_tokens = int(structural.get("tokens_saved", 0) or 0)
+    struct_cost = float(structural.get("cost_saved_usd", 0.0) or 0.0)
+    struct_events = int(structural.get("events", 0) or 0)
+    if struct_tokens > 0 or structural.get("baseline_source"):
+        by_category["structural_savings"] = {
+            "events": struct_events,
+            "tokens_saved": struct_tokens,
+            "cost_saved_usd": struct_cost,
+            "baseline_source": structural.get("baseline_source"),
+            "baseline_date": structural.get("baseline_date"),
+            "overhead_delta": structural.get("overhead_delta", 0),
+        }
+        total_tokens += struct_tokens
+        total_cost += struct_cost
+        total_events += struct_events
+
+    # Pricing detail — tells the consumer which model rate was applied.
+    active_model = _resolve_session_model()
+    pricing_tier = _load_pricing_tier()
+    tier_data = PRICING_TIERS.get(pricing_tier, PRICING_TIERS["anthropic"])
+    rate = tier_data.get("claude_models", {}).get(active_model, {}).get("input", 3.0)
+
     return {
         "total_tokens": total_tokens,
         "total_cost_usd": round(total_cost, 4),
@@ -14005,6 +14306,12 @@ def _get_merged_savings(days=30):
         "by_category": by_category,
         "daily_avg_usd": round(total_cost / max(days, 1), 4),
         "period_days": days,
+        "pricing_detail": {
+            "model": active_model,
+            "tier": pricing_tier,
+            "rate_usd_per_mtok": float(rate),
+        },
+        "structural_detail": structural,
     }
 
 
@@ -14030,6 +14337,23 @@ def savings_report(days=30, as_json=False):
     print("\n  Token Optimizer Savings Report")
     print(f"  {'=' * 58}")
     print(f"  Period: Last {days} days ({start} to {end})")
+
+    pricing = summary.get("pricing_detail") or {}
+    p_model = pricing.get("model", "sonnet")
+    p_rate = pricing.get("rate_usd_per_mtok", 3.0)
+    print(f"  Pricing: calculated at {p_model} rates (${p_rate:.2f}/MTok input)")
+
+    struct = summary.get("structural_detail") or {}
+    src = struct.get("baseline_source")
+    if src == "snapshot":
+        b_date = (struct.get("baseline_date") or "")[:10]
+        print(f"  Baseline: snapshot {b_date} (overhead reduced by {struct.get('overhead_delta', 0):,} tokens)")
+    elif src == "first_session":
+        b_date = (struct.get("baseline_date") or "")[:10]
+        print(f"  Baseline: first session {b_date} (overhead reduced by {struct.get('overhead_delta', 0):,} tokens)")
+    else:
+        print(f"  Baseline: none (run 'snapshot before' to track structural savings)")
+
     print()
     print(f"  {'Category':<28s} {'Events':>8s} {'Tokens Saved':>14s} {'Cost Saved':>11s}")
     print(f"  {'-' * 25}  {'-' * 8}  {'-' * 14}  {'-' * 11}")

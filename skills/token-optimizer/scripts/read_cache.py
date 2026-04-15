@@ -362,7 +362,15 @@ def _log_savings_event(event_type: str, tokens_saved: int, session_id: str, deta
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=5000")
         conn.executescript(_SAVINGS_SCHEMA)
-        cost_saved = tokens_saved * 3.0 / 1_000_000
+        # Price at active session model. Import lazily to avoid circular imports
+        # and keep this hook fast when measure.py isn't already loaded.
+        cost_per_mtok = 3.0
+        try:
+            from measure import _estimate_compression_cost_per_mtok  # type: ignore
+            cost_per_mtok = _estimate_compression_cost_per_mtok()
+        except Exception:
+            pass
+        cost_saved = tokens_saved * cost_per_mtok / 1_000_000
         conn.execute(
             "INSERT INTO savings_events (timestamp, event_type, tokens_saved, cost_saved_usd, session_id, detail) "
             "VALUES (?, ?, ?, ?, ?, ?)",

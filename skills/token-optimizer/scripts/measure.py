@@ -7307,7 +7307,7 @@ def _is_hook_installed(settings=None):
             hook_list = entry.get("hooks", []) if isinstance(entry, dict) else []
             for hook in hook_list:
                 cmd = hook.get("command", "") if isinstance(hook, dict) else ""
-                if "measure.py" in cmd and "collect" in cmd:
+                if "measure.py" in cmd and ("collect" in cmd or "session-end-flush" in cmd):
                     return True
 
     # Check plugin cache hooks (marketplace plugin auto-install)
@@ -7324,7 +7324,7 @@ def _is_hook_installed(settings=None):
                         hook_list = entry.get("hooks", []) if isinstance(entry, dict) else []
                         for hook in hook_list:
                             cmd = hook.get("command", "") if isinstance(hook, dict) else ""
-                            if "measure.py" in cmd and "collect" in cmd:
+                            if "measure.py" in cmd and ("collect" in cmd or "session-end-flush" in cmd):
                                 return True
             except (json.JSONDecodeError, PermissionError, OSError):
                 continue
@@ -12537,7 +12537,14 @@ def _is_smart_compact_installed(settings=None):
         for hook_group in event_hooks:
             for hook in hook_group.get("hooks", []):
                 cmd = hook.get("command", "")
-                if "measure.py" in cmd and ("compact-capture" in cmd or "compact-restore" in cmd):
+                # SessionEnd uses session-end-flush in plugin (handles both
+                # collection + end-of-session checkpoint). Accept it alongside
+                # the older compact-capture / compact-restore signatures.
+                if "measure.py" in cmd and (
+                    "compact-capture" in cmd
+                    or "compact-restore" in cmd
+                    or (event == "SessionEnd" and ("session-end-flush" in cmd or "collect" in cmd))
+                ):
                     installed = True
                     break
         status[event] = installed

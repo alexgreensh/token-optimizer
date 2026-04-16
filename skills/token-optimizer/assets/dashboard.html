@@ -3935,15 +3935,21 @@ var DB = (function() {
         .then(function(resp) {
           if (row) row.style.opacity = '1';
           if (resp.ok) {
-            // Update local data and re-render.
-            // The --serve mode returns full v5_features; the daemon mode
-            // returns only {ok, msg}. Fall back to flipping the single
-            // feature's enabled flag based on user intent so the UI
-            // reflects reality regardless of which backend served it.
-            if (data.manage) {
+            // Merge the enabled flags from resp.v5_features into the local
+            // data without dropping the render-time metadata (label,
+            // risk_level, desc, etc.). The daemon's response only carries
+            // {enabled: bool} per feature — a full replace would strip the
+            // descriptive fields that renderManage needs and trigger a
+            // TypeError inside esc(f.label). Fall back to flipping the
+            // single feature the user toggled if no v5_features came back.
+            if (data.manage && data.manage.v5_features) {
               if (resp.v5_features) {
-                data.manage.v5_features = resp.v5_features;
-              } else if (data.manage.v5_features && data.manage.v5_features[fname]) {
+                Object.keys(resp.v5_features).forEach(function(k) {
+                  if (data.manage.v5_features[k] && typeof resp.v5_features[k] === 'object' && resp.v5_features[k] !== null) {
+                    data.manage.v5_features[k].enabled = !!resp.v5_features[k].enabled;
+                  }
+                });
+              } else if (data.manage.v5_features[fname]) {
                 data.manage.v5_features[fname].enabled = newState;
               }
             }

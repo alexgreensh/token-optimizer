@@ -3935,9 +3935,17 @@ var DB = (function() {
         .then(function(resp) {
           if (row) row.style.opacity = '1';
           if (resp.ok) {
-            // Update local data and re-render
-            if (data.manage && resp.v5_features) {
-              data.manage.v5_features = resp.v5_features;
+            // Update local data and re-render.
+            // The --serve mode returns full v5_features; the daemon mode
+            // returns only {ok, msg}. Fall back to flipping the single
+            // feature's enabled flag based on user intent so the UI
+            // reflects reality regardless of which backend served it.
+            if (data.manage) {
+              if (resp.v5_features) {
+                data.manage.v5_features = resp.v5_features;
+              } else if (data.manage.v5_features && data.manage.v5_features[fname]) {
+                data.manage.v5_features[fname].enabled = newState;
+              }
             }
             renderManage();
             // Toast

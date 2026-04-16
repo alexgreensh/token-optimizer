@@ -7784,7 +7784,7 @@ def setup_hook(dry_run=False):
 
 # ========== Persistent Dashboard Daemon ==========
 
-TOKEN_OPTIMIZER_VERSION = "5.4.19"  # Keep in sync with plugin.json + marketplace.json
+TOKEN_OPTIMIZER_VERSION = "5.4.20"  # Keep in sync with plugin.json + marketplace.json
 DAEMON_LABEL = "com.token-optimizer.dashboard"
 DAEMON_PORT = 24842  # Memorable: 2-4-8-4-2 (powers of 2 palindrome), avoids common ports
 LAUNCH_AGENTS_DIR = Path.home() / "Library" / "LaunchAgents"
@@ -8086,7 +8086,27 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self._json_response(500, {{"ok": False, "msg": "toggle backend unavailable: " + str(e)}})
                 return
             if result.returncode == 0:
-                self._json_response(200, {{"ok": True, "msg": result.stdout.strip()}})
+                # Read config.json directly to return the fresh v5_features map
+                # so the dashboard UI updates without a page reload.
+                v5_features = {{}}
+                try:
+                    import json as _json
+                    cfg_path = os.path.expanduser("~/.claude/token-optimizer/config.json")
+                    if os.path.exists(cfg_path):
+                        with open(cfg_path, "r", encoding="utf-8") as _cf:
+                            cfg = _json.load(_cf)
+                        feature_keys = {{
+                            "quality_nudges": "v5_quality_nudges",
+                            "loop_detection": "v5_loop_detection",
+                            "delta_mode": "v5_delta_mode",
+                            "structure_map_beta": "v5_structure_map_beta",
+                            "bash_compress": "v5_bash_compress",
+                        }}
+                        for short, cfg_key in feature_keys.items():
+                            v5_features[short] = {{"enabled": bool(cfg.get(cfg_key, False))}}
+                except (OSError, ValueError):
+                    pass
+                self._json_response(200, {{"ok": True, "msg": result.stdout.strip(), "v5_features": v5_features}})
             else:
                 self._json_response(500, {{"ok": False, "msg": result.stderr.strip()}})
             return

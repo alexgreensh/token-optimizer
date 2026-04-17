@@ -15,6 +15,7 @@ Security:
 - Partial output on timeout is NEVER compressed
 """
 
+import json
 import re
 import shlex
 import subprocess
@@ -901,8 +902,62 @@ def _detect_pattern(command_str):
         return "list"
     elif cmd == "brew" and subcmd == "list":
         return "list"
+    elif cmd == "sqlite3":
+        return "sqlite3"
+    elif cmd in ("wc", "du", "df"):
+        return "disk_stats"
+    elif cmd == "printenv":
+        return "list"
+    elif cmd == "docker" and subcmd in ("exec", "logs", "inspect"):
+        if subcmd == "logs":
+            return "logs"
+        return "docker_output"
+    elif cmd == "kubectl" and subcmd in ("get", "describe", "logs"):
+        if subcmd == "logs":
+            return "logs"
+        return "list"
 
     return None
+
+
+def _compress_sqlite3(output):
+    """Compress sqlite3 query output: truncate large result sets."""
+    lines = output.strip().splitlines()
+    if len(lines) < 30:
+        return output
+    header = lines[:2]
+    data = lines[2:22]
+    result = header + data
+    result.append(f"... ({len(lines) - 22} more rows, {len(lines)} total)")
+    return "\n".join(result)
+
+
+def _compress_disk_stats(output):
+    """Compress du/df/wc output: keep header + totals."""
+    lines = output.strip().splitlines()
+    if len(lines) < 20:
+        return output
+    result = lines[:3]
+    result.append(f"... ({len(lines) - 8} entries omitted)")
+    result.extend(lines[-5:])
+    return "\n".join(result)
+
+
+def _compress_docker_output(output):
+    """Compress docker exec/logs/inspect output."""
+    stripped = output.strip()
+    if stripped.startswith("[") or stripped.startswith("{"):
+        try:
+            data = json.loads(stripped)
+            if isinstance(data, list) and len(data) > 0:
+                first_preview = json.dumps(data[0], indent=2)[:500]
+                return f"[{len(data)} items, first:\n{first_preview}\n...]"
+            elif isinstance(data, dict):
+                keys = list(data.keys())[:10]
+                return f"Object with {len(data)} keys: {', '.join(keys)}"
+        except (json.JSONDecodeError, RecursionError, TypeError):
+            pass
+    return _compress_logs(output)
 
 
 _PATTERN_HANDLERS = {
@@ -919,6 +974,9 @@ _PATTERN_HANDLERS = {
     "progress": _compress_progress,
     "list": _compress_list,
     "build": _compress_build,
+    "sqlite3": _compress_sqlite3,
+    "disk_stats": _compress_disk_stats,
+    "docker_output": _compress_docker_output,
 }
 
 

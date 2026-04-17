@@ -47,6 +47,8 @@ _WHITELIST_SINGLE = frozenset({
     "tsc", "webpack", "esbuild",
     # v5.1 extended test runners (read-only test execution)
     "mocha", "karma",
+    # v5.5 read-only utilities
+    "sqlite3", "wc", "du", "df", "printenv",
 })
 _WHITELIST_COMPOUND = {
     ("git", "status"), ("git", "log"), ("git", "diff"), ("git", "show"), ("git", "branch"),
@@ -80,6 +82,13 @@ _WHITELIST_COMPOUND = {
     ("npx", "playwright"),
     ("npx", "mocha"),
     ("npx", "karma"),
+    # v5.5 docker/kubectl read-only inspection
+    ("docker", "exec"),
+    ("docker", "logs"),
+    ("docker", "inspect"),
+    ("kubectl", "get"),
+    ("kubectl", "describe"),
+    ("kubectl", "logs"),
 }
 
 # Git write commands that should NOT be compressed
@@ -125,19 +134,24 @@ def _is_whitelisted(command_str):
 
     # Check compound whitelist first (more specific)
     if (cmd, subcmd) in _WHITELIST_COMPOUND:
-        # Special case: git write commands
         if cmd == "git" and subcmd in _GIT_WRITE_SUBCMDS:
             return False
+        if cmd == "docker" and subcmd == "exec":
+            remaining = tokens[cmd_start + 2:]
+            if any(arg in ("-it", "-i", "-t") for arg in remaining):
+                return False
         return True
 
     # Check single command whitelist
     if cmd in _WHITELIST_SINGLE:
-        # For git, only allow read-only subcommands
         if cmd == "git":
             if subcmd in _GIT_WRITE_SUBCMDS or not subcmd:
                 return False
-            # Only whitelist known read subcommands
             if subcmd not in ("status", "log", "diff", "show", "branch"):
+                return False
+        if cmd == "sqlite3":
+            cmd_lower = command_str.lower()
+            if any(w in cmd_lower for w in ("insert", "update", "delete", "drop", "alter", "create")):
                 return False
         return True
 

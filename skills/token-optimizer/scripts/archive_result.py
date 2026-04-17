@@ -32,7 +32,7 @@ from plugin_env import resolve_snapshot_dir
 
 CHARS_PER_TOKEN = 4.0
 _ARCHIVE_THRESHOLD = 4096       # chars: only archive results >= this size
-_ARCHIVE_PREVIEW_SIZE = 1000    # chars: preview included in replacement output
+_ARCHIVE_PREVIEW_SIZE = 1500    # chars: preview included in replacement output
 _ARCHIVE_MAX_SIZE = 5_242_880   # 5MB: truncate responses beyond this
 _STDIN_MAX_BYTES = 1_048_576    # 1MB: cap stdin reads
 
@@ -72,6 +72,109 @@ def _archive_dir_for_session(session_id: str) -> Path:
     """Return the archive directory for a given session."""
     sid = _sanitize_session_id(session_id)
     return SNAPSHOT_DIR / "tool-archive" / sid
+
+
+# ---------------------------------------------------------------------------
+# Structure-aware MCP output compression
+# ---------------------------------------------------------------------------
+
+def _detect_output_type(text: str) -> str:
+    stripped = text.strip()
+    if stripped.startswith("{") or stripped.startswith("["):
+        try:
+            json.loads(stripped[:100_000])
+            return "json"
+        except (json.JSONDecodeError, RecursionError):
+            pass
+    lines = stripped.splitlines()[:50]
+    if len(lines) > 5:
+        path_like = sum(1 for ln in lines if "/" in ln or "\\" in ln)
+        if path_like > len(lines) * 0.6:
+            return "paths"
+    if len(lines) > 5:
+        sep_count = sum(1 for ln in lines if set(ln.strip()) <= set("-=| +") and ln.strip())
+        if sep_count >= 1:
+            return "table"
+    return "text"
+
+
+def _compress_mcp_preview(text: str, output_type: str) -> str:
+    if output_type == "json":
+        return _compress_mcp_json(text)
+    if output_type == "paths":
+        return _compress_mcp_paths(text)
+    if output_type == "table":
+        return _compress_mcp_table(text)
+    return text[:_ARCHIVE_PREVIEW_SIZE]
+
+
+def _compress_mcp_json(text: str) -> str:
+    try:
+        data = json.loads(text[:500_000])
+    except (json.JSONDecodeError, RecursionError):
+        return text[:_ARCHIVE_PREVIEW_SIZE]
+
+    parts: list[str] = []
+    if isinstance(data, dict):
+        parts.append(f"JSON object ({len(data)} keys):")
+        for key in list(data.keys())[:15]:
+            val = data[key]
+            if isinstance(val, list):
+                parts.append(f"  {key}: [{len(val)} items]")
+            elif isinstance(val, dict):
+                subkeys = list(val.keys())[:5]
+                suffix = "..." if len(val) > 5 else ""
+                parts.append(f"  {key}: {{{', '.join(subkeys)}{suffix}}}")
+            elif isinstance(val, str) and len(val) > 80:
+                parts.append(f'  {key}: "{val[:77]}..."')
+            else:
+                parts.append(f"  {key}: {json.dumps(val)[:80]}")
+        if len(data) > 15:
+            parts.append(f"  ... ({len(data) - 15} more keys)")
+    elif isinstance(data, list):
+        parts.append(f"JSON array ({len(data)} items):")
+        for item in data[:5]:
+            if isinstance(item, dict):
+                keys = list(item.keys())[:5]
+                suffix = "..." if len(item) > 5 else ""
+                parts.append(f"  {{{', '.join(keys)}{suffix}}}")
+            else:
+                parts.append(f"  {json.dumps(item)[:80]}")
+        if len(data) > 5:
+            parts.append(f"  ... ({len(data) - 5} more items)")
+
+    result = "\n".join(parts)
+    return result[:_ARCHIVE_PREVIEW_SIZE] if len(result) > _ARCHIVE_PREVIEW_SIZE else result
+
+
+def _compress_mcp_paths(text: str) -> str:
+    lines = text.strip().splitlines()
+    dirs: dict[str, int] = {}
+    for line in lines:
+        stripped = line.strip()
+        if "/" in stripped:
+            dir_name = stripped.rsplit("/", 1)[0] if "/" in stripped else "."
+            dirs[dir_name] = dirs.get(dir_name, 0) + 1
+
+    parts = [f"{len(lines)} paths across {len(dirs)} directories:"]
+    sorted_dirs = sorted(dirs.items(), key=lambda x: -x[1])
+    for dir_name, count in sorted_dirs[:10]:
+        parts.append(f"  {dir_name}/ ({count} files)")
+    if len(sorted_dirs) > 10:
+        parts.append(f"  ... ({len(sorted_dirs) - 10} more directories)")
+
+    result = "\n".join(parts)
+    return result[:_ARCHIVE_PREVIEW_SIZE] if len(result) > _ARCHIVE_PREVIEW_SIZE else result
+
+
+def _compress_mcp_table(text: str) -> str:
+    lines = text.strip().splitlines()
+    header = lines[:2]
+    data = [ln for ln in lines[2:] if ln.strip()]
+    result = header + data[:10]
+    if len(data) > 10:
+        result.append(f"... ({len(data) - 10} more rows, {len(data)} total)")
+    return "\n".join(result)[:_ARCHIVE_PREVIEW_SIZE]
 
 
 # ---------------------------------------------------------------------------
@@ -166,11 +269,13 @@ def archive_result(quiet: bool = False) -> None:
 
     # For MCP tools (tool_name contains "__"): output replacement via stdout
     if "__" in tool_name:
-        preview = tool_response[:_ARCHIVE_PREVIEW_SIZE]
+        output_type = _detect_output_type(tool_response)
+        preview = _compress_mcp_preview(tool_response, output_type)
+        suffix = f" ({output_type})" if output_type != "text" else ""
         if original_char_count > _ARCHIVE_MAX_SIZE:
-            replacement = preview + f"\n\n[Full result archived ({original_char_count:,} chars, truncated to 5MB). Use 'expand {tool_use_id}' to retrieve.]"
+            replacement = preview + f"\n\n[Full result archived ({original_char_count:,} chars{suffix}, truncated to 5MB).]"
         else:
-            replacement = preview + f"\n\n[Full result archived ({char_count:,} chars). Use 'expand {tool_use_id}' to retrieve.]"
+            replacement = preview + f"\n\n[Full result archived ({char_count:,} chars{suffix}).]"
         output = json.dumps({"updatedMCPToolOutput": replacement})
         print(output)
 

@@ -86,6 +86,15 @@ CREATE TABLE IF NOT EXISTS session_meta (
     value TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS context_intel_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tool_name TEXT NOT NULL,
+    tool_use_id TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    output_chars INTEGER NOT NULL,
+    timestamp REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS _meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -349,6 +358,42 @@ class SessionStore:
             (key, value),
         )
         conn.commit()
+
+    # ----- context_intel_events -----
+
+    def insert_intel_event(
+        self,
+        tool_name: str,
+        tool_use_id: str,
+        summary: str,
+        output_chars: int,
+    ) -> None:
+        if self._is_over_size_cap():
+            return
+        conn = self._connect()
+        conn.execute(
+            """INSERT INTO context_intel_events
+               (tool_name, tool_use_id, summary, output_chars, timestamp)
+               VALUES (?, ?, ?, ?, ?)""",
+            (tool_name, tool_use_id, summary, output_chars, time.time()),
+        )
+        conn.commit()
+
+    def get_intel_events(self, limit: int = 20) -> list[dict[str, Any]]:
+        conn = self._connect()
+        rows = conn.execute(
+            """SELECT tool_name, summary, output_chars, timestamp
+               FROM context_intel_events
+               ORDER BY timestamp DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_intel_event_count(self) -> int:
+        conn = self._connect()
+        row = conn.execute("SELECT COUNT(*) FROM context_intel_events").fetchone()
+        return row[0] if row else 0
 
     # ----- queries for dynamic compact instructions -----
 

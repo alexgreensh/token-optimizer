@@ -21,17 +21,17 @@ Hook registration: PostToolUse on Bash|Read|Grep|Glob|mcp__.*
 
 from __future__ import annotations
 
-import json
 import re
-import sys
 import time
 
+from hook_io import read_stdin_hook_input
 from session_store import SessionStore
 
 _OUTPUT_THRESHOLD = 8192  # Only summarize outputs >= 8K chars
 _SUMMARY_CAP = 600  # Max chars per summary
 _COOLDOWN_WINDOW = 300  # 5 minutes
 _COOLDOWN_MAX = 3  # Max summaries per window
+_STDIN_MAX_BYTES = 524_288  # 512KB: sufficient for 50KB extraction limit
 
 _PATH_RE = re.compile(
     r"(?:^|[\s\"':=])(/[\w./-]{3,120}(?:\.\w{1,10})?)",
@@ -59,15 +59,6 @@ _ERROR_TYPE_RE = re.compile(
 _SAFE_TOOL_NAME_RE = re.compile(r"[^A-Za-z0-9._:/-]")
 
 
-def _read_stdin_hook_input(max_bytes: int = 524_288) -> dict:
-    try:
-        import select
-        if select.select([sys.stdin], [], [], 0.1)[0]:
-            data = sys.stdin.read(max_bytes)
-            return json.loads(data) if data else {}
-    except (OSError, json.JSONDecodeError, ValueError):
-        pass
-    return {}
 
 
 def _check_cooldown(store: SessionStore) -> bool:
@@ -173,7 +164,7 @@ def _summarize_output(tool_name: str, output: str) -> str:
 
 
 def handle_post_tool_use() -> None:
-    hook_input = _read_stdin_hook_input()
+    hook_input = read_stdin_hook_input(_STDIN_MAX_BYTES)
     if not hook_input:
         return
 
@@ -182,7 +173,7 @@ def handle_post_tool_use() -> None:
     tool_response = hook_input.get("tool_response", "")
     session_id = hook_input.get("session_id", "")
 
-    if not tool_response or len(tool_response) < _OUTPUT_THRESHOLD:
+    if not isinstance(tool_response, str) or len(tool_response) < _OUTPUT_THRESHOLD:
         return
 
     if not session_id or not tool_use_id:

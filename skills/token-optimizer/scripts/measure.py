@@ -83,6 +83,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from hook_io import read_stdin_hook_input as _read_stdin_hook_input_shared
 from plugin_env import resolve_plugin_data_dir
 
 try:
@@ -3588,7 +3589,7 @@ def generate_standalone_dashboard(days=30, quiet=False, force=False):
             continue
     if not wrote_any:
         if not quiet:
-            print(f"  [Error] Failed to write dashboard to any path")
+            print("  [Error] Failed to write dashboard to any path")
         return None
 
     if not quiet:
@@ -9824,21 +9825,8 @@ def _extract_user_text(record):
 
 
 def _read_stdin_hook_input(max_bytes=65536):
-    """Read JSON hook input from stdin non-blocking. Returns dict or empty dict.
-
-    Bounds read size to max_bytes. Works on Unix; returns empty dict on Windows
-    where select.select() doesn't support file descriptors.
-    """
-    try:
-        import select
-        if select.select([sys.stdin], [], [], 0.1)[0]:
-            data = sys.stdin.read(max_bytes)
-            return json.loads(data) if data else {}
-    except (OSError, json.JSONDecodeError, ValueError):
-        # OSError: Windows doesn't support select on stdin
-        # JSONDecodeError: malformed input
-        pass
-    return {}
+    """Thin wrapper: measure.py callers default to 64KB (PreToolUse payloads)."""
+    return _read_stdin_hook_input_shared(max_bytes)
 
 
 def _parse_jsonl_for_quality(filepath):
@@ -13093,101 +13081,98 @@ def dynamic_compact_instructions(session_id=None):
         one_time = store.get_one_time_reads(limit=8)
         high_value = store.get_high_value_outputs(min_tokens=500, limit=5)
         intel_events = store.get_intel_events(limit=10)
-    except Exception:
-        store.close()
-        print(_STATIC_COMPACT_FALLBACK)
-        return
 
-    has_data = active_files or intel_events or high_value
+        has_data = active_files or intel_events or high_value
 
-    if not has_data:
-        store.close()
-        print(_STATIC_COMPACT_FALLBACK)
-        return
+        if not has_data:
+            print(_STATIC_COMPACT_FALLBACK)
+            return
 
-    parts: list[str] = ["COMPACTION GUIDANCE (session-specific):"]
+        parts: list[str] = ["COMPACTION GUIDANCE (session-specific):"]
 
-    if active_files:
-        parts.append("")
-        parts.append("PRESERVE - Files actively being worked on:")
-        for f in active_files:
+        if active_files:
+            parts.append("")
+            parts.append("PRESERVE - Files actively being worked on:")
+            for f in active_files:
+                fp = f["file_path"]
+                short = fp.replace(str(Path.home()), "~")
+                parts.append(f"  - {short} (read {f['read_count']}x)")
+
+        if intel_events:
+            parts.append("")
+            parts.append("PRESERVE - Key findings from tool outputs:")
+            for ev in intel_events:
+                summary_line = ev["summary"].split("\n")[0][:100]
+                parts.append(f"  - {summary_line}")
+
+        error_signals = []
+        for ev in intel_events:
+            for line in ev["summary"].split("\n"):
+                if line.startswith("ERR:"):
+                    error_signals.append(line[:100])
+                    if len(error_signals) >= 3:
+                        break
+            if len(error_signals) >= 3:
+                break
+
+        if error_signals:
+            parts.append("")
+            parts.append("PRESERVE - Errors encountered:")
+            for e in error_signals:
+                parts.append(f"  - {e}")
+
+        if high_value:
+            parts.append("")
+            parts.append("PRESERVE - High-value tool outputs:")
+            for h in high_value:
+                cmd = h.get("command_or_path", h.get("tool_name", "?"))
+                if cmd and len(cmd) > 60:
+                    cmd = cmd[:57] + "..."
+                tokens = h["output_tokens_est"]
+                parts.append(f"  - {cmd} ({tokens} tokens)")
+
+        drop_candidates: list[str] = []
+        for f in one_time:
             fp = f["file_path"]
             short = fp.replace(str(Path.home()), "~")
-            parts.append(f"  - {short} (read {f['read_count']}x)")
+            tok = f.get("tokens_est", 0)
+            if tok > 200:
+                drop_candidates.append(f"  - {short} (read once, ~{tok} tokens)")
 
-    if intel_events:
+        if drop_candidates:
+            parts.append("")
+            parts.append("DROP - Safe to discard:")
+            parts.extend(drop_candidates[:5])
+
         parts.append("")
-        parts.append("PRESERVE - Key findings from tool outputs:")
-        for ev in intel_events:
-            summary_line = ev["summary"].split("\n")[0][:100]
-            parts.append(f"  - {summary_line}")
+        parts.append(
+            "Always preserve the specific next step with enough detail "
+            "to continue without asking."
+        )
 
-    error_signals = []
-    for ev in intel_events:
-        for line in ev["summary"].split("\n"):
-            if line.startswith("ERR:"):
-                error_signals.append(line[:100])
-                if len(error_signals) >= 3:
-                    break
-        if len(error_signals) >= 3:
-            break
+        try:
+            quality_raw = store.get_meta("quality_score")
+            if quality_raw:
+                quality = float(quality_raw)
+                if quality < 60:
+                    parts.append("")
+                    parts.append(
+                        f"WARNING: Context quality has degraded ({quality:.0f}/100). "
+                        "Consider starting a new session or compacting with focused "
+                        "instructions for your current task."
+                    )
+        except Exception:
+            pass
 
-    if error_signals:
-        parts.append("")
-        parts.append("PRESERVE - Errors encountered:")
-        for e in error_signals:
-            parts.append(f"  - {e}")
+        text = "\n".join(parts)
+        if len(text) > _DYNAMIC_COMPACT_CAP:
+            text = text[:_DYNAMIC_COMPACT_CAP - 3] + "..."
 
-    if high_value:
-        parts.append("")
-        parts.append("PRESERVE - High-value tool outputs:")
-        for h in high_value:
-            cmd = h.get("command_or_path", h.get("tool_name", "?"))
-            if cmd and len(cmd) > 60:
-                cmd = cmd[:57] + "..."
-            tokens = h["output_tokens_est"]
-            parts.append(f"  - {cmd} ({tokens} tokens)")
-
-    drop_candidates: list[str] = []
-    for f in one_time:
-        fp = f["file_path"]
-        short = fp.replace(str(Path.home()), "~")
-        tok = f.get("tokens_est", 0)
-        if tok > 200:
-            drop_candidates.append(f"  - {short} (read once, ~{tok} tokens)")
-
-    if drop_candidates:
-        parts.append("")
-        parts.append("DROP - Safe to discard:")
-        parts.extend(drop_candidates[:5])
-
-    parts.append("")
-    parts.append(
-        "Always preserve the specific next step with enough detail "
-        "to continue without asking."
-    )
-
-    try:
-        quality_raw = store.get_meta("quality_score")
-        if quality_raw:
-            quality = float(quality_raw)
-            if quality < 60:
-                parts.append("")
-                parts.append(
-                    f"WARNING: Context quality has degraded ({quality:.0f}/100). "
-                    "Consider starting a new session or compacting with focused "
-                    "instructions for your current task."
-                )
-    except (TypeError, ValueError):
-        pass
-
-    store.close()
-
-    text = "\n".join(parts)
-    if len(text) > _DYNAMIC_COMPACT_CAP:
-        text = text[:_DYNAMIC_COMPACT_CAP - 3] + "..."
-
-    print(text)
+        print(text)
+    except Exception:
+        print(_STATIC_COMPACT_FALLBACK)
+    finally:
+        store.close()
 
 
 # ========== Session Continuity Engine (v2.0) ==========
@@ -15377,7 +15362,7 @@ def savings_report(days=30, as_json=False):
         b_date = (struct.get("baseline_date") or "")[:10]
         print(f"  Baseline: first session {b_date} (overhead reduced by {struct.get('overhead_delta', 0):,} tokens)")
     else:
-        print(f"  Baseline: none (run 'snapshot before' to track structural savings)")
+        print("  Baseline: none (run 'snapshot before' to track structural savings)")
 
     print()
     print(f"  {'Category':<28s} {'Events':>8s} {'Tokens Saved':>14s} {'Cost Saved':>11s}")

@@ -10,7 +10,8 @@ Plain SQLite with indexed columns, no FTS5. All lookups are exact match
 
 Configuration:
   - WAL mode for concurrent read/write from separate hook processes
-  - busy_timeout=1000 for write contention under concurrent hooks
+  - busy_timeout=50ms: fail-fast under write contention (shadow mode
+    accepts dropped writes rather than stalling the hook process)
   - synchronous=NORMAL (WAL-safe relaxation for performance)
   - 50MB cap per session DB
   - PreToolUse hooks: READ-ONLY queries only
@@ -95,10 +96,6 @@ CREATE TABLE IF NOT EXISTS context_intel_events (
     timestamp REAL NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS _meta (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-);
 """
 
 
@@ -136,8 +133,8 @@ class SessionStore:
             return
         conn.executescript(_SCHEMA_SQL)
         conn.execute(
-            "INSERT OR IGNORE INTO _meta (key, value) VALUES (?, ?)",
-            ("schema_version", str(_SCHEMA_VERSION)),
+            "INSERT OR IGNORE INTO session_meta (key, value) VALUES (?, ?)",
+            ("_schema_version", str(_SCHEMA_VERSION)),
         )
         conn.commit()
 

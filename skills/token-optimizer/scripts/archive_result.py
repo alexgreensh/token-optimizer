@@ -11,8 +11,8 @@ Security hardening:
   - Session ID sanitized against path traversal
   - tool_use_id validated to alphanumeric + hyphens/underscores
 
-SOURCE OF TRUTH for _sanitize_session_id, _read_stdin_hook_input,
-_archive_dir_for_session: measure.py. Keep in sync.
+SOURCE OF TRUTH for _sanitize_session_id: session_store.py.
+SOURCE OF TRUTH for read_stdin_hook_input: hook_io.py.
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ from pathlib import Path
 
 import hashlib
 
+from hook_io import read_stdin_hook_input
 from plugin_env import resolve_snapshot_dir
 from session_store import SessionStore, _sanitize_session_id as sanitize_sid
 
@@ -51,21 +52,6 @@ def _sanitize_session_id(sid: str | None) -> str:
     return sanitize_sid(sid or "")
 
 
-def _read_stdin_hook_input(max_bytes: int = _STDIN_MAX_BYTES) -> dict:
-    """Read JSON hook input from stdin non-blocking. Returns dict or empty dict.
-
-    Bounds read size to max_bytes. Uses 1MB cap (vs measure.py's 64KB default)
-    because PostToolUse payloads include tool_response which can be large.
-    Works on Unix; returns empty dict on Windows.
-    """
-    try:
-        import select
-        if select.select([sys.stdin], [], [], 0.1)[0]:
-            data = sys.stdin.read(max_bytes)
-            return json.loads(data) if data else {}
-    except (OSError, json.JSONDecodeError, ValueError):
-        pass
-    return {}
 
 
 def _archive_dir_for_session(session_id: str) -> Path:
@@ -190,7 +176,7 @@ def archive_result(quiet: bool = False) -> None:
 
     NO _log_savings_event: SessionEnd `collect` derives savings from manifest.jsonl.
     """
-    hook_input = _read_stdin_hook_input()
+    hook_input = read_stdin_hook_input(_STDIN_MAX_BYTES)
     if not hook_input:
         return
 

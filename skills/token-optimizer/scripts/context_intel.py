@@ -33,8 +33,6 @@ _SUMMARY_CAP = 600  # Max chars per summary
 _COOLDOWN_WINDOW = 300  # 5 minutes
 _COOLDOWN_MAX = 3  # Max summaries per window
 
-_cooldown_timestamps: list[float] = []
-
 _PATH_RE = re.compile(
     r"(?:^|[\s\"':=])(/[\w./-]{3,120}(?:\.\w{1,10})?)",
     re.MULTILINE,
@@ -51,9 +49,17 @@ _WARNING_RE = re.compile(
     r"^.*(?:warning|Warning|WARNING|WARN|deprecated|DEPRECATED).*$",
     re.MULTILINE,
 )
+_ERROR_TYPE_RE = re.compile(
+    r"(TypeError|ValueError|KeyError|ImportError|ModuleNotFoundError"
+    r"|SyntaxError|RuntimeError|AttributeError|NameError|OSError"
+    r"|FileNotFoundError|PermissionError|ConnectionError"
+    r"|Error|FAIL|FAILED|panic|exception|Exception"
+    r"|warning|Warning|WARNING|WARN|deprecated)",
+)
+_SAFE_TOOL_NAME_RE = re.compile(r"[^A-Za-z0-9._:/-]")
 
 
-def _read_stdin_hook_input(max_bytes: int = 1_048_576) -> dict:
+def _read_stdin_hook_input(max_bytes: int = 524_288) -> dict:
     try:
         import select
         if select.select([sys.stdin], [], [], 0.1)[0]:
@@ -64,14 +70,18 @@ def _read_stdin_hook_input(max_bytes: int = 1_048_576) -> dict:
     return {}
 
 
-def _check_cooldown() -> bool:
-    now = time.time()
-    cutoff = now - _COOLDOWN_WINDOW
-    _cooldown_timestamps[:] = [t for t in _cooldown_timestamps if t > cutoff]
-    if len(_cooldown_timestamps) >= _COOLDOWN_MAX:
-        return False
-    _cooldown_timestamps.append(now)
-    return True
+def _check_cooldown(store: SessionStore) -> bool:
+    """Check cooldown via SQLite (persists across subprocess invocations)."""
+    try:
+        cutoff = time.time() - _COOLDOWN_WINDOW
+        conn = store._connect()
+        row = conn.execute(
+            "SELECT COUNT(*) FROM context_intel_events WHERE timestamp > ?",
+            (cutoff,),
+        ).fetchone()
+        return (row[0] if row else 0) < _COOLDOWN_MAX
+    except Exception:
+        return True
 
 
 def _extract_paths(text: str) -> list[str]:
@@ -87,32 +97,52 @@ def _extract_paths(text: str) -> list[str]:
     return paths
 
 
+def _sanitize_signal(raw_line: str, prefix: str) -> str:
+    """Extract structural digest from an error/warning line.
+
+    Returns e.g. "ERR: TypeError in /src/auth.py" rather than raw text,
+    to prevent tool output content from flowing verbatim into compaction
+    prompts.
+    """
+    error_type = _ERROR_TYPE_RE.search(raw_line)
+    type_str = error_type.group(0) if error_type else "unknown"
+    paths = _PATH_RE.findall(raw_line)
+    path_str = f" in {paths[0]}" if paths else ""
+    return f"{prefix}: {type_str}{path_str}"
+
+
 def _extract_signals(text: str) -> list[str]:
     signals: list[str] = []
     seen: set[str] = set()
 
     errors = _ERROR_RE.findall(text[:50_000])
     for e in errors:
-        line = e.strip()[:120]
-        if line and line not in seen:
-            seen.add(line)
-            signals.append(f"ERR: {line}")
+        sanitized = _sanitize_signal(e, "ERR")
+        if sanitized not in seen:
+            seen.add(sanitized)
+            signals.append(sanitized)
             if len(signals) >= 5:
-                return signals
+                break
 
     warnings = _WARNING_RE.findall(text[:50_000])
     for w in warnings:
-        line = w.strip()[:120]
-        if line and line not in seen:
-            seen.add(line)
-            signals.append(f"WARN: {line}")
+        sanitized = _sanitize_signal(w, "WARN")
+        if sanitized not in seen:
+            seen.add(sanitized)
+            signals.append(sanitized)
             if len(signals) >= 8:
                 break
 
     return signals
 
 
+def _sanitize_tool_name(name: str) -> str:
+    sanitized = _SAFE_TOOL_NAME_RE.sub("", name)
+    return sanitized[:64]
+
+
 def _summarize_output(tool_name: str, output: str) -> str:
+    tool_name = _sanitize_tool_name(tool_name)
     lines = output.splitlines()
     line_count = len(lines)
     char_count = len(output)
@@ -158,14 +188,12 @@ def handle_post_tool_use() -> None:
     if not session_id or not tool_use_id:
         return
 
-    if not _check_cooldown():
-        return
-
-    summary = _summarize_output(tool_name, tool_response)
-
     try:
         store = SessionStore(session_id)
         try:
+            if not _check_cooldown(store):
+                return
+            summary = _summarize_output(tool_name, tool_response)
             store.insert_intel_event(
                 tool_name=tool_name,
                 tool_use_id=tool_use_id,

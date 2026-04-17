@@ -390,11 +390,6 @@ class SessionStore:
         ).fetchall()
         return [dict(r) for r in rows]
 
-    def get_intel_event_count(self) -> int:
-        conn = self._connect()
-        row = conn.execute("SELECT COUNT(*) FROM context_intel_events").fetchone()
-        return row[0] if row else 0
-
     # ----- queries for dynamic compact instructions -----
 
     def get_recent_file_reads(

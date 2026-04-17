@@ -83,7 +83,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from paths import resolve_plugin_data_dir
+from plugin_env import resolve_plugin_data_dir
 
 try:
     import fcntl
@@ -98,7 +98,7 @@ CLAUDE_DIR = HOME / ".claude"
 
 # Plugin-data-aware paths: prefer CLAUDE_PLUGIN_DATA if set (v2.1.78+),
 # else discover via installed_plugins.json so dashboard CLI runs find live data
-# (v5.4.22+), else fall back to legacy paths for symlink/script installs.
+# (v5.4.23+), else fall back to legacy paths for symlink/script installs.
 # _PLUGIN_DATA stays env-only — the migration check at SessionStart looks at
 # either source so CLI-discovered data dirs also get a one-time legacy copy.
 _PLUGIN_DATA = os.environ.get("CLAUDE_PLUGIN_DATA")
@@ -189,19 +189,8 @@ def _load_pricing_tier():
 
 
 def _save_pricing_tier(tier):
-    """Persist pricing tier preference to config."""
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    cfg = {}
-    try:
-        if CONFIG_PATH.exists():
-            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                cfg = json.load(f)
-    except (json.JSONDecodeError, OSError):
-        pass
-    cfg["pricing_tier"] = tier
-    fd = os.open(str(CONFIG_PATH), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=2)
+    """Persist pricing tier preference via the atomic+locked config writer."""
+    _write_config_flag("pricing_tier", tier)
 
 
 def _get_model_cost(model, input_tokens, output_tokens, cache_read=0, cache_create=0, tier=None):
@@ -7789,7 +7778,7 @@ def setup_hook(dry_run=False):
 
 # ========== Persistent Dashboard Daemon ==========
 
-TOKEN_OPTIMIZER_VERSION = "5.4.22"  # Keep in sync with plugin.json + marketplace.json
+TOKEN_OPTIMIZER_VERSION = "5.4.23"  # Keep in sync with plugin.json + marketplace.json
 DAEMON_LABEL = "com.token-optimizer.dashboard"
 DAEMON_PORT = 24842  # Memorable: 2-4-8-4-2 (powers of 2 palindrome), avoids common ports
 LAUNCH_AGENTS_DIR = Path.home() / "Library" / "LaunchAgents"
@@ -14367,27 +14356,14 @@ def _is_quality_bar_installed(settings=None):
 
 
 def _set_quality_bar_disabled(disabled):
-    """Persist the quality-bar opt-out flag in config.json.
+    """Persist the quality-bar opt-out flag via the atomic+locked config writer.
 
     Makes `setup-quality-bar --uninstall` sticky across SessionStart auto-
     restore: ensure-health and quality-cache self-heal both already gate on
-    this flag, they just had no writer until now. Non-fatal on I/O errors;
-    the flag is advisory, not a security boundary.
+    this flag. Routed through _write_config_flag so concurrent writers
+    (toggle clicks, ensure-health timestamps) never see partial JSON.
     """
-    try:
-        cfg = {}
-        if CONFIG_PATH.exists():
-            try:
-                loaded = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-                if isinstance(loaded, dict):
-                    cfg = loaded
-            except (json.JSONDecodeError, OSError):
-                pass
-        cfg["quality_bar_disabled"] = bool(disabled)
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        CONFIG_PATH.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
-    except OSError:
-        pass
+    _write_config_flag("quality_bar_disabled", bool(disabled))
 
 
 def _read_config_flag(key, default=False):

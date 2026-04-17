@@ -13,7 +13,7 @@
       "name": "token-optimizer",
       "source": "./",
       "description": "Audit, fix, and monitor Claude Code context window usage. Find the ghost tokens.",
-      "version": "5.4.22",
+      "version": "5.4.23",
       "author": {
         "name": "Alex Greenshpun",
         "url": "https://linkedin.com/in/alexgreensh"

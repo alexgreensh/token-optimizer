@@ -30,7 +30,7 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any, Optional
 
-from paths import is_v5_flag_enabled, resolve_snapshot_dir
+from plugin_env import is_v5_flag_enabled, resolve_snapshot_dir
 from structure_map import (
     StructureMapResult,
     detect_structure_language,

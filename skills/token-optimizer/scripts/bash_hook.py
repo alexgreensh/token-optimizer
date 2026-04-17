@@ -19,7 +19,7 @@ import sys
 import time
 from pathlib import Path
 
-from paths import is_v5_flag_enabled, resolve_plugin_data_dir
+from plugin_env import is_v5_flag_enabled, resolve_plugin_data_dir
 
 # Categorical exclusion: if ANY of these appear in the raw command string,
 # never rewrite. Checked BEFORE shlex tokenization to catch all forms.

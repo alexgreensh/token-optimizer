@@ -138,23 +138,41 @@ def resolve_snapshot_dir() -> Path:
     return _LEGACY_BACKUP_DIR
 
 
+# Common truthy/falsy strings accepted in env-var boolean checks.
+_TRUTHY_ENV = frozenset({"1", "true", "yes", "on"})
+_FALSY_ENV = frozenset({"0", "false", "no", "off", ""})
+
+
 def is_v5_flag_enabled(
     flag_name: str,
     env_var: str,
     *,
     default: bool,
-    env_truthy_value: str = "1",
+    env_truthy_value: str | None = None,
 ) -> bool:
     """Check a v5 feature flag in priority order.
 
-    1. Environment variable (compared to env_truthy_value)
+    1. Environment variable
     2. User config: ~/.claude/token-optimizer/config.json
     3. Plugin-data config: $CLAUDE_PLUGIN_DATA/config/config.json
     4. default
+
+    Env parsing: when env_truthy_value is None (default), accepts the common
+    boolean strings "1"/"true"/"yes"/"on" as True (case-insensitive) and
+    "0"/"false"/"no"/"off"/"" as False; any other value falls through to
+    config/default. When env_truthy_value is supplied (tri-state flags like
+    structure-map "beta"), only an exact string match returns True.
     """
     env_val = os.environ.get(env_var)
     if env_val is not None:
-        return env_val == env_truthy_value
+        if env_truthy_value is not None:
+            return env_val == env_truthy_value
+        normalized = env_val.strip().lower()
+        if normalized in _TRUTHY_ENV:
+            return True
+        if normalized in _FALSY_ENV:
+            return False
+        # Unrecognized value: don't guess, fall through to config/default.
 
     config_paths = [_USER_CONFIG_DIR / "config.json"]
     plugin_data = resolve_plugin_data_dir()

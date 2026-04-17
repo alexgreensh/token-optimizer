@@ -24,7 +24,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from paths import resolve_snapshot_dir
+from plugin_env import resolve_snapshot_dir
 
 # ---------------------------------------------------------------------------
 # Constants

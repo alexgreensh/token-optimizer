@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from plugin_env import is_v5_flag_enabled, resolve_snapshot_dir
+from session_store import SessionStore
 from structure_map import (
     StructureMapResult,
     detect_structure_language,
@@ -60,7 +61,6 @@ def _is_v5_structure_map_beta():
 SNAPSHOT_DIR = resolve_snapshot_dir()
 CACHE_DIR = SNAPSHOT_DIR / "read-cache"
 TRENDS_DB = SNAPSHOT_DIR / "trends.db"
-MAX_CACHE_ENTRIES = 500
 MAX_CONTEXTIGNORE_PATTERNS = 200
 READ_CACHE_MODES = frozenset({"shadow", "warn", "soft_block", "block"})
 DEFAULT_MODE = "soft_block"
@@ -146,6 +146,15 @@ def _is_contextignored(file_path: str) -> bool:
 # Cache operations
 # ---------------------------------------------------------------------------
 
+_store_cache: dict[str, SessionStore] = {}
+
+
+def _get_store(session_id: str) -> SessionStore:
+    if session_id not in _store_cache:
+        _store_cache[session_id] = SessionStore(session_id)
+    return _store_cache[session_id]
+
+
 def _cache_path(session_id: str) -> Path:
     safe_id = re.sub(r"[^a-zA-Z0-9_-]", "", session_id) or "unknown"
     return CACHE_DIR / f"{safe_id}.json"
@@ -157,39 +166,6 @@ def _decisions_log_path(session_id: str = "unknown") -> Path:
     decisions_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     return decisions_dir / f"{safe_id}.jsonl"
 
-
-def _load_cache(session_id: str) -> dict[str, Any]:
-    cp = _cache_path(session_id)
-    if not cp.exists():
-        return {"files": {}}
-    try:
-        data = json.loads(cp.read_text(encoding="utf-8"))
-        if not isinstance(data, dict) or "files" not in data:
-            raise ValueError("invalid cache structure")
-        return data
-    except (json.JSONDecodeError, ValueError, OSError):
-        try:
-            cp.unlink()
-        except OSError:
-            pass
-        return {"files": {}}
-
-
-def _save_cache(session_id: str, cache: dict[str, Any]) -> None:
-    files = cache.get("files", {})
-    if len(files) > MAX_CACHE_ENTRIES:
-        sorted_entries = sorted(files.items(), key=lambda item: item[1].get("last_access", 0))
-        to_remove = len(files) - MAX_CACHE_ENTRIES
-        for key, _ in sorted_entries[:to_remove]:
-            del files[key]
-
-    CACHE_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
-    cp = _cache_path(session_id)
-    tmp = cp.with_suffix(f".{os.getpid()}.{time.time_ns()}.tmp")
-    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        json.dump(cache, handle)
-    os.replace(tmp, cp)
 
 
 def _reset_replacement_state(entry: dict[str, Any]) -> None:
@@ -496,9 +472,8 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
             _emit_pretool_response(None, None, context_msg)
         return
 
-    cache = _load_cache(session_id)
-    files = cache.get("files", {})
-    entry = files.get(file_path)
+    store = _get_store(session_id)
+    entry = store.get_file_entry(file_path)
 
     if entry is None:
         try:
@@ -515,7 +490,6 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
             "read_count": 1,
             "last_access": time.time(),
         }
-        # v5.0: Cache content for delta diffs on first whole-file read
         if _is_v5_delta_enabled() and offset == 0 and limit == 0:
             try:
                 from delta_diff import is_delta_eligible, content_hash, MAX_CONTENT_CACHE_BYTES
@@ -524,12 +498,11 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
                     if len(fc.encode("utf-8", errors="replace")) <= MAX_CONTENT_CACHE_BYTES:
                         entry["cached_content"] = fc
                         entry["content_hash"] = content_hash(fc)
+                        store.upsert_cached_content(file_path, fc, content_hash(fc))
             except Exception:
                 pass
         _reset_replacement_state(entry)
-        files[file_path] = entry
-        cache["files"] = files
-        _save_cache(session_id, cache)
+        store.upsert_file_entry(file_path, entry)
         _log_decision(
             "allow",
             file_path,
@@ -557,9 +530,7 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
     try:
         current_stat = os.stat(file_path)
     except OSError:
-        del files[file_path]
-        cache["files"] = files
-        _save_cache(session_id, cache)
+        store.delete_file_entry(file_path)
         _log_decision(
             "allow",
             file_path,
@@ -607,35 +578,34 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
     if not (mtime_match and size_match and range_covered):
         # v5.0: Delta mode -- return diff instead of allowing full re-read
         delta_enabled = _is_v5_delta_enabled()
+        cached = store.get_cached_content(file_path) if delta_enabled else None
+        old_content = cached.get("content") if cached else entry.get("cached_content")
+        old_hash = cached.get("content_hash") if cached else entry.get("content_hash")
         if (
             delta_enabled
             and offset == 0
             and limit == 0
             and not mtime_match
-            and entry.get("content_hash")
-            and entry.get("cached_content")
+            and old_hash
+            and old_content
         ):
             try:
                 from delta_diff import compute_delta, content_hash, is_delta_eligible, MAX_CONTENT_CACHE_BYTES
                 if is_delta_eligible(file_path):
                     new_content = Path(file_path).read_text(encoding="utf-8", errors="replace")
                     new_hash = content_hash(new_content)
-                    if new_hash != entry.get("content_hash"):
-                        old_content = entry.get("cached_content", "")
+                    if new_hash != old_hash:
                         delta_text, delta_stats = compute_delta(old_content, new_content, Path(file_path).name)
                         if delta_text is not None:
-                            # Update cache with new content
                             entry["mtime_ns"] = current_stat.st_mtime_ns
                             entry["size_bytes"] = current_stat.st_size
                             entry["content_hash"] = new_hash
-                            if len(new_content.encode("utf-8", errors="replace")) <= MAX_CONTENT_CACHE_BYTES:
-                                entry["cached_content"] = new_content
-                            else:
-                                entry.pop("cached_content", None)
                             entry["read_count"] = int(entry.get("read_count", 0) or 0) + 1
                             entry["last_access"] = time.time()
                             _reset_replacement_state(entry)
-                            _save_cache(session_id, cache)
+                            store.upsert_file_entry(file_path, entry)
+                            if len(new_content.encode("utf-8", errors="replace")) <= MAX_CONTENT_CACHE_BYTES:
+                                store.upsert_cached_content(file_path, new_content, new_hash)
 
                             old_tokens = max(1, current_stat.st_size // 4)
                             delta_tokens = len(delta_text.encode("utf-8", errors="replace")) // 4
@@ -719,10 +689,11 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
                     if len(fc.encode("utf-8", errors="replace")) <= MAX_CONTENT_CACHE_BYTES:
                         entry["cached_content"] = fc
                         entry["content_hash"] = content_hash(fc)
+                        store.upsert_cached_content(file_path, fc, content_hash(fc))
             except Exception:
                 pass
         _reset_replacement_state(entry)
-        _save_cache(session_id, cache)
+        store.upsert_file_entry(file_path, entry)
         _log_decision(
             "allow",
             file_path,
@@ -764,7 +735,7 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
         decision = "warn" if mode == "warn" else "allow"
         entry["last_structure_reason"] = reason_code
         entry["last_structure_confidence"] = summary.confidence if summary else 0.0
-        _save_cache(session_id, cache)
+        store.upsert_file_entry(file_path, entry)
         _log_decision(
             decision,
             file_path,
@@ -798,7 +769,7 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
         entry["repeat_replacement_count"] = repeat_count
         entry["last_structure_reason"] = reason_code
         entry["last_structure_confidence"] = summary.confidence
-        _save_cache(session_id, cache)
+        store.upsert_file_entry(file_path, entry)
 
         if repeat_count == 1:
             replacement_tokens_est = summary.replacement_tokens_est
@@ -878,7 +849,7 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
         return
 
     if mode == "block":
-        _save_cache(session_id, cache)
+        store.upsert_file_entry(file_path, entry)
         _log_decision(
             "block",
             file_path,
@@ -912,6 +883,8 @@ def handle_clear(session_id: str, quiet: bool) -> None:
     """Clear read cache for a session."""
 
     if session_id and session_id != "all":
+        store = _get_store(session_id)
+        store.clear_file_entries()
         cp = _cache_path(session_id)
         if cp.exists():
             cp.unlink()
@@ -956,13 +929,12 @@ def handle_invalidate(hook_input: dict[str, Any], quiet: bool) -> None:
 
     file_path = str(Path(raw_path).resolve())
     session_id = str(hook_input.get("agent_id") or hook_input.get("session_id") or "unknown")
-    cache = _load_cache(session_id)
-    files = cache.get("files", {})
+    store = _get_store(session_id)
+    existing = store.get_file_entry(file_path)
 
-    if file_path in files:
-        del files[file_path]
-        cache["files"] = files
-        _save_cache(session_id, cache)
+    if existing is not None:
+        store.delete_file_entry(file_path)
+        store.delete_cached_content(file_path)
         if not quiet:
             print(f"[Read Cache] Invalidated: {file_path}", file=sys.stderr)
 
@@ -970,8 +942,8 @@ def handle_invalidate(hook_input: dict[str, Any], quiet: bool) -> None:
 def handle_stats(session_id: str) -> None:
     """Print cache stats for a session."""
 
-    cache = _load_cache(session_id)
-    files = cache.get("files", {})
+    store = _get_store(session_id)
+    files = store.get_all_file_entries()
     total_reads = sum(int(entry.get("read_count", 0) or 0) for entry in files.values())
     total_tokens = sum(int(entry.get("tokens_est", 0) or 0) for entry in files.values())
 

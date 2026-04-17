@@ -19,6 +19,8 @@ import sys
 import time
 from pathlib import Path
 
+from paths import is_v5_flag_enabled, resolve_plugin_data_dir
+
 # Categorical exclusion: if ANY of these appear in the raw command string,
 # never rewrite. Checked BEFORE shlex tokenization to catch all forms.
 # Includes newlines/nulls to prevent multi-line command injection (SEC-F1).
@@ -147,22 +149,8 @@ def _is_whitelisted(command_str):
 
 
 def _is_bash_compress_enabled():
-    """Check if bash compression is enabled. Env var > config.json > default (False)."""
-    env_val = os.environ.get("TOKEN_OPTIMIZER_BASH_COMPRESS")
-    if env_val is not None:
-        return env_val == "1"
-    try:
-        config_dir = Path(os.environ.get("CLAUDE_PLUGIN_DATA", str(Path.home() / ".claude" / "token-optimizer"))) / "config"
-        if not config_dir.exists():
-            config_dir = Path.home() / ".claude" / "token-optimizer"
-        config_path = config_dir / "config.json"
-        if config_path.exists():
-            cfg = json.loads(config_path.read_text(encoding="utf-8"))
-            if isinstance(cfg, dict) and "v5_bash_compress" in cfg:
-                return bool(cfg["v5_bash_compress"])
-    except (json.JSONDecodeError, OSError):
-        pass
-    return False  # Default: OFF
+    """Check if bash compression is enabled. Default OFF — opt-in via flag/env."""
+    return is_v5_flag_enabled("v5_bash_compress", "TOKEN_OPTIMIZER_BASH_COMPRESS", default=False)
 
 
 def main():
@@ -208,7 +196,7 @@ def main():
 
     # Log rewrite event to sidecar JSONL
     try:
-        log_dir = Path(os.environ.get("CLAUDE_PLUGIN_DATA", str(Path.home() / ".claude" / "token-optimizer")))
+        log_dir = resolve_plugin_data_dir() or (Path.home() / ".claude" / "token-optimizer")
         log_dir.mkdir(parents=True, exist_ok=True)
         log_path = log_dir / "bash-rewrites.jsonl"
         event = json.dumps({

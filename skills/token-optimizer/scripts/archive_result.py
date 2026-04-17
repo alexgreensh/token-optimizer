@@ -24,6 +24,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from paths import resolve_snapshot_dir
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -34,12 +36,8 @@ _ARCHIVE_PREVIEW_SIZE = 1000    # chars: preview included in replacement output
 _ARCHIVE_MAX_SIZE = 5_242_880   # 5MB: truncate responses beyond this
 _STDIN_MAX_BYTES = 1_048_576    # 1MB: cap stdin reads
 
-# Plugin-data-aware paths
-_PLUGIN_DATA = os.environ.get("CLAUDE_PLUGIN_DATA")
-if _PLUGIN_DATA:
-    SNAPSHOT_DIR = Path(_PLUGIN_DATA) / "data"
-else:
-    SNAPSHOT_DIR = Path.home() / ".claude" / "_backups" / "token-optimizer"
+# Plugin-data-aware paths (env > installed_plugins.json > legacy)
+SNAPSHOT_DIR = resolve_snapshot_dir()
 
 
 # ---------------------------------------------------------------------------

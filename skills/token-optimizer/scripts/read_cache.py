@@ -30,6 +30,7 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any, Optional
 
+from paths import is_v5_flag_enabled, resolve_snapshot_dir
 from structure_map import (
     StructureMapResult,
     detect_structure_language,
@@ -39,49 +40,24 @@ from structure_map import (
 
 
 def _is_v5_delta_enabled():
-    """Check if delta mode is enabled. Env var > config.json > default (True in v5.1)."""
-    env_val = os.environ.get("TOKEN_OPTIMIZER_READ_CACHE_DELTA")
-    if env_val is not None:
-        return env_val == "1"
-    # Read config.json directly to avoid importing measure.py in hot path
-    try:
-        config_dir = Path(os.environ.get("CLAUDE_PLUGIN_DATA", str(Path.home() / ".claude" / "token-optimizer"))) / "config"
-        if not config_dir.exists():
-            config_dir = Path.home() / ".claude" / "token-optimizer"
-        config_path = config_dir / "config.json"
-        if config_path.exists():
-            cfg = json.loads(config_path.read_text(encoding="utf-8"))
-            if isinstance(cfg, dict) and "v5_delta_mode" in cfg:
-                return bool(cfg["v5_delta_mode"])
-    except (json.JSONDecodeError, OSError):
-        pass
-    return True  # Default: ON in v5.1
+    """Check if delta mode is enabled. Default ON in v5.1."""
+    return is_v5_flag_enabled("v5_delta_mode", "TOKEN_OPTIMIZER_READ_CACHE_DELTA", default=True)
 
 
 def _is_v5_structure_map_beta():
     """Check if structure map beta telemetry is enabled."""
-    env_val = os.environ.get("TOKEN_OPTIMIZER_STRUCTURE_MAP")
-    if env_val is not None:
-        return env_val == "beta"
-    try:
-        config_dir = Path(os.environ.get("CLAUDE_PLUGIN_DATA", str(Path.home() / ".claude" / "token-optimizer"))) / "config"
-        if not config_dir.exists():
-            config_dir = Path.home() / ".claude" / "token-optimizer"
-        config_path = config_dir / "config.json"
-        if config_path.exists():
-            cfg = json.loads(config_path.read_text(encoding="utf-8"))
-            if isinstance(cfg, dict) and "v5_structure_map_beta" in cfg:
-                return bool(cfg["v5_structure_map_beta"])
-    except (json.JSONDecodeError, OSError):
-        pass
-    return False
+    return is_v5_flag_enabled(
+        "v5_structure_map_beta",
+        "TOKEN_OPTIMIZER_STRUCTURE_MAP",
+        default=False,
+        env_truthy_value="beta",
+    )
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
-_PLUGIN_DATA = os.environ.get("CLAUDE_PLUGIN_DATA")
-SNAPSHOT_DIR = Path(_PLUGIN_DATA) / "data" if _PLUGIN_DATA else Path.home() / ".claude" / "_backups" / "token-optimizer"
+SNAPSHOT_DIR = resolve_snapshot_dir()
 CACHE_DIR = SNAPSHOT_DIR / "read-cache"
 TRENDS_DB = SNAPSHOT_DIR / "trends.db"
 MAX_CACHE_ENTRIES = 500

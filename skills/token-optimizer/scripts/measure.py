@@ -83,6 +83,8 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from paths import resolve_plugin_data_dir
+
 try:
     import fcntl
     _HAS_FCNTL = True
@@ -95,12 +97,15 @@ HOME = Path.home()
 CLAUDE_DIR = HOME / ".claude"
 
 # Plugin-data-aware paths: prefer CLAUDE_PLUGIN_DATA if set (v2.1.78+),
-# fall back to legacy paths for symlink/script installs.
+# else discover via installed_plugins.json so dashboard CLI runs find live data
+# (v5.4.22+), else fall back to legacy paths for symlink/script installs.
+# _PLUGIN_DATA stays env-only — the migration check at SessionStart looks at
+# either source so CLI-discovered data dirs also get a one-time legacy copy.
 _PLUGIN_DATA = os.environ.get("CLAUDE_PLUGIN_DATA")
-if _PLUGIN_DATA:
-    _PLUGIN_BASE = Path(_PLUGIN_DATA)
-    SNAPSHOT_DIR = _PLUGIN_BASE / "data"
-    _CONFIG_BASE = _PLUGIN_BASE / "config"
+_RESOLVED_PLUGIN_DATA = resolve_plugin_data_dir()
+if _RESOLVED_PLUGIN_DATA is not None:
+    SNAPSHOT_DIR = _RESOLVED_PLUGIN_DATA / "data"
+    _CONFIG_BASE = _RESOLVED_PLUGIN_DATA / "config"
 else:
     SNAPSHOT_DIR = CLAUDE_DIR / "_backups" / "token-optimizer"
     _CONFIG_BASE = None  # resolved below after constants
@@ -7784,7 +7789,7 @@ def setup_hook(dry_run=False):
 
 # ========== Persistent Dashboard Daemon ==========
 
-TOKEN_OPTIMIZER_VERSION = "5.4.21"  # Keep in sync with plugin.json + marketplace.json
+TOKEN_OPTIMIZER_VERSION = "5.4.22"  # Keep in sync with plugin.json + marketplace.json
 DAEMON_LABEL = "com.token-optimizer.dashboard"
 DAEMON_PORT = 24842  # Memorable: 2-4-8-4-2 (powers of 2 palindrome), avoids common ports
 LAUNCH_AGENTS_DIR = Path.home() / "Library" / "LaunchAgents"
@@ -15765,7 +15770,10 @@ def _run_ensure_health():
     # completes. Leaving the marker last preserves correctness under
     # interrupt; the only downside is slow completion on pathologically
     # slow filesystems, which is acceptable for a one-time path.
-    if _PLUGIN_DATA:
+    # Migration also fires when plugin-data was discovered via installed_plugins
+    # (CLI dashboard path), not just when Claude Code set the env var.
+    _migration_target = _PLUGIN_DATA or (str(_RESOLVED_PLUGIN_DATA) if _RESOLVED_PLUGIN_DATA else None)
+    if _migration_target:
         # Outer OSError guard closes a latent unhandled-exception path: if
         # SNAPSHOT_DIR / CONFIG_DIR mkdir fails (unwritable, disk full),
         # the OSError would otherwise propagate through _run_ensure_health
@@ -15773,7 +15781,7 @@ def _run_ensure_health():
         try:
             _legacy_data = CLAUDE_DIR / "_backups" / "token-optimizer"
             _legacy_config = CLAUDE_DIR / "token-optimizer"
-            _migrated_marker = Path(_PLUGIN_DATA) / ".migrated"
+            _migrated_marker = Path(_migration_target) / ".migrated"
             if not _migrated_marker.exists():
                 import shutil
                 SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)

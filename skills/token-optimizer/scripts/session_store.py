@@ -113,9 +113,9 @@ class SessionStore:
         if self._conn is not None:
             return self._conn
         self._store_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        self._conn = sqlite3.connect(str(self.db_path), timeout=2.0)
+        self._conn = sqlite3.connect(str(self.db_path), timeout=0.1)
         self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA busy_timeout=1000")
+        self._conn.execute("PRAGMA busy_timeout=50")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.row_factory = sqlite3.Row
         self._init_schema()
@@ -140,11 +140,18 @@ class SessionStore:
                 pass
             self._conn = None
 
+    _cap_warned = False
+
     def _is_over_size_cap(self) -> bool:
         try:
-            return self.db_path.stat().st_size > MAX_DB_SIZE_BYTES
+            over = self.db_path.stat().st_size > MAX_DB_SIZE_BYTES
         except OSError:
             return False
+        if over and not SessionStore._cap_warned:
+            SessionStore._cap_warned = True
+            import sys as _sys
+            print("[Session Store] 50MB cap reached, new writes paused for this session", file=_sys.stderr)
+        return over
 
     # ----- file_reads -----
 

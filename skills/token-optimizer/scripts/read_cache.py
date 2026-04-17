@@ -31,7 +31,13 @@ from pathlib import Path
 from typing import Any, Optional
 
 from plugin_env import is_v5_flag_enabled, resolve_snapshot_dir
-from session_store import SessionStore, cleanup_old_stores
+
+try:
+    from session_store import SessionStore, cleanup_old_stores
+except ImportError:
+    SessionStore = None  # type: ignore[assignment,misc]
+    cleanup_old_stores = None  # type: ignore[assignment]
+
 from structure_map import (
     StructureMapResult,
     detect_structure_language,
@@ -146,13 +152,13 @@ def _is_contextignored(file_path: str) -> bool:
 # Cache operations
 # ---------------------------------------------------------------------------
 
-_store_cache: dict[str, SessionStore] = {}
-
-
-def _get_store(session_id: str) -> SessionStore:
-    if session_id not in _store_cache:
-        _store_cache[session_id] = SessionStore(session_id)
-    return _store_cache[session_id]
+def _make_store(session_id: str) -> Optional["SessionStore"]:
+    if SessionStore is None:
+        return None
+    try:
+        return SessionStore(session_id)
+    except Exception:
+        return None
 
 
 def _cache_path(session_id: str) -> Path:
@@ -472,7 +478,9 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
             _emit_pretool_response(None, None, context_msg)
         return
 
-    store = _get_store(session_id)
+    store = _make_store(session_id)
+    if store is None:
+        return
     entry = store.get_file_entry(file_path)
 
     if entry is None:
@@ -883,7 +891,7 @@ def handle_clear(session_id: str, quiet: bool) -> None:
     """Clear read cache for a session."""
 
     if session_id and session_id != "all":
-        store = _get_store(session_id)
+        store = _make_store(session_id)
         store.clear_file_entries()
         cp = _cache_path(session_id)
         if cp.exists():
@@ -931,7 +939,7 @@ def handle_invalidate(hook_input: dict[str, Any], quiet: bool) -> None:
 
     file_path = str(Path(raw_path).resolve())
     session_id = str(hook_input.get("agent_id") or hook_input.get("session_id") or "unknown")
-    store = _get_store(session_id)
+    store = _make_store(session_id)
     existing = store.get_file_entry(file_path)
 
     if existing is not None:
@@ -944,7 +952,7 @@ def handle_invalidate(hook_input: dict[str, Any], quiet: bool) -> None:
 def handle_stats(session_id: str) -> None:
     """Print cache stats for a session."""
 
-    store = _get_store(session_id)
+    store = _make_store(session_id)
     files = store.get_all_file_entries()
     total_reads = sum(int(entry.get("read_count", 0) or 0) for entry in files.values())
     total_tokens = sum(int(entry.get("tokens_est", 0) or 0) for entry in files.values())

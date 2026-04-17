@@ -270,6 +270,7 @@ def archive_result(quiet: bool = False) -> None:
     if not quiet:
         print(f"[Tool Archive] Archived {tool_name} result ({char_count:,} chars, ~{token_est:,} tokens): {tool_use_id}", file=sys.stderr)
 
+    store = None
     try:
         tool_type = "mcp" if "__" in tool_name else tool_name.lower()
         command_or_path = hook_input.get("tool_input", {}).get("command") or hook_input.get("tool_input", {}).get("file_path") or tool_name
@@ -287,6 +288,9 @@ def archive_result(quiet: bool = False) -> None:
         )
     except Exception:
         pass
+    finally:
+        if store is not None:
+            store.close()
 
     # For MCP tools (tool_name contains "__"): output replacement via stdout
     if "__" in tool_name:

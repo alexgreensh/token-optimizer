@@ -937,9 +937,12 @@ def _compress_disk_stats(output):
     lines = output.strip().splitlines()
     if len(lines) < 20:
         return output
-    result = lines[:3]
-    result.append(f"... ({len(lines) - 8} entries omitted)")
-    result.extend(lines[-5:])
+    head = lines[:3]
+    tail = lines[-5:]
+    kept = len(head) + len(tail)
+    result = head
+    result.append(f"... ({len(lines) - kept} entries omitted)")
+    result.extend(tail)
     return "\n".join(result)
 
 
@@ -948,7 +951,7 @@ def _compress_docker_output(output):
     stripped = output.strip()
     if stripped.startswith("[") or stripped.startswith("{"):
         try:
-            data = json.loads(stripped)
+            data = json.loads(stripped[:200_000])
             if isinstance(data, list) and len(data) > 0:
                 first_preview = json.dumps(data[0], indent=2)[:500]
                 return f"[{len(data)} items, first:\n{first_preview}\n...]"

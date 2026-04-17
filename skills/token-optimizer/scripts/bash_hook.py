@@ -153,6 +153,9 @@ def _is_whitelisted(command_str):
             cmd_lower = command_str.lower()
             if any(w in cmd_lower for w in ("insert", "update", "delete", "drop", "alter", "create")):
                 return False
+            remaining = tokens[cmd_start + 1:]
+            if any(t.startswith(".") for t in remaining):
+                return False
         return True
 
     # Check for sudo/su prefix (never rewrite)

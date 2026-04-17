@@ -1816,7 +1816,7 @@ def _fallback_unary_operator(op: ast.AST) -> str:
 MAX_MD_HEADINGS = 20
 MAX_MD_HEADING_CHARS = 100
 MAX_JSON_KEYS = 30
-MAX_JSON_BYTES = 500 * 1024
+MAX_JSON_BYTES = 100 * 1024
 MAX_NON_CODE_KEYS = 30
 
 MAX_REPLACEMENT_CHARS_NON_CODE = {
@@ -2031,13 +2031,22 @@ def _summarize_yaml(
     source: str, *, file_path: str, line_count: int,
     file_tokens_est: Optional[int], file_size_bytes: Optional[int],
 ) -> StructureMapResult:
+    lines = source.splitlines()
+    indent_unit = 2
+    for ln in lines:
+        if ln and ln[0] == " ":
+            spaces = len(ln) - len(ln.lstrip())
+            if spaces > 0:
+                indent_unit = spaces
+                break
+
     keys: list[str] = []
-    for line in source.splitlines():
+    for line in lines:
         stripped = line.rstrip()
         if not stripped or stripped.lstrip().startswith("#"):
             continue
         indent = len(line) - len(line.lstrip())
-        depth = indent // 2
+        depth = indent // max(indent_unit, 1)
         if depth <= 2 and ":" in stripped:
             key_part = stripped.split(":")[0].strip().lstrip("- ")
             if key_part and not key_part.startswith("#"):

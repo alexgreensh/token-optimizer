@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from plugin_env import is_v5_flag_enabled, resolve_snapshot_dir
-from session_store import SessionStore
+from session_store import SessionStore, cleanup_old_stores
 from structure_map import (
     StructureMapResult,
     detect_structure_language,
@@ -911,8 +911,10 @@ def handle_clear(session_id: str, quiet: bool) -> None:
                     candidate.unlink()
                 except OSError:
                     pass
+        deleted = cleanup_old_stores()
         if not quiet:
-            print("[Read Cache] Cleared all caches", file=sys.stderr)
+            extra = f", pruned {deleted} old session stores" if deleted else ""
+            print(f"[Read Cache] Cleared all caches{extra}", file=sys.stderr)
 
 
 def handle_invalidate(hook_input: dict[str, Any], quiet: bool) -> None:

@@ -31,7 +31,14 @@ LANGUAGE_LABELS = {
     ".tsx": "typescript",
     ".mts": "typescript",
     ".cts": "typescript",
+    ".md": "markdown",
+    ".json": "json",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+    ".toml": "toml",
 }
+
+NON_CODE_SUFFIXES = frozenset({".md", ".json", ".yaml", ".yml", ".toml"})
 
 MIN_TOKENS_FOR_STRUCTURE = 1000
 MAX_AST_BYTES = 300 * 1024
@@ -193,7 +200,9 @@ def detect_structure_language(file_path: str | os.PathLike[str]) -> str:
 def is_structure_supported_file(file_path: str | os.PathLike[str]) -> bool:
     """Return True when this module may attempt a structure map."""
 
-    return is_python_file(file_path) or is_js_ts_file(file_path)
+    if is_python_file(file_path) or is_js_ts_file(file_path):
+        return True
+    return Path(str(file_path)).suffix.lower() in NON_CODE_SUFFIXES
 
 
 def estimate_tokens(text: str) -> int:
@@ -321,6 +330,17 @@ def summarize_code_source(
         return summarize_js_ts_source(
             source,
             file_path=path,
+            offset=offset,
+            limit=limit,
+            file_tokens_est=file_tokens_est,
+            file_size_bytes=file_size_bytes,
+        )
+    suffix = Path(path).suffix.lower()
+    if suffix in NON_CODE_SUFFIXES:
+        return _summarize_non_code_source(
+            source,
+            file_path=path,
+            suffix=suffix,
             offset=offset,
             limit=limit,
             file_tokens_est=file_tokens_est,
@@ -1791,6 +1811,319 @@ def _fallback_unary_operator(op: ast.AST) -> str:
         if isinstance(op, cls):
             return symbol
     return ""
+
+
+MAX_MD_HEADINGS = 20
+MAX_MD_HEADING_CHARS = 100
+MAX_JSON_KEYS = 30
+MAX_JSON_BYTES = 500 * 1024
+MAX_NON_CODE_KEYS = 30
+
+MAX_REPLACEMENT_CHARS_NON_CODE = {
+    "outline": 800,
+    "key_tree": 800,
+    "section_list": 600,
+}
+
+
+def _summarize_non_code_source(
+    source: str,
+    *,
+    file_path: str,
+    suffix: str,
+    offset: int = 0,
+    limit: int = 0,
+    file_tokens_est: Optional[int] = None,
+    file_size_bytes: Optional[int] = None,
+) -> StructureMapResult:
+    if file_size_bytes is None:
+        file_size_bytes = len(source.encode("utf-8", errors="ignore"))
+    if file_tokens_est is None:
+        file_tokens_est = estimate_tokens(source)
+
+    language = LANGUAGE_LABELS.get(suffix, "unknown")
+    line_count = source.count("\n") + (1 if source else 0)
+
+    if offset != 0 or limit != 0:
+        return _build_fallback_result(
+            file_path=file_path, language=language, source=source,
+            reason="partial_range_not_supported", confidence=0.12,
+            parse_ok=False, generated_like=False,
+            file_tokens_est=file_tokens_est, file_size_bytes=file_size_bytes,
+        )
+
+    if not source.strip():
+        return _build_fallback_result(
+            file_path=file_path, language=language, source=source,
+            reason="empty_file", confidence=0.05,
+            parse_ok=False, generated_like=False,
+            file_tokens_est=file_tokens_est, file_size_bytes=file_size_bytes,
+        )
+
+    if suffix == ".md":
+        return _summarize_markdown(source, file_path=file_path,
+                                   line_count=line_count,
+                                   file_tokens_est=file_tokens_est,
+                                   file_size_bytes=file_size_bytes)
+    if suffix == ".json":
+        return _summarize_json(source, file_path=file_path,
+                               line_count=line_count,
+                               file_tokens_est=file_tokens_est,
+                               file_size_bytes=file_size_bytes)
+    if suffix in (".yaml", ".yml"):
+        return _summarize_yaml(source, file_path=file_path,
+                               line_count=line_count,
+                               file_tokens_est=file_tokens_est,
+                               file_size_bytes=file_size_bytes)
+    if suffix == ".toml":
+        return _summarize_toml(source, file_path=file_path,
+                               line_count=line_count,
+                               file_tokens_est=file_tokens_est,
+                               file_size_bytes=file_size_bytes)
+
+    return _build_fallback_result(
+        file_path=file_path, language=language, source=source,
+        reason="unsupported_language", confidence=0.10,
+        parse_ok=False, generated_like=False,
+        file_tokens_est=file_tokens_est, file_size_bytes=file_size_bytes,
+    )
+
+
+def _summarize_markdown(
+    source: str, *, file_path: str, line_count: int,
+    file_tokens_est: Optional[int], file_size_bytes: Optional[int],
+) -> StructureMapResult:
+    lines = source.splitlines()
+    headings: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            level = len(stripped) - len(stripped.lstrip("#"))
+            title = stripped.lstrip("#").strip()
+            if 1 <= level <= 4 and title:
+                indent = "  " * (level - 1)
+                headings.append(f"{indent}{title[:MAX_MD_HEADING_CHARS]}")
+        if len(headings) >= MAX_MD_HEADINGS:
+            break
+
+    if not headings:
+        return _build_fallback_result(
+            file_path=file_path, language="markdown", source=source,
+            reason="no_headings", confidence=0.15,
+            parse_ok=False, generated_like=False,
+            file_tokens_est=file_tokens_est, file_size_bytes=file_size_bytes,
+        )
+
+    name = Path(file_path).name
+    rendered = f"Markdown outline for {name} ({line_count} lines):\n"
+    rendered += "\n".join(headings)
+    if len(headings) == MAX_MD_HEADINGS:
+        rendered += f"\n... (truncated at {MAX_MD_HEADINGS} headings)"
+
+    cap = MAX_REPLACEMENT_CHARS_NON_CODE["outline"]
+    if len(rendered) > cap:
+        rendered = rendered[:cap - 3] + "..."
+
+    fp = _fingerprint(path=file_path, replacement_type="outline",
+                       rendered=rendered, line_count=line_count,
+                       file_size_bytes=file_size_bytes)
+    return StructureMapResult(
+        file_path=file_path, language="markdown",
+        replacement_type="outline", replacement_text=rendered,
+        replacement_tokens_est=estimate_tokens(rendered),
+        confidence=0.90, fingerprint=fp, eligible=True,
+        reason="ok", generated_like=False, parse_ok=True,
+        line_count=line_count, file_tokens_est=file_tokens_est,
+        file_size_bytes=file_size_bytes,
+    )
+
+
+def _json_type_hint(val: object) -> str:
+    if isinstance(val, dict):
+        return f"object({len(val)} keys)"
+    if isinstance(val, list):
+        return f"array({len(val)})"
+    if isinstance(val, str):
+        return f"string({len(val)}ch)" if len(val) > 40 else f'"{val}"'
+    if isinstance(val, bool):
+        return str(val).lower()
+    if isinstance(val, (int, float)):
+        return str(val)
+    if val is None:
+        return "null"
+    return type(val).__name__
+
+
+def _extract_json_keys(
+    data: object, depth: int, max_depth: int, max_keys: int,
+) -> list[str]:
+    result: list[str] = []
+    if depth > max_depth or len(result) >= max_keys:
+        return result
+    if isinstance(data, dict):
+        for key in list(data.keys())[:max_keys - len(result)]:
+            val = data[key]
+            indent = "  " * depth
+            hint = _json_type_hint(val)
+            result.append(f"{indent}{key}: {hint}")
+            if isinstance(val, dict) and depth < max_depth:
+                result.extend(_extract_json_keys(val, depth + 1, max_depth, max_keys - len(result)))
+            if len(result) >= max_keys:
+                break
+    elif isinstance(data, list) and data:
+        result.append(f"{'  ' * depth}[{len(data)} items, first: {_json_type_hint(data[0])}]")
+    return result[:max_keys]
+
+
+def _summarize_json(
+    source: str, *, file_path: str, line_count: int,
+    file_tokens_est: Optional[int], file_size_bytes: Optional[int],
+) -> StructureMapResult:
+    raw_bytes = len(source.encode("utf-8", errors="replace"))
+    if raw_bytes > MAX_JSON_BYTES:
+        return _build_fallback_result(
+            file_path=file_path, language="json", source=source,
+            reason="too_large_to_parse", confidence=0.10,
+            parse_ok=False, generated_like=False,
+            file_tokens_est=file_tokens_est, file_size_bytes=file_size_bytes,
+        )
+    try:
+        import json as _json
+        data = _json.loads(source)
+    except (ValueError, RecursionError):
+        return _build_fallback_result(
+            file_path=file_path, language="json", source=source,
+            reason="parse_error", confidence=0.10,
+            parse_ok=False, generated_like=False,
+            file_tokens_est=file_tokens_est, file_size_bytes=file_size_bytes,
+        )
+
+    keys = _extract_json_keys(data, depth=0, max_depth=2, max_keys=MAX_JSON_KEYS)
+    if not keys:
+        return _build_fallback_result(
+            file_path=file_path, language="json", source=source,
+            reason="no_keys", confidence=0.15,
+            parse_ok=True, generated_like=False,
+            file_tokens_est=file_tokens_est, file_size_bytes=file_size_bytes,
+        )
+
+    name = Path(file_path).name
+    rendered = f"JSON structure for {name}:\n" + "\n".join(keys)
+    cap = MAX_REPLACEMENT_CHARS_NON_CODE["key_tree"]
+    if len(rendered) > cap:
+        rendered = rendered[:cap - 3] + "..."
+
+    fp = _fingerprint(path=file_path, replacement_type="key_tree",
+                       rendered=rendered, line_count=line_count,
+                       file_size_bytes=file_size_bytes)
+    return StructureMapResult(
+        file_path=file_path, language="json",
+        replacement_type="key_tree", replacement_text=rendered,
+        replacement_tokens_est=estimate_tokens(rendered),
+        confidence=0.92, fingerprint=fp, eligible=True,
+        reason="ok", generated_like=False, parse_ok=True,
+        line_count=line_count, file_tokens_est=file_tokens_est,
+        file_size_bytes=file_size_bytes,
+    )
+
+
+def _summarize_yaml(
+    source: str, *, file_path: str, line_count: int,
+    file_tokens_est: Optional[int], file_size_bytes: Optional[int],
+) -> StructureMapResult:
+    keys: list[str] = []
+    for line in source.splitlines():
+        stripped = line.rstrip()
+        if not stripped or stripped.lstrip().startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip())
+        depth = indent // 2
+        if depth <= 2 and ":" in stripped:
+            key_part = stripped.split(":")[0].strip().lstrip("- ")
+            if key_part and not key_part.startswith("#"):
+                keys.append(f"{'  ' * depth}{key_part}")
+        if len(keys) >= MAX_NON_CODE_KEYS:
+            break
+
+    if not keys:
+        return _build_fallback_result(
+            file_path=file_path, language="yaml", source=source,
+            reason="no_keys", confidence=0.15,
+            parse_ok=False, generated_like=False,
+            file_tokens_est=file_tokens_est, file_size_bytes=file_size_bytes,
+        )
+
+    name = Path(file_path).name
+    rendered = f"YAML key tree for {name} ({line_count} lines):\n" + "\n".join(keys)
+    cap = MAX_REPLACEMENT_CHARS_NON_CODE["key_tree"]
+    if len(rendered) > cap:
+        rendered = rendered[:cap - 3] + "..."
+
+    fp = _fingerprint(path=file_path, replacement_type="key_tree",
+                       rendered=rendered, line_count=line_count,
+                       file_size_bytes=file_size_bytes)
+    return StructureMapResult(
+        file_path=file_path, language="yaml",
+        replacement_type="key_tree", replacement_text=rendered,
+        replacement_tokens_est=estimate_tokens(rendered),
+        confidence=0.85, fingerprint=fp, eligible=True,
+        reason="ok", generated_like=False, parse_ok=True,
+        line_count=line_count, file_tokens_est=file_tokens_est,
+        file_size_bytes=file_size_bytes,
+    )
+
+
+def _summarize_toml(
+    source: str, *, file_path: str, line_count: int,
+    file_tokens_est: Optional[int], file_size_bytes: Optional[int],
+) -> StructureMapResult:
+    sections: list[str] = []
+    top_keys: list[str] = []
+    for line in source.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            sections.append(stripped)
+        elif "=" in stripped and not stripped.startswith("#"):
+            key = stripped.split("=")[0].strip()
+            if key and len(top_keys) < 15:
+                top_keys.append(key)
+
+    if not sections and not top_keys:
+        return _build_fallback_result(
+            file_path=file_path, language="toml", source=source,
+            reason="no_structure", confidence=0.15,
+            parse_ok=False, generated_like=False,
+            file_tokens_est=file_tokens_est, file_size_bytes=file_size_bytes,
+        )
+
+    name = Path(file_path).name
+    parts = [f"TOML structure for {name} ({line_count} lines):"]
+    if sections:
+        parts.append("Sections:")
+        parts.extend(f"  {s}" for s in sections[:15])
+        if len(sections) > 15:
+            parts.append(f"  ... ({len(sections) - 15} more)")
+    if top_keys:
+        parts.append("Top-level keys:")
+        parts.extend(f"  {k}" for k in top_keys)
+
+    rendered = "\n".join(parts)
+    cap = MAX_REPLACEMENT_CHARS_NON_CODE["section_list"]
+    if len(rendered) > cap:
+        rendered = rendered[:cap - 3] + "..."
+
+    fp = _fingerprint(path=file_path, replacement_type="section_list",
+                       rendered=rendered, line_count=line_count,
+                       file_size_bytes=file_size_bytes)
+    return StructureMapResult(
+        file_path=file_path, language="toml",
+        replacement_type="section_list", replacement_text=rendered,
+        replacement_tokens_est=estimate_tokens(rendered),
+        confidence=0.88, fingerprint=fp, eligible=True,
+        reason="ok", generated_like=False, parse_ok=True,
+        line_count=line_count, file_tokens_est=file_tokens_est,
+        file_size_bytes=file_size_bytes,
+    )
 
 
 def _build_fallback_result(

@@ -24,7 +24,10 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import hashlib
+
 from plugin_env import resolve_snapshot_dir
+from session_store import SessionStore
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -266,6 +269,24 @@ def archive_result(quiet: bool = False) -> None:
 
     if not quiet:
         print(f"[Tool Archive] Archived {tool_name} result ({char_count:,} chars, ~{token_est:,} tokens): {tool_use_id}", file=sys.stderr)
+
+    try:
+        tool_type = "mcp" if "__" in tool_name else tool_name.lower()
+        command_or_path = hook_input.get("tool_input", {}).get("command") or hook_input.get("tool_input", {}).get("file_path") or tool_name
+        output_hash = hashlib.sha256(tool_response[:10000].encode("utf-8", errors="replace")).hexdigest()[:16]
+        store = SessionStore(session_id)
+        store.insert_tool_output(
+            tool_use_id=tool_use_id,
+            tool_name=tool_name,
+            tool_type=tool_type,
+            command_or_path=str(command_or_path)[:500],
+            output_hash=output_hash,
+            output_chars=char_count,
+            output_tokens_est=token_est,
+            compressed_preview=tool_response[:1500],
+        )
+    except Exception:
+        pass
 
     # For MCP tools (tool_name contains "__"): output replacement via stdout
     if "__" in tool_name:

@@ -66,7 +66,6 @@ READ_CACHE_MODES = frozenset({"shadow", "warn", "soft_block", "block"})
 DEFAULT_MODE = "soft_block"
 
 MIN_STRUCTURE_CONFIDENCE = 0.84
-REMINDER_TOKENS_EST = 20
 REASON_ONLY_TOKENS_EST = 10
 STRICT_CONTEXT_CAPS = {
     "signatures": 350,
@@ -204,8 +203,6 @@ def _reset_replacement_state(entry: dict[str, Any]) -> None:
 def _ensure_entry_defaults(entry: dict[str, Any]) -> None:
     entry.setdefault("mtime_ns", 0)
     entry.setdefault("size_bytes", 0)
-    entry.setdefault("offset", 0)
-    entry.setdefault("limit", 0)
     entry.setdefault("tokens_est", 0)
     entry.setdefault("read_count", 0)
     entry.setdefault("last_access", 0.0)
@@ -214,6 +211,10 @@ def _ensure_entry_defaults(entry: dict[str, Any]) -> None:
     entry["repeat_replacement_count"] = int(entry.get("repeat_replacement_count", 0) or 0)
     entry["last_structure_reason"] = entry.get("last_structure_reason", "")
     entry["last_structure_confidence"] = float(entry.get("last_structure_confidence", 0.0) or 0.0)
+    if "ranges_seen" not in entry:
+        old_off = int(entry.get("offset", 0) or 0)
+        old_lim = int(entry.get("limit", 0) or 0)
+        entry["ranges_seen"] = [[old_off, old_lim]]
 
 
 def _log_decision(
@@ -273,24 +274,11 @@ def _build_structure_message(
 ) -> str:
     return "\n".join(
         [
-            f"[Token Optimizer] {Path(file_path).name} is unchanged and was already read in this session.",
-            f"Using {summary.replacement_type} view to avoid ~{net_saved_tokens_est:,} tokens.",
-            "If you truly need the full body, edit the file or request a narrower range.",
+            f"[Token Optimizer] {Path(file_path).name} is unchanged (already read this session).",
+            f"Using {summary.replacement_type} view. Edit the file or request a specific range for full content.",
             "",
             summary.replacement_text,
         ]
-    )
-
-
-def _build_repeat_reminder(
-    file_path: str,
-    replacement_type: str,
-    net_saved_tokens_est: int,
-) -> str:
-    return (
-        f"[Token Optimizer] {Path(file_path).name} is still unchanged and already summarized as "
-        f"{replacement_type}. Reusing that code map avoids ~{net_saved_tokens_est:,} tokens. "
-        "Request a narrower range or reread after the file changes if you need more detail."
     )
 
 
@@ -522,8 +510,7 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
         entry = {
             "mtime_ns": stat.st_mtime_ns,
             "size_bytes": stat.st_size,
-            "offset": offset,
-            "limit": limit,
+            "ranges_seen": [[offset, limit]],
             "tokens_est": tokens_est,
             "read_count": 1,
             "last_access": time.time(),
@@ -597,9 +584,27 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
 
     mtime_match = int(entry.get("mtime_ns", 0) or 0) == current_stat.st_mtime_ns
     size_match = int(entry.get("size_bytes", 0) or 0) == current_stat.st_size
-    range_match = (int(entry.get("offset", 0) or 0) == offset and int(entry.get("limit", 0) or 0) == limit)
 
-    if not (mtime_match and size_match and range_match):
+    ranges_seen = entry.get("ranges_seen", [])
+    if not ranges_seen:
+        old_off = int(entry.get("offset", 0) or 0)
+        old_lim = int(entry.get("limit", 0) or 0)
+        ranges_seen = [[old_off, old_lim]]
+
+    range_covered = False
+    for cached_off, cached_lim in ranges_seen:
+        if cached_off == 0 and cached_lim == 0:
+            range_covered = True
+            break
+        if offset >= cached_off:
+            if cached_lim == 0:
+                range_covered = True
+                break
+            if limit > 0 and (offset + limit) <= (cached_off + cached_lim):
+                range_covered = True
+                break
+
+    if not (mtime_match and size_match and range_covered):
         # v5.0: Delta mode -- return diff instead of allowing full re-read
         delta_enabled = _is_v5_delta_enabled()
         if (
@@ -693,11 +698,15 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
             except Exception:
                 pass  # Fail open: fall through to normal allow
 
-        # Normal path: file modified, allow full re-read
+        file_changed = not (mtime_match and size_match)
+        reason_code_allow = "file_modified" if file_changed else "new_range"
         entry["mtime_ns"] = current_stat.st_mtime_ns
         entry["size_bytes"] = current_stat.st_size
-        entry["offset"] = offset
-        entry["limit"] = limit
+        if file_changed:
+            entry["ranges_seen"] = [[offset, limit]]
+        else:
+            ranges_seen.append([offset, limit])
+            entry["ranges_seen"] = ranges_seen
         entry["tokens_est"] = max(1, current_stat.st_size // 4) if current_stat.st_size else 0
         entry["read_count"] = int(entry.get("read_count", 0) or 0) + 1
         entry["last_access"] = time.time()
@@ -717,13 +726,13 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
         _log_decision(
             "allow",
             file_path,
-            "file_modified_or_different_range",
+            reason_code_allow,
             session_id,
             mode=mode,
             actual_substitution=False,
             eligible=False,
             language=language,
-            reason_code="file_modified_or_different_range",
+            reason_code=reason_code_allow,
             offset=offset,
             limit=limit,
             replacement_type=None,
@@ -799,35 +808,20 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
                 max(0, tokens_est - summary.replacement_tokens_est),
             )
             if not _additional_context_within_cap(additional_context, save_hook_context_enabled):
-                additional_context = _build_repeat_reminder(
-                    file_path,
-                    summary.replacement_type,
-                    max(0, tokens_est - REMINDER_TOKENS_EST),
-                )
-                replacement_tokens_est = REMINDER_TOKENS_EST
-        elif repeat_count == 2:
-            additional_context = _build_repeat_reminder(
-                file_path,
-                summary.replacement_type,
-                max(0, tokens_est - REMINDER_TOKENS_EST),
-            )
-            replacement_tokens_est = REMINDER_TOKENS_EST
+                additional_context = None
+                replacement_tokens_est = REASON_ONLY_TOKENS_EST
         else:
             additional_context = None
             replacement_tokens_est = REASON_ONLY_TOKENS_EST
 
         net_saved_tokens_est = max(0, tokens_est - replacement_tokens_est)
-        reason = _build_reason_only_message(file_path)
         if repeat_count == 1:
             reason = (
                 f"{Path(file_path).name} is unchanged and already in context; "
-                f"using {summary.replacement_type} code map instead."
+                f"using {summary.replacement_type} view."
             )
-        elif repeat_count == 2:
-            reason = (
-                f"{Path(file_path).name} is unchanged and already summarized; "
-                "reusing prior structure map."
-            )
+        else:
+            reason = _build_reason_only_message(file_path)
 
         _log_decision(
             "block",

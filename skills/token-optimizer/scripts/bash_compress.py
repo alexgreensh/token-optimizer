@@ -16,10 +16,12 @@ Security:
 """
 
 import json
+import os
 import re
 import shlex
 import subprocess
 import sys
+from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Token/credential preservation patterns (scanned PRE-compression)
@@ -982,6 +984,26 @@ _PATTERN_HANDLERS = {
     "docker_output": _compress_docker_output,
 }
 
+# Maps _detect_pattern() output to the feature name stored in compression_events.
+_COMPRESS_FEATURE_MAP = {
+    "git_status": "bash_compress_git",
+    "git_log": "bash_compress_git",
+    "git_diff": "bash_compress_git",
+    "pytest": "bash_compress_pytest",
+    "jest": "bash_compress_jest",
+    "npm_install": "bash_compress_npm",
+    "ls": "bash_compress_ls",
+    "lint": "bash_compress_lint",
+    "logs": "bash_compress_logs",
+    "tree": "bash_compress_tree",
+    "progress": "bash_compress_progress",
+    "list": "bash_compress_list",
+    "build": "bash_compress_build",
+    "sqlite3": "bash_compress_build",
+    "disk_stats": "bash_compress_list",
+    "docker_output": "bash_compress_build",
+}
+
 
 # ---------------------------------------------------------------------------
 # Main entry point
@@ -1090,6 +1112,28 @@ def main():
             returncode=result.returncode,
             stderr=stderr,
         )
+
+        # Record savings to trends.db if compression was meaningful
+        try:
+            orig_bytes = len(raw_output.encode("utf-8", errors="replace"))
+            comp_bytes = len(compressed.encode("utf-8", errors="replace"))
+            if comp_bytes < orig_bytes * 0.9:
+                _pattern = _detect_pattern(command_str)
+                _feature = _COMPRESS_FEATURE_MAP.get(_pattern or "")
+                if _feature:
+                    sys.path.insert(0, str(Path(__file__).resolve().parent))
+                    from measure import _log_compression_event
+                    _log_compression_event(
+                        feature=_feature,
+                        original_text=raw_output,
+                        compressed_text=compressed,
+                        session_id=os.environ.get("CLAUDE_SESSION_ID", ""),
+                        command_pattern=command_str[:100],
+                        quality_preserved=True,
+                        verified=True,
+                    )
+        except Exception:
+            pass
 
         # Buffer completely, then write
         sys.stdout.write(compressed)

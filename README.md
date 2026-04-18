@@ -51,7 +51,8 @@ Then in Claude Code: `/token-optimizer`
 
 > **Please enable auto-update after installing.** Claude Code ships third-party marketplaces with auto-update **off by default**, and plugin authors cannot change that default. So you won't get bug fixes automatically unless you turn it on. In Claude Code: `/plugin` → **Marketplaces** tab → select `alexgreensh-token-optimizer` → **Enable auto-update**. One-time, 10 seconds, and you'll never miss a fix again. Token Optimizer also prints a one-time reminder on your first SessionStart so you don't forget.
 
-### Seeing `Unknown skill: plugin`?
+<details>
+<summary><h3>Seeing <code>Unknown skill: plugin</code>?</h3></summary>
 
 That means your Claude Code is out of date. The `/plugin` command was added in a recent Claude Code release. Update first:
 
@@ -61,7 +62,10 @@ That means your Claude Code is out of date. The `/plugin` command was added in a
 
 Then restart Claude Code and re-run the two `/plugin` commands above.
 
-### Windows users: read this first
+</details>
+
+<details>
+<summary><h3>Windows users: read this first</h3></summary>
 
 The plugin install above is the **only** path you should use on Windows. Do **not** also run the `install.sh` script described below — that's a bash installer for macOS/Linux/WSL, and combining the two creates an `EBUSY: resource busy or locked` error because Git Bash holds Windows file handles open while the plugin system is trying to clone.
 
@@ -79,7 +83,10 @@ If you've already hit the EBUSY error:
 
 **Manual ZIP fallback** (if plugin install repeatedly fails): download [the repo ZIP](https://github.com/alexgreensh/token-optimizer/archive/refs/heads/main.zip) (~800 KB), extract to `C:\Users\<you>\.claude\token-optimizer\`, then run `python measure.py setup-quality-bar` from that directory. Note: on Windows the command is `python`, not `python3`.
 
-### macOS / Linux only: script install (alternative)
+</details>
+
+<details>
+<summary><h3>macOS / Linux only: script install (alternative)</h3></summary>
 
 If you prefer a script-managed install on macOS or Linux, this works too and auto-updates daily via `git pull --ff-only`. **Do not run this on Windows, and do not run it alongside the plugin install above on any platform.** Pick one method.
 
@@ -89,6 +96,8 @@ bash ~/.claude/token-optimizer/install.sh
 ```
 
 Works on Claude Code and [OpenClaw](#openclaw-plugin). Each platform has its own native plugin (Python for Claude Code, TypeScript for OpenClaw). No bridging, no shared runtime, zero cross-platform dependencies.
+
+</details>
 
 ---
 

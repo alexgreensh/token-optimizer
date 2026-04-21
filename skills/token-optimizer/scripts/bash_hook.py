@@ -137,7 +137,7 @@ def _is_whitelisted(command_str):
             return False
         if cmd == "kubectl":
             remaining = tokens[cmd_start + 2:]
-            if any(arg in ("secret", "secrets") for arg in remaining):
+            if any(arg == "secret" or arg == "secrets" or arg.startswith("secret/") or arg.startswith("secrets/") for arg in remaining):
                 return False
         return True
 

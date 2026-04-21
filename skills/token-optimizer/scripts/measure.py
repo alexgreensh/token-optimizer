@@ -129,26 +129,16 @@ TOKENS_PER_DEFERRED_TOOL = 15
 TOKENS_PER_EAGER_TOOL = 150
 # Average tools per MCP server (fallback when tool count unknown)
 AVG_TOOLS_PER_SERVER = 10
-# Known MCP server tool counts (from official docs/manifests, updated 2026-04)
+# Known MCP server tool counts (public/marketplace servers only, updated 2026-04)
 _KNOWN_SERVER_TOOL_COUNTS = {
-    "brightdata": 4, "claude_ai_BrightData": 4,
+    "brightdata": 4,
     "claude-in-chrome": 20,
     "exa": 3,
     "tavily": 5,
-    "memory": 8, "memory-semantic": 11,
-    "context7": 2, "plugin_context7_context7": 2,
-    "whatsapp": 11,
-    "reddit": 8,
-    "youtube-research": 14, "youtube-transcript": 2,
+    "memory": 8,
+    "memory-semantic": 11,
+    "context7": 2,
     "perplexity-ask": 1,
-    "notebooklm": 16,
-    "pencil": 9,
-    "dashay-away": 6,
-    "claude_ai_Clarify": 18,
-    "claude_ai_ExcaliDraw": 5,
-    "claude_ai_Gmail": 2, "claude_ai_Google_Calendar": 2,
-    "claude_ai_Google_Drive": 2, "claude_ai_Notion": 2,
-    "claude_ai_n8n-workflows": 4,
 }
 # Overhead per CLAUDE.md file injection (XML wrapper + headers + disclaimer)
 CLAUDE_MD_INJECTION_OVERHEAD = 75
@@ -548,14 +538,8 @@ def count_mcp_tools_and_servers():
 
     # Count tools using known-server table, fall back to average for unknown
     tool_count_estimate = 0
-    known_count = 0
     for name in server_names:
-        base = name.split("__")[0] if "__" in name else name
-        if base in _KNOWN_SERVER_TOOL_COUNTS:
-            tool_count_estimate += _KNOWN_SERVER_TOOL_COUNTS[base]
-            known_count += 1
-        else:
-            tool_count_estimate += AVG_TOOLS_PER_SERVER
+        tool_count_estimate += _KNOWN_SERVER_TOOL_COUNTS.get(name, AVG_TOOLS_PER_SERVER)
 
     # Detect deferred (lazy) vs eager loading
     # Modern Claude Code (2.0+) uses deferred loading by default.
@@ -581,10 +565,7 @@ def count_mcp_tools_and_servers():
         "tool_count_estimate": tool_count_estimate,
         "tokens": tokens,
         "loading_mode": loading_mode,
-        "tokens_if_eager": tool_count_estimate * TOKENS_PER_EAGER_TOOL,
-        "tokens_if_deferred": tool_count_estimate * TOKENS_PER_DEFERRED_TOOL,
-        "known_servers": known_count,
-        "note": f"{known_count}/{server_count} servers with known tool counts, ~{tokens_per_tool} tokens/tool ({loading_mode} loading)",
+        "note": f"~{tokens_per_tool} tokens/tool ({loading_mode} loading)",
     }
 
 
@@ -1042,7 +1023,6 @@ def measure_components():
         "server_count": mcp["server_count"],
         "server_names": mcp["server_names"],
         "tool_count_estimate": mcp["tool_count_estimate"],
-        "known_servers": mcp["known_servers"],
         "tokens": mcp["tokens"],
         "note": mcp["note"],
     }

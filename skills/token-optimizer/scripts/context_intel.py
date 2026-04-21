@@ -152,12 +152,7 @@ def _summarize_output(tool_name: str, output: str) -> str:
         parts.append(s)
 
     if line_count > 20 and not signals:
-        first_lines = [ln.strip() for ln in lines[:3] if ln.strip()]
-        last_lines = [ln.strip() for ln in lines[-3:] if ln.strip()]
-        if first_lines:
-            parts.append(f"Start: {first_lines[0][:80]}")
-        if last_lines and last_lines != first_lines:
-            parts.append(f"End: {last_lines[-1][:80]}")
+        parts.append(f"Output: {line_count} lines, no errors detected")
 
     summary = "\n".join(parts)
     return summary[:_SUMMARY_CAP]

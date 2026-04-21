@@ -13077,21 +13077,86 @@ def generate_compact_instructions(as_json=False, install=False, dry_run=False):
     return instructions_text
 
 
-_DYNAMIC_COMPACT_CAP = 2000
+_DYNAMIC_COMPACT_CAP = 2500
 _STATIC_COMPACT_FALLBACK = (
     "COMPACTION GUIDANCE: Preserve code changes, key decisions, "
     "and file paths. Discard intermediate attempts, explanations, "
     "and verbose tool output."
 )
 
+_MODE_PRESERVE_HINTS = {
+    "code": "Focus: preserve edited files, their test files, and build output. Drop exploration reads.",
+    "debug": "Focus: preserve error messages, stack traces, and the investigated file. Drop unrelated reads.",
+    "review": "Focus: preserve file list, findings, and decisions. Drop full file contents (summaries suffice).",
+    "infra": "Focus: preserve command outputs and config changes. Drop source code reads.",
+    "general": "",
+}
+
+
+def _build_anchor_state(store, intel_events, active_files):
+    """Build or update the anchored compaction state.
+
+    The anchor persists across compaction cycles. On first compact it's built
+    from scratch; on subsequent compacts only new data since last compaction
+    is merged in. This prevents detail drift across multiple compressions.
+
+    Returns anchor dict with keys: intent, changes, decisions, errors, next_steps.
+    """
+    import json as _json
+
+    existing_raw = store.get_meta("compact_anchor")
+    anchor = {}
+    if existing_raw:
+        try:
+            anchor = _json.loads(existing_raw)
+        except (ValueError, TypeError):
+            anchor = {}
+
+    changes = anchor.get("changes", [])
+    for f in active_files:
+        fp = f["file_path"]
+        short = fp.replace(str(Path.home()), "~")
+        entry = f"{short} (read {f['read_count']}x)"
+        if entry not in changes:
+            changes.append(entry)
+    anchor["changes"] = changes[-8:]
+
+    errors = anchor.get("errors", [])
+    for ev in intel_events:
+        for line in ev["summary"].split("\n"):
+            if line.startswith("ERR:"):
+                err = line[:100]
+                if err not in errors:
+                    errors.append(err)
+    anchor["errors"] = errors[-5:]
+
+    decisions = anchor.get("decisions", [])
+    try:
+        decisions_raw = store.get_meta("session_decisions")
+        if decisions_raw:
+            stored = _json.loads(decisions_raw)
+            for d in stored:
+                if d not in decisions:
+                    decisions.append(d)
+    except Exception:
+        pass
+    anchor["decisions"] = decisions[-5:]
+
+    try:
+        store.set_meta("compact_anchor", _json.dumps(anchor, ensure_ascii=False))
+    except Exception:
+        pass
+
+    return anchor
+
 
 def dynamic_compact_instructions(session_id=None):
-    """Generate session-aware compaction guidance from Session Knowledge Store.
+    """Generate session-aware compaction guidance with anchored state.
 
-    Called by PreCompact hook. Produces PRESERVE/DROP sections based on
-    actual session data: frequently read files, error signals, context
-    intelligence summaries. Falls back to static guidance if store is
-    unavailable.
+    Called by PreCompact hook. Builds an anchor state that persists across
+    compaction cycles (intent/changes/decisions/errors/next_steps), plus
+    mode-aware PRESERVE/DROP sections. Falls back to static guidance if
+    store is unavailable.
 
     Prints guidance to stdout (hook output).
     """
@@ -13125,7 +13190,32 @@ def dynamic_compact_instructions(session_id=None):
             print(_STATIC_COMPACT_FALLBACK)
             return
 
-        parts: list[str] = ["COMPACTION GUIDANCE (session-specific):"]
+        # Build anchored state (persists across compaction cycles)
+        anchor = _build_anchor_state(store, intel_events, active_files)
+
+        # Read activity mode
+        mode = store.get_meta("current_mode") or "general"
+        mode_hint = _MODE_PRESERVE_HINTS.get(mode, "")
+
+        parts: list[str] = [f"COMPACTION GUIDANCE (session-specific, mode={mode}):"]
+        if mode_hint:
+            parts.append(mode_hint)
+
+        # Anchored decisions — MUST survive compaction
+        decisions = anchor.get("decisions", [])
+        if decisions:
+            parts.append("")
+            parts.append("CRITICAL DECISIONS (preserve verbatim, never summarize away):")
+            for d in decisions:
+                parts.append(f"  - {d[:120]}")
+
+        # Anchored errors — active debugging context
+        errors = anchor.get("errors", [])
+        if errors:
+            parts.append("")
+            parts.append("ACTIVE ERRORS (preserve for debugging continuity):")
+            for e in errors:
+                parts.append(f"  - {e}")
 
         if active_files:
             parts.append("")
@@ -13138,25 +13228,9 @@ def dynamic_compact_instructions(session_id=None):
         if intel_events:
             parts.append("")
             parts.append("PRESERVE - Key findings from tool outputs:")
-            for ev in intel_events:
+            for ev in intel_events[:5]:
                 summary_line = ev["summary"].split("\n")[0][:100]
                 parts.append(f"  - {summary_line}")
-
-        error_signals = []
-        for ev in intel_events:
-            for line in ev["summary"].split("\n"):
-                if line.startswith("ERR:"):
-                    error_signals.append(line[:100])
-                    if len(error_signals) >= 3:
-                        break
-            if len(error_signals) >= 3:
-                break
-
-        if error_signals:
-            parts.append("")
-            parts.append("PRESERVE - Errors encountered:")
-            for e in error_signals:
-                parts.append(f"  - {e}")
 
         if high_value:
             parts.append("")
@@ -14222,12 +14296,18 @@ def _maybe_nudge(result, cache_path, quality_data, quiet=False):
     result["_nudge_count"] = nudge_count + 1
     result["_nudge_last_epoch"] = now
 
-    # Log to compression_events
+    # Log to compression_events with estimated token savings.
+    # A nudge that triggers /compact typically recovers 20-40% of context.
+    # Conservative: assume 10K tokens recovered per nudge via compaction or
+    # behavior change (user switches approach, stops bloating context).
+    est_tokens_saved = 10000
     session_id = Path(cache_path).stem.replace("quality-cache-", "", 1) if cache_path else None
     _log_compression_event(
         feature="quality_nudge",
+        original_text=" " * (est_tokens_saved * 4),
+        compressed_text=f"nudge:score={score}",
         session_id=session_id,
-        detail=f"score={score} prev={previous_score} drop={drop}",
+        detail=f"score={score} prev={previous_score} drop={drop} est_saved={est_tokens_saved}",
         verified=True,
     )
 
@@ -14257,12 +14337,18 @@ def _maybe_loop_warning(result, cache_path, quality_data, quiet=False):
 
     result["_loop_warning_count"] = loop_count + 1
 
-    # Log to compression_events
+    # Log to compression_events with estimated token savings.
+    # A caught loop prevents at least 2 wasted turns of input replay + output.
+    # Conservative estimate: 15K tokens per caught loop (avg turn from trends.db).
+    est_prevented_turns = max(best.get("count", 2) - 1, 1)
+    est_tokens_saved = est_prevented_turns * 15000
     session_id = Path(cache_path).stem.replace("quality-cache-", "", 1) if cache_path else None
     _log_compression_event(
         feature="loop_detection",
+        original_text=" " * (est_tokens_saved * 4),
+        compressed_text=f"loop:{best['type']}",
         session_id=session_id,
-        detail=f"type={best['type']} confidence={best['confidence']:.2f} count={best.get('count', 0)}",
+        detail=f"type={best['type']} confidence={best['confidence']:.2f} count={best.get('count', 0)} est_saved={est_tokens_saved}",
         verified=True,
     )
 

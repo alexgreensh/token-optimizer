@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Token Optimizer v5.5 - Context Intelligence (Shadow Mode).
+"""Token Optimizer v5.6 - Context Intelligence + Activity Tracking + Decision Extraction.
 
 PostToolUse handler that generates heuristic summaries for large tool outputs
 and logs them to the Session Knowledge Store. Shadow mode only: no
@@ -21,6 +21,7 @@ Hook registration: PostToolUse on Bash|Read|Grep|Glob|mcp__.*
 
 from __future__ import annotations
 
+import json
 import re
 import time
 
@@ -158,6 +159,86 @@ def _summarize_output(tool_name: str, output: str) -> str:
     return summary[:_SUMMARY_CAP]
 
 
+_DECISION_RE = re.compile(
+    r'\b(chose|decided|because|instead of|went with|going with|switched to|'
+    r'prefer|better to|should use|will use|picking|opting for|let\'s use|'
+    r'using .+ over|settled on|sticking with)\b',
+    re.IGNORECASE,
+)
+_MAX_DECISIONS = 10
+_SENTENCE_SPLIT_RE = re.compile(r"[.!?\n]+")
+
+
+def _extract_decisions(text: str, store: SessionStore) -> None:
+    """Extract decision statements from tool output and store incrementally.
+
+    Uses split-then-filter to avoid catastrophic regex backtracking on
+    large outputs without sentence-ending punctuation (build logs, JSON).
+    Wraps the read-modify-write in BEGIN IMMEDIATE to prevent lost updates
+    under concurrent PostToolUse subprocesses.
+    """
+    if len(text) < 50:
+        return
+    sample = text[:5000]
+    if not _DECISION_RE.search(sample):
+        return
+
+    sentences = [
+        s.strip() for s in _SENTENCE_SPLIT_RE.split(sample)
+        if 20 <= len(s.strip()) <= 200
+    ]
+    new_decisions = []
+    for sentence in sentences:
+        if _DECISION_RE.search(sentence):
+            new_decisions.append(sentence.strip()[:150])
+        if len(new_decisions) >= 3:
+            break
+
+    if not new_decisions:
+        return
+
+    try:
+        conn = store._connect()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                "SELECT value FROM session_meta WHERE key = ?",
+                ("session_decisions",),
+            ).fetchone()
+            existing = json.loads(row[0]) if row else []
+
+            if len(existing) >= _MAX_DECISIONS:
+                conn.execute("COMMIT")
+                return
+
+            for d in new_decisions:
+                if d not in existing:
+                    existing.append(d)
+                    if len(existing) >= _MAX_DECISIONS:
+                        break
+
+            conn.execute(
+                "INSERT OR REPLACE INTO session_meta (key, value) VALUES (?, ?)",
+                ("session_decisions", json.dumps(existing, ensure_ascii=False)),
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _has_error_signals(text: str) -> bool:
+    """Quick check for error indicators in tool output."""
+    if len(text) < 10:
+        return False
+    sample = text[:20_000]
+    return bool(_ERROR_RE.search(sample))
+
+
 def handle_post_tool_use() -> None:
     hook_input = read_stdin_hook_input(_STDIN_MAX_BYTES)
     if not hook_input:
@@ -167,16 +248,36 @@ def handle_post_tool_use() -> None:
     tool_use_id = hook_input.get("tool_use_id", "")
     tool_response = hook_input.get("tool_response", "")
     session_id = hook_input.get("session_id", "")
+    tool_input = hook_input.get("tool_input", {})
 
-    if not isinstance(tool_response, str) or len(tool_response) < _OUTPUT_THRESHOLD:
-        return
-
-    if not session_id or not tool_use_id:
+    if not session_id:
         return
 
     try:
         store = SessionStore(session_id)
         try:
+            # Activity tracking runs on every tool call, regardless of output size
+            try:
+                from activity_tracker import log_tool_use
+                command = ""
+                if tool_name == "Bash" and isinstance(tool_input, dict):
+                    command = tool_input.get("command", "")
+                has_error = _has_error_signals(tool_response) if isinstance(tool_response, str) else False
+                log_tool_use(store, tool_name, command=command, has_error=has_error)
+            except Exception:
+                pass
+
+            # Decision extraction on outputs likely to contain decisions (>500 chars)
+            if isinstance(tool_response, str) and len(tool_response) > 500:
+                try:
+                    _extract_decisions(tool_response, store)
+                except Exception:
+                    pass
+
+            # Context intel summary only for large outputs
+            if not tool_use_id or not isinstance(tool_response, str) or len(tool_response) < _OUTPUT_THRESHOLD:
+                return
+
             if not _check_cooldown(store):
                 return
             summary = _summarize_output(tool_name, tool_response)

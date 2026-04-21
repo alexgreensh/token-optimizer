@@ -96,6 +96,14 @@ CREATE TABLE IF NOT EXISTS context_intel_events (
     timestamp REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS activity_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tool_name TEXT NOT NULL,
+    tool_bucket TEXT NOT NULL,
+    has_error INTEGER NOT NULL DEFAULT 0,
+    timestamp REAL NOT NULL
+);
+
 """
 
 

@@ -738,6 +738,57 @@ function detectUnusedSkills(installed, usageMap) {
     ];
 }
 // ---------------------------------------------------------------------------
+// Tier 2: Output token waste (v2.4.0)
+// ---------------------------------------------------------------------------
+/**
+ * Detect sessions where output tokens are disproportionately high relative
+ * to input and message count, suggesting verbose or repetitive model responses.
+ */
+function detectOutputWaste(runs, _config) {
+    const OUTPUT_RATIO_THRESHOLD = 0.4; // output > 40% of total is suspicious
+    const MIN_TOTAL_TOKENS = 50_000;
+    const suspects = runs.filter((r) => {
+        const total = (0, models_1.totalTokens)(r.tokens);
+        if (total < MIN_TOTAL_TOKENS)
+            return false;
+        const outputRatio = r.tokens.output / total;
+        return outputRatio > OUTPUT_RATIO_THRESHOLD && r.messageCount > 5;
+    });
+    if (suspects.length < 2)
+        return [];
+    const excessOutput = suspects.reduce((sum, r) => {
+        const healthyOutput = (0, models_1.totalTokens)(r.tokens) * 0.2;
+        return sum + Math.max(0, r.tokens.output - healthyOutput);
+    }, 0);
+    const totalWaste = suspects.reduce((sum, r) => {
+        const healthyOutput = (0, models_1.totalTokens)(r.tokens) * 0.2;
+        const excessRatio = Math.max(0, r.tokens.output - healthyOutput) / r.tokens.output;
+        return sum + r.costUsd * excessRatio;
+    }, 0);
+    const days = spanDays(suspects);
+    const monthlyCost = (totalWaste / days) * 30;
+    if (monthlyCost < 0.5)
+        return [];
+    return [{
+            system: "openclaw",
+            agentName: "",
+            wasteType: "output_waste",
+            tier: 2,
+            severity: monthlyCost < 5 ? "low" : monthlyCost < 20 ? "medium" : "high",
+            confidence: 0.6,
+            description: `${suspects.length} sessions with >40% output token ratio (${Math.round(excessOutput).toLocaleString()} excess output tokens)`,
+            monthlyWasteUsd: monthlyCost,
+            monthlyWasteTokens: excessOutput,
+            recommendation: "Add conciseness instructions to agent prompts. Request structured output formats to reduce verbosity.",
+            fixSnippet: "# Add to agent system prompt:\n# Respond concisely. No explanations unless asked.",
+            evidence: {
+                suspectCount: suspects.length,
+                avgOutputRatio: Math.round(suspects.reduce((sum, r) => sum + r.tokens.output / (0, models_1.totalTokens)(r.tokens), 0) /
+                    suspects.length * 100),
+            },
+        }];
+}
+// ---------------------------------------------------------------------------
 // Registry: all detectors in execution order
 // ---------------------------------------------------------------------------
 exports.ALL_DETECTORS = [
@@ -759,6 +810,7 @@ exports.ALL_DETECTORS = [
     { name: "overpowered_model", tier: 2, fn: detectOverpoweredModel },
     { name: "weak_model", tier: 2, fn: detectWeakModel },
     { name: "bad_decomposition", tier: 2, fn: detectBadDecomposition },
+    { name: "output_waste", tier: 2, fn: detectOutputWaste },
     // unused_skills is NOT in ALL_DETECTORS because it requires an external
     // installed-skill list (not derivable from AgentRun data alone).
     // Call detectUnusedSkills() directly, passing auditContext().skills.

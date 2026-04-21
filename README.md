@@ -485,7 +485,7 @@ Tell it your goal. Get back specific, prioritized fixes with exact token savings
 
 ### Waste Detectors
 
-9 automated detectors analyze your session patterns and surface actionable findings:
+11 automated detectors analyze your session patterns and surface actionable findings:
 
 | Detector | What it catches |
 |---|---|
@@ -498,6 +498,8 @@ Tell it your goal. Get back specific, prioritized fixes with exact token savings
 | Weak model | Haiku on complex tasks needing a stronger model |
 | Bad decomposition | Monolithic 500+ word prompts doing too much |
 | Wasteful thinking | Extended thinking >2x output for small edits |
+| Output waste | Verbose responses to simple operations, repeated explanations |
+| Cache instability | CLAUDE.md patterns that break Anthropic's prompt cache prefix |
 
 ### Fleet Auditor
 
@@ -565,7 +567,7 @@ Hover help on every column explains `Cache`, `TTL`, `Pacing`, `Cache R`, and `Ca
 | Runtime output compression | 16 CLI handlers, credential-safe, individually toggleable | No | Yes | Yes, always-on (cannot disable) |
 | Measures if compression actually helped | Yes, local telemetry with before/after tokens | No | No | No |
 | Read deduplication and smart diff on re-reads | Yes | No | No | No |
-| Behavioral coaching and model routing | 9 detectors, cost-ranked subagent breakdown | Basic suggestions | No | No |
+| Behavioral coaching and model routing | 11 detectors, cost-ranked subagent breakdown | Basic suggestions | No | No |
 | CLAUDE.md and MEMORY.md structural health | 8 auditors plus attention-curve scoring | No | No | No |
 | Fleet-level waste detection across agents | Yes | No | No | No |
 | Zero context tokens consumed | Yes, external process | Adds ~200 tokens | MCP overhead | Injects instructions into context |
@@ -743,7 +745,7 @@ Inside OpenClaw, run `/token-optimizer` for a guided audit with coaching.
 
 **Session audits and cost tracking.** Parses your OpenClaw session data, calculates per-turn costs against your configured pricing (falls back to built-in rates for 20+ models), surfaces costly prompts, and ranks subagents by spend so you can see which orchestrator-worker pairs are actually pulling their weight.
 
-**9 waste detectors native to OpenClaw.** Idle burn detection, model misrouting, unused skills, retry churn, tool cascades, looping patterns, overpowered model use, weak model on complex tasks, and wasteful thinking. Each finding comes with a dollar estimate.
+**10 waste detectors native to OpenClaw.** Idle burn detection, model misrouting, unused skills, retry churn, tool cascades, looping patterns, overpowered model use, weak model on complex tasks, wasteful thinking, and output token waste. Each finding comes with a dollar estimate.
 
 **Coach tab adapted for OpenClaw.** Scoring adapts to OpenClaw concepts (SOUL.md instead of CLAUDE.md, agent configs instead of hooks). Health score surfaces earned signals, neutral signals, and anti-patterns.
 

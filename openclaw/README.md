@@ -33,7 +33,7 @@ Inside OpenClaw, run `/token-optimizer` for a guided audit with coaching.
 ## What It Does
 
 - **Scans** all agent sessions for token usage, cost, and topic extraction
-- **Detects** 15 waste patterns across 3 tiers with monthly $ savings and fix snippets
+- **Detects** 16 waste patterns across 3 tiers with monthly $ savings and fix snippets
 - **Dashboard** with 8-tab interactive HTML visualization
 - **Context audit** with per-skill and per-MCP-server token breakdown
 - **Quality scoring** with 7 signals (2-stage) and model-aware context windows (Claude 1M, GPT-5 400K, Gemini 2M)
@@ -93,7 +93,7 @@ Dashboard auto-regenerates on session end. Open manually with `npx token-optimiz
 
 ## Waste Patterns Detected
 
-15 detectors across 3 tiers:
+16 detectors across 3 tiers:
 
 ### Tier 1: Config & Heartbeat Analysis
 
@@ -116,6 +116,7 @@ Dashboard auto-regenerates on session end. Open manually with `npx token-optimiz
 | Tool Cascade | 5+ tool calls ending in failure (error chains) | $0.50-10/month |
 | Overpowered Model | Expensive model for simple tasks (low output, few tools) | $0.50-20/month |
 | Weak Model | Cheap model for complex tasks (causes errors/retries) | Quality impact |
+| Output Waste | Sessions with >40% output tokens vs total (verbose responses) | $0.50-15/month |
 | Bad Decomposition | 30+ messages with <2% output ratio (monolithic prompts) | $1-15/month |
 
 ### Tier 3: Context Composition

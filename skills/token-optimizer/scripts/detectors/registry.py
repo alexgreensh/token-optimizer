@@ -7,6 +7,8 @@ from detectors.overpowered import detect_overpowered
 from detectors.weak_model import detect_weak_model
 from detectors.bad_decomposition import detect_bad_decomposition
 from detectors.wasteful_thinking import detect_wasteful_thinking
+from detectors.output_waste import detect_output_waste
+from detectors.cache_instability import detect_cache_instability
 
 ALL_DETECTORS = [
     {"name": "retry_churn", "fn": detect_retry_churn},
@@ -16,6 +18,8 @@ ALL_DETECTORS = [
     {"name": "weak_model", "fn": detect_weak_model},
     {"name": "bad_decomposition", "fn": detect_bad_decomposition},
     {"name": "wasteful_thinking", "fn": detect_wasteful_thinking},
+    {"name": "output_waste", "fn": detect_output_waste},
+    {"name": "cache_instability", "fn": detect_cache_instability},
 ]
 
 _TRIAGE_MIN_TOKENS = 5000

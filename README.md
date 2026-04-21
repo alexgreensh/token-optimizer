@@ -769,7 +769,7 @@ _This FAQ is informational guidance, not a modification of the license terms. La
 Go for it. Full source, runs locally, no license purchase needed. That's the whole point.
 
 ### 🏢 Small team (under 5 people OR under $20k/month revenue)?
-You're good. No paperwork needed.
+Small teams get a no-cost commercial license automatically. Just use it.
 If you want to [sponsor the project](https://github.com/sponsors/alexgreensh) or buy me a coffee, not required, but always appreciated ☕
 
 ### 🔄 Started personal, now it's turning into a business?

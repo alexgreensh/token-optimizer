@@ -4,8 +4,8 @@
 #   - macOS / Linux (python3 on PATH)
 #   - Windows python.org installs at spaced paths like "C:\Program Files\Python313\"
 #   - Windows py-launcher-only installs (py -3)
-#   - Windows Store zero-byte stubs in %LOCALAPPDATA%\Microsoft\WindowsApps (walked past,
-#     not treated as first match)
+#   - Windows Store Python (real installs probed with --version; non-functional
+#     AppExecutionAlias stubs skipped automatically)
 # Exits 127 with a diagnostic message if none found.
 
 set -eu
@@ -21,7 +21,12 @@ find_interpreter() {
             [ -x "$binpath" ] || continue
             [ -s "$binpath" ] || continue
             case "$binpath" in
-                */WindowsApps/*|*/windowsapps/*) continue ;;
+                */WindowsApps/*|*/windowsapps/*)
+                    # WindowsApps may contain real Store-installed Python OR
+                    # non-functional AppExecutionAlias stubs (non-zero-byte, pass -s).
+                    # Probe with --version to distinguish functional interpreters.
+                    "$binpath" --version >/dev/null 2>&1 || continue
+                    ;;
             esac
             printf "%s\n" "$binpath"
             return 0

@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-from __future__ import annotations  # PEP 604 union syntax compat for Python 3.9
 """Fleet Auditor: Cross-Platform Agent Token Waste Auditor.
 
 Detects agent systems (Claude Code, OpenClaw, NanoClaw, Hermes, OpenCode, IronClaw),
@@ -15,14 +14,14 @@ Usage:
     python3 fleet.py report [--system X] [--json]   # Full report with $ savings
     python3 fleet.py dashboard [--serve]             # Generate fleet dashboard
 """
+from __future__ import annotations
 
 import json
 import os
-import re
 import sqlite3
 import sys
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -32,7 +31,7 @@ from typing import Any
 # ---------------------------------------------------------------------------
 _SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_SCRIPT_DIR))
-from shared import (
+from shared import (  # noqa: E402 — must follow sys.path.insert above
     HOME,
     CLAUDE_DIR,
     normalize_model_name,
@@ -42,7 +41,6 @@ from shared import (
     find_subagent_jsonl_files,
     clean_project_name,
     init_sqlite_db,
-    migrate_add_columns,
     estimate_tokens_from_file,
     estimate_tokens_from_text,
 )
@@ -810,7 +808,7 @@ class SkillBloat(BaseDetector):
             description=f"{len(skills)} skills loaded ({total_skill_tokens:,} tokens overhead per API call)",
             monthly_waste_usd=monthly_cost,
             monthly_waste_tokens=monthly_waste,
-            recommendation=f"Archive unused skills. Each removed skill saves ~100 tokens per API call across all sessions.",
+            recommendation="Archive unused skills. Each removed skill saves ~100 tokens per API call across all sessions.",
             fix_snippet="# Move unused skills out of ~/.claude/skills/\n# Check which skills you actually use:\n# python3 measure.py trends --days 30",
             evidence={"skill_count": len(skills), "skill_names": [s.get("name", "?") for s in skills]},
         )]
@@ -1485,8 +1483,6 @@ def cmd_audit(args: list[str]):
     total_monthly_waste = sum(f.monthly_waste_usd for f in all_findings)
 
     for i, f in enumerate(all_findings, 1):
-        sev_marker = {"critical": "!!!", "high": "!!", "medium": "!", "low": "."}
-        marker = sev_marker.get(f.severity, "")
         print(f"\n  {i}. [{f.severity.upper():8s}] {f.description}")
         print(f"     System: {f.system} | Tier {f.tier} | Confidence: {f.confidence:.0%}")
         if f.monthly_waste_usd > 0:
@@ -1623,7 +1619,7 @@ def cmd_report(args: list[str]):
     if waste_rows:
         total_waste = sum((wr[4] or 0) for wr in waste_rows)
         print(f"\n  Waste detected: ${total_waste:.2f}/month potential savings")
-        print(f"  Run 'fleet.py audit' for detailed recommendations.")
+        print("  Run 'fleet.py audit' for detailed recommendations.")
     print()
 
 
@@ -1752,9 +1748,6 @@ def _generate_dashboard_html(daily_rows, waste_rows, system_stats, model_mix, to
     # Daily chart data as JSON
     daily_json = json.dumps(daily_data)
     model_json = json.dumps(model_data)
-    project_json = json.dumps(project_data)
-    waste_json = json.dumps(waste_data)
-    generated_at = datetime.now(timezone.utc).isoformat()
 
     # Build system cards
     sys_html = ""

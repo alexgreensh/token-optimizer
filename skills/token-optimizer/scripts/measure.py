@@ -13124,26 +13124,15 @@ def _build_anchor_state(store, intel_events, active_files):
     from scratch; on subsequent compacts only new data since last compaction
     is merged in. This prevents detail drift across multiple compressions.
 
-    Returns anchor dict with keys: intent, changes, decisions, errors, next_steps.
+    Returns anchor dict with keys: decisions, errors.
     """
-    import json as _json
-
     existing_raw = store.get_meta("compact_anchor")
     anchor = {}
     if existing_raw:
         try:
-            anchor = _json.loads(existing_raw)
+            anchor = json.loads(existing_raw)
         except (ValueError, TypeError):
             anchor = {}
-
-    changes = anchor.get("changes", [])
-    for f in active_files:
-        fp = f["file_path"]
-        short = fp.replace(str(Path.home()), "~")
-        entry = f"{short} (read {f['read_count']}x)"
-        if entry not in changes:
-            changes.append(entry)
-    anchor["changes"] = changes[-8:]
 
     errors = anchor.get("errors", [])
     for ev in intel_events:
@@ -13158,7 +13147,7 @@ def _build_anchor_state(store, intel_events, active_files):
     try:
         decisions_raw = store.get_meta("session_decisions")
         if decisions_raw:
-            stored = _json.loads(decisions_raw)
+            stored = json.loads(decisions_raw)
             for d in stored:
                 if d not in decisions:
                     decisions.append(d)
@@ -13167,7 +13156,7 @@ def _build_anchor_state(store, intel_events, active_files):
     anchor["decisions"] = decisions[-5:]
 
     try:
-        store.set_meta("compact_anchor", _json.dumps(anchor, ensure_ascii=False))
+        store.set_meta("compact_anchor", json.dumps(anchor, ensure_ascii=False))
     except Exception:
         pass
 

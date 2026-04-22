@@ -4,6 +4,7 @@ _OUTPUT_RATIO_THRESHOLD = 3.0  # output/input ratio above this on simple turns
 _VERBOSE_RESPONSE_TOKENS = 2000  # assistant message above this after simple ops
 _SIMILARITY_THRESHOLD = 0.6  # Jaccard word overlap for repeated explanations
 _MIN_TURNS_FOR_DETECTION = 5
+_MIN_SAVINGS_TOKENS = 5000  # minimum token savings to report a finding
 
 
 def _jaccard_words(a: str, b: str) -> float:
@@ -54,7 +55,7 @@ def detect_output_waste(session_data):
         ratio = simple_turn_output / simple_turn_input
         if ratio > _OUTPUT_RATIO_THRESHOLD:
             excess = simple_turn_output - int(simple_turn_input * 1.5)
-            if excess > 5000:
+            if excess > _MIN_SAVINGS_TOKENS:
                 findings.append({
                     "name": "output_waste",
                     "confidence": min(0.5 + (ratio - _OUTPUT_RATIO_THRESHOLD) * 0.1, 0.85),
@@ -81,7 +82,7 @@ def detect_output_waste(session_data):
                 verbose_after_simple += 1
                 verbose_waste += output_tok - _VERBOSE_RESPONSE_TOKENS
 
-    if verbose_after_simple >= 3 and verbose_waste > 5000:
+    if verbose_after_simple >= 3 and verbose_waste > _MIN_SAVINGS_TOKENS:
         findings.append({
             "name": "output_waste",
             "confidence": 0.65,
@@ -111,7 +112,7 @@ def detect_output_waste(session_data):
                 repeated_pairs += 1
                 repeated_waste += len(assistant_msgs[j]) // 4
 
-    if repeated_pairs >= 2 and repeated_waste > 5000:
+    if repeated_pairs >= 2 and repeated_waste > _MIN_SAVINGS_TOKENS:
         findings.append({
             "name": "output_waste",
             "confidence": 0.55,

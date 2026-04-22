@@ -11,6 +11,7 @@ mode in the per-session SQLite store.
 from __future__ import annotations
 
 import re
+import time
 from typing import Optional
 
 _WINDOW_SIZE = 10
@@ -105,14 +106,13 @@ def log_tool_use(store, tool_name: str, command: str = "", has_error: bool = Fal
         Current detected mode string, or None on failure
     """
     try:
-        import time as _time
         bucket = classify_tool(tool_name, command)
         conn = store._connect()
 
         conn.execute(
             "INSERT INTO activity_log (tool_name, tool_bucket, has_error, timestamp) "
             "VALUES (?, ?, ?, ?)",
-            (tool_name[:64], bucket, 1 if has_error else 0, _time.time()),
+            (tool_name[:64], bucket, 1 if has_error else 0, time.time()),
         )
 
         rows = conn.execute(
@@ -140,8 +140,4 @@ def log_tool_use(store, tool_name: str, command: str = "", has_error: bool = Fal
         conn.commit()
         return mode
     except Exception:
-        try:
-            store._connect().rollback()
-        except Exception:
-            pass
         return None

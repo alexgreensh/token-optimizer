@@ -1866,27 +1866,34 @@ function extractFindings(auditMd) {
 function getComponentDetails(data) {
   var c = data.snapshot.components;
   var cd = data.snapshot.component_details || {};
+  var isCodex = data.runtime === 'codex';
 
   var ct = 0;
-  for (var k in c) { if (k.indexOf('claude_md') === 0 && c[k] && c[k].tokens) ct += c[k].tokens; }
+  for (var k in c) {
+    if (!c[k] || !c[k].tokens) continue;
+    if ((!isCodex && k.indexOf('claude_md') === 0) || (isCodex && k.indexOf('agents_md') === 0)) ct += c[k].tokens;
+  }
 
   var components = [
     {
-      key: 'claude_md', name: 'CLAUDE.md', tokens: ct,
+      key: isCodex ? 'agents_md' : 'claude_md', name: isCodex ? 'AGENTS.md' : 'CLAUDE.md', tokens: ct,
       sub: (function() {
         var lines = 0, found = [];
         for (var k in c) {
-          if (k.indexOf('claude_md') === 0 && c[k]) {
+          var isInstructionFile = isCodex ? k.indexOf('agents_md') === 0 : k.indexOf('claude_md') === 0;
+          if (isInstructionFile && c[k]) {
             if (c[k].lines) lines += c[k].lines;
             if (c[k].exists) found.push(
-              k.replace('claude_md_', '').replace('_dotclaude', ' (.claude/)').replace(/_/g, ' ')
+              k.replace(isCodex ? 'agents_md_' : 'claude_md_', '').replace('_dotclaude', ' (.claude/)').replace(/_/g, ' ')
             );
           }
         }
-        if (found.length === 0) return 'No CLAUDE.md found (checked global + project)';
+        if (found.length === 0) return isCodex ? 'No AGENTS.md found in current project or parent dirs' : 'No CLAUDE.md found (checked global + project)';
         return lines + ' lines from ' + found.join(', ');
       })(),
-      what: 'Your CLAUDE.md files are loaded at the start of every session. They contain personality rules, key paths, workflow instructions, and quality gates that shape every Claude response.',
+      what: isCodex
+        ? 'Your AGENTS.md files guide Codex in this project. They contain repo-specific instructions, workflows, and constraints that shape each session.'
+        : 'Your CLAUDE.md files are loaded at the start of every session. They contain personality rules, key paths, workflow instructions, and quality gates that shape every Claude response.',
       top: [], issues: [],
       related: [
         { title: 'Condense Multi-Agent Coordination', section: 'quick' },
@@ -1898,8 +1905,10 @@ function getComponentDetails(data) {
       tokens: c.memory_md ? c.memory_md.tokens : 0,
       sub: (c.memory_md && c.memory_md.exists !== false)
         ? c.memory_md.lines + ' lines loaded every session'
-        : 'Not configured. Auto-memory is off or no project match.',
-      what: 'Auto-memory file loaded into every conversation context. Contains accumulated patterns, decisions, and system notes. Lines after 200 are truncated but still counted.',
+        : (isCodex ? 'Claude auto-memory is not part of Codex startup measurement.' : 'Not configured. Auto-memory is off or no project match.'),
+      what: isCodex
+        ? 'Codex continuity is measured from local session JSONL and Token Optimizer checkpoints, not Claude MEMORY.md.'
+        : 'Auto-memory file loaded into every conversation context. Contains accumulated patterns, decisions, and system notes. Lines after 200 are truncated but still counted.',
       top: [], issues: [],
       related: [
         { title: 'Delete competitive landscape', section: 'quick' },
@@ -1914,9 +1923,12 @@ function getComponentDetails(data) {
         var userCount = c.skills ? c.skills.count : 0;
         var pluginCount = c.plugin_skills ? c.plugin_skills.count : 0;
         if (pluginCount > 0) return userCount + ' user + ' + pluginCount + ' plugin skills';
+        if (isCodex) return 'Codex plugin skill startup overhead is not measured as Claude skills';
         return userCount + ' user skills loaded at startup';
       })(),
-      what: "Every skill's SKILL.md frontmatter (name + description) is loaded into the tool menu at session start. The description length directly controls token cost.",
+      what: isCodex
+        ? 'Codex plugin capabilities are managed through the Codex plugin/skill surface. Claude skill archiving is intentionally hidden in Codex mode.'
+        : "Every skill's SKILL.md frontmatter (name + description) is loaded into the tool menu at session start. The description length directly controls token cost.",
       top: [], issues: [],
       related: [
         { title: 'Trim top-10 skill descriptions', section: 'medium' },
@@ -1931,9 +1943,12 @@ function getComponentDetails(data) {
         var userCount = c.commands ? c.commands.count : 0;
         var pluginCount = c.plugin_commands ? c.plugin_commands.count : 0;
         if (pluginCount > 0) return userCount + ' user + ' + pluginCount + ' plugin commands';
+        if (isCodex) return 'Claude slash commands are not part of Codex startup measurement';
         return userCount + ' slash commands registered';
       })(),
-      what: "Each command's COMMAND.md file is parsed and registered. Commands with long descriptions consume tokens even if rarely used.",
+      what: isCodex
+        ? 'Codex command/menu overhead is not optimized through Claude command archiving.'
+        : "Each command's COMMAND.md file is parsed and registered. Commands with long descriptions consume tokens even if rarely used.",
       top: [], issues: [],
       related: [
         { title: 'Merge overlapping commands', section: 'deep' },
@@ -1944,7 +1959,9 @@ function getComponentDetails(data) {
       key: 'mcp_tools', name: 'MCP Tools',
       tokens: c.mcp_tools ? c.mcp_tools.tokens : 0,
       sub: (c.mcp_tools ? c.mcp_tools.server_count : '?') + ' servers, ~' + (c.mcp_tools ? c.mcp_tools.tool_count_estimate : '?') + ' tools',
-      what: "MCP server tool definitions are loaded when servers connect. Each tool's name, description, and parameter schema contribute to token cost.",
+      what: isCodex
+        ? 'Codex MCP/tool overhead depends on the active Codex tool surface and is not estimated from Claude settings.'
+        : "MCP server tool definitions are loaded when servers connect. Each tool's name, description, and parameter schema contribute to token cost.",
       top: [], issues: [],
       related: [
         { title: 'Merge duplicate MCP servers', section: 'medium' }
@@ -1954,7 +1971,9 @@ function getComponentDetails(data) {
       key: 'core_system', name: 'Core System',
       tokens: c.core_system ? c.core_system.tokens : 0,
       sub: 'Fixed overhead, not optimizable',
-      what: "Claude Code's built-in system prompt, tool definitions, safety instructions, and MCP protocol overhead. This is fixed by Anthropic and cannot be reduced by user configuration changes.",
+      what: isCodex
+        ? "Codex's built-in instructions and tool definitions. This is fixed by the runtime and cannot be reduced by project configuration."
+        : "Claude Code's built-in system prompt, tool definitions, safety instructions, and MCP protocol overhead. This is fixed by Anthropic and cannot be reduced by user configuration changes.",
       top: [], issues: [], related: []
     }
   ];
@@ -2390,8 +2409,12 @@ var DB = (function() {
     document.getElementById('stat-pct').innerHTML = pct + '% <span class="mini-label">gone before you type</span>';
     // Generate bar chart from components
     var c = data.snapshot.components;
+    var isCodexOverview = data.runtime === 'codex';
     var vals = [];
-    var ct = 0; for (var k in c) { if (k.indexOf('claude_md') === 0 && c[k].tokens) ct += c[k].tokens; }
+    var ct = 0; for (var k in c) {
+      if (!c[k] || !c[k].tokens) continue;
+      if ((!isCodexOverview && k.indexOf('claude_md') === 0) || (isCodexOverview && k.indexOf('agents_md') === 0)) ct += c[k].tokens;
+    }
     vals.push(ct);
     vals.push(c.memory_md ? c.memory_md.tokens : 0);
     vals.push((c.skills ? c.skills.tokens : 0) + (c.plugin_skills ? c.plugin_skills.tokens : 0));
@@ -2410,7 +2433,7 @@ var DB = (function() {
       var logMax = Math.log10(ctxWindow);
       return Math.max(2, (logVal / logMax) * 80);
     }
-    var barLabels = ['CLAUDE.md', 'MEMORY.md', 'Skills', 'Commands'];
+    var barLabels = [isCodexOverview ? 'AGENTS.md' : 'CLAUDE.md', 'MEMORY.md', 'Skills', 'Commands'];
     if (rulesTokens > 0) barLabels.push('Rules');
     if (importsTokens > 0) barLabels.push('@imports');
     barLabels.push('MCP Tools');

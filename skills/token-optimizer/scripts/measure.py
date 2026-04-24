@@ -795,6 +795,9 @@ def _scan_plugin_skills_and_commands():
 
 def measure_components():
     """Measure all controllable token overhead components."""
+    if detect_runtime() == "codex":
+        return _measure_codex_components()
+
     components = {}
     seen_real_paths = set()
 
@@ -1220,6 +1223,97 @@ def measure_components():
     return components
 
 
+def _measure_codex_components():
+    """Measure Codex-relevant startup/config components without reading Claude config."""
+    components = {}
+    seen_real_paths = set()
+    cwd = Path.cwd()
+
+    for parent in [cwd] + list(cwd.parents)[:3]:
+        agents_md = parent / "AGENTS.md"
+        if not agents_md.exists():
+            continue
+        real = resolve_real_path(agents_md)
+        if real in seen_real_paths:
+            continue
+        seen_real_paths.add(real)
+        components[f"agents_md_project_{parent.name}"] = {
+            "path": str(agents_md),
+            "exists": True,
+            "tokens": estimate_tokens_from_file(agents_md),
+            "lines": count_lines(agents_md),
+        }
+
+    codex_config_tokens = 0
+    codex_config_files = []
+    for config_path in (runtime_home() / "config.toml", cwd / ".codex" / "config.toml"):
+        if config_path.exists():
+            tokens = estimate_tokens_from_file(config_path)
+            codex_config_tokens += tokens
+            codex_config_files.append({"path": str(config_path), "tokens": tokens})
+
+    project_hooks = cwd / ".codex" / "hooks.json"
+    hook_names = []
+    hooks_configured = False
+    if project_hooks.exists():
+        try:
+            data = json.loads(project_hooks.read_text(encoding="utf-8"))
+            hooks = data.get("hooks", {}) if isinstance(data, dict) else {}
+            if isinstance(hooks, dict):
+                hooks_configured = bool(hooks)
+                hook_names = sorted(hooks)
+        except (json.JSONDecodeError, OSError):
+            hooks_configured = True
+
+    components["claude_md_global"] = {"path": str(CLAUDE_DIR / "CLAUDE.md"), "exists": False, "tokens": 0, "lines": 0}
+    components["claude_md_home"] = {"path": str(HOME / "CLAUDE.md"), "exists": False, "tokens": 0, "lines": 0}
+    components["memory_md"] = {"path": "", "exists": False, "tokens": 0, "lines": 0}
+    components["skills"] = {"count": 0, "tokens": 0, "names": [], "name_to_dir": {}, "dir_to_name": {}}
+    components["skills_detail"] = {}
+    components["commands"] = {"count": 0, "tokens": 0, "names": []}
+    components["plugin_skills"] = {
+        "count": 0,
+        "tokens": 0,
+        "names": [],
+        "plugins": [],
+        "disabled_plugins": [],
+        "duplicate_skills": {},
+        "suspicious_paths": [],
+    }
+    components["plugin_commands"] = {"count": 0, "tokens": 0, "names": []}
+    components["mcp_tools"] = {"server_count": 0, "server_names": [], "tool_count_estimate": 0, "tokens": 0, "note": "Codex MCP overhead not measured yet"}
+    components["file_exclusion"] = {"global_deny_rules": [], "project_deny_rules": [], "has_rules": False}
+    components["hooks"] = {
+        "configured": hooks_configured,
+        "names": hook_names,
+        "warnings": [],
+        "est_per_turn_tokens": 0,
+        "path": str(project_hooks),
+    }
+    components["rules"] = {"count": 0, "tokens": 0, "always_loaded_tokens": 0, "path_scoped_tokens": 0, "files": [], "always_loaded": 0}
+    components["imports"] = {"count": 0, "tokens": 0, "files": []}
+    components["claude_local_md"] = {"path": "", "exists": False, "tokens": 0, "lines": 0}
+    components["settings_env"] = {"found": {}, "settings_exists": (runtime_home() / "config.toml").exists()}
+    components["settings_local"] = {"global_exists": False, "project_exists": False, "exists": False, "includeGitInstructions": True, "effortLevel": None, "defaultModel": None}
+    components["compact_instructions"] = {
+        "exists": bool(codex_config_files),
+        "tokens": codex_config_tokens,
+        "note": "Codex compact prompt/config guidance. Counted as configurable local setup.",
+        "files": codex_config_files,
+    }
+    components["codex_config"] = {
+        "count": len(codex_config_files),
+        "tokens": codex_config_tokens,
+        "files": codex_config_files,
+    }
+    components["skill_frontmatter_quality"] = {"verbose_count": 0, "verbose_skills": []}
+    components["core_system"] = {
+        "tokens": 12900,
+        "note": "Codex base instructions and built-in tools. Fixed overhead, not user-configurable.",
+    }
+    return components
+
+
 def calculate_totals(components):
     """Calculate total controllable and estimated overhead."""
     controllable = 0
@@ -1291,6 +1385,11 @@ def detect_context_window():
     # CLI override (set by --context-size flag)
     if _cli_context_size:
         return _cli_context_size, "cli: --context-size"
+    if detect_runtime() == "codex":
+        model = os.environ.get("CODEX_MODEL") or os.environ.get("OPENAI_MODEL")
+        if model:
+            return 1_000_000, f"runtime: Codex model {model} (override: TOKEN_OPTIMIZER_CONTEXT_SIZE)"
+        return 1_000_000, "runtime: Codex default (override: TOKEN_OPTIMIZER_CONTEXT_SIZE)"
     # Detect from model string in environment
     model = os.environ.get("CLAUDE_MODEL", "").lower()
     if not model:

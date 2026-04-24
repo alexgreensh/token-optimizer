@@ -84,6 +84,20 @@ def _tool_name(name: str) -> str:
     return TOOL_ALIASES.get(name, name or "unknown")
 
 
+def _extract_model(payload: dict[str, Any]) -> str | None:
+    model = payload.get("model")
+    if isinstance(model, str) and model.strip():
+        return model.strip()
+    collaboration = payload.get("collaboration_mode")
+    if isinstance(collaboration, dict):
+        settings = collaboration.get("settings")
+        if isinstance(settings, dict):
+            model = settings.get("model")
+            if isinstance(model, str) and model.strip():
+                return model.strip()
+    return None
+
+
 def _estimate_tokens(text: str | int) -> int:
     chars = text if isinstance(text, int) else len(text)
     return max(0, int(chars / CHARS_PER_TOKEN))
@@ -175,7 +189,8 @@ def find_session_jsonl_by_id(session_id: str) -> Path | None:
         if not root.exists():
             continue
         for jf in root.rglob(f"*{safe_id}*.jsonl"):
-            if jf.stem == safe_id or jf.stem.endswith("-" + safe_id) or _session_meta_id(jf) == safe_id:
+            meta_id = _session_meta_id(jf)
+            if jf.stem == safe_id or safe_id in jf.stem or meta_id == safe_id or (meta_id and meta_id.startswith(safe_id)):
                 exact_matches.append(jf)
     if not exact_matches:
         return None
@@ -236,6 +251,8 @@ def parse_session_jsonl(filepath: str | Path) -> dict[str, Any] | None:
     output_text_chars = 0
     tool_output_chars = 0
     last_usage: dict[str, int] | None = None
+    current_model = "unknown"
+    per_model_usage: dict[str, dict[str, int]] = {}
 
     try:
         with Path(filepath).open("r", encoding="utf-8", errors="replace") as handle:
@@ -256,10 +273,24 @@ def parse_session_jsonl(filepath: str | Path) -> dict[str, Any] | None:
                     version = version or payload.get("cli_version")
                     slug = slug or payload.get("id")
 
+                model = _extract_model(payload)
+                if model:
+                    current_model = model
+
                 if payload_type == "token_count":
                     usage = _token_usage(payload, cumulative=True)
                     if usage:
                         last_usage = usage
+                    turn_usage = _token_usage(payload, cumulative=False)
+                    if turn_usage:
+                        model_key = current_model if current_model != "unknown" else "codex"
+                        bucket = per_model_usage.setdefault(
+                            model_key,
+                            {"fresh_input": 0, "cache_read": 0, "cache_create": 0, "output": 0},
+                        )
+                        bucket["fresh_input"] += turn_usage["input_tokens"]
+                        bucket["cache_read"] += turn_usage["cached_input_tokens"]
+                        bucket["output"] += turn_usage["output_tokens"] + turn_usage["reasoning_output_tokens"]
 
                 elif payload_type in {"user_message", "message", "agent_message"}:
                     text = _extract_text(payload)
@@ -311,15 +342,20 @@ def parse_session_jsonl(filepath: str | Path) -> dict[str, Any] | None:
         estimated_output = _estimate_tokens(output_text_chars)
         token_source = "char_estimate"
 
-    model = "codex"
-    billable_estimate = fresh_input + estimated_output
-    model_usage[model] = billable_estimate
-    model_usage_breakdown[model] = {
-        "fresh_input": fresh_input,
-        "cache_read": cache_read,
-        "cache_create": 0,
-        "output": estimated_output,
-    }
+    if per_model_usage:
+        model_usage_breakdown = per_model_usage
+        for model, parts in model_usage_breakdown.items():
+            model_usage[model] = parts["fresh_input"] + parts["cache_create"] + parts["output"]
+    else:
+        model = current_model if current_model != "unknown" else "codex"
+        billable_estimate = fresh_input + estimated_output
+        model_usage[model] = billable_estimate
+        model_usage_breakdown[model] = {
+            "fresh_input": fresh_input,
+            "cache_read": cache_read,
+            "cache_create": 0,
+            "output": estimated_output,
+        }
 
     return {
         "version": version,
@@ -354,6 +390,7 @@ def parse_session_turns(filepath: str | Path) -> list[dict[str, Any]]:
     turns: list[dict[str, Any]] = []
     pending_tools: list[str] = []
     pending_usage: dict[str, int] | None = None
+    current_model = "unknown"
     turn_index = 0
     try:
         with Path(filepath).open("r", encoding="utf-8", errors="replace") as handle:
@@ -364,6 +401,9 @@ def parse_session_turns(filepath: str | Path) -> list[dict[str, Any]]:
                     continue
                 payload = _payload(record)
                 payload_type = payload.get("type")
+                model = _extract_model(payload)
+                if model:
+                    current_model = model
                 if payload_type in {"function_call", "custom_tool_call"}:
                     pending_tools.append(_tool_name(str(payload.get("name") or "unknown")))
                 elif payload_type == "token_count":
@@ -388,7 +428,7 @@ def parse_session_turns(filepath: str | Path) -> list[dict[str, Any]]:
                         "cache_creation": 0,
                         "cache_creation_1h": 0,
                         "cache_creation_5m": 0,
-                        "model": "codex",
+                        "model": current_model if current_model != "unknown" else "codex",
                         "timestamp": record.get("timestamp"),
                         "gap_since_prev_seconds": None,
                         "tools_used": pending_tools,

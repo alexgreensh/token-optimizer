@@ -189,6 +189,23 @@ PRICING_TIERS = {
     },
 }
 
+OPENAI_MODEL_PRICING = {
+    # Prices per 1M tokens from OpenAI API pricing/model docs.
+    "gpt-5-codex": {"input": 1.25, "cache_read": 0.125, "output": 10.0},
+    "gpt-5.1-codex": {"input": 1.25, "cache_read": 0.125, "output": 10.0},
+    "gpt-5.1-codex-mini": {"input": 0.25, "cache_read": 0.025, "output": 2.0},
+    "gpt-5.1": {"input": 1.25, "cache_read": 0.125, "output": 10.0},
+    "gpt-5.3-codex": {"input": 1.75, "cache_read": 0.175, "output": 14.0},
+    "gpt-5.4": {"input": 2.5, "cache_read": 0.25, "output": 15.0},
+    "gpt-5.4-mini": {"input": 0.75, "cache_read": 0.075, "output": 4.5},
+    "gpt-5.4-nano": {"input": 0.20, "cache_read": 0.02, "output": 1.25},
+    "gpt-5.5": {"input": 5.0, "cache_read": 0.50, "output": 30.0},
+}
+OPENAI_LONG_CONTEXT_PRICING = {
+    "gpt-5.4": {"input": 5.0, "cache_read": 0.50, "output": 22.5},
+}
+OPENAI_LONG_CONTEXT_INPUT_THRESHOLD = 272_000
+
 CONFIG_DIR = _CONFIG_BASE if _CONFIG_BASE else RUNTIME_DIR / "token-optimizer"
 CONFIG_PATH = CONFIG_DIR / "config.json"
 
@@ -207,6 +224,12 @@ def _load_pricing_tier():
     return "anthropic"
 
 
+def _pricing_tier_label(tier):
+    if detect_runtime() == "codex":
+        return "OpenAI API pricing for recognized Codex models"
+    return PRICING_TIERS.get(tier, {}).get("label", "Anthropic API")
+
+
 def _save_pricing_tier(tier):
     """Persist pricing tier preference via the atomic+locked config writer."""
     _write_config_flag("pricing_tier", tier)
@@ -220,6 +243,18 @@ def _get_model_cost(model, input_tokens, output_tokens, cache_read=0, cache_crea
     if tier is None:
         tier = _load_pricing_tier()
     tier_data = PRICING_TIERS.get(tier, PRICING_TIERS["anthropic"])
+
+    openai_model = _normalize_openai_model_name(model)
+    if openai_model:
+        full_input = int(input_tokens or 0) + int(cache_read or 0) + int(cache_create or 0)
+        rates = OPENAI_MODEL_PRICING[openai_model]
+        if full_input > OPENAI_LONG_CONTEXT_INPUT_THRESHOLD and openai_model in OPENAI_LONG_CONTEXT_PRICING:
+            rates = OPENAI_LONG_CONTEXT_PRICING[openai_model]
+        return (
+            input_tokens * rates["input"] / 1e6
+            + output_tokens * rates["output"] / 1e6
+            + cache_read * rates["cache_read"] / 1e6
+        )
 
     normalized = _normalize_model_name(model) if model else None
     if normalized and normalized in tier_data["claude_models"]:
@@ -237,6 +272,30 @@ def _get_model_cost(model, input_tokens, output_tokens, cache_read=0, cache_crea
         + cache_create * rates["cache_write"] / 1e6
     )
     return cost
+
+
+def _normalize_openai_model_name(model):
+    """Return a priced OpenAI model id, or None when we cannot price exactly."""
+    if not model:
+        return None
+    value = str(model).strip().lower()
+    if not value or value in {"codex", "openai", "unknown"}:
+        return None
+    aliases = (
+        "gpt-5.4-mini",
+        "gpt-5.4-nano",
+        "gpt-5.1-codex-mini",
+        "gpt-5.1-codex",
+        "gpt-5.3-codex",
+        "gpt-5-codex",
+        "gpt-5.1",
+        "gpt-5.4",
+        "gpt-5.5",
+    )
+    for alias in aliases:
+        if value == alias or value.startswith(alias + "-"):
+            return alias
+    return None
 
 
 # Process-local cache for _resolve_session_model to avoid re-reading JSONL
@@ -353,6 +412,25 @@ def _simulate_model_switch(session_data, target_model="sonnet"):
         "savings_usd": round(max(0, savings), 4),
         "savings_pct": round(savings / current_cost * 100, 1) if current_cost > 0 else 0,
     }
+
+
+def _cost_from_model_breakdown(model_usage_breakdown, tier=None):
+    """Calculate exact known cost from per-model token buckets."""
+    if not isinstance(model_usage_breakdown, dict):
+        return 0.0
+    total = 0.0
+    for model, parts in model_usage_breakdown.items():
+        if not isinstance(parts, dict):
+            continue
+        total += _get_model_cost(
+            model,
+            int(parts.get("fresh_input") or 0),
+            int(parts.get("output") or 0),
+            int(parts.get("cache_read") or 0),
+            int(parts.get("cache_create") or 0),
+            tier=tier,
+        )
+    return total
 
 
 def _fmt_context_window(size):
@@ -2612,7 +2690,7 @@ def _daemon_is_running():
     import urllib.error
     import urllib.request
 
-    magic = b"token-optimizer-dashboard-v1"
+    magic = DAEMON_IDENTITY_MAGIC.encode("utf-8")
     for host in ("127.0.0.1", "[::1]"):
         url = f"http://{host}:{DAEMON_PORT}/__to_ping"
         try:
@@ -3787,7 +3865,7 @@ def generate_standalone_dashboard(days=30, quiet=False, force=False):
         "auto_plan": True,
         "generated_at": datetime.now().isoformat(),
         "pricing_tier": pricing_tier,
-        "pricing_tier_label": PRICING_TIERS.get(pricing_tier, {}).get("label", "Anthropic API"),
+        "pricing_tier_label": _pricing_tier_label(pricing_tier),
         "pricing_tiers": {k: v["label"] for k, v in PRICING_TIERS.items()},
         "ttl_period_summary": ttl_period_summary,
         "session_turns": session_turns,
@@ -5403,7 +5481,18 @@ def parse_session_turns(filepath):
     Returns empty list if file is empty/unparseable.
     """
     if _use_codex_session_adapter(filepath):
-        return codex_session.parse_session_turns(filepath)
+        turns = codex_session.parse_session_turns(filepath)
+        for turn in turns:
+            cost = _get_model_cost(
+                turn.get("model"),
+                max(0, turn.get("input_tokens", 0) - turn.get("cache_read", 0)),
+                turn.get("output_tokens", 0),
+                turn.get("cache_read", 0),
+                turn.get("cache_creation", 0),
+            )
+            turn["cost_usd"] = round(cost, 6)
+            turn["cost_source"] = "openai_api_pricing" if cost > 0 else "unavailable"
+        return turns
 
     turns = []
     turn_index = 0
@@ -5665,6 +5754,7 @@ CREATE TABLE IF NOT EXISTS session_log (
     subagents_json TEXT,
     tool_calls_json TEXT,
     model_usage_json TEXT,
+    model_usage_breakdown_json TEXT,
     version TEXT,
     slug TEXT,
     topic TEXT,
@@ -5754,6 +5844,8 @@ def _init_trends_db():
             conn.execute("ALTER TABLE session_log ADD COLUMN max_call_gap_seconds REAL")
         if "p95_call_gap_seconds" not in cols:
             conn.execute("ALTER TABLE session_log ADD COLUMN p95_call_gap_seconds REAL")
+        if "model_usage_breakdown_json" not in cols:
+            conn.execute("ALTER TABLE session_log ADD COLUMN model_usage_breakdown_json TEXT")
         conn.commit()
     except sqlite3.Error:
         pass
@@ -6235,8 +6327,8 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
                 cache_create_1h_tokens, cache_create_5m_tokens, cache_ttl_scanned,
                 avg_call_gap_seconds, max_call_gap_seconds, p95_call_gap_seconds,
                 skills_json, subagents_json, tool_calls_json, model_usage_json,
-                version, slug, topic, collected_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                model_usage_breakdown_json, version, slug, topic, collected_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 str(filepath), date, project_name,
                 parsed["duration_minutes"],
@@ -6255,6 +6347,7 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
                 json.dumps(subagents_used),
                 json.dumps(parsed["tool_calls"]),
                 json.dumps(parsed["model_usage"]),
+                json.dumps(parsed.get("model_usage_breakdown", {})),
                 parsed["version"],
                 parsed.get("slug"),
                 parsed.get("topic"),
@@ -6489,12 +6582,13 @@ def _query_trends_db(conn, days):
     # Daily breakdown from session_log
     pricing_tier = _load_pricing_tier()
     daily = {}
+    total_cost_usd = 0.0
     session_rows = conn.execute(
         """SELECT date, jsonl_path, duration_minutes, input_tokens, output_tokens,
                   message_count, api_calls, cache_hit_rate,
                   cache_create_1h_tokens, cache_create_5m_tokens,
                   avg_call_gap_seconds, max_call_gap_seconds, p95_call_gap_seconds, skills_json,
-                  subagents_json, model_usage_json, slug, topic, project
+                  subagents_json, model_usage_json, model_usage_breakdown_json, slug, topic, project
            FROM session_log WHERE date >= ? ORDER BY date DESC""",
         (cutoff,),
     ).fetchall()
@@ -6543,8 +6637,15 @@ def _query_trends_db(conn, days):
         except (json.JSONDecodeError, TypeError, KeyError):
             mu = {}
         dom_model = max(mu, key=mu.get) if mu else "unknown"
-
-        session_cost = _get_model_cost(dom_model, uncached_est, out_total, cache_read_est, cache_create_total, tier=pricing_tier)
+        try:
+            mb_raw = sr["model_usage_breakdown_json"]
+            mb = json.loads(mb_raw) if mb_raw else {}
+        except (json.JSONDecodeError, TypeError, KeyError):
+            mb = {}
+        session_cost = _cost_from_model_breakdown(mb, tier=pricing_tier)
+        if session_cost == 0.0:
+            session_cost = _get_model_cost(dom_model, uncached_est, out_total, cache_read_est, cache_create_total, tier=pricing_tier)
+        total_cost_usd += session_cost
         jsonl_path = sr["jsonl_path"]
 
         sd = {
@@ -6583,7 +6684,7 @@ def _query_trends_db(conn, days):
 
     # Pricing tier info for dashboard
     pricing_tier = _load_pricing_tier()
-    tier_label = PRICING_TIERS.get(pricing_tier, {}).get("label", "Anthropic API")
+    tier_label = _pricing_tier_label(pricing_tier)
 
     return {
         "period_days": days,
@@ -6612,6 +6713,7 @@ def _query_trends_db(conn, days):
             "current_total": current_total,
         },
         "daily": daily_sorted,
+        "total_cost_usd": round(total_cost_usd, 4),
         "pricing_tier": pricing_tier,
         "pricing_tier_label": tier_label,
         "source": "sqlite",
@@ -6780,7 +6882,7 @@ def _collect_trends_from_jsonl(days=30):
 
     # Pricing tier info for dashboard
     pricing_tier = _load_pricing_tier()
-    tier_label = PRICING_TIERS.get(pricing_tier, {}).get("label", "Anthropic API")
+    tier_label = _pricing_tier_label(pricing_tier)
 
     return {
         "period_days": days,
@@ -8048,15 +8150,17 @@ def setup_hook(dry_run=False):
 
 # ========== Persistent Dashboard Daemon ==========
 
-TOKEN_OPTIMIZER_VERSION = "5.5.1"  # Keep in sync with plugin.json + marketplace.json
-DAEMON_LABEL = "com.token-optimizer.dashboard"
-DAEMON_PORT = 24842  # Memorable: 2-4-8-4-2 (powers of 2 palindrome), avoids common ports
+TOKEN_OPTIMIZER_VERSION = "5.6.1"  # Keep in sync with plugin.json + marketplace.json
+_DAEMON_RUNTIME = detect_runtime()
+_DAEMON_RUNTIME_SUFFIX = "codex" if _DAEMON_RUNTIME == "codex" else "claude"
+DAEMON_LABEL = "com.token-optimizer.codex-dashboard" if _DAEMON_RUNTIME == "codex" else "com.token-optimizer.dashboard"
+DAEMON_PORT = 24843 if _DAEMON_RUNTIME == "codex" else 24842
 LAUNCH_AGENTS_DIR = Path.home() / "Library" / "LaunchAgents"
 PLIST_PATH = LAUNCH_AGENTS_DIR / f"{DAEMON_LABEL}.plist"
 DAEMON_LOG_DIR = SNAPSHOT_DIR / "logs"
 DAEMON_TOKEN_PATH = SNAPSHOT_DIR / "daemon-token"  # 0600, per-install CSRF secret
 DAEMON_THRASH_BREADCRUMB = SNAPSHOT_DIR / ".daemon-thrash"  # adv-005 tombstone
-DAEMON_IDENTITY_MAGIC = "token-optimizer-dashboard-v1"
+DAEMON_IDENTITY_MAGIC = "token-optimizer-codex-dashboard-v1" if _DAEMON_RUNTIME == "codex" else "token-optimizer-dashboard-v1"
 
 
 def _get_or_create_daemon_token():
@@ -9206,7 +9310,7 @@ def _install_launchd_daemon(dry_run=False, soft_fail=False):
             print("[Token Optimizer] Dashboard server installed and running.\n")
             print("  Bookmark this URL:")
             print(f"    http://localhost:{DAEMON_PORT}/token-optimizer\n")
-            print("  It updates automatically after every Claude Code session.")
+            print(f"  It updates automatically after every {runtime_name_for_humans()} session.")
             print("  Starts on login, so the URL always works.\n")
             print("  To remove: python3 measure.py setup-daemon --uninstall")
         else:
@@ -9283,7 +9387,7 @@ def _uninstall_launchd_daemon():
         print("[Token Optimizer] No daemon artifacts found. Nothing to remove.")
 
 
-WINDOWS_TASK_NAME = "TokenOptimizerDashboard"
+WINDOWS_TASK_NAME = "TokenOptimizerCodexDashboard" if _DAEMON_RUNTIME == "codex" else "TokenOptimizerDashboard"
 WINDOWS_LAUNCHER_NAME = "dashboard-launcher.cmd"
 
 
@@ -9603,7 +9707,7 @@ def _install_task_scheduler_daemon(dry_run=False):
             print("[Token Optimizer] Dashboard server installed and running.\n")
             print("  Bookmark this URL:")
             print(f"    http://localhost:{DAEMON_PORT}/token-optimizer\n")
-            print("  It updates automatically after every Claude Code session.")
+            print(f"  It updates automatically after every {runtime_name_for_humans()} session.")
             print("  Starts at logon, so the URL always works.\n")
             print("  To remove: python -m measure setup-daemon --uninstall")
         else:
@@ -9672,8 +9776,8 @@ def _uninstall_task_scheduler_daemon():
         print("[Token Optimizer] No daemon artifacts found. Nothing to remove.")
 
 
-SYSTEMD_UNIT_NAME = "token-optimizer-dashboard.service"
-LINUX_LAUNCHER_NAME = "dashboard-launcher.sh"
+SYSTEMD_UNIT_NAME = "token-optimizer-codex-dashboard.service" if _DAEMON_RUNTIME == "codex" else "token-optimizer-dashboard.service"
+LINUX_LAUNCHER_NAME = "codex-dashboard-launcher.sh" if _DAEMON_RUNTIME == "codex" else "dashboard-launcher.sh"
 
 
 def _generate_linux_launcher_sh(daemon_script_path, log_dir):
@@ -9908,7 +10012,7 @@ def _install_systemd_user_daemon(dry_run=False):
             print("[Token Optimizer] Dashboard server installed and running.\n")
             print("  Bookmark this URL:")
             print(f"    http://localhost:{DAEMON_PORT}/token-optimizer\n")
-            print("  It updates automatically after every Claude Code session.")
+            print(f"  It updates automatically after every {runtime_name_for_humans()} session.")
             print("  Starts at login via default.target.\n")
             print("  Survive logout: loginctl enable-linger $USER (may need sudo)")
             print("  To remove: python3 measure.py setup-daemon --uninstall")
@@ -16846,7 +16950,7 @@ if __name__ == "__main__":
         import urllib.error
         import urllib.request
 
-        magic = b"token-optimizer-dashboard-v1"
+        magic = DAEMON_IDENTITY_MAGIC.encode("utf-8")
         status = "DAEMON_NOT_RUNNING"
         for host in ("127.0.0.1", "[::1]"):
             url = f"http://{host}:{DAEMON_PORT}/__to_ping"

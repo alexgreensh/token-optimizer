@@ -3025,6 +3025,9 @@ def generate_dashboard(coord_path):
 
 def _collect_hook_status_for_dashboard():
     """Collect hook installation status for dashboard toggle panel."""
+    if detect_runtime() == "codex":
+        return _collect_codex_hook_status_for_dashboard()
+
     settings, _ = _read_settings_json()
 
     # Check each hook type
@@ -3054,12 +3057,78 @@ def _collect_hook_status_for_dashboard():
     }
 
 
+def _collect_codex_hook_status_for_dashboard():
+    """Collect Codex project hook status for dashboard toggle panel."""
+    import codex_doctor
+
+    mp = str(Path(__file__).resolve())
+    project = Path.cwd().resolve(strict=False)
+    checks = codex_doctor.run_checks(project=project)
+    by_name = {check["name"]: check for check in checks}
+
+    def _ok(name):
+        return by_name.get(name, {}).get("status") == "OK"
+
+    project_arg = shlex.quote(str(project))
+    base = f"TOKEN_OPTIMIZER_RUNTIME=codex python3 {shlex.quote(mp)} codex-install --project {project_arg}"
+    return {
+        "codex_project": {
+            "installed": _ok("Project hooks"),
+            "label": "Codex Project Hooks",
+            "description": "Installs prompt quality nudges, context intelligence, archiving, Stop refresh, and checkpoint capture for this project.",
+            "install_cmd": base,
+            "uninstall_cmd": base + " --uninstall",
+        },
+        "codex_compact_prompt": {
+            "installed": _ok("Compact prompt"),
+            "partial": by_name.get("Compact prompt", {}).get("status") == "WARN",
+            "label": "Codex Compact Prompt",
+            "description": "Adds Token Optimizer compact guidance to Codex config so manual compaction preserves decisions, files, and continuation state.",
+            "install_cmd": f"TOKEN_OPTIMIZER_RUNTIME=codex python3 {shlex.quote(mp)} codex-compact-prompt --install",
+            "uninstall_cmd": "Edit ~/.codex/config.toml and remove compact_prompt / experimental_compact_prompt_file",
+        },
+        "codex_bash_compression": {
+            "installed": _ok("Feature: Bash compression"),
+            "label": "Bash Compression (Opt-In)",
+            "description": "Optionally rewrites safe Bash commands through the compression wrapper. Leave off unless you want command-output compression.",
+            "install_cmd": base + " --enable-bash-compression",
+            "uninstall_cmd": base,
+        },
+        "codex_stop_refresh": {
+            "installed": _ok("Feature: Session continuity and dashboard refresh"),
+            "label": "Stop Refresh and Continuity",
+            "description": "On Codex Stop, collects sessions, regenerates the dashboard, and saves a checkpoint for continuity.",
+            "install_cmd": base,
+            "uninstall_cmd": base + " --uninstall",
+        },
+    }
+
+
 def _collect_management_data(components=None, trends=None):
     """Collect data for the Manage tab: active/archived skills, MCP servers."""
     if components is None:
         components = measure_components()
 
     mp = str(Path(__file__).resolve())
+    if detect_runtime() == "codex":
+        project = Path.cwd().resolve(strict=False)
+        project_arg = shlex.quote(str(project))
+        base = f"TOKEN_OPTIMIZER_RUNTIME=codex python3 {shlex.quote(mp)} codex-install --project {project_arg}"
+        return {
+            "mode": "codex",
+            "codex": {
+                "project": str(project),
+                "install_cmd": base,
+                "install_with_bash_compression_cmd": base + " --enable-bash-compression",
+                "refresh_cmd": f"TOKEN_OPTIMIZER_RUNTIME=codex python3 {shlex.quote(mp)} session-end-flush --trigger manual",
+                "doctor_cmd": f"TOKEN_OPTIMIZER_RUNTIME=codex python3 {shlex.quote(mp)} doctor",
+                "dashboard_cmd": f"TOKEN_OPTIMIZER_RUNTIME=codex python3 {shlex.quote(mp)} dashboard",
+            },
+            "skills": {"active": [], "archived": []},
+            "mcp_servers": {"active": [], "disabled": [], "cloud": []},
+            "v5_features": _get_v5_feature_status(),
+        }
+
     backups_dir = CLAUDE_DIR / "_backups"
 
     # Active skills

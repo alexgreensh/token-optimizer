@@ -3561,7 +3561,9 @@ var DB = (function() {
 
     html += '<div class="card wide"><div class="card-header"><span>Installed Hooks</span></div>';
 
-    var hookKeys = ['session_end', 'smart_compact'];
+    var hookKeys = Object.keys(h).filter(function(key) {
+      return h[key] && typeof h[key] === 'object' && h[key].label;
+    });
     hookKeys.forEach(function(key) {
       var hook = h[key];
       if (!hook) return;
@@ -3701,6 +3703,7 @@ var DB = (function() {
     var el = document.getElementById('view-manage');
     if (!el) return;
     var m = data.manage;
+    var isCodex = data.runtime === 'codex' || (m && m.mode === 'codex');
     // v5.4.18: v5 feature toggles are pure config state, so render them
     // regardless of whether session data exists. Skills/hooks/MCP sections
     // still require real audit data below.
@@ -3716,8 +3719,10 @@ var DB = (function() {
       '<h1>Manage</h1>' +
       '<p id="manage-mode-desc">' +
         (window.__TOKEN_API_LIVE
-          ? '<span style="color:var(--c-accent-cyan);font-weight:600;">Live mode</span> — toggles apply instantly to settings. <strong>Restart Claude</strong> to activate changes.'
-          : 'Open in serve mode for live toggles: <code style="background:var(--c-bg);padding:2px 5px;border-radius:4px;">python3 measure.py dashboard --serve</code>') +
+          ? '<span style="color:var(--c-accent-cyan);font-weight:600;">Live mode</span> — toggles apply instantly to settings. <strong>Restart ' + (isCodex ? 'Codex' : 'Claude') + '</strong> to activate changes.'
+          : (isCodex
+              ? 'Codex project setup is terminal-driven. Copy the commands below to install, verify, or refresh the adapter.'
+              : 'Open in serve mode for live toggles: <code style="background:var(--c-bg);padding:2px 5px;border-radius:4px;">python3 measure.py dashboard --serve</code>')) +
       '</p>' +
       '</div>';
 
@@ -3801,7 +3806,23 @@ var DB = (function() {
       html += '</div>';
     }
 
+    if (isCodex) {
+      var cx = (m && m.codex) || {};
+      html += '<div class="card wide"><div class="card-header"><span>Codex Project Setup</span><span class="label">terminal commands</span></div>' +
+        '<div style="padding:var(--s-3);color:var(--c-text-dim);font-size:14px;line-height:1.7;">' +
+        '<p style="margin-top:0;">Token Optimizer for Codex is project-hook based. These commands keep setup explicit and private to this branch/project.</p>' +
+        '<div style="display:grid;gap:10px;">' +
+        '<div><strong style="color:var(--c-text-main);">Install/update Codex hooks:</strong><br><code class="update-cmd">' + esc(cx.install_cmd || 'TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-install --project .') + '</code></div>' +
+        '<div><strong style="color:var(--c-text-main);">Install with opt-in Bash compression:</strong><br><code class="update-cmd">' + esc(cx.install_with_bash_compression_cmd || 'TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-install --project . --enable-bash-compression') + '</code></div>' +
+        '<div><strong style="color:var(--c-text-main);">Refresh trends, dashboard, and checkpoint now:</strong><br><code class="update-cmd">' + esc(cx.refresh_cmd || 'TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py session-end-flush --trigger manual') + '</code></div>' +
+        '<div><strong style="color:var(--c-text-main);">Verify readiness:</strong><br><code class="update-cmd">' + esc(cx.doctor_cmd || 'TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py doctor') + '</code></div>' +
+        '</div>' +
+        '<p style="margin-bottom:0;margin-top:var(--s-3);">Claude-specific skill and MCP archiving is hidden in Codex mode because it would optimize the wrong runtime.</p>' +
+        '</div></div>';
+    }
+
     // --- SKILLS SECTION ---
+    if (!isCodex) {
     var activeSkills = (m.skills && m.skills.active) || [];
     var archivedSkills = (m.skills && m.skills.archived) || [];
     var totalTokens = activeSkills.reduce(function(s, sk) { return s + (sk.tokens || 100); }, 0);
@@ -3914,6 +3935,7 @@ var DB = (function() {
       '<strong style="color:var(--c-text-main);">Skills</strong>: Archived skills are moved to <code>~/.claude/_backups/skills-archived-DATE/</code>. Restoring moves them back to <code>~/.claude/skills/</code>.' +
       '<br><strong style="color:var(--c-text-main);">MCP Servers</strong>: Disabled servers are moved to a <code>_disabledMcpServers</code> section in settings.json. Re-enabling moves them back.' +
       '</div></div>';
+    }
 
     el.innerHTML = html;
 

@@ -86,46 +86,6 @@ Works on Claude Code and [OpenClaw](#openclaw-plugin). Each platform has its own
 
 </details>
 
-<details>
-<summary><h3>Codex private beta</h3></summary>
-
-Codex support is currently a private beta on the `codex/codex-beta-adapter` branch. It uses Codex project hooks plus a Codex compact prompt. It is not Claude-parity yet: Codex does not currently support the same input-rewrite and compaction lifecycle hooks that Claude Code exposes, so some features are adapted instead of transparent.
-
-Install the beta checkout somewhere stable:
-
-```bash
-git clone -b codex/codex-beta-adapter https://github.com/alexgreensh/token-optimizer.git ~/.codex/token-optimizer
-cd ~/.codex/token-optimizer
-```
-
-Install Token Optimizer into a Codex project:
-
-```bash
-TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py codex-install --project /path/to/your/project
-TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py codex-doctor --project /path/to/your/project
-```
-
-What this does:
-
-- Writes managed Token Optimizer hooks into `/path/to/your/project/.codex/hooks.json`
-- Installs a Codex compact prompt into `$CODEX_HOME/token-optimizer/codex-compact-prompt.md`
-- Updates `$CODEX_HOME/config.toml` with `experimental_compact_prompt_file`
-- Leaves your Claude Code and OpenClaw installs untouched
-
-Uninstall from a project:
-
-```bash
-TOKEN_OPTIMIZER_RUNTIME=codex python3 ~/.codex/token-optimizer/skills/token-optimizer/scripts/measure.py codex-install --project /path/to/your/project --uninstall
-```
-
-Known beta limitations:
-
-- Hooks currently cover continuity, prompt nudges, Bash post-tool summaries, archives, stop checkpoints, and explicit outlines.
-- Codex does not yet support transparent `updatedInput` command rewrites or pre/post compact hooks, so Bash compression and exact compaction restore are adapted rather than Claude-native.
-- Keep the beta checkout path stable. Project hooks use absolute paths back to that checkout.
-
-</details>
-
 ---
 
 ## Full Visibility: See Every Token, Every Dollar, Every Turn
@@ -246,7 +206,7 @@ No. Pure Python stdlib on Claude Code. Pure Node stdlib on OpenClaw. Nothing to 
 
 Claude Code and OpenClaw today, with native plugins for each (Python for Claude Code, TypeScript for OpenClaw, no shared runtime, no cross-platform bridging).
 
-Codex support is available as a private beta on the `codex/codex-beta-adapter` branch. Windsurf and Cursor are next on the roadmap.
+Windsurf and Cursor are next on the roadmap. Codex is waiting for the plugin API to stabilize.
 </details>
 
 ---

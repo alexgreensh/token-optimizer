@@ -16257,10 +16257,13 @@ if __name__ == "__main__":
         doctor(as_json=output_json)
     elif args[0] == "codex-doctor":
         import codex_doctor
-        sys.exit(codex_doctor.main())
+        sys.exit(codex_doctor.main(args[1:]))
     elif args[0] == "codex-compact-prompt":
         import codex_compact_prompt
         sys.exit(codex_compact_prompt.main(args[1:]))
+    elif args[0] == "codex-install":
+        import codex_install
+        sys.exit(codex_install.main(args[1:]))
     elif args[0] == "drift":
         output_json = "--json" in args
         drift_check(as_json=output_json)
@@ -17333,6 +17336,7 @@ if __name__ == "__main__":
         print("  python3 measure.py doctor               # Health check: verify all components installed")
         print("  python3 measure.py doctor --json        # Machine-readable doctor output")
         print("  python3 measure.py codex-doctor         # Codex adapter readiness check")
+        print("  python3 measure.py codex-install        # Install Codex hooks into a project")
         print("  python3 measure.py codex-compact-prompt # Render/install Codex compact prompt")
         print("  python3 measure.py drift                # Drift report: compare against last snapshot")
         print("  python3 measure.py drift --json          # Machine-readable drift output")

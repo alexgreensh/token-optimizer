@@ -99,7 +99,7 @@ clone_repo() {
         local url="$1"
         git clone --depth 1 --filter=blob:none --sparse "$url" "$INSTALL_DIR" 2>"$clone_log" || return 1
         git -C "$INSTALL_DIR" sparse-checkout set \
-            skills/ hooks/ .claude-plugin/ \
+            skills/ hooks/ .claude-plugin/ .codex-plugin/ .codex/ \
             install.sh README.md LICENSE NOTICE PRIVACY.md \
             2>>"$clone_log" || true
     }

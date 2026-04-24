@@ -21,6 +21,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 # Defense in depth: the launcher script already filters interpreters, but
 # if a user's PATH has a stale Python 3.7 that slipped through, bail early
@@ -36,20 +37,31 @@ def main() -> int:
     script_rel = sys.argv[1]
     script_args = sys.argv[2:]
 
+    rel_path = Path(script_rel)
+    if rel_path.is_absolute() or ".." in rel_path.parts:
+        return 0
+
     plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip()
     if plugin_root:
-        script_path = os.path.join(plugin_root, script_rel)
+        root_path = Path(plugin_root)
     else:
         # Fallback: relative to this wrapper's parent directory.
-        script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", script_rel)
+        root_path = Path(__file__).resolve().parent.parent
 
-    script_path = os.path.normpath(script_path)
-    if not os.path.isfile(script_path):
+    try:
+        root_resolved = root_path.resolve(strict=True)
+        candidate = root_resolved / rel_path
+        if not candidate.is_file():
+            return 0
+        script_path = candidate.resolve(strict=True)
+        if not script_path.is_relative_to(root_resolved):
+            return 0
+    except (OSError, ValueError):
         return 0
 
     # Use the interpreter that ran this wrapper so we inherit the correct
     # Python across macOS/Linux/Windows without relying on PATH.
-    cmd = [sys.executable, script_path, *script_args]
+    cmd = [sys.executable, str(script_path), *script_args]
     proc = None
     try:
         proc = subprocess.Popen(cmd)

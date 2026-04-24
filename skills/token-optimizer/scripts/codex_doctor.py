@@ -3,10 +3,10 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +28,7 @@ REQUIRED_FILES = (
     "hooks/run.py",
     "skills/token-optimizer/scripts/codex_hook_bridge.py",
     "skills/token-optimizer/scripts/codex_compact_prompt.py",
+    "skills/token-optimizer/scripts/codex_install.py",
     "skills/token-optimizer/scripts/context_intel.py",
     "skills/token-optimizer/scripts/archive_result.py",
     "skills/token-optimizer/scripts/measure.py",
@@ -173,17 +174,30 @@ def _compact_prompt_check() -> dict[str, str]:
     try:
         text = config_path.read_text(encoding="utf-8")
     except OSError:
-        return _check("WARN", "Compact prompt", f"{config_path} not found")
+        return _check("FAIL", "Compact prompt", f"{config_path} not found; run measure.py codex-compact-prompt --install")
     expected = codex_home() / "token-optimizer" / "codex-compact-prompt.md"
     if str(expected) in text and expected.exists():
         return _check("OK", "Compact prompt", str(expected))
     if "compact_prompt" in text or "experimental_compact_prompt_file" in text:
         return _check("WARN", "Compact prompt", "custom compact prompt configured")
-    return _check("WARN", "Compact prompt", "not configured yet")
+    return _check("FAIL", "Compact prompt", "not configured yet; run measure.py codex-compact-prompt --install")
 
 
-def run_checks() -> list[dict[str, str]]:
+def _project_hook_check(project: Path) -> dict[str, str]:
+    hooks_path = project / ".codex" / "hooks.json"
+    data, error = _load_json(hooks_path)
+    if error:
+        return _check("FAIL", "Project hooks", f"{hooks_path} not found or unreadable; run measure.py codex-install --project {project}")
+    if not isinstance(data, dict) or not isinstance(data.get("hooks"), dict):
+        return _check("FAIL", "Project hooks", f"{hooks_path} has no hooks object")
+    if "token-optimizer/scripts" in json.dumps(data, sort_keys=True):
+        return _check("OK", "Project hooks", str(hooks_path))
+    return _check("FAIL", "Project hooks", f"Token Optimizer not installed in {hooks_path}; run measure.py codex-install --project {project}")
+
+
+def run_checks(project: Path | None = None) -> list[dict[str, str]]:
     root = _repo_root()
+    project = project or Path.cwd()
     checks = [
         _check("OK", "Repo root", str(root)),
         _check("OK", "Detected runtime", detect_runtime()),
@@ -194,6 +208,7 @@ def run_checks() -> list[dict[str, str]]:
     checks.extend(_manifest_checks(root))
     checks.extend(_hook_config_checks(root))
     checks.append(_compact_prompt_check())
+    checks.append(_project_hook_check(project))
     return checks
 
 
@@ -206,11 +221,19 @@ def _print_text(checks: list[dict[str, str]]) -> None:
     print(f"\nSummary: {counts['OK']} OK, {counts['WARN']} WARN, {counts['FAIL']} FAIL")
 
 
-def main() -> int:
-    as_json = "--json" in sys.argv[1:]
-    checks = run_checks()
-    if as_json:
-        print(json.dumps({"checks": checks}, indent=2))
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Check Token Optimizer Codex adapter readiness.")
+    parser.add_argument("--json", action="store_true", help="Emit machine-readable output")
+    parser.add_argument("--project", default=".", help="Project directory whose .codex/hooks.json should be checked")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    project = Path(args.project).expanduser().resolve(strict=False)
+    checks = run_checks(project=project)
+    if args.json:
+        print(json.dumps({"project": str(project), "checks": checks}, indent=2))
     else:
         _print_text(checks)
     return 1 if any(check["status"] == "FAIL" for check in checks) else 0

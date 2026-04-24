@@ -17,6 +17,8 @@ MANAGED_BEGIN = "# BEGIN token-optimizer compact prompt"
 MANAGED_END = "# END token-optimizer compact prompt"
 COMPACT_FILE_RE = re.compile(r"(?m)^\s*experimental_compact_prompt_file\s*=")
 INLINE_COMPACT_RE = re.compile(r"(?m)^\s*compact_prompt\s*=")
+COMPACT_FILE_LINE_RE = re.compile(r"(?m)^(\s*)experimental_compact_prompt_file\s*=.*$")
+INLINE_COMPACT_LINE_RE = re.compile(r"(?m)^(\s*)compact_prompt\s*=.*$")
 
 COMPACT_PROMPT = """Token Optimizer compact prompt for Codex.
 
@@ -51,15 +53,55 @@ def _config_path() -> Path:
     return codex_home() / "config.toml"
 
 
+def _ensure_codex_home() -> Path:
+    home = codex_home()
+    if home.exists():
+        if home.is_symlink() or not home.is_dir():
+            raise ValueError(f"{home} must be a real directory")
+    else:
+        home.mkdir(mode=0o700)
+    return home.resolve(strict=True)
+
+
+def _safe_codex_child(*parts: str) -> Path:
+    home = _ensure_codex_home()
+    target = home.joinpath(*parts)
+    parent = target.parent
+    if parent.exists():
+        if parent.is_symlink() or not parent.is_dir():
+            raise ValueError(f"{parent} must be a real directory")
+        parent_resolved = parent.resolve(strict=True)
+        if not parent_resolved.is_relative_to(home):
+            raise ValueError(f"{parent} escapes Codex home")
+    else:
+        parent.mkdir(mode=0o700)
+    if target.exists() and target.is_symlink():
+        raise ValueError(f"{target} must not be a symlink")
+    target_resolved = target.resolve(strict=target.exists())
+    if not target_resolved.is_relative_to(home):
+        raise ValueError(f"{target} escapes Codex home")
+    return target
+
+
 def _managed_block(prompt_path: Path) -> str:
     return "\n".join(
         [
             MANAGED_BEGIN,
-            f'experimental_compact_prompt_file = "{prompt_path}"',
+            f"experimental_compact_prompt_file = {json_string(str(prompt_path))}",
             MANAGED_END,
             "",
         ]
     )
+
+
+def json_string(value: str) -> str:
+    """Return a TOML-compatible basic string for simple path values."""
+    import json
+    return json.dumps(value)
+
+
+def _comment_out_setting(pattern: re.Pattern[str], text: str) -> str:
+    return pattern.sub(r"\1# replaced by Token Optimizer: \g<0>", text)
 
 
 def _replace_or_append_config(config_text: str, prompt_path: Path, *, force: bool) -> tuple[str, str]:
@@ -74,7 +116,10 @@ def _replace_or_append_config(config_text: str, prompt_path: Path, *, force: boo
         raise ValueError("config.toml already has experimental_compact_prompt_file; rerun with --force to replace")
 
     if COMPACT_FILE_RE.search(config_text):
-        config_text = COMPACT_FILE_RE.sub("# replaced by Token Optimizer: experimental_compact_prompt_file =", config_text)
+        config_text = _comment_out_setting(COMPACT_FILE_LINE_RE, config_text)
+
+    if INLINE_COMPACT_RE.search(config_text):
+        config_text = _comment_out_setting(INLINE_COMPACT_LINE_RE, config_text)
 
     suffix = "" if not config_text or config_text.endswith("\n") else "\n"
     return config_text + suffix + "\n" + block, "installed"
@@ -97,8 +142,8 @@ def _atomic_write(path: Path, content: str, mode: int = 0o600) -> None:
 
 
 def install(force: bool = False) -> str:
-    prompt_path = _prompt_path()
-    config_path = _config_path()
+    prompt_path = _safe_codex_child("token-optimizer", PROMPT_FILENAME)
+    config_path = _safe_codex_child("config.toml")
     _atomic_write(prompt_path, COMPACT_PROMPT)
 
     try:

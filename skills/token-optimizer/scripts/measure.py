@@ -10233,12 +10233,19 @@ def compute_quality_score(quality_data):
         return {"score": 0, "signals": {}, "breakdown": {}}
 
     # 0. Context fill degradation
-    # Priority: live fill from statusline sidecar > char-length estimate from JSONL
+    # Priority: session token counters > live fill from statusline sidecar > char-length estimate from JSONL
     ctx_window = detect_context_window()[0]
     fill_pct = None
     try:
+        context_tokens = quality_data.get("context_tokens")
+        model_context_window = quality_data.get("model_context_window")
+        if context_tokens is not None and model_context_window:
+            fill_pct = min(1.0, max(0.0, float(context_tokens) / float(model_context_window)))
+    except (TypeError, ValueError):
+        fill_pct = None
+    try:
         live_fill_path = QUALITY_CACHE_DIR / "live-fill.json"
-        if live_fill_path.exists():
+        if fill_pct is None and live_fill_path.exists():
             live = json.loads(live_fill_path.read_text(encoding="utf-8"))
             age = time.time() - live.get("timestamp", 0) / 1000  # JS timestamp is ms
             if age < 10:
@@ -12457,6 +12464,9 @@ def _extract_session_state(filepath, tail_lines=500):
 
     Returns a dict, or None if file is empty/unreadable.
     """
+    if _use_codex_session_adapter(filepath):
+        return codex_session.extract_session_state(filepath, tail_lines=tail_lines, max_files=_CHECKPOINT_MAX_FILES)
+
     question_re = re.compile(r'\?|TODO|FIXME|HACK|XXX', re.IGNORECASE)
 
     active_files = []  # (path, action, line_range)
@@ -16309,6 +16319,9 @@ if __name__ == "__main__":
         quick_scan(as_json=output_json)
     elif args[0] == "doctor":
         output_json = "--json" in args
+        if detect_runtime() == "codex":
+            import codex_doctor
+            sys.exit(codex_doctor.main(args[1:]))
         doctor(as_json=output_json)
     elif args[0] == "codex-doctor":
         import codex_doctor
@@ -16387,17 +16400,7 @@ if __name__ == "__main__":
                 print("[Error] No session ID provided and no active session found.")
                 sys.exit(1)
         else:
-            # Find session by ID
-            fp = None
-            projects_dir = CLAUDE_DIR / "projects"
-            if projects_dir.exists():
-                for pd in projects_dir.iterdir():
-                    if not pd.is_dir():
-                        continue
-                    candidate = pd / f"{sid}.jsonl"
-                    if candidate.exists():
-                        fp = str(candidate)
-                        break
+            fp = _find_session_jsonl_by_id(sid)
             if not fp:
                 print(f"[Error] Session '{sid}' not found.")
                 sys.exit(1)
@@ -16645,7 +16648,11 @@ if __name__ == "__main__":
         except Exception:
             pass
         try:
-            compact_capture(trigger="end")
+            flush_trigger = "end"
+            for i, a in enumerate(args):
+                if a == "--trigger" and i + 1 < len(args):
+                    flush_trigger = args[i + 1]
+            compact_capture(trigger=flush_trigger)
         except Exception:
             pass
         sys.exit(0)

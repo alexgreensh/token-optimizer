@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -lc 'root=$(git rev-parse --show-toplevel 2>/dev/null || pwd); bash \"$root/hooks/python-launcher.sh\" \"$root/hooks/run.py\" skills/token-optimizer/scripts/codex_hook_bridge.py session-start'",
+            "command": "bash -lc 'root=$(git rev-parse --show-toplevel 2>/dev/null || pwd); TOKEN_OPTIMIZER_RUNTIME=codex bash \"$root/hooks/python-launcher.sh\" \"$root/hooks/run.py\" skills/token-optimizer/scripts/codex_hook_bridge.py session-start'",
             "timeout": 15
           }
         ]
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -lc 'root=$(git rev-parse --show-toplevel 2>/dev/null || pwd); bash \"$root/hooks/python-launcher.sh\" \"$root/hooks/run.py\" skills/token-optimizer/scripts/codex_hook_bridge.py user-prompt-submit'",
+            "command": "bash -lc 'root=$(git rev-parse --show-toplevel 2>/dev/null || pwd); TOKEN_OPTIMIZER_RUNTIME=codex bash \"$root/hooks/python-launcher.sh\" \"$root/hooks/run.py\" skills/token-optimizer/scripts/codex_hook_bridge.py user-prompt-submit'",
             "timeout": 12
           }
         ]
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -lc 'root=$(git rev-parse --show-toplevel 2>/dev/null || pwd); bash \"$root/hooks/python-launcher.sh\" \"$root/hooks/run.py\" skills/token-optimizer/scripts/context_intel.py --quiet'",
+            "command": "bash -lc 'root=$(git rev-parse --show-toplevel 2>/dev/null || pwd); TOKEN_OPTIMIZER_RUNTIME=codex bash \"$root/hooks/python-launcher.sh\" \"$root/hooks/run.py\" skills/token-optimizer/scripts/context_intel.py --quiet'",
             "timeout": 10
           }
         ]
@@ -38,7 +38,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -lc 'root=$(git rev-parse --show-toplevel 2>/dev/null || pwd); bash \"$root/hooks/python-launcher.sh\" \"$root/hooks/run.py\" skills/token-optimizer/scripts/archive_result.py --quiet >/dev/null 2>&1'",
+            "command": "bash -lc 'root=$(git rev-parse --show-toplevel 2>/dev/null || pwd); TOKEN_OPTIMIZER_RUNTIME=codex bash \"$root/hooks/python-launcher.sh\" \"$root/hooks/run.py\" skills/token-optimizer/scripts/archive_result.py --quiet >/dev/null 2>&1'",
             "timeout": 10
           }
         ]
@@ -49,8 +49,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -lc 'root=$(git rev-parse --show-toplevel 2>/dev/null || pwd); bash \"$root/hooks/python-launcher.sh\" \"$root/hooks/run.py\" skills/token-optimizer/scripts/measure.py compact-capture --trigger stop --quiet'",
-            "timeout": 20
+            "command": "bash -lc 'root=$(git rev-parse --show-toplevel 2>/dev/null || pwd); TOKEN_OPTIMIZER_RUNTIME=codex bash \"$root/hooks/python-launcher.sh\" \"$root/hooks/run.py\" skills/token-optimizer/scripts/measure.py session-end-flush --trigger stop --quiet'",
+            "timeout": 45
           }
         ]
       }

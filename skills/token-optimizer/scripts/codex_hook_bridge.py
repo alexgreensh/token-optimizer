@@ -20,8 +20,12 @@ from hook_io import read_stdin_hook_input
 
 def _capture_stdout(func, *args, **kwargs) -> str:
     buffer = io.StringIO()
-    with redirect_stdout(buffer):
-        func(*args, **kwargs)
+    try:
+        with redirect_stdout(buffer):
+            func(*args, **kwargs)
+    except Exception as exc:
+        print(f"[Token Optimizer] Codex hook helper failed: {exc}", file=sys.stderr)
+        return ""
     return buffer.getvalue()
 
 
@@ -107,14 +111,17 @@ def handle_user_prompt_submit() -> None:
 
 
 def main() -> int:
-    if len(sys.argv) < 2:
-        return 0
+    try:
+        if len(sys.argv) < 2:
+            return 0
 
-    command = sys.argv[1].strip().lower()
-    if command == "session-start":
-        handle_session_start()
-    elif command == "user-prompt-submit":
-        handle_user_prompt_submit()
+        command = sys.argv[1].strip().lower()
+        if command == "session-start":
+            handle_session_start()
+        elif command == "user-prompt-submit":
+            handle_user_prompt_submit()
+    except Exception as exc:
+        print(f"[Token Optimizer] Codex hook bridge failed: {exc}", file=sys.stderr)
     return 0
 
 

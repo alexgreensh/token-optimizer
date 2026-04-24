@@ -27,7 +27,7 @@ def _hook_command(script: str, *args: str, redirect_quiet: bool = False) -> str:
     launcher = shlex.quote(str(root / "hooks" / "python-launcher.sh"))
     runner = shlex.quote(str(root / "hooks" / "run.py"))
     command_args = " ".join(shlex.quote(arg) for arg in (script, *args))
-    command = f"bash {launcher} {runner} {command_args}"
+    command = f"TOKEN_OPTIMIZER_RUNTIME=codex bash {launcher} {runner} {command_args}"
     if redirect_quiet:
         command += " >/dev/null 2>&1"
     return command
@@ -99,12 +99,12 @@ def _managed_hooks(*, enable_bash_compression: bool = False) -> dict[str, list[d
                         "type": "command",
                         "command": _hook_command(
                             "skills/token-optimizer/scripts/measure.py",
-                            "compact-capture",
+                            "session-end-flush",
                             "--trigger",
                             "stop",
                             "--quiet",
                         ),
-                        "timeout": 20,
+                        "timeout": 45,
                     }
                 ]
             }

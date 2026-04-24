@@ -213,7 +213,7 @@ def _project_feature_checks(project: Path) -> list[dict[str, str]]:
 
     required_features = (
         ("Prompt quality nudges", "UserPromptSubmit", None, "codex_hook_bridge.py"),
-        ("Session continuity", "Stop", None, "compact-capture"),
+        ("Session continuity and dashboard refresh", "Stop", None, "session-end-flush"),
         ("Tool output archive", "PostToolUse", "Bash", "archive_result.py"),
         ("Context intelligence", "PostToolUse", "Bash", "context_intel.py"),
     )
@@ -233,7 +233,7 @@ def _project_feature_checks(project: Path) -> list[dict[str, str]]:
         _check(
             "WARN",
             "Codex API limitations",
-            "read deltas, structure maps, dynamic compaction, auto dashboard refresh, and StopFailure recovery need additional Codex hook payloads",
+            "read deltas, structure maps, dynamic compaction, and StopFailure recovery need additional Codex hook payloads",
         )
     )
 

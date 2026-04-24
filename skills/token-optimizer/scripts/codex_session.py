@@ -88,6 +88,13 @@ def _estimate_tokens(text: str) -> int:
     return max(0, int(len(text) / CHARS_PER_TOKEN))
 
 
+def _safe_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _token_usage(payload: dict[str, Any], *, cumulative: bool = True) -> dict[str, int] | None:
     info = payload.get("info")
     if not isinstance(info, dict):
@@ -98,12 +105,12 @@ def _token_usage(payload: dict[str, Any], *, cumulative: bool = True) -> dict[st
     if not isinstance(usage, dict):
         return None
     return {
-        "input_tokens": int(usage.get("input_tokens") or 0),
-        "cached_input_tokens": int(usage.get("cached_input_tokens") or 0),
-        "output_tokens": int(usage.get("output_tokens") or 0),
-        "reasoning_output_tokens": int(usage.get("reasoning_output_tokens") or 0),
-        "total_tokens": int(usage.get("total_tokens") or 0),
-        "model_context_window": int(info.get("model_context_window") or 0),
+        "input_tokens": _safe_int(usage.get("input_tokens")),
+        "cached_input_tokens": _safe_int(usage.get("cached_input_tokens")),
+        "output_tokens": _safe_int(usage.get("output_tokens")),
+        "reasoning_output_tokens": _safe_int(usage.get("reasoning_output_tokens")),
+        "total_tokens": _safe_int(usage.get("total_tokens")),
+        "model_context_window": _safe_int(info.get("model_context_window")),
     }
 
 
@@ -345,6 +352,7 @@ def parse_session_jsonl(filepath: str | Path) -> dict[str, Any] | None:
 def parse_session_turns(filepath: str | Path) -> list[dict[str, Any]]:
     turns: list[dict[str, Any]] = []
     pending_tools: list[str] = []
+    pending_usage: dict[str, int] | None = None
     turn_index = 0
     try:
         with Path(filepath).open("r", encoding="utf-8", errors="replace") as handle:
@@ -359,32 +367,40 @@ def parse_session_turns(filepath: str | Path) -> list[dict[str, Any]]:
                     pending_tools.append(_tool_name(str(payload.get("name") or "unknown")))
                 elif payload_type == "token_count":
                     usage = _token_usage(payload, cumulative=False)
-                    if usage and turns:
-                        turn = turns[-1]
-                        turn["input_tokens"] = usage["input_tokens"] + usage["cached_input_tokens"]
-                        turn["output_tokens"] = usage["output_tokens"] + usage["reasoning_output_tokens"]
-                        turn["cache_read"] = usage["cached_input_tokens"]
-                        turn["estimated"] = False
+                    if usage:
+                        if turns:
+                            turn = turns[-1]
+                            turn["input_tokens"] = usage["input_tokens"] + usage["cached_input_tokens"]
+                            turn["output_tokens"] = usage["output_tokens"] + usage["reasoning_output_tokens"]
+                            turn["cache_read"] = usage["cached_input_tokens"]
+                            turn["estimated"] = False
+                        else:
+                            pending_usage = usage
                 elif payload_type == "agent_message":
                     text = _extract_text(payload)
-                    turns.append(
-                        {
-                            "turn_index": turn_index,
-                            "role": "assistant",
-                            "input_tokens": 0,
-                            "output_tokens": _estimate_tokens(text),
-                            "cache_read": 0,
-                            "cache_creation": 0,
-                            "cache_creation_1h": 0,
-                            "cache_creation_5m": 0,
-                            "model": "codex",
-                            "timestamp": record.get("timestamp"),
-                            "gap_since_prev_seconds": None,
-                            "tools_used": pending_tools,
-                            "cost_usd": 0.0,
-                            "estimated": True,
-                        }
-                    )
+                    turn = {
+                        "turn_index": turn_index,
+                        "role": "assistant",
+                        "input_tokens": 0,
+                        "output_tokens": _estimate_tokens(text),
+                        "cache_read": 0,
+                        "cache_creation": 0,
+                        "cache_creation_1h": 0,
+                        "cache_creation_5m": 0,
+                        "model": "codex",
+                        "timestamp": record.get("timestamp"),
+                        "gap_since_prev_seconds": None,
+                        "tools_used": pending_tools,
+                        "cost_usd": 0.0,
+                        "estimated": True,
+                    }
+                    if pending_usage:
+                        turn["input_tokens"] = pending_usage["input_tokens"] + pending_usage["cached_input_tokens"]
+                        turn["output_tokens"] = pending_usage["output_tokens"] + pending_usage["reasoning_output_tokens"]
+                        turn["cache_read"] = pending_usage["cached_input_tokens"]
+                        turn["estimated"] = False
+                        pending_usage = None
+                    turns.append(turn)
                     pending_tools = []
                     turn_index += 1
     except (PermissionError, OSError):
@@ -401,6 +417,7 @@ def parse_jsonl_for_quality(filepath: str | Path) -> dict[str, Any] | None:
     compactions = 0
     agent_dispatches: list[tuple[int, int, int]] = []
     decisions: list[tuple[int, str]] = []
+    last_usage: dict[str, int] | None = None
     idx = 0
 
     try:
@@ -426,7 +443,12 @@ def parse_jsonl_for_quality(filepath: str | Path) -> dict[str, Any] | None:
                     idx += 1
                     continue
 
-                if payload_type in {"user_message", "message", "agent_message"}:
+                if payload_type == "token_count":
+                    usage = _token_usage(payload, cumulative=True)
+                    if usage:
+                        last_usage = usage
+
+                elif payload_type in {"user_message", "message", "agent_message"}:
                     text = _extract_text(payload)
                     role = "assistant" if payload_type == "agent_message" else str(payload.get("role") or "user")
                     substantive = len(text.split()) > (20 if role == "assistant" else 10)
@@ -481,7 +503,192 @@ def parse_jsonl_for_quality(filepath: str | Path) -> dict[str, Any] | None:
         "decisions": decisions,
         "total_entries": idx,
         "estimated": True,
+        "context_tokens": last_usage["total_tokens"] if last_usage else None,
+        "model_context_window": last_usage["model_context_window"] if last_usage else None,
     }
+
+
+def extract_session_state(filepath: str | Path, tail_lines: int = 500, max_files: int = 10) -> dict[str, Any] | None:
+    """Extract checkpoint-ready continuity state from a Codex JSONL session."""
+    question_re = re.compile(r"\?|TODO|FIXME|HACK|XXX", re.IGNORECASE)
+    active_files: list[tuple[str, str, str]] = []
+    recent_reads: list[str] = []
+    decisions: list[str] = []
+    open_questions: list[str] = []
+    agent_state: list[tuple[str, str]] = []
+    error_context: list[tuple[str, str]] = []
+    todos: list[tuple[str, str]] = []
+    active_plan = None
+    last_user_msg = ""
+    last_assistant_msg = ""
+    seen_files: set[str] = set()
+    recent_errors: list[str] = []
+
+    records: list[dict[str, Any]] = []
+    try:
+        with Path(filepath).open("r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                try:
+                    records.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+                if len(records) > tail_lines:
+                    records.pop(0)
+    except (PermissionError, OSError):
+        return None
+
+    if not records:
+        return None
+
+    for record in records:
+        payload = _payload(record)
+        payload_type = payload.get("type")
+
+        if payload_type in {"user_message", "message", "agent_message"}:
+            role = payload.get("role")
+            if payload_type == "user_message":
+                role = "user"
+            elif payload_type == "agent_message":
+                role = "assistant"
+            text = _extract_text(payload).strip()
+            if not text:
+                continue
+            if role == "user":
+                last_user_msg = text
+            elif role == "assistant":
+                last_assistant_msg = text
+                _append_decisions(text, decisions)
+                if recent_errors and _looks_like_fix(text):
+                    error_context.append((recent_errors[-1][:200], text[:200]))
+                    recent_errors = []
+            if question_re.search(text):
+                _append_question(text, open_questions)
+
+        elif payload_type in {"function_call", "custom_tool_call"}:
+            name = str(payload.get("name") or "")
+            args = _parse_arguments(payload)
+            if name == "exec_command":
+                cmd = str(args.get("cmd") or args.get("command") or "")
+                if READ_CMD_RE.search(cmd):
+                    for path in _extract_shell_paths(cmd):
+                        _append_file_path(path, "read", "", active_files, recent_reads, seen_files, max_files)
+                        if _is_plan_path(path):
+                            active_plan = path
+                for path in _extract_probable_write_paths(cmd):
+                    _append_file_path(path, "modified", "", active_files, recent_reads, seen_files, max_files)
+                    if _is_plan_path(path):
+                        active_plan = path
+            elif name == "apply_patch":
+                patch = str(args.get("patch") or "")
+                for path in PATCH_FILE_RE.findall(patch):
+                    clean_path = path.strip()
+                    _append_file_path(clean_path, "modified", "", active_files, recent_reads, seen_files, max_files)
+                    if _is_plan_path(clean_path):
+                        active_plan = clean_path
+            elif name == "spawn_agent":
+                agent_type = str(args.get("agent_type") or "default")
+                desc = str(args.get("message") or args.get("prompt") or "")[:100]
+                agent_state.append((agent_type, desc))
+            elif name == "update_plan":
+                plan = args.get("plan")
+                if isinstance(plan, list):
+                    todos = [
+                        (str(item.get("step") or item.get("content") or "")[:120], str(item.get("status") or ""))
+                        for item in plan
+                        if isinstance(item, dict) and (item.get("step") or item.get("content"))
+                    ]
+
+        elif payload_type in {"function_call_output", "custom_tool_call_output"}:
+            text = str(payload.get("output") or "")
+            if _looks_like_error(text):
+                recent_errors.append(text[:300].strip())
+        elif payload_type in {"exec_command_end", "patch_apply_end"}:
+            text = _event_output_text(payload)
+            exit_code = payload.get("exit_code")
+            status = str(payload.get("status") or "").lower()
+            if exit_code not in (None, 0) or "error" in status or _looks_like_error(text):
+                recent_errors.append(text[:300].strip())
+
+    return {
+        "active_files": active_files[-max_files:],
+        "recent_reads": recent_reads[-max_files:],
+        "decisions": decisions[-10:],
+        "open_questions": open_questions[-5:],
+        "agent_state": agent_state[-10:],
+        "error_context": error_context[-5:],
+        "todos": todos,
+        "active_plan": active_plan,
+        "current_step": {
+            "last_user": last_user_msg[:500],
+            "last_assistant": last_assistant_msg[:500],
+        },
+    }
+
+
+def _append_file_path(
+    path: str,
+    action: str,
+    line_range: str,
+    active_files: list[tuple[str, str, str]],
+    recent_reads: list[str],
+    seen_files: set[str],
+    max_files: int,
+) -> None:
+    if not path:
+        return
+    if path in seen_files:
+        if action == "modified" and all(existing[0] != path for existing in active_files):
+            if len(active_files) < max_files:
+                active_files.append((path, action, line_range))
+            try:
+                recent_reads.remove(path)
+            except ValueError:
+                pass
+        return
+    seen_files.add(path)
+    if action == "modified":
+        if len(active_files) < max_files:
+            active_files.append((path, action, line_range))
+    else:
+        recent_reads.append(path)
+
+
+def _append_decisions(text: str, decisions: list[str]) -> None:
+    if not re.search(r"\b(chose|decided|because|instead of|went with|going with|switched|prefer|should use|will use)\b", text, re.IGNORECASE):
+        return
+    for sentence in re.split(r"[.!?\n]", text):
+        if re.search(r"\b(chose|decided|because|instead of|went with|going with|switched|prefer|should use|will use)\b", sentence, re.IGNORECASE):
+            snippet = sentence.strip()[:200]
+            if snippet and snippet not in decisions:
+                decisions.append(snippet)
+            return
+
+
+def _append_question(text: str, open_questions: list[str]) -> None:
+    for sentence in re.split(r"[.!?\n]", text):
+        snippet = sentence.strip()[:200]
+        if snippet and ("?" in snippet or re.search(r"\bTODO\b|\bFIXME\b", snippet, re.IGNORECASE)):
+            if snippet not in open_questions:
+                open_questions.append(snippet)
+            return
+
+
+def _extract_probable_write_paths(command: str) -> list[str]:
+    if not re.search(r">\s*|tee\s+|mv\s+|cp\s+|touch\s+|mkdir\s+-p\s+", command):
+        return []
+    return _extract_shell_paths(command)
+
+
+def _is_plan_path(path: str) -> bool:
+    return "/docs/plans/" in path and path.endswith(".md")
+
+
+def _looks_like_error(text: str) -> bool:
+    return bool(re.search(r"\b(error|failed|traceback|exception|permission denied|not found)\b", text, re.IGNORECASE))
+
+
+def _looks_like_fix(text: str) -> bool:
+    return bool(re.search(r"\b(fix|fixed|instead|switched|resolved|retry|rerun|passing)\b", text, re.IGNORECASE))
 
 
 def _extract_shell_paths(command: str) -> list[str]:

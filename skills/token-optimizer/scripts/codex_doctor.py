@@ -27,6 +27,7 @@ REQUIRED_FILES = (
     "hooks/python-launcher.sh",
     "hooks/run.py",
     "skills/token-optimizer/scripts/codex_hook_bridge.py",
+    "skills/token-optimizer/scripts/codex_compact_prompt.py",
     "skills/token-optimizer/scripts/context_intel.py",
     "skills/token-optimizer/scripts/archive_result.py",
     "skills/token-optimizer/scripts/measure.py",
@@ -173,8 +174,11 @@ def _compact_prompt_check() -> dict[str, str]:
         text = config_path.read_text(encoding="utf-8")
     except OSError:
         return _check("WARN", "Compact prompt", f"{config_path} not found")
+    expected = codex_home() / "token-optimizer" / "codex-compact-prompt.md"
+    if str(expected) in text and expected.exists():
+        return _check("OK", "Compact prompt", str(expected))
     if "compact_prompt" in text or "experimental_compact_prompt_file" in text:
-        return _check("OK", "Compact prompt", "configured")
+        return _check("WARN", "Compact prompt", "custom compact prompt configured")
     return _check("WARN", "Compact prompt", "not configured yet")
 
 

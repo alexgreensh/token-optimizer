@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import codex_compact_prompt
+import codex_statusline
 
 TOKEN_OPTIMIZER_MARKER = "token-optimizer/scripts"
 SUPPORTED_EVENTS = ("PreToolUse", "SessionStart", "UserPromptSubmit", "PostToolUse", "Stop")
@@ -240,6 +241,8 @@ def install(
     skip_compact_prompt: bool = False,
     force_compact_prompt: bool = False,
     enable_bash_compression: bool = False,
+    enable_status_line: bool = False,
+    force_status_line: bool = False,
 ) -> tuple[Path, str, dict[str, Any]]:
     path = _hooks_path(project)
     existing = _load_hooks(path)
@@ -248,12 +251,17 @@ def install(
         "hook_events": sorted(updated.get("hooks", {}).keys()),
         "bash_compression": enable_bash_compression,
         "compact_prompt": "skipped" if skip_compact_prompt else None,
+        "status_line": "skipped" if not enable_status_line else None,
     }
     if dry_run and not skip_compact_prompt:
         details["compact_prompt"] = codex_compact_prompt.plan_install(force=force_compact_prompt)
+    if dry_run and enable_status_line:
+        details["status_line"] = codex_statusline.plan_install(force=force_status_line)
     if not dry_run:
         if not skip_compact_prompt:
             details["compact_prompt"] = codex_compact_prompt.install(force=force_compact_prompt)
+        if enable_status_line:
+            details["status_line"] = codex_statusline.install(force=force_status_line)
         _atomic_write_json(path, updated)
     return path, "installed", details
 
@@ -276,6 +284,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-compact-prompt", action="store_true", help="Do not install Codex compact prompt")
     parser.add_argument("--force-compact-prompt", action="store_true", help="Replace existing compact-prompt settings")
     parser.add_argument("--enable-bash-compression", action="store_true", help="Opt into Codex PreToolUse(Bash) command rewriting")
+    parser.add_argument("--enable-status-line", action="store_true", help="Opt into Codex CLI context/status visibility")
+    parser.add_argument("--force-status-line", action="store_true", help="Replace existing Codex [tui] status_line settings")
     parser.add_argument("--json", action="store_true", help="Emit machine-readable output")
     return parser
 
@@ -293,6 +303,8 @@ def main(argv: list[str] | None = None) -> int:
                 skip_compact_prompt=args.skip_compact_prompt,
                 force_compact_prompt=args.force_compact_prompt,
                 enable_bash_compression=args.enable_bash_compression,
+                enable_status_line=args.enable_status_line,
+                force_status_line=args.force_status_line,
             )
     except ValueError as exc:
         print(f"[Token Optimizer] {exc}", file=sys.stderr)

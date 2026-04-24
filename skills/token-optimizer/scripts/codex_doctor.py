@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from runtime_env import codex_home, detect_runtime, runtime_home
+import codex_statusline
 
 SUPPORTED_HOOK_EVENTS = {
     "PreToolUse",
@@ -29,6 +30,7 @@ REQUIRED_FILES = (
     "skills/token-optimizer/scripts/codex_hook_bridge.py",
     "skills/token-optimizer/scripts/codex_session.py",
     "skills/token-optimizer/scripts/codex_compact_prompt.py",
+    "skills/token-optimizer/scripts/codex_statusline.py",
     "skills/token-optimizer/scripts/codex_install.py",
     "skills/token-optimizer/scripts/bash_hook.py",
     "skills/token-optimizer/scripts/bash_compress.py",
@@ -186,6 +188,15 @@ def _compact_prompt_check() -> dict[str, str]:
     return _check("FAIL", "Compact prompt", "not configured yet; run measure.py codex-compact-prompt --install")
 
 
+def _status_line_check() -> dict[str, str]:
+    state = codex_statusline.status()
+    if state.startswith("configured: Token Optimizer"):
+        return _check("OK", "Codex CLI status line", state)
+    if state.startswith("configured: custom"):
+        return _check("WARN", "Codex CLI status line", state)
+    return _check("WARN", "Codex CLI status line", "not configured; rerun codex-install with --enable-status-line")
+
+
 def _project_hook_check(project: Path) -> dict[str, str]:
     hooks_path = project / ".codex" / "hooks.json"
     data, error = _load_json(hooks_path)
@@ -271,6 +282,7 @@ def run_checks(project: Path | None = None) -> list[dict[str, str]]:
     checks.extend(_manifest_checks(root))
     checks.extend(_hook_config_checks(root))
     checks.append(_compact_prompt_check())
+    checks.append(_status_line_check())
     checks.append(_project_hook_check(project))
     checks.extend(_project_feature_checks(project))
     return checks

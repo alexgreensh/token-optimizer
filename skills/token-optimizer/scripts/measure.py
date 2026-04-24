@@ -3193,6 +3193,14 @@ def _collect_codex_hook_status_for_dashboard():
             "install_cmd": base + " --enable-bash-compression",
             "uninstall_cmd": base,
         },
+        "codex_status_line": {
+            "installed": _ok("Codex CLI status line"),
+            "partial": by_name.get("Codex CLI status line", {}).get("status") == "WARN",
+            "label": "Codex CLI Status Line",
+            "description": "Shows model, fast mode, context remaining/used, token count, branch, and cwd in the Codex terminal UI.",
+            "install_cmd": base + " --enable-status-line",
+            "uninstall_cmd": "Edit ~/.codex/config.toml and remove the Token Optimizer [tui] status line block",
+        },
         "codex_stop_refresh": {
             "installed": _ok("Feature: Session continuity and dashboard refresh"),
             "label": "Stop Refresh and Continuity",
@@ -3219,6 +3227,7 @@ def _collect_management_data(components=None, trends=None):
                 "project": str(project),
                 "install_cmd": base,
                 "install_with_bash_compression_cmd": base + " --enable-bash-compression",
+                "install_with_status_line_cmd": base + " --enable-status-line",
                 "refresh_cmd": f"TOKEN_OPTIMIZER_RUNTIME=codex python3 {shlex.quote(mp)} session-end-flush --trigger manual",
                 "doctor_cmd": f"TOKEN_OPTIMIZER_RUNTIME=codex python3 {shlex.quote(mp)} doctor",
                 "dashboard_cmd": f"TOKEN_OPTIMIZER_RUNTIME=codex python3 {shlex.quote(mp)} dashboard",
@@ -16497,6 +16506,9 @@ if __name__ == "__main__":
     elif args[0] == "codex-compact-prompt":
         import codex_compact_prompt
         sys.exit(codex_compact_prompt.main(args[1:]))
+    elif args[0] == "codex-status-line":
+        import codex_statusline
+        sys.exit(codex_statusline.main(args[1:]))
     elif args[0] == "codex-install":
         import codex_install
         sys.exit(codex_install.main(args[1:]))

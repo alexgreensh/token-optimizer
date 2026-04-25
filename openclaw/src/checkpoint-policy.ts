@@ -473,6 +473,8 @@ export function recordCheckpointDecision(sessionId: string, trigger: string, now
   if (trigger === "milestone-edit-batch") {
     state.editBatchMarkerWrites = state.editWriteCount;
     state.editBatchMarkerFiles = state.editedFiles.size;
+    persistState(sessionId, state);
+    return;
   }
 
   persistState(sessionId, state);

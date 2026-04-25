@@ -43,8 +43,8 @@ def _managed_hooks(
     """Build Codex project hooks.
 
     Codex Desktop currently renders every successful hook as a visible row.
-    Keep the default install low-noise: one Stop hook for collection/continuity,
-    and require explicit opt-in for prompt/tool hot-path hooks.
+    Default to balanced: session/prompt hooks for quality tracking plus Stop for
+    refresh/continuity. Per-tool hot-path hooks remain explicit opt-in.
     """
     hooks = {
         "Stop": [
@@ -59,7 +59,7 @@ def _managed_hooks(
                             "stop",
                             "--quiet",
                         ),
-                        "timeout": 45,
+                        "timeout": 180,
                     }
                 ]
             }
@@ -318,9 +318,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--profile",
         choices=("quiet", "balanced", "telemetry", "aggressive"),
-        default="quiet",
+        default="balanced",
         help=(
-            "Hook profile: quiet=Stop only; balanced=Stop+prompt hooks; "
+            "Hook profile: balanced=Stop+prompt hooks (default); quiet=Stop only; "
             "telemetry=Stop+PostToolUse; aggressive=all currently available hooks"
         ),
     )
@@ -333,7 +333,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--disable-bash-compression", action="store_true", help="Deprecated no-op; Bash compression is off by default")
     parser.add_argument("--enable-hot-path-hooks", action="store_true", help="Opt into visible PostToolUse tool-output hooks")
-    parser.add_argument("--enable-prompt-hooks", action="store_true", help="Opt into visible SessionStart/UserPromptSubmit guidance hooks")
+    parser.add_argument(
+        "--enable-prompt-hooks",
+        action="store_true",
+        help="Add visible SessionStart/UserPromptSubmit hooks when using --profile quiet; balanced already includes them",
+    )
     parser.add_argument("--enable-status-line", action="store_true", help="Opt into Codex CLI context/status visibility")
     parser.add_argument("--force-status-line", action="store_true", help="Replace existing Codex [tui] status_line settings")
     parser.add_argument("--json", action="store_true", help="Emit machine-readable output")
@@ -361,6 +365,7 @@ def main(argv: list[str] | None = None) -> int:
                 enable_status_line=args.enable_status_line,
                 force_status_line=args.force_status_line,
             )
+            details["profile"] = args.profile
     except ValueError as exc:
         print(f"[Token Optimizer] {exc}", file=sys.stderr)
         return 1

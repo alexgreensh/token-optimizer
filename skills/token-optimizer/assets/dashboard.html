@@ -3157,15 +3157,15 @@ var DB = (function() {
         '<thead><tr>' +
         '<th title="Session number within this day." style="cursor:help">#</th>' +
         '<th title="How long the session lasted from first event to last event." style="cursor:help">Duration</th>' +
-        '<th title="Total input context Claude processed in this session, including reused cache and cache writes." style="cursor:help">Input</th>' +
-        '<th title="Total output tokens Claude produced in this session." style="cursor:help">Output</th>' +
+        '<th title="Total input context ' + esc(data.runtime_label || 'Claude Code') + ' processed in this session, including reused cache and cache writes." style="cursor:help">Input</th>' +
+        '<th title="Total output tokens ' + esc(data.runtime_label || 'Claude Code') + ' produced in this session." style="cursor:help">Output</th>' +
         '<th title="How many user or assistant messages appeared in the session log." style="cursor:help">Msgs</th>' +
-        '<th title="Approximate cache hit rate. Higher means Claude reused more previously cached context instead of reprocessing it." style="cursor:help">Cache</th>' +
+        '<th title="Approximate cache hit rate. Higher means ' + esc(data.runtime_label || 'Claude Code') + ' reused more previously cached context instead of reprocessing it." style="cursor:help">Cache</th>' +
         '<th title="How much of cache writing used 1-hour TTL versus 5-minute TTL. Longer TTL keeps cache reusable for longer." style="cursor:help">TTL</th>' +
         '<th title="Time between assistant API calls in this session. Helpful for seeing whether a session was steady or stop-start." style="cursor:help">Pacing</th>' +
         '<th title="Estimated API-equivalent cost for the session." style="cursor:help">Cost</th>' +
         '<th title="Session quality score. Higher is healthier; lower means more context rot or risk." style="cursor:help">Q</th>' +
-        '<th title="Dominant Claude model used in the session." style="cursor:help">Model</th>' +
+        '<th title="Dominant ' + esc(data.runtime_label || 'Claude Code') + ' model used in the session." style="cursor:help">Model</th>' +
         '<th title="Short topic extracted from the session so you can recognize the thread." style="cursor:help">Topic</th>' +
         '</tr></thead><tbody>';
       (d.session_details || []).forEach(function(sd, si) {
@@ -3400,6 +3400,7 @@ var DB = (function() {
     var el = document.getElementById('view-coach');
     if (!el) return;
     var c = data.coach;
+    var runtimeLabel = data.runtime_label || 'Claude Code';
 
     var html = '<div class="section-header">' +
       '<div class="label">Advisory</div>' +
@@ -3561,7 +3562,7 @@ var DB = (function() {
     html += '<div class="card wide">' +
       '<div class="card-header"><span>Start a Coaching Session</span></div>' +
       '<div style="padding:var(--s-3);">' +
-      '<p style="color:var(--c-text-dim);font-size:14px;margin-bottom:var(--s-3);">Copy this prompt into Claude Code to start an interactive coaching session:</p>' +
+      '<p style="color:var(--c-text-dim);font-size:14px;margin-bottom:var(--s-3);">Copy this prompt into ' + esc(runtimeLabel) + ' to start an interactive coaching session:</p>' +
       '<div id="coach-prompt" style="background:var(--c-bg);padding:var(--s-3);border-radius:6px;font-family:var(--font-mono);font-size:13px;color:var(--c-accent-cyan);cursor:pointer;border:1px solid var(--c-border);" onclick="navigator.clipboard.writeText(this.textContent).then(function(){document.getElementById(\'coach-copy-msg\').style.opacity=1;setTimeout(function(){document.getElementById(\'coach-copy-msg\').style.opacity=0;},1500);})">/token-coach</div>' +
       '<div id="coach-copy-msg" style="color:var(--c-accent-cyan);font-size:13px;margin-top:var(--s-1);opacity:0;transition:opacity 0.3s;">Copied to clipboard!</div>' +
       '</div></div>';
@@ -3702,7 +3703,7 @@ var DB = (function() {
       existing.style.borderColor = 'var(--c-accent-cyan)';
       existing.style.color = 'var(--c-accent-cyan)';
       existing.style.background = 'rgba(0,255,255,0.05)';
-      existing.textContent = '\u27f3 ' + count + ' change' + (count > 1 ? 's' : '') + ' pending \u2014 restart Claude to apply';
+      existing.textContent = '\u27f3 ' + count + ' change' + (count > 1 ? 's' : '') + ' pending \u2014 restart ' + (data.runtime === 'codex' ? 'Codex' : 'Claude') + ' to apply';
       existing.style.display = 'block';
     } else {
       existing.style.borderColor = '#2ecc71';
@@ -3852,11 +3853,12 @@ var DB = (function() {
       var cx = (m && m.codex) || {};
       html += '<div class="card wide"><div class="card-header"><span>Codex Project Setup</span><span class="label">terminal commands</span></div>' +
         '<div style="padding:var(--s-3);color:var(--c-text-dim);font-size:14px;line-height:1.7;">' +
-        '<p style="margin-top:0;">Token Optimizer for Codex keeps setup explicit and private to this branch/project. The default install is low-noise because Codex Desktop currently shows every hook execution in the transcript.</p>' +
+        '<p style="margin-top:0;">Token Optimizer for Codex keeps setup explicit and private to this branch/project. The default balanced install captures prompt quality, loop signals, dashboard refresh, and continuity while avoiding per-tool hook spam.</p>' +
         '<div style="display:grid;gap:10px;">' +
-        '<div><strong style="color:var(--c-text-main);">Install/update low-noise Codex hook:</strong><br><code class="update-cmd">' + esc(cx.install_cmd || 'TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-install --project .') + '</code><br><span style="font-size:12px;color:var(--c-text-dim);">Uses Stop only for checkpoint/dashboard refresh. No per-tool hook rows while you work.</span></div>' +
+        '<div><strong style="color:var(--c-text-main);">Install/update balanced Codex hooks:</strong><br><code class="update-cmd">' + esc(cx.install_cmd || 'TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-install --project .') + '</code><br><span style="font-size:12px;color:var(--c-text-dim);">Uses SessionStart/UserPromptSubmit/Stop for real quality and continuity data. No PreToolUse/PostToolUse rows by default.</span></div>' +
+        '<div><strong style="color:var(--c-text-main);">Switch to quiet Stop-only mode:</strong><br><code class="update-cmd">' + esc(cx.install_quiet_profile_cmd || 'TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-install --project . --profile quiet') + '</code><br><span style="font-size:12px;color:var(--c-text-dim);">Keeps checkpoint/dashboard refresh only if a user wants minimum visible hook rows.</span></div>' +
         '<div><strong style="color:var(--c-text-main);">Opt into Bash compression:</strong><br><code class="update-cmd">' + esc(cx.install_with_bash_compression_cmd || 'TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-install --project . --enable-bash-compression') + '</code><br><span style="font-size:12px;color:var(--c-text-dim);">Adds visible PreToolUse rows for Bash calls.</span></div>' +
-        '<div><strong style="color:var(--c-text-main);">Opt into prompt/tool automation hooks:</strong><br><code class="update-cmd">' + esc(cx.install_with_hot_path_hooks_cmd || 'TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-install --project . --enable-hot-path-hooks --enable-prompt-hooks') + '</code><br><span style="font-size:12px;color:var(--c-text-dim);">Closest to Claude behavior, but visibly noisy in Codex Desktop.</span></div>' +
+        '<div><strong style="color:var(--c-text-main);">Opt into full quality + tool telemetry:</strong><br><code class="update-cmd">' + esc(cx.install_with_hot_path_hooks_cmd || 'TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-install --project . --enable-hot-path-hooks --enable-prompt-hooks') + '</code><br><span style="font-size:12px;color:var(--c-text-dim);">Keeps the balanced quality hooks and adds PostToolUse rows so QA/users can measure exact tool-output bloat. Best for CLI/headless or explicit opt-in.</span></div>' +
         '<div><strong style="color:var(--c-text-main);">Refresh trends, dashboard, and checkpoint now:</strong><br><code class="update-cmd">' + esc(cx.refresh_cmd || 'TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py session-end-flush --trigger manual') + '</code></div>' +
         '<div><strong style="color:var(--c-text-main);">Verify readiness:</strong><br><code class="update-cmd">' + esc(cx.doctor_cmd || 'TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py doctor') + '</code></div>' +
         '</div>' +
@@ -4432,12 +4434,12 @@ var DB = (function() {
         '<th title="Assistant API call number inside this session." style="cursor:help">#</th>' +
         '<th title="Time since the previous assistant API call. Start means this was the first one." style="cursor:help">Gap</th>' +
         '<th title="Fresh input tokens for this API call, before counting cache reuse." style="cursor:help">Input</th>' +
-        '<th title="Output tokens produced by Claude for this API call." style="cursor:help">Output</th>' +
-        '<th title="Cached input tokens Claude reused on this call." style="cursor:help">Cache R</th>' +
+        '<th title="Output tokens produced by ' + esc(data.runtime_label || 'Claude Code') + ' for this API call." style="cursor:help">Output</th>' +
+        '<th title="Cached input tokens ' + esc(data.runtime_label || 'Claude Code') + ' reused on this call." style="cursor:help">Cache R</th>' +
         '<th title="New cache tokens written on this call for future reuse." style="cursor:help">Cache W</th>' +
         '<th title="Estimated API-equivalent cost for this call." style="cursor:help">Cost</th>' +
-        '<th title="Claude model used for this call." style="cursor:help">Model</th>' +
-        '<th title="Tools Claude used during this call." style="cursor:help">Tools</th>' +
+        '<th title="' + esc(data.runtime_label || 'Claude Code') + ' model used for this call." style="cursor:help">Model</th>' +
+        '<th title="Tools ' + esc(data.runtime_label || 'Claude Code') + ' used during this call." style="cursor:help">Tools</th>' +
         '</tr></thead><tbody>';
       var prevCR = -1, prevCW = -1, prevCtx = 0;
       turns.forEach(function(t) {

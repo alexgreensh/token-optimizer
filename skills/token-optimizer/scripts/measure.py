@@ -3506,7 +3506,7 @@ def _collect_codex_hook_status_for_dashboard():
         "codex_project": {
             "installed": _ok("Project hooks"),
             "label": "Codex Project Hooks",
-            "description": "Installs the low-noise Stop hook for dashboard refresh and checkpoint capture. Prompt/tool hooks are opt-in because Codex Desktop shows every hook row.",
+            "description": "Installs the balanced default hooks: SessionStart/UserPromptSubmit for quality tracking plus Stop for dashboard refresh and checkpoint capture. Per-tool hooks remain opt-in because Codex Desktop shows every hook row.",
             "install_cmd": base,
             "uninstall_cmd": base + " --uninstall",
         },
@@ -3529,8 +3529,8 @@ def _collect_codex_hook_status_for_dashboard():
         "codex_balanced_profile": {
             "installed": "UserPromptSubmit" in hooks_text and "codex_hook_bridge.py" in hooks_text,
             "label": "Balanced Quality Profile",
-            "description": "Enables prompt/session hooks for live quality cache and loop nudges with far less noise than per-tool hooks.",
-            "install_cmd": base + " --profile balanced",
+            "description": "Default profile. Enables prompt/session hooks for live quality cache and loop nudges with far less noise than per-tool hooks.",
+            "install_cmd": base,
             "uninstall_cmd": base + " --uninstall",
         },
         "codex_telemetry_profile": {
@@ -3552,7 +3552,7 @@ def _collect_codex_hook_status_for_dashboard():
             "installed": _ok("Feature: Session continuity and dashboard refresh"),
             "label": "Stop Refresh and Continuity",
             "description": "On Codex Stop, collects sessions, regenerates the dashboard, and saves a checkpoint for continuity.",
-            "install_cmd": base,
+            "install_cmd": base + " --profile quiet",
             "uninstall_cmd": base + " --uninstall",
         },
     }
@@ -3689,6 +3689,7 @@ def _collect_management_data(components=None, trends=None):
             "codex": {
                 "project": str(project),
                 "install_cmd": base,
+                "install_quiet_profile_cmd": base + " --profile quiet",
                 "install_balanced_profile_cmd": base + " --profile balanced",
                 "install_telemetry_profile_cmd": base + " --profile telemetry",
                 "install_aggressive_profile_cmd": base + " --profile aggressive",
@@ -4415,16 +4416,16 @@ def _generate_codex_auto_recommendations(components, trends=None, days=30):
     hook_names = set(hooks.get("names", []))
     if "Stop" not in hook_names:
         quick.append(
-            "**Install the low-noise Codex Stop hook**: "
-            "This refreshes the dashboard and captures continuity at turn/session end without per-tool hook spam. "
+            "**Install the default Codex hooks for real data**: "
+            "The balanced default enables SessionStart/UserPromptSubmit plus Stop, so Token Optimizer can track prompt quality, loop signals, dashboard refresh, and continuity without per-tool hook spam. "
             "Run `TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py codex-install --project .`."
         )
     if "UserPromptSubmit" not in hook_names:
         medium.append(
-            "**Consider the balanced Codex hook profile for live quality tracking**: "
-            "`codex-install --project . --profile balanced` enables SessionStart/UserPromptSubmit plus Stop. "
+            "**Enable the balanced Codex hook profile for live quality tracking**: "
+            "`codex-install --project .` now installs the balanced profile by default. "
             "That gives quality cache and loop/nudge timing with one visible row per prompt/session, not one row per tool. "
-            "This is the current best compromise until Codex adds hidden/background hook runs."
+            "Use `--profile quiet` only for users who prefer Stop-only continuity over live quality tracking."
         )
     if "PostToolUse" not in hook_names:
         deep.append(

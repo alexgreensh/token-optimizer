@@ -2,7 +2,12 @@ __pycache__/
 *.pyc
 *.pyo
 .env
+.env.*
 .DS_Store
+*.key
+*.pem
+*.p12
+*.crt
 *.egg-info/
 dist/
 !openclaw/dist/

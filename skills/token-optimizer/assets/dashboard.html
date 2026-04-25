@@ -2224,6 +2224,18 @@ var DB = (function() {
   // has no real data (pre-SessionEnd). Mirrors _get_v5_savings_recommendation()
   // in measure.py so the Overview card pitches the same numbers a real audit would.
   function synthesizeV5Recommendation() {
+    if (data && data.runtime === 'codex') {
+      return {
+        total_disabled_impact_pct: 0,
+        aggressive_impact_pct: 0,
+        disabled_features: [],
+        enabled_features: [],
+        recommendation: 'Codex-safe hooks measure quality, continuity, and cached input from real logs. Claude-only read substitution features are shown as API gaps, not promised savings.',
+        has_savings_available: false,
+        synthesized: true,
+        runtime_note: 'Codex does not currently expose enough read-hook payload or cache-write TTL data for Claude-style delta and structure-map savings.'
+      };
+    }
     var disabled = [], enabled = [], totalImpact = 0;
     Object.keys(V5_FEATURES_FALLBACK).forEach(function(name) {
       var f = V5_FEATURES_FALLBACK[name];
@@ -2270,11 +2282,16 @@ var DB = (function() {
     var status = {};
     Object.keys(V5_FEATURES_FALLBACK).forEach(function(name) {
       var f = V5_FEATURES_FALLBACK[name];
+      var codexGap = data && data.runtime === 'codex' && (name === 'delta_mode' || name === 'structure_map_beta');
       status[name] = {
         label: f.label, what: f.what, value: f.value, impact_pct: f.impact_pct,
-        how: f.how, risk: f.risk, risk_level: f.risk_level,
-        recommended: f.recommended, enabled: f.default,
-        source: 'default', env_var: f.env_var, config_key: 'v5_' + name
+        how: codexGap ? 'Codex currently lacks the Read-hook payload/response-substitution surface needed for this Claude feature.' : f.how,
+        risk: f.risk, risk_level: f.risk_level,
+        recommended: codexGap ? false : f.recommended,
+        enabled: codexGap ? false : f.default,
+        source: codexGap ? 'codex api gap' : 'default',
+        unavailable: codexGap,
+        env_var: f.env_var, config_key: 'v5_' + name
       };
     });
     return status;
@@ -2393,7 +2410,8 @@ var DB = (function() {
     var ts = data.generated_at ? new Date(data.generated_at).toLocaleString() : 'unknown';
     var staleMinutes = data.generated_at ? Math.round((Date.now() - new Date(data.generated_at).getTime()) / 60000) : 0;
     var isStale = staleMinutes > 60;
-    var staleWarning = isStale ? ' <span style="color:#ff9f43;font-weight:500;">(data is ' + (staleMinutes > 1440 ? Math.round(staleMinutes / 1440) + 'd' : Math.round(staleMinutes / 60) + 'h') + ' old — run /token-optimizer to refresh)</span>' : '';
+    var refreshHint = data.runtime === 'codex' ? 'run the Codex dashboard refresh command' : 'run /token-optimizer';
+    var staleWarning = isStale ? ' <span style="color:#ff9f43;font-weight:500;">(data is ' + (staleMinutes > 1440 ? Math.round(staleMinutes / 1440) + 'd' : Math.round(staleMinutes / 60) + 'h') + ' old — ' + refreshHint + ' to refresh)</span>' : '';
     var headerEl = document.querySelector('#view-overview .header');
     if (headerEl) {
       var existingTs = headerEl.querySelector('.last-updated');
@@ -2402,10 +2420,14 @@ var DB = (function() {
         tsDiv.className = 'last-updated';
         if (data.standalone) {
           tsDiv.innerHTML = 'Last updated: ' + esc(ts) + staleWarning +
-            ' &middot; Run <span class="update-cmd">/token-optimizer</span> for a full audit with recommendations.';
+            (data.runtime === 'codex'
+              ? ' &middot; Run <span class="update-cmd">TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py session-end-flush --trigger manual</span> for a fresh Codex audit.'
+              : ' &middot; Run <span class="update-cmd">/token-optimizer</span> for a full audit with recommendations.');
         } else {
           tsDiv.innerHTML = 'Last updated: ' + esc(ts) + staleWarning +
-            ' &middot; To refresh, run <span class="update-cmd">/token-optimizer</span> again.';
+            (data.runtime === 'codex'
+              ? ' &middot; To refresh, run <span class="update-cmd">TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py session-end-flush --trigger manual</span>.'
+              : ' &middot; To refresh, run <span class="update-cmd">/token-optimizer</span> again.');
         }
         headerEl.appendChild(tsDiv);
       }
@@ -2424,7 +2446,7 @@ var DB = (function() {
     vals.push(ct);
     vals.push(c.memory_md ? c.memory_md.tokens : 0);
     vals.push((c.skills ? c.skills.tokens : 0) + (c.plugin_skills ? c.plugin_skills.tokens : 0));
-    vals.push((c.commands ? c.commands.tokens : 0) + (c.plugin_commands ? c.plugin_commands.tokens : 0));
+    if (!isCodexOverview) vals.push((c.commands ? c.commands.tokens : 0) + (c.plugin_commands ? c.plugin_commands.tokens : 0));
     var rulesTokens = c.rules ? c.rules.tokens : 0;
     var importsTokens = c.imports ? c.imports.tokens : 0;
     if (rulesTokens > 0) vals.push(rulesTokens);
@@ -2439,7 +2461,8 @@ var DB = (function() {
       var logMax = Math.log10(ctxWindow);
       return Math.max(2, (logVal / logMax) * 80);
     }
-    var barLabels = [isCodexOverview ? 'AGENTS.md' : 'CLAUDE.md', 'MEMORY.md', 'Skills', 'Commands'];
+    var barLabels = [isCodexOverview ? 'AGENTS.md' : 'CLAUDE.md', isCodexOverview ? 'Codex Memories' : 'MEMORY.md', 'Skills'];
+    if (!isCodexOverview) barLabels.push('Commands');
     if (rulesTokens > 0) barLabels.push('Rules');
     if (importsTokens > 0) barLabels.push('@imports');
     barLabels.push('MCP Tools');
@@ -2489,7 +2512,7 @@ var DB = (function() {
     } else if (data.standalone) {
       document.getElementById('stat-potential').innerHTML = fn(ctrl) + ' <span class="mini-label">controllable tokens</span>';
       document.getElementById('potential-desc').textContent =
-        fn(ctrl) + ' of your ' + fn(total) + ' tokens are things you can change. Run /token-optimizer for a full audit with specific savings estimates.';
+        fn(ctrl) + ' of your ' + fn(total) + ' tokens are things you can change. ' + (isCodexOverview ? 'Use the Codex dashboard refresh command for a full local audit with specific savings estimates.' : 'Run /token-optimizer for a full audit with specific savings estimates.');
     } else {
       document.getElementById('stat-potential').innerHTML = fn(ctrl) + ' <span class="mini-label">controllable tokens</span>';
       document.getElementById('potential-desc').textContent =
@@ -2599,11 +2622,11 @@ var DB = (function() {
         ctaEl.innerHTML = '<div class="card-header"><span>Auto-Detected Recommendations</span></div>' +
           '<div class="empty-state" style="text-align:left;color:var(--c-text-dim);font-size:14px;">' +
           'These recommendations are auto-generated from your config. Browse them in the tabs on the left.<br>' +
-          'For deeper analysis (semantic duplication, content quality), run <code style="color:var(--c-accent-cyan)">/token-optimizer</code> for a full LLM-powered audit.</div>';
+          (isCodexOverview ? 'For deeper analysis, refresh the Codex dashboard after a few real turns so quality and continuity signals are available.' : 'For deeper analysis (semantic duplication, content quality), run <code style="color:var(--c-accent-cyan)">/token-optimizer</code> for a full LLM-powered audit.') + '</div>';
       } else {
         ctaEl.innerHTML = '<div class="card-header"><span>Optimization Recommendations</span></div>' +
           '<div class="empty-state">No auto-detected issues. Your setup looks clean.<br>' +
-          'Run <code style="color:var(--c-accent-cyan)">/token-optimizer</code> for a full audit with deeper analysis.</div>';
+          (isCodexOverview ? 'Refresh the Codex dashboard after live usage for deeper quality analysis.' : 'Run <code style="color:var(--c-accent-cyan)">/token-optimizer</code> for a full audit with deeper analysis.') + '</div>';
       }
       gridEl.parentNode.insertBefore(ctaEl, gridEl.nextSibling);
     }
@@ -2626,20 +2649,20 @@ var DB = (function() {
 
       if (data.auto_plan) {
         html += '<div class="last-updated">Last updated: ' + esc(ts) +
-          ' · Auto-detected. Run <span class="update-cmd">/token-optimizer</span> for deeper LLM-powered analysis.</div>';
+          (data.runtime === 'codex' ? ' · Auto-detected from Codex local config and logs.</div>' : ' · Auto-detected. Run <span class="update-cmd">/token-optimizer</span> for deeper LLM-powered analysis.</div>');
       } else if (data.standalone) {
         html += '<div class="last-updated">Last updated: ' + esc(ts) +
-          ' · Optimization data not available in standalone mode. Run <span class="update-cmd">/token-optimizer</span> for a full audit with recommendations.</div>';
+          (data.runtime === 'codex' ? ' · Optimization data is limited until Codex session logs are collected.</div>' : ' · Optimization data not available in standalone mode. Run <span class="update-cmd">/token-optimizer</span> for a full audit with recommendations.</div>');
       } else {
         html += '<div class="last-updated">Last updated: ' + esc(ts) +
-          ' · To refresh, run <span class="update-cmd">/token-optimizer</span> again.</div>';
+          (data.runtime === 'codex' ? ' · To refresh, use the Codex dashboard refresh command.</div>' : ' · To refresh, run <span class="update-cmd">/token-optimizer</span> again.</div>');
       }
 
       if (secItems.length === 0) {
         if (!data.plan && !data.auto_plan) {
           html += '<div class="empty-state" style="text-align:center;padding:2rem 1rem;">' +
             '<div style="font-size:1.5rem;margin-bottom:0.5rem;">No optimization plan yet</div>' +
-            '<div style="color:var(--text-secondary);margin-bottom:1rem;">Run <span class="update-cmd" style="cursor:pointer">/token-optimizer</span> in ' + esc(data.runtime_label || 'Claude Code') + ' to generate personalized recommendations with toggle items here.</div>' +
+            '<div style="color:var(--text-secondary);margin-bottom:1rem;">' + (data.runtime === 'codex' ? 'Use live Codex sessions and refresh the dashboard to generate personalized recommendations with toggle items here.' : 'Run <span class="update-cmd" style="cursor:pointer">/token-optimizer</span> in ' + esc(data.runtime_label || 'Claude Code') + ' to generate personalized recommendations with toggle items here.') + '</div>' +
             '</div>';
         } else {
           html += '<div class="empty-state">No items in this category.</div>';
@@ -2788,18 +2811,24 @@ var DB = (function() {
       : 'Fresh input + cache writes + output (what your invoice bills at full rate).';
     var cacheLabel = isCodex ? 'Cached Input Share' : 'Avg Cache Hit Rate';
     var cacheNote = isCodex
-      ? 'Codex exposes cached_input_tokens but not Claude-style cache-write TTL fields.'
+      ? 'Share of logged input tokens Codex says were cached_input_tokens. Similar to a cache hit rate, but Codex does not expose cache-write TTL or write-size fields.'
       : 'Above 90% is normal for longer sessions. It means prompt caching is working well.';
+    var tokenBreakdownNote = isCodex
+      ? 'fresh:' + fn(t.total_fresh_input || 0) + ' · cached input:' + fn(t.total_cache_read || 0) + ' · out:' + fn(t.total_output_tokens || 0)
+      : 'fresh:' + fn(t.total_fresh_input || 0) + ' · cache-write:' + fn(t.total_cache_create || 0) + ' · out:' + fn(t.total_output_tokens || 0);
+    var cacheExtra = isCodex
+      ? '<div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">' + cacheNote + '</div>'
+      : '<div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">Cache writes: ' + esc(globalTtlMix) + '</div><div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">' + esc(globalTtlSessionLabel) + '</div><div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">' + esc(ttlPeriodSummary || 'TTL period summary unavailable') + '</div><div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">' + cacheNote + '</div>';
 
     html += '<div class="stat-row" style="grid-template-columns:repeat(3,1fr);margin-bottom:var(--s-3)">' +
       '<div class="stat-card"><div class="stat-card-value">' + t.session_count + '</div><div class="stat-card-label">Sessions (' + t.period_days + 'd)</div></div>' +
-      '<div class="stat-card"><div class="stat-card-value">' + fn(t.total_tokens || 0) + '</div><div class="stat-card-label">' + tokenLabel + ' (' + t.period_days + 'd)</div><div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">' + tokenNote + '</div><div style="font-size:10px;color:var(--c-text-dim);margin-top:2px">fresh:' + fn(t.total_fresh_input || 0) + ' · cache-write:' + fn(t.total_cache_create || 0) + ' · out:' + fn(t.total_output_tokens || 0) + '</div></div>' +
+      '<div class="stat-card"><div class="stat-card-value">' + fn(t.total_tokens || 0) + '</div><div class="stat-card-label">' + tokenLabel + ' (' + t.period_days + 'd)</div><div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">' + tokenNote + '</div><div style="font-size:10px;color:var(--c-text-dim);margin-top:2px">' + tokenBreakdownNote + '</div></div>' +
       '<div class="stat-card"><div class="stat-card-value">' + fn(t.total_messages || 0) + '</div><div class="stat-card-label">Messages (' + t.period_days + 'd)</div></div>' +
       '</div>' +
       '<div class="stat-row" style="grid-template-columns:repeat(3,1fr)">' +
       '<div class="stat-card"><div class="stat-card-value">' + Math.round(t.avg_duration_minutes || 0) + 'm</div><div class="stat-card-label">Avg Duration</div></div>' +
       '<div class="stat-card"><div class="stat-card-value">' + fn((t.avg_input_tokens || 0) + (t.avg_output_tokens || 0)) + '</div><div class="stat-card-label">Avg Tokens/Session</div></div>' +
-      '<div class="stat-card"><div class="stat-card-value" style="color:#22c55e">' + avgCacheHit + (avgCacheHit !== 'N/A' ? '%' : '') + '</div><div class="stat-card-label">' + cacheLabel + '</div><div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">Cache writes: ' + esc(globalTtlMix) + '</div><div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">' + esc(globalTtlSessionLabel) + '</div><div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">' + esc(ttlPeriodSummary || 'TTL period summary unavailable') + '</div><div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">' + cacheNote + '</div></div>' +
+      '<div class="stat-card"><div class="stat-card-value" style="color:#22c55e">' + avgCacheHit + (avgCacheHit !== 'N/A' ? '%' : '') + '</div><div class="stat-card-label">' + cacheLabel + '</div>' + cacheExtra + '</div>' +
       '</div>';
 
     // Shared data for skills sections
@@ -2858,7 +2887,7 @@ var DB = (function() {
       // Date nav: show 7 days by default, with picker to jump to a date
       html += '<div class="card wide" id="daily-breakdown-card">' +
         '<div class="card-header"><span>Daily Breakdown</span></div>' +
-        '<div style="font-size:12px;color:var(--c-text-dim);padding:0 0 var(--s-2) 0;">Click any row to expand per-session details with cost, quality scores, cache hit rates, and cache TTL mix. Click a session for per-turn token breakdown.</div>' +
+        '<div style="font-size:12px;color:var(--c-text-dim);padding:0 0 var(--s-2) 0;">Click any row to expand per-session details with cost, quality scores, and cache data. ' + (isCodex ? 'Codex cache write TTL is not exposed, so those fields are hidden.' : 'Claude cache TTL mix is shown when available.') + ' Click a session for per-turn token breakdown.</div>' +
         '<div class="date-nav">' +
         '<button class="date-nav-btn active" data-range="7">7 days</button>' +
         '<button class="date-nav-btn" data-range="14">14 days</button>' +
@@ -2879,7 +2908,10 @@ var DB = (function() {
     skillEntries.sort(function(a, b) { return b[1] - a[1]; });
     var topSkills = skillEntries.slice(0, 15);
 
-    if (topSkills.length > 0) {
+    if (isCodex) {
+      html += '<div class="card wide"><div class="card-header"><span>Codex Skill Usage</span><span class="label">not exposed yet</span></div>' +
+        '<p style="font-size:13px;color:var(--c-text-dim);font-family:var(--font-mono);margin-bottom:0;">Codex exposes installed skill inventory and config state, but not reliable per-session skill invocation counts in the local logs. Use Manage to disable obvious stale skills; usage bars will appear once Codex exposes invocation telemetry.</p></div>';
+    } else if (topSkills.length > 0) {
       var maxSkill = topSkills[0][1];
       html += '<div class="card wide"><div class="card-header"><span>Skills Used</span><span class="label">' +
         Object.keys(skillsUsed).length + ' skills used of ' + (t.skills.installed_count || '?') + ' installed</span></div>' +
@@ -2898,7 +2930,7 @@ var DB = (function() {
 
     // Never-used skills with expandable detail (half-folded)
     var neverUsed = t.skills ? t.skills.never_used : [];
-    if (neverUsed.length > 0) {
+    if (!isCodex && neverUsed.length > 0) {
       var overhead = t.skills.never_used_overhead || (neverUsed.length * 100);
       var PREVIEW_COUNT = 4;
       html += '<div class="card wide"><div class="card-header"><span>Never Used (' + neverUsed.length + ' skills)</span><span class="label">~' + fn(overhead) + ' tokens wasted/session</span></div>' +
@@ -3114,9 +3146,12 @@ var DB = (function() {
     }
 
     var gitCommits = (data.trends && data.trends.git_commits) || {};
+    var isCodex = data.runtime === 'codex';
 
     var html = '<table class="session-table"><thead><tr>' +
-      '<th>Date</th><th>Sessions</th><th>Input Tokens</th><th>Output Tokens</th><th>Cost</th><th>Skills Used</th><th>Commits</th>' +
+      '<th>Date</th><th>Sessions</th><th>Input Tokens</th><th>Output Tokens</th><th>Cost</th>' +
+      (isCodex ? '<th>Cache</th>' : '<th>Skills Used</th>') +
+      '<th>Commits</th>' +
       '</tr></thead><tbody>';
     filtered.forEach(function(d) {
       var skillNames = Object.keys(d.skills_used || {});
@@ -3138,8 +3173,13 @@ var DB = (function() {
 
       // Daily cost total
       var dayCost = 0;
-      (d.session_details || []).forEach(function(sd) { dayCost += sd.cost_usd || 0; });
+      var dayCacheSum = 0, dayCacheCount = 0;
+      (d.session_details || []).forEach(function(sd) {
+        dayCost += sd.cost_usd || 0;
+        if ((sd.cache_hit_rate || 0) > 0) { dayCacheSum += sd.cache_hit_rate || 0; dayCacheCount += 1; }
+      });
       var dayCostStr = dayCost >= 1 ? '$' + dayCost.toFixed(2) : dayCost > 0 ? '$' + dayCost.toFixed(3) : '';
+      var dayCacheStr = dayCacheCount ? (dayCacheSum / dayCacheCount * 100).toFixed(0) + '% cached input' : 'not logged';
 
       html += '<tr class="daily-row" data-date="' + esc(d.date) + '" style="cursor:pointer;">' +
         '<td>' + esc(d.date) + '</td>' +
@@ -3147,24 +3187,24 @@ var DB = (function() {
         '<td>' + fn(d.total_input) + '</td>' +
         '<td>' + fn(d.total_output) + '</td>' +
         '<td style="color:var(--c-accent-cyan);font-family:var(--font-mono)">' + dayCostStr + '</td>' +
-        '<td style="color:var(--c-text-dim);font-size:13px;">' + esc(skillStr) + '</td>' +
+        '<td style="color:var(--c-text-dim);font-size:13px;">' + (isCodex ? esc(dayCacheStr) : esc(skillStr)) + '</td>' +
         '<td style="color:var(--c-text-dim);font-size:12px;">' + esc(commitStr) + '</td>' +
         '</tr>';
       html += '<tr class="daily-detail" data-detail-date="' + esc(d.date) + '" style="display:none;">' +
         '<td colspan="7" style="padding:0;">' +
         '<div style="background:var(--c-surface-hover);padding:var(--s-2) var(--s-3);margin:2px 0;overflow-x:auto;">' +
-        '<table class="session-table" style="margin:0;min-width:1180px;">' +
+        '<table class="session-table" style="margin:0;min-width:' + (isCodex ? '1060' : '1180') + 'px;">' +
         '<thead><tr>' +
         '<th title="Session number within this day." style="cursor:help">#</th>' +
         '<th title="How long the session lasted from first event to last event." style="cursor:help">Duration</th>' +
         '<th title="Total input context ' + esc(data.runtime_label || 'Claude Code') + ' processed in this session, including reused cache and cache writes." style="cursor:help">Input</th>' +
         '<th title="Total output tokens ' + esc(data.runtime_label || 'Claude Code') + ' produced in this session." style="cursor:help">Output</th>' +
         '<th title="How many user or assistant messages appeared in the session log." style="cursor:help">Msgs</th>' +
-        '<th title="Approximate cache hit rate. Higher means ' + esc(data.runtime_label || 'Claude Code') + ' reused more previously cached context instead of reprocessing it." style="cursor:help">Cache</th>' +
-        '<th title="How much of cache writing used 1-hour TTL versus 5-minute TTL. Longer TTL keeps cache reusable for longer." style="cursor:help">TTL</th>' +
+        '<th title="' + (isCodex ? 'Cached input share from Codex token_count logs.' : 'Approximate cache hit rate. Higher means ' + esc(data.runtime_label || 'Claude Code') + ' reused more previously cached context instead of reprocessing it.') + '" style="cursor:help">Cache</th>' +
+        (isCodex ? '' : '<th title="How much of cache writing used 1-hour TTL versus 5-minute TTL. Longer TTL keeps cache reusable for longer." style="cursor:help">TTL</th>') +
         '<th title="Time between assistant API calls in this session. Helpful for seeing whether a session was steady or stop-start." style="cursor:help">Pacing</th>' +
         '<th title="Estimated API-equivalent cost for the session." style="cursor:help">Cost</th>' +
-        '<th title="Session quality score. Higher is healthier; lower means more context rot or risk." style="cursor:help">Q</th>' +
+        '<th title="' + (isCodex ? 'Estimated context quality score from local Codex session events.' : 'Session quality score. Higher is healthier; lower means more context rot or risk.') + '" style="cursor:help">Q' + (isCodex ? ' (est.)' : '') + '</th>' +
         '<th title="Dominant ' + esc(data.runtime_label || 'Claude Code') + ' model used in the session." style="cursor:help">Model</th>' +
         '<th title="Short topic extracted from the session so you can recognize the thread." style="cursor:help">Topic</th>' +
         '</tr></thead><tbody>';
@@ -3202,7 +3242,7 @@ var DB = (function() {
           '<td>' + fn(sd.output_tokens) + '</td>' +
           '<td>' + (sd.message_count || 0) + '</td>' +
           '<td>' + ((sd.cache_hit_rate || 0) * 100).toFixed(0) + '%</td>' +
-          '<td style="font-family:var(--font-mono);font-size:11px;">' + esc(ttlStr) + '</td>' +
+          (isCodex ? '' : '<td style="font-family:var(--font-mono);font-size:11px;">' + esc(ttlStr) + '</td>') +
           '<td style="font-family:var(--font-mono);font-size:11px;">' + esc(pacingStr) + '</td>' +
           '<td style="color:var(--c-accent-cyan);font-family:var(--font-mono);font-size:12px;">' + costStr + '</td>' +
           '<td><span class="quality-badge ' + qBadgeClass + '">' + qGrade + ' (' + qs + ')</span></td>' +
@@ -3235,6 +3275,7 @@ var DB = (function() {
     var el = document.getElementById('view-health');
     if (!el) return;
     var h = data.health;
+    var isCodex = data.runtime === 'codex';
 
     var ts = data.generated_at ? new Date(data.generated_at).toLocaleString() : 'unknown';
     var html = '<div class="section-header">' +
@@ -3250,10 +3291,14 @@ var DB = (function() {
       return;
     }
 
-    // Version hero
-    html += '<div class="card wide"><div class="card-header"><span>Installed Version</span></div>' +
-      '<div class="version-hero">' + esc(h.installed_version || 'unknown') + '</div>' +
-      '<div class="label">' + esc(data.runtime_label || 'Claude Code') + '</div></div>';
+    if (!isCodex) {
+      html += '<div class="card wide"><div class="card-header"><span>Installed Version</span></div>' +
+        '<div class="version-hero">' + esc(h.installed_version || 'unknown') + '</div>' +
+        '<div class="label">' + esc(data.runtime_label || 'Claude Code') + '</div></div>';
+    } else {
+      html += '<div class="card wide"><div class="card-header"><span>Codex Health</span><span class="label">local session logs</span></div>' +
+        '<p style="font-size:13px;color:var(--c-text-dim);margin-bottom:0;">Codex process version comparison is not exposed reliably in local session data, so version/outdated rows are hidden. This tab focuses on running sessions, hook health, and context quality.</p></div>';
+    }
 
     // Running sessions table
     var sessions = h.running_sessions || [];
@@ -3281,7 +3326,7 @@ var DB = (function() {
       }
 
       html += '<table class="session-table"><thead><tr>' +
-        '<th>PID</th><th>Started</th><th>Elapsed</th><th>Version</th><th>Status</th><th></th>' +
+        '<th>PID</th><th>Started</th><th>Elapsed</th>' + (isCodex ? '' : '<th>Version</th>') + '<th>Status</th><th></th>' +
         '</tr></thead><tbody>';
       sessions.forEach(function(s) {
         var flagHtml = '';
@@ -3297,7 +3342,7 @@ var DB = (function() {
           '<td>' + s.pid + '</td>' +
           '<td>' + esc((s.started || '').slice(0, 20)) + '</td>' +
           '<td>' + esc(s.elapsed_human || '?') + '</td>' +
-          '<td>' + esc(s.version || 'unknown') + '</td>' +
+          (isCodex ? '' : '<td>' + esc(s.version || 'unknown') + '</td>') +
           '<td>' + flagHtml + '</td>' +
           '<td>' + killBtn + '</td>' +
           '</tr>';
@@ -3308,8 +3353,8 @@ var DB = (function() {
         '<span class="flag-badge terminal" style="font-size:10px">TERMINAL</span> = attached to a terminal tab (your active sessions) &nbsp; ' +
         '<span class="flag-badge" style="font-size:10px;background:rgba(125,140,163,0.2);color:var(--c-text-dim)">HEADLESS</span> = no terminal (automation/background) &nbsp; ' +
         '<span class="flag-badge stale" style="font-size:10px">STALE</span> = running 24h+ &nbsp; ' +
-        '<span class="flag-badge zombie" style="font-size:10px">ZOMBIE</span> = running 48h+ &nbsp; ' +
-        '<span class="flag-badge outdated" style="font-size:10px">OUTDATED</span> = older version than installed' +
+        '<span class="flag-badge zombie" style="font-size:10px">ZOMBIE</span> = running 48h+' +
+        (isCodex ? '' : ' &nbsp; <span class="flag-badge outdated" style="font-size:10px">OUTDATED</span> = older version than installed') +
         '</div>';
     }
     html += '</div>';
@@ -3332,7 +3377,7 @@ var DB = (function() {
       var qBand = qs >= 85 ? 'Excellent' : qs >= 70 ? 'Good' : qs >= 50 ? 'Degraded' : 'Critical';
       var sessionFile = q.session_file ? q.session_file.replace(/.*\//, '') : null;
       var runtimeLabel = q.runtime_label || data.runtime_label || 'Claude Code';
-      var estimateNote = q.estimated ? ' Some Codex quality signals are inferred from local session events.' : '';
+      var estimateNote = q.estimated ? ' Some Codex quality signals are inferred from local session events and should be read as an operational estimate, not model self-evaluation.' : '';
       html += '<div class="card wide"><div class="card-header"><span>Context Quality</span><span class="label">v2.0</span></div>' +
         '<div style="padding:8px var(--s-3) 0;font-size:12px;color:var(--c-text-dim);">This score measures your most recently active ' + esc(runtimeLabel) + ' session, not an average across sessions. It reflects context quality based on 7 signals.' + estimateNote + '</div>' +
         (sessionFile ? '<div style="padding:4px var(--s-3) 0;font-size:13px;color:var(--c-text-dim);">Session: <code style="font-family:var(--font-mono);color:var(--c-text-main);">' + esc(sessionFile) + '</code><span style="margin-left:8px;color:var(--c-text-dim);font-size:12px;">(most recently active)</span></div>' : '') +
@@ -3401,6 +3446,7 @@ var DB = (function() {
     if (!el) return;
     var c = data.coach;
     var runtimeLabel = data.runtime_label || 'Claude Code';
+    var isCodex = data.runtime === 'codex';
 
     var html = '<div class="section-header">' +
       '<div class="label">Advisory</div>' +
@@ -3420,7 +3466,7 @@ var DB = (function() {
     var scoreColor = score >= 80 ? 'var(--c-accent-cyan)' : score >= 50 ? '#ff9f43' : '#ff6b6b';
     html += '<div class="card wide">' +
       '<div class="card-header"><span>Token Health Score</span></div>' +
-      '<div style="font-size:12px;color:var(--c-text-dim);padding:4px var(--s-3) 0;">How token-efficient your setup is overall. Factors in overhead size, skill count, config bloat, model routing, and usage patterns.</div>' +
+      '<div style="font-size:12px;color:var(--c-text-dim);padding:4px var(--s-3) 0;">How token-efficient your ' + esc(runtimeLabel) + ' setup appears. Factors include instruction-file size, skill/plugin inventory, MCP config, hooks, model routing, and recent usage. This is a setup health grade, not a model-quality grade.</div>' +
       '<div style="text-align:center;padding:var(--s-4) 0;">' +
       '<div style="font-size:72px;font-weight:700;font-family:var(--font-mono);color:' + scoreColor + ';text-shadow:0 0 20px ' + scoreColor + ';">' + healthGrade + '</div>' +
       '<div style="font-size:28px;font-weight:500;font-family:var(--font-mono);color:' + scoreColor + ';">' + score + '/100</div>' +
@@ -3428,9 +3474,10 @@ var DB = (function() {
 
     // Snapshot summary
     var snap = c.snapshot || {};
+    var instructionLabel = snap.instruction_label || (isCodex ? 'AGENTS.md' : 'CLAUDE.md');
     html += '<div class="dashboard-grid">' +
       '<div class="card"><div class="card-header"><span>Startup Overhead</span></div>' +
-      '<div style="font-size:11px;color:var(--c-text-dim);padding:0 0 4px 0;">Tokens loaded into every API call before you type. Includes CLAUDE.md, skills, MCP tools, and system prompt.</div>' +
+      '<div style="font-size:11px;color:var(--c-text-dim);padding:0 0 4px 0;">Tokens loaded before you type. Includes ' + esc(instructionLabel) + ', skills/plugin metadata, MCP tools, and system prompt.</div>' +
       '<div class="mini-stat">' + fn(snap.total_overhead || 0) + '</div>' +
       '<div class="label">' + (snap.overhead_pct || 0) + '% of ' + ((snap.context_window || data.snapshot.context_window || 1000000) >= 1000000 ? ((snap.context_window || data.snapshot.context_window || 1000000) / 1000000) + 'M' : ((snap.context_window || data.snapshot.context_window || 1000000) / 1000) + 'K') + '</div></div>' +
       '<div class="card"><div class="card-header"><span>Usable Context</span></div>' +
@@ -3762,7 +3809,7 @@ var DB = (function() {
       '<h1>Manage</h1>' +
       '<p id="manage-mode-desc">' +
         (isCodex
-          ? 'Codex setup is terminal-driven. Hot-path hooks are intentionally opt-in because Codex Desktop shows hook rows.'
+          ? 'Codex setup uses real local logs plus project hooks. Balanced hooks are on by default; noisy per-tool hooks stay opt-in so Desktop users are not spammed.'
           : window.__TOKEN_API_LIVE
           ? '<span style="color:var(--c-accent-cyan);font-weight:600;">Live mode</span> — toggles apply instantly to settings. <strong>Restart ' + (isCodex ? 'Codex' : 'Claude') + '</strong> to activate changes.'
           : 'Open in serve mode for live toggles: <code style="background:var(--c-bg);padding:2px 5px;border-radius:4px;">python3 measure.py dashboard --serve</code>') +
@@ -3771,7 +3818,9 @@ var DB = (function() {
 
     if (v5Synthesized) {
       html += '<div style="padding:12px var(--s-3);margin-bottom:var(--s-2);background:var(--c-bg);border-left:3px solid var(--c-accent-cyan);border-radius:4px;font-size:14px;color:var(--c-text-dim);">' +
-        'Showing default feature state. Run <code style="background:var(--c-bg);padding:2px 5px;border-radius:4px;">/token-optimizer</code> once to reflect your actual config and enable live toggles.' +
+        (isCodex
+          ? 'Showing default Codex feature state. Run a Codex dashboard refresh to reflect your actual config.'
+          : 'Showing default feature state. Run <code style="background:var(--c-bg);padding:2px 5px;border-radius:4px;">/token-optimizer</code> once to reflect your actual config and enable live toggles.') +
         '</div>';
     }
 
@@ -3802,16 +3851,21 @@ var DB = (function() {
 
       v5Names.forEach(function(fname) {
         var f = v5Features[fname];
+        var unavailable = !!f.unavailable || f.source === 'codex api gap';
         var riskBg = '#4ade80';
         var riskLabel = 'NO RISK';
         if (f.risk_level === 'low') { riskBg = '#60a5fa'; riskLabel = 'LOW RISK'; }
         else if (f.risk_level === 'moderate') { riskBg = '#ff9f43'; riskLabel = 'MODERATE RISK'; }
 
-        var recBadge = f.recommended
+        var recBadge = unavailable
+          ? '<span style="background:var(--c-border);color:var(--c-text-dim);font-size:12px;padding:3px 10px;border-radius:4px;margin-left:10px;vertical-align:middle;">CODEX API GAP</span>'
+          : f.recommended
           ? '<span style="background:#4ade80;color:#000;font-size:12px;padding:3px 10px;border-radius:4px;margin-left:10px;font-weight:700;vertical-align:middle;">RECOMMENDED</span>'
           : '<span style="background:var(--c-border);color:var(--c-text-dim);font-size:12px;padding:3px 10px;border-radius:4px;margin-left:10px;vertical-align:middle;">OPT-IN</span>';
         var sourceBadge = f.source === 'env'
           ? '<span style="font-size:12px;color:var(--c-text-dim);margin-left:10px;">(set via env var, cannot toggle from dashboard)</span>'
+          : unavailable
+          ? '<span style="font-size:12px;color:var(--c-text-dim);margin-left:10px;">(shown for parity; not toggleable in Codex yet)</span>'
           : '';
         var impactPct = f.impact_pct > 0 ? '+' + f.impact_pct + '%' : '';
         var impactBadge = impactPct
@@ -3822,7 +3876,7 @@ var DB = (function() {
           '<label class="hook-toggle" style="margin-top:4px;transform:scale(1.2);transform-origin:left top;">' +
           '<input type="checkbox"' + (f.enabled ? ' checked' : '') +
             ' data-v5-name="' + esc(fname) + '"' +
-            (f.source === 'env' ? ' disabled' : '') + '>' +
+            (f.source === 'env' || unavailable ? ' disabled' : '') + '>' +
           '<span class="hook-slider"></span></label>' +
           '<div class="hook-info" style="margin-left:8px;">' +
           '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:10px;">' +
@@ -3851,18 +3905,28 @@ var DB = (function() {
 
     if (isCodex) {
       var cx = (m && m.codex) || {};
-      html += '<div class="card wide"><div class="card-header"><span>Codex Project Setup</span><span class="label">terminal commands</span></div>' +
+      html += '<div class="card wide"><div class="card-header"><span>Codex Optimizer Setup</span><span class="label">real local telemetry</span></div>' +
         '<div style="padding:var(--s-3);color:var(--c-text-dim);font-size:14px;line-height:1.7;">' +
-        '<p style="margin-top:0;">Token Optimizer for Codex keeps setup explicit and private to this branch/project. The default balanced install captures prompt quality, loop signals, dashboard refresh, and continuity while avoiding per-tool hook spam.</p>' +
-        '<div style="display:grid;gap:10px;">' +
-        '<div><strong style="color:var(--c-text-main);">Install/update balanced Codex hooks:</strong><br><code class="update-cmd">' + esc(cx.install_cmd || 'TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-install --project .') + '</code><br><span style="font-size:12px;color:var(--c-text-dim);">Uses SessionStart/UserPromptSubmit/Stop for real quality and continuity data. No PreToolUse/PostToolUse rows by default.</span></div>' +
-        '<div><strong style="color:var(--c-text-main);">Switch to quiet Stop-only mode:</strong><br><code class="update-cmd">' + esc(cx.install_quiet_profile_cmd || 'TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-install --project . --profile quiet') + '</code><br><span style="font-size:12px;color:var(--c-text-dim);">Keeps checkpoint/dashboard refresh only if a user wants minimum visible hook rows.</span></div>' +
-        '<div><strong style="color:var(--c-text-main);">Opt into Bash compression:</strong><br><code class="update-cmd">' + esc(cx.install_with_bash_compression_cmd || 'TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-install --project . --enable-bash-compression') + '</code><br><span style="font-size:12px;color:var(--c-text-dim);">Adds visible PreToolUse rows for Bash calls.</span></div>' +
-        '<div><strong style="color:var(--c-text-main);">Opt into full quality + tool telemetry:</strong><br><code class="update-cmd">' + esc(cx.install_with_hot_path_hooks_cmd || 'TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-install --project . --enable-hot-path-hooks --enable-prompt-hooks') + '</code><br><span style="font-size:12px;color:var(--c-text-dim);">Keeps the balanced quality hooks and adds PostToolUse rows so QA/users can measure exact tool-output bloat. Best for CLI/headless or explicit opt-in.</span></div>' +
-        '<div><strong style="color:var(--c-text-main);">Refresh trends, dashboard, and checkpoint now:</strong><br><code class="update-cmd">' + esc(cx.refresh_cmd || 'TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py session-end-flush --trigger manual') + '</code></div>' +
-        '<div><strong style="color:var(--c-text-main);">Verify readiness:</strong><br><code class="update-cmd">' + esc(cx.doctor_cmd || 'TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py doctor') + '</code></div>' +
+        '<p style="margin-top:0;">The default install is the useful middle path: it captures prompt quality, loop signals, session checkpoints, and dashboard refreshes without adding noisy PreToolUse/PostToolUse rows to every tool call.</p>' +
+        '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:var(--s-2);margin:var(--s-2) 0;">' +
+          '<div class="stat-card"><div class="stat-card-value" style="font-size:18px;color:#22c55e">On</div><div class="stat-card-label">Quality tracking</div><div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">UserPromptSubmit + Stop</div></div>' +
+          '<div class="stat-card"><div class="stat-card-value" style="font-size:18px;color:#22d3ee">On</div><div class="stat-card-label">Session continuity</div><div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">SessionStart + checkpoints</div></div>' +
+          '<div class="stat-card"><div class="stat-card-value" style="font-size:18px;color:#ff9f43">Opt-in</div><div class="stat-card-label">Per-tool compression</div><div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">Visible hook rows in Desktop</div></div>' +
         '</div>' +
-        '<p style="margin-bottom:0;margin-top:var(--s-3);">Claude-specific skill and MCP archiving is hidden in Codex mode because it would optimize the wrong runtime.</p>' +
+        '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:var(--s-2);">' +
+          '<span style="color:var(--c-text-main);font-weight:600;">Install/update balanced hooks:</span>' +
+          '<code class="update-cmd" style="white-space:normal;">' + esc(cx.install_cmd || 'TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-install --project .') + '</code>' +
+        '</div>' +
+        '<details style="margin-top:var(--s-3);"><summary style="cursor:pointer;color:var(--c-accent-cyan);font-weight:600;">Show advanced commands</summary>' +
+          '<div style="display:grid;gap:10px;margin-top:var(--s-2);">' +
+          '<div><strong style="color:var(--c-text-main);">Quiet Stop-only mode:</strong><br><code class="update-cmd">' + esc(cx.install_quiet_profile_cmd || 'TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-install --project . --profile quiet') + '</code><br><span style="font-size:12px;color:var(--c-text-dim);">Minimum visible rows, but weaker quality telemetry.</span></div>' +
+          '<div><strong style="color:var(--c-text-main);">Bash compression:</strong><br><code class="update-cmd">' + esc(cx.install_with_bash_compression_cmd || 'TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-install --project . --enable-bash-compression') + '</code><br><span style="font-size:12px;color:var(--c-text-dim);">Opt-in only because Codex Desktop shows each PreToolUse row.</span></div>' +
+          '<div><strong style="color:var(--c-text-main);">Full quality + tool telemetry:</strong><br><code class="update-cmd">' + esc(cx.install_with_hot_path_hooks_cmd || 'TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-install --project . --enable-hot-path-hooks --enable-prompt-hooks') + '</code><br><span style="font-size:12px;color:var(--c-text-dim);">Best for CLI/headless QA when exact tool-output bloat matters more than UI quietness.</span></div>' +
+          '<div><strong style="color:var(--c-text-main);">Refresh dashboard now:</strong><br><code class="update-cmd">' + esc(cx.refresh_cmd || 'TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py session-end-flush --trigger manual') + '</code></div>' +
+          '<div><strong style="color:var(--c-text-main);">Verify readiness:</strong><br><code class="update-cmd">' + esc(cx.doctor_cmd || 'TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-doctor --project .') + '</code></div>' +
+          '</div>' +
+        '</details>' +
+        '<p style="margin-bottom:0;margin-top:var(--s-3);">These commands are generated from this checkout at runtime. They are not shipped with any user-specific paths.</p>' +
         '</div></div>';
 
       var codexSkills = (m.skills && m.skills.active) || [];
@@ -3871,25 +3935,48 @@ var DB = (function() {
       if (codexSkills.length === 0 && codexDisabledSkills.length === 0) {
         html += '<div class="empty-state">No Codex skills found in this project, user install, or plugin cache.</div>';
       } else {
-        html += '<div style="max-height:420px;overflow:auto;"><table class="session-table"><thead><tr><th>Name</th><th>Source</th><th>Description</th></tr></thead><tbody>';
+        html += '<p style="font-size:13px;color:var(--c-text-dim);padding:0 var(--s-3) var(--s-2);">Toggle skills by writing Codex config entries in <code>~/.codex/config.toml</code>. Disable rarely used skills to reduce startup discovery noise and user confusion; Codex does not yet expose per-session skill invocation telemetry.</p>';
+        html += '<div style="max-height:520px;overflow:auto;">';
         codexSkills.slice(0, 120).forEach(function(sk) {
-          html += '<tr><td>' + esc(sk.skill_name || sk.name) + '</td><td>' + esc(sk.source || 'codex') + '</td><td>' + esc(sk.description || '') + '</td></tr>';
+          html += '<div class="hook-row" style="padding:8px var(--s-3);">' +
+            '<label class="hook-toggle">' +
+            '<input type="checkbox" checked data-manage-cmd="' + esc(sk.disable_cmd || '') + '" data-manage-name="' + esc(sk.path || sk.name) + '" data-manage-type="skill-off">' +
+            '<span class="hook-slider"></span></label>' +
+            '<div class="hook-info">' +
+            '<div class="hook-label" style="font-size:14px;font-family:var(--font-mono);">' + esc(sk.skill_name || sk.name) + ' <span style="color:var(--c-text-dim);font-size:12px;">' + esc(sk.source || 'codex') + '</span></div>' +
+            '<div class="hook-desc">' + esc(sk.description || '') + '</div>' +
+            '</div></div>';
         });
         codexDisabledSkills.slice(0, 40).forEach(function(sk) {
-          html += '<tr style="opacity:.55"><td>' + esc(sk.skill_name || sk.name) + '</td><td>' + esc(sk.source || 'codex') + ' · disabled</td><td>' + esc(sk.description || '') + '</td></tr>';
+          html += '<div class="hook-row" style="padding:8px var(--s-3);opacity:.6;">' +
+            '<label class="hook-toggle">' +
+            '<input type="checkbox" data-manage-cmd="' + esc(sk.enable_cmd || '') + '" data-manage-name="' + esc(sk.path || sk.name) + '" data-manage-type="skill-on">' +
+            '<span class="hook-slider"></span></label>' +
+            '<div class="hook-info">' +
+            '<div class="hook-label" style="font-size:14px;font-family:var(--font-mono);">' + esc(sk.skill_name || sk.name) + ' <span style="color:var(--c-text-dim);font-size:12px;">disabled · ' + esc(sk.source || 'codex') + '</span></div>' +
+            '<div class="hook-desc">' + esc(sk.description || '') + '</div>' +
+            '</div></div>';
         });
-        html += '</tbody></table></div>';
+        html += '</div>';
       }
       html += '</div>';
 
       var codexMcp = (m.mcp_servers && m.mcp_servers.active) || [];
+      var codexDisabledMcp = (m.mcp_servers && m.mcp_servers.disabled) || [];
       var codexPlugins = m.plugins || [];
-      html += '<div class="card wide"><div class="card-header"><span>Codex MCP Servers & Plugins</span><span class="label">' + codexMcp.length + ' MCP · ' + codexPlugins.filter(function(p) { return p.enabled; }).length + ' plugins</span></div>';
+      html += '<div class="card wide"><div class="card-header"><span>Codex MCP Servers & Plugins</span><span class="label">' + codexMcp.length + ' MCP · ' + codexDisabledMcp.length + ' disabled · ' + codexPlugins.filter(function(p) { return p.enabled; }).length + ' plugins</span></div>';
       html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:var(--s-3);padding:var(--s-3);">';
       html += '<div><h3 style="margin-top:0">MCP Servers</h3>';
       if (codexMcp.length === 0) html += '<p style="color:var(--c-text-dim)">No MCP servers configured in Codex.</p>';
       else codexMcp.forEach(function(server) {
-        html += '<div style="padding:8px 0;border-bottom:1px solid var(--c-border);"><strong>' + esc(server.name) + '</strong><br><span style="color:var(--c-text-dim);font-size:12px;">' + esc(server.transport || '') + ' · ' + esc(server.command || '') + '</span></div>';
+        html += '<div class="hook-row" style="padding:8px 0;border-bottom:1px solid var(--c-border);">' +
+          '<label class="hook-toggle"><input type="checkbox" checked data-manage-cmd="' + esc(server.disable_cmd || '') + '" data-manage-name="' + esc(server.name) + '" data-manage-type="mcp-off"><span class="hook-slider"></span></label>' +
+          '<div class="hook-info"><div class="hook-label" style="font-size:14px;font-family:var(--font-mono);">' + esc(server.name) + '</div><div style="color:var(--c-text-dim);font-size:12px;">' + esc(server.transport || '') + ' · ' + esc(server.command || '') + '</div></div></div>';
+      });
+      codexDisabledMcp.forEach(function(server) {
+        html += '<div class="hook-row" style="padding:8px 0;border-bottom:1px solid var(--c-border);opacity:.6;">' +
+          '<label class="hook-toggle"><input type="checkbox" data-manage-cmd="' + esc(server.enable_cmd || '') + '" data-manage-name="' + esc(server.name) + '" data-manage-type="mcp-on"><span class="hook-slider"></span></label>' +
+          '<div class="hook-info"><div class="hook-label" style="font-size:14px;font-family:var(--font-mono);">' + esc(server.name) + ' <span style="color:var(--c-text-dim);font-size:12px;">disabled</span></div><div style="color:var(--c-text-dim);font-size:12px;">' + esc(server.transport || '') + ' · ' + esc(server.command || '') + '</div></div></div>';
       });
       html += '</div><div><h3 style="margin-top:0">Enabled Plugins</h3>';
       if (codexPlugins.length === 0) html += '<p style="color:var(--c-text-dim)">No Codex plugins found in config.toml.</p>';
@@ -4141,11 +4228,12 @@ var DB = (function() {
                 document.body.appendChild(toast);
               }
               var isOff = (mType === 'skill-off' || mType === 'mcp-off');
+              var restartName = data.runtime === 'codex' ? 'Codex' : 'Claude';
               toast.textContent = isOff
-                ? 'Disabled. Restart Claude to apply.'
+                ? 'Disabled. Restart ' + restartName + ' to apply.'
                 : ((window._managePending && window._managePending.size === 0)
                     ? 'Restored. No restart needed.'
-                    : 'Enabled. Restart Claude to apply.');
+                    : 'Enabled. Restart ' + restartName + ' to apply.');
               toast.classList.add('visible');
               setTimeout(function() { toast.classList.remove('visible'); }, 2000);
             } else {
@@ -4186,7 +4274,7 @@ var DB = (function() {
               var badge = document.createElement('span');
               badge.className = 'hook-pending';
               badge.style.cssText = 'font-size:11px;color:#ff9f43;margin-left:8px;display:block;margin-top:4px;';
-              badge.textContent = 'Queued for removal';
+              badge.textContent = data.runtime === 'codex' ? 'Queued for config change' : 'Queued for removal';
               row.querySelector('.hook-info').appendChild(badge);
             }
             // Find token count from data
@@ -4206,15 +4294,16 @@ var DB = (function() {
   // indices. The toggle handler uses items[idx] by _i, so splicing would
   // corrupt references from DOM data-toggle attributes.
   function addManageItem(name, cmd, tokens) {
+    var itemTitle = (data.runtime === 'codex' ? 'Change Codex setting: ' : 'Archive skill: ') + name;
     // Check if already exists (idempotent: no-op if present)
     for (var i = 0; i < items.length; i++) {
-      if (items[i].synthetic && items[i].title === 'Archive skill: ' + name && !items[i]._removed) {
+      if (items[i].synthetic && items[i].title === itemTitle && !items[i]._removed) {
         return; // already exists, don't toggle or duplicate
       }
     }
     // Check if a soft-deleted version exists, revive it
     for (var j = 0; j < items.length; j++) {
-      if (items[j].synthetic && items[j].title === 'Archive skill: ' + name && items[j]._removed) {
+      if (items[j].synthetic && items[j].title === itemTitle && items[j]._removed) {
         items[j]._removed = false;
         items[j].checked = true;
         items[j].fullDesc = cmd;
@@ -4225,7 +4314,7 @@ var DB = (function() {
     }
     items.push({
       group: 'Manage',
-      title: 'Archive skill: ' + name,
+      title: itemTitle,
       shortDesc: 'Toggled off in Manage tab',
       detail: '',
       fullDesc: cmd,
@@ -4239,8 +4328,9 @@ var DB = (function() {
   }
 
   function removeManageItem(name) {
+    var itemTitle = (data.runtime === 'codex' ? 'Change Codex setting: ' : 'Archive skill: ') + name;
     for (var i = 0; i < items.length; i++) {
-      if (items[i].synthetic && items[i].title === 'Archive skill: ' + name && !items[i]._removed) {
+      if (items[i].synthetic && items[i].title === itemTitle && !items[i]._removed) {
         items[i]._removed = true;
         items[i].checked = false;
         break;
@@ -4423,6 +4513,7 @@ var DB = (function() {
     });
 
     function buildSessionDeepDiveRow(turns) {
+      var isCodex = data.runtime === 'codex';
       var dr = document.createElement('tr');
       dr.className = 'session-deep-dive';
       var td = document.createElement('td');
@@ -4436,7 +4527,7 @@ var DB = (function() {
         '<th title="Fresh input tokens for this API call, before counting cache reuse." style="cursor:help">Input</th>' +
         '<th title="Output tokens produced by ' + esc(data.runtime_label || 'Claude Code') + ' for this API call." style="cursor:help">Output</th>' +
         '<th title="Cached input tokens ' + esc(data.runtime_label || 'Claude Code') + ' reused on this call." style="cursor:help">Cache R</th>' +
-        '<th title="New cache tokens written on this call for future reuse." style="cursor:help">Cache W</th>' +
+        (isCodex ? '' : '<th title="New cache tokens written on this call for future reuse." style="cursor:help">Cache W</th>') +
         '<th title="Estimated API-equivalent cost for this call." style="cursor:help">Cost</th>' +
         '<th title="' + esc(data.runtime_label || 'Claude Code') + ' model used for this call." style="cursor:help">Model</th>' +
         '<th title="Tools ' + esc(data.runtime_label || 'Claude Code') + ' used during this call." style="cursor:help">Tools</th>' +
@@ -4460,7 +4551,7 @@ var DB = (function() {
           '<td>' + fn(t.input_tokens) + '</td>' +
           '<td>' + fn(t.output_tokens) + '</td>' +
           '<td style="' + crStyle + '">' + fn(t.cache_read) + (crChanged && prevCR >= 0 ? ' \u2191' : '') + '</td>' +
-          '<td style="' + cwStyle + '">' + fn(t.cache_creation) + (cwChanged && prevCW >= 0 ? ' \u2191' : '') + '</td>' +
+          (isCodex ? '' : '<td style="' + cwStyle + '">' + fn(t.cache_creation) + (cwChanged && prevCW >= 0 ? ' \u2191' : '') + '</td>') +
           '<td style="color:var(--c-accent-cyan)">' + cost + '</td>' +
           '<td style="color:var(--c-text-dim)">' + esc(model) + '</td>' +
           '<td style="color:var(--c-text-dim);font-size:11px">' + esc(tools) + '</td></tr>';
@@ -4488,7 +4579,7 @@ var DB = (function() {
           }
         }
       });
-      var totAll = totIn + totOut + totCR + totCW || 1;
+      var totAll = totIn + totOut + totCR + (isCodex ? 0 : totCW) || 1;
       var pacingSummary = '';
       if (gapSeconds.length > 0) {
         var sortedGaps = gapSeconds.slice().sort(function(a, b) { return a - b; });
@@ -4499,7 +4590,7 @@ var DB = (function() {
           esc(fmtGap(avgGap)) + ' | p95 ' + esc(fmtGap(p95Gap)) + ' | max ' + esc(fmtGap(maxGap)) + '</div>';
       }
       var ttlSummary = '';
-      if (totCW1h + totCW5m > 0) {
+      if (!isCodex && totCW1h + totCW5m > 0) {
         var ttlSummaryLabel = 'mixed';
         if (!totCW5m) ttlSummaryLabel = '1h only';
         else if (!totCW1h) ttlSummaryLabel = '5m only';
@@ -4513,12 +4604,12 @@ var DB = (function() {
         '<div class="cache-bar-segment cache-bar-input" style="width:' + (totIn/totAll*100).toFixed(1) + '%"></div>' +
         '<div class="cache-bar-segment cache-bar-output" style="width:' + (totOut/totAll*100).toFixed(1) + '%"></div>' +
         '<div class="cache-bar-segment cache-bar-read" style="width:' + (totCR/totAll*100).toFixed(1) + '%"></div>' +
-        '<div class="cache-bar-segment cache-bar-create" style="width:' + (totCW/totAll*100).toFixed(1) + '%"></div></div>' +
+        (isCodex ? '' : '<div class="cache-bar-segment cache-bar-create" style="width:' + (totCW/totAll*100).toFixed(1) + '%"></div>') + '</div>' +
         '<div class="cache-legend">' +
         '<div class="cache-legend-item"><div class="cache-legend-dot" style="background:var(--c-accent-cyan)"></div>Input ' + fn(totIn) + '</div>' +
         '<div class="cache-legend-item"><div class="cache-legend-dot" style="background:#3b82f6"></div>Output ' + fn(totOut) + '</div>' +
         '<div class="cache-legend-item"><div class="cache-legend-dot" style="background:#22c55e"></div>Cache Read ' + fn(totCR) + '</div>' +
-        '<div class="cache-legend-item"><div class="cache-legend-dot" style="background:#a855f7"></div>Cache Write ' + fn(totCW) + '</div>' +
+        (isCodex ? '<div class="cache-legend-item" style="color:var(--c-text-dim);">Cache writes/TTL are not exposed by Codex logs</div>' : '<div class="cache-legend-item"><div class="cache-legend-dot" style="background:#a855f7"></div>Cache Write ' + fn(totCW) + '</div>') +
         '</div>' + pacingSummary + ttlSummary + '</div>';
       html += '</div>';
       td.innerHTML = html;
@@ -4980,7 +5071,11 @@ function getSampleData() {
 
 /* ========== INIT ========== */
 document.addEventListener('DOMContentLoaded', function() {
-  var data = window.__TOKEN_DATA__ || getSampleData();
+  var data = window.__TOKEN_DATA__;
+  if (!data) {
+    document.body.innerHTML = '<div style="max-width:760px;margin:80px auto;padding:32px;border:1px solid #263044;border-radius:14px;background:#0f172a;color:#d6e4ff;font-family:system-ui,sans-serif;line-height:1.6;"><h1 style="margin-top:0;">Token Optimizer</h1><p>No dashboard data was injected into this file, so sample Claude data is intentionally hidden. Generate a fresh dashboard from your local runtime before reviewing metrics.</p><code style="display:block;white-space:normal;background:#111827;padding:12px;border-radius:8px;color:#93c5fd;">python3 skills/token-optimizer/scripts/measure.py dashboard</code></div>';
+    return;
+  }
   var runtimeLabel = data.runtime_label || (data.runtime === 'codex' ? 'Codex' : 'Claude Code');
   if (data.runtime === 'codex') {
     document.title = 'Token Optimizer - Codex';

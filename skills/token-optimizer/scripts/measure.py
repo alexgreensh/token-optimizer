@@ -955,7 +955,7 @@ def measure_components():
     # (-Users-<you>/memory/MEMORY.md) on every session regardless of
     # cwd. Before v5.3.10 this helper only checked the cwd-matched
     # project dir, so running /token-optimizer from a subdirectory
-    # (e.g. ~/CascadeProjects/.../PERSONAL_OS) reported
+    # (e.g. a nested project checkout) reported
     # "Not configured" for users whose memory actually lived in HOME.
     #
     # Resolution order now:
@@ -3175,17 +3175,33 @@ def _serve_dashboard(filepath, port=8080, host="127.0.0.1"):
             ok = False
             msg = ""
             if path == "/api/skill/archive":
-                ok = _manage_skill("archive", name)
-                msg = f"Archived skill: {name}" if ok else f"Failed to archive: {name}"
+                if detect_runtime() == "codex":
+                    ok = _manage_codex_skill("disable", raw_path=name)
+                    msg = f"Disabled Codex skill: {name}" if ok else f"Failed to disable Codex skill: {name}"
+                else:
+                    ok = _manage_skill("archive", name)
+                    msg = f"Archived skill: {name}" if ok else f"Failed to archive: {name}"
             elif path == "/api/skill/restore":
-                ok = _manage_skill("restore", name)
-                msg = f"Restored skill: {name}" if ok else f"Failed to restore: {name}"
+                if detect_runtime() == "codex":
+                    ok = _manage_codex_skill("enable", raw_path=name)
+                    msg = f"Enabled Codex skill: {name}" if ok else f"Failed to enable Codex skill: {name}"
+                else:
+                    ok = _manage_skill("restore", name)
+                    msg = f"Restored skill: {name}" if ok else f"Failed to restore: {name}"
             elif path == "/api/mcp/disable":
-                ok = _manage_mcp("disable", name)
-                msg = f"Disabled MCP server: {name}" if ok else f"Failed to disable: {name}"
+                if detect_runtime() == "codex":
+                    ok = _manage_codex_mcp("disable", name)
+                    msg = f"Disabled Codex MCP server: {name}" if ok else f"Failed to disable Codex MCP: {name}"
+                else:
+                    ok = _manage_mcp("disable", name)
+                    msg = f"Disabled MCP server: {name}" if ok else f"Failed to disable: {name}"
             elif path == "/api/mcp/enable":
-                ok = _manage_mcp("enable", name)
-                msg = f"Enabled MCP server: {name}" if ok else f"Failed to enable: {name}"
+                if detect_runtime() == "codex":
+                    ok = _manage_codex_mcp("enable", name)
+                    msg = f"Enabled Codex MCP server: {name}" if ok else f"Failed to enable Codex MCP: {name}"
+                else:
+                    ok = _manage_mcp("enable", name)
+                    msg = f"Enabled MCP server: {name}" if ok else f"Failed to enable: {name}"
             elif path == "/api/v5/toggle":
                 # v5 feature toggle: body has {"name": "feature_name", "enabled": true/false}
                 enabled = bool(body.get("enabled", False))
@@ -3372,6 +3388,10 @@ def generate_dashboard(coord_path):
     # Collect hook installation status for dashboard toggles
     hook_status = _collect_hook_status_for_dashboard()
 
+    # Collect management data for Manage tab. The full audit dashboard should
+    # expose the same Codex skill/MCP controls as the standalone dashboard.
+    management = _collect_management_data(components=components, trends=trends)
+
     # Savings data for dashboard
     print("  Collecting savings data...")
     savings_data = _get_savings_summary(days=30)
@@ -3396,6 +3416,7 @@ def generate_dashboard(coord_path):
         "health": health,
         "coach": coach,
         "quality": quality,
+        "manage": management,
         "hooks": hook_status,
         "savings": savings_data,
         "auto_plan": auto_plan_flag,
@@ -3598,7 +3619,10 @@ def _collect_codex_skill_inventory(cfg: dict, *, project: Path) -> dict[str, lis
                     continue
                 raw_path = entry.get("path")
                 if isinstance(raw_path, str):
-                    disabled_paths.add(str(Path(raw_path).expanduser().resolve(strict=False)))
+                    resolved = Path(raw_path).expanduser().resolve(strict=False)
+                    disabled_paths.add(str(resolved))
+                    if resolved.name != "SKILL.md":
+                        disabled_paths.add(str((resolved / "SKILL.md").resolve(strict=False)))
 
     candidates: list[tuple[Path, str]] = []
     for root, source in (
@@ -3628,6 +3652,8 @@ def _collect_codex_skill_inventory(cfg: dict, *, project: Path) -> dict[str, lis
             "tokens": meta.get("tokens", 0),
             "source": source,
             "path": resolved,
+            "disable_cmd": f"TOKEN_OPTIMIZER_RUNTIME=codex python3 {shlex.quote(str(Path(__file__).resolve()))} codex-skill disable --path {shlex.quote(resolved)}",
+            "enable_cmd": f"TOKEN_OPTIMIZER_RUNTIME=codex python3 {shlex.quote(str(Path(__file__).resolve()))} codex-skill enable --path {shlex.quote(resolved)}",
         }
         if resolved in disabled_paths:
             disabled.append(item)
@@ -3643,9 +3669,11 @@ def _collect_codex_mcp_inventory(cfg: dict) -> list[dict]:
     if not isinstance(servers, dict):
         return []
     items = []
+    mp = shlex.quote(str(Path(__file__).resolve()))
     for name, server in servers.items():
         if not isinstance(server, dict):
             server = {}
+        enabled = bool(server.get("enabled", True))
         transport = "http" if server.get("url") else "stdio"
         command = server.get("url") or server.get("command") or ""
         items.append({
@@ -3653,6 +3681,9 @@ def _collect_codex_mcp_inventory(cfg: dict) -> list[dict]:
             "command": str(command),
             "transport": transport,
             "tokens": TOKENS_PER_DEFERRED_TOOL,
+            "enabled": enabled,
+            "disable_cmd": f"TOKEN_OPTIMIZER_RUNTIME=codex python3 {mp} codex-mcp disable {shlex.quote(str(name))}",
+            "enable_cmd": f"TOKEN_OPTIMIZER_RUNTIME=codex python3 {mp} codex-mcp enable {shlex.quote(str(name))}",
         })
     return sorted(items, key=lambda item: item["name"])
 
@@ -3670,6 +3701,160 @@ def _collect_codex_plugin_inventory(cfg: dict) -> list[dict]:
     return sorted(items, key=lambda item: item["name"])
 
 
+def _codex_config_path() -> Path:
+    return runtime_home() / "config.toml"
+
+
+def _safe_codex_config_path() -> Path:
+    home = runtime_home().resolve(strict=False)
+    path = _codex_config_path()
+    if path.exists() and path.is_symlink():
+        raise ValueError(f"{path} must not be a symlink")
+    parent = path.parent
+    if parent.exists():
+        if parent.is_symlink() or not parent.is_dir():
+            raise ValueError(f"{parent} must be a real directory")
+        if not parent.resolve(strict=True).is_relative_to(home):
+            raise ValueError(f"{parent} escapes Codex home")
+    else:
+        parent.mkdir(mode=0o700)
+    return path
+
+
+def _write_codex_config(text: str) -> None:
+    path = _safe_codex_config_path()
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent), text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.chmod(tmp_name, 0o600)
+        os.replace(tmp_name, path)
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
+def _toml_string(value: str) -> str:
+    return json.dumps(value)
+
+
+def _set_toml_key(block: str, key: str, value: str) -> str:
+    pattern = re.compile(rf"(?m)^([ \t]*){re.escape(key)}([ \t]*=[^\n]*)$")
+    if pattern.search(block):
+        return pattern.sub(lambda match: f"{match.group(1)}{key} = {value}", block, count=1)
+    suffix = "" if block.endswith("\n") else "\n"
+    return block + suffix + f"{key} = {value}\n"
+
+
+def _iter_toml_array_table_spans(text: str, header: str):
+    pattern = re.compile(rf"(?m)^[ \t]*\[\[{re.escape(header)}\]\][ \t]*(?:#.*)?$")
+    next_header = re.compile(r"(?m)^[ \t]*\[\[?[^\]\n]+\]?\][ \t]*(?:#.*)?$")
+    for match in pattern.finditer(text):
+        next_match = next_header.search(text, match.end())
+        yield match.start(), next_match.start() if next_match else len(text)
+
+
+def _decode_toml_string(raw: str) -> str:
+    raw = raw.strip()
+    if raw.startswith('"') and raw.endswith('"'):
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return raw.strip('"')
+    return raw.strip("'\"")
+
+
+def _codex_skill_target(raw_path: str | None = None, name: str | None = None) -> Path | None:
+    project = Path.cwd().resolve(strict=False)
+    cfg = _read_codex_config()
+    inventory = _collect_codex_skill_inventory(cfg, project=project)
+    all_items = inventory["active"] + inventory["disabled"]
+    if raw_path:
+        target = Path(raw_path).expanduser().resolve(strict=False)
+        if target.name != "SKILL.md":
+            target = target / "SKILL.md"
+        for item in all_items:
+            if Path(item["path"]).resolve(strict=False) == target:
+                return target
+        return target if target.exists() else None
+    if name:
+        matches = [item for item in all_items if item["name"] == name or item.get("skill_name") == name]
+        if len(matches) == 1:
+            return Path(matches[0]["path"]).resolve(strict=False)
+    return None
+
+
+def _manage_codex_skill(action: str, *, raw_path: str | None = None, name: str | None = None) -> bool:
+    target = _codex_skill_target(raw_path=raw_path, name=name)
+    if not target:
+        return False
+    try:
+        text = _safe_codex_config_path().read_text(encoding="utf-8")
+    except OSError:
+        text = ""
+
+    enabled = action == "enable"
+    target_str = str(target)
+    replacement = None
+    for start, end in _iter_toml_array_table_spans(text, "skills.config"):
+        block = text[start:end]
+        path_match = re.search(r"(?m)^[ \t]*path[ \t]*=[ \t]*(.+?)[ \t]*(?:#.*)?$", block)
+        if not path_match:
+            continue
+        configured = Path(_decode_toml_string(path_match.group(1))).expanduser().resolve(strict=False)
+        if configured.name != "SKILL.md":
+            configured = configured / "SKILL.md"
+        if configured == target:
+            replacement = text[:start] + _set_toml_key(block, "enabled", "true" if enabled else "false") + text[end:]
+            break
+
+    if replacement is None:
+        suffix = "" if not text or text.endswith("\n") else "\n"
+        replacement = (
+            text
+            + suffix
+            + "\n[[skills.config]]\n"
+            + f"path = {_toml_string(target_str)}\n"
+            + f"enabled = {'true' if enabled else 'false'}\n"
+        )
+    _write_codex_config(replacement)
+    return True
+
+
+def _toml_table_header_variants(prefix: str, name: str) -> list[str]:
+    if re.fullmatch(r"[A-Za-z0-9_-]+", name):
+        return [f"[{prefix}.{name}]"]
+    return [f"[{prefix}.{_toml_string(name)}]"]
+
+
+def _set_codex_named_table_enabled(prefix: str, name: str, enabled: bool) -> bool:
+    path = _safe_codex_config_path()
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    next_header = re.compile(r"(?m)^[ \t]*\[[^\]\n]+\][ \t]*(?:#.*)?$")
+    for header in _toml_table_header_variants(prefix, name):
+        pattern = re.compile(rf"(?m)^[ \t]*{re.escape(header)}[ \t]*(?:#.*)?$")
+        match = pattern.search(text)
+        if not match:
+            continue
+        next_match = next_header.search(text, match.end())
+        end = next_match.start() if next_match else len(text)
+        block = text[match.start():end]
+        updated = _set_toml_key(block, "enabled", "true" if enabled else "false")
+        _write_codex_config(text[:match.start()] + updated + text[end:])
+        return True
+    return False
+
+
+def _manage_codex_mcp(action: str, name: str) -> bool:
+    return _set_codex_named_table_enabled("mcp_servers", name, action == "enable")
+
+
 def _collect_management_data(components=None, trends=None):
     """Collect data for the Manage tab: active/archived skills, MCP servers."""
     if components is None:
@@ -3683,6 +3868,8 @@ def _collect_management_data(components=None, trends=None):
         cfg = _read_codex_config()
         codex_skills = _collect_codex_skill_inventory(cfg, project=project)
         codex_mcp = _collect_codex_mcp_inventory(cfg)
+        codex_mcp_active = [item for item in codex_mcp if item.get("enabled", True)]
+        codex_mcp_disabled = [item for item in codex_mcp if not item.get("enabled", True)]
         codex_plugins = _collect_codex_plugin_inventory(cfg)
         return {
             "mode": "codex",
@@ -3697,11 +3884,11 @@ def _collect_management_data(components=None, trends=None):
                 "install_with_hot_path_hooks_cmd": base + " --enable-hot-path-hooks --enable-prompt-hooks",
                 "install_with_status_line_cmd": base + " --enable-status-line",
                 "refresh_cmd": f"TOKEN_OPTIMIZER_RUNTIME=codex python3 {shlex.quote(mp)} session-end-flush --trigger manual",
-                "doctor_cmd": f"TOKEN_OPTIMIZER_RUNTIME=codex python3 {shlex.quote(mp)} doctor",
+                "doctor_cmd": f"TOKEN_OPTIMIZER_RUNTIME=codex python3 {shlex.quote(mp)} codex-doctor --project {project_arg}",
                 "dashboard_cmd": f"TOKEN_OPTIMIZER_RUNTIME=codex python3 {shlex.quote(mp)} dashboard",
             },
             "skills": {"active": codex_skills["active"], "archived": [], "disabled": codex_skills["disabled"]},
-            "mcp_servers": {"active": codex_mcp, "disabled": [], "cloud": []},
+            "mcp_servers": {"active": codex_mcp_active, "disabled": codex_mcp_disabled, "cloud": []},
             "plugins": codex_plugins,
             "v5_features": _get_v5_feature_status(),
         }
@@ -4941,6 +5128,9 @@ def generate_coach_data(focus=None, components=None, trends=None):
         components = measure_components()
     totals = calculate_totals(components)
     context_window = detect_context_window()[0]
+    is_codex = detect_runtime() == "codex"
+    instruction_label = "AGENTS.md" if is_codex else "CLAUDE.md"
+    memory_label = "Codex memories" if is_codex else "MEMORY.md"
 
     # Collect trends if not provided
     if trends is None:
@@ -4996,33 +5186,36 @@ def generate_coach_data(focus=None, components=None, trends=None):
             "detail": f"{skill_count} skills ({skill_tokens:,} tokens, {skill_pct:.1f}% of context)",
         })
 
-    # Check CLAUDE.md size — thresholds relative to context window
+    # Check instruction-file size — thresholds relative to context window.
     claude_tokens = 0
     for key in components:
-        if key.startswith("claude_md") and components[key].get("exists"):
+        if (
+            (not is_codex and key.startswith("claude_md"))
+            or (is_codex and key.startswith("agents_md"))
+        ) and components[key].get("exists"):
             claude_tokens += components[key].get("tokens", 0)
     claude_pct = claude_tokens / context_window * 100 if context_window else 0
     if claude_pct > 3:
         patterns_bad.append({
-            "name": "CLAUDE.md Could Be Leaner",
+            "name": f"{instruction_label} Could Be Leaner",
             "severity": "medium",
-            "detail": f"CLAUDE.md chain totals {claude_tokens:,} tokens ({claude_pct:.1f}% of context)",
-            "fix": "Run /token-optimizer to restructure: moves long sections into reference files with @import pointers, keeping CLAUDE.md as a lean index",
+            "detail": f"{instruction_label} chain totals {claude_tokens:,} tokens ({claude_pct:.1f}% of context)",
+            "fix": "Split long always-loaded guidance into narrower project files and keep the root instruction file as a lean index.",
             "savings": f"~{claude_tokens - 4500:,} tokens per message",
         })
         score -= 5
     elif claude_pct > 2:
         patterns_bad.append({
-            "name": "CLAUDE.md Growing",
+            "name": f"{instruction_label} Growing",
             "severity": "low",
-            "detail": f"CLAUDE.md at {claude_tokens:,} tokens ({claude_pct:.1f}% of context)",
-            "fix": "Run /token-optimizer for guided cleanup: splits verbose sections into reference files",
+            "detail": f"{instruction_label} at {claude_tokens:,} tokens ({claude_pct:.1f}% of context)",
+            "fix": "Move verbose guidance into narrower project files or on-demand skills.",
             "savings": f"~{claude_tokens - 4500:,} tokens per message",
         })
         score -= 5
     elif claude_tokens > 0:
         patterns_good.append({
-            "name": "Lean CLAUDE.md",
+            "name": f"Lean {instruction_label}",
             "detail": f"{claude_tokens:,} tokens ({claude_pct:.1f}% of context)",
             "earned": True,
         })
@@ -5033,16 +5226,16 @@ def generate_coach_data(focus=None, components=None, trends=None):
     mem_lines = mem.get("lines", 0)
     if mem_lines > 200:
         patterns_bad.append({
-            "name": "Oversized MEMORY.md",
+            "name": f"Oversized {memory_label}",
             "severity": "medium",
             "detail": f"{mem_lines} lines (200-line auto-load cutoff)",
-            "fix": "Move detailed notes to topic files in memory/ directory",
+            "fix": "Move detailed notes to topic files and keep injected memory guidance short.",
             "savings": f"~{(mem_lines - 200) * 15:,} tokens",
         })
         score -= 10
     elif mem_lines > 150:
         patterns_bad.append({
-            "name": "MEMORY.md Approaching Limit",
+            "name": f"{memory_label} Approaching Limit",
             "severity": "low",
             "detail": f"{mem_lines} lines ({200 - mem_lines} lines of headroom)",
             "fix": "Proactively move detailed notes to topic files",
@@ -5074,7 +5267,7 @@ def generate_coach_data(focus=None, components=None, trends=None):
 
     # Check file exclusion rules (permissions.deny)
     exclusion = components.get("file_exclusion", {})
-    if not exclusion.get("has_rules"):
+    if not is_codex and not exclusion.get("has_rules"):
         patterns_bad.append({
             "name": "Missing file exclusion rules",
             "severity": "medium",
@@ -5112,7 +5305,14 @@ def generate_coach_data(focus=None, components=None, trends=None):
 
     # Check hooks
     hooks = components.get("hooks", {})
-    if hooks.get("configured") and "SessionEnd" in hooks.get("names", []):
+    if is_codex and hooks.get("configured") and "Stop" in hooks.get("names", []):
+        patterns_good.append({
+            "name": "Codex Stop Hook Installed",
+            "detail": "Dashboard refresh and continuity checkpoints are active",
+            "earned": True,
+        })
+        score += 5
+    elif hooks.get("configured") and "SessionEnd" in hooks.get("names", []):
         patterns_good.append({
             "name": "SessionEnd Hook Installed",
             "detail": "Usage tracking active",
@@ -5121,10 +5321,10 @@ def generate_coach_data(focus=None, components=None, trends=None):
         score += 5
     else:
         patterns_bad.append({
-            "name": "No SessionEnd Hook",
+            "name": "No Codex Stop Hook" if is_codex else "No SessionEnd Hook",
             "severity": "low",
-            "detail": "Usage tracking not active",
-            "fix": "Run: python3 measure.py setup-hook",
+            "detail": "Automatic dashboard refresh and continuity checkpoints are not active",
+            "fix": "Run: TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-install --project ." if is_codex else "Run: python3 measure.py setup-hook",
             "savings": "Enables trends data for better coaching",
         })
         score -= 3
@@ -5138,7 +5338,7 @@ def generate_coach_data(focus=None, components=None, trends=None):
             opus_pct = model_mix.get("opus", 0) / total_model_tokens * 100
             haiku_pct = model_mix.get("haiku", 0) / total_model_tokens * 100
             _opus_addiction_fired = False
-            if opus_pct > 85:
+            if not is_codex and opus_pct > 85:
                 fix_msg = "Route data-gathering agents to Haiku, analysis to Sonnet"
                 if default_model and "opus" in str(default_model).lower():
                     fix_msg += f". Root cause: settings.json has \"model\": \"{default_model}\" which may override routing"
@@ -5181,7 +5381,7 @@ def generate_coach_data(focus=None, components=None, trends=None):
     settings_env = components.get("settings_env", {}).get("found", {})
     claudeai_val = settings_env.get("ENABLE_CLAUDEAI_MCP_SERVERS",
                                      os.environ.get("ENABLE_CLAUDEAI_MCP_SERVERS", ""))
-    if str(claudeai_val).lower() != "false" and mcp_servers > 3:
+    if not is_codex and str(claudeai_val).lower() != "false" and mcp_servers > 3:
         questions.append("Cloud-synced MCP servers from claude.ai may be adding overhead. Have you reviewed which servers are cloud-synced vs local?")
 
     # WebSearch routing nudge (post-hoc detector)
@@ -5304,6 +5504,7 @@ def generate_coach_data(focus=None, components=None, trends=None):
             "skill_count": skill_count,
             "skill_tokens": skill_tokens,
             "claude_md_tokens": claude_tokens,
+            "instruction_label": instruction_label,
             "memory_md_lines": mem_lines,
             "mcp_server_count": mcp_servers,
             "mcp_tokens": mcp_tokens,
@@ -5322,7 +5523,7 @@ def generate_coach_data(focus=None, components=None, trends=None):
     # Add compaction timing guide when relevant
     has_compaction_patterns = (
         claude_tokens > 5000
-        or any(p["name"] in ("Unused Skill Overhead", "Some Unused Skills", "Unused Skills", "Heavy CLAUDE.md", "CLAUDE.md Novel", "Oversized MEMORY.md")
+        or any(p["name"] in ("Unused Skill Overhead", "Some Unused Skills", "Unused Skills", f"{instruction_label} Could Be Leaner", f"Oversized {memory_label}")
                for p in patterns_bad)
     )
     if has_compaction_patterns:
@@ -9150,7 +9351,7 @@ def _generate_plist():
 _HOOKS_JSON_CANDIDATES = [
     # Script install path (installed by install.sh to ~/.claude/token-optimizer)
     RUNTIME_DIR / "token-optimizer" / "hooks" / "hooks.json",
-    # Dev path (symlinked/local checkout at ~/CascadeProjects/...)
+    # Dev path (symlinked/local checkout)
     Path(__file__).resolve().parents[3] / "hooks" / "hooks.json",
 ]
 
@@ -15867,7 +16068,7 @@ def _get_v5_feature_status():
                 hook_enabled = "UserPromptSubmit" in codex_hooks_text and "codex_hook_bridge.py" in codex_hooks_text
                 status[name]["enabled"] = hook_enabled
                 status[name]["source"] = "codex hook" if hook_enabled else "codex opt-in"
-                status[name]["how"] = "Requires the optional Codex UserPromptSubmit hook. Off by default because Codex Desktop shows visible hook rows."
+                status[name]["how"] = "Requires the Codex UserPromptSubmit hook. The default balanced Codex install enables it; quiet mode disables live quality nudges."
             elif name == "bash_compress":
                 hook_enabled = "PreToolUse" in codex_hooks_text and "bash_hook.py" in codex_hooks_text
                 status[name]["enabled"] = False
@@ -15879,8 +16080,9 @@ def _get_v5_feature_status():
                 status[name]["enabled"] = False
                 status[name]["recommended"] = False
                 status[name]["source"] = "codex api gap"
+                status[name]["unavailable"] = True
                 status[name]["value"] = "Not yet active in Codex. Token Optimizer measures the gap, but safe substitution needs richer Codex hook payloads."
-                status[name]["how"] = "Claude can intercept read flows for this feature. Current Codex hooks do not expose enough read/delta payload to enable it safely."
+                status[name]["how"] = "Claude can intercept read flows for this feature. Current Codex hooks do not expose Read tool payloads or a safe response-substitution path, so Token Optimizer will not pretend to enable it."
     return status
 
 
@@ -15934,7 +16136,9 @@ def _get_v5_savings_recommendation():
 
     has_savings = total_impact > 0 or aggressive_impact > 0
 
-    if total_impact > 0:
+    if detect_runtime() == "codex" and not has_savings:
+        recommendation = "Codex-safe active features are enabled. Claude-only read substitution features are shown as API gaps, not promised savings."
+    elif total_impact > 0:
         recommendation = f"Turn on {sum(1 for f in disabled if f['recommended'])} more recommended feature(s) to save up to {total_impact}% more tokens per session"
     elif aggressive_impact > 0:
         recommendation = f"All recommended features are on. Enable opt-in features for up to {aggressive_impact}% more savings (with trade-offs)"
@@ -15948,6 +16152,7 @@ def _get_v5_savings_recommendation():
         "enabled_features": enabled,
         "recommendation": recommendation,
         "has_savings_available": has_savings,
+        "runtime_note": "Codex cannot yet use Claude's delta-read or structure-map substitution hooks." if detect_runtime() == "codex" else "",
     }
 
 
@@ -18129,6 +18334,29 @@ if __name__ == "__main__":
         else:
             print(f"  Unknown mcp action: {action}. Use 'disable' or 'enable'.")
             sys.exit(1)
+    elif args[0] == "codex-skill" and len(args) >= 3:
+        action = args[1]  # disable or enable
+        raw_path = None
+        name = None
+        if "--path" in args:
+            idx = args.index("--path")
+            if idx + 1 < len(args):
+                raw_path = args[idx + 1]
+        else:
+            name = args[2]
+        if action in ("disable", "enable"):
+            ok = _manage_codex_skill(action, raw_path=raw_path, name=name)
+            sys.exit(0 if ok else 1)
+        print(f"  Unknown codex-skill action: {action}. Use 'disable' or 'enable'.")
+        sys.exit(1)
+    elif args[0] == "codex-mcp" and len(args) >= 3:
+        action = args[1]  # disable or enable
+        name = args[2]
+        if action in ("disable", "enable"):
+            ok = _manage_codex_mcp(action, name)
+            sys.exit(0 if ok else 1)
+        print(f"  Unknown codex-mcp action: {action}. Use 'disable' or 'enable'.")
+        sys.exit(1)
     elif args[0] == "jsonl-inspect":
         output_json = "--json" in args
         target = None

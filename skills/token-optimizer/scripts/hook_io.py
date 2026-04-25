@@ -23,6 +23,8 @@ def read_stdin_hook_input(max_bytes: int = 1_048_576) -> dict:
     try:
         import select
         if select.select([sys.stdin], [], [], 0.1)[0]:
+            if max_bytes is not None and max_bytes <= 0:
+                return {}
             data = sys.stdin.read(max_bytes)
             return json.loads(data) if data else {}
     except (OSError, json.JSONDecodeError, ValueError):

@@ -15643,6 +15643,24 @@ def quality_cache(throttle_seconds=120, warn_threshold=70, quiet=False, session_
     result["session_start_ts"] = _extract_session_start_ts(filepath)
     result["active_agents"] = _extract_active_agents(filepath)
 
+    # Cache hit rate for statusline (v5.4.27)
+    try:
+        total_input_all = 0
+        total_cache_read = 0
+        with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                try:
+                    rec = json.loads(line)
+                    usage = rec.get("message", {}).get("usage", {}) if rec.get("type") == "assistant" else {}
+                    if usage:
+                        total_input_all += usage.get("input_tokens", 0) + usage.get("cache_read_input_tokens", 0) + usage.get("cache_creation_input_tokens", 0)
+                        total_cache_read += usage.get("cache_read_input_tokens", 0)
+                except (json.JSONDecodeError, AttributeError):
+                    continue
+        result["cache_hit_rate"] = round(total_cache_read / total_input_all, 3) if total_input_all > 0 else 0
+    except (OSError, ZeroDivisionError):
+        result["cache_hit_rate"] = 0
+
     if not _write_quality_cache(cache_path, result):
         return None
 

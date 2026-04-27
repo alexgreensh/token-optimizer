@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Token Optimizer - Claude Code Status Line
-// Shows: model | effort | project | context bar used% | ContextQ:score (duration) | Compacts:N(loss) | Agents
+// Shows: model | effort | project | branch | context bar used% | ContextQ:score | duration | Cache:N% | Compacts:N(loss) | Agents
 //
 // Install: python3 measure.py setup-quality-bar
 // The quality score is updated by a UserPromptSubmit hook every ~2 minutes.
@@ -134,22 +134,43 @@ process.stdin.on('end', () => {
       }
     } catch (e) {}
 
-    // Session duration - show only when quality < 75 AND cache matches current session
-    // Without the session match check, all terminals show the same stale duration
+    // Session duration - always show when cache matches current session
     let duration = '';
     const cacheMatchesSession = q && q.session_file && safeSessionId && q.session_file.includes(safeSessionId);
-    if (cacheMatchesSession && q.session_start_ts && q.score != null && q.score < 75) {
+    if (cacheMatchesSession && q.session_start_ts) {
       const elapsed = Math.floor((Date.now() / 1000) - q.session_start_ts);
       if (elapsed > 0) {
         const h = Math.floor(elapsed / 3600);
         const m = Math.floor((elapsed % 3600) / 60);
         const dur = h > 0 ? `${h}h${m}m` : `${m}m`;
-        duration = ` ${DIM}(${dur})${RESET}`;
+        duration = `${SEP}${DIM}${dur}${RESET}`;
       }
     }
 
+    // Cache hit rate from quality cache
+    let cacheRate = '';
+    if (cacheMatchesSession && q.cache_hit_rate != null) {
+      const pct = Math.round(q.cache_hit_rate * 100);
+      if (pct >= 70) {
+        cacheRate = `${SEP}\x1b[32mCache:${pct}%${RESET}`;
+      } else if (pct >= 40) {
+        cacheRate = `${SEP}\x1b[33mCache:${pct}%${RESET}`;
+      } else {
+        cacheRate = `${SEP}\x1b[31mCache:${pct}%${RESET}`;
+      }
+    }
+
+    // Git branch (from working directory)
+    let branch = '';
+    try {
+      const { execSync } = require('child_process');
+      const br = execSync('git branch --show-current 2>/dev/null', { cwd: dir, timeout: 500, encoding: 'utf8' }).trim();
+      if (br && br !== 'main' && br !== 'master') {
+        branch = `${SEP}${DIM}${br}${RESET}`;
+      }
+    } catch (e) {}
+
     // Active agents - show running agents with model
-    // Strip ANSI escape codes from agent data (defense-in-depth against JSONL injection)
     const stripAnsi = s => String(s).replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/[\x00-\x1f]/g, '');
     let agents = '';
     if (cacheMatchesSession && q.active_agents && q.active_agents.length > 0) {
@@ -172,7 +193,7 @@ process.stdin.on('end', () => {
     }
 
     const dirname = path.basename(dir);
-    process.stdout.write(`${DIM}${model}${RESET}${effort}${SEP}${DIM}${dirname}${RESET}${ctx}${qScore}${duration}${sessionInfo}${agents}`);
+    process.stdout.write(`${DIM}${model}${RESET}${effort}${SEP}${DIM}${dirname}${RESET}${branch}${ctx}${qScore}${duration}${cacheRate}${sessionInfo}${agents}`);
   } catch (e) {
     // Silent fail - never break the status line
   }

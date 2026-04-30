@@ -213,22 +213,6 @@ OPENAI_LONG_CONTEXT_PRICING = {
 }
 OPENAI_LONG_CONTEXT_INPUT_THRESHOLD = 272_000
 
-OPENAI_MODEL_CONTEXT_WINDOWS = {
-    # Official API context windows. Codex Desktop/CLI can expose a smaller
-    # effective window; prefer logged Codex model_context_window over this map.
-    "gpt-5.5": 1_050_000,
-    "gpt-5.5-pro": 1_050_000,
-    "gpt-5.4": 1_050_000,
-    "gpt-5.4-mini": 400_000,
-    "gpt-5.4-nano": 400_000,
-    "gpt-5.3-codex": 400_000,
-    "gpt-5.2": 400_000,
-    "gpt-5.2-codex": 400_000,
-    "gpt-5.1-codex-mini": 400_000,
-    "gpt-5.1-codex": 400_000,
-    "gpt-5-codex": 400_000,
-    "gpt-5.1": 400_000,
-}
 CODEX_DEFAULT_EFFECTIVE_CONTEXT_WINDOW = 258_400
 
 CONFIG_DIR = _CONFIG_BASE if _CONFIG_BASE else RUNTIME_DIR / "token-optimizer"
@@ -263,7 +247,8 @@ def _save_pricing_tier(tier):
 def _get_model_cost(model, input_tokens, output_tokens, cache_read=0, cache_create=0, tier=None):
     """Calculate USD cost for a given model and token counts using the active pricing tier.
 
-    Returns cost in USD. Non-Claude models use Anthropic API rates.
+    Returns cost in USD. OpenAI/Codex models use the API-equivalent OpenAI
+    rate card; Claude models use the selected Claude provider tier.
     """
     if tier is None:
         tier = _load_pricing_tier()
@@ -297,6 +282,17 @@ def _get_model_cost(model, input_tokens, output_tokens, cache_read=0, cache_crea
         + cache_create * rates["cache_write"] / 1e6
     )
     return cost
+
+
+def _is_priced_model(model, tier=None):
+    """True when Token Optimizer has an exact rate card for this model id."""
+    if _normalize_openai_model_name(model):
+        return True
+    if tier is None:
+        tier = _load_pricing_tier()
+    tier_data = PRICING_TIERS.get(tier, PRICING_TIERS["anthropic"])
+    normalized = _normalize_model_name(model) if model else None
+    return bool(normalized and normalized in tier_data.get("claude_models", {}))
 
 
 def _normalize_openai_model_name(model):
@@ -1651,23 +1647,18 @@ def _latest_codex_logged_context_window() -> tuple[int | None, str | None]:
     return None, None
 
 
-def _official_openai_context_window(model: str | None) -> int | None:
-    priced_model = _normalize_openai_model_name(model)
-    if not priced_model:
-        return None
-    return OPENAI_MODEL_CONTEXT_WINDOWS.get(priced_model)
-
-
 def detect_context_window():
-    """Detect context window size. 1M default (since March 2026 GA).
+    """Detect context window size without assuming API limits for Codex.
 
     Detection order:
       1. CLAUDE_CODE_DISABLE_1M_CONTEXT=1 -> 200K (explicit opt-out)
       2. TOKEN_OPTIMIZER_CONTEXT_SIZE env var -> explicit override
       3. --context-size CLI flag (set via _cli_context_size) -> override
-      4. CLAUDE_MODEL / ANTHROPIC_MODEL env var -> check model family
-      5. config.json or settings.json model field -> check model family
-      6. Fallback: 1M (Opus 4.6+/4.7 and Sonnet 4.6 are 1M GA since March 2026)
+      4. Codex: logged model_context_window, then explicit Codex config,
+         then conservative Codex effective default
+      5. Claude: CLAUDE_MODEL / ANTHROPIC_MODEL env var -> check model family
+      6. Claude config.json or settings.json model field -> check model family
+      7. Claude fallback: 1M (Opus 4.6+/4.7 and Sonnet 4.6 are 1M GA since March 2026)
     """
     if os.environ.get("CLAUDE_CODE_DISABLE_1M_CONTEXT") == "1":
         return 200_000, "env: CLAUDE_CODE_DISABLE_1M_CONTEXT"
@@ -1688,10 +1679,8 @@ def detect_context_window():
         if configured_window:
             return configured_window, "codex config: model_context_window"
         model = os.environ.get("CODEX_MODEL") or os.environ.get("OPENAI_MODEL") or _codex_config_model()
-        official_window = _official_openai_context_window(model)
-        if official_window:
-            return official_window, f"OpenAI model metadata: {model} (override: TOKEN_OPTIMIZER_CONTEXT_SIZE)"
-        return CODEX_DEFAULT_EFFECTIVE_CONTEXT_WINDOW, "Codex default effective window (override: TOKEN_OPTIMIZER_CONTEXT_SIZE)"
+        model_note = f" for {model}" if model else ""
+        return CODEX_DEFAULT_EFFECTIVE_CONTEXT_WINDOW, f"Codex conservative effective window{model_note} (override: TOKEN_OPTIMIZER_CONTEXT_SIZE)"
     # Detect from model string in environment
     model = os.environ.get("CLAUDE_MODEL", "").lower()
     if not model:
@@ -7369,6 +7358,7 @@ def _query_trends_db(conn, days):
     total_messages = row["total_msgs"]
     total_fresh_input = int(_total_fresh_clamped)
     total_cache_create = int(row["total_cache_create"])
+    total_cache_read = max(0, int(total_input) - total_fresh_input - total_cache_create)
     # Billable tokens for headline (matches our token coach methodology):
     # fresh_input + cache_create + output.
     # - Excludes cache_read (bills at 10% of fresh, would dominate numbers).
@@ -7452,6 +7442,9 @@ def _query_trends_db(conn, days):
     pricing_tier = _load_pricing_tier()
     daily = {}
     total_cost_usd = 0.0
+    total_cost_priced_tokens = 0
+    total_cost_unpriced_tokens = 0
+    total_unpriced_sessions = 0
     session_rows = conn.execute(
         """SELECT date, jsonl_path, duration_minutes, input_tokens, output_tokens,
                   message_count, api_calls, cache_hit_rate,
@@ -7513,10 +7506,38 @@ def _query_trends_db(conn, days):
             mb = json.loads(mb_raw) if mb_raw else {}
         except (json.JSONDecodeError, TypeError, KeyError):
             mb = {}
+        session_priced_tokens = 0
+        session_unpriced_tokens = 0
+        if isinstance(mb, dict) and mb:
+            for model_name, parts in mb.items():
+                if not isinstance(parts, dict):
+                    continue
+                model_tokens = (
+                    int(parts.get("fresh_input") or 0)
+                    + int(parts.get("cache_read") or 0)
+                    + int(parts.get("cache_create") or 0)
+                    + int(parts.get("output") or 0)
+                )
+                if _is_priced_model(model_name, tier=pricing_tier):
+                    session_priced_tokens += model_tokens
+                else:
+                    session_unpriced_tokens += model_tokens
+        else:
+            model_tokens = inp_total + out_total
+            if _is_priced_model(dom_model, tier=pricing_tier):
+                session_priced_tokens = model_tokens
+            else:
+                session_unpriced_tokens = model_tokens
         session_cost = _cost_from_model_breakdown(mb, tier=pricing_tier)
         if session_cost == 0.0:
             session_cost = _get_model_cost(dom_model, uncached_est, out_total, cache_read_est, cache_create_total, tier=pricing_tier)
+        if session_cost == 0.0 and session_priced_tokens == 0 and session_unpriced_tokens == 0 and (inp_total or out_total):
+            session_unpriced_tokens = inp_total + out_total
         total_cost_usd += session_cost
+        total_cost_priced_tokens += session_priced_tokens
+        total_cost_unpriced_tokens += session_unpriced_tokens
+        if session_unpriced_tokens > 0:
+            total_unpriced_sessions += 1
         jsonl_path = sr["jsonl_path"]
 
         sd = {
@@ -7539,6 +7560,8 @@ def _query_trends_db(conn, days):
             "topic": sr["topic"],
             "project": _clean_project_name(sr["project"]),
             "cost_usd": round(session_cost, 4),
+            "cost_priced_tokens": session_priced_tokens,
+            "cost_unpriced_tokens": session_unpriced_tokens,
             "model": _normalize_model_name(dom_model) or dom_model,
         }
         # Prefer stored quality score (persisted during collect), fall back to recomputation
@@ -7554,6 +7577,18 @@ def _query_trends_db(conn, days):
         d["session_details"].append(sd)
 
     daily_sorted = sorted(daily.values(), key=lambda x: x["date"], reverse=True)
+    grade_rank = {grade: idx for idx, grade in enumerate(["F", "D", "C", "B", "A", "S"])}
+    for d in daily_sorted:
+        details = d.get("session_details", [])
+        d["total_cost_usd"] = round(sum(float(sd.get("cost_usd") or 0.0) for sd in details), 4)
+        d["cost_priced_tokens"] = sum(int(sd.get("cost_priced_tokens") or 0) for sd in details)
+        d["cost_unpriced_tokens"] = sum(int(sd.get("cost_unpriced_tokens") or 0) for sd in details)
+        scores = [float(sd["quality_score"]) for sd in details if sd.get("quality_score") is not None]
+        if scores:
+            d["avg_quality_score"] = round(sum(scores) / len(scores), 1)
+        grades = [sd.get("quality_grade") for sd in details if sd.get("quality_grade")]
+        if grades:
+            d["worst_grade"] = min(grades, key=lambda grade: grade_rank.get(grade, 999))
 
     # Rolling quality trend from session_log
     quality_trend_rows = conn.execute(
@@ -7591,6 +7626,7 @@ def _query_trends_db(conn, days):
         "total_input_tokens": total_input,           # raw (includes cache reads + cache creates)
         "total_output_tokens": total_output,
         "total_fresh_input": total_fresh_input,      # v5.4.9: billable fresh input (Desktop-parity)
+        "total_cache_read": total_cache_read,
         "total_cache_create": total_cache_create,    # separate (bills at 1.25x fresh)
         "total_tokens": total_billable_tokens,       # v5.4.9: fresh_input + output (Desktop-parity)
         "total_tokens_raw": total_input + total_output,  # includes cache, for debugging
@@ -7613,6 +7649,11 @@ def _query_trends_db(conn, days):
         },
         "daily": daily_sorted,
         "total_cost_usd": round(total_cost_usd, 4),
+        "cost_priced_tokens": total_cost_priced_tokens,
+        "cost_unpriced_tokens": total_cost_unpriced_tokens,
+        "cost_unpriced_sessions": total_unpriced_sessions,
+        "cost_coverage_pct": round(100 * total_cost_priced_tokens / max(total_cost_priced_tokens + total_cost_unpriced_tokens, 1), 1),
+        "cost_note": "Costs exclude sessions whose logs do not expose a recognized model id." if total_cost_unpriced_tokens else None,
         "quality_trend": quality_trend,
         "pricing_tier": pricing_tier,
         "pricing_tier_label": tier_label,
@@ -7671,12 +7712,16 @@ def _collect_trends_from_jsonl(days=30):
     total_model_tokens = {}
     total_input = 0
     total_output = 0
+    total_cache_read = 0
+    total_cache_create = 0
     total_duration = 0
     session_count = len(sessions)
 
     for s in sessions:
         total_input += s["total_input_tokens"]
         total_output += s["total_output_tokens"]
+        total_cache_read += s.get("total_cache_read", 0)
+        total_cache_create += s.get("total_cache_create", 0)
         total_duration += s["duration_minutes"]
 
         for skill, count in s["skills_used"].items():
@@ -7729,6 +7774,10 @@ def _collect_trends_from_jsonl(days=30):
     # Build daily breakdown
     pricing_tier = _load_pricing_tier()
     daily = {}
+    total_cost_usd = 0.0
+    total_cost_priced_tokens = 0
+    total_cost_unpriced_tokens = 0
+    total_unpriced_sessions = 0
     for s in sessions:
         date = s["date"]
         if date not in daily:
@@ -7753,6 +7802,18 @@ def _collect_trends_from_jsonl(days=30):
         # uncached input = total - cache_read - cache_create
         uncached = max(0, s["total_input_tokens"] - cr - cc)
         session_cost = _get_model_cost(dom_model, uncached, s["total_output_tokens"], cr, cc, tier=pricing_tier)
+        session_tokens_for_cost = s["total_input_tokens"] + s["total_output_tokens"]
+        if _is_priced_model(dom_model, tier=pricing_tier):
+            session_priced_tokens = session_tokens_for_cost
+            session_unpriced_tokens = 0
+        else:
+            session_priced_tokens = 0
+            session_unpriced_tokens = session_tokens_for_cost
+        total_cost_usd += session_cost
+        total_cost_priced_tokens += session_priced_tokens
+        total_cost_unpriced_tokens += session_unpriced_tokens
+        if session_unpriced_tokens > 0:
+            total_unpriced_sessions += 1
 
         jsonl_path = s.get("jsonl_path")
         sd = {
@@ -7777,6 +7838,8 @@ def _collect_trends_from_jsonl(days=30):
             "cache_read_tokens": cr,
             "cache_create_tokens": cc,
             "cost_usd": round(session_cost, 4),
+            "cost_priced_tokens": session_priced_tokens,
+            "cost_unpriced_tokens": session_unpriced_tokens,
             "model": _normalize_model_name(dom_model) or dom_model,
         }
         sq = score_session_quality(sd)
@@ -7787,6 +7850,18 @@ def _collect_trends_from_jsonl(days=30):
 
     # Sort daily by date descending
     daily_sorted = sorted(daily.values(), key=lambda x: x["date"], reverse=True)
+    grade_rank = {grade: idx for idx, grade in enumerate(["F", "D", "C", "B", "A", "S"])}
+    for d in daily_sorted:
+        details = d.get("session_details", [])
+        d["total_cost_usd"] = round(sum(float(sd.get("cost_usd") or 0.0) for sd in details), 4)
+        d["cost_priced_tokens"] = sum(int(sd.get("cost_priced_tokens") or 0) for sd in details)
+        d["cost_unpriced_tokens"] = sum(int(sd.get("cost_unpriced_tokens") or 0) for sd in details)
+        scores = [float(sd["quality_score"]) for sd in details if sd.get("quality_score") is not None]
+        if scores:
+            d["avg_quality_score"] = round(sum(scores) / len(scores), 1)
+        grades = [sd.get("quality_grade") for sd in details if sd.get("quality_grade")]
+        if grades:
+            d["worst_grade"] = min(grades, key=lambda grade: grade_rank.get(grade, 999))
 
     # Build quality trend from computed session scores
     quality_trend = []
@@ -7808,6 +7883,14 @@ def _collect_trends_from_jsonl(days=30):
     return {
         "period_days": days,
         "session_count": session_count,
+        "total_input_tokens": total_input,
+        "total_output_tokens": total_output,
+        "total_fresh_input": max(0, total_input - total_cache_read - total_cache_create),
+        "total_cache_read": total_cache_read,
+        "total_cache_create": total_cache_create,
+        "total_tokens": max(0, total_input - total_cache_read) + total_output,
+        "total_tokens_raw": total_input + total_output,
+        "total_messages": sum(s.get("message_count", 0) for s in sessions),
         "avg_duration_minutes": round(total_duration / session_count, 1) if session_count else 0,
         "avg_input_tokens": round(total_input / session_count) if session_count else 0,
         "avg_output_tokens": round(total_output / session_count) if session_count else 0,
@@ -7825,6 +7908,12 @@ def _collect_trends_from_jsonl(days=30):
             "current_total": current_total,
         },
         "daily": daily_sorted,
+        "total_cost_usd": round(total_cost_usd, 4),
+        "cost_priced_tokens": total_cost_priced_tokens,
+        "cost_unpriced_tokens": total_cost_unpriced_tokens,
+        "cost_unpriced_sessions": total_unpriced_sessions,
+        "cost_coverage_pct": round(100 * total_cost_priced_tokens / max(total_cost_priced_tokens + total_cost_unpriced_tokens, 1), 1),
+        "cost_note": "Costs exclude sessions whose logs do not expose a recognized model id." if total_cost_unpriced_tokens else None,
         "quality_trend": quality_trend,
         "pricing_tier": pricing_tier,
         "pricing_tier_label": tier_label,
@@ -17881,9 +17970,9 @@ if __name__ == "__main__":
                 "standalone": True,
                 "auto_plan": False,
                 "generated_at": datetime.now().isoformat(),
-                "pricing_tier": "anthropic",
-                "pricing_tier_label": "Anthropic API",
-                "pricing_tiers": {},
+                "pricing_tier": _load_pricing_tier(),
+                "pricing_tier_label": _pricing_tier_label(_load_pricing_tier()),
+                "pricing_tiers": {} if detect_runtime() == "codex" else {k: v["label"] for k, v in PRICING_TIERS.items()},
                 "ttl_period_summary": [],
                 "session_turns": {},
                 "memory_review": None,

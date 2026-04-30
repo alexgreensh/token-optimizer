@@ -2816,13 +2816,24 @@ var DB = (function() {
     var tokenBreakdownNote = isCodex
       ? 'fresh:' + fn(t.total_fresh_input || 0) + ' · cached input:' + fn(t.total_cache_read || 0) + ' · out:' + fn(t.total_output_tokens || 0)
       : 'fresh:' + fn(t.total_fresh_input || 0) + ' · cache-write:' + fn(t.total_cache_create || 0) + ' · out:' + fn(t.total_output_tokens || 0);
+    var codexCostNote = '';
+    if (isCodex && typeof t.total_cost_usd === 'number') {
+      codexCostNote = '<div style="font-size:10px;color:var(--c-text-dim);margin-top:2px">API-equivalent known cost: $' + t.total_cost_usd.toFixed(2);
+      if (typeof t.cost_coverage_pct === 'number' && t.cost_coverage_pct < 100) {
+        codexCostNote += ' · pricing coverage: ' + t.cost_coverage_pct.toFixed(1) + '%';
+      }
+      codexCostNote += '</div>';
+      if (t.cost_note) {
+        codexCostNote += '<div style="font-size:10px;color:var(--c-warn);margin-top:2px">' + esc(t.cost_note) + '</div>';
+      }
+    }
     var cacheExtra = isCodex
       ? '<div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">' + cacheNote + '</div>'
       : '<div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">Cache writes: ' + esc(globalTtlMix) + '</div><div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">' + esc(globalTtlSessionLabel) + '</div><div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">' + esc(ttlPeriodSummary || 'TTL period summary unavailable') + '</div><div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">' + cacheNote + '</div>';
 
     html += '<div class="stat-row" style="grid-template-columns:repeat(3,1fr);margin-bottom:var(--s-3)">' +
       '<div class="stat-card"><div class="stat-card-value">' + t.session_count + '</div><div class="stat-card-label">Sessions (' + t.period_days + 'd)</div></div>' +
-      '<div class="stat-card"><div class="stat-card-value">' + fn(t.total_tokens || 0) + '</div><div class="stat-card-label">' + tokenLabel + ' (' + t.period_days + 'd)</div><div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">' + tokenNote + '</div><div style="font-size:10px;color:var(--c-text-dim);margin-top:2px">' + tokenBreakdownNote + '</div></div>' +
+      '<div class="stat-card"><div class="stat-card-value">' + fn(t.total_tokens || 0) + '</div><div class="stat-card-label">' + tokenLabel + ' (' + t.period_days + 'd)</div><div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">' + tokenNote + '</div><div style="font-size:10px;color:var(--c-text-dim);margin-top:2px">' + tokenBreakdownNote + '</div>' + codexCostNote + '</div>' +
       '<div class="stat-card"><div class="stat-card-value">' + fn(t.total_messages || 0) + '</div><div class="stat-card-label">Messages (' + t.period_days + 'd)</div></div>' +
       '</div>' +
       '<div class="stat-row" style="grid-template-columns:repeat(3,1fr)">' +

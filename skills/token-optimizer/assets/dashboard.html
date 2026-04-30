@@ -1368,6 +1368,16 @@ input:checked + .slider:before {
 .cmd-toast-btn { background: var(--c-accent-cyan); color: var(--c-bg); border: 0; border-radius: 6px; padding: 8px 14px; cursor: pointer; font-size: 13px; font-weight: 500; }
 .cmd-toast-btn.secondary { background: transparent; color: var(--c-text-dim); border: 1px solid var(--c-border); }
 .hook-partial { font-size: 12px; color: #ff9f43; margin-top: 2px; }
+.hook-action-btn { background: transparent; color: var(--c-accent-cyan); border: 1px solid var(--c-border); border-radius: 6px; padding: 6px 10px; font-size: 12px; cursor: pointer; margin-top: 8px; }
+.hook-action-btn:hover { border-color: var(--c-accent-cyan); }
+.hook-profile-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--s-2); padding: var(--s-3); }
+.hook-profile-card { background: var(--c-bg); border: 1px solid var(--c-border); border-radius: 10px; padding: 14px; }
+.hook-profile-card.recommended { border-color: var(--c-accent-cyan); box-shadow: 0 0 18px rgba(0,240,255,.08); }
+.hook-profile-title { color: var(--c-text-main); font-weight: 700; margin-bottom: 6px; }
+.hook-profile-desc { color: var(--c-text-dim); font-size: 13px; line-height: 1.45; min-height: 54px; }
+.hook-command-panel { border-color: var(--c-accent-cyan); }
+.hook-command-pre { white-space: pre-wrap; word-break: break-word; background: var(--c-bg); border: 1px solid var(--c-border); border-radius: 8px; padding: 12px; color: var(--c-accent-cyan); font-family: var(--font-mono); font-size: 13px; line-height: 1.5; margin: 10px 0 12px; }
+.hook-command-meta { color: var(--c-text-dim); font-size: 13px; line-height: 1.45; }
 
 /* ========== SESSION QUALITY OVERLAY (v2.6) ========== */
 .quality-good { border-left: 4px solid #22c55e !important; }
@@ -3697,6 +3707,7 @@ var DB = (function() {
     if (!el) return;
     var h = data.hooks;
     var isCodex = data.runtime === 'codex';
+    var codexSetup = (data.manage && data.manage.codex) || {};
     var refreshCmd = isCodex
       ? 'TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py dashboard'
       : 'python3 measure.py dashboard';
@@ -3714,6 +3725,38 @@ var DB = (function() {
       el.innerHTML = html;
       return;
     }
+
+    if (isCodex) {
+      var balancedCmd = codexSetup.install_balanced_profile_cmd || (h.codex_balanced_profile && h.codex_balanced_profile.install_cmd) || '';
+      var quietCmd = codexSetup.install_quiet_profile_cmd || (h.codex_stop_refresh && h.codex_stop_refresh.install_cmd) || '';
+      var telemetryCmd = codexSetup.install_telemetry_profile_cmd || (h.codex_telemetry_profile && h.codex_telemetry_profile.install_cmd) || '';
+      var aggressiveCmd = codexSetup.install_aggressive_profile_cmd || '';
+      html += '<div class="card wide"><div class="card-header"><span>Codex Hook Profiles</span><span class="label">choose one command</span></div>' +
+        '<div style="padding:0 var(--s-3) var(--s-2);color:var(--c-text-dim);font-size:14px;line-height:1.6;">Profiles install groups of hooks. <strong style="color:var(--c-text-main);">Quiet</strong> installs only Stop, so most quality hooks remain off. <strong style="color:var(--c-text-main);">Balanced</strong> is the useful default for real quality tracking without per-tool spam.</div>' +
+        '<div class="hook-profile-grid">';
+      [
+        ['Balanced', 'Recommended. Installs SessionStart, UserPromptSubmit, and Stop for quality cache, loop signals, continuity, and dashboard refresh.', balancedCmd, 'recommended'],
+        ['Quiet', 'Stop-only. Lowest visible noise, but prompt-quality hooks stay off and telemetry is weaker.', quietCmd, ''],
+        ['Telemetry', 'Adds PostToolUse rows for tool-output archive/context intel. Useful for QA, noisier in Desktop.', telemetryCmd, ''],
+        ['Aggressive', 'All currently available Codex hooks, including experimental Bash PreToolUse. Best for torture-room testing, not default Desktop UX.', aggressiveCmd, '']
+      ].forEach(function(profile) {
+        if (!profile[2]) return;
+        html += '<div class="hook-profile-card ' + profile[3] + '">' +
+          '<div class="hook-profile-title">' + esc(profile[0]) + '</div>' +
+          '<div class="hook-profile-desc">' + esc(profile[1]) + '</div>' +
+          '<button class="hook-action-btn" data-hook-preview-title="' + esc(profile[0] + ' profile') + '" data-hook-preview-body="' + esc(profile[1]) + '" data-hook-preview-cmd="' + esc(profile[2]) + '">Preview command</button>' +
+          '</div>';
+      });
+      html += '</div></div>';
+    }
+
+    html += '<div class="card wide hook-command-panel" id="hook-command-panel">' +
+      '<div class="card-header"><span>Command Preview</span><span class="label">nothing copied until you click copy</span></div>' +
+      '<div style="padding:var(--s-3);">' +
+      '<div id="hook-command-meta" class="hook-command-meta">Select a hook toggle or profile above to preview the exact terminal command.</div>' +
+      '<pre id="hook-selected-cmd" class="hook-command-pre">No command selected yet.</pre>' +
+      '<button class="hook-action-btn" id="hook-copy-selected" disabled>Copy shown command</button>' +
+      '</div></div>';
 
     html += '<div class="card wide"><div class="card-header"><span>Installed Hooks</span></div>';
 
@@ -3736,6 +3779,9 @@ var DB = (function() {
       if (hook.partial) {
         html += '<div class="hook-partial">Partially installed. Click to complete setup.</div>';
       }
+      html += '<button class="hook-action-btn" data-hook-preview-title="' + esc(hook.label) + '" data-hook-preview-body="' + esc(hook.installed ? 'Installed now. Preview the uninstall command.' : 'Off now. Preview the install command.') + '" data-hook-preview-cmd="' + esc(cmd || '') + '">' +
+        (hook.installed ? 'Preview uninstall command' : 'Preview install command') +
+        '</button>';
       var genTime = data.generated_at ? new Date(data.generated_at) : null;
       var agoText = genTime ? timeAgo(genTime) : 'unknown';
       html += '<div style="font-size:11px;color:var(--c-text-dim);margin-top:2px;">Detected ' + agoText + '. Regenerate dashboard to refresh.</div>';
@@ -3747,8 +3793,7 @@ var DB = (function() {
     // How it works card
     html += '<div class="card wide"><div class="card-header"><span>How It Works</span></div>' +
       '<div style="padding:var(--s-3);color:var(--c-text-dim);font-size:14px;line-height:1.6;">' +
-      'Toggles copy the install or uninstall command to your clipboard. ' +
-      'Paste it into your terminal to apply. The dashboard is a static file and cannot modify your settings directly.' +
+      'Toggles and profile buttons preview the install or uninstall command. Use <strong style="color:var(--c-text-main);">Copy shown command</strong> only when you are ready. Paste it into your terminal to apply. The dashboard is a static file and cannot modify your settings directly.' +
       '<br><br>After running the command, regenerate the dashboard to update the toggle state: ' +
       '<code style="background:var(--c-bg);padding:2px 6px;border-radius:4px;font-size:13px;">' + esc(refreshCmd) + '</code>' +
       '</div></div>';
@@ -3760,9 +3805,13 @@ var DB = (function() {
       input.addEventListener('change', function(e) {
         var isNowChecked = e.target.checked;
         var cmd = isNowChecked ? e.target.dataset.install : e.target.dataset.uninstall;
-        copyHookCmd(cmd);
-        // Mark the row as pending (visual cue that command needs to run)
         var row = e.target.closest('.hook-row');
+        var label = row ? row.querySelector('.hook-label') : null;
+        previewHookCmd(cmd, {
+          title: label ? label.textContent.trim() : 'Hook command',
+          body: isNowChecked ? 'Previewing install command. It has not been copied or applied yet.' : 'Previewing uninstall command. It has not been copied or applied yet.'
+        });
+        // Mark the row as pending (visual cue that command needs to run)
         if (row) {
           row.style.opacity = '0.7';
           var existing = row.querySelector('.hook-pending');
@@ -3776,6 +3825,38 @@ var DB = (function() {
         }
       });
     });
+    el.querySelectorAll('[data-hook-preview-cmd]').forEach(function(btn) {
+      btn.addEventListener('click', function(e) {
+        e.preventDefault();
+        previewHookCmd(btn.getAttribute('data-hook-preview-cmd') || '', {
+          title: btn.getAttribute('data-hook-preview-title') || 'Hook command',
+          body: btn.getAttribute('data-hook-preview-body') || 'Previewing command. It has not been copied or applied yet.'
+        });
+      });
+    });
+    var copySelected = document.getElementById('hook-copy-selected');
+    if (copySelected) {
+      copySelected.addEventListener('click', function() {
+        var cmd = window._selectedHookCommand || '';
+        if (cmd) copyHookCmd(cmd);
+      });
+    }
+  }
+
+  function previewHookCmd(cmd, meta) {
+    window._selectedHookCommand = cmd || '';
+    var cmdEl = document.getElementById('hook-selected-cmd');
+    var metaEl = document.getElementById('hook-command-meta');
+    var copyBtn = document.getElementById('hook-copy-selected');
+    if (cmdEl) cmdEl.textContent = cmd || 'No command available for this item.';
+    if (metaEl) {
+      var title = meta && meta.title ? meta.title : 'Hook command';
+      var body = meta && meta.body ? meta.body : 'Previewing command. It has not been copied or applied yet.';
+      metaEl.innerHTML = '<strong style="color:var(--c-text-main);">' + esc(title) + ':</strong> ' + esc(body);
+    }
+    if (copyBtn) copyBtn.disabled = !cmd;
+    var panel = document.getElementById('hook-command-panel');
+    if (panel && panel.scrollIntoView) panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
 
   function copyHookCmd(cmd) {

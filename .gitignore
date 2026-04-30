@@ -4,6 +4,7 @@ __pycache__/
 .env
 .env.*
 .DS_Store
+.codex/hooks.json
 *.key
 *.pem
 *.p12

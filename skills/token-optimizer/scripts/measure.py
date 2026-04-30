@@ -16451,6 +16451,7 @@ def _get_v5_feature_status():
                 hook_enabled = "UserPromptSubmit" in codex_hooks_text and "codex_hook_bridge.py" in codex_hooks_text
                 status[name]["enabled"] = hook_enabled
                 status[name]["source"] = "codex hook" if hook_enabled else "codex opt-in"
+                status[name]["managed_by_hooks"] = True
                 status[name]["how"] = "Requires the Codex UserPromptSubmit hook. The default balanced Codex install enables it; quiet mode disables live quality nudges."
             elif name == "bash_compress":
                 hook_enabled = "PreToolUse" in codex_hooks_text and "bash_hook.py" in codex_hooks_text

@@ -2282,17 +2282,32 @@ var DB = (function() {
     var status = {};
     Object.keys(V5_FEATURES_FALLBACK).forEach(function(name) {
       var f = V5_FEATURES_FALLBACK[name];
-      var codexGap = data && data.runtime === 'codex' && (name === 'delta_mode' || name === 'structure_map_beta');
+      var isCodexRuntime = data && data.runtime === 'codex';
+      var codexGap = isCodexRuntime && (name === 'delta_mode' || name === 'structure_map_beta' || name === 'bash_compress');
+      var codexValue = f.value;
+      var codexHow = 'Codex currently lacks the Read-hook payload/response-substitution surface needed for this Claude feature.';
+      var codexSource = 'codex api gap';
+      if (isCodexRuntime && name === 'bash_compress') {
+        codexValue = 'Codex can report Bash usage, but invisible command rewriting is not supported yet. Bash compression is experimental and opt-in only.';
+        codexHow = 'Codex PreToolUse can block commands, but current Codex support does not apply updatedInput, so Token Optimizer will not pretend this saves tokens by default.';
+        codexSource = 'codex experimental gap';
+      }
       status[name] = {
-        label: f.label, what: f.what, value: f.value, impact_pct: f.impact_pct,
-        how: codexGap ? 'Codex currently lacks the Read-hook payload/response-substitution surface needed for this Claude feature.' : f.how,
+        label: f.label, what: f.what, value: codexGap ? codexValue : f.value, impact_pct: f.impact_pct,
+        how: codexGap ? codexHow : f.how,
         risk: f.risk, risk_level: f.risk_level,
         recommended: codexGap ? false : f.recommended,
         enabled: codexGap ? false : f.default,
-        source: codexGap ? 'codex api gap' : 'default',
+        source: codexGap ? codexSource : 'default',
         unavailable: codexGap,
+        managed_by_hooks: isCodexRuntime && (name === 'quality_nudges' || name === 'loop_detection'),
         env_var: f.env_var, config_key: 'v5_' + name
       };
+      if (status[name].managed_by_hooks) {
+        status[name].enabled = false;
+        status[name].source = 'codex hook-managed';
+        status[name].how = 'Managed by the Codex hook profile. Install the balanced hooks from the Hooks or Codex Optimizer Setup section to enable live prompt-quality signals.';
+      }
     });
     return status;
   }
@@ -3681,15 +3696,21 @@ var DB = (function() {
     var el = document.getElementById('view-hooks');
     if (!el) return;
     var h = data.hooks;
+    var isCodex = data.runtime === 'codex';
+    var refreshCmd = isCodex
+      ? 'TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py dashboard'
+      : 'python3 measure.py dashboard';
 
     var html = '<div class="section-header">' +
       '<div class="label">Configuration</div>' +
       '<h1>Hooks</h1>' +
-      '<p>Toggle features on and off. Click a toggle to copy the install or uninstall command.</p>' +
+      '<p>' + (isCodex
+        ? 'Codex hooks collect real local telemetry. Balanced mode is the default; per-tool hooks are opt-in because Codex Desktop shows hook rows.'
+        : 'Toggle features on and off. Click a toggle to copy the install or uninstall command.') + '</p>' +
       '</div>';
 
     if (!h) {
-      html += '<div class="empty-state">Hook status not available. Regenerate dashboard: python3 measure.py dashboard</div>';
+      html += '<div class="empty-state">Hook status not available. Regenerate dashboard: ' + esc(refreshCmd) + '</div>';
       el.innerHTML = html;
       return;
     }
@@ -3729,7 +3750,7 @@ var DB = (function() {
       'Toggles copy the install or uninstall command to your clipboard. ' +
       'Paste it into your terminal to apply. The dashboard is a static file and cannot modify your settings directly.' +
       '<br><br>After running the command, regenerate the dashboard to update the toggle state: ' +
-      '<code style="background:var(--c-bg);padding:2px 6px;border-radius:4px;font-size:13px;">python3 measure.py dashboard</code>' +
+      '<code style="background:var(--c-bg);padding:2px 6px;border-radius:4px;font-size:13px;">' + esc(refreshCmd) + '</code>' +
       '</div></div>';
 
     el.innerHTML = html;
@@ -3881,34 +3902,42 @@ var DB = (function() {
       });
 
       var headerColor = offRecommended > 0 ? '#ff9f43' : 'var(--c-accent-cyan)';
+      var v5Title = isCodex ? 'Codex Optimization Signals & Gaps' : 'Active Compression (v5)';
+      var v5Intro = isCodex
+        ? '<strong>What this shows:</strong> Which Token Optimizer capabilities work natively in Codex today, which ones are managed by hooks, and which Claude-only compression features need more Codex API support. Use the Hooks tab for hook-managed features.'
+        : '<strong>What these do:</strong> Actively reduce the tokens your sessions use. Toggles apply instantly to new tool calls &mdash; no restart needed.';
       html += '<div class="card wide" style="border: 3px solid ' + headerColor + ';margin-bottom: var(--s-3);">' +
         '<div class="card-header" style="padding:18px var(--s-3);">' +
-          '<span style="font-size:22px;font-weight:700;">Active Compression (v5)</span>' +
+          '<span style="font-size:22px;font-weight:700;">' + v5Title + '</span>' +
           '<span class="label" style="font-size:14px;background:' + headerColor + ';color:var(--c-bg);padding:6px 12px;border-radius:4px;font-weight:700;">' +
           onCount + '/' + v5Names.length + ' ON' +
           '</span>' +
         '</div>' +
         '<p style="font-size:17px;color:var(--c-text);padding:0 var(--s-3) var(--s-2);line-height:1.6;">' +
-          '<strong>What these do:</strong> Actively reduce the tokens your sessions use. ' +
-          'Toggles apply instantly to new tool calls &mdash; no restart needed. ' +
+          v5Intro + ' ' +
           '<span style="color:var(--c-text-dim);">All data stays 100% local on your machine.</span>' +
         '</p>';
 
       v5Names.forEach(function(fname) {
         var f = v5Features[fname];
         var unavailable = !!f.unavailable || f.source === 'codex api gap';
+        var managedByHooks = !!f.managed_by_hooks || (isCodex && (f.source === 'codex hook' || f.source === 'codex opt-in' || f.source === 'codex hook-managed'));
         var riskBg = '#4ade80';
         var riskLabel = 'NO RISK';
         if (f.risk_level === 'low') { riskBg = '#60a5fa'; riskLabel = 'LOW RISK'; }
         else if (f.risk_level === 'moderate') { riskBg = '#ff9f43'; riskLabel = 'MODERATE RISK'; }
 
-        var recBadge = unavailable
+        var recBadge = managedByHooks
+          ? '<span style="background:#60a5fa;color:#000;font-size:12px;padding:3px 10px;border-radius:4px;margin-left:10px;font-weight:700;vertical-align:middle;">HOOK-MANAGED</span>'
+          : unavailable
           ? '<span style="background:var(--c-border);color:var(--c-text-dim);font-size:12px;padding:3px 10px;border-radius:4px;margin-left:10px;vertical-align:middle;">CODEX API GAP</span>'
           : f.recommended
           ? '<span style="background:#4ade80;color:#000;font-size:12px;padding:3px 10px;border-radius:4px;margin-left:10px;font-weight:700;vertical-align:middle;">RECOMMENDED</span>'
           : '<span style="background:var(--c-border);color:var(--c-text-dim);font-size:12px;padding:3px 10px;border-radius:4px;margin-left:10px;vertical-align:middle;">OPT-IN</span>';
         var sourceBadge = f.source === 'env'
           ? '<span style="font-size:12px;color:var(--c-text-dim);margin-left:10px;">(set via env var, cannot toggle from dashboard)</span>'
+          : managedByHooks
+          ? '<span style="font-size:12px;color:var(--c-text-dim);margin-left:10px;">(enable from Hooks / balanced profile)</span>'
           : unavailable
           ? '<span style="font-size:12px;color:var(--c-text-dim);margin-left:10px;">(shown for parity; not toggleable in Codex yet)</span>'
           : '';
@@ -3921,7 +3950,7 @@ var DB = (function() {
           '<label class="hook-toggle" style="margin-top:4px;transform:scale(1.2);transform-origin:left top;">' +
           '<input type="checkbox"' + (f.enabled ? ' checked' : '') +
             ' data-v5-name="' + esc(fname) + '"' +
-            (f.source === 'env' || unavailable ? ' disabled' : '') + '>' +
+            (f.source === 'env' || unavailable || managedByHooks ? ' disabled' : '') + '>' +
           '<span class="hook-slider"></span></label>' +
           '<div class="hook-info" style="margin-left:8px;">' +
           '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:10px;">' +
@@ -3971,7 +4000,7 @@ var DB = (function() {
           '<div><strong style="color:var(--c-text-main);">Verify readiness:</strong><br><code class="update-cmd">' + esc(cx.doctor_cmd || 'TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-doctor --project .') + '</code></div>' +
           '</div>' +
         '</details>' +
-        '<p style="margin-bottom:0;margin-top:var(--s-3);">These commands are generated from this checkout at runtime. They are not shipped with any user-specific paths.</p>' +
+        '<p style="margin-bottom:0;margin-top:var(--s-3);">These commands are generated locally at dashboard-build time. Source checkouts include the checkout path; packaged installs will show the user&apos;s plugin path. No maintainer-specific paths are shipped.</p>' +
         '</div></div>';
 
       var codexSkills = (m.skills && m.skills.active) || [];
@@ -5118,7 +5147,7 @@ function getSampleData() {
 document.addEventListener('DOMContentLoaded', function() {
   var data = window.__TOKEN_DATA__;
   if (!data) {
-    document.body.innerHTML = '<div style="max-width:760px;margin:80px auto;padding:32px;border:1px solid #263044;border-radius:14px;background:#0f172a;color:#d6e4ff;font-family:system-ui,sans-serif;line-height:1.6;"><h1 style="margin-top:0;">Token Optimizer</h1><p>No dashboard data was injected into this file, so sample Claude data is intentionally hidden. Generate a fresh dashboard from your local runtime before reviewing metrics.</p><code style="display:block;white-space:normal;background:#111827;padding:12px;border-radius:8px;color:#93c5fd;">python3 skills/token-optimizer/scripts/measure.py dashboard</code></div>';
+    document.body.innerHTML = '<div style="max-width:760px;margin:80px auto;padding:32px;border:1px solid #263044;border-radius:14px;background:#0f172a;color:#d6e4ff;font-family:system-ui,sans-serif;line-height:1.6;"><h1 style="margin-top:0;">Token Optimizer</h1><p>No local dashboard data was injected into this file, so demo data is hidden. Generate a fresh dashboard from your local runtime before reviewing metrics.</p><code style="display:block;white-space:normal;background:#111827;padding:12px;border-radius:8px;color:#93c5fd;">python3 skills/token-optimizer/scripts/measure.py dashboard</code></div>';
     return;
   }
   var runtimeLabel = data.runtime_label || (data.runtime === 'codex' ? 'Codex' : 'Claude Code');
@@ -5132,7 +5161,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
   // Probe for our custom API server before init.
   // When served from the daemon (http://localhost:*), a relative /api/health works.
-  // When viewed as a file:// URL, relative paths fail — probe the daemon directly.
+  // When viewed as file://, stay in static read-only mode to avoid CORS noise.
   var DAEMON_URL = data.runtime === 'codex' ? 'http://localhost:24843' : 'http://localhost:24842';
   function _setApiLive(baseUrl) {
     window.__TOKEN_API_LIVE = true;
@@ -5180,14 +5209,17 @@ document.addEventListener('DOMContentLoaded', function() {
   }
   if (typeof fetch === 'function') {
     var isHttp = window.location.protocol.indexOf('http') === 0;
-    var isFile = window.location.protocol === 'file:';
-    var probe = isHttp ? '/api/health' : (DAEMON_URL + '/api/health');
+    if (!isHttp) {
+      startApp();
+      return;
+    }
+    var probe = '/api/health';
     try {
       fetch(probe, { method: 'GET' })
         .then(function(r) { return r.json(); })
         .then(function(d) {
           if (d && d.ok) {
-            var base = isFile ? DAEMON_URL : '';
+            var base = '';
             _setApiLive(base);
             return _fetchToken(base);
           }

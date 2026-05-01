@@ -87,6 +87,48 @@ Works on Claude Code and [OpenClaw](#openclaw-plugin). Each platform has its own
 
 </details>
 
+<details>
+<summary><h3>Codex (beta)</h3></summary>
+
+Token Optimizer works on OpenAI Codex (CLI and Desktop). Same core engine, adapted for AGENTS.md, GPT-5.x models, and Codex's hook surface. This is a **beta** -- core audit, coaching, dashboard, and fleet scanning work. Some advanced features (Delta Mode, Structure Map, invisible Bash compression) are waiting on upstream Codex hook parity.
+
+```bash
+codex plugin marketplace add alexgreensh/token-optimizer
+```
+
+Then in the Codex TUI: `/plugins` and install Token Optimizer. Ask for it conversationally: "Run Token Optimizer".
+
+After install, set up hooks for your project:
+
+```bash
+TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py codex-install --project "$PWD"
+```
+
+Auto-updates on startup via `git ls-remote`. Manual: `codex plugin marketplace upgrade`.
+
+See [`docs/codex-beta.md`](docs/codex-beta.md) for the full feature parity table, hook profiles, and Codex model pricing.
+
+</details>
+
+<details>
+<summary><h3>OpenClaw</h3></summary>
+
+Native TypeScript plugin for OpenClaw agent systems. Zero Python dependency, zero runtime dependencies, zero telemetry. Works with any model your gateway is configured against: Claude, GPT-5, Gemini, DeepSeek, local via Ollama.
+
+```bash
+# From GitHub (recommended)
+openclaw plugins install github:alexgreensh/token-optimizer
+
+# From ClawHub
+openclaw plugins install token-optimizer
+```
+
+Inside OpenClaw, run `/token-optimizer` for a guided audit with coaching.
+
+See [`openclaw/README.md`](openclaw/README.md) for full docs.
+
+</details>
+
 ---
 
 ## Full Visibility: See Every Token, Every Dollar, Every Turn
@@ -741,76 +783,15 @@ Using Claude Code in the VS Code extension? Most of Token Optimizer works identi
 
 ---
 
-## OpenClaw Plugin
+## Other Platforms
 
-Native TypeScript plugin for OpenClaw agent systems. Zero Python dependency, zero runtime dependencies, zero telemetry. Works with any model your gateway is configured against: Claude, GPT-5, Gemini, DeepSeek, local via Ollama.
+### OpenClaw
 
-```bash
-# From GitHub (recommended)
-openclaw plugins install github:alexgreensh/token-optimizer
+Native TypeScript plugin with session audits, 10 waste detectors, coach mode, Smart Compaction, and interactive dashboard adapted for OpenClaw's architecture. Works with any model (Claude, GPT-5, Gemini, DeepSeek, local via Ollama). Install instructions in the [Install section above](#openclaw). Full docs: [`openclaw/README.md`](openclaw/README.md).
 
-# From ClawHub
-openclaw plugins install token-optimizer
+### Codex (Beta)
 
-# From source
-git clone https://github.com/alexgreensh/token-optimizer
-cd token-optimizer/openclaw && npm install && npm run build
-openclaw plugins install ./
-```
-
-Inside OpenClaw, run `/token-optimizer` for a guided audit with coaching.
-
-### What the OpenClaw plugin does
-
-**Session audits and cost tracking.** Parses your OpenClaw session data, calculates per-turn costs against your configured pricing (falls back to built-in rates for 20+ models), surfaces costly prompts, and ranks subagents by spend so you can see which orchestrator-worker pairs are actually pulling their weight.
-
-**10 waste detectors native to OpenClaw.** Idle burn detection, model misrouting, unused skills, retry churn, tool cascades, looping patterns, overpowered model use, weak model on complex tasks, wasteful thinking, and output token waste. Each finding comes with a dollar estimate.
-
-**Coach tab adapted for OpenClaw.** Scoring adapts to OpenClaw concepts (SOUL.md instead of CLAUDE.md, agent configs instead of hooks). Health score surfaces earned signals, neutral signals, and anti-patterns.
-
-**7-signal ContextQ tuned for OpenClaw's architecture.** Message Efficiency, Compression Opportunity, Model Routing, and related signals that match how OpenClaw actually runs, rather than a direct port of Claude Code's signals.
-
-**Smart Compaction.** Checkpoint and restore across compaction events, so your agent systems survive auto-compact the same way Claude Code sessions do.
-
-**Interactive HTML dashboard.** Same single-file, bookmarkable dashboard as on Claude Code, adapted to OpenClaw session data and agent topology.
-
-**Active Compression features**: v5 feature registry, Delta Mode (smart re-reads with proper offset/limit scoping), Structure Map Beta local-only measurement, plus the dashboard, CLI, and first-run welcome flow. Bash Output Compression, Quality Nudges, and Loop Detection are on the OpenClaw track pending upstream hook support.
-
-See [`openclaw/README.md`](openclaw/README.md) for full docs.
-
----
-
-## Codex Beta
-
-Python adapter for OpenAI Codex (CLI and Desktop). Same core engine, adapted for Codex's hook surface, AGENTS.md, GPT-5.x models, and intelligence levels.
-
-```bash
-codex plugin marketplace add alexgreensh/token-optimizer
-```
-
-Then in the Codex TUI: `/plugins` and install Token Optimizer. Auto-updates on startup.
-
-After install, set up hooks for your project:
-```bash
-TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py codex-install --project "$PWD"
-```
-
-### Parity at a glance
-
-| Capability | Claude Code | Codex Beta |
-|---|---|---|
-| Context audit | CLAUDE.md, memory, skills, MCP, hooks, commands | AGENTS.md, Codex memories, skills/plugins, MCP, hooks, compact prompt |
-| Quality scoring | 7-signal, Opus/Sonnet calibration | 7-signal, GPT-5.5 calibration |
-| Session continuity | PreCompact + PostCompact + SessionStart + SessionEnd | SessionStart + Stop checkpoints + compact prompt guidance |
-| Active compression (Delta, Structure Map, Bash) | Full, automatic | Delta and Structure Map waiting on Codex PreToolUse parity. Bash experimental |
-| Dashboard | Auto-refresh, bookmarkable localhost URL | Auto-refresh via Stop hook, file-based |
-| Coach | Opus/Sonnet/Haiku routing advice | Intelligence level + GPT model selection advice |
-| Fleet Auditor | Claude + OpenClaw + others | Claude + Codex + OpenClaw + others |
-| Cost tracking | Anthropic, Vertex, Bedrock tiers | GPT-5.5/5.4/5.4-Mini/5.3-Codex/5.2 pricing |
-| Install | `/plugin marketplace add` | `codex plugin marketplace add` |
-| Auto-update | Marketplace auto-update | Git-backed marketplace auto-update |
-
-See [`docs/codex-beta.md`](docs/codex-beta.md) for full docs, install profiles, and the complete feature parity table.
+Python adapter for OpenAI Codex (CLI and Desktop). Same core engine, adapted for AGENTS.md, GPT-5.x models, intelligence levels, and Codex's hook surface. Install instructions in the [Install section above](#codex-beta). Full docs with feature parity table, hook profiles, and model pricing: [`docs/codex-beta.md`](docs/codex-beta.md).
 
 ---
 

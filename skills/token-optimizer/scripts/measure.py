@@ -5309,12 +5309,18 @@ def generate_coach_data(focus=None, components=None, trends=None):
     unused_count = len(unused_skills) if unused_skills else 0
     unused_ratio = unused_count / skill_count if skill_count > 0 else 0
     if unused_count > 20 and skill_pct > 2 and unused_ratio > 0.8:
+        skill_fix = (
+            "Review unused Codex skills and plugins. Disable truly stale user skills with "
+            "`measure.py codex-skill disable --path ...`; do not edit plugin cache directories directly."
+            if is_codex
+            else "Review unused skills. Some may be seasonal, but archiving truly abandoned ones saves tokens. Move to ~/.claude/skills/_archived/"
+        )
         # Truly excessive: >80% of skills unused AND significant token overhead
         patterns_bad.append({
             "name": "Unused Skill Overhead",
             "severity": "high",
             "detail": f"{unused_count} of {skill_count} skills unused in 30 days ({skill_tokens:,} tokens, {skill_pct:.1f}% of context)",
-            "fix": "Review unused skills. Some may be seasonal, but archiving truly abandoned ones saves tokens. Move to ~/.claude/skills/_archived/",
+            "fix": skill_fix,
             "savings": f"~{unused_count * TOKENS_PER_SKILL_APPROX:,} tokens from unused skills",
         })
         score -= 7
@@ -5795,6 +5801,8 @@ def generate_coach_block(components=None, trends=None):
     """
     if components is None:
         components = measure_components()
+    is_codex = detect_runtime() == "codex"
+    instruction_label = "AGENTS.md" if is_codex else "CLAUDE.md"
     if trends is None:
         try:
             trends = _collect_trends_data(days=30)
@@ -5829,7 +5837,7 @@ def generate_coach_block(components=None, trends=None):
                 avg_chr = sum(s.get("cache_hit_rate", 0) for s in recent_sessions) / len(recent_sessions)
                 avg_chr_pct = round(avg_chr * 100)
                 if avg_chr_pct < 60:
-                    lines.append(f"- Cache hit rate: {avg_chr_pct}%. Restructure CLAUDE.md for better cache reuse.")
+                    lines.append(f"- Cache hit rate: {avg_chr_pct}%. Keep {instruction_label} and enabled plugins stable during a session for better cache reuse.")
 
     if len(lines) < 2:
         return None  # No useful advice to give
@@ -18312,18 +18320,21 @@ if __name__ == "__main__":
     elif args[0] in ("inject-routing", "inject-coach", "setup-coach-injection"):
         from injection import inject_managed_block, remove_managed_block
 
-        def _resolve_claudemd(cli_args):
+        def _managed_instruction_candidates() -> list[Path]:
+            cwd = Path.cwd()
+            if detect_runtime() == "codex":
+                return [cwd / "AGENTS.md", cwd / "AGENTS.override.md", runtime_home() / "AGENTS.md"]
+            return [cwd / "CLAUDE.md", cwd / ".claude" / "CLAUDE.md", CLAUDE_DIR / "CLAUDE.md"]
+
+        def _resolve_instruction_file(cli_args):
             for i, a in enumerate(cli_args):
                 if a == "--file" and i + 1 < len(cli_args):
                     return cli_args[i + 1]
-            cwd = Path.cwd()
-            candidates = [cwd / "CLAUDE.md", cwd / ".claude" / "CLAUDE.md"]
+            candidates = _managed_instruction_candidates()
             return str(next((c for c in candidates if c.exists()), candidates[0]))
 
         if args[0] == "setup-coach-injection" and "--uninstall" in args:
-            cwd = Path.cwd()
-            for candidate in [cwd / "CLAUDE.md", cwd / ".claude" / "CLAUDE.md",
-                              CLAUDE_DIR / "CLAUDE.md"]:
+            for candidate in _managed_instruction_candidates():
                 if candidate.exists():
                     r = remove_managed_block(str(candidate), "COACH")
                     if r["action"] == "removed":
@@ -18341,7 +18352,7 @@ if __name__ == "__main__":
                 print(f"[Error] {err} Run some sessions first.")
                 sys.exit(1)
 
-            target = _resolve_claudemd(args)
+            target = _resolve_instruction_file(args)
             dry = "--dry-run" in args and args[0] != "setup-coach-injection"
             result = inject_managed_block(target, section, block, dry_run=dry)
 
@@ -18359,8 +18370,11 @@ if __name__ == "__main__":
         from injection import check_staleness, remove_managed_block
         section = args[1] if len(args) > 1 else "COACH"
         cwd = Path.cwd()
-        for candidate in [cwd / "CLAUDE.md", cwd / ".claude" / "CLAUDE.md",
-                          CLAUDE_DIR / "CLAUDE.md"]:
+        if detect_runtime() == "codex":
+            candidates = [cwd / "AGENTS.md", cwd / "AGENTS.override.md", runtime_home() / "AGENTS.md"]
+        else:
+            candidates = [cwd / "CLAUDE.md", cwd / ".claude" / "CLAUDE.md", CLAUDE_DIR / "CLAUDE.md"]
+        for candidate in candidates:
             if candidate.exists():
                 s = check_staleness(str(candidate), section)
                 if s["exists"] and s["stale"]:
@@ -18377,13 +18391,15 @@ if __name__ == "__main__":
         if output_json:
             print(json.dumps(data, indent=2))
         else:
+            is_codex = detect_runtime() == "codex"
+            instruction_label = "AGENTS.md" if is_codex else "CLAUDE.md"
             score = data["health_score"]
             snap = data["snapshot"]
             print(f"\n  Token Health Score: {score}/100")
             print(f"  Startup overhead: {snap['total_overhead']:,} tokens ({snap['overhead_pct']}% of {snap['context_window'] // 1000}K)")
             print(f"  Usable context: ~{snap['usable_tokens']:,} tokens (after overhead + autocompact buffer)")
             print(f"  Skills: {snap['skill_count']} ({snap['skill_tokens']:,} tokens)")
-            print(f"  CLAUDE.md: {snap['claude_md_tokens']:,} tokens")
+            print(f"  {instruction_label}: {snap['claude_md_tokens']:,} tokens")
             print(f"  MCP: {snap['mcp_server_count']} servers ({snap['mcp_tokens']:,} tokens)")
             print()
             if data["patterns_bad"]:

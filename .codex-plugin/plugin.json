@@ -17,7 +17,9 @@
     ],
     "websiteURL": "https://github.com/alexgreensh/token-optimizer",
     "defaultPrompt": [
-      "Run Token Optimizer quick and tell me the biggest waste sources.",
+      "Run Token Optimizer and tell me my Codex status, setup, and safest next fix.",
+      "Run Token Coach and help me make this Codex project more token-efficient.",
+      "Run Fleet Auditor and include Codex sessions in the cross-system audit.",
       "Show me the outline for this large file before we reread it.",
       "Help me continue the last interrupted Codex session cleanly."
     ],

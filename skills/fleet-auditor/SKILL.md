@@ -1,6 +1,6 @@
 ---
 name: fleet-auditor
-description: Audit token waste across agent systems (Claude Code, OpenClaw, Hermes, OpenCode). Detect idle burns, model misrouting, and config bloat with dollar savings.
+description: Audit token waste across agent systems (Claude Code, Codex, OpenClaw, Hermes, OpenCode). Detect idle burns, model misrouting, and config bloat with dollar savings.
 ---
 
 # Fleet Auditor: Cross-Platform Agent Token Waste Auditor
@@ -13,25 +13,39 @@ Detects installed agent systems, collects token usage data, identifies waste pat
 
 ## Phase 0: Initialize
 
-1. **Resolve fleet.py path** (works for both skill and plugin installs):
+1. **Resolve runtime and fleet.py path** (works for both skill and plugin installs):
 ```bash
+RUNTIME="${TOKEN_OPTIMIZER_RUNTIME:-}"
+if [ -z "$RUNTIME" ]; then
+  if [ -n "$CLAUDE_PLUGIN_ROOT" ] || [ -n "$CLAUDE_PLUGIN_DATA" ]; then
+    RUNTIME="claude"
+  elif [ -n "$CODEX_HOME" ] || [ -d "$HOME/.codex" ]; then
+    RUNTIME="codex"
+  else
+    RUNTIME="claude"
+  fi
+fi
+
 FLEET_PY=""
-for f in "$HOME/.claude/skills/fleet-auditor/scripts/fleet.py" \
+for f in "$HOME/.codex/skills/fleet-auditor/scripts/fleet.py" \
+         "$HOME/.codex/plugins/cache"/*/token-optimizer/*/skills/fleet-auditor/scripts/fleet.py \
+         "$HOME/.claude/skills/fleet-auditor/scripts/fleet.py" \
          "$HOME/.claude/plugins/cache"/*/token-optimizer/*/skills/fleet-auditor/scripts/fleet.py; do
   [ -f "$f" ] && FLEET_PY="$f" && break
 done
 [ -z "$FLEET_PY" ] && { echo "[Error] fleet.py not found. Is Fleet Auditor installed?"; exit 1; }
 echo "Using: $FLEET_PY"
+export TOKEN_OPTIMIZER_RUNTIME="$RUNTIME"
 ```
 Use `$FLEET_PY` for all subsequent fleet.py calls.
 
 2. **Detect systems**:
 ```bash
-python3 $FLEET_PY detect --json
+python3 "$FLEET_PY" detect --json
 ```
 Parse the JSON output. Report what was found.
 
-If nothing detected, explain: "No agent systems found. Fleet Auditor supports: Claude Code, OpenClaw, NanoClaw, Hermes, OpenCode, IronClaw."
+If nothing detected, explain: "No agent systems found. Fleet Auditor supports: Claude Code, Codex, OpenClaw, NanoClaw, Hermes, OpenCode, IronClaw."
 
 ---
 
@@ -39,7 +53,7 @@ If nothing detected, explain: "No agent systems found. Fleet Auditor supports: C
 
 Collect token usage data from detected systems:
 ```bash
-python3 $FLEET_PY scan --days 30
+python3 "$FLEET_PY" scan --days 30
 ```
 
 Report how many runs were collected per system. If this is the first scan, it may take a moment to parse all session files.
@@ -50,12 +64,14 @@ Report how many runs were collected per system. If this is the first scan, it ma
 
 Run waste pattern detection:
 ```bash
-python3 $FLEET_PY audit --json
+python3 "$FLEET_PY" audit --json
 ```
 
 Parse the JSON output. Present findings ordered by severity and monthly savings.
 
 If no waste found: "Your fleet looks clean. No significant waste patterns detected."
+
+For Codex findings, be careful with dollars: if a model's pricing is not in the local pricing table, present token waste confidently and say dollar impact depends on current model pricing instead of inventing a cost.
 
 **OpenClaw Security + Cost Check** (March 2026):
 - If OpenClaw is detected and version < 2026.3.12: flag as HIGH severity. 31 CVEs including ClawJacked (full agent takeover). Compromised instances run rogue agents that burn tokens undetected. Recommend immediate upgrade.
@@ -71,6 +87,7 @@ If no waste found: "Your fleet looks clean. No significant waste patterns detect
 
 SYSTEMS DETECTED
 - Claude Code: X runs ($Y.YY)
+- Codex: X runs ($Y.YY)
 - OpenClaw: X runs ($Y.YY)
 
 WASTE PATTERNS FOUND
@@ -95,16 +112,18 @@ Ready to act? I can:
 
 If user wants visual analysis:
 ```bash
-python3 $FLEET_PY dashboard
+python3 "$FLEET_PY" dashboard
 ```
 
-This generates `~/.claude/_backups/token-optimizer/fleet-dashboard.html` and opens it in the browser.
+This generates `~/.claude/_backups/token-optimizer/fleet-dashboard.html` in Claude Code, or `~/.codex/_backups/token-optimizer/fleet-dashboard.html` when `TOKEN_OPTIMIZER_RUNTIME=codex`.
 
 ---
 
 ## Phase 5: Deep Dive (optional)
 
-For Claude Code specifically, offer `/token-optimizer` for full audit (CLAUDE.md, skills, MCP, hooks, etc.).
+For Claude Code specifically, offer `/token-optimizer` for full audit (`CLAUDE.md`, skills, MCP, hooks, etc.).
+
+For Codex specifically, offer `token-optimizer` for full audit (`AGENTS.md`, Codex memories, plugin skills, MCP, balanced hooks, compact prompt, status line).
 
 For other systems, show the fix snippets from the audit and guide the user through implementing them.
 

@@ -1,4 +1,3 @@
-from __future__ import annotations  # PEP 604 union syntax compat for Python 3.9
 """Shared utilities for Token Optimizer fleet and measurement tools.
 
 Extracted from measure.py to prevent duplicate maintenance of JSONL parsing,
@@ -7,11 +6,12 @@ model normalization, SQLite initialization, and file discovery patterns.
 Zero external dependencies. Python 3.10+ (for match/case and type unions).
 """
 
+from __future__ import annotations  # PEP 604 union syntax compat for Python 3.9
+
 import json
-import os
 import re
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 # ---------------------------------------------------------------------------

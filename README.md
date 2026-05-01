@@ -136,7 +136,7 @@ Token Optimizer handles both. And because it also checkpoints your session befor
 
 ### Fully local, zero dependencies, zero telemetry
 
-Pure Python stdlib on Claude Code. Pure Node stdlib on OpenClaw. Nothing to `pip install`, nothing to `npm install` at runtime, no analytics endpoint, no phone-home. Every measurement is a local SQLite write to a file you own at `~/.claude/_backups/token-optimizer/trends.db`. You can inspect it, export it, or delete it.
+Pure Python stdlib on Claude Code and Codex. Pure Node stdlib on OpenClaw. Nothing to `pip install`, nothing to `npm install` at runtime, no analytics endpoint, no phone-home. Every measurement is a local SQLite write to a file you own under your runtime home, such as `~/.claude/_backups/token-optimizer/trends.db` or `~/.codex/_backups/token-optimizer/trends.db`. You can inspect it, export it, or delete it.
 
 ### Zero context tokens consumed
 
@@ -198,15 +198,15 @@ No. All hooks are non-blocking with fail-open design. If a Token Optimizer scrip
 <details>
 <summary>📦 <strong>Does it have any runtime dependencies?</strong></summary>
 
-No. Pure Python stdlib on Claude Code. Pure Node stdlib on OpenClaw. Nothing to `pip install`, nothing to `npm install` at runtime. What you clone is everything it needs.
+No. Pure Python stdlib on Claude Code and Codex. Pure Node stdlib on OpenClaw. Nothing to `pip install`, nothing to `npm install` at runtime. What you clone is everything it needs.
 </details>
 
 <details>
 <summary>🧰 <strong>Which platforms does it support?</strong></summary>
 
-Claude Code and OpenClaw today, with native plugins for each (Python for Claude Code, TypeScript for OpenClaw, no shared runtime, no cross-platform bridging).
+Claude Code and OpenClaw today, with native plugins for each. Codex support is in beta, with a Python adapter for chat-first status, coaching, dashboard refresh, and fleet scans.
 
-Windsurf and Cursor are next on the roadmap. Codex is waiting for the plugin API to stabilize.
+Windsurf and Cursor are next on the roadmap. Full Codex parity is waiting on upstream hook/cache surfaces for invisible read substitution, structure-map substitution, and compact lifecycle hooks.
 </details>
 
 ---
@@ -499,7 +499,7 @@ Token Optimizer is not just reactive. It's also proactive.
 
 Tell it your goal. Get back specific, prioritized fixes with exact token savings. Detects 8 named anti-patterns (The Kitchen Sink, The Hoarder, The Monolith, and more) and recommends multi-agent design patterns that actually save context.
 
-**Building a new project?** Run `/token-coach` before writing your first CLAUDE.md. Start with a clean, optimized setup instead of accumulating waste for months and fixing it later.
+**Building a new project?** Run `/token-coach` before writing your first `CLAUDE.md` or Codex `AGENTS.md`. Start with a clean, optimized setup instead of accumulating waste for months and fixing it later.
 
 ### Waste Detectors
 
@@ -521,7 +521,7 @@ Tell it your goal. Get back specific, prioritized fixes with exact token savings
 
 ### Fleet Auditor
 
-Managing multiple agent systems? Fleet Auditor scans across Claude Code, OpenClaw, and custom setups to find idle burns, model misrouting, and config bloat with dollar savings per finding. One command, one report, every ecosystem.
+Managing multiple agent systems? Fleet Auditor scans across Claude Code, Codex, OpenClaw, and custom setups to find idle burns, model misrouting, and config bloat with dollar savings per finding. One command, one report, every ecosystem.
 
 ### Subagent Cost Breakdown
 
@@ -591,7 +591,7 @@ Hover help on every column explains `Cache`, `TTL`, `Pacing`, `Cache R`, and `Ca
 | Zero context tokens consumed | Yes, external process | Adds ~200 tokens | MCP overhead | Injects instructions into context |
 | Zero runtime dependencies | Yes, pure stdlib | N/A | Varies | External binary |
 | Zero telemetry | Yes | Yes | Varies | Opt-out telemetry |
-| Works across platforms | Claude Code and OpenClaw (Windsurf and Cursor coming) | Claude Code only | Several platforms | Several platforms |
+| Works across platforms | Claude Code, Codex beta, and OpenClaw (Windsurf and Cursor coming) | Claude Code only | Several platforms | Several platforms |
 
 A few notes on the compression column: proxy tools quote big compression ratios on the commands they handle best, like `git status` or `tree`. Those numbers are real for those specific commands, but they cover only 15-25% of what you're actually burning. Everything else (configs, skills, memory, compaction loss) stays untouched. And most proxy compressors inject their own instructions into your context, which costs tokens on the way in.
 

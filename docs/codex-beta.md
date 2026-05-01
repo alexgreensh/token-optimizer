@@ -75,9 +75,25 @@ TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py 
 TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py dashboard
 ```
 
+### Bookmarkable URL (recommended)
+
+```bash
+TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py setup-daemon
+```
+
+This installs a tiny local web server that starts at login and serves the dashboard at:
+
+```
+http://localhost:24843/token-optimizer
+```
+
+Bookmark it. It auto-updates after every session. Runs on macOS (launchd), Linux (systemd --user), and Windows (Task Scheduler). Port 24843 is Codex-specific (Claude Code uses 24842, so both can run side by side). Remove anytime with `setup-daemon --uninstall`.
+
+### File fallback
+
 Dashboard file: `~/.codex/_backups/token-optimizer/dashboard.html`
 
-Auto-refreshes via the balanced Stop hook after each session.
+Auto-refreshes via the balanced Stop hook after each session. Works without the daemon, just harder to reach.
 
 ## Feature Parity
 
@@ -111,7 +127,7 @@ Codex and Claude Code have different hook surfaces, so some features work differ
 | Hook install | Auto via plugin, 8 hook events | `codex-install` command, 4 profiles, 3-5 hook events | Codex hooks are newer, fewer events |
 | Compact lifecycle | PreCompact + PostCompact hooks capture/restore | Compact prompt guidance + Stop checkpoints | Codex lacks PreCompact/PostCompact |
 | Tool result archive | PostToolUse archives immediately per tool call | Stop-time backfill from JSONL (balanced), or PostToolUse (telemetry profile) | Different timing |
-| Dashboard refresh | SessionEnd hook + daemon (bookmarkable URL) | Stop hook (file-based) | Codex daemon support coming |
+| Dashboard refresh | SessionEnd hook + daemon at `localhost:24842` | Stop hook + daemon at `localhost:24843` | Both support bookmarkable URL via `setup-daemon` |
 | Plugin install | `/plugin marketplace add alexgreensh/token-optimizer` | `codex plugin marketplace add alexgreensh/token-optimizer` | Same concept, different CLI |
 | Auto-update | Claude Code marketplace auto-update | Codex marketplace `git ls-remote` on startup | Both work |
 

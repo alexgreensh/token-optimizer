@@ -98,11 +98,14 @@ codex plugin marketplace add alexgreensh/token-optimizer
 
 Then in the Codex TUI: `/plugins` and install Token Optimizer. Ask for it conversationally: "Run Token Optimizer".
 
-After install, set up hooks for your project:
+After install, set up hooks and the bookmarkable dashboard:
 
 ```bash
 TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py codex-install --project "$PWD"
+TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py setup-daemon
 ```
+
+Dashboard: `http://localhost:24843/token-optimizer` (separate port from Claude Code's 24842, both can run side by side).
 
 Auto-updates on startup via `git ls-remote`. Manual: `codex plugin marketplace upgrade`.
 

@@ -627,6 +627,38 @@ input:checked + .slider:before {
   gap: 8px;
 }
 
+.language-switch {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--c-border);
+  border-radius: 999px;
+  background: rgba(255,255,255,0.03);
+  font-family: var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.language-switch button {
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--c-text-dim);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  padding: 5px 9px;
+  transition: 0.2s;
+}
+
+.language-switch button:hover,
+.language-switch button.active {
+  background: var(--c-accent-cyan);
+  color: var(--c-bg);
+}
+
 .social-icons {
   display: flex;
   gap: 12px;
@@ -1591,6 +1623,130 @@ tr.token-spike td:first-child {
 <!-- Data injection point: measure.py replaces 'null' with real JSON -->
 <script>
 window.__TOKEN_DATA__ = null;
+window.__TOKEN_LANGUAGE_PACKS__ = null;
+</script>
+<script>
+(function() {
+  var packs = window.__TOKEN_LANGUAGE_PACKS__ || {};
+  var storageKey = 'tokenOptimizer.language';
+  var fallbackLang = packs.default || 'en';
+
+  function getLang() {
+    try {
+      var saved = localStorage.getItem(storageKey);
+      if (saved && packs.languages && packs.languages[saved]) return saved;
+    } catch (_) {}
+    return fallbackLang;
+  }
+
+  function phraseMap(lang) {
+    return ((packs.languages || {})[lang] || {}).phrases || {};
+  }
+
+  function replaceAllSafe(input, from, to) {
+    return input.split(from).join(to);
+  }
+
+  function escapeRegExp(value) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  function replaceEnglishPhrase(input, from, to) {
+    if (from.slice(-1) === ':') {
+      return replaceAllSafe(input, from, to);
+    }
+    if (/^[A-Za-z0-9 .:/()+%-]+$/.test(from) && from.length <= 24) {
+      var re = new RegExp('(^|[^A-Za-z0-9_-])(' + escapeRegExp(from) + ')(?=$|[^A-Za-z0-9_-])', 'g');
+      return input.replace(re, function(_, prefix) { return prefix + to; });
+    }
+    return replaceAllSafe(input, from, to);
+  }
+
+  function toEnglish(text) {
+    var out = text;
+    Object.keys(packs.languages || {}).forEach(function(lang) {
+      if (lang === 'en') return;
+      var phrases = phraseMap(lang);
+      Object.keys(phrases)
+        .sort(function(a, b) { return phrases[b].length - phrases[a].length; })
+        .forEach(function(en) { out = replaceAllSafe(out, phrases[en], en); });
+    });
+    return out;
+  }
+
+  function translateText(text, lang) {
+    if (!text || !text.trim()) return text;
+    var leading = text.match(/^\s*/)[0];
+    var trailing = text.match(/\s*$/)[0];
+    var body = text.slice(leading.length, text.length - trailing.length);
+    body = toEnglish(body);
+    if (lang !== 'en') {
+      var phrases = phraseMap(lang);
+      Object.keys(phrases)
+        .sort(function(a, b) { return b.length - a.length; })
+        .forEach(function(en) { body = replaceEnglishPhrase(body, en, phrases[en]); });
+    }
+    return leading + body + trailing;
+  }
+
+  function shouldSkipNode(node) {
+    var el = node.nodeType === 1 ? node : node.parentElement;
+    if (!el) return false;
+    if (el.closest('.hook-command-pre')) return false;
+    return !!el.closest('script, style, code, pre, textarea, svg, .update-cmd, #prompt-modal-text');
+  }
+
+  function walk(root, lang) {
+    var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode: function(node) {
+        return shouldSkipNode(node) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT;
+      }
+    });
+    var nodes = [];
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+    nodes.forEach(function(node) { node.nodeValue = translateText(node.nodeValue, lang); });
+  }
+
+  function translateAttributes(lang) {
+    document.querySelectorAll('[title], [placeholder], [aria-label]').forEach(function(el) {
+      ['title', 'placeholder', 'aria-label'].forEach(function(attr) {
+        if (!el.hasAttribute(attr)) return;
+        el.setAttribute(attr, translateText(el.getAttribute(attr), lang));
+      });
+    });
+  }
+
+  function updateControls(lang) {
+    document.documentElement.lang = lang === 'ko' ? 'ko' : 'en';
+    document.querySelectorAll('[data-lang-choice]').forEach(function(btn) {
+      btn.classList.toggle('active', btn.getAttribute('data-lang-choice') === lang);
+    });
+  }
+
+  function apply(lang) {
+    lang = lang || getLang();
+    if (!packs.languages || !packs.languages[lang]) lang = fallbackLang;
+    if (document.body) walk(document.body, lang);
+    translateAttributes(lang);
+    document.title = translateText(document.title, lang);
+    updateControls(lang);
+  }
+
+  function setLang(lang) {
+    if (!packs.languages || !packs.languages[lang]) return;
+    try { localStorage.setItem(storageKey, lang); } catch (_) {}
+    apply(lang);
+  }
+
+  document.addEventListener('click', function(ev) {
+    var btn = ev.target && ev.target.closest && ev.target.closest('[data-lang-choice]');
+    if (!btn) return;
+    ev.preventDefault();
+    setLang(btn.getAttribute('data-lang-choice'));
+  });
+
+  window.TokenOptimizerI18n = { apply: apply, getLang: getLang, setLang: setLang };
+})();
 </script>
 
 <div class="layout">
@@ -1678,6 +1834,10 @@ window.__TOKEN_DATA__ = null;
     <div class="view" id="view-manage"></div>
 
     <div class="main-footer">
+      <div class="language-switch" aria-label="Language">
+        <button type="button" data-lang-choice="en">ENG</button>
+        <button type="button" data-lang-choice="ko">KOR</button>
+      </div>
       <span>Built by <a href="https://linkedin.com/in/alexgreensh" target="_blank" rel="noopener">Alex Greenshpun</a></span>
       <div class="social-icons">
         <a href="https://github.com/alexgreensh/token-optimizer" target="_blank" rel="noopener" title="GitHub" class="social-link">
@@ -1706,6 +1866,10 @@ window.__TOKEN_DATA__ = null;
     <button class="apply-btn" id="copy-btn" disabled>Preview &amp; Copy</button>
 
     <div class="version-footer">
+      <div class="language-switch" aria-label="Language">
+        <button type="button" data-lang-choice="en">ENG</button>
+        <button type="button" data-lang-choice="ko">KOR</button>
+      </div>
       <div>Built by <a href="https://linkedin.com/in/alexgreensh" target="_blank" rel="noopener" style="color:var(--c-accent-cyan);text-decoration:none;opacity:1;">Alex Greenshpun</a></div>
       <div class="social-icons">
         <a href="https://github.com/alexgreensh/token-optimizer" target="_blank" rel="noopener" title="GitHub" class="social-link">
@@ -2112,6 +2276,7 @@ var DB = (function() {
     safeRender('Manage', 'manage', renderManage);
     safeRender('RightPanel', null, updateRightPanel);
     safeRender('EventBinding', null, bind);
+    if (window.TokenOptimizerI18n) window.TokenOptimizerI18n.apply();
 
     // Kill stale session buttons (v2.6)
     var killStaleBtn = document.getElementById('kill-stale-btn');
@@ -2164,6 +2329,7 @@ var DB = (function() {
       // Default to Trends tab (analytics are always relevant for standalone)
       var trendsNav = document.querySelector('.nav-item[data-view="trends"]');
       if (trendsNav) trendsNav.click();
+      if (window.TokenOptimizerI18n) window.TokenOptimizerI18n.apply();
     }
   }
 
@@ -3732,7 +3898,7 @@ var DB = (function() {
       var telemetryCmd = codexSetup.install_telemetry_profile_cmd || (h.codex_telemetry_profile && h.codex_telemetry_profile.install_cmd) || '';
       var aggressiveCmd = codexSetup.install_aggressive_profile_cmd || '';
       html += '<div class="card wide"><div class="card-header"><span>Codex Hook Profiles</span><span class="label">choose one command</span></div>' +
-        '<div style="padding:0 var(--s-3) var(--s-2);color:var(--c-text-dim);font-size:14px;line-height:1.6;">Profiles install groups of hooks. <strong style="color:var(--c-text-main);">Quiet</strong> installs only Stop, so most quality hooks remain off. <strong style="color:var(--c-text-main);">Balanced</strong> is the useful default for real quality tracking without per-tool spam.</div>' +
+        '<div style="padding:0 var(--s-3) var(--s-2);color:var(--c-text-dim);font-size:14px;line-height:1.6;">Profiles install groups of hooks. Quiet installs only Stop, so most quality hooks remain off. Balanced is the useful default for real quality tracking without per-tool spam.</div>' +
         '<div class="hook-profile-grid">';
       [
         ['Balanced', 'Recommended. Installs SessionStart, UserPromptSubmit, and Stop for quality cache, loop signals, continuity, and dashboard refresh.', balancedCmd, 'recommended'],
@@ -3793,7 +3959,7 @@ var DB = (function() {
     // How it works card
     html += '<div class="card wide"><div class="card-header"><span>How It Works</span></div>' +
       '<div style="padding:var(--s-3);color:var(--c-text-dim);font-size:14px;line-height:1.6;">' +
-      'Toggles and profile buttons preview the install or uninstall command. Use <strong style="color:var(--c-text-main);">Copy shown command</strong> only when you are ready. Paste it into your terminal to apply. The dashboard is a static file and cannot modify your settings directly.' +
+      'Toggles and profile buttons preview the install or uninstall command. Use Copy shown command only when you are ready. Paste it into your terminal to apply. The dashboard is a static file and cannot modify your settings directly.' +
       '<br><br>After running the command, regenerate the dashboard to update the toggle state: ' +
       '<code style="background:var(--c-bg);padding:2px 6px;border-radius:4px;font-size:13px;">' + esc(refreshCmd) + '</code>' +
       '</div></div>';
@@ -4512,6 +4678,7 @@ var DB = (function() {
       } else {
         listEl.innerHTML = '<div class="empty-state">Toggle items in Quick Wins, Medium, or Deep to build your optimization prompt.</div>';
       }
+      if (window.TokenOptimizerI18n) window.TokenOptimizerI18n.apply();
       return;
     }
 
@@ -4541,6 +4708,7 @@ var DB = (function() {
       });
     });
     listEl.innerHTML = html;
+    if (window.TokenOptimizerI18n) window.TokenOptimizerI18n.apply();
   }
 
   function syncSelectAll(section) {
@@ -4638,6 +4806,7 @@ var DB = (function() {
           layout.classList.remove('panel-hidden');
         }
         document.querySelector('.main-col').scrollTop = 0;
+        if (window.TokenOptimizerI18n) window.TokenOptimizerI18n.apply();
       });
     });
 
@@ -4868,6 +5037,7 @@ var DB = (function() {
                   data.session_turns[sessionKey] = fetchedTurns;
                 }
                 loadingRow.replaceWith(buildSessionDeepDiveRow(fetchedTurns));
+                if (window.TokenOptimizerI18n) window.TokenOptimizerI18n.apply();
               })
               .catch(function(err) {
                 loadingCell.textContent = (err && err.message) ? err.message : 'Failed to load per-turn breakdown.';

@@ -3413,6 +3413,32 @@ def _sanitize_codex_dashboard_paths(data):
     return data
 
 
+def _load_dashboard_language_packs(template_path):
+    """Load dashboard language packs from assets/language-packs.json."""
+    lang_path = template_path.parent / "language-packs.json"
+    try:
+        with open(str(lang_path), "r", encoding="utf-8") as f:
+            packs = json.load(f)
+        if isinstance(packs, dict):
+            return packs
+    except (OSError, json.JSONDecodeError):
+        pass
+    return {"version": 1, "default": "en", "languages": {"en": {"label": "ENG", "phrases": {}}}}
+
+
+def _inject_dashboard_payloads(template, data, template_path):
+    """Inject dashboard metrics and i18n language packs into the HTML template."""
+    data_json = json.dumps(data, ensure_ascii=True, default=str)
+    data_json = data_json.replace("</", "<\\/")  # Prevent </script> injection
+    injected = template.replace("window.__TOKEN_DATA__ = null;", f"window.__TOKEN_DATA__ = {data_json};", 1)
+
+    language_packs = _load_dashboard_language_packs(template_path)
+    lang_json = json.dumps(language_packs, ensure_ascii=False, default=str)
+    lang_json = lang_json.replace("</", "<\\/")
+    injected = injected.replace("window.__TOKEN_LANGUAGE_PACKS__ = null;", f"window.__TOKEN_LANGUAGE_PACKS__ = {lang_json};", 1)
+    return injected
+
+
 def generate_dashboard(coord_path):
     """Generate an interactive HTML dashboard from audit results."""
     coord = Path(coord_path)
@@ -3547,10 +3573,7 @@ def generate_dashboard(coord_path):
 
     # Load template and inject data
     template = template_path.read_text(encoding="utf-8")
-    data_json = json.dumps(data, ensure_ascii=True, default=str)
-    data_json = data_json.replace("</", "<\\/")  # Prevent </script> injection
-    placeholder = "window.__TOKEN_DATA__ = null;"
-    injected = template.replace(placeholder, f"window.__TOKEN_DATA__ = {data_json};", 1)
+    injected = _inject_dashboard_payloads(template, data, template_path)
     if injected == template:
         print("  [Warning] Data injection failed: placeholder not found in template.")
 
@@ -4611,10 +4634,7 @@ def generate_standalone_dashboard(days=30, quiet=False, force=False):
     data = _sanitize_codex_dashboard_paths(data)
 
     template = template_path.read_text(encoding="utf-8")
-    data_json = json.dumps(data, ensure_ascii=True, default=str)
-    data_json = data_json.replace("</", "<\\/")  # Prevent </script> injection
-    placeholder = "window.__TOKEN_DATA__ = null;"
-    injected = template.replace(placeholder, f"window.__TOKEN_DATA__ = {data_json};", 1)
+    injected = _inject_dashboard_payloads(template, data, template_path)
     if injected == template:
         if not quiet:
             print("  [Warning] Data injection failed: placeholder not found in template.")

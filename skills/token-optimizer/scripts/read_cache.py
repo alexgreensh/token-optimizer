@@ -73,6 +73,7 @@ READ_CACHE_MODES = frozenset({"shadow", "warn", "soft_block", "block"})
 DEFAULT_MODE = "soft_block"
 
 MIN_STRUCTURE_CONFIDENCE = 0.75
+MAX_CONSECUTIVE_DENIALS = 3
 REASON_ONLY_TOKENS_EST = 10
 STRICT_CONTEXT_CAPS = {
     "signatures": 350,
@@ -179,8 +180,62 @@ def _reset_replacement_state(entry: dict[str, Any]) -> None:
     entry["last_replacement_fingerprint"] = ""
     entry["last_replacement_type"] = ""
     entry["repeat_replacement_count"] = 0
+    entry["consecutive_denials"] = 0
     entry["last_structure_reason"] = ""
     entry["last_structure_confidence"] = 0.0
+
+
+def _check_escape_hatch(
+    entry: dict[str, Any],
+    store: Any,
+    file_path: str,
+    session_id: str,
+    mode: str,
+    offset: int,
+    limit: int,
+    tokens_est: int,
+    language: str,
+    eligible: bool,
+    summary: Any,
+    save_hook_context_enabled: bool,
+    quiet: bool,
+) -> bool:
+    """Allow the read if consecutive denials reach the threshold. Returns True if escaped."""
+    consecutive_denials = int(entry.get("consecutive_denials", 0) or 0) + 1
+    if consecutive_denials < MAX_CONSECUTIVE_DENIALS:
+        entry["consecutive_denials"] = consecutive_denials
+        return False
+
+    entry["consecutive_denials"] = 0
+    _reset_replacement_state(entry)
+    store.upsert_file_entry(file_path, entry)
+    _log_decision(
+        "allow",
+        file_path,
+        f"escape_hatch_read_{entry['read_count']}",
+        session_id,
+        mode=mode,
+        actual_substitution=False,
+        eligible=eligible,
+        language=language,
+        reason_code="consecutive_denial_escape",
+        offset=offset,
+        limit=limit,
+        replacement_type=summary.replacement_type if summary else None,
+        file_tokens_est=tokens_est,
+        replacement_tokens_est=0,
+        net_saved_tokens_est=0,
+        replacement_fingerprint=summary.fingerprint if summary else None,
+        repeat_replacement_count=consecutive_denials,
+        save_hook_additional_context_enabled=save_hook_context_enabled,
+        confidence=summary.confidence if summary else 0.0,
+    )
+    if not quiet:
+        print(
+            f"[Read Cache] Escape hatch: allowing read after {consecutive_denials} consecutive denials: {file_path}",
+            file=sys.stderr,
+        )
+    return True
 
 
 def _ensure_entry_defaults(entry: dict[str, Any]) -> None:
@@ -192,6 +247,7 @@ def _ensure_entry_defaults(entry: dict[str, Any]) -> None:
     entry.setdefault("last_replacement_fingerprint", "")
     entry.setdefault("last_replacement_type", "")
     entry["repeat_replacement_count"] = int(entry.get("repeat_replacement_count", 0) or 0)
+    entry["consecutive_denials"] = int(entry.get("consecutive_denials", 0) or 0)
     entry["last_structure_reason"] = entry.get("last_structure_reason", "")
     entry["last_structure_confidence"] = float(entry.get("last_structure_confidence", 0.0) or 0.0)
     if "ranges_seen" not in entry:
@@ -222,6 +278,29 @@ def _log_decision(
             handle.write(json.dumps(entry, sort_keys=True) + "\n")
     except OSError:
         pass
+
+
+def _log_unexpected_tool(tool_name: str, quiet: bool = False) -> None:
+    """Log when the hook is invoked for a non-Read tool (matcher bypass)."""
+    log_dir = SNAPSHOT_DIR / "diagnostics"
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        log_path = log_dir / "unexpected_tool_invocations.jsonl"
+        entry = {
+            "ts": time.time(),
+            "tool_name": tool_name,
+            "event": "read_cache_invoked_for_non_read_tool",
+        }
+        fd = os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, sort_keys=True) + "\n")
+    except OSError:
+        pass
+    if not quiet:
+        print(
+            f"[Read Cache] WARNING: invoked for tool '{tool_name}', expected 'Read'. Skipping.",
+            file=sys.stderr,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -256,7 +335,8 @@ def _build_structure_message(
     return "\n".join(
         [
             f"[Token Optimizer] {Path(file_path).name} is unchanged (already read this session).",
-            f"Using {summary.replacement_type} view. Edit the file or request a specific range for full content.",
+            f"Using {summary.replacement_type} view (~{net_saved_tokens_est:,} tokens saved).",
+            "You can still Edit this file directly, or Read a specific range (offset/limit) for full content.",
             "",
             summary.replacement_text,
         ]
@@ -266,7 +346,7 @@ def _build_structure_message(
 def _build_reason_only_message(file_path: str) -> str:
     return (
         f"[Token Optimizer] {Path(file_path).name} is unchanged, already in context, and was already "
-        "summarized in this session."
+        "summarized in this session. You can still Edit this file or Read a specific range."
     )
 
 
@@ -375,10 +455,7 @@ def _summarize_redundant_read(
 # ---------------------------------------------------------------------------
 
 def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
-    """Handle a PreToolUse Read event."""
-
-    if hook_input.get("tool_name") not in ("", "Read"):
-        return
+    """Handle a PreToolUse Read event. Caller must verify tool_name == "Read"."""
 
     tool_input = hook_input.get("tool_input", {})
     raw_path = tool_input.get("file_path", "")
@@ -773,6 +850,12 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
         return
 
     if eligible_structure and summary is not None:
+        if _check_escape_hatch(
+            entry, store, file_path, session_id, mode, offset, limit,
+            tokens_est, language, True, summary, save_hook_context_enabled, quiet,
+        ):
+            return
+
         same_fingerprint = summary.fingerprint == entry.get("last_replacement_fingerprint", "")
         repeat_count = int(entry.get("repeat_replacement_count", 0) or 0) + 1 if same_fingerprint else 1
         entry["last_replacement_fingerprint"] = summary.fingerprint
@@ -860,6 +943,12 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
         return
 
     if mode == "block":
+        if _check_escape_hatch(
+            entry, store, file_path, session_id, mode, offset, limit,
+            tokens_est, language, False, summary, save_hook_context_enabled, quiet,
+        ):
+            return
+
         store.upsert_file_entry(file_path, entry)
         _log_decision(
             "block",
@@ -884,7 +973,7 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
         )
         reason = (
             f"{Path(file_path).name} is unchanged and already in context; "
-            "redundant reread blocked."
+            "redundant reread blocked. You can still Edit this file or Read a specific range."
         )
         _emit_pretool_response("deny", reason)
         return
@@ -1079,6 +1168,12 @@ def main() -> None:
     try:
         hook_input = json.loads(sys.stdin.read(1_000_000))
     except (json.JSONDecodeError, OSError):
+        return
+
+    tool_name = hook_input.get("tool_name", "")
+    if tool_name != "Read":
+        if tool_name:
+            _log_unexpected_tool(tool_name, quiet)
         return
 
     handle_read(hook_input, mode, quiet)

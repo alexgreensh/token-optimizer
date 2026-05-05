@@ -9351,7 +9351,7 @@ def setup_hook(dry_run=False):
 
 # ========== Persistent Dashboard Daemon ==========
 
-TOKEN_OPTIMIZER_VERSION = "5.6.4"  # Keep in sync with plugin.json + marketplace.json
+TOKEN_OPTIMIZER_VERSION = "5.6.5"  # Keep in sync with plugin.json + marketplace.json
 _DAEMON_RUNTIME = detect_runtime()
 _DAEMON_RUNTIME_SUFFIX = "codex" if _DAEMON_RUNTIME == "codex" else "claude"
 DAEMON_LABEL = "com.token-optimizer.codex-dashboard" if _DAEMON_RUNTIME == "codex" else "com.token-optimizer.dashboard"

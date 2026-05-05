@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/alexgreensh/token-optimizer/releases"><img src="https://img.shields.io/badge/version-5.6.4-green" alt="Version 5.6.4"></a>
+  <a href="https://github.com/alexgreensh/token-optimizer/releases"><img src="https://img.shields.io/badge/version-5.6.5-green" alt="Version 5.6.5"></a>
   <a href="https://github.com/alexgreensh/token-optimizer"><img src="https://img.shields.io/badge/Claude_Code-Plugin-blueviolet" alt="Claude Code Plugin"></a>
   <a href="https://github.com/alexgreensh/token-optimizer/tree/main/openclaw"><img src="https://img.shields.io/badge/OpenClaw-v2.4.1-brightgreen" alt="OpenClaw v2.4.1"></a>
   <a href="https://github.com/alexgreensh/token-optimizer/blob/main/docs/codex-beta.md"><img src="https://img.shields.io/badge/Codex-v0.1.0--beta-orange" alt="Codex v0.1.0-beta"></a>

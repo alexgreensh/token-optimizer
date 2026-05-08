@@ -11382,6 +11382,20 @@ _QUALITY_WEIGHTS = {
     "agent_efficiency": 0.07,
 }
 
+# Rolling window size for ratio-based signals.
+# Ratio signals (stale_reads, bloated_results, decision_density, agent_efficiency)
+# use only the last N operations to prevent denominator-expansion bias where
+# scores climb as the session progresses even though context health is degrading.
+_QUALITY_ROLLING_WINDOW = int(os.environ.get("TOKEN_OPTIMIZER_QUALITY_WINDOW", "20"))
+
+# Fill-based warning thresholds that fire independently of the composite score.
+# These cannot be masked by improving ratio signals.
+_FILL_WARN_THRESHOLDS = [
+    (0.85, "CRITICAL", "85% context fill, compact now"),
+    (0.75, "WARNING", "75% context fill, consider compacting"),
+    (0.60, "INFO", "Context fill at 60%, monitoring"),
+]
+
 # Configurable via env vars
 _CHECKPOINT_MAX_FILES = int(os.environ.get("TOKEN_OPTIMIZER_CHECKPOINT_FILES", "10"))
 _CHECKPOINT_TTL_SECONDS = int(os.environ.get("TOKEN_OPTIMIZER_CHECKPOINT_TTL", "300"))
@@ -11803,25 +11817,28 @@ def compute_quality_score(quality_data):
     # Scale to 0-100 score (76 at worst = 0, 98 at best = 100)
     fill_score = max(0, min(100, (fill_quality - 76) / (98 - 76) * 100))
 
-    # 1. Stale reads: soft linear curve. 0% stale -> 100, 100% stale -> 0.
-    # Previous formula (100 - ratio * 200) hit the 0 floor at 50% stale
-    # ratio, which over-penalised sessions with any ratio above half. The
-    # stale_reads signal is also now more conservative (only counts real
-    # wasted reads, not normal Read-then-Edit workflows), so a lighter
-    # scoring curve is both fair and consistent with the tighter detection.
-    total_reads = len(quality_data["reads"])
+    # 1. Stale reads: rolling window to prevent denominator-expansion bias.
+    # Only the last N reads are scored, so early stale reads don't get
+    # diluted by later clean reads accumulating in the denominator.
+    all_reads = quality_data["reads"]
     stale_data = detect_stale_reads(quality_data)
-    if total_reads > 0:
-        stale_ratio = stale_data["count"] / total_reads
+    stale_set = {(path, ridx) for path, ridx, _ in stale_data["stale_reads"]}
+    window_reads = all_reads[-_QUALITY_ROLLING_WINDOW:] if len(all_reads) > _QUALITY_ROLLING_WINDOW else all_reads
+    if window_reads:
+        window_stale = sum(1 for ridx, rpath, _ in window_reads if (rpath, ridx) in stale_set)
+        stale_ratio = window_stale / len(window_reads)
         stale_score = max(0, min(100, 100 - stale_ratio * 100))
     else:
-        stale_score = 100  # No reads = no stale reads
+        stale_score = 100
 
-    # 2. Bloated results: score = 100 - (bloated_ratio * 300), clamped
-    total_results = len(quality_data["tool_results"])
+    # 2. Bloated results: rolling window over last N tool results.
+    all_results = quality_data["tool_results"]
     bloated_data = detect_bloated_results(quality_data)
-    if total_results > 0:
-        bloated_ratio = bloated_data["count"] / total_results
+    bloated_set = {ridx for _, ridx, _ in bloated_data["bloated_results"]}
+    window_results = all_results[-_QUALITY_ROLLING_WINDOW:] if len(all_results) > _QUALITY_ROLLING_WINDOW else all_results
+    if window_results:
+        window_bloated = sum(1 for ridx, _, _, _ in window_results if ridx in bloated_set)
+        bloated_ratio = window_bloated / len(window_results)
         bloated_score = max(0, min(100, 100 - bloated_ratio * 300))
     else:
         bloated_score = 100
@@ -11847,20 +11864,24 @@ def compute_quality_score(quality_data):
     else:
         compaction_score = 35
 
-    # 5. Decision density: ratio of substantive messages to total
-    substantive = sum(1 for _, _, _, s in quality_data["messages"] if s)
-    if total_messages > 0:
-        density_ratio = substantive / total_messages
+    # 5. Decision density: rolling window over last N messages.
+    all_messages = quality_data["messages"]
+    window_messages = all_messages[-_QUALITY_ROLLING_WINDOW:] if len(all_messages) > _QUALITY_ROLLING_WINDOW else all_messages
+    substantive = sum(1 for _, _, _, s in window_messages if s)
+    window_msg_count = len(window_messages)
+    if window_msg_count > 0:
+        density_ratio = substantive / window_msg_count
         density_score = min(100, density_ratio * 200)  # 50% substantive = 100
     else:
         density_ratio = 0
         density_score = 50
 
-    # 6. Agent efficiency: result tokens used vs dispatched
-    dispatches = quality_data["agent_dispatches"]
-    if dispatches:
-        total_prompt = sum(p for _, p, _ in dispatches)
-        total_result = sum(r for _, _, r in dispatches)
+    # 6. Agent efficiency: rolling window over last N dispatches.
+    all_dispatches = quality_data["agent_dispatches"]
+    window_dispatches = all_dispatches[-_QUALITY_ROLLING_WINDOW:] if len(all_dispatches) > _QUALITY_ROLLING_WINDOW else all_dispatches
+    if window_dispatches:
+        total_prompt = sum(p for _, p, _ in window_dispatches)
+        total_result = sum(r for _, _, r in window_dispatches)
         if total_prompt > 0:
             efficiency = total_result / (total_prompt + total_result) if (total_prompt + total_result) > 0 else 0.5
             agent_score = min(100, efficiency * 150)  # 67% efficiency = 100
@@ -11913,16 +11934,20 @@ def compute_quality_score(quality_data):
         "stale_reads": {
             "score": signals["stale_reads"],
             "count": stale_data["count"],
-            "total_reads": total_reads,
+            "total_reads": len(all_reads),
+            "window_reads": len(window_reads),
+            "window_stale": window_stale if window_reads else 0,
             "estimated_waste_tokens": stale_data["estimated_waste_tokens"],
-            "detail": f"{stale_data['count']} stale file reads" if stale_data["count"] else "No stale reads",
+            "detail": f"{stale_data['count']} stale file reads ({len(window_reads)} in window)" if stale_data["count"] else "No stale reads",
         },
         "bloated_results": {
             "score": signals["bloated_results"],
             "count": bloated_data["count"],
-            "total_results": total_results,
+            "total_results": len(all_results),
+            "window_results": len(window_results),
+            "window_bloated": window_bloated if window_results else 0,
             "estimated_waste_tokens": bloated_data["estimated_waste_tokens"],
-            "detail": f"{bloated_data['count']} bloated results" if bloated_data["count"] else "No bloated results",
+            "detail": f"{bloated_data['count']} bloated results ({len(window_results)} in window)" if bloated_data["count"] else "No bloated results",
         },
         "duplicates": {
             "score": signals["duplicates"],
@@ -11943,22 +11968,32 @@ def compute_quality_score(quality_data):
             "score": signals["decision_density"],
             "substantive_messages": substantive,
             "total_messages": total_messages,
-            "ratio": round(density_ratio, 2) if total_messages > 0 else 0,
-            "detail": f"{round(density_ratio * 100)}% substantive" if total_messages > 0 else "No messages",
+            "window_messages": window_msg_count,
+            "ratio": round(density_ratio, 2) if window_msg_count > 0 else 0,
+            "detail": f"{round(density_ratio * 100)}% substantive ({window_msg_count} in window)" if window_msg_count > 0 else "No messages",
         },
         "agent_efficiency": {
             "score": signals["agent_efficiency"],
-            "dispatch_count": len(dispatches),
-            "detail": f"{len(dispatches)} agent dispatches" if dispatches else "No agents used",
+            "dispatch_count": len(all_dispatches),
+            "window_dispatches": len(window_dispatches),
+            "detail": f"{len(all_dispatches)} agent dispatches ({len(window_dispatches)} in window)" if all_dispatches else "No agents used",
         },
         "total_estimated_waste_tokens": total_waste,
     }
+
+    # Tier 1: independent fill warnings that cannot be masked by composite score
+    fill_warning = None
+    for threshold, level, message in _FILL_WARN_THRESHOLDS:
+        if fill_pct >= threshold:
+            fill_warning = {"level": level, "fill_pct": round(fill_pct * 100, 1), "message": message}
+            break
 
     return {
         "score": round(composite, 1),
         "grade": score_to_grade(round(composite)),
         "signals": signals,
         "breakdown": breakdown,
+        "fill_warning": fill_warning,
     }
 
 
@@ -16467,7 +16502,7 @@ def quality_cache(throttle_seconds=120, warn_threshold=70, quiet=False, session_
     result = compute_quality_score(quality_data)
     for carry_key in ("_nudge_fill_pct_at_fire", "_nudge_count", "_nudge_last_epoch",
                        "_nudge_previous_score", "_loop_warning_count",
-                       "progressive_bands_captured"):
+                       "progressive_bands_captured", "_last_fill_warn_level"):
         if carry_key in prev_result and carry_key not in result:
             result[carry_key] = prev_result[carry_key]
     result["total_messages"] = len(quality_data["messages"])
@@ -16512,6 +16547,21 @@ def quality_cache(throttle_seconds=120, warn_threshold=70, quiet=False, session_
     # These always run regardless of --quiet, because they emit systemMessage JSON
     # that Claude Code injects into context. Suppressing them defeats their purpose.
     system_messages = []
+
+    # Fill warnings fire independently of composite score (Tier 1 monotonicity fix).
+    # These cannot be masked by improving ratio signals. Deduplicated per level
+    # so the same threshold doesn't fire every prompt.
+    fill_warning = result.get("fill_warning")
+    if fill_warning and fill_warning["level"] in ("WARNING", "CRITICAL"):
+        prev_fill_warn_level = prev_result.get("_last_fill_warn_level")
+        if fill_warning["level"] != prev_fill_warn_level:
+            result["_last_fill_warn_level"] = fill_warning["level"]
+            system_messages.append(
+                f"[Token Optimizer] {fill_warning['level']}: {fill_warning['message']}"
+            )
+        else:
+            result["_last_fill_warn_level"] = prev_fill_warn_level
+
     nudge_msg = _maybe_nudge(result, cache_path, quality_data)
     if nudge_msg:
         system_messages.append(nudge_msg)

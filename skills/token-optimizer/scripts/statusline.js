@@ -83,10 +83,11 @@ process.stdin.on('end', () => {
       } catch (e) {}
     }
 
-    // Quality score + compaction info from quality cache
+    // Quality score + fill warning + compaction info from quality cache
     // ONLY show data from the current session's cache. Never fall back to
     // another session's data (causes stale Compacts/ContextQ on fresh sessions).
     let qScore = '';
+    let fillWarn = '';
     let sessionInfo = '';
 
     let q = null;
@@ -113,6 +114,16 @@ process.stdin.on('end', () => {
             qScore = `${SEP}\x1b[38;5;208mContextQ:${grade}(${score})${RESET}`;
           } else {
             qScore = `${SEP}\x1b[31mContextQ:${grade}(${score})${RESET}`;
+          }
+        }
+
+        // Fill warning: independent of composite score, cannot be masked
+        const fw = q.fill_warning;
+        if (fw && fw.level) {
+          if (fw.level === 'CRITICAL') {
+            fillWarn = `${SEP}\x1b[5;31mFill:${Math.round(fw.fill_pct)}%!${RESET}`;
+          } else if (fw.level === 'WARNING') {
+            fillWarn = `${SEP}\x1b[33mFill:${Math.round(fw.fill_pct)}%${RESET}`;
           }
         }
 
@@ -172,7 +183,7 @@ process.stdin.on('end', () => {
     }
 
     const dirname = path.basename(dir);
-    process.stdout.write(`${DIM}${model}${RESET}${effort}${SEP}${DIM}${dirname}${RESET}${ctx}${qScore}${duration}${sessionInfo}${agents}`);
+    process.stdout.write(`${DIM}${model}${RESET}${effort}${SEP}${DIM}${dirname}${RESET}${ctx}${qScore}${fillWarn}${duration}${sessionInfo}${agents}`);
   } catch (e) {
     // Silent fail - never break the status line
   }

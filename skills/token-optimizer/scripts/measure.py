@@ -9351,7 +9351,7 @@ def setup_hook(dry_run=False):
 
 # ========== Persistent Dashboard Daemon ==========
 
-TOKEN_OPTIMIZER_VERSION = "5.6.5"  # Keep in sync with plugin.json + marketplace.json
+TOKEN_OPTIMIZER_VERSION = "5.6.6"  # Keep in sync with plugin.json + marketplace.json
 _DAEMON_RUNTIME = detect_runtime()
 _DAEMON_RUNTIME_SUFFIX = "codex" if _DAEMON_RUNTIME == "codex" else "claude"
 DAEMON_LABEL = "com.token-optimizer.codex-dashboard" if _DAEMON_RUNTIME == "codex" else "com.token-optimizer.dashboard"
@@ -11393,7 +11393,6 @@ _QUALITY_ROLLING_WINDOW = int(os.environ.get("TOKEN_OPTIMIZER_QUALITY_WINDOW", "
 _FILL_WARN_THRESHOLDS = [
     (0.85, "CRITICAL", "85% context fill, compact now"),
     (0.75, "WARNING", "75% context fill, consider compacting"),
-    (0.60, "INFO", "Context fill at 60%, monitoring"),
 ]
 
 # Configurable via env vars
@@ -11822,8 +11821,9 @@ def compute_quality_score(quality_data):
     # diluted by later clean reads accumulating in the denominator.
     all_reads = quality_data["reads"]
     stale_data = detect_stale_reads(quality_data)
-    stale_set = {(path, ridx) for path, ridx, _ in stale_data["stale_reads"]}
-    window_reads = all_reads[-_QUALITY_ROLLING_WINDOW:] if len(all_reads) > _QUALITY_ROLLING_WINDOW else all_reads
+    stale_set = {(rpath, ridx) for rpath, ridx, _ in stale_data["stale_reads"]}
+    window_reads = all_reads[-_QUALITY_ROLLING_WINDOW:]
+    window_stale = 0
     if window_reads:
         window_stale = sum(1 for ridx, rpath, _ in window_reads if (rpath, ridx) in stale_set)
         stale_ratio = window_stale / len(window_reads)
@@ -11834,8 +11834,9 @@ def compute_quality_score(quality_data):
     # 2. Bloated results: rolling window over last N tool results.
     all_results = quality_data["tool_results"]
     bloated_data = detect_bloated_results(quality_data)
-    bloated_set = {ridx for _, ridx, _ in bloated_data["bloated_results"]}
-    window_results = all_results[-_QUALITY_ROLLING_WINDOW:] if len(all_results) > _QUALITY_ROLLING_WINDOW else all_results
+    bloated_set = {bidx for _, bidx, _ in bloated_data["bloated_results"]}
+    window_results = all_results[-_QUALITY_ROLLING_WINDOW:]
+    window_bloated = 0
     if window_results:
         window_bloated = sum(1 for ridx, _, _, _ in window_results if ridx in bloated_set)
         bloated_ratio = window_bloated / len(window_results)
@@ -11866,7 +11867,7 @@ def compute_quality_score(quality_data):
 
     # 5. Decision density: rolling window over last N messages.
     all_messages = quality_data["messages"]
-    window_messages = all_messages[-_QUALITY_ROLLING_WINDOW:] if len(all_messages) > _QUALITY_ROLLING_WINDOW else all_messages
+    window_messages = all_messages[-_QUALITY_ROLLING_WINDOW:]
     substantive = sum(1 for _, _, _, s in window_messages if s)
     window_msg_count = len(window_messages)
     if window_msg_count > 0:
@@ -11878,7 +11879,7 @@ def compute_quality_score(quality_data):
 
     # 6. Agent efficiency: rolling window over last N dispatches.
     all_dispatches = quality_data["agent_dispatches"]
-    window_dispatches = all_dispatches[-_QUALITY_ROLLING_WINDOW:] if len(all_dispatches) > _QUALITY_ROLLING_WINDOW else all_dispatches
+    window_dispatches = all_dispatches[-_QUALITY_ROLLING_WINDOW:]
     if window_dispatches:
         total_prompt = sum(p for _, p, _ in window_dispatches)
         total_result = sum(r for _, _, r in window_dispatches)
@@ -11936,7 +11937,7 @@ def compute_quality_score(quality_data):
             "count": stale_data["count"],
             "total_reads": len(all_reads),
             "window_reads": len(window_reads),
-            "window_stale": window_stale if window_reads else 0,
+            "window_stale": window_stale,
             "estimated_waste_tokens": stale_data["estimated_waste_tokens"],
             "detail": f"{stale_data['count']} stale file reads ({len(window_reads)} in window)" if stale_data["count"] else "No stale reads",
         },
@@ -11945,7 +11946,7 @@ def compute_quality_score(quality_data):
             "count": bloated_data["count"],
             "total_results": len(all_results),
             "window_results": len(window_results),
-            "window_bloated": window_bloated if window_results else 0,
+            "window_bloated": window_bloated,
             "estimated_waste_tokens": bloated_data["estimated_waste_tokens"],
             "detail": f"{bloated_data['count']} bloated results ({len(window_results)} in window)" if bloated_data["count"] else "No bloated results",
         },
@@ -16559,8 +16560,6 @@ def quality_cache(throttle_seconds=120, warn_threshold=70, quiet=False, session_
             system_messages.append(
                 f"[Token Optimizer] {fill_warning['level']}: {fill_warning['message']}"
             )
-        else:
-            result["_last_fill_warn_level"] = prev_fill_warn_level
 
     nudge_msg = _maybe_nudge(result, cache_path, quality_data)
     if nudge_msg:

@@ -1805,6 +1805,19 @@ _OPENAI_GPT5_MRCR_TOKENS = [
     (1_000_000, 64),
 ]
 
+_GEMINI_MRCR_TOKENS = [
+    # Gemini 3/3.1 Pro: steepest degradation among frontier models.
+    # MRCR v2 8-needle: 84.9% at 128K, collapses to 26.3% at 1M.
+    (0, 98),
+    (8_000, 97),
+    (32_000, 95),
+    (64_000, 92),
+    (128_000, 85),
+    (256_000, 72),
+    (512_000, 50),
+    (1_000_000, 26),
+]
+
 
 def _interpolate_curve(value, curve):
     value = max(curve[0][0], min(curve[-1][0], value))
@@ -1819,6 +1832,8 @@ def _interpolate_curve(value, curve):
 
 def _quality_curve_for_model(model):
     m = str(model or "").lower()
+    if "gemini" in m:
+        return "google-gemini", _GEMINI_MRCR_TOKENS, "absolute_tokens"
     if "gpt-5.5" in m:
         return "openai-gpt-5.5", _OPENAI_GPT55_MRCR_TOKENS, "absolute_tokens"
     if "gpt-5" in m or m.startswith("codex"):
@@ -9351,7 +9366,7 @@ def setup_hook(dry_run=False):
 
 # ========== Persistent Dashboard Daemon ==========
 
-TOKEN_OPTIMIZER_VERSION = "5.6.6"  # Keep in sync with plugin.json + marketplace.json
+TOKEN_OPTIMIZER_VERSION = "5.6.7"  # Keep in sync with plugin.json + marketplace.json
 _DAEMON_RUNTIME = detect_runtime()
 _DAEMON_RUNTIME_SUFFIX = "codex" if _DAEMON_RUNTIME == "codex" else "claude"
 DAEMON_LABEL = "com.token-optimizer.codex-dashboard" if _DAEMON_RUNTIME == "codex" else "com.token-optimizer.dashboard"
@@ -11370,16 +11385,20 @@ def setup_daemon(dry_run=False, uninstall=False):
 CHECKPOINT_DIR = RUNTIME_DIR / "token-optimizer" / "checkpoints"
 CHECKPOINT_EVENT_LOG = RUNTIME_DIR / "token-optimizer" / "checkpoint-events.jsonl"
 
-# Quality signal weights (must sum to 1.0)
-# context_fill_degradation is the most important signal at large context windows
-_QUALITY_WEIGHTS = {
-    "context_fill_degradation": 0.20,
-    "stale_reads": 0.20,
-    "bloated_results": 0.20,
-    "duplicates": 0.10,
-    "compaction_depth": 0.15,
-    "decision_density": 0.08,
-    "agent_efficiency": 0.07,
+# v6 dual-score architecture: ResourceHealth (monotonic warning) + SessionEfficiency (behavioral).
+# ResourceHealth can only worsen within a session (no rolling-window signals).
+# SessionEfficiency uses rolling windows and can rise or fall freely.
+_RESOURCE_HEALTH_WEIGHTS = {
+    "context_fill_degradation": 0.50,
+    "compaction_depth": 0.30,
+    "absolute_waste_tokens": 0.20,
+}
+
+_SESSION_EFFICIENCY_WEIGHTS = {
+    "stale_reads": 0.30,
+    "bloated_results": 0.30,
+    "decision_density": 0.20,
+    "agent_efficiency": 0.20,
 }
 
 # Rolling window size for ratio-based signals.
@@ -11393,6 +11412,13 @@ _QUALITY_ROLLING_WINDOW = int(os.environ.get("TOKEN_OPTIMIZER_QUALITY_WINDOW", "
 _FILL_WARN_THRESHOLDS = [
     (0.85, "CRITICAL", "85% context fill, compact now"),
     (0.75, "WARNING", "75% context fill, consider compacting"),
+]
+
+# Tool call thresholds: instruction adherence degrades after ~15 tool calls
+# (COLM 2025, codeongrass.com practitioner analysis). Cumulative, not reset on compact.
+_TOOL_CALL_WARN_THRESHOLDS = [
+    (40, "CRITICAL", "40+ tool calls, instruction adherence severely degraded"),
+    (25, "WARNING", "25+ tool calls, consider a fresh session"),
 ]
 
 # Configurable via env vars
@@ -11472,6 +11498,7 @@ def _parse_jsonl_for_quality(filepath):
     system_reminders = []  # (index, content_hash, size_chars)
     messages = []    # (index, role, text_length, is_substantive)
     compactions = 0
+    tool_calls = 0   # cumulative tool call count (not reset on compact)
     agent_dispatches = []  # (index, prompt_size, result_size)
     decisions = []   # (index, text_snippet)
 
@@ -11554,6 +11581,7 @@ def _parse_jsonl_for_quality(filepath):
 
                             elif block.get("type") == "tool_use":
                                 is_substantive = True  # tool invocations ARE decisions
+                                tool_calls += 1
                                 tool_name = block.get("name", "")
                                 tool_id = block.get("id", "")
                                 if tool_id:
@@ -11617,6 +11645,7 @@ def _parse_jsonl_for_quality(filepath):
         "system_reminders": system_reminders,
         "messages": messages,
         "compactions": compactions,
+        "tool_calls": tool_calls,
         "agent_dispatches": agent_dispatches,
         "decisions": decisions,
         "total_entries": idx,
@@ -11708,6 +11737,30 @@ def detect_stale_reads(quality_data):
         "stale_reads": stale,
         "count": len(stale),
         "estimated_waste_tokens": estimated_waste_tokens,
+    }
+
+
+def detect_reread_loops(quality_data):
+    """Find files read 3+ times in the session, a signal of context rot.
+
+    When the model re-reads the same file repeatedly, it has likely forgotten
+    what it already read. This is distinct from stale reads (which track
+    read-after-write). Bounded to the last _QUALITY_ROLLING_WINDOW reads.
+    """
+    reads = quality_data["reads"][-_QUALITY_ROLLING_WINDOW:]
+    path_counts = {}
+    for _ridx, rpath, _rts in reads:
+        path_counts[rpath] = path_counts.get(rpath, 0) + 1
+
+    reread_paths = {p: c for p, c in path_counts.items() if c >= 3}
+    total_excess = sum(c - 1 for c in reread_paths.values())
+    AVG_READ_TOKENS = 2000
+
+    return {
+        "reread_paths": reread_paths,
+        "count": len(reread_paths),
+        "excess_reads": total_excess,
+        "estimated_waste_tokens": total_excess * AVG_READ_TOKENS,
     }
 
 
@@ -11844,26 +11897,23 @@ def compute_quality_score(quality_data):
     else:
         bloated_score = 100
 
-    # 3. Duplicates: score = 100 - (duplicates * 10), clamped
+    # 3. Duplicates: display-only signal (not in either composite weight dict).
+    # Duplicate waste feeds ResourceHealth indirectly via absolute_waste_tokens.
     dup_data = detect_duplicates(quality_data)
     dup_score = max(0, min(100, 100 - dup_data["duplicates"] * 10))
 
-    # 4. Compaction depth: users run /compact to FIX a degraded session,
-    # so the first compact should not tank the quality bar they just acted
-    # to improve. Penalties are now gradient, not cliff-shaped.
-    #   0 compactions -> fresh session, 100
-    #   1 compaction  -> user resolved a fill issue, mild penalty
-    #   2 compactions -> starting to feel the cumulative loss
-    #   3+ compactions-> deep rot, documented behavioural degradation
+    # 4. Compaction depth: steepened penalties based on research showing
+    # each compaction loses ~65% of remaining information (Factory.ai).
+    # Negations can semantically invert across compression passes.
     compactions = quality_data["compactions"]
     if compactions == 0:
         compaction_score = 100
     elif compactions == 1:
-        compaction_score = 90
+        compaction_score = 75
     elif compactions == 2:
-        compaction_score = 65
+        compaction_score = 45
     else:
-        compaction_score = 35
+        compaction_score = 20
 
     # 5. Decision density: rolling window over last N messages.
     all_messages = quality_data["messages"]
@@ -11891,6 +11941,20 @@ def compute_quality_score(quality_data):
     else:
         agent_score = 80  # No agents = neutral score
 
+    # 7. Signal-to-noise ratio (diagnostic-only, not weighted in either composite yet)
+    noise_chars = sum(ssize for _, _, ssize in quality_data["system_reminders"])
+    noise_chars += dup_data.get("estimated_waste_tokens", 0) * 4  # tokens to chars estimate
+    signal_chars = sum(tlen for _, _, tlen, s in all_messages if s)
+    total_chars = signal_chars + noise_chars
+    if total_chars > 0:
+        snr_ratio = signal_chars / total_chars
+        snr_score = min(100, snr_ratio * 125)  # 80% signal = perfect score
+    else:
+        snr_score = 50  # neutral when no data
+
+    # 8. Re-reading loop detection (diagnostic-only, not weighted yet)
+    reread_data = detect_reread_loops(quality_data)
+
     signals = {
         "context_fill_degradation": round(fill_score, 1),
         "stale_reads": round(stale_score, 1),
@@ -11901,13 +11965,26 @@ def compute_quality_score(quality_data):
         "agent_efficiency": round(agent_score, 1),
     }
 
-    composite = sum(signals[k] * _QUALITY_WEIGHTS[k] for k in _QUALITY_WEIGHTS)
-
     # Build breakdown with token estimates
     total_waste = (
         stale_data["estimated_waste_tokens"]
         + bloated_data["estimated_waste_tokens"]
         + dup_data["estimated_waste_tokens"]
+    )
+
+    # Absolute waste tokens signal for ResourceHealth (0-100, higher = less waste)
+    waste_fraction = total_waste / max(ctx_window, 1) if ctx_window > 0 else 0
+    waste_score = max(0, min(100, 100 - waste_fraction * 1000))
+    signals["absolute_waste_tokens"] = round(waste_score, 1)
+
+    # v6 dual composite: ResourceHealth (monotonic) + SessionEfficiency (flexible)
+    resource_health = sum(
+        signals[k] * _RESOURCE_HEALTH_WEIGHTS[k]
+        for k in _RESOURCE_HEALTH_WEIGHTS
+    )
+    session_efficiency = sum(
+        signals[k] * _SESSION_EFFICIENCY_WEIGHTS[k]
+        for k in _SESSION_EFFICIENCY_WEIGHTS
     )
 
     # Compaction loss estimate
@@ -11979,6 +12056,26 @@ def compute_quality_score(quality_data):
             "window_dispatches": len(window_dispatches),
             "detail": f"{len(all_dispatches)} agent dispatches ({len(window_dispatches)} in window)" if all_dispatches else "No agents used",
         },
+        "absolute_waste_tokens": {
+            "score": signals["absolute_waste_tokens"],
+            "total_waste_tokens": total_waste,
+            "waste_fraction": round(waste_fraction, 4),
+            "detail": f"{total_waste} waste tokens ({round(waste_fraction * 100, 1)}% of window)" if total_waste > 0 else "No measurable waste",
+        },
+        "snr": {
+            "score": round(snr_score, 1),
+            "signal_chars": signal_chars,
+            "noise_chars": noise_chars,
+            "ratio": round(snr_ratio, 2) if total_chars > 0 else 0,
+            "detail": f"{round(snr_ratio * 100)}% signal" if total_chars > 0 else "No data",
+        },
+        "reread_loops": {
+            "count": reread_data["count"],
+            "excess_reads": reread_data["excess_reads"],
+            "paths": list(reread_data["reread_paths"].keys())[:5],
+            "estimated_waste_tokens": reread_data["estimated_waste_tokens"],
+            "detail": f"{reread_data['count']} files re-read 3+ times" if reread_data["count"] else "No re-reading loops",
+        },
         "total_estimated_waste_tokens": total_waste,
     }
 
@@ -11989,12 +12086,40 @@ def compute_quality_score(quality_data):
             fill_warning = {"level": level, "fill_pct": round(fill_pct * 100, 1), "message": message}
             break
 
+    # Tool call fatigue warning (cumulative, not reset on compact)
+    tc = quality_data.get("tool_calls", 0)
+    tool_call_warning = None
+    for threshold, level, message in _TOOL_CALL_WARN_THRESHOLDS:
+        if tc >= threshold:
+            tool_call_warning = {"level": level, "tool_calls": tc, "message": message}
+            break
+
+    # 50% fill regime change (COLM 2025: positional bias pattern shifts)
+    regime_change = None
+    if fill_pct > 0.50:
+        regime_change = {
+            "fill_pct": round(fill_pct * 100, 1),
+            "message": "System prompt erosion accelerating, middle content at highest risk",
+        }
+
+    rh_rounded = round(resource_health, 1)
+    se_rounded = round(session_efficiency, 1)
+    rh_grade = score_to_grade(round(resource_health))
+    se_grade = score_to_grade(round(session_efficiency))
+
     return {
-        "score": round(composite, 1),
-        "grade": score_to_grade(round(composite)),
+        "score": rh_rounded,
+        "grade": rh_grade,
+        "resource_health": rh_rounded,
+        "resource_health_grade": rh_grade,
+        "session_efficiency": se_rounded,
+        "session_efficiency_grade": se_grade,
         "signals": signals,
         "breakdown": breakdown,
         "fill_warning": fill_warning,
+        "tool_call_warning": tool_call_warning,
+        "regime_change": regime_change,
+        "tool_calls": tc,
     }
 
 
@@ -16559,6 +16684,16 @@ def quality_cache(throttle_seconds=120, warn_threshold=70, quiet=False, session_
             result["_last_fill_warn_level"] = fill_warning["level"]
             system_messages.append(
                 f"[Token Optimizer] {fill_warning['level']}: {fill_warning['message']}"
+            )
+
+    # Tool call fatigue warnings (independent of composite score)
+    tool_call_warning = result.get("tool_call_warning")
+    if tool_call_warning and tool_call_warning["level"] in ("WARNING", "CRITICAL"):
+        prev_tc_level = prev_result.get("_last_tool_call_warn_level")
+        if tool_call_warning["level"] != prev_tc_level:
+            result["_last_tool_call_warn_level"] = tool_call_warning["level"]
+            system_messages.append(
+                f"[Token Optimizer] {tool_call_warning['level']}: {tool_call_warning['message']}"
             )
 
     nudge_msg = _maybe_nudge(result, cache_path, quality_data)

@@ -83,10 +83,10 @@ process.stdin.on('end', () => {
       } catch (e) {}
     }
 
-    // Quality score + fill warning + compaction info from quality cache
-    // ONLY show data from the current session's cache. Never fall back to
-    // another session's data (causes stale Compacts/ContextQ on fresh sessions).
+    // v6 dual score: ResourceHealth (primary) + SessionEfficiency (secondary)
+    // ONLY show data from the current session's cache.
     let qScore = '';
+    let effScore = '';
     let fillWarn = '';
     let sessionInfo = '';
 
@@ -101,11 +101,11 @@ process.stdin.on('end', () => {
       }
 
       if (q) {
-        const s = q.score;
-        if (s != null) {
-          const score = Math.round(s);
-          const grade = q.grade || (score >= 90 ? 'S' : score >= 80 ? 'A' : score >= 70 ? 'B' : score >= 55 ? 'C' : score >= 40 ? 'D' : 'F');
-          // Color bands: green >=85, yellow 75-84, orange 50-74, red <50
+        // ResourceHealth (primary display) - fallback to score for older caches
+        const rh = q.resource_health != null ? q.resource_health : q.score;
+        if (rh != null) {
+          const score = Math.round(rh);
+          const grade = q.resource_health_grade || q.grade || (score >= 90 ? 'S' : score >= 80 ? 'A' : score >= 70 ? 'B' : score >= 55 ? 'C' : score >= 40 ? 'D' : 'F');
           if (score >= 85) {
             qScore = `${SEP}\x1b[32mContextQ:${grade}(${score})${RESET}`;
           } else if (score >= 75) {
@@ -117,6 +117,14 @@ process.stdin.on('end', () => {
           }
         }
 
+        // SessionEfficiency (secondary, dim)
+        const se = q.session_efficiency;
+        if (se != null) {
+          const seScore = Math.round(se);
+          const seGrade = q.session_efficiency_grade || (seScore >= 90 ? 'S' : seScore >= 80 ? 'A' : seScore >= 70 ? 'B' : seScore >= 55 ? 'C' : seScore >= 40 ? 'D' : 'F');
+          effScore = `${SEP}${DIM}Eff:${seGrade}(${seScore})${RESET}`;
+        }
+
         // Fill warning: independent of composite score, cannot be masked
         const fw = q.fill_warning;
         if (fw && fw.level) {
@@ -125,6 +133,19 @@ process.stdin.on('end', () => {
           } else if (fw.level === 'WARNING') {
             fillWarn = `${SEP}\x1b[33mFill:${Math.round(fw.fill_pct)}%${RESET}`;
           }
+        }
+
+        // Regime change warning (50% fill threshold, COLM 2025)
+        if (q.regime_change && !fw) {
+          fillWarn = `${SEP}\x1b[33mRegime:${Math.round(q.regime_change.fill_pct)}%${RESET}`;
+        }
+
+        // Tool call fatigue warning
+        const tcw = q.tool_call_warning;
+        if (tcw && tcw.level === 'CRITICAL') {
+          fillWarn += `${SEP}\x1b[31mTools:${q.tool_calls}!${RESET}`;
+        } else if (tcw && tcw.level === 'WARNING') {
+          fillWarn += `${SEP}\x1b[33mTools:${q.tool_calls}${RESET}`;
         }
 
         // Compaction count with cumulative loss
@@ -140,8 +161,9 @@ process.stdin.on('end', () => {
           }
         }
       } else {
-        // No cache for this session yet. Show pending (SessionStart hook will create it shortly).
+        // No cache for this session yet.
         qScore = `${SEP}${DIM}ContextQ:--${RESET}`;
+        effScore = `${SEP}${DIM}Eff:--${RESET}`;
       }
     } catch (e) {}
 
@@ -183,7 +205,7 @@ process.stdin.on('end', () => {
     }
 
     const dirname = path.basename(dir);
-    process.stdout.write(`${DIM}${model}${RESET}${effort}${SEP}${DIM}${dirname}${RESET}${ctx}${qScore}${fillWarn}${duration}${sessionInfo}${agents}`);
+    process.stdout.write(`${DIM}${model}${RESET}${effort}${SEP}${DIM}${dirname}${RESET}${ctx}${qScore}${effScore}${fillWarn}${duration}${sessionInfo}${agents}`);
   } catch (e) {
     // Silent fail - never break the status line
   }

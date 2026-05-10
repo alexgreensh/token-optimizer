@@ -151,6 +151,41 @@ else
     clone_repo
 fi
 
+# ── Integrity Verification ────────────────────────────────────
+# Checksums verify file integrity post-clone/pull.
+# For full supply-chain security, pin to a specific commit SHA in your
+# deployment pipeline instead of relying on HEAD.
+# This check is advisory: it warns but does not block, because the
+# CHECKSUMS.sha256 file itself is updated with each code change.
+
+CHECKSUM_FILE="${INSTALL_DIR}/CHECKSUMS.sha256"
+if [ -f "$CHECKSUM_FILE" ]; then
+    info "Verifying file integrity..."
+    (
+        cd "$INSTALL_DIR" || exit 1
+        if sha256sum -c "$CHECKSUM_FILE" --quiet 2>/dev/null || \
+           shasum -a 256 -c "$CHECKSUM_FILE" --quiet 2>/dev/null; then
+            printf "${GREEN}>${NC} Integrity check passed\n"
+        else
+            printf "${YELLOW}!${NC} WARNING: Integrity check failed or checksums are outdated.\n"
+            printf "${YELLOW}!${NC} This is expected immediately after a code update (checksums\n"
+            printf "${YELLOW}!${NC} are regenerated with each release). If you did not just\n"
+            printf "${YELLOW}!${NC} update, verify your clone manually: cd ${INSTALL_DIR} && git log --oneline -5\n"
+        fi
+    )
+else
+    warn "CHECKSUMS.sha256 not found, skipping integrity check."
+fi
+
+# Log the current commit SHA so users can audit which version is installed.
+SHA_LOG_DIR="${HOME}/.claude/token-optimizer"
+mkdir -p "$SHA_LOG_DIR"
+CURRENT_SHA=$(git -C "$INSTALL_DIR" rev-parse HEAD 2>/dev/null || echo "unknown")
+CURRENT_SHORT=$(git -C "$INSTALL_DIR" rev-parse --short HEAD 2>/dev/null || echo "unknown")
+printf "%s\t%s\t%s\n" "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" "$CURRENT_SHA" "install" \
+    >> "${SHA_LOG_DIR}/.last-verified-sha"
+info "Verified commit ${CURRENT_SHORT} logged to ${SHA_LOG_DIR}/.last-verified-sha"
+
 # ── Symlink Skill ─────────────────────────────────────────────
 
 mkdir -p "$SKILL_DIR"

@@ -224,14 +224,24 @@ def main():
         + " " + " ".join(shlex.quote(t) for t in original_tokens)
     )
 
-    # Log rewrite event to sidecar JSONL
+    # Log rewrite event to sidecar JSONL.
+    # Security: only log metadata (command name + arg count), never the raw command
+    # text, which may contain package names, file paths, or other sensitive tokens.
+    # Rotation: cap at 1MB; rotate to .1 (single rotated copy = 2MB max on disk).
     try:
         log_dir = resolve_plugin_data_dir() or (runtime_home() / "token-optimizer")
         log_dir.mkdir(parents=True, exist_ok=True)
         log_path = log_dir / "bash-rewrites.jsonl"
+        _MAX_LOG_BYTES = 1 * 1024 * 1024  # 1MB
+        if log_path.exists() and log_path.stat().st_size >= _MAX_LOG_BYTES:
+            rotated = log_path.with_suffix(".jsonl.1")
+            log_path.replace(rotated)  # atomic rename; overwrites any existing .1
+        tokens_split = command.split()
         event = json.dumps({
             "timestamp": time.time(),
-            "command": command[:100],
+            "command_name": tokens_split[0] if tokens_split else "",
+            "arg_count": len(tokens_split) - 1,
+            "compressed": True,
             "session_id": payload.get("session_id", ""),
         })
         fd = os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)

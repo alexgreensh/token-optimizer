@@ -55,16 +55,19 @@ _WHITELIST_COMPOUND = {
     ("git", "status"), ("git", "log"), ("git", "diff"), ("git", "show"), ("git", "branch"),
     ("python", "-m"), ("python3", "-m"),  # python -m pytest
     ("npx", "jest"), ("npx", "vitest"),
-    ("npm", "install"), ("npm", "ci"), ("npm", "test"),
-    ("pip", "install"), ("pip3", "install"),
-    ("cargo", "test"), ("cargo", "build"),
+    # NOTE: npm install, npm ci, pip install, pip3 install, cargo build, docker build
+    # are intentionally excluded. They execute postinstall/build scripts, produce
+    # security-relevant output (vulnerability warnings, deprecation notices), and
+    # are NOT read-only. Silent compression could hide important errors.
+    ("npm", "test"),
+    ("cargo", "test"),
     ("go", "test"),
     # v5.1 lint handlers (multi-word lint invocations)
     ("ruff", "check"),
     ("biome", "lint"),
     ("golangci-lint", "run"),
-    # v5.1 progress handler (docker build/pull — read-only layer fetch)
-    ("docker", "build"),
+    # v5.1 progress handler (docker pull — read-only layer fetch)
+    # docker build excluded: executes Dockerfile RUN instructions (write side-effects)
     ("docker", "pull"),
     # v5.1 list handlers (read-only inventory queries)
     ("pip", "list"), ("pip3", "list"),

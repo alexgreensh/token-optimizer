@@ -163,13 +163,13 @@ Model routing is the single highest-ROI optimization for multi-agent workflows. 
 
 | Model | Input $/1M | Output $/1M | Relative Cost (vs Haiku) |
 |-------|-----------|-------------|--------------------------|
-| Haiku | $0.25 | $1.25 | 1x |
-| Sonnet | $3.00 | $15.00 | 12x |
-| Opus | $15.00 | $75.00 | 60x |
+| Haiku | $1.00 | $5.00 | 1x |
+| Sonnet | $3.00 | $15.00 | 3x |
+| Opus | $5.00 | $25.00 | 5x |
 
 *Pricing from anthropic.com/pricing. Check for current rates.*
 
-Haiku is **12x cheaper** than Sonnet and **60x cheaper** than Opus per token. For tasks that don't require judgment or complex reasoning, every Opus call is 60x overspend.
+Haiku is **3x cheaper** than Sonnet and **5x cheaper** than Opus per token. For tasks that don't require judgment or complex reasoning, every Opus call is 5x overspend.
 
 ### Task-to-Model Mapping
 
@@ -196,17 +196,17 @@ A typical audit workflow dispatches 5 agents to scan files, count items, analyze
 
 **Without routing (all Opus)**:
 Each agent uses ~30K input + ~5K output tokens.
-- 5 agents x 30K input x $15/1M = $2.25 input
-- 5 agents x 5K output x $75/1M = $1.88 output
-- **Total: ~$4.13**
+- 5 agents x 30K input x $5/1M = $0.75 input
+- 5 agents x 5K output x $25/1M = $0.63 output
+- **Total: ~$1.38**
 
 **With routing (3 Haiku + 1 Sonnet + 1 Opus)**:
-- 3 Haiku agents: 90K input x $0.25/1M + 15K output x $1.25/1M = $0.04
+- 3 Haiku agents: 90K input x $1/1M + 15K output x $5/1M = $0.17
 - 1 Sonnet agent: 30K input x $3/1M + 5K output x $15/1M = $0.17
-- 1 Opus agent: 30K input x $15/1M + 5K output x $75/1M = $0.83
-- **Total: ~$1.04**
+- 1 Opus agent: 30K input x $5/1M + 5K output x $25/1M = $0.28
+- **Total: ~$0.62**
 
-**Savings: ~75% ($3.09 saved per workflow run)**
+**Savings: ~55% ($0.76 saved per workflow run)**
 
 For subscription users (Max plan): model routing affects rate limits, not dollars. Haiku calls consume fewer quota units and are 3-5x faster. Routing means your session stays under rate limits longer and agents return results faster.
 

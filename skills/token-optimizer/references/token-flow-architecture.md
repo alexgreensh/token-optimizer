@@ -364,17 +364,17 @@ Most Claude Code users are on Max subscriptions ($100-200/month), not per-token 
 
 **Without caching** (worst case, e.g. cache misses from inactivity):
 ```
-Opus input: $15 per 1M tokens
-20K overhead x 100 msgs/day x 30 days = 60M tokens/mo = $900/mo overhead
-35K overhead x 100 msgs/day x 30 days = 105M tokens/mo = $1,575/mo overhead
-Savings from optimization: ~$675/mo
+Opus input: $5 per 1M tokens
+20K overhead x 100 msgs/day x 30 days = 60M tokens/mo = $300/mo overhead
+35K overhead x 100 msgs/day x 30 days = 105M tokens/mo = $525/mo overhead
+Savings from optimization: ~$225/mo
 ```
 
 **With caching** (typical, 96-97% cache hit rate):
 ```
 Cached reads cost 10% of base input price.
 
-Opus cached input: $1.50/1M (10% of $15)
+Opus cached input: $0.50/1M (10% of $5)
   20K overhead: ~$0.03/msg | 35K overhead: ~$0.05/msg
   Savings from optimization: ~$68/mo
 
@@ -393,16 +393,16 @@ Routing subagents to the right model tier is the highest-ROI behavioral change. 
 
 | Model | Input $/1M | Output $/1M | Relative Cost (vs Haiku) |
 |-------|-----------|-------------|--------------------------|
-| Haiku | $0.25 | $1.25 | 1x |
-| Sonnet | $3.00 | $15.00 | 12x input, 12x output |
-| Opus | $15.00 | $75.00 | 60x input, 60x output |
+| Haiku | $1.00 | $5.00 | 1x |
+| Sonnet | $3.00 | $15.00 | 3x input, 3x output |
+| Opus | $5.00 | $25.00 | 5x input, 5x output |
 
 *Pricing from anthropic.com/pricing. Check for current rates.*
 
 **Worked example**: 5-agent workflow (file scanning + analysis + synthesis):
-- **All Opus**: 5 agents x (30K input x $15/1M + 5K output x $75/1M) = ~$4.13
-- **Routed** (3 Haiku + 1 Sonnet + 1 Opus): ~$1.04
-- **Savings: ~75%**
+- **All Opus**: 5 agents x (30K input x $5/1M + 5K output x $25/1M) = ~$1.38
+- **Routed** (3 Haiku + 1 Sonnet + 1 Opus): ~$0.44
+- **Savings: ~68%**
 
 For subscription users (Max plan): model routing affects rate limits, not dollars. Haiku calls consume fewer quota units and return results 3-5x faster. Routing means your session stays under rate limits longer.
 

@@ -11416,9 +11416,14 @@ _FILL_WARN_THRESHOLDS = [
 
 # Tool call thresholds: instruction adherence degrades after ~15 tool calls
 # (COLM 2025, codeongrass.com practitioner analysis). Cumulative, not reset on compact.
+# Configurable via TOKEN_OPTIMIZER_TOOL_CALL_WARN / _CRITICAL env vars to suit
+# longer-context models (e.g. Claude Opus 4.7 1M). Defaults are unchanged from the
+# original literal — opt-in override only.
+_TOOL_CALL_WARN     = int(os.environ.get("TOKEN_OPTIMIZER_TOOL_CALL_WARN", "25"))
+_TOOL_CALL_CRITICAL = int(os.environ.get("TOKEN_OPTIMIZER_TOOL_CALL_CRITICAL", "40"))
 _TOOL_CALL_WARN_THRESHOLDS = [
-    (40, "CRITICAL", "40+ tool calls, instruction adherence severely degraded"),
-    (25, "WARNING", "25+ tool calls, consider a fresh session"),
+    (_TOOL_CALL_CRITICAL, "CRITICAL", f"{_TOOL_CALL_CRITICAL}+ tool calls, instruction adherence severely degraded"),
+    (_TOOL_CALL_WARN,     "WARNING",  f"{_TOOL_CALL_WARN}+ tool calls, consider a fresh session"),
 ]
 
 # Configurable via env vars

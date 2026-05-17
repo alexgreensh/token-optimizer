@@ -166,6 +166,9 @@ def _hook_config_checks(root: Path) -> list[dict[str, str]]:
                     checks.append(_check("FAIL", f"{event_name} hook", f"unsupported type {hook.get('type')!r}"))
                 if hook.get("async"):
                     checks.append(_check("FAIL", f"{event_name} hook", "async hooks are skipped by current Codex"))
+                timeout = hook.get("timeout")
+                if isinstance(timeout, (int, float)) and timeout > 300:
+                    checks.append(_check("WARN", f"{event_name} hook timeout", f"timeout={timeout} may be in milliseconds (Codex expects seconds)"))
                 command = hook.get("command", "")
                 if not isinstance(command, str) or not command.strip():
                     checks.append(_check("FAIL", f"{event_name} hook", "missing command"))
@@ -226,11 +229,57 @@ def _status_line_check() -> dict[str, str]:
     return _check("WARN", "Codex CLI status line", "not configured; rerun codex-install with --enable-status-line")
 
 
+def _global_hook_check() -> dict[str, str]:
+    hooks_path = codex_home() / "hooks.json"
+    data, error = _load_json(hooks_path)
+    if error:
+        return _check("FAIL", "Global hooks", f"{hooks_path} not found; run measure.py codex-install")
+    if not isinstance(data, dict) or not isinstance(data.get("hooks"), dict):
+        return _check("FAIL", "Global hooks", f"{hooks_path} has no hooks object")
+    if "token-optimizer/scripts" in json.dumps(data, sort_keys=True):
+        return _check("OK", "Global hooks", str(hooks_path))
+    return _check("WARN", "Global hooks", f"no Token Optimizer hooks in {hooks_path}; run measure.py codex-install")
+
+
+def _global_hook_config_checks() -> list[dict[str, str]]:
+    hooks_path = codex_home() / "hooks.json"
+    data, error = _load_json(hooks_path)
+    if error:
+        return []
+    if not isinstance(data, dict) or not isinstance(data.get("hooks"), dict):
+        return []
+    return _validate_hook_structure(data, hooks_path)
+
+
+def _validate_hook_structure(data: dict[str, Any], source_path: Path) -> list[dict[str, str]]:
+    checks: list[dict[str, str]] = []
+    hooks = data["hooks"]
+    unsupported = sorted(set(hooks) - SUPPORTED_HOOK_EVENTS)
+    if unsupported:
+        checks.append(_check("FAIL", f"Hook events ({source_path.name})", f"unsupported events: {', '.join(unsupported)}"))
+
+    for event_name, groups in hooks.items():
+        if not isinstance(groups, list):
+            continue
+        for group_index, group in enumerate(groups):
+            if not isinstance(group, dict):
+                continue
+            for hook in group.get("hooks", []):
+                if not isinstance(hook, dict):
+                    continue
+                if hook.get("async"):
+                    checks.append(_check("FAIL", f"{event_name} hook", "async hooks are skipped by current Codex"))
+                timeout = hook.get("timeout")
+                if isinstance(timeout, (int, float)) and timeout > 300:
+                    checks.append(_check("WARN", f"{event_name} hook timeout", f"timeout={timeout} may be in milliseconds (Codex expects seconds)"))
+    return checks
+
+
 def _project_hook_check(project: Path) -> dict[str, str]:
     hooks_path = project / ".codex" / "hooks.json"
     data, error = _load_json(hooks_path)
     if error:
-        return _check("FAIL", "Project hooks", f"{hooks_path} not found or unreadable; run measure.py codex-install --project {project}")
+        return _check("WARN", "Project hooks", f"{hooks_path} not found; per-project hooks are optional when global hooks are installed")
     if not isinstance(data, dict) or not isinstance(data.get("hooks"), dict):
         return _check("FAIL", "Project hooks", f"{hooks_path} has no hooks object")
     if "token-optimizer/scripts" in json.dumps(data, sort_keys=True):
@@ -327,6 +376,8 @@ def run_checks(project: Path | None = None) -> list[dict[str, str]]:
         checks.extend(_skill_install_checks())
     checks.append(_compact_prompt_check())
     checks.append(_status_line_check())
+    checks.append(_global_hook_check())
+    checks.extend(_global_hook_config_checks())
     checks.append(_project_hook_check(project))
     checks.extend(_project_feature_checks(project))
     return checks

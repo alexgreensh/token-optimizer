@@ -24,11 +24,13 @@ Then in the Codex TUI: `/plugins` and install Token Optimizer.
 
 > Auto-update: Codex auto-upgrades Git-backed marketplaces on startup via `git ls-remote`. Manual upgrade: `codex plugin marketplace upgrade`.
 
-**After install, set up hooks for your project:**
+**After install, set up hooks globally (one-time):**
 
 ```bash
-TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py codex-install --project "$PWD"
+TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py codex-install
 ```
+
+This installs hooks to `~/.codex/hooks.json`, which Codex loads for all projects regardless of trust level. For per-project overrides, use `--project "$PWD"` instead.
 
 The default profile is `balanced`. It installs:
 
@@ -47,7 +49,7 @@ The default profile is `balanced`. It installs:
 | `aggressive` | All hooks including experimental Bash PreToolUse | High, full coverage |
 
 ```bash
-TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py codex-install --project "$PWD" --profile quiet
+TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py codex-install --profile quiet
 ```
 
 ## Usage
@@ -124,7 +126,7 @@ Codex and Claude Code have different hook surfaces, so some features work differ
 | Config file | `CLAUDE.md` | `AGENTS.md` | Different platforms |
 | Memory system | `MEMORY.md` + project memory dirs | `~/.codex/memories/**/*.md` | Different storage |
 | Model routing advice | Opus/Sonnet/Haiku per-agent routing | Intelligence levels (Low/Medium/High/Extra High) + model selection (GPT-5.5, 5.4, 5.4-Mini, 5.3-Codex, 5.2) | Different model families |
-| Hook install | Auto via plugin, 8 hook events | `codex-install` command, 4 profiles, 3-5 hook events | Codex hooks are newer, fewer events |
+| Hook install | Auto via plugin, 8 hook events | `codex-install` command (global by default), 4 profiles, 3-5 hook events | Codex hooks are newer, fewer events |
 | Compact lifecycle | PreCompact + PostCompact hooks capture/restore | Compact prompt guidance + Stop checkpoints | Codex lacks PreCompact/PostCompact |
 | Tool result archive | PostToolUse archives immediately per tool call | Stop-time backfill from JSONL (balanced), or PostToolUse (telemetry profile) | Different timing |
 | Dashboard refresh | SessionEnd hook + daemon at `localhost:24842` | Stop hook + daemon at `localhost:24843` | Both support bookmarkable URL via `setup-daemon` |

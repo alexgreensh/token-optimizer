@@ -130,7 +130,7 @@ if [ -d "${INSTALL_DIR}/.git" ]; then
         info "Migrating to sparse checkout (removing OpenClaw files)..."
         git -C "$INSTALL_DIR" sparse-checkout init --cone 2>/dev/null || true
         git -C "$INSTALL_DIR" sparse-checkout set \
-            skills/ hooks/ .claude-plugin/ \
+            skills/ hooks/ .claude-plugin/ .codex-plugin/ .codex/ \
             install.sh README.md LICENSE NOTICE PRIVACY.md \
             2>/dev/null || true
     fi

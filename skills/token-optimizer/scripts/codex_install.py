@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install Token Optimizer Codex hooks into a project workspace."""
+"""Install Token Optimizer Codex hooks globally or into a project workspace."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from typing import Any
 import codex_compact_prompt
 import codex_io
 import codex_statusline
+from runtime_env import codex_home
 
 TOKEN_OPTIMIZER_MARKER = "token-optimizer/scripts"
 SUPPORTED_EVENTS = ("PreToolUse", "SessionStart", "UserPromptSubmit", "PostToolUse", "Stop")
@@ -181,6 +182,21 @@ def _hooks_path(project: Path) -> Path:
     return hooks_path
 
 
+def _global_hooks_path(*, ensure_dir: bool = False) -> Path:
+    home = codex_home()
+    if home.exists() and home.is_symlink():
+        raise ValueError(f"{home} must not be a symlink")
+    if ensure_dir:
+        home.mkdir(parents=True, exist_ok=True)
+    hooks_path = home / "hooks.json"
+    if hooks_path.exists() and hooks_path.is_symlink():
+        raise ValueError(f"{hooks_path} must not be a symlink")
+    resolved = hooks_path.resolve(strict=False)
+    if not resolved.is_relative_to(Path.home()):
+        raise ValueError(f"{hooks_path} escapes user home")
+    return hooks_path
+
+
 def _load_hooks(path: Path) -> dict[str, Any]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -242,6 +258,7 @@ def _remove_hooks(existing: dict[str, Any]) -> dict[str, Any]:
 def install(
     project: Path,
     *,
+    is_global: bool = False,
     dry_run: bool = False,
     skip_compact_prompt: bool = False,
     force_compact_prompt: bool = False,
@@ -251,7 +268,7 @@ def install(
     enable_status_line: bool = False,
     force_status_line: bool = False,
 ) -> tuple[Path, str, dict[str, Any]]:
-    path = _hooks_path(project)
+    path = _global_hooks_path(ensure_dir=not dry_run) if is_global else _hooks_path(project)
     existing = _load_hooks(path)
     updated = _merge_hooks(
         existing,
@@ -280,8 +297,8 @@ def install(
     return path, "installed", details
 
 
-def uninstall(project: Path, *, dry_run: bool = False) -> tuple[Path, str, dict[str, Any]]:
-    path = _hooks_path(project)
+def uninstall(project: Path, *, is_global: bool = False, dry_run: bool = False) -> tuple[Path, str, dict[str, Any]]:
+    path = _global_hooks_path() if is_global else _hooks_path(project)
     existing = _load_hooks(path)
     updated = _remove_hooks(existing)
     details = {"hook_events": sorted(updated.get("hooks", {}).keys())}
@@ -291,10 +308,12 @@ def uninstall(project: Path, *, dry_run: bool = False) -> tuple[Path, str, dict[
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Install Token Optimizer for a Codex project.")
-    parser.add_argument("--project", default=".", help="Project directory to configure")
+    parser = argparse.ArgumentParser(description="Install Token Optimizer hooks for Codex (globally by default).")
+    target = parser.add_mutually_exclusive_group()
+    target.add_argument("--global", dest="use_global", action="store_true", default=True, help="Install hooks globally to ~/.codex/hooks.json (default)")
+    target.add_argument("--project", default=None, help="Install hooks to a specific project directory instead of globally")
     parser.add_argument("--dry-run", action="store_true", help="Validate and print intended action without writing")
-    parser.add_argument("--uninstall", action="store_true", help="Remove Token Optimizer hooks from the project")
+    parser.add_argument("--uninstall", action="store_true", help="Remove Token Optimizer hooks")
     parser.add_argument(
         "--profile",
         choices=("quiet", "balanced", "telemetry", "aggressive"),
@@ -326,16 +345,18 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    is_global = args.project is None
     try:
-        project = _resolve_project(Path(args.project))
+        project = Path(".") if is_global else _resolve_project(Path(args.project))
         if args.uninstall:
-            path, action, details = uninstall(project, dry_run=args.dry_run)
+            path, action, details = uninstall(project, is_global=is_global, dry_run=args.dry_run)
         else:
             enable_prompt_hooks = args.enable_prompt_hooks or args.profile in {"balanced", "aggressive"}
             enable_hot_path_hooks = args.enable_hot_path_hooks or args.profile in {"telemetry", "aggressive"}
             enable_bash_compression = args.enable_bash_compression or args.profile == "aggressive"
             path, action, details = install(
                 project,
+                is_global=is_global,
                 dry_run=args.dry_run,
                 skip_compact_prompt=args.skip_compact_prompt,
                 force_compact_prompt=args.force_compact_prompt,
@@ -350,9 +371,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[Token Optimizer] {exc}", file=sys.stderr)
         return 1
 
+    target = "global" if is_global else str(project)
     payload = {
         "action": action,
-        "project": str(project),
+        "target": target,
         "hooks_path": str(path),
         "dry_run": args.dry_run,
         "details": details,

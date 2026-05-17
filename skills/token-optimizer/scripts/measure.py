@@ -9366,7 +9366,7 @@ def setup_hook(dry_run=False):
 
 # ========== Persistent Dashboard Daemon ==========
 
-TOKEN_OPTIMIZER_VERSION = "5.6.7"  # Keep in sync with plugin.json + marketplace.json
+TOKEN_OPTIMIZER_VERSION = "5.6.10"  # Keep in sync with plugin.json + marketplace.json
 _DAEMON_RUNTIME = detect_runtime()
 _DAEMON_RUNTIME_SUFFIX = "codex" if _DAEMON_RUNTIME == "codex" else "claude"
 DAEMON_LABEL = "com.token-optimizer.codex-dashboard" if _DAEMON_RUNTIME == "codex" else "com.token-optimizer.dashboard"
@@ -11416,9 +11416,14 @@ _FILL_WARN_THRESHOLDS = [
 
 # Tool call thresholds: instruction adherence degrades after ~15 tool calls
 # (COLM 2025, codeongrass.com practitioner analysis). Cumulative, not reset on compact.
+# Configurable via TOKEN_OPTIMIZER_TOOL_CALL_WARN / _CRITICAL env vars to suit
+# longer-context models (e.g. Claude Opus 4.7 1M). Defaults are unchanged from the
+# original literal — opt-in override only.
+_TOOL_CALL_WARN     = int(os.environ.get("TOKEN_OPTIMIZER_TOOL_CALL_WARN", "25"))
+_TOOL_CALL_CRITICAL = int(os.environ.get("TOKEN_OPTIMIZER_TOOL_CALL_CRITICAL", "40"))
 _TOOL_CALL_WARN_THRESHOLDS = [
-    (40, "CRITICAL", "40+ tool calls, instruction adherence severely degraded"),
-    (25, "WARNING", "25+ tool calls, consider a fresh session"),
+    (_TOOL_CALL_CRITICAL, "CRITICAL", f"{_TOOL_CALL_CRITICAL}+ tool calls, instruction adherence severely degraded"),
+    (_TOOL_CALL_WARN,     "WARNING",  f"{_TOOL_CALL_WARN}+ tool calls, consider a fresh session"),
 ]
 
 # Configurable via env vars
@@ -18040,30 +18045,26 @@ def run_ensure_health():
     bad env var removal) run first so they are guaranteed to complete
     even if a later task exhausts the wall-clock budget.
     """
+    _is_codex = detect_runtime() == "codex"
     # Preserve session transcripts: set cleanupPeriodDays if not configured.
-    # This runs FIRST (before any slow task) so the 8s budget cannot
-    # starve it on a loaded machine. Without this setting, Claude Code
-    # deletes JSONL transcripts after 30 days, silently degrading
-    # Token Optimizer trends and Total Recall raw-transcript search.
-    # Single-key JSON write, completes in <100ms, idempotent via the
-    # "already present" guard.
-    try:
-        _cp_data, _ = _read_settings_json()
-        if _cp_data and "cleanupPeriodDays" not in _cp_data:
-            _cp_data = dict(_cp_data)
-            _cp_data["cleanupPeriodDays"] = 99999
-            _write_settings_atomic(_cp_data)
-            print("  [Token Optimizer] Set cleanupPeriodDays=99999 (preserves session transcripts for trends/analytics)")
-    except Exception as _e:
-        print(f"  [Token Optimizer] cleanupPeriodDays write failed: {_e}", file=sys.stderr)
+    # Claude Code only: writes to ~/.claude/settings.json.
+    if not _is_codex:
+        try:
+            _cp_data, _ = _read_settings_json()
+            if _cp_data and "cleanupPeriodDays" not in _cp_data:
+                _cp_data = dict(_cp_data)
+                _cp_data["cleanupPeriodDays"] = 99999
+                _write_settings_atomic(_cp_data)
+                print("  [Token Optimizer] Set cleanupPeriodDays=99999 (preserves session transcripts for trends/analytics)")
+        except Exception as _e:
+            print(f"  [Token Optimizer] cleanupPeriodDays write failed: {_e}", file=sys.stderr)
     # Silent auto-fix of known harmful settings.
-    # Guarded: a corrupt settings.json would otherwise raise
-    # json.JSONDecodeError through the dispatch and crash the hook
-    # invocation. The outer dispatch only catches _HookTimeout.
-    try:
-        _auto_remove_bad_env_vars()
-    except Exception:
-        pass
+    # Claude Code only: reads/writes ~/.claude/settings.json.
+    if not _is_codex:
+        try:
+            _auto_remove_bad_env_vars()
+        except Exception:
+            pass
 
     # v5.3.8: auto-regenerate the dashboard HTML when the on-disk file
     # is stale relative to the currently installed plugin version.
@@ -18235,42 +18236,27 @@ def run_ensure_health():
     except Exception:
         pass
     # v5.0.2: Self-heal hooks with correct semantics for each install mode.
-    # Plugin users get hooks auto-loaded from plugin hooks.json by Claude Code,
-    # so settings.json copies are pure duplicates that cause every hook to fire
-    # twice (wasted CPU, racy SQLite writes, undercounted savings). For plugin
-    # users, the auto-heal INVERTS: instead of adding hooks, it removes the
-    # duplicates. Script-install users (no plugin) still get the original
-    # add-missing-hooks behavior.
-    #
-    # Throttled to once per 24h to keep SessionStart fast. Both paths update
-    # last_hook_heal_check on success so the throttle works the same way.
-    try:
-        last_check = _read_config_flag("last_hook_heal_check", 0)
-        now = int(time.time())
-        if now - int(last_check or 0) > 86400:  # 24h
-            if _is_plugin_installed():
-                # Plugin mode: remove duplicates the plugin already provides.
-                cleanup_result = _cleanup_duplicate_plugin_hooks_from_settings(dry_run=False)
-                removed = cleanup_result.get("removed", 0)
-                if removed > 0:
-                    print(f"  [Token Optimizer] Removed {removed} duplicate hook(s) from settings.json (plugin already provides them). Restart Claude Code to fully apply.")
-                # Update timestamp whether or not anything was removed, so we
-                # don't re-scan on every SessionStart for the next 24h.
-                _write_config_flag("last_hook_heal_check", now)
-            else:
-                # Script-install mode: add any missing hooks from the repo's
-                # hooks.json. Upgrades from v4.x pick up v5 hooks here.
-                heal_result = setup_all_hooks(dry_run=False, verbose=False)
-                added = heal_result.get("added", 0)
-                if added > 0:
-                    print(f"  [Token Optimizer] Self-healed {added} missing hook(s) in settings.json. Restart Claude Code to activate.")
-                elif added == 0 and not heal_result.get("error"):
-                    # setup_all_hooks only updates the timestamp when it
-                    # actually wrote hooks. Update it here on the no-op path
-                    # so we don't re-scan every session for 24h.
+    # Claude Code only: reads/writes ~/.claude/settings.json for hook management.
+    if not _is_codex:
+        try:
+            last_check = _read_config_flag("last_hook_heal_check", 0)
+            now = int(time.time())
+            if now - int(last_check or 0) > 86400:  # 24h
+                if _is_plugin_installed():
+                    cleanup_result = _cleanup_duplicate_plugin_hooks_from_settings(dry_run=False)
+                    removed = cleanup_result.get("removed", 0)
+                    if removed > 0:
+                        print(f"  [Token Optimizer] Removed {removed} duplicate hook(s) from settings.json (plugin already provides them). Restart Claude Code to fully apply.")
                     _write_config_flag("last_hook_heal_check", now)
-    except Exception:
-        pass
+                else:
+                    heal_result = setup_all_hooks(dry_run=False, verbose=False)
+                    added = heal_result.get("added", 0)
+                    if added > 0:
+                        print(f"  [Token Optimizer] Self-healed {added} missing hook(s) in settings.json. Restart Claude Code to activate.")
+                    elif added == 0 and not heal_result.get("error"):
+                        _write_config_flag("last_hook_heal_check", now)
+        except Exception:
+            pass
     # v5.1: First-run welcome. Shows once when v5 is first seen on this machine.
     try:
         if not _read_config_flag("v5_welcome_shown", False):
@@ -18279,13 +18265,14 @@ def run_ensure_health():
     except Exception:
         pass
     # Fix stale versioned plugin cache paths in settings.json (GitHub #7).
-    # When a plugin updates, hardcoded version paths break silently.
-    try:
-        _stale_fixed = _fix_stale_settings_paths()
-        if _stale_fixed:
-            print(f"  [Token Optimizer] Fixed {_stale_fixed} stale plugin path(s) in settings.json")
-    except Exception as _e:
-        print(f"  [Token Optimizer] stale path fix failed: {_e}", file=sys.stderr)
+    # Claude Code only: reads/writes ~/.claude/settings.json.
+    if not _is_codex:
+        try:
+            _stale_fixed = _fix_stale_settings_paths()
+            if _stale_fixed:
+                print(f"  [Token Optimizer] Fixed {_stale_fixed} stale plugin path(s) in settings.json")
+        except Exception as _e:
+            print(f"  [Token Optimizer] stale path fix failed: {_e}", file=sys.stderr)
     # Plugin cleanup is available as `measure.py plugin-cleanup` but NOT auto-run.
     # Deleting cache dirs on SessionStart can break plugins that load hooks from
     # dogfood/development paths. Users should run it manually after review.
@@ -18377,38 +18364,30 @@ def run_ensure_health():
     except (OSError, ValueError):
         pass
     # Auto-install / auto-restore quality bar on SessionStart.
-    # - No statusLine at all: install ours silently.
-    # - statusLine exists but cache hook is missing: reinstall.
-    # - statusLine was replaced by something else (e.g., user ran /statusline)
-    #   while our cache hook is still running: the surviving cache hook is
-    #   strong evidence the user had our full quality bar previously, so
-    #   something clobbered just the statusline. Auto-restore with force=True
-    #   and print a one-line notice explaining what happened.
-    # Respects "quality_bar_disabled" in config.json for permanent opt-out.
-    # `setup-quality-bar --uninstall` writes that flag, so the user's
-    # explicit intent to remove the quality bar is sticky across sessions.
-    try:
-        _eh_qb_disabled = False
-        if CONFIG_PATH.exists():
-            _eh_cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-            _eh_qb_disabled = _eh_cfg.get("quality_bar_disabled", False)
-        if not _eh_qb_disabled and SETTINGS_PATH.exists():
-            settings = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
-            has_statusline = bool(settings.get("statusLine"))
-            hooks = settings.get("hooks", {}).get("UserPromptSubmit", [])
-            has_cache_hook = any("quality-cache" in str(h) for h in hooks)
-            statusline_cmd = (settings.get("statusLine") or {}).get("command", "") or ""
-            statusline_is_ours = "statusline.js" in statusline_cmd and "token-optimizer" in statusline_cmd
-            if has_statusline and not statusline_is_ours and has_cache_hook:
-                print(
-                    "  [Token Optimizer] Statusline was replaced (e.g., by /statusline). "
-                    "Auto-restored. Opt out permanently: measure.py setup-quality-bar --uninstall"
-                )
-                setup_quality_bar(force=True)
-            elif not has_statusline or (has_statusline and not has_cache_hook):
-                setup_quality_bar()
-    except Exception as _e:
-        print(f"  [Token Optimizer] quality bar setup failed: {_e}", file=sys.stderr)
+    # Claude Code only: reads/writes ~/.claude/settings.json for statusLine and hooks.
+    if not _is_codex:
+        try:
+            _eh_qb_disabled = False
+            if CONFIG_PATH.exists():
+                _eh_cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+                _eh_qb_disabled = _eh_cfg.get("quality_bar_disabled", False)
+            if not _eh_qb_disabled and SETTINGS_PATH.exists():
+                settings = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+                has_statusline = bool(settings.get("statusLine"))
+                hooks = settings.get("hooks", {}).get("UserPromptSubmit", [])
+                has_cache_hook = any("quality-cache" in str(h) for h in hooks)
+                statusline_cmd = (settings.get("statusLine") or {}).get("command", "") or ""
+                statusline_is_ours = "statusline.js" in statusline_cmd and "token-optimizer" in statusline_cmd
+                if has_statusline and not statusline_is_ours and has_cache_hook:
+                    print(
+                        "  [Token Optimizer] Statusline was replaced (e.g., by /statusline). "
+                        "Auto-restored. Opt out permanently: measure.py setup-quality-bar --uninstall"
+                    )
+                    setup_quality_bar(force=True)
+                elif not has_statusline or (has_statusline and not has_cache_hook):
+                    setup_quality_bar()
+        except Exception as _e:
+            print(f"  [Token Optimizer] quality bar setup failed: {_e}", file=sys.stderr)
     # Auto-update check (once per day, script-installed users only)
     try:
         install_dir = RUNTIME_DIR / "token-optimizer"

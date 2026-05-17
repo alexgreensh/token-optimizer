@@ -11401,11 +11401,33 @@ _SESSION_EFFICIENCY_WEIGHTS = {
     "agent_efficiency": 0.20,
 }
 
+def _int_env(key: str, default: int) -> int:
+    raw = os.environ.get(key, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        print(f"[Token Optimizer] Warning: invalid {key}={raw!r}, using default {default}", file=sys.stderr)
+        return default
+
+
+def _float_env(key: str, default: float) -> float:
+    raw = os.environ.get(key, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        print(f"[Token Optimizer] Warning: invalid {key}={raw!r}, using default {default}", file=sys.stderr)
+        return default
+
+
 # Rolling window size for ratio-based signals.
 # Ratio signals (stale_reads, bloated_results, decision_density, agent_efficiency)
 # use only the last N operations to prevent denominator-expansion bias where
 # scores climb as the session progresses even though context health is degrading.
-_QUALITY_ROLLING_WINDOW = int(os.environ.get("TOKEN_OPTIMIZER_QUALITY_WINDOW", "20"))
+_QUALITY_ROLLING_WINDOW = _int_env("TOKEN_OPTIMIZER_QUALITY_WINDOW", 20)
 
 # Fill-based warning thresholds that fire independently of the composite score.
 # These cannot be masked by improving ratio signals.
@@ -11419,27 +11441,27 @@ _FILL_WARN_THRESHOLDS = [
 # Configurable via TOKEN_OPTIMIZER_TOOL_CALL_WARN / _CRITICAL env vars to suit
 # longer-context models (e.g. Claude Opus 4.7 1M). Defaults are unchanged from the
 # original literal — opt-in override only.
-_TOOL_CALL_WARN     = int(os.environ.get("TOKEN_OPTIMIZER_TOOL_CALL_WARN", "25"))
-_TOOL_CALL_CRITICAL = int(os.environ.get("TOKEN_OPTIMIZER_TOOL_CALL_CRITICAL", "40"))
+_TOOL_CALL_WARN     = _int_env("TOKEN_OPTIMIZER_TOOL_CALL_WARN", 25)
+_TOOL_CALL_CRITICAL = _int_env("TOKEN_OPTIMIZER_TOOL_CALL_CRITICAL", 40)
 _TOOL_CALL_WARN_THRESHOLDS = [
     (_TOOL_CALL_CRITICAL, "CRITICAL", f"{_TOOL_CALL_CRITICAL}+ tool calls, instruction adherence severely degraded"),
     (_TOOL_CALL_WARN,     "WARNING",  f"{_TOOL_CALL_WARN}+ tool calls, consider a fresh session"),
 ]
 
 # Configurable via env vars
-_CHECKPOINT_MAX_FILES = int(os.environ.get("TOKEN_OPTIMIZER_CHECKPOINT_FILES", "10"))
-_CHECKPOINT_TTL_SECONDS = int(os.environ.get("TOKEN_OPTIMIZER_CHECKPOINT_TTL", "300"))
-_CHECKPOINT_RETENTION_DAYS = int(os.environ.get("TOKEN_OPTIMIZER_CHECKPOINT_RETENTION_DAYS", "7"))
-_CHECKPOINT_RETENTION_MAX = int(os.environ.get("TOKEN_OPTIMIZER_CHECKPOINT_RETENTION_MAX", "50"))
-_RELEVANCE_THRESHOLD = float(os.environ.get("TOKEN_OPTIMIZER_RELEVANCE_THRESHOLD", "0.3"))
+_CHECKPOINT_MAX_FILES = _int_env("TOKEN_OPTIMIZER_CHECKPOINT_FILES", 10)
+_CHECKPOINT_TTL_SECONDS = _int_env("TOKEN_OPTIMIZER_CHECKPOINT_TTL", 300)
+_CHECKPOINT_RETENTION_DAYS = _int_env("TOKEN_OPTIMIZER_CHECKPOINT_RETENTION_DAYS", 7)
+_CHECKPOINT_RETENTION_MAX = _int_env("TOKEN_OPTIMIZER_CHECKPOINT_RETENTION_MAX", 50)
+_RELEVANCE_THRESHOLD = _float_env("TOKEN_OPTIMIZER_RELEVANCE_THRESHOLD", 0.3)
 
 # Progressive checkpoint thresholds (% fill, fires once each per session)
 _PROGRESSIVE_BANDS = [20, 35, 50, 65, 80]
 _PROGRESSIVE_ENABLED = os.environ.get("TOKEN_OPTIMIZER_PROGRESSIVE_CHECKPOINTS", "1") not in ("0", "false", "no", "off")
 _QUALITY_CHECKPOINT_THRESHOLDS = [80, 70, 50, 40]
-_CHECKPOINT_COOLDOWN_SECONDS = int(os.environ.get("TOKEN_OPTIMIZER_CHECKPOINT_COOLDOWN_SECONDS", "90"))
-_EDIT_BATCH_WRITE_THRESHOLD = int(os.environ.get("TOKEN_OPTIMIZER_EDIT_BATCH_WRITE_THRESHOLD", "4"))
-_EDIT_BATCH_FILE_THRESHOLD = int(os.environ.get("TOKEN_OPTIMIZER_EDIT_BATCH_FILE_THRESHOLD", "3"))
+_CHECKPOINT_COOLDOWN_SECONDS = _int_env("TOKEN_OPTIMIZER_CHECKPOINT_COOLDOWN_SECONDS", 90)
+_EDIT_BATCH_WRITE_THRESHOLD = _int_env("TOKEN_OPTIMIZER_EDIT_BATCH_WRITE_THRESHOLD", 4)
+_EDIT_BATCH_FILE_THRESHOLD = _int_env("TOKEN_OPTIMIZER_EDIT_BATCH_FILE_THRESHOLD", 3)
 _CHECKPOINT_TELEMETRY_ENABLED = os.environ.get("TOKEN_OPTIMIZER_CHECKPOINT_TELEMETRY", "0").lower() in ("1", "true", "yes", "on")
 
 # Shared decision-detection regex (used by both quality analyzer and state extractor)

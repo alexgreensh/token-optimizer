@@ -11436,13 +11436,25 @@ _FILL_WARN_THRESHOLDS = [
     (0.75, "WARNING", "75% context fill, consider compacting"),
 ]
 
-# Tool call thresholds: instruction adherence degrades after ~15 tool calls
-# (COLM 2025, codeongrass.com practitioner analysis). Cumulative, not reset on compact.
-# Configurable via TOKEN_OPTIMIZER_TOOL_CALL_WARN / _CRITICAL env vars to suit
-# longer-context models (e.g. Claude Opus 4.7 1M). Defaults are unchanged from the
-# original literal — opt-in override only.
-_TOOL_CALL_WARN     = _int_env("TOKEN_OPTIMIZER_TOOL_CALL_WARN", 25)
-_TOOL_CALL_CRITICAL = _int_env("TOKEN_OPTIMIZER_TOOL_CALL_CRITICAL", 40)
+# Tool call thresholds: instruction adherence degrades after ~15 tool calls on
+# 200K models (COLM 2025, codeongrass.com practitioner analysis). On 1M context
+# models the degradation is much later because tool results are a smaller fraction
+# of the window. Thresholds scale with detected context window: 1M gets 5x the
+# baseline; 200K gets 1x. Env var overrides still take precedence.
+def _scaled_tool_call_thresholds():
+    """Compute tool call thresholds scaled by context window size."""
+    try:
+        ctx_size, _ = detect_context_window()
+    except Exception:
+        ctx_size = 200_000
+    scale = max(1.0, ctx_size / 200_000)
+    base_warn = 25
+    base_crit = 40
+    warn = _int_env("TOKEN_OPTIMIZER_TOOL_CALL_WARN", int(base_warn * scale))
+    crit = _int_env("TOKEN_OPTIMIZER_TOOL_CALL_CRITICAL", int(base_crit * scale))
+    return warn, crit
+
+_TOOL_CALL_WARN, _TOOL_CALL_CRITICAL = _scaled_tool_call_thresholds()
 _TOOL_CALL_WARN_THRESHOLDS = [
     (_TOOL_CALL_CRITICAL, "CRITICAL", f"{_TOOL_CALL_CRITICAL}+ tool calls, instruction adherence severely degraded"),
     (_TOOL_CALL_WARN,     "WARNING",  f"{_TOOL_CALL_WARN}+ tool calls, consider a fresh session"),

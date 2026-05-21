@@ -1,0 +1,5 @@
+# Bun lockfile contains SHA-512 integrity hashes (not payloads)
+bun.lock
+
+# bun:sqlite is a Bun built-in module, not an npm phantom dependency
+# (equivalent to node:fs - part of the runtime)

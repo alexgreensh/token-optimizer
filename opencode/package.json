@@ -1,0 +1,74 @@
+{
+  "name": "token-optimizer-opencode",
+  "version": "1.0.0",
+  "description": "Context quality scoring, smart compaction, and session continuity for OpenCode. Full parity with the Claude Code Token Optimizer plugin.",
+  "type": "module",
+  "main": "dist/plugin.js",
+  "types": "dist/plugin.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/plugin.js",
+      "types": "./dist/plugin.d.ts"
+    },
+    "./server": {
+      "import": "./dist/plugin.js",
+      "types": "./dist/plugin.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "prepublishOnly": "bun run build"
+  },
+  "keywords": [
+    "opencode",
+    "plugin",
+    "token-optimizer",
+    "context-quality",
+    "smart-compaction",
+    "session-continuity",
+    "ai-agent",
+    "context-window"
+  ],
+  "author": "Alex Greenshpun",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/alexgreensh/token-optimizer",
+    "directory": "opencode"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "opencode": {
+    "type": "plugin",
+    "hooks": [
+      "chat.message",
+      "tool.execute.before",
+      "tool.execute.after",
+      "experimental.session.compacting",
+      "experimental.compaction.autocontinue",
+      "experimental.chat.system.transform",
+      "event"
+    ]
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "^1.3.0",
+    "@opencode-ai/sdk": "^1.3.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.8",
+    "typescript": "^5.7.3"
+  },
+  "files": [
+    "dist",
+    "package.json",
+    "README.md"
+  ],
+  "engines": {
+    "bun": ">=1.1.0"
+  }
+}

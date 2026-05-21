@@ -3,10 +3,11 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/alexgreensh/token-optimizer/releases"><img src="https://img.shields.io/badge/version-5.6.13-green" alt="Version 5.6.13"></a>
+  <a href="https://github.com/alexgreensh/token-optimizer/releases"><img src="https://img.shields.io/badge/version-5.7.0-green" alt="Version 5.6.13"></a>
   <a href="https://github.com/alexgreensh/token-optimizer/releases"><img src="https://img.shields.io/github/release-date/alexgreensh/token-optimizer?label=last%20release&color=blue" alt="Last Release"></a>
   <a href="https://github.com/alexgreensh/token-optimizer"><img src="https://img.shields.io/badge/Claude_Code-Plugin-blueviolet" alt="Claude Code Plugin"></a>
   <a href="https://github.com/alexgreensh/token-optimizer/tree/main/openclaw"><img src="https://img.shields.io/badge/OpenClaw-v2.4.1-brightgreen" alt="OpenClaw v2.4.1"></a>
+  <a href="https://github.com/alexgreensh/token-optimizer/tree/main/opencode"><img src="https://img.shields.io/badge/OpenCode-v1.0.0-58a6ff" alt="OpenCode v1.0.0"></a>
   <a href="https://github.com/alexgreensh/token-optimizer/blob/main/docs/codex-beta.md"><img src="https://img.shields.io/badge/Codex-v0.1.0--beta-orange" alt="Codex v0.1.0-beta"></a>
 </p>
 <p align="center">
@@ -42,7 +43,7 @@ They compress command output, which covers 15-25% of your context on a good day.
 Token Optimizer covers all of it, keeps your work alive across compactions, measures whether the optimization actually helped, and gives you a <strong>live dashboard</strong> that shows every token, every dollar, and every turn, auto-updated after every session. Runs fully local. Zero context tokens used. Zero runtime dependencies.
 </p>
 <p align="center">
-Works on <strong>Claude Code</strong>, <strong>OpenClaw</strong>, and <strong>Codex</strong> (beta) today. Windsurf, Cursor, and more on the way.
+Works on <strong>Claude Code</strong>, <strong>OpenCode</strong>, <strong>OpenClaw</strong>, and <strong>Codex</strong> (beta) today. Windsurf, Cursor, and more on the way.
 </p>
 
 <p align="center">
@@ -93,7 +94,7 @@ git clone https://github.com/alexgreensh/token-optimizer.git ~/.claude/token-opt
 bash ~/.claude/token-optimizer/install.sh
 ```
 
-Works on Claude Code and [OpenClaw](#openclaw-plugin). Each platform has its own native plugin (Python for Claude Code, TypeScript for OpenClaw). No bridging, no shared runtime, zero cross-platform dependencies.
+Works on Claude Code, [OpenCode](#opencode), and [OpenClaw](#openclaw). Each platform has its own native plugin (Python for Claude Code, TypeScript for OpenCode and OpenClaw). No bridging, no shared runtime, zero cross-platform dependencies.
 
 </details>
 
@@ -120,6 +121,33 @@ Dashboard: `http://localhost:24843/token-optimizer` (separate port from Claude C
 Auto-updates on startup via `git ls-remote`. Manual: `codex plugin marketplace upgrade`.
 
 See [`docs/codex-beta.md`](docs/codex-beta.md) for the full feature parity table, hook profiles, and Codex model pricing.
+
+</details>
+
+<details>
+<summary><h3>OpenCode</h3></summary>
+
+Native TypeScript plugin for [OpenCode](https://github.com/anomalyco/opencode) with full Claude Code feature parity. 7-signal dual-score quality engine, smart compaction with mode-aware context injection, session continuity, quality nudges, loop detection, and a built-in dashboard.
+
+```bash
+opencode plugin add token-optimizer-opencode
+```
+
+Or add to `.opencode/opencode.jsonc`:
+
+```jsonc
+{
+  "plugin": ["token-optimizer-opencode"]
+}
+```
+
+Two custom tools are available inside OpenCode:
+- `token_status` for on-demand quality reports
+- `token_dashboard` to generate and open the visual dashboard
+
+Works with every model OpenCode supports: Anthropic, OpenAI, Google, DeepSeek, Qwen, Mistral, xAI, and local models. MRCR quality curves are calibrated per model family.
+
+See [`opencode/README.md`](opencode/README.md) for full docs, configuration options, and environment variable overrides.
 
 </details>
 
@@ -192,7 +220,7 @@ Token Optimizer handles both. And because it also checkpoints your session befor
 
 ### Fully local, zero dependencies, zero telemetry
 
-Pure Python stdlib on Claude Code and Codex. Pure Node stdlib on OpenClaw. Nothing to `pip install`, nothing to `npm install` at runtime, no analytics endpoint, no phone-home. Every measurement is a local SQLite write to a file you own under your runtime home, such as `~/.claude/_backups/token-optimizer/trends.db` or `~/.codex/_backups/token-optimizer/trends.db`. You can inspect it, export it, or delete it.
+Pure Python stdlib on Claude Code and Codex. TypeScript with zero runtime deps on OpenCode and OpenClaw. Nothing to `pip install`, no analytics endpoint, no phone-home. Every measurement is a local SQLite write to a file you own under your runtime home. You can inspect it, export it, or delete it.
 
 ### Zero context tokens consumed
 
@@ -254,7 +282,7 @@ No. All hooks are non-blocking with fail-open design. If a Token Optimizer scrip
 <details>
 <summary>📦 <strong>Does it have any runtime dependencies?</strong></summary>
 
-No. Pure Python stdlib on Claude Code and Codex. Pure Node stdlib on OpenClaw. Nothing to `pip install`, nothing to `npm install` at runtime. What you clone is everything it needs.
+No. Pure Python stdlib on Claude Code and Codex. TypeScript with zero runtime deps on OpenCode and OpenClaw. What you clone (or `opencode plugin add`) is everything it needs.
 </details>
 
 <details>

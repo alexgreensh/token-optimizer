@@ -4299,7 +4299,7 @@ var DB = (function() {
             // TypeError inside esc(f.label). Fall back to flipping the
             // single feature the user toggled if no v5_features came back.
             if (data.manage && data.manage.v5_features) {
-              if (resp.v5_features) {
+              if (resp.v5_features && Object.keys(resp.v5_features).length > 0) {
                 Object.keys(resp.v5_features).forEach(function(k) {
                   if (data.manage.v5_features[k] && typeof resp.v5_features[k] === 'object' && resp.v5_features[k] !== null) {
                     data.manage.v5_features[k].enabled = !!resp.v5_features[k].enabled;

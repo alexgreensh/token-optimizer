@@ -9684,34 +9684,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             action = "enable" if enabled else "disable"
             try:
                 result = subprocess.run(
-                    [sys.executable, {measure_py_literal}, "v5", action, name],
+                    [sys.executable, {measure_py_literal}, "v5", action, name, "--json"],
                     capture_output=True, text=True, timeout=10
                 )
             except (subprocess.TimeoutExpired, OSError) as e:
                 self._json_response(500, {{"ok": False, "msg": "toggle backend unavailable: " + str(e)}})
                 return
             if result.returncode == 0:
-                # Read config.json directly to return the fresh v5_features map
-                # so the dashboard UI updates without a page reload.
                 v5_features = {{}}
                 try:
-                    import json as _json
-                    cfg_path = os.path.expanduser("~/.claude/token-optimizer/config.json")
-                    if os.path.exists(cfg_path):
-                        with open(cfg_path, "r", encoding="utf-8") as _cf:
-                            cfg = _json.load(_cf)
-                        feature_keys = {{
-                            "quality_nudges": ("v5_quality_nudges", True),
-                            "loop_detection": ("v5_loop_detection", True),
-                            "delta_mode": ("v5_delta_mode", True),
-                            "structure_map_beta": ("v5_structure_map_beta", False),
-                            "bash_compress": ("v5_bash_compress", True),
-                        }}
-                        for short, (cfg_key, feat_default) in feature_keys.items():
-                            v5_features[short] = {{"enabled": bool(cfg.get(cfg_key, feat_default))}}
-                except (OSError, ValueError):
+                    parsed = json.loads(result.stdout)
+                    v5_features = parsed.get("v5_features", {{}})
+                except (ValueError, KeyError):
                     pass
-                self._json_response(200, {{"ok": True, "msg": result.stdout.strip(), "v5_features": v5_features}})
+                state = "ENABLED" if enabled else "DISABLED"
+                self._json_response(200, {{"ok": True, "msg": state + ": " + name, "v5_features": v5_features}})
             else:
                 self._json_response(500, {{"ok": False, "msg": result.stderr.strip()}})
             return
@@ -19434,15 +19421,25 @@ if __name__ == "__main__":
                 sys.exit(1)
             enabled = (sub == "enable")
             if _set_v5_feature(feature_name, enabled):
-                feat = V5_FEATURES[feature_name]
-                state = "ENABLED" if enabled else "DISABLED"
-                print(f"  {state}: {feat['label']}")
-                print(f"  Stored in: {CONFIG_PATH}")
-                if enabled and feat.get("risk") and feat["risk"] != "None.":
-                    print(f"\n  Note: {feat['risk']}")
-                print()
+                if output_json:
+                    status = _get_v5_feature_status()
+                    v5_map = {}
+                    for n, info in status.items():
+                        v5_map[n] = {"enabled": info["enabled"]}
+                    print(json.dumps({"ok": True, "v5_features": v5_map}))
+                else:
+                    feat = V5_FEATURES[feature_name]
+                    state = "ENABLED" if enabled else "DISABLED"
+                    print(f"  {state}: {feat['label']}")
+                    print(f"  Stored in: {CONFIG_PATH}")
+                    if enabled and feat.get("risk") and feat["risk"] != "None.":
+                        print(f"\n  Note: {feat['risk']}")
+                    print()
             else:
-                print(f"[Error] Failed to update {feature_name}")
+                if output_json:
+                    print(json.dumps({"ok": False}))
+                else:
+                    print(f"[Error] Failed to update {feature_name}")
                 sys.exit(1)
         elif sub == "welcome":
             # First-run welcome: show all features with full details

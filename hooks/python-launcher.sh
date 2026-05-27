@@ -71,7 +71,16 @@ if pyl=$(find_interpreter "py"); then
     exec "$pyl" -3 "$@"
 fi
 
+# Direct probe: hook environments often have a stripped PATH that excludes
+# the user's Python. Check known locations directly as a fallback.
+for _direct in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3 \
+               /home/linuxbrew/.linuxbrew/bin/python3; do
+    if [ -x "$_direct" ] && [ -s "$_direct" ]; then
+        exec "$_direct" "$@"
+    fi
+done
+
 echo "token-optimizer: no usable Python 3 interpreter found" >&2
-echo "  tried: python3, python, py -3" >&2
+echo "  tried: python3, python, py -3, direct paths" >&2
 echo "  on Windows: install Python from https://python.org/ and restart Claude Code" >&2
 exit 127

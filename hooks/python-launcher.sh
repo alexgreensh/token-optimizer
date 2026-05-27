@@ -24,6 +24,19 @@ _is_safe_prefix() {
             "$prefix"/*) return 0 ;;
         esac
     done
+    # Windows install locations (git-bash/MSYS path form, e.g. /c/...). These map
+    # to admin- or user-owned Python install roots, not arbitrary PATH dirs, so
+    # they preserve the anti-PATH-hijack intent of the Unix prefix list above.
+    # WindowsApps is still probed with --version downstream to reject alias stubs.
+    # A case statement is used (not $_SAFE_PREFIXES) because these roots contain
+    # spaces (Program Files), which would break the space-split prefix loop.
+    case "$binpath" in
+        /[a-zA-Z]/Program\ Files/Python*) return 0 ;;
+        /[a-zA-Z]/Program\ Files\ \(x86\)/Python*) return 0 ;;
+        /[a-zA-Z]/Python3*) return 0 ;;
+        */AppData/Local/Programs/Python/*) return 0 ;;
+        */AppData/Local/Microsoft/WindowsApps/*) return 0 ;;
+    esac
     return 1
 }
 

@@ -6,7 +6,7 @@
 #   bash ~/.claude/token-optimizer/install.sh
 #
 # What it does:
-#   1. Checks prerequisites (Python 3.8+, git, ~/.claude/)
+#   1. Checks prerequisites (Python 3.9+, git, ~/.claude/)
 #   2. Clones (or updates) the repo into ~/.claude/token-optimizer
 #   3. Symlinks the skill into ~/.claude/skills/token-optimizer
 #   4. Prints success + usage instructions
@@ -44,17 +44,17 @@ fail()  { printf "${RED}x${NC} %s\n" "$1"; exit 1; }
 
 info "Checking prerequisites..."
 
-# Python 3.8+
+# Python 3.9+
 if ! command -v python3 &>/dev/null; then
-    fail "python3 not found. Install Python 3.8+ first."
+    fail "python3 not found. Install Python 3.9+ first."
 fi
 
 PY_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null)
 PY_MAJOR=$(echo "$PY_VERSION" | cut -d. -f1)
 PY_MINOR=$(echo "$PY_VERSION" | cut -d. -f2)
 
-if [ "$PY_MAJOR" -lt 3 ] 2>/dev/null || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 8 ]; } 2>/dev/null; then
-    fail "Python ${PY_VERSION} found, but 3.8+ is required."
+if [ "$PY_MAJOR" -lt 3 ] 2>/dev/null || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 9 ]; } 2>/dev/null; then
+    fail "Python ${PY_VERSION} found, but 3.9+ is required."
 fi
 info "Python ${PY_VERSION} OK"
 

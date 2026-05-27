@@ -2166,11 +2166,11 @@ def doctor(as_json=False):
     # 2. Python version
     total += 1
     py_ver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
-    if sys.version_info >= (3, 8):
-        checks.append(("OK", f"Python {py_ver}", ">= 3.8"))
+    if sys.version_info >= (3, 9):
+        checks.append(("OK", f"Python {py_ver}", ">= 3.9"))
         score += 1
     else:
-        checks.append(("!!", f"Python {py_ver}", "requires >= 3.8"))
+        checks.append(("!!", f"Python {py_ver}", "requires >= 3.9"))
 
     # 3. Context window detection
     total += 1

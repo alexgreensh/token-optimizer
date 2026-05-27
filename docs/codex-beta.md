@@ -176,7 +176,7 @@ Expected beta readiness is `codex-doctor` with `0 FAIL`.
 
 ## Requirements
 
-- Python 3.8+
+- Python 3.9+
 - Codex CLI or Codex Desktop
 - macOS, Linux, or Windows
 - Zero runtime dependencies (pure Python stdlib)

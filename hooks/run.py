@@ -8,7 +8,7 @@ Python 3 interpreter on macOS, Linux, and Windows:
 
 The launcher handles Windows-specific gotchas (Program Files spaced paths,
 Microsoft Store zero-byte stubs in WindowsApps, py launcher fallback) so
-this file can assume it's running under a real Python 3.8+.
+this file can assume it's running under a real Python 3.9+.
 
 This dispatcher resolves the target script under CLAUDE_PLUGIN_ROOT,
 checks it exists, and runs it with the same interpreter (sys.executable).

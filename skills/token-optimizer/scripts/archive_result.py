@@ -217,13 +217,6 @@ def archive_result(quiet: bool = False) -> None:
 
     NO _log_savings_event: SessionEnd `collect` derives savings from manifest.jsonl.
     """
-    # Best-effort TTL cleanup: run before any new write so the archive never
-    # grows without bound. Errors are swallowed — cleanup failure is not fatal.
-    try:
-        cleanup_old_archives(max_age_hours=48)
-    except Exception:
-        pass
-
     hook_input = read_stdin_hook_input(_STDIN_MAX_BYTES)
     if not hook_input:
         return
@@ -260,6 +253,13 @@ def archive_result(quiet: bool = False) -> None:
 
     char_count = _ARCHIVE_MAX_SIZE if truncated else original_char_count
     token_est = int(char_count / CHARS_PER_TOKEN)
+
+    # Best-effort TTL cleanup: runs only when we're about to write (after
+    # early-exit checks), not on every PostToolUse invocation.
+    try:
+        cleanup_old_archives(max_age_hours=48)
+    except Exception:
+        pass
 
     meta = {
         "tool_name": tool_name,

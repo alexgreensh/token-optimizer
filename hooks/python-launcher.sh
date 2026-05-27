@@ -18,6 +18,7 @@ set -eu
 _SAFE_PREFIXES="/usr/bin /usr/local/bin /opt/homebrew/bin /opt/homebrew/opt /home/linuxbrew/.linuxbrew/bin"
 
 _is_safe_prefix() {
+    local IFS=$' \t\n'
     local binpath="$1" prefix
     for prefix in $_SAFE_PREFIXES; do
         case "$binpath" in

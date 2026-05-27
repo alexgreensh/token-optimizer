@@ -867,6 +867,11 @@ class OpenCodeAdapter(BaseAdapter):
         oc_dir = HOME / ".local" / "share" / "opencode"
         if oc_dir.exists():
             return True, 0.8, "Found ~/.local/share/opencode/"
+        appdata = os.environ.get("APPDATA", "")
+        if appdata:
+            win_dir = Path(appdata) / "opencode"
+            if win_dir.exists():
+                return True, 0.8, f"Found {win_dir}"
         return False, 0.0, "No OpenCode data directory found"
 
 

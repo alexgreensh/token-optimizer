@@ -25,6 +25,16 @@ _is_safe_prefix() {
             "$prefix"/*) return 0 ;;
         esac
     done
+    # Windows install locations (git-bash/MSYS path form, e.g. /c/...).
+    # Drive-letter-anchored to preserve the anti-PATH-hijack intent.
+    # Version-number suffixes block directory-name spoofing (e.g. Python3-evil).
+    case "$binpath" in
+        /[a-zA-Z]/Program\ Files/Python[23]*)                          return 0 ;;
+        /[a-zA-Z]/Program\ Files\ \(x86\)/Python[23]*)                 return 0 ;;
+        /[a-zA-Z]/Python3[0-9]*)                                       return 0 ;;
+        /[a-zA-Z]/Users/*/AppData/Local/Programs/Python/*)              return 0 ;;
+        /[a-zA-Z]/Users/*/AppData/Local/Microsoft/WindowsApps/*)        return 0 ;;
+    esac
     return 1
 }
 

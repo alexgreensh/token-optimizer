@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import hashlib
+import shutil
 import time
 
 from bash_compress import _TOKEN_PATTERNS
@@ -76,8 +77,12 @@ def _redact_credentials(text: str) -> str:
 def cleanup_old_archives(max_age_hours: int = 48) -> int:
     """Delete tool-archive session directories older than max_age_hours.
 
-    Best-effort: individual OSError is swallowed so a locked or missing
-    directory never aborts the hook. Returns the count of removed dirs.
+    Uses shutil.rmtree so nested subdirectories are reclaimed too. The
+    prior loop only handled flat files and would orphan any session dir
+    that contained a subdirectory. Best-effort: individual failures are
+    swallowed so a locked or missing directory never aborts the hook,
+    but a partial-failure leaves a stderr breadcrumb so silent regressions
+    are visible in hook logs. Returns the count of fully removed dirs.
     """
     archive_root = SNAPSHOT_DIR / "tool-archive"
     if not archive_root.exists():
@@ -89,13 +94,13 @@ def cleanup_old_archives(max_age_hours: int = 48) -> int:
             continue
         try:
             if session_dir.stat().st_mtime < cutoff:
-                for entry in session_dir.iterdir():
-                    try:
-                        entry.unlink()
-                    except OSError:
-                        pass
-                session_dir.rmdir()
-                removed += 1
+                shutil.rmtree(session_dir, ignore_errors=True)
+                if session_dir.exists():
+                    sys.stderr.write(
+                        f"token-optimizer: archive cleanup left {session_dir.name} in place\n"
+                    )
+                else:
+                    removed += 1
         except OSError:
             pass
     return removed

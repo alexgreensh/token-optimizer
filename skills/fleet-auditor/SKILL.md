@@ -13,29 +13,13 @@ Detects installed agent systems, collects token usage data, identifies waste pat
 
 ## Phase 0: Initialize
 
-1. **Resolve runtime and fleet.py path** (works for both skill and plugin installs):
+1. **Resolve runtime and fleet.py path** (shared resolver):
 ```bash
-RUNTIME="${TOKEN_OPTIMIZER_RUNTIME:-}"
-if [ -z "$RUNTIME" ]; then
-  if [ -n "$CLAUDE_PLUGIN_ROOT" ] || [ -n "$CLAUDE_PLUGIN_DATA" ]; then
-    RUNTIME="claude"
-  elif [ -n "$CODEX_HOME" ] || [ -d "$HOME/.codex" ]; then
-    RUNTIME="codex"
-  else
-    RUNTIME="claude"
-  fi
-fi
-
-FLEET_PY=""
-for f in "$HOME/.codex/skills/fleet-auditor/scripts/fleet.py" \
-         "$HOME/.codex/plugins/cache"/*/token-optimizer/*/skills/fleet-auditor/scripts/fleet.py \
-         "$HOME/.claude/skills/fleet-auditor/scripts/fleet.py" \
-         "$HOME/.claude/plugins/cache"/*/token-optimizer/*/skills/fleet-auditor/scripts/fleet.py; do
-  [ -f "$f" ] && FLEET_PY="$f" && break
-done
-[ -z "$FLEET_PY" ] && { echo "[Error] fleet.py not found. Is Fleet Auditor installed?"; exit 1; }
-echo "Using: $FLEET_PY"
-export TOKEN_OPTIMIZER_RUNTIME="$RUNTIME"
+_r="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/token-optimizer}/hooks/resolve.sh"
+[ -f "$_r" ] || _r=$(ls "$HOME/.codex/plugins/cache"/*/token-optimizer/*/hooks/resolve.sh "$HOME/.claude/plugins/cache"/*/token-optimizer/*/hooks/resolve.sh "$PWD/hooks/resolve.sh" 2>/dev/null | head -1)
+[ -f "$_r" ] || { echo "[Error] Token Optimizer resolver not found. Is Token Optimizer installed?" >&2; exit 1; }
+_o=$(bash "$_r" --export --need fleet) || exit 1
+eval "$_o"
 ```
 Use `$FLEET_PY` for all subsequent fleet.py calls.
 

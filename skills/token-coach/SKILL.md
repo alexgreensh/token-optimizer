@@ -13,29 +13,13 @@ Interactive coaching for Claude Code or Codex architecture decisions. Analyzes y
 
 ## Phase 0: Initialize
 
-1. **Resolve runtime and measure.py path** (same as token-optimizer):
+1. **Resolve runtime, measure.py, and coach dir** (shared resolver):
 ```bash
-RUNTIME="${TOKEN_OPTIMIZER_RUNTIME:-}"
-if [ -z "$RUNTIME" ]; then
-  if [ -n "$CLAUDE_PLUGIN_ROOT" ] || [ -n "$CLAUDE_PLUGIN_DATA" ]; then
-    RUNTIME="claude"
-  elif [ -n "$CODEX_HOME" ] || [ -d "$HOME/.codex" ]; then
-    RUNTIME="codex"
-  else
-    RUNTIME="claude"
-  fi
-fi
-
-MEASURE_PY=""
-for f in "$HOME/.codex/skills/token-optimizer/scripts/measure.py" \
-         "$HOME/.codex/plugins/cache"/*/token-optimizer/*/skills/token-optimizer/scripts/measure.py \
-         "$HOME/.claude/skills/token-optimizer/scripts/measure.py" \
-         "$HOME/.claude/plugins/cache"/*/token-optimizer/*/skills/token-optimizer/scripts/measure.py \
-         "$PWD/skills/token-optimizer/scripts/measure.py"; do
-  [ -f "$f" ] && MEASURE_PY="$f" && break
-done
-[ -z "$MEASURE_PY" ] || [ ! -f "$MEASURE_PY" ] && { echo "[Error] measure.py not found. Is Token Optimizer installed?"; exit 1; }
-export TOKEN_OPTIMIZER_RUNTIME="$RUNTIME"
+_r="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/token-optimizer}/hooks/resolve.sh"
+[ -f "$_r" ] || _r=$(ls "$HOME/.codex/plugins/cache"/*/token-optimizer/*/hooks/resolve.sh "$HOME/.claude/plugins/cache"/*/token-optimizer/*/hooks/resolve.sh "$PWD/hooks/resolve.sh" 2>/dev/null | head -1)
+[ -f "$_r" ] || { echo "[Error] Token Optimizer resolver not found. Is Token Optimizer installed?" >&2; exit 1; }
+_o=$(bash "$_r" --export --need measure,coach-dir) || exit 1
+eval "$_o"
 ```
 
 2. **Collect coaching data**:
@@ -52,7 +36,7 @@ If available, parse the quality score and issues. This enriches coaching with se
 
 4. **For Codex, check setup readiness**:
 ```bash
-if [ "$RUNTIME" = "codex" ]; then
+if [ "$TOKEN_OPTIMIZER_RUNTIME" = "codex" ]; then
   python3 "$MEASURE_PY" codex-doctor --project "$PWD" --json 2>/dev/null
 fi
 ```
@@ -72,23 +56,7 @@ Wait for the answer. Don't dump info before they choose.
 
 ## Phase 2: Load Context (based on intake)
 
-Resolve the token-coach skill directory:
-```bash
-COACH_DIR=""
-if [ -d "$HOME/.codex/skills/token-coach" ]; then
-  COACH_DIR="$HOME/.codex/skills/token-coach"
-elif [ -d "$HOME/.codex/skills/token-optimizer/../token-coach" ]; then
-  COACH_DIR="$HOME/.codex/skills/token-optimizer/../token-coach"
-elif [ -d "$HOME/.claude/skills/token-coach" ]; then
-  COACH_DIR="$HOME/.claude/skills/token-coach"
-elif [ -d "$HOME/.claude/skills/token-optimizer/../token-coach" ]; then
-  COACH_DIR="$HOME/.claude/skills/token-optimizer/../token-coach"
-else
-  COACH_DIR="$(find "$HOME/.codex/plugins/cache" "$HOME/.claude/plugins/cache" -path "*/token-coach" -type d 2>/dev/null | head -1)"
-fi
-```
-
-Load references based on intake choice:
+`$COACH_DIR` was resolved in Phase 0. Load references based on intake choice:
 - **Option a or b**: Read `$COACH_DIR/references/coach-patterns.md` + `$COACH_DIR/references/quick-reference.md`
 - **Option c**: Read `$COACH_DIR/references/agentic-systems.md` + `$COACH_DIR/references/quick-reference.md`
 - **Option d**: Read `$COACH_DIR/references/quick-reference.md` only (fast path)

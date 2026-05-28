@@ -9,28 +9,13 @@ Opens an up-to-date dashboard showing your context usage trends, quality scores,
 
 ## Instructions
 
-1. **Resolve runtime and measure.py path**:
+1. **Resolve runtime and measure.py path** (shared resolver):
 ```bash
-RUNTIME="${TOKEN_OPTIMIZER_RUNTIME:-}"
-if [ -z "$RUNTIME" ]; then
-  if [ -n "$CLAUDE_PLUGIN_ROOT" ] || [ -n "$CLAUDE_PLUGIN_DATA" ]; then
-    RUNTIME="claude"
-  elif [ -n "$CODEX_HOME" ] || [ -d "$HOME/.codex" ]; then
-    RUNTIME="codex"
-  else
-    RUNTIME="claude"
-  fi
-fi
-
-MEASURE_PY=""
-for f in "$HOME/.codex/skills/token-optimizer/scripts/measure.py" \
-         "$HOME/.codex/plugins/cache"/*/token-optimizer/*/skills/token-optimizer/scripts/measure.py \
-         "$HOME/.claude/skills/token-optimizer/scripts/measure.py" \
-         "$HOME/.claude/plugins/cache"/*/token-optimizer/*/skills/token-optimizer/scripts/measure.py; do
-  [ -f "$f" ] && MEASURE_PY="$f" && break
-done
-[ -z "$MEASURE_PY" ] && { echo "[Error] measure.py not found. Is Token Optimizer installed?"; exit 1; }
-export TOKEN_OPTIMIZER_RUNTIME="$RUNTIME"
+_r="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/token-optimizer}/hooks/resolve.sh"
+[ -f "$_r" ] || _r=$(ls "$HOME/.codex/plugins/cache"/*/token-optimizer/*/hooks/resolve.sh "$HOME/.claude/plugins/cache"/*/token-optimizer/*/hooks/resolve.sh "$PWD/hooks/resolve.sh" 2>/dev/null | head -1)
+[ -f "$_r" ] || { echo "[Error] Token Optimizer resolver not found. Is Token Optimizer installed?" >&2; exit 1; }
+_o=$(bash "$_r" --export --need measure) || exit 1
+eval "$_o"
 ```
 
 2. **Collect and open**:

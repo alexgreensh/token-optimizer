@@ -22,12 +22,11 @@ If `TOKEN_OPTIMIZER_RUNTIME=codex` or Codex environment is detected, read `refer
 
 Resolve measure.py path:
 ```bash
-MEASURE_PY=""
-for f in "$HOME/.claude/skills/token-optimizer/scripts/measure.py" \
-         "$HOME/.claude/plugins/cache"/*/token-optimizer/*/skills/token-optimizer/scripts/measure.py; do
-  [ -f "$f" ] && MEASURE_PY="$f" && break
-done
-[ -z "$MEASURE_PY" ] && { echo "[Error] measure.py not found."; exit 1; }
+_r="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/token-optimizer}/hooks/resolve.sh"
+[ -f "$_r" ] || _r=$(ls "$HOME/.codex/plugins/cache"/*/token-optimizer/*/hooks/resolve.sh "$HOME/.claude/plugins/cache"/*/token-optimizer/*/hooks/resolve.sh "$PWD/hooks/resolve.sh" 2>/dev/null | head -1)
+[ -f "$_r" ] || { echo "[Error] Token Optimizer resolver not found. Is Token Optimizer installed?" >&2; exit 1; }
+_o=$(bash "$_r" --export --need measure) || exit 1
+eval "$_o"
 ```
 
 Read `references/phase0-setup.md` for the full setup sequence: context window detection, pre-check, backup, coordination folder, hook checks, daemon setup, and smart compaction.

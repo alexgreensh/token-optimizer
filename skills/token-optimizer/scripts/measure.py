@@ -92,8 +92,11 @@ from hook_io import read_stdin_hook_input as _read_stdin_hook_input_shared
 from plugin_env import resolve_plugin_data_dir
 from runtime_env import claude_home, detect_runtime, runtime_home, runtime_name_for_humans
 
-import codex_io
-import codex_session
+# Codex adapters (codex_io, codex_session) are imported lazily at their call
+# sites rather than here. They are only needed when the active runtime is Codex
+# (or a Codex session path is being inspected), so the common Claude Code path
+# avoids paying their import cost. This mirrors the lazy pattern used for the
+# other codex_* modules in the CLI dispatch (codex_doctor, codex_install, ...).
 
 try:
     import fcntl
@@ -124,6 +127,7 @@ DASHBOARD_PATH = SNAPSHOT_DIR / "dashboard.html"
 
 def _use_codex_session_adapter(filepath=None):
     """True when session JSONL should be parsed with the Codex adapter."""
+    import codex_session
     return detect_runtime() == "codex" or (filepath is not None and codex_session.is_codex_session_path(filepath))
 
 # Tokens per skill frontmatter (loaded at startup)
@@ -1627,6 +1631,7 @@ def _codex_config_model() -> str | None:
 
 def _latest_codex_logged_context_window() -> tuple[int | None, str | None]:
     try:
+        import codex_session
         files = codex_session.find_all_jsonl_files(days=30)
     except Exception:
         return None, None
@@ -3926,6 +3931,7 @@ def _codex_config_lock():
 def _write_codex_config(text: str) -> None:
     path = _safe_codex_config_path()
     with _codex_config_lock():
+        import codex_io
         codex_io.atomic_write(path, text)
 
 
@@ -6000,6 +6006,7 @@ def generate_coach_block(components=None, trends=None):
 def _find_all_jsonl_files(days=30):
     """Find all JSONL session files across all projects within the given day window."""
     if _use_codex_session_adapter():
+        import codex_session
         return codex_session.find_all_jsonl_files(days)
 
     projects_base = CLAUDE_DIR / "projects"
@@ -6302,6 +6309,7 @@ def _parse_session_jsonl(filepath):
     is empty or unparseable.
     """
     if _use_codex_session_adapter(filepath):
+        import codex_session
         return codex_session.parse_session_jsonl(filepath)
 
     skills_used = {}
@@ -6544,6 +6552,7 @@ def parse_session_turns(filepath):
     Returns empty list if file is empty/unparseable.
     """
     if _use_codex_session_adapter(filepath):
+        import codex_session
         turns = codex_session.parse_session_turns(filepath)
         for turn in turns:
             cost = _get_model_cost(
@@ -11624,6 +11633,7 @@ def _parse_jsonl_for_quality(filepath):
     the file is empty or unparseable.
     """
     if _use_codex_session_adapter(filepath):
+        import codex_session
         return codex_session.parse_jsonl_for_quality(filepath)
 
     reads = []       # (index, path, timestamp)
@@ -12275,6 +12285,7 @@ def _find_current_session_jsonl():
     recently modified JSONL is almost always the currently active session.
     """
     if _use_codex_session_adapter():
+        import codex_session
         return codex_session.find_current_session_jsonl()
 
     projects_base = CLAUDE_DIR / "projects"
@@ -12296,6 +12307,7 @@ def _find_session_jsonl_by_id(session_id):
     if safe_id == "unknown":
         return None
     if _use_codex_session_adapter():
+        import codex_session
         return codex_session.find_session_jsonl_by_id(safe_id)
 
     projects_base = CLAUDE_DIR / "projects"
@@ -14212,6 +14224,7 @@ def _codex_backfill_tool_archive(filepath=None, session_id=None, max_outputs=20)
     archived = 0
     archived_tokens = 0
     try:
+        import codex_session
         outputs = codex_session.iter_tool_outputs(
             path,
             min_chars=_ARCHIVE_THRESHOLD,
@@ -14507,6 +14520,7 @@ def _extract_session_state(filepath, tail_lines=500):
     Returns a dict, or None if file is empty/unreadable.
     """
     if _use_codex_session_adapter(filepath):
+        import codex_session
         return codex_session.extract_session_state(filepath, tail_lines=tail_lines, max_files=_CHECKPOINT_MAX_FILES)
 
     question_re = re.compile(r'\?|TODO|FIXME|HACK|XXX', re.IGNORECASE)
@@ -15241,6 +15255,7 @@ def checkpoint_trigger(milestone=None, session_id=None, transcript_path=None, qu
         )
 
     filepath = None
+    import codex_session
     if transcript_path and codex_session.is_codex_session_path(transcript_path):
         candidate = Path(transcript_path)
         if candidate.exists():

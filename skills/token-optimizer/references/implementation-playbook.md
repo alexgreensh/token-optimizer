@@ -215,21 +215,26 @@ Audit settings.json env block and help user tune token-relevant variables.
 
 Flag verbose skill frontmatter and generate tighter descriptions.
 
+Claude Code truncates combined `description` + `when_to_use` text at 1,536 characters (since v2.1.105). Descriptions over this limit waste the overflow tokens. Descriptions under 1,536 are NOT truncated but shorter is still more efficient since they load every session.
+
 **Steps**:
-1. Scan all skill SKILL.md files in `~/.claude/skills/`
-2. Extract frontmatter `description:` field from each
-3. Flag descriptions >200 characters (~50 tokens, twice the typical ~100 token budget)
-4. Generate tighter alternatives:
+1. Scan all skill SKILL.md files in `~/.claude/skills/` and plugin-bundled skills
+2. Extract frontmatter `description:` and `when_to_use:` fields from each
+3. Flag descriptions with combined length >1,536 chars as TRUNCATED (correctness bug)
+4. Flag descriptions >200 characters as verbose (efficiency opportunity, not a bug)
+5. Generate tighter alternatives for verbose descriptions:
    ```
-   Verbose Descriptions:
+   Truncated Descriptions (CRITICAL):
+   - my-mega-skill (1,842 chars): Combined description + when_to_use exceeds 1,536 limit
+     Action: Split content between description (core purpose) and SKILL.md body (detailed usage)
+
+   Verbose Descriptions (efficiency):
    - morning (312 chars): "Your comprehensive daily briefing that covers email, calendar..."
      Suggested: "Daily briefing: email, calendar, tasks, partner updates"
-   - code-review (285 chars): "Performs an in-depth code review analyzing..."
-     Suggested: "Code review with style, security, and performance checks"
    ```
-5. Apply approved changes to SKILL.md frontmatter (backup first)
+6. Apply approved changes to SKILL.md frontmatter (backup first)
 
-**Note**: Only modify the `description:` field in frontmatter. Never touch skill body content.
+**Note**: Only modify `description:` and `when_to_use:` fields in frontmatter. Never touch skill body content.
 
 ---
 

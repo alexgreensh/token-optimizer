@@ -102,6 +102,7 @@ except ImportError:
     _HAS_FCNTL = False  # Windows: no advisory locking
 
 CHARS_PER_TOKEN = 4.0
+_SKILL_DESC_TRUNCATION_LIMIT = 1536
 
 HOME = Path.home()
 RUNTIME_DIR = runtime_home()
@@ -759,10 +760,13 @@ def _check_settings_env(settings_path):
 
 
 def _get_frontmatter_description_length(filepath):
-    """Get the character length of the description field in YAML frontmatter."""
+    """Get the combined character length of description + when_to_use in YAML frontmatter.
+
+    Claude Code truncates the combined text at 1,536 characters in the skill listing.
+    """
     try:
         with open(filepath, "r", encoding="utf-8", errors="replace") as f:
-            content = f.read(4096)
+            content = f.read(8192)
         if not content.startswith("---"):
             return 0
         end = content.find("---", 3)
@@ -770,29 +774,30 @@ def _get_frontmatter_description_length(filepath):
             return 0
         frontmatter = content[3:end]
         lines = frontmatter.split("\n")
-        desc_text = ""
-        in_desc = False
-        for line in lines:
-            if line.startswith("description:"):
-                value = line[len("description:"):].strip()
-                if value in ("|", ">", "|+", "|-", ">+", ">-"):
-                    # Multi-line block scalar
-                    in_desc = True
-                    continue
-                # Single-line value (possibly quoted)
-                if value.startswith('"') and value.endswith('"'):
-                    desc_text = value[1:-1]
-                elif value.startswith("'") and value.endswith("'"):
-                    desc_text = value[1:-1]
-                else:
-                    desc_text = value
-                break
-            elif in_desc:
-                if line and (line[0] == " " or line[0] == "\t"):
-                    desc_text += line.strip() + " "
-                else:
+        total_len = 0
+        for target_field in ("description:", "when_to_use:"):
+            field_text = ""
+            in_field = False
+            for line in lines:
+                if line.startswith(target_field):
+                    value = line[len(target_field):].strip()
+                    if value in ("|", ">", "|+", "|-", ">+", ">-"):
+                        in_field = True
+                        continue
+                    if value.startswith('"') and value.endswith('"'):
+                        field_text = value[1:-1]
+                    elif value.startswith("'") and value.endswith("'"):
+                        field_text = value[1:-1]
+                    else:
+                        field_text = value
                     break
-        return len(desc_text.strip())
+                elif in_field:
+                    if line and (line[0] == " " or line[0] == "\t"):
+                        field_text += line.strip() + " "
+                    else:
+                        break
+            total_len += len(field_text.strip())
+        return total_len
     except (FileNotFoundError, PermissionError, OSError):
         return 0
 
@@ -1030,10 +1035,17 @@ def measure_components():
                 fm_tokens = estimate_tokens_from_frontmatter(skill_md)
                 skill_tokens += fm_tokens
                 desc_len = _get_frontmatter_description_length(skill_md)
-                if desc_len > 200:
+                if desc_len > _SKILL_DESC_TRUNCATION_LIMIT:
                     verbose_skills.append({
                         "name": item.name,
                         "description_chars": desc_len,
+                        "truncated": True,
+                    })
+                elif desc_len > 200:
+                    verbose_skills.append({
+                        "name": item.name,
+                        "description_chars": desc_len,
+                        "truncated": False,
                     })
                 # Collect per-skill detail for dashboard
                 detail = {
@@ -1330,7 +1342,6 @@ def measure_components():
 
     # Skill frontmatter quality (collected during skills scan above)
     components["skill_frontmatter_quality"] = {
-        "verbose_count": len(verbose_skills),
         "verbose_skills": verbose_skills,
     }
 
@@ -1455,16 +1466,25 @@ def _measure_codex_components():
     skill_inventory = _collect_codex_skill_inventory(cfg, project=cwd.resolve(strict=False))
     user_skills = [item for item in skill_inventory["active"] if item.get("source") != "plugin"]
     plugin_skills = [item for item in skill_inventory["active"] if item.get("source") == "plugin"]
-    verbose_skills = [
-        {
-            "name": item["name"],
-            "description_chars": len(item.get("description", "")),
-            "tokens": item.get("tokens", 0),
-            "path": item.get("path", ""),
-        }
-        for item in skill_inventory["active"]
-        if len(item.get("description", "")) > 120
-    ]
+    verbose_skills = []
+    for item in skill_inventory["active"]:
+        desc_len = len(item.get("description", ""))
+        if desc_len > _SKILL_DESC_TRUNCATION_LIMIT:
+            verbose_skills.append({
+                "name": item["name"],
+                "description_chars": desc_len,
+                "tokens": item.get("tokens", 0),
+                "path": item.get("path", ""),
+                "truncated": True,
+            })
+        elif desc_len > 120:
+            verbose_skills.append({
+                "name": item["name"],
+                "description_chars": desc_len,
+                "tokens": item.get("tokens", 0),
+                "path": item.get("path", ""),
+                "truncated": False,
+            })
     components["skills"] = {
         "count": len(user_skills),
         "tokens": sum(int(item.get("tokens", 0)) for item in user_skills),
@@ -1530,7 +1550,7 @@ def _measure_codex_components():
         "tokens": codex_config_tokens,
         "files": codex_config_files,
     }
-    components["skill_frontmatter_quality"] = {"verbose_count": len(verbose_skills), "verbose_skills": verbose_skills}
+    components["skill_frontmatter_quality"] = {"verbose_skills": verbose_skills}
     components["core_system"] = {
         "tokens": 12900,
         "note": "Codex base instructions and built-in tools. Fixed overhead, not user-configurable.",
@@ -1725,8 +1745,8 @@ def detect_context_window():
         if "haiku" in model:
             reason = f"model: {model} (Haiku = 200K)"
             if "claude-3-haiku" in model or "3-haiku" in model:
-                reason += " [WARNING: retires April 19, 2026. Migrate to Haiku 4.5]"
-                print(f"[Token Optimizer] WARNING: {model} retires April 19, 2026. Migrate to claude-haiku-4-5.", file=sys.stderr)
+                reason += " [WARNING: Claude 3 Haiku retired April 2026. Migrate to claude-haiku-4-5-20251001]"
+                print(f"[Token Optimizer] WARNING: {model} was retired April 2026. Migrate to claude-haiku-4-5-20251001.", file=sys.stderr)
             return remember((200_000, reason))
         if _is_1m_model(model):
             return remember((1_000_000, f"model: {model} (1M)"))
@@ -1742,8 +1762,8 @@ def detect_context_window():
                     if "haiku" in m:
                         reason = f"{cfg_name.split('.')[0]}: {m} (Haiku = 200K)"
                         if "claude-3-haiku" in m or "3-haiku" in m:
-                            reason += " [WARNING: retires April 19, 2026. Migrate to Haiku 4.5]"
-                            print(f"[Token Optimizer] WARNING: {m} retires April 19, 2026. Migrate to claude-haiku-4-5.", file=sys.stderr)
+                            reason += " [WARNING: Claude 3 Haiku retired April 2026. Migrate to claude-haiku-4-5-20251001]"
+                            print(f"[Token Optimizer] WARNING: {m} was retired April 2026. Migrate to claude-haiku-4-5-20251001.", file=sys.stderr)
                         return remember((200_000, reason))
                     if _is_1m_model(m):
                         return remember((1_000_000, f"{cfg_name.split('.')[0]}: {m} (1M)"))
@@ -2841,10 +2861,15 @@ def print_snapshot_summary(snapshot):
 
     # Verbose skill descriptions
     quality = c.get("skill_frontmatter_quality", {})
-    verbose_count = quality.get("verbose_count", 0)
-    if verbose_count > 0:
-        names = [s["name"] for s in quality.get("verbose_skills", [])]
-        print(f"  Verbose skill descriptions (>120 chars): {verbose_count} ({', '.join(names[:5])}{'...' if verbose_count > 5 else ''})")
+    all_verbose = quality.get("verbose_skills", [])
+    truncated_descs = [s for s in all_verbose if s.get("truncated")]
+    verbose_descs = [s for s in all_verbose if not s.get("truncated")]
+    if truncated_descs:
+        names = [s["name"] for s in truncated_descs]
+        print(f"  TRUNCATED skill descriptions (>1,536 chars): {len(truncated_descs)} ({', '.join(names[:5])}{'...' if len(truncated_descs) > 5 else ''})")
+    if verbose_descs:
+        names = [s["name"] for s in verbose_descs]
+        print(f"  Verbose skill descriptions (>200 chars): {len(verbose_descs)} ({', '.join(names[:5])}{'...' if len(verbose_descs) > 5 else ''})")
 
     # Calibration gap
     cal = snapshot.get("calibration", {})
@@ -4879,7 +4904,16 @@ def _generate_codex_auto_recommendations(components, trends=None, days=30):
             "Start with plugin bundles outside your daily work; they are reversible."
         )
     verbose = components.get("skill_frontmatter_quality", {}).get("verbose_skills", [])
-    very_verbose = [s for s in verbose if s.get("description_chars", 0) > 200]
+    codex_truncated = [s for s in verbose if s.get("truncated")]
+    very_verbose = [s for s in verbose if not s.get("truncated")]
+    if codex_truncated:
+        names = ", ".join(s["name"] for s in codex_truncated[:8])
+        quick.append(
+            f"**{len(codex_truncated)} Codex skill descriptions exceed 1,536 chars (truncated)**: "
+            f"{names}{'...' if len(codex_truncated) > 8 else ''}. "
+            "The overflow loads every session but is silently cut from the skill listing. "
+            "Move detailed usage instructions into the SKILL.md body."
+        )
     if very_verbose:
         names = ", ".join(s["name"] for s in very_verbose[:8])
         quick.append(
@@ -5111,13 +5145,25 @@ def generate_auto_recommendations(components, trends=None, days=30):
     # --- Rule 5: Verbose skill descriptions ---
     quality = components.get("skill_frontmatter_quality", {})
     verbose = quality.get("verbose_skills", [])
-    very_verbose = [s for s in verbose if s.get("description_chars", 0) > 200]
+    truncated = [s for s in verbose if s.get("truncated")]
+    very_verbose = [s for s in verbose if not s.get("truncated")]
     moderate_verbose = [s for s in verbose if 120 < s.get("description_chars", 0) <= 200]
+    if truncated:
+        names = [s["name"] for s in truncated[:10]]
+        est_waste = sum(int((s["description_chars"] - _SKILL_DESC_TRUNCATION_LIMIT) / CHARS_PER_TOKEN) for s in truncated)
+        quick.append(
+            f"**{len(truncated)} skill descriptions TRUNCATED by Claude Code (>1,536 chars)**: "
+            f"{', '.join(names)}{'...' if len(truncated) > 10 else ''}. "
+            f"Claude Code silently cuts combined description + when_to_use at 1,536 characters. "
+            f"The overflow tokens load every session but Claude never sees them.\n"
+            f"  Move detailed usage instructions into the SKILL.md body (loaded only when invoked). "
+            f"~{est_waste:,} tokens wasted."
+        )
     if very_verbose:
         names = [s["name"] for s in very_verbose[:10]]
         est_waste = sum(int((s["description_chars"] - 80) / CHARS_PER_TOKEN) for s in very_verbose)
         quick.append(
-            f"**Tighten {len(very_verbose)} bloated skill descriptions (>200 chars)**: "
+            f"**Tighten {len(very_verbose)} verbose skill descriptions (>200 chars)**: "
             f"{', '.join(names)}{'...' if len(very_verbose) > 10 else ''}. "
             f"Target: under 80 characters. The description field loads every session.\n"
             f"  Move detailed usage instructions into the SKILL.md body (loaded only when invoked). "
@@ -5665,12 +5711,23 @@ def generate_coach_data(focus=None, components=None, trends=None):
     # Check verbose skill descriptions
     quality = components.get("skill_frontmatter_quality", {})
     verbose = quality.get("verbose_skills", [])
-    if len(verbose) >= 3:
+    truncated_skills = [s for s in verbose if s.get("truncated")]
+    verbose_only = [s for s in verbose if not s.get("truncated")]
+    if truncated_skills:
+        patterns_bad.append({
+            "name": "Truncated Skill Descriptions",
+            "severity": "high",
+            "detail": f"{len(truncated_skills)} skills exceed 1,536-char limit (silently truncated by Claude Code)",
+            "fix": "Move overflow content to the SKILL.md body",
+            "savings": f"~{sum(int((s.get('description_chars', 0) - _SKILL_DESC_TRUNCATION_LIMIT) / CHARS_PER_TOKEN) for s in truncated_skills):,} tokens wasted",
+        })
+        score -= 8
+    if len(verbose_only) >= 3:
         patterns_bad.append({
             "name": "Verbose Skill Descriptions",
             "severity": "low",
-            "detail": f"{len(verbose)} skills have descriptions over 200 chars",
-            "fix": "Tighten descriptions to under 80 characters",
+            "detail": f"{len(verbose_only)} skills have descriptions over 200 chars",
+            "fix": "Tighten descriptions to under 80 characters for efficiency",
             "savings": "Minor per-skill, adds up with many skills",
         })
         score -= 3
@@ -9414,7 +9471,7 @@ def setup_hook(dry_run=False):
 
 # ========== Persistent Dashboard Daemon ==========
 
-TOKEN_OPTIMIZER_VERSION = "5.7.13"  # Keep in sync with plugin.json + marketplace.json
+TOKEN_OPTIMIZER_VERSION = "5.7.14"  # Keep in sync with plugin.json + marketplace.json
 _DASHBOARD_CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 _DAEMON_RUNTIME = detect_runtime()
 _DAEMON_RUNTIME_SUFFIX = "codex" if _DAEMON_RUNTIME == "codex" else "claude"

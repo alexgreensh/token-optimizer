@@ -1,0 +1,54 @@
+name: Publish OpenCode plugin to npm
+
+# Publishes opencode/ (token-optimizer-opencode) to npm whenever a release tag
+# is pushed AND the package version is new. Idempotent: re-running on a tag whose
+# version is already on npm is a no-op, so it's safe to fire on every v* release.
+#
+# Setup (one time): add an npm automation/granular token (publish rights, bypass
+# 2FA) as the repo secret NPM_TOKEN. Settings -> Secrets and variables -> Actions.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        working-directory: opencode
+        run: bun install --frozen-lockfile
+
+      - name: Publish if version is new
+        working-directory: opencode
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NPM_TOKEN:-}" ]; then
+            echo "NPM_TOKEN secret is not set; skipping publish."
+            exit 0
+          fi
+          NAME=$(node -p "require('./package.json').name")
+          VERSION=$(node -p "require('./package.json').version")
+          if npm view "${NAME}@${VERSION}" version >/dev/null 2>&1; then
+            echo "${NAME}@${VERSION} is already published. Nothing to do."
+            exit 0
+          fi
+          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
+          echo "Publishing ${NAME}@${VERSION}..."
+          npm publish
+          rm -f ~/.npmrc

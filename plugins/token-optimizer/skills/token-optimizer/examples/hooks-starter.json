@@ -1,0 +1,92 @@
+{
+  "hooks": {
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'COMPACTION GUIDANCE: Preserve code changes, key decisions, and file paths. Discard intermediate attempts, explanations, and verbose tool output.'"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/token-optimizer}/hooks/python-launcher.sh\" '$MEASURE_PY' compact-capture --trigger auto --quiet"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/token-optimizer}/hooks/python-launcher.sh\" '$MEASURE_PY' compact-restore --compact"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/token-optimizer}/hooks/python-launcher.sh\" '$MEASURE_PY' compact-restore --new-session-only"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/token-optimizer}/hooks/python-launcher.sh\" '$MEASURE_PY' compact-capture --trigger stop --quiet"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/token-optimizer}/hooks/python-launcher.sh\" '$MEASURE_PY' collect --quiet && $(command -v python3 || command -v python || echo py -3) '$MEASURE_PY' dashboard --quiet",
+            "async": true
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/token-optimizer}/hooks/python-launcher.sh\" '$MEASURE_PY' compact-capture --trigger end --quiet",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/token-optimizer}/hooks/python-launcher.sh\" '$MEASURE_PY' quality-cache --warn --quiet"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'File modified. Skip formatting explanations. The formatter handles it.'"
+          }
+        ]
+      }
+    ]
+  }
+}

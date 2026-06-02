@@ -1,0 +1,105 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 260" width="800" height="260">
+  <!--
+    Token Optimizer: Status bar degradation progression.
+    Shows 4 states of the live quality bar as context fills.
+    Catppuccin Mocha palette.
+  -->
+
+  <!-- Background -->
+  <rect width="800" height="260" rx="12" fill="#1e1e2e"/>
+
+  <!-- Title -->
+  <text x="400" y="32" fill="#cdd6f4" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="16" font-weight="bold" text-anchor="middle">Live Quality Bar — Updates Every 2 Minutes</text>
+  <text x="400" y="50" fill="#585b70" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="11" text-anchor="middle">Colors shift as your context fills. Quality score drops as degradation kicks in.</text>
+
+  <!-- ═══ State 1: Peak Zone (green) ═══ -->
+  <g opacity="0">
+    <animate attributeName="opacity" values="0;1" dur="0.3s" begin="0.3s" fill="freeze"/>
+
+    <!-- Label -->
+    <text x="28" y="84" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="10" font-weight="bold">PEAK</text>
+
+    <!-- Status bar background -->
+    <rect x="72" y="70" width="700" height="30" rx="6" fill="#181825" stroke="#313244" stroke-width="1"/>
+
+    <!-- Status bar content -->
+    <text x="86" y="90" fill="#6c7086" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">Opus 4.6</text>
+    <text x="186" y="90" fill="#313244" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">|</text>
+    <text x="198" y="90" fill="#6c7086" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">my-project</text>
+
+    <!-- Progress bar: 6% -->
+    <rect x="320" y="80" width="80" height="10" rx="4" fill="#313244"/>
+    <rect x="320" y="80" width="5" height="10" rx="3" fill="#a6e3a1"/>
+    <text x="408" y="90" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12">6%</text>
+
+    <text x="444" y="90" fill="#313244" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">|</text>
+    <text x="458" y="90" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">Q:96</text>
+  </g>
+
+  <!-- ═══ State 2: Degradation Starting (yellow) ═══ -->
+  <g opacity="0">
+    <animate attributeName="opacity" values="0;1" dur="0.3s" begin="0.7s" fill="freeze"/>
+
+    <text x="16" y="130" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="10" font-weight="bold">WATCH</text>
+
+    <rect x="72" y="116" width="700" height="30" rx="6" fill="#181825" stroke="#313244" stroke-width="1"/>
+
+    <text x="86" y="136" fill="#6c7086" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">Opus 4.6</text>
+    <text x="186" y="136" fill="#313244" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">|</text>
+    <text x="198" y="136" fill="#6c7086" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">my-project</text>
+
+    <!-- Progress bar: 55% -->
+    <rect x="320" y="126" width="80" height="10" rx="4" fill="#313244"/>
+    <rect x="320" y="126" width="44" height="10" rx="4" fill="#f9e2af"/>
+    <text x="408" y="136" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12">55%</text>
+
+    <text x="444" y="136" fill="#313244" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">|</text>
+    <text x="458" y="136" fill="#6c7086" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">Q:78</text>
+  </g>
+
+  <!-- ═══ State 3: Quality Dropping (orange) ═══ -->
+  <g opacity="0">
+    <animate attributeName="opacity" values="0;1" dur="0.3s" begin="1.1s" fill="freeze"/>
+
+    <text x="16" y="176" fill="#fab387" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="10" font-weight="bold">ALERT</text>
+
+    <rect x="72" y="162" width="700" height="30" rx="6" fill="#181825" stroke="#313244" stroke-width="1"/>
+
+    <text x="86" y="182" fill="#6c7086" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">Opus 4.6</text>
+    <text x="186" y="182" fill="#313244" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">|</text>
+    <text x="198" y="182" fill="#6c7086" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">my-project</text>
+
+    <!-- Progress bar: 72% -->
+    <rect x="320" y="172" width="80" height="10" rx="4" fill="#313244"/>
+    <rect x="320" y="172" width="58" height="10" rx="4" fill="#fab387"/>
+    <text x="408" y="182" fill="#fab387" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12">72%</text>
+
+    <text x="444" y="182" fill="#313244" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">|</text>
+    <text x="458" y="182" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">Q:58</text>
+    <text x="510" y="182" fill="#313244" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">|</text>
+    <text x="524" y="182" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">Compacts:1(~65% lost)</text>
+  </g>
+
+  <!-- ═══ State 4: Critical (red) ═══ -->
+  <g opacity="0">
+    <animate attributeName="opacity" values="0;1" dur="0.3s" begin="1.5s" fill="freeze"/>
+
+    <text x="10" y="222" fill="#f38ba8" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="10" font-weight="bold">DANGER</text>
+
+    <rect x="72" y="208" width="700" height="30" rx="6" fill="#181825" stroke="#f38ba8" stroke-width="1" opacity="0.6"/>
+
+    <text x="86" y="228" fill="#6c7086" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">Opus 4.6</text>
+    <text x="186" y="228" fill="#313244" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">|</text>
+    <text x="198" y="228" fill="#6c7086" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">my-project</text>
+
+    <!-- Progress bar: 85% -->
+    <rect x="320" y="218" width="80" height="10" rx="4" fill="#313244"/>
+    <rect x="320" y="218" width="68" height="10" rx="4" fill="#f38ba8"/>
+    <text x="408" y="228" fill="#f38ba8" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12">85%</text>
+
+    <text x="444" y="228" fill="#313244" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">|</text>
+    <text x="458" y="228" fill="#f38ba8" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">Q:34</text>
+    <text x="510" y="228" fill="#313244" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">|</text>
+    <text x="524" y="228" fill="#f38ba8" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">Compacts:2(~88% lost)</text>
+  </g>
+</svg>

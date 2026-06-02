@@ -1,0 +1,181 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 720" width="800" height="720">
+  <!--
+    Token Optimizer 5-phase flow diagram. Vertical layout.
+    14s loop. Catppuccin Mocha palette. Pure SMIL animations.
+  -->
+
+  <!-- Background -->
+  <rect width="800" height="720" rx="12" fill="#1e1e2e"/>
+
+  <!-- Title -->
+  <text x="400" y="46" fill="#cdd6f4" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="22" font-weight="bold" text-anchor="middle">How It Works</text>
+
+  <!-- Vertical connecting line that draws top to bottom -->
+  <line x1="400" y1="100" x2="400" y2="100" stroke="#45475a" stroke-width="2">
+    <animate attributeName="y2"
+      values="100;100;600;600;600;100;100"
+      keyTimes="0;0.05;0.45;0.75;0.82;0.82;1"
+      dur="14s" repeatCount="indefinite"/>
+  </line>
+
+  <!-- ══════ Phase 1: Initialize (blue #89b4fa) ══════ -->
+  <g>
+    <!-- Circle -->
+    <circle cx="400" cy="100" r="28" fill="#1e1e2e" stroke="#45475a" stroke-width="2.5">
+      <animate attributeName="stroke" values="#45475a;#89b4fa;#89b4fa;#89b4fa;#45475a;#45475a" keyTimes="0;0.07;0.12;0.75;0.82;1" dur="14s" repeatCount="indefinite"/>
+    </circle>
+    <text x="400" y="106" fill="#89b4fa" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="16" font-weight="bold" text-anchor="middle" opacity="0">
+      1
+      <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.07;0.10;0.75;0.82;1" dur="14s" repeatCount="indefinite"/>
+    </text>
+
+    <!-- Card to the right -->
+    <rect x="460" y="72" width="280" height="56" rx="8" fill="#181825" stroke="#89b4fa" stroke-width="1" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.08;0.12;0.75;0.82;1" dur="14s" repeatCount="indefinite"/>
+    </rect>
+    <text x="480" y="96" fill="#89b4fa" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="16" font-weight="bold" opacity="0">
+      Initialize
+      <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.08;0.12;0.75;0.82;1" dur="14s" repeatCount="indefinite"/>
+    </text>
+    <text x="480" y="118" fill="#585b70" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14" opacity="0">
+      Backup configs + snapshot
+      <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.08;0.12;0.75;0.82;1" dur="14s" repeatCount="indefinite"/>
+    </text>
+  </g>
+
+  <!-- ══════ Phase 2: Audit (green #a6e3a1) ══════ -->
+  <g>
+    <circle cx="400" cy="225" r="28" fill="#1e1e2e" stroke="#45475a" stroke-width="2.5">
+      <animate attributeName="stroke" values="#45475a;#45475a;#a6e3a1;#a6e3a1;#45475a;#45475a" keyTimes="0;0.14;0.18;0.75;0.82;1" dur="14s" repeatCount="indefinite"/>
+    </circle>
+    <text x="400" y="231" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="16" font-weight="bold" text-anchor="middle" opacity="0">
+      2
+      <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.14;0.18;0.75;0.82;1" dur="14s" repeatCount="indefinite"/>
+    </text>
+
+    <!-- Card to the left -->
+    <rect x="60" y="197" width="280" height="56" rx="8" fill="#181825" stroke="#a6e3a1" stroke-width="1" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.18;0.22;0.75;0.82;1" dur="14s" repeatCount="indefinite"/>
+    </rect>
+    <text x="80" y="221" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="16" font-weight="bold" opacity="0">
+      Audit
+      <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.18;0.22;0.75;0.82;1" dur="14s" repeatCount="indefinite"/>
+    </text>
+    <text x="80" y="243" fill="#585b70" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14" opacity="0">
+      6 agents in parallel
+      <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.18;0.22;0.75;0.82;1" dur="14s" repeatCount="indefinite"/>
+    </text>
+  </g>
+
+  <!-- ══════ Phase 3: Analyze (yellow #f9e2af) ══════ -->
+  <g>
+    <circle cx="400" cy="350" r="28" fill="#1e1e2e" stroke="#45475a" stroke-width="2.5">
+      <animate attributeName="stroke" values="#45475a;#45475a;#45475a;#f9e2af;#f9e2af;#45475a;#45475a" keyTimes="0;0.14;0.24;0.28;0.75;0.82;1" dur="14s" repeatCount="indefinite"/>
+    </circle>
+    <text x="400" y="356" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="16" font-weight="bold" text-anchor="middle" opacity="0">
+      3
+      <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.24;0.28;0.75;0.82;1" dur="14s" repeatCount="indefinite"/>
+    </text>
+
+    <!-- Card to the right -->
+    <rect x="460" y="322" width="280" height="56" rx="8" fill="#181825" stroke="#f9e2af" stroke-width="1" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.28;0.32;0.75;0.82;1" dur="14s" repeatCount="indefinite"/>
+    </rect>
+    <text x="480" y="346" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="16" font-weight="bold" opacity="0">
+      Analyze
+      <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.28;0.32;0.75;0.82;1" dur="14s" repeatCount="indefinite"/>
+    </text>
+    <text x="480" y="368" fill="#585b70" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14" opacity="0">
+      Opus synthesizes findings
+      <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.28;0.32;0.75;0.82;1" dur="14s" repeatCount="indefinite"/>
+    </text>
+  </g>
+
+  <!-- ══════ Phase 4: Implement (pink #f38ba8) ══════ -->
+  <g>
+    <circle cx="400" cy="475" r="28" fill="#1e1e2e" stroke="#45475a" stroke-width="2.5">
+      <animate attributeName="stroke" values="#45475a;#45475a;#45475a;#45475a;#f38ba8;#f38ba8;#45475a;#45475a" keyTimes="0;0.14;0.24;0.34;0.38;0.75;0.82;1" dur="14s" repeatCount="indefinite"/>
+    </circle>
+    <text x="400" y="481" fill="#f38ba8" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="16" font-weight="bold" text-anchor="middle" opacity="0">
+      4
+      <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.34;0.38;0.75;0.82;1" dur="14s" repeatCount="indefinite"/>
+    </text>
+
+    <!-- Card to the left -->
+    <rect x="60" y="447" width="280" height="56" rx="8" fill="#181825" stroke="#f38ba8" stroke-width="1" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.38;0.42;0.75;0.82;1" dur="14s" repeatCount="indefinite"/>
+    </rect>
+    <text x="80" y="471" fill="#f38ba8" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="16" font-weight="bold" opacity="0">
+      Implement
+      <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.38;0.42;0.75;0.82;1" dur="14s" repeatCount="indefinite"/>
+    </text>
+    <text x="80" y="493" fill="#585b70" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14" opacity="0">
+      You choose. Diffs + approval.
+      <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.38;0.42;0.75;0.82;1" dur="14s" repeatCount="indefinite"/>
+    </text>
+  </g>
+
+  <!-- ══════ Phase 5: Verify (purple #cba6f7) ══════ -->
+  <g>
+    <circle cx="400" cy="600" r="28" fill="#1e1e2e" stroke="#45475a" stroke-width="2.5">
+      <animate attributeName="stroke" values="#45475a;#45475a;#45475a;#45475a;#45475a;#cba6f7;#cba6f7;#45475a;#45475a" keyTimes="0;0.14;0.24;0.34;0.42;0.46;0.75;0.82;1" dur="14s" repeatCount="indefinite"/>
+    </circle>
+    <text x="400" y="606" fill="#cba6f7" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="16" font-weight="bold" text-anchor="middle" opacity="0">
+      5
+      <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.42;0.46;0.75;0.82;1" dur="14s" repeatCount="indefinite"/>
+    </text>
+
+    <!-- Card to the right -->
+    <rect x="460" y="572" width="280" height="56" rx="8" fill="#181825" stroke="#cba6f7" stroke-width="1" opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.46;0.50;0.75;0.82;1" dur="14s" repeatCount="indefinite"/>
+    </rect>
+    <text x="480" y="596" fill="#cba6f7" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="16" font-weight="bold" opacity="0">
+      Verify
+      <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.46;0.50;0.75;0.82;1" dur="14s" repeatCount="indefinite"/>
+    </text>
+    <text x="480" y="618" fill="#585b70" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14" opacity="0">
+      Re-measure + before/after
+      <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.46;0.50;0.75;0.82;1" dur="14s" repeatCount="indefinite"/>
+    </text>
+  </g>
+
+  <!-- ══════ Bottom stats bar ══════ -->
+  <rect x="40" y="652" width="720" height="52" rx="8" fill="#181825" opacity="0">
+    <animate attributeName="opacity" values="0;0;0;0;0;0;1;1;0;0" keyTimes="0;0.14;0.24;0.34;0.44;0.52;0.58;0.75;0.82;1" dur="14s" repeatCount="indefinite"/>
+  </rect>
+
+  <text x="175" y="676" fill="#585b70" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="middle" opacity="0">
+    AUDIT AGENTS
+    <animate attributeName="opacity" values="0;0;0;0;0;0;1;1;0;0" keyTimes="0;0.14;0.24;0.34;0.44;0.52;0.58;0.75;0.82;1" dur="14s" repeatCount="indefinite"/>
+  </text>
+  <text x="175" y="696" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="18" font-weight="bold" text-anchor="middle" opacity="0">
+    6 parallel
+    <animate attributeName="opacity" values="0;0;0;0;0;0;1;1;0;0" keyTimes="0;0.14;0.24;0.34;0.44;0.52;0.58;0.75;0.82;1" dur="14s" repeatCount="indefinite"/>
+  </text>
+
+  <line x1="320" y1="662" x2="320" y2="698" stroke="#313244" stroke-width="1" opacity="0">
+    <animate attributeName="opacity" values="0;0;0;0;0;0;1;1;0;0" keyTimes="0;0.14;0.24;0.34;0.44;0.52;0.58;0.75;0.82;1" dur="14s" repeatCount="indefinite"/>
+  </line>
+
+  <text x="480" y="676" fill="#585b70" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="middle" opacity="0">
+    SYNTHESIS
+    <animate attributeName="opacity" values="0;0;0;0;0;0;1;1;0;0" keyTimes="0;0.14;0.24;0.34;0.44;0.52;0.58;0.75;0.82;1" dur="14s" repeatCount="indefinite"/>
+  </text>
+  <text x="480" y="696" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="18" font-weight="bold" text-anchor="middle" opacity="0">
+    synthesizer
+    <animate attributeName="opacity" values="0;0;0;0;0;0;1;1;0;0" keyTimes="0;0.14;0.24;0.34;0.44;0.52;0.58;0.75;0.82;1" dur="14s" repeatCount="indefinite"/>
+  </text>
+
+  <line x1="620" y1="662" x2="620" y2="698" stroke="#313244" stroke-width="1" opacity="0">
+    <animate attributeName="opacity" values="0;0;0;0;0;0;1;1;0;0" keyTimes="0;0.14;0.24;0.34;0.44;0.52;0.58;0.75;0.82;1" dur="14s" repeatCount="indefinite"/>
+  </line>
+
+  <text x="700" y="676" fill="#585b70" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="middle" opacity="0">
+    SAFE
+    <animate attributeName="opacity" values="0;0;0;0;0;0;1;1;0;0" keyTimes="0;0.14;0.24;0.34;0.44;0.52;0.58;0.75;0.82;1" dur="14s" repeatCount="indefinite"/>
+  </text>
+  <text x="700" y="696" fill="#89b4fa" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="18" font-weight="bold" text-anchor="middle" opacity="0">
+    100%
+    <animate attributeName="opacity" values="0;0;0;0;0;0;1;1;0;0" keyTimes="0;0.14;0.24;0.34;0.44;0.52;0.58;0.75;0.82;1" dur="14s" repeatCount="indefinite"/>
+  </text>
+</svg>

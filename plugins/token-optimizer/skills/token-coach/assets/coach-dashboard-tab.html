@@ -1,0 +1,45 @@
+<!-- Coach Dashboard Tab Fragment
+     Integrated into token-optimizer dashboard.html as the "Coach" tab.
+     Data comes from generate_coach_data() in measure.py, injected as data.coach.
+
+     This file is a reference copy. The actual rendering lives in dashboard.html's
+     renderCoach() function. Update both if modifying the coach tab layout.
+-->
+
+<!-- Nav item (add to .nav-menu): -->
+<!-- <a class="nav-item" data-view="coach">Coach</a> -->
+
+<!-- View container (add to main-col): -->
+<!-- <div class="view" id="view-coach"></div> -->
+
+<!-- Rendering: renderCoach() in dashboard.html JavaScript section -->
+<!-- Called from init() after renderHealth() -->
+
+<!-- Data structure expected (from measure.py generate_coach_data()): -->
+<!--
+{
+  "health_score": 0-100,
+  "snapshot": {
+    "total_overhead": number,
+    "controllable": number,
+    "fixed": number,
+    "context_window": number,
+    "overhead_pct": number,
+    "usable_tokens": number,
+    "skill_count": number,
+    "skill_tokens": number,
+    "claude_md_tokens": number,
+    "memory_md_lines": number,
+    "mcp_server_count": number,
+    "mcp_tokens": number,
+    "rules_count": number,
+    "rules_always_loaded": number,
+    "imports_count": number,
+    "imports_tokens": number
+  },
+  "patterns_good": [{"name": string, "detail": string}],
+  "patterns_bad": [{"name": string, "severity": "high"|"medium"|"low", "detail": string, "fix": string, "savings": string}],
+  "questions": [string],
+  "focus_area": string|null
+}
+-->

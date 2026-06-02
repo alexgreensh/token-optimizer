@@ -1,0 +1,120 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 540" width="800" height="540">
+  <!--
+    Token Optimizer: The 1M session lifecycle.
+    Shows degradation progression through a session.
+    Sequential fade-in. Catppuccin Mocha palette.
+    Track: 680px = 1M context window.
+  -->
+
+  <!-- Background -->
+  <rect width="800" height="540" rx="12" fill="#1e1e2e"/>
+
+  <!-- Title -->
+  <text x="400" y="38" fill="#cdd6f4" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="20" font-weight="bold" text-anchor="middle">What Happens Inside a 1M Session</text>
+  <text x="400" y="60" fill="#a6adc8" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="middle">Startup overhead is tiny. The degradation curve is what gets you.</text>
+
+  <!-- ═══ Row 1: Session Start ═══ -->
+  <g opacity="0">
+    <animate attributeName="opacity" values="0;1" dur="0.4s" begin="0.3s" fill="freeze"/>
+
+    <text x="60" y="100" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="15" font-weight="bold">Session Start</text>
+    <text x="260" y="100" fill="#a6adc8" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">Ghost tokens loaded. Peak quality zone.</text>
+
+    <!-- Track -->
+    <rect x="60" y="112" width="680" height="32" rx="6" fill="#313244"/>
+    <!-- Zone markers -->
+    <line x1="400" y1="112" x2="400" y2="144" stroke="#45475a" stroke-width="1.5" stroke-dasharray="4,4"/>
+    <line x1="536" y1="112" x2="536" y2="144" stroke="#45475a" stroke-width="1.5" stroke-dasharray="4,4"/>
+    <line x1="604" y1="112" x2="604" y2="144" stroke="#45475a" stroke-width="1.5" stroke-dasharray="4,4"/>
+    <!-- Fill: 6% = 41px -->
+    <rect x="60" y="112" width="41" height="32" rx="6" fill="#a6e3a1" opacity="0.85"/>
+
+    <!-- Stats to the right -->
+    <text x="112" y="133" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14" font-weight="bold">6%</text>
+    <text x="148" y="133" fill="#a6adc8" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">Q:96 · MRCR ~93% · 938K free</text>
+  </g>
+
+  <!-- ═══ Row 2: Mid-Session ═══ -->
+  <g opacity="0">
+    <animate attributeName="opacity" values="0;1" dur="0.4s" begin="0.9s" fill="freeze"/>
+
+    <text x="60" y="182" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="15" font-weight="bold">~100 Messages In</text>
+    <text x="290" y="182" fill="#a6adc8" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">"Lost in the middle" kicks in. References get vague.</text>
+
+    <rect x="60" y="194" width="680" height="32" rx="6" fill="#313244"/>
+    <line x1="400" y1="194" x2="400" y2="226" stroke="#45475a" stroke-width="1.5" stroke-dasharray="4,4"/>
+    <line x1="536" y1="194" x2="536" y2="226" stroke="#45475a" stroke-width="1.5" stroke-dasharray="4,4"/>
+    <line x1="604" y1="194" x2="604" y2="226" stroke="#45475a" stroke-width="1.5" stroke-dasharray="4,4"/>
+    <!-- Fill: 50% = 340px -->
+    <rect x="60" y="194" width="340" height="32" rx="6" fill="#f9e2af" opacity="0.8"/>
+
+    <text x="412" y="215" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14" font-weight="bold">50%</text>
+    <text x="450" y="215" fill="#a6adc8" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">Q:78 · Quality dropping</text>
+  </g>
+
+  <!-- ═══ Row 3: Pre-Compact ═══ -->
+  <g opacity="0">
+    <animate attributeName="opacity" values="0;1" dur="0.4s" begin="1.5s" fill="freeze"/>
+
+    <text x="60" y="264" fill="#f38ba8" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="15" font-weight="bold">~150 Messages In</text>
+    <text x="290" y="264" fill="#a6adc8" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">Auto-compact imminent. Accuracy down to ~76%.</text>
+
+    <rect x="60" y="276" width="680" height="32" rx="6" fill="#313244"/>
+    <line x1="400" y1="276" x2="400" y2="308" stroke="#45475a" stroke-width="1.5" stroke-dasharray="4,4"/>
+    <line x1="536" y1="276" x2="536" y2="308" stroke="#45475a" stroke-width="1.5" stroke-dasharray="4,4"/>
+    <line x1="604" y1="276" x2="604" y2="308" stroke="#45475a" stroke-width="1.5" stroke-dasharray="4,4"/>
+    <!-- Fill: 80% = 544px -->
+    <rect x="60" y="276" width="544" height="32" rx="6" fill="#f38ba8" opacity="0.75"/>
+
+    <text x="614" y="297" fill="#f38ba8" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14" font-weight="bold">80%</text>
+    <text x="650" y="297" fill="#a6adc8" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">Q:52</text>
+  </g>
+
+  <!-- ═══ Row 4: After Compaction ═══ -->
+  <g opacity="0">
+    <animate attributeName="opacity" values="0;1" dur="0.4s" begin="2.1s" fill="freeze"/>
+
+    <text x="60" y="346" fill="#cdd6f4" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="15" font-weight="bold">After Auto-Compact</text>
+    <text x="310" y="346" fill="#f38ba8" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14" font-weight="bold">60-70% of your conversation: gone.</text>
+
+    <rect x="60" y="358" width="680" height="32" rx="6" fill="#313244"/>
+    <line x1="400" y1="358" x2="400" y2="390" stroke="#45475a" stroke-width="1.5" stroke-dasharray="4,4"/>
+    <line x1="536" y1="358" x2="536" y2="390" stroke="#45475a" stroke-width="1.5" stroke-dasharray="4,4"/>
+    <line x1="604" y1="358" x2="604" y2="390" stroke="#45475a" stroke-width="1.5" stroke-dasharray="4,4"/>
+    <!-- Fill: 30% = 204px (shrunken after compact) -->
+    <rect x="60" y="358" width="204" height="32" rx="6" fill="#45475a" opacity="0.7"/>
+
+    <text x="274" y="379" fill="#bac2de" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14" font-weight="bold">30% remains</text>
+    <text x="430" y="379" fill="#a6adc8" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">Decisions, errors, context: lost</text>
+  </g>
+
+  <!-- ═══ Legend ═══ -->
+  <g opacity="0">
+    <animate attributeName="opacity" values="0;1" dur="0.4s" begin="2.7s" fill="freeze"/>
+
+    <line x1="60" y1="410" x2="740" y2="410" stroke="#313244" stroke-width="1"/>
+
+    <text x="60" y="436" fill="#a6adc8" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">Degradation zones:</text>
+
+    <rect x="250" y="424" width="14" height="14" rx="3" fill="#a6e3a1" opacity="0.85"/>
+    <text x="270" y="436" fill="#cdd6f4" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">&lt;50%</text>
+
+    <rect x="330" y="424" width="14" height="14" rx="3" fill="#f9e2af" opacity="0.85"/>
+    <text x="350" y="436" fill="#cdd6f4" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">50-70%</text>
+
+    <rect x="430" y="424" width="14" height="14" rx="3" fill="#fab387" opacity="0.85"/>
+    <text x="450" y="436" fill="#cdd6f4" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">70-80%</text>
+
+    <rect x="530" y="424" width="14" height="14" rx="3" fill="#f38ba8" opacity="0.85"/>
+    <text x="550" y="436" fill="#cdd6f4" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">80%+</text>
+  </g>
+
+  <!-- ═══ Callout ═══ -->
+  <g opacity="0">
+    <animate attributeName="opacity" values="0;1" dur="0.4s" begin="3.2s" fill="freeze"/>
+
+    <rect x="60" y="460" width="680" height="60" rx="8" fill="#181825" stroke="#89b4fa" stroke-width="1"/>
+    <text x="400" y="486" fill="#89b4fa" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14" font-weight="bold" text-anchor="middle">Smart Compaction checkpoints your decisions before auto-compact fires.</text>
+    <text x="400" y="508" fill="#a6adc8" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="middle">Token Optimizer tracks all of this. Run: python3 measure.py quick</text>
+  </g>
+</svg>

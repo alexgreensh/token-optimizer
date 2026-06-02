@@ -28,3 +28,6 @@ docs/internal/
 CLAUDE.md
 skills/token-optimizer/references/roadmap.md
 signatures/
+
+# Codex marketplace sync staging dir (atomic-swap temp from sync-codex-marketplace-plugin.sh)
+plugins/.token-optimizer.stage.*

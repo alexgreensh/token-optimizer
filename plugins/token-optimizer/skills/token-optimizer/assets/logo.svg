@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 780 340" width="780" height="340">
+  <defs>
+    <linearGradient id="claude-orange" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#e87b55"/>
+      <stop offset="50%" style="stop-color:#d4623b"/>
+      <stop offset="100%" style="stop-color:#c4502a"/>
+    </linearGradient>
+    <linearGradient id="line-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#c4502a"/>
+      <stop offset="100%" style="stop-color:#e87b55"/>
+    </linearGradient>
+    <style>
+      @keyframes blink {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0; }
+      }
+      .cursor { animation: blink 1s step-end infinite; }
+    </style>
+  </defs>
+
+  <!-- Background -->
+  <rect width="780" height="340" rx="12" fill="#1a1a2e"/>
+
+  <!-- TOKEN - ASCII block art -->
+  <text x="390" y="42" text-anchor="middle" font-family="'Menlo','Cascadia Code','JetBrains Mono','Fira Code',monospace" font-size="13" fill="url(#claude-orange)" xml:space="preserve"> ████████╗  ██████╗  ██╗  ██╗ ███████╗ ███╗   ██╗</text>
+  <text x="390" y="57" text-anchor="middle" font-family="'Menlo','Cascadia Code','JetBrains Mono','Fira Code',monospace" font-size="13" fill="url(#claude-orange)" xml:space="preserve"> ╚══██╔══╝ ██╔═══██╗ ██║ ██╔╝ ██╔════╝ ████╗  ██║</text>
+  <text x="390" y="72" text-anchor="middle" font-family="'Menlo','Cascadia Code','JetBrains Mono','Fira Code',monospace" font-size="13" fill="url(#claude-orange)" xml:space="preserve">    ██║    ██║   ██║ █████╔╝  █████╗   ██╔██╗ ██║</text>
+  <text x="390" y="87" text-anchor="middle" font-family="'Menlo','Cascadia Code','JetBrains Mono','Fira Code',monospace" font-size="13" fill="url(#claude-orange)" xml:space="preserve">    ██║    ██║   ██║ ██╔═██╗  ██╔══╝   ██║╚██╗██║</text>
+  <text x="390" y="102" text-anchor="middle" font-family="'Menlo','Cascadia Code','JetBrains Mono','Fira Code',monospace" font-size="13" fill="url(#claude-orange)" xml:space="preserve">    ██║    ╚██████╔╝ ██║  ██╗ ███████╗ ██║ ╚████║</text>
+  <text x="390" y="117" text-anchor="middle" font-family="'Menlo','Cascadia Code','JetBrains Mono','Fira Code',monospace" font-size="13" fill="url(#claude-orange)" xml:space="preserve">    ╚═╝     ╚═════╝  ╚═╝  ╚═╝ ╚══════╝ ╚═╝  ╚═══╝</text>
+
+  <!-- OPTIMIZER - ASCII block art -->
+  <text x="390" y="147" text-anchor="middle" font-family="'Menlo','Cascadia Code','JetBrains Mono','Fira Code',monospace" font-size="13" fill="url(#claude-orange)" xml:space="preserve">  ██████╗  ██████╗  ████████╗ ██╗ ███╗   ███╗ ██╗ ███████╗ ███████╗ ██████╗ </text>
+  <text x="390" y="162" text-anchor="middle" font-family="'Menlo','Cascadia Code','JetBrains Mono','Fira Code',monospace" font-size="13" fill="url(#claude-orange)" xml:space="preserve"> ██╔═══██╗ ██╔══██╗ ╚══██╔══╝ ██║ ████╗ ████║ ██║ ╚══███╔╝ ██╔════╝ ██╔══██╗</text>
+  <text x="390" y="177" text-anchor="middle" font-family="'Menlo','Cascadia Code','JetBrains Mono','Fira Code',monospace" font-size="13" fill="url(#claude-orange)" xml:space="preserve"> ██║   ██║ ██████╔╝    ██║    ██║ ██╔████╔██║ ██║   ███╔╝  █████╗   ██████╔╝</text>
+  <text x="390" y="192" text-anchor="middle" font-family="'Menlo','Cascadia Code','JetBrains Mono','Fira Code',monospace" font-size="13" fill="url(#claude-orange)" xml:space="preserve"> ██║   ██║ ██╔═══╝     ██║    ██║ ██║╚██╔╝██║ ██║  ███╔╝   ██╔══╝   ██╔══██╗</text>
+  <text x="390" y="207" text-anchor="middle" font-family="'Menlo','Cascadia Code','JetBrains Mono','Fira Code',monospace" font-size="13" fill="url(#claude-orange)" xml:space="preserve"> ╚██████╔╝ ██║         ██║    ██║ ██║ ╚═╝ ██║ ██║ ███████╗ ███████╗ ██║  ██║</text>
+  <text x="390" y="222" text-anchor="middle" font-family="'Menlo','Cascadia Code','JetBrains Mono','Fira Code',monospace" font-size="13" fill="url(#claude-orange)" xml:space="preserve">  ╚═════╝  ╚═╝         ╚═╝    ╚═╝ ╚═╝     ╚═╝ ╚═╝ ╚══════╝ ╚══════╝ ╚═╝  ╚═╝</text>
+
+  <!-- Decorative line -->
+  <line x1="140" y1="248" x2="640" y2="248" stroke="url(#line-grad)" stroke-width="1.5" opacity="0.4"/>
+
+  <!-- Value subtitle with blinking cursor -->
+  <text x="390" y="278" text-anchor="middle" font-family="'Menlo','Cascadia Code','JetBrains Mono','Fira Code',monospace" font-size="14" fill="#e87b55" opacity="0.9" letter-spacing="2">GHOST TOKENS ARE EATING YOUR CONTEXT WINDOW<tspan class="cursor">▌</tspan></text>
+
+  <!-- Tagline -->
+  <text x="390" y="308" text-anchor="middle" font-family="'Menlo','Cascadia Code','JetBrains Mono','Fira Code',monospace" font-size="13" fill="#7a7a9a" letter-spacing="1.5">Find them. Fix them. Track the quality decay.</text>
+</svg>

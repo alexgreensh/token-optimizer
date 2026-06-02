@@ -1,0 +1,28 @@
+{
+  "name": "token-optimizer",
+  "version": "5.8.8",
+  "description": "Audit, monitor, and reduce Codex context waste with continuity helpers and explicit outline tools.",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Token Optimizer",
+    "shortDescription": "Find the ghost tokens in Codex sessions.",
+    "longDescription": "Token Optimizer for Codex focuses on measurable waste, continuity recovery, and explicit helper tools that fit the current Codex hook surface honestly.",
+    "developerName": "Alex Greenshpun",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Session continuity",
+      "Prompt quality nudges",
+      "Context analytics",
+      "Explicit file outlines"
+    ],
+    "websiteURL": "https://github.com/alexgreensh/token-optimizer",
+    "defaultPrompt": [
+      "Run Token Optimizer and tell me my Codex status, setup, and safest next fix.",
+      "Run Token Coach and help me make this Codex project more token-efficient.",
+      "Run Fleet Auditor and include Codex sessions in the cross-system audit.",
+      "Show me the outline for this large file before we reread it.",
+      "Help me continue the last interrupted Codex session cleanly."
+    ],
+    "brandColor": "#0F766E"
+  }
+}

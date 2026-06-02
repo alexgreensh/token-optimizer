@@ -1,0 +1,23 @@
+{
+  "_README": "Apply at PROJECT level (.claude/settings.json), not global (~/.claude/settings.json). Database rules (*.sqlite, *.db) will break tools that read SQLite (session memory, local search, WhatsApp MCP). Remove those lines if you use such tools.",
+  "permissions": {
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./secrets/**)",
+      "Read(./**/credentials.json)",
+      "Read(./**/service-account*.json)",
+      "Read(./**/*.key)",
+      "Read(./**/*.pem)",
+      "Read(./node_modules/**)",
+      "Read(./.venv/**)",
+      "Read(./dist/**)",
+      "Read(./build/**)",
+      "Read(./.next/**)",
+      "Read(./**/__pycache__/**)",
+      "Read(./**/*.log)",
+      "Read(./coverage/**)"
+    ]
+  },
+  "_CAUTION_database_rules": "Only add these if no tools need database access: Read(./**/*.sqlite), Read(./**/*.db)"
+}

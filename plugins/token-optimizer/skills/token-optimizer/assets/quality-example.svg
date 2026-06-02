@@ -1,0 +1,163 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 580" width="800" height="580">
+  <!--
+    Token Optimizer: Real-world quality score example.
+    Based on actual session data (anonymized). Shows what degradation looks like
+    and why you need visibility into session quality.
+    Sequential fade-in. Catppuccin Mocha palette.
+  -->
+
+  <!-- Background -->
+  <rect width="800" height="580" rx="12" fill="#1e1e2e"/>
+
+  <!-- Terminal chrome -->
+  <rect width="800" height="36" rx="12" fill="#181825"/>
+  <rect x="0" y="24" width="800" height="12" fill="#181825"/>
+  <circle cx="18" cy="18" r="6" fill="#f38ba8"/>
+  <circle cx="36" cy="18" r="6" fill="#f9e2af"/>
+  <circle cx="54" cy="18" r="6" fill="#a6e3a1"/>
+  <text x="400" y="23" text-anchor="middle" fill="#6c7086" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">Claude Code</text>
+
+  <!-- Status bar at bottom -->
+  <rect y="544" width="800" height="36" rx="0" fill="#181825"/>
+  <rect x="0" y="544" width="800" height="1" fill="#313244"/>
+
+  <!-- ═══ Command ═══ -->
+  <g opacity="0">
+    <animate attributeName="opacity" values="0;1" dur="0.3s" begin="0.2s" fill="freeze"/>
+    <text x="28" y="64" fill="#89b4fa" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="15" font-weight="bold">&#x276F; python3 measure.py quality current</text>
+  </g>
+
+  <!-- ═══ Header ═══ -->
+  <g opacity="0">
+    <animate attributeName="opacity" values="0;1" dur="0.3s" begin="0.6s" fill="freeze"/>
+    <text x="28" y="100" fill="#cdd6f4" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="15" font-weight="bold">Context Quality Report</text>
+    <line x1="28" y1="108" x2="380" y2="108" stroke="#313244" stroke-width="1"/>
+  </g>
+
+  <!-- ═══ Top-level stats ═══ -->
+  <g opacity="0">
+    <animate attributeName="opacity" values="0;1" dur="0.3s" begin="1.0s" fill="freeze"/>
+    <text font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14">
+      <tspan x="28" y="134" fill="#bac2de">Content quality:     </tspan>
+      <tspan fill="#f38ba8" font-weight="bold">36/100 (Critical)</tspan>
+    </text>
+    <text font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14">
+      <tspan x="28" y="156" fill="#bac2de">Degradation band:    </tspan>
+      <tspan fill="#f38ba8" font-weight="bold">SEVERE</tspan>
+      <tspan fill="#585b70"> (2 compactions, ~88% context lost)</tspan>
+    </text>
+    <text font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14">
+      <tspan x="28" y="178" fill="#bac2de">Messages analyzed:   </tspan>
+      <tspan fill="#bac2de">708</tspan>
+    </text>
+    <text font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14">
+      <tspan x="28" y="200" fill="#bac2de">Decisions captured:  </tspan>
+      <tspan fill="#bac2de">4</tspan>
+    </text>
+  </g>
+
+  <!-- ═══ Signal breakdown ═══ -->
+  <g opacity="0">
+    <animate attributeName="opacity" values="0;1" dur="0.3s" begin="1.6s" fill="freeze"/>
+    <text x="28" y="234" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14" font-weight="bold">Signal Breakdown</text>
+  </g>
+
+  <g opacity="0">
+    <animate attributeName="opacity" values="0;1" dur="0.3s" begin="2.0s" fill="freeze"/>
+
+    <!-- Context fill -->
+    <text font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">
+      <tspan x="44" y="258" fill="#f38ba8">&#x25CF;</tspan>
+      <tspan fill="#bac2de"> Context fill:      </tspan>
+      <tspan fill="#f38ba8">15/100</tspan>
+      <tspan fill="#585b70">  72% full, MRCR ~80%</tspan>
+    </text>
+
+    <!-- Stale reads -->
+    <text font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">
+      <tspan x="44" y="280" fill="#f38ba8">&#x25CF;</tspan>
+      <tspan fill="#bac2de"> Stale reads:       </tspan>
+      <tspan fill="#f38ba8">0/100</tspan>
+      <tspan fill="#585b70">  74 of 88 reads now stale</tspan>
+    </text>
+
+    <!-- Compaction depth -->
+    <text font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">
+      <tspan x="44" y="302" fill="#f38ba8">&#x25CF;</tspan>
+      <tspan fill="#bac2de"> Compaction depth:  </tspan>
+      <tspan fill="#f38ba8">25/100</tspan>
+      <tspan fill="#585b70">  2 compactions (~88% lost)</tspan>
+    </text>
+
+    <!-- Decision density -->
+    <text font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">
+      <tspan x="44" y="324" fill="#f9e2af">&#x25CF;</tspan>
+      <tspan fill="#bac2de"> Decision density:  </tspan>
+      <tspan fill="#f9e2af">18/100</tspan>
+      <tspan fill="#585b70">  9% substantive messages</tspan>
+    </text>
+
+    <!-- Agent efficiency -->
+    <text font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">
+      <tspan x="44" y="346" fill="#f9e2af">&#x25CF;</tspan>
+      <tspan fill="#bac2de"> Agent efficiency:  </tspan>
+      <tspan fill="#f9e2af">67/100</tspan>
+      <tspan fill="#585b70">  8 agent dispatches</tspan>
+    </text>
+
+    <!-- Bloated results -->
+    <text font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">
+      <tspan x="44" y="368" fill="#a6e3a1">&#x25CF;</tspan>
+      <tspan fill="#bac2de"> Bloated results:   </tspan>
+      <tspan fill="#a6e3a1">79/100</tspan>
+      <tspan fill="#585b70">  19 bloated of 270</tspan>
+    </text>
+
+    <!-- Duplicates -->
+    <text font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">
+      <tspan x="44" y="390" fill="#a6e3a1">&#x25CF;</tspan>
+      <tspan fill="#bac2de"> Duplicates:        </tspan>
+      <tspan fill="#a6e3a1">100/100</tspan>
+      <tspan fill="#585b70">  No duplicates detected</tspan>
+    </text>
+  </g>
+
+  <!-- ═══ Waste estimate ═══ -->
+  <g opacity="0">
+    <animate attributeName="opacity" values="0;1" dur="0.3s" begin="2.6s" fill="freeze"/>
+    <line x1="28" y1="408" x2="600" y2="408" stroke="#313244" stroke-width="1"/>
+    <text font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14">
+      <tspan x="28" y="432" fill="#bac2de">Estimated waste:     </tspan>
+      <tspan fill="#f38ba8" font-weight="bold">~190K tokens</tspan>
+      <tspan fill="#585b70"> (stale reads + bloated results)</tspan>
+    </text>
+  </g>
+
+  <!-- ═══ The Insight ═══ -->
+  <g opacity="0">
+    <animate attributeName="opacity" values="0;1" dur="0.4s" begin="3.2s" fill="freeze"/>
+    <rect x="28" y="454" width="744" height="76" rx="8" fill="#181825" stroke="#89b4fa" stroke-width="1" opacity="0.8"/>
+    <text x="48" y="478" fill="#89b4fa" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" font-weight="bold">This session is running on fumes.</text>
+    <text x="48" y="498" fill="#585b70" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12">708 messages, 2 compactions, 88% of original context gone.</text>
+    <text x="48" y="518" fill="#585b70" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12">Before Token Optimizer, you'd have no idea.</text>
+  </g>
+
+  <!-- ═══ Status bar content ═══ -->
+  <g opacity="0">
+    <animate attributeName="opacity" values="0;1" dur="0.3s" begin="0.2s" fill="freeze"/>
+    <text x="14" y="568" fill="#6c7086" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12">Opus 4.6</text>
+    <text x="100" y="568" fill="#313244" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12">|</text>
+    <text x="112" y="568" fill="#6c7086" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12">my-project</text>
+
+    <!-- Progress bar: 72% (orange/red zone) -->
+    <rect x="220" y="558" width="80" height="10" rx="4" fill="#313244"/>
+    <rect x="220" y="558" width="58" height="10" rx="4" fill="#fab387" opacity="0.8"/>
+    <text x="308" y="568" fill="#fab387" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12">72%</text>
+
+    <text x="354" y="568" fill="#313244" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12">|</text>
+    <text x="368" y="568" fill="#f38ba8" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12">Q:36</text>
+
+    <text x="414" y="568" fill="#313244" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12">|</text>
+    <text x="428" y="568" fill="#f38ba8" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12">Compacts:2(~88% lost)</text>
+  </g>
+</svg>

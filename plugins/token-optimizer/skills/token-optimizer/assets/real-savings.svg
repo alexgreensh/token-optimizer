@@ -1,0 +1,202 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 760" width="1000" height="760" role="img" aria-labelledby="title desc">
+  <title id="title">Estimated monthly savings for a heavy Token Optimizer user</title>
+  <desc id="desc">A dark, high-contrast animated diagram showing measured 30-day usage, a modeled historical baseline assumption, and estimated monthly savings across structural, behavioral, and runtime waste reduction.</desc>
+
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#101318"/>
+      <stop offset="58%" stop-color="#171b24"/>
+      <stop offset="100%" stop-color="#0b0e13"/>
+    </linearGradient>
+    <linearGradient id="totalGlow" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#7dd3fc"/>
+      <stop offset="48%" stop-color="#a7f3d0"/>
+      <stop offset="100%" stop-color="#c4b5fd"/>
+    </linearGradient>
+    <linearGradient id="structuralFill" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#16a34a"/>
+      <stop offset="100%" stop-color="#86efac"/>
+    </linearGradient>
+    <linearGradient id="behaviorFill" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#2563eb"/>
+      <stop offset="100%" stop-color="#93c5fd"/>
+    </linearGradient>
+    <linearGradient id="runtimeFill" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#7c3aed"/>
+      <stop offset="100%" stop-color="#c4b5fd"/>
+    </linearGradient>
+    <filter id="softShadow" x="-10%" y="-10%" width="120%" height="135%">
+      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#000000" flood-opacity="0.36"/>
+    </filter>
+
+    <style>
+      .bgText { font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .mono { font-family: "SF Mono", "Fira Code", ui-monospace, monospace; }
+      .muted { fill: #d1d5db; }
+      .quiet { fill: #a7b0c0; }
+      .strong { fill: #f8fafc; }
+      .headline {
+        animation: fadeHead 8200ms ease-in-out infinite;
+      }
+      .metric {
+        animation-duration: 8200ms;
+        animation-timing-function: ease-in-out;
+        animation-iteration-count: infinite;
+      }
+      .m1 { animation-name: fadeM1; }
+      .m2 { animation-name: fadeM2; }
+      .m3 { animation-name: fadeM3; }
+      .assumption {
+        animation: fadeAssumption 8200ms ease-in-out infinite;
+      }
+      .card {
+        animation-duration: 8200ms;
+        animation-timing-function: cubic-bezier(.2,.9,.2,1);
+        animation-iteration-count: infinite;
+      }
+      .card1 { animation-name: riseCard1; }
+      .card2 { animation-name: riseCard2; }
+      .card3 { animation-name: riseCard3; }
+      .barFill {
+        transform-box: fill-box;
+        transform-origin: left center;
+        animation-duration: 8200ms;
+        animation-timing-function: cubic-bezier(.16,1,.3,1);
+        animation-iteration-count: infinite;
+      }
+      .b1 { animation-name: loadB1; }
+      .b2 { animation-name: loadB2; }
+      .b3 { animation-name: loadB3; }
+      .totalBox {
+        animation: riseTotal 8200ms cubic-bezier(.2,.9,.2,1) infinite;
+      }
+      .pulse {
+        opacity: .48;
+        animation: breathe 2200ms ease-in-out infinite;
+      }
+      @keyframes fadeHead {
+        0%, 96%, 100% { opacity: 0; }
+        8%, 90% { opacity: 1; }
+      }
+      @keyframes riseTotal {
+        0%, 4%, 96%, 100% { opacity: 0; transform: translateY(18px); }
+        14%, 90% { opacity: 1; transform: translateY(0); }
+      }
+      @keyframes fadeM1 {
+        0%, 10%, 96%, 100% { opacity: 0; }
+        18%, 90% { opacity: 1; }
+      }
+      @keyframes fadeM2 {
+        0%, 12%, 96%, 100% { opacity: 0; }
+        20%, 90% { opacity: 1; }
+      }
+      @keyframes fadeM3 {
+        0%, 14%, 96%, 100% { opacity: 0; }
+        22%, 90% { opacity: 1; }
+      }
+      @keyframes fadeAssumption {
+        0%, 20%, 96%, 100% { opacity: 0; }
+        30%, 90% { opacity: 1; }
+      }
+      @keyframes riseCard1 {
+        0%, 26%, 96%, 100% { opacity: 0; transform: translateY(18px); }
+        36%, 90% { opacity: 1; transform: translateY(0); }
+      }
+      @keyframes riseCard2 {
+        0%, 34%, 96%, 100% { opacity: 0; transform: translateY(18px); }
+        44%, 90% { opacity: 1; transform: translateY(0); }
+      }
+      @keyframes riseCard3 {
+        0%, 42%, 96%, 100% { opacity: 0; transform: translateY(18px); }
+        52%, 90% { opacity: 1; transform: translateY(0); }
+      }
+      @keyframes loadB1 {
+        0%, 38%, 96%, 100% { transform: scaleX(0); }
+        52%, 90% { transform: scaleX(1); }
+      }
+      @keyframes loadB2 {
+        0%, 46%, 96%, 100% { transform: scaleX(0); }
+        60%, 90% { transform: scaleX(1); }
+      }
+      @keyframes loadB3 {
+        0%, 54%, 96%, 100% { transform: scaleX(0); }
+        68%, 90% { transform: scaleX(1); }
+      }
+      @keyframes breathe {
+        0%, 100% { opacity: .24; }
+        50% { opacity: .7; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .headline, .metric, .assumption, .card, .barFill, .totalBox, .pulse {
+          animation: none;
+          opacity: 1;
+          transform: none;
+        }
+      }
+    </style>
+  </defs>
+
+  <rect width="1000" height="760" rx="28" fill="url(#bg)"/>
+  <path d="M70 118 C216 54 362 72 486 146 C616 224 766 210 932 114" fill="none" stroke="#334155" stroke-width="2" opacity=".36"/>
+  <path class="pulse" d="M74 704 C218 638 354 656 486 710 C638 772 790 746 926 674" fill="none" stroke="#38bdf8" stroke-width="2"/>
+
+  <g class="headline bgText">
+    <text x="60" y="76" class="strong" font-size="42" font-weight="850" letter-spacing="0">Estimated monthly savings</text>
+    <text x="62" y="112" class="muted" font-size="21" font-weight="560">Real 30-day usage profile, modeled against a historical prefix baseline</text>
+  </g>
+
+  <g class="totalBox bgText" filter="url(#softShadow)">
+    <rect x="60" y="140" width="880" height="112" rx="24" fill="#0f172a" stroke="url(#totalGlow)" stroke-width="3"/>
+    <text x="500" y="178" fill="#d1d5db" font-size="18" font-weight="800" text-anchor="middle">ESTIMATED API-EQUIVALENT VALUE</text>
+    <text x="500" y="229" fill="#f8fafc" font-size="52" font-weight="900" text-anchor="middle">~$350-$750 / month</text>
+  </g>
+
+  <g class="metric bgText m1">
+    <rect x="60" y="280" width="280" height="82" rx="16" fill="#202635" stroke="#334155"/>
+    <text x="86" y="314" class="quiet" font-size="16" font-weight="800">SESSIONS</text>
+    <text x="86" y="349" class="strong" font-size="36" font-weight="850">428</text>
+  </g>
+  <g class="metric bgText m2">
+    <rect x="360" y="280" width="280" height="82" rx="16" fill="#202635" stroke="#334155"/>
+    <text x="386" y="314" class="quiet" font-size="16" font-weight="800">API CALLS</text>
+    <text x="386" y="349" class="strong" font-size="36" font-weight="850">12,430</text>
+  </g>
+  <g class="metric bgText m3">
+    <rect x="660" y="280" width="280" height="82" rx="16" fill="#202635" stroke="#334155"/>
+    <text x="686" y="314" class="quiet" font-size="16" font-weight="800">INPUT MIX</text>
+    <text x="686" y="349" class="strong" font-size="36" font-weight="850">2.23B</text>
+  </g>
+
+  <g class="assumption bgText">
+    <rect x="60" y="384" width="880" height="58" rx="16" fill="#111827" stroke="#263244"/>
+    <text x="86" y="408" fill="#d1d5db" font-size="18" font-weight="720">Measured split: 8.7M fresh input, 2.13B cache-read input</text>
+    <text x="86" y="431" fill="#d1d5db" font-size="18" font-weight="720">88.5M cache-write input, 9.65M output</text>
+  </g>
+
+  <g class="bgText card card1" filter="url(#softShadow)">
+    <rect x="60" y="468" width="880" height="80" rx="18" fill="#202635" stroke="#334155"/>
+    <text x="86" y="501" fill="#86efac" font-size="26" font-weight="850">Structural</text>
+    <text x="86" y="527" class="muted" font-size="18" font-weight="560">Historical baseline: 45K start, 15K-20K prefix tokens trimmed</text>
+    <text x="900" y="514" fill="#bbf7d0" font-size="32" font-weight="900" text-anchor="end">$300-550</text>
+    <rect x="86" y="534" width="630" height="10" rx="5" fill="#0f172a"/>
+    <rect class="barFill b1" x="86" y="534" width="430" height="10" rx="5" fill="url(#structuralFill)"/>
+  </g>
+
+  <g class="bgText card card2" filter="url(#softShadow)">
+    <rect x="60" y="570" width="880" height="80" rx="18" fill="#202635" stroke="#334155"/>
+    <text x="86" y="603" fill="#93c5fd" font-size="26" font-weight="850">Behavioral</text>
+    <text x="86" y="629" class="muted" font-size="18" font-weight="560">Modeled: better compact timing, warmer cache, fewer loops</text>
+    <text x="900" y="616" fill="#bfdbfe" font-size="32" font-weight="900" text-anchor="end">$50-150</text>
+    <rect x="86" y="636" width="630" height="10" rx="5" fill="#0f172a"/>
+    <rect class="barFill b2" x="86" y="636" width="132" height="10" rx="5" fill="url(#behaviorFill)"/>
+  </g>
+
+  <g class="bgText card card3" filter="url(#softShadow)">
+    <rect x="60" y="672" width="880" height="80" rx="18" fill="#202635" stroke="#334155"/>
+    <text x="86" y="705" fill="#c4b5fd" font-size="26" font-weight="850">Runtime</text>
+    <text x="86" y="731" class="muted" font-size="18" font-weight="560">Measured + estimated: compression, MCP caps, smarter re-reads</text>
+    <text x="900" y="718" fill="#ddd6fe" font-size="32" font-weight="900" text-anchor="end">$15-50</text>
+    <rect x="86" y="738" width="630" height="10" rx="5" fill="#0f172a"/>
+    <rect class="barFill b3" x="86" y="738" width="60" height="10" rx="5" fill="url(#runtimeFill)"/>
+  </g>
+</svg>

@@ -1,0 +1,72 @@
+"""WebSearch routing nudge detector for Token Optimizer.
+
+Post-hoc detector that identifies heavy web search/fetch usage across sessions
+and suggests routing through dedicated subagents or targeted queries.
+"""
+
+# Only tools that dump full web pages into the main session context.
+# Exa, Perplexity, BrightData MCP tools return focused snippets by design
+# and are NOT overhead — they're the recommended approach.
+_WEB_TOOLS = frozenset({
+    "WebSearch", "WebFetch",
+    "mcp__tavily__tavily_crawl",  # full-page crawl is expensive
+})
+
+# Tavily search/extract are moderate; Exa/BrightData/Perplexity are efficient
+_WEB_MCP_PREFIXES = ()  # no blanket prefix matching — too aggressive
+
+_EST_TOKENS_PER_CALL = 5000
+_MIN_CALLS = 5
+_MIN_TOKENS = 50_000
+
+
+def _count_web_calls(tool_calls):
+    """Count web search/fetch tool calls from a tool_calls dict."""
+    count = sum(tool_calls.get(t, 0) for t in _WEB_TOOLS)
+    for name, n in tool_calls.items():
+        if name in _WEB_TOOLS:
+            continue
+        if any(name.startswith(p) for p in _WEB_MCP_PREFIXES):
+            count += n
+    return count
+
+
+def detect_websearch_routing(trends):
+    """Detect heavy web search usage from aggregated trends data.
+
+    Args:
+        trends: dict from _collect_trends_data() with total_tools, session_count, days
+
+    Returns:
+        list[dict] of findings
+    """
+    total_tools = trends.get("tool_calls", {})
+    web_calls = _count_web_calls(total_tools)
+    est_tokens = web_calls * _EST_TOKENS_PER_CALL
+    session_count = trends.get("session_count", 1)
+    days = trends.get("days", 30)
+
+    if web_calls < _MIN_CALLS or est_tokens < _MIN_TOKENS:
+        return []
+
+    avg_per_session = web_calls / max(session_count, 1)
+
+    # Don't flag if average is less than 1 call per session — that's normal usage
+    if avg_per_session < 1.0:
+        return []
+
+    return [{
+        "name": "websearch_routing",
+        "confidence": 0.7 if avg_per_session >= 3 else 0.5,
+        "evidence": (
+            f"{web_calls} web search/fetch calls across {session_count} sessions "
+            f"({days}d), ~{est_tokens:,} tokens of web content"
+        ),
+        "savings_tokens": est_tokens,
+        "suggestion": (
+            f"Web results consumed ~{est_tokens:,} tokens ({avg_per_session:.1f} calls/session avg). "
+            "Run research in subagents so web content stays in their context (not yours). "
+            "Use search APIs (Exa, Perplexity) for focused snippets instead of full page dumps."
+        ),
+        "occurrence_count": web_calls,
+    }]

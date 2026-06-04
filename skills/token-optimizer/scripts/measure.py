@@ -7296,7 +7296,8 @@ CREATE TABLE IF NOT EXISTS session_log (
     topic TEXT,
     collected_at TEXT,
     quality_score REAL,
-    quality_grade TEXT
+    quality_grade TEXT,
+    stale_waste_tokens INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS daily_stats (
@@ -7393,6 +7394,10 @@ def _init_trends_db():
             conn.execute("ALTER TABLE session_log ADD COLUMN quality_score REAL")
         if "quality_grade" not in cols:
             conn.execute("ALTER TABLE session_log ADD COLUMN quality_grade TEXT")
+        # B1: per-session reclaimable stale-read waste (opportunity tier only,
+        # never summed into realized savings). Defaults 0 for pre-existing rows.
+        if "stale_waste_tokens" not in cols:
+            conn.execute("ALTER TABLE session_log ADD COLUMN stale_waste_tokens INTEGER DEFAULT 0")
         conn.commit()
     except sqlite3.Error:
         pass
@@ -7973,6 +7978,8 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
 
         # Compute quality score at collection time for persistence
         sq = score_session_quality(parsed)
+        # B1: persist reclaimable stale-read waste (opportunity tier, not realized).
+        stale_waste = _session_stale_waste_tokens(filepath)
 
         # Insert session_log
         cur = conn.execute(
@@ -7983,8 +7990,8 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
                 avg_call_gap_seconds, max_call_gap_seconds, p95_call_gap_seconds,
                 skills_json, subagents_json, tool_calls_json, model_usage_json,
                 all_model_usage_json, model_usage_breakdown_json, version, slug, topic, collected_at,
-                quality_score, quality_grade)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                quality_score, quality_grade, stale_waste_tokens)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 str(filepath), date, project_name,
                 parsed["duration_minutes"],
@@ -8011,6 +8018,7 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
                 datetime.now().isoformat(),
                 sq["score"],
                 sq["grade"],
+                int(stale_waste or 0),
             ),
         )
         if cur.rowcount != 1:
@@ -12490,6 +12498,24 @@ def detect_stale_reads(quality_data):
         "count": len(stale),
         "estimated_waste_tokens": estimated_waste_tokens,
     }
+
+
+def _session_stale_waste_tokens(filepath):
+    """Reclaimable stale-read waste (tokens) for one session's JSONL, or 0.
+
+    Reuses the same quality parse + detect_stale_reads the scorer runs, but
+    persists the token estimate the scorer discards. This is RECLAIMABLE waste
+    (reads that slipped through and were billed), surfaced ONLY in the
+    opportunity tier — it is never counted as realized savings. Guarded: any
+    parse failure or oversized file yields 0 (conservative under-count).
+    """
+    try:
+        qd = _parse_jsonl_for_quality(filepath)
+        if not qd:
+            return 0
+        return int(detect_stale_reads(qd).get("estimated_waste_tokens", 0) or 0)
+    except Exception:
+        return 0
 
 
 def detect_reread_loops(quality_data):
@@ -19263,6 +19289,48 @@ def _estimate_cache_drop_savings(days=30):
         return zero
 
 
+def _estimate_stale_reads_reclaimable(days=30):
+    """Reclaimable stale-read waste over the window — OPPORTUNITY tier only.
+
+    Sums session_log.stale_waste_tokens: per-session reads that slipped through
+    (re-read after write, or far-distance stale) and were BILLED. This is NOT
+    realized savings — it is waste the user COULD reclaim by avoiding redundant
+    re-reads, using .contextignore, or compacting. It is never summed into the
+    realized total (that would re-introduce the inflation the integrity fixes
+    remove). Priced at the input rate; reports the contributing session count as
+    an honest sample size. Returns zeros (evidence=opportunity) with no data.
+    Never raises.
+    """
+    zero = {"tokens": 0, "cost_usd": 0.0, "sessions": 0, "evidence": "opportunity"}
+    try:
+        if not TRENDS_DB.exists():
+            return zero
+        cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        conn = _init_trends_db()
+        try:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(stale_waste_tokens),0), "
+                "COALESCE(SUM(CASE WHEN stale_waste_tokens > 0 THEN 1 ELSE 0 END),0) "
+                "FROM session_log WHERE date >= ?",
+                (cutoff,),
+            ).fetchone()
+        finally:
+            conn.close()
+        tokens = int(row[0] or 0)
+        sessions = int(row[1] or 0)
+        if tokens <= 0:
+            return zero
+        rate = _estimate_compression_cost_per_mtok()
+        return {
+            "tokens": tokens,
+            "cost_usd": round(tokens * rate / 1_000_000, 4),
+            "sessions": sessions,
+            "evidence": "opportunity",
+        }
+    except (sqlite3.Error, OSError):
+        return zero
+
+
 def _get_merged_savings(days=30):
     """Merge savings_events and compression_events into one unified savings view.
 
@@ -19333,6 +19401,7 @@ def _get_merged_savings(days=30):
     model_routing = _compute_model_routing_savings(days=days)
     output_waste = _estimate_output_waste(days=days)
     cache_drop = _estimate_cache_drop_savings(days=days)
+    stale_reads_reclaimable = _estimate_stale_reads_reclaimable(days=days)
 
     return {
         "total_tokens": total_tokens,
@@ -19353,6 +19422,10 @@ def _get_merged_savings(days=30):
         "model_routing": model_routing,
         "output_waste": output_waste,
         "cache_drop": cache_drop,
+        # Opportunity tier: reclaimable stale-read waste. Intentionally NOT in
+        # total_tokens/total_cost above — billed waste the user could reclaim,
+        # never realized savings.
+        "stale_reads_reclaimable": stale_reads_reclaimable,
     }
 
 

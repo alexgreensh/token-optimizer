@@ -3555,11 +3555,11 @@ var DB = (function() {
     // routing + sub-agents), grounded in your own earliest-vs-recent sessions. ----
     var ba = s.before_after || {};
     if (Number(ba.monthly_savings_usd) > 0) {
-      function baCol(title, cost, toks, opus, accent, dim) {
+      function baCol(title, cost, toks, mix, accent, dim) {
         return '<div>' +
           '<div class="label" style="margin-bottom:6px;">' + esc(title) + '</div>' +
           '<div style="font-family:var(--font-mono);font-weight:300;font-size:34px;line-height:1;color:' + accent + ';' + (dim ? '' : 'text-shadow:0 0 12px var(--c-accent-glow);') + '">' + esc(cost) + '<span style="font-size:14px;color:var(--c-text-dim);">/session</span></div>' +
-          '<div style="margin-top:var(--s-2);font-size:14px;color:var(--c-text-dim);font-family:var(--font-mono);line-height:1.95;">' + esc(toks) + ' tokens/session<br>' + esc(opus) + ' Opus</div>' +
+          '<div style="margin-top:var(--s-2);font-size:14px;color:var(--c-text-dim);font-family:var(--font-mono);line-height:1.95;">' + esc(toks) + ' tokens/session' + (mix ? '<br>' + esc(mix) : '') + '</div>' +
         '</div>';
       }
       // "Where it comes from": waterfall attribution of the $/mo headline. Each lever's
@@ -3603,7 +3603,8 @@ var DB = (function() {
           '<div class="note" style="margin-top:var(--s-2);">Each line is the share it accounts for, largest first, and the lines add up to the total. A minus sign means that part grew instead.</div>' +
         '</div>';
       }
-      var beforeOpusPct = Math.round((Number(ba.before_opus) || 0) * 100);
+      var beforeMix = ba.before_mix_label || '';  // e.g. "95% Opus" or "62% GPT-5.2-Codex"
+      var afterMix = ba.after_mix_label || '';
       var baExplicit = ba.baseline_source === 'pretool_baseline';  // stable flag, not display prose
       html += '<div class="card wide" style="padding:var(--s-5) var(--s-4);margin-bottom:var(--s-3);">' +
         '<div class="label" style="margin-bottom:var(--s-2);">The big picture &middot; estimated</div>' +
@@ -3614,12 +3615,12 @@ var DB = (function() {
         '<div class="lede">Running this month\'s work the heavy way you used to would cost about <strong>' + money(ba.monthly_savings_usd) + '/mo more</strong> than it does now. That is the value of working lighter, measured against your own pre-tool baseline.</div>' +
         '<div class="lede" style="margin-top:var(--s-2);">Your <strong>' + (Number(ba.sessions_per_month) || 0).toLocaleString() + ' sessions a month</strong> ran about <strong>' + money(ba.before_cost_per_session) + '</strong> each back then. They run <strong>' + money(ba.after_cost_per_session) + '</strong> now.</div>' +
         fold('What changed',
-          '<p>Your earliest sessions ran heavier, with ' + beforeOpusPct + '% of the work on Opus. Now sessions are lighter, sub-agents are lighter, and routine work runs on cheaper models. That compounds across every session you run.</p>' +
+          '<p>Your earliest sessions ran heavier' + (beforeMix ? ', mostly ' + esc(beforeMix) : '') + '. Now sessions are lighter, sub-agents are lighter, and routine work runs on cheaper models. That compounds across every session you run.</p>' +
           '<p>Most of the old cost was long sessions re-reading their cached context, turn after turn. Shorter sessions cut that, and Token Optimizer flags when it is happening so you know to start fresh.</p>') +
         baBreakdown(ba) +
         '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:var(--s-4) var(--s-5);margin-top:var(--s-4);padding-top:var(--s-4);border-top:1px solid rgba(255,255,255,0.06);">' +
-          baCol(baExplicit ? 'Before, your baseline' : 'Before, baseline window', money(ba.before_cost_per_session), fmtTok(ba.before_tokens), beforeOpusPct + '%', 'var(--c-text-main)', true) +
-          baCol('Now', money(ba.after_cost_per_session), fmtTok(ba.after_tokens), Math.round((Number(ba.after_opus)||0) * 100) + '%', 'var(--c-accent-cyan)', false) +
+          baCol(baExplicit ? 'Before, your baseline' : 'Before, baseline window', money(ba.before_cost_per_session), fmtTok(ba.before_tokens), beforeMix, 'var(--c-text-main)', true) +
+          baCol('Now', money(ba.after_cost_per_session), fmtTok(ba.after_tokens), afterMix, 'var(--c-accent-cyan)', false) +
           '<div><div class="label" style="margin-bottom:6px;">Cut per session</div>' +
             '<div style="font-family:var(--font-mono);font-weight:300;font-size:34px;line-height:1;color:var(--c-accent-cyan);text-shadow:0 0 12px var(--c-accent-glow);">' + money(ba.savings_per_session) + '</div>' +
             '<div style="margin-top:var(--s-2);font-size:14px;color:var(--c-text-dim);font-family:var(--font-mono);line-height:1.95;">across a ' + (Number(ba.before_sessions) || 0).toLocaleString() + '-session baseline</div></div>' +
@@ -3627,9 +3628,10 @@ var DB = (function() {
         fold('How we work this number out',
           '<p>We measure how heavy your sessions ran before Token Optimizer, price this month\'s workload at both rates, and report the difference.</p>' +
           '<p>The baseline is conservative by design. It comes from your earliest recorded sessions, which were already running Token Optimizer, so your true pre-tool sessions were heavier. This figure understates the full gap rather than inflating it.</p>' +
-          (baExplicit
+          // Offer the set-baseline tip only when the user has not pinned one AND their
+          // mix is Opus-based (the --opus flag is Anthropic-specific; hide it for Codex).
+          (baExplicit || !(Number(ba.before_opus) > 0)
             ? ''
-            // Offer the set-baseline tip only when the user has not already pinned one.
             : '<p style="color:var(--c-accent-cyan);">For a sharper baseline, run <strong>/token-optimizer set-baseline --opus 0.95</strong> to pin your real pre-install model mix.</p>') +
           // Volume-growth context: when you run many more sessions now than in the
           // baseline era, part of the monthly figure is volume, stated as fact.

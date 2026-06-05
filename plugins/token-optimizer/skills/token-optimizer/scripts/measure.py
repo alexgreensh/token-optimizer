@@ -19285,6 +19285,33 @@ def _model_mix_shares(days=14):
     return out
 
 
+def _default_model_for_runtime():
+    """Representative model id to price a session against when the era's model mix
+    has no priced entries at all. Runtime-aware so a Codex user is never priced at
+    Anthropic rates (and vice versa)."""
+    return "gpt-5-codex" if detect_runtime() == "codex" else "sonnet"
+
+
+def _friendly_model(model):
+    """Human label for a model id: 'opus' -> 'Opus', 'gpt-5.2-codex' -> 'GPT-5.2-Codex'."""
+    m = _strip_provider_prefixes(str(model or "")) or str(model or "")
+    if m in ("opus", "sonnet", "haiku"):
+        return m.capitalize()
+    if m.startswith("gpt-") or m.startswith("o3") or m.startswith("o4"):
+        return m.upper().replace("CODEX", "Codex").replace("MINI", "mini").replace("NANO", "nano").replace("PRO", "Pro")
+    return m
+
+
+def _mix_label(shares):
+    """Short label for a model mix: the dominant model + its share, e.g. '95% Opus'
+    or '62% GPT-5.2-Codex'. Provider-agnostic display string. 'mixed' when empty."""
+    priced = {m: s for m, s in (shares or {}).items() if s and s > 0}
+    if not priced:
+        return "mixed"
+    top, share = max(priced.items(), key=lambda kv: kv[1])
+    return f"{round(share * 100)}% {_friendly_model(top)}"
+
+
 def _model_rate_per_mtok(model):
     """Conservative $/MTok proxy for a model: its input rate.
 
@@ -19702,7 +19729,10 @@ def _estimate_cache_drop_savings(days=30):
 # n) were capped at different effective percentiles, biasing the comparison upward. v3
 # uses a true nearest-rank percentile that applies the SAME tail fraction at every
 # sample size, so small windows are no longer over-capped and the two sides stay fair.
-_BASELINE_VERSION = 3
+# v4: store the full model-mix shares (not just opus_share) so the before/after
+# transformation prices each era at its real model mix -- works for Codex/GPT and any
+# provider, not just Anthropic opus-vs-sonnet.
+_BASELINE_VERSION = 4
 _BASELINE_ONBOARDING_DAYS = _int_env("TOKEN_OPTIMIZER_BASELINE_ONBOARDING_DAYS", 1)
 _BASELINE_EARLY_WINDOW_DAYS = _int_env("TOKEN_OPTIMIZER_BASELINE_WINDOW_DAYS", 30)
 # Percentile at which a single session's total tokens is capped (winsorized). 0.99
@@ -19836,11 +19866,13 @@ def _compute_baseline_state():
         # weeks 3-4).
         baseline = _pretool_baseline_mix()
         if baseline:
+            model_shares = dict(baseline)  # {"opus": x, "sonnet": 1-x}
             opus_share = float(baseline.get("opus", 0.0))
             opus_source = "pretool_baseline"
         else:
             early = _earliest_model_mix(lookback_days=_BASELINE_EARLY_WINDOW_DAYS)
-            opus_share = float((early.get("shares") or {}).get("opus", 0.0)) if early else 0.0
+            model_shares = dict((early.get("shares") or {})) if early else {}
+            opus_share = float(model_shares.get("opus", 0.0))
             opus_source = "robust_earliest"
 
         struct_overhead = 0
@@ -19862,6 +19894,7 @@ def _compute_baseline_state():
             },
             "opus_share": round(opus_share, 4),
             "opus_share_source": opus_source,
+            "model_shares": {k: round(float(v), 4) for k, v in model_shares.items() if v},
             "window": {
                 "start": win_start.strftime("%Y-%m-%d"),
                 "end": win_end.strftime("%Y-%m-%d"),
@@ -19971,6 +20004,7 @@ def _estimate_before_after_savings(days=30):
     zero = {"before_cost_per_session": 0.0, "after_cost_per_session": 0.0,
             "savings_per_session": 0.0, "sessions_per_month": 0,
             "monthly_savings_usd": 0.0, "before_opus": 0.0, "after_opus": 0.0,
+            "before_mix_label": "", "after_mix_label": "",
             "before_tokens": 0, "after_tokens": 0, "before_sessions": 0,
             "after_sessions": 0, "baseline_source": None, "breakdown": [],
             "breakdown_caveat": "", "reason": None, "evidence": "estimated"}
@@ -19992,8 +20026,11 @@ def _estimate_before_after_savings(days=30):
         before_opus = float(baseline.get("opus_share", 0) or 0)
         baseline_source = baseline.get("opus_share_source") or "robust_earliest"
         bn = int((baseline.get("window") or {}).get("sessions_used", 0) or 0)
-        if before_opus <= 0:
-            return {**zero, "before_sessions": bn, "reason": "insufficient_history"}
+        # Pre-tool model mix as full shares (provider-agnostic). Back-compat: a baseline
+        # frozen before v4 has only opus_share -> synthesize an opus/sonnet split.
+        before_shares = dict(baseline.get("model_shares") or {})
+        if not before_shares and before_opus > 0:
+            before_shares = {"opus": before_opus, "sonnet": round(1.0 - before_opus, 4)}
 
         # "After" = a robust (same winsorized-mean) typical CURRENT session, priced at the
         # measured current model mix. Same estimator both sides keeps the comparison fair.
@@ -20019,21 +20056,32 @@ def _estimate_before_after_savings(days=30):
         if recent_n < _AFTER_MIN_SESSIONS:
             return {**zero, "before_sessions": bn, "reason": "no_recent_sessions"}
         (afi, acw, acr, aout), an, _ = _winsorized_mean_session(recent_rows)
-        after_opus = float((_model_mix_shares(days=days).get("shares") or {}).get("opus", 0.0))
+        after_shares = dict((_model_mix_shares(days=days).get("shares") or {}))
+        after_opus = float(after_shares.get("opus", 0.0))
 
-        # Price each typical session via the canonical rate card at opus vs sonnet, then
-        # blend by the era's Opus share. Opus-vs-rest binary by design (the baseline IS an
-        # opus_share); omitting haiku from the current mix is conservative (haiku is
-        # cheaper, so it only nudges the "after" cost upward).
+        # Price each typical session at its era's REAL model mix: blend the per-model
+        # rate card over the priced models in the mix, renormalized over priced share so
+        # an unpriced entry (a generic "codex" row, an unrecognized model) never drags the
+        # cost toward zero. Provider-agnostic -- Anthropic (opus/sonnet/haiku) and Codex
+        # (gpt-*-codex) both price correctly. Same estimator both sides keeps it fair.
         tier = _load_pricing_tier()  # resolve once; cost_per_session runs 7x below
 
-        def cost_per_session(fi, cw, cr, out, opus_share):
-            co = _get_model_cost("opus", int(fi), int(out), int(cr), int(cw), tier=tier)
-            cs = _get_model_cost("sonnet", int(fi), int(out), int(cr), int(cw), tier=tier)
-            return opus_share * co + (1 - opus_share) * cs
+        def cost_per_session(fi, cw, cr, out, shares):
+            priced = {m: s for m, s in (shares or {}).items()
+                      if s and s > 0 and _is_priced_model(m, tier)}
+            psum = sum(priced.values())
+            if psum <= 0:
+                return _get_model_cost(_default_model_for_runtime(), int(fi), int(out),
+                                       int(cr), int(cw), tier=tier)
+            return sum((s / psum) * _get_model_cost(m, int(fi), int(out), int(cr), int(cw), tier=tier)
+                       for m, s in priced.items())
 
-        before_cost = cost_per_session(bfi, bcw, bcr, bout, before_opus)
-        after_cost = cost_per_session(afi, acw, acr, aout, after_opus)
+        before_cost = cost_per_session(bfi, bcw, bcr, bout, before_shares)
+        after_cost = cost_per_session(afi, acw, acr, aout, after_shares)
+        # Replaces the old `before_opus<=0` bail (which hid the panel for any 0%-Opus /
+        # Codex baseline): the only true blocker is being unable to price the baseline.
+        if before_cost <= 0:
+            return {**zero, "before_sessions": bn, "reason": "insufficient_history"}
         per_session = before_cost - after_cost
         # Monthly-ize by the ACTUAL after-window length (the cutoff may have been clamped
         # to the baseline end for a recently installed user, so it can be < `days`).
@@ -20058,6 +20106,8 @@ def _estimate_before_after_savings(days=30):
                     "before_cost_per_session": round(before_cost, 4),
                     "after_cost_per_session": round(after_cost, 4),
                     "before_opus": round(before_opus, 4), "after_opus": round(after_opus, 4),
+                    "before_mix_label": _mix_label(before_shares),
+                    "after_mix_label": _mix_label(after_shares),
                     "reason": "net_negative" if per_session <= 0 else "no_recent_sessions"}
 
         # --- Attribution breakdown of the per-session delta (waterfall) ---
@@ -20072,18 +20122,18 @@ def _estimate_before_after_savings(days=30):
         # priced at today's mix, split by token class heaviest-first. `waterfall_index`
         # preserves that causal order for machines; the list is sorted largest-first
         # for display.
-        v0 = cost_per_session(bfi, bcw, bcr, bout, after_opus)  # before tokens, today's mix
+        v0 = cost_per_session(bfi, bcw, bcr, bout, after_shares)  # before tokens, today's mix
         s_route = before_cost - v0
-        v1 = cost_per_session(bfi, bcw, acr, bout, after_opus)  # context re-reads collapse
-        v2 = cost_per_session(bfi, acw, acr, bout, after_opus)  # structural prefix
-        v3 = cost_per_session(afi, acw, acr, bout, after_opus)  # fresh input
+        v1 = cost_per_session(bfi, bcw, acr, bout, after_shares)  # context re-reads collapse
+        v2 = cost_per_session(bfi, acw, acr, bout, after_shares)  # structural prefix
+        v3 = cost_per_session(afi, acw, acr, bout, after_shares)  # fresh input
         # final class: output (v3 holds before-output bout; after_cost holds after-output aout)
         # Each lever: (key, savings-framed label, grew-framed label, per-session delta).
         # A negative delta means that class GREW (a cost increase), so the grew label is
         # shown, so a "-$X" line never reads as if cutting that class saved money.
         _levers = [
-            ("routing", "Smarter routing (less Opus)",
-             "Routing shifted toward Opus (added cost)", s_route),
+            ("routing", "Smarter model routing (lighter mix)",
+             "Model mix shifted to costlier models (added cost)", s_route),
             ("context_rereads", "Lighter sessions (fewer context re-reads)",
              "Heavier context re-reads (added cost)", v0 - v1),
             ("structural", "Trimmed structural prefix",
@@ -20118,6 +20168,8 @@ def _estimate_before_after_savings(days=30):
             "monthly_savings_usd": round(per_session * sessions_per_month, 2),
             "before_opus": round(before_opus, 4),
             "after_opus": round(after_opus, 4),
+            "before_mix_label": _mix_label(before_shares),
+            "after_mix_label": _mix_label(after_shares),
             "before_tokens": int(bfi + bcw + bcr + bout),
             "after_tokens": int(afi + acw + acr + aout),
             "before_sessions": bn,

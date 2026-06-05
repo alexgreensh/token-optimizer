@@ -76,13 +76,17 @@ token volume (commonly 80%+, rising with session length) is cache-reads — the 
 each user's own measured cache-hit rate. Cache-reads are cheap per token (0.1×) but enormous in volume, so they
 dominate cost. The whole savings story is largely about cache-read *volume* falling.
 
-**Per-session cost** (`cost_per_session`): price the class vector at Opus and at Sonnet via
-`_get_model_cost`, then blend by the era's Opus share:
+**Per-session cost** (`cost_per_session`): price the class vector at the era's REAL model
+mix. For each priced model in the mix, price the vector at that model's rate card via
+`_get_model_cost`, then blend by the model's share (renormalized over the priced models so
+an unpriced entry never drags the cost toward zero):
 ```
-cost = opus_share × cost_opus(vec) + (1 − opus_share) × cost_sonnet(vec)
+cost = Σ_model (share_model / Σ priced shares) × cost_model(vec)
 ```
-Opus-vs-rest is binary by design (the baseline is an Opus share). Omitting Haiku from the
-current mix is conservative — Haiku is cheaper, so it would only lower the "after" cost.
+This is provider-agnostic: an Anthropic era blends Opus/Sonnet/Haiku; a Codex era blends
+gpt-5-codex / gpt-5.x / mini by their measured shares. The same blend is applied to both the
+before and after windows, so the comparison is fair. If a mix has no priced models at all, the
+session is priced at a single runtime-default model (Codex → gpt-5-codex, else Sonnet).
 
 ---
 
@@ -118,9 +122,12 @@ real sessions**, captured once and frozen:
   - **Why not the earliest-N-sessions cohort:** a 60-session cohort lets ~5 marathon sessions
     (8% of the window) dominate the mean. Over a 30-day window those same marathons are ~1%
     and the mean is stable. The fix to an earlier over-estimate was the *window*, not trimming.
-- **Baseline Opus share:** the user's explicit pre-TO value (`pretool_baseline.json`,
-  `opus_share_source = "pretool_baseline"`) if set; else the earliest measured Opus mix
-  (`"robust_earliest"`). Remaining share is Sonnet.
+- **Baseline model mix:** the baseline stores the full pre-TO model-mix shares
+  (`model_shares`). For an Anthropic user with an explicit pre-TO value
+  (`pretool_baseline.json`, `opus_share_source = "pretool_baseline"`) it is the recorded
+  Opus split; otherwise it is the earliest measured mix (`"robust_earliest"`) — which for a
+  Codex user is their early gpt-* mix. The before/after prices each side at its own stored
+  mix, so the transformation works on any provider, not just Anthropic.
 - **New users:** the baseline freezes automatically once the 30-day window has fully elapsed
   AND ≥ `_BASELINE_MIN_STABLE_SESSIONS` (30) sessions exist — until then the transformation
   is hidden (no fake number). **Existing users** (installed before any baseline was captured):
@@ -204,7 +211,7 @@ token class heaviest-first:
 
 | Lever | What it is |
 |---|---|
-| `routing` | Cost removed by the Opus-share shift (e.g. 95% → 68%) |
+| `routing` | Cost removed by the model-mix shift, holding tokens fixed (e.g. Anthropic 95%→68% Opus, or Codex moving off a pricier GPT tier). A negative value means the mix moved to costlier models. |
 | `context_rereads` | Cost removed by the cache-read volume collapse (lighter sessions) — usually the largest |
 | `structural` | Cost removed by the trimmed cache-write / structural prefix |
 | `fresh_input` | Change in fresh-input cost |

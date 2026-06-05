@@ -19420,6 +19420,42 @@ def _pretool_baseline_mix():
     return {"opus": share, "sonnet": round(1.0 - share, 4)}
 
 
+def set_pretool_baseline(args):
+    """Record the user's pre-Token-Optimizer Opus share (CLI: `set-baseline --opus 0.95`).
+
+    Writes pretool_baseline.json to SNAPSHOT_DIR. Use this when your earliest captured
+    history is already optimized, so the "Your transformation" before/after reflects
+    your true pre-TO era. Without it, the transformation falls back to your measured
+    earliest sessions. Never raises fatally.
+    """
+    opus = None
+    for i, a in enumerate(args):
+        if a == "--opus" and i + 1 < len(args):
+            try:
+                opus = float(args[i + 1])
+            except ValueError:
+                opus = None
+    if opus is None or not (0.0 < opus <= 1.0):
+        print("  Usage: set-baseline --opus <0..1>   (e.g. --opus 0.95 for 95% Opus pre-TO)")
+        try:
+            bp = SNAPSHOT_DIR / "pretool_baseline.json"
+            if bp.exists():
+                cur = json.loads(bp.read_text(encoding="utf-8"))
+                print(f"  Current baseline: {float(cur.get('opus_share', 0)) * 100:.0f}% Opus")
+        except (json.JSONDecodeError, OSError, ValueError, TypeError):
+            pass
+        return
+    try:
+        SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        bp = SNAPSHOT_DIR / "pretool_baseline.json"
+        bp.write_text(json.dumps({"opus_share": round(opus, 4)}) + "\n", encoding="utf-8")
+        print(f"  [Token Optimizer] Pre-TO baseline set: {opus * 100:.0f}% Opus.")
+        print("  'Your transformation' now prices the before-era at this mix.")
+        print(f"  Saved to {_display_path(bp)}")
+    except OSError as e:
+        print(f"  [Error] Could not write baseline: {e}")
+
+
 def _compute_model_routing_savings(days=30):
     """Model-routing savings: realized (mix shift vs baseline) + potential (remaining Opus).
 
@@ -19556,12 +19592,14 @@ def _estimate_output_waste(days=30):
     We estimate avoidable output as a conservative share of Write calls times a
     typical per-rewrite output delta, priced at the OUTPUT rate. This is a
     coaching OPPORTUNITY (use Edit over Write), never a forced output cap, which
-    would risk truncating real work. Labelled estimated. Never raises.
+    would risk truncating real work. OPPORTUNITY tier (avoidable output you COULD
+    save by using Edit over Write); not a realized saving, never summed into the
+    realized total. Never raises.
 
     Returns {writes, edits, avoidable_writes, tokens_saved, cost_saved_usd, evidence}.
     """
     zero = {"writes": 0, "edits": 0, "avoidable_writes": 0, "tokens_saved": 0,
-            "cost_saved_usd": 0.0, "evidence": "estimated"}
+            "cost_saved_usd": 0.0, "evidence": "opportunity"}
     try:
         tools = _sum_tool_calls(days=days)
         writes = int(tools.get("Write", 0) or 0)
@@ -19583,7 +19621,7 @@ def _estimate_output_waste(days=30):
             "avoidable_writes": avoidable,
             "tokens_saved": tokens_saved,
             "cost_saved_usd": round(tokens_saved * output_rate / 1_000_000, 4),
-            "evidence": "estimated",
+            "evidence": "opportunity",
         }
     except Exception:
         return zero
@@ -19606,9 +19644,12 @@ def _estimate_cache_drop_savings(days=30):
     Labelled estimated/opportunity. Never raises.
 
     Returns {drop_sessions, est_drops, prefix_tokens, cost_saved_usd, evidence}.
+    OPPORTUNITY tier: counts drops that ALREADY happened (TO does not yet prevent
+    them); the cost is reclaimable by compacting before breaks / using the 1h cache,
+    not a realized saving. Never summed into the realized total.
     """
     zero = {"drop_sessions": 0, "est_drops": 0, "prefix_tokens": 0,
-            "cost_saved_usd": 0.0, "evidence": "estimated"}
+            "cost_saved_usd": 0.0, "evidence": "opportunity"}
     try:
         if not TRENDS_DB.exists():
             return zero
@@ -19638,9 +19679,160 @@ def _estimate_cache_drop_savings(days=30):
             "est_drops": est_drops,
             "prefix_tokens": int(prefix),
             "cost_saved_usd": round(cost, 4),
-            "evidence": "estimated",
+            "evidence": "opportunity",
         }
     except Exception:
+        return zero
+
+
+def _before_after_cohort(conn, order, limit):
+    """Average per-session token classes for the earliest/most-recent N sessions.
+
+    Returns (fresh_input, cache_write, cache_read, output, n) averaged per session.
+    fresh_input is full-price input (cache reads and writes removed); cache_read is
+    the cheap (0.1x) re-read of the cached prefix; cache_write is the prefix re-write
+    (1.25x). Heavy pre-TO sessions carry enormous cache_read volume (the prefix is
+    re-read every turn over many calls), which is real billed cost even at 0.1x.
+    """
+    # `id` as a secondary sort key gives a stable cohort under day-granularity date
+    # ties (dozens of sessions share a `date`); without it LIMIT picks arbitrary rows
+    # and the headline drifts between runs. `order` is caller-hardcoded "ASC"/"DESC".
+    direction = "DESC" if str(order).upper() == "DESC" else "ASC"
+    rows = conn.execute(
+        "SELECT input_tokens, output_tokens, cache_create_5m_tokens, "
+        "cache_create_1h_tokens, cache_hit_rate FROM session_log "
+        "WHERE input_tokens IS NOT NULL "
+        "ORDER BY date " + direction + ", id " + direction + " LIMIT ?",
+        (limit,),
+    ).fetchall()
+    n = len(rows)
+    if n == 0:
+        return (0.0, 0.0, 0.0, 0.0, 0)
+    fi = cw = cr = out = 0.0
+    for r in rows:
+        inp = float(r[0] or 0)
+        o = float(r[1] or 0)
+        c = float((r[2] or 0) + (r[3] or 0))
+        # Clamp to [0,1]: a corrupt/recomputed stale row could otherwise over- or
+        # under-count cache-reads vs fresh input.
+        hit = min(1.0, max(0.0, float(r[4] or 0)))
+        cr += inp * hit
+        fi += max(0.0, inp * (1 - hit) - c)
+        cw += c
+        out += o
+    return (fi / n, cw / n, cr / n, out / n, n)
+
+
+def _estimate_before_after_savings(days=30, before_n=60):
+    """THE headline saving: your current activity priced at your PRE-TO per-session
+    weight + model mix, vs what it actually costs now.
+
+    Earlier pillars captured only the model-mix shift on CURRENT (already-light)
+    volume — a thin slice. This captures the whole footprint collapse: sessions,
+    sub-agents, structural prefix, and routing together, by comparing cost-PER-SESSION
+    between the user's earliest captured sessions (the pre-TO / heavy era) and their
+    recent sessions, then scaling the per-session delta by current monthly session
+    volume. The per-session token mix already includes the structural prefix (in
+    cache_write) and sub-agent weight, so this is comprehensive — do NOT add
+    structural on top.
+
+    Each cohort's avg per-session tokens are priced through the canonical rate card
+    (`_get_model_cost`, which owns the tier / cache-TTL / provider rates) at Opus and
+    Sonnet, then blended by the era's Opus share. Pre-TO Opus share comes from the
+    user's own stated baseline (pretool_baseline.json, default unset); current share
+    is measured. Counterfactual ("your current N sessions, run the old way"), grounded
+    entirely in the user's own cohorts. Conservative: the earliest captured cohort is
+    already a couple weeks post-install, so the true pre-TO era was likely heavier.
+    Returns zeros if history is too short. Never raises.
+
+    Returns {before_cost_per_session, after_cost_per_session, savings_per_session,
+             sessions_per_month, monthly_savings_usd, before_opus, after_opus,
+             before_tokens, after_tokens, before_sessions, after_sessions,
+             baseline_source ("pretool_baseline" | "earliest"), evidence}.
+    """
+    zero = {"before_cost_per_session": 0.0, "after_cost_per_session": 0.0,
+            "savings_per_session": 0.0, "sessions_per_month": 0,
+            "monthly_savings_usd": 0.0, "before_opus": 0.0, "after_opus": 0.0,
+            "before_tokens": 0, "after_tokens": 0, "before_sessions": 0,
+            "after_sessions": 0, "baseline_source": None, "evidence": "estimated"}
+    try:
+        if not TRENDS_DB.exists():
+            return zero
+
+        # Cohorts + recent count first (one connection); bail cheaply on thin history
+        # BEFORE doing any pricing or model-mix work (those open more connections).
+        conn = _init_trends_db()
+        try:
+            total_avail = conn.execute(
+                "SELECT COUNT(*) FROM session_log WHERE input_tokens IS NOT NULL"
+            ).fetchone()[0] or 0
+            # DISJOINT cohorts: cap each side at total//2 so the earliest and most-recent
+            # windows can never share a row. Overlap would compare sessions to themselves
+            # and fabricate a "transformation" out of the model-mix delta alone — the
+            # 20-floor below then hides it for anyone with < 40 qualifying sessions.
+            cohort = min(before_n, total_avail // 2)
+            bfi, bcw, bcr, bout, bn = _before_after_cohort(conn, "ASC", cohort)
+            cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+            afi, acw, acr, aout, an = _before_after_cohort(conn, "DESC", cohort)
+            recent_n = conn.execute(
+                "SELECT COUNT(*) FROM session_log WHERE date >= ?", (cutoff,)
+            ).fetchone()[0] or 0
+        finally:
+            conn.close()
+        if bn < 20 or an < 10 or recent_n < 5:
+            return {**zero, "before_sessions": bn, "after_sessions": an}
+
+        # Pre-TO Opus share: explicit baseline if set (most accurate when the earliest
+        # captured data is already optimized), else the user's MEASURED earliest mix —
+        # a pure measured before/after for any user with history, never a strange $0.
+        # Stable machine value (not display prose) so the dashboard can't break on a copy edit.
+        baseline = _pretool_baseline_mix()
+        if baseline:
+            before_opus = float(baseline.get("opus", 0.0))
+            baseline_source = "pretool_baseline"
+        else:
+            early = _earliest_model_mix()
+            before_opus = float((early.get("shares") or {}).get("opus", 0.0)) if early else 0.0
+            baseline_source = "earliest"
+        if before_opus <= 0:
+            return {**zero, "before_sessions": bn, "after_sessions": an}
+
+        after_opus = float((_model_mix_shares(days=days).get("shares") or {}).get("opus", 0.0))
+
+        # Price the cohort's avg per-session tokens via the canonical rate card at opus
+        # vs sonnet, then blend by the era's Opus share. Opus-vs-rest binary by design
+        # (the baseline IS an opus_share); omitting haiku from the current mix is
+        # conservative (haiku is cheaper, so it only nudges the "after" cost upward).
+        def cost_per_session(fi, cw, cr, out, opus_share):
+            co = _get_model_cost("opus", int(fi), int(out), int(cr), int(cw))
+            cs = _get_model_cost("sonnet", int(fi), int(out), int(cr), int(cw))
+            return opus_share * co + (1 - opus_share) * cs
+
+        before_cost = cost_per_session(bfi, bcw, bcr, bout, before_opus)
+        after_cost = cost_per_session(afi, acw, acr, aout, after_opus)
+        per_session = before_cost - after_cost
+        sessions_per_month = int(recent_n / max(days, 1) * 30)
+        if per_session <= 0 or sessions_per_month <= 0:
+            return {**zero, "before_sessions": bn, "after_sessions": an,
+                    "before_cost_per_session": round(before_cost, 4),
+                    "after_cost_per_session": round(after_cost, 4)}
+
+        return {
+            "before_cost_per_session": round(before_cost, 4),
+            "after_cost_per_session": round(after_cost, 4),
+            "savings_per_session": round(per_session, 4),
+            "sessions_per_month": sessions_per_month,
+            "monthly_savings_usd": round(per_session * sessions_per_month, 2),
+            "before_opus": round(before_opus, 4),
+            "after_opus": round(after_opus, 4),
+            "before_tokens": int(bfi + bcw + bcr + bout),
+            "after_tokens": int(afi + acw + acr + aout),
+            "before_sessions": bn,
+            "after_sessions": an,
+            "baseline_source": baseline_source,
+            "evidence": "estimated",
+        }
+    except (sqlite3.Error, OSError, ValueError, TypeError):
         return zero
 
 
@@ -19792,6 +19984,7 @@ def _get_merged_savings(days=30):
     model_routing = _compute_model_routing_savings(days=days)
     output_waste = _estimate_output_waste(days=days)
     cache_drop = _estimate_cache_drop_savings(days=days)
+    before_after = _estimate_before_after_savings(days=days)
     stale_reads_reclaimable = _estimate_stale_reads_reclaimable(days=days)
 
     return {
@@ -19818,6 +20011,12 @@ def _get_merged_savings(days=30):
         "contamination_exit": contamination_exit,
         # B7: handover/continuity avoided-rework (estimated tier, same method).
         "handover_rerun": handover_rerun,
+        # THE headline before/after transformation: current activity priced at the
+        # user's pre-TO per-session weight + mix vs actual. Comprehensive (volume +
+        # structural + routing + sub-agents). Estimated tier, counterfactual,
+        # grounded in the user's own earliest-vs-recent cohorts. Zero without a
+        # pretool_baseline. Never summed into the metered total.
+        "before_after": before_after,
         # Opportunity tier: reclaimable stale-read waste. Intentionally NOT in
         # total_tokens/total_cost above — billed waste the user could reclaim,
         # never realized savings.
@@ -19879,10 +20078,13 @@ def _savings_since_install():
         # Measured = logged runtime + realized structural + realized routing.
         measured = float(full.get("total_cost_usd", 0) or 0)
         measured += float((full.get("model_routing") or {}).get("realized_cost_usd", 0) or 0)
-        # Estimated = the labelled estimate tiers.
+        # Estimated = genuine TO-realized counterfactuals only. cache_drop and
+        # output_waste are OPPORTUNITY (avoidable waste TO does not yet prevent),
+        # so they are excluded here — counting them would claim money saved that
+        # was actually spent.
         estimated = sum(
             float((full.get(k) or {}).get("cost_saved_usd", 0) or 0)
-            for k in ("cache_drop", "output_waste", "behavioral_estimate", "uncaptured_runtime")
+            for k in ("behavioral_estimate", "uncaptured_runtime")
         )
         return {
             "install_date": d,
@@ -19917,6 +20119,15 @@ def savings_report(days=30, as_json=False):
     print("\n  Token Optimizer Savings Report")
     print(f"  {'=' * 58}")
     print(f"  Period: Last {days} days ({start} to {end})")
+
+    # Headline before/after transformation (current activity at pre-TO weight+mix vs actual).
+    ba = summary.get("before_after") or {}
+    if float(ba.get("monthly_savings_usd", 0.0) or 0.0) > 0:
+        print()
+        print(f"  YOUR TRANSFORMATION: ~${ba['monthly_savings_usd']:,.0f}/mo")
+        print(f"    {ba.get('sessions_per_month', 0):,} sessions/mo, pre-TO way (~{ba.get('before_opus', 0) * 100:.0f}% Opus, "
+              f"heavy) ${ba.get('before_cost_per_session', 0):.2f}/session vs ${ba.get('after_cost_per_session', 0):.2f}/session now "
+              f"(~{ba.get('after_opus', 0) * 100:.0f}% Opus). Cut ${ba.get('savings_per_session', 0):.2f}/session [estimated]")
 
     pricing = summary.get("pricing_detail") or {}
     p_model = pricing.get("model", "sonnet")
@@ -20004,21 +20215,8 @@ def savings_report(days=30, as_json=False):
               f"({behavioral.get('loop_events', 0)} loops caught, repeated ~{behavioral.get('prevented_iterations', 0)}x "
               f"before catch; avoided continuation estimated at one more span) [estimated]")
 
-    # Estimated tier — cache drops (coffee-break reloads) that re-write the prefix.
-    cache_drop = summary.get("cache_drop") or {}
-    cd_cost = float(cache_drop.get("cost_saved_usd", 0.0) or 0.0)
-    if cd_cost > 0:
-        cd_monthly = cd_cost / max(days, 1) * 30
-        print(f"  + est. cache-drop avoidance: ~${cd_monthly:.2f}/mo "
-              f"({cache_drop.get('drop_sessions', 0)} sessions dropped cache mid-run) [estimated]")
-
-    # Estimated tier — output waste (full-file Writes that could be Edits).
-    output_waste = summary.get("output_waste") or {}
-    ow_cost = float(output_waste.get("cost_saved_usd", 0.0) or 0.0)
-    if ow_cost > 0:
-        ow_monthly = ow_cost / max(days, 1) * 30
-        print(f"  + est. output waste (Write->Edit): ~${ow_monthly:.2f}/mo "
-              f"({output_waste.get('avoidable_writes', 0)} of {output_waste.get('writes', 0)} writes avoidable) [estimated]")
+    # cache_drop + output_waste are OPPORTUNITY (avoidable waste TO does not yet
+    # prevent), shown in the COULD SAVE block below, never in the estimated total.
 
     # Estimated tier — MCP-cap (relocated from measured; Claude Code's own
     # truncation, inferred not observed).
@@ -20063,7 +20261,15 @@ def savings_report(days=30, as_json=False):
     routing_potential = float(routing.get("potential_cost_usd", 0.0) or 0.0)
     reclaimable = summary.get("stale_reads_reclaimable") or {}
     recl_cost = float(reclaimable.get("cost_usd", 0.0) or 0.0)
-    if pot_cost > 0 or routing_potential > 0 or recl_cost > 0:
+    cache_drop = summary.get("cache_drop") or {}
+    # cache-drop is shown in TOKENS (re-written prefix), not dollars: the $ cost is
+    # Anthropic-specific (OpenAI/OpenCode cache writes are free/unbilled), but the
+    # re-written token count is a provider-neutral fact. Matches Claude Code's own
+    # token-denominated cost display.
+    cd_tokens = int(cache_drop.get("est_drops", 0) or 0) * int(cache_drop.get("prefix_tokens", 0) or 0)
+    output_waste = summary.get("output_waste") or {}
+    ow_cost = float(output_waste.get("cost_saved_usd", 0.0) or 0.0)
+    if pot_cost > 0 or routing_potential > 0 or recl_cost > 0 or cd_tokens > 0 or ow_cost > 0:
         print()
         print(f"  {'-' * 58}")
         print("  COULD SAVE (opportunity — act to realize, not counted above):")
@@ -20075,6 +20281,14 @@ def savings_report(days=30, as_json=False):
             rp_monthly = routing_potential / max(days, 1) * 30
             print(f"    ~${rp_monthly:.2f}/mo routing: move {int(routing.get('routable_fraction', 0.3) * 100)}% "
                   f"of remaining Opus ({routing.get('current_opus_share', 0.0) * 100:.0f}% of tokens) to Sonnet/Haiku.")
+        if cd_tokens > 0:
+            cd_tokens_monthly = int(cd_tokens / max(days, 1) * 30)
+            print(f"    ~{cd_tokens_monthly:,} tokens/mo cache drops: {cache_drop.get('drop_sessions', 0)} sessions idled "
+                  f"past the cache window and re-wrote the prefix — compact before breaks or use the 1h cache.")
+        if ow_cost > 0:
+            ow_monthly = ow_cost / max(days, 1) * 30
+            print(f"    ~${ow_monthly:.2f}/mo output: {output_waste.get('avoidable_writes', 0)} of "
+                  f"{output_waste.get('writes', 0)} full-file Writes could be targeted Edits.")
         if recl_cost > 0:
             recl_monthly = recl_cost / max(days, 1) * 30
             print(f"    ~${recl_monthly:.2f}/mo reclaimable: {reclaimable.get('tokens', 0):,} tokens of stale "
@@ -20783,6 +20997,8 @@ if __name__ == "__main__":
         git_context(as_json=output_json)
     elif args[0] == "snapshot" and len(args) > 1:
         take_snapshot(args[1])
+    elif args[0] == "set-baseline":
+        set_pretool_baseline(args[1:])
     elif args[0] == "compare":
         compare_snapshots()
     elif args[0] == "dashboard":

@@ -46,9 +46,15 @@ def _managed_hooks(
 ) -> dict[str, list[dict[str, Any]]]:
     """Build Codex project hooks.
 
-    Codex Desktop currently renders every successful hook as a visible row.
-    Default to balanced: session/prompt hooks for quality tracking plus Stop for
-    refresh/continuity. Per-tool hot-path hooks remain explicit opt-in.
+    Default is the aggressive profile (max savings). All hooks are wired to run
+    silently: prompt/session/subagent hooks via redirect_quiet, the PostToolUse
+    archive hook via redirect_quiet, and context_intel emits no stdout. The
+    PostToolUse hooks match Bash only, so archive_result never reaches its
+    MCP-output-replacement branch (which Codex rejects as unsupported anyway).
+    The result is no visible Codex Desktop rows under normal operation.
+
+    Bash compression is the one genuinely-visible hook (Codex cannot rewrite
+    command input yet), so it stays explicit opt-in on every profile.
     """
     hooks = {
         "Stop": [
@@ -361,10 +367,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--profile",
         choices=("quiet", "balanced", "telemetry", "aggressive"),
-        default="balanced",
+        default="aggressive",
         help=(
-            "Hook profile: balanced=Stop+prompt hooks (default); quiet=Stop only; "
-            "telemetry=Stop+PostToolUse; aggressive=all currently available hooks"
+            "Hook profile: aggressive=max savings, all silent hooks (default); "
+            "balanced=Stop+prompt hooks; quiet=Stop only; telemetry=Stop+PostToolUse. "
+            "Bash compression stays opt-in (--enable-bash-compression) on every profile "
+            "because Codex cannot rewrite command input yet."
         ),
     )
     parser.add_argument("--skip-compact-prompt", action="store_true", help="Do not install Codex compact prompt")
@@ -407,7 +415,12 @@ def main(argv: list[str] | None = None) -> int:
         else:
             enable_prompt_hooks = args.enable_prompt_hooks or args.profile in {"balanced", "aggressive"}
             enable_hot_path_hooks = args.enable_hot_path_hooks or args.profile in {"telemetry", "aggressive"}
-            enable_bash_compression = args.enable_bash_compression or args.profile == "aggressive"
+            # Bash compression stays explicit opt-in on every profile (including
+            # aggressive): Codex PreToolUse cannot rewrite command input yet, so the
+            # hook is non-functional AND visible. Enabling it by default would add a
+            # visible row per Bash call with no token saving. Re-couple to the
+            # aggressive profile once Codex supports input rewriting.
+            enable_bash_compression = args.enable_bash_compression
             enable_subagent_hooks = (
                 args.enable_subagent_hooks or args.profile in {"balanced", "aggressive"}
             ) and not args.no_subagent_hooks

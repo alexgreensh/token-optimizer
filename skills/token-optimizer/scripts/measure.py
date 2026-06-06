@@ -9103,6 +9103,30 @@ def _find_session_version_for_pid(pid):
     return None  # No confident match; don't guess (causes false OUTDATED flags)
 
 
+def _command_matches_process(command, process_name):
+    """True if a `ps` COMMAND field denotes a `process_name` CLI session.
+
+    Matches a bare ``argv[0]`` (``claude`` / ``claude --resume ...``) and
+    also absolute-path or wrapper launches -- e.g.
+    ``/usr/local/.../@anthropic-ai/claude-code/bin/claude`` and the patched
+    ``.../bin/claude.exe ...`` form -- by comparing the executable basename
+    with a trailing ``.exe`` stripped. The bare-name fast path is preserved
+    for backward compatibility. Matching is case-sensitive so the macOS
+    desktop app (``/Applications/Claude.app/Contents/MacOS/Claude``) is not
+    mistaken for the ``claude`` CLI, and ``claude`` appearing only as an
+    argument (``vim claude.py``) does not match.
+    """
+    command = (command or "").strip()
+    if not command:
+        return False
+    if command == process_name or command.startswith(process_name + " "):
+        return True
+    exe_base = os.path.basename(command.split()[0])
+    if exe_base.endswith(".exe"):
+        exe_base = exe_base[:-4]
+    return exe_base == process_name
+
+
 def _collect_posix_claude_sessions(process_name="claude"):
     """Collect running Claude/Codex CLI sessions via `ps` on macOS/Linux.
 
@@ -9131,7 +9155,7 @@ def _collect_posix_claude_sessions(process_name="claude"):
         # Fields: PID TTY LSTART(5 fields) ETIME COMMAND...
         tty = parts[1]
         command = " ".join(parts[8:])
-        if not (command.strip() == process_name or command.startswith(process_name + " ")):
+        if not _command_matches_process(command, process_name):
             continue
         try:
             pid = int(parts[0])
@@ -9519,6 +9543,23 @@ def health_selfcheck():
 
     iso_probe = _parse_iso_process_datetime("2026-01-01T12:00:00Z")
     check("ISO-8601 datetime parser", iso_probe is not None and iso_probe["elapsed_seconds"] > 0)
+
+    # Process-name matcher: bare argv0, absolute-path and ".exe" wrapper
+    # launches all match; the case-different desktop app, an arg-only
+    # mention, and unrelated processes must not.
+    _m = _command_matches_process
+    matcher_ok = (
+        _m("claude", "claude")
+        and _m("claude --resume abc", "claude")
+        and _m("/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude", "claude")
+        and _m("/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe --resume abc", "claude")
+        and _m("/opt/homebrew/bin/codex serve", "codex")
+        and not _m("/Applications/Claude.app/Contents/MacOS/Claude", "claude")
+        and not _m("/usr/bin/vim claude.py", "claude")
+        and not _m("node /path/to/app.js", "claude")
+        and not _m("", "claude")
+    )
+    check("process-name matcher (basename + .exe)", matcher_ok)
 
     # Live process-listing command
     if system == "Windows":

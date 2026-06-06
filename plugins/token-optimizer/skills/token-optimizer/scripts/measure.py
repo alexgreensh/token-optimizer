@@ -19503,10 +19503,14 @@ def _compute_model_routing_savings(days=30):
     (conservative). The blend is grounded in the user's own token mix, not a
     multiplier. Labelled measured (realized) and opportunity (potential). Never raises.
     """
+    # `zero` is returned only on no-data / error paths (no current mix, no
+    # baseline, or an exception). Label it "unavailable" so a $0 here reads as
+    # "couldn't compute" rather than a measured zero -- the success return below
+    # sets its own evidence="measured".
     zero = {
         "realized_cost_usd": 0.0, "potential_cost_usd": 0.0,
         "baseline_opus_share": 0.0, "current_opus_share": 0.0,
-        "baseline_source": None, "evidence": "measured",
+        "baseline_source": None, "evidence": "unavailable",
     }
     try:
         current = _model_mix_shares(days=days)
@@ -19968,6 +19972,29 @@ def _get_baseline_state(freeze=True):
     return state
 
 
+def _cost_per_session(fi, cw, cr, out, shares, tier):
+    """Weighted-average cost of one typical session priced over a REAL model mix.
+
+    Every share contributes at its true weight; an unpriced share (an unknown or
+    local model id with no rate card) is proxy-priced at the runtime-default rate
+    rather than dropped or renormalized away. The denominator is the TOTAL present
+    share, not the priced share -- so a tiny priced sliver can never be inflated to
+    represent the whole mix. (The old renorm-over-priced-share could turn a
+    {opus:0.01, <unpriced>:0.99} mix into 100% opus.) Provider-agnostic; using the
+    same estimator on the before and after mix keeps the comparison fair.
+    """
+    items = [(m, s) for m, s in (shares or {}).items() if s and s > 0]
+    default_model = _default_model_for_runtime()
+    if not items:
+        return _get_model_cost(default_model, int(fi), int(out), int(cr), int(cw), tier=tier)
+    total_share = sum(s for _, s in items)
+    cost = sum(
+        s * _get_model_cost(m if _is_priced_model(m, tier) else default_model,
+                            int(fi), int(out), int(cr), int(cw), tier=tier)
+        for m, s in items)
+    return cost / total_share
+
+
 def _estimate_before_after_savings(days=30):
     """THE headline saving: your current activity priced at your PRE-TO per-session
     weight + model mix, vs what it actually costs now.
@@ -20059,22 +20086,16 @@ def _estimate_before_after_savings(days=30):
         after_shares = dict((_model_mix_shares(days=days).get("shares") or {}))
         after_opus = float(after_shares.get("opus", 0.0))
 
-        # Price each typical session at its era's REAL model mix: blend the per-model
-        # rate card over the priced models in the mix, renormalized over priced share so
-        # an unpriced entry (a generic "codex" row, an unrecognized model) never drags the
-        # cost toward zero. Provider-agnostic -- Anthropic (opus/sonnet/haiku) and Codex
-        # (gpt-*-codex) both price correctly. Same estimator both sides keeps it fair.
-        tier = _load_pricing_tier()  # resolve once; cost_per_session runs 7x below
+        # Price each typical session at its era's REAL model mix via _cost_per_session:
+        # a weighted average over every present model, with an unpriced entry (a generic
+        # "codex" row, an unrecognized/local model) proxy-priced at the runtime default
+        # rather than dropped or renormalized away. Provider-agnostic -- Anthropic
+        # (opus/sonnet/haiku) and Codex (gpt-*-codex) both price correctly. Same
+        # estimator both sides keeps it fair.
+        tier = _load_pricing_tier()  # resolve once; reused across the waterfall levers
 
         def cost_per_session(fi, cw, cr, out, shares):
-            priced = {m: s for m, s in (shares or {}).items()
-                      if s and s > 0 and _is_priced_model(m, tier)}
-            psum = sum(priced.values())
-            if psum <= 0:
-                return _get_model_cost(_default_model_for_runtime(), int(fi), int(out),
-                                       int(cr), int(cw), tier=tier)
-            return sum((s / psum) * _get_model_cost(m, int(fi), int(out), int(cr), int(cw), tier=tier)
-                       for m, s in priced.items())
+            return _cost_per_session(fi, cw, cr, out, shares, tier)
 
         before_cost = cost_per_session(bfi, bcw, bcr, bout, before_shares)
         after_cost = cost_per_session(afi, acw, acr, aout, after_shares)

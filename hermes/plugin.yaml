@@ -1,5 +1,5 @@
 name: token-optimizer
-version: "5.10.0"
+version: "0.1.0"
 description: "Token Optimizer for Hermes — proactive context-fill nudges before each turn, per-turn token accumulation, session rollup into the shared dashboard, and /token-optimizer slash command."
 author: AlexGreenshpun
 hooks:

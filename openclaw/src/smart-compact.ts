@@ -14,6 +14,7 @@ import {
   checkpointSessionDir,
   cleanupPolicyArtifacts,
   getCheckpointFiles,
+  recordCheckpointDecision,
   registerCheckpointCapture,
   type CheckpointTrigger,
 } from "./checkpoint-policy";
@@ -351,6 +352,11 @@ function writeCheckpointArtifact(
     lastEntry.semanticDigest === semanticDigest &&
     lastEntry.trigger === trigger
   ) {
+    // Identical content already captured for this trigger. Mark the band/cooldown
+    // so the policy stops re-evaluating (and re-reading the transcript) every
+    // cooldown window — without writing a duplicate file or double-counting
+    // telemetry. (Skipping this caused an indefinite re-fire I/O churn.)
+    recordCheckpointDecision(sessionId, trigger);
     return typeof lastEntry.file === "string" ? lastEntry.file : null;
   }
 
@@ -647,6 +653,9 @@ export function captureCheckpointV2(
   const digest = buildSemanticDigest(session.sessionId, messages, bodyOptions);
   const lastEntry = readLastManifestEntry(sanitizeSessionId(session.sessionId));
   if (lastEntry && lastEntry.semanticDigest === digest && lastEntry.trigger === bodyOptions.trigger) {
+    // Identical content already captured: mark band/cooldown so the policy stops
+    // re-evaluating every cooldown (indefinite I/O churn) without a duplicate write.
+    recordCheckpointDecision(sanitizeSessionId(session.sessionId), bodyOptions.trigger ?? "compact");
     return typeof lastEntry.file === "string" ? lastEntry.file : null;
   }
 

@@ -36,7 +36,7 @@ export declare const RELEVANCE_THRESHOLD: number;
  *
  * Returns 0.0 – 1.0.
  */
-export declare function keywordRelevanceScore(text: string, checkpointPath: string): number;
+export declare function keywordRelevanceScore(text: string, checkpointPath: string, precomputedContent?: string): number;
 interface CheckpointEntry {
     /** Absolute path to the .md checkpoint file. */
     path: string;

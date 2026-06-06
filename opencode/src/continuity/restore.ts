@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, statSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { findBestCheckpoint, type CheckpointMatch } from "./matcher.js";
@@ -32,7 +32,40 @@ export function restoreCheckpoint(
 
   try {
     const allFiles = readdirSync(sessDir);
-    const dbFiles = allFiles.filter((f) => f.endsWith(".db")).slice(0, config.checkpointRetentionMax);
+    // Sort by mtime (newest first) BEFORE slicing. readdir order is
+    // filesystem-hash order, so a bare slice(0, max) would pick arbitrary DBs
+    // and could exclude the most recent sessions entirely once the count
+    // exceeds checkpointRetentionMax.
+    const ranked = allFiles
+      .filter((f) => f.endsWith(".db"))
+      .map((f) => {
+        let mtimeMs = 0;
+        try { mtimeMs = statSync(join(sessDir, f)).mtimeMs; } catch { /* unreadable → oldest */ }
+        return { f, mtimeMs };
+      })
+      .sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+    // Prune session DB files whose mtime is older than the retention window so
+    // the sessions/ dir does not grow without bound over months of daily use.
+    // Only stale files (old mtime ⇒ no active writer) are removed; fresh files
+    // remain for scanning.
+    const pruneBeforeMs =
+      config.checkpointRetentionDays > 0
+        ? Date.now() - config.checkpointRetentionDays * 86400 * 1000
+        : 0;
+    const fresh: typeof ranked = [];
+    for (const item of ranked) {
+      const sid = item.f.replace(".db", "");
+      const isStale =
+        pruneBeforeMs > 0 && item.mtimeMs > 0 && item.mtimeMs < pruneBeforeMs;
+      if (isStale && sid !== safeCurrentId) {
+        try { rmSync(join(sessDir, item.f), { force: true }); } catch { /* best-effort */ }
+        continue;
+      }
+      fresh.push(item);
+    }
+
+    const dbFiles = fresh.slice(0, config.checkpointRetentionMax).map((x) => x.f);
 
     for (const file of dbFiles) {
       const sessionId = file.replace(".db", "");

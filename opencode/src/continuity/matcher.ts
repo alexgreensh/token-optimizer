@@ -10,23 +10,29 @@ const STOP_WORDS = new Set([
   "i", "me", "let", "us",
 ]);
 
-function extractKeywords(text: string): string[] {
+function tokenize(text: string): string[] {
   return text
     .toLowerCase()
     .replace(/[^a-z0-9\s_.-]/g, " ")
     .split(/\s+/)
-    .filter((w) => w.length > 2 && !STOP_WORDS.has(w));
+    .filter(Boolean);
+}
+
+function extractKeywords(text: string): string[] {
+  return tokenize(text).filter((w) => w.length > 2 && !STOP_WORDS.has(w));
 }
 
 export function scoreRelevance(userPrompt: string, checkpointContent: string): number {
   const promptKeywords = extractKeywords(userPrompt);
   if (promptKeywords.length === 0) return 0;
 
-  const contentLower = checkpointContent.toLowerCase();
+  // Word-level membership, NOT substring: a keyword "test" must not match
+  // "latest"/"protest", and "port" must not match "report"/"support". Substring
+  // matching inflated scores and injected unrelated prior sessions.
+  const contentTokens = new Set(tokenize(checkpointContent));
   let matches = 0;
-
   for (const kw of promptKeywords) {
-    if (contentLower.includes(kw)) matches++;
+    if (contentTokens.has(kw)) matches++;
   }
 
   return matches / promptKeywords.length;

@@ -121,6 +121,19 @@ function resolveRoot() {
         return null;
     }
 }
+/**
+ * Sanitize a session id into a directory-safe token. MUST stay identical to
+ * smart-compact.ts:sanitizeSessionId so the same-session skip and the pending-
+ * hint sidecar resolve to the SAME directory the capture path wrote to.
+ * (Edge ids ".", "..", "" collapse to "invalid-session" there; a divergent
+ * sanitizer here would miss the same-session skip and self-inject.)
+ */
+function sanitizeSessionId(id) {
+    const clean = id.replace(/[^a-zA-Z0-9_-]/g, "_");
+    if (!clean || clean === "." || clean === "..")
+        return "invalid-session";
+    return clean;
+}
 // ---------------------------------------------------------------------------
 // Tunables (match Python defaults; all overridable via env)
 // ---------------------------------------------------------------------------
@@ -155,16 +168,13 @@ const CONTINUATION_WORDS = new Set(["continue", "resume"]);
  *
  * Returns 0.0 – 1.0.
  */
-function keywordRelevanceScore(text, checkpointPath) {
+function keywordRelevanceScore(text, checkpointPath, precomputedContent) {
     const lower = text.toLowerCase();
-    // Explicit continuation signals match any checkpoint
+    // Explicit continuation PHRASES are unambiguous ("continue where", "left
+    // off") — they always mean "resume my prior thread", so any recent
+    // checkpoint is relevant.
     for (const phrase of CONTINUATION_PHRASES) {
         if (lower.includes(phrase))
-            return 1.0;
-    }
-    const words = lower.split(/\s+/);
-    for (const w of words) {
-        if (CONTINUATION_WORDS.has(w))
             return 1.0;
     }
     // Content-word extraction: tokens >3 chars (avoids stopword list)
@@ -173,14 +183,28 @@ function keywordRelevanceScore(text, checkpointPath) {
         return new Set(matches.filter((w) => w.length > 3));
     }
     const textTokens = contentWords(text);
+    // A bare continuation WORD ("continue", "resume") only means "resume my
+    // prior thread" when it IS the request. In a substantive prompt
+    // ("resume the nginx process") the word is incidental and must NOT
+    // short-circuit to 1.0 against an unrelated checkpoint. Gate on a short
+    // prompt (<=2 content words) so the word dominates the meaning.
+    if (textTokens.size <= 2) {
+        const words = lower.split(/\s+/);
+        for (const w of words) {
+            if (CONTINUATION_WORDS.has(w))
+                return 1.0;
+        }
+    }
     if (textTokens.size === 0)
         return 0.0;
-    let checkpointContent;
-    try {
-        checkpointContent = fs.readFileSync(checkpointPath, "utf-8");
-    }
-    catch {
-        return 0.0;
+    let checkpointContent = precomputedContent;
+    if (checkpointContent === undefined) {
+        try {
+            checkpointContent = fs.readFileSync(checkpointPath, "utf-8");
+        }
+        catch {
+            return 0.0;
+        }
     }
     const checkpointTokens = contentWords(checkpointContent);
     if (checkpointTokens.size === 0)
@@ -282,11 +306,18 @@ function checkpointTopicScore(text, entry, cwd) {
     catch {
         return { score: 0.0, content: "" };
     }
-    let score = keywordRelevanceScore(text, entry.path);
-    // cwd bonus: if working directory name appears in the checkpoint's file paths
+    // Reuse the content we already read instead of letting keywordRelevanceScore
+    // read the same file a second time (2x I/O per candidate, up to 50/session).
+    let score = keywordRelevanceScore(text, entry.path, content);
+    // cwd bonus: if working directory name appears in the checkpoint's file paths.
+    // Skip generic dirs (home, root, empty): the gateway process's cwd is often
+    // the home dir, whose basename would match checkpoint text by coincidence and
+    // inflate every score.
     if (cwd) {
         const cwdName = path.basename(cwd).toLowerCase();
-        if (cwdName && content.toLowerCase().includes(cwdName)) {
+        const homeName = HOME ? path.basename(HOME).toLowerCase() : "";
+        const generic = !cwdName || cwdName === homeName || cwd === "/" || cwd === HOME;
+        if (!generic && content.toLowerCase().includes(cwdName)) {
             score += 0.12;
         }
     }
@@ -318,8 +349,9 @@ function findBestContinuityCheckpoint(promptText, currentSessionId, cwd, maxAgeD
     const allCheckpoints = listAllCheckpoints(maxAgeDays).slice(0, MAX_CANDIDATES);
     if (allCheckpoints.length === 0)
         return null;
-    // Sanitize current session ID the same way smart-compact.ts does
-    const safeCurrentId = currentSessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
+    // Sanitize current session ID the SAME way smart-compact.ts writes dir names
+    // (shared helper), so edge ids (".", "..", "") still match the same-session skip.
+    const safeCurrentId = sanitizeSessionId(currentSessionId);
     const candidates = [];
     for (const entry of allCheckpoints) {
         // Skip same-session checkpoints (within-session restore is compact's job)
@@ -435,9 +467,16 @@ function storePendingContinuityHint(sessionId, hint) {
         return;
     try {
         // Store per-session: one pending hint at a time is sufficient.
-        const safeId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
+        const safeId = sanitizeSessionId(sessionId);
         const sessionDir = path.join(root, safeId);
-        if (!fs.existsSync(sessionDir)) {
+        if (fs.existsSync(sessionDir)) {
+            // Never follow a symlinked or non-directory sessionDir (TOCTOU: another
+            // process could have planted a symlink redirecting the write).
+            const st = fs.lstatSync(sessionDir);
+            if (st.isSymbolicLink() || !st.isDirectory())
+                return;
+        }
+        else {
             fs.mkdirSync(sessionDir, { recursive: true, mode: 0o700 });
         }
         const filePath = path.join(sessionDir, PENDING_HINT_FILE);
@@ -459,7 +498,7 @@ function consumePendingContinuityHint(sessionId) {
     if (!root)
         return null;
     try {
-        const safeId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
+        const safeId = sanitizeSessionId(sessionId);
         const filePath = path.join(root, safeId, PENDING_HINT_FILE);
         const safeFilePath = safeFile(filePath, path.join(root, safeId));
         if (!safeFilePath)

@@ -337,6 +337,11 @@ function writeCheckpointArtifact(session, maxMessages, options) {
     if (lastEntry &&
         lastEntry.semanticDigest === semanticDigest &&
         lastEntry.trigger === trigger) {
+        // Identical content already captured for this trigger. Mark the band/cooldown
+        // so the policy stops re-evaluating (and re-reading the transcript) every
+        // cooldown window — without writing a duplicate file or double-counting
+        // telemetry. (Skipping this caused an indefinite re-fire I/O churn.)
+        (0, checkpoint_policy_1.recordCheckpointDecision)(sessionId, trigger);
         return typeof lastEntry.file === "string" ? lastEntry.file : null;
     }
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -575,6 +580,9 @@ function captureCheckpointV2(session, maxRecentMessages = 10, options = {}) {
     const digest = buildSemanticDigest(session.sessionId, messages, bodyOptions);
     const lastEntry = readLastManifestEntry(sanitizeSessionId(session.sessionId));
     if (lastEntry && lastEntry.semanticDigest === digest && lastEntry.trigger === bodyOptions.trigger) {
+        // Identical content already captured: mark band/cooldown so the policy stops
+        // re-evaluating every cooldown (indefinite I/O churn) without a duplicate write.
+        (0, checkpoint_policy_1.recordCheckpointDecision)(sanitizeSessionId(session.sessionId), bodyOptions.trigger ?? "compact");
         return typeof lastEntry.file === "string" ? lastEntry.file : null;
     }
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");

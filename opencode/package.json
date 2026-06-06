@@ -1,6 +1,6 @@
 {
   "name": "token-optimizer-opencode",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Context quality scoring, smart compaction, and session continuity for OpenCode. Full parity with the Claude Code Token Optimizer plugin.",
   "type": "module",
   "main": "dist/plugin.js",

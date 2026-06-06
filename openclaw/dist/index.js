@@ -378,55 +378,52 @@ exports.default = definePluginEntry({
             // session-scoped event available.  The _continuityInjectedSessions guard
             // ensures we attempt injection at most once per session.
             if (!_continuityInjectedSessions.has(event.sessionId)) {
-                _continuityInjectedSessions.add(event.sessionId);
                 try {
-                    // Use firstMessage if the gateway provides it; otherwise we cannot
-                    // score against the prompt yet (no text to match).  We still log the
-                    // pending-injection opportunity so a future session:start hook can
-                    // pick it up.
-                    const promptText = event.firstMessage ?? "";
-                    const cwd = process.cwd();
-                    if (promptText && event.inject) {
-                        // Best case: gateway forwards both the first prompt AND inject on
-                        // the first session:patch.
-                        const candidate = (0, continuity_1.findBestContinuityCheckpoint)(promptText, event.sessionId, cwd);
+                    // Resolve the first user prompt. Prefer the gateway-forwarded
+                    // firstMessage, but fall back to reading the session transcript on
+                    // disk so injection does NOT depend on an undocumented, gateway-
+                    // version-specific field. Without this, sessions whose first
+                    // session:patch carries no firstMessage never matched at all.
+                    let promptText = (event.firstMessage ?? "").trim();
+                    if (!promptText) {
+                        promptText = firstUserPromptFromSession(openclawDir, event.agentId, event.sessionId);
+                    }
+                    if (promptText) {
+                        // We finally have a prompt to score against — consume the one-shot
+                        // guard ONLY now. A bare init session:patch (no prompt yet) leaves
+                        // the guard unset so a later patch with the real prompt still runs.
+                        _continuityInjectedSessions.add(event.sessionId);
+                        const candidate = (0, continuity_1.findBestContinuityCheckpoint)(promptText, event.sessionId, process.cwd());
                         if (candidate) {
                             const hint = (0, continuity_1.buildContinuityHint)(candidate);
-                            event.inject(hint);
-                            api.logger.info(`[token-optimizer] Cross-session continuity injected for session ${event.sessionId} ` +
-                                `(score=${candidate.score.toFixed(2)}, source=${candidate.entry.sessionDirName})`);
+                            if (typeof event.inject === "function") {
+                                // Best case: gateway forwards an inject callback on session:patch.
+                                event.inject(hint);
+                                api.logger.info(`[token-optimizer] Cross-session continuity injected for session ${event.sessionId} ` +
+                                    `(score=${candidate.score.toFixed(2)}, source=${candidate.entry.sessionDirName})`);
+                            }
+                            else {
+                                // No inject path here. Persist the hint so the next
+                                // session:compact:after — the spec-documented inject point —
+                                // delivers it. Always store on a match so it lands at the
+                                // earliest opportunity.
+                                (0, continuity_1.storePendingContinuityHint)(event.sessionId, hint);
+                                api.logger.info(`[token-optimizer] Cross-session match for session ${event.sessionId} ` +
+                                    `(score=${candidate.score.toFixed(2)}, source=${candidate.entry.sessionDirName}); ` +
+                                    `queued for the next inject point.`);
+                            }
                         }
                         else {
                             api.logger.info(`[token-optimizer] No matching prior checkpoint for session ${event.sessionId} ` +
                                 `(threshold=${continuity_1.RELEVANCE_THRESHOLD})`);
                         }
                     }
-                    else if (promptText && !event.inject) {
-                        // Gateway has the first prompt but no inject path on session:patch.
-                        // Score the checkpoints and log the best match so operators can
-                        // see what would have been injected.  When session:start + inject
-                        // lands, this branch can simply call event.inject(hint).
-                        // TODO(continuity): replace this log branch with event.inject(hint)
-                        // once session:start exposes an inject callback.
-                        const candidate = (0, continuity_1.findBestContinuityCheckpoint)(promptText, event.sessionId, cwd);
-                        if (candidate) {
-                            api.logger.info(`[token-optimizer] Cross-session match found but no inject path available. ` +
-                                `Session ${event.sessionId}, source=${candidate.entry.sessionDirName}, ` +
-                                `score=${candidate.score.toFixed(2)}. ` +
-                                `Will inject on next compaction restore as fallback.`);
-                            // Store the hint so the next session:compact:after can inject it
-                            // as a fallback (belt-and-suspenders when compaction happens first).
-                            // TODO(continuity): remove this fallback once session:start inject is live.
-                            (0, continuity_1.storePendingContinuityHint)(event.sessionId, (0, continuity_1.buildContinuityHint)(candidate));
-                        }
-                    }
                     else {
-                        // No prompt text yet on first patch.  This is expected when the
-                        // gateway emits session:patch on session initialization before the
-                        // first user message.  Injection will be deferred to the
-                        // agent:tool:before path (first tool call carries session context).
+                        // Bare init patch before the first user message. Do NOT consume the
+                        // guard — a later session:patch (or the on-disk transcript) will
+                        // carry the prompt and we retry then.
                         api.logger.info(`[token-optimizer] session:patch for new session ${event.sessionId}: ` +
-                            `no first-message text yet; continuity injection deferred to first tool event.`);
+                            `no user prompt yet; will retry continuity on the next patch.`);
                     }
                 }
                 catch (err) {
@@ -506,11 +503,46 @@ exports.default = definePluginEntry({
                 // Always clean up session state, even if checkpoint or dashboard fails
                 if (event?.sessionId) {
                     (0, checkpoint_policy_1.clearCheckpointState)(event.sessionId);
+                    // Release the per-session continuity one-shot guard so the Set does
+                    // not grow unbounded over a long-running gateway.
+                    _continuityInjectedSessions.delete(event.sessionId);
                 }
+                // Prune checkpoints older than the retention window here too: an
+                // always-on gateway may never restart, so the gateway:startup cleanup
+                // alone would let old checkpoints accumulate indefinitely.
+                try {
+                    (0, smart_compact_1.cleanupCheckpoints)(7);
+                }
+                catch { /* best-effort */ }
             }
         });
     },
 });
+/**
+ * Read the first non-empty USER message from a session's on-disk transcript.
+ * Used by continuity injection so the match no longer depends on the gateway
+ * forwarding an (undocumented) firstMessage field on session:patch. Returns ""
+ * when the transcript is missing or has no user text yet. Never throws.
+ */
+function firstUserPromptFromSession(openclawDir, agentId, sessionId) {
+    try {
+        const sessionFile = resolveSessionFile(openclawDir, agentId, sessionId);
+        if (!sessionFile)
+            return "";
+        const messages = (0, smart_compact_1.loadMessagesFromSessionFile)(sessionFile);
+        if (!messages)
+            return "";
+        for (const m of messages) {
+            if (m.role === "user" && typeof m.content === "string" && m.content.trim()) {
+                return m.content.trim().slice(0, 2000);
+            }
+        }
+        return "";
+    }
+    catch {
+        return "";
+    }
+}
 function resolveSessionFile(openclawDir, agentId, sessionId) {
     if (agentId) {
         const direct = path.join(openclawDir, "agents", agentId, "sessions", `${sessionId}.jsonl`);

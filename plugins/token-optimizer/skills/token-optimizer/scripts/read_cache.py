@@ -44,6 +44,7 @@ from structure_map import (
     StructureMapResult,
     detect_structure_language,
     is_structure_supported_file,
+    summarize_code_file,
     summarize_code_source,
 )
 
@@ -70,6 +71,75 @@ def _is_v5_structure_map_beta():
         default=False,
         env_truthy_value="beta",
     )
+
+
+def _is_first_read_shadow_enabled():
+    """Master switch for the first-read skeleton feature (default ON).
+
+    Off (TOKEN_OPTIMIZER_FIRST_READ_SHADOW=0 / config first_read_shadow_enabled)
+    disables BOTH the shadow measurement and active skeleton serving — the read
+    falls through untouched.
+    """
+    return is_v5_flag_enabled(
+        "v5_first_read_shadow",
+        "TOKEN_OPTIMIZER_FIRST_READ_SHADOW",
+        default=True,
+    )
+
+
+def _is_first_read_active_enabled():
+    """Whether validated cohorts serve a SKELETON instead of the full file.
+
+    Default ON. Off (TOKEN_OPTIMIZER_FIRST_READ_ACTIVE=0) drops every cohort back
+    to shadow (measure-only) without disabling measurement. The full file always
+    stays one `expand`/range-read away (see _serve_first_read_skeleton).
+    """
+    return is_v5_flag_enabled(
+        "v5_first_read_active",
+        "TOKEN_OPTIMIZER_FIRST_READ_ACTIVE",
+        default=True,
+    )
+
+
+# Cohorts (language, size-band) promoted shadow->active because real-history
+# backfill showed an edit-within-5-turns rate well under the 15% gate with a
+# confident sample (>=20). Bands MUST match compression_backfill._size_band.
+# Reversible: drop a tuple here (or set TOKEN_OPTIMIZER_FIRST_READ_ACTIVE=0).
+FIRST_READ_ACTIVE_COHORTS = frozenset({
+    ("markdown", "16-64KB"),
+    ("python", "16-64KB"),
+    ("python", "64-256KB"),
+    ("typescript", "16-64KB"),
+})
+
+
+def _first_read_size_band(n_bytes: int) -> str:
+    """Size band for cohort lookup. MUST match compression_backfill._size_band."""
+    kb = n_bytes / 1024
+    if kb < 16:
+        return "<16KB"   # below the shadow floor; never a promoted cohort
+    if kb < 64:
+        return "16-64KB"
+    if kb < 256:
+        return "64-256KB"
+    if kb < 1024:
+        return "256KB-1MB"
+    return "1-2MB"
+
+
+# First-read shadow size window (bytes). Below the floor a skeleton saves too
+# little to justify the extra hot-path read; above the ceiling we refuse to read
+# content on the PreToolUse path to stay inside the hook budget.
+FIRST_READ_SHADOW_MIN_BYTES = 16 * 1024
+FIRST_READ_SHADOW_MAX_BYTES = 2 * 1024 * 1024
+# Only log a shadow opportunity when the skeleton is a clear win, matching the
+# >=40% gate U3/U4 use, so coverage reflects genuinely compressible reads.
+FIRST_READ_SHADOW_MIN_RATIO = 0.40
+
+# compression_events feature names for the first-read shadow path. measure.py's
+# coverage view matches on these same strings (its own mirror constants).
+FEATURE_FIRST_READ_SKELETON = "first_read_skeleton"
+FEATURE_FIRST_READ_EDIT_FOLLOWUP = "first_read_edit_followup"
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -393,10 +463,9 @@ CREATE TABLE IF NOT EXISTS savings_events (
 );
 """
 
-import re as _re
-_UUID_PAT_RC = _re.compile(
+_UUID_PAT_RC = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-    _re.IGNORECASE,
+    re.IGNORECASE,
 )
 
 
@@ -444,9 +513,9 @@ def _ensure_savings_columns(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE savings_events ADD COLUMN session_uuid TEXT")
         if "unjoinable" not in cols:
             conn.execute("ALTER TABLE savings_events ADD COLUMN unjoinable INTEGER DEFAULT 0")
-        else:
-            # All present and no ALTER needed -> safe to skip future introspection.
-            _savings_columns_verified = True
+        # All three columns now exist (present already or just ALTER'd, which
+        # auto-commits), so future introspection in this process is redundant.
+        _savings_columns_verified = True
     except Exception:
         pass
 
@@ -543,6 +612,255 @@ def _summarize_redundant_read(
 # ---------------------------------------------------------------------------
 # Main hook logic
 # ---------------------------------------------------------------------------
+
+def _first_read_compress(
+    file_path: str,
+    stat: os.stat_result,
+    offset: int,
+    limit: int,
+    language: str,
+    session_id: str,
+    store: "SessionStore",
+    mode: str,
+    cached_content: Optional[str] = None,
+    save_hook_context_enabled: bool = False,
+    quiet: bool = True,
+) -> bool:
+    """First-read skeleton path (U5). Returns True iff it SERVED a skeleton
+    (active mode emitted a deny+inject and the caller must stop).
+
+    For a whole-file first read of a structure-supported file in the size window
+    that compresses well:
+      * ACTIVE cohort (validated by history) -> serve the skeleton, archive the
+        full original for `expand`, log a measured event. Returns True.
+      * Otherwise -> SHADOW: serve the full file unchanged, log an opportunity
+        event + arm the edit-rate ledger marker (resolved at the Edit hook).
+        Returns False.
+    Fully fail-open: any error returns False (serve the full file).
+    """
+    try:
+        if not _is_first_read_shadow_enabled():
+            return False
+        # Whole-file reads only: a partial range has no skeleton equivalent.
+        if offset != 0 or limit != 0:
+            return False
+        size = int(stat.st_size)
+        if size < FIRST_READ_SHADOW_MIN_BYTES or size > FIRST_READ_SHADOW_MAX_BYTES:
+            return False
+        if not is_structure_supported_file(file_path):
+            return False
+
+        # Reuse the content delta mode already read this turn, if present, to
+        # avoid a second full read of the same file on the hot path.
+        content = (
+            cached_content
+            if cached_content is not None
+            else Path(file_path).read_text(encoding="utf-8", errors="replace")
+        )
+        result = summarize_code_file(file_path, content=content, file_size_bytes=size)
+        if not result.eligible:
+            return False
+        orig_tokens = int(result.file_tokens_est or estimate_tokens(content))
+        skel_tokens = int(result.replacement_tokens_est or 0)
+        if orig_tokens <= 0:
+            return False
+        would_be_ratio = 1.0 - (skel_tokens / orig_tokens)
+        if would_be_ratio < FIRST_READ_SHADOW_MIN_RATIO:
+            return False
+
+        cohort = (language, _first_read_size_band(size))
+        if (
+            _is_first_read_active_enabled()
+            and cohort in FIRST_READ_ACTIVE_COHORTS
+            and result.replacement_text
+        ):
+            return _serve_first_read_skeleton(
+                file_path, stat, size, language, session_id, store, mode,
+                content, result, orig_tokens, skel_tokens,
+                save_hook_context_enabled, quiet,
+            )
+
+        # SHADOW (cohort not yet promoted): serve full, measure the opportunity.
+        # Write the ledger marker FIRST, then the skeleton event. If the second
+        # write fails, the failure biases the R9 edit-rate the SAFE way (an
+        # orphan marker can only over-count edits → looks less safe to promote),
+        # never the unsafe way. Keyed by the resolved file_path (handle_invalidate
+        # normalizes the path identically).
+        store.set_meta(
+            f"shadow_fr:{file_path}",
+            json.dumps({
+                "ts": time.time(),
+                "lang": language,
+                "ratio": round(would_be_ratio, 4),
+                "resolved": 0,
+            }),
+        )
+        from compression_log import log_compression_event
+        log_compression_event(
+            feature=FEATURE_FIRST_READ_SKELETON,
+            session_id=session_id,
+            command_pattern=language,
+            tier="opportunity",
+            verified=False,
+            detail=f"shadow size_bytes={size}",
+            original_tokens=orig_tokens,
+            compressed_tokens=skel_tokens,
+        )
+        return False
+    except Exception:
+        return False
+
+
+def _serve_first_read_skeleton(
+    file_path: str,
+    stat: os.stat_result,
+    size: int,
+    language: str,
+    session_id: str,
+    store: "SessionStore",
+    mode: str,
+    content: str,
+    result: StructureMapResult,
+    orig_tokens: int,
+    skel_tokens: int,
+    save_hook_context_enabled: bool,
+    quiet: bool,
+) -> bool:
+    """ACTIVE mode: serve the skeleton in place of the full file. Returns True
+    iff it actually withheld content (a deny was emitted), else False.
+
+    Invariant (the whole safety story): content is withheld ONLY when the full
+    original has been successfully archived and is recoverable via `expand <key>`.
+    If archiving fails for any reason, we FAIL OPEN — return False so the caller
+    serves the full file. Once archived, logging is best-effort and can never
+    abandon the deny we committed to. The original file on disk is never touched;
+    a ranged Read or a direct Edit also reach the full content.
+    """
+    net_saved = max(0, orig_tokens - skel_tokens)
+    # Archive FIRST. No guaranteed path back to the full content => do not withhold.
+    try:
+        from archive_result import derive_archive_key, archive_original, build_archive_pointer
+        key = derive_archive_key(session_id, file_path, stat.st_mtime_ns)
+        if archive_original(content, session_id, key, "Read", quiet=quiet) is None:
+            return False
+        body = build_archive_pointer(result.replacement_text, len(content), key)
+    except Exception:
+        return False
+
+    context = "\n".join([
+        f"[Token Optimizer] {Path(file_path).name} is large (~{orig_tokens:,} tokens). "
+        f"Serving a {result.replacement_type} skeleton (~{net_saved:,} tokens saved).",
+        f"Need the full file? Run: expand {key}  "
+        "(or Read a specific offset/limit range, or Edit the file directly).",
+        "",
+        body,
+    ])
+    reason = (
+        f"{Path(file_path).name}: large-file first read served as a "
+        f"{result.replacement_type} skeleton; full content available via expand or a ranged Read."
+    )
+
+    # The original is archived, so the deny is now safe to emit. Side-channel
+    # logging is best-effort and MUST NOT prevent _emit_pretool_response.
+    try:
+        from compression_log import log_compression_event
+        log_compression_event(
+            feature=FEATURE_FIRST_READ_SKELETON,
+            session_id=session_id,
+            command_pattern=language,
+            tier="measured",
+            verified=True,
+            quality_preserved=True,
+            detail=f"active size_bytes={size} type={result.replacement_type}",
+            original_tokens=orig_tokens,
+            compressed_tokens=skel_tokens,
+        )
+    except Exception:
+        pass
+    try:
+        _log_decision(
+            "block",
+            file_path,
+            "first_read_skeleton",
+            session_id,
+            mode=mode,
+            actual_substitution=True,
+            eligible=True,
+            language=language,
+            reason_code="first_read_skeleton_active",
+            offset=0,
+            limit=0,
+            replacement_type=result.replacement_type,
+            file_tokens_est=orig_tokens,
+            replacement_tokens_est=skel_tokens,
+            net_saved_tokens_est=net_saved,
+            replacement_fingerprint=result.fingerprint,
+            repeat_replacement_count=0,
+            save_hook_additional_context_enabled=save_hook_context_enabled,
+            confidence=result.confidence,
+        )
+    except Exception:
+        pass
+    if not quiet:
+        print(f"[Read Cache] First-read skeleton: {file_path} (saved~{net_saved:,})",
+              file=sys.stderr)
+    _emit_pretool_response("deny", reason, context)
+    return True
+
+
+def _resolve_first_read_shadow_on_edit(
+    file_path: str,
+    language: str,
+    session_id: str,
+    store: "SessionStore",
+) -> None:
+    """Resolve a shadow first-read ledger marker at the Edit/Write hook (R9).
+
+    A shadow-measured first read followed by an edit to the same file is the
+    "the model needed the full file" proxy. Emit an Opportunity-tier follow-up
+    event so coverage (U6) can compute the cohort edit-rate
+    (followups / shadows). Marked resolved so repeated edits count once.
+    Fully fail-open.
+
+    Known limitation: the marker lives in the per-session store, so an edit in a
+    DIFFERENT session than the shadow read is not resolved. The proxy therefore
+    undercounts edits for cross-session read→edit patterns, biasing the edit-rate
+    LOW (toward "promote"). The promotion decision (R9) must account for this with
+    a conservative gate and human review before any active-mode flip — it must
+    not auto-promote purely on this proxy.
+    """
+    try:
+        raw = store.get_meta(f"shadow_fr:{file_path}")
+        if not raw:
+            return
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            # A corrupt marker would otherwise stay un-resolvable forever and
+            # silently drop this file from the edit-rate numerator. Clear it.
+            store.set_meta(f"shadow_fr:{file_path}", "")
+            return
+        if data.get("resolved"):
+            return
+        from compression_log import log_compression_event
+        log_compression_event(
+            feature=FEATURE_FIRST_READ_EDIT_FOLLOWUP,
+            session_id=session_id,
+            command_pattern=data.get("lang") or language,
+            tier="opportunity",
+            verified=False,
+            # The full file was needed right after the read — a skeleton would
+            # have withheld content. That is the opposite of quality-preserving.
+            quality_preserved=False,
+            detail="shadow first-read followed by edit",
+            original_tokens=0,
+            compressed_tokens=0,
+        )
+        data["resolved"] = 1
+        store.set_meta(f"shadow_fr:{file_path}", json.dumps(data))
+    except Exception:
+        pass
+
 
 def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
     """Handle a PreToolUse Read event. Caller must verify tool_name == "Read"."""
@@ -698,11 +1016,13 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
             "read_count": 1,
             "last_access": time.time(),
         }
+        delta_content = None
         if _is_v5_delta_enabled() and offset == 0 and limit == 0:
             try:
                 from delta_diff import is_delta_eligible, content_hash, MAX_CONTENT_CACHE_BYTES
                 if is_delta_eligible(file_path):
                     fc = Path(file_path).read_text(encoding="utf-8", errors="replace")
+                    delta_content = fc  # reusable in-process even if too big to persist
                     if len(fc.encode("utf-8", errors="replace")) <= MAX_CONTENT_CACHE_BYTES:
                         entry["cached_content"] = fc
                         entry["content_hash"] = content_hash(fc)
@@ -711,6 +1031,17 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
                 pass
         _reset_replacement_state(entry)
         store.upsert_file_entry(file_path, entry)
+        # U5: first-read skeleton. Active cohorts serve a skeleton (returns True,
+        # we stop here); others fall through to serve the full file + shadow-log.
+        # Reuses content delta mode already read this turn (even when too large to
+        # persist) so the file is never read twice.
+        if _first_read_compress(
+            file_path, stat, offset, limit, language, session_id, store, mode,
+            cached_content=entry.get("cached_content") or delta_content,
+            save_hook_context_enabled=save_hook_context_enabled,
+            quiet=quiet,
+        ):
+            return
         _log_decision(
             "allow",
             file_path,
@@ -853,6 +1184,7 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
                                     command_pattern=f"Read:{Path(file_path).name}",
                                     quality_preserved=True,
                                     verified=True,
+                                    tier="measured",  # realized: reaches headline explicitly
                                     detail=f"+{delta_stats['added']}/-{delta_stats['removed']}",
                                 )
                             except Exception:
@@ -1169,6 +1501,11 @@ def handle_invalidate(hook_input: dict[str, Any], quiet: bool) -> None:
     store = _make_store(session_id)
     if store is None:
         return
+
+    # U5: resolve the first-read shadow quality proxy (edit-after-shadow-read).
+    _resolve_first_read_shadow_on_edit(
+        file_path, detect_structure_language(file_path), session_id, store
+    )
 
     try:
         existing = store.get_file_entry(file_path)

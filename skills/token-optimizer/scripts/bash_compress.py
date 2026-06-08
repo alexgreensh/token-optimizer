@@ -1010,6 +1010,68 @@ _COMPRESS_FEATURE_MAP = {
 # Main entry point
 # ---------------------------------------------------------------------------
 
+_GENERIC_MIN_CHARS = 2000   # only compress reasonably large unmatched output
+_GENERIC_HEAD = 20          # lines kept from the top
+_GENERIC_TAIL = 20          # lines kept from the bottom
+_GENERIC_IMPORTANT = re.compile(
+    r"\b(error|errors|warn|warning|fail|failed|failure|exception|traceback|"
+    r"fatal|panic|denied|refused|timeout|timed out)\b",
+    re.IGNORECASE,
+)
+
+
+def _compress_generic(text):
+    """Generic structural/log compression for output matching no known pattern.
+
+    Collapses consecutive duplicate lines, keeps head + tail, and preserves
+    every error/warning line anywhere in the body. Deterministic, fail-open
+    (caller wraps in try/except), and credential lines are independently
+    re-injected by the PRE-compression scan in compress().
+    """
+    lines = text.splitlines()
+
+    # Collapse runs of identical consecutive lines into "<line>  (xN)".
+    collapsed: list[str] = []
+    run_val = None
+    run_count = 0
+
+    def _flush_run():
+        if run_val is None:
+            return
+        if run_count > 1:
+            collapsed.append(f"{run_val}  (x{run_count})")
+        else:
+            collapsed.append(run_val)
+
+    for ln in lines:
+        if ln == run_val:
+            run_count += 1
+        else:
+            _flush_run()
+            run_val = ln
+            run_count = 1
+    _flush_run()
+
+    if len(collapsed) <= _GENERIC_HEAD + _GENERIC_TAIL:
+        return "\n".join(collapsed)
+
+    head = collapsed[:_GENERIC_HEAD]
+    tail = collapsed[len(collapsed) - _GENERIC_TAIL:]
+    middle = collapsed[_GENERIC_HEAD:len(collapsed) - _GENERIC_TAIL]
+    _IMPORTANT_CAP = _GENERIC_HEAD * 10
+    important = [ln for ln in middle if _GENERIC_IMPORTANT.search(ln)][:_IMPORTANT_CAP]
+    omitted = len(middle) - len(important)
+
+    out: list[str] = list(head)
+    if important:
+        out.append(f"... {omitted} lines omitted (kept {len(important)} error/warning lines) ...")
+        out.extend(important)
+    else:
+        out.append(f"... {omitted} lines omitted ...")
+    out.extend(tail)
+    return "\n".join(out)
+
+
 def compress(command_str, raw_output, returncode=0, stderr=""):
     """Compress CLI output based on command pattern.
 
@@ -1035,16 +1097,23 @@ def compress(command_str, raw_output, returncode=0, stderr=""):
     # Detect pattern
     pattern = _detect_pattern(command_str)
     if pattern is None:
-        return cleaned  # no pattern, return ANSI-stripped only
-
-    handler = _PATTERN_HANDLERS.get(pattern)
-    if handler is None:
-        return cleaned
-
-    try:
-        compressed = handler(cleaned)
-    except Exception:
-        return cleaned  # fail open
+        # U4: generic structural/log compression for unmatched large output.
+        # Small outputs pass through; large ones get deduped + head/tail with
+        # all error/warning lines kept. The shared 10% gate below still applies.
+        if len(cleaned) < _GENERIC_MIN_CHARS:
+            return cleaned
+        try:
+            compressed = _compress_generic(cleaned)
+        except Exception:
+            return cleaned  # fail open
+    else:
+        handler = _PATTERN_HANDLERS.get(pattern)
+        if handler is None:
+            return cleaned
+        try:
+            compressed = handler(cleaned)
+        except Exception:
+            return cleaned  # fail open
 
     # Re-inject preserved lines that were stripped by compression.
     # Uses exact-line membership (not substring) so a short preserved
@@ -1064,11 +1133,12 @@ def compress(command_str, raw_output, returncode=0, stderr=""):
         if appended:
             compressed = compressed + "\n" + "\n".join(appended)
 
-    # Check if compression actually saved enough (10% minimum via bytes/4)
-    # We use 10% rather than 30% because even modest truncation (e.g., ls with 60 entries)
-    # is valuable context savings. The whitelist already limits risk.
-    original_tokens = len(cleaned.encode("utf-8", errors="replace")) // 4
-    compressed_tokens = len(compressed.encode("utf-8", errors="replace")) // 4
+    try:
+        from token_estimate import estimate_tokens as _est
+    except Exception:
+        _est = lambda t: len(t.encode("utf-8", errors="replace")) // 4
+    original_tokens = _est(cleaned)
+    compressed_tokens = _est(compressed)
     if original_tokens > 0 and (1.0 - compressed_tokens / original_tokens) < 0.10:
         return cleaned  # not worth the risk
 
@@ -1121,6 +1191,8 @@ def main():
             if comp_bytes < orig_bytes * 0.9:
                 _pattern = _detect_pattern(command_str)
                 _feature = _COMPRESS_FEATURE_MAP.get(_pattern or "")
+                if _feature is None and _pattern is None:
+                    _feature = "bash_generic"  # U4: unmatched-output coverage
                 if _feature:
                     sys.path.insert(0, str(Path(__file__).resolve().parent))
                     from measure import _log_compression_event
@@ -1132,6 +1204,7 @@ def main():
                         command_pattern=command_str[:100],
                         quality_preserved=True,
                         verified=True,
+                        tier="measured",
                     )
         except Exception:
             pass

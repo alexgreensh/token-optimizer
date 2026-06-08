@@ -3928,6 +3928,13 @@ def generate_dashboard(coord_path):
     except Exception:
         savings_data = _get_savings_summary(days=30)
 
+    # U6: tiered compression-coverage diagnostic (kept separate from savings;
+    # shadow/opportunity ratios never feed the headline). Fail-open to empty.
+    try:
+        compression_coverage = _get_compression_coverage(days=30)
+    except Exception:
+        compression_coverage = {"available": False, "tiers": {}, "first_read_proxy": None}
+
     # Fall back to auto-recommendations if LLM plan is missing
     auto_plan_flag = False
     if not plan:
@@ -3951,6 +3958,7 @@ def generate_dashboard(coord_path):
         "manage": management,
         "hooks": hook_status,
         "savings": savings_data,
+        "compression_coverage": compression_coverage,
         "auto_plan": auto_plan_flag,
         "generated_at": datetime.now().isoformat(),
         "version": TOKEN_OPTIMIZER_VERSION,
@@ -7484,7 +7492,8 @@ CREATE TABLE IF NOT EXISTS compression_events (
     quality_preserved INTEGER DEFAULT 1,
     verified INTEGER DEFAULT 0,
     detail TEXT,
-    model TEXT
+    model TEXT,
+    tier TEXT
 );
 """
 
@@ -7661,6 +7670,11 @@ def _init_trends_db():
             conn.execute("ALTER TABLE compression_events ADD COLUMN session_uuid TEXT")
         if "model" not in ce_cols:
             conn.execute("ALTER TABLE compression_events ADD COLUMN model TEXT")
+        if "tier" not in ce_cols:
+            # U1 (coverage build): three-tier accounting tag (measured/estimated/
+            # opportunity). Nullable: pre-existing rows stay NULL and keep their
+            # current headline treatment; only new coverage events set a tier.
+            conn.execute("ALTER TABLE compression_events ADD COLUMN tier TEXT")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_compression_events_uuid "
             "ON compression_events (session_uuid)"
@@ -7867,20 +7881,34 @@ def _log_savings_event(event_type, tokens_saved, session_id=None, detail=None, m
         pass  # Never crash the caller over savings tracking
 
 
+_cached_estimate_fn = None
+
 def _estimate_tokens(text):
-    """Estimate token count using bytes/4 proxy. Closer to BPE than word count."""
+    """Estimate token count via the shared calibrated estimator (token_estimate.py).
+
+    Falls back to bytes/4 only if the shared estimator is unavailable.
+    """
+    global _cached_estimate_fn
     if not text:
         return 0
-    return len(text.encode("utf-8", errors="replace")) // 4
+    if _cached_estimate_fn is None:
+        try:
+            from token_estimate import estimate_tokens as _fn
+            _cached_estimate_fn = _fn
+        except Exception:
+            _cached_estimate_fn = lambda t: len(t.encode("utf-8", errors="replace")) // 4
+    return _cached_estimate_fn(text)
 
 
 def _log_compression_event(feature, original_text="", compressed_text="",
                            session_id=None, command_pattern=None,
-                           quality_preserved=True, verified=False, detail=None):
+                           quality_preserved=True, verified=False, detail=None,
+                           tier=None):
     """Log a compression event to the trends database.
 
-    Uses bytes/4 proxy for token estimation (closer to BPE than word count).
-    Never crashes the caller -- all errors silently caught.
+    Token counts come from the shared calibrated estimator (_estimate_tokens ->
+    token_estimate.py); it falls back to a bytes/4 proxy only if that module is
+    unavailable. Never crashes the caller -- all errors silently caught.
 
     U1: writes session_uuid (the stable join key) and resolves + stores model
     at event-time so _get_merged_savings can reprice at the session's real
@@ -7902,13 +7930,13 @@ def _log_compression_event(feature, original_text="", compressed_text="",
             conn.execute(
                 "INSERT INTO compression_events "
                 "(timestamp, session_id, session_uuid, feature, command_pattern, original_tokens, "
-                "compressed_tokens, compression_ratio, quality_preserved, verified, detail, model) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "compressed_tokens, compression_ratio, quality_preserved, verified, detail, model, tier) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (datetime.now().isoformat(), session_id, session_uuid, feature, command_pattern,
                  original_tokens, compressed_tokens, ratio,
                  1 if quality_preserved else 0,
                  1 if verified else 0,
-                 detail, resolved_model),
+                 detail, resolved_model, tier),
             )
             conn.commit()
         finally:
@@ -7932,6 +7960,9 @@ def _get_compression_summary(days=30):
             cutoff = (datetime.now() - timedelta(days=days)).isoformat()
             # Pull model alongside aggregates so we can reprice by event-time model.
             # NULLs land as None in Python; fallback handled below.
+            # REALIZED tiers only: opportunity (shadow) and estimated rows are
+            # diagnostic and MUST NEVER reach the savings headline (three-tier
+            # rule). Legacy rows predate the tier column (NULL) and stay counted.
             rows = conn.execute(
                 "SELECT feature, COUNT(*) as cnt, "
                 "SUM(original_tokens) as orig, SUM(compressed_tokens) as comp, "
@@ -7940,6 +7971,7 @@ def _get_compression_summary(days=30):
                 "SUM(CASE WHEN verified = 1 THEN 1 ELSE 0 END) as verified_cnt, "
                 "model "
                 "FROM compression_events WHERE timestamp >= ? "
+                "AND (tier IS NULL OR tier = 'measured') "
                 "GROUP BY feature, model ORDER BY orig DESC",
                 (cutoff,),
             ).fetchall()
@@ -8016,6 +8048,131 @@ def _get_compression_summary(days=30):
         }
     except Exception:
         return {"total_events": 0, "total_tokens_saved": 0, "by_feature": {}, "period_days": days}
+
+
+# U6: human labels for coverage features. These ARE in _V5_COMPRESSION_CATEGORIES
+# (so tier=measured rows reach the savings headline). Shadow/opportunity rows are
+# excluded by the tier filter in _get_compression_summary, not by this set.
+# Three-tier accounting (KTD5). The single source of truth for tier ordering +
+# display, mirrored by compression_log._VALID_TIERS on the write side.
+_COMPRESSION_TIERS = ("measured", "estimated", "opportunity")
+_TIER_DISPLAY_NAMES = {
+    "measured": "Measured (active compression)",
+    "estimated": "Estimated",
+    "opportunity": "Opportunity (shadow, not active)",
+}
+
+# Mirror of read_cache.FEATURE_* — kept as literals here to avoid importing the
+# hot-path read hook into this dashboard/CLI module.
+_FEATURE_FIRST_READ_SKELETON = "first_read_skeleton"
+_FEATURE_FIRST_READ_EDIT_FOLLOWUP = "first_read_edit_followup"
+
+_COVERAGE_FEATURE_LABELS = {
+    "bash_generic": "Bash (unmatched output)",
+    _FEATURE_FIRST_READ_SKELETON: "First-read skeleton",
+    _FEATURE_FIRST_READ_EDIT_FOLLOWUP: "First-read edit follow-up",
+}
+
+# First-read shadow promotion gate (R9): a cohort graduates from shadow to active
+# only when the post-read edit rate is below this. Lower edit rate = the model
+# rarely needed the full file = safer to serve a skeleton.
+_FIRST_READ_PROMOTION_EDIT_RATE = 0.15
+
+
+def _coverage_feature_label(feature):
+    """Display label for a coverage feature (falls back through the v5 labels)."""
+    return (
+        _COVERAGE_FEATURE_LABELS.get(feature)
+        or _V5_COMPRESSION_LABELS.get(feature)
+        or feature
+    )
+
+
+def _get_compression_coverage(days=30):
+    """Tiered compression-coverage view (U6). Diagnostic only — never summed.
+
+    Groups compression_events by feature into measured / estimated / opportunity
+    buckets and reports per-feature events, would-be (shadow) or realized
+    (active) avg ratio, and verified %. Tiers are kept strictly separate so a
+    shadow opportunity can never be read as realized savings. These numbers do
+    NOT feed _get_merged_savings (only _V5_COMPRESSION_CATEGORIES features do).
+
+    Also surfaces the first-read shadow quality proxy: edit_rate =
+    edits-after-shadow-read / shadow-reads. It is the R9 promotion gate — a low
+    rate means the model rarely needed the full file, so a skeleton would have
+    been safe. Fail-open: returns an empty (but well-formed) structure on error.
+    """
+    out = {
+        "period_days": days,
+        "tiers": {t: [] for t in _COMPRESSION_TIERS},
+        "first_read_proxy": None,
+        "available": False,
+    }
+    try:
+        conn = _init_trends_db()
+        try:
+            cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+            rows = conn.execute(
+                "SELECT feature, tier, COUNT(*) as cnt, "
+                "SUM(original_tokens) as orig, SUM(compressed_tokens) as comp, "
+                "AVG(compression_ratio) as avg_ratio, "
+                "SUM(CASE WHEN verified = 1 THEN 1 ELSE 0 END) as vcnt "
+                "FROM compression_events WHERE timestamp >= ? "
+                "GROUP BY feature, tier",
+                (cutoff,),
+            ).fetchall()
+        finally:
+            conn.close()
+    except Exception as exc:
+        # Distinguish a broken query from a legitimately empty DB so the
+        # dashboard/CLI can show "unavailable (error)" rather than "no data yet".
+        out["error"] = str(exc)
+        return out
+
+    # Proxy denominator is the shadow-tier skeletons only; the numerator is their
+    # edit follow-ups. Both must come from the same opportunity cohort.
+    skeleton_cnt = 0
+    followup_cnt = 0
+    for feature, tier, cnt, _orig, _comp, _avg, _vcnt in rows:
+        if feature == _FEATURE_FIRST_READ_SKELETON and tier == "opportunity":
+            skeleton_cnt += cnt or 0
+        elif feature == _FEATURE_FIRST_READ_EDIT_FOLLOWUP and tier == "opportunity":
+            followup_cnt += cnt or 0
+
+    for feature, tier, cnt, orig, comp, avg_ratio, vcnt in rows:
+        if feature == _FEATURE_FIRST_READ_EDIT_FOLLOWUP:
+            continue  # internal proxy signal — surfaced via first_read_proxy only
+        cnt = cnt or 0
+        orig = orig or 0
+        comp = comp or 0
+        safe_tier = tier if tier in _COMPRESSION_TIERS else "estimated"
+        realized = safe_tier == "measured"
+        out["tiers"][safe_tier].append({
+            "feature": feature,
+            "label": _coverage_feature_label(feature),
+            "events": cnt,
+            "tokens_saved": max(orig - comp, 0),
+            "ratio": round(avg_ratio or 0.0, 4),
+            "ratio_kind": "realized" if realized else "would_be",
+            "verified_pct": round(100 * (vcnt or 0) / max(cnt, 1), 1),
+            "shadow": not realized,
+        })
+        out["available"] = True
+
+    if skeleton_cnt > 0:
+        edit_rate = followup_cnt / skeleton_cnt
+        out["first_read_proxy"] = {
+            "shadow_reads": skeleton_cnt,
+            "edits_after_read": followup_cnt,
+            "edit_rate_pct": round(100 * edit_rate, 1),
+            "promotion_gate_pct": round(100 * _FIRST_READ_PROMOTION_EDIT_RATE, 1),
+            "promotion_ready": edit_rate < _FIRST_READ_PROMOTION_EDIT_RATE,
+        }
+        out["available"] = True
+
+    for bucket in out["tiers"].values():
+        bucket.sort(key=lambda e: e["events"], reverse=True)
+    return out
 
 
 def _get_savings_summary(days=30):
@@ -13154,38 +13311,28 @@ def compute_quality_score(quality_data, session_id=None):
         return {"score": 0, "signals": {}, "breakdown": {}}
 
     # 0. Context fill degradation
-    # Priority: session token counters > live fill from statusline sidecar > char-length estimate from JSONL
+    # Priority: live fill from statusline (real-time) > JSONL context_tokens (previous turn) > char-length estimate
     ctx_window = detect_context_window()[0]
+    model_context_window = quality_data.get("model_context_window") or ctx_window
     fill_pct = None
     try:
-        context_tokens = quality_data.get("context_tokens")
-        # Fall back to the resolved window when the parsed data didn't carry one —
-        # otherwise the most accurate fill source (this session's own usage tokens)
-        # is skipped and we drop to the char-length estimate, which misses cached
-        # context and reads ~0% for sessions with heavy cache_creation/cache_read.
-        model_context_window = quality_data.get("model_context_window") or ctx_window
-        if context_tokens is not None and model_context_window:
-            fill_pct = min(1.0, max(0.0, float(context_tokens) / float(model_context_window)))
-    except (TypeError, ValueError):
-        fill_pct = None
-    try:
         live_fill_path = QUALITY_CACHE_DIR / "live-fill.json"
-        if fill_pct is None and live_fill_path.exists():
+        if live_fill_path.exists():
             live = json.loads(live_fill_path.read_text(encoding="utf-8"))
             age = time.time() - live.get("timestamp", 0) / 1000  # JS timestamp is ms
-            # live-fill.json is a single global file written by whichever session's
-            # status line rendered last. Only trust it when its session_id matches
-            # the session being scored — otherwise a fresh session reads another
-            # active session's fill, scores a false-low fill, and the resource_health
-            # ratchet pins that wrong value for the rest of the session.
             live_sid = sanitize_session_id(str(live.get("session_id") or ""))
             want_sid = sanitize_session_id(str(session_id or ""))
             if age < 10 and want_sid and live_sid == want_sid:
-                # Cap at 1.0: the live percentage is measured against an assumed
-                # window, so it must never display/score as >100% fill.
                 fill_pct = min(1.0, max(0.0, live["used_percentage"] / 100.0))
     except (json.JSONDecodeError, OSError, KeyError):
         pass
+    if fill_pct is None:
+        try:
+            context_tokens = quality_data.get("context_tokens")
+            if context_tokens is not None and model_context_window:
+                fill_pct = min(1.0, max(0.0, float(context_tokens) / float(model_context_window)))
+        except (TypeError, ValueError):
+            fill_pct = None
     if fill_pct is None:
         CHARS_PER_TOKEN = 4
         total_chars = sum(tlen for _, _, tlen, _ in quality_data["messages"])
@@ -18152,20 +18299,18 @@ def quality_cache(throttle_seconds=120, warn_threshold=70, quiet=False, session_
     # fall back to a 200k guess and inflate every 1M-context session ~5x.
     result["model_context_window"] = cfd.get("model_context_window") or detect_context_window()[0]
 
-    # Enforce ResourceHealth monotonicity within a session.
-    # ResourceHealth can only worsen (decrease) within a session. Fill_pct fluctuates
-    # between measurements due to context window adds/removes, causing 10-20 point
-    # score swings. Clamp to previous value unless a new compaction happened.
-    # Uses >= to handle corrupted caches where compactions regresses.
+    # Dampen ResourceHealth swings within a session.
+    # Fill_pct fluctuates between measurements (context adds/removes, compaction).
+    # Allow recovery but dampen: drops are immediate, recovery moves 30% toward
+    # the new value per measurement to prevent wild upward swings.
     prev_rh = prev_result.get("resource_health")
-    prev_compactions = prev_result.get("compactions", 0)
-    if (prev_rh is not None
-            and result["compactions"] <= prev_compactions
-            and result["resource_health"] > prev_rh):
-        result["resource_health"] = prev_rh
-        result["score"] = prev_rh
-        result["grade"] = prev_result.get("grade", score_to_grade(round(prev_rh)))
-        result["resource_health_grade"] = prev_result.get("resource_health_grade", result["grade"])
+    current_rh = result.get("resource_health")
+    if prev_rh is not None and current_rh is not None:
+        if current_rh >= prev_rh:
+            result["resource_health"] = round(prev_rh + (current_rh - prev_rh) * 0.3, 1)
+        result["score"] = result["resource_health"]
+        result["grade"] = score_to_grade(round(result["resource_health"]))
+        result["resource_health_grade"] = result["grade"]
 
     # Session duration + active agents for statusline (v2.6)
     result["session_start_ts"] = _extract_session_start_ts(filepath)
@@ -19183,6 +19328,11 @@ _V5_COMPRESSION_LABELS = {
     "bash_compress_list": "Bash compress (list)",
     "bash_compress_build": "Bash compress (build)",
     "bash_compress_test_exts": "Bash compress (test runners)",
+    # U4: unmatched-output coverage (tier=measured). U5: first-read skeleton —
+    # only its ACTIVE (tier=measured) rows reach the headline; shadow rows are
+    # tier=opportunity and filtered out in _get_compression_summary.
+    "bash_generic": "Bash compress (other commands)",
+    "first_read_skeleton": "First-read code skeleton",
 }
 
 # Unified label dict used by the savings-report renderer. Legacy entries
@@ -22965,8 +23115,9 @@ if __name__ == "__main__":
                 except ValueError:
                     pass
         summary = _get_compression_summary(days=days)
+        coverage = _get_compression_coverage(days=days)
         if output_json:
-            print(json.dumps(summary, indent=2))
+            print(json.dumps({"summary": summary, "coverage": coverage}, indent=2))
         else:
             print(f"\n  Compression Stats ({days}d)")
             print(f"  {'=' * 50}")
@@ -22982,6 +23133,24 @@ if __name__ == "__main__":
                           f"quality: {data['quality_preserved_pct']:.0f}%")
             else:
                 print("  No compression events yet. Enable v5 features to start tracking.")
+            # U6: tiered coverage — measured / shadow kept strictly separate.
+            for tkey in _COMPRESSION_TIERS:
+                bucket = coverage.get("tiers", {}).get(tkey, [])
+                if not bucket:
+                    continue
+                print(f"\n  {_TIER_DISPLAY_NAMES[tkey]}:")
+                for e in bucket:
+                    kind = "realized" if e["ratio_kind"] == "realized" else "would-be"
+                    print(f"    {e['label']:28s}  {e['events']:5d} events  "
+                          f"{kind} ratio: {e['ratio']:.1%}")
+            proxy = coverage.get("first_read_proxy")
+            if proxy:
+                ready = "READY" if proxy["promotion_ready"] else "not yet"
+                print("\n  First-read shadow quality proxy (R9 promotion gate):")
+                print(f"    shadow reads: {proxy['shadow_reads']}  "
+                      f"edits after read: {proxy['edits_after_read']}  "
+                      f"edit rate: {proxy['edit_rate_pct']:.1f}% "
+                      f"(gate <{proxy['promotion_gate_pct']:.0f}% — {ready})")
             print()
     elif args[0] == "benchmark":
         # Run compression benchmark fixtures

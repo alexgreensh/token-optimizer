@@ -18,7 +18,7 @@ from runtime_env import codex_home
 TOKEN_OPTIMIZER_MARKER = "token-optimizer/scripts"
 SUPPORTED_EVENTS = (
     "PreToolUse", "SessionStart", "UserPromptSubmit", "PostToolUse", "Stop",
-    "SubagentStart", "SubagentStop",
+    "SessionEnd", "StopFailure", "SubagentStart", "SubagentStop",
 )
 
 

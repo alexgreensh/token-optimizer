@@ -3774,6 +3774,55 @@ var DB = (function() {
         '</div></div>';
     }
 
+    // ---- Compression coverage (U6): diagnostic only. Tiers are rendered as
+    // separate blocks and NEVER summed; shadow/opportunity rows are visually
+    // distinct and labelled so a would-be ratio can't be misread as realized
+    // savings. None of these numbers feed the headline above. ----
+    var cc = data.compression_coverage || {};
+    if (cc.available) {
+      var tierMeta = {
+        measured:    { title: 'Measured (active compression)', note: 'Output actually shrunk before it reached the model.', dim: false },
+        estimated:   { title: 'Estimated',                     note: 'Directional counterfactuals.',                       dim: false },
+        opportunity: { title: 'Opportunity (shadow — not active)', note: 'Measured what a skeleton WOULD save. Full content was still served, so this is not realized savings yet.', dim: true }
+      };
+      function covRow(e) {
+        var kind = e.ratio_kind === 'realized' ? 'realized' : 'would-be';
+        var badge = e.shadow ? ' <span style="font-size:11px;color:var(--c-text-dim);border:1px solid rgba(255,255,255,0.12);border-radius:4px;padding:1px 5px;">shadow, not active</span>' : '';
+        return '<div style="display:flex;justify-content:space-between;gap:var(--s-3);padding:5px 0;' + (e.shadow ? 'opacity:0.72;' : '') + '">' +
+          '<span>' + esc(e.label) + badge + '</span>' +
+          '<span style="font-family:var(--font-mono);color:var(--c-text-dim);">' +
+            (Number(e.events) || 0) + ' events &middot; ' + kind + ' ratio ' + Math.round((Number(e.ratio) || 0) * 100) + '%' +
+          '</span></div>';
+      }
+      var ccHtml = '<div class="card wide" style="margin-top:var(--s-3);"><div class="card-header">' +
+        '<span>Compression coverage</span><span class="label">diagnostic &middot; not summed into savings</span></div>';
+      ['measured', 'estimated', 'opportunity'].forEach(function(tk) {
+        var bucket = (cc.tiers && cc.tiers[tk]) || [];
+        if (!bucket.length) return;
+        var meta = tierMeta[tk];
+        ccHtml += '<div style="margin-top:var(--s-2);">' +
+          '<div style="font-weight:500;color:' + (meta.dim ? 'var(--c-text-dim)' : 'var(--c-text)') + ';">' + meta.title + '</div>' +
+          '<div style="font-size:13px;color:var(--c-text-dim);margin-bottom:4px;">' + meta.note + '</div>';
+        bucket.forEach(function(e) { ccHtml += covRow(e); });
+        ccHtml += '</div>';
+      });
+      var pr = cc.first_read_proxy;
+      if (pr) {
+        var ready = pr.promotion_ready;
+        ccHtml += '<div style="margin-top:var(--s-3);padding-top:var(--s-2);border-top:1px solid rgba(255,255,255,0.08);">' +
+          '<div style="font-weight:500;">First-read skeleton — safety check</div>' +
+          '<div style="font-size:13px;color:var(--c-text-dim);line-height:1.6;margin-top:2px;">' +
+            'Of ' + (Number(pr.shadow_reads) || 0) + ' large files where a skeleton would have saved tokens, ' +
+            (Number(pr.edits_after_read) || 0) + ' were edited soon after the read &mdash; an edit rate of ' +
+            '<span style="font-family:var(--font-mono);color:' + (ready ? 'var(--c-accent-cyan)' : 'var(--c-text)') + ';">' + (Number(pr.edit_rate_pct) || 0).toFixed(1) + '%</span>. ' +
+            'Skeletons turn on automatically only once this stays under ' + (Number(pr.promotion_gate_pct) || 15) + '% (the model rarely needed the full file). ' +
+            'Currently <strong>' + (ready ? 'ready to promote' : 'still measuring') + '</strong>.' +
+          '</div></div>';
+      }
+      ccHtml += '</div>';
+      html += ccHtml;
+    }
+
     el.innerHTML = html;
   }
 

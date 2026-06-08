@@ -39,7 +39,13 @@ from session_store import SessionStore, _sanitize_session_id as sanitize_sid
 # Constants
 # ---------------------------------------------------------------------------
 
-CHARS_PER_TOKEN = 4.0
+CHARS_PER_TOKEN = 4.0  # legacy proxy; retained only for the conservative MCP-cap proximity threshold
+try:
+    # Calibrated chars/token (~3.3 for code) — shared ratio basis for savings
+    # estimates so tool_archive numbers match the rest of the pipeline.
+    from token_estimate import CODE_CHARS_PER_TOKEN
+except Exception:  # pragma: no cover - fail-open if shared estimator missing
+    CODE_CHARS_PER_TOKEN = 3.3
 _ARCHIVE_THRESHOLD = 4096       # chars: only archive results >= this size
 _ARCHIVE_PREVIEW_SIZE = 1500    # chars: preview included in replacement output
 _ARCHIVE_MAX_SIZE = 5_242_880   # 5MB: truncate responses beyond this
@@ -393,6 +399,72 @@ def _append_manifest_line(path: Path, payload: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Progressive-disclosure spine (U2): reusable archive-original + pointer.
+#
+# Lets non-MCP / PreToolUse compressors (first-read code, bash, structured
+# data) persist the FULL original and hand the model a retrievable pointer,
+# exactly like the MCP eviction path. Cache-safety is structural: these run in
+# arrival hooks (PreToolUse / PostToolUse) BEFORE the content's first API send,
+# so they never mutate already-cached context. expand_archived locates an entry
+# by filename stem, so a derived key retrieves identically to a tool_use_id --
+# no expand change is needed.
+# ---------------------------------------------------------------------------
+
+def derive_archive_key(session_id: str | None, file_path: str, mtime_ns: int) -> str:
+    """Stable archive key for PreToolUse paths that have no tool_use_id.
+
+    sha256(session_id + file_path + mtime_ns)[:16]. Hex output satisfies
+    expand_archived's [a-zA-Z0-9_-]+ key validation.
+    """
+    raw = f"{session_id or ''}|{file_path}|{mtime_ns}".encode("utf-8", errors="replace")
+    return hashlib.sha256(raw).hexdigest()[:16]
+
+
+def build_archive_pointer(preview: str, original_chars: int, key: str) -> str:
+    """Standard progressive-disclosure pointer appended after a compressed preview."""
+    return (
+        f"{preview}\n\n"
+        f"[Full result archived ({original_chars:,} chars). "
+        f"Retrieve with: expand {key}]"
+    )
+
+
+def archive_original(content: str, session_id: str | None, key: str,
+                     tool_name: str, quiet: bool = True) -> str | None:
+    """Persist a full original (credential-redacted) under `key`; return the key.
+
+    Reusable by non-MCP / PreToolUse compressors so nothing is ever lost. Mirrors
+    the MCP archive path (same dir layout + manifest) so expand_archived retrieves
+    it unchanged. Fail-open: returns None on any failure (caller serves raw).
+    """
+    try:
+        if not key or not re.match(r"^[a-zA-Z0-9_-]+$", key):
+            return None
+        archive_dir = _archive_dir_for_session(session_id or "unknown")
+        if not _ensure_private_archive_dir(archive_dir):
+            return None
+        safe_response = _redact_credentials(content)
+        meta = {
+            "tool_name": tool_name,
+            "tool_use_id": key,
+            "chars": len(safe_response),
+            "original_chars": len(content),
+            "tokens_est": int(len(safe_response) / CODE_CHARS_PER_TOKEN),
+            "truncated": False,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "archived_from": "compress_with_preservation",
+        }
+        entry_path = archive_dir / f"{key}.json"
+        _atomic_write_json(entry_path, {**meta, "response": safe_response})
+        _append_manifest_line(archive_dir / "manifest.jsonl", meta)
+        return key
+    except Exception:
+        if not quiet:
+            print(f"[Tool Archive] archive_original failed for {tool_name}; serving raw.", file=sys.stderr)
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Structure-aware MCP output compression
 # ---------------------------------------------------------------------------
 
@@ -426,11 +498,77 @@ def _compress_mcp_preview(text: str, output_type: str) -> str:
     return text[:_ARCHIVE_PREVIEW_SIZE]
 
 
+# Value-preserving columnar compression thresholds (U3).
+_TABULAR_MIN_ROWS = 3            # too few rows to be worth a schema header
+_TABULAR_MAX_COLS = 40          # wider than this is not really tabular
+_TABULAR_CELL_CAP = 100         # per-cell char cap (keeps values, bounds width)
+_TABULAR_TOTAL_CAP = 8192       # if the columnar form exceeds this, evict instead
+_TABULAR_MIN_REDUCTION = 0.40   # must be >=40% smaller than original to engage
+
+
+def _compress_mcp_json_tabular(data, original_text: str):
+    """Value-preserving columnar compression for homogeneous arrays-of-dicts.
+
+    Strips the repeated per-row schema (emit keys once) while KEEPING values, so
+    the model can still read any cell inline instead of paying a full re-expand.
+    Returns the columnar string, or None to fall back to the eviction preview
+    when the data isn't tabular enough or the result isn't a clear win.
+    """
+    try:
+        if not isinstance(data, list) or len(data) < _TABULAR_MIN_ROWS:
+            return None
+        dict_rows = [r for r in data if isinstance(r, dict)]
+        if len(dict_rows) < max(_TABULAR_MIN_ROWS, int(len(data) * 0.8)):
+            return None  # not predominantly homogeneous dicts
+        # Ordered union of keys (first-seen order), bounded width.
+        cols: list[str] = []
+        seen = set()
+        for row in dict_rows:
+            for k in row.keys():
+                if k not in seen:
+                    seen.add(k)
+                    cols.append(str(k))
+        if not cols or len(cols) > _TABULAR_MAX_COLS:
+            return None
+
+        def _cell(v) -> str:
+            s = v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)
+            s = s.replace("\n", " ").replace("\t", " ")
+            return s[:_TABULAR_CELL_CAP] + ("…" if len(s) > _TABULAR_CELL_CAP else "")
+
+        lines = [
+            f"JSON array ({len(data)} items), columnar (schema-stripped, values preserved):",
+            "cols: " + ", ".join(cols),
+        ]
+        for row in data:
+            if isinstance(row, dict):
+                lines.append("- " + " | ".join(_cell(row.get(c, "")) for c in cols))
+            else:
+                lines.append("- " + _cell(row))
+        result = "\n".join(lines)
+
+        # Only engage when it's a clear win and stays within the inline budget.
+        if len(result) > _TABULAR_TOTAL_CAP:
+            return None
+        if len(result) > len(original_text) * (1.0 - _TABULAR_MIN_REDUCTION):
+            return None
+        return result
+    except Exception:
+        return None
+
+
 def _compress_mcp_json(text: str) -> str:
     try:
         data = json.loads(text[:500_000])
     except (json.JSONDecodeError, RecursionError):
         return text[:_ARCHIVE_PREVIEW_SIZE]
+
+    # U3: value-preserving columnar path for homogeneous arrays-of-dicts.
+    # Keeps values usable inline so the model rarely needs a full re-expand;
+    # falls through to the eviction preview below when it isn't a clear win.
+    tabular = _compress_mcp_json_tabular(data, text)
+    if tabular is not None:
+        return tabular
 
     parts: list[str] = []
     if isinstance(data, dict):
@@ -548,7 +686,7 @@ def archive_result(quiet: bool = False) -> None:
         )
 
     char_count = _ARCHIVE_MAX_SIZE if truncated else original_char_count
-    token_est = int(char_count / CHARS_PER_TOKEN)
+    token_est = int(char_count / CODE_CHARS_PER_TOKEN)
 
     # Best-effort TTL cleanup: runs only when we're about to write (after
     # early-exit checks), not on every PostToolUse invocation.
@@ -626,8 +764,8 @@ def archive_result(quiet: bool = False) -> None:
             replacement = preview + f"\n\n[Full result archived ({original_char_count:,} chars{suffix}, truncated to 5MB).]"
         else:
             replacement = preview + f"\n\n[Full result archived ({char_count:,} chars{suffix}).]"
-        original_tokens = int(original_char_count / CHARS_PER_TOKEN)
-        replacement_tokens = int(len(replacement) / CHARS_PER_TOKEN)
+        original_tokens = int(original_char_count / CODE_CHARS_PER_TOKEN)
+        replacement_tokens = int(len(replacement) / CODE_CHARS_PER_TOKEN)
         tokens_saved = max(0, original_tokens - replacement_tokens)
         _log_savings_event(
             "tool_archive",

@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/alexgreensh/token-optimizer/releases"><img src="https://img.shields.io/badge/version-5.10.3-green" alt="Version 5.10.3"></a>
+  <a href="https://github.com/alexgreensh/token-optimizer/releases"><img src="https://img.shields.io/badge/version-5.10.4-green" alt="Version 5.10.3"></a>
   <a href="https://github.com/alexgreensh/token-optimizer/releases"><img src="https://img.shields.io/github/release-date/alexgreensh/token-optimizer?label=last%20release&color=blue" alt="Last Release"></a>
   <a href="https://github.com/alexgreensh/token-optimizer"><img src="https://img.shields.io/badge/Claude_Code-Plugin-blueviolet" alt="Claude Code Plugin"></a>
   <a href="https://github.com/alexgreensh/token-optimizer/tree/main/openclaw"><img src="https://img.shields.io/badge/OpenClaw-v2.4.6-brightgreen" alt="OpenClaw v2.4.6"></a>
@@ -305,7 +305,7 @@ Token Optimizer runs as an external process. It doesn't inject always-on instruc
 | **Model routing and behavioral coaching** | 🟢 11 detectors, subagent cost breakdown, anti-patterns | 🔴 | 🔴 | 🔴 | 🟡 Basic suggestions |
 | **Historical trend analysis** | 🟢 30-day trends, quality/cost/cache/duration correlation, model-switch detection | 🔴 | 🔴 | 🔴 | 🔴 |
 | **Loop and spin detection** | 🟢 Catches behavioral loops before they burn | 🔴 | 🔴 | 🔴 | 🔴 |
-| **Context quality scoring** | 🟢 6-signal dual-score with grades | 🔴 | 🔴 | 🔴 | 🟡 Capacity % only |
+| **Context quality scoring** | 🟢 7-signal dual-score with grades | 🔴 | 🔴 | 🔴 | 🟡 Capacity % only |
 | **Structural waste audit** | 🟢 Deep per-component (CLAUDE.md, skills, MCP, memory) | 🔴 | 🔴 | 🔴 | 🟡 Summary only |
 | **CLAUDE.md and MEMORY.md health** | 🟢 8 auditors + attention-curve scoring | 🔴 | 🔴 | 🔴 | 🔴 |
 | **Measures if compression helped** | 🟢 Local telemetry, before/after tokens, dollar savings | 🔴 | 🟡 `rtk gain` (token counts only) | 🔴 | 🔴 |
@@ -396,7 +396,7 @@ Claude Code (CLI and VS Code), OpenCode, OpenClaw, Codex, and Hermes today, with
 
 | Capability | Claude Code / Codex | OpenClaw | OpenCode | Hermes |
 |---|---|---|---|---|
-| Quality scoring | 5 signals | 7 signals (two-stage) | 7 signals (MRCR curves) | 3 signals (delegated) |
+| Quality scoring | 7 signals (dual composite) | 7 signals (two-stage) | 7 signals (MRCR curves) | 3 signals (delegated) |
 | Output compression | 🟢 Full | 🟢 Native TS | Platform-native | 🟢 Via Python delegation |
 | Continuity + checkpoints | 🟢 | 🟢 | 🟢 | 🟢 |
 | Dashboard + savings | 🟢 | 🟢 | 🟢 | 🟢 (via bridge) |
@@ -506,9 +506,9 @@ Every quality score includes a letter grade for quick triage. The status line sh
 | **S** | 90-100 | Peak efficiency. Everything is clean. |
 | **A** | 80-89 | Healthy. Minor optimization possible. |
 | **B** | 70-79 | Degradation starting. Worth investigating. |
-| **C** | 60-69 | Significant waste. Coach mode will help. |
-| **D** | 50-59 | Serious problems. Multiple anti-patterns likely. |
-| **F** | 0-49 | Context is rotting. Immediate action needed. |
+| **C** | 55-69 | Significant waste. Coach mode will help. |
+| **D** | 40-54 | Serious problems. Multiple anti-patterns likely. |
+| **F** | 0-39 | Context is rotting. Immediate action needed. |
 
 ### Degradation Bands
 

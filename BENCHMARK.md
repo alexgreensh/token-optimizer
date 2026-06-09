@@ -11,7 +11,7 @@ All pricing at Opus 4 rates ($5/MTok input, $25/MTok output, $0.50/MTok cache-re
 
 | Layer | 30-day savings | Evidence |
 |---|---|---|
-| 🔧 Output compression + context eviction | **$17.51** | 📊 Measured: 908 production events with before/after delta |
+| 🔧 Output compression + context eviction | **$17.51** | 📊 Measured: 892 production events with before/after delta |
 | 🔀 Model routing | **$56.95** | 📊 Measured: cost difference from downgrading routable turns |
 | 🏗️ Structural waste cleanup | **$105.36** | 💡 Opportunity: savings if audit recommendations are applied |
 | **🟢 Total (all layers)** | **$179.82/month** | |
@@ -30,13 +30,13 @@ All pricing at Opus 4 rates ($5/MTok input, $25/MTok output, $0.50/MTok cache-re
 | 🔬 Quality-scored sessions | **1,885** (30 days, `trends.db`) |
 | 📂 Sessions with file reads | **5,814** (backfill corpus for skeleton analysis) |
 | 📖 First-reads analyzed | **30,771** |
-| 🧪 Benchmark fixtures | **57** across 16 categories |
+| 🧪 Benchmark fixtures | **57** across 10 categories |
 | ⚡ Avg prompt-cache hit rate | **65.4%** |
-| 🖥️ Platforms | Claude Code CLI, VS Code, Codex, OpenClaw, OpenCode |
+| 🖥️ Platforms | Claude Code CLI, VS Code, Codex, OpenClaw, OpenCode, Hermes |
 
 The two corpora are distinct populations, not double-counted. The backfill corpus is larger because it includes historical sessions recovered from file-read logs.
 
-**Data source:** The production numbers in this benchmark come primarily from Claude Code CLI sessions (the author's primary platform). Quality scoring, dashboard, and savings tracking work on all supported platforms, but quality signal counts vary by platform (3 to 7 signals depending on the platform's measurement context). The grade scale (S/A/B/C/D/F) is consistent everywhere.
+**Data source:** The production numbers in this benchmark come entirely from Claude Code CLI sessions (the author's primary platform). Quality scoring, dashboard, and savings tracking work on all supported platforms, but quality signal counts vary by platform (3 to 7 signals depending on the platform's measurement context). The grade scale (S/A/B/C/D/F) is consistent everywhere.
 
 **Reproducibility:** Your results will differ based on your usage. Every measurement tool ships in the repo so you can regenerate against your own data. See [Running the Benchmarks](#-running-the-benchmarks).
 
@@ -114,7 +114,7 @@ Every fixture defines raw output, a must-preserve list, a must-not-contain list 
 | Checkpoint restore | 12 | 410,503 | Prior session context injected on compaction |
 | **Subtotal** | **318** | **3,662,649** | |
 
-> 🟢 **Combined: 908 events, 4,887,138 tokens saved, $17.51 measured (30 days)**
+> 🟢 **Combined: 892 events, 4,887,138 tokens saved, $17.51 measured (30 days)**
 
 Token counting uses `bytes / 4` as BPE proxy (~15% error vs actual Claude tokenization). Consistent across all measurements.
 
@@ -175,7 +175,7 @@ Token counting uses `bytes / 4` as BPE proxy (~15% error vs actual Claude tokeni
 | **Checkpoint restore** | Keyword-matches stored checkpoints on new session or compaction, injects relevant context |
 | **Tool result archive** | Replaces large outputs with ~50-token stubs, full result retrievable via `expand` |
 | **Loop detection** | Catches repeated reads/retries, breaks the cycle (50 detections, 60,987 tokens saved) |
-| **Quality scoring** | 6-signal real-time scoring, fires coaching nudges when quality degrades |
+| **Quality scoring** | 7-signal real-time scoring, fires coaching nudges when quality degrades |
 
 Checkpoint restore and tool archive token counts are reported in Layer 2 (context eviction). Listed here because the mechanism is continuity, but **not double-counted**.
 
@@ -215,7 +215,7 @@ Token Optimizer reduces:
 
 ## 📊 Quality Grades (1,885 sessions)
 
-6 signals: stale reads, bloated results, duplicates, compaction depth, decision density, agent efficiency.
+7 signals: context fill degradation, stale reads, bloated results, compaction depth, decision density, agent efficiency, and absolute waste tokens.
 
 | Grade | Sessions | |
 |---|---|---|
@@ -224,6 +224,7 @@ Token Optimizer reduces:
 | **B** | 528 | 🔵 Normal: some bloat, recoverable |
 | **C** | 264 | 🟡 Degraded: significant waste, coaching recommended |
 | **D** | 619 | 🔴 Poor: heavy bloat, likely retries or loops |
+| **F** | 0 | ⚫ Failing: near-total waste (none observed in this corpus) |
 
 Tracked over time so you can see whether your habits and Token Optimizer's interventions are improving session efficiency.
 

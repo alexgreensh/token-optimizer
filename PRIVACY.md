@@ -1,11 +1,11 @@
 # Privacy Policy
 
-**Token Optimizer** is a source-available developer tool that runs entirely on your local machine. It optimizes AI coding assistant context windows across Claude Code, Codex, OpenCode, and Hermes.
+**Token Optimizer** is a source-available developer tool that runs entirely on your local machine. It optimizes AI coding assistant context windows across Claude Code, Codex, OpenClaw, OpenCode, and Hermes.
 
 ## No External Data Transmission
 
 - **No telemetry**: No usage data, analytics, or metrics are sent anywhere.
-- **No network calls**: Zero outbound network requests. The only network activity is a loopback-only (127.0.0.1) dashboard server for local visualization.
+- **No runtime network calls**: Zero outbound network requests during normal operation. The only network activity at runtime is a loopback-only (127.0.0.1) dashboard server for local visualization. Install and update checks contact GitHub (`api.github.com`) to verify release integrity; no product data is sent.
 - **No third-party services**: No external APIs, tracking pixels, or data processors.
 - **No accounts required**: No sign-up, login, or registration.
 

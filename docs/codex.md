@@ -91,6 +91,8 @@ http://localhost:24843/token-optimizer
 
 Bookmark it. It auto-updates after every session. Runs on macOS (launchd), Linux (systemd --user), and Windows (Task Scheduler). Port 24843 is Codex-specific (Claude Code uses 24842, so both can run side by side). Remove anytime with `setup-daemon --uninstall`.
 
+For LAN access on a headless box, set `TOKEN_OPTIMIZER_DASHBOARD_HOST=0.0.0.0` before running `setup-daemon`. The daemon runs under the service manager with an empty environment, so the chosen host is persisted to a `dashboard-host` file and re-read at startup. The setting is per-runtime (each of Claude/Codex/Hermes/Copilot persists its own). It is sticky across re-runs (and version-bump auto-regen) until you change it or run `setup-daemon --uninstall`. Allowed values: `127.0.0.1`, `localhost`, `0.0.0.0`. In network mode the dashboard is view-only for LAN visitors: the token endpoint is loopback-locked, so toggles work only from the machine running the daemon (LAN visitors can view but cannot fetch the token that gates mutations).
+
 ### File fallback
 
 Dashboard file: `~/.codex/_backups/token-optimizer/dashboard.html`

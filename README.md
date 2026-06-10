@@ -305,6 +305,14 @@ python3 measure.py setup-daemon           # Bookmarkable URL at http://localhost
 python3 measure.py dashboard --serve      # One-time serve over HTTP
 ```
 
+By default the dashboard binds to localhost, reachable only from your own machine. On a headless or shared box where you want LAN access, set `TOKEN_OPTIMIZER_DASHBOARD_HOST=0.0.0.0` before running `setup-daemon`:
+
+```bash
+TOKEN_OPTIMIZER_DASHBOARD_HOST=0.0.0.0 python3 measure.py setup-daemon
+```
+
+`setup-daemon` now honors this variable (the older `dashboard --serve` path already did). Because the daemon runs under launchd / systemd / Task Scheduler with an empty environment, the host you choose is persisted to a small `dashboard-host` file next to the daemon, so the background service binds it correctly. This setting is **per-runtime**: each daemon (Claude, Codex, Hermes, Copilot) persists its own host, so run `setup-daemon` under each runtime you want to expose. The setting is **sticky**: re-running `setup-daemon` without the variable (for example during an upgrade) keeps your last choice. It is cleared only when you change it or run `setup-daemon --uninstall`. Allowed values are `127.0.0.1`, `localhost`, and `0.0.0.0`; anything else is rejected with a warning and falls back to localhost. In network mode the dashboard is **view-only for LAN visitors**: the token endpoint is loopback-locked, so the per-install token that gates every toggle can only be fetched from the machine itself. LAN visitors can view the dashboard; skill and MCP toggles work only from the machine running the daemon.
+
 Throughout this README, whenever a feature mentions it's also visible on the dashboard, that means it lives inside this same HTML page. One place, everything tracked.
 
 ---

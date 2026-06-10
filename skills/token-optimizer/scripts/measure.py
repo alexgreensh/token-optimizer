@@ -290,6 +290,7 @@ PRICING_TIERS = {
         "claude_models": {
             # cache_write = 5-minute TTL (1.25x input); cache_write_1h = 1-hour TTL (2x input).
             # Verified 2026-05-30 from platform.claude.com/docs pricing.
+            "fable":  {"input": 10.0, "output": 50.0, "cache_read": 1.0,  "cache_write": 12.5,  "cache_write_1h": 20.0},
             "opus":   {"input": 5.0,  "output": 25.0, "cache_read": 0.5,  "cache_write": 6.25,  "cache_write_1h": 10.0},
             "sonnet": {"input": 3.0,  "output": 15.0, "cache_read": 0.3,  "cache_write": 3.75,  "cache_write_1h": 6.0},
             "haiku":  {"input": 1.0,  "output": 5.0,  "cache_read": 0.1,  "cache_write": 1.25,  "cache_write_1h": 2.0},
@@ -298,6 +299,7 @@ PRICING_TIERS = {
     "vertex-global": {
         "label": "Vertex AI Global",
         "claude_models": {
+            "fable":  {"input": 10.0, "output": 50.0, "cache_read": 1.0,  "cache_write": 12.5,  "cache_write_1h": 20.0},
             "opus":   {"input": 5.0,  "output": 25.0, "cache_read": 0.5,  "cache_write": 6.25,  "cache_write_1h": 10.0},
             "sonnet": {"input": 3.0,  "output": 15.0, "cache_read": 0.3,  "cache_write": 3.75,  "cache_write_1h": 6.0},
             "haiku":  {"input": 1.0,  "output": 5.0,  "cache_read": 0.1,  "cache_write": 1.25,  "cache_write_1h": 2.0},
@@ -307,6 +309,7 @@ PRICING_TIERS = {
         "label": "Vertex AI Regional",
         "claude_models": {
             # Vertex regional applies a +10% surcharge on all Claude rates.
+            "fable":  {"input": 11.0, "output": 55.0, "cache_read": 1.1,  "cache_write": 13.75, "cache_write_1h": 22.0},
             "opus":   {"input": 5.5,  "output": 27.5, "cache_read": 0.55, "cache_write": 6.875, "cache_write_1h": 11.0},
             "sonnet": {"input": 3.3,  "output": 16.5, "cache_read": 0.33, "cache_write": 4.125, "cache_write_1h": 6.6},
             "haiku":  {"input": 1.1,  "output": 5.5,  "cache_read": 0.11, "cache_write": 1.375, "cache_write_1h": 2.2},
@@ -315,6 +318,7 @@ PRICING_TIERS = {
     "bedrock": {
         "label": "AWS Bedrock",
         "claude_models": {
+            "fable":  {"input": 10.0, "output": 50.0, "cache_read": 1.0,  "cache_write": 12.5,  "cache_write_1h": 20.0},
             "opus":   {"input": 5.0,  "output": 25.0, "cache_read": 0.5,  "cache_write": 6.25,  "cache_write_1h": 10.0},
             "sonnet": {"input": 3.0,  "output": 15.0, "cache_read": 0.3,  "cache_write": 3.75,  "cache_write_1h": 6.0},
             "haiku":  {"input": 1.0,  "output": 5.0,  "cache_read": 0.1,  "cache_write": 1.25,  "cache_write_1h": 2.0},
@@ -7689,6 +7693,8 @@ def _normalize_model_name(model_id):
     if not model_id or model_id.startswith("<"):
         return None
     m = model_id.lower()
+    if "fable" in m:
+        return "fable"
     if "opus" in m:
         return "opus"
     if "sonnet" in m:
@@ -11303,7 +11309,7 @@ def setup_hook(dry_run=False):
 
 # ========== Persistent Dashboard Daemon ==========
 
-TOKEN_OPTIMIZER_VERSION = "5.11.0"  # Keep in sync with plugin.json + marketplace.json
+TOKEN_OPTIMIZER_VERSION = "5.11.1"  # Keep in sync with plugin.json + marketplace.json
 _DASHBOARD_CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 # Per-runtime daemon identity. Each runtime gets a distinct port + label so a
 # dashboard under one runtime never collides with another's. Copilot uses 24845
@@ -11323,6 +11329,21 @@ LAUNCH_AGENTS_DIR = Path.home() / "Library" / "LaunchAgents"
 PLIST_PATH = LAUNCH_AGENTS_DIR / f"{DAEMON_LABEL}.plist"
 DAEMON_LOG_DIR = SNAPSHOT_DIR / "logs"
 DAEMON_TOKEN_PATH = SNAPSHOT_DIR / "daemon-token"  # 0600, per-install CSRF secret
+# v5.11.1 (#59): persisted bind-host for the daemon. setup-daemon writes the
+# effective TOKEN_OPTIMIZER_DASHBOARD_HOST here so the launchd/systemd/Task
+# Scheduler daemon -- which runs with an empty environment and therefore never
+# sees the env var -- can read it at runtime. The generated script also reads
+# this file, so the ensure-health auto-regen path keeps honoring it across
+# version bumps without baking the value into the script (which would regress
+# to 127.0.0.1 on the next regen).
+DAEMON_HOST_PATH = SNAPSHOT_DIR / "dashboard-host"
+# Hosts the daemon is allowed to BIND. v5.11.1 (#59): "::1" is intentionally
+# excluded -- the daemon uses socketserver.TCPServer which is AF_INET, so a
+# "::1" bind raises OSError -> sys.exit(0) -> silent daemon death (confirmed
+# live). This is the bind allowlist only; the generated script's
+# _LOCALHOST_ADDRS still includes "::1" because that list validates Host
+# HEADERS, not bind addresses.
+_DAEMON_HOST_ALLOWLIST = ("127.0.0.1", "localhost", "0.0.0.0")
 DAEMON_THRASH_BREADCRUMB = SNAPSHOT_DIR / ".daemon-thrash"  # adv-005 tombstone
 DAEMON_IDENTITY_MAGIC = (
     f"token-optimizer-{_DAEMON_RUNTIME_SUFFIX}-dashboard-v1"
@@ -11351,13 +11372,10 @@ def _get_or_create_daemon_token():
     and non-empty. Only creates a new token on first run or if the file
     is missing/empty.
     """
-    try:
-        if DAEMON_TOKEN_PATH.exists():
-            existing = DAEMON_TOKEN_PATH.read_text(encoding="utf-8").strip()
-            if len(existing) >= 16:
-                return existing
-    except OSError:
-        pass
+    # v5.11.1: read via _read_state_file (consistent OSError-safe read path).
+    existing = _read_state_file(DAEMON_TOKEN_PATH)
+    if len(existing) >= 16:
+        return existing
     try:
         SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
         token = secrets.token_urlsafe(32)  # 43 chars, cryptographically random
@@ -11373,22 +11391,88 @@ def _get_or_create_daemon_token():
         return token
     except FileExistsError:
         # Lost the race — another installer created it first. Read theirs.
-        try:
-            return DAEMON_TOKEN_PATH.read_text(encoding="utf-8").strip()
-        except OSError:
-            return ""
+        return _read_state_file(DAEMON_TOKEN_PATH)
     except OSError:
         return ""
 
 
-def _read_daemon_token():
-    """Read the daemon token from disk. Returns empty string if missing."""
+def _read_state_file(path):
+    """Read a small single-value state file. Returns '' if absent/unreadable."""
     try:
-        if DAEMON_TOKEN_PATH.exists():
-            return DAEMON_TOKEN_PATH.read_text(encoding="utf-8").strip()
+        if path.exists():
+            return path.read_text(encoding="utf-8").strip()
     except OSError:
         pass
     return ""
+
+
+def _read_daemon_token():
+    """Read the daemon token from disk. Returns empty string if missing."""
+    return _read_state_file(DAEMON_TOKEN_PATH)
+
+
+def _read_dashboard_host_file():
+    """Return the persisted daemon bind-host, or '' if absent/unreadable."""
+    return _read_state_file(DAEMON_HOST_PATH)
+
+
+def _persist_dashboard_host(persist=True):
+    """v5.11.1 (#59): persist the daemon bind-host so the service-managed daemon
+    (launchd/systemd/Task Scheduler) -- which starts with an empty environment --
+    binds the host the user asked for instead of always 127.0.0.1.
+
+    Reads TOKEN_OPTIMIZER_DASHBOARD_HOST (fallback TOKEN_OPTIMIZER_HOST):
+      - set + valid (in the allowlist): write it to DAEMON_HOST_PATH.
+      - set + invalid: warn naming the bad value and the allowed values; do NOT
+        persist (and do NOT clobber an existing valid file).
+      - unset: leave any existing file untouched. The setting is sticky so a
+        network setup survives re-running setup-daemon without the env var
+        (e.g. during an upgrade that re-invokes the installer).
+
+    persist=False resolves without writing (dry-run path), so the env > file >
+    default chain lives in exactly one place.
+
+    The setting is per-runtime: each daemon (Claude/Codex/Hermes/Copilot) has
+    its own DAEMON_HOST_PATH and persists independently, so run setup-daemon
+    under each runtime you want to expose on the network.
+
+    Returns the effective host for messaging (env var > file > '127.0.0.1').
+    """
+    env_raw = os.environ.get(
+        "TOKEN_OPTIMIZER_DASHBOARD_HOST",
+        os.environ.get("TOKEN_OPTIMIZER_HOST", ""),
+    ).strip()
+    if env_raw:
+        if env_raw in _DAEMON_HOST_ALLOWLIST:
+            if persist:
+                try:
+                    SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+                    # v5.11.1 (#59): O_CREAT|O_TRUNC with 0o600 + fdopen, matching
+                    # the daemon-token write -- avoids a umask-widened world-readable
+                    # file and the symlink-replacement write that plain write_text
+                    # (which follows symlinks) would allow.
+                    fd = os.open(
+                        str(DAEMON_HOST_PATH),
+                        os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+                        0o600,
+                    )
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        f.write(env_raw + "\n")
+                except OSError as e:
+                    print(
+                        f"[Token Optimizer] Warning: could not persist dashboard host "
+                        f"to {DAEMON_HOST_PATH}: {e}",
+                        file=sys.stderr,
+                    )
+            return env_raw
+        # Invalid value: warn and fall through to the existing/default host.
+        print(
+            f"[Token Optimizer] Ignoring invalid dashboard host "
+            f"{env_raw!r}. Allowed: {', '.join(_DAEMON_HOST_ALLOWLIST)}.",
+            file=sys.stderr,
+        )
+    # Env unset or invalid: honor any sticky persisted host, else default.
+    return _read_dashboard_host_file() or "127.0.0.1"
 
 
 def _is_localhost_host_header(host_header):
@@ -11431,6 +11515,7 @@ def _generate_daemon_script():
     dashboard_literal = repr(str(DASHBOARD_PATH))
     measure_py_literal = repr(str(Path(__file__).resolve()))
     token_path_literal = repr(str(DAEMON_TOKEN_PATH))
+    host_path_literal = repr(str(DAEMON_HOST_PATH))
     thrash_path_literal = repr(str(DAEMON_THRASH_BREADCRUMB))
     magic_literal = repr(DAEMON_IDENTITY_MAGIC)
     return f'''#!/usr/bin/env python3
@@ -11449,6 +11534,7 @@ import time
 
 DASHBOARD = {dashboard_literal}
 TOKEN_PATH = {token_path_literal}
+HOST_PATH = {host_path_literal}
 THRASH_PATH = {thrash_path_literal}
 IDENTITY_MAGIC = {magic_literal}
 PORT = {DAEMON_PORT}
@@ -11577,10 +11663,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json_response(200, {{"ok": True, "server": "token-optimizer-daemon"}})
             return
         if clean == "api/token":
-            # In default mode, restrict to localhost Origin+Host (anti-exfiltration).
-            # In network mode, serve to any origin so remote dashboard users can
-            # fetch the token for toggle buttons (the token itself gates POSTs).
-            if not NETWORK_MODE:
+            # v5.11.1 (#59): the token endpoint is loopback-locked in BOTH modes.
+            # In network mode we serve the dashboard HTML to LAN visitors (view-
+            # only) but only hand out the CSRF token to clients connecting FROM
+            # the machine itself (client_address loopback), so a LAN visitor can
+            # never obtain the token and therefore can never toggle. Mutations
+            # are effectively localhost-only. In default mode we additionally
+            # require localhost Origin+Host (anti-exfiltration / DNS-rebind).
+            if NETWORK_MODE:
+                if self.client_address[0] not in ("127.0.0.1", "::1"):
+                    self._json_response(403, {{"ok": False, "msg": "token endpoint is loopback-only"}})
+                    return
+            else:
                 origin = self.headers.get("Origin", "")
                 origin_ok = (not origin) or _is_localhost_origin(origin)
                 if not origin_ok or not _is_localhost_host(self.headers.get("Host", "")):
@@ -11770,9 +11864,29 @@ if not _thrash_check_and_update():
 # Bind address. Default: localhost only. TOKEN_OPTIMIZER_DASHBOARD_HOST=0.0.0.0 enables
 # network access (Tailscale Funnel, LAN). When network-bound, Host header checks are
 # relaxed since remote clients send non-localhost Host headers. Token auth still applies.
+# Resolution (#59): env var -> persisted host file (HOST_PATH, written by
+# setup-daemon) -> 127.0.0.1. The service manager starts us with an empty
+# environment, so the env var is usually absent here; the host file carries the
+# user's choice across to the daemon and survives version-bump auto-regen.
 _LOCALHOST_ADDRS = ("127.0.0.1", "::1", "localhost")
 _host_raw = os.environ.get("TOKEN_OPTIMIZER_DASHBOARD_HOST",
-                           os.environ.get("TOKEN_OPTIMIZER_HOST", "127.0.0.1"))
+                           os.environ.get("TOKEN_OPTIMIZER_HOST", "")).strip()
+if not _host_raw:
+    try:
+        with open(HOST_PATH, "r", encoding="utf-8") as _hf:
+            _host_raw = _hf.read().strip()
+    except FileNotFoundError:
+        # Normal: setup-daemon never persisted a host. Default to loopback.
+        _host_raw = ""
+    except OSError as _e:
+        # v5.11.1 (#59): a non-missing read failure (e.g. PermissionError) is
+        # worth a one-line note in the service-manager logs before we silently
+        # fall back to loopback -- otherwise a misconfigured host file looks
+        # like the daemon ignored the setting for no reason.
+        print(f"[Token Optimizer] Warning: could not read dashboard host file {{HOST_PATH}}: {{_e}}", file=sys.stderr)
+        _host_raw = ""
+if not _host_raw:
+    _host_raw = "127.0.0.1"
 HOST = _host_raw if _host_raw in _LOCALHOST_ADDRS + ("0.0.0.0",) else "127.0.0.1"
 NETWORK_MODE = HOST == "0.0.0.0"
 if NETWORK_MODE:
@@ -12498,7 +12612,30 @@ def _reclaim_posix_daemon_port(port=DAEMON_PORT, script_name="dashboard-server.p
             time.sleep(0.5)
 
 
-def _install_launchd_daemon(dry_run=False, soft_fail=False):
+def _daemon_access_lines(effective_host):
+    """v5.11.1 (#59): return the access-scope lines for install/dry-run output.
+
+    Localhost binds print the usual "only your machine" line. A 0.0.0.0 bind is
+    network mode -- the dashboard is reachable on the LAN, but token auth still
+    gates every mutation, so we say so explicitly instead of claiming localhost
+    only.
+    """
+    if effective_host == "0.0.0.0":
+        return [
+            "    - Network mode: reachable on your LAN (bound 0.0.0.0)",
+            "    - Token auth still required for any change (toggle/disable)",
+        ]
+    return ["    - Only accessible from your machine (localhost)"]
+
+
+def _print_daemon_network_note(effective_host):
+    """Print a brief LAN note after a successful network-mode install."""
+    if effective_host == "0.0.0.0":
+        print("  Network mode: dashboard reachable on your LAN (bound 0.0.0.0).")
+        print("  Token auth still required for any change.\n")
+
+
+def _install_launchd_daemon(dry_run=False, soft_fail=False, effective_host=None):
     """macOS: install the dashboard daemon via a LaunchAgent.
 
     v5.4.19 (adv-001/adv-008 fix): added `soft_fail`. When True (hook paths),
@@ -12526,7 +12663,8 @@ def _install_launchd_daemon(dry_run=False, soft_fail=False):
         print("    - Serves your dashboard file so you can bookmark the URL")
         print("    - Starts automatically when you log into your Mac")
         print("    - Restarts itself if it ever stops")
-        print("    - Only accessible from your machine (localhost)")
+        for line in _daemon_access_lines(effective_host):
+            print(line)
         print("    - Uses ~2MB of memory\n")
         print("  Files it creates:")
         print(f"    {SNAPSHOT_DIR / 'dashboard-server.py'}")
@@ -12597,6 +12735,7 @@ def _install_launchd_daemon(dry_run=False, soft_fail=False):
             print("[Token Optimizer] Dashboard server installed and running.\n")
             print("  Bookmark this URL:")
             print(f"    http://localhost:{DAEMON_PORT}/token-optimizer\n")
+            _print_daemon_network_note(effective_host)
             print(f"  It updates automatically after every {runtime_name_for_humans()} session.")
             print("  Starts on login, so the URL always works.\n")
             print("  To remove: python3 measure.py setup-daemon --uninstall")
@@ -12660,12 +12799,14 @@ def _uninstall_launchd_daemon():
             removed.append(str(daemon_script))
         except OSError:
             pass
-    # Clean up per-install token (not a secret the user needs to keep).
-    try:
-        if DAEMON_TOKEN_PATH.exists():
-            DAEMON_TOKEN_PATH.unlink()
-    except OSError:
-        pass
+    # Clean up per-install token (not a secret the user needs to keep) and the
+    # persisted dashboard host (#59) so a fresh install starts from defaults.
+    for _state_path in (DAEMON_TOKEN_PATH, DAEMON_HOST_PATH):
+        try:
+            if _state_path.exists():
+                _state_path.unlink()
+        except OSError:
+            pass
     if removed:
         print("[Token Optimizer] Dashboard daemon removed.")
         for path in removed:
@@ -12882,7 +13023,7 @@ def _generate_schtasks_xml(task_name, user_id, launcher_path):
     )
 
 
-def _install_task_scheduler_daemon(dry_run=False):
+def _install_task_scheduler_daemon(dry_run=False, effective_host=None):
     """Windows: register a per-user Scheduled Task that runs the dashboard
     daemon at logon, survives reboot, and stays out of the foreground.
 
@@ -12903,7 +13044,8 @@ def _install_task_scheduler_daemon(dry_run=False):
         print("    - Registers a per-user Scheduled Task (no UAC / admin rights needed)")
         print("    - Starts automatically when you log into Windows")
         print("    - Runs with pythonw.exe so no console window appears")
-        print("    - Only accessible from your machine (localhost)")
+        for line in _daemon_access_lines(effective_host):
+            print(line)
         print("    - Uses ~2MB of memory\n")
         print("  Files it creates:")
         print(f"    {SNAPSHOT_DIR / 'dashboard-server.py'}")
@@ -13000,6 +13142,7 @@ def _install_task_scheduler_daemon(dry_run=False):
             print("[Token Optimizer] Dashboard server installed and running.\n")
             print("  Bookmark this URL:")
             print(f"    http://localhost:{DAEMON_PORT}/token-optimizer\n")
+            _print_daemon_network_note(effective_host)
             print(f"  It updates automatically after every {runtime_name_for_humans()} session.")
             print("  Starts at logon, so the URL always works.\n")
             print("  To remove: python -m measure setup-daemon --uninstall")
@@ -13055,12 +13198,13 @@ def _uninstall_task_scheduler_daemon():
                 pass
     except OSError:
         pass
-    # Clean up per-install token.
-    try:
-        if DAEMON_TOKEN_PATH.exists():
-            DAEMON_TOKEN_PATH.unlink()
-    except OSError:
-        pass
+    # Clean up per-install token + persisted dashboard host (#59).
+    for _state_path in (DAEMON_TOKEN_PATH, DAEMON_HOST_PATH):
+        try:
+            if _state_path.exists():
+                _state_path.unlink()
+        except OSError:
+            pass
     if removed:
         print("[Token Optimizer] Dashboard daemon removed.")
         for path in removed:
@@ -13178,7 +13322,7 @@ def _generate_systemd_user_unit(launcher_path, log_dir):
     )
 
 
-def _install_systemd_user_daemon(dry_run=False):
+def _install_systemd_user_daemon(dry_run=False, effective_host=None):
     """Linux: install the dashboard daemon via systemd --user.
 
     User-scoped unit, no root required. Survives reboot when the user
@@ -13197,7 +13341,8 @@ def _install_systemd_user_daemon(dry_run=False):
         print("    - Registers a systemd --user unit (no root needed)")
         print("    - Starts automatically at login via default.target")
         print("    - Restarts itself on failure (Restart=on-failure)")
-        print("    - Only accessible from your machine (localhost)")
+        for line in _daemon_access_lines(effective_host):
+            print(line)
         print("    - Uses ~2MB of memory\n")
         print("  Files it creates:")
         print(f"    {daemon_script}")
@@ -13307,6 +13452,7 @@ def _install_systemd_user_daemon(dry_run=False):
             print("[Token Optimizer] Dashboard server installed and running.\n")
             print("  Bookmark this URL:")
             print(f"    http://localhost:{DAEMON_PORT}/token-optimizer\n")
+            _print_daemon_network_note(effective_host)
             print(f"  It updates automatically after every {runtime_name_for_humans()} session.")
             print("  Starts at login via default.target.\n")
             print("  Survive logout: loginctl enable-linger $USER (may need sudo)")
@@ -13355,12 +13501,13 @@ def _uninstall_systemd_user_daemon():
                 removed.append(str(artifact))
             except OSError:
                 pass
-    # Clean up per-install token.
-    try:
-        if DAEMON_TOKEN_PATH.exists():
-            DAEMON_TOKEN_PATH.unlink()
-    except OSError:
-        pass
+    # Clean up per-install token + persisted dashboard host (#59).
+    for _state_path in (DAEMON_TOKEN_PATH, DAEMON_HOST_PATH):
+        try:
+            if _state_path.exists():
+                _state_path.unlink()
+        except OSError:
+            pass
     if removed:
         print("[Token Optimizer] Dashboard daemon removed.")
         for path in removed:
@@ -13408,12 +13555,19 @@ def setup_daemon(dry_run=False, uninstall=False):
         else:
             print(f"[Token Optimizer] Unsupported platform for daemon uninstall: {system}")
         return
+    # v5.11.1 (#59): resolve the bind-host once, before branching, so every OS
+    # installer (and dry-run messaging) shares the same effective host. The
+    # daemon runs under launchd/systemd/Task Scheduler with an empty env, so it
+    # reads the persisted value instead of the env var. Dry-run resolves the
+    # same env > file > default chain but skips the write, staying
+    # side-effect-free.
+    effective_host = _persist_dashboard_host(persist=not dry_run)
     if system == "Darwin":
-        _install_launchd_daemon(dry_run=dry_run)
+        _install_launchd_daemon(dry_run=dry_run, effective_host=effective_host)
     elif system == "Windows":
-        _install_task_scheduler_daemon(dry_run=dry_run)
+        _install_task_scheduler_daemon(dry_run=dry_run, effective_host=effective_host)
     elif system == "Linux":
-        _install_systemd_user_daemon(dry_run=dry_run)
+        _install_systemd_user_daemon(dry_run=dry_run, effective_host=effective_host)
     else:
         print(f"[Error] Dashboard daemon not supported on {system}.")
         print(f"  Open the dashboard file directly: {DASHBOARD_PATH.as_uri()}")
@@ -16786,7 +16940,7 @@ def _security_report(as_json=False):
         },
         "credential_scanning": {"pattern_count": cred_count, "types": cred_types},
         "hooks": {"count": len(hooks_list), "source": str(hooks_json_path) if hooks_json_path else None},
-        "dashboard": {"daemon_pid": daemon_pid, "daemon_running": daemon_running, "token_file_exists": DAEMON_TOKEN_PATH.exists(), "token_file_permissions": _file_info(DAEMON_TOKEN_PATH).get("permissions"), "bind_address": "127.0.0.1"},
+        "dashboard": {"daemon_pid": daemon_pid, "daemon_running": daemon_running, "token_file_exists": DAEMON_TOKEN_PATH.exists(), "token_file_permissions": _file_info(DAEMON_TOKEN_PATH).get("permissions"), "bind_address": (_read_dashboard_host_file() or "127.0.0.1")},  # #59: reflect persisted host
         "transcript_preservation": {"cleanup_period_days": cleanup_period, "note": "Intentional: preserves transcripts for trend analysis. Transcripts are host platform data."},
     }
 
@@ -16848,7 +17002,11 @@ def _security_report(as_json=False):
     print(f"7. DASHBOARD SECURITY")
     print(f"   Daemon running: {'yes (PID ' + str(daemon_pid) + ')' if daemon_running else 'no'}")
     print(f"   Token file: {'exists' if DAEMON_TOKEN_PATH.exists() else 'absent'} | {_file_info(DAEMON_TOKEN_PATH).get('permissions', 'N/A')}")
-    print(f"   Bind address: 127.0.0.1 (loopback only)")
+    # v5.11.1 (#59): reflect the persisted bind-host like the JSON path does,
+    # instead of hardcoding loopback (which lied when network mode was on).
+    _sec_bind = _read_dashboard_host_file() or "127.0.0.1"
+    _sec_scope = "LAN (network mode)" if _sec_bind == "0.0.0.0" else "loopback only"
+    print(f"   Bind address: {_sec_bind} ({_sec_scope})")
     print()
 
     print(f"8. TRANSCRIPT PRESERVATION")

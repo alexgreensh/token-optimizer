@@ -23266,31 +23266,57 @@ def run_ensure_health():
     # Claude Code only: reads/writes ~/.claude/settings.json for statusLine and hooks.
     if not _is_codex:
         try:
-            _eh_qb_disabled = False
-            if CONFIG_PATH.exists():
-                _eh_cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-                _eh_qb_disabled = _eh_cfg.get("quality_bar_disabled", False)
-            # Skip the settings.json self-heal for plugin installs: the cache
-            # hook is provided by hooks.json and intentionally absent from
-            # settings.json (GitHub #7), so "not has_cache_hook" is always true
-            # and would re-emit the foreign-status-line advisory once per
-            # session for no benefit (GitHub #53).
+            _eh_qb_disabled = _read_config_flag("quality_bar_disabled", False)
             _eh_is_plugin = _is_running_from_plugin_cache() or _is_plugin_installed()
-            if not _eh_is_plugin and not _eh_qb_disabled and SETTINGS_PATH.exists():
-                settings = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
-                has_statusline = bool(settings.get("statusLine"))
-                hooks = settings.get("hooks", {}).get("UserPromptSubmit", [])
-                has_cache_hook = any("quality-cache" in str(h) for h in hooks)
-                statusline_cmd = (settings.get("statusLine") or {}).get("command", "") or ""
-                statusline_is_ours = "statusline.js" in statusline_cmd and "token-optimizer" in statusline_cmd
-                if has_statusline and not statusline_is_ours and has_cache_hook:
-                    print(
-                        "  [Token Optimizer] Statusline was replaced (e.g., by /statusline). "
-                        "Auto-restored. Opt out permanently: measure.py setup-quality-bar --uninstall"
-                    )
-                    setup_quality_bar(force=True, quiet=True)
-                elif not has_statusline or (has_statusline and not has_cache_hook):
-                    setup_quality_bar(quiet=True)
+            if not _eh_qb_disabled and SETTINGS_PATH.exists():
+                try:
+                    settings = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, ValueError):
+                    # Malformed settings.json (often a transient partial write by
+                    # another tool). Skip the quality-bar self-heal this session
+                    # rather than risk overwriting a recoverable file — and stay
+                    # silent so a broken file doesn't spam stderr every session.
+                    settings = None
+                if isinstance(settings, dict):
+                    has_statusline = bool(settings.get("statusLine"))
+                    if _eh_is_plugin:
+                        # Plugin/marketplace installs: the cache hook is supplied by
+                        # hooks.json (intentionally absent from settings.json, GitHub
+                        # #7), so there is no settings.json cache-hook signal to detect
+                        # a clobber with. Manage only the statusLine, and act solely
+                        # when it is ABSENT. This makes the quality bar default-on for
+                        # plugin users without (a) re-running every session once it is
+                        # present, (b) re-emitting the foreign-statusline advisory
+                        # (GitHub #53), or (c) overwriting a user's own custom
+                        # statusLine. setup_quality_bar skips the redundant settings
+                        # hook for plugin installs; here it only ever writes our
+                        # statusLine into an otherwise-empty slot.
+                        if not has_statusline:
+                            setup_quality_bar(quiet=True)
+                            # Only announce success if OUR statusLine actually landed.
+                            # A concurrent foreign write in the read→write window would
+                            # make setup_quality_bar skip silently; never claim an
+                            # install we didn't deliver.
+                            _eh_sl = (_read_settings_json()[0].get("statusLine") or {}).get("command", "") or ""
+                            if "statusline.js" in _eh_sl and "token-optimizer" in _eh_sl:
+                                print(
+                                    "  [Token Optimizer] Quality statusline enabled "
+                                    "(context % + quality score in your status bar). "
+                                    "Opt out anytime: measure.py setup-quality-bar --uninstall"
+                                )
+                    else:
+                        statusline_cmd = (settings.get("statusLine") or {}).get("command", "") or ""
+                        statusline_is_ours = "statusline.js" in statusline_cmd and "token-optimizer" in statusline_cmd
+                        hooks = settings.get("hooks", {}).get("UserPromptSubmit", [])
+                        has_cache_hook = any("quality-cache" in str(h) for h in hooks)
+                        if has_statusline and not statusline_is_ours and has_cache_hook:
+                            print(
+                                "  [Token Optimizer] Statusline was replaced (e.g., by /statusline). "
+                                "Auto-restored. Opt out permanently: measure.py setup-quality-bar --uninstall"
+                            )
+                            setup_quality_bar(force=True, quiet=True)
+                        elif not has_statusline or (has_statusline and not has_cache_hook):
+                            setup_quality_bar(quiet=True)
         except Exception as _e:
             print(f"  [Token Optimizer] quality bar setup failed: {_e}", file=sys.stderr)
     # Auto-update check (once per day, script-installed users only).

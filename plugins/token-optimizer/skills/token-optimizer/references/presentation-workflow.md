@@ -28,7 +28,7 @@ Ready to implement? I can:
 4. Show MCP servers to consider disabling
 
 Some optimizations have side effects:
-- Deny rules block file access for ALL tools (may break MCP servers that read databases)
+- Deny rules block file access for ALL tools (may break MCP servers that read databases). Keep them narrow and only for paths Claude won't read anyway: a broad rule on an actively-read path makes Claude repeatedly hit "permission denied," and that feedback accumulates in context, costing tokens instead of saving them.
 - Archiving skills breaks anything that @imports them
 - Disabling MCP servers breaks skills that use their tools
 I'll check for dependencies and warn you before each change.

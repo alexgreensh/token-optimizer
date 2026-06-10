@@ -209,7 +209,7 @@ System reminders are auto-injected by Claude Code when certain conditions occur:
 | Tool-specific context | Tool guidance | ~100-500 |
 
 ### How to Reduce
-- **Use `permissions.deny`**: Exclude files from discovery and read operations
+- **Use `permissions.deny`** (narrowly): Exclude files Claude never needs (secrets, `node_modules`, build output). Keep rules narrow, a broad deny on a path Claude actively wants causes repeated "permission denied" feedback that accumulates in context and costs tokens.
 - **Don't edit unnecessary files**: Each edit = potential injection
 - **Be aware**: You can't disable these entirely, but you can avoid triggering them
 

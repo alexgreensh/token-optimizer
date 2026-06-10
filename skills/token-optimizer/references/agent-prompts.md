@@ -350,7 +350,16 @@ Output file: {COORD_PATH}/audit/advanced.md
 3. File exclusion status:
    - Check permissions.deny in ~/.claude/settings.json (global)
    - Check permissions.deny in .claude/settings.json (project)
-   - If no Read() deny rules found: flag as HIGH PRIORITY
+   - If no SECURITY deny rules found (`.env`, `secrets/`, credentials): flag as HIGH
+     PRIORITY (these protect secrets and Claude never reads them, so they are pure win).
+   - If no NOISE deny rules found (`node_modules`, build output): flag as a LOW-priority
+     suggestion, not high. Recommend NARROW, specific paths, only for dirs Claude would not
+     read anyway. Do NOT blanket-recommend broad globs.
+   - CAUTION to surface in the recommendation: deny rules save tokens only when Claude never
+     tries the path. A broad rule on a path Claude actively wants causes repeated "permission
+     denied" feedback that accumulates in context and is re-sent every turn, which COSTS
+     tokens. Prefer `Read(./logs/**)` over `Read(./**/*.log)`; if Claude keeps hitting a
+     denied path, that rule is a net negative.
    - If a `.claudeignore` file exists: flag as DEPRECATED. `.claudeignore` is no longer
      supported. Recommend migrating patterns to `permissions.deny` rules in settings.json.
      Never recommend creating a `.claudeignore` file.

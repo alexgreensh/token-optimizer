@@ -77,23 +77,43 @@ If dependencies are found, list them explicitly and get confirmation.
 
 If missing, add `permissions.deny` rules to `.claude/settings.json` (project-level) or `~/.claude/settings.json` (global). See `examples/permissions-deny-template.json` for a starter template.
 
+Start with the **security-critical** excludes only. These are files Claude has no reason to read, so it never bumps into the rule, and they protect secrets:
+
 ```json
 {
   "permissions": {
     "deny": [
       "Read(./.env)",
       "Read(./.env.*)",
-      "Read(./secrets/**)",
+      "Read(./secrets/**)"
+    ]
+  }
+}
+```
+
+**Add noise excludes ONLY if they apply to your repo, and prefer narrow paths:**
+
+```json
+{
+  "permissions": {
+    "deny": [
       "Read(./node_modules/**)",
       "Read(./dist/**)",
-      "Read(./build/**)",
       "Read(./**/*.log)"
     ]
   }
 }
 ```
 
-**Why**: Files matching deny patterns are excluded from file discovery, search, and read operations. This is the officially supported approach (replaces deprecated `ignorePatterns`). Security + token savings.
+**Why**: Files matching deny patterns are excluded from file discovery, search, and read operations. This is the officially supported approach (replaces deprecated `ignorePatterns`). Deny rules are enforced *locally* by Claude Code's permission engine and are NOT injected into the prompt, so the rules themselves cost zero tokens per turn.
+
+**TOKEN-COST WARNING (the counterintuitive one)**:
+Deny rules save tokens when Claude *never tries* the denied path (e.g. `.env`, `secrets/`). But a **broad deny rule on a path Claude actively wants to explore can cost tokens instead of saving them.** When Claude attempts a denied read, the denial comes back as tool feedback, and that feedback **accumulates in the conversation and is re-sent on every subsequent turn.** A broad glob plus an exploring agent can stack up dozens of "blocked" messages.
+
+To stay on the saving side of the line:
+- **Prefer narrow, specific paths** over broad globs. `Read(./logs/**)` beats `Read(./**/*.log)`.
+- **Only deny what Claude wouldn't need anyway.** Excluding `node_modules/` is safe because Claude rarely reads it; denying a source directory Claude keeps reaching into is not.
+- **If you see Claude repeatedly hit "permission denied" on the same path, that rule is costing you, not saving you.** Narrow it or remove it.
 
 **SIDE EFFECT WARNING (mandatory before applying)**:
 Deny rules affect ALL tools in ALL sessions. Before applying:

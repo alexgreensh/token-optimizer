@@ -80,14 +80,16 @@ Add `permissions.deny` rules to `.claude/settings.json` (project-level) or `~/.c
 }
 ```
 
-**Why**: Files matching deny patterns are excluded from file discovery, search, and read operations. This is the official approach (replaces deprecated `ignorePatterns`). Security + token savings.
+**Why**: Files matching deny patterns are excluded from file discovery, search, and read operations. This is the official approach (replaces deprecated `ignorePatterns`). The rules are enforced locally and are NOT injected into the prompt, so they cost zero tokens per turn.
 
 **CAUTION**: Deny rules affect ALL tools in ALL sessions for the scope they're applied to.
 - Apply at **project level** (`.claude/settings.json`) first, not global. Easier to debug when something breaks.
 - **Never deny `*.sqlite` or `*.db` globally** unless you're certain no tools need database access. Many plugins (session memory, search indexes, WhatsApp) read SQLite files.
 - **Credential denies** (`.env`, `*.key`) are usually safe and desired, but will break any skill that reads API keys from those files at runtime.
 
-**Expected savings**: Varies (500-2,000 tokens/msg if you frequently edit media/deps)
+**TOKEN-COST CAUTION (counterintuitive)**: Deny rules save tokens only when Claude *never tries* the path. If you deny a path Claude actively wants, each blocked attempt returns feedback that accumulates in the conversation and is re-sent every turn, which **costs** tokens. Prefer narrow paths over broad globs (`Read(./logs/**)` over `Read(./**/*.log)`), only deny what Claude wouldn't read anyway, and if Claude keeps hitting "permission denied" on the same path, narrow or remove that rule.
+
+**Expected savings**: Varies. Net positive when rules target files Claude never needs (secrets, `node_modules`, build output). Broad globs on actively-read paths can net negative.
 
 ---
 

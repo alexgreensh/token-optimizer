@@ -1,5 +1,6 @@
 {
   "_README": "Apply at PROJECT level (.claude/settings.json), not global (~/.claude/settings.json). Database rules (*.sqlite, *.db) will break tools that read SQLite (session memory, local search, WhatsApp MCP). Remove those lines if you use such tools.",
+  "_TOKEN_NOTE": "Deny rules save tokens ONLY when Claude never tries the path (secrets, node_modules, build output). If you deny a path Claude actively wants, each blocked attempt comes back as feedback that accumulates in the conversation and is re-sent every turn, which COSTS tokens. Prefer narrow paths over broad globs: Read(./logs/**) over Read(./**/*.log). If Claude keeps hitting 'permission denied' on the same path, narrow or remove that rule.",
   "permissions": {
     "deny": [
       "Read(./.env)",

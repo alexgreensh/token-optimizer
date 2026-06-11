@@ -12,6 +12,13 @@
 /* ========== RESET ========== */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; outline: none; }
 
+/* ========== THEME TOKENS ==========
+   Dark is the DEFAULT and is pixel-unchanged: every value below is the exact
+   literal the dashboard already shipped, just lifted into a named token. The
+   light theme (further down, [data-theme="light"]) overrides the same tokens
+   with re-derived, WCAG-AA hues -- never naive inversions. Charts/SVG/canvas
+   read these vars so they re-theme live. scripts/check-theme-contrast.py is the
+   audit artifact that proves every declared pair >= AA in BOTH themes. */
 :root {
   --c-bg: #0a0b10;
   --c-surface: #13151a;
@@ -22,11 +29,156 @@
   --c-text-main: #ffffff;
   --c-text-dim: #7d8ca3;
   --c-border: rgba(255, 255, 255, 0.08);
-  --font-sans: 'Space Grotesk', sans-serif;
-  --font-mono: 'JetBrains Mono', monospace;
+  /* Accent alias (single token charts/links read; flips for light). */
+  --c-accent: #00f0ff;
+  /* Semi-transparent structural overlays (white-on-dark today). */
+  --c-elev: rgba(255,255,255,0.04);
+  --c-elev-2: rgba(255,255,255,0.05);
+  --c-elev-3: rgba(255,255,255,0.1);
+  --c-border-strong: rgba(255, 255, 255, 0.2);
+  --c-accent-soft: rgba(0, 240, 255, 0.1);
+  --c-overlay-scrim: rgba(0, 0, 0, 0.75);
+  /* Status semantics (re-derived, never inverted, for light). */
+  --c-savings: #4ade80;
+  --c-savings-strong: #22c55e;
+  --c-waste: #f87171;
+  --c-waste-strong: #ef4444;
+  --c-warning: #ff9f43;
+  --c-warning-soft: #fb923c;
+  --c-warning-2: #fbbf24;
+  --c-warning-yellow: #eab308;
+  --c-amber: #d9a441;
+  --c-info: #60a5fa;
+  --c-info-strong: #3b82f6;
+  --c-savings-toast: #2ecc71;
+  --c-savings-alt: #10b981;
+  /* Soft status tint fills (badge/pill backgrounds). */
+  --c-warning-fill: rgba(251,146,60,0.1);
+  --c-warning-fill-2: rgba(251, 146, 60, 0.08);
+  --c-warning-2-fill: rgba(251,191,36,0.1);
+  --c-warning-yellow-fill: rgba(234,179,8,0.15);
+  --c-waste-fill: rgba(248,113,113,0.1);
+  --c-waste-strong-fill: rgba(239,68,68,0.15);
+  --c-waste-strong-fill-2: rgba(239,68,68,.05);
+  --c-savings-fill: rgba(34,197,94,0.15);
+  /* Chart / legend secondary palette. */
+  --c-chart-teal: #4ecdc4;
+  --c-chart-coral: #ff6b6b;
+  --c-model-opus: #a78bfa;
+  --c-model-haiku: #34d399;
+  --c-model-fable: #fb7185;
+  --c-model-other: #94a3b8;
+  --c-cache-output: #3b82f6;
+  --c-cache-read: #22c55e;
+  --c-cache-create: #a855f7;
+  /* Page-level decorative backgrounds. */
+  --c-bg-glow: #1a253a;
+  --c-grid-line: rgba(255,255,255,0.03);
+  /* Right config rail backdrop. Was a hardcoded dark rgba (near-black panel in
+     light mode); tokenized to keep the exact dark value and flip for light. */
+  --c-config-rail: rgba(10,11,16,0.8);
+  /* Big display-title gradient endpoints (clipped to text). Tokenized so the
+     title stays legible after the theme flips (was hardcoded #fff -> #aaa,
+     invisible on a light page). */
+  --c-title-grad-from: #fff;
+  --c-title-grad-to: #aaa;
+  /* Scrollbar thumb (defined in BOTH themes; dark was falling back to the
+     #333/#555 literals). */
+  --c-scrollbar: #333;
+  --c-scrollbar-hover: #555;
+  /* Vivid status SWATCHES for JS-injected badges/risk pills that paint a solid
+     fill with black text on top. These stay saturated in light mode (unlike the
+     darkened body-text status tokens) so the black label keeps >=4.5:1. */
+  --c-badge-savings: #4ade80;
+  --c-badge-info: #60a5fa;
+  --c-badge-cyan: #22d3ee;
+  --c-badge-amber: #ff9f43;
+  /* Codex model-mix cycle swatches (segment fills + legend dots). */
+  --c-model-codex-cyan: #22d3ee;
+  --c-model-codex-amber: #f59e0b;
+  --c-model-codex-pink: #f472b6;
+  /* Webfonts load with display=swap + preconnect (see <head>). Offline / blocked
+     CDN degrades to a metric-near local stack instead of bare sans/mono, so the
+     layout holds; when the webfont loads it simply swaps in unchanged. */
+  --font-sans: 'Space Grotesk', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
   --s-1: 4px; --s-2: 8px; --s-3: 16px; --s-4: 24px; --s-5: 32px; --s-6: 64px;
   --glow-sm: 0 0 10px var(--c-accent-glow);
   --glow-text: 0 0 8px rgba(0, 240, 255, 0.6);
+}
+
+/* ========== LIGHT THEME ==========
+   Same visual language (cyan-accent technical dashboard), inverted lightness.
+   Activation order (no FOUC, see inline boot script in <head>):
+     explicit toggle (localStorage 'to-theme') > prefers-color-scheme:light > dark.
+   Status hues are re-derived for light backgrounds and verified by
+   scripts/check-theme-contrast.py (AA: 4.5 body text, 3.0 large/UI). */
+[data-theme="light"] {
+  --c-bg: #eef1f6;
+  --c-surface: #ffffff;
+  --c-surface-hover: #e4e9f1;
+  --c-accent-cyan: #0b8aa8;
+  --c-accent-blue: #0b62c4;
+  --c-accent-glow: rgba(11, 138, 168, 0.28);
+  --c-text-main: #0e1622;
+  --c-text-dim: #4f5a6b;
+  --c-border: rgba(14, 22, 34, 0.14);
+  --c-accent: #0b6e87;
+  --c-elev: rgba(14, 22, 34, 0.035);
+  --c-elev-2: rgba(14, 22, 34, 0.05);
+  --c-elev-3: rgba(14, 22, 34, 0.08);
+  --c-border-strong: rgba(14, 22, 34, 0.32);
+  --c-accent-soft: rgba(11, 138, 168, 0.12);
+  --c-overlay-scrim: rgba(14, 22, 34, 0.45);
+  --c-savings: #0c6e2e;
+  --c-savings-strong: #0a5f28;
+  --c-waste: #c4314b;
+  --c-waste-strong: #b3203c;
+  --c-warning: #9a5b00;
+  --c-warning-soft: #a85d00;
+  --c-warning-2: #8a5a00;
+  --c-warning-yellow: #7d5a00;
+  --c-amber: #8a5a00;
+  --c-info: #0b62c4;
+  --c-info-strong: #0a57ad;
+  --c-savings-toast: #0c6e2e;
+  --c-savings-alt: #0c6e2e;
+  --c-warning-fill: rgba(154, 91, 0, 0.10);
+  --c-warning-fill-2: rgba(154, 91, 0, 0.08);
+  --c-warning-2-fill: rgba(138, 90, 0, 0.10);
+  --c-warning-yellow-fill: rgba(125, 90, 0, 0.12);
+  --c-waste-fill: rgba(196, 49, 75, 0.10);
+  --c-waste-strong-fill: rgba(179, 32, 60, 0.12);
+  --c-waste-strong-fill-2: rgba(179, 32, 60, 0.06);
+  --c-savings-fill: rgba(12, 110, 46, 0.12);
+  --c-chart-teal: #0d8a80;
+  --c-chart-coral: #c4314b;
+  --c-model-opus: #6d4bd1;
+  --c-model-haiku: #0f8a47;
+  --c-model-fable: #c2305a;
+  --c-model-other: #55607a;
+  --c-cache-output: #0b62c4;
+  --c-cache-read: #0c6e2e;
+  --c-cache-create: #7c3aed;
+  --c-bg-glow: #dbe4f2;
+  --c-grid-line: rgba(14, 22, 34, 0.05);
+  --c-config-rail: rgba(255, 255, 255, 0.85);
+  --c-scrollbar: #b3bdcc;
+  --c-scrollbar-hover: #97a3b5;
+  /* Display-title gradient: dark ink -> mid-grey, legible on the light page. */
+  --c-title-grad-from: #0e1622;
+  --c-title-grad-to: #55607a;
+  /* Neon halo would smear dark text on a light page -> off in light. */
+  --glow-text: none;
+  /* Badge swatches: deepened so black-on-fill text still clears AA on white. */
+  --c-badge-savings: #16a34a;
+  --c-badge-info: #5b9bff;
+  --c-badge-cyan: #2bc0da;
+  --c-badge-amber: #f59e0b;
+  /* Codex model-mix cycle, light-tuned. */
+  --c-model-codex-cyan: #0e7490;
+  --c-model-codex-amber: #b45309;
+  --c-model-codex-pink: #be185d;
 }
 
 body {
@@ -39,7 +191,7 @@ body {
   min-height: 100vh;
   overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
-  background-image: radial-gradient(circle at 50% 0%, #1a253a 0%, var(--c-bg) 60%);
+  background-image: radial-gradient(circle at 50% 0%, var(--c-bg-glow) 0%, var(--c-bg) 60%);
 }
 
 /* v5.1: Global font size bump for readability.
@@ -104,8 +256,8 @@ body::before {
   position: fixed;
   top: 0; left: 0; width: 100%; height: 100%;
   background-image:
-    linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
+    linear-gradient(var(--c-grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--c-grid-line) 1px, transparent 1px);
   background-size: 40px 40px;
   pointer-events: none;
   z-index: 0;
@@ -115,8 +267,8 @@ h1, h2, h3, h4 { font-weight: 400; }
 
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: var(--c-bg); }
-::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: #555; }
+::-webkit-scrollbar-thumb { background: var(--c-scrollbar, #333); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--c-scrollbar-hover, #555); }
 
 /* ========== 3-COLUMN LAYOUT ========== */
 .layout {
@@ -244,7 +396,7 @@ h1, h2, h3, h4 { font-weight: 400; }
   margin: var(--s-2) 0;
   line-height: 1;
   letter-spacing: -0.02em;
-  background: linear-gradient(180deg, #fff, #aaa);
+  background: linear-gradient(180deg, var(--c-title-grad-from), var(--c-title-grad-to));
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
 }
@@ -308,7 +460,7 @@ h1, h2, h3, h4 { font-weight: 400; }
   margin-bottom: var(--s-3);
   margin-top: var(--s-2);
   color: var(--c-text-main);
-  text-shadow: 0 0 20px rgba(255,255,255,0.2);
+  text-shadow: 0 0 20px var(--c-border-strong, rgba(255,255,255,0.2));
 }
 
 .metric-sub {
@@ -373,7 +525,7 @@ h1, h2, h3, h4 { font-weight: 400; }
 .bar-track {
   flex: 1;
   height: 16px;
-  background: rgba(255,255,255,0.04);
+  background: var(--c-elev, rgba(255,255,255,0.04));
   border-radius: 3px;
   overflow: hidden;
 }
@@ -387,7 +539,7 @@ h1, h2, h3, h4 { font-weight: 400; }
 }
 
 .bar-fill.fixed {
-  background: linear-gradient(90deg, rgba(255,255,255,0.2), rgba(255,255,255,0.05));
+  background: linear-gradient(90deg, var(--c-border-strong, rgba(255,255,255,0.2)), var(--c-elev-2, rgba(255,255,255,0.05)));
   opacity: 0.4;
 }
 
@@ -413,7 +565,7 @@ h1, h2, h3, h4 { font-weight: 400; }
   margin: var(--s-2) 0;
   line-height: 1;
   letter-spacing: -0.02em;
-  background: linear-gradient(180deg, #fff, #aaa);
+  background: linear-gradient(180deg, var(--c-title-grad-from), var(--c-title-grad-to));
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
 }
@@ -517,7 +669,7 @@ h1, h2, h3, h4 { font-weight: 400; }
   position: absolute;
   cursor: pointer;
   top: 0; left: 0; right: 0; bottom: 0;
-  background-color: rgba(255,255,255,0.1);
+  background-color: var(--c-elev-3, rgba(255,255,255,0.1));
   border: 1px solid var(--c-border);
   transition: .3s;
   border-radius: 20px;
@@ -551,7 +703,7 @@ input:checked + .slider:before {
 .config-col {
   border-left: 1px solid var(--c-border);
   padding: var(--s-4);
-  background: rgba(10,11,16,0.8);
+  background: var(--c-config-rail);
   display: flex;
   flex-direction: column;
   gap: var(--s-4);
@@ -641,8 +793,8 @@ input:checked + .slider:before {
 }
 
 .apply-btn.copied {
-  border-color: #10b981;
-  color: #10b981;
+  border-color: var(--c-savings-alt, #10b981);
+  color: var(--c-savings-alt, #10b981);
   box-shadow: 0 0 10px rgba(16,185,129,0.3);
 }
 
@@ -1092,7 +1244,7 @@ input:checked + .slider:before {
   height: 28px;
   border-radius: 6px;
   overflow: hidden;
-  background: rgba(255,255,255,0.04);
+  background: var(--c-elev, rgba(255,255,255,0.04));
   margin-top: var(--s-2);
 }
 
@@ -1101,11 +1253,11 @@ input:checked + .slider:before {
   transition: width 0.5s ease;
 }
 
-.model-segment.fable { background: linear-gradient(90deg, #fb7185, #e11d48); }
-.model-segment.opus { background: linear-gradient(90deg, #a78bfa, #7c3aed); }
+.model-segment.fable { background: linear-gradient(90deg, var(--c-model-fable, #fb7185), #e11d48); }
+.model-segment.opus { background: linear-gradient(90deg, var(--c-model-opus, #a78bfa), #7c3aed); }
 .model-segment.sonnet { background: linear-gradient(90deg, var(--c-accent-cyan), #0099cc); }
-.model-segment.haiku { background: linear-gradient(90deg, #34d399, #059669); }
-.model-segment.other { background: linear-gradient(90deg, #94a3b8, #64748b); }
+.model-segment.haiku { background: linear-gradient(90deg, var(--c-model-haiku, #34d399), #059669); }
+.model-segment.other { background: linear-gradient(90deg, var(--c-model-other, #94a3b8), #64748b); }
 
 .model-legend {
   display: flex;
@@ -1130,11 +1282,11 @@ input:checked + .slider:before {
   flex-shrink: 0;
 }
 
-.model-legend-dot.fable { background: #fb7185; }
-.model-legend-dot.opus { background: #a78bfa; }
+.model-legend-dot.fable { background: var(--c-model-fable, #fb7185); }
+.model-legend-dot.opus { background: var(--c-model-opus, #a78bfa); }
 .model-legend-dot.sonnet { background: var(--c-accent-cyan); }
-.model-legend-dot.haiku { background: #34d399; }
-.model-legend-dot.other { background: #94a3b8; }
+.model-legend-dot.haiku { background: var(--c-model-haiku, #34d399); }
+.model-legend-dot.other { background: var(--c-model-other, #94a3b8); }
 
 /* ========== TRAJECTORY BARS ========== */
 .trajectory-bars {
@@ -1205,21 +1357,21 @@ input:checked + .slider:before {
 }
 
 .flag-badge.outdated {
-  color: #fb923c;
-  border: 1px solid #fb923c;
-  background: rgba(251,146,60,0.1);
+  color: var(--c-warning-soft, #fb923c);
+  border: 1px solid var(--c-warning-soft, #fb923c);
+  background: var(--c-warning-fill, rgba(251,146,60,0.1));
 }
 
 .flag-badge.stale {
-  color: #fbbf24;
-  border: 1px solid #fbbf24;
-  background: rgba(251,191,36,0.1);
+  color: var(--c-warning-2, #fbbf24);
+  border: 1px solid var(--c-warning-2, #fbbf24);
+  background: var(--c-warning-2-fill, rgba(251,191,36,0.1));
 }
 
 .flag-badge.zombie {
-  color: #f87171;
-  border: 1px solid #f87171;
-  background: rgba(248,113,113,0.1);
+  color: var(--c-waste, #f87171);
+  border: 1px solid var(--c-waste, #f87171);
+  background: var(--c-waste-fill, rgba(248,113,113,0.1));
 }
 
 /* ========== VERSION HERO ========== */
@@ -1228,7 +1380,7 @@ input:checked + .slider:before {
   font-weight: 300;
   font-size: 48px;
   color: var(--c-text-main);
-  text-shadow: 0 0 20px rgba(255,255,255,0.2);
+  text-shadow: 0 0 20px var(--c-border-strong, rgba(255,255,255,0.2));
   margin-bottom: var(--s-2);
 }
 
@@ -1398,7 +1550,7 @@ input:checked + .slider:before {
   font-family: var(--font-mono);
   font-size: 13px;
   color: var(--c-text-dim);
-  background: rgba(255,255,255,0.04);
+  background: var(--c-elev, rgba(255,255,255,0.04));
   padding: 2px 8px;
   border-radius: 4px;
   border: 1px solid var(--c-border);
@@ -1435,15 +1587,15 @@ input:checked + .slider:before {
 .hook-desc { font-size: 15px; color: var(--c-text-dim); margin-top: 2px; }
 .hook-cmd-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--c-accent-cyan); color: var(--c-bg); padding: 10px 20px; border-radius: 8px; font-size: 16px; font-weight: 500; opacity: 0; transition: opacity 0.3s; pointer-events: none; z-index: 100; }
 .hook-cmd-toast.visible { opacity: 1; }
-.cmd-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--c-bg-card); color: var(--c-text-main); padding: 16px 20px; border-radius: 10px; border: 1px solid var(--c-border); box-shadow: 0 12px 32px rgba(0,0,0,.35); z-index: 200; max-width: 640px; width: calc(100% - 48px); font-size: 14px; }
+.cmd-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--c-surface); color: var(--c-text-main); padding: 16px 20px; border-radius: 10px; border: 1px solid var(--c-border); box-shadow: 0 12px 32px rgba(0,0,0,.35); z-index: 200; max-width: 640px; width: calc(100% - 48px); font-size: 14px; }
 .cmd-toast-title { font-weight: 600; font-size: 15px; margin-bottom: 6px; color: var(--c-text-main); }
 .cmd-toast-body { color: var(--c-text-dim); margin-bottom: 12px; line-height: 1.45; }
 .cmd-toast-cmd { background: var(--c-bg); border: 1px solid var(--c-border); border-radius: 6px; padding: 10px 12px; font-family: var(--font-mono); font-size: 13px; word-break: break-all; margin-bottom: 10px; color: var(--c-text-main); }
-.cmd-toast-hint { color: var(--c-muted); font-size: 12px; margin-bottom: 12px; line-height: 1.4; }
+.cmd-toast-hint { color: var(--c-text-dim); font-size: 12px; margin-bottom: 12px; line-height: 1.4; }
 .cmd-toast-actions { display: flex; gap: 8px; justify-content: flex-end; }
 .cmd-toast-btn { background: var(--c-accent-cyan); color: var(--c-bg); border: 0; border-radius: 6px; padding: 8px 14px; cursor: pointer; font-size: 13px; font-weight: 500; }
 .cmd-toast-btn.secondary { background: transparent; color: var(--c-text-dim); border: 1px solid var(--c-border); }
-.hook-partial { font-size: 12px; color: #ff9f43; margin-top: 2px; }
+.hook-partial { font-size: 12px; color: var(--c-warning, #ff9f43); margin-top: 2px; }
 .hook-action-btn { background: transparent; color: var(--c-accent-cyan); border: 1px solid var(--c-border); border-radius: 6px; padding: 6px 10px; font-size: 12px; cursor: pointer; margin-top: 8px; }
 .hook-action-btn:hover { border-color: var(--c-accent-cyan); }
 .hook-profile-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--s-2); padding: var(--s-3); }
@@ -1456,10 +1608,10 @@ input:checked + .slider:before {
 .hook-command-meta { color: var(--c-text-dim); font-size: 13px; line-height: 1.45; }
 
 /* ========== SESSION QUALITY OVERLAY (v2.6) ========== */
-.quality-good { border-left: 4px solid #22c55e !important; }
+.quality-good { border-left: 4px solid var(--c-savings-strong, #22c55e) !important; }
 .quality-fair { border-left: 4px solid transparent !important; }
-.quality-needs-work { border-left: 4px solid #eab308 !important; }
-.quality-poor { border-left: 4px solid #ef4444 !important; }
+.quality-needs-work { border-left: 4px solid var(--c-warning-yellow, #eab308) !important; }
+.quality-poor { border-left: 4px solid var(--c-waste-strong, #ef4444) !important; }
 .quality-badge {
   display: inline-block;
   font-family: var(--font-mono);
@@ -1468,10 +1620,10 @@ input:checked + .slider:before {
   border-radius: 4px;
   font-weight: 500;
 }
-.quality-badge.good { background: rgba(34,197,94,0.15); color: #22c55e; }
+.quality-badge.good { background: var(--c-savings-fill, rgba(34,197,94,0.15)); color: var(--c-savings-strong, #22c55e); }
 .quality-badge.fair { background: rgba(125,140,163,0.15); color: var(--c-text-dim); }
-.quality-badge.needs-work { background: rgba(234,179,8,0.15); color: #eab308; }
-.quality-badge.poor { background: rgba(239,68,68,0.15); color: #ef4444; }
+.quality-badge.needs-work { background: var(--c-warning-yellow-fill, rgba(234,179,8,0.15)); color: var(--c-warning-yellow, #eab308); }
+.quality-badge.poor { background: var(--c-waste-strong-fill, rgba(239,68,68,0.15)); color: var(--c-waste-strong, #ef4444); }
 
 /* ========== CACHE VISUALIZATION (v2.6) ========== */
 .cache-bar {
@@ -1479,7 +1631,7 @@ input:checked + .slider:before {
   height: 14px;
   border-radius: 4px;
   overflow: hidden;
-  background: rgba(255,255,255,0.05);
+  background: var(--c-elev-2, rgba(255,255,255,0.05));
   margin-top: 4px;
 }
 .cache-bar-segment {
@@ -1488,9 +1640,9 @@ input:checked + .slider:before {
   transition: width 0.3s;
 }
 .cache-bar-input { background: var(--c-accent-cyan); }
-.cache-bar-output { background: #3b82f6; }
-.cache-bar-read { background: #22c55e; }
-.cache-bar-create { background: #a855f7; }
+.cache-bar-output { background: var(--c-cache-output, #3b82f6); }
+.cache-bar-read { background: var(--c-savings-strong, #22c55e); }
+.cache-bar-create { background: var(--c-cache-create, #a855f7); }
 .cache-legend {
   display: flex;
   gap: var(--s-3);
@@ -1549,10 +1701,10 @@ input:checked + .slider:before {
 
 /* ========== SPIKE HIGHLIGHT (v2.6) ========== */
 tr.token-spike td {
-  background: rgba(251, 146, 60, 0.08) !important;
+  background: var(--c-warning-fill-2, rgba(251, 146, 60, 0.08)) !important;
 }
 tr.token-spike td:first-child {
-  border-left: 3px solid #fb923c;
+  border-left: 3px solid var(--c-warning-soft, #fb923c);
 }
 
 /* ========== PROMPT PREVIEW MODAL ========== */
@@ -1560,7 +1712,7 @@ tr.token-spike td:first-child {
   display: none;
   position: fixed;
   top: 0; left: 0; width: 100%; height: 100%;
-  background: rgba(0, 0, 0, 0.75);
+  background: var(--c-overlay-scrim, rgba(0, 0, 0, 0.75));
   z-index: 500;
   align-items: center;
   justify-content: center;
@@ -1658,9 +1810,58 @@ tr.token-spike td:first-child {
   box-shadow: var(--glow-sm);
 }
 .prompt-modal-copy.copied {
-  background: #2ecc71;
+  background: var(--c-savings-toast, #2ecc71);
 }
+
+/* ========== THEME TOGGLE (U9) ========== */
+.theme-toggle {
+  position: fixed; top: 16px; right: 20px; z-index: 300;
+  display: inline-flex; align-items: center; gap: 7px;
+  font-family: var(--font-mono); font-size: 12px; letter-spacing: .04em;
+  color: var(--c-text-dim);
+  background: var(--c-surface); border: 1px solid var(--c-border);
+  border-radius: 8px; padding: 7px 11px; cursor: pointer;
+  transition: color .15s ease, border-color .15s ease, background .15s ease;
+}
+.theme-toggle:hover { color: var(--c-text-main); border-color: var(--c-accent); }
+.theme-toggle:focus-visible {
+  outline: 2px solid var(--c-accent); outline-offset: 2px;
+}
+.theme-toggle .theme-toggle-icon { width: 15px; height: 15px; display: block; }
+/* Show the sun in light mode, the moon in dark mode (the icon for the theme
+   you'd switch TO). */
+.theme-toggle .icon-sun { display: none; }
+.theme-toggle .icon-moon { display: block; }
+[data-theme="light"] .theme-toggle .icon-sun { display: block; }
+[data-theme="light"] .theme-toggle .icon-moon { display: none; }
 </style>
+<script>
+/* No-FOUC theme boot. Runs before first paint: reads the persisted choice
+   ('to-theme' in localStorage), else honors prefers-color-scheme:light, else
+   the dark default. Sets data-theme on <html> so the CSS var layer resolves
+   correctly on the very first frame. Wrapped/guarded so a locked-down
+   localStorage (private mode) degrades silently to the dark default. */
+(function () {
+  try {
+    var stored = null;
+    try { stored = window.localStorage.getItem('to-theme'); } catch (e) {}
+    var theme;
+    if (stored === 'light' || stored === 'dark') {
+      theme = stored;
+    } else if (window.matchMedia &&
+               window.matchMedia('(prefers-color-scheme: light)').matches) {
+      theme = 'light';
+    } else {
+      theme = 'dark';
+    }
+    if (theme === 'light') {
+      document.documentElement.setAttribute('data-theme', 'light');
+    } else {
+      document.documentElement.removeAttribute('data-theme');
+    }
+  } catch (e) { /* dark default already applies */ }
+})();
+</script>
 </head>
 <body>
 
@@ -1668,6 +1869,26 @@ tr.token-spike td:first-child {
 <script>
 window.__TOKEN_DATA__ = null;
 </script>
+
+<!-- Theme toggle (U9). aria-pressed reflects light mode; keyboard operable as a
+     native <button>; the boot script above already applied the right theme so
+     this only wires the click + label state. -->
+<button type="button" id="theme-toggle" class="theme-toggle"
+        aria-pressed="false" aria-label="Toggle light and dark theme"
+        title="Toggle light / dark theme">
+  <svg class="theme-toggle-icon icon-moon" viewBox="0 0 24 24" fill="none"
+       stroke="currentColor" stroke-width="2" stroke-linecap="round"
+       stroke-linejoin="round" aria-hidden="true">
+    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+  </svg>
+  <svg class="theme-toggle-icon icon-sun" viewBox="0 0 24 24" fill="none"
+       stroke="currentColor" stroke-width="2" stroke-linecap="round"
+       stroke-linejoin="round" aria-hidden="true">
+    <circle cx="12" cy="12" r="5"/>
+    <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+  </svg>
+  <span class="theme-toggle-label">Dark</span>
+</button>
 
 <div class="layout">
   <!-- NAV -->
@@ -1923,7 +2144,7 @@ function showCmdToast(opts) {
 function showErrorToast(message) {
   var el = document.createElement('div');
   el.className = 'hook-cmd-toast visible';
-  el.style.background = '#ef4444';
+  el.style.background = 'var(--c-waste-strong, #ef4444)';
   el.style.color = '#fff';
   el.textContent = message;
   document.body.appendChild(el);
@@ -2139,8 +2360,8 @@ var DB = (function() {
         if (el) {
           var errId = 'render-err-' + viewId;
           el.innerHTML =
-            '<div style="padding:2rem;background:rgba(239,68,68,.05);border:1px solid #ef4444;border-radius:8px;margin:1.5rem">' +
-            '<h2 style="color:#ef4444;margin:0 0 .5rem 0;font-size:20px">' + esc(name) + ' tab failed to load</h2>' +
+            '<div style="padding:2rem;background:var(--c-waste-strong-fill-2, rgba(239,68,68,.05));border:1px solid var(--c-waste-strong, #ef4444);border-radius:8px;margin:1.5rem">' +
+            '<h2 style="color:var(--c-waste-strong, #ef4444);margin:0 0 .5rem 0;font-size:20px">' + esc(name) + ' tab failed to load</h2>' +
             '<p style="color:var(--c-text-dim);margin-bottom:1rem;font-size:14px">' +
             'This is a render error, not missing data. Copy the diagnostic below and paste it into a GitHub issue at ' +
             '<a href="https://github.com/alexgreensh/token-optimizer/issues" target="_blank" rel="noopener" style="color:var(--c-accent-cyan)">github.com/alexgreensh/token-optimizer/issues</a>. ' +
@@ -2148,7 +2369,7 @@ var DB = (function() {
             '<pre id="' + errId + '" style="background:var(--c-bg);padding:1rem;overflow:auto;max-height:260px;font-size:12px;white-space:pre-wrap;border-radius:4px">' +
             esc(redactPaths(stack)) + '</pre>' +
             '<button data-copy-err="' + errId + '" data-tab-name="' + esc(name) + '" ' +
-            'style="margin-top:.75rem;padding:.5rem 1rem;background:#ef4444;color:white;border:0;border-radius:4px;cursor:pointer;font-size:13px">' +
+            'style="margin-top:.75rem;padding:.5rem 1rem;background:var(--c-waste-strong, #ef4444);color:white;border:0;border-radius:4px;cursor:pointer;font-size:13px">' +
             'Copy diagnostic</button></div>';
         }
       }
@@ -2177,7 +2398,7 @@ var DB = (function() {
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(payload).then(function() {
         btn.textContent = 'Copied. Paste into your issue.';
-        btn.style.background = '#22c55e';
+        btn.style.background = 'var(--c-savings-strong, #22c55e)';
       }).catch(function() {
         btn.textContent = 'Copy failed; select text above manually';
       });
@@ -2231,8 +2452,8 @@ var DB = (function() {
         if (navigator.clipboard && navigator.clipboard.writeText) {
           navigator.clipboard.writeText(cmd).then(function() {
             killStaleBtn.textContent = 'Copied!';
-            killStaleBtn.style.background = '#22c55e';
-            setTimeout(function() { killStaleBtn.textContent = 'Copy Kill Command'; killStaleBtn.style.background = '#ef4444'; }, 2000);
+            killStaleBtn.style.background = 'var(--c-savings-strong, #22c55e)';
+            setTimeout(function() { killStaleBtn.textContent = 'Copy Kill Command'; killStaleBtn.style.background = 'var(--c-waste-strong, #ef4444)'; }, 2000);
           });
         }
       });
@@ -2246,8 +2467,8 @@ var DB = (function() {
         if (navigator.clipboard && navigator.clipboard.writeText) {
           navigator.clipboard.writeText(cmd).then(function() {
             btn.textContent = 'copied';
-            btn.style.background = '#22c55e';
-            setTimeout(function() { btn.textContent = 'kill'; btn.style.background = '#ef4444'; }, 2000);
+            btn.style.background = 'var(--c-savings-strong, #22c55e)';
+            setTimeout(function() { btn.textContent = 'kill'; btn.style.background = 'var(--c-waste-strong, #ef4444)'; }, 2000);
           });
         }
       });
@@ -2482,28 +2703,28 @@ var DB = (function() {
         var pctBig = v5rec.total_disabled_impact_pct > 0 ? v5rec.total_disabled_impact_pct : v5rec.aggressive_impact_pct;
 
         var cardHtml = '<div class="card wide" style="border: 2px solid ' +
-          (disabledRecs.length > 0 ? '#ff9f43' : 'var(--c-accent-cyan)') + ';margin-bottom:var(--s-3);">' +
+          (disabledRecs.length > 0 ? 'var(--c-warning, #ff9f43)' : 'var(--c-accent-cyan)') + ';margin-bottom:var(--s-3);">' +
           '<div class="card-header" style="display:flex;justify-content:space-between;align-items:center;">' +
           '<span style="font-size:20px;">Active Compression (v5)</span>' +
-          '<span class="label" style="background:' + (disabledRecs.length > 0 ? '#ff9f43' : 'var(--c-accent-cyan)') +
+          '<span class="label" style="background:' + (disabledRecs.length > 0 ? 'var(--c-warning, #ff9f43)' : 'var(--c-accent-cyan)') +
           ';color:var(--c-bg);padding:4px 10px;border-radius:4px;font-weight:700;font-size:13px;">' + headerLabel + '</span>' +
           '</div>' +
           '<div style="padding: var(--s-2) var(--s-3);">' +
           '<div style="font-size: 36px; font-weight: 800; color: var(--c-accent-cyan); line-height: 1.1; margin-bottom: 8px;">' +
           'Save up to ' + pctBig + '% more tokens' +
           '</div>' +
-          '<div style="font-size: 17px; color: var(--c-text); margin-bottom: var(--s-2); line-height: 1.5;">' +
+          '<div style="font-size: 17px; color: var(--c-text-main); margin-bottom: var(--s-2); line-height: 1.5;">' +
           esc(v5rec.recommendation) + '</div>';
 
         if (disabled.length > 0) {
           cardHtml += '<div style="margin-top: var(--s-2); display:grid;grid-template-columns:1fr;gap:12px;">';
           disabled.forEach(function(f) {
-            var riskColor = '#4ade80';
+            var riskColor = 'var(--c-savings)';
             var riskText = 'no risk';
-            if (f.risk_level === 'low') { riskColor = '#60a5fa'; riskText = 'low risk'; }
-            else if (f.risk_level === 'moderate') { riskColor = '#ff9f43'; riskText = 'moderate risk'; }
+            if (f.risk_level === 'low') { riskColor = 'var(--c-info)'; riskText = 'low risk'; }
+            else if (f.risk_level === 'moderate') { riskColor = 'var(--c-warning)'; riskText = 'moderate risk'; }
             var recBadge = f.recommended
-              ? '<span style="background:#4ade80;color:#000;font-size:11px;padding:2px 7px;border-radius:3px;margin-left:8px;font-weight:700;">RECOMMENDED</span>'
+              ? '<span style="background:var(--c-badge-savings);color:#000;font-size:11px;padding:2px 7px;border-radius:3px;margin-left:8px;font-weight:700;">RECOMMENDED</span>'
               : '<span style="background:var(--c-border);color:var(--c-text-dim);font-size:11px;padding:2px 7px;border-radius:3px;margin-left:8px;">OPT-IN</span>';
             cardHtml += '<div style="padding:14px;background:var(--c-bg);border-radius:6px;border-left:4px solid ' + riskColor + ';">' +
               '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;">' +
@@ -2526,9 +2747,9 @@ var DB = (function() {
         v5card.innerHTML = cardHtml;
       } else {
         // All features enabled - show success state
-        v5card.innerHTML = '<div class="card wide" style="border: 2px solid #4ade80;margin-bottom:var(--s-3);">' +
+        v5card.innerHTML = '<div class="card wide" style="border: 2px solid var(--c-savings);margin-bottom:var(--s-3);">' +
           '<div class="card-header"><span style="font-size:20px;">Active Compression (v5)</span>' +
-          '<span class="label" style="background:#4ade80;color:#000;padding:4px 10px;border-radius:4px;font-weight:700;font-size:13px;">MAXED OUT</span></div>' +
+          '<span class="label" style="background:var(--c-badge-savings);color:#000;padding:4px 10px;border-radius:4px;font-weight:700;font-size:13px;">MAXED OUT</span></div>' +
           '<div style="padding: var(--s-2) var(--s-3);font-size:17px;">' +
           '<span style="font-size:24px;">\u2713</span> ' + esc(v5rec.recommendation) +
           '</div></div>';
@@ -2540,7 +2761,7 @@ var DB = (function() {
     var staleMinutes = data.generated_at ? Math.round((Date.now() - new Date(data.generated_at).getTime()) / 60000) : 0;
     var isStale = staleMinutes > 60;
     var refreshHint = data.runtime === 'codex' ? 'run the Codex dashboard refresh command' : 'run /token-optimizer';
-    var staleWarning = isStale ? ' <span style="color:#ff9f43;font-weight:500;">(data is ' + (staleMinutes > 1440 ? Math.round(staleMinutes / 1440) + 'd' : Math.round(staleMinutes / 60) + 'h') + ' old — ' + refreshHint + ' to refresh)</span>' : '';
+    var staleWarning = isStale ? ' <span style="color:var(--c-warning, #ff9f43);font-weight:500;">(data is ' + (staleMinutes > 1440 ? Math.round(staleMinutes / 1440) + 'd' : Math.round(staleMinutes / 60) + 'h') + ' old — ' + refreshHint + ' to refresh)</span>' : '';
     var headerEl = document.querySelector('#view-overview .header');
     if (headerEl) {
       var existingTs = headerEl.querySelector('.last-updated');
@@ -2617,7 +2838,7 @@ var DB = (function() {
     if (!caveatEl) {
       caveatEl = document.createElement('div');
       caveatEl.id = 'sat-caveat';
-      caveatEl.style.cssText = 'font-size:11px;color:var(--c-muted);margin-top:6px;font-style:italic;';
+      caveatEl.style.cssText = 'font-size:11px;color:var(--c-text-dim);margin-top:6px;font-style:italic;';
       document.getElementById('sat-desc').parentNode.appendChild(caveatEl);
     }
     var cal = data.snapshot.calibration;
@@ -2698,7 +2919,7 @@ var DB = (function() {
     var cmh = data.claude_md_health;
     if (cmh) {
       var instructionLabel = isCodexOverview ? 'AGENTS.md Health' : 'CLAUDE.md Health';
-      var cmColor = cmh.status === 'good' ? 'var(--c-accent-cyan)' : cmh.status === 'warning' ? '#ff9f43' : '#7d8ca3';
+      var cmColor = cmh.status === 'good' ? 'var(--c-accent-cyan)' : cmh.status === 'warning' ? 'var(--c-warning, #ff9f43)' : 'var(--c-text-dim, #7d8ca3)';
       healthCardsHtml += '<div class="card"><div class="card-header"><span>' + instructionLabel + '</span></div>' +
         '<div style="text-align:center;padding:var(--s-3) 0;">' +
         '<div style="font-size:28px;font-weight:700;font-family:var(--font-mono);color:' + cmColor + ';">' + fn(cmh.tokens) + '</div>' +
@@ -2716,7 +2937,7 @@ var DB = (function() {
       var memoryLimitText = isCodexOverview ? 'local memory lines' : 'lines (200-line visible limit)';
       var memoryCountText = isCodexOverview ? String(mr.total_lines || 0) : ((mr.total_lines || 0) + ' / 200');
       var mrOver = mr.truncated_lines || 0;
-      var mrColor = mr.severity_counts && mr.severity_counts.medium > 0 ? '#ff9f43' : mr.truncated ? '#7d8ca3' : 'var(--c-accent-cyan)';
+      var mrColor = mr.severity_counts && mr.severity_counts.medium > 0 ? 'var(--c-warning, #ff9f43)' : mr.truncated ? 'var(--c-text-dim, #7d8ca3)' : 'var(--c-accent-cyan)';
       var mrStatus = mr.severity_counts && mr.severity_counts.medium > 0 ? (mr.severity_counts.medium + ' warning(s)') : mr.truncated ? (mrOver + ' lines over limit') : 'Healthy';
       var orphanCount = (mr.topic_files_count || 0) - (mr.linked_files_count || 0);
       healthCardsHtml += '<div class="card"><div class="card-header"><span>' + memoryLabel + '</span></div>' +
@@ -2727,7 +2948,7 @@ var DB = (function() {
         '<div style="padding:0 var(--s-3) var(--s-3);font-size:13px;">' +
         '<div style="display:flex;justify-content:space-between;color:var(--c-text-dim);"><span>Entries</span><span>' + (mr.entry_count || 0) + '</span></div>' +
         '<div style="display:flex;justify-content:space-between;color:var(--c-text-dim);"><span>Topic files</span><span>' + (mr.topic_files_count || 0) + ' (' + (mr.linked_files_count || 0) + ' linked)</span></div>' +
-        (orphanCount > 0 ? '<div style="display:flex;justify-content:space-between;color:#ff9f43;"><span>Orphaned files</span><span>' + orphanCount + '</span></div>' : '') +
+        (orphanCount > 0 ? '<div style="display:flex;justify-content:space-between;color:var(--c-warning, #ff9f43);"><span>Orphaned files</span><span>' + orphanCount + '</span></div>' : '') +
         '<div style="display:flex;justify-content:space-between;color:' + mrColor + ';margin-top:4px;font-weight:500;"><span>Status</span><span>' + esc(mrStatus) + '</span></div>' +
         (mr.savings && mr.savings.total_tokens > 0 ? '<div style="display:flex;justify-content:space-between;color:var(--c-text-dim);margin-top:2px;"><span>Recoverable</span><span>~' + fn(mr.savings.total_tokens) + ' tokens</span></div>' : '') +
         '</div>' +
@@ -2773,7 +2994,7 @@ var DB = (function() {
         var rows = '';
         if (sub.available) {
           var leakWarn = sub.leaked_subagents > 0
-            ? ' &middot; <span style="color:#ff9f43;font-weight:600;">' + sub.leaked_subagents + ' leaked</span>' : '';
+            ? ' &middot; <span style="color:var(--c-warning, #ff9f43);font-weight:600;">' + sub.leaked_subagents + ' leaked</span>' : '';
           rows += '<div class="bar-row"><span class="bar-label">Subagents</span><span class="bar-value">' +
             sub.total_subagents + ' total (' + sub.open_subagents + ' open)' + leakWarn +
             ' &middot; ' + fn(sub.total_child_tokens) + ' tokens</span></div>';
@@ -2785,7 +3006,7 @@ var DB = (function() {
           '</span></div>';
         if (goals.available && goals.total_goals) {
           var limited = (goals.budget_limited || 0) + (goals.usage_limited || 0);
-          var goalWarn = limited > 0 ? ' &middot; <span style="color:#ff9f43;font-weight:600;">' + limited + ' limited</span>' : '';
+          var goalWarn = limited > 0 ? ' &middot; <span style="color:var(--c-warning, #ff9f43);font-weight:600;">' + limited + ' limited</span>' : '';
           rows += '<div class="bar-row"><span class="bar-label">Goals</span><span class="bar-value">' +
             goals.total_goals + ' (' + goals.active_goals + ' active)' + goalWarn + '</span></div>';
         } else {
@@ -2844,7 +3065,7 @@ var DB = (function() {
         if (!data.plan && !data.auto_plan) {
           html += '<div class="empty-state" style="text-align:center;padding:2rem 1rem;">' +
             '<div style="font-size:1.5rem;margin-bottom:0.5rem;">No optimization plan yet</div>' +
-            '<div style="color:var(--text-secondary);margin-bottom:1rem;">' + (data.runtime === 'codex' ? 'Use live Codex sessions and refresh the dashboard to generate personalized recommendations with toggle items here.' : 'Run <span class="update-cmd" style="cursor:pointer">/token-optimizer</span> in ' + esc(data.runtime_label || 'Claude Code') + ' to generate personalized recommendations with toggle items here.') + '</div>' +
+            '<div style="color:var(--c-text-dim);margin-bottom:1rem;">' + (data.runtime === 'codex' ? 'Use live Codex sessions and refresh the dashboard to generate personalized recommendations with toggle items here.' : 'Run <span class="update-cmd" style="cursor:pointer">/token-optimizer</span> in ' + esc(data.runtime_label || 'Claude Code') + ' to generate personalized recommendations with toggle items here.') + '</div>' +
             '</div>';
         } else {
           html += '<div class="empty-state">No items in this category.</div>';
@@ -3006,7 +3227,7 @@ var DB = (function() {
       }
       codexCostNote += '</div>';
       if (t.cost_note) {
-        codexCostNote += '<div style="font-size:10px;color:var(--c-warn);margin-top:2px">' + esc(t.cost_note) + '</div>';
+        codexCostNote += '<div style="font-size:10px;color:var(--c-warning);margin-top:2px">' + esc(t.cost_note) + '</div>';
       }
     }
     var cacheExtra = isCodex
@@ -3021,7 +3242,7 @@ var DB = (function() {
       '<div class="stat-row" style="grid-template-columns:repeat(3,1fr)">' +
       '<div class="stat-card"><div class="stat-card-value">' + Math.round(t.avg_duration_minutes || 0) + 'm</div><div class="stat-card-label">Avg Duration</div></div>' +
       '<div class="stat-card"><div class="stat-card-value">' + fn((t.avg_input_tokens || 0) + (t.avg_output_tokens || 0)) + '</div><div class="stat-card-label">Avg Tokens/Session</div></div>' +
-      '<div class="stat-card"><div class="stat-card-value" style="color:#22c55e">' + avgCacheHit + (avgCacheHit !== 'N/A' ? '%' : '') + '</div><div class="stat-card-label">' + cacheLabel + '</div>' + cacheExtra + '</div>' +
+      '<div class="stat-card"><div class="stat-card-value" style="color:var(--c-savings-strong, #22c55e)">' + avgCacheHit + (avgCacheHit !== 'N/A' ? '%' : '') + '</div><div class="stat-card-label">' + cacheLabel + '</div>' + cacheExtra + '</div>' +
       '</div>';
 
     // Shared data for skills sections
@@ -3049,7 +3270,7 @@ var DB = (function() {
         var tokens = modelMix[m] || 0;
         if (tokens > 0) {
           var pct = (tokens / modelTotal * 100).toFixed(1);
-          var color = isCodex ? ['#22d3ee','#60a5fa','#34d399','#f59e0b','#a78bfa','#f472b6'][modelOrder.indexOf(m) % 6] : '';
+          var color = isCodex ? ['var(--c-model-codex-cyan)','var(--c-info)','var(--c-model-haiku, #34d399)','var(--c-model-codex-amber)','var(--c-model-opus, #a78bfa)','var(--c-model-codex-pink)'][modelOrder.indexOf(m) % 6] : '';
           var bg = isCodex ? ';background:' + color : '';
           html += '<div class="model-segment ' + m.replace(/[^a-z0-9-]/g,'') + '" style="width:' + pct + '%' + bg + '" title="' + esc(m) + ': ' + pct + '% (' + fn(tokens) + ' tokens)"></div>';
         }
@@ -3064,7 +3285,7 @@ var DB = (function() {
         var tokens = modelMix[m] || 0;
         if (tokens > 0) {
           var pct = (tokens / modelTotal * 100).toFixed(0);
-          var dotColor = isCodex ? ' style="background:' + ['#22d3ee','#60a5fa','#34d399','#f59e0b','#a78bfa','#f472b6'][modelOrder.indexOf(m) % 6] + '"' : '';
+          var dotColor = isCodex ? ' style="background:' + ['var(--c-model-codex-cyan)','var(--c-info)','var(--c-model-haiku, #34d399)','var(--c-model-codex-amber)','var(--c-model-opus, #a78bfa)','var(--c-model-codex-pink)'][modelOrder.indexOf(m) % 6] + '"' : '';
           html += '<div class="model-legend-item"><div class="model-legend-dot ' + m.replace(/[^a-z0-9-]/g,'') + '"' + dotColor + '></div>' + esc(m) + ' ' + pct + '% (' + fn(tokens) + ' tok)</div>';
         }
       });
@@ -3296,7 +3517,7 @@ var DB = (function() {
         if (navigator.clipboard && navigator.clipboard.writeText) {
           navigator.clipboard.writeText(cmd).then(function() {
             archiveBtn.textContent = 'Copied! Paste in terminal.';
-            archiveBtn.style.background = '#4ecdc4';
+            archiveBtn.style.background = 'var(--c-chart-teal, #4ecdc4)';
             setTimeout(function() {
               archiveBtn.textContent = 'Archive Selected';
               archiveBtn.style.background = '';
@@ -3803,7 +4024,7 @@ var DB = (function() {
         if (!bucket.length) return;
         var meta = tierMeta[tk];
         ccHtml += '<div style="margin-top:var(--s-2);">' +
-          '<div style="font-weight:500;color:' + (meta.dim ? 'var(--c-text-dim)' : 'var(--c-text)') + ';">' + meta.title + '</div>' +
+          '<div style="font-weight:500;color:' + (meta.dim ? 'var(--c-text-dim)' : 'var(--c-text-main)') + ';">' + meta.title + '</div>' +
           '<div style="font-size:13px;color:var(--c-text-dim);margin-bottom:4px;">' + meta.note + '</div>';
         bucket.forEach(function(e) { ccHtml += covRow(e); });
         ccHtml += '</div>';
@@ -3816,7 +4037,7 @@ var DB = (function() {
           '<div style="font-size:13px;color:var(--c-text-dim);line-height:1.6;margin-top:2px;">' +
             'Of ' + (Number(pr.shadow_reads) || 0) + ' large files where a skeleton would have saved tokens, ' +
             (Number(pr.edits_after_read) || 0) + ' were edited soon after the read &mdash; an edit rate of ' +
-            '<span style="font-family:var(--font-mono);color:' + (ready ? 'var(--c-accent-cyan)' : 'var(--c-text)') + ';">' + (Number(pr.edit_rate_pct) || 0).toFixed(1) + '%</span>. ' +
+            '<span style="font-family:var(--font-mono);color:' + (ready ? 'var(--c-accent-cyan)' : 'var(--c-text-main)') + ';">' + (Number(pr.edit_rate_pct) || 0).toFixed(1) + '%</span>. ' +
             'Skeletons turn on automatically only once this stays under ' + (Number(pr.promotion_gate_pct) || 15) + '% (the model rarely needed the full file). ' +
             'Currently <strong>' + (ready ? 'ready to promote' : 'still measuring') + '</strong>.' +
           '</div></div>';
@@ -3839,8 +4060,8 @@ var DB = (function() {
           var interp = c.basis === 'interpolated';
           ccHtml += '<div style="display:flex;justify-content:space-between;gap:var(--s-3);padding:4px 0;' + (dem ? 'opacity:0.72;' : '') + '">' +
             '<span>' + esc(String(c.language)) + ' &middot; ' + esc(String(c.band)) +
-              (interp ? ' <span title="Promoted on a thin sample because an adjacent size band of the same language passed the full gate. Higher exposure; tighter tripwire floor." style="font-size:11px;color:var(--c-text-dim);border:1px solid rgba(255,255,255,0.2);border-radius:4px;padding:1px 5px;">interpolated</span>' : '') +
-              (dem ? ' <span style="font-size:11px;color:var(--c-warn,#e6a23c);border:1px solid rgba(230,162,60,0.4);border-radius:4px;padding:1px 5px;">demoted</span>' : '') + '</span>' +
+              (interp ? ' <span title="Promoted on a thin sample because an adjacent size band of the same language passed the full gate. Higher exposure; tighter tripwire floor." style="font-size:11px;color:var(--c-text-dim);border:1px solid var(--c-border-strong, rgba(255,255,255,0.2));border-radius:4px;padding:1px 5px;">interpolated</span>' : '') +
+              (dem ? ' <span style="font-size:11px;color:var(--c-warning);border:1px solid rgba(230,162,60,0.4);border-radius:4px;padding:1px 5px;">demoted</span>' : '') + '</span>' +
             '<span style="font-family:var(--font-mono);color:var(--c-text-dim);">' +
               (Number(c.skeletons) || 0) + ' reads &middot; ' + (Number(c.followups) || 0) + ' edits &middot; ' +
               (Number(c.edit_rate_pct) || 0).toFixed(1) + '%</span>' +
@@ -3935,6 +4156,88 @@ var DB = (function() {
     chHtml += '</div>';
     html += chHtml;
 
+    // ---- Keep-warm cache automation (U7). Five tile states. Realized $ enters
+    // the realized savings headline via savings_events (category 'keepwarm');
+    // ping spend stays a dedicated cost line; NET (realized - spend) is the
+    // prominent number. Same dark-theme visual language as the cache-health
+    // card above (U9 themes it later — do not restyle). ----
+    var kw = (data.cache_health || {}).keepwarm || null;
+    if (kw) {
+      var kwState = kw.state || 'platform-gap';
+      var kwBadge = ({
+        'active-probe': 'probe-only · active',
+        'active-sustain': 'sustain · active',
+        'off-subscription': 'off · subscription',
+        'demoted-by-tripwire': 'off · tripwire',
+        'platform-gap': 'platform gap'
+      })[kwState] || kwState;
+      var kwHtml = '<div class="card wide" style="margin-top:var(--s-3);"><div class="card-header">' +
+        '<span>Keep-warm cache automation</span>' +
+        '<span class="label" style="border:1px solid rgba(255,255,255,0.12);border-radius:4px;padding:1px 5px;">' + esc(kwBadge) + '</span>' +
+        '</div>';
+      if (kwState === 'platform-gap') {
+        kwHtml += '<div style="margin-top:var(--s-2);font-size:13px;color:var(--c-text-dim);line-height:1.6;">' +
+          esc(kw.note || 'Keep-warm ships for Claude Code only.') + '</div>';
+      } else if (kwState === 'off-subscription') {
+        kwHtml += '<div style="margin-top:var(--s-2);font-size:13px;color:var(--c-text-dim);line-height:1.6;">' +
+          esc(kw.honest_line || 'Keep-warm is off on subscription billing: pings spend quota and recover no write premium.') + '</div>';
+      } else {
+        if (kwState === 'demoted-by-tripwire') {
+          kwHtml += '<div style="margin-top:var(--s-2);font-size:13px;color:var(--c-amber, #d9a441);line-height:1.6;">' +
+            'Auto-demoted to OFF by the tripwire (rolling 7d realized/spend ≤ 1.0). Re-enable with keepwarm-enable to reset the ladder.</div>';
+        }
+        // Realized vs spend vs NET (30d) — NET prominent.
+        var net = Number(kw.net_usd) || 0;
+        var netColor = net >= 0 ? 'var(--c-savings, #4ade80)' : 'var(--c-waste, #f87171)';
+        kwHtml += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:var(--s-3);margin-top:var(--s-2);">' +
+          '<div><div style="font-size:12px;color:var(--c-text-dim);">Realized (30d)</div>' +
+            '<div style="font-family:var(--font-mono);font-size:20px;">$' + (Number(kw.realized_usd) || 0).toFixed(2) + '</div></div>' +
+          '<div><div style="font-size:12px;color:var(--c-text-dim);">Ping spend (30d)</div>' +
+            '<div style="font-family:var(--font-mono);font-size:20px;color:var(--c-text-dim);">$' + (Number(kw.spend_usd) || 0).toFixed(2) + '</div></div>' +
+          '<div><div style="font-size:12px;color:var(--c-text-dim);">NET (30d)</div>' +
+            '<div style="font-family:var(--font-mono);font-size:20px;color:' + netColor + ';">$' + net.toFixed(2) + '</div></div>' +
+          '<div><div style="font-size:12px;color:var(--c-text-dim);">Tripwire ratio (7d)</div>' +
+            '<div style="font-family:var(--font-mono);font-size:20px;">' + (kw.tripwire_ratio_7d == null ? 'n/a' : (Number(kw.tripwire_ratio_7d)).toFixed(2)) + '</div></div>' +
+        '</div>';
+        if (!kw.has_pings) {
+          kwHtml += '<div style="margin-top:var(--s-2);font-size:12px;color:var(--c-text-dim);">No keep-warm pings yet — numbers fill in once an eligible paused session is probe-refreshed.</div>';
+        }
+        // Health signal.
+        var hh = kw.health || {};
+        if (Number(hh.total_pings) > 0) {
+          kwHtml += '<div style="margin-top:var(--s-2);font-size:12px;color:' + (hh.alarm ? 'var(--c-waste, #f87171)' : 'var(--c-text-dim)') + ';">' +
+            'Pings on never-resumed pauses: ' + (Number(hh.pings_on_never_resumed) || 0) + '/' + (Number(hh.total_pings) || 0) +
+            ' (' + Math.round((Number(hh.fraction) || 0) * 100) + '%)' + (hh.alarm ? ' — ALARM (>50%)' : '') + '</div>';
+        }
+        // Predictor transparency (feature names; relevant when sustain activates).
+        var feats = kw.predictor_features || [];
+        if (kwState === 'active-sustain' && feats.length) {
+          kwHtml += '<div style="margin-top:var(--s-2);font-size:12px;color:var(--c-text-dim);line-height:1.5;">' +
+            'Sustain predictor (threshold ' + (Number(kw.predictor_threshold) || 0).toFixed(2) + '): ' +
+            feats.map(function(f) { return esc(f); }).join(', ') + '</div>';
+        }
+        // Top sessions by realized.
+        var ts2 = kw.top_sessions || [];
+        if (ts2.length) {
+          kwHtml += '<div style="margin-top:var(--s-3);"><div style="font-size:12px;color:var(--c-text-dim);margin-bottom:6px;">Top sessions by realized</div>' +
+            '<table style="width:100%;border-collapse:collapse;font-size:12px;">' +
+            '<thead><tr style="color:var(--c-text-dim);text-align:left;">' +
+            '<th style="padding:4px 6px;">Session</th><th style="padding:4px 6px;">Realized $</th>' +
+            '<th style="padding:4px 6px;">Spend $</th><th style="padding:4px 6px;">Pings</th></tr></thead><tbody>';
+          ts2.forEach(function(t) {
+            kwHtml += '<tr style="border-top:1px solid rgba(255,255,255,0.06);">' +
+              '<td style="padding:4px 6px;font-family:var(--font-mono);">' + esc(String(t.session_id || '').slice(0, 28)) + '</td>' +
+              '<td style="padding:4px 6px;font-family:var(--font-mono);">$' + (Number(t.realized_usd) || 0).toFixed(2) + '</td>' +
+              '<td style="padding:4px 6px;font-family:var(--font-mono);color:var(--c-text-dim);">$' + (Number(t.spend_usd) || 0).toFixed(2) + '</td>' +
+              '<td style="padding:4px 6px;font-family:var(--font-mono);">' + (Number(t.pings) || 0) + '</td></tr>';
+          });
+          kwHtml += '</tbody></table></div>';
+        }
+      }
+      kwHtml += '</div>';
+      html += kwHtml;
+    }
+
     el.innerHTML = html;
   }
 
@@ -3980,8 +4283,8 @@ var DB = (function() {
       if (staleCount > 0) {
         html += '<div style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.2);border-radius:8px;padding:var(--s-3);margin-bottom:var(--s-3)">' +
           '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">' +
-          '<div style="font-weight:500;color:#ef4444">' + staleCount + ' stale session' + (staleCount !== 1 ? 's' : '') + ' detected</div>' +
-          '<button class="copy-fix-btn" id="kill-stale-btn" style="background:#ef4444;border-color:#ef4444">Copy Kill Command</button></div>' +
+          '<div style="font-weight:500;color:var(--c-waste-strong, #ef4444)">' + staleCount + ' stale session' + (staleCount !== 1 ? 's' : '') + ' detected</div>' +
+          '<button class="copy-fix-btn" id="kill-stale-btn" style="background:var(--c-waste-strong, #ef4444);border-color:var(--c-waste-strong, #ef4444)">Copy Kill Command</button></div>' +
           '<div style="font-size:13px;color:var(--c-text-dim);line-height:1.5">' +
           'These ' + esc(data.runtime_label || 'Claude Code') + ' sessions have been running 24+ hours. ' +
           'Some may be your active terminals (marked TERMINAL), others may be forgotten or headless. ' +
@@ -4004,7 +4307,7 @@ var DB = (function() {
         });
         if (flags.length === 0) flagHtml = '<span style="color:var(--c-accent-cyan);">OK</span>';
         var isStale = flags.some(function(f) { return f === 'STALE' || f === 'ZOMBIE'; });
-        var killBtn = isStale ? '<button class="copy-fix-btn kill-pid-btn" data-pid="' + s.pid + '" style="font-size:11px;padding:2px 8px;background:#ef4444;border-color:#ef4444">kill</button>' : '';
+        var killBtn = isStale ? '<button class="copy-fix-btn kill-pid-btn" data-pid="' + s.pid + '" style="font-size:11px;padding:2px 8px;background:var(--c-waste-strong, #ef4444);border-color:var(--c-waste-strong, #ef4444)">kill</button>' : '';
         html += '<tr>' +
           '<td>' + s.pid + '</td>' +
           '<td>' + esc((s.started || '').slice(0, 20)) + '</td>' +
@@ -4040,7 +4343,7 @@ var DB = (function() {
     var q = data.quality;
     if (q && typeof q.score === 'number') {
       var qs = q.score;
-      var qColor = qs >= 85 ? 'var(--c-accent-cyan)' : qs >= 70 ? '#4ecdc4' : qs >= 50 ? '#ff9f43' : '#ff6b6b';
+      var qColor = qs >= 85 ? 'var(--c-accent-cyan)' : qs >= 70 ? 'var(--c-chart-teal, #4ecdc4)' : qs >= 50 ? 'var(--c-warning, #ff9f43)' : 'var(--c-chart-coral, #ff6b6b)';
       var qBand = qs >= 85 ? 'Excellent' : qs >= 70 ? 'Good' : qs >= 50 ? 'Degraded' : 'Critical';
       var sessionFile = q.session_file ? q.session_file.replace(/.*\//, '') : null;
       var runtimeLabel = q.runtime_label || data.runtime_label || 'Claude Code';
@@ -4069,7 +4372,7 @@ var DB = (function() {
         var d = bd[sig.key];
         if (!d) return;
         var sigScore = typeof d.score === 'number' ? d.score : 100;
-        var barColor = sigScore >= 85 ? 'var(--c-accent-cyan)' : sigScore >= 70 ? '#4ecdc4' : sigScore >= 50 ? '#ff9f43' : '#ff6b6b';
+        var barColor = sigScore >= 85 ? 'var(--c-accent-cyan)' : sigScore >= 70 ? 'var(--c-chart-teal, #4ecdc4)' : sigScore >= 50 ? 'var(--c-warning, #ff9f43)' : 'var(--c-chart-coral, #ff6b6b)';
         var detail = '';
         if (d.count !== undefined) detail = d.count + ' found';
         else if (d.compactions !== undefined) detail = d.compactions + ' compaction' + (d.compactions !== 1 ? 's' : '');
@@ -4108,7 +4411,7 @@ var DB = (function() {
       var minPath = last7.map(function(p, i) { return (i === 0 ? 'M' : 'L') + (pad + i * stepX) + ',' + scaleY(p.min_quality); }).join(' ');
 
       var latestAvg = last7[last7.length - 1].avg_quality;
-      var trendColor = latestAvg >= 80 ? 'var(--c-accent-cyan)' : latestAvg >= 60 ? '#4ecdc4' : latestAvg >= 50 ? '#ff9f43' : '#ff6b6b';
+      var trendColor = latestAvg >= 80 ? 'var(--c-accent-cyan)' : latestAvg >= 60 ? 'var(--c-chart-teal, #4ecdc4)' : latestAvg >= 50 ? 'var(--c-warning, #ff9f43)' : 'var(--c-chart-coral, #ff6b6b)';
 
       html += '<div class="card wide"><div class="card-header"><span>Quality Trend</span><span class="label">' + last7.length + '-day</span></div>' +
         '<div style="padding:var(--s-2) var(--s-3);font-size:12px;color:var(--c-text-dim);">Rolling daily average quality score across sessions. Dashed line shows daily minimum.</div>' +
@@ -4118,7 +4421,7 @@ var DB = (function() {
         '<text x="' + (chartW - pad + 4) + '" y="' + (scaleY(80) + 4) + '" fill="var(--c-text-dim)" font-size="10" font-family="var(--font-mono)">80</text>' +
         '<line x1="' + pad + '" y1="' + scaleY(60) + '" x2="' + (chartW - pad) + '" y2="' + scaleY(60) + '" stroke="var(--c-border)" stroke-dasharray="4,4" stroke-width="1" />' +
         '<text x="' + (chartW - pad + 4) + '" y="' + (scaleY(60) + 4) + '" fill="var(--c-text-dim)" font-size="10" font-family="var(--font-mono)">60</text>' +
-        '<path d="' + minPath + '" fill="none" stroke="#ff6b6b" stroke-width="1.5" stroke-dasharray="3,3" opacity="0.5" />' +
+        '<path d="' + minPath + '" fill="none" stroke="var(--c-chart-coral, #ff6b6b)" stroke-width="1.5" stroke-dasharray="3,3" opacity="0.5" />' +
         '<path d="' + avgPath + '" fill="none" stroke="' + trendColor + '" stroke-width="2.5" />';
       last7.forEach(function(p, i) {
         var cx = pad + i * stepX, cy = scaleY(p.avg_quality);
@@ -4164,7 +4467,7 @@ var DB = (function() {
     // Health Score hero
     var score = c.health_score || 0;
     var healthGrade = score >= 90 ? 'S' : score >= 80 ? 'A' : score >= 70 ? 'B' : score >= 55 ? 'C' : score >= 40 ? 'D' : 'F';
-    var scoreColor = score >= 80 ? 'var(--c-accent-cyan)' : score >= 50 ? '#ff9f43' : '#ff6b6b';
+    var scoreColor = score >= 80 ? 'var(--c-accent-cyan)' : score >= 50 ? 'var(--c-warning, #ff9f43)' : 'var(--c-chart-coral, #ff6b6b)';
     html += '<div class="card wide">' +
       '<div class="card-header"><span>Token Health Score</span></div>' +
       '<div style="font-size:12px;color:var(--c-text-dim);padding:4px var(--s-3) 0;">How token-efficient your ' + esc(runtimeLabel) + ' setup appears. Factors include instruction-file size, skill/plugin inventory, MCP config, hooks, model routing, and recent usage. This is a setup health grade, not a model-quality grade.</div>' +
@@ -4194,7 +4497,7 @@ var DB = (function() {
     if (bad.length > 0) {
       html += '<div class="card wide"><div class="card-header"><span>Issues Detected</span><span class="label">' + bad.length + ' found</span></div>';
       bad.forEach(function(p) {
-        var sevColor = p.severity === 'high' ? '#ff6b6b' : p.severity === 'medium' ? '#ff9f43' : '#7d8ca3';
+        var sevColor = p.severity === 'high' ? 'var(--c-chart-coral, #ff6b6b)' : p.severity === 'medium' ? 'var(--c-warning, #ff9f43)' : 'var(--c-text-dim, #7d8ca3)';
         html += '<div style="border-left:3px solid ' + sevColor + ';padding:var(--s-3);margin-bottom:var(--s-2);background:rgba(255,255,255,0.02);border-radius:0 6px 6px 0;">' +
           '<div style="font-weight:500;color:' + sevColor + ';">' + esc(p.name) + '</div>' +
           '<div style="color:var(--c-text-dim);font-size:14px;margin-top:4px;">' + esc(p.detail) + '</div>' +
@@ -4243,7 +4546,7 @@ var DB = (function() {
         html += '<div style="font-size:14px;color:var(--c-text-dim);padding:4px 0;">\u2705 ' + esc(item) + '</div>';
       });
       html += '</div><div>' +
-        '<div style="font-weight:500;color:#ff6b6b;margin-bottom:var(--s-2);">Avoid during</div>';
+        '<div style="font-weight:500;color:var(--c-chart-coral, #ff6b6b);margin-bottom:var(--s-2);">Avoid during</div>';
       (cg.avoid_during || []).forEach(function(item) {
         html += '<div style="font-size:14px;color:var(--c-text-dim);padding:4px 0;">\u274C ' + esc(item) + '</div>';
       });
@@ -4255,7 +4558,7 @@ var DB = (function() {
     if (sc && sc.total_usd > 0) {
       html += '<div class="card wide"><div class="card-header"><span>Subagent Spend</span><span class="label">' + sc.pct_of_spend + '% of total</span></div>';
       html += '<div style="text-align:center;padding:var(--s-3) 0;">' +
-        '<div style="font-size:36px;font-weight:700;font-family:var(--font-mono);color:' + (sc.pct_of_spend > 30 ? '#ff9f43' : 'var(--c-accent-cyan)') + ';">$' + sc.total_usd.toFixed(2) + '</div>' +
+        '<div style="font-size:36px;font-weight:700;font-family:var(--font-mono);color:' + (sc.pct_of_spend > 30 ? 'var(--c-warning, #ff9f43)' : 'var(--c-accent-cyan)') + ';">$' + sc.total_usd.toFixed(2) + '</div>' +
         '<div style="font-size:13px;color:var(--c-text-dim);">spent on subagents (last 7 days)</div>' +
         '</div>';
       var topSubs = sc.top_subagents || [];
@@ -4290,7 +4593,7 @@ var DB = (function() {
         html += '<div style="padding:10px var(--s-3);border-bottom:1px solid var(--c-border);">' +
           '<div style="display:flex;justify-content:space-between;margin-bottom:4px;">' +
           '<span style="font-size:13px;color:var(--c-text-dim);">#' + (i + 1) + ' (' + breakdown + ')</span>' +
-          '<span style="font-family:var(--font-mono);font-weight:500;color:' + (p.cost_usd > 1 ? '#ff6b6b' : p.cost_usd > 0.5 ? '#ff9f43' : 'var(--c-text-main)') + ';">$' + p.cost_usd.toFixed(4) + '</span></div>' +
+          '<span style="font-family:var(--font-mono);font-weight:500;color:' + (p.cost_usd > 1 ? 'var(--c-chart-coral, #ff6b6b)' : p.cost_usd > 0.5 ? 'var(--c-warning, #ff9f43)' : 'var(--c-text-main)') + ';">$' + p.cost_usd.toFixed(4) + '</span></div>' +
           '<div style="font-size:14px;color:var(--c-text-dim);font-style:italic;">"' + esc(preview) + '..."</div></div>';
       });
       html += '</div>';
@@ -4461,7 +4764,7 @@ var DB = (function() {
           if (!existing) {
             var badge = document.createElement('span');
             badge.className = 'hook-pending';
-            badge.style.cssText = 'font-size:11px;color:#ff9f43;margin-left:8px;';
+            badge.style.cssText = 'font-size:11px;color:var(--c-warning, #ff9f43);margin-left:8px;';
             badge.textContent = '(paste command in terminal, then regenerate dashboard)';
             row.querySelector('.hook-info').appendChild(badge);
           }
@@ -4543,8 +4846,8 @@ var DB = (function() {
       existing.textContent = '\u27f3 ' + count + ' change' + (count > 1 ? 's' : '') + ' pending \u2014 restart ' + (data.runtime === 'codex' ? 'Codex' : 'Claude') + ' to apply';
       existing.style.display = 'block';
     } else {
-      existing.style.borderColor = '#2ecc71';
-      existing.style.color = '#2ecc71';
+      existing.style.borderColor = 'var(--c-savings-toast, #2ecc71)';
+      existing.style.color = 'var(--c-savings-toast, #2ecc71)';
       existing.style.background = 'rgba(46,204,113,0.05)';
       existing.textContent = '\u2713 All changes restored \u2014 no restart needed';
       existing.style.display = 'block';
@@ -4564,7 +4867,7 @@ var DB = (function() {
       bar = document.createElement('div');
       bar.id = 'manage-file-bar';
       bar.style.cssText = 'position:fixed;bottom:0;left:50%;transform:translateX(-50%) translateY(100%);background:var(--c-surface);border:1px solid var(--c-accent-cyan);border-bottom:none;border-radius:12px 12px 0 0;padding:16px 32px;display:flex;align-items:center;gap:24px;z-index:150;transition:transform 0.3s;box-shadow:0 -4px 30px rgba(0,240,255,0.15);';
-      bar.innerHTML = '<span id="mfb-count" style="font-family:var(--font-mono);font-size:16px;color:var(--c-accent-cyan);text-shadow:0 0 8px rgba(0,240,255,0.6)"></span><span id="mfb-warning" style="font-size:12px;color:#ff9f43;margin-left:12px;">Changes are in memory only. Copy before closing or they will be lost.</span><button id="mfb-copy" style="background:var(--c-accent-cyan);color:var(--c-bg);border:none;padding:10px 24px;border-radius:8px;font-family:var(--font-mono);font-size:15px;font-weight:500;cursor:pointer;">Copy All to Clipboard</button>';
+      bar.innerHTML = '<span id="mfb-count" style="font-family:var(--font-mono);font-size:16px;color:var(--c-accent-cyan);text-shadow:0 0 8px rgba(0,240,255,0.6)"></span><span id="mfb-warning" style="font-size:12px;color:var(--c-warning, #ff9f43);margin-left:12px;">Changes are in memory only. Copy before closing or they will be lost.</span><button id="mfb-copy" style="background:var(--c-accent-cyan);color:var(--c-bg);border:none;padding:10px 24px;border-radius:8px;font-family:var(--font-mono);font-size:15px;font-weight:500;cursor:pointer;">Copy All to Clipboard</button>';
       document.body.appendChild(bar);
       document.getElementById('mfb-copy').addEventListener('click', function() {
         var c = window._pendingManageCmds || {};
@@ -4625,7 +4928,7 @@ var DB = (function() {
         else if (v5Features[n].recommended) offRecommended++;
       });
 
-      var headerColor = offRecommended > 0 ? '#ff9f43' : 'var(--c-accent-cyan)';
+      var headerColor = offRecommended > 0 ? 'var(--c-warning, #ff9f43)' : 'var(--c-accent-cyan)';
       var v5Title = isCodex ? 'Codex Optimization Signals & Gaps' : 'Active Compression (v5)';
       var v5Intro = isCodex
         ? '<strong>What this shows:</strong> Which Token Optimizer capabilities work natively in Codex today, which ones are managed by hooks, and which Claude-only compression features need more Codex API support. Use the Hooks tab for hook-managed features.'
@@ -4637,7 +4940,7 @@ var DB = (function() {
           onCount + '/' + v5Names.length + ' ON' +
           '</span>' +
         '</div>' +
-        '<p style="font-size:17px;color:var(--c-text);padding:0 var(--s-3) var(--s-2);line-height:1.6;">' +
+        '<p style="font-size:17px;color:var(--c-text-main);padding:0 var(--s-3) var(--s-2);line-height:1.6;">' +
           v5Intro + ' ' +
           '<span style="color:var(--c-text-dim);">All data stays 100% local on your machine.</span>' +
         '</p>';
@@ -4646,17 +4949,17 @@ var DB = (function() {
         var f = v5Features[fname];
         var unavailable = !!f.unavailable || f.source === 'codex api gap';
         var managedByHooks = !!f.managed_by_hooks || (isCodex && (f.source === 'codex hook' || f.source === 'codex opt-in' || f.source === 'codex hook-managed'));
-        var riskBg = '#4ade80';
+        var riskBg = 'var(--c-badge-savings)';
         var riskLabel = 'NO RISK';
-        if (f.risk_level === 'low') { riskBg = '#60a5fa'; riskLabel = 'LOW RISK'; }
-        else if (f.risk_level === 'moderate') { riskBg = '#ff9f43'; riskLabel = 'MODERATE RISK'; }
+        if (f.risk_level === 'low') { riskBg = 'var(--c-badge-info)'; riskLabel = 'LOW RISK'; }
+        else if (f.risk_level === 'moderate') { riskBg = 'var(--c-badge-amber)'; riskLabel = 'MODERATE RISK'; }
 
         var recBadge = managedByHooks
-          ? '<span style="background:#60a5fa;color:#000;font-size:12px;padding:3px 10px;border-radius:4px;margin-left:10px;font-weight:700;vertical-align:middle;">HOOK-MANAGED</span>'
+          ? '<span style="background:var(--c-badge-info);color:#000;font-size:12px;padding:3px 10px;border-radius:4px;margin-left:10px;font-weight:700;vertical-align:middle;">HOOK-MANAGED</span>'
           : unavailable
           ? '<span style="background:var(--c-border);color:var(--c-text-dim);font-size:12px;padding:3px 10px;border-radius:4px;margin-left:10px;vertical-align:middle;">CODEX API GAP</span>'
           : f.recommended
-          ? '<span style="background:#4ade80;color:#000;font-size:12px;padding:3px 10px;border-radius:4px;margin-left:10px;font-weight:700;vertical-align:middle;">RECOMMENDED</span>'
+          ? '<span style="background:var(--c-badge-savings);color:#000;font-size:12px;padding:3px 10px;border-radius:4px;margin-left:10px;font-weight:700;vertical-align:middle;">RECOMMENDED</span>'
           : '<span style="background:var(--c-border);color:var(--c-text-dim);font-size:12px;padding:3px 10px;border-radius:4px;margin-left:10px;vertical-align:middle;">OPT-IN</span>';
         var sourceBadge = f.source === 'env'
           ? '<span style="font-size:12px;color:var(--c-text-dim);margin-left:10px;">(set via env var, cannot toggle from dashboard)</span>'
@@ -4681,10 +4984,10 @@ var DB = (function() {
           '<div style="font-size:19px;font-weight:700;">' + esc(f.label) + '</div>' +
           recBadge + sourceBadge + impactBadge +
           '</div>' +
-          '<div style="font-size:16px;color:var(--c-text);margin-top:8px;line-height:1.6;">' +
+          '<div style="font-size:16px;color:var(--c-text-main);margin-top:8px;line-height:1.6;">' +
           '<strong style="color:var(--c-accent-cyan);">What it does:</strong> ' + esc(f.what) +
           '</div>' +
-          '<div style="font-size:16px;color:#4ade80;margin-top:8px;line-height:1.6;">' +
+          '<div style="font-size:16px;color:var(--c-savings);margin-top:8px;line-height:1.6;">' +
           '<strong>Value:</strong> ' + esc(f.value) +
           '</div>' +
           '<div style="font-size:14px;color:var(--c-text-dim);margin-top:8px;line-height:1.6;">' +
@@ -4707,9 +5010,9 @@ var DB = (function() {
         '<div style="padding:var(--s-3);color:var(--c-text-dim);font-size:14px;line-height:1.7;">' +
         '<p style="margin-top:0;">The default install is the useful middle path: it captures prompt quality, loop signals, session checkpoints, and dashboard refreshes without adding noisy PreToolUse/PostToolUse rows to every tool call.</p>' +
         '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:var(--s-2);margin:var(--s-2) 0;">' +
-          '<div class="stat-card"><div class="stat-card-value" style="font-size:18px;color:#22c55e">On</div><div class="stat-card-label">Quality tracking</div><div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">UserPromptSubmit + Stop</div></div>' +
-          '<div class="stat-card"><div class="stat-card-value" style="font-size:18px;color:#22d3ee">On</div><div class="stat-card-label">Session continuity</div><div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">SessionStart + checkpoints</div></div>' +
-          '<div class="stat-card"><div class="stat-card-value" style="font-size:18px;color:#ff9f43">Opt-in</div><div class="stat-card-label">Per-tool compression</div><div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">Visible hook rows in Desktop</div></div>' +
+          '<div class="stat-card"><div class="stat-card-value" style="font-size:18px;color:var(--c-savings-strong, #22c55e)">On</div><div class="stat-card-label">Quality tracking</div><div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">UserPromptSubmit + Stop</div></div>' +
+          '<div class="stat-card"><div class="stat-card-value" style="font-size:18px;color:var(--c-accent-cyan)">On</div><div class="stat-card-label">Session continuity</div><div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">SessionStart + checkpoints</div></div>' +
+          '<div class="stat-card"><div class="stat-card-value" style="font-size:18px;color:var(--c-warning, #ff9f43)">Opt-in</div><div class="stat-card-label">Per-tool compression</div><div style="font-size:11px;color:var(--c-text-dim);margin-top:4px">Visible hook rows in Desktop</div></div>' +
         '</div>' +
         '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:var(--s-2);">' +
           '<span style="color:var(--c-text-main);font-weight:600;">Install/update balanced hooks:</span>' +
@@ -5073,7 +5376,7 @@ var DB = (function() {
               if (existingBadge) existingBadge.remove();
               var badge = document.createElement('span');
               badge.className = 'hook-pending';
-              badge.style.cssText = 'font-size:11px;color:#ff9f43;margin-left:8px;display:block;margin-top:4px;';
+              badge.style.cssText = 'font-size:11px;color:var(--c-warning, #ff9f43);margin-left:8px;display:block;margin-top:4px;';
               badge.textContent = data.runtime === 'codex' ? 'Queued for config change' : 'Queued for removal';
               row.querySelector('.hook-info').appendChild(badge);
             }
@@ -5343,8 +5646,8 @@ var DB = (function() {
         var gap = t.gap_since_prev_seconds == null ? 'start' : fmtGap(t.gap_since_prev_seconds);
         var crChanged = prevCR !== t.cache_read;
         var cwChanged = prevCW !== t.cache_creation;
-        var crStyle = crChanged ? 'color:#22c55e' : 'color:var(--c-text-dim);opacity:0.4';
-        var cwStyle = cwChanged ? 'color:#a855f7' : 'color:var(--c-text-dim);opacity:0.4';
+        var crStyle = crChanged ? 'color:var(--c-savings-strong, #22c55e)' : 'color:var(--c-text-dim);opacity:0.4';
+        var cwStyle = cwChanged ? 'color:var(--c-cache-create, #a855f7)' : 'color:var(--c-text-dim);opacity:0.4';
         html += '<tr' + cls + '>' +
           '<td>' + t.turn_index + '</td>' +
           '<td style="font-family:var(--font-mono);font-size:11px;color:var(--c-text-dim)">' + esc(gap) + '</td>' +
@@ -5407,9 +5710,9 @@ var DB = (function() {
         (isCodex ? '' : '<div class="cache-bar-segment cache-bar-create" style="width:' + (totCW/totAll*100).toFixed(1) + '%"></div>') + '</div>' +
         '<div class="cache-legend">' +
         '<div class="cache-legend-item"><div class="cache-legend-dot" style="background:var(--c-accent-cyan)"></div>Input ' + fn(totIn) + '</div>' +
-        '<div class="cache-legend-item"><div class="cache-legend-dot" style="background:#3b82f6"></div>Output ' + fn(totOut) + '</div>' +
-        '<div class="cache-legend-item"><div class="cache-legend-dot" style="background:#22c55e"></div>Cache Read ' + fn(totCR) + '</div>' +
-        (isCodex ? '<div class="cache-legend-item" style="color:var(--c-text-dim);">Cache writes/TTL are not exposed by Codex logs</div>' : '<div class="cache-legend-item"><div class="cache-legend-dot" style="background:#a855f7"></div>Cache Write ' + fn(totCW) + '</div>') +
+        '<div class="cache-legend-item"><div class="cache-legend-dot" style="background:var(--c-cache-output, #3b82f6)"></div>Output ' + fn(totOut) + '</div>' +
+        '<div class="cache-legend-item"><div class="cache-legend-dot" style="background:var(--c-savings-strong, #22c55e)"></div>Cache Read ' + fn(totCR) + '</div>' +
+        (isCodex ? '<div class="cache-legend-item" style="color:var(--c-text-dim);">Cache writes/TTL are not exposed by Codex logs</div>' : '<div class="cache-legend-item"><div class="cache-legend-dot" style="background:var(--c-cache-create, #a855f7)"></div>Cache Write ' + fn(totCW) + '</div>') +
         '</div>' + pacingSummary + ttlSummary + '</div>';
       html += '</div>';
       td.innerHTML = html;
@@ -5871,6 +6174,58 @@ function getSampleData() {
 
 /* ========== INIT ========== */
 document.addEventListener('DOMContentLoaded', function() {
+  // Theme toggle wiring (U9). The boot script in <head> already applied the
+  // correct theme before first paint (no FOUC); here we sync the button's
+  // label + aria-pressed and handle clicks, persisting the explicit choice.
+  (function setupThemeToggle() {
+    var btn = document.getElementById('theme-toggle');
+    if (!btn) return;
+    function currentTheme() {
+      return document.documentElement.getAttribute('data-theme') === 'light'
+        ? 'light' : 'dark';
+    }
+    function syncButton() {
+      var light = currentTheme() === 'light';
+      btn.setAttribute('aria-pressed', light ? 'true' : 'false');
+      var label = btn.querySelector('.theme-toggle-label');
+      if (label) label.textContent = light ? 'Light' : 'Dark';
+    }
+    function applyTheme(theme) {
+      if (theme === 'light') {
+        document.documentElement.setAttribute('data-theme', 'light');
+      } else {
+        document.documentElement.removeAttribute('data-theme');
+      }
+      try { window.localStorage.setItem('to-theme', theme); } catch (e) {}
+      syncButton();
+    }
+    btn.addEventListener('click', function() {
+      applyTheme(currentTheme() === 'light' ? 'dark' : 'light');
+    });
+    // Follow OS preference live only while the user hasn't made an explicit
+    // choice (no stored key).
+    if (window.matchMedia) {
+      var mq = window.matchMedia('(prefers-color-scheme: light)');
+      var onChange = function(e) {
+        var stored = null;
+        try { stored = window.localStorage.getItem('to-theme'); } catch (err) {}
+        if (stored === 'light' || stored === 'dark') return;
+        applyThemeNoPersist(e.matches ? 'light' : 'dark');
+      };
+      function applyThemeNoPersist(theme) {
+        if (theme === 'light') {
+          document.documentElement.setAttribute('data-theme', 'light');
+        } else {
+          document.documentElement.removeAttribute('data-theme');
+        }
+        syncButton();
+      }
+      if (mq.addEventListener) mq.addEventListener('change', onChange);
+      else if (mq.addListener) mq.addListener(onChange);
+    }
+    syncButton();
+  })();
+
   var data = window.__TOKEN_DATA__;
   if (!data) {
     document.body.innerHTML = '<div style="max-width:820px;margin:80px auto;padding:32px;border:1px solid #263044;border-radius:14px;background:#0f172a;color:#d6e4ff;font-family:system-ui,sans-serif;line-height:1.6;"><h1 style="margin-top:0;">Token Optimizer</h1><p><strong>You opened the dashboard template.</strong> This file intentionally contains no local metrics. Generate the runtime dashboard first, then open the generated file.</p><p style="margin-bottom:8px;color:#93a4c4;">From the Token Optimizer checkout:</p><code style="display:block;white-space:normal;background:#111827;padding:12px;border-radius:8px;color:#93c5fd;">TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py dashboard</code><p style="margin:18px 0 8px;color:#93a4c4;">Generated Codex dashboard path:</p><code style="display:block;white-space:normal;background:#111827;padding:12px;border-radius:8px;color:#93c5fd;">~/.codex/_backups/token-optimizer/dashboard.html</code></div>';

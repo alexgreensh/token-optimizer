@@ -103,6 +103,11 @@
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py session-end-flush --trigger stop --quiet --defer",
             "timeout": 8
+          },
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py keepwarm-arm --quiet",
+            "timeout": 5
           }
         ]
       }

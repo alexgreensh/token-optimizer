@@ -62,6 +62,7 @@ SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """
 from __future__ import annotations
 
+import bisect
 import hashlib
 import heapq
 import hmac
@@ -4159,6 +4160,15 @@ def generate_dashboard(coord_path):
     except Exception:
         cache_health = {"available": False, "tier": "opportunity"}
 
+    # U7: keep-warm cache-automation sub-block carried inside the cache-health
+    # payload (realized vs spend vs NET, tripwire ratio, the 5 tile states,
+    # predictor transparency). Fail-open so it never blocks dashboard regen.
+    try:
+        if isinstance(cache_health, dict):
+            cache_health["keepwarm"] = keepwarm_cache_health_block(days=30)
+    except Exception:
+        pass
+
     # Fall back to auto-recommendations if LLM plan is missing
     auto_plan_flag = False
     if not plan:
@@ -8105,9 +8115,20 @@ def _init_trends_db():
             conn.execute("ALTER TABLE savings_events ADD COLUMN session_uuid TEXT")
         if "unjoinable" not in se_cols:
             conn.execute("ALTER TABLE savings_events ADD COLUMN unjoinable INTEGER DEFAULT 0")
+        # Keep-warm idempotency: pause_key uniquely identifies one (session, pause)
+        # realized booking. The UNIQUE index makes SQLite the dedup authority so a
+        # lost ledger marker (or a re-detect across ticks) can never double-book the
+        # same warm resume. Partial index (WHERE pause_key IS NOT NULL) leaves every
+        # legacy/non-keepwarm row -- all NULL here -- unconstrained.
+        if "pause_key" not in se_cols:
+            conn.execute("ALTER TABLE savings_events ADD COLUMN pause_key TEXT")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_savings_events_uuid "
             "ON savings_events (session_uuid)"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_savings_events_pause_key "
+            "ON savings_events (pause_key) WHERE pause_key IS NOT NULL"
         )
         conn.commit()
     except sqlite3.Error:
@@ -9657,6 +9678,4105 @@ def _cache_ttl_waste_cached(days=30, fresh=False):
         # serialize) just means this call returns the fresh result uncached.
         pass
     return result
+
+
+# ========== Keep-warm state sidecar (U2: arm record + resume detection) ==========
+# Operational state ONLY (not the savings ledger — KTD-7 keeps realized rows in the
+# SQLite savings_events path). This sidecar tracks which paused sessions are "armed"
+# so the keepwarm-tick loop (U3) can later decide whether to ping. Two hard rules
+# govern this region:
+#   * The arm-record WRITER runs inside the Stop hook hot path (KTD-5). It must be
+#     dumb and fast (well under the 500ms hook budget): read the transcript tail,
+#     append one line, exit. NO eligibility evaluation, NO policy, NO network. If
+#     anything is missing or unreadable it writes nothing and returns silently so
+#     the hook chain is never broken (R4).
+#   * Eligibility and disarm are NOT hook responsibilities (KTD-5: no native resume
+#     signal exists). The tick loop reads this sidecar, classifies each record via
+#     the pure `classify_keepwarm_record` helper, and compacts resolved rows.
+# Atomic 0600 writes (mkstemp+fchmod+os.replace) under flock, mirroring the
+# cache_health.json / cohort_tripwire.json sites above. NOT compression_log.py
+# (that is a SQLite writer despite its name).
+
+_KEEPWARM_SIDECAR_NAME = "keepwarm_state.jsonl"
+_KEEPWARM_LOCK_NAME = ".keepwarm_state.lock"
+# Records older than this (by their arm ts) are dropped on compaction regardless of
+# state: an arm that never resumed and never got pinged is dead weight after 14d.
+_KEEPWARM_MAX_AGE_SECONDS = 14 * 24 * 3600
+# How many tail lines of a transcript the fast arm-writer scans for the last
+# usage-bearing turn. Bounded so a multi-MB transcript never blows the hook budget.
+_KEEPWARM_TAIL_LINES = 400
+
+
+def _keepwarm_sidecar_path():
+    return SNAPSHOT_DIR / _KEEPWARM_SIDECAR_NAME
+
+
+@contextmanager
+def _keepwarm_lock():
+    """Advisory file lock serializing keep-warm sidecar read-modify-writes.
+
+    Mirrors _tripwire_lock / _config_lock: a blocking flock with kernel
+    auto-release on process death and a no-op fallback on Windows. Two Stop hooks
+    from different sessions can append concurrently, and the tick loop rewrites the
+    whole file during compaction; without this an interleaved append + rewrite
+    could lose a record or leave a torn line.
+    """
+    if not _HAS_FCNTL:
+        yield
+        return
+    lock_path = SNAPSHOT_DIR / _KEEPWARM_LOCK_NAME
+    try:
+        SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+    except OSError:
+        yield
+        return
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
+def _keepwarm_append_line(path, line):
+    """Append one already-serialized line to `path` under the keep-warm lock.
+
+    The shared WS2-pattern sidecar append (R4/R6): take _keepwarm_lock, ensure
+    SNAPSHOT_DIR exists, create the file 0600 BEFORE the first write (or re-chmod
+    an existing one) so a group/other-readable sidecar can never exist, then
+    append. Returns True on success, False on any OSError. Used by the arm-writer
+    (U2) and the ping ledger (U3); both serialize through the same lock so an
+    append can never tear against a concurrent compaction rewrite.
+    """
+    try:
+        with _keepwarm_lock():
+            try:
+                SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                return False
+            try:
+                # Open the append target with O_NOFOLLOW so a pre-planted symlink
+                # at this path (same-UID TOCTOU, security M3) cannot redirect our
+                # ledger/state JSON into a victim file: ELOOP -> hard skip. Create
+                # 0600 if absent. The single fd we write to is the file itself, so
+                # no separate chmod-then-open race remains.
+                flags = os.O_APPEND | os.O_CREAT | os.O_WRONLY
+                if hasattr(os, "O_NOFOLLOW"):
+                    flags |= os.O_NOFOLLOW
+                try:
+                    fd = os.open(str(path), flags, 0o600)
+                except OSError:
+                    # ELOOP (symlink) or any open failure -> refuse to write.
+                    return False
+                try:
+                    with os.fdopen(fd, "a", encoding="utf-8") as fh:
+                        fh.write(line)
+                except OSError:
+                    return False
+            except OSError:
+                return False
+        return True
+    except Exception:
+        return False
+
+
+def _keepwarm_ttl_kind(usage):
+    """Classify a turn's cache TTL as '1h' | '5m' | 'unknown' from usage fields.
+
+    Handles BOTH field shapes Claude Code emits (parse parity with the parser at
+    ~7524): the nested `cache_creation.ephemeral_{1h,5m}_input_tokens` object AND
+    the flat usage-level `ephemeral_{1h,5m}_input_tokens` fields. Whichever side is
+    larger wins; a tie or both-zero is 'unknown' (the default-TTL regression means
+    we must never assume 1h — KTD/Risk: per-session measured kind, not a hardcode).
+    """
+    if not isinstance(usage, dict):
+        return "unknown"
+    cache_creation = usage.get("cache_creation", {})
+    if not isinstance(cache_creation, dict):
+        cache_creation = {}
+    cc_1h = int(
+        cache_creation.get("ephemeral_1h_input_tokens", 0)
+        or usage.get("ephemeral_1h_input_tokens", 0)
+        or 0
+    )
+    cc_5m = int(
+        cache_creation.get("ephemeral_5m_input_tokens", 0)
+        or usage.get("ephemeral_5m_input_tokens", 0)
+        or 0
+    )
+    if cc_1h > cc_5m:
+        return "1h"
+    if cc_5m > cc_1h:
+        return "5m"
+    return "unknown"
+
+
+def _keepwarm_read_tail(filepath, max_lines=_KEEPWARM_TAIL_LINES):
+    """Return up to the last `max_lines` raw lines of a file, newest-last.
+
+    Bounded-memory deque scan so a huge transcript costs only one pass and a fixed
+    window. Returns [] on any read error (the arm-writer fails open to "write
+    nothing"). Pure read; no side effects.
+    """
+    from collections import deque
+    try:
+        with open(filepath, "r", encoding="utf-8", errors="replace") as fh:
+            return list(deque(fh, maxlen=max_lines))
+    except (OSError, ValueError):
+        return []
+
+
+def _keepwarm_last_usage(filepath):
+    """Scan a transcript tail for the most recent assistant turn carrying usage.
+
+    Returns (usage_dict, model, ts_str) for the last record whose
+    message.usage is non-empty, or (None, None, None) if none found / unreadable.
+    Read-only. Used by the fast arm-writer to derive prefix_proxy + ttl_kind
+    without re-parsing the whole session.
+    """
+    lines = _keepwarm_read_tail(filepath)
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(record, dict):
+            continue
+        # Parser parity (integration M2): the realized-booking path
+        # (parse_session_turns) only reads type=="assistant" turns, so the arm
+        # writer must use the SAME definition of a usage turn. Arming off a
+        # non-assistant usage record would spend pings on a session whose resume
+        # turn the booker can never read -- structurally-impossible payback.
+        if record.get("type") != "assistant":
+            continue
+        msg = record.get("message", {})
+        if not isinstance(msg, dict):
+            continue
+        usage = msg.get("usage", {})
+        if isinstance(usage, dict) and usage:
+            model = msg.get("model") or record.get("model")
+            ts = record.get("timestamp") or record.get("ts")
+            return usage, model, ts
+    return None, None, None
+
+
+def _keepwarm_prefix_proxy(usage):
+    """Prefix-size proxy for an armed turn: cache_read + cache_creation tokens.
+
+    cache_creation may be the flat int field OR a nested object (sum its ephemeral
+    splits). Falls back to 0 on malformed input.
+    """
+    if not isinstance(usage, dict):
+        return 0
+    cr = int(usage.get("cache_read_input_tokens", 0) or 0)
+    cc = usage.get("cache_creation_input_tokens", 0)
+    if cc is None:
+        cc = 0
+    cc = int(cc or 0)
+    if cc == 0:
+        nested = usage.get("cache_creation", {})
+        if isinstance(nested, dict):
+            cc = int(
+                (nested.get("ephemeral_1h_input_tokens", 0) or 0)
+                + (nested.get("ephemeral_5m_input_tokens", 0) or 0)
+            )
+    return cr + cc
+
+
+def _keepwarm_iso_to_epoch(ts):
+    """Parse a transcript ISO-8601 timestamp to epoch seconds, or None.
+
+    Tolerates the trailing 'Z' UTC suffix and any non-string/garbage input
+    (returns None). Keeps arm records storing `last_turn_ts` as an epoch float so
+    it is the same type the policy and replay paths consume — no silent fallback.
+    """
+    if ts is None:
+        return None
+    try:
+        return datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
+def write_keepwarm_arm_record(session_id, transcript_path, now=None):
+    """Append one keep-warm arm record. Dumb + fast; safe to call from the Stop hook.
+
+    Derives prefix_proxy (last-turn cache_read + cache_creation), model, and
+    ttl_kind from the transcript tail, then appends a single JSON line to the
+    keepwarm_state.jsonl sidecar under flock with an atomic-equivalent append.
+    Returns the record dict on success, or None when it wrote nothing (missing
+    session_id/transcript, unreadable transcript, or no usage-bearing turn).
+
+    NEVER raises into the hook chain: all errors are swallowed -> return None
+    (R4: a hook failure must not break the user's session). Eligibility (api
+    billing, prefix >=10k, etc.) is deliberately NOT evaluated here — that is the
+    tick loop's job (KTD-5: hook stays dumb).
+    """
+    try:
+        if not session_id or not transcript_path:
+            return None
+        # ANTI-RECURSION (U3 contract): a keep-warm ping subprocess carries
+        # TOKEN_OPTIMIZER_KEEPWARM_PING=1; its own Stop hook must never arm,
+        # re-arm, or refresh any record -- no self-feeding ping loops.
+        if os.environ.get("TOKEN_OPTIMIZER_KEEPWARM_PING"):
+            return None
+        # Only arm under the claude_code runtime: Codex has no write premium to
+        # recover (R5), and the prefix proxy below is Claude-shaped. Cheap guard,
+        # fail-open to "arm anyway" only if detection errors (tick re-checks).
+        try:
+            if detect_runtime() != "claude":
+                return None
+        except Exception:
+            pass
+        tp = Path(transcript_path)
+        usage, model, ts = _keepwarm_last_usage(tp)
+        if not usage:
+            return None
+        prefix_proxy = _keepwarm_prefix_proxy(usage)
+        ttl_kind = _keepwarm_ttl_kind(usage)
+        if now is None:
+            now = time.time()
+        try:
+            st = tp.stat()
+            transcript_mtime = st.st_mtime
+            # Byte size is the resume signal (checklist M3/M4): an O(1) stat-based
+            # equality replaces the old full line-count scan. A resume appends
+            # turns -> the file GROWS, so a later size increase past the armed size
+            # is the resume marker. This removes the per-arm full read (which the
+            # SIGALRM hook budget bounded but a multi-MB transcript still strained).
+            byte_size = int(st.st_size)
+        except OSError:
+            return None
+        # Store the last real turn as epoch seconds (the policy/replay type),
+        # falling back to the arm time when the transcript timestamp is absent.
+        last_turn_epoch = _keepwarm_iso_to_epoch(ts)
+        if last_turn_epoch is None:
+            last_turn_epoch = float(now)
+        record = {
+            "session_id": str(session_id),
+            "transcript_path": str(tp),
+            "model": model,
+            "prefix_proxy": int(prefix_proxy),
+            "ttl_kind": ttl_kind,
+            "last_turn_ts": last_turn_epoch,
+            "transcript_mtime": float(transcript_mtime),
+            "byte_size": int(byte_size),
+            "ts": float(now),
+            "state": "armed",
+        }
+        line = json.dumps(record) + "\n"
+        if not _keepwarm_append_line(_keepwarm_sidecar_path(), line):
+            return None
+        return record
+    except Exception:
+        # Absolute backstop: nothing in the arm path may propagate to the hook.
+        return None
+
+
+def _valid_keepwarm_record(rec):
+    """Schema-check one parsed arm record (corrupt -> skip, fail-open to not armed)."""
+    if not isinstance(rec, dict):
+        return False
+    if not rec.get("session_id") or not rec.get("transcript_path"):
+        return False
+    try:
+        float(rec.get("ts"))
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def load_keepwarm_records(path=None):
+    """Load valid arm records from the sidecar; corrupt lines are skipped.
+
+    Returns a list of record dicts (possibly empty). Never raises: a missing file
+    -> [], an unreadable file -> [], a malformed line -> skipped (fail-open to
+    "not armed" — a record we cannot trust must never cause a ping).
+    """
+    if path is None:
+        path = _keepwarm_sidecar_path()
+    records = []
+    try:
+        if not Path(path).exists():
+            return []
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if _valid_keepwarm_record(rec):
+                    records.append(rec)
+    except OSError:
+        return []
+    return records
+
+
+def classify_keepwarm_record(rec, now=None):
+    """Pure-ish resume classifier for one arm record (tick-side, U3-consumed).
+
+    Compares the arm record's snapshot of the transcript (mtime + byte_size)
+    against the transcript's CURRENT state and returns one of:
+        'gone'         -> transcript file no longer exists / unreadable
+        'resumed'      -> "stop tracking this arm" umbrella, NOT proof of a real
+                          resume. Covers three cases: the transcript grew (a true
+                          resume), the arm expired past the 14d max age, and the
+                          mtime moved but the file became unreadable. The name is
+                          historical; callers that BOOK realized savings (U7
+                          keepwarm_detect_realized) must re-read the post-arm
+                          turn's actual usage and never book off this verdict
+                          alone (KTD-4). Compaction may safely drop all three.
+        'still_paused' -> transcript unchanged since the arm record was written
+
+    The ONLY side effect is reading the transcript tail / stat — no writes, no
+    hook involvement (KTD-5). `now` is injectable for deterministic tests.
+    """
+    if now is None:
+        now = time.time()
+    try:
+        arm_ts = float(rec.get("ts", 0) or 0)
+    except (TypeError, ValueError):
+        arm_ts = 0.0
+    # Expired arms are treated as resolved so the tick loop stops tracking them.
+    if arm_ts and (now - arm_ts) > _KEEPWARM_MAX_AGE_SECONDS:
+        return "resumed"
+
+    tp = rec.get("transcript_path")
+    if not tp:
+        return "gone"
+    p = Path(tp)
+    try:
+        if not p.exists():
+            return "gone"
+        st = p.stat()
+        cur_mtime = st.st_mtime
+        cur_size = int(st.st_size)
+    except OSError:
+        return "gone"
+
+    try:
+        armed_mtime = float(rec.get("transcript_mtime", 0) or 0)
+    except (TypeError, ValueError):
+        armed_mtime = 0.0
+
+    # Resume detection is O(1) stat-based (checklist M3/M4): a newer mtime is the
+    # cheap first signal; a byte-size GROWTH past the armed size confirms real
+    # appended turns (a bare touch bumps mtime without growth -> not a resume).
+    # Legacy records carry line_count (no byte_size): we cannot do the O(1) size
+    # compare for them, so they stay 'still_paused' until the 14d max-age expiry
+    # drops them (handled above) -- never falsely booked off a missing field.
+    armed_size = rec.get("byte_size")
+    if armed_size is None:
+        return "still_paused"  # legacy line_count record: tolerate, await expiry
+    try:
+        armed_size = int(armed_size)
+    except (TypeError, ValueError):
+        return "still_paused"
+    if cur_mtime > armed_mtime + 0.001 and cur_size > armed_size:
+        return "resumed"
+    return "still_paused"
+
+
+def compact_keepwarm_sidecar(path=None, now=None):
+    """Rewrite the sidecar keeping only records still worth tracking.
+
+    Drops any record classified 'resumed' or 'gone', plus any older than the 14d
+    max age. The surviving 'still_paused' records are rewritten atomically
+    (mkstemp+fchmod(0600)+os.replace) under flock. Corrupt lines are dropped (they
+    are never loaded). Returns (kept_count, dropped_count). Never raises.
+
+    This is tick-side maintenance (U3 calls it each tick); it is the disarm path
+    KTD-5 places outside the hook.
+    """
+    if path is None:
+        path = _keepwarm_sidecar_path()
+    path = Path(path)
+    if now is None:
+        now = time.time()
+    kept = []
+    dropped = 0
+    with _keepwarm_lock():
+        records = load_keepwarm_records(path)
+        # Account for corrupt/invalid lines as dropped for the caller's visibility.
+        try:
+            raw_lines = 0
+            if path.exists():
+                with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                    raw_lines = sum(1 for line in fh if line.strip())
+            dropped += max(0, raw_lines - len(records))
+        except OSError:
+            pass
+        for rec in records:
+            verdict = classify_keepwarm_record(rec, now=now)
+            if verdict == "still_paused":
+                kept.append(rec)
+            else:
+                dropped += 1
+        if not path.exists() and not kept:
+            return 0, dropped
+        try:
+            SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+            fd, tmp_name = tempfile.mkstemp(
+                prefix=".keepwarm_state.", suffix=".tmp", dir=str(SNAPSHOT_DIR))
+            try:
+                if hasattr(os, "fchmod"):
+                    os.fchmod(fd, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    for rec in kept:
+                        fh.write(json.dumps(rec) + "\n")
+                os.replace(tmp_name, str(path))
+            except Exception:
+                try:
+                    os.unlink(tmp_name)
+                except OSError:
+                    pass
+                raise
+        except OSError:
+            pass
+    return len(kept), dropped
+
+
+# ========== Keep-warm billing + consent gate (U5: R2/R7 eligibility) ==========
+# THE pre-ping gate. U3's tick loop calls keepwarm_gate() before it touches any
+# armed record; it returns (allowed, reason) and nothing pings unless allowed is
+# True. Two independent conditions must both hold (KTD-6 + R7):
+#   * billing == 'api'  — keep-warm only recovers a *write premium*, which only
+#     API-key billing pays. On subscription auth a ping spends quota and saves
+#     nothing (R2: never net-negative), so subscription is a HARD off and is
+#     never even asked for consent.
+#   * consent == 'enabled' — opt-in only (R7; Alex 2026-06-11: the default-on
+#     rule explicitly does NOT extend to token-spending features). Tri-state,
+#     sticky, stored via the same _write_config_flag/_config_lock surface as the
+#     rest of TO's config (0600 atomic write). States: unasked -> asked ->
+#     enabled|declined. enabled/declined are terminal unless an explicit CLI
+#     flip (keepwarm-enable / keepwarm-disable) moves them.
+# Detection is CONSERVATIVE by construction: anything we cannot positively
+# identify as API-key billing is treated as subscription (= off). Better to skip
+# a legitimate ping than to ever burn a subscription user's quota.
+# Every reader here is PURE + injectable (env dict + config paths) so the U5
+# tests can drive each ladder rung without touching the real machine.
+
+_KEEPWARM_CONSENT_KEY = "keepwarm_consent"
+# Valid sticky consent states. 'unasked' is the implicit default (no key yet).
+_KEEPWARM_CONSENT_STATES = ("unasked", "asked", "declined", "enabled")
+# Env marker the ping subprocess sets on itself (U3) so a keepwarm-tick that runs
+# *inside* a ping resume can never recursively arm/ping again.
+_KEEPWARM_PING_ENV = "TOKEN_OPTIMIZER_KEEPWARM_PING"
+
+
+def _keepwarm_default_claude_json_path():
+    """The Claude Code top-level config file (~/.claude.json). Read-only here.
+
+    This lives in HOME, NOT inside ~/.claude/ — Claude Code writes its top-level
+    config to ~/.claude.json. Using CLAUDE_DIR/.claude.json would silently miss
+    the real file and mis-detect every API user as subscription.
+    """
+    return HOME / ".claude.json"
+
+
+def _keepwarm_default_settings_path():
+    """The Claude Code settings file (~/.claude/settings.json). Read-only here."""
+    return CLAUDE_DIR / "settings.json"
+
+
+def _keepwarm_env_says_api(env):
+    """True iff an API-key env var is present and non-empty.
+
+    Checks ANTHROPIC_API_KEY then ANTHROPIC_AUTH_TOKEN. Only presence/non-empty
+    is consulted — the value itself is never read past truthiness and is never
+    logged or returned anywhere.
+    """
+    for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
+        val = env.get(name)
+        if isinstance(val, str) and val.strip():
+            return True
+    return False
+
+
+def _keepwarm_json_says_api(path):
+    """Inspect a Claude Code JSON config file for API-key billing markers.
+
+    Returns 'api' if a positive API-key indicator is present
+    (apiKeyHelper / primaryApiKey / a non-empty customApiKeyResponses set),
+    'subscription' if an OAuth/account marker is present and no API-key marker
+    is, or None if the file is missing/unreadable/uninformative (caller decides
+    the conservative default). Reads ONLY key presence — secret values are never
+    dereferenced beyond a truthiness check and never returned or printed.
+    """
+    try:
+        path = Path(path)
+        if not path.exists():
+            return None
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(cfg, dict):
+        return None
+    # API-key indicators (any one is decisive — env wins earlier, but a config
+    # apiKeyHelper/primaryApiKey is a strong positive on its own).
+    helper = cfg.get("apiKeyHelper")
+    if isinstance(helper, str) and helper.strip():
+        return "api"
+    primary = cfg.get("primaryApiKey")
+    if isinstance(primary, str) and primary.strip():
+        return "api"
+    # customApiKeyResponses: Claude Code records approved/rejected API keys here.
+    # A non-empty 'approved' list means the user has actively used an API key.
+    custom = cfg.get("customApiKeyResponses")
+    if isinstance(custom, dict):
+        approved = custom.get("approved")
+        if isinstance(approved, (list, tuple)) and len(approved) > 0:
+            return "api"
+    # No API marker. An OAuth/account marker means a logged-in subscription.
+    oauth = cfg.get("oauthAccount")
+    if isinstance(oauth, dict) and oauth:
+        return "subscription"
+    return None
+
+
+def keepwarm_billing_mode(env=None, claude_json_path=None, settings_path=None):
+    """Detect billing class: 'api' (eligible) or 'subscription' (hard off).
+
+    Conservative ladder (first decisive rung wins), per KTD-6 / U5:
+      1. env ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN non-empty  -> 'api'
+      2. ~/.claude.json   apiKeyHelper/primaryApiKey/customApiKey -> 'api'
+                          oauthAccount (and no api marker)        -> 'subscription'
+      3. ~/.claude/settings.json apiKeyHelper                     -> 'api'
+      4. nothing detectable                                       -> 'subscription'
+
+    Step 4 is the safety default (R2): an unknown user is assumed subscription so
+    keep-warm stays off rather than risk burning quota. Pure + injectable.
+    """
+    if env is None:
+        env = os.environ
+    if claude_json_path is None:
+        claude_json_path = _keepwarm_default_claude_json_path()
+    if settings_path is None:
+        settings_path = _keepwarm_default_settings_path()
+    # Rung 1: env (env wins over config — a live key overrides a stale marker).
+    if _keepwarm_env_says_api(env):
+        return "api"
+    # Rung 2: ~/.claude.json. A positive 'api' is decisive; a 'subscription'
+    # marker here is provisional (settings.json could still carry apiKeyHelper).
+    json_verdict = _keepwarm_json_says_api(claude_json_path)
+    if json_verdict == "api":
+        return "api"
+    # Rung 3: settings.json apiKeyHelper (some users configure billing only here).
+    settings_verdict = _keepwarm_json_says_api(settings_path)
+    if settings_verdict == "api":
+        return "api"
+    # Rung 2 (resolved): if ~/.claude.json positively identified subscription and
+    # nothing upgraded it to api, honor it.
+    if json_verdict == "subscription":
+        return "subscription"
+    # Rung 4: nothing detectable -> conservative subscription (off).
+    return "subscription"
+
+
+def keepwarm_consent():
+    """Read the sticky tri/quad-state consent record.
+
+    Returns one of 'unasked' | 'asked' | 'declined' | 'enabled'. Absent key (or
+    any corruption) reads as 'unasked' — fail-safe to the never-pings default.
+    Stored via _read_config_flag so it shares config.json's atomic surface.
+    """
+    val = _read_config_flag(_KEEPWARM_CONSENT_KEY, "unasked")
+    if isinstance(val, str) and val in _KEEPWARM_CONSENT_STATES:
+        return val
+    return "unasked"
+
+
+def _keepwarm_set_consent(value):
+    """Persist the consent state via _write_config_flag (0600, atomic, flock).
+
+    Rejects unknown states (no-op) so a typo can never write a value that
+    keepwarm_consent() would then read back as 'unasked' and silently mis-gate.
+    Returns the value actually written, or None if rejected.
+    """
+    if value not in _KEEPWARM_CONSENT_STATES:
+        return None
+    _write_config_flag(_KEEPWARM_CONSENT_KEY, value)
+    return value
+
+
+def keepwarm_mark_asked():
+    """Idempotently record that the one-time consent pitch was shown.
+
+    Transitions only 'unasked' -> 'asked'. 'asked', 'declined' and 'enabled' are
+    all left untouched (the pitch is shown exactly once; a terminal answer is
+    never reverted to a re-ask). Returns the resulting state.
+    """
+    current = keepwarm_consent()
+    if current == "unasked":
+        _keepwarm_set_consent("asked")
+        return "asked"
+    return current
+
+
+def keepwarm_enable(env=None, claude_json_path=None, settings_path=None,
+                    limits_lab=False):
+    """Explicit opt-in. Refuses on subscription billing (R2 honest copy).
+
+    Returns (ok, message). On API billing sets consent='enabled' and returns the
+    pointer to what happens next (U4 installs the scheduler — NOT here). On
+    subscription billing it writes NOTHING and returns the honest refusal: a
+    ping spends quota and recovers no write premium, so the only real remedy is
+    behavioral (shorter pauses / resume sooner).
+
+    limits_lab=True is the DOGFOOD-ONLY exception (R2 stands for the product):
+    measured 2026-06-11 on an instrumented Max machine that full-prefix pings
+    moved the plan usage meters 0.0 points (6 pings, all three buckets), so an
+    operator may explicitly enroll a subscription machine to measure the
+    write-avoidance side. It sets consent='enabled' AND the keepwarm_limits_lab
+    config flag, and says EXPERIMENTAL out loud. Never offered by any consent
+    pitch surface; CLI-only, deliberate.
+    """
+    mode = keepwarm_billing_mode(
+        env=env, claude_json_path=claude_json_path, settings_path=settings_path)
+    if mode != "api" and limits_lab:
+        _keepwarm_set_consent("enabled")
+        _write_config_flag("keepwarm_limits_lab", True)
+        # U7 (KTD-8): an explicit (re-)enable is the ONLY sanctioned tripwire
+        # walk-up. Reset the demotion ladder to the most-permissive state with a
+        # fresh promoted_at so a previously demoted-to-off lab re-arms.
+        try:
+            keepwarm_tripwire_repromote()
+        except Exception:
+            pass
+        sched_line = _keepwarm_enable_install_scheduler()
+        return (True, (
+            "Keep-warm enabled in LIMITS-LAB mode (EXPERIMENTAL, subscription "
+            "billing). Pings measured 0.0 usage-meter movement on this setup, "
+            "but write-side limit weighting is still unmeasured: watch the "
+            "keep-warm ledger and your /usage meters. keepwarm-disable exits "
+            "the lab any time; the tripwire still auto-demotes if outcomes "
+            "go bad.\n" + sched_line
+        ))
+    if mode != "api":
+        return (False, (
+            "Keep-warm refused: this looks like a subscription (non-API-key) "
+            "Claude account. Keep-warm pings spend your quota and recover no "
+            "savings, because subscription billing has no per-write premium to "
+            "recover. The honest remedy is behavioral: resume paused sessions "
+            "sooner, or keep pauses under the cache TTL so the prefix survives "
+            "on its own. (If you do bill via an API key, set ANTHROPIC_API_KEY "
+            "and re-run keepwarm-enable.)"
+        ))
+    _keepwarm_set_consent("enabled")
+    # U7 (KTD-8): explicit enable resets the tripwire ladder (the sole walk-up).
+    try:
+        keepwarm_tripwire_repromote()
+    except Exception:
+        pass
+    sched_line = _keepwarm_enable_install_scheduler()
+    return (True, (
+        "Keep-warm enabled. On your next paused, API-billed session the "
+        "keepwarm-tick loop will probe-refresh the cache prefix (max 2 pings "
+        "unless the predictor promotes sustain), book ping spend and realized "
+        "savings honestly, and auto-demote if it ever stops paying.\n"
+        + sched_line
+    ))
+
+
+def _keepwarm_enable_install_scheduler():
+    """Install the scheduler as part of enable; return a status line (never raises).
+
+    p3-plan CRITICAL activation gap: enable now records consent AND installs the
+    scheduler (macOS) so an opt-in user actually gets pinged -- the one-switch
+    mental model. A failed install NEVER rolls back consent (the consent is
+    already recorded); we report the failure and print the manual command. On a
+    non-macOS (documented-gap) OS we print the honest manual-wiring note.
+    """
+    try:
+        ok, msg = keepwarm_scheduler_install(quiet=True)
+    except Exception as exc:  # never let an install error break the enable
+        return ("  Scheduler install errored (%s). Run manually: "
+                "measure.py keepwarm-scheduler install" % type(exc).__name__)
+    if ok:
+        return "  Scheduler installed (macOS): keep-warm ticks every ~5 minutes."
+    # Consent stays recorded; surface why install did not land + the manual path.
+    first = (msg or "").strip().splitlines()
+    head = first[0] if first else "scheduler install did not complete"
+    return ("  Scheduler NOT installed: %s\n"
+            "  Consent is recorded; run manually: "
+            "measure.py keepwarm-scheduler install" % head)
+
+
+def keepwarm_disable():
+    """Explicit opt-out from ANY state. Sets consent='declined' (terminal).
+
+    Always succeeds and is always honored — a declined user is never re-asked
+    and is never pinged regardless of billing mode. Returns (True, message).
+    """
+    _keepwarm_set_consent("declined")
+    return (True, (
+        "Keep-warm disabled. No pings will fire and you won't be asked again. "
+        "Re-run keepwarm-enable any time to opt back in (API billing only)."
+    ))
+
+
+def keepwarm_consent_status(env=None, claude_json_path=None, settings_path=None):
+    """Machine-readable gate inputs for the first-run ASK surface.
+
+    Returns {billing_mode, consent, should_ask} where should_ask is True ONLY
+    when billing is 'api' AND consent is 'unasked'. The TO skill / dashboard
+    calls this to decide whether to present the one-time pitch; it must transition
+    unasked->asked (via keepwarm-consent-asked) immediately after showing it so
+    the pitch is shown exactly once.
+    """
+    mode = keepwarm_billing_mode(
+        env=env, claude_json_path=claude_json_path, settings_path=settings_path)
+    consent = keepwarm_consent()
+    return {
+        "billing_mode": mode,
+        "consent": consent,
+        "should_ask": bool(mode == "api" and consent == "unasked"),
+    }
+
+
+def keepwarm_gate(env=None, claude_json_path=None, settings_path=None):
+    """THE pre-ping gate U3's tick loop calls. Returns (allowed, reason).
+
+    allowed is True ONLY when ALL hold:
+      * not running inside a keep-warm ping subprocess (anti-recursion marker);
+      * billing_mode == 'api';
+      * consent == 'enabled'.
+    Any other state returns (False, <reason>) so the tick loop can log why it
+    skipped without pinging. The ping-marker check is first and unconditional:
+    even a fully-enabled api user must never have a ping spawn another ping.
+    """
+    if env is None:
+        env = os.environ
+    # Anti-recursion: a keepwarm-tick that somehow runs inside a ping resume
+    # (the ping subprocess inherits this marker) must never ping again.
+    marker = env.get(_KEEPWARM_PING_ENV)
+    if isinstance(marker, str) and marker.strip():
+        return (False, "ping-process")
+    mode = keepwarm_billing_mode(
+        env=env, claude_json_path=claude_json_path, settings_path=settings_path)
+    consent = keepwarm_consent()
+    # Order: marker (above) -> explicit decline -> billing -> consent-state.
+    # An explicitly-declined user's refusal must be attributed to THEIR opt-out
+    # (consent-declined), not to billing -- otherwise a declined subscription user
+    # reads as 'billing-subscription' and consent-compliance audits are misled
+    # (integration M3). Declined is terminal regardless of billing mode.
+    if consent == "declined":
+        return (False, "consent-declined")
+    if mode != "api":
+        # Dogfood-only limits-lab (see keepwarm_enable docstring): explicit
+        # double opt-in — the lab config flag AND consent='enabled'. The
+        # product posture for subscription stays OFF.
+        if consent == "enabled" and _read_config_flag(
+                "keepwarm_limits_lab", False):
+            # The tripwire ceiling applies in limits-lab too: a demoted-to-off
+            # verdict refuses even the lab so a bad outcome streak self-heals.
+            if _keepwarm_tripwire_off():
+                return (False, "tripwire-off")
+            return (True, "ok-limits-lab")
+        return (False, "billing-subscription")
+    if consent != "enabled":
+        return (False, "consent-%s" % consent)
+    # U7 (KTD-8): the keep-warm tripwire can auto-demote an otherwise-eligible
+    # user to 'off' when the rolling 7d realized/spend ratio stays <= 1.0. The
+    # check is last (only an api+consented user can reach it) and fail-closed
+    # (a corrupt sidecar reads as 'off').
+    if _keepwarm_tripwire_off():
+        return (False, "tripwire-off")
+    return (True, "ok")
+
+
+def _keepwarm_tripwire_off():
+    """True iff the keep-warm tripwire has demoted the feature to 'off'.
+
+    Thin wrapper over keepwarm_tripwire_mode so the gate stays readable. A
+    missing sidecar (no breach yet) is NOT off; a corrupt sidecar reads as off
+    (fail-closed, inside keepwarm_tripwire_mode). Defined below the gate but
+    resolved at call time. Never raises.
+    """
+    try:
+        return keepwarm_tripwire_mode() == "off"
+    except Exception:
+        return True  # fail-closed: if we cannot read the verdict, refuse
+
+
+# ========== Keep-warm scheduler (U4: R6, R5 OS-parity honesty) ==========
+# Installs a launchd interval agent that runs `measure.py keepwarm-tick` every
+# ~5min, fully decoupled from the dashboard HTTP daemon. Hard invariants (plan U4
+# + KTD-5 + R7):
+#   * Distinct label `com.token-optimizer.keepwarm` -- never collides with the
+#     dashboard's `com.token-optimizer.dashboard`.
+#   * Its OWN install lock (_keepwarm_scheduler_install_lock) -- NEVER reuses
+#     `_daemon_install_lock`, so a stuck dashboard install can't block keep-warm
+#     and vice versa.
+#   * Does NOT touch the dashboard plist, the dashboard staleness-regen loop, or
+#     the dashboard install lock. The ensure-health repair below is a separate,
+#     additive, consent-gated step that only ever manages the keep-warm agent.
+#   * install REFUSES unless keepwarm_gate() allows (consent drives install, R7).
+#     A user who has not consented (unasked/declined) or whose billing is
+#     subscription gets a printed reason and exit 1 -- nothing is written.
+#   * Install marker sidecar (0600) records installed_at + plist path. ensure-
+#     health's repair keys on marker AND consent: a user-deleted plist with a
+#     marker + consent=enabled is regenerated; declined/unasked/absent-marker is
+#     NEVER (re)installed (the #59 sticky-opt-out lesson).
+# Per-OS honesty (R5): macOS launchd is implemented fully. The dashboard
+# dispatcher's systemd/schtasks arms ARE real installers, but keep-warm only
+# implements macOS in this unit; Linux/Windows print an honest documented-gap
+# message + exit 1 (README parity row says macOS-only, U8). We deliberately do
+# NOT mirror the dashboard's systemd/schtasks into keep-warm yet -- that is
+# explicit deferred scope, surfaced rather than silently half-built.
+
+_KEEPWARM_SCHEDULER_LABEL = "com.token-optimizer.keepwarm"
+# Marker filename lives under SNAPSHOT_DIR (resolved at call time so tests that
+# monkeypatch SNAPSHOT_DIR get an isolated marker).
+_KEEPWARM_SCHEDULER_MARKER_NAME = ".keepwarm-scheduler-marker"
+_KEEPWARM_SCHEDULER_LOCK_NAME = ".keepwarm-scheduler.lock"
+_KEEPWARM_SCHEDULER_LOG_NAME = "keepwarm-tick.log"
+# A tiny JSON stamp written on every real (non-dry) tick. Drives the scheduler's
+# last_tick_ok/last_tick_age freshness signal independently of whether the log
+# carries a traceback (the log can be quiet-clean yet the scheduler dead).
+_KEEPWARM_TICK_STAMP_NAME = ".keepwarm-tick-stamp.json"
+# StartInterval: 5min (matches KTD-5's "~5min" cadence). ThrottleInterval 60s so
+# launchd never hot-loops the tick if it exits fast. Log rotation guard truncates
+# the combined stdout/stderr log when it exceeds this size, on install and on the
+# tick's own check (deliverable 1).
+_KEEPWARM_SCHEDULER_START_INTERVAL = 300
+_KEEPWARM_SCHEDULER_THROTTLE = 60
+_KEEPWARM_SCHEDULER_LOG_MAX_BYTES = 1024 * 1024  # 1MB
+
+
+def _keepwarm_scheduler_plist_path():
+    """LaunchAgent plist path for the keep-warm agent (NOT the dashboard's)."""
+    return LAUNCH_AGENTS_DIR / f"{_KEEPWARM_SCHEDULER_LABEL}.plist"
+
+
+def _keepwarm_scheduler_marker_path():
+    return SNAPSHOT_DIR / _KEEPWARM_SCHEDULER_MARKER_NAME
+
+
+def _keepwarm_scheduler_log_path():
+    return SNAPSHOT_DIR / _KEEPWARM_SCHEDULER_LOG_NAME
+
+
+def _keepwarm_tick_stamp_path():
+    return SNAPSHOT_DIR / _KEEPWARM_TICK_STAMP_NAME
+
+
+def _keepwarm_scheduler_log_append(payload):
+    """Append ONE structured JSON line to the tick log (0600). Never raises.
+
+    Used for the per-tick observability line (written even under --quiet) and for
+    per-record/per-stage error traces. Best-effort: any OSError is swallowed so a
+    full disk never breaks the tick.
+    """
+    try:
+        line = json.dumps(payload) + "\n"
+    except (TypeError, ValueError):
+        return False
+    return _keepwarm_append_line(_keepwarm_scheduler_log_path(), line)
+
+
+def _keepwarm_write_tick_stamp(payload, now=None):
+    """Atomically write the tick freshness stamp (0600). Never raises."""
+    if now is None:
+        now = time.time()
+    record = dict(payload or {})
+    record["ts"] = float(now)
+    path = _keepwarm_tick_stamp_path()
+    try:
+        SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=".keepwarm-tick-stamp.", suffix=".tmp", dir=str(SNAPSHOT_DIR))
+        try:
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(record, fh)
+            os.replace(tmp_name, str(path))
+        except Exception:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+    except Exception:
+        pass
+
+
+def _keepwarm_read_tick_stamp():
+    """Read the tick freshness stamp dict, or None. Never raises."""
+    path = _keepwarm_tick_stamp_path()
+    try:
+        if not path.exists():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except (json.JSONDecodeError, OSError, ValueError):
+        return None
+
+
+def _keepwarm_measure_script_path():
+    """Absolute path to THIS measure.py for the agent's ProgramArguments.
+
+    The scheduler points the agent at the real, resolved measure.py so a moved
+    plugin cache or a dev symlink resolves to a stable file (parity with how the
+    daemon embeds an absolute script path).
+    """
+    return str(Path(__file__).resolve())
+
+
+def _keepwarm_python3_path():
+    """Resolve a python3 launcher the same way the dashboard plist does.
+
+    Mirror of _generate_plist's convention: prefer `shutil.which('python3')`
+    but skip a version-manager shim (pyenv/asdf '/shims/'), which would resolve
+    differently under launchd's empty environment, and fall back to the system
+    interpreter. Keeps the agent portable across the same machines the dashboard
+    daemon already supports.
+    """
+    import shutil as _shutil
+    which = _shutil.which("python3") or ""
+    if which and "/shims/" not in which:
+        return which
+    return "/usr/bin/python3"
+
+
+def _keepwarm_resolve_claude_bin():
+    """Resolve the `claude` CLI to an absolute path at fire time, or None.
+
+    LIVE BUG (infra F6): under launchd the agent inherits a near-empty PATH, so a
+    bare `"claude"` argv[0] fails FileNotFoundError on every ping (30/30 errors on
+    this machine). We resolve `claude` exactly the way the python3 resolver works:
+    `shutil.which` first (honours the user's real PATH when the tick runs in a
+    foreground shell), then the common install locations launchd cannot see. We
+    persist NOTHING (a resolved path could go stale across an npm/Homebrew update);
+    this runs once per fire. Returns the first executable absolute path, or None
+    when nothing resolves (caller books a 'claude-not-found' outcome).
+    """
+    import shutil as _shutil
+    which = _shutil.which("claude")
+    if which:
+        return which
+    home = Path.home()
+    candidates = [
+        home / ".claude" / "local" / "claude",
+        Path("/opt/homebrew/bin/claude"),
+        Path("/usr/local/bin/claude"),
+        home / ".local" / "bin" / "claude",
+    ]
+    for cand in candidates:
+        try:
+            if cand.is_file() and os.access(str(cand), os.X_OK):
+                return str(cand)
+        except OSError:
+            continue
+    return None
+
+
+def _keepwarm_scheduler_install_lock(soft_fail=False):
+    """Serialise concurrent keep-warm scheduler installs. SEPARATE lock from the
+    dashboard's `_daemon_install_lock` (never shared, per plan U4).
+
+    Same mkdir-mutex + stale-PID reaping shape as `_daemon_install_lock`, but a
+    distinct lock directory so the two installers never block each other.
+    """
+    from contextlib import contextmanager
+
+    lock_dir = SNAPSHOT_DIR / _KEEPWARM_SCHEDULER_LOCK_NAME
+    pid_file = lock_dir / "pid"
+    max_age = 10 * 60
+
+    def _pid_alive(pid):
+        if pid <= 0:
+            return False
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
+    def _try_reclaim_stale():
+        try:
+            mtime = lock_dir.stat().st_mtime
+        except OSError:
+            return False
+        owner_pid = 0
+        try:
+            owner_pid = int(pid_file.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            owner_pid = 0
+        if not _pid_alive(owner_pid) or (time.time() - mtime) > max_age:
+            try:
+                if pid_file.exists():
+                    pid_file.unlink()
+                lock_dir.rmdir()
+                return True
+            except OSError:
+                return False
+        return False
+
+    @contextmanager
+    def _locked():
+        acquired = False
+        try:
+            SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+            try:
+                lock_dir.mkdir(exist_ok=False)
+                acquired = True
+            except FileExistsError:
+                if _try_reclaim_stale():
+                    try:
+                        lock_dir.mkdir(exist_ok=False)
+                        acquired = True
+                    except FileExistsError:
+                        acquired = False
+                else:
+                    acquired = False
+            if not acquired:
+                yield False
+                return
+            try:
+                pid_file.write_text(str(os.getpid()), encoding="utf-8")
+            except OSError:
+                pass
+            yield True
+        finally:
+            if acquired:
+                try:
+                    if pid_file.exists():
+                        pid_file.unlink()
+                except OSError:
+                    pass
+                try:
+                    lock_dir.rmdir()
+                except OSError:
+                    pass
+
+    return _locked()
+
+
+def _keepwarm_rotate_log(max_bytes=_KEEPWARM_SCHEDULER_LOG_MAX_BYTES):
+    """Keep the last ~half of the keep-warm tick log when it exceeds max_bytes.
+
+    Cheap rotation guard called on install and on every tick. launchd appends to
+    StandardOutPath/StandardErrorPath forever otherwise; a paused-but-armed
+    machine that ticks every 5min would grow this unbounded. We READ the tail,
+    then truncate-in-place and rewrite the tail (NOT rename) so the inode launchd
+    holds stays valid AND a crash burst that triggers rotation does not erase its
+    own cause (torture FIX-A6d -- a hard truncate-to-zero destroyed the only
+    diagnostic trail). Best-effort: any OSError is swallowed.
+    """
+    path = _keepwarm_scheduler_log_path()
+    keep = max(1, max_bytes // 2)
+    # The log is opened+created by launchd (StandardOutPath), which makes it
+    # world-readable (0644); it records session_ids + activity. Force 0600 here
+    # so the rotation guard (called on install + every tick) also hardens the
+    # perms (infra F1). Best-effort.
+    try:
+        if path.exists():
+            os.chmod(str(path), 0o600)
+    except OSError:
+        pass
+    try:
+        if path.exists() and path.stat().st_size > max_bytes:
+            tail = b""
+            try:
+                with open(str(path), "rb") as fh:
+                    fh.seek(-keep, os.SEEK_END)
+                    tail = fh.read()
+            except OSError:
+                tail = b""
+            # Drop a partial leading line so the kept tail starts clean.
+            nl = tail.find(b"\n")
+            if 0 <= nl < len(tail) - 1:
+                tail = tail[nl + 1:]
+            # Truncate in place (keep the inode launchd's fd points at) then
+            # rewrite the retained tail.
+            with open(str(path), "wb") as fh:
+                fh.write(tail)
+            return True
+    except OSError:
+        pass
+    return False
+
+
+def _keepwarm_generate_scheduler_plist():
+    """Build the launchd plist XML for the keep-warm interval agent.
+
+    Mirrors the dashboard plist's ProgramArguments convention (resolved python3 +
+    absolute script path) but: distinct Label, StartInterval (not RunAtLoad
+    KeepAlive -- this is a periodic batch job, not a long-lived server),
+    ProcessType Background + LowPriorityIO (it must never compete with the user's
+    foreground session), ThrottleInterval, and a single combined log target.
+    """
+    from xml.sax.saxutils import escape as _xml_escape
+    python3_path = _xml_escape(_keepwarm_python3_path())
+    script = _xml_escape(_keepwarm_measure_script_path())
+    log_path = _xml_escape(str(_keepwarm_scheduler_log_path()))
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{_KEEPWARM_SCHEDULER_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{python3_path}</string>
+        <string>{script}</string>
+        <string>keepwarm-tick</string>
+        <string>--quiet</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>{_KEEPWARM_SCHEDULER_START_INTERVAL}</integer>
+    <key>ThrottleInterval</key>
+    <integer>{_KEEPWARM_SCHEDULER_THROTTLE}</integer>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>LowPriorityIO</key>
+    <true/>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>StandardOutPath</key>
+    <string>{log_path}</string>
+    <key>StandardErrorPath</key>
+    <string>{log_path}</string>
+</dict>
+</plist>
+"""
+
+
+def _keepwarm_write_scheduler_marker(bootstrap_rc="__unset__"):
+    """Write the 0600 install marker (installed_at + plist path + bootstrap_rc).
+
+    ensure-health's repair keys on this marker AND consent so a user-deleted
+    plist is only regenerated for a machine we actually installed on (#59). Atomic
+    0600 write via mkstemp + os.replace. `bootstrap_rc` records the launchctl
+    bootstrap outcome (infra F4): an int rc, or None when bootstrap could not run;
+    omitted (sentinel) for callers that don't know it.
+    """
+    marker_path = _keepwarm_scheduler_marker_path()
+    payload = {
+        "installed_at": time.time(),
+        "plist_path": str(_keepwarm_scheduler_plist_path()),
+        "label": _KEEPWARM_SCHEDULER_LABEL,
+    }
+    if bootstrap_rc != "__unset__":
+        payload["bootstrap_rc"] = bootstrap_rc
+    tmp_path = None
+    try:
+        SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            dir=str(SNAPSHOT_DIR), prefix=".keepwarm-marker-", suffix=".tmp")
+        os.fchmod(tmp_fd, 0o600)
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+        os.replace(tmp_path, str(marker_path))
+        tmp_path = None
+        return True
+    except OSError:
+        return False
+    finally:
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+
+def _keepwarm_read_scheduler_marker():
+    """Return the marker dict, or None if absent/corrupt."""
+    try:
+        marker_path = _keepwarm_scheduler_marker_path()
+        if not marker_path.exists():
+            return None
+        data = json.loads(marker_path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None
+
+
+def _keepwarm_remove_scheduler_marker():
+    try:
+        marker_path = _keepwarm_scheduler_marker_path()
+        if marker_path.exists():
+            marker_path.unlink()
+    except OSError:
+        pass
+
+
+def _keepwarm_scheduler_last_tick_ok():
+    """Best-effort: report whether the most recent tick looks healthy.
+
+    Returns True/False/None (unknown). PRIMARY source is the tick-stamp written on
+    every real tick (torture FIX-A6c): a tick with errors==0 and a clean gate is
+    ok, otherwise not-ok. Falls back to the tick log tail (traceback => not ok)
+    when no stamp exists yet. A missing stamp AND empty log is 'unknown' (None).
+    """
+    stamp = _keepwarm_read_tick_stamp()
+    if stamp is not None:
+        try:
+            return int(stamp.get("errors", 0) or 0) == 0
+        except (TypeError, ValueError):
+            return True
+    path = _keepwarm_scheduler_log_path()
+    try:
+        if not path.exists() or path.stat().st_size == 0:
+            return None
+        with open(str(path), "r", encoding="utf-8", errors="replace") as f:
+            tail = f.readlines()[-20:]
+    except OSError:
+        return None
+    if not tail:
+        return None
+    # Any traceback in the recent tail = not ok.
+    joined = "".join(tail)
+    if "Traceback (most recent call last)" in joined:
+        return False
+    return True
+
+
+def _keepwarm_scheduler_last_tick_age(now=None):
+    """Seconds since the last real tick (from the stamp), or None if unknown."""
+    if now is None:
+        now = time.time()
+    stamp = _keepwarm_read_tick_stamp()
+    if not stamp:
+        return None
+    try:
+        return max(0.0, float(now) - float(stamp.get("ts", 0) or 0))
+    except (TypeError, ValueError):
+        return None
+
+
+def _keepwarm_scheduler_install_macos(quiet=False):
+    """macOS: write the keep-warm LaunchAgent plist, marker, and bootstrap it.
+
+    Caller (keepwarm_scheduler_install) has already confirmed the gate allows and
+    holds the install lock. Idempotent: bootout-then-bootstrap so a re-install
+    refreshes the agent in place. Returns (ok, message).
+    """
+    plist_path = _keepwarm_scheduler_plist_path()
+    try:
+        LAUNCH_AGENTS_DIR.mkdir(parents=True, exist_ok=True)
+        SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        return (False, f"could not create agent/snapshot dir: {e}")
+    # Rotation guard on install so a stale oversized log doesn't carry over.
+    _keepwarm_rotate_log()
+    try:
+        plist_path.write_text(_keepwarm_generate_scheduler_plist(), encoding="utf-8")
+    except OSError as e:
+        return (False, f"could not write plist {plist_path}: {e}")
+    uid = os.getuid()
+    # Idempotent: bootout any existing instance first (ignore failure: not loaded).
+    try:
+        subprocess.run(
+            ["launchctl", "bootout", f"gui/{uid}", str(plist_path)],
+            capture_output=True, text=True, errors="replace", timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    try:
+        result = subprocess.run(
+            ["launchctl", "bootstrap", f"gui/{uid}", str(plist_path)],
+            capture_output=True, text=True, errors="replace", timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        # Bootstrap could not even run: record the failed attempt in the marker
+        # (bootstrap_rc=None) so ensure-health knows WE own this path but the
+        # bootstrap never succeeded (infra F4).
+        _keepwarm_write_scheduler_marker(bootstrap_rc=None)
+        return (False, f"launchctl bootstrap failed: {e}")
+    # Marker written AFTER bootstrap, carrying bootstrap_rc (infra F4): the marker
+    # now reflects the ACTUAL bootstrap outcome, not merely an attempt, so a
+    # repair keys on a marker that proves a real install path was reached.
+    _keepwarm_write_scheduler_marker(bootstrap_rc=int(result.returncode))
+    if result.returncode != 0:
+        # Plist + marker are on disk; report so the user can bootstrap manually.
+        return (False, (
+            f"launchctl bootstrap failed (rc {result.returncode}): "
+            f"{(result.stderr or '').strip()}\n"
+            f"  Plist written to: {plist_path}\n"
+            f"  Try manually: launchctl bootstrap gui/{uid} {plist_path}"))
+    return (True, (
+        f"Keep-warm scheduler installed ({_KEEPWARM_SCHEDULER_LABEL}, every "
+        f"{_KEEPWARM_SCHEDULER_START_INTERVAL}s).\n"
+        f"  Plist: {plist_path}\n"
+        f"  Log:   {_keepwarm_scheduler_log_path()}\n"
+        f"  Remove: measure.py keepwarm-scheduler uninstall"))
+
+
+def keepwarm_scheduler_install(gate=None, quiet=False):
+    """Install the keep-warm interval agent. REFUSES unless the gate allows (R7).
+
+    Consent drives install: keepwarm_gate() must return allowed=True (api billing
+    + consent=enabled, or the dogfood limits-lab double opt-in). A refused gate
+    prints the reason and the caller exits 1; nothing is written.
+
+    Per-OS (R5): macOS implemented; Linux/Windows are an explicit documented gap
+    (honest message + the caller exits 1). Returns (ok, message).
+    `gate` injectable for tests.
+    """
+    gate_fn = gate or keepwarm_gate
+    allowed, reason = gate_fn()
+    if not allowed:
+        return (False, (
+            f"Keep-warm scheduler not installed: gate refused ({reason}). "
+            "Run keepwarm-enable on an API-billed account first."))
+    system = _normalized_platform()
+    if system != "Darwin":
+        return (False, (
+            f"Keep-warm scheduler is macOS-only in this release; {system} is a "
+            "documented gap (the dashboard daemon's systemd/Task-Scheduler "
+            "support has not yet been mirrored for keep-warm). Track parity in "
+            "the README platform table. The keepwarm-tick CLI still works if you "
+            "wire your own cron/timer to run it every ~5 minutes."))
+    with _keepwarm_scheduler_install_lock() as acquired:
+        if not acquired:
+            return (False, "another keep-warm scheduler install is in progress")
+        return _keepwarm_scheduler_install_macos(quiet=quiet)
+
+
+def keepwarm_scheduler_uninstall(quiet=False):
+    """Remove the keep-warm agent: bootout + rm plist + rm marker. Always works.
+
+    Unconditional (no gate): a user who opted out or hit a documented-gap OS must
+    always be able to clean up. Leaves OTHER keep-warm sidecars (state/ledger/
+    consent) intact -- only the scheduler's own plist + marker are removed.
+    Returns (ok, message).
+    """
+    plist_path = _keepwarm_scheduler_plist_path()
+    removed = []
+    system = _normalized_platform()
+    if system == "Darwin":
+        uid = os.getuid()
+        try:
+            subprocess.run(
+                ["launchctl", "bootout", f"gui/{uid}", str(plist_path)],
+                capture_output=True, text=True, errors="replace", timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    try:
+        if plist_path.exists():
+            plist_path.unlink()
+            removed.append(str(plist_path))
+    except OSError:
+        pass
+    marker_path = _keepwarm_scheduler_marker_path()
+    marker_existed = marker_path.exists()
+    _keepwarm_remove_scheduler_marker()
+    if marker_existed:
+        removed.append(str(marker_path))
+    if removed:
+        return (True, "Keep-warm scheduler removed:\n  " + "\n  ".join(removed))
+    return (True, "Keep-warm scheduler not installed. Nothing to remove.")
+
+
+def keepwarm_scheduler_status(gate=None):
+    """Return the scheduler status dict (deliverable 1).
+
+    {installed, plist_path, label, last_tick_ok, consent, billing_mode|reason}.
+    `installed` is True only when BOTH the plist and the marker exist (the marker
+    proves WE installed it; the plist proves it is still wired). Pure-ish: reads
+    files + the gate, never installs. `gate` injectable for tests.
+    """
+    gate_fn = gate or keepwarm_gate
+    plist_path = _keepwarm_scheduler_plist_path()
+    marker = _keepwarm_read_scheduler_marker()
+    plist_exists = plist_path.exists()
+    allowed, reason = gate_fn()
+    status = {
+        "installed": bool(plist_exists and marker is not None),
+        "plist_path": str(plist_path),
+        "label": _KEEPWARM_SCHEDULER_LABEL,
+        "plist_exists": bool(plist_exists),
+        "marker_exists": marker is not None,
+        "last_tick_ok": _keepwarm_scheduler_last_tick_ok(),
+        "last_tick_age": _keepwarm_scheduler_last_tick_age(),
+        "consent": keepwarm_consent(),
+        "billing_mode": keepwarm_billing_mode(),
+        "gate_allowed": bool(allowed),
+    }
+    if not allowed:
+        status["reason"] = reason
+    return status
+
+
+def keepwarm_scheduler_repair(gate=None):
+    """ensure-health's consent-gated repair (deliverable 3). ADDITIVE, no-op fast.
+
+    Regenerate + bootstrap the keep-warm agent ONLY when ALL hold:
+      * consent gate allows (api + consent=enabled / limits-lab) -- R7;
+      * the install marker exists (WE installed here before) -- #59 lesson;
+      * the plist is missing or stale (label drift / older content).
+    Otherwise NO-OP. The hot path when nothing needs repair is cheap file-
+    existence checks only -- NO subprocess, NO launchctl -- to honour the <50ms
+    ensure-health budget. A user who declined/never-consented, or a machine with
+    no marker, is NEVER (re)installed (the sticky-opt-out invariant).
+
+    Returns one of: 'noop-gate', 'noop-no-marker', 'noop-fresh', 'repaired',
+    'repair-failed'. Does NOT touch the dashboard plist/lock/regen loop.
+    """
+    # Cheapest gate first: marker existence (one stat) before any gate read.
+    marker = _keepwarm_read_scheduler_marker()
+    if marker is None:
+        return "noop-no-marker"
+    gate_fn = gate or keepwarm_gate
+    allowed, _reason = gate_fn()
+    if not allowed:
+        return "noop-gate"
+    plist_path = _keepwarm_scheduler_plist_path()
+    needs_repair = False
+    if not plist_path.exists():
+        needs_repair = True
+    else:
+        # Stale if the label marker isn't present (e.g. a hand-edited or
+        # foreign plist sitting at our path). Cheap CAPPED read (infra F3): our
+        # plist is <1KB, so reading the first 8KB is enough to find the Label;
+        # this bounds the warm-path cost against an attacker-planted huge file.
+        try:
+            with open(str(plist_path), "r", encoding="utf-8",
+                      errors="replace") as _pf:
+                content = _pf.read(8192)
+            if _KEEPWARM_SCHEDULER_LABEL not in content:
+                needs_repair = True
+        except OSError:
+            needs_repair = True
+    if not needs_repair:
+        return "noop-fresh"
+    # Repair path: now (and only now) do the costly install. Reuse the same
+    # macOS installer + lock so we never double-bootstrap concurrently.
+    if _normalized_platform() != "Darwin":
+        return "noop-gate"
+    with _keepwarm_scheduler_install_lock(soft_fail=True) as acquired:
+        if not acquired:
+            return "noop-fresh"  # another session is repairing; skip quietly
+        ok, _msg = _keepwarm_scheduler_install_macos(quiet=True)
+        if not ok:
+            # Surface ONE stderr line so a silently-failing repair is diagnosable
+            # (infra F5); the first line carries the launchctl rc/reason.
+            try:
+                first = (_msg or "repair failed").strip().splitlines()[0]
+                print(f"[Token Optimizer] keep-warm scheduler repair failed: "
+                      f"{first}", file=sys.stderr)
+            except Exception:
+                pass
+            return "repair-failed"
+        return "repaired"
+
+
+# ========== Keep-warm policy core + ping executor (U3: R1/R2/R4/R6) ==========
+# This region is the "brain and the trigger" for keep-warm cache automation:
+#   * keepwarm_policy_decision()  -- PURE. Zero IO. Drives both the live tick and
+#     U6's future history-backfill replay, so it MUST stay side-effect free.
+#   * _keepwarm_fire_ping()       -- the ONLY side-effectful part. Locks, idle-
+#     re-checks, pre-logs spend, runs the U1-winning CLI ping, books the outcome.
+#   * keepwarm-tick               -- the CLI loop (gate -> load -> classify ->
+#     decide -> fire), wired in the dispatcher at the bottom of measure.py.
+#
+# Economics (KTD-3, survival-curve-driven, never a hardcoded clock):
+#   A kept-warm prefix avoids a future re-WRITE of that prefix when the user
+#   resumes. The avoided cost = prefix_tokens * write_rate (per token) * the
+#   probability the user actually resumes at the current elapsed time. We only
+#   keep pinging while the cumulative ping cost we have ALREADY spent stays below
+#   that expected avoided write -- otherwise we abort the pause (break-even).
+#
+#   write_rate is TTL-dependent: a 1h entry would be re-written at the 2.0x
+#   premium; a 5m entry at the 1.25x premium. The 5m premium is so low that the
+#   formula almost always yields probe-only-or-nothing -- the FORMULA decides,
+#   not a constant (Risk: default-TTL 1h->5m regression).
+#
+# Phases (KTD-3 / state machine): probe = pings #1 and #2 at a TTL-aware cadence.
+# Sustain = pings #3+ ONLY when history_stats.predictor_continue is True (U6
+# wires the real predictor; default False = probe-only floor, measured +$13/30d,
+# positive by construction) AND the tripwire allows sustain. 12h is an absolute
+# hard cap on elapsed pause age regardless of phase.
+
+# Survival curve P(resume | still paused at elapsed) from the simulation's
+# measured 30d history (plan KTD-3). Keys are elapsed-since-pause-start seconds
+# bucket lower-bounds; we use the nearest bucket at-or-below the elapsed time.
+_KEEPWARM_SURVIVAL_TABLE = (
+    (3600, 0.245),    # >=1h paused
+    (7200, 0.149),    # >=2h
+    (14400, 0.119),   # >=4h
+    (28800, 0.073),   # >=8h
+    (57600, 0.032),   # >=16h
+)
+# Eligibility floor: prefixes smaller than this are not worth a ping (the read
+# cost of the ping itself rivals the avoided write). Plan KTD-3 / U3.
+_KEEPWARM_PREFIX_FLOOR = 10000
+# Absolute hard cap on pause age. Past this we always stop, regardless of phase
+# or predictor (KTD-3: a blind 12h *clock* cap is net-negative, but as an upper
+# bound on predictor-gated sustain it is the safety ceiling).
+_KEEPWARM_HARD_CAP_SECONDS = 12 * 3600
+# Probe cadence for 1h entries: ping at ~effective-window-minus-safety-margin so
+# the refresh lands before the 1h cache would expire. 3600 - 300 margin = 3300s.
+_KEEPWARM_1H_WINDOW_SECONDS = 3600
+_KEEPWARM_1H_SAFETY_MARGIN = 300
+_KEEPWARM_1H_CADENCE = _KEEPWARM_1H_WINDOW_SECONDS - _KEEPWARM_1H_SAFETY_MARGIN
+# 5m entries: the window is 300s; cadence (if viable at all) is window minus a
+# proportional margin. Viability is decided by the break-even formula, NOT this.
+_KEEPWARM_5M_WINDOW_SECONDS = 300
+_KEEPWARM_5M_SAFETY_MARGIN = 60
+_KEEPWARM_5M_CADENCE = _KEEPWARM_5M_WINDOW_SECONDS - _KEEPWARM_5M_SAFETY_MARGIN
+# Per-TTL write premium multiplier on the input rate, DERIVED from PRICING_TIERS
+# at module init (single source of truth -- no hand-copied numbers). The anthropic
+# tier's cache_write / input ratio is the 5m premium; cache_write_1h / input is
+# the 1h premium. 'unknown' falls back to the 5m (conservative-low) premium.
+# A future PRICING_TIERS rate edit propagates here automatically.
+def _keepwarm_derive_pricing():
+    """Derive the keep-warm per-token price + premium tables from PRICING_TIERS.
+
+    Returns (input_per_token, cache_read_per_token, write_premium). Reads the
+    canonical anthropic tier so the keep-warm money math can never drift from the
+    watchdog's pricing tables. Pure; called once at import.
+    """
+    models = PRICING_TIERS["anthropic"]["claude_models"]
+    input_per_token = {}
+    cache_read_per_token = {}
+    for key, rates in models.items():
+        input_per_token[key] = rates["input"] / 1_000_000
+        cache_read_per_token[key] = rates["cache_read"] / 1_000_000
+    # Premiums are ratios on the input rate; take them from sonnet (uniform across
+    # models within a tier: cache_write=1.25x input, cache_write_1h=2.0x input).
+    s = models["sonnet"]
+    premium_5m = s["cache_write"] / s["input"]
+    premium_1h = s["cache_write_1h"] / s["input"]
+    write_premium = {"1h": premium_1h, "5m": premium_5m, "unknown": premium_5m}
+    return input_per_token, cache_read_per_token, write_premium
+
+
+(_KEEPWARM_INPUT_USD_PER_TOKEN,
+ _KEEPWARM_CACHE_READ_USD_PER_TOKEN,
+ _KEEPWARM_WRITE_PREMIUM) = _keepwarm_derive_pricing()
+# Budget cap passed to --max-budget-usd. A single bland ping reads the prefix as
+# a cache hit (~$0.01-0.04 even for large prefixes) and writes a tiny refresh; a
+# few cents is a generous ceiling that still aborts a runaway.
+_KEEPWARM_PING_BUDGET_USD = 0.10
+# The ping subprocess wall-clock ceiling. One shot per tick; no in-tick retry.
+_KEEPWARM_PING_TIMEOUT_SECONDS = 180
+# Idle re-check: the transcript must have been untouched for at least this long
+# immediately before we fire, else the session may be live -> skip (R4).
+_KEEPWARM_IDLE_RECHECK_SECONDS = 120
+# Per-session ping lock filename prefix in SNAPSHOT_DIR.
+_KEEPWARM_PING_LOCK_PREFIX = ".keepwarm_ping."
+# Whole-tick single-instance lock filename.
+_KEEPWARM_TICK_LOCK_NAME = ".keepwarm_tick.lock"
+# Ping-spend / outcome ledger sidecar (operational accounting only; KTD-7 keeps
+# realized savings in the SQLite path -- U7 -- NOT here).
+_KEEPWARM_LEDGER_NAME = "keepwarm_ledger.jsonl"
+# A lockfile whose owning PID is gone and whose mtime is older than this is
+# considered stale and reclaimed (a crashed tick must not wedge a session).
+_KEEPWARM_STALE_LOCK_SECONDS = 600
+# A 'firing' ledger row older than this with no sibling outcome row is treated as
+# orphaned spend (the tick died between pre-log and outcome). The ping timeout is
+# 180s; 600s leaves generous slack for a slow ping that simply hasn't resolved.
+_KEEPWARM_ORPHAN_FIRING_SECONDS = 600
+# The bland, tool-discouraging ping prompt (U1-verified form A).
+_KEEPWARM_PING_PROMPT = "Reply with exactly: ok"
+
+
+def _keepwarm_model_norm(model):
+    """Normalize an arm record's model id to a pricing key, defaulting to sonnet."""
+    norm = _normalize_model_name(model) if model else None
+    if norm in _KEEPWARM_INPUT_USD_PER_TOKEN:
+        return norm
+    return "sonnet"
+
+
+def _keepwarm_p_resume(elapsed_seconds):
+    """P(user resumes | still paused at `elapsed_seconds`) from the survival table.
+
+    Uses the nearest bucket at or below elapsed. Below the first bucket (<1h) we
+    use the 1h rate (the most generous still-defensible estimate); past the last
+    bucket we use the last (lowest) rate. Pure.
+    """
+    try:
+        e = float(elapsed_seconds)
+    except (TypeError, ValueError):
+        return _KEEPWARM_SURVIVAL_TABLE[0][1]
+    rate = _KEEPWARM_SURVIVAL_TABLE[0][1]
+    for bucket, p in _KEEPWARM_SURVIVAL_TABLE:
+        if e >= bucket:
+            rate = p
+        else:
+            break
+    return rate
+
+
+def _keepwarm_avoided_write_usd(prefix_tokens, ttl_kind, model, elapsed_seconds):
+    """Expected USD saved by keeping the prefix warm for a resume at `elapsed`.
+
+    = prefix_tokens * input_rate * write_premium(ttl) * P(resume | elapsed).
+    This is the right-hand side of the per-pause break-even inequality. Pure.
+    """
+    key = _keepwarm_model_norm(model)
+    input_rate = _KEEPWARM_INPUT_USD_PER_TOKEN.get(key, _KEEPWARM_INPUT_USD_PER_TOKEN["sonnet"])
+    premium = _KEEPWARM_WRITE_PREMIUM.get(ttl_kind, _KEEPWARM_WRITE_PREMIUM["unknown"])
+    try:
+        prefix = max(0, int(prefix_tokens))
+    except (TypeError, ValueError):
+        prefix = 0
+    write_rate = input_rate * premium
+    return prefix * write_rate * _keepwarm_p_resume(elapsed_seconds)
+
+
+def _keepwarm_ping_cost_est(prefix_tokens, model):
+    """Estimated USD cost of ONE ping (reads the full prefix as a cache hit).
+
+    The ping resends the prefix; it is billed at the cache_read rate plus a tiny
+    write refresh we approximate as a fraction of the read. Conservative (slightly
+    high) so break-even errs toward stopping. Pure.
+    """
+    key = _keepwarm_model_norm(model)
+    read_rate = _KEEPWARM_CACHE_READ_USD_PER_TOKEN.get(
+        key, _KEEPWARM_CACHE_READ_USD_PER_TOKEN["sonnet"])
+    try:
+        prefix = max(0, int(prefix_tokens))
+    except (TypeError, ValueError):
+        prefix = 0
+    # Read of the full prefix + a ~5% refresh-write overhead estimate.
+    return prefix * read_rate * 1.05
+
+
+def _keepwarm_cadence_for(ttl_kind):
+    """Probe cadence (seconds between activity/ping and the next ping) by TTL."""
+    if ttl_kind == "1h":
+        return _KEEPWARM_1H_CADENCE
+    # 5m and 'unknown' (treated as 5m for caution) share the 5m cadence; whether
+    # a 5m ping fires at all is decided by the break-even formula, not here.
+    return _KEEPWARM_5M_CADENCE
+
+
+def keepwarm_policy_decision(record, now, tripwire_state=None, history_stats=None):
+    """PURE policy core. Decide what to do with one armed record. Zero IO.
+
+    Returns a dict: {action, reason, phase} where
+        action in ('ping', 'wait', 'stop')
+        phase  in ('probe', 'sustain')   (the phase the decision pertains to)
+
+    Inputs (all plain data so backfill replay can drive identical logic):
+      record         -- an arm record (prefix_proxy, ttl_kind, model, ts,
+                        last_turn_ts, pings_fired list of ping timestamps).
+      now            -- current epoch seconds (injected; never time.time() here).
+      tripwire_state -- optional dict; tripwire_state.get('allow_sustain', True)
+                        gates pings #3+. Default: sustain allowed (U7 wires the
+                        real demotion ladder; absence must not block the floor
+                        probe policy).
+      history_stats  -- optional dict; history_stats.get('predictor_continue',
+                        False) gates sustain. DEFAULT FALSE = probe-only floor
+                        (U6 wires the validated predictor). A missing predictor
+                        means we never sustain -- safe by construction.
+
+    Order of checks (each is a hard gate; this matches the code below):
+      1. prefix floor (>=10k) and a known model -> else stop ('ineligible-*').
+      2. 12h absolute hard cap on pause age      -> stop ('hard-cap').
+      3. phase: pings 0-1 already fired => probe; ping #3+ requires BOTH
+         predictor_continue AND tripwire allow_sustain, else stop ('probe-only').
+      4. break-even: cumulative ping cost already spent (this ping included)
+         must stay < expected avoided write at current elapsed -> else stop.
+      5. cadence: only ping if enough time has elapsed since the last activity
+         (probe #1) or the last ping (probe #2+), else wait.
+    """
+    if not isinstance(record, dict):
+        return {"action": "stop", "reason": "bad-record", "phase": "probe"}
+
+    # --- elapsed & prefix ---------------------------------------------------
+    try:
+        arm_ts = float(record.get("ts", 0) or 0)
+    except (TypeError, ValueError):
+        arm_ts = 0.0
+    # Pause "start" is the last real turn if we have it, else the arm time.
+    last_activity = arm_ts
+    lt = record.get("last_turn_ts")
+    if isinstance(lt, (int, float)):
+        last_activity = float(lt)
+    try:
+        prefix = int(record.get("prefix_proxy", 0) or 0)
+    except (TypeError, ValueError):
+        prefix = 0
+    model = record.get("model")
+    ttl_kind = record.get("ttl_kind") or "unknown"
+
+    pings = record.get("pings_fired")
+    if not isinstance(pings, list):
+        pings = []
+    ping_count = len(pings)
+
+    # --- 1. eligibility floor ----------------------------------------------
+    if prefix < _KEEPWARM_PREFIX_FLOOR:
+        return {"action": "stop", "reason": "ineligible-prefix", "phase": "probe"}
+    if not model or _normalize_model_name(model) is None:
+        return {"action": "stop", "reason": "ineligible-model", "phase": "probe"}
+
+    elapsed = max(0.0, float(now) - arm_ts)
+
+    # --- 2. 12h absolute hard cap ------------------------------------------
+    # Absolute upper bound on pause age, checked before phase/economics so a
+    # stale pause is always reported as hard-cap regardless of how it would
+    # otherwise be classified.
+    if elapsed >= _KEEPWARM_HARD_CAP_SECONDS:
+        return {"action": "stop", "reason": "hard-cap", "phase": "probe"}
+
+    # --- 3. phase gate ------------------------------------------------------
+    # pings #1 and #2 (ping_count 0 or 1) are probe. ping #3+ is sustain and
+    # requires BOTH the predictor AND the tripwire. Checked before break-even so
+    # a ping we will not fire on policy grounds is never even priced (and the
+    # plan's order: phase decision -> break-even abort -> hard cap).
+    if ping_count >= 2:
+        predictor_continue = bool(
+            (history_stats or {}).get("predictor_continue", False))
+        allow_sustain = bool((tripwire_state or {}).get("allow_sustain", True))
+        if not predictor_continue:
+            return {"action": "stop", "reason": "probe-only-no-predictor",
+                    "phase": "sustain"}
+        if not allow_sustain:
+            return {"action": "stop", "reason": "tripwire-no-sustain",
+                    "phase": "sustain"}
+        phase = "sustain"
+    else:
+        phase = "probe"
+
+    # --- 4. per-pause break-even abort -------------------------------------
+    # Cumulative cost if we fire one more ping now, vs expected avoided write at
+    # this elapsed time. If the spend would exceed the expected saving, the pause
+    # can never pay back -> stop. Note the ratio is prefix-independent (both
+    # sides scale with prefix); P(resume) decaying with elapsed is what trips it.
+    ping_cost = _keepwarm_ping_cost_est(prefix, model)
+    cumulative_cost = ping_cost * (ping_count + 1)
+    expected_avoided = _keepwarm_avoided_write_usd(prefix, ttl_kind, model, elapsed)
+    if cumulative_cost >= expected_avoided:
+        return {"action": "stop", "reason": "break-even-abort", "phase": phase}
+
+    # --- 5. cadence gate ----------------------------------------------------
+    cadence = _keepwarm_cadence_for(ttl_kind)
+    if ping_count == 0:
+        # First probe fires once the pause has lasted one cadence since the last
+        # real activity (TTL-minus-margin) -- not before.
+        since = float(now) - last_activity
+    else:
+        try:
+            last_ping = float(pings[-1])
+        except (TypeError, ValueError):
+            last_ping = last_activity
+        since = float(now) - last_ping
+    if since < cadence:
+        return {"action": "wait", "reason": "cadence-not-due", "phase": phase}
+
+    return {"action": "ping", "reason": "due", "phase": phase}
+
+
+def _keepwarm_ledger_path():
+    return SNAPSHOT_DIR / _KEEPWARM_LEDGER_NAME
+
+
+def _keepwarm_ledger_append(row):
+    """Atomically append one 0600 row to the keep-warm ledger. Never raises.
+
+    Shares the arm-writer's 0600-before-first-append discipline via
+    _keepwarm_append_line (R4/R6). Used for BOTH the pre-fire 'firing' spend row
+    and the post-fire outcome row.
+    """
+    try:
+        line = json.dumps(row) + "\n"
+    except (TypeError, ValueError):
+        return False
+    return _keepwarm_append_line(_keepwarm_ledger_path(), line)
+
+
+def _keepwarm_scrub_error_reason(stderr, rc, max_len=120):
+    """Bounded, secret/path-scrubbed error reason for an rc!=0 ping outcome row.
+
+    The ping prompt is a fixed "Reply with exactly: ok", so stderr never carries
+    user content -- but it may carry absolute paths or tokens from the CLI, so we
+    strip anything path-like and cap the length. Falls back to 'rc-N' when stderr
+    is empty. Pure; never raises.
+    """
+    try:
+        s = (stderr or "").strip().replace("\n", " ").replace("\r", " ")
+        # Drop absolute paths (keep basenames) and anything resembling a token.
+        s = re.sub(r"(/[^\s]+/)([^\s/]+)", r"\2", s)
+        s = re.sub(r"sk-[A-Za-z0-9_-]{6,}", "<redacted>", s)
+        s = re.sub(r"\s+", " ", s).strip()
+        if not s:
+            return "rc-%s" % rc
+        snippet = s[:max_len]
+        return "rc-%s: %s" % (rc, snippet)
+    except Exception:
+        return "rc-%s" % rc
+
+
+def _keepwarm_acquire_ping_lock(session_id, now=None):
+    """Per-session pidfile-style exclusive lock (O_CREAT|O_EXCL), NOT flock.
+
+    flock is released when the tick PROCESS exits, which is exactly the wrong
+    lifetime here: a ping that outlives one tick must still exclude the next
+    tick's ping for the same session. A pidfile excludes ACROSS tick invocations.
+    Stale locks (owning PID gone AND old mtime) are reclaimed. Returns the lock
+    path on success or None if another live ping holds it.
+    """
+    if now is None:
+        now = time.time()
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", str(session_id))[:120] or "unknown"
+    lock_path = SNAPSHOT_DIR / (_KEEPWARM_PING_LOCK_PREFIX + safe + ".lock")
+    try:
+        SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+
+    def _try_create():
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            return False
+        except OSError:
+            return False
+        try:
+            os.write(fd, str(os.getpid()).encode("ascii"))
+        except OSError:
+            pass
+        finally:
+            os.close(fd)
+        return True
+
+    if _try_create():
+        return lock_path
+    # Lock exists. Reclaim if stale (dead owner or old mtime).
+    try:
+        st = lock_path.stat()
+        age = now - st.st_mtime
+        owner_pid = None
+        try:
+            owner_pid = int(lock_path.read_text(encoding="utf-8").strip() or 0)
+        except (OSError, ValueError):
+            owner_pid = None
+        alive = False
+        if owner_pid and owner_pid > 0:
+            try:
+                os.kill(owner_pid, 0)
+                alive = True
+            except ProcessLookupError:
+                alive = False
+            except PermissionError:
+                alive = True  # exists but not ours -> treat as live
+            except OSError:
+                alive = False
+        if not alive and age > _KEEPWARM_STALE_LOCK_SECONDS:
+            try:
+                os.unlink(str(lock_path))
+            except OSError:
+                return None
+            if _try_create():
+                return lock_path
+    except OSError:
+        return None
+    return None
+
+
+def _keepwarm_release_ping_lock(lock_path):
+    """Best-effort remove a per-session ping lock. Never raises."""
+    if not lock_path:
+        return
+    try:
+        os.unlink(str(lock_path))
+    except OSError:
+        pass
+
+
+def _keepwarm_cwd_is_contained(resolved):
+    """True iff a realpath'd dir is a plausible project dir we may cd into (M2).
+
+    Containment roots: the user's HOME and the private temp roots (TMPDIR,
+    /tmp, /private/var/folders on macOS). A transcript-supplied cwd that resolves
+    OUTSIDE these (e.g. /etc, /, an attacker symlink target) is rejected so a
+    poisoned transcript cannot redirect the ping's working dir into a directory
+    carrying a hostile project-scoped .claude/ config.
+    """
+    try:
+        rp = os.path.realpath(str(resolved))
+    except OSError:
+        return False
+    roots = []
+    try:
+        roots.append(os.path.realpath(str(Path.home())))
+    except OSError:
+        pass
+    for env_key in ("TMPDIR",):
+        val = os.environ.get(env_key)
+        if val:
+            try:
+                roots.append(os.path.realpath(val))
+            except OSError:
+                pass
+    for base in ("/tmp", "/private/tmp", "/private/var/folders", "/var/folders"):
+        try:
+            roots.append(os.path.realpath(base))
+        except OSError:
+            pass
+    for root in roots:
+        if not root:
+            continue
+        if rp == root or rp.startswith(root + os.sep):
+            return True
+    return False
+
+
+def _keepwarm_extract_cwd(transcript_path):
+    """Return the session's ORIGINAL project cwd from the transcript, or None.
+
+    Sessions resolve per project dir, so the ping MUST run with cwd = the
+    session's original cwd (verified U1). Transcript event records carry a 'cwd'
+    field; we scan the tail for the most recent non-empty one.
+
+    The cwd is attacker-influenceable (the transcript is a same-UID-writable
+    JSONL file), so it is hardened (security M2 / checklist cwd): the value is
+    rejected unless it contains no '..' segment, realpath-resolves (following
+    symlinks) to an EXISTING directory, and that resolved dir is contained under
+    HOME or a private temp root. Any failure -> None (caller skips; never guess).
+    """
+    lines = _keepwarm_read_tail(transcript_path)
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(rec, dict):
+            continue
+        cwd = rec.get("cwd")
+        if not (isinstance(cwd, str) and cwd.strip()):
+            continue
+        # Reject path-traversal segments outright (defense in depth before realpath).
+        if ".." in Path(cwd).parts:
+            return None
+        try:
+            resolved = os.path.realpath(cwd)
+            if not Path(resolved).is_dir():
+                return None
+        except OSError:
+            return None
+        if not _keepwarm_cwd_is_contained(resolved):
+            return None
+        return resolved
+    return None
+
+
+# Charset gate for values placed after `claude` flags (security M1). Model IDs and
+# session IDs are both [A-Za-z0-9._-]; anything else (whitespace, leading-dash flag
+# spoofing, shell metacharacters, control bytes) is rejected before the subprocess.
+_KEEPWARM_ARG_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+
+
+def _keepwarm_valid_arg(value):
+    """True iff `value` is a safe post-flag subprocess arg (^[A-Za-z0-9._-]{1,128}$)."""
+    return isinstance(value, str) and bool(_KEEPWARM_ARG_RE.match(value))
+
+
+def _keepwarm_build_ping_cmd(session_id, model, claude_bin="claude",
+                             budget_usd=_KEEPWARM_PING_BUDGET_USD):
+    """The U1-verified ping command (form A): resume, print, no persistence.
+
+    `claude_bin` is the fire-time-resolved absolute path (infra F6); callers pass
+    the resolved binary so launchd's empty PATH cannot break the spawn.
+    """
+    return [
+        claude_bin,
+        "--resume", str(session_id),
+        "-p", _KEEPWARM_PING_PROMPT,
+        "--no-session-persistence",
+        "--model", str(model),
+        "--max-budget-usd", str(budget_usd),
+        "--output-format", "json",
+    ]
+
+
+def _keepwarm_parse_ping_json(stdout):
+    """Pull (cost, cache_read, cache_write, session_id) from a ping's JSON output.
+
+    Tolerant of extra fields and of the usage living either at top level or
+    nested under 'usage'/'cache_creation'. Returns a dict of parsed numbers
+    (zeros on absence). Never raises.
+    """
+    out = {"cost_usd": 0.0, "cache_read": 0, "cache_write": 0, "session_id": None}
+    try:
+        data = json.loads(stdout)
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return out
+    if not isinstance(data, dict):
+        return out
+    out["session_id"] = data.get("session_id")
+    try:
+        out["cost_usd"] = float(data.get("total_cost_usd", 0) or 0)
+    except (TypeError, ValueError):
+        out["cost_usd"] = 0.0
+    usage = data.get("usage")
+    if isinstance(usage, dict):
+        try:
+            out["cache_read"] = int(usage.get("cache_read_input_tokens", 0) or 0)
+        except (TypeError, ValueError):
+            out["cache_read"] = 0
+        try:
+            out["cache_write"] = int(usage.get("cache_creation_input_tokens", 0) or 0)
+        except (TypeError, ValueError):
+            out["cache_write"] = 0
+        if out["cache_write"] == 0:
+            nested = usage.get("cache_creation")
+            if isinstance(nested, dict):
+                try:
+                    out["cache_write"] = int(
+                        (nested.get("ephemeral_1h_input_tokens", 0) or 0)
+                        + (nested.get("ephemeral_5m_input_tokens", 0) or 0))
+                except (TypeError, ValueError):
+                    out["cache_write"] = 0
+    return out
+
+
+def _keepwarm_fire_ping(record, now=None, runner=None):
+    """Fire ONE keep-warm ping for an armed record. The only side-effectful path.
+
+    Sequence (R4 invariants, KTD-3 anti-recursion + crash-can't-hide-spend):
+      1. Per-session pidfile lock (excludes across tick invocations). Held for
+         the whole fire so two racing ticks can never double-fire one session.
+      2. Idle re-check: the transcript mtime must be unchanged for the last
+         IDLE_RECHECK seconds, else the session may be live -> skip
+         ('recently-active'); NEVER ping a live turn.
+      3. Resolve the model (skip if missing) and the ORIGINAL cwd from the
+         transcript (skip if absent / gone -- never guess).
+      4. Pre-log a 'firing' spend row to the ledger BEFORE the subprocess, so a
+         crash mid-ping cannot hide that we spent.
+      5. Run the U1 CLI ping with TOKEN_OPTIMIZER_KEEPWARM_PING=1 in the child
+         env (defense in depth: the child's own Stop hook self-suppresses) and
+         cwd = the session's project dir, 180s timeout, NO in-call retry.
+      6. Append an outcome row (status ok|error|timeout, cost, tokens, duration).
+
+    Returns a result dict {fired: bool, status, reason, ...}. Never raises.
+    `runner` is injectable for tests (a fake claude shim); defaults to
+    subprocess.run so production needs no shim.
+    """
+    if now is None:
+        now = time.time()
+    result = {"fired": False, "status": "skip", "reason": "", "session_id": None}
+    sid = record.get("session_id")
+    result["session_id"] = sid
+    transcript_path = record.get("transcript_path")
+    model = record.get("model")
+
+    if not sid or not transcript_path:
+        result["reason"] = "missing-session"
+        return result
+    if not model:
+        result["reason"] = "missing-model"
+        return result
+    # Charset gate BEFORE any subprocess arg construction (security M1). session_id
+    # comes from hook stdin, model verbatim from the transcript; a leading-dash or
+    # metacharacter value is rejected (booked skip/invalid-field, logged) rather
+    # than handed to the claude CLI.
+    if not _keepwarm_valid_arg(str(sid)):
+        result["reason"] = "invalid-session-id"
+        _keepwarm_scheduler_log_append({
+            "ts": float(time.time()), "event": "ping_skip",
+            "reason": "invalid-session-id"})
+        return result
+    if not _keepwarm_valid_arg(str(model)):
+        result["reason"] = "invalid-model"
+        _keepwarm_scheduler_log_append({
+            "ts": float(time.time()), "event": "ping_skip",
+            "reason": "invalid-model", "session_id": str(sid)})
+        return result
+
+    lock_path = _keepwarm_acquire_ping_lock(sid, now=now)
+    if lock_path is None:
+        result["reason"] = "locked"
+        return result
+    try:
+        # Idle re-check immediately before exec (R4).
+        tp = Path(transcript_path)
+        try:
+            mtime = tp.stat().st_mtime
+        except OSError:
+            result["reason"] = "transcript-gone"
+            return result
+        if (now - mtime) < _KEEPWARM_IDLE_RECHECK_SECONDS:
+            result["reason"] = "recently-active"
+            return result
+
+        cwd = _keepwarm_extract_cwd(tp)
+        if not cwd:
+            result["reason"] = "no-cwd"
+            return result
+
+        prefix = 0
+        try:
+            prefix = int(record.get("prefix_proxy", 0) or 0)
+        except (TypeError, ValueError):
+            prefix = 0
+        est_cost = _keepwarm_ping_cost_est(prefix, model)
+
+        # 4. Pre-log spend BEFORE firing (a crash can't hide spend).
+        _keepwarm_ledger_append({
+            "session_id": str(sid),
+            "ts": float(now),
+            "status": "firing",
+            "phase": record.get("_phase", "probe"),
+            "model": model,
+            "prefix_proxy": prefix,
+            "est_cost_usd": est_cost,
+        })
+
+        status = "ok"
+        reason = "ok"
+        rc = None
+        parsed = {"cost_usd": 0.0, "cache_read": 0, "cache_write": 0}
+        duration = 0.0
+
+        # Resolve the claude binary to an absolute path at FIRE time (infra F6 /
+        # LIVE BUG). Unresolvable -> book a distinct 'claude-not-found' error
+        # outcome (the firing row is already pre-logged) so the launchd empty-PATH
+        # case is diagnosable rather than a generic spawn error.
+        if runner is None:
+            claude_bin = _keepwarm_resolve_claude_bin()
+            if claude_bin is None:
+                outcome = {
+                    "session_id": str(sid), "ts": float(time.time()),
+                    "status": "error", "phase": record.get("_phase", "probe"),
+                    "model": model, "cost_usd": 0.0, "cache_read": 0,
+                    "cache_write": 0, "duration_s": 0.0,
+                    "reason": "claude-not-found",
+                }
+                _keepwarm_ledger_append(outcome)
+                result["status"] = "error"
+                result["reason"] = "claude-not-found"
+                return result
+        else:
+            claude_bin = "claude"  # injected runner ignores argv[0] resolution
+
+        cmd = _keepwarm_build_ping_cmd(sid, model, claude_bin=claude_bin)
+        # Allowlisted child env (infra F2): only the variables the ping genuinely
+        # needs. Inheriting the full os.environ leaked unrelated secrets/config
+        # into the claude child; here we pass PATH/HOME/TMPDIR/locale, the
+        # anti-recursion marker, and the API credentials IF present -- nothing else.
+        child_env = {_KEEPWARM_PING_ENV: "1"}
+        for key in ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL",
+                    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
+            val = os.environ.get(key)
+            if val is not None:
+                child_env[key] = val
+        # Ensure the resolved binary's dir is on PATH (belt+suspenders for launchd).
+        try:
+            bin_dir = os.path.dirname(claude_bin)
+            if bin_dir:
+                existing = child_env.get("PATH", "")
+                if bin_dir not in existing.split(os.pathsep):
+                    child_env["PATH"] = (
+                        bin_dir + (os.pathsep + existing if existing else ""))
+        except Exception:
+            pass
+
+        if runner is None:
+            def runner(cmd, cwd, env, timeout):  # noqa: A001 - injectable default
+                return subprocess.run(
+                    cmd, cwd=cwd, env=env, timeout=timeout,
+                    capture_output=True, text=True)
+
+        # Real monotonic start (NOT the injected logical `now`) so duration_s is
+        # sane even on backfill/replay paths that pass a synthetic now (lang M1).
+        wall_start = time.monotonic()
+        try:
+            proc = runner(cmd, cwd, child_env, _KEEPWARM_PING_TIMEOUT_SECONDS)
+            duration = max(0.0, time.monotonic() - wall_start)
+            rc = getattr(proc, "returncode", 1)
+            stdout = getattr(proc, "stdout", "") or ""
+            if rc == 0:
+                parsed = _keepwarm_parse_ping_json(stdout)
+                status = "ok"
+                reason = "ok"
+                result["fired"] = True
+            else:
+                status = "error"
+                # Persist a bounded, path/secret-scrubbed stderr tail so a field
+                # user can see WHY every ping fails (auth/budget/cwd/resume).
+                stderr = getattr(proc, "stderr", "") or ""
+                reason = _keepwarm_scrub_error_reason(stderr, rc)
+        except subprocess.TimeoutExpired:
+            duration = max(0.0, time.monotonic() - wall_start)
+            status = "timeout"
+            reason = "timeout"
+        except Exception as exc:  # any spawn failure -> booked error, no raise
+            duration = max(0.0, time.monotonic() - wall_start)
+            status = "error"
+            reason = "exc-%s" % type(exc).__name__
+
+        # 6. Outcome row (always written, even on error/timeout). Carries the
+        # error reason + returncode so 100%-error runs are diagnosable.
+        outcome = {
+            "session_id": str(sid),
+            "ts": float(time.time()),
+            "status": status,
+            "phase": record.get("_phase", "probe"),
+            "model": model,
+            "cost_usd": float(parsed.get("cost_usd", 0.0) or 0.0),
+            "cache_read": int(parsed.get("cache_read", 0) or 0),
+            "cache_write": int(parsed.get("cache_write", 0) or 0),
+            "duration_s": round(duration, 3),
+        }
+        if status != "ok":
+            outcome["reason"] = reason
+            if rc is not None:
+                outcome["rc"] = int(rc)
+        _keepwarm_ledger_append(outcome)
+        result["status"] = status
+        result["reason"] = reason
+        result["cost_usd"] = float(parsed.get("cost_usd", 0.0) or 0.0)
+        result["cache_read"] = int(parsed.get("cache_read", 0) or 0)
+        return result
+    finally:
+        _keepwarm_release_ping_lock(lock_path)
+
+
+def _keepwarm_emit_tick_observability(now, allowed, reason, armed, fired,
+                                      skipped, booked, errors):
+    """Write ONE structured tick line to the scheduler log + the freshness stamp.
+
+    Called on every REAL (non-dry) tick, including gate-refused ones, so the field
+    can always answer 'did the scheduler run / why didn't it ping / is it
+    erroring' (torture FIX-A6a/c). Best-effort; never raises.
+    """
+    payload = {
+        "ts": float(now),
+        "event": "tick",
+        "allowed": bool(allowed),
+        "reason": reason,
+        "armed": int(armed),
+        "fired": int(fired),
+        "skipped": int(skipped),
+        "booked": int(booked),
+        "errors": int(errors),
+    }
+    try:
+        _keepwarm_scheduler_log_append(payload)
+    except Exception:
+        pass
+    try:
+        _keepwarm_write_tick_stamp(payload, now=now)
+    except Exception:
+        pass
+
+
+@contextmanager
+def _keepwarm_tick_singleton():
+    """Yield True iff this process holds the whole-tick single-instance lock.
+
+    Pidfile-style (O_CREAT|O_EXCL) so a hung/long tick blocks the next scheduled
+    tick rather than overlapping it. Stale locks (dead owner + old mtime) are
+    reclaimed. Yields False (caller exits quietly) when another tick is live.
+    """
+    held = False
+    lock_path = SNAPSHOT_DIR / _KEEPWARM_TICK_LOCK_NAME
+    fd = None
+    try:
+        try:
+            SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            yield False
+            return
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            # Reclaim if stale.
+            now = time.time()
+            try:
+                st = lock_path.stat()
+                owner = None
+                try:
+                    owner = int(lock_path.read_text(encoding="utf-8").strip() or 0)
+                except (OSError, ValueError):
+                    owner = None
+                alive = False
+                if owner and owner > 0:
+                    try:
+                        os.kill(owner, 0)
+                        alive = True
+                    except ProcessLookupError:
+                        alive = False
+                    except PermissionError:
+                        alive = True
+                    except OSError:
+                        alive = False
+                if not alive and (now - st.st_mtime) > _KEEPWARM_STALE_LOCK_SECONDS:
+                    try:
+                        os.unlink(str(lock_path))
+                        fd = os.open(str(lock_path),
+                                     os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                    except OSError:
+                        yield False
+                        return
+                else:
+                    yield False
+                    return
+            except OSError:
+                yield False
+                return
+        except OSError:
+            yield False
+            return
+        try:
+            os.write(fd, str(os.getpid()).encode("ascii"))
+        except OSError:
+            pass
+        held = True
+        yield True
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if held:
+            try:
+                os.unlink(str(lock_path))
+            except OSError:
+                pass
+
+
+def keepwarm_tick(now=None, dry_run=False, env=None, runner=None,
+                  gate=None, tripwire_state=None, history_stats=None):
+    """One keep-warm tick: gate -> load -> classify -> decide -> fire.
+
+    Order (every step fail-closed; one record's failure never blocks the rest):
+      1. keepwarm_gate() FIRST -- if not allowed (subscription / not consented /
+         ping-process), return immediately with the gate reason; NOTHING fires.
+      2. Single-instance tick lock -- if another tick is live, skip quietly.
+      3a. keepwarm_detect_realized() (U7, KTD-4) -- BEFORE compaction, because
+          compaction drops resumed records. Books realized/loss rows off the
+          resumed turn's REAL usage, never off the 'resumed' classification.
+      3b. evaluate_keepwarm_tripwire() (U7, KTD-8) -- refresh the rolling-7d
+          ratio + sticky demotion ladder from the ledger.
+      3c. compact_keepwarm_sidecar() -- drop resumed/gone/expired records (the
+          disarm path; KTD-5). U3 writes ONLY ping spend + outcome rows here.
+      4. For each surviving still_paused record: policy decision; on 'ping' fire
+         (unless dry_run) and append the ping ts to the record's pings_fired,
+         then rewrite the sidecar with the updated records.
+
+    Returns a summary dict {allowed, reason, decisions:[...], fired:int,
+    skipped:int}. dry_run prints/returns decisions without firing anything.
+    `gate`/`runner` are injectable for tests; defaults use the real gate and
+    subprocess.
+    """
+    if now is None:
+        now = time.time()
+    if env is None:
+        env = os.environ
+    if gate is None:
+        gate = keepwarm_gate
+    summary = {"allowed": False, "reason": "", "decisions": [],
+               "fired": 0, "skipped": 0}
+
+    # Stage-error counter for the per-tick observability line (FIX-A6a). A
+    # gate-refused tick is NOT an error; only thrown stages count.
+    stage_errors = 0
+    booked_realized = 0
+
+    allowed, reason = gate(env=env)
+    summary["reason"] = reason
+    if not allowed:
+        # Gate refusal is the silent-exit path (subscription / unconsented /
+        # ping-process). Nothing loads, nothing fires. Still record ONE tick line
+        # + stamp so 'why didn't it ping' is answerable and freshness is tracked.
+        if not dry_run:
+            _keepwarm_emit_tick_observability(
+                now=now, allowed=False, reason=reason, armed=0, fired=0,
+                skipped=0, booked=0, errors=0)
+        return summary
+    summary["allowed"] = True
+
+    with _keepwarm_tick_singleton() as held:
+        if not held:
+            summary["reason"] = "tick-already-running"
+            return summary
+
+        # 3a. REALIZED detection (U7, KTD-4) BEFORE compaction: compaction drops
+        # resumed records, so the only-place-savings-are-booked step must run on
+        # the still-present resumed records first. Books a realized savings row
+        # (warm resume) or a ledger loss row (cold resume), idempotent per pause;
+        # a resume the transcript can't prove warm books NOTHING.
+        try:
+            det = keepwarm_detect_realized(now=now)
+            booked_realized = int(det.get("realized", 0) or 0)
+            stage_errors += int(det.get("errors", 0) or 0)
+        except Exception:
+            stage_errors += 1
+
+        # 3b. Tripwire evaluation (U7, KTD-8): refresh the rolling-7d ratio +
+        # demotion ladder from the ledger so the gate's tripwire-off ceiling and
+        # the dashboard ratio stay current. Sticky + fail-closed; never raises.
+        try:
+            evaluate_keepwarm_tripwire(now=now)
+        except Exception:
+            stage_errors += 1
+
+        # 3c. Disarm pass (drops resumed/gone/expired). Realized already booked.
+        try:
+            compact_keepwarm_sidecar(now=now)
+        except Exception:
+            stage_errors += 1
+
+        # 3d. Ledger compaction (FIX-A4): trim the spend/outcome ledger to the
+        # last 30d (or when >5MB). Safe AFTER detect_realized (3a) booked this
+        # tick's realized rows -- the SQLite UNIQUE index, not the ledger marker,
+        # is the dedup authority, so old markers can drop without risking a
+        # re-book. Best-effort; never blocks the tick.
+        try:
+            _keepwarm_compact_ledger(now=now)
+        except Exception:
+            stage_errors += 1
+
+        records = load_keepwarm_records()
+        changed = False
+        for rec in records:
+            sid = rec.get("session_id")
+            try:
+                verdict = classify_keepwarm_record(rec, now=now)
+            except Exception:
+                verdict = "gone"
+            if verdict != "still_paused":
+                # Resumed/gone are handled by compaction; never fire, never book.
+                summary["decisions"].append(
+                    {"session_id": sid, "action": "stop",
+                     "reason": "not-paused-%s" % verdict, "phase": "probe"})
+                continue
+            try:
+                decision = keepwarm_policy_decision(
+                    rec, now, tripwire_state=tripwire_state,
+                    history_stats=history_stats)
+            except Exception:
+                decision = {"action": "stop", "reason": "policy-error",
+                            "phase": "probe"}
+            entry = {"session_id": sid, "action": decision.get("action"),
+                     "reason": decision.get("reason"),
+                     "phase": decision.get("phase")}
+            summary["decisions"].append(entry)
+
+            if decision.get("action") != "ping":
+                continue
+            if dry_run:
+                # Dry-run fires nothing; the decision is still reported.
+                continue
+            # Stamp the phase so the executor's ledger rows carry it.
+            rec["_phase"] = decision.get("phase", "probe")
+            try:
+                fire = _keepwarm_fire_ping(rec, now=now, runner=runner)
+            except Exception:
+                fire = {"fired": False, "status": "error", "reason": "fire-error"}
+                stage_errors += 1
+            rec.pop("_phase", None)
+            entry["fire_status"] = fire.get("status")
+            entry["fire_reason"] = fire.get("reason")
+            if fire.get("fired"):
+                summary["fired"] += 1
+                pings = rec.get("pings_fired")
+                if not isinstance(pings, list):
+                    pings = []
+                pings.append(float(now))
+                rec["pings_fired"] = pings
+                changed = True
+            else:
+                summary["skipped"] += 1
+
+        # Persist updated ping counters (extends the record dict; U2's
+        # _valid_keepwarm_record tolerates extra keys).
+        if changed:
+            try:
+                _keepwarm_rewrite_records(records, now=now)
+            except Exception:
+                stage_errors += 1
+
+    # One structured observability line + freshness stamp per REAL tick (even
+    # under --quiet), so the field can answer 'did it run / why didn't it ping /
+    # is it erroring' (FIX-A6a/c). dry-run logs nothing (no real run happened).
+    if not dry_run:
+        _keepwarm_emit_tick_observability(
+            now=now, allowed=True, reason=summary.get("reason", ""),
+            armed=len(summary.get("decisions", [])),
+            fired=summary.get("fired", 0), skipped=summary.get("skipped", 0),
+            booked=booked_realized, errors=stage_errors)
+    summary["errors"] = stage_errors
+    return summary
+
+
+def _keepwarm_rewrite_records(records, now=None):
+    """Atomically rewrite the whole sidecar with `records` (0600, under flock).
+
+    Used by the tick to persist appended pings_fired entries. Mirrors
+    compact_keepwarm_sidecar's atomic rewrite. Never raises.
+    """
+    if now is None:
+        now = time.time()
+    path = _keepwarm_sidecar_path()
+    try:
+        with _keepwarm_lock():
+            try:
+                SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+                fd, tmp_name = tempfile.mkstemp(
+                    prefix=".keepwarm_state.", suffix=".tmp", dir=str(SNAPSHOT_DIR))
+                try:
+                    if hasattr(os, "fchmod"):
+                        os.fchmod(fd, 0o600)
+                    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                        for rec in records:
+                            if _valid_keepwarm_record(rec):
+                                fh.write(json.dumps(rec) + "\n")
+                    os.replace(tmp_name, str(path))
+                except Exception:
+                    try:
+                        os.unlink(tmp_name)
+                    except OSError:
+                        pass
+                    raise
+            except OSError:
+                pass
+    except Exception:
+        pass
+
+
+# ========== Keep-warm resume predictor + history-backfill (U6) ==========
+# The +$119 simulation gated sustain on hindsight (it knew which pauses resumed).
+# Live code cannot. U6 ships an IMPLEMENTABLE predictor scored ONLY on features a
+# tick can compute at ping time, then proves on the real 30d history that turning
+# sustain on with that predictor still beats probe-only > 0 before promotion.
+#
+# Two hard properties (oracle-leakage guards, asserted by tests):
+#   * The predictor's features are all computable from data that exists AT or
+#     BEFORE the ping instant: the session's own past resume count, sibling/
+#     machine activity in the recent window ENDING at the ping time, and the
+#     elapsed-time survival prior. None reads the future (whether THIS pause will
+#     resume). The replay reconstructs each feature as-of the ping time only.
+#   * The predictor is a pure function over an injected feature dict; it never
+#     touches the filesystem or clock. Backfill feeds reconstructed-at-ping-time
+#     features; the live tick (U7) will feed real mtime scans through the same
+#     signature. A "future-only" signal handed in is structurally ignored.
+
+# Score weights (transparent, tunable). A pause is predicted to continue (sustain
+# allowed) when the summed score clears the threshold. The survival prior is the
+# dominant term: a pause already well past the dense 1-2h resume cluster is a poor
+# bet no matter the side signals.
+_KEEPWARM_PRED_W_PRIOR_RESUMES = 0.30   # session has its own history of >1h resumes
+_KEEPWARM_PRED_W_SIBLING = 0.20         # another transcript in the SAME project is warm
+_KEEPWARM_PRED_W_MACHINE = 0.10         # any machine-level Claude activity recently
+_KEEPWARM_PRED_W_SURVIVAL = 1.0         # weight on P(resume|elapsed) survival prior
+_KEEPWARM_PRED_THRESHOLD = 0.30         # continue sustain when score >= this
+# Recency window (seconds) for sibling / machine activity signals. A sibling or
+# machine touched within this window of the ping time counts as "active".
+_KEEPWARM_PRED_ACTIVITY_WINDOW_SECONDS = 2 * 3600
+
+
+def keepwarm_resume_predictor(features):
+    """PURE resume predictor. Score implementable, ping-time-computable features.
+
+    `features` is a plain dict (injected by the caller — the backfill replay or
+    the live tick); this function never reads the filesystem or the clock, so it
+    cannot see the future and the oracle-leakage guard is structural.
+
+    Recognized feature keys (all OPTIONAL; missing -> neutral/zero):
+      prior_resume_count : int   -- how many >1h-gap resumes THIS session already
+                                    had before the ping (from its own transcript
+                                    tail / the watchdog gap history). Capped to a
+                                    small saturating contribution.
+      sibling_active     : bool  -- any OTHER transcript in the same project dir
+                                    modified within the activity window ENDING at
+                                    the ping time.
+      machine_active     : bool  -- any transcript under ~/.claude/projects
+                                    modified within the activity window ending at
+                                    the ping time.
+      survival_p         : float -- P(resume | still paused at elapsed) from the
+                                    local survival table, evaluated at the ping's
+                                    elapsed time. The caller supplies it (it is a
+                                    function of elapsed, a ping-time quantity).
+
+    Returns a dict (transparency: the dashboard renders WHY):
+      {predictor_continue: bool, score: float, threshold: float, features: {...}}
+    where `features` echoes the (sanitized) named inputs that drove the score.
+    """
+    f = features if isinstance(features, dict) else {}
+
+    try:
+        prior = int(f.get("prior_resume_count", 0) or 0)
+    except (TypeError, ValueError):
+        prior = 0
+    prior = max(0, prior)
+    # Saturating: 1+ prior resumes already signals a resumer; 2+ does not keep
+    # paying. The weight is the full contribution at >=2.
+    prior_term = _KEEPWARM_PRED_W_PRIOR_RESUMES * min(1.0, prior / 2.0)
+
+    sibling = bool(f.get("sibling_active", False))
+    machine = bool(f.get("machine_active", False))
+    sibling_term = _KEEPWARM_PRED_W_SIBLING if sibling else 0.0
+    machine_term = _KEEPWARM_PRED_W_MACHINE if machine else 0.0
+
+    try:
+        survival_p = float(f.get("survival_p", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        survival_p = 0.0
+    survival_p = max(0.0, min(1.0, survival_p))
+    survival_term = _KEEPWARM_PRED_W_SURVIVAL * survival_p
+
+    score = prior_term + sibling_term + machine_term + survival_term
+    cont = score >= _KEEPWARM_PRED_THRESHOLD
+    return {
+        "predictor_continue": bool(cont),
+        "score": round(score, 6),
+        "threshold": _KEEPWARM_PRED_THRESHOLD,
+        "features": {
+            "prior_resume_count": prior,
+            "sibling_active": sibling,
+            "machine_active": machine,
+            "survival_p": round(survival_p, 6),
+        },
+    }
+
+
+# --- History reconstruction: rebuild per-session pause events from transcripts.
+# A "pause event" is a >1h gap between two consecutive usage turns whose next turn
+# RE-WRITES the prior cached prefix (the watchdog's exact waste criterion); the
+# avoided write is the right-hand side of break-even. A "tail" is the final turn
+# of a session that never resumed within the window. Replay charges probe cost to
+# tails and books savings only on covered, resumed pauses (the honesty rule).
+
+def _keepwarm_reconstruct_session_events(turns, now):
+    """Turn one session's parsed turns into pause events + a tail, for replay.
+
+    Pure (turns + now in; plain data out). Mirrors _detect_explicit_ttl's gap +
+    re-write criterion so the replayed economics reconcile with the watchdog.
+
+    Returns {"events": [...], "tail": {...} | None, "resume_times": [...]} where
+    each event is:
+      {pause_start_ts, resume_ts, elapsed (resume-pause), prefix_proxy, model,
+       ttl_kind, rewrote (bool), is_resume (always True here)}
+    and `resume_times` is the sorted list of this session's own resume epoch
+    seconds (used to count a session's PRIOR >1h resumes at any ping time).
+    The tail (last turn, never resumed in-window) is:
+      {pause_start_ts, prefix_proxy, model, ttl_kind}.
+    """
+    parsed = []
+    for t in turns:
+        epoch = _keepwarm_iso_to_epoch(t.get("timestamp"))
+        if epoch is None:
+            continue
+        parsed.append((epoch, t))
+    if not parsed:
+        return {"events": [], "tail": None, "resume_times": []}
+
+    model = _dominant_turn_model(turns)
+    ttl_kind = "1h" if _resolve_cache_profile(
+        model, runtime="claude")[0] == "claude_code" else "unknown"
+    boundary = _KEEPWARM_1H_WINDOW_SECONDS  # claude_code 1h boundary
+
+    events = []
+    resume_times = []
+    for i in range(1, len(parsed)):
+        prev_epoch, prev_turn = parsed[i - 1]
+        cur_epoch, cur_turn = parsed[i]
+        gap = cur_epoch - prev_epoch
+        if gap <= boundary:
+            continue
+        prev_cached = (int(prev_turn.get("cache_read", 0) or 0)
+                       + int(prev_turn.get("cache_creation", 0) or 0))
+        cc = int(cur_turn.get("cache_creation", 0) or 0)
+        if prev_cached <= 0:
+            continue
+        rewrote = cc >= _CACHE_REWRITE_PREFIX_FRACTION * prev_cached
+        resume_times.append(cur_epoch)
+        events.append({
+            "pause_start_ts": prev_epoch,
+            "resume_ts": cur_epoch,
+            "elapsed": gap,
+            "prefix_proxy": int(prev_cached),
+            "model": model,
+            "ttl_kind": ttl_kind,
+            "rewrote": bool(rewrote),
+            "is_resume": True,
+        })
+
+    last_epoch, last_turn = parsed[-1]
+    last_cached = (int(last_turn.get("cache_read", 0) or 0)
+                   + int(last_turn.get("cache_creation", 0) or 0))
+    tail = None
+    # Only a tail that idled past the boundary AND had a cacheable prefix is a
+    # ping candidate (matches the live arm eligibility floor downstream).
+    if last_cached > 0 and (now - last_epoch) > boundary:
+        tail = {
+            "pause_start_ts": last_epoch,
+            "prefix_proxy": int(last_cached),
+            "model": model,
+            "ttl_kind": ttl_kind,
+        }
+    resume_times.sort()
+    return {"events": events, "tail": tail, "resume_times": resume_times}
+
+
+def _keepwarm_replay_pause(pause, predictor_mode, now, project_resume_index=None,
+                           machine_resume_index=None, own_resume_times=None,
+                           is_tail=False):
+    """Replay the LIVE policy over one pause/tail and return (pings, cost, saving).
+
+    Drives keepwarm_policy_decision step by step exactly as the tick would, in
+    cadence-sized time steps, building the pings_fired list as the policy fires.
+    Three predictor_mode values:
+      "probe"   : predictor_continue always False  (probe-only floor).
+      "predictor": real keepwarm_resume_predictor on reconstructed-at-ping-time
+                   features.
+      "oracle"  : predictor_continue always True   (hindsight upper bound).
+
+    Honesty rules (KTD-4 / sim section 4):
+      * a SAVING is booked only when the pause actually resumed AND the ping
+        schedule covers the gap through the resume (every cache window from pause
+        start to resume_ts has a ping no older than one cadence at its start);
+      * partial coverage = cost, NO saving;
+      * a tail (never resumed) accrues its ping cost, never a saving.
+    Returns (n_pings, ping_cost_usd, saving_usd).
+    """
+    record = {
+        "session_id": "replay",
+        "transcript_path": "/replay",
+        "prefix_proxy": pause["prefix_proxy"],
+        "ttl_kind": pause["ttl_kind"],
+        "model": pause["model"],
+        "ts": pause["pause_start_ts"],
+        "last_turn_ts": pause["pause_start_ts"],
+        "pings_fired": [],
+    }
+    cadence = _keepwarm_cadence_for(pause["ttl_kind"])
+    resume_ts = None if is_tail else pause.get("resume_ts")
+    # The replay clock runs from pause start to resume (or to a sane horizon for a
+    # tail: the 12h hard cap, where the policy stops anyway).
+    horizon = (resume_ts if resume_ts is not None
+               else pause["pause_start_ts"] + _KEEPWARM_HARD_CAP_SECONDS)
+
+    ping_ts = []
+    clock = pause["pause_start_ts"]
+    # Step in cadence-sized increments; on each due 'ping' fire a ping at that
+    # instant (advance to a ping point exactly, like the scheduler's ~cadence
+    # wakeups). Bound the loop hard.
+    max_steps = int(_KEEPWARM_HARD_CAP_SECONDS / max(1, cadence)) + 4
+    steps = 0
+    while clock <= horizon and steps < max_steps:
+        steps += 1
+        decision = keepwarm_policy_decision(
+            record, clock,
+            tripwire_state={"allow_sustain": True},
+            history_stats=_keepwarm_replay_history_stats(
+                pause, predictor_mode, clock, project_resume_index,
+                machine_resume_index, own_resume_times))
+        action = decision.get("action")
+        if action == "stop":
+            break
+        if action == "ping":
+            ping_ts.append(clock)
+            record["pings_fired"] = list(ping_ts)
+            clock += cadence
+        else:  # wait -> jump to when the first ping becomes due
+            if not ping_ts:
+                since_needed = cadence - (clock - record["last_turn_ts"])
+            else:
+                since_needed = cadence - (clock - ping_ts[-1])
+            clock += max(cadence, since_needed) if since_needed > 0 else cadence
+
+    n_pings = len(ping_ts)
+    ping_cost = n_pings * _keepwarm_ping_cost_est(
+        pause["prefix_proxy"], pause["model"])
+
+    saving = 0.0
+    if (not is_tail) and resume_ts is not None and pause.get("rewrote") and n_pings > 0:
+        if _keepwarm_schedule_covers(ping_ts, pause["pause_start_ts"], resume_ts,
+                                     cadence):
+            # Covered + resumed + would have re-written: the re-write is avoided.
+            # Price it at the realized avoided write (full prefix at the write
+            # premium), NOT the P(resume)-discounted expectation -- this pause DID
+            # resume, so the whole write is genuinely spared.
+            key = _keepwarm_model_norm(pause["model"])
+            input_rate = _KEEPWARM_INPUT_USD_PER_TOKEN.get(
+                key, _KEEPWARM_INPUT_USD_PER_TOKEN["sonnet"])
+            premium = _KEEPWARM_WRITE_PREMIUM.get(
+                pause["ttl_kind"], _KEEPWARM_WRITE_PREMIUM["unknown"])
+            read_rate = _KEEPWARM_CACHE_READ_USD_PER_TOKEN.get(
+                key, _KEEPWARM_CACHE_READ_USD_PER_TOKEN["sonnet"])
+            prefix = max(0, int(pause["prefix_proxy"]))
+            paid_write = prefix * input_rate * premium
+            avoided_read = prefix * read_rate
+            saving = max(0.0, paid_write - avoided_read)
+    return n_pings, ping_cost, saving
+
+
+def _keepwarm_schedule_covers(ping_ts, pause_start, resume_ts, cadence):
+    """True if the ping schedule keeps the cache warm from pause_start to resume.
+
+    Coverage = the cache never lapses: the first ping fires within one cadence of
+    pause start, each subsequent ping within one cadence of the prior, and the
+    last ping is within one cadence of the resume. A single gap > cadence anywhere
+    means the cache expired in between -> the resume re-writes anyway -> NO saving
+    (partial coverage is pure cost). Conservative against keep-warm.
+    """
+    if not ping_ts:
+        return False
+    pts = sorted(ping_ts)
+    if pts[0] - pause_start > cadence:
+        return False
+    for a, b in zip(pts, pts[1:]):
+        if b - a > cadence:
+            return False
+    if resume_ts - pts[-1] > cadence:
+        return False
+    return True
+
+
+def _keepwarm_replay_history_stats(pause, predictor_mode, clock,
+                                   project_resume_index, machine_resume_index,
+                                   own_resume_times):
+    """Build the history_stats dict fed to the policy at one replay instant.
+
+    For "probe" -> predictor_continue False; for "oracle" -> True; for
+    "predictor" -> run keepwarm_resume_predictor on features reconstructed AS OF
+    `clock` only (the oracle-leakage guard: nothing here reads resume_ts or any
+    event after `clock`).
+    """
+    if predictor_mode == "probe":
+        return {"predictor_continue": False}
+    if predictor_mode == "oracle":
+        return {"predictor_continue": True}
+
+    # predictor mode: reconstruct ping-time features.
+    elapsed = max(0.0, clock - pause["pause_start_ts"])
+    survival_p = _keepwarm_p_resume(elapsed)
+    # prior >1h resumes of THIS session strictly BEFORE the current pause start
+    # (cannot include this pause's own resume -> no leakage).
+    prior = 0
+    for rt in (own_resume_times or []):
+        if rt < pause["pause_start_ts"]:
+            prior += 1
+    win = _KEEPWARM_PRED_ACTIVITY_WINDOW_SECONDS
+    sibling = _keepwarm_index_active(
+        project_resume_index, clock, win, exclude_ts=pause["pause_start_ts"])
+    machine = _keepwarm_index_active(
+        machine_resume_index, clock, win, exclude_ts=None)
+    return keepwarm_resume_predictor({
+        "prior_resume_count": prior,
+        "sibling_active": sibling,
+        "machine_active": machine,
+        "survival_p": survival_p,
+    })
+
+
+def _keepwarm_index_active(index, clock, window, exclude_ts=None):
+    """True if `index` has any activity timestamp in (clock-window, clock).
+
+    `index` is a SORTED list of activity epoch seconds (sibling turns in the
+    project, or all machine turns). STRICTLY before `clock` (no future leakage)
+    and within `window` of it. `exclude_ts` drops the pause's own activity so a
+    session is never counted as its own sibling/machine signal.
+
+    Bisect over the sorted index (torture FIX-A7): O(log n) instead of the prior
+    linear scan, which made backfill ~O(n^2) when sessions cluster in one project.
+    """
+    if not index:
+        return False
+    lo = clock - window
+    # Candidate slice = index entries strictly in (lo, clock).
+    left = bisect.bisect_right(index, lo)      # first entry > lo
+    right = bisect.bisect_left(index, clock)   # first entry >= clock
+    if left >= right:
+        return False
+    if exclude_ts is None:
+        return True
+    # Some entry in the slice exists; True unless the ONLY entry is the excluded
+    # one (within 1s). Cheap to confirm: scan just the (tiny in practice) window
+    # of entries near exclude_ts within the slice.
+    for i in range(left, right):
+        if abs(index[i] - exclude_ts) >= 1.0:
+            return True
+    return False
+
+
+def keepwarm_backfill(days=30, now=None, files=None, parse_fn=None):
+    """Replay the LIVE keep-warm policy over the last `days` of real history.
+
+    Reuses the watchdog's session source (_find_all_jsonl_files + the SAME
+    parse_session_turns the detector uses) so the replayed economics reconcile
+    with `_get_cache_ttl_waste`. Pure-ish: `files`/`parse_fn`/`now` are injectable
+    for deterministic tests (a fixed fixture replays identically).
+
+    Three modes (per the U6 plan + sim section 4):
+      probe-only       : predictor always False (the floor; sim +$13).
+      predictor-sustain: real predictor on reconstructed-at-ping-time features.
+      oracle-sustain   : hindsight upper bound (sim +$119).
+
+    Honesty: savings booked ONLY for resumed + covered pauses; tails accrue probe
+    cost. Returns a dict with per-mode {pings, ping_cost_usd, avoided_writes,
+    saving_usd, net_usd} plus reconciliation diagnostics.
+    """
+    if now is None:
+        now = time.time()
+    if files is None:
+        try:
+            files = [fp for fp, _m, _p in _find_all_jsonl_files(days)]
+        except Exception:
+            files = []
+    if parse_fn is None:
+        parse_fn = parse_session_turns
+
+    # First pass: reconstruct every session's events + tail, and a machine-wide
+    # index of all resume timestamps (for the machine-activity feature).
+    sessions = []  # list of (project_key, recon)
+    machine_resume_index = []
+    project_index = {}  # project_key -> sorted resume ts list
+    for fp in files:
+        try:
+            turns = parse_fn(fp)
+        except Exception:
+            continue
+        if not turns:
+            continue
+        recon = _keepwarm_reconstruct_session_events(turns, now)
+        if not recon["events"] and not recon["tail"]:
+            continue
+        try:
+            project_key = Path(fp).parent.name
+        except Exception:
+            project_key = ""
+        sessions.append((project_key, recon))
+        for rt in recon["resume_times"]:
+            machine_resume_index.append(rt)
+            project_index.setdefault(project_key, []).append(rt)
+    machine_resume_index.sort()
+    for k in project_index:
+        project_index[k].sort()
+
+    modes = {
+        "probe-only": "probe",
+        "predictor-sustain": "predictor",
+        "oracle-sustain": "oracle",
+    }
+    out = {m: {"pings": 0, "ping_cost_usd": 0.0, "avoided_writes": 0,
+               "saving_usd": 0.0, "net_usd": 0.0} for m in modes}
+
+    for project_key, recon in sessions:
+        own_resume_times = recon["resume_times"]
+        proj_idx = project_index.get(project_key, [])
+        for label, mode in modes.items():
+            agg = out[label]
+            for ev in recon["events"]:
+                # Eligibility floor mirrors the live policy (the policy enforces
+                # it too, but skipping here keeps tails/events symmetric).
+                if int(ev["prefix_proxy"]) < _KEEPWARM_PREFIX_FLOOR:
+                    continue
+                n, cost, saving = _keepwarm_replay_pause(
+                    ev, mode, now, project_resume_index=proj_idx,
+                    machine_resume_index=machine_resume_index,
+                    own_resume_times=own_resume_times, is_tail=False)
+                agg["pings"] += n
+                agg["ping_cost_usd"] += cost
+                agg["saving_usd"] += saving
+                if saving > 0:
+                    agg["avoided_writes"] += 1
+            if recon["tail"]:
+                if int(recon["tail"]["prefix_proxy"]) >= _KEEPWARM_PREFIX_FLOOR:
+                    n, cost, _ = _keepwarm_replay_pause(
+                        recon["tail"], mode, now, project_resume_index=proj_idx,
+                        machine_resume_index=machine_resume_index,
+                        own_resume_times=own_resume_times, is_tail=True)
+                    agg["pings"] += n
+                    agg["ping_cost_usd"] += cost
+
+    for label in out:
+        agg = out[label]
+        agg["net_usd"] = round(agg["saving_usd"] - agg["ping_cost_usd"], 4)
+        agg["saving_usd"] = round(agg["saving_usd"], 4)
+        agg["ping_cost_usd"] = round(agg["ping_cost_usd"], 4)
+
+    return {
+        "period_days": days,
+        "scanned_sessions": len(sessions),
+        "modes": out,
+    }
+
+
+# --- Promotion fence sidecar (0600). U7 will EXTEND this file with the rolling
+# tripwire ratio + demotion ladder; U6 only writes the backfill-gated promotion.
+
+_KEEPWARM_PROMOTION_NAME = "keepwarm_promotion.json"
+# Reconciliation bands (sim section 4): probe-only landed +$13 (allow window
+# drift); oracle-sustain landed +$119. If the replay is wildly outside these we
+# do NOT silently promote -- the caller reports the divergence.
+_KEEPWARM_RECON_PROBE_TARGET = 13.0
+_KEEPWARM_RECON_PROBE_TOL = 15.0
+_KEEPWARM_RECON_ORACLE_TARGET = 119.0
+_KEEPWARM_RECON_ORACLE_TOL_FRAC = 0.30
+
+
+def _keepwarm_promotion_path():
+    return SNAPSHOT_DIR / _KEEPWARM_PROMOTION_NAME
+
+
+def keepwarm_backfill_reconcile(result):
+    """Compare a backfill result to the offline sim bands. Returns a diag dict.
+
+    Never raises. {probe_net, oracle_net, probe_in_band, oracle_in_band, notes}.
+    A False band flag is a "investigate before trusting the fence" signal, not a
+    hard error (the caller reports it either way per the honesty rule).
+    """
+    try:
+        modes = result.get("modes", {})
+        probe_net = float(modes.get("probe-only", {}).get("net_usd", 0.0))
+        oracle_net = float(modes.get("oracle-sustain", {}).get("net_usd", 0.0))
+    except (TypeError, ValueError, AttributeError):
+        return {"probe_net": 0.0, "oracle_net": 0.0, "probe_in_band": False,
+                "oracle_in_band": False, "notes": "unparseable result"}
+    probe_in_band = abs(probe_net - _KEEPWARM_RECON_PROBE_TARGET) <= _KEEPWARM_RECON_PROBE_TOL
+    oracle_in_band = (
+        abs(oracle_net - _KEEPWARM_RECON_ORACLE_TARGET)
+        <= _KEEPWARM_RECON_ORACLE_TARGET * _KEEPWARM_RECON_ORACLE_TOL_FRAC)
+    return {
+        "probe_net": round(probe_net, 4),
+        "oracle_net": round(oracle_net, 4),
+        "probe_in_band": bool(probe_in_band),
+        "oracle_in_band": bool(oracle_in_band),
+        "notes": ("probe within sim band" if probe_in_band else
+                  "probe OUTSIDE sim band (+$13 +-$15)"),
+    }
+
+
+def keepwarm_promotion_decide(result):
+    """Decide sustain promotion from a backfill result. Pure (no IO).
+
+    PROMOTION FENCE (U6): sustain is allowed ONLY when
+        net(predictor-sustain) > net(probe-only) > 0
+    on the real replay. Returns {sustain_allowed, reason, basis} where `basis`
+    carries the three-mode nets so the sidecar/dashboard can show WHY.
+    """
+    modes = (result or {}).get("modes", {})
+
+    def _net(label):
+        try:
+            return float(modes.get(label, {}).get("net_usd", 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+
+    probe_net = _net("probe-only")
+    pred_net = _net("predictor-sustain")
+    oracle_net = _net("oracle-sustain")
+    basis = {
+        "probe_net_usd": round(probe_net, 4),
+        "predictor_net_usd": round(pred_net, 4),
+        "oracle_net_usd": round(oracle_net, 4),
+        "period_days": (result or {}).get("period_days"),
+        "scanned_sessions": (result or {}).get("scanned_sessions"),
+    }
+    if probe_net <= 0:
+        return {"sustain_allowed": False,
+                "reason": "probe-only-not-positive", "basis": basis}
+    if pred_net <= probe_net:
+        return {"sustain_allowed": False,
+                "reason": "predictor-not-better-than-probe", "basis": basis}
+    return {"sustain_allowed": True, "reason": "predictor-beats-probe", "basis": basis}
+
+
+def _keepwarm_write_promotion_sidecar(decision, now=None):
+    """Atomically write/refresh the 0600 promotion sidecar. Never raises.
+
+    Writes sustain_allowed + (when allowed) promoted_at + the replay basis. U7
+    EXTENDS this file (rolling ratio, demotion); U6 only owns the promotion
+    fields. Mirrors _write_tripwire_sidecar's mkstemp+fchmod+os.replace 0600
+    discipline. A non-promoting decision still writes the file (sustain_allowed
+    False) so the dashboard always has an honest current verdict.
+    """
+    if now is None:
+        now = time.time()
+    path = _keepwarm_promotion_path()
+    record = {
+        "sustain_allowed": bool(decision.get("sustain_allowed", False)),
+        "reason": decision.get("reason", ""),
+        "basis": decision.get("basis", {}),
+        "_cached_ts": now,
+    }
+    if record["sustain_allowed"]:
+        record["promoted_at"] = now
+    try:
+        SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=".keepwarm_promotion.", suffix=".tmp", dir=str(SNAPSHOT_DIR))
+        try:
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(record, fh)
+            os.replace(tmp_name, str(path))
+        except Exception:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
+    except Exception:
+        pass
+    return record
+
+
+def keepwarm_backfill_run(days=30, now=None, write_fence=True, files=None,
+                          parse_fn=None):
+    """Full U6 backfill: replay -> reconcile -> fence decision -> (write sidecar).
+
+    Returns {result, reconcile, decision, wrote_fence} so the CLI can render the
+    three-mode numbers, the reconciliation verdict, and the promotion outcome.
+    The fence is written ONLY when `write_fence` and the promotion gate passes
+    (net(predictor) > net(probe) > 0); a failing gate still records an honest
+    sustain_allowed=False sidecar so live code never reads a stale True.
+    """
+    if now is None:
+        now = time.time()
+    result = keepwarm_backfill(days=days, now=now, files=files, parse_fn=parse_fn)
+    reconcile = keepwarm_backfill_reconcile(result)
+    decision = keepwarm_promotion_decide(result)
+    wrote = False
+    if write_fence:
+        # We ALWAYS persist the current honest verdict (True or False) so a prior
+        # promotion cannot linger if the latest replay no longer supports it.
+        _keepwarm_write_promotion_sidecar(decision, now=now)
+        wrote = True
+    return {"result": result, "reconcile": reconcile,
+            "decision": decision, "wrote_fence": wrote}
+
+
+# ========== Keep-warm accounting + tripwire + report (U7) ==========
+# The ONLY place keep-warm savings are ever booked (KTD-4). A realized row is
+# written exactly once per (session, pause), and only when the resumed turn's
+# REAL usage proves a warm resume -- never off the resume CLASSIFICATION alone
+# (classify_keepwarm_record maps expired/unreadable to 'resumed' too; U2/U6
+# caveat). Realized $ enters the canonical merge via the savings_events SQLite
+# path (event_type 'keepwarm'); ping SPEND stays ledger-side and is surfaced as
+# a dedicated cost line. NET (realized - spend) is the prominent number. The raw
+# ledger is NEVER summed into the merge by hand (KTD-7).
+
+# event_type written to savings_events for a realized warm-resume avoided write.
+_KEEPWARM_SAVINGS_EVENT_TYPE = "keepwarm"
+# Fraction-of-prefix thresholds for the warm-vs-cold resume verdict (KTD-4).
+_KEEPWARM_WARM_READ_FRACTION = 0.50   # cache_read >= this * prefix  -> warm read
+_KEEPWARM_WARM_WRITE_FRACTION = 0.50  # cache_creation < this * prefix -> not a re-write
+# Ledger statuses U7 adds beside U3's firing/ok/error/timeout. 'realized' and
+# 'loss' are the idempotency markers per (session, arm_ts) pause.
+_KEEPWARM_LEDGER_REALIZED = "realized"
+_KEEPWARM_LEDGER_LOSS = "loss"
+
+
+def _keepwarm_realized_write_usd(prefix_tokens, model):
+    """USD value of ONE realized warm resume = the avoided 1h prefix re-write.
+
+    Priced at the profile's REAL 1h write rate (input_rate * 2.0 premium) on the
+    full prefix. We KNOW the pause resumed warm, so the entire re-write is
+    genuinely spared -- this is the realized (not P-discounted) counterfactual,
+    matching U6's honesty stance. Reuses the watchdog/U3 per-token pricing tables
+    (_KEEPWARM_INPUT_USD_PER_TOKEN + _KEEPWARM_WRITE_PREMIUM['1h']). Pure.
+    """
+    key = _keepwarm_model_norm(model)
+    input_rate = _KEEPWARM_INPUT_USD_PER_TOKEN.get(
+        key, _KEEPWARM_INPUT_USD_PER_TOKEN["sonnet"])
+    try:
+        prefix = max(0, int(prefix_tokens))
+    except (TypeError, ValueError):
+        prefix = 0
+    return prefix * input_rate * _KEEPWARM_WRITE_PREMIUM["1h"]
+
+
+def _keepwarm_pause_key(session_id, arm_ts):
+    """Stable identity for one (session, pause). Idempotency key for booking."""
+    try:
+        ts = float(arm_ts or 0)
+    except (TypeError, ValueError):
+        ts = 0.0
+    return "%s|%.0f" % (str(session_id), ts)
+
+
+def _keepwarm_load_ledger_rows(path=None):
+    """Parse the keep-warm ledger into a list of row dicts. Never raises.
+
+    Corrupt/blank lines are skipped. Missing file -> []. Read-only.
+    """
+    if path is None:
+        path = _keepwarm_ledger_path()
+    rows = []
+    try:
+        p = Path(path)
+        if not p.exists():
+            return []
+        with open(p, "r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if isinstance(row, dict):
+                    rows.append(row)
+    except OSError:
+        return []
+    return rows
+
+
+_KEEPWARM_LEDGER_RETAIN_DAYS = 30
+_KEEPWARM_LEDGER_MAX_BYTES = 5 * 1024 * 1024  # 5MB
+
+
+def _keepwarm_compact_ledger(now=None, retain_days=_KEEPWARM_LEDGER_RETAIN_DAYS):
+    """Compact the keep-warm ledger to the last `retain_days` of rows on tick.
+
+    Safe now that SQLite is the realized-booking dedup authority (FIX-A1): a
+    realized/loss marker older than 30d can drop because the savings_events UNIQUE
+    index -- not the ledger marker -- prevents a re-book. Rewrites atomically
+    (mkstemp + os.replace under the ledger lock) keeping only rows with
+    ts >= now - retain_days. Triggered when the file exceeds 5MB OR holds any row
+    older than the retain window. Best-effort; never raises. Returns
+    (compacted_bool, kept, dropped).
+    """
+    if now is None:
+        now = time.time()
+    path = _keepwarm_ledger_path()
+    try:
+        if not path.exists():
+            return (False, 0, 0)
+        size = path.stat().st_size
+    except OSError:
+        return (False, 0, 0)
+    rows = _keepwarm_load_ledger_rows(path)
+    cutoff = float(now) - float(retain_days) * 86400.0
+    kept = []
+    dropped = 0
+    has_old = False
+    for r in rows:
+        try:
+            ts = float(r.get("ts", 0) or 0)
+        except (TypeError, ValueError):
+            ts = 0.0
+        if ts < cutoff:
+            dropped += 1
+            has_old = True
+        else:
+            kept.append(r)
+    # Only rewrite when something would actually change (size cap breached OR old
+    # rows present). A clean, in-window, small ledger is left untouched.
+    if not has_old and size <= _KEEPWARM_LEDGER_MAX_BYTES:
+        return (False, len(kept), 0)
+    try:
+        with _keepwarm_lock():
+            try:
+                SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+                fd, tmp_name = tempfile.mkstemp(
+                    prefix=".keepwarm_ledger.", suffix=".tmp", dir=str(SNAPSHOT_DIR))
+                try:
+                    if hasattr(os, "fchmod"):
+                        os.fchmod(fd, 0o600)
+                    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                        for r in kept:
+                            try:
+                                fh.write(json.dumps(r) + "\n")
+                            except (TypeError, ValueError):
+                                continue
+                    os.replace(tmp_name, str(path))
+                except Exception:
+                    try:
+                        os.unlink(tmp_name)
+                    except OSError:
+                        pass
+                    raise
+            except OSError:
+                return (False, len(kept), 0)
+    except Exception:
+        return (False, len(kept), 0)
+    return (True, len(kept), dropped)
+
+
+def _keepwarm_booked_pause_keys(rows=None):
+    """Set of pause keys already booked (realized or loss) in the ledger.
+
+    Used so keepwarm_detect_realized never double-books a (session, pause).
+    """
+    if rows is None:
+        rows = _keepwarm_load_ledger_rows()
+    booked = set()
+    for r in rows:
+        st = r.get("status")
+        if st in (_KEEPWARM_LEDGER_REALIZED, _KEEPWARM_LEDGER_LOSS):
+            key = r.get("pause_key")
+            if key:
+                booked.add(str(key))
+    return booked
+
+
+def _keepwarm_first_usage_after(transcript_path, arm_ts, parse_fn=None):
+    """First usage-bearing assistant turn AFTER `arm_ts` in the transcript.
+
+    Returns a turn dict (parse_session_turns shape) or None. A turn counts as
+    usage-bearing if it has any cache_read/cache_creation/input_tokens. The arm
+    record's `ts` (arm_ts) is the pause boundary; we take the earliest turn whose
+    timestamp is strictly after arm_ts. Read-only. Never raises.
+    """
+    if parse_fn is None:
+        parse_fn = parse_session_turns
+    try:
+        turns = parse_fn(str(transcript_path))
+    except Exception:
+        return None
+    if not turns:
+        return None
+    try:
+        boundary = float(arm_ts or 0)
+    except (TypeError, ValueError):
+        boundary = 0.0
+    best = None
+    best_ts = None
+    for t in turns:
+        epoch = _keepwarm_iso_to_epoch(t.get("timestamp"))
+        if epoch is None:
+            continue
+        if epoch <= boundary + 0.001:
+            continue
+        has_usage = (
+            int(t.get("cache_read", 0) or 0) > 0
+            or int(t.get("cache_creation", 0) or 0) > 0
+            or int(t.get("input_tokens", 0) or 0) > 0
+        )
+        if not has_usage:
+            continue
+        if best_ts is None or epoch < best_ts:
+            best = t
+            best_ts = epoch
+    return best
+
+
+def keepwarm_resume_is_warm(turn, prefix_proxy):
+    """Pure warm-vs-cold verdict for a resumed turn's usage (KTD-4).
+
+    Warm iff cache_read >= 50% of the armed prefix AND cache_creation < 50% of
+    the armed prefix (the resume reused the kept-warm prefix instead of paying a
+    full re-write). Returns None when prefix is unknown/zero (cannot judge ->
+    never book). Pure.
+    """
+    try:
+        prefix = int(prefix_proxy or 0)
+    except (TypeError, ValueError):
+        prefix = 0
+    if prefix <= 0 or not isinstance(turn, dict):
+        return None
+    cr = int(turn.get("cache_read", 0) or 0)
+    cc = int(turn.get("cache_creation", 0) or 0)
+    warm = (cr >= _KEEPWARM_WARM_READ_FRACTION * prefix
+            and cc < _KEEPWARM_WARM_WRITE_FRACTION * prefix)
+    return bool(warm)
+
+
+def _keepwarm_log_realized_savings(tokens_saved, cost_usd, session_id, detail=None,
+                                   model=None, pause_key=None):
+    """Write ONE realized keep-warm row to savings_events (the canonical merge).
+
+    KTD-7: realized savings enter _get_merged_savings via savings_events (the
+    same table model_routing-style realized rows live in). _get_savings_summary
+    groups by event_type with no allowlist, so an event_type='keepwarm' row's
+    stored cost_saved_usd flows straight into the merged total -- no edit to
+    _get_merged_savings or _V5_COMPRESSION_CATEGORIES (those gate the SEPARATE
+    compression_events source only).
+
+    Unlike _log_savings_event (which re-prices tokens at the INPUT rate), the
+    keep-warm value is the avoided WRITE (already computed by
+    _keepwarm_realized_write_usd at the 1h premium), so the row is inserted with
+    the pre-computed cost directly. Same table + columns, correct price.
+
+    SQLite is the dedup AUTHORITY (torture FIX-A1): the row carries pause_key and
+    is inserted INSERT OR IGNORE against the partial UNIQUE index on pause_key, so
+    re-booking the same (session, pause) -- whether from a lost ledger marker or a
+    re-detect across ticks -- is a no-op at the DB layer. Returns the number of
+    rows ACTUALLY inserted (1 = new booking, 0 = deduped no-op / error). The caller
+    uses this so in-memory realized counters never inflate on a dedup. Never raises
+    (savings tracking must never crash the tick).
+    """
+    try:
+        session_uuid, unjoinable = _extract_session_uuid(session_id)
+        normalized = _keepwarm_model_norm(model)
+        conn = _init_trends_db()
+        try:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO savings_events "
+                "(timestamp, event_type, tokens_saved, cost_saved_usd, "
+                "session_id, session_uuid, detail, model, unjoinable, pause_key) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (datetime.now().isoformat(), _KEEPWARM_SAVINGS_EVENT_TYPE,
+                 int(tokens_saved), float(cost_usd), session_id, session_uuid,
+                 detail, normalized, 1 if unjoinable else 0, pause_key),
+            )
+            conn.commit()
+            inserted = int(cur.rowcount or 0)
+        finally:
+            conn.close()
+        return inserted
+    except Exception:
+        return 0
+
+
+def keepwarm_detect_realized(now=None, records=None, parse_fn=None):
+    """Book realized/loss outcomes for resumed armed records (THE booking step).
+
+    For each armed record that has pings_fired >= 1 AND classifies 'resumed':
+      * read the first usage-bearing turn AFTER the arm ts from the transcript;
+      * if it cannot be read / there is no usable turn / prefix unknown -> book
+        NOTHING (resume-but-unreadable; classification alone never books, KTD-4);
+      * warm resume (cache_read >= 50% prefix AND cache_creation < 50% prefix)
+        -> write ONE realized savings_events row (avoided 1h write) AND a
+        ledger 'realized' marker row;
+      * else (cold resume: prefix was re-written despite the pings) -> write a
+        ledger 'loss' marker row only (no savings).
+
+    Idempotent per (session, arm_ts): a pause already carrying a realized/loss
+    ledger marker is skipped. MUST run BEFORE compact_keepwarm_sidecar (which
+    drops resumed records). Returns {realized, loss, skipped, booked_usd}.
+    Never raises.
+    """
+    if now is None:
+        now = time.time()
+    if records is None:
+        records = load_keepwarm_records()
+    out = {"realized": 0, "loss": 0, "skipped": 0, "errors": 0, "booked_usd": 0.0}
+    try:
+        booked = _keepwarm_booked_pause_keys()
+    except Exception:
+        booked = set()
+    for rec in records:
+        try:
+            pings = rec.get("pings_fired")
+            n_pings = len(pings) if isinstance(pings, list) else 0
+            if n_pings < 1:
+                continue
+            sid = rec.get("session_id")
+            arm_ts = rec.get("ts")
+            pause_key = _keepwarm_pause_key(sid, arm_ts)
+            if pause_key in booked:
+                continue
+            try:
+                verdict = classify_keepwarm_record(rec, now=now)
+            except Exception:
+                verdict = "gone"
+            if verdict != "resumed":
+                # still_paused -> not done yet; gone -> never readable. Neither books.
+                continue
+            tp = rec.get("transcript_path")
+            turn = _keepwarm_first_usage_after(tp, arm_ts, parse_fn=parse_fn) if tp else None
+            if turn is None:
+                # Resumed-but-unreadable (or expired with no post-arm turn): the
+                # classifier said 'resumed' but real usage is unavailable, so we
+                # book NOTHING (KTD-4: classification alone never books).
+                out["skipped"] += 1
+                continue
+            prefix = rec.get("prefix_proxy")
+            warm = keepwarm_resume_is_warm(turn, prefix)
+            if warm is None:
+                out["skipped"] += 1
+                continue
+            model = rec.get("model")
+            if warm:
+                value = _keepwarm_realized_write_usd(prefix, model)
+                try:
+                    pfx = int(prefix or 0)
+                except (TypeError, ValueError):
+                    pfx = 0
+                # Marker FIRST (torture FIX-A1): a stranded ledger marker with no
+                # savings row only UNDER-counts = safe; the reverse (savings row,
+                # no marker) is what double-books. The DB INSERT OR IGNORE on
+                # pause_key is the real dedup authority, so even a duplicate
+                # marker+INSERT pair is a DB no-op. We credit in-memory counters
+                # ONLY when the INSERT actually wrote a new row.
+                _keepwarm_ledger_append({
+                    "session_id": str(sid),
+                    "ts": float(now),
+                    "status": _KEEPWARM_LEDGER_REALIZED,
+                    "pause_key": pause_key,
+                    "model": _keepwarm_model_norm(model),
+                    "prefix_proxy": int(prefix or 0),
+                    "pings": n_pings,
+                    "realized_usd": round(float(value), 6),
+                    "cache_read": int(turn.get("cache_read", 0) or 0),
+                    "cache_creation": int(turn.get("cache_creation", 0) or 0),
+                })
+                inserted = _keepwarm_log_realized_savings(
+                    tokens_saved=pfx, cost_usd=value, session_id=sid,
+                    detail="keep-warm warm resume (avoided 1h re-write)",
+                    model=model, pause_key=pause_key)
+                if inserted:
+                    out["realized"] += 1
+                    out["booked_usd"] += float(value)
+            else:
+                _keepwarm_ledger_append({
+                    "session_id": str(sid),
+                    "ts": float(now),
+                    "status": _KEEPWARM_LEDGER_LOSS,
+                    "pause_key": pause_key,
+                    "model": _keepwarm_model_norm(model),
+                    "prefix_proxy": int(prefix or 0),
+                    "pings": n_pings,
+                    "cache_read": int(turn.get("cache_read", 0) or 0),
+                    "cache_creation": int(turn.get("cache_creation", 0) or 0),
+                })
+                out["loss"] += 1
+            booked.add(pause_key)
+        except Exception as exc:
+            # A record that raises every tick would otherwise be invisible
+            # forever (torture FIX-A6e). Count it and write ONE scrubbed line so
+            # a systematically un-bookable pause is diagnosable in the field.
+            out["errors"] += 1
+            try:
+                _keepwarm_scheduler_log_append({
+                    "ts": float(now),
+                    "event": "detect_realized_error",
+                    "session_id": str(rec.get("session_id"))[:64],
+                    "error": type(exc).__name__,
+                })
+            except Exception:
+                pass
+            continue
+    out["booked_usd"] = round(out["booked_usd"], 6)
+    return out
+
+
+def keepwarm_spend_summary(days=None, now=None, rows=None):
+    """Aggregate ping SPEND + realized from the keep-warm ledger (operational).
+
+    Spend = sum of cost_usd over outcome rows (status ok/error/timeout) -- the
+    real metered ping cost. Realized = sum of realized_usd over 'realized' rows.
+    NET = realized - spend. Returns counts too. `days` windows on row ts (None =
+    all). Read-only; the merge total comes from savings_events, NOT this -- this
+    is the dedicated spend cost-line and the per-session realized breakdown.
+    """
+    if now is None:
+        now = time.time()
+    if rows is None:
+        rows = _keepwarm_load_ledger_rows()
+    cutoff = None
+    if days is not None:
+        try:
+            cutoff = now - float(days) * 86400.0
+        except (TypeError, ValueError):
+            cutoff = None
+    # Pre-pass (torture FIX-A2): index every outcome row's ts per session so we can
+    # detect 'firing' rows that never got a sibling outcome (tick SIGKILLed between
+    # the pre-log and the outcome append). An orphaned firing is real spend the
+    # quota was charged for; counting it keeps the tripwire ratio honest.
+    outcome_ts_by_session = {}
+    for r in rows:
+        if r.get("status") in ("ok", "error", "timeout"):
+            try:
+                ots = float(r.get("ts", 0) or 0)
+            except (TypeError, ValueError):
+                ots = 0.0
+            outcome_ts_by_session.setdefault(
+                r.get("session_id") or "unknown", []).append(ots)
+
+    spend = 0.0
+    realized = 0.0
+    pings = 0
+    ok_count = 0
+    error_count = 0
+    timeout_count = 0
+    realized_count = 0
+    loss_count = 0
+    orphan_firing_count = 0
+    orphan_firing_usd = 0.0
+    per_session = {}
+    # Dedup realized/loss by pause_key (torture FIX-A1 defense-in-depth): even
+    # though the SQLite UNIQUE index is the booking authority, a duplicated ledger
+    # marker must NOT inflate the rolling-7d ratio the tripwire divides by.
+    seen_realized_keys = set()
+    seen_loss_keys = set()
+    for r in rows:
+        try:
+            ts = float(r.get("ts", 0) or 0)
+        except (TypeError, ValueError):
+            ts = 0.0
+        if cutoff is not None and ts < cutoff:
+            continue
+        st = r.get("status")
+        sid = r.get("session_id") or "unknown"
+        if st in ("ok", "error", "timeout"):
+            c = float(r.get("cost_usd", 0.0) or 0.0)
+            spend += c
+            pings += 1
+            if st == "ok":
+                ok_count += 1
+            elif st == "error":
+                error_count += 1
+            else:
+                timeout_count += 1
+            ps = per_session.setdefault(sid, {"realized_usd": 0.0, "spend_usd": 0.0, "pings": 0})
+            ps["spend_usd"] += c
+            ps["pings"] += 1
+        elif st == "firing":
+            # Orphan iff no outcome row for this session landed at/after the firing
+            # ts AND the firing is older than the grace window (a fresh firing may
+            # simply be mid-ping). Counted at its recorded est_cost_usd.
+            siblings = outcome_ts_by_session.get(sid, ())
+            has_outcome = any(o >= ts - 0.001 for o in siblings)
+            if (not has_outcome) and (now - ts) > _KEEPWARM_ORPHAN_FIRING_SECONDS:
+                ec = float(r.get("est_cost_usd", 0.0) or 0.0)
+                spend += ec
+                pings += 1
+                error_count += 1  # an unresolved ping is a failed outcome
+                orphan_firing_count += 1
+                orphan_firing_usd += ec
+                ps = per_session.setdefault(
+                    sid, {"realized_usd": 0.0, "spend_usd": 0.0, "pings": 0})
+                ps["spend_usd"] += ec
+                ps["pings"] += 1
+        elif st == _KEEPWARM_LEDGER_REALIZED:
+            key = r.get("pause_key")
+            if key is not None:
+                if key in seen_realized_keys:
+                    continue
+                seen_realized_keys.add(key)
+            v = float(r.get("realized_usd", 0.0) or 0.0)
+            realized += v
+            realized_count += 1
+            ps = per_session.setdefault(sid, {"realized_usd": 0.0, "spend_usd": 0.0, "pings": 0})
+            ps["realized_usd"] += v
+        elif st == _KEEPWARM_LEDGER_LOSS:
+            key = r.get("pause_key")
+            if key is not None:
+                if key in seen_loss_keys:
+                    continue
+                seen_loss_keys.add(key)
+            loss_count += 1
+    top_sessions = sorted(
+        ({"session_id": s, **v} for s, v in per_session.items()),
+        key=lambda x: x["realized_usd"], reverse=True)[:5]
+    return {
+        "spend_usd": round(spend, 6),
+        "realized_usd": round(realized, 6),
+        "net_usd": round(realized - spend, 6),
+        "pings": pings,
+        "ok_count": ok_count,
+        "error_count": error_count,
+        "timeout_count": timeout_count,
+        "realized_count": realized_count,
+        "loss_count": loss_count,
+        "orphan_firing_count": orphan_firing_count,
+        "orphan_firing_usd": round(orphan_firing_usd, 6),
+        "top_sessions": top_sessions,
+        "period_days": days,
+    }
+
+
+# ---- Keep-warm tripwire (KTD-8: clone of the WS2 sidecar discipline) ----
+# Rolling 7-day realized/spend ratio drives a sticky demotion ladder
+# sustain -> probe-only -> off. Two strikes: first breach demotes sustain (moot
+# while sustain is unpromoted, but wired); a second breach (probe-only STILL
+# <= 1.0 over a full 7d window with >= 20 pings) demotes to 'off' = the gate
+# refuses with reason 'tripwire-off'. Fail-closed: a corrupt sidecar reads as
+# the MOST-demoted state ('off'). Re-promotion only via an explicit
+# keepwarm-enable re-run (records a fresh promoted_at). Leading health signal:
+# pings_on_never_resumed / total_pings (alarm > 50%).
+_KEEPWARM_TRIPWIRE_NAME = "keepwarm_tripwire.json"
+_KEEPWARM_TRIPWIRE_LOCK_NAME = ".keepwarm_tripwire.lock"
+_KEEPWARM_TRIPWIRE_WINDOW_DAYS = 7
+_KEEPWARM_TRIPWIRE_RATIO_GATE = 1.0       # demote at ratio <= this
+_KEEPWARM_TRIPWIRE_MIN_PINGS = 20         # min pings in window before off-demote
+# Distinct-window strike semantics (torture FIX-A3): a NEW strike requires at
+# least this long since the previous strike, so a money-losing config has to fail
+# across two SEPARATE days -- not two ticks 5min apart -- before it demotes.
+_KEEPWARM_TRIPWIRE_STRIKE_WINDOW_SECONDS = 24 * 3600
+_KEEPWARM_TRIPWIRE_ALARM_FRACTION = 0.50  # health alarm above this
+# The demotion ladder, most-permissive first. Fail-closed maps to the last one.
+_KEEPWARM_TRIPWIRE_LADDER = ("sustain", "probe-only", "off")
+
+
+def _keepwarm_tripwire_path():
+    return SNAPSHOT_DIR / _KEEPWARM_TRIPWIRE_NAME
+
+
+def _valid_keepwarm_tripwire_payload(data):
+    """Schema-check the keep-warm tripwire sidecar (corrupt -> fail-closed off)."""
+    if not isinstance(data, dict):
+        return False
+    mode = data.get("mode")
+    if mode not in _KEEPWARM_TRIPWIRE_LADDER:
+        return False
+    if not isinstance(data.get("strikes", 0), (int, float)):
+        return False
+    return True
+
+
+def keepwarm_tripwire_mode():
+    """Current tripwire-imposed mode ceiling. Fail-closed to 'off' on corruption.
+
+    Returns one of 'sustain' | 'probe-only' | 'off'. A missing sidecar reads as
+    the most-permissive 'sustain' (no tripwire breach yet); an EXISTING but
+    corrupt/unparseable sidecar reads as 'off' (fail-closed, never fail-open to
+    sustain -- the wave-2 poisoning lesson). Read-only, lock-free fast path.
+    """
+    path = _keepwarm_tripwire_path()
+    try:
+        if not path.exists():
+            return "sustain"
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, ValueError):
+        return "off"
+    if not _valid_keepwarm_tripwire_payload(data):
+        return "off"
+    return data.get("mode", "off")
+
+
+@contextmanager
+def _keepwarm_tripwire_lock():
+    """Advisory flock serializing tripwire recompute+write (clone of _tripwire_lock)."""
+    if not _HAS_FCNTL:
+        yield
+        return
+    lock_path = SNAPSHOT_DIR / _KEEPWARM_TRIPWIRE_LOCK_NAME
+    try:
+        SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+    except OSError:
+        yield
+        return
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
+def _write_keepwarm_tripwire_sidecar(mode, strikes, ratio, health, now=None,
+                                     last_strike_ts=None):
+    """Atomically write the keep-warm tripwire sidecar (0600). Never raises."""
+    if now is None:
+        now = time.time()
+    path = _keepwarm_tripwire_path()
+    record = {
+        "mode": mode,
+        "strikes": int(strikes),
+        "ratio_7d": round(float(ratio), 4),
+        "health": health,
+        "last_strike_ts": last_strike_ts,
+        "_cached_ts": now,
+    }
+    try:
+        SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=".keepwarm_tripwire.", suffix=".tmp", dir=str(SNAPSHOT_DIR))
+        try:
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(record, fh)
+            os.replace(tmp_name, str(path))
+        except Exception:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
+    except Exception:
+        pass
+    return record
+
+
+def _keepwarm_tripwire_health(rows, now=None):
+    """Leading health signal: pings on pauses that never resumed / total pings.
+
+    A ping belongs to a 'never resumed' pause if that session has outcome pings
+    in the ledger but no realized/loss booking marker. Returns
+    {pings_on_never_resumed, total_pings, fraction, alarm}. Read-only, pure over
+    `rows`.
+    """
+    total_pings = 0
+    pings_by_session = {}
+    resolved_sessions = set()
+    for r in rows:
+        st = r.get("status")
+        sid = r.get("session_id") or "unknown"
+        if st in ("ok", "error", "timeout"):
+            total_pings += 1
+            pings_by_session[sid] = pings_by_session.get(sid, 0) + 1
+        elif st in (_KEEPWARM_LEDGER_REALIZED, _KEEPWARM_LEDGER_LOSS):
+            resolved_sessions.add(sid)
+    never = sum(n for s, n in pings_by_session.items() if s not in resolved_sessions)
+    frac = (never / total_pings) if total_pings else 0.0
+    return {
+        "pings_on_never_resumed": never,
+        "total_pings": total_pings,
+        "fraction": round(frac, 4),
+        "alarm": bool(frac > _KEEPWARM_TRIPWIRE_ALARM_FRACTION),
+    }
+
+
+def evaluate_keepwarm_tripwire(now=None, rows=None, force=False):
+    """Recompute the rolling-7d realized/spend ratio and apply the demotion ladder.
+
+    Two-strike, sticky, fail-closed (clone of evaluate_cohort_tripwire shape):
+      * ratio = realized_7d / spend_7d (spend 0 -> ratio treated as >1 so a
+        zero-spend window never demotes).
+      * On a breach (ratio <= 1.0): first strike demotes sustain -> probe-only;
+        a second strike demotes probe-only -> off, but ONLY when the window has
+        >= _KEEPWARM_TRIPWIRE_MIN_PINGS pings (a full, informative window).
+      * Demotions are STICKY: the mode only moves DOWN here; it never re-promotes
+        on a later good ratio (that needs an explicit keepwarm-enable re-run).
+      * Fail-closed: a corrupt sidecar is read as 'off' before this runs, so a
+        poisoned file can never be walked back up to sustain.
+    Returns the written sidecar record. Never raises.
+    """
+    if now is None:
+        now = time.time()
+    if rows is None:
+        rows = _keepwarm_load_ledger_rows()
+    summary = keepwarm_spend_summary(days=_KEEPWARM_TRIPWIRE_WINDOW_DAYS,
+                                     now=now, rows=rows)
+    spend = summary["spend_usd"]
+    realized = summary["realized_usd"]
+    pings = summary["pings"]
+    # Zero-spend windows never demote: no pings means no breach to judge, so the
+    # ratio sits strictly above the gate (gate + realized + 1) regardless.
+    ratio = (realized / spend) if spend > 0 else (
+        _KEEPWARM_TRIPWIRE_RATIO_GATE + realized + 1.0)
+    health = _keepwarm_tripwire_health(rows, now=now)
+
+    with _keepwarm_tripwire_lock():
+        cur_mode = keepwarm_tripwire_mode()
+        try:
+            prev = json.loads(_keepwarm_tripwire_path().read_text(encoding="utf-8"))
+            strikes = int(prev.get("strikes", 0) or 0)
+            last_strike_ts = prev.get("last_strike_ts")
+        except (json.JSONDecodeError, OSError, ValueError, TypeError):
+            strikes = 0
+            last_strike_ts = None
+
+        new_mode = cur_mode
+        breach = ratio <= _KEEPWARM_TRIPWIRE_RATIO_GATE
+        if breach:
+            # Distinct-window strike (FIX-A3): only count a NEW strike when at
+            # least 24h has elapsed since the previous one. Repeated breaches
+            # within the same window are the SAME strike -- a money-losing config
+            # must fail across two separate days, not two adjacent ticks.
+            try:
+                prev_ts = float(last_strike_ts) if last_strike_ts is not None else None
+            except (TypeError, ValueError):
+                prev_ts = None
+            new_strike = (
+                prev_ts is None
+                or (float(now) - prev_ts) >= _KEEPWARM_TRIPWIRE_STRIKE_WINDOW_SECONDS)
+            if new_strike:
+                strikes += 1
+                last_strike_ts = float(now)
+                # Strike 1: sustain -> probe-only (moot while sustain unpromoted,
+                # still wired). Strike 2+: probe-only -> off, only on a full window.
+                if cur_mode == "sustain":
+                    new_mode = "probe-only"
+                elif cur_mode == "probe-only" and strikes >= 2 and pings >= _KEEPWARM_TRIPWIRE_MIN_PINGS:
+                    new_mode = "off"
+                # 'off' is terminal here (sticky); never walks back up.
+            # else: same-window breach -> no new strike, mode/strikes preserved.
+        # else: no breach -> sticky, mode unchanged, strikes preserved.
+
+        record = _write_keepwarm_tripwire_sidecar(
+            new_mode, strikes, ratio, health, now=now,
+            last_strike_ts=last_strike_ts)
+    return record
+
+
+def keepwarm_tripwire_repromote(now=None):
+    """Reset the tripwire to the most-permissive 'sustain' (explicit re-enable).
+
+    Called ONLY by keepwarm-enable re-run (records a fresh promoted_at-equivalent
+    by zeroing strikes + writing mode 'sustain'). This is the single sanctioned
+    walk-up path; the auto-evaluator never re-promotes. Never raises.
+    """
+    if now is None:
+        now = time.time()
+    rows = _keepwarm_load_ledger_rows()
+    health = _keepwarm_tripwire_health(rows, now=now)
+    summary = keepwarm_spend_summary(days=_KEEPWARM_TRIPWIRE_WINDOW_DAYS,
+                                     now=now, rows=rows)
+    spend = summary["spend_usd"]
+    ratio = (summary["realized_usd"] / spend) if spend > 0 else (summary["realized_usd"] + 1.0)
+    with _keepwarm_tripwire_lock():
+        return _write_keepwarm_tripwire_sidecar(
+            "sustain", 0, ratio, health, now=now, last_strike_ts=None)
+
+
+def keepwarm_report(days=30, now=None):
+    """Assemble the human/JSON keep-warm money story (CLI keepwarm-report).
+
+    Returns a dict: mode (probe-only/sustain/off/limits-lab), consent + billing,
+    scheduler status, 7d + 30d {pings, spend, realized, net}, tripwire state +
+    ratio, top-5 sessions by realized. Honest empty-state when no pings yet.
+    Never raises (each sub-read is fail-open).
+    """
+    if now is None:
+        now = time.time()
+    try:
+        billing = keepwarm_billing_mode()
+    except Exception:
+        billing = "subscription"
+    try:
+        consent = keepwarm_consent()
+    except Exception:
+        consent = "unasked"
+    try:
+        limits_lab = bool(_read_config_flag("keepwarm_limits_lab", False))
+    except Exception:
+        limits_lab = False
+    try:
+        gate_allowed, gate_reason = keepwarm_gate()
+    except Exception:
+        gate_allowed, gate_reason = (False, "error")
+    try:
+        tw_mode = keepwarm_tripwire_mode()
+    except Exception:
+        tw_mode = "off"
+    # Promotion fence (U6): sustain only if promoted AND tripwire allows it.
+    sustain_allowed = False
+    try:
+        prom = json.loads(_keepwarm_promotion_path().read_text(encoding="utf-8"))
+        sustain_allowed = bool(prom.get("sustain_allowed", False))
+    except (json.JSONDecodeError, OSError, ValueError):
+        sustain_allowed = False
+
+    # Effective mode label for humans.
+    if limits_lab:
+        mode = "limits-lab"
+    elif tw_mode == "off" or not gate_allowed:
+        mode = "off"
+    elif tw_mode == "sustain" and sustain_allowed:
+        mode = "sustain"
+    else:
+        mode = "probe-only"
+
+    rows = _keepwarm_load_ledger_rows()
+    s7 = keepwarm_spend_summary(days=7, now=now, rows=rows)
+    s30 = keepwarm_spend_summary(days=days, now=now, rows=rows)
+    health = _keepwarm_tripwire_health(rows, now=now)
+    try:
+        tw_ratio = json.loads(_keepwarm_tripwire_path().read_text(encoding="utf-8")).get("ratio_7d")
+    except (json.JSONDecodeError, OSError, ValueError):
+        tw_ratio = None
+
+    try:
+        sched = keepwarm_scheduler_status()
+    except Exception:
+        sched = {"installed": False}
+
+    has_pings = s30["pings"] > 0 or s30["realized_count"] > 0
+    return {
+        "mode": mode,
+        "billing": billing,
+        "consent": consent,
+        "limits_lab": limits_lab,
+        "gate_allowed": gate_allowed,
+        "gate_reason": gate_reason,
+        "sustain_allowed": sustain_allowed,
+        "tripwire_mode": tw_mode,
+        "tripwire_ratio_7d": tw_ratio,
+        "scheduler": sched,
+        "last_tick_ok": sched.get("last_tick_ok"),
+        "last_tick_age": sched.get("last_tick_age"),
+        "window_7d": s7,
+        "window_30d": s30,
+        "health": health,
+        "top_sessions": s30["top_sessions"],
+        "has_pings": has_pings,
+        "empty_state": (
+            None if has_pings else
+            "No keep-warm pings yet. Once an eligible (API-billed, consented) "
+            "session pauses past the cache window, the tick will probe-refresh "
+            "the prefix and this report will fill in with spend, realized "
+            "savings, and net."),
+    }
+
+
+def keepwarm_cache_health_block(days=30, now=None):
+    """Build the dashboard cache-health keep-warm sub-block (carried in payload).
+
+    One of five tile states + the realized/spend/net numbers + tripwire ratio +
+    predictor transparency (feature names when sustain ever activates). Pure
+    assembly over keepwarm_report; the dashboard renders it. Never raises.
+    States: active-probe | active-sustain | off-subscription | demoted-by-tripwire
+    | platform-gap.
+    """
+    if now is None:
+        now = time.time()
+    try:
+        rep = keepwarm_report(days=days, now=now)
+    except Exception:
+        rep = None
+    # platform-gap: keep-warm only ships on the claude_code runtime (R5). On any
+    # other runtime the tile is an explicit documented gap.
+    try:
+        runtime = detect_runtime()
+    except Exception:
+        runtime = "claude"
+    if runtime != "claude":
+        return {
+            "state": "platform-gap",
+            "runtime": runtime,
+            "note": ("Keep-warm ships for Claude Code only. Codex automatic "
+                     "caching has no write premium to recover; other runtimes "
+                     "are documented gaps."),
+        }
+    if rep is None:
+        return {"state": "platform-gap", "runtime": runtime,
+                "note": "Keep-warm status unavailable."}
+
+    tw_mode = rep["tripwire_mode"]
+    if tw_mode == "off":
+        state = "demoted-by-tripwire"
+    elif rep["billing"] != "api" and not rep["limits_lab"]:
+        state = "off-subscription"
+    elif rep["mode"] == "sustain":
+        state = "active-sustain"
+    elif rep["mode"] in ("probe-only", "limits-lab"):
+        state = "active-probe"
+    else:
+        state = "off-subscription"
+
+    block = {
+        "state": state,
+        "mode": rep["mode"],
+        "billing": rep["billing"],
+        "consent": rep["consent"],
+        "limits_lab": rep["limits_lab"],
+        "realized_usd": rep["window_30d"]["realized_usd"],
+        "spend_usd": rep["window_30d"]["spend_usd"],
+        "net_usd": rep["window_30d"]["net_usd"],
+        "realized_usd_7d": rep["window_7d"]["realized_usd"],
+        "spend_usd_7d": rep["window_7d"]["spend_usd"],
+        "net_usd_7d": rep["window_7d"]["net_usd"],
+        "pings_30d": rep["window_30d"]["pings"],
+        "tripwire_mode": tw_mode,
+        "tripwire_ratio_7d": rep["tripwire_ratio_7d"],
+        "health": rep["health"],
+        "has_pings": rep["has_pings"],
+        "top_sessions": rep["top_sessions"],
+        # Predictor transparency: the feature names that gate sustain when it
+        # ever activates (U6). Surfaced so the dashboard can explain WHY.
+        "predictor_features": [
+            "prior_resume_count", "sibling_active",
+            "machine_active", "survival_p",
+        ],
+        "predictor_threshold": _KEEPWARM_PRED_THRESHOLD,
+        "honest_line": (
+            "Keep-warm is off on subscription billing: pings spend quota and "
+            "recover no write premium. The remedy is behavioral (resume sooner)."
+            if state == "off-subscription" else None),
+    }
+    return block
 
 
 def _dominant_turn_model(turns):
@@ -12748,7 +16868,7 @@ def setup_hook(dry_run=False):
 
 # ========== Persistent Dashboard Daemon ==========
 
-TOKEN_OPTIMIZER_VERSION = "5.11.2"  # Keep in sync with plugin.json + marketplace.json
+TOKEN_OPTIMIZER_VERSION = "5.12.0"  # Keep in sync with plugin.json + marketplace.json
 _DASHBOARD_CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 # Per-runtime daemon identity. Each runtime gets a distinct port + label so a
 # dashboard under one runtime never collides with another's. Copilot uses 24845
@@ -24705,6 +28825,21 @@ def run_ensure_health():
     except Exception as _e:
         print(f"  [Token Optimizer] daemon auto-update check failed: {_e}", file=sys.stderr)
 
+    # Keep-warm scheduler repair (U4 deliverable 3). ADDITIVE + consent-gated +
+    # cheap. Regenerates a user-deleted/stale keep-warm agent ONLY when the
+    # install marker exists AND consent allows (the #59 sticky-opt-out lesson:
+    # user-removed != regen-target unless WE installed it and consent still
+    # holds). The no-op hot path is file-existence checks only (no subprocess)
+    # so it stays well inside the ensure-health budget. Completely separate from
+    # the dashboard daemon block above: distinct label, own install lock, never
+    # touches the dashboard plist/lock/regen loop. Non-blocking (try/except).
+    try:
+        _kw_repair = keepwarm_scheduler_repair()
+        if _kw_repair == "repaired":
+            print("  [Token Optimizer] Repaired keep-warm scheduler agent.")
+    except Exception as _e:
+        print(f"  [Token Optimizer] keep-warm scheduler repair failed: {_e}", file=sys.stderr)
+
     # v5.2.0 migration notice for Windows users. v5.1.0 and earlier shipped
     # a hooks.json that used POSIX shell syntax, which silently failed on
     # Windows PowerShell -- the plugin installed but every hook was a
@@ -25689,6 +29824,208 @@ if __name__ == "__main__":
             # Only print for non-hook invocations (hooks should be quiet)
             if "--quiet" not in args:
                 print(f"[Token Optimizer] Checkpoint saved: {result}")
+    elif args[0] == "keepwarm-arm":
+        # Called by the Stop hook (additive, U2). Appends one arm record to the
+        # keep-warm sidecar so the keepwarm-tick loop can later decide whether to
+        # ping. Dumb + fast: a SIGALRM budget plus the writer's own fail-open
+        # backstop keep it well inside the hook hot path; any failure is silent so
+        # the hook chain is never broken (R4). NO eligibility/policy here (KTD-5).
+        _tok_hook_old_sig = _install_hook_budget(2)
+        try:
+            hook_input = _read_stdin_hook_input()
+            sid = hook_input.get("session_id")
+            transcript = hook_input.get("transcript_path")
+            rec = write_keepwarm_arm_record(sid, transcript)
+            if rec and "--quiet" not in args:
+                print(f"[Token Optimizer] keep-warm armed: {rec.get('session_id')}")
+        except _HookTimeout:
+            sys.exit(0)
+        except Exception:
+            sys.exit(0)
+        finally:
+            _clear_hook_budget(_tok_hook_old_sig)
+    elif args[0] == "keepwarm-enable":
+        # Explicit opt-in (U5). Refuses on subscription billing with the honest
+        # message (no per-write premium to recover). On API billing it records
+        # consent='enabled'; the U4 scheduler install is a SEPARATE step.
+        # --limits-lab: dogfood-only subscription enrollment (EXPERIMENTAL),
+        # never offered by consent pitch surfaces — operator CLI only.
+        ok, msg = keepwarm_enable(limits_lab="--limits-lab" in args)
+        print(f"[Token Optimizer] {msg}")
+        sys.exit(0 if ok else 1)
+    elif args[0] == "keepwarm-disable":
+        # Explicit opt-out from any state (U5). Sets consent='declined'
+        # (terminal); a declined user is never re-asked and never pinged.
+        _, msg = keepwarm_disable()
+        print(f"[Token Optimizer] {msg}")
+    elif args[0] == "keepwarm-consent-status":
+        # Machine-readable gate inputs for the first-run ASK surface (U5). The
+        # TO skill / dashboard reads should_ask to decide whether to show the
+        # one-time pitch. JSON to stdout only — no human prose to confuse a
+        # parser; nothing here ever prints a secret value.
+        print(json.dumps(keepwarm_consent_status()))
+    elif args[0] == "keepwarm-consent-asked":
+        # Idempotent marker (U5): record that the pitch was shown so it is shown
+        # exactly once (unasked -> asked; terminal states untouched). The
+        # resulting state is echoed for the caller's confirmation.
+        state = keepwarm_mark_asked()
+        if "--quiet" not in args:
+            print(f"[Token Optimizer] keep-warm consent state: {state}")
+    elif args[0] == "keepwarm-tick":
+        # The keep-warm brain+trigger loop (U3). Run by the U4 scheduler every
+        # ~5min. Gates via keepwarm_gate() FIRST -- exits 0 silently when not
+        # allowed (subscription / unconsented / ping-process). Single-instance
+        # guarded; per-record isolated; fires the U1 CLI ping for any 'ping'
+        # decision. --dry-run prints decisions JSON without firing anything.
+        dry_run = "--dry-run" in args
+        # Log rotation guard (U4 deliverable 1): truncate the scheduler's
+        # combined stdout/stderr log if it has grown past 1MB. Cheap, best-effort,
+        # never blocks the tick. Skipped under --dry-run (no real run is logged).
+        if not dry_run:
+            try:
+                _keepwarm_rotate_log()
+            except Exception:
+                pass
+        try:
+            summary = keepwarm_tick(dry_run=dry_run)
+        except Exception:
+            sys.exit(0)
+        if dry_run:
+            # Machine-readable decisions to stdout; nothing fired.
+            print(json.dumps(summary))
+        elif "--quiet" not in args:
+            if summary.get("allowed"):
+                print(
+                    f"[Token Optimizer] keep-warm tick: "
+                    f"{summary.get('fired', 0)} pinged, "
+                    f"{summary.get('skipped', 0)} skipped "
+                    f"({len(summary.get('decisions', []))} armed)")
+            # Gate-refused ticks stay silent (exit 0).
+        sys.exit(0)
+    elif args[0] == "keepwarm-scheduler":
+        # Install/uninstall/status the keep-warm launchd interval agent (U4).
+        # install REFUSES unless keepwarm_gate() allows (consent drives install,
+        # R7); uninstall always works; status prints JSON. Fully decoupled from
+        # the dashboard daemon (distinct label + own install lock; never touches
+        # the dashboard plist/lock/regen loop).
+        sub = args[1] if len(args) > 1 else ""
+        if sub == "install":
+            ok, msg = keepwarm_scheduler_install(quiet="--quiet" in args)
+            print(f"[Token Optimizer] {msg}")
+            sys.exit(0 if ok else 1)
+        elif sub == "uninstall":
+            ok, msg = keepwarm_scheduler_uninstall(quiet="--quiet" in args)
+            print(f"[Token Optimizer] {msg}")
+            sys.exit(0 if ok else 1)
+        elif sub == "status":
+            print(json.dumps(keepwarm_scheduler_status()))
+            sys.exit(0)
+        else:
+            print("[Token Optimizer] usage: keepwarm-scheduler install|uninstall|status")
+            sys.exit(1)
+    elif args[0] == "keepwarm-backfill":
+        # Replay the LIVE keep-warm policy over the last 30d of real history in
+        # three modes (probe-only / predictor-sustain / oracle-sustain) and
+        # decide the sustain PROMOTION FENCE (U6). READ-ONLY on transcripts; the
+        # only write is the 0600 promotion sidecar (and only when the gate
+        # passes / to record the honest current verdict). --json prints the full
+        # result+reconcile+decision; otherwise a human summary. --no-fence skips
+        # the sidecar write (inspection only).
+        as_json = "--json" in args
+        write_fence = "--no-fence" not in args
+        days = 30
+        for i, a in enumerate(args):
+            if a == "--days" and i + 1 < len(args):
+                try:
+                    days = int(args[i + 1])
+                except ValueError:
+                    pass
+        try:
+            run = keepwarm_backfill_run(days=days, write_fence=write_fence)
+        except Exception as exc:
+            print(json.dumps({"error": str(exc)}) if as_json
+                  else f"[Token Optimizer] keep-warm backfill failed: {exc}")
+            sys.exit(1)
+        if as_json:
+            print(json.dumps(run))
+            sys.exit(0)
+        modes = run["result"]["modes"]
+        dec = run["decision"]
+        rec = run["reconcile"]
+        print(f"[Token Optimizer] keep-warm backfill ({days}d, "
+              f"{run['result']['scanned_sessions']} sessions):")
+        for label in ("probe-only", "predictor-sustain", "oracle-sustain"):
+            m = modes[label]
+            print(f"  {label:<18} net ${m['net_usd']:>9.2f}  "
+                  f"(saving ${m['saving_usd']:.2f} - ping ${m['ping_cost_usd']:.2f}; "
+                  f"{m['pings']} pings, {m['avoided_writes']} writes avoided)")
+        print(f"  reconcile: probe_net=${rec['probe_net']:.2f} "
+              f"(in-band={rec['probe_in_band']}), "
+              f"oracle_net=${rec['oracle_net']:.2f} "
+              f"(in-band={rec['oracle_in_band']})")
+        verdict = "PROMOTED (sustain ON)" if dec["sustain_allowed"] else "probe-only (sustain OFF)"
+        print(f"  fence: {verdict} -- {dec['reason']}"
+              + ("  [sidecar written]" if run["wrote_fence"] else ""))
+        sys.exit(0)
+    elif args[0] == "keepwarm-report":
+        # The honest end-to-end money story (U7). Human summary by default;
+        # --json for the machine-readable block. Mode, consent+billing,
+        # scheduler, 7d+30d pings/spend/realized/NET, tripwire state+ratio,
+        # top-5 sessions by realized. Honest empty-state when no pings yet.
+        as_json = "--json" in args
+        try:
+            rep = keepwarm_report()
+        except Exception as exc:
+            print(json.dumps({"error": str(exc)}) if as_json
+                  else f"[Token Optimizer] keep-warm report failed: {exc}")
+            sys.exit(1)
+        if as_json:
+            print(json.dumps(rep))
+            sys.exit(0)
+        print("[Token Optimizer] keep-warm report:")
+        print(f"  mode: {rep['mode']}  (billing={rep['billing']}, "
+              f"consent={rep['consent']}, gate={rep['gate_reason']})")
+        sched = rep.get("scheduler") or {}
+        print(f"  scheduler: {'installed' if sched.get('installed') else 'not installed'}"
+              + (f" ({sched.get('label')})" if sched.get('label') else ""))
+        print(f"  tripwire: {rep['tripwire_mode']}"
+              + (f"  ratio_7d={rep['tripwire_ratio_7d']:.2f}"
+                 if rep.get('tripwire_ratio_7d') is not None else "  ratio_7d=n/a"))
+        if not rep["has_pings"]:
+            print(f"  {rep['empty_state']}")
+            sys.exit(0)
+        for label, w in (("7d", rep["window_7d"]), ("30d", rep["window_30d"])):
+            print(f"  {label}: {w['pings']} pings "
+                  f"({w.get('ok_count', 0)} ok, {w.get('error_count', 0)} error, "
+                  f"{w.get('timeout_count', 0)} timeout), "
+                  f"spend ${w['spend_usd']:.2f}, realized ${w['realized_usd']:.2f}, "
+                  f"NET ${w['net_usd']:.2f} "
+                  f"({w['realized_count']} realized / {w['loss_count']} loss)")
+            orphans = w.get("orphan_firing_count", 0)
+            if orphans:
+                print(f"      WARN: {orphans} orphaned firing rows "
+                      f"(${w.get('orphan_firing_usd', 0.0):.2f} spent, never resolved "
+                      f"-- outcome booking may be broken)")
+            errs = w.get("error_count", 0) + w.get("timeout_count", 0)
+            if w["pings"] > 0 and errs > w["pings"] * 0.5:
+                print(f"      ALARM: {errs}/{w['pings']} pings failed "
+                      f"-- every ping may be erroring (check model/auth/cwd)")
+        h = rep["health"]
+        print(f"  health: pings-on-never-resumed "
+              f"{h['pings_on_never_resumed']}/{h['total_pings']} "
+              f"({h['fraction']*100:.0f}%{'  ALARM' if h['alarm'] else ''})")
+        sched_age = rep.get("last_tick_age")
+        if sched_age is not None:
+            mins = int(sched_age // 60)
+            ok_str = ("ok" if rep.get("last_tick_ok") else "ISSUE")
+            print(f"  last tick: {mins}m ago ({ok_str})")
+        tops = rep.get("top_sessions") or []
+        if tops:
+            print("  top sessions by realized:")
+            for t in tops:
+                print(f"    {t['session_id'][:24]:<24}  realized ${t['realized_usd']:.2f}  "
+                      f"spend ${t['spend_usd']:.2f}  ({t['pings']} pings)")
+        sys.exit(0)
     elif args[0] == "checkpoint-trigger":
         quiet = "--quiet" in args or "-q" in args
         milestone = None

@@ -34,9 +34,9 @@ hermes_hook_bridge reads it to shell into measure.py.
 At import time we add the plugin directory itself (``_PLUGIN_DIR``) to
 ``sys.path`` so the three sibling modules resolve correctly, whether the plugin
 is loaded from the install tree OR from the repo checkout (where scripts/ is the
-parent of all four files).  No Hermes modules are imported; we touch
-``agent.usage_pricing`` only for live per-call cost estimation, wrapped in
-try/except (fail-open).
+parent of all four files).  We append it so Hermes core modules keep import
+precedence. No Hermes modules are imported; we touch ``agent.usage_pricing``
+only for live per-call cost estimation, wrapped in try/except (fail-open).
 
 Activation: Hermes (v0.15.x) does NOT auto-discover plugins by directory
 presence — the plugin must be allow-listed in the Hermes config under
@@ -60,12 +60,14 @@ logger = logging.getLogger(__name__)
 # Strategy: We add the directory that contains THIS file to sys.path.
 # This works both from the install tree (~/.hermes/plugins/token-optimizer/)
 # and from the repo checkout (skills/token-optimizer/scripts/ is already on
-# sys.path via the test bootstrap; this is a no-op in that case).
+# sys.path via the test bootstrap). Keep it at the end so Hermes core modules
+# keep import precedence.
 # ---------------------------------------------------------------------------
 
 _PLUGIN_DIR = Path(__file__).parent.resolve()
-if str(_PLUGIN_DIR) not in sys.path:
-    sys.path.insert(0, str(_PLUGIN_DIR))
+_PLUGIN_DIR_STR = str(_PLUGIN_DIR)
+sys.path[:] = [p for p in sys.path if p != _PLUGIN_DIR_STR]
+sys.path.append(_PLUGIN_DIR_STR)
 
 # Lazy import so the plugin loads even if hermes_hook_bridge is not available
 # in the install tree at module-load time.  We cache ONLY on success so a

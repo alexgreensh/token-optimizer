@@ -17801,7 +17801,7 @@ def setup_hook(dry_run=False):
 
 # ========== Persistent Dashboard Daemon ==========
 
-TOKEN_OPTIMIZER_VERSION = "5.11.10"  # Keep in sync with plugin.json + marketplace.json
+TOKEN_OPTIMIZER_VERSION = "5.11.11"  # Keep in sync with plugin.json + marketplace.json
 _DASHBOARD_CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 # Per-runtime daemon identity. Each runtime gets a distinct port + label so a
 # dashboard under one runtime never collides with another's. Copilot uses 24845
@@ -18914,8 +18914,13 @@ def _ensure_dashboard_file():
     return True
 
 
-def _verify_daemon_port(timeout_seconds=1, retries=None):
+def _verify_daemon_port(timeout_seconds=1, retries=None, retry_sleep=1):
     """Probe 127.0.0.1:DAEMON_PORT to confirm OUR daemon is up (not a foreign listener).
+
+    retry_sleep (default 1): seconds to wait between retries. The SessionStart
+    ensure-health self-heal passes retry_sleep=0 with retries=1 so a single
+    quick probe of a dead port returns immediately instead of burning ~1-2s of
+    the hook budget on time.sleep -- the cheap-hot-path requirement.
 
     v5.4.19 (adv-007 fix): a TCP connect() alone can't tell us whether the
     process on DAEMON_PORT is actually ours. A foreign app (or a stale orphan
@@ -18945,7 +18950,8 @@ def _verify_daemon_port(timeout_seconds=1, retries=None):
                 s.settimeout(timeout_seconds)
                 s.connect(("127.0.0.1", DAEMON_PORT))
         except (OSError, ConnectionRefusedError):
-            time.sleep(1)
+            if retry_sleep:
+                time.sleep(retry_sleep)
             continue
         # Port is open -- verify identity so we don't mistake a foreign listener for ours.
         try:
@@ -18957,7 +18963,8 @@ def _verify_daemon_port(timeout_seconds=1, retries=None):
             # Wrong magic -- foreign listener or older build. Don't retry ident check.
             return False
         except (urllib.error.URLError, OSError, ValueError):
-            time.sleep(1)
+            if retry_sleep:
+                time.sleep(retry_sleep)
             continue
     return False
 
@@ -19515,7 +19522,7 @@ def _generate_schtasks_xml(task_name, user_id, launcher_path):
     )
 
 
-def _install_task_scheduler_daemon(dry_run=False, effective_host=None):
+def _install_task_scheduler_daemon(dry_run=False, soft_fail=False, effective_host=None):
     """Windows: register a per-user Scheduled Task that runs the dashboard
     daemon at logon, survives reboot, and stays out of the foreground.
 
@@ -19524,10 +19531,22 @@ def _install_task_scheduler_daemon(dry_run=False, effective_host=None):
     we stop any running instance before re-registering so we never
     fight a stale process on port 24842.
 
+    soft_fail=True (hook paths, e.g. ensure-health self-heal): every error
+    path returns False instead of sys.exit(1) so SystemExit can never escape
+    and kill the calling Claude Code session. Returns True on success.
+
     Not tested on a real Windows box from the development Mac. First
     Windows user to run this is the de facto smoke test. Full rollback
     is one command: `measure.py setup-daemon --uninstall`.
     """
+    def _fail(msg, *extra):
+        print(msg)
+        for line in extra:
+            print(line)
+        if soft_fail:
+            return False
+        sys.exit(1)
+
     if dry_run:
         print("[Token Optimizer] Dry run (Windows). Would install:\n")
         print("  A tiny web server that makes your dashboard available at:")
@@ -19546,42 +19565,48 @@ def _install_task_scheduler_daemon(dry_run=False, effective_host=None):
         return
 
     if not _ensure_dashboard_file():
-        sys.exit(1)
+        return _fail("[Error] Dashboard file missing; cannot start daemon.")
 
     # HIGH-1: Microsoft Store Python's App Execution Alias cannot be
     # launched from Task Scheduler's service context. Refuse install
     # with a clear remediation path rather than registering a task
     # that will silently fail every logon.
     if _is_ms_store_python_alias(sys.executable):
-        print("[Error] Microsoft Store Python detected (App Execution Alias).")
-        print("  Task Scheduler cannot launch Store aliases as background services,")
-        print("  so the daemon would never start. Install a real Python build instead:")
-        print("    winget install Python.Python.3.12")
-        print("  or download from python.org (make sure 'Add to PATH' is checked).")
-        print("  Then re-run: python -m measure setup-daemon")
-        sys.exit(1)
+        return _fail(
+            "[Error] Microsoft Store Python detected (App Execution Alias).",
+            "  Task Scheduler cannot launch Store aliases as background services,",
+            "  so the daemon would never start. Install a real Python build instead:",
+            "    winget install Python.Python.3.12",
+            "  or download from python.org (make sure 'Add to PATH' is checked).",
+            "  Then re-run: python -m measure setup-daemon",
+        )
 
     # HIGH-3: compose DOMAIN\user when domain-joined so LogonTrigger
     # actually fires on corporate machines.
     user_id = _compose_windows_user_id()
     if not user_id:
-        print("[Error] Could not determine Windows username from %USERNAME%.")
-        print("  Set the USERNAME environment variable and retry.")
-        sys.exit(1)
+        return _fail(
+            "[Error] Could not determine Windows username from %USERNAME%.",
+            "  Set the USERNAME environment variable and retry.",
+        )
 
     # MEDIUM-4: surface the port owner before we try to install so the
     # user isn't stuck in an indefinite 'wait 30s' loop if 24842 is
     # already bound by something else.
     owner = _probe_windows_port_owner(DAEMON_PORT)
     if owner:
-        print(f"[Error] Port {DAEMON_PORT} is already bound: {owner}")
-        print("  Release the port (or run --uninstall if it is our own stale")
-        print("  pythonw), then re-run setup. Reclaim: taskkill /PID <pid> /F")
-        sys.exit(1)
+        return _fail(
+            f"[Error] Port {DAEMON_PORT} is already bound: {owner}",
+            "  Release the port (or run --uninstall if it is our own stale",
+            "  pythonw), then re-run setup. Reclaim: taskkill /PID <pid> /F",
+        )
 
     _get_or_create_daemon_token()
 
-    with _daemon_install_lock():
+    with _daemon_install_lock(soft_fail=soft_fail) as acquired:
+        if soft_fail and not acquired:
+            # Another installer holds the lock; don't fight it from a hook path.
+            return False
         SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
         DAEMON_LOG_DIR.mkdir(parents=True, exist_ok=True)
         daemon_script = SNAPSHOT_DIR / "dashboard-server.py"
@@ -19619,11 +19644,12 @@ def _install_task_scheduler_daemon(dry_run=False, effective_host=None):
             capture_output=True, text=True, errors="replace",
         )
         if create.returncode != 0:
-            print(f"[Error] schtasks /Create failed: {create.stderr.strip()}")
-            print("  Common causes: locked-down enterprise policy blocking task")
-            print("  creation, or schtasks.exe missing. Try manually with:")
-            print(f"    schtasks /Create /XML \"{xml_path}\" /TN {WINDOWS_TASK_NAME} /F")
-            sys.exit(1)
+            return _fail(
+                f"[Error] schtasks /Create failed: {create.stderr.strip()}",
+                "  Common causes: locked-down enterprise policy blocking task",
+                "  creation, or schtasks.exe missing. Try manually with:",
+                f"    schtasks /Create /XML \"{xml_path}\" /TN {WINDOWS_TASK_NAME} /F",
+            )
         # Fire the task immediately so the user's first URL click works.
         subprocess.run(
             ["schtasks", "/Run", "/TN", WINDOWS_TASK_NAME],
@@ -19644,6 +19670,8 @@ def _install_task_scheduler_daemon(dry_run=False, effective_host=None):
             print("  Do NOT run --uninstall while it is still coming up.")
             print(f"  If still unreachable, check daemon logs: {DAEMON_LOG_DIR}\\stderr.log")
             print(f"  and task status: schtasks /Query /TN {WINDOWS_TASK_NAME} /V /FO LIST")
+        # Install succeeded (task registered); port may still be warming up.
+        return True
 
 
 def _uninstall_task_scheduler_daemon():
@@ -19814,14 +19842,27 @@ def _generate_systemd_user_unit(launcher_path, log_dir):
     )
 
 
-def _install_systemd_user_daemon(dry_run=False, effective_host=None):
+def _install_systemd_user_daemon(dry_run=False, soft_fail=False, effective_host=None):
     """Linux: install the dashboard daemon via systemd --user.
 
     User-scoped unit, no root required. Survives reboot when the user
     has lingering enabled (loginctl enable-linger $USER -- we surface
     the hint but don't auto-enable because some distros require
     sudo/pkexec for that operation).
+
+    soft_fail=True (hook paths, e.g. ensure-health self-heal): every error
+    path returns False instead of sys.exit(1) so SystemExit can never escape
+    and kill the calling Claude Code session. Returns True on success. CLI
+    callers keep the default False for the hard-failure + actionable-hint UX.
     """
+    def _fail(msg, *extra):
+        print(msg)
+        for line in extra:
+            print(line)
+        if soft_fail:
+            return False
+        sys.exit(1)
+
     unit_path = _systemd_user_unit_path()
     daemon_script = SNAPSHOT_DIR / "dashboard-server.py"
 
@@ -19849,22 +19890,26 @@ def _install_systemd_user_daemon(dry_run=False, effective_host=None):
     # WSL2 without systemd=true). Probing list-units requires the bus,
     # so a positive result confirms we can actually enable a unit.
     if not _probe_systemd_user_bus():
-        print("[Error] systemctl --user is not reachable on this system.")
-        print("  Likely causes:")
-        print("    - systemd is not installed (minimal container, WSL2 w/o systemd=true)")
-        print("    - this is a headless SSH session without lingering enabled")
-        print("    - the user dbus is not running in this shell")
-        print("  Try: loginctl enable-linger $USER    (may need sudo on some distros)")
-        print("  Then re-run: python3 measure.py setup-daemon")
-        print(f"  Meanwhile, the dashboard file still works: {DASHBOARD_PATH.as_uri()}")
-        sys.exit(1)
+        return _fail(
+            "[Error] systemctl --user is not reachable on this system.",
+            "  Likely causes:",
+            "    - systemd is not installed (minimal container, WSL2 w/o systemd=true)",
+            "    - this is a headless SSH session without lingering enabled",
+            "    - the user dbus is not running in this shell",
+            "  Try: loginctl enable-linger $USER    (may need sudo on some distros)",
+            "  Then re-run: python3 measure.py setup-daemon",
+            f"  Meanwhile, the dashboard file still works: {DASHBOARD_PATH.as_uri()}",
+        )
 
     if not _ensure_dashboard_file():
-        sys.exit(1)
+        return _fail("[Error] Dashboard file missing; cannot start daemon.")
 
     _get_or_create_daemon_token()
 
-    with _daemon_install_lock():
+    with _daemon_install_lock(soft_fail=soft_fail) as acquired:
+        if soft_fail and not acquired:
+            # Another installer holds the lock; don't fight it from a hook path.
+            return False
         # Ordering (torture HIGH-4): stop + reclaim FIRST, BEFORE touching
         # unit/daemon files, so a failed stop never races a half-written
         # new unit. On failure after write, rollback removes artifacts
@@ -19924,8 +19969,7 @@ def _install_systemd_user_daemon(dry_run=False, effective_host=None):
         )
         if reload_result.returncode != 0:
             _rollback("daemon-reload failed")
-            print(f"[Error] systemctl daemon-reload failed: {reload_result.stderr.strip()}")
-            sys.exit(1)
+            return _fail(f"[Error] systemctl daemon-reload failed: {reload_result.stderr.strip()}")
 
         enable_result = subprocess.run(
             ["systemctl", "--user", "enable", "--now", SYSTEMD_UNIT_NAME],
@@ -19933,11 +19977,12 @@ def _install_systemd_user_daemon(dry_run=False, effective_host=None):
         )
         if enable_result.returncode != 0:
             _rollback("enable failed")
-            print(f"[Error] systemctl --user enable failed: {enable_result.stderr.strip()}")
-            print("  Common causes: XDG_RUNTIME_DIR missing (SSH w/o linger), user bus")
-            print("  refusing a root-owned unit file (bind-mounted home), or a polkit")
-            print("  prompt that couldn't reach a TTY.")
-            sys.exit(1)
+            return _fail(
+                f"[Error] systemctl --user enable failed: {enable_result.stderr.strip()}",
+                "  Common causes: XDG_RUNTIME_DIR missing (SSH w/o linger), user bus",
+                "  refusing a root-owned unit file (bind-mounted home), or a polkit",
+                "  prompt that couldn't reach a TTY.",
+            )
 
         time.sleep(1)
         if _verify_daemon_port():
@@ -19955,6 +20000,8 @@ def _install_systemd_user_daemon(dry_run=False, effective_host=None):
             print("  Do NOT run --uninstall while it is still coming up.")
             print(f"  Diagnose: systemctl --user status {SYSTEMD_UNIT_NAME}")
             print(f"  Logs:     {DAEMON_LOG_DIR}/stderr.log")
+        # Install succeeded (unit enabled); port may still be warming up.
+        return True
 
 
 def _uninstall_systemd_user_daemon():
@@ -20046,6 +20093,21 @@ def setup_daemon(dry_run=False, uninstall=False):
             _uninstall_systemd_user_daemon()
         else:
             print(f"[Token Optimizer] Unsupported platform for daemon uninstall: {system}")
+        # Sticky opt-out: persist the user's intent so the SessionStart ensure-
+        # health self-install (`_ensure_dashboard_daemon`) never resurrects a
+        # daemon the user deliberately removed. Mirrors the quality-bar opt-out.
+        # Written on every platform (including unsupported) so a future install
+        # on a now-supported OS still honours the prior opt-out until an explicit
+        # `setup-daemon` clears it.
+        if not dry_run:
+            _set_daemon_disabled(True)
+        else:
+            # A dry-run does NOT write the sticky opt-out, so the SessionStart
+            # self-heal would reinstall the daemon. Say so, or the user thinks a
+            # preview opted them out for good.
+            print("  [Token Optimizer] (dry run: sticky opt-out NOT written -- "
+                  "the daemon will be reinstalled at next SessionStart. Run "
+                  "`setup-daemon --uninstall` without --dry-run to opt out for good.)")
         return
     # v5.11.1 (#59): resolve the bind-host once, before branching, so every OS
     # installer (and dry-run messaging) shares the same effective host. The
@@ -20054,6 +20116,11 @@ def setup_daemon(dry_run=False, uninstall=False):
     # same env > file > default chain but skips the write, staying
     # side-effect-free.
     effective_host = _persist_dashboard_host(persist=not dry_run)
+    # Explicit install = explicit opt-in: clear any sticky opt-out so the
+    # ensure-health self-heal resumes maintaining this daemon. Symmetric with
+    # the quality-bar install path. Skipped on dry-run (side-effect-free).
+    if not dry_run:
+        _set_daemon_disabled(False)
     if system == "Darwin":
         _install_launchd_daemon(dry_run=dry_run, effective_host=effective_host)
     elif system == "Windows":
@@ -20064,6 +20131,192 @@ def setup_daemon(dry_run=False, uninstall=False):
         print(f"[Error] Dashboard daemon not supported on {system}.")
         print(f"  Open the dashboard file directly: {DASHBOARD_PATH.as_uri()}")
         sys.exit(1)
+
+
+def _daemon_service_installed(system=None):
+    """True when the OS service manager has the dashboard daemon REGISTERED.
+
+    This is the "is it installed" half of the ensure-health health check; the
+    "is it alive" half is `_verify_daemon_port`. Kept cheap: macOS/Linux are
+    stat-only (no subprocess); only Windows shells out (one locale-independent
+    `schtasks /Query`, matching the rest of the Windows daemon code which avoids
+    parsing localized text output). Never raises.
+
+    Returns False on unsupported platforms so the ensure path no-ops there.
+    """
+    system = system or _normalized_platform()
+    try:
+        if system == "Darwin":
+            return PLIST_PATH.exists()
+        if system == "Linux":
+            return _systemd_user_unit_path().exists()
+        if system == "Windows":
+            try:
+                rc = subprocess.run(
+                    ["schtasks", "/Query", "/TN", WINDOWS_TASK_NAME],
+                    capture_output=True, timeout=5,
+                ).returncode
+                return rc == 0
+            except (OSError, subprocess.TimeoutExpired):
+                return False
+    except OSError:
+        return False
+    return False
+
+
+def _daemon_ensure_throttle_seconds():
+    """Throttle window (seconds) for the COSTLY half of the ensure path
+    (install/restart). The cheap presence + port probe runs every SessionStart;
+    an actual install attempt is retried at most once per this interval so a
+    persistently-failing install (e.g. unwritable LaunchAgents dir) doesn't shell
+    out on every prompt. Mirrors the 24h hook-heal throttle. Read lazily (not a
+    module-level constant) because `_int_env` is defined further down the file.
+    Overridable via TOKEN_OPTIMIZER_DAEMON_ENSURE_THROTTLE for tests.
+    """
+    return _int_env("TOKEN_OPTIMIZER_DAEMON_ENSURE_THROTTLE", 24 * 3600)
+
+
+def _ensure_dashboard_daemon(force=False):
+    """SessionStart self-heal: INSTALL the dashboard daemon if missing, RESTART
+    it if installed-but-dead, NO-OP when healthy. Default-on for every Claude
+    user (loopback-only, token-authed, ~0 cost), with a sticky `daemon_disabled`
+    opt-out -- mirroring the quality-bar self-install, NOT the marker-gated
+    keep-warm scheduler (that gate exists because keep-warm spends tokens; this
+    daemon does not).
+
+    Cheap-gate-first so the healthy hot path costs only a config read + a stat +
+    a fast (sleepless) port probe -- no install lock, no install subprocess,
+    well inside the ensure-health budget. The one costly branch (install/restart)
+    is throttled to once per `_daemon_ensure_throttle_seconds()` via a config
+    timestamp; `force=True` bypasses the throttle (tests / explicit repair).
+
+    Concurrency: this does NOT take `_daemon_install_lock` itself -- the platform
+    installers self-serialise on that lock (soft_fail=True), so two parallel
+    sessions can't double-install; the loser soft-skips and we resolve the final
+    status from on-disk reality. Restart is lock-free (kickstart/restart is
+    idempotent), matching the auto-update block.
+
+    Security: a silent auto-install always binds LOOPBACK (127.0.0.1) regardless
+    of any persisted dashboard host -- a default-on install must never surface a
+    network-exposed daemon. An explicit `setup-daemon` still honours a chosen host.
+
+    Distinct from the daemon AUTO-UPDATE block in run_ensure_health: that block
+    refreshes a STALE script for an already-installed daemon; this function
+    handles the ABSENT / dead-service case. Run this AFTER the update block so
+    update owns has-daemon and ensure owns no-daemon.
+
+    Returns one of: 'noop-foreign', 'noop-disabled', 'noop-unsupported',
+    'noop-healthy', 'noop-throttled', 'installed', 'install-failed',
+    'restarted', 'restart-failed'. Never raises.
+    """
+    # Cheapest gates first -- all pure/stat, no subprocess.
+    if _is_foreign_runtime() or detect_runtime() != "claude":
+        return "noop-foreign"
+    if _read_config_flag("daemon_disabled", False):
+        return "noop-disabled"
+    system = _normalized_platform()
+    if system not in ("Darwin", "Linux", "Windows"):
+        return "noop-unsupported"
+
+    installed = _daemon_service_installed(system)
+    # Fast, sleepless probe: this runs on the SessionStart budget, so a single
+    # quick attempt with NO inter-retry sleep is all we can afford.
+    alive = _verify_daemon_port(timeout_seconds=1, retries=1, retry_sleep=0)
+    if installed and alive:
+        return "noop-healthy"
+
+    # We need the costly path (install or restart). Throttle the ATTEMPT so a
+    # persistently-failing install doesn't shell out every prompt. The cheap
+    # probe above still runs every time, so a daemon that comes back healthy is
+    # detected instantly; only the repair attempt is rate-limited.
+    if not force:
+        last = _read_config_flag("last_daemon_ensure_attempt", 0)
+        try:
+            if time.time() - float(last or 0) < _daemon_ensure_throttle_seconds():
+                return "noop-throttled"
+        except (TypeError, ValueError):
+            pass
+        # Stamp BEFORE the attempt so a failure (or a hard exit upstream) can't
+        # loop the costly path next session.
+        try:
+            _write_config_flag("last_daemon_ensure_attempt", int(time.time()))
+        except Exception:
+            pass
+
+    if installed:
+        # Installed but dead -> restart (lock-free, idempotent).
+        return _restart_dashboard_daemon(system)
+
+    # Not installed -> run the platform installer. Each installer self-locks with
+    # soft_fail so a concurrent session can't deadlock or double-install. Force
+    # loopback for this silent install. `except (Exception, SystemExit)` is
+    # belt-and-suspenders: installers return False under soft_fail, but a future
+    # edit that reintroduces sys.exit must NEVER kill the SessionStart hook.
+    try:
+        if not _ensure_dashboard_file():
+            return "install-failed"
+        _get_or_create_daemon_token()
+        if system == "Darwin":
+            ok = _install_launchd_daemon(soft_fail=True, effective_host="127.0.0.1")
+        elif system == "Linux":
+            ok = _install_systemd_user_daemon(soft_fail=True, effective_host="127.0.0.1")
+        else:  # Windows
+            ok = _install_task_scheduler_daemon(soft_fail=True, effective_host="127.0.0.1")
+        if ok is False:
+            # Real failure OR a concurrent installer won the lock and soft-skipped
+            # us. Resolve from reality so a race doesn't log a false failure.
+            if _daemon_service_installed(system):
+                return "installed"
+            return "install-failed"
+        return "installed"
+    except (Exception, SystemExit) as _e:
+        try:
+            print(
+                "[Token Optimizer] dashboard daemon self-install failed: "
+                f"{str(_e).splitlines()[0] if str(_e) else type(_e).__name__}",
+                file=sys.stderr,
+            )
+        except Exception:
+            pass
+        return "install-failed"
+
+
+def _restart_dashboard_daemon(system):
+    """Restart an installed-but-dead dashboard daemon via its service manager.
+
+    Factored out of run_ensure_health's auto-update block so the ensure path can
+    reuse the exact same kickstart/restart/Run calls. Returns 'restarted' or
+    'restart-failed'. Never raises.
+    """
+    try:
+        if system == "Darwin":
+            uid = subprocess.run(
+                ["id", "-u"], capture_output=True, text=True
+            ).stdout.strip()
+            subprocess.run(
+                ["launchctl", "kickstart", "-k", f"gui/{uid}/{DAEMON_LABEL}"],
+                capture_output=True, timeout=5,
+            )
+        elif system == "Linux":
+            subprocess.run(
+                ["systemctl", "--user", "restart", SYSTEMD_UNIT_NAME],
+                capture_output=True, timeout=10,
+            )
+        elif system == "Windows":
+            subprocess.run(
+                ["schtasks", "/End", "/TN", WINDOWS_TASK_NAME],
+                capture_output=True, timeout=5,
+            )
+            time.sleep(2)
+            subprocess.run(
+                ["schtasks", "/Run", "/TN", WINDOWS_TASK_NAME],
+                capture_output=True, timeout=5,
+            )
+        else:
+            return "restart-failed"
+        return "restarted"
+    except Exception:
+        return "restart-failed"
 
 
 # ========== Context Quality Analyzer (v2.0) ==========
@@ -24336,7 +24589,11 @@ def codex_prompt_hints(prompt_text="", session_id=None, cwd=None, max_age_minute
 # scoped to the same project. Kept tight to avoid firing on incidental "continue".
 _RESUME_INTENT_RE = re.compile(
     r"\b(last session|previous session|prior session|earlier session|last time|"
-    r"where we left off|pick(?:ing)? up where|continue (?:working|where|on|our|the|with|that|this)|"
+    r"where we left off|pick(?:ing)? up where|"
+    # "from" added so "continue from checkpoint" / "continue from where we left off"
+    # is recognized; the cue is the verb "continue from", NOT a bare "from
+    # checkpoint" (which would false-match "import data from checkpoint file").
+    r"continue (?:working|where|on|our|the|with|that|this|from)|"
     r"carry on (?:with|where)|what we (?:discussed|talked about|were (?:doing|working))|"
     r"resume (?:our|that|this|work|the (?:work|session|project|task|conversation|thread|discussion))|"
     r"recap (?:of )?(?:our|the|last)|"
@@ -24475,6 +24732,21 @@ def _continuity_resume_block(text, checkpoints, sid_safe, cwd):
     return block
 
 
+def _checkpoint_session_id(checkpoint, sidecar=None):
+    """Resolve the owning session id for a checkpoint, sidecar first then filename.
+
+    Used to dedup the continuity surface to ONE entry per parallel session (so a
+    session with 30 checkpoints doesn't crowd out the other parallel sessions).
+    Never raises; returns the filename as a last resort so distinct files never
+    silently collapse together.
+    """
+    if isinstance(sidecar, dict) and sidecar.get("session_id"):
+        return str(sidecar["session_id"])
+    fn = checkpoint.get("filename", "") if isinstance(checkpoint, dict) else ""
+    m = re.match(r"([0-9a-fA-F-]{8,})-\d{8}-\d{6}-", fn)
+    return m.group(1) if m else (fn or "unknown")
+
+
 def _continuity_prompt_hint(prompt_text="", session_id=None, cwd=None, max_age_minutes=60 * 24 * 7):
     """Topic-matched prior-session continuity hint (runtime-agnostic core).
 
@@ -24483,8 +24755,17 @@ def _continuity_prompt_hint(prompt_text="", session_id=None, cwd=None, max_age_m
       FULL lean reconstruction of the right SAME-PROJECT session (keyword winner
       if a topic is named, else most-recent). This is the deliberate "pick up
       where we left off" path -- no special command needed.
-    - Otherwise: a lightweight one-line hint when a recent checkpoint clears
-      `_RELEVANCE_THRESHOLD`.
+    - Otherwise: a lightweight hint built from the most relevant prior session,
+      PLUS a compact list of other recent parallel sessions when several qualify.
+
+    Parallel-session surfacing (the fix): sessions are deduped to one entry each
+    and ranked by relevance x activity (topic precision scaled by how actively the
+    session was worked -- checkpoint density), not recency alone. The top session
+    gets the rich hint; up to `TOKEN_OPTIMIZER_CONTINUITY_MAX_SESSIONS - 1` others
+    are listed self-labeled, with a "name a topic to surface more" affordance when
+    additional distinct sessions remain. Because this fires on every prompt, added
+    context re-ranks and promotes the matching session next turn (progressive
+    disclosure -- a low-recency "session 10" surfaces the moment its topic is named).
 
     Both are fenced as recovered DATA (never instructions). Skips same-session
     checkpoints (handled by SessionStart/compact). Returns "" when nothing
@@ -24514,19 +24795,65 @@ def _continuity_prompt_hint(prompt_text="", session_id=None, cwd=None, max_age_m
         if cwd:
             return ""
 
+    # Group ALL checkpoints by session. The filename-derived id is the stable
+    # per-session key and is used CONSISTENTLY for grouping, density, and dedup
+    # (a sidecar session_id that disagreed with the filename would otherwise make
+    # the density lookup miss and silently drop the activity boost).
+    # list_checkpoints is recent-first, so each bucket stays recent-first too.
+    _per_session = {}
+    for _cp in checkpoints:
+        _per_session.setdefault(_checkpoint_session_id(_cp), []).append(_cp)
+    _session_density = {sid: len(cps) for sid, cps in _per_session.items()}
+
+    # Score the most-recent N checkpoints PER SESSION (not the N most-recent
+    # globally): with 10 parallel sessions, a global [:50] window can be entirely
+    # consumed by a few churny sessions and hide the others. Per-session scanning
+    # guarantees every session is considered while bounding I/O to N x (#sessions).
+    _per_session_scan = max(1, _int_env("TOKEN_OPTIMIZER_CONTINUITY_PER_SESSION_SCAN", 3))
     candidates = []
-    for checkpoint in checkpoints[:50]:
-        if sid_safe and sid_safe in checkpoint.get("filename", ""):
-            # Same-session compact recovery is handled by SessionStart/compact.
+    for _sid, _cps in _per_session.items():
+        # Skip the CURRENT session (its recovery is SessionStart/compact's job).
+        if sid_safe and sanitize_session_id(_sid) == sid_safe:
             continue
-        score, sidecar = _checkpoint_topic_score(text, checkpoint, cwd=cwd)
-        if score >= _RELEVANCE_THRESHOLD:
-            candidates.append((score, checkpoint, sidecar))
+        density = _session_density.get(_sid, 1)
+        # activity_weight in [1.0, 1.5]: relevance still dominates (a 1.0
+        # on-topic session beats a 0.33 off-topic one even at max activity),
+        # but among similar-relevance sessions the more active one wins.
+        activity_weight = 1.0 + 0.5 * min(density, 20) / 20.0
+        for checkpoint in _cps[:_per_session_scan]:
+            if sid_safe and sid_safe in checkpoint.get("filename", ""):
+                continue
+            score, sidecar = _checkpoint_topic_score(text, checkpoint, cwd=cwd)
+            if score >= _RELEVANCE_THRESHOLD:
+                composite = score * activity_weight
+                candidates.append({
+                    "composite": composite,
+                    "score": score,
+                    "checkpoint": checkpoint,
+                    "sidecar": sidecar,
+                    "session_id": _sid,
+                    "density": density,
+                })
     if not candidates:
         return ""
 
-    candidates.sort(key=lambda item: (item[0], item[1]["created"].timestamp()), reverse=True)
-    score, checkpoint, sidecar = candidates[0]
+    # Dedup to one (best-composite) checkpoint per distinct session, then rank
+    # sessions by composite (relevance x activity), recency breaking ties.
+    _best_per_session = {}
+    for c in candidates:
+        prev = _best_per_session.get(c["session_id"])
+        if prev is None or c["composite"] > prev["composite"]:
+            _best_per_session[c["session_id"]] = c
+    ranked = sorted(
+        _best_per_session.values(),
+        key=lambda c: (c["composite"], c["checkpoint"]["created"].timestamp()),
+        reverse=True,
+    )
+
+    top = ranked[0]
+    score = top["score"]
+    checkpoint = top["checkpoint"]
+    sidecar = top["sidecar"]
     path = checkpoint["path"]
     quality = sidecar.get("quality") if isinstance(sidecar, dict) else {}
     active_task = sidecar.get("active_task") if isinstance(sidecar, dict) else None
@@ -24575,6 +24902,34 @@ def _continuity_prompt_hint(prompt_text="", session_id=None, cwd=None, max_age_m
             summary.append(f"{tool_name} ({chars} chars) -> {pointer!r}")
         if summary:
             lines.append("- Archived tool results: " + "; ".join(summary))
+
+    # Parallel-session surfacing: when more than one distinct session qualifies,
+    # list the other recent sessions (deduped, self-labeled) so the right one is
+    # visible even if the top pick is wrong. Capped; a "name a topic" affordance
+    # covers any beyond the cap (the per-turn re-rank promotes them on demand).
+    max_sessions = max(1, _int_env("TOKEN_OPTIMIZER_CONTINUITY_MAX_SESSIONS", 5))
+    others = ranked[1:max_sessions]
+    remaining = len(ranked) - max_sessions
+    if others:
+        lines.append(
+            "- Other recent sessions (name a topic, file, or branch to surface the exact one):"
+        )
+        for c in others:
+            label = _checkpoint_descriptor(c["checkpoint"]["path"]) or "session"
+            o_sid = sanitize_session_id(c["session_id"])[:8]
+            o_task = ""
+            if isinstance(c["sidecar"], dict) and c["sidecar"].get("active_task"):
+                o_task = " — " + _safe_recovered_scalar(c["sidecar"]["active_task"], 80)
+            lines.append(
+                f"  * {label} [{o_sid}] — rel {c['score']:.2f}, "
+                f"{c['density']} checkpoint(s){o_task}\n    {c['checkpoint']['path']}"
+            )
+        if remaining > 0:
+            lines.append(
+                f"  * (+{remaining} more recent session(s) — name a topic, file, or "
+                "branch to surface the exact one)"
+            )
+
     lines.append(
         "Use this only if it matches the user's current request. If you do use it, "
         "briefly tell the user you found a relevant prior session (mention its topic / "
@@ -25304,22 +25659,49 @@ def keyword_relevance_score(text, checkpoint_path):
     Uses precision-oriented scoring: what fraction of user's content words
     appear in the checkpoint. This avoids Jaccard's bias toward the larger set.
     Returns 0.0-1.0.
+
+    Topic-aware continuation handling (the parallel-session fix): a continuation
+    cue ("continue"/"resume"/a continuation phrase) only short-circuits to 1.0
+    when the prompt carries NO distinctive topic of its own. When a topic
+    survives stopword removal ("continue from checkpoint on TOKEN OPTIMIZER"),
+    the cue is ignored and the prompt is scored by topic precision -- otherwise
+    every checkpoint ties at 1.0 and the most RECENT one wins, surfacing the
+    wrong parallel session instead of the one the user named.
     """
     text_lower = text.lower()
-
-    # Special case: explicit continuation phrases match any checkpoint
-    if any(phrase in text_lower for phrase in _CONTINUATION_PHRASES):
-        return 1.0
-    # Strong single-word signals
-    words = text_lower.split()
-    if any(w in _CONTINUATION_WORDS for w in words):
-        return 1.0
 
     # Extract content words (>3 chars, filters most stopwords without a list)
     def content_words(s):
         return {w for w in re.findall(r'[a-zA-Z0-9_./:-]+', s.lower()) if len(w) > 3}
 
     text_tokens = content_words(text)
+
+    # Continuation cue present? (phrase OR strong single word)
+    has_continuation = (
+        any(phrase in text_lower for phrase in _CONTINUATION_PHRASES)
+        or any(w in _CONTINUATION_WORDS for w in text_lower.split())
+    )
+    if has_continuation:
+        # Residual topic = content words left after removing the resume cue
+        # itself. We FIRST strip the matched continuation PHRASES from the text
+        # (so multi-word cues like "pick up where" / "carry on" don't leave
+        # stray constituents like "pick"/"carry" that masquerade as a topic),
+        # THEN drop resume glue (stopwords) and the single-word cues. Empty
+        # residual = a vague "continue last session" with no named topic -> keep
+        # the legacy match-any-at-1.0 behavior (recency decides). Non-empty
+        # residual = the user named something -> rank by precision on it.
+        residual_text = text_lower
+        for phrase in _CONTINUATION_PHRASES:
+            if phrase in residual_text:
+                residual_text = residual_text.replace(phrase, " ")
+        residual = {
+            w for w in content_words(residual_text)
+            if w not in _RESUME_TOPIC_STOPWORDS and w not in _CONTINUATION_WORDS
+        }
+        if not residual:
+            return 1.0
+        text_tokens = residual
+
     if not text_tokens:
         return 0.0
 
@@ -27223,6 +27605,19 @@ def _set_quality_bar_disabled(disabled):
     (toggle clicks, ensure-health timestamps) never see partial JSON.
     """
     _write_config_flag("quality_bar_disabled", bool(disabled))
+
+
+def _set_daemon_disabled(disabled):
+    """Persist the dashboard-daemon opt-out flag via the atomic+locked writer.
+
+    Makes `setup-daemon --uninstall` sticky across the SessionStart ensure-
+    health self-install: `_ensure_dashboard_daemon` gates on this flag so a
+    deliberate uninstall is never resurrected. Symmetric with
+    `_set_quality_bar_disabled`; an explicit `setup-daemon` install clears it
+    (explicit opt-in). Routed through _write_config_flag so it never races the
+    ensure-health timestamp / dashboard-toggle writers.
+    """
+    _write_config_flag("daemon_disabled", bool(disabled))
 
 
 def _read_config_flag(key, default=False):
@@ -30951,42 +31346,37 @@ def run_ensure_health():
                         )
                         for p, e in write_failures:
                             sys.stderr.write(f"  {p}: {e}\n")
-                    # Restart the daemon so the new script takes effect.
-                    try:
-                        import subprocess as _sp
-                        _sys = platform.system()
-                        if _sys == "Darwin":
-                            uid = _sp.run(["id", "-u"], capture_output=True, text=True).stdout.strip()
-                            _sp.run(
-                                ["launchctl", "kickstart", "-k", f"gui/{uid}/{DAEMON_LABEL}"],
-                                capture_output=True, timeout=5
-                            )
-                        elif _sys == "Linux":
-                            _sp.run(
-                                ["systemctl", "--user", "restart", SYSTEMD_UNIT_NAME],
-                                capture_output=True, timeout=10
-                            )
-                        elif _sys == "Windows":
-                            # v5.4.8: /End is async, /Run issued too soon races on
-                            # port 24842. Fixed sleep of 2s lets /End settle.
-                            # Locale-independent: avoids parsing schtasks text output
-                            # which is localized on non-EN Windows (breaks polling).
-                            # /Run errors ("Task already running") are swallowed.
-                            _sp.run(
-                                ["schtasks", "/End", "/TN", WINDOWS_TASK_NAME],
-                                capture_output=True, timeout=5
-                            )
-                            import time as _t
-                            _t.sleep(2)
-                            _sp.run(
-                                ["schtasks", "/Run", "/TN", WINDOWS_TASK_NAME],
-                                capture_output=True, timeout=5
-                            )
+                    # Restart the daemon so the new script takes effect. Reuse
+                    # the shared per-OS restart helper (single source of truth for
+                    # kickstart / systemctl restart / schtasks End+Run).
+                    if _restart_dashboard_daemon(_normalized_platform()) == "restarted":
                         print(f"  [Token Optimizer] Auto-updated daemon to v{TOKEN_OPTIMIZER_VERSION}")
-                    except Exception as _e:
-                        print(f"  [Token Optimizer] daemon restart failed: {_e}", file=sys.stderr)
+                    else:
+                        print("  [Token Optimizer] daemon restart failed after auto-update",
+                              file=sys.stderr)
     except Exception as _e:
         print(f"  [Token Optimizer] daemon auto-update check failed: {_e}", file=sys.stderr)
+
+    # Dashboard daemon self-heal: INSTALL it if missing, RESTART it if dead.
+    # Default-on for every Claude user (loopback-only + token-authed + ~0 cost),
+    # sticky `daemon_disabled` opt-out -- the quality-bar posture, not the
+    # marker-gated keep-warm one. Runs AFTER the auto-update block above: that
+    # block owns the has-daemon (stale-script) case; this owns the absent/dead
+    # case so a lost plist / never-ran-the-audit user still gets the bookmarkable
+    # localhost URL. Cheap-gate-first (config read + stat + 1s port probe) and the
+    # costly install/restart is internally throttled, so the healthy hot path
+    # stays inside the SessionStart budget. Non-blocking (try/except).
+    try:
+        _daemon_ensure = _ensure_dashboard_daemon()
+        if _daemon_ensure == "installed":
+            print("  [Token Optimizer] Installed the dashboard daemon. "
+                  f"Bookmark this exact URL: http://localhost:{DAEMON_PORT}/token-optimizer "
+                  "(the /token-optimizer path is required -- the bare host:port won't load it). "
+                  "Opt out anytime: measure.py setup-daemon --uninstall")
+        elif _daemon_ensure == "restarted":
+            print("  [Token Optimizer] Restarted the dashboard daemon.")
+    except Exception as _e:
+        print(f"  [Token Optimizer] dashboard daemon self-heal failed: {_e}", file=sys.stderr)
 
     # Keep-warm scheduler repair (U4 deliverable 3). ADDITIVE + consent-gated +
     # cheap. Regenerates a user-deleted/stale keep-warm agent ONLY when the

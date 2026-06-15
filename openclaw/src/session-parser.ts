@@ -126,6 +126,22 @@ function parseLine(line: string): Record<string, unknown> | null {
   }
 }
 
+/**
+ * Coerce a usage token field to a non-negative, finite number.
+ *
+ * Corrupt or hand-edited JSONL can carry negative, NaN, Infinity, string, or
+ * otherwise non-numeric token counts. The `?? 0` coalescing elsewhere only
+ * catches undefined/null, so a single bad line would otherwise flow straight
+ * into the running totals and the cost computation, poisoning the whole
+ * session's numbers. Values are coerced with Number() first so a string-typed
+ * count ("1234") is recovered rather than discarded -- matching the numClamp()
+ * boundary savings.ts already applies to its own inputs.
+ */
+function nonNeg(value: unknown): number {
+  const n = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
 /** Common prefixes to strip before extracting a topic. */
 const TOPIC_STRIP_PREFIXES = [
   "implement the following plan:",
@@ -285,14 +301,16 @@ export function parseSession(
       if (usage) {
         // Prefer explicit cache fields when present, but tolerate older logs
         // that only expose input/output totals.
-        const inp =
+        const inp = nonNeg(
           (usage.inputTokens as number) ??
           (usage.input_tokens as number) ??
-          0;
-        const out =
+          0
+        );
+        const out = nonNeg(
           (usage.outputTokens as number) ??
           (usage.output_tokens as number) ??
-          0;
+          0
+        );
         const promptDetails =
           (usage.promptTokensDetails as Record<string, unknown>) ??
           (usage.prompt_tokens_details as Record<string, unknown>) ??
@@ -303,10 +321,15 @@ export function parseSession(
         const explicitCacheRead =
           (usage.cacheReadInputTokens as number) ??
           (usage.cache_read_input_tokens as number);
-        const cacheRead =
+        // Clamp the resolved cache-read. explicitCacheRead / promptCached stay
+        // possibly-undefined above on purpose: the inputForCost branch below
+        // relies on their `=== undefined` distinction to tell "field present"
+        // from "field absent".
+        const cacheRead = nonNeg(
           explicitCacheRead ??
           promptCached ??
-          0;
+          0
+        );
         const inputForCost =
           explicitCacheRead === undefined && promptCached !== undefined
             ? Math.max(0, inp - cacheRead)
@@ -315,18 +338,21 @@ export function parseSession(
           (usage.cacheCreation as Record<string, unknown>) ??
           (usage.cache_creation as Record<string, unknown>) ??
           {};
-        const cacheWrite1h =
+        const cacheWrite1h = nonNeg(
           (cacheCreation.ephemeral_1h_input_tokens as number) ??
           (usage.ephemeral_1h_input_tokens as number) ??
-          0;
-        const cacheWrite5m =
+          0
+        );
+        const cacheWrite5m = nonNeg(
           (cacheCreation.ephemeral_5m_input_tokens as number) ??
           (usage.ephemeral_5m_input_tokens as number) ??
-          0;
-        const cacheWrite =
+          0
+        );
+        const cacheWrite = nonNeg(
           (usage.cacheCreationInputTokens as number) ??
           (usage.cache_creation_input_tokens as number) ??
-          (cacheWrite1h + cacheWrite5m);
+          (cacheWrite1h + cacheWrite5m)
+        );
 
         const modelId =
           (msg?.model as string) ?? (record.model as string) ?? "unknown";
@@ -652,16 +678,18 @@ export function parseSessionTurns(
       {};
 
     // --- Input tokens ---
-    const inputTokens =
+    const inputTokens = nonNeg(
       (usageRaw.inputTokens as number) ??
       (usageRaw.input_tokens as number) ??
-      0;
+      0
+    );
 
     // --- Output tokens ---
-    const outputTokens =
+    const outputTokens = nonNeg(
       (usageRaw.outputTokens as number) ??
       (usageRaw.output_tokens as number) ??
-      0;
+      0
+    );
 
     // --- Cache read ---
     // Claude: cache_read_input_tokens
@@ -675,10 +703,14 @@ export function parseSessionTurns(
     const explicitCacheRead =
       (usageRaw.cacheReadInputTokens as number) ??
       (usageRaw.cache_read_input_tokens as number);
-    const cacheRead =
+    // Clamp the resolved cache-read; explicitCacheRead / promptCached stay
+    // possibly-undefined above so the freshInputTokens branch can still tell
+    // "field present" from "field absent".
+    const cacheRead = nonNeg(
       explicitCacheRead ??
       promptCached ??
-      0;
+      0
+    );
     const freshInputTokens =
       explicitCacheRead === undefined && promptCached !== undefined
         ? Math.max(0, inputTokens - cacheRead)
@@ -690,18 +722,21 @@ export function parseSessionTurns(
       (usageRaw.cacheCreation as Record<string, unknown>) ??
       (usageRaw.cache_creation as Record<string, unknown>) ??
       {};
-    const cacheWrite1h =
+    const cacheWrite1h = nonNeg(
       (cacheCreationObj.ephemeral_1h_input_tokens as number) ??
       (usageRaw.ephemeral_1h_input_tokens as number) ??
-      0;
-    const cacheWrite5m =
+      0
+    );
+    const cacheWrite5m = nonNeg(
       (cacheCreationObj.ephemeral_5m_input_tokens as number) ??
       (usageRaw.ephemeral_5m_input_tokens as number) ??
-      0;
-    const cacheCreation =
+      0
+    );
+    const cacheCreation = nonNeg(
       (usageRaw.cacheCreationInputTokens as number) ??
       (usageRaw.cache_creation_input_tokens as number) ??
-      (cacheWrite1h + cacheWrite5m);
+      (cacheWrite1h + cacheWrite5m)
+    );
 
     // --- Model ---
     const modelRaw =

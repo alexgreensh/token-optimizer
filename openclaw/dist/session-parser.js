@@ -142,6 +142,21 @@ function parseLine(line) {
         return null;
     }
 }
+/**
+ * Coerce a usage token field to a non-negative, finite number.
+ *
+ * Corrupt or hand-edited JSONL can carry negative, NaN, Infinity, string, or
+ * otherwise non-numeric token counts. The `?? 0` coalescing elsewhere only
+ * catches undefined/null, so a single bad line would otherwise flow straight
+ * into the running totals and the cost computation, poisoning the whole
+ * session's numbers. Values are coerced with Number() first so a string-typed
+ * count ("1234") is recovered rather than discarded -- matching the numClamp()
+ * boundary savings.ts already applies to its own inputs.
+ */
+function nonNeg(value) {
+    const n = typeof value === "number" ? value : Number(value);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+}
 /** Common prefixes to strip before extracting a topic. */
 const TOPIC_STRIP_PREFIXES = [
     "implement the following plan:",
@@ -286,12 +301,12 @@ function parseSession(filePath, agentName, openclawDir) {
             if (usage) {
                 // Prefer explicit cache fields when present, but tolerate older logs
                 // that only expose input/output totals.
-                const inp = usage.inputTokens ??
+                const inp = nonNeg(usage.inputTokens ??
                     usage.input_tokens ??
-                    0;
-                const out = usage.outputTokens ??
+                    0);
+                const out = nonNeg(usage.outputTokens ??
                     usage.output_tokens ??
-                    0;
+                    0);
                 const promptDetails = usage.promptTokensDetails ??
                     usage.prompt_tokens_details ??
                     {};
@@ -299,24 +314,28 @@ function parseSession(filePath, agentName, openclawDir) {
                     promptDetails.cached_tokens;
                 const explicitCacheRead = usage.cacheReadInputTokens ??
                     usage.cache_read_input_tokens;
-                const cacheRead = explicitCacheRead ??
+                // Clamp the resolved cache-read. explicitCacheRead / promptCached stay
+                // possibly-undefined above on purpose: the inputForCost branch below
+                // relies on their `=== undefined` distinction to tell "field present"
+                // from "field absent".
+                const cacheRead = nonNeg(explicitCacheRead ??
                     promptCached ??
-                    0;
+                    0);
                 const inputForCost = explicitCacheRead === undefined && promptCached !== undefined
                     ? Math.max(0, inp - cacheRead)
                     : inp;
                 const cacheCreation = usage.cacheCreation ??
                     usage.cache_creation ??
                     {};
-                const cacheWrite1h = cacheCreation.ephemeral_1h_input_tokens ??
+                const cacheWrite1h = nonNeg(cacheCreation.ephemeral_1h_input_tokens ??
                     usage.ephemeral_1h_input_tokens ??
-                    0;
-                const cacheWrite5m = cacheCreation.ephemeral_5m_input_tokens ??
+                    0);
+                const cacheWrite5m = nonNeg(cacheCreation.ephemeral_5m_input_tokens ??
                     usage.ephemeral_5m_input_tokens ??
-                    0;
-                const cacheWrite = usage.cacheCreationInputTokens ??
+                    0);
+                const cacheWrite = nonNeg(usage.cacheCreationInputTokens ??
                     usage.cache_creation_input_tokens ??
-                    (cacheWrite1h + cacheWrite5m);
+                    (cacheWrite1h + cacheWrite5m));
                 const modelId = msg?.model ?? record.model ?? "unknown";
                 const reqId = record.requestId;
                 const key = reqId || `__noreq__${requestUsage.size}`;
@@ -597,13 +616,13 @@ function parseSessionTurns(filePath, openclawDir) {
             assistantRecord.usage ??
             {};
         // --- Input tokens ---
-        const inputTokens = usageRaw.inputTokens ??
+        const inputTokens = nonNeg(usageRaw.inputTokens ??
             usageRaw.input_tokens ??
-            0;
+            0);
         // --- Output tokens ---
-        const outputTokens = usageRaw.outputTokens ??
+        const outputTokens = nonNeg(usageRaw.outputTokens ??
             usageRaw.output_tokens ??
-            0;
+            0);
         // --- Cache read ---
         // Claude: cache_read_input_tokens
         // OpenAI: usage.prompt_tokens_details.cached_tokens
@@ -613,9 +632,12 @@ function parseSessionTurns(filePath, openclawDir) {
             promptDetails.cached_tokens;
         const explicitCacheRead = usageRaw.cacheReadInputTokens ??
             usageRaw.cache_read_input_tokens;
-        const cacheRead = explicitCacheRead ??
+        // Clamp the resolved cache-read; explicitCacheRead / promptCached stay
+        // possibly-undefined above so the freshInputTokens branch can still tell
+        // "field present" from "field absent".
+        const cacheRead = nonNeg(explicitCacheRead ??
             promptCached ??
-            0;
+            0);
         const freshInputTokens = explicitCacheRead === undefined && promptCached !== undefined
             ? Math.max(0, inputTokens - cacheRead)
             : inputTokens;
@@ -624,15 +646,15 @@ function parseSessionTurns(filePath, openclawDir) {
         const cacheCreationObj = usageRaw.cacheCreation ??
             usageRaw.cache_creation ??
             {};
-        const cacheWrite1h = cacheCreationObj.ephemeral_1h_input_tokens ??
+        const cacheWrite1h = nonNeg(cacheCreationObj.ephemeral_1h_input_tokens ??
             usageRaw.ephemeral_1h_input_tokens ??
-            0;
-        const cacheWrite5m = cacheCreationObj.ephemeral_5m_input_tokens ??
+            0);
+        const cacheWrite5m = nonNeg(cacheCreationObj.ephemeral_5m_input_tokens ??
             usageRaw.ephemeral_5m_input_tokens ??
-            0;
-        const cacheCreation = usageRaw.cacheCreationInputTokens ??
+            0);
+        const cacheCreation = nonNeg(usageRaw.cacheCreationInputTokens ??
             usageRaw.cache_creation_input_tokens ??
-            (cacheWrite1h + cacheWrite5m);
+            (cacheWrite1h + cacheWrite5m));
         // --- Model ---
         const modelRaw = msg?.model ?? assistantRecord.model ?? "unknown";
         const model = (0, pricing_1.normalizeModelName)(modelRaw) ?? modelRaw;

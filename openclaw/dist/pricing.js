@@ -224,6 +224,14 @@ function loadUserPricing(openclawDir) {
     }
 }
 let _mergedPricing = null;
+/**
+ * Memoizes {@link normalizeModelName}. Model-id strings repeat heavily across a
+ * session's records and across sessions, so caching the result of the ~60-branch
+ * match below turns repeat lookups into O(1). Keyed on the raw model id; values
+ * may be null, so membership is tested with Map.has (not a falsy check) to
+ * distinguish a cached null from a miss. Cleared by {@link resetPricingCache}.
+ */
+const _normalizeCache = new Map();
 /** Get pricing with user overrides merged on top of defaults. */
 function getPricing(openclawDir) {
     if (_mergedPricing)
@@ -243,6 +251,7 @@ function getPricing(openclawDir) {
 /** Reset cached pricing (for testing or config reload). */
 function resetPricingCache() {
     _mergedPricing = null;
+    _normalizeCache.clear();
 }
 /**
  * Normalize a model ID into a pricing key.
@@ -250,6 +259,17 @@ function resetPricingCache() {
  * and version suffixes (gpt-5.2-2026-03 -> gpt-5.2).
  */
 function normalizeModelName(modelId) {
+    if (_normalizeCache.has(modelId)) {
+        return _normalizeCache.get(modelId);
+    }
+    const result = computeNormalizedModelName(modelId);
+    // Bound defensively: the distinct-model-id set is small and finite in practice,
+    // but cap so a pathological stream of unique ids can't grow the cache unbounded.
+    if (_normalizeCache.size < 4096)
+        _normalizeCache.set(modelId, result);
+    return result;
+}
+function computeNormalizedModelName(modelId) {
     if (!modelId || modelId.startsWith("<"))
         return null;
     // Strip one or more provider prefixes:

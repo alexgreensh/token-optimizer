@@ -126,6 +126,54 @@ function definePluginEntry(options: PluginEntryOptions): PluginEntryOptions {
 }
 
 // ---------------------------------------------------------------------------
+// Bounded per-session tracking
+// ---------------------------------------------------------------------------
+
+/**
+ * Upper bound on the number of sessions held in the in-memory continuity and
+ * fresh-nudge collections. These are normally pruned on session:end, but a
+ * session that ends uncleanly (process killed, network disconnect) never fires
+ * that event, so without a cap the collections would grow for the gateway's
+ * entire lifetime. The bound evicts the oldest tracked session once exceeded.
+ */
+const MAX_TRACKED_SESSIONS = 2000;
+
+/**
+ * add() to a Set with oldest-first eviction past MAX_TRACKED_SESSIONS.
+ *
+ * No recency refresh on a repeat add: the Set guards here
+ * (_continuityInjectedSessions, _freshNudgeFiredSessions) are add-once
+ * fire-guards, so a key is never re-added and a refresh would be dead code. A
+ * guard could therefore age out while its session is still live, but only once
+ * the cap (a leaked-session backstop) is exceeded -- the cost is at most one
+ * duplicate injection/nudge for that session, which is acceptable.
+ */
+function boundedSetAdd(set: Set<string>, key: string): void {
+  set.add(key);
+  while (set.size > MAX_TRACKED_SESSIONS) {
+    const oldest = set.keys().next().value;
+    if (oldest === undefined || oldest === key) break;
+    set.delete(oldest);
+  }
+}
+
+/**
+ * set() on a Map with oldest-first eviction past MAX_TRACKED_SESSIONS. Unlike
+ * the Set helper, this refreshes recency on update (delete + re-set) because
+ * _freshNudgePriorScores is re-set on every session:patch, so refreshing keeps
+ * an actively-scored session from being evicted while still in use.
+ */
+function boundedMapSet<V>(map: Map<string, V>, key: string, value: V): void {
+  if (map.has(key)) map.delete(key);
+  map.set(key, value);
+  while (map.size > MAX_TRACKED_SESSIONS) {
+    const oldest = map.keys().next().value;
+    if (oldest === undefined || oldest === key) break;
+    map.delete(oldest);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Core audit logic (used by both plugin and CLI)
 // ---------------------------------------------------------------------------
 
@@ -553,7 +601,7 @@ export default definePluginEntry({
             // We finally have a prompt to score against — consume the one-shot
             // guard ONLY now. A bare init session:patch (no prompt yet) leaves
             // the guard unset so a later patch with the real prompt still runs.
-            _continuityInjectedSessions.add(event.sessionId);
+            boundedSetAdd(_continuityInjectedSessions, event.sessionId);
 
             // ── Cold-resume-lean path (upgrade from lightweight hint) ────────
             // When the user signals resume intent ("continue our work / last
@@ -670,10 +718,10 @@ export default definePluginEntry({
               nudgeSnapshot.contextWindow  // thread the exact window fillPct was measured against
             );
             // Always update the prior-score baseline (whether or not the nudge fired).
-            _freshNudgePriorScores.set(event.sessionId, nudgeSnapshot.qualityScore);
+            boundedMapSet(_freshNudgePriorScores, event.sessionId, nudgeSnapshot.qualityScore);
 
             if (nudgeMsg) {
-              _freshNudgeFiredSessions.add(event.sessionId);
+              boundedSetAdd(_freshNudgeFiredSessions, event.sessionId);
               const { savedTokens } = freshSessionSavingsEstimate(nudgeSnapshot.fillPct, nudgeSnapshot.model, nudgeSnapshot.contextWindow);
               logSavingsEvent("fresh_session_nudge", savedTokens, event.sessionId,
                 `score=${nudgeSnapshot.qualityScore} fill_pct=${nudgeSnapshot.fillPct.toFixed(1)}`);

@@ -113,6 +113,38 @@ const EVENTS_FILENAME = "checkpoint-events.jsonl";
 
 const states = new Map<string, SessionCheckpointState>();
 
+/**
+ * Cap the in-memory state cache. States are normally released on session:end
+ * via clearCheckpointState(), but a session that ends uncleanly never fires it,
+ * so without a bound this Map would grow for the gateway's entire lifetime.
+ *
+ * Eviction is safe because the dedup-critical fields (capturedFillBands,
+ * capturedQualityThresholds, capturedMilestones, lastCheckpointAt) are written
+ * through to disk on every recordCheckpointDecision() call, and
+ * getCheckpointState() re-hydrates an evicted entry via loadPersistedState() --
+ * so a band/threshold/milestone is never re-captured after eviction. The
+ * transient counters (editWriteCount, editedFiles, lastEvaluatedAt) mutated by
+ * registerWriteEvent()/markEvaluated() are NOT persisted; evicting an
+ * uncheckpointed session resets them to zero, which only delays a
+ * milestone-edit-batch checkpoint (conservative -- never a spurious one) and
+ * costs one redundant runtime evaluation. Acceptable for a backstop that only
+ * trips on thousands of leaked sessions.
+ */
+const MAX_TRACKED_SESSION_STATES = 2000;
+
+function rememberState(
+  sessionId: string,
+  state: SessionCheckpointState
+): SessionCheckpointState {
+  states.set(sessionId, state);
+  while (states.size > MAX_TRACKED_SESSION_STATES) {
+    const oldest = states.keys().next().value;
+    if (oldest === undefined || oldest === sessionId) break;
+    states.delete(oldest);
+  }
+  return state;
+}
+
 function sanitizeSessionId(id: string): string {
   const clean = id.replace(/[^a-zA-Z0-9_-]/g, "_");
   if (!clean || clean === "." || clean === "..") return "invalid-session";
@@ -315,8 +347,7 @@ export function getCheckpointState(sessionId: string): SessionCheckpointState {
 
   const persisted = loadPersistedState(sessionId);
   if (persisted) {
-    states.set(sessionId, persisted);
-    return persisted;
+    return rememberState(sessionId, persisted);
   }
 
   const created: SessionCheckpointState = {
@@ -330,8 +361,7 @@ export function getCheckpointState(sessionId: string): SessionCheckpointState {
     editBatchMarkerWrites: 0,
     editBatchMarkerFiles: 0,
   };
-  states.set(sessionId, created);
-  return created;
+  return rememberState(sessionId, created);
 }
 
 export function clearCheckpointState(sessionId: string): void {

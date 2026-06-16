@@ -34,6 +34,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from runtime_env import claude_home  # noqa: E402
 from structure_map import (  # noqa: E402
     detect_structure_language,
     is_structure_supported_file,
@@ -566,7 +567,7 @@ def print_agent_report(report):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="First-read shadow backfill analyzer")
-    ap.add_argument("--projects-dir", default=str(Path.home() / ".claude" / "projects"))
+    ap.add_argument("--projects-dir", default=str(claude_home() / "projects"))
     ap.add_argument("--edit-window", type=int, default=DEFAULT_EDIT_WINDOW_TURNS)
     ap.add_argument("--limit", type=int, default=None,
                     help="max sessions WITH reads to process (for a quick sample)")

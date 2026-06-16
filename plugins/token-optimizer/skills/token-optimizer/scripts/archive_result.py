@@ -37,6 +37,7 @@ except ImportError:
 from bash_compress import _TOKEN_PATTERNS
 from hook_io import read_stdin_hook_input
 from plugin_env import resolve_snapshot_dir
+from runtime_env import claude_home
 from session_store import SessionStore, _sanitize_session_id as sanitize_sid
 
 # ---------------------------------------------------------------------------
@@ -302,7 +303,7 @@ def _resolve_mcp_cap_tokens() -> int | None:
             pass
 
     # 2. settings.json "env" block — for out-of-process callers
-    settings_path = Path.home() / ".claude" / "settings.json"
+    settings_path = claude_home() / "settings.json"
     try:
         with open(settings_path, "r", encoding="utf-8") as f:
             settings = json.load(f)

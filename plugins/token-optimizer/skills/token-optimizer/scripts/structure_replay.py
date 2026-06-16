@@ -36,6 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
+from runtime_env import claude_home
 from structure_map import (
     StructureMapResult,
     estimate_tokens,
@@ -940,8 +941,8 @@ def _gather_input_paths(raw_paths: Sequence[str]) -> List[Path]:
     expanded: List[Path] = []
     if not raw_paths:
         defaults = [
-            Path.home() / ".claude" / "projects",
-            Path.home() / ".claude" / "_backups" / "token-optimizer" / "read-cache" / "decisions",
+            claude_home() / "projects",
+            claude_home() / "_backups" / "token-optimizer" / "read-cache" / "decisions",
         ]
         for root in defaults:
             if root.exists():
@@ -949,8 +950,8 @@ def _gather_input_paths(raw_paths: Sequence[str]) -> List[Path]:
         return expanded
 
     # Determine the safe root for glob expansion.
-    # TOKEN_OPTIMIZER_SAFE_ROOT overrides the default (~/.claude) for tests only.
-    _default_root = (Path.home() / ".claude").resolve()
+    # TOKEN_OPTIMIZER_SAFE_ROOT overrides the default (claude_home()) for tests only.
+    _default_root = claude_home().resolve()
     _safe_root_env = os.environ.get("TOKEN_OPTIMIZER_SAFE_ROOT", "").strip()
     if _safe_root_env:
         _candidate = Path(_safe_root_env).resolve()

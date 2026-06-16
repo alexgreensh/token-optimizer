@@ -37,6 +37,9 @@ _VALID_RUNTIMES = frozenset(
     {_RUNTIME_CLAUDE, _RUNTIME_CODEX, _RUNTIME_HERMES, _RUNTIME_OPENCODE, _RUNTIME_COPILOT}
 )
 _CLAUDE_PLUGIN_ENVS = ("CLAUDE_PLUGIN_ROOT", "CLAUDE_PLUGIN_DATA")
+# Claude Code's official config-dir override. When set, Claude stores
+# projects/, settings.json, etc. under this directory instead of ~/.claude.
+_CLAUDE_CONFIG_DIR_ENV = "CLAUDE_CONFIG_DIR"
 _CODEX_HOME_ENV = "CODEX_HOME"
 _HERMES_HOME_ENV = "HERMES_HOME"
 _COPILOT_HOME_ENV = "COPILOT_HOME"
@@ -219,8 +222,17 @@ def detect_runtime() -> str:
 
 
 def claude_home() -> Path:
-    """Return Claude Code's home directory."""
-    return Path.home() / ".claude"
+    """Return Claude Code's home directory.
+
+    Honors CLAUDE_CONFIG_DIR — Claude Code's official override for where it
+    stores projects/, settings.json, etc. — when it points at a safe directory
+    under the user home, matching how every other runtime honors its own home
+    env var (CODEX_HOME, HERMES_HOME, COPILOT_HOME, ...). Falls back to
+    ~/.claude. Without this, multi-config-dir users (CLAUDE_CONFIG_DIR set to a
+    non-default location) silently get session scans, the trends DB, and the
+    dashboard pinned to a stale ~/.claude that no longer receives sessions.
+    """
+    return _safe_home_from_env(_CLAUDE_CONFIG_DIR_ENV, Path.home() / ".claude")
 
 
 def codex_home() -> Path:

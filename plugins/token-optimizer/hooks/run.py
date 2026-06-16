@@ -52,7 +52,16 @@ def _check_consent() -> bool:
                     return True
                 config_path = ch / "token-optimizer" / "config.json"
             else:
-                config_path = home / ".claude" / "token-optimizer" / "config.json"
+                # Honor CLAUDE_CONFIG_DIR (Claude Code's official config-dir
+                # override) before falling back to ~/.claude.
+                claude_config = os.environ.get("CLAUDE_CONFIG_DIR", "")
+                if claude_config:
+                    cc = Path(claude_config).resolve()
+                    if not str(cc).startswith(str(home)):
+                        return True  # Path outside home = skip (fail-open)
+                    config_path = cc / "token-optimizer" / "config.json"
+                else:
+                    config_path = home / ".claude" / "token-optimizer" / "config.json"
 
         if not config_path.exists() or config_path.is_symlink():
             return True  # No config or symlink = fail-open

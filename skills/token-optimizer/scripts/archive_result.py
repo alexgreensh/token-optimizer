@@ -50,8 +50,31 @@ try:
     from token_estimate import CODE_CHARS_PER_TOKEN
 except Exception:  # pragma: no cover - fail-open if shared estimator missing
     CODE_CHARS_PER_TOKEN = 3.3
-_ARCHIVE_THRESHOLD = 4096       # chars: only archive results >= this size
-_ARCHIVE_PREVIEW_SIZE = 1500    # chars: preview included in replacement output
+def _positive_int_env(name: str, default: int) -> int:
+    """Read a positive-int override from the environment; fall back to ``default``.
+
+    Never raises — invalid or non-positive values are ignored so a misconfigured
+    env var can never crash this hot-path hook.
+    """
+    raw = os.environ.get(name, "").strip()
+    if raw:
+        try:
+            value = int(raw)
+            if value > 0:
+                return value
+        except ValueError:
+            pass
+    return default
+
+
+# Compression hysteresis (knock-in / knock-out). A result is only archived once it
+# reaches the knock-in threshold X; when archived, the inline preview is capped at
+# the knock-out size Y. Both are env-tunable. Invariant X > Y guarantees compressing
+# always yields a real saving; if misconfigured, Y is clamped below X (never crashes).
+_ARCHIVE_THRESHOLD = _positive_int_env("TOKEN_OPTIMIZER_ARCHIVE_THRESHOLD", 4096)        # knock-in (X)
+_ARCHIVE_PREVIEW_SIZE = _positive_int_env("TOKEN_OPTIMIZER_ARCHIVE_PREVIEW_SIZE", 1500)  # knock-out (Y)
+if _ARCHIVE_PREVIEW_SIZE >= _ARCHIVE_THRESHOLD:
+    _ARCHIVE_PREVIEW_SIZE = max(1, _ARCHIVE_THRESHOLD - 1)
 _ARCHIVE_MAX_SIZE = 5_242_880   # 5MB: truncate responses beyond this
 _STDIN_MAX_BYTES = _ARCHIVE_MAX_SIZE + 262_144  # 5MB response plus JSON overhead
 
@@ -449,12 +472,13 @@ def derive_archive_key(session_id: str | None, file_path: str, mtime_ns: int) ->
     return hashlib.sha256(raw).hexdigest()[:16]
 
 
-def build_archive_pointer(preview: str, original_chars: int, key: str) -> str:
+def build_archive_pointer(preview: str, original_chars: int, key: str, archive_path: str | None = None) -> str:
     """Standard progressive-disclosure pointer appended after a compressed preview."""
+    path_hint = f"Full file: {archive_path} — " if archive_path else ""
     return (
         f"{preview}\n\n"
         f"[Full result archived ({original_chars:,} chars). "
-        f"Retrieve with: expand {key}]"
+        f"{path_hint}Retrieve with: expand {key}]"
     )
 
 
@@ -816,7 +840,7 @@ def archive_result(quiet: bool = False) -> None:
             output_hash=output_hash,
             output_chars=char_count,
             output_tokens_est=token_est,
-            compressed_preview=safe_response[:1500],
+            compressed_preview=safe_response[:_ARCHIVE_PREVIEW_SIZE],
         )
     except Exception:
         pass
@@ -832,9 +856,9 @@ def archive_result(quiet: bool = False) -> None:
         preview = _compress_mcp_preview(safe_response, output_type)
         suffix = f" ({output_type})" if output_type != "text" else ""
         if original_char_count > _ARCHIVE_MAX_SIZE:
-            replacement = preview + f"\n\n[Full result archived ({original_char_count:,} chars{suffix}, truncated to 5MB).]"
+            replacement = preview + f"\n\n[Full result archived ({original_char_count:,} chars{suffix}, truncated to 5MB). Full file: {entry_path} — retrieve with: expand {tool_use_id}]"
         else:
-            replacement = preview + f"\n\n[Full result archived ({char_count:,} chars{suffix}).]"
+            replacement = preview + f"\n\n[Full result archived ({char_count:,} chars{suffix}). Full file: {entry_path} — retrieve with: expand {tool_use_id}]"
         original_tokens = int(original_char_count / CODE_CHARS_PER_TOKEN)
         replacement_tokens = int(len(replacement) / CODE_CHARS_PER_TOKEN)
         tokens_saved = max(0, original_tokens - replacement_tokens)

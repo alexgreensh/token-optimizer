@@ -1,0 +1,117 @@
+---
+title: Fleet Auditor
+description: "Fleet Auditor scans every agent system you run in one pass and reports idle burns, model misrouting, and config bloat with a dollar figure on each finding and a monthly savings total."
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+Most people run more than one agent system, and each one bills you separately. Fleet Auditor detects all of them, scans their usage, and reports where tokens leak with a dollar figure on every finding. Run `/fleet-auditor` and you get a single cross-system bill of waste instead of checking each tool by hand.
+
+## What it does
+
+Fleet Auditor detects installed agent systems (Claude Code, Codex, OpenClaw, NanoClaw, Hermes, OpenCode, IronClaw), collects token usage from each, runs waste-pattern detection, and reports recommended fixes with monthly savings estimates. It frames savings as recurring, because an idle heartbeat that burns $5 a month keeps burning until you fix it.
+
+It reads usage, never message content. The scan parses session metadata and token counts, prices them against a local pricing table, and produces findings. It never opens the text of your conversations.
+
+When a model's pricing is not in the local table, it reports the token waste confidently and says the dollar impact depends on current pricing rather than inventing a number. Findings below 0.4 confidence are suppressed.
+
+## What it catches
+
+The detectors split into static config checks and session-analysis checks.
+
+| Detector | Tier | What it catches |
+|---|---|---|
+| Heartbeat model waste | Config | An expensive model wired to a heartbeat or cron run that should use a cheap one. |
+| Heartbeat over-frequency | Config | A heartbeat interval under five minutes, firing far more than it needs to. |
+| Blocking hook | Config | A Stop hook that re-invokes the model on every turn via `decision: block`. |
+| Skill bloat | Config | Too many skills loaded per agent, each costing startup tokens. |
+| Tool definition bloat | Config | Tool definitions consuming more than 20% of the context window. |
+| Memory config overhead | Config | Memory or config files over 5,000 tokens loaded every session. |
+| Stale cron | Config | Cron jobs pointed at dead or archived repos, running for nothing. |
+| Empty heartbeat | Session | Heartbeat runs with high input but near-zero output: idle burns. |
+| Session history bloat | Session | Sessions where context grows monotonically with no compaction. |
+| Loop detection | Session | Many messages with trivially small output, the signature of a stuck loop. |
+| Abandoned sessions | Session | Sessions that start with a turn or two then stop, wasting the startup cost. |
+
+<Aside type="caution" title="OpenClaw gets extra scrutiny">
+When OpenClaw is detected, Fleet Auditor layers on security checks: an outdated gateway, malicious ClawHub skills, and disabled rate limiting. These are scored high severity because a compromised instance burns tokens until you notice. See [Waste detectors](/features/waste-detectors/).
+</Aside>
+
+## Subagent cost breakdown and costly-prompt ranking
+
+Beyond the fleet detectors, the analysis surfaces two breakdowns that pinpoint where spend concentrates.
+
+The **subagent cost breakdown** shows how much of recent spend went to subagent dispatch and what share of the total that is. When subagents dominate, it estimates the savings from routing them to a cheaper model, roughly 60% of their current cost. The top subagents by cost are listed so you know which ones to re-route first.
+
+The **costly-prompt ranking** lists the individual prompts that cost the most across recent sessions, so a single expensive turn does not hide inside a session average.
+
+## The fleet dashboard
+
+For visual analysis, the auditor generates a standalone HTML dashboard that matches the Token Optimizer design system. It writes to `~/.claude/_backups/token-optimizer/fleet-dashboard.html`, or the Codex backups directory when the runtime is Codex.
+
+## When to use it
+
+Run it manually when you run more than one agent system, when daily agent spend feels high, when you suspect idle heartbeats are burning tokens, or when you want a cross-system cost audit. It never fires automatically.
+
+## Default state
+
+Always available as the `/fleet-auditor` skill. It is invoked on demand and stays inactive until you call it. See the [capability matrix](/reference/capability-matrix/).
+
+## How to turn it on and off
+
+Nothing to disable. Fleet Auditor is a skill that runs only when you invoke it and reads usage metadata you already have. It changes no configuration, opens no message content, and issues no model calls.
+
+The fixes it recommends are yours to apply. Acting on a finding is always a separate, deliberate step.
+
+## Exact commands
+
+The skill runs these in sequence. To drive them directly:
+
+```bash
+cd ~/.claude/skills/fleet-auditor/scripts
+python3 fleet.py detect --json                   # list installed agent systems
+python3 fleet.py scan --days 30                   # collect usage over a window
+python3 fleet.py audit --json                     # run waste detection with savings
+python3 fleet.py dashboard                         # generate and open the fleet dashboard
+```
+
+<Steps>
+1. **Detect.** `detect` reports which systems are installed. If none, it lists the supported set.
+2. **Scan.** `scan --days 30` parses session files into `fleet.db`. The first scan can take a moment.
+3. **Audit.** `audit --json` runs the detectors and orders findings by severity and monthly savings.
+4. **Visualize.** `dashboard` writes the HTML view and opens it in your browser.
+</Steps>
+
+On a non-Claude runtime, prefix the runtime, for example `TOKEN_OPTIMIZER_RUNTIME=codex python3 fleet.py audit --json`.
+
+## Defaults and thresholds
+
+| Setting | Default | Notes |
+|---|---|---|
+| Scan window | 30 days | Widen with `--days N`. |
+| Confidence floor | 0.4 | Findings below this are suppressed. |
+| Tool-definition bloat | >20% of context | Threshold for the tool-definition detector. |
+| Memory config overhead | >5,000 tokens | Threshold for the memory-config detector. |
+| Heartbeat over-frequency | under 5 minute interval | Threshold for the frequency detector. |
+| Subagent re-route estimate | ~60% of subagent cost | Projected savings from cheaper routing. |
+| Savings framing | monthly recurring | Not a one-time figure. |
+
+## Risk rating
+
+None. Fleet Auditor reads usage metadata, prices it, and reports. It never reads message content, changes config, or calls a model. The remedies it recommends are yours to apply.
+
+## Related environment variables
+
+`TOKEN_OPTIMIZER_RUNTIME` selects the runtime and the backups directory the dashboard writes to. Model pricing follows the active tier. Both are defined in the [configuration reference](/reference/configuration/).
+
+## Platform availability
+
+The `/fleet-auditor` skill runs on Claude Code and Codex and detects and audits Claude Code, Codex, OpenClaw, NanoClaw, Hermes, OpenCode, and IronClaw. See the [capability matrix](/reference/capability-matrix/).
+
+## Related
+
+- [Token Coach](/features/token-coach/): the single-system version, focused on your Claude Code or Codex setup.
+- [Waste detectors](/features/waste-detectors/): the detectors behind the findings, including the OpenClaw security checks.
+- [Setup audit](/features/audit/): the deeper per-component Claude Code audit Fleet Auditor points you to.
+- [Cache TTL watchdog](/features/cache-watchdog/): the prompt-cache expiry waste not covered by the fleet detectors.
+- [Configuration](/reference/configuration/): runtime selection and pricing tiers.

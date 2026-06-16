@@ -1,0 +1,47 @@
+---
+title: The compaction problem
+description: Why 60-70% of your conversation vanishes on every auto-compact, how that loss compounds, and what motivates Smart Compaction.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+When auto-compact fires, the agent replaces your conversation with a summary to free space. That summary keeps the gist and drops the detail. In practice, 60 to 70% of the conversation goes: decisions, error-and-fix sequences, agent state, the reasoning behind the code you are looking at.
+
+This is the single largest source of lost work in a long session, and it is why compression that does not survive compaction is only half a solution.
+
+## The loss compounds
+
+One compaction costs you most of the conversation. The next one compacts what is left, including the summary of the first. The losses stack.
+
+- After one compaction: roughly 60 to 70% of the original conversation is gone.
+- After two or three: 88 to 95% is gone.
+
+Each compaction also re-sends your structural overhead again: the system prompt, tool definitions, skills, and configs all re-enter the fresh context. So a late, deep compaction is expensive twice, once in lost work and once in re-sent overhead.
+
+## Why runtime compression alone does not save you
+
+Suppose a command-output compressor saved you 500 tokens on a `git status`. If the next auto-compact wipes out the decision that made you run `git status`, you saved 500 tokens and lost the thing that made them worth spending. Compression and continuity are not separate features that happen to ship together. Compression only pays off if the session survives long enough to use what it saved.
+
+## What survives a compaction, and how
+
+Smart Compaction closes the loop by acting on both sides of the compaction boundary, where the prompt cache is safe to touch because nothing already in your context is being edited.
+
+- **Before compaction:** it captures a checkpoint of session state, the active task, key decisions, recent errors, agent state, and open work. Progressive checkpoints fire at multiple fill and quality thresholds rather than waiting for an emergency, so the checkpoint is rich, not last-second.
+- **At compaction:** it injects mode-aware PRESERVE and DROP guidance so the summary keeps what matters for what you are actually doing. Debug sessions keep error signals and stack traces; code sessions keep edited files and their tests.
+- **After compaction:** it restores the checkpoint and reminds the model which large tool outputs it already processed, so it does not re-read them from scratch.
+
+The result is that a session picks up where it left off, even after a compaction, a crash, or a `/clear`.
+
+<Aside type="note">
+Checkpoints are additive. They never edit or remove anything already in your context, so they do not break the prompt cache. The checkpoint path makes no LLM calls, so it costs no tokens of its own.
+</Aside>
+
+## The cheaper alternative to grinding
+
+Once a session is deep into the degradation bands, you have a third option besides grinding on or paying full price to resume the whole transcript: let the old session go and reopen it lean. Cold-resume-lean reconstructs a compact context from the checkpoint for almost nothing. See [Session continuity and cold resume](/features/session-continuity/).
+
+## Next steps
+
+- [Smart compaction](/features/smart-compaction/): the checkpoint and restore mechanics in detail.
+- [Quality scoring](/concepts/quality-scoring/): how to see a compaction coming.
+- [Prompt cache economics](/concepts/cache-economics/): the other cost of pausing and resuming.

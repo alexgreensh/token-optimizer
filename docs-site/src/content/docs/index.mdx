@@ -1,0 +1,46 @@
+---
+title: Introduction
+description: A fully local context optimizer for Claude Code and five other agents. It cuts the three kinds of token waste, keeps your work alive across compaction, and shows every token, dollar, and turn on a live dashboard.
+---
+
+import { Card, CardGrid, Aside } from '@astrojs/starlight/components';
+
+Token Optimizer cuts the tokens you waste and keeps the work you would otherwise lose. It audits your setup for waste, compresses new content as it enters your context, checkpoints your session before compaction destroys it, and tracks every token and dollar on a dashboard that updates after each session. It runs fully local, with zero baseline context overhead and zero runtime dependencies.
+
+It works today on Claude Code (CLI and VS Code), OpenCode, OpenClaw, Codex, Hermes, and GitHub Copilot (CLI and VS Code, beta). Each platform has its own native plugin. Windsurf and Cursor are on the roadmap.
+
+## Most tools fix one kind of waste
+
+Command-output compressors touch roughly 15 to 25% of your context on a good day. The other 75 to 85%, plus the 60 to 70% you lose on every compaction, goes untouched. Token waste comes in three kinds, and a tool that fixes one leaves the rest on the table.
+
+<CardGrid>
+  <Card title="Structural waste" icon="setting">
+    A bloated CLAUDE.md, unused skills, duplicate system reminders, stale MEMORY.md, entries past line 200 the model never sees, dead MCP servers. Often the largest share, and it compounds: a leaner prefix means a smaller cache-read bill on every turn that follows.
+  </Card>
+  <Card title="Runtime waste" icon="bars">
+    Verbose command output, oversized MCP results, and re-read files that flood your context mid-session. This is the slice proxy compressors handle.
+  </Card>
+  <Card title="Behavioral waste" icon="random">
+    The habits that quietly burn tokens: letting the cache expire, compacting too late, looping on a failing approach, running Opus where Haiku would do. Some are caught live in the session; others only show up across many.
+  </Card>
+</CardGrid>
+
+Token Optimizer covers all three. And because it checkpoints your session before compaction fires and restores what the summary dropped, the savings stick instead of vanishing the moment auto-compact kicks in. Read the full model in [How it works](/concepts/how-it-works/).
+
+## What you get
+
+- **A one-time audit.** Run `/token-optimizer` after install. It produces a per-component token breakdown, fixes what it safely can, and recommends the rest. See [Reading your first audit](/start/first-audit/).
+- **Active compression, automatic.** Delta re-reads, code-skeleton substitution, and bash-output compression cut runtime waste as it enters your window, all on by default.
+- **Compaction survival.** Checkpoints before auto-compact, restore after, and a digest of large tool outputs so the model does not re-read from scratch.
+- **A live dashboard.** Per-turn token and cost breakdown across four pricing tiers, quality grades, subagent spend, skill adoption, and a savings tracker. It regenerates after every session.
+- **A quality score.** A 0 to 100 grade that tracks how much the session has degraded, turn by turn, in the terminal status line and on the dashboard.
+
+## Where to go next
+
+- [Quickstart](/start/quickstart/): install, run the audit once, open the dashboard. Two minutes.
+- [All features at a glance](/start/feature-map/): every feature, its one-line purpose, its default state, and a link. The fastest way to see what is here.
+- [Why install this first](/concepts/why-first/): the compounding overhead that makes this the first plugin worth adding.
+
+<Aside type="tip">
+Already installed and want to confirm it worked? Run `/token-optimizer quick` for a ten-second health check, or see [Reading your first audit](/start/first-audit/).
+</Aside>

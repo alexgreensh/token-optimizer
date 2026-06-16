@@ -1,0 +1,113 @@
+---
+title: Codex (CLI)
+description: "Install Token Optimizer in Codex CLI via the marketplace, wire hooks with the four hook profiles, and set up the bookmarkable dashboard at port 24843."
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+Installing for Codex is two steps: add the marketplace plugin, then run the one-time `codex-install` command to wire the hooks. The plugin alone does not install the hooks; the command does. Every Codex engine command needs the `TOKEN_OPTIMIZER_RUNTIME=codex` prefix so it reads Codex data, not Claude Code data.
+
+## Prerequisites
+
+- Codex CLI or Codex Desktop.
+- Python 3.9 or newer on your PATH.
+
+## Install the plugin
+
+```bash
+codex plugin marketplace add alexgreensh/token-optimizer
+```
+
+Then in the Codex TUI, open `/plugins` and install Token Optimizer. Invoke it conversationally: "Run Token Optimizer".
+
+## Wire the hooks
+
+This step is required. It writes the hooks to `~/.codex/hooks.json`, which Codex loads for all projects regardless of trust level.
+
+<Steps>
+
+1. Install globally, for all projects:
+
+   ```bash
+   TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py codex-install
+   ```
+
+2. Or scope it to one project instead:
+
+   ```bash
+   TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py codex-install --project "$PWD"
+   ```
+
+</Steps>
+
+### Hook profiles
+
+`codex-install` defaults to the `balanced` profile. Pass `--profile` to pick another based on how much hook activity you want.
+
+| Profile | What it installs | Noise level |
+|---|---|---|
+| `balanced` (default) | SessionStart + UserPromptSubmit + Stop + compact prompt | Low, 3 hook events |
+| `quiet` | Stop only | Minimal, 1 hook event |
+| `telemetry` | Balanced + PostToolUse | Medium, visible rows in Desktop |
+| `aggressive` | All hooks including experimental Bash PreToolUse | High, full coverage |
+
+Install with a specific profile:
+
+```bash
+TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py codex-install --profile quiet
+```
+
+## Set up the dashboard
+
+The Codex dashboard runs on port 24843, separate from Claude Code's 24842, so both can run at once.
+
+```bash
+TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py setup-daemon
+```
+
+Open it at `http://localhost:24843/token-optimizer`. The file fallback lives at `~/.codex/_backups/token-optimizer/dashboard.html`. For LAN access, set `TOKEN_OPTIMIZER_DASHBOARD_HOST=0.0.0.0` before running `setup-daemon`; the setting is sticky and independent per runtime.
+
+## Verify
+
+Run the doctor. A healthy install reports `0 FAIL`.
+
+```bash
+TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py codex-doctor --project "$PWD"
+```
+
+Other useful checks:
+
+```bash
+TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py report
+TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py dashboard --quiet
+```
+
+Inside Codex, you can also say "Run Token Optimizer", "Run Token Coach", "Run Fleet Auditor", or "Show the dashboard".
+
+## Auto-update
+
+Codex auto-upgrades Git-backed marketplaces on startup via `git ls-remote`. To update by hand:
+
+```bash
+codex plugin marketplace upgrade
+```
+
+## Uninstall
+
+Remove the dashboard daemon, then remove the plugin via the Codex `/plugins` menu:
+
+```bash
+TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py setup-daemon --uninstall
+```
+
+To strip the hooks, delete the Token Optimizer entries from `~/.codex/hooks.json` (or the per-project file if you scoped it).
+
+<Aside type="note">
+Codex uses `AGENTS.md` where Claude Code uses `CLAUDE.md`, and keeps memory under `~/.codex/memories/`. A few Claude Code features are approximated on Codex because of upstream hook gaps. See the [Codex platform reference](/platforms/codex/) for the full list.
+</Aside>
+
+## See also
+
+- [Codex (Desktop)](/install/codex-desktop/), which uses this same adapter.
+- [Codex platform reference](/platforms/codex/) for capabilities and upstream gaps.
+- [Configuration](/reference/configuration/) for every environment variable.

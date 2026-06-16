@@ -1,0 +1,48 @@
+---
+title: Reading your first audit
+description: What /token-optimizer produces, how to read the findings, and how to apply fixes with approval and backups.
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+Running `/token-optimizer` once after install gives you a complete picture of where your context goes and a guided path to recover it. The audit runs in phases: it scans your setup with parallel agents, synthesizes the findings, presents them on a dashboard, and applies the fixes you approve. Nothing changes without your sign-off, and every change is backed up first.
+
+Typical recovery is 5 to 15% of your context budget, and up to 25% or more once autocompact management is in place.
+
+## What the audit does, phase by phase
+
+<Steps>
+
+1. **Scan.** Six auditors run in parallel, one per source of structural waste: CLAUDE.md, MEMORY.md, skills, MCP servers, slash commands, and settings or hooks. Each measures size, duplication, and dead weight in tokens.
+
+2. **Synthesize.** A synthesis pass reads every auditor's findings and produces one ranked optimization plan: what to fix, how many tokens each fix recovers, and the side effects to watch for.
+
+3. **Present.** The plan renders on the dashboard so you can see the per-component breakdown and the projected savings before deciding anything. The audit waits here for you.
+
+4. **Implement.** For each fix you approve, Token Optimizer shows a before-and-after diff, backs up the original, and applies the change. Fixes cover trimming CLAUDE.md, archiving stale MEMORY.md entries, archiving unused skills, disabling dead MCP servers, adding file-exclusion rules, tuning hooks and caching, and installing compact instructions.
+
+5. **Verify.** A final pass re-measures everything and reports the actual before-and-after savings, plus behavioral next steps for the habits a single audit cannot fix.
+
+</Steps>
+
+## How to act on the findings
+
+Read the findings as a budget, not a dollar figure. Each item tells you how many tokens it recovers and what share of your context window that is. Prioritize the structural items at the top of the plan: they recover the most and they compound, because a leaner prefix lowers your cache-read bill on every turn that follows.
+
+Approve fixes one at a time when you are unsure. The audit presents a diff for each change and waits for you. You can approve the safe, high-recovery items (duplicate configs, orphaned memory entries, unused skill frontmatter) and defer anything that touches a skill, MCP server, or deny rule another tool depends on.
+
+<Aside type="note">
+The audit never deletes files. Skills and configs are archived outside the skills directory so you can restore them. It also checks dependencies before archiving, because a skill, MCP server, or deny rule can be load-bearing for something else.
+</Aside>
+
+## After the audit
+
+The structural fixes are one-time. The rest runs on its own: active compression cuts runtime waste as it enters your window, Smart Compaction protects your work across auto-compact, and the quality score tracks degradation turn by turn. The dashboard regenerates after every session so you can watch the savings accumulate.
+
+For the behavioral patterns the audit surfaces (compacting too late, model misrouting, sessions creeping longer), run [Token Coach](/features/token-coach/), which reads 30 days of your session history.
+
+## Next steps
+
+- [The dashboard](/features/dashboard/): how to read every panel.
+- [Active compression overview](/features/active-compression/): what runs automatically after the audit.
+- [Managing skills and MCP](/features/manage-tab/): toggle components on and off after the audit.

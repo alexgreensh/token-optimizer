@@ -1,0 +1,153 @@
+---
+title: Session continuity and cold resume
+description: "Reopen a paused or forgotten session without paying to relearn it. Cold-Resume-Lean rebuilds a lean context block at zero LLM cost, and a topic-matched nudge fires on every prompt."
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+Reopening a session that has sat idle for hours or days normally forces a full prefix re-write, and the model still has to relearn where you were. Session continuity gives you that context back cheaply: a token-free reconstruction you can paste into a new session, an automatic hint when a new prompt matches an old session, and a browsable history of every checkpoint.
+
+## What it does
+
+Smart compaction saves checkpoints. Session continuity is how you spend them.
+
+When you start a fresh session about a topic you worked on before, the work you already did lives in checkpoints on disk. Continuity surfaces it three ways. Cold-Resume-Lean reconstructs a compact context block from those checkpoints and the session log without calling the model at all. The prompt-continuity hook watches each new prompt and injects a short hint when it matches a prior session's topic. The fresh-session nudge tells you, on a low-quality fresh start, that a richer resume is available.
+
+The shared idea is breadcrumb continuity: leave a trail of cheap, structured markers as you work, then follow the trail back instead of re-deriving the path.
+
+## Cold-Resume-Lean
+
+Cold-Resume-Lean rebuilds context for a cold or forgotten session at zero LLM cost. It reads checkpoints and the session log, joins them, and emits a lean block you can inject directly. No summarization model runs, so reopening a stale session costs nothing beyond the file reads.
+
+Run it with no session argument to list candidate sessions, or with a number or session ID to emit a block:
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+python3 measure.py resume-lean                  # list candidate sessions
+python3 measure.py resume-lean 1                # emit the block for candidate #1
+python3 measure.py resume-lean SESSION_ID --print
+python3 measure.py resume-lean --days 14        # widen the lookback window
+```
+
+The `--print` output is built to drop straight into a new run:
+
+```bash
+claude "$(cd ~/.claude/skills/token-optimizer/scripts && python3 measure.py resume-lean 1 --print)"
+```
+
+Cold-Resume-Lean works across Claude Code, Codex, OpenClaw, and OpenCode, so the same reconstruction reopens a session no matter which surface created it.
+
+<Aside type="tip" title="Why it is free">
+Reconstruction is pure file work: read the checkpoints, read the session log, join them, format the block. There is no model call, so a forgotten session costs nothing to reopen and you never pay the prefix re-write you were trying to avoid.
+</Aside>
+
+## Prompt continuity (the automatic hint)
+
+The prompt-continuity hook runs on every user prompt. It checks whether your prompt matches the topic of a prior session and, if it does, injects a lean context hint through the hook's `additionalContext` channel. The match is keyword-based and the hook runs under an 8-second wall-clock budget, so a miss costs nothing and never delays your turn.
+
+This is the hands-off path: you start typing about yesterday's work, and the relevant breadcrumb appears without you running a command. It fires automatically through the UserPromptSubmit hook when the plugin is installed.
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+python3 measure.py prompt-continuity   # the command the hook runs; rarely run by hand
+```
+
+## The fresh-session nudge
+
+When you start a fresh session whose context fill is meaningful but whose quality is low, continuity surfaces a nudge: a richer resume is available from a prior checkpoint. Two thresholds gate it so it stays quiet on genuinely new work.
+
+| Condition | Variable | Default |
+|---|---|---|
+| Quality below | `TOKEN_OPTIMIZER_FRESH_NUDGE_QUALITY` | `70` |
+| Fill at least | `TOKEN_OPTIMIZER_FRESH_NUDGE_MIN_FILL` | `50` |
+
+Both are defined in the [configuration reference](/reference/configuration/#checkpoints-and-continuity). Raise the quality threshold to nudge more often, or lower it to nudge less.
+
+## Codex continue-last
+
+Codex has its own continuation flow. The `continue-last` command renders a topic-matched hint from a prior Codex session for use in a continuation prompt.
+
+```bash
+TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py continue-last
+TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py continue-last --topic "auth refactor"
+```
+
+The `codex-continue-last` verb is an alias for the same behavior.
+
+## Browsing and measuring checkpoints
+
+List every saved checkpoint, newest first, with its age and filename:
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+python3 measure.py list-checkpoints
+```
+
+For aggregate telemetry (count, recency, session coverage) over a window, enable checkpoint telemetry and run the stats command:
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+TOKEN_OPTIMIZER_CHECKPOINT_TELEMETRY=1 python3 measure.py checkpoint-stats --days 14
+```
+
+`checkpoint-stats` requires `TOKEN_OPTIMIZER_CHECKPOINT_TELEMETRY=1` because telemetry collection is off by default.
+
+## Default state
+
+The automatic hint is on. Prompt-continuity fires on every prompt through the UserPromptSubmit hook for plugin users, and the fresh-session nudge fires on eligible fresh starts.
+
+The manual reopener is on demand: `resume-lean`, `continue-last`, and `list-checkpoints` run only when you call them.
+
+Checkpoint telemetry (`checkpoint-stats`) is off until you set `TOKEN_OPTIMIZER_CHECKPOINT_TELEMETRY=1`.
+
+## How to turn it on and off
+
+Cold-Resume-Lean, `continue-last`, and `list-checkpoints` are read-only commands you invoke by hand. There is nothing to disable; just do not run them.
+
+The automatic prompt-continuity hint comes from the prompt-continuity hook. To stop it, remove the UserPromptSubmit continuity hook through the same path that installs the smart-compaction hooks:
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+python3 measure.py setup-smart-compact --uninstall
+```
+
+To quiet the fresh-session nudge without removing hooks, raise its quality floor so it rarely qualifies, for example `TOKEN_OPTIMIZER_FRESH_NUDGE_QUALITY=0`.
+
+<Aside type="note" title="Removing checkpoint data">
+Uninstalling the hooks leaves existing checkpoints on disk. To delete all local Token Optimizer data including checkpoints, use `purge`. See [your data and privacy](/reference/data-and-privacy/).
+</Aside>
+
+## Defaults and thresholds
+
+| Setting | Default | Notes |
+|---|---|---|
+| Prompt-continuity budget | 8 seconds | Wall-clock; misses cost nothing |
+| `resume-lean` lookback | recent sessions | Widen with `--days N` |
+| Fresh nudge quality floor | `70` | `TOKEN_OPTIMIZER_FRESH_NUDGE_QUALITY` |
+| Fresh nudge minimum fill | `50` | `TOKEN_OPTIMIZER_FRESH_NUDGE_MIN_FILL` |
+| Checkpoint telemetry | off | Set `TOKEN_OPTIMIZER_CHECKPOINT_TELEMETRY=1` for stats |
+| Cold-Resume-Lean cost | zero LLM tokens | Pure file reconstruction |
+
+## Risk rating
+
+None. Every continuity feature is additive and read-only with respect to your conversation. Cold-Resume-Lean reads files and prints a block. The prompt-continuity hint is injected only on a topic match and is bounded by an 8-second budget that fails open on a miss. Nothing here can corrupt or delete a session.
+
+## Related environment variables
+
+- `TOKEN_OPTIMIZER_FRESH_NUDGE_QUALITY`, `TOKEN_OPTIMIZER_FRESH_NUDGE_MIN_FILL` (fresh-session nudge gates)
+- `TOKEN_OPTIMIZER_CHECKPOINT_TELEMETRY` (enables `checkpoint-stats`)
+- `TOKEN_OPTIMIZER_CONTINUITY` (OpenCode enable flag)
+- `TOKEN_OPTIMIZER_CHECKPOINT_RETENTION_DAYS`, `TOKEN_OPTIMIZER_CHECKPOINT_RETENTION_MAX`, `TOKEN_OPTIMIZER_RELEVANCE_THRESHOLD` (OpenCode/OpenClaw restore tuning)
+
+Defined with defaults in the [configuration reference](/reference/configuration/#checkpoints-and-continuity).
+
+## Platform availability
+
+Cold-Resume-Lean spans Claude Code, Codex, OpenClaw, and OpenCode. The automatic prompt-continuity hint runs on Claude Code (CLI and VS Code). `continue-last` is the Codex path. See the [capability matrix](/reference/capability-matrix/).
+
+## Related
+
+- [Smart compaction](/features/smart-compaction/): how checkpoints are captured, including progressive and milestone triggers.
+- [Compaction model](/concepts/compaction-model/): why a cold resume is expensive without continuity.
+- [Cache economics](/concepts/cache-economics/): the prefix re-write cost a resume avoids.
+- [Configuration](/reference/configuration/): every continuity variable.

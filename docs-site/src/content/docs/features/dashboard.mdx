@@ -1,0 +1,117 @@
+---
+title: The dashboard
+description: "A single-file HTML dashboard for context overhead, quality, trends, and skill management: open it once or run it as a persistent local service."
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+The dashboard turns the audit and your session history into a browsable HTML page with panels for overhead, quality, trends, and skill management.
+
+## What it does
+
+The dashboard renders one self-contained HTML file with four panels: Overview (a current context snapshot from the setup audit), Context Quality (your rolling quality score), Trends (per-session token usage from history), and Manage (toggle skills and MCP servers on or off). It either opens once in your browser or serves over HTTP so you can refresh it as you work.
+
+After every session, the SessionEnd hook regenerates the dashboard data so the page is current the next time you open it. You do not have to rerun the audit by hand.
+
+## When it runs
+
+You open the dashboard on demand. The underlying data refreshes automatically on SessionEnd through the `session-end-flush` hook. The daemon, when installed, keeps the HTTP server alive between sessions so the page is always one click away.
+
+## Default state
+
+Generated on demand on every platform. The persistent daemon is off until you opt in with `setup-daemon`. The data collection that feeds the dashboard is on by default through the SessionEnd hook on platforms that support hooks.
+
+## How to turn off
+
+The dashboard is generated on request, so nothing is running to disable unless you installed the daemon. Remove the daemon with:
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+python3 measure.py setup-daemon --uninstall
+```
+
+During an uninstall, `python3 measure.py purge --force` stops the daemon and deletes its data in one step. See [your data and privacy](/reference/data-and-privacy/).
+
+## Commands
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+
+# Generate and open the dashboard in your browser
+python3 measure.py dashboard
+
+# Serve it over HTTP instead of opening a file
+python3 measure.py dashboard --serve --port 8080
+
+# Quiet mode, custom history window
+python3 measure.py dashboard --serve --quiet --days 30
+
+# Diagnose an empty or broken panel (validates the data shape)
+python3 measure.py dashboard-diagnose
+
+# Check whether the persistent daemon is yours and running
+python3 measure.py daemon-status
+```
+
+The convenience skill `/token-dashboard` collects the latest session data, regenerates the page, and opens it for you.
+
+## Serve versus daemon
+
+These are two different ways to view the page over HTTP.
+
+| | `dashboard --serve` | `setup-daemon` |
+|---|---|---|
+| Lifetime | Runs while the command is open | Persists across sessions |
+| Use case | One look at the live page | A bookmarkable URL you keep open |
+| URL | The host and port you pass | `http://localhost:24842` |
+| Consent | None needed | One-time daemon consent |
+| Install | Nothing to install | launchd agent (macOS) or scheduled task (Windows) |
+
+<Aside type="note">
+The daemon binds to a fixed port (24842). `dashboard --serve` defaults to port 8080 and accepts `--port`. Run `setup-daemon` once for the always-on bookmarkable URL; use `--serve` for a quick disposable view.
+</Aside>
+
+## Network and LAN model
+
+By default the dashboard binds to `127.0.0.1`, so only your own machine can reach it. To expose it on your local network, set the bind host to `0.0.0.0` before installing the daemon:
+
+```bash
+TOKEN_OPTIMIZER_DASHBOARD_HOST=0.0.0.0 python3 measure.py setup-daemon
+```
+
+The chosen host persists per-runtime across upgrades. Accepted values are `127.0.0.1`, `localhost`, and `0.0.0.0`. Anything else falls back to localhost with a warning.
+
+<Aside type="caution">
+`0.0.0.0` makes the dashboard reachable by any device on your LAN. Use it only on networks you trust. There is no authentication layer in front of the page.
+</Aside>
+
+`daemon-status` runs an identity-verified probe, not just a TCP check, so it can tell your daemon apart from another process holding the port. It returns `DAEMON_RUNNING`, `DAEMON_NOT_RUNNING`, or `DAEMON_FOREIGN`.
+
+## Defaults and thresholds
+
+| Setting | Value |
+|---|---|
+| Default bind host | `127.0.0.1` |
+| Daemon port | `24842` |
+| `--serve` default port | `8080` (overridable with `--port`) |
+| History window | Recent days; tune with `--days N` |
+| Data refresh | Automatic on SessionEnd |
+
+## Risk rating
+
+Low. The default localhost bind keeps the page private to your machine. The only material exposure is choosing `0.0.0.0`, which is opt-in and warned about. The page is read-mostly; its one write action is the Manage panel, covered on its own page.
+
+## Related environment variables
+
+`TOKEN_OPTIMIZER_DASHBOARD_HOST`, `TOKEN_OPTIMIZER_HOST`, and `TOKEN_OPTIMIZER_DASHBOARD_TIMEOUT`. Defined in the [configuration reference](/reference/configuration/).
+
+## Platform availability
+
+Generated on all platforms. The persistent daemon is supported on macOS (launchd) and Windows (scheduled task). Codex, Hermes, and Copilot regenerate dashboard data through their own session-end rollups; prefix commands with the runtime selector.
+
+## Related pages
+
+- [Setup audit](/features/audit/): the data behind the Overview panel.
+- [Managing skills and MCP](/features/manage-tab/): the Manage panel and its CLI equivalents.
+- [Usage and session analytics](/features/usage-analytics/): the Trends panel in CLI form.
+- [Your data and privacy](/reference/data-and-privacy/): daemon consent and purge.

@@ -1,0 +1,65 @@
+---
+title: Quickstart
+description: Install Token Optimizer on Claude Code, run the audit once, and open the live dashboard. About two minutes.
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+This is the fastest path on Claude Code. Install the plugin, run the audit one time, and open the dashboard. Everything else runs automatically from there.
+
+For other platforms, or for a script-managed install on macOS and Linux, see [Choosing your install](/install/overview/).
+
+## Install and run
+
+<Steps>
+
+1. **Add the marketplace and install the plugin.** In Claude Code:
+
+   ```
+   /plugin marketplace add alexgreensh/token-optimizer
+   /plugin install token-optimizer@alexgreensh-token-optimizer
+   ```
+
+   This is the recommended path on macOS, Linux, and Windows. The plugin auto-loads its hooks on install, so Smart Compaction, quality scoring, active compression, and session data collection start working without manual setup.
+
+2. **Turn on auto-update.** Claude Code ships third-party marketplaces with auto-update off, and plugin authors cannot change that default. Go to `/plugin`, open the **Marketplaces** tab, select `alexgreensh-token-optimizer`, and choose **Enable auto-update**. One time, ten seconds, and you receive fixes automatically.
+
+3. **Run the audit once.** In Claude Code:
+
+   ```
+   /token-optimizer
+   ```
+
+   It scans your setup, finds waste, shows you the findings on a dashboard, and applies the fixes you approve. See [Reading your first audit](/start/first-audit/) for what each phase produces and how to act on it.
+
+4. **Open the dashboard.** The dashboard regenerates after every session. To make it available at a bookmarkable URL, install the daemon once from the scripts directory:
+
+   ```bash
+   cd ~/.claude/skills/token-optimizer/scripts
+   python3 measure.py setup-daemon
+   ```
+
+   Then open `http://localhost:24842/token-optimizer`. The dashboard binds to localhost by default, reachable only from your own machine.
+
+</Steps>
+
+## Confirm it worked
+
+Run the health check from the scripts directory:
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+python3 measure.py doctor
+```
+
+`doctor` reports pass, warn, or fail for each component: hooks, status line, Smart Compaction, dashboard daemon, and quality bar. For a quick context-fill and quality read instead, run `/token-optimizer quick`.
+
+<Aside type="caution" title="Windows users">
+Use only the `/plugin` install above. Do not also run the script installer. Combining the two creates an `EBUSY: resource busy or locked` error. On Windows, the Python command is `python`, not `python3`. See the Windows notes in [Choosing your install](/install/overview/).
+</Aside>
+
+## Next steps
+
+- [Reading your first audit](/start/first-audit/): the multi-phase audit and how to apply fixes safely.
+- [All features at a glance](/start/feature-map/): every feature, its default, and where to learn more.
+- [Why install this first](/concepts/why-first/): the overhead that makes this worth doing early.

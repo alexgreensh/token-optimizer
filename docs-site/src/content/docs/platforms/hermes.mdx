@@ -1,0 +1,89 @@
+---
+title: Hermes
+description: "Hermes: a three-signal quality score, a pre-turn context nudge, read-only state.db access, and conservative per-model savings."
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Beta">
+The Hermes adapter is beta, version 0.1.0. It has passed a full internal gauntlet but is not yet validated against a live Hermes install. Live smoke-testing is the remaining gate before stable.
+</Aside>
+
+Hermes runs Token Optimizer through a read-only adapter. It scores quality from a three-signal subset, fires a one-line context nudge before each turn, and never writes to the Hermes session database. The narrower feature set follows directly from what Hermes exposes to plugins.
+
+## Supported surfaces
+
+Hermes has two entry points into the same adapter.
+
+| Surface | How to use |
+|---|---|
+| `/token-optimizer` | Slash command inside a Hermes session. Prints a token and cost summary for recent sessions. |
+| `hermes token-optimizer` | Shell subcommand. Opens the dashboard at `http://localhost:24844`. |
+
+Install and allow-list from the [Hermes install page](/install/hermes/). The cross-platform grid is at [/reference/capability-matrix/](/reference/capability-matrix/).
+
+## Three-signal quality score
+
+Hermes scores quality from three signals rather than the seven on Claude Code. Three upstream signals are dropped, each for a concrete data reason.
+
+| Signal | Weight | What it measures |
+|---|---|---|
+| Context fill | 40% | Input plus cache-read tokens, over the model context window |
+| Message-count risk | 35% | Session length against a risk curve |
+| Output / input ratio | 25% | Productivity, output tokens over input tokens |
+
+Three signals are omitted on purpose.
+
+- Cache hit rate is dropped because `cache_read_tokens` is documented as unreliable in the Hermes schema.
+- Compaction depth is dropped because compaction events are not persisted in the sessions row.
+- API calls per turn is dropped because the figure is not directly comparable across Hermes sessions.
+
+## Pre-turn context nudge
+
+The nudge fires through the `pre_llm_call` hook before each turn. At roughly 70 percent fill it prints a one-line notice. At 85 percent and above it escalates to suggest `/compact`. It fires at most once per session crossing a threshold.
+
+Hermes does not expose the live context window size to plugins, so fill is an estimate against an assumed window of 200,000 tokens by default, or a mapped window for known models. The display is capped at 100 percent.
+
+## Read-only by design
+
+The adapter opens `~/.hermes/state.db` with a read-only, immutable URI and `PRAGMA query_only = ON`. It never writes back. All plugin hooks are wrapped so no exception escapes into the Hermes host. There is no telemetry and there are no network calls. There is nothing to disable for safety, because the adapter only reads.
+
+## Conservative per-model savings
+
+Cost and savings figures use the Hermes-reported cost when available and fall back to a Token Optimizer estimate otherwise. Estimates are deliberately conservative, since Hermes does not expose every field a precise figure would need.
+
+## Features not available
+
+Several features depend on hooks Hermes does not provide.
+
+| Feature | Reason |
+|---|---|
+| Smart Compaction with PreCompact/PostCompact | No such hooks in Hermes; the nudge is injection-only via `pre_llm_call` |
+| Status line quality bar | No terminal status-bar surface |
+| Quality Nudges as active injection | No `UserPromptSubmit` equivalent; limited to `pre_llm_call` |
+| Keep-Warm, delta read, structure map, bash compression | Not available |
+| Fleet Auditor direct scan | Fleet Auditor covers Claude Code and Codex; Hermes data flows to the shared trends database and is read through its own dashboard |
+
+## Runtime prefix
+
+Hermes commands run through `measure.py` with the `hermes-` subcommand names.
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+python3 measure.py hermes-doctor
+```
+
+If Hermes is not at `~/.hermes`, set `HERMES_HOME` ahead of the command. See the [configuration reference](/reference/configuration/).
+
+## Doctor command
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+python3 measure.py hermes-doctor
+```
+
+It checks `HERMES_HOME` resolution, the plugin directory and required files, declared hooks, a bridge smoke test, the `plugins.enabled` activation entry, `state.db` readability, and dashboard-port availability.
+
+## Dashboard
+
+The Hermes dashboard serves at `http://localhost:24844`. It is the shared Token Optimizer dashboard populated with Hermes session data across the Overview, Quality, Waste, Sessions, and Daily tabs.

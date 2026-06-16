@@ -1,0 +1,33 @@
+---
+title: Platform support
+description: "Platform support: Token Optimizer ships a native adapter per platform, with Claude Code as the reference surface."
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Token Optimizer runs natively on seven coding surfaces. Each platform gets its own adapter built against that platform's real hook API, not a lowest-common-denominator wrapper. Where an upstream API cannot do something, the page for that platform names the gap and the reason instead of pretending parity.
+
+## Supported platforms
+
+Claude Code is the reference platform. Every feature ships there first, and every other platform page describes its capabilities relative to it.
+
+| Platform | Surfaces | Status |
+|---|---|---|
+| [Claude Code](/platforms/claude-code/) | CLI, VS Code extension | Stable |
+| [Codex](/platforms/codex/) | CLI, Desktop | Stable |
+| [OpenCode](/platforms/opencode/) | Plugin | Stable |
+| [OpenClaw](/platforms/openclaw/) | Plugin | Stable |
+| [Hermes](/platforms/hermes/) | Slash command, CLI | Beta |
+| [GitHub Copilot](/platforms/copilot/) | CLI, VS Code | Beta |
+
+The VS Code companion extension that surfaces Claude Code data also runs in Cursor and Windsurf, because both are VS Code forks. That covers the editor status bar only. Standalone Cursor and Windsurf adapters with their own hook integration are on the roadmap, not shipped.
+
+## Native per platform, not a shim
+
+Each adapter maps Token Optimizer features onto the host's own primitives. Codex reads `AGENTS.md` where Claude Code reads `CLAUDE.md`. Hermes opens its session database read-only because that is the access Hermes grants plugins. Copilot bills in AI Credits, so cost figures use Copilot's own numbers rather than a token estimate.
+
+The result is honest asymmetry. A feature that depends on a hook the platform does not expose is marked unavailable on that platform, with the upstream blocker named.
+
+## Compare every feature
+
+The full grid of which feature works on which surface, including approximated and unavailable cells, lives at [/reference/capability-matrix/](/reference/capability-matrix/).

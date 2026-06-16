@@ -1,0 +1,100 @@
+---
+title: Setup audit
+description: "Per-component token breakdown for CLAUDE.md, skills, MCP servers, and MEMORY.md: how much each piece of your configuration costs before a single message is sent."
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+The setup audit measures every configuration component that loads into context before you type anything, then shows which ones cost the most.
+
+## What it does
+
+Every Claude session opens with a fixed overhead: the global CLAUDE.md, any project CLAUDE.md files, skill metadata, MCP server tool schemas, MEMORY.md, hooks, and settings. Those tokens are spent on every session no matter what you work on.
+
+The audit scans each component individually and estimates its token cost. It then surfaces a calibration gap, the difference between what the audit predicts and what your recent sessions actually started with. A large gap means something is loading that the audit does not account for, or your real sessions are leaner than your current config implies.
+
+A typical unconfigured setup runs 10,000 to 40,000 tokens of overhead before the first message. Setups with many installed skills and verbose MCP server tool lists can exceed 80,000 tokens. The full report breaks that down per component and flags the biggest contributors so you know where to act.
+
+## When it runs
+
+The audit is manual only. Nothing triggers it automatically. Run it when you want a snapshot of current overhead, after changing your configuration, or before the `/token-optimizer` skill to pre-load context for the five-phase optimization workflow.
+
+## Default state
+
+Both commands are always available after installation, on every platform. No feature flag or environment variable enables or disables them.
+
+## How to turn off
+
+The audit is a read-only measurement tool. It writes no files and changes no configuration. There is nothing to disable.
+
+## Commands
+
+Run from the scripts directory, or use an absolute path to `measure.py`.
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+
+# Full per-component report (default command, runs with no args too)
+python3 measure.py report
+
+# Fast scan: overhead total, degradation risk, top offenders
+python3 measure.py quick
+
+# Same scan as machine-readable JSON for scripts and CI
+python3 measure.py quick --json
+```
+
+On Codex, Hermes, or Copilot, prefix the runtime selector:
+
+```bash
+TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py report
+```
+
+<Aside type="tip">
+`report` reads the whole configuration surface and is the right command when you want the full breakdown. `quick` is the ten-second health check: total overhead, degradation risk, and the handful of components costing you the most.
+</Aside>
+
+## What the report covers
+
+<Steps>
+
+1. **CLAUDE.md.** Global and project memory files, sized individually so you can see which one dominates.
+
+2. **Skills.** Per-skill metadata cost. Every installed skill adds frontmatter that loads each session.
+
+3. **MCP servers.** Tool-schema cost per server. Verbose servers with many tools are common top offenders.
+
+4. **MEMORY.md.** Auto-memory file size and its overlap with CLAUDE.md.
+
+5. **Hooks and settings.** Wiring that runs on each session.
+
+6. **Calibration gap.** The predicted-versus-measured delta, so the numbers stay honest against your real session starts.
+
+</Steps>
+
+## Defaults and thresholds
+
+| Setting | Value |
+|---|---|
+| Token estimate basis | Calibrated, CJK-aware (about 3.3 chars per token for code) |
+| Trigger | Manual only |
+| Writes to disk | None |
+
+## Risk rating
+
+None. The audit reads files and reports numbers. It never edits configuration or session content, so there is no fail-open concern and nothing to undo.
+
+## Related environment variables
+
+None gate the audit itself. To override the detected context window for the run, see `TOKEN_OPTIMIZER_CONTEXT_SIZE` and the `--context-size` flag in the [configuration reference](/reference/configuration/).
+
+## Platform availability
+
+Available on all supported surfaces: Claude Code CLI and VS Code, Codex CLI and Desktop, Copilot CLI and VS Code, Hermes, OpenClaw, and OpenCode. The runtime prefix selects the platform whose configuration is scanned.
+
+## Related pages
+
+- [The dashboard](/features/dashboard/): the same data, visualized, with a Context Quality panel.
+- [Managing skills and MCP](/features/manage-tab/): act on the audit by toggling the offenders off.
+- [How it works](/concepts/how-it-works/): why setup overhead matters before the first message.
+- [CLI reference](/reference/cli/): every flag for `report` and `quick`.

@@ -1,0 +1,129 @@
+---
+title: Claude Code (CLI)
+description: "Install Token Optimizer in Claude Code CLI via the plugin marketplace (all platforms) or the verified script installer (macOS and Linux only)."
+---
+
+import { Aside, Steps, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Use the plugin install on every operating system, including Windows. The script install is a macOS and Linux alternative for people who want a Git-backed checkout that re-runs daily. Pick one. Running both on the same machine doubles the hooks and the session writes.
+
+## Prerequisites
+
+- Claude Code CLI, current version.
+- Python 3.9 or newer on your PATH (the engine is pure standard library, no `pip install`).
+- For the script install only: `git`, `curl`, and `sha256sum` or `shasum` (macOS and Linux).
+
+## Install
+
+<Tabs>
+<TabItem label="Plugin (recommended, all OS)">
+
+```
+/plugin marketplace add alexgreensh/token-optimizer
+/plugin install token-optimizer@alexgreensh-token-optimizer
+```
+
+Then run your first audit:
+
+```
+/token-optimizer
+```
+
+The plugin lands in `~/.claude/plugins/marketplaces/alexgreensh-token-optimizer`. Its hooks auto-activate on install. No manual hook setup.
+
+</TabItem>
+<TabItem label="Script (macOS and Linux only)">
+
+The script clones the latest release tag and verifies the `install.sh` checksum before executing it.
+
+```bash
+tmp="$(mktemp -d)"
+release_json="$(curl -fsSL https://api.github.com/repos/alexgreensh/token-optimizer/releases/latest)"
+tag="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])' <<<"$release_json")"
+checksums="$(python3 -c 'import json,sys; data=json.load(sys.stdin); print(next(a["browser_download_url"] for a in data["assets"] if a["name"]=="CHECKSUMS.sha256"))' <<<"$release_json")"
+git clone --branch "$tag" --depth 1 https://github.com/alexgreensh/token-optimizer.git ~/.claude/token-optimizer
+curl -fsSL -o "$tmp/CHECKSUMS.sha256" "$checksums"
+install_sum="$(grep '  install.sh$' "$tmp/CHECKSUMS.sha256")"
+(cd ~/.claude/token-optimizer && (printf '%s\n' "$install_sum" | sha256sum -c - --quiet 2>/dev/null || printf '%s\n' "$install_sum" | shasum -a 256 -c - --quiet))
+bash ~/.claude/token-optimizer/install.sh
+rm -rf "$tmp"
+```
+
+The script install destination is `~/.claude/token-optimizer/` and it symlinks the skill into `~/.claude/skills/token-optimizer`. To skip checksum verification, set `TOKEN_OPTIMIZER_SKIP_VERIFY=1` before running.
+
+</TabItem>
+</Tabs>
+
+<Aside type="caution">
+Do not run the script install alongside the plugin install. The plugin lives in `~/.claude/plugins/...` and the script in `~/.claude/token-optimizer/`. Two copies means two sets of hooks firing on every session.
+</Aside>
+
+## Enable auto-update
+
+Auto-update is off by default for plugins, and plugin authors cannot change that default. Turn it on once:
+
+```
+/plugin  →  Marketplaces tab  →  alexgreensh-token-optimizer  →  Enable auto-update
+```
+
+The script install handles updates differently. It re-runs the installer daily against the latest release tag and re-verifies the checksum each time.
+
+## Windows note
+
+Windows is plugin path only. Do not run `install.sh` on Windows; Git Bash holds file handles and the install fails with EBUSY errors. A manual ZIP fallback is available from GitHub Releases.
+
+On Windows, call the engine with `python`, not `python3`:
+
+```
+python measure.py doctor
+```
+
+## Post-install setup
+
+Both steps are optional. The status line auto-installs when your `statusLine` slot is empty, via the `SessionStart ensure-health` hook.
+
+<Steps>
+
+1. Install the quality status line manually (only if the auto-install did not run):
+
+   ```bash
+   python3 measure.py setup-quality-bar
+   ```
+
+2. Set up the bookmarkable dashboard daemon so the URL stays live between sessions:
+
+   ```bash
+   python3 measure.py setup-daemon
+   ```
+
+   This supports macOS (launchd), Linux (systemd --user), and Windows (Task Scheduler). For LAN access, set `TOKEN_OPTIMIZER_DASHBOARD_HOST=0.0.0.0` before running it. See [Configuration](/reference/configuration/) for the full variable list.
+
+</Steps>
+
+## Verify
+
+```bash
+python3 measure.py doctor
+```
+
+Or inside Claude Code, run `/token-optimizer` for the full guided audit. The dashboard lives at `http://localhost:24842/token-optimizer` and falls back to a generated `dashboard.html` when the daemon is not running.
+
+## Uninstall
+
+```
+/plugin uninstall token-optimizer@alexgreensh-token-optimizer
+```
+
+Remove the dashboard daemon first if you installed it:
+
+```bash
+python3 measure.py setup-daemon --uninstall
+```
+
+For the script install, delete `~/.claude/token-optimizer/` and the `~/.claude/skills/token-optimizer` symlink. To remove the status line, run `python3 measure.py setup-quality-bar --uninstall`.
+
+## See also
+
+- [Claude Code (VS Code)](/install/claude-code-vscode/) for the status-bar companion extension.
+- [Claude Code platform reference](/platforms/claude-code/) for the full capability list and hook inventory.
+- [Configuration](/reference/configuration/) for every environment variable.

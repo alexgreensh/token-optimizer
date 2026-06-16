@@ -1,0 +1,96 @@
+---
+title: Claude Code (VS Code)
+description: "Install the Token Optimizer VS Code companion VSIX to surface quality scores and usage data in the VS Code status bar."
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+The VS Code extension is a companion that surfaces Token Optimizer data in the status bar. The engine and the hooks still run inside the Claude Code process, which means you install the [Claude Code CLI plugin](/install/claude-code-cli/) first, then add this VSIX on top. The extension reads the files the plugin writes to `~/.claude/token-optimizer/`.
+
+## Prerequisites
+
+- The Token Optimizer plugin installed in Claude Code (see [Claude Code (CLI)](/install/claude-code-cli/)). Without it, the status bar has nothing to read.
+- VS Code, Cursor, or Windsurf. The VSIX works in all three.
+
+## Install
+
+<Steps>
+
+1. Download `token-optimizer-statusline-<version>.vsix` from the GitHub release.
+
+2. Install it from the command line:
+
+   ```
+   code --install-extension token-optimizer-statusline-<version>.vsix
+   ```
+
+   Or in the editor: Extensions → `...` → Install from VSIX.
+
+</Steps>
+
+The Claude Code extension itself is the same two `/plugin` commands as the CLI. This VSIX is the separate companion that renders the data in the status bar.
+
+## What the status bar shows
+
+Two status-bar items plus a hover tooltip covering:
+
+- Context fill percent with a bar.
+- ContextQ, the resource health grade and score.
+- Eff, the session efficiency grade and score.
+- Warnings for fill, tool fatigue, and regime change.
+- Compactions and estimated context loss.
+- Session duration and active subagents.
+- 5-hour and 7-day usage limits with reset times.
+
+Usage limits read as "verified" from the Claude statusline cache, "estimated" when computed locally from the transcript, or "cached" with the age of the last captured value shown.
+
+## Parity with the CLI
+
+Everything the CLI does, the extension does, because the same hooks run in the VS Code Claude Code process.
+
+| Feature | CLI | VS Code |
+|---|---|---|
+| Smart Compaction (checkpoint and restore) | Yes | Yes |
+| Quality tracking and session data | Yes | Yes |
+| All hooks (SessionEnd, PreCompact, and others) | Yes | Yes |
+| Dashboard at `localhost:24842/token-optimizer` | Yes | Yes (click a status-bar item) |
+| Active compression | Yes | Yes |
+| Status line (quality bar) | Terminal | VS Code status bar (this VSIX) |
+
+## Dashboard bookmark
+
+Click either status-bar item to open the dashboard at `http://localhost:24842/token-optimizer`. The extension does zero network activity except one localhost probe to that port, and only when you click. To keep the URL live between sessions, set up the daemon from the CLI:
+
+```bash
+python3 measure.py setup-daemon
+```
+
+## Verify
+
+The VSIX has no separate doctor. Use the underlying plugin's doctor:
+
+```bash
+python3 measure.py doctor
+```
+
+To force the panel to re-read the cache, use the **Token Optimizer: Refresh Now** button.
+
+<Aside type="caution">
+The `--bare` flag (scripted or CI runs of Claude Code) skips all hooks, so nothing gets written to `~/.claude/token-optimizer/`. The extension then shows stale or empty data. That is expected; `--bare` is for non-interactive automation.
+</Aside>
+
+## Uninstall
+
+Remove the extension from the VS Code Extensions panel, or:
+
+```
+code --uninstall-extension token-optimizer-statusline
+```
+
+The underlying plugin uninstalls separately. See [Claude Code (CLI)](/install/claude-code-cli/).
+
+## See also
+
+- [Claude Code (CLI)](/install/claude-code-cli/) for the required plugin install.
+- [Claude Code platform reference](/platforms/claude-code/) for the full capability list.
+- [Configuration](/reference/configuration/) for environment variables, including the `tokenOptimizer.runtime` setting that points the extension at Copilot.

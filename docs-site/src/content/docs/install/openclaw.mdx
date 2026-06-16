@@ -1,0 +1,101 @@
+---
+title: OpenClaw
+description: "Install Token Optimizer for OpenClaw from GitHub, ClawHub, or source. Use npx CLI commands for audits, dashboard, and drift detection outside of sessions."
+---
+
+import { Steps } from '@astrojs/starlight/components';
+
+Token Optimizer for OpenClaw is a native TypeScript plugin with zero Python dependency, zero runtime dependencies, and zero telemetry. It works with any model your OpenClaw gateway is configured against.
+
+## Prerequisites
+
+- OpenClaw installed
+- npm (for npx CLI commands)
+- Git (for source install only)
+
+## Recommended method: GitHub registry install
+
+```bash
+openclaw plugins install github:alexgreensh/token-optimizer
+```
+
+## Alternative method: ClawHub install
+
+```bash
+openclaw plugins install token-optimizer
+```
+
+## Alternative method: source install
+
+<Steps>
+
+1. Clone the repo:
+
+   ```bash
+   git clone https://github.com/alexgreensh/token-optimizer
+   ```
+
+2. Build and install:
+
+   ```bash
+   cd token-optimizer/openclaw && npm install && npm run build
+   openclaw plugins install ./
+   ```
+
+</Steps>
+
+## Verify the install
+
+```bash
+npx token-optimizer doctor --json
+```
+
+A healthy install reports plugin status and checkpoint health. The `--json` flag returns machine-readable output for scripting.
+
+## Inside OpenClaw
+
+Run `/token-optimizer` inside any OpenClaw session for a guided audit with coaching.
+
+## CLI commands
+
+All commands are available via `npx token-optimizer` outside of sessions:
+
+```bash
+npx token-optimizer detect                                            # Is OpenClaw installed?
+npx token-optimizer scan --days 30                                    # Scan sessions, show usage
+npx token-optimizer audit --days 30                                   # Detect waste, show $ savings
+npx token-optimizer audit --json                                      # JSON output for agents
+npx token-optimizer dashboard                                         # Generate HTML dashboard, open in browser
+npx token-optimizer context                                           # Context overhead breakdown
+npx token-optimizer context --json                                    # Context audit as JSON
+npx token-optimizer quality                                           # Quality score (0-100)
+npx token-optimizer quality --json                                    # Quality report as JSON
+npx token-optimizer git-context                                       # Suggest files based on git state
+npx token-optimizer git-context --json                                # Git context as JSON
+npx token-optimizer drift                                             # Check for config drift
+npx token-optimizer drift --snapshot                                  # Capture current config snapshot
+npx token-optimizer validate                                          # Before/after impact comparison
+npx token-optimizer validate --strategy auto --json                   # Auto-split strategy, JSON output
+npx token-optimizer doctor --json                                     # Check checkpoint health, plugin status
+TOKEN_OPTIMIZER_CHECKPOINT_TELEMETRY=1 npx token-optimizer checkpoint-stats  # Checkpoint telemetry summary
+```
+
+## Dashboard
+
+The OpenClaw dashboard is an 8-tab interactive HTML file, separate from the Python-based shared dashboard used by Claude Code and Codex. It auto-regenerates on session end. Open it manually:
+
+```bash
+npx token-optimizer dashboard
+```
+
+Tabs: Overview, Context, Quality, Waste, Agents, Sessions, Daily, Manage.
+
+## Auto-update
+
+Standard npm versioning. After updating to a new version, re-install from source if you used the source install path.
+
+## Model support
+
+30+ models: Claude, GPT-5, Gemini, DeepSeek, Qwen, Mistral, Grok, and local models via Ollama. Four pricing tiers: Anthropic API (direct), Google Vertex AI (global), Vertex AI (regional, +10%), and AWS Bedrock. User-configured pricing overrides via `openclaw.json`.
+
+See [OpenClaw capabilities](/platforms/openclaw/) for the full feature list, the 16 waste detectors, and features unique to OpenClaw vs Claude Code.

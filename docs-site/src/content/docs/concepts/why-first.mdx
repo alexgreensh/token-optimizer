@@ -1,0 +1,34 @@
+---
+title: Why install this first
+description: Every session starts with 50-70K tokens of invisible overhead before you type a word, and the problems that follow compound. Solving them from the start beats retrofitting later.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Every session starts with invisible overhead: system prompt, tool definitions, skills, MCP servers, CLAUDE.md, MEMORY.md. A typical power user burns 50 to 70K tokens before typing a word. That overhead is the prefix every later turn is measured against, so trimming it early pays off on every message that follows.
+
+## A larger window did not make the problems go away
+
+With Opus and Sonnet now at 1M context, the overhead feels like breathing room. It is not. The problems still compound, and a few of them get worse as the window grows.
+
+- **Quality degrades as context fills.** Long-context recall drops measurably as the window fills, from roughly 93% to 76% between 256K and 1M on the MRCR benchmark. The model gets quieter about it, but it gets less accurate.
+- **Rate limits hit faster.** Overhead counts toward your plan's usage caps on every message, cached or not. 50K of overhead times 100 messages is 5M tokens spent on nothing.
+- **Compaction is catastrophic.** 60 to 70% of your conversation goes per compaction, and after two or three rounds you have lost 88 to 95%. Each compaction also re-sends all that overhead again. See [The compaction problem](/concepts/compaction-model/).
+- **Higher effort burns faster.** More thinking tokens per response means you hit compaction sooner, which means more total tokens across the session.
+- **You cannot fix what you cannot see.** Without per-turn visibility into cache hits, model mix, and subagent spend, every "it feels slow" guess costs money.
+
+## Why first, not later
+
+Structural waste compounds. A leaner prefix lowers the cache-read bill on every subsequent turn, so the recovery you bank in the first audit keeps paying for the rest of the session and every session after it. Retrofitting after the habits and the bloat have set in recovers less and costs more attention.
+
+Token Optimizer also adds nothing to the problem it solves. It runs as an external process with zero baseline context overhead, so installing it does not eat into the budget it is helping you protect.
+
+<Aside type="note" title="Does removing tokens hurt the model?">
+No. Structural optimization removes genuinely unused components: duplicate configs, unused skill frontmatter, orphaned memory entries. It never touches the conversation itself, which means your prompt cache stays intact. The quality score tracks degradation in real time, and most users see scores improve after optimization because the model has more room for real work.
+</Aside>
+
+## Next steps
+
+- [Quickstart](/start/quickstart/): install and run the first audit in two minutes.
+- [How it works](/concepts/how-it-works/): the three-kinds-of-waste model in full.
+- [Quality scoring](/concepts/quality-scoring/): how the degradation cliff is measured.

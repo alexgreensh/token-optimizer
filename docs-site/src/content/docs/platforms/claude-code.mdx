@@ -1,0 +1,89 @@
+---
+title: Claude Code
+description: "Claude Code: the reference platform where every feature runs and hooks activate automatically on plugin install."
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Claude Code is the reference platform. Every Token Optimizer feature runs here first, and every other platform page describes its capabilities relative to this one.
+
+## Supported surfaces
+
+Claude Code has two surfaces, and they share one data store.
+
+The CLI is the primary surface. Install it through the Claude Code plugin marketplace and the full feature set activates.
+
+The VS Code extension is a companion VSIX that surfaces the same data in the editor status bar. It runs in VS Code, Cursor, and Windsurf, since all three read the same `~/.claude/token-optimizer/` files the plugin writes.
+
+Install from the [Claude Code (CLI)](/install/claude-code-cli/) or [Claude Code (VS Code)](/install/claude-code-vscode/) page. The cross-platform grid is at [/reference/capability-matrix/](/reference/capability-matrix/).
+
+## Hooks activate on install
+
+Plugin install wires every hook automatically through `hooks/hooks.json`. No manual setup step is required for compaction, quality tracking, or session data collection.
+
+| Hook event | What it does |
+|---|---|
+| `PreToolUse: Read` | Returns a delta diff or structure-map skeleton instead of re-reading a full file |
+| `PreToolUse: Bash` | Rewrites eligible commands to shrink their output |
+| `PreCompact` | Injects PRESERVE and DROP guidance into the compact prompt, then saves a checkpoint |
+| `SessionStart` | Restores the matching checkpoint and installs the status line when the slot is empty |
+| `UserPromptSubmit` | Updates the quality cache that feeds the status bar |
+| `Stop` and `SessionEnd` | Collect session data, refresh the dashboard, and write a continuity checkpoint |
+
+<Aside type="note">
+The status line is default-on for plugin users. The `SessionStart ensure-health` hook writes it into `~/.claude/settings.json` only when your `statusLine` slot is empty, and it respects the opt-out set by `setup-quality-bar --uninstall`. The plugin system cannot set a status line declaratively, so the hook does it directly.
+</Aside>
+
+## Full capability list
+
+Everything works on Claude Code. This is the baseline other platforms are measured against.
+
+| Capability | Status on Claude Code |
+|---|---|
+| Quality scoring (7 signals, dual composite) | Works |
+| Smart Compaction (PreCompact and PostCompact) | Works |
+| Session continuity and checkpoints | Works |
+| Delta read and structure-map substitution | Works |
+| Bash output compression | Works |
+| Per-prompt quality steering | Works |
+| Status line quality bar | Works, terminal on CLI, status bar via the VSIX |
+| Dashboard (visual HTML) | Works, port 24842 |
+| Bookmarkable daemon | Works, via `setup-daemon` |
+| Keep-Warm automation | Works, macOS launchd, opt-in |
+| Fleet Auditor and Token Coach | Works |
+| Memory and config audit (`CLAUDE.md`, `MEMORY.md`) | Works |
+| Crash recovery | Works, via the StopFailure hook |
+
+Nothing is approximated or unavailable on Claude Code.
+
+## Runtime prefix
+
+Claude Code is the default runtime. Commands run without a prefix.
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+python3 measure.py report
+```
+
+On Windows use `python`, not `python3`.
+
+## Doctor command
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+python3 measure.py doctor
+```
+
+Inside Claude Code, run `/token-optimizer` for a guided audit. In the VS Code extension, use the Refresh Now button to re-read the cache. The VSIX has no separate doctor; it relies on the plugin's.
+
+## Dashboard
+
+The dashboard serves at `http://localhost:24842/token-optimizer`. When the daemon is not running, it falls back to the generated `dashboard.html`. Clicking either VS Code status bar item opens it.
+
+## Known gaps
+
+There are no capability gaps on Claude Code. Two operational caveats apply.
+
+The `--bare` scripted and CI flag skips all hooks and plugin sync, so Smart Compaction, quality tracking, and session data collection do not run under it. This is expected.
+
+Plugin users do not get clobber-restore after `/statusline` replaces the Token Optimizer status line. No settings cache signal exists to tell an intentional replacement apart from a clobber, so the trade-off is accepted.

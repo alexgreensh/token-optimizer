@@ -1,0 +1,57 @@
+---
+title: Quality scoring
+description: A live context-quality score tells you how close a session is to the degradation cliff and whether it is using its tokens well right now.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+The quality score is a 0 to 100 measure of how healthy a session is. It is read from the session transcript, so it reflects what is actually in your context, not a guess. The status line shows it live, the dashboard charts it over time, and a sudden drop triggers a nudge so you can act before you lose work to compaction.
+
+This page explains what the score means. To read it on demand or tune the alerts, see [Quality nudges and loop detection](/features/quality-signals/) and [The quality status line](/features/status-line/).
+
+## The two composites
+
+The score reports two composites, because two different things can go wrong in a session.
+
+| Composite | Signals | What it tells you |
+|---|---|---|
+| Resource Health | Context fill, compaction depth, absolute waste tokens | How close you are to the degradation cliff, and how much hard capacity is already lost. This only moves one direction within a session. |
+| Session Efficiency | Stale reads, bloated results, decision density, agent efficiency | Whether the session is using its tokens well right now. This can improve or regress as you work. |
+
+A third group of detail signals (duplicate reminders and per-category waste estimates) explains why a score moved, without changing the headline number.
+
+## Grades
+
+Every score carries a letter grade for quick triage. The same grade appears in the status line, the dashboard, the coach tab, and CLI output.
+
+| Grade | Range | Meaning |
+|---|---|---|
+| S | 90-100 | Peak efficiency. Everything is clean. |
+| A | 80-89 | Healthy. Minor optimization possible. |
+| B | 70-79 | Degradation starting. Worth investigating. |
+| C | 55-69 | Significant waste. Coaching will help. |
+| D | 40-54 | Serious problems. Multiple anti-patterns likely. |
+| F | 0-39 | Context is rotting. Act now. |
+
+The grade scale is identical on every platform, even where the underlying signal count differs.
+
+## The degradation cliff
+
+Quality does not fall in a straight line. It holds, then drops sharply once the window fills past a threshold, which is why a single number that tracks fill is worth watching. The status bar shifts color to mark the bands.
+
+- **Green, under 50% fill:** peak quality zone.
+- **Yellow, 50 to 70%:** degradation starting.
+- **Orange, 70 to 80%:** quality dropping.
+- **Red, 80% and up:** severe. Consider a clean restart.
+
+The point of measuring the cliff is timing. If you compact or restart while you are still in the green or yellow band, you keep your work and your accuracy. If you wait until red, you have already paid for the degraded turns and you are closer to a compaction that will cost you 60 to 70% of the conversation.
+
+<Aside type="tip">
+A long session that has crossed into orange or red is often cheaper to restart than to keep grinding. Cold-resume-lean reopens it from its checkpoint for almost nothing. See [Session continuity and cold resume](/features/session-continuity/).
+</Aside>
+
+## Next steps
+
+- [The compaction problem](/concepts/compaction-model/): what waiting too long actually costs.
+- [Quality nudges and loop detection](/features/quality-signals/): the real-time alerts driven by this score.
+- [The quality status line](/features/status-line/): reading the grade in your terminal.

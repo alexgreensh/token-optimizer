@@ -1,0 +1,129 @@
+---
+title: Codex
+description: "Codex: full quality scoring and Smart Compaction approximated through the Codex hook API, with GPT-5.x pricing and intelligence-level routing advice."
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Codex runs the Token Optimizer engine through its own hook API. Quality scoring, cost tracking, the dashboard, and session continuity all work. A few Claude Code features are approximated or unavailable because the Codex hook API exposes less than Claude Code's, and each gap is named below with its upstream cause.
+
+Codex CLI and Codex Desktop share one adapter. There is no separate Desktop install. The `telemetry` hook profile adds PostToolUse rows that render in Desktop.
+
+## Supported surfaces
+
+- **Codex CLI** is the primary surface.
+- **Codex Desktop** loads the same `~/.codex/hooks.json` and behaves identically.
+
+Install from the [Codex (CLI)](/install/codex-cli/) or [Codex (Desktop)](/install/codex-desktop/) page. The full capability grid is at [/reference/capability-matrix/](/reference/capability-matrix/).
+
+## Runtime prefix
+
+Every Token Optimizer command on Codex carries the runtime prefix:
+
+```bash
+TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py <command>
+```
+
+This selects the Codex adapter, the Codex dashboard port, and Codex pricing. Omitting it falls back to the Claude Code defaults.
+
+## How Codex maps to Claude Code
+
+Codex uses different config and memory conventions, and the adapter follows them.
+
+| Concept | Claude Code | Codex |
+|---|---|---|
+| Config file | `CLAUDE.md` | `AGENTS.md` |
+| Memory system | `MEMORY.md` plus project memory dirs | `~/.codex/memories/**/*.md` |
+| Model routing advice | Opus, Sonnet, Haiku per agent | Intelligence levels plus GPT-5.x model selection |
+| Hook install | Auto on plugin install, 8 events | `codex-install` command, global by default, 4 profiles, 3 to 5 events |
+| Compact lifecycle | PreCompact and PostCompact capture and restore | Compact-prompt guidance plus Stop checkpoints |
+| Tool result archive | PostToolUse archives immediately | Stop-time backfill from JSONL, or PostToolUse on the telemetry profile |
+| Dashboard refresh | SessionEnd hook plus daemon at 24842 | Stop hook plus daemon at 24843 |
+
+The Token Coach reads `AGENTS.md` and the Codex memory directories, and its routing advice speaks in GPT-5.x intelligence levels and model choices rather than the Claude model tiers.
+
+## Hook profiles
+
+Codex hooks install through `codex-install`. Pick a profile by how much surface noise you want.
+
+| Profile | Installs | Noise |
+|---|---|---|
+| `balanced` (default) | SessionStart, UserPromptSubmit, Stop, compact prompt | Low, 3 events |
+| `quiet` | Stop only | Minimal, 1 event |
+| `telemetry` | Balanced plus PostToolUse | Medium, visible rows in Desktop |
+| `aggressive` | All hooks including experimental Bash PreToolUse | High, full coverage |
+
+```bash
+TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py codex-install --profile quiet
+```
+
+## What works
+
+| Capability | Status on Codex |
+|---|---|
+| Quality scoring (7 signals, dual composite, GPT-5.x curves) | Yes |
+| S/A/B/C/D/F grades | Yes |
+| Session continuity and checkpoints | Yes |
+| Dashboard (port 24843) and bookmarkable daemon | Yes |
+| Cost tracking (GPT-5.x pricing) | Yes |
+| Fleet Auditor (cross-system, includes Codex sessions) | Yes |
+| Token Coach (adapted for `AGENTS.md`) | Yes |
+| Memory and config audit (`AGENTS.md` plus memories) | Yes |
+| Proactive context nudge | Yes |
+| Per-prompt quality steering (via UserPromptSubmit) | Yes |
+
+## What is approximated
+
+| Feature | Behavior on Codex | Upstream cause |
+|---|---|---|
+| Smart Compaction | Approximated through compact-prompt guidance plus Stop checkpoints | No PreCompact or PostCompact hook in Codex |
+| Crash recovery | Approximated with Stop plus the compact prompt | No StopFailure hook in Codex |
+| Bash output compression | Experimental opt-in only | Codex hooks cannot rewrite tool input silently |
+| Cache-write TTL breakdown | Cached input shown, no 1h or 5m split | Codex logs do not expose cache-write TTL fields |
+| Skill usage telemetry | Partial, from limited log signals | Codex logs do not expose every skill invocation event |
+
+## What is unavailable
+
+| Feature | Upstream cause |
+|---|---|
+| Delta read substitution | Codex PreToolUse Read hook does not support `updatedInput` |
+| Structure-map substitution | Same `updatedInput` gap |
+| Keep-Warm automation | See below |
+
+<Aside type="caution">
+Keep-Warm does not apply to Codex. OpenAI caching is automatic, so there is no cache-write premium to recover, and `codex exec resume` appends to a session rather than forking it. The savings model that justifies Keep-Warm on Claude Code does not exist here.
+</Aside>
+
+## Doctor command
+
+```bash
+TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py codex-doctor --project "$PWD"
+```
+
+A healthy install reports `0 FAIL`.
+
+## Dashboard
+
+The Codex dashboard serves at `http://localhost:24843/token-optimizer`. The Claude Code dashboard on 24842 can run at the same time without conflict. The file fallback lives at `~/.codex/_backups/token-optimizer/dashboard.html`.
+
+```bash
+TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py setup-daemon
+```
+
+For LAN access, set `TOKEN_OPTIMIZER_DASHBOARD_HOST=0.0.0.0` before `setup-daemon`. The setting is sticky and independent per runtime.
+
+## Model pricing
+
+Token Optimizer tracks these Codex model prices for cost figures.
+
+| Model | Input ($/1M) | Cached ($/1M) | Output ($/1M) |
+|---|---|---|---|
+| GPT-5.5 | $5.00 | $0.50 | $30.00 |
+| GPT-5.4 | $2.50 | $0.25 | $15.00 |
+| GPT-5.4-Mini | $0.75 | $0.075 | $4.50 |
+| GPT-5.3-Codex | $1.75 | $0.175 | $14.00 |
+| GPT-5.2 | $1.75 | $0.175 | $14.00 |
+
+## Auto-update
+
+Codex auto-upgrades Git-backed marketplaces on startup with `git ls-remote`. Force an upgrade with `codex plugin marketplace upgrade`.

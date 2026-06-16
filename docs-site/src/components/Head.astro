@@ -1,0 +1,10 @@
+---
+// Extends Starlight's default Head and adds Astro's ClientRouter so navigating
+// between docs pages swaps content in place (SPA-style) instead of a full page
+// reload. That removes the white flash / "blink" on every link click.
+import Default from "@astrojs/starlight/components/Head.astro";
+import { ClientRouter } from "astro:transitions";
+---
+
+<Default><slot /></Default>
+<ClientRouter />

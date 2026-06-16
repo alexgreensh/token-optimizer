@@ -1,0 +1,145 @@
+---
+title: Smart compaction
+description: "Checkpoint capture and restore keep work recoverable across compaction. Dynamic compact instructions adapt PRESERVE and DROP priorities to what you are doing right now."
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+Smart compaction protects the two moments where context collapses: the compaction event itself, and the cold start that follows it. At compaction it saves a structured checkpoint and rewrites the compact prompt to keep what matters. At the next start it restores that checkpoint so the model resumes instead of relearning.
+
+## What it does
+
+Compaction throws away the middle of your conversation to free room. The model keeps a summary, but the summary is generic. Decisions you made, errors you already diagnosed, and the agent state you built up tend to vanish, and the next turns waste tokens rediscovering them.
+
+Smart compaction adds two interventions. Before compaction runs, the PreCompact hook captures a checkpoint of session state (decisions, errors, open TODOs, agent state) and injects activity-aware PRESERVE and DROP guidance into the compact prompt. After compaction, the SessionStart hook restores that checkpoint into context so the model knows exactly where the prior pass left off.
+
+The result is a compaction that drops noise on purpose and keeps signal on purpose, instead of summarizing everything at the same shallow depth.
+
+## How checkpoints work
+
+A checkpoint is a small structured record written to disk when the session reaches a moment worth remembering. Three triggers write one automatically: PreCompact (before context is summarized), Stop (when the session pauses), and StopFailure (when a run ends in error). A fourth trigger fires at milestones, covered below.
+
+On the next start, restore runs in one of two variants. After a compaction, the compact-triggered restore injects the full checkpoint so the model recovers the prior state in detail. On a fresh session that is not a compaction, the new-session-only restore injects a keyword-matched hint instead, so an unrelated new task is not flooded with stale context.
+
+### Progressive checkpoints
+
+Progressive checkpoints save more often as a session gets riskier, not on a fixed timer. Two conditions raise the stakes: context fill climbing toward the window limit, and the quality score dropping. When either crosses its threshold, a checkpoint is written so that a compaction or crash at a bad moment still has a recent recovery point.
+
+Progressive behavior is governed by `TOKEN_OPTIMIZER_PROGRESSIVE_CHECKPOINTS`. The exact fill and quality thresholds are platform-tuned (verify). See the [configuration reference](/reference/configuration/#checkpoints-and-continuity) for the variable.
+
+### Milestone checkpoints
+
+Some moments deserve a checkpoint regardless of fill or quality. The clearest one is a fan-out: dispatching sub-agents multiplies the work in flight, and a failure mid-fan-out is expensive to reconstruct. The PreToolUse hook on `Agent` and `Task` calls writes a `pre-fanout` checkpoint before sub-agents launch, and guards against writing duplicates for the same milestone.
+
+You can write a milestone checkpoint by hand for any named moment:
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+python3 measure.py checkpoint-trigger --milestone before-refactor
+```
+
+## Dynamic versus static compact instructions
+
+Compact instructions tell the compactor what to keep and what to discard. Token Optimizer offers two kinds, and they answer different needs.
+
+**Dynamic** instructions are generated at compaction time and injected by the PreCompact hook. They read the current activity mode (code, debug, review, infra, or general) from the recent tool calls and select PRESERVE and DROP priorities that fit. A debugging session keeps the error trail; a review session keeps the diff and the decisions. Nothing is configured ahead of time, and the guidance changes as your work changes.
+
+**Static** instructions are generated once from your repository structure and written into `settings.json`. They apply on every compaction without re-evaluating the session. Static is the right choice when you want a fixed, inspectable rule set under version control rather than per-session adaptation.
+
+Dynamic is on by default through the plugin hooks. Static is opt-in.
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+# Dynamic: preview what would be injected at the next compaction
+python3 measure.py dynamic-compact-instructions --quiet
+
+# Static: generate, preview, then install into settings.json
+python3 measure.py compact-instructions
+python3 measure.py compact-instructions --dry-run
+python3 measure.py compact-instructions --install
+```
+
+## When it fires
+
+| Moment | Trigger | What runs |
+|---|---|---|
+| Before compaction | PreCompact hook | Checkpoint capture, dynamic compact instructions, read-cache clear |
+| Session pause | Stop hook | Checkpoint capture (`--trigger stop`) |
+| Run ends in error | StopFailure hook | Checkpoint capture (`--trigger stop-failure`) |
+| Before sub-agent fan-out | PreToolUse `Agent`/`Task` | Milestone checkpoint (`pre-fanout`) |
+| After compaction | SessionStart (compact) | Full checkpoint restore |
+| Fresh session start | SessionStart | Keyword-matched checkpoint restore |
+
+Manual capture and restore are available for any moment:
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+python3 measure.py compact-capture --trigger stop --quiet
+python3 measure.py compact-restore --compact
+python3 measure.py compact-restore --new-session-only
+```
+
+## Default state
+
+On. The plugin auto-installs the PreCompact and SessionStart hooks on install, so checkpoint capture, restore, and dynamic compact instructions run without setup. Skill-only users (no plugin) install the hooks once with `setup-smart-compact`.
+
+Static compact instructions are off until you run `compact-instructions --install`.
+
+Platform availability: checkpoint capture and restore run on Claude Code, Codex, OpenCode, and OpenClaw. See the [capability matrix](/reference/capability-matrix/).
+
+## How to turn it on and off
+
+To install the hooks (skill-only users) or repair them:
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+python3 measure.py setup-smart-compact            # install capture + restore hooks
+python3 measure.py setup-smart-compact --dry-run  # preview without writing
+python3 measure.py setup-smart-compact --status   # show current install state
+```
+
+To turn it off, uninstall the hooks:
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+python3 measure.py setup-smart-compact --uninstall
+```
+
+Uninstalling removes the capture and restore hooks. Existing checkpoints on disk are left in place. Browse or clear them from the [session continuity page](/features/session-continuity/).
+
+<Aside type="caution" title="Plugin users">
+If you installed Token Optimizer as a plugin, the smart-compaction hooks come from the plugin's `hooks/hooks.json`, not from `settings.json`. Uninstall through the plugin, or run `cleanup-duplicate-hooks` if you previously ran `setup-smart-compact` and now have both.
+</Aside>
+
+## Defaults and thresholds
+
+| Setting | Default | Notes |
+|---|---|---|
+| Auto-capture triggers | PreCompact, Stop, StopFailure | Plus milestone on `Agent`/`Task` fan-out |
+| Milestone name (fan-out) | `pre-fanout` | Duplicate-guarded per milestone |
+| Restore variants | full (after compaction), keyword-matched (fresh) | Chosen automatically by SessionStart |
+| Progressive checkpoints | platform-tuned (verify) | Gated by fill % and quality drop |
+| Activity modes | code, debug, review, infra, general | Detected from the last 10 tool calls |
+| Dynamic compact instructions | On (via hook) | Static is opt-in |
+
+## Risk rating
+
+None. Capture and restore add metadata and context, they do not delete or rewrite your conversation. If a capture or restore fails or runs out of its time budget, the hook fails open: compaction and session start proceed normally without the checkpoint. The worst case is the behavior you already had without smart compaction.
+
+## Related environment variables
+
+- `TOKEN_OPTIMIZER_PROGRESSIVE_CHECKPOINTS` (progressive save behavior)
+- `TOKEN_OPTIMIZER_SMART_COMPACTION` (OpenCode enable flag)
+
+Defined with defaults in the [configuration reference](/reference/configuration/#checkpoints-and-continuity).
+
+## Platform availability
+
+Claude Code (CLI and VS Code), Codex, OpenCode, and OpenClaw. Hermes and Copilot do not run the compaction hooks. See the [capability matrix](/reference/capability-matrix/).
+
+## Related
+
+- [Session continuity and cold resume](/features/session-continuity/): browse checkpoints, reopen forgotten sessions, and the fresh-session nudge.
+- [Compaction model](/concepts/compaction-model/): why context collapses and what a good compaction keeps.
+- [Configuration](/reference/configuration/): the checkpoint and compaction variables.
+- [Automatic hooks](/reference/hooks/): every hook that capture and restore run on.

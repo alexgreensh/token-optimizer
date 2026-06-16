@@ -1,0 +1,46 @@
+---
+title: Codex (Desktop)
+description: "Token Optimizer for Codex Desktop uses the same adapter and hooks.json as Codex CLI. No separate install step is required."
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Codex Desktop runs on the same adapter as Codex CLI. There is no separate install for Desktop. Once you have run the `codex-install` command, Desktop loads the hooks from `~/.codex/hooks.json` automatically.
+
+## Install
+
+Follow the [Codex (CLI)](/install/codex-cli/) install. The `codex-install` command writes `~/.codex/hooks.json`, and Codex Desktop reads that file. Nothing else is needed.
+
+## What differs from the CLI
+
+There are no documented capability differences between Codex Desktop and Codex CLI. Every engine command works identically with the `TOKEN_OPTIMIZER_RUNTIME=codex` prefix.
+
+One surface detail: the `telemetry` hook profile adds PostToolUse rows that render in Desktop. If you want those rows visible, install with the telemetry profile:
+
+```bash
+TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py codex-install --profile telemetry
+```
+
+## Verify
+
+Same doctor as the CLI:
+
+```bash
+TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py codex-doctor --project "$PWD"
+```
+
+The dashboard runs on port 24843 at `http://localhost:24843/token-optimizer`.
+
+## Uninstall
+
+Uninstall from the Codex CLI side. Removing the plugin and the daemon there removes them for Desktop too, because both surfaces share `~/.codex/hooks.json`. See [Codex (CLI)](/install/codex-cli/).
+
+<Aside type="note">
+The hook profiles and the upstream Codex API gaps apply equally to Desktop. See the [Codex platform reference](/platforms/codex/) for the full capability list.
+</Aside>
+
+## See also
+
+- [Codex (CLI)](/install/codex-cli/) for the install steps that Desktop inherits.
+- [Codex platform reference](/platforms/codex/).
+- [Configuration](/reference/configuration/).

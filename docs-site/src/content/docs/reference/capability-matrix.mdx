@@ -1,0 +1,73 @@
+---
+title: Capability matrix
+description: "The full platform-by-feature grid across all nine supported surfaces: Claude Code CLI and VS Code, Codex CLI and Desktop, OpenCode, OpenClaw, Hermes, and Copilot CLI and VS Code."
+---
+
+Token Optimizer runs on nine surfaces. Feature coverage varies because each host exposes a different hook surface. The grid below shows exactly what works where. The full feature set lands on Claude Code; other platforms cover what their host APIs allow.
+
+Legend: **Yes** = full support, **Part** = partial or capability-gated, **Beta** = beta status, **No** = not available, **n/a** = not applicable, **verify** = not confirmed in source.
+
+## Dashboard port map
+
+Each runtime serves its dashboard on a fixed port, so multiple runtimes run side by side without conflict.
+
+| Platform | Port | URL |
+|---|---|---|
+| Claude Code (CLI and VS Code) | 24842 | `http://localhost:24842/token-optimizer` |
+| Codex (CLI and Desktop) | 24843 | `http://localhost:24843/token-optimizer` |
+| Hermes | 24844 | `http://localhost:24844` |
+| Copilot | 24845 | `http://localhost:24845/token-optimizer` (verify) |
+
+## Feature grid
+
+| Capability | Claude Code CLI | Claude Code VS Code | Codex CLI | Codex Desktop | OpenCode | OpenClaw | Hermes | Copilot CLI (beta) | Copilot VS Code (beta) |
+|---|---|---|---|---|---|---|---|---|---|
+| Quality scoring | 7 signals | 7 signals | 7 signals (GPT-5.x curves) | 7 signals | 7 signals (MRCR curves) | 7 signals (two-stage) | 3 signals | 3 signals | 3 signals |
+| S/A/B/C/D/F grades | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| Smart Compaction (PreCompact/PostCompact) | Yes | Yes | Approx. via prompt + Stop | Approx. via prompt + Stop | Yes (mode-aware) | Yes (progressive) | No (nudge only) | No (server-side) | No (server-side) |
+| Session continuity / checkpoints | Yes | Yes | Yes | Yes | Yes | Yes (progressive) | Yes (via history db) | Part (session-start restore) | Part (session-start restore) |
+| Status line (terminal quality bar) | Yes | Via VSIX | No | No | No | No | No | No | No |
+| Dashboard (visual HTML) | Yes (24842) | Yes (24842) | Yes (24843) | Yes (24843) | Yes | Yes (8-tab) | Yes (24844) | Yes (24845, verify) | Yes |
+| Daemon (bookmarkable URL) | Yes | Yes | Yes | Yes | verify | No (own build) | Via CLI subcommand | verify | verify |
+| Keep-Warm automation | Yes (macOS, opt-in) | Yes | No | No | No | No | No | No | No |
+| Bash output compression | Yes | Yes | Experimental opt-in | Experimental opt-in | No | No | No | Part (gated on CLI ≥1.0.24) | No |
+| Delta read substitution | Yes | Yes | No | No | No | No | No | No (blocked #2585) | No (blocked #2585) |
+| Structure-map substitution | Yes | Yes | No | No | No | No | No | No (blocked #2585) | No (blocked #2585) |
+| Per-prompt quality steering | Yes | Yes | Via UserPromptSubmit | Via UserPromptSubmit | Yes | verify | No | No (regressed #3727) | No (regressed #3727) |
+| Cache-health watchdog | Yes | Yes | Part | Part | Part | Part | Part | Part | Part |
+| Cost tracking | Yes (Claude) | Yes | Yes (GPT-5.x) | Yes | Yes (30+ models) | Yes (30+ models, 4 tiers) | Yes (model-agnostic) | Yes (AI Credits) | Yes (per-request nanoAIU) |
+| Fleet Auditor | Yes | Yes | Yes (cross-system) | Yes | No (verify) | Via own dashboard | No | No | No |
+| Token Coach | Yes | Yes | Yes (AGENTS.md) | Yes | verify | Yes | No | No | No |
+| Memory / config audit | Yes | Yes | Yes (AGENTS.md + memories) | Yes | No (verify) | Yes | No | No | No |
+| Read-cache (warn/block modes) | No (verify) | No | No | No | No | Yes | No | No | No |
+| Git-aware context | No (verify) | No | No | No | No | Yes | No | No | No |
+| Drift detection | No (verify) | No | No | No | No | Yes | No | No | No |
+| Impact validation | No (verify) | No | No | No | No | Yes | No | No | No |
+| Agent cost breakdown | No (verify) | No | No | No | No | Yes | No | No | No |
+| Model-switch simulation | No (verify) | No | No | No | No | Yes | No | No | No |
+| Proactive context nudge | Yes | Yes | Yes | Yes | Yes | No (verify) | Yes (at 70%) | Part (version-gated) | No |
+| Crash recovery | Yes (StopFailure) | Yes | Approx. (Stop + compact) | Approx. | verify | verify | verify | Yes (in-flight tally) | Yes (debug-log source) |
+
+## How to read the gaps
+
+The repeated **No** entries fall into a few clear groups.
+
+**Read interception (delta and structure map)** needs a hook that can rewrite the result of a file read before the model sees it. Claude Code supports this; Codex lacks `updatedInput` on its Read hook; Copilot's `additionalContext` on `preToolUse` is broken upstream (issue #2585). OpenCode and OpenClaw have no equivalent hook in their plugin APIs.
+
+**Bash output compression** needs a hook that can rewrite tool input silently. Available on Claude Code, experimental opt-in on Codex, gated on a Copilot CLI version, and unavailable on the TypeScript platforms and Hermes.
+
+**Quality Nudges and Loop Detection** need a session-visible notification surface to inject a warning the model can act on. Claude Code has it via `UserPromptSubmit`; OpenCode, OpenClaw, and Hermes do not yet expose one.
+
+**Status line** needs a terminal status-bar surface. Claude Code has it (and the VS Code VSIX surfaces it in the editor). No other host exposes one.
+
+**Keep-Warm** is Claude Code only, and only on API billing. OpenAI caching is automatic with no cache-write premium to recover; the other hosts have no comparable lever.
+
+**OpenClaw extras** (read-cache warn/block, git-aware context, drift, impact validation, agent cost breakdown, model-switch simulation) are features of the native OpenClaw TypeScript engine. Several of these have no equivalent in the shared Python engine yet, marked **(verify)** for Claude Code until confirmed.
+
+## Quality scoring depth
+
+Where a platform exposes 7 signals, the score uses the full set: context-fill degradation, stale reads, bloated results, duplicate system reminders, compaction depth, decision density, and agent-dispatch efficiency. Hermes and Copilot fall back to a 3-signal subset because their session schemas do not persist the other signals reliably. The S/A/B/C/D/F grade scale is identical everywhere, so grades are comparable across platforms even when the underlying signal count differs.
+
+## Per-platform detail
+
+For install commands, doctor commands, hook profiles, and platform-specific caveats, see the platform pages: [Claude Code](/platforms/claude-code/), [Codex](/platforms/codex/), [OpenCode](/platforms/opencode/), [OpenClaw](/platforms/openclaw/), [Hermes](/platforms/hermes/), and [Copilot](/platforms/copilot/).

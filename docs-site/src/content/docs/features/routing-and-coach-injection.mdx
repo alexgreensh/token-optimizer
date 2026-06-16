@@ -1,0 +1,106 @@
+---
+title: CLAUDE.md injection
+description: "inject-routing and inject-coach write data-driven advice into CLAUDE.md as managed blocks with a 48-hour TTL, so the guidance is present where Claude reads it and removes itself before it goes stale."
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+Advice only helps if Claude sees it. CLAUDE.md injection writes Token Optimizer's recommendations directly into your CLAUDE.md as a managed block, so model-routing and coaching guidance is in the file Claude loads every session. The block carries a 48-hour TTL and removes itself once stale, so old advice never lingers.
+
+## What it does
+
+Two commands write managed blocks. `inject-routing` writes data-driven model-routing advice based on your actual session trends: which work should go to a cheaper model, where a stronger one is worth it. `inject-coach` writes auto-generated coaching advice from the same analysis the coach uses.
+
+Each block is fenced with a managed marker so Token Optimizer can find and replace its own block without touching the rest of your CLAUDE.md. A timestamp inside the marker drives the TTL.
+
+Both are opt-in and off by default, because they write to a file you own. Nothing is injected until you run the command or install the hook that runs it.
+
+<Aside type="caution" title="Dry-run first">
+Both commands support `--dry-run`, which prints the block it would write without touching the file. Run the dry-run first, read the block, then run it for real. Injection writes to your CLAUDE.md, so see the change before you make it.
+</Aside>
+
+## The 48-hour staleness TTL
+
+A managed block is data-driven, so it is only as good as the data behind it. After 48 hours the advice is considered stale: your trends may have moved, and a routing recommendation from two days ago could be wrong.
+
+`check-staleness` reads the timestamp in a managed block and removes the block if it has passed the 48-hour window. This keeps CLAUDE.md from accumulating expired advice that costs tokens every session while no longer being true.
+
+You can check a specific section or let it sweep the managed blocks it knows about (`COACH`, `MODEL_ROUTING`).
+
+## When it fires
+
+Injection is manual or hook-driven, never automatic on its own. You run `inject-routing` or `inject-coach` when you want the block written. `check-staleness` runs when you call it, or on a hook if you set one up with `setup-coach-injection`. The setup command installs the injection-and-staleness loop so the block refreshes and expires without you thinking about it.
+
+## Default state
+
+Off, opt-in, on Claude Code and Codex (where the target is AGENTS.md). Nothing is written to your CLAUDE.md until you run a command or install the hook. See the [capability matrix](/reference/capability-matrix/).
+
+## How to turn it on and off
+
+To turn it on, run the inject command once, or install the managed loop:
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+python3 measure.py setup-coach-injection          # install the inject + staleness loop
+```
+
+To turn it off and remove the loop:
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+python3 measure.py setup-coach-injection --uninstall
+```
+
+To remove a block right now without uninstalling, run `check-staleness`, which deletes any managed block past its TTL, or delete the fenced managed block from CLAUDE.md by hand. The markers make it safe to remove: everything between them is Token Optimizer's, everything outside is yours.
+
+## Exact commands
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+python3 measure.py inject-routing --dry-run       # preview the routing block
+python3 measure.py inject-routing                  # write the routing block to CLAUDE.md
+python3 measure.py inject-coach --dry-run          # preview the coaching block
+python3 measure.py inject-coach                    # write the coaching block
+python3 measure.py inject-coach --file PATH         # target a non-default file
+python3 measure.py check-staleness                  # remove any managed block past 48h
+python3 measure.py check-staleness MODEL_ROUTING    # check one section
+python3 measure.py setup-coach-injection            # install the managed loop
+python3 measure.py setup-coach-injection --uninstall
+```
+
+<Steps>
+1. **Preview.** Run the inject command with `--dry-run` and read the block.
+2. **Write.** Run it without `--dry-run` to write the managed block into CLAUDE.md.
+3. **Let it expire.** `check-staleness` removes the block after 48 hours, or install `setup-coach-injection` to automate the refresh-and-expire loop.
+</Steps>
+
+On Codex, the target is AGENTS.md. Prefix the runtime, for example `TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py inject-routing --dry-run`.
+
+## Defaults and thresholds
+
+| Setting | Default | Notes |
+|---|---|---|
+| Default state | off (opt-in) | Nothing written until you run a command. |
+| Block TTL | 48 hours | `check-staleness` removes a block past this. |
+| Default target | CLAUDE.md (AGENTS.md on Codex) | Override with `--file PATH`. |
+| Preview | `--dry-run` | Prints the block without writing. |
+| Managed sections | COACH, MODEL_ROUTING | The blocks staleness sweeps. |
+
+## Risk rating
+
+Low. These commands write to your CLAUDE.md, which is the one thing the read-only features do not do. The risk is contained three ways: `--dry-run` lets you preview, the managed markers mean removal never touches your own content, and the 48-hour TTL means a forgotten block expires on its own. Run the dry-run first and the change is fully visible before it lands.
+
+## Related environment variables
+
+`TOKEN_OPTIMIZER_RUNTIME` selects the runtime and the target file (CLAUDE.md versus AGENTS.md). Defined in the [configuration reference](/reference/configuration/).
+
+## Platform availability
+
+Claude Code (CLAUDE.md) and Codex (AGENTS.md). See the [capability matrix](/reference/capability-matrix/).
+
+## Related
+
+- [Token Coach](/features/token-coach/): the source of the coaching advice that gets injected.
+- [Memory health](/features/memory-health/): the line-200 cutoff that shapes where in the file a block should sit.
+- [Attention optimizer](/features/attention-optimizer/): where in CLAUDE.md a block lands matters, because the middle is the low-attention zone.
+- [Configuration](/reference/configuration/): runtime selection and target file.

@@ -1,0 +1,92 @@
+---
+title: Attention optimizer
+description: "attention-score and attention-optimize measure where your critical CLAUDE.md rules sit on the U-shaped attention curve and reorder sections so the rules that matter land where the model reads hardest."
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+A large model does not read your CLAUDE.md evenly. It attends hardest to the beginning and the end and least to the middle, a U-shaped curve. A NEVER rule buried at the 50% mark has less effect than the same rule near the top. `attention-score` measures where your critical rules land, and `attention-optimize` moves them into the high-attention zones.
+
+## What it does
+
+`attention-score` reads a markdown file (CLAUDE.md by default) and classifies each section by its position. Sections in the first 30% or the last 30% sit in the high-attention zone; sections between the 30% and 70% marks sit in the low-attention zone. It then finds your critical rules, the lines containing NEVER, ALWAYS, MUST, CRITICAL, IMPORTANT, or NON-NEGOTIABLE, and scores how many of them land in the high zone versus the low one.
+
+A score of 100 means every critical rule sits where the model reads hardest. A low score means rules you care about are buried in the middle, where they carry the least weight.
+
+`attention-optimize` proposes a reordering that moves critical sections into the high-attention zones. By default it only proposes; it shows the new order without touching the file. Pass `--apply` and it backs up the file, then writes the reordered version.
+
+## The U-shaped attention curve
+
+| Zone | Position in file | Attention |
+|---|---|---|
+| High (primacy) | First 30% | Strong. The model reads the opening hardest. |
+| Low (lost in the middle) | 30% to 70% | Weak. Critical rules here are easy to miss. |
+| High (recency) | Last 30% | Strong. The model reads the closing hardest. |
+
+<Aside type="note" title="This is the same bias behind memory truncation">
+The first-and-last preference is a property of how large models read long context. The [line-200 MEMORY.md cutoff](/features/memory-health/) is the hard version of the same lesson: position decides whether content lands at all, and where it lands decides how much weight it carries.
+</Aside>
+
+## When to use it
+
+Run it manually after your CLAUDE.md grows past a screen or two, when a rule you wrote does not seem to take effect (it may be stranded in the middle), or as a tune-up before a long session. It never fires automatically.
+
+## Default state
+
+Always available, on Claude Code and Codex. `attention-score` is read-only. `attention-optimize` defaults to dry-run and changes nothing until you pass `--apply`. See the [capability matrix](/reference/capability-matrix/).
+
+## How to turn it on and off
+
+Nothing to disable. Both commands run only when you invoke them. `attention-score` only reads. `attention-optimize` only proposes unless you explicitly pass `--apply`.
+
+If you apply a reordering and want it back, restore from the backup the command writes before it changes the file.
+
+## Exact commands
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+python3 measure.py attention-score                     # score CLAUDE.md
+python3 measure.py attention-score FILE                # score any markdown file
+python3 measure.py attention-score --json              # machine-readable score
+python3 measure.py attention-optimize                  # dry-run: propose a reordering
+python3 measure.py attention-optimize --dry-run        # same, explicit
+python3 measure.py attention-optimize --apply          # back up, then write the reorder
+```
+
+<Steps>
+1. **Score.** Run `attention-score` to see how many critical rules sit in the low-attention middle.
+2. **Preview.** Run `attention-optimize` to see the proposed new order without changing the file.
+3. **Apply.** Run `attention-optimize --apply` to back up and write the reordered file, then re-score to confirm.
+</Steps>
+
+On Codex, the default target is AGENTS.md. Prefix the runtime, for example `TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py attention-score`.
+
+## Defaults and thresholds
+
+| Setting | Default | Notes |
+|---|---|---|
+| Default target | CLAUDE.md (AGENTS.md on Codex) | Pass a path to score any file. |
+| High zone | first 30% and last 30% | Where the model attends hardest. |
+| Low zone | 30% to 70% | The "lost in the middle" band. |
+| Optimize mode | dry-run | `--apply` required to write. |
+| Backup on apply | yes | The file is backed up before reordering. |
+| Best score | 100 | All critical rules in the high zone. |
+
+## Risk rating
+
+Low. `attention-score` only reads. `attention-optimize` defaults to dry-run, and even with `--apply` it backs up the file before writing, so a reorder is reversible. Reordering changes section order, not content, so your rules are preserved, just relocated.
+
+## Related environment variables
+
+`TOKEN_OPTIMIZER_RUNTIME` selects the runtime and the default target file. Defined in the [configuration reference](/reference/configuration/).
+
+## Platform availability
+
+Claude Code (CLAUDE.md) and Codex (AGENTS.md), and any markdown file you point it at. See the [capability matrix](/reference/capability-matrix/).
+
+## Related
+
+- [Memory health](/features/memory-health/): the line-200 cutoff, the same position-matters lesson applied to MEMORY.md.
+- [CLAUDE.md injection](/features/routing-and-coach-injection/): where an injected managed block sits matters, because the middle is the low-attention zone.
+- [Token Coach](/features/token-coach/): flags bloated CLAUDE.md, which is what pushes critical rules into the middle.
+- [Configuration](/reference/configuration/): runtime selection and target file.

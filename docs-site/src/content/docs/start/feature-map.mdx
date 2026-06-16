@@ -1,0 +1,149 @@
+---
+title: All features at a glance
+description: "Every Token Optimizer feature: what it does, its default state, and where to learn more. The discovery index for the whole tool."
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+This is the complete map. Every feature is listed once, grouped by what it does, with its default state and a link to the page that covers it. Use it to find a capability fast or to see the whole surface at once.
+
+Default states use three values. **On** means it runs automatically after install with no action from you. **Opt-in** means it is off until you turn it on. **On demand** means it is always available but only runs when you invoke it.
+
+<Aside type="note">
+Commands shown as `measure.py ...` run from the scripts directory. Get there with `cd ~/.claude/skills/token-optimizer/scripts`. On non-Claude platforms, prefix with the runtime, for example `TOKEN_OPTIMIZER_RUNTIME=codex`. Slash commands like `/token-optimizer` run inside the agent. Every default and environment variable is defined once in [Configuration](/reference/configuration/).
+</Aside>
+
+## Audit and visibility
+
+The commands that show you where context goes and what each session cost.
+
+| Feature | What it does | Default | Learn more |
+|---|---|---|---|
+| Full audit workflow | The `/token-optimizer` scan-fix-verify workflow that recovers structural waste | On demand | [First audit](/start/first-audit/) |
+| Full report | Per-component token breakdown with optimization suggestions (`report`) | On demand | [Setup audit](/features/audit/) |
+| Quick scan | Ten-second overhead, degradation risk, and top offenders (`quick`) | On demand | [Setup audit](/features/audit/) |
+| Dashboard | Single-file HTML dashboard: overview, quality, trends, manage | On (regenerates each session) | [The dashboard](/features/dashboard/) |
+| Trends report | Per-session usage, quality, cache, and cost over N days (`trends`) | On demand | [Usage analytics](/features/usage-analytics/) |
+| Savings report | Measured, estimated, and opportunity savings (`savings`) | On demand | [Usage analytics](/features/usage-analytics/) |
+| Turn breakdown | Per-API-call tokens, cost, model, and tools (`conversation`) | On demand | [Usage analytics](/features/usage-analytics/) |
+| Pricing tier | The pricing tier used for all cost math (`pricing-tier`) | Anthropic | [Configuration](/reference/configuration/) |
+| Dashboard daemon | Bookmarkable dashboard URL at a fixed port (`setup-daemon`) | Opt-in | [The dashboard](/features/dashboard/) |
+| Daemon and schema diagnostics | Probe the daemon and validate dashboard data (`daemon-status`, `dashboard-diagnose`) | On demand | [Health and diagnostics](/reference/diagnostics/) |
+| Security report | Enterprise security self-assessment (`security-report`) | On demand | [Health and diagnostics](/reference/diagnostics/) |
+
+## Active compression
+
+Runtime savers that cut new content as it enters your window. All on by default.
+
+| Feature | What it does | Default | Learn more |
+|---|---|---|---|
+| Bash output compression | Rewrites safe read-only CLI output to compact summaries, credential-safe | On | [Bash output compression](/features/bash-compression/) |
+| Delta mode | Re-reads of changed files return only the diff | On | [Read cache](/features/read-cache/) |
+| Structure map | Large code re-reads return a function-and-class skeleton | On (soft-block) | [Read cache](/features/read-cache/) |
+| Read cache management | Clear or inspect the per-session read cache (`read-cache-clear`, `read-cache-stats`) | On demand | [Read cache](/features/read-cache/) |
+| Tool result archive | Large tool results saved to disk, retrievable with `expand` after compaction | On | [Tool result archive](/features/tool-result-archive/) |
+| Active compression manager | Status and toggles for the compression suite (`v5` command) | On demand | [Active compression](/features/active-compression/) |
+| JSONL trim and dedup | Remove oversized results and duplicate reminders from transcripts (`jsonl-trim`, `jsonl-dedup`) | Dry-run | [Full CLI reference](/reference/cli/) |
+
+## Smart compaction and continuity
+
+Keep your work alive across auto-compact, crashes, and fresh sessions.
+
+| Feature | What it does | Default | Learn more |
+|---|---|---|---|
+| Checkpoint capture and restore | Saves session state before compaction, restores it after (`compact-capture`, `compact-restore`) | On | [Smart compaction](/features/smart-compaction/) |
+| Progressive checkpoints | Captures at multiple fill and quality thresholds, not just emergencies | On | [Smart compaction](/features/smart-compaction/) |
+| Milestone checkpoints | Snapshots before agent fan-out (`checkpoint-trigger`) | On | [Smart compaction](/features/smart-compaction/) |
+| Compact instructions | Mode-aware PRESERVE/DROP guidance injected at compaction time | On (dynamic) | [Smart compaction](/features/smart-compaction/) |
+| Cold-resume-lean | Reopen a stale session from its checkpoint for free (`resume-lean`) | On demand | [Session continuity](/features/session-continuity/) |
+| Fresh-session nudge | Offers a clean restart when a long session degrades | On | [Session continuity](/features/session-continuity/) |
+| Prompt continuity | Injects a topic-matched hint from a prior session on a new prompt | On | [Session continuity](/features/session-continuity/) |
+| Checkpoint browser and stats | List checkpoints and view telemetry (`list-checkpoints`, `checkpoint-stats`) | On demand | [Session continuity](/features/session-continuity/) |
+
+## Quality scoring
+
+A live grade for how healthy a session is, plus real-time alerts.
+
+| Feature | What it does | Default | Learn more |
+|---|---|---|---|
+| Quality analyzer | The 0 to 100, 7-signal context-quality score (`quality`) | On demand | [Quality scoring](/concepts/quality-scoring/) |
+| Status line | Context fill and quality grade in the terminal status bar | On | [The quality status line](/features/status-line/) |
+| Quality nudges | Warns when quality drops suddenly so you compact at the right moment | On | [Quality nudges and loop detection](/features/quality-signals/) |
+| Loop detection | Flags when the model is stuck retrying the same approach | On | [Quality nudges and loop detection](/features/quality-signals/) |
+| Compression stats | Per-feature events, tokens saved, and quality preserved (`compression-stats`) | On demand | [Quality nudges and loop detection](/features/quality-signals/) |
+| Validate impact | Statistical before-and-after check on session efficiency (`validate-impact`) | On demand | [Health and diagnostics](/reference/diagnostics/) |
+| Attention optimizer | Scores and reorders CLAUDE.md for the LLM attention curve (`attention-score`, `attention-optimize`) | On demand | [Attention optimizer](/features/attention-optimizer/) |
+
+## Coaching and fleet
+
+Behavioral analysis across your history and across your agent systems.
+
+| Feature | What it does | Default | Learn more |
+|---|---|---|---|
+| Token Coach | Reads 30 days of history for setup and behavioral patterns (`/token-coach`) | On demand | [Token Coach](/features/token-coach/) |
+| Fleet Auditor | Scans every installed agent system for waste and dollar savings (`/fleet-auditor`) | On demand | [Fleet Auditor](/features/fleet-auditor/) |
+| Waste detectors | The per-platform detectors for idle burns, misrouting, and config bloat | On demand | [Waste detectors](/features/waste-detectors/) |
+| CLAUDE.md injection | Inject data-driven coaching and model-routing advice as a managed block (`inject-coach`, `inject-routing`) | Opt-in | [CLAUDE.md injection](/features/routing-and-coach-injection/) |
+
+## Cache and cost
+
+Recover the prefix re-write penalty paid when a session resumes past its cache window.
+
+| Feature | What it does | Default | Learn more |
+|---|---|---|---|
+| Keep-Warm | Pings the cache before expiry so a resume stays warm (`keepwarm-enable`) | Opt-in | [Keep-Warm](/features/keep-warm/) |
+| Keep-Warm forecast and backfill | Project savings from your own history before enabling (`keepwarm-forecast`, `keepwarm-backfill`) | On demand | [Keep-Warm](/features/keep-warm/) |
+| Keep-Warm report | Mode, spend, realized savings, and tripwire state (`keepwarm-report`) | On demand | [Keep-Warm](/features/keep-warm/) |
+| Subscription quota value | Measures Keep-Warm value in rate-limit quota for flat-rate plans (`keepwarm-quota-value`) | On demand | [Keep-Warm](/features/keep-warm/) |
+| Cache TTL watchdog | Reports tokens re-written because a session resumed after cache expiry (`cache-report`) | On demand | [Cache TTL watchdog](/features/cache-watchdog/) |
+
+## Memory and configuration health
+
+Keep CLAUDE.md, MEMORY.md, skills, and MCP servers lean and correct.
+
+| Feature | What it does | Default | Learn more |
+|---|---|---|---|
+| Memory review | Audits memory files for stale entries, size, and overlap (`memory-review`) | Read-only | [Memory health](/features/memory-health/) |
+| Skill and MCP toggles | Archive or restore skills and disable or enable MCP servers (`skill`, `mcp`) | On demand | [Managing skills and MCP](/features/manage-tab/) |
+| Doctor | Verifies every component is installed correctly (`doctor`) | On demand | [Health and diagnostics](/reference/diagnostics/) |
+| Drift check | Compares the current setup against the last snapshot (`drift`) | On demand | [Health and diagnostics](/reference/diagnostics/) |
+| Snapshot and compare | Before-and-after snapshots of your setup (`snapshot`, `compare`) | On demand | [Health and diagnostics](/reference/diagnostics/) |
+| Git context | Suggests relevant files from current git state (`git-context`) | On demand | [Health and diagnostics](/reference/diagnostics/) |
+| Self-heal on start | Repairs drifted config on every session start (`ensure-health`) | On | [Reference: hooks](/reference/hooks/) |
+| Kill stale sessions | Ends sessions stuck in a running state (`kill-stale`) | On demand | [Health and diagnostics](/reference/diagnostics/) |
+
+## Data and privacy
+
+Control the local data Token Optimizer keeps.
+
+| Feature | What it does | Default | Learn more |
+|---|---|---|---|
+| Purge all data | Lists, then deletes all local data on confirm (`purge`) | Dry-run | [Your data and privacy](/reference/data-and-privacy/) |
+| Consent management | Shows, grants, or resets the data-notice consent flag (`consent`) | On demand | [Your data and privacy](/reference/data-and-privacy/) |
+| Daemon consent | Sets consent for the persistent dashboard URL (`daemon-consent`) | On demand | [Your data and privacy](/reference/data-and-privacy/) |
+
+## Setup and platforms
+
+Install, hooks, and the per-platform adapters.
+
+| Feature | What it does | Default | Learn more |
+|---|---|---|---|
+| Plugin and hook install | Install the plugin and wire the hooks (`setup-hook`, `setup-all-hooks`) | On demand | [Choosing your install](/install/overview/) |
+| Smart compaction and quality bar setup | Install the compaction and status-line hooks (`setup-smart-compact`, `setup-quality-bar`) | On (plugin) | [Choosing your install](/install/overview/) |
+| Codex adapter | Install and run on OpenAI Codex (`codex-install`, `codex-doctor`) | Opt-in | [Codex capabilities](/platforms/codex/) |
+| Copilot adapter | Install and run on GitHub Copilot, beta (`copilot-install`, `copilot-doctor`) | Opt-in | [Copilot capabilities](/platforms/copilot/) |
+| Hermes adapter | Install and run on Hermes, beta (`hermes-install`, `hermes-doctor`) | Opt-in | [Hermes capabilities](/platforms/hermes/) |
+| OpenCode and OpenClaw | Native TypeScript plugins | Opt-in | [OpenCode](/platforms/opencode/), [OpenClaw](/platforms/openclaw/) |
+
+## Diagnostics and developer tools
+
+The deeper utilities for validating and tuning the compression engine.
+
+| Feature | What it does | Default | Learn more |
+|---|---|---|---|
+| Benchmark | Runs the compression fixture suite (`benchmark`) | On demand | [Benchmarks](/reference/benchmarks/) |
+| Structure map inspector and proof | Preview or replay structure-map savings (`structure-map`, `structure-proof`) | On demand | [Benchmarks](/reference/benchmarks/) |
+| Cohort tripwire | Live edit-rate per cohort and auto-demotion state (`cohorts`) | On demand | [Benchmarks](/reference/benchmarks/) |
+| Context size override | Override the detected context window (`--context-size`) | On demand | [Configuration](/reference/configuration/) |
+
+For the complete command surface with every flag, see the [Full CLI reference](/reference/cli/). For what runs without your intervention, see [Automatic hooks](/reference/hooks/).

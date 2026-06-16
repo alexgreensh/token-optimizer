@@ -1,0 +1,100 @@
+---
+title: Managing skills and MCP
+description: "Toggle skills and MCP servers on or off from the dashboard Manage tab or the CLI, so the audit's top offenders stop loading into every session."
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+The Manage tab turns off the skills and MCP servers that the audit flags as expensive, without editing config files by hand.
+
+## What it does
+
+Skills and MCP servers each add token overhead to every session: skill metadata loads on start, and MCP servers contribute their full tool schema. The audit identifies the heaviest contributors. The Manage tab, and its CLI equivalents, let you disable a contributor in one action so it stops loading, then restore it later when you need it.
+
+Disabling a skill moves it out of the skills directory to a backup location, so nothing is deleted. Disabling an MCP server removes its entry from `settings.json`. Both actions are reversible, and both apply to new tool calls without restarting the session.
+
+## When to use it
+
+Use it after the audit shows a skill or MCP server costing more overhead than it earns you. Disable the ones you rarely use, keep the ones you rely on, and restore on demand.
+
+## Default state
+
+The toggles are always available on every platform. Nothing is disabled until you disable it. There is no automatic toggling: Token Optimizer never turns a skill or server off on your behalf.
+
+## How to turn off
+
+There is no background behavior to disable. The toggles act only when you run them. To reverse any toggle you made, restore the skill or re-enable the server:
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+python3 measure.py skill restore SKILL_NAME
+python3 measure.py mcp enable SERVER_NAME
+```
+
+## Commands
+
+### Claude Code
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+
+# Skills (archive moves it to backup, restore brings it back)
+python3 measure.py skill archive SKILL_NAME
+python3 measure.py skill restore SKILL_NAME
+
+# MCP servers (disable removes from settings.json, enable restores it)
+python3 measure.py mcp disable SERVER_NAME
+python3 measure.py mcp enable SERVER_NAME
+```
+
+### Codex
+
+Codex keeps skills and MCP in different locations, so it has its own verbs.
+
+```bash
+TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-skill disable NAME
+TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-skill enable NAME
+TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-mcp disable NAME
+TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-mcp enable NAME
+```
+
+`codex-skill` accepts an optional `--path PATH` when your Codex project is not at the default location.
+
+### From the dashboard
+
+Open the dashboard, go to the Manage tab, and use the toggles. Each toggle runs the same command shown above.
+
+```bash
+python3 measure.py dashboard
+```
+
+<Aside type="note">
+A disabled skill is archived, not deleted. The files move to a backup directory and come back intact on restore. A disabled MCP server is removed from `settings.json` only; the server software stays installed.
+</Aside>
+
+## Defaults and thresholds
+
+| Setting | Value |
+|---|---|
+| Skill disable mechanism | Move to backup directory (reversible) |
+| MCP disable mechanism | Remove entry from `settings.json` (reversible) |
+| Effect timing | New tool calls; no session restart needed |
+| Automatic toggling | Never |
+
+## Risk rating
+
+Low. Disabling a skill or server changes what loads next session, and a tool you turned off will not be available until you restore it. Both actions are reversible with a single command, and skills are archived rather than deleted, so a mistaken toggle costs nothing but a restore.
+
+## Related environment variables
+
+None. The toggles act on files and `settings.json` directly. See the [configuration reference](/reference/configuration/) for unrelated settings.
+
+## Platform availability
+
+Skill and MCP toggles work on Claude Code (CLI and VS Code). Codex uses the `codex-skill` and `codex-mcp` verbs. Other platforms manage their own skill and connector inventories; check the [capability matrix](/reference/capability-matrix/).
+
+## Related pages
+
+- [Setup audit](/features/audit/): find the offenders to toggle.
+- [The dashboard](/features/dashboard/): the Manage tab UI.
+- [CLI reference](/reference/cli/): every `skill`, `mcp`, `codex-skill`, and `codex-mcp` flag.

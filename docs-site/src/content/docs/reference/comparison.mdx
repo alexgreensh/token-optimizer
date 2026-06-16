@@ -1,0 +1,52 @@
+---
+title: How it compares
+description: "A factual, neutral comparison of Token Optimizer against the tools most often weighed against it, organized around the three kinds of token waste each tool addresses."
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Token waste comes in three kinds. Most tools address one. This page defines each kind and gives a feature-by-feature comparison against the tools most often weighed against Token Optimizer.
+
+## Three kinds of token waste
+
+**Structural waste** is what gets billed before any conversation starts: an oversized CLAUDE.md, unused skills, duplicate system reminders, a stale MEMORY.md with entries past the attention horizon, dead MCP servers. It is often the largest share in high-waste setups, and it compounds, because a leaner prefix means a smaller cache-read bill on every turn that follows.
+
+**Runtime waste** accumulates mid-session: verbose command output, oversized MCP results, and files re-read into context that were already there. Proxy compressors intercept these on the way in and shrink or evict them.
+
+**Behavioral waste** is the pattern layer that no single session reveals: letting the cache expire, compacting too late, looping on a failing approach, running a top-tier model where a cheaper one would do, switching models mid-session and killing the cache. Token Coach analyzes 30 days of session history to surface these patterns and distinguishes a model-switch cache drop (expected) from a config-change cache drop (fixable).
+
+For how Token Optimizer audits and scores each kind, see [How it works](/concepts/how-it-works/).
+
+## Comparison table
+
+The table covers the five tools most often compared to Token Optimizer. Status: 🟢 supported, 🟡 partial, 🔴 not supported.
+
+| Feature | Token Optimizer | Headroom | RTK | context-mode | `/context` |
+|---|---|---|---|---|---|
+| Tool output compression | 🟢 30+ CLI families, credential-safe, toggleable | 🟢 6 algorithms incl. model-based | 🟢 100+ command filters | 🟢 Sandbox + summary | 🔴 |
+| First-read file skeletons | 🟢 History-validated, fail-open, full original retrievable | 🔴 | 🔴 | 🔴 | 🔴 |
+| Tabular/JSON compression | 🟢 Value-preserving columnar | 🟢 SmartCrusher | 🔴 | 🟡 Generic summary | 🔴 |
+| Read dedup and delta diffs | 🟢 Re-reads serve diff only | 🔴 | 🔴 | 🔴 | 🔴 |
+| Compaction survival | 🟢 Progressive checkpoints, restore, tool-output digest | 🔴 | 🔴 | 🟡 Session guide only | 🔴 |
+| Conversation history | 🟢 Progressive checkpoints + compaction restore | 🔴 | 🔴 | 🟡 Session guide | 🔴 |
+| Model routing and behavioral coaching | 🟢 11 detectors, subagent cost breakdown, anti-patterns | 🔴 | 🔴 | 🔴 | 🟡 Basic suggestions |
+| Historical trend analysis | 🟢 30-day trends, quality/cost/cache/duration correlation, model-switch detection | 🔴 | 🔴 | 🔴 | 🔴 |
+| Loop and spin detection | 🟢 Catches behavioral loops before they burn | 🔴 | 🔴 | 🔴 | 🔴 |
+| Context quality scoring | 🟢 7-signal quality score with grades | 🔴 | 🔴 | 🔴 | 🟡 Capacity % only |
+| Structural waste audit | 🟢 Per-component (CLAUDE.md, skills, MCP, memory) | 🔴 | 🔴 | 🔴 | 🟡 Summary only |
+| CLAUDE.md and MEMORY.md health | 🟢 8 auditors + attention-curve scoring | 🔴 | 🔴 | 🔴 | 🔴 |
+| Measures if compression helped | 🟢 Local telemetry, before/after tokens, dollar savings | 🔴 | 🟡 `rtk gain` (token counts only) | 🔴 | 🔴 |
+| Fleet-level cross-agent analysis | 🟢 | 🔴 | 🔴 | 🔴 | 🔴 |
+| Cache-safe | 🟢 Never modifies existing context prefix | 🟡 Proxy mode rewrites in-flight | 🟢 Pre-shell only | 🟡 MCP overhead | 🟢 |
+| Zero baseline context overhead | 🟢 External process, no context injection | 🔴 Injects instructions | 🟢 Shell-level only | 🔴 MCP server overhead | 🟢 Native |
+| Zero runtime dependencies | 🟢 Pure stdlib (Python/TypeScript) | 🟡 Python + Rust + optional model | 🟢 Single Rust binary | 🟡 SQLite adapter required | 🟢 N/A |
+| Zero telemetry | 🟢 | 🟢 | 🟡 Opt-in | 🟡 Varies | 🟢 |
+| Multi-platform | 🟢 Claude Code, VS Code, Codex, OpenClaw, OpenCode, Hermes, Copilot | 🟢 Claude Code, Cursor, Codex, Aider, Copilot | 🟢 14 integrations | 🟢 15 integrations | 🔴 Claude Code only |
+
+<Aside type="note">
+Every claim in this table is tested against real sessions and a 57-fixture compression suite. For methodology and reproducible commands, see [Benchmarks](/reference/benchmarks/).
+</Aside>
+
+## What `/context` shows versus what Token Optimizer does
+
+`/context` reports that your context is 73% full. Token Optimizer reports which 12K tokens are spent on skills you never use, flags orphaned MEMORY.md topic files past the attention horizon, checkpoints decisions before compaction destroys them, and gives a quality score that tracks how much the session degrades as context fills. The built-in command shows the problem; Token Optimizer fixes it and measures the result.

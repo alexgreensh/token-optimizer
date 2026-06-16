@@ -1,0 +1,142 @@
+---
+title: Hermes (beta)
+description: "Install Token Optimizer for NousResearch Hermes via a shallow clone and the install.sh --hermes flag. Allow-listing in config.yaml is required."
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+<Aside type="caution">
+Beta (v0.1.0). Token Optimizer for Hermes has been through a full internal test suite but has not yet been validated against a live Hermes install. Live smoke-testing is the remaining gate before stable release.
+</Aside>
+
+Token Optimizer for NousResearch Hermes adds per-turn usage capture, cost tracking, context-quality scoring, a proactive pre-turn context nudge, and the shared dashboard. It reads from Hermes's own `~/.hermes/state.db` with read-only access; it never writes back.
+
+## Prerequisites
+
+- NousResearch Hermes installed
+- Python 3.x or later
+- Git
+
+## Recommended method: clone and install
+
+<Steps>
+
+1. Clone the repo:
+
+   ```bash
+   git clone https://github.com/alexgreensh/token-optimizer.git
+   ```
+
+2. Run the installer:
+
+   ```bash
+   token-optimizer/install.sh --hermes
+   ```
+
+   The installer copies the plugin payload into `~/.hermes/plugins/token-optimizer/`. Hermes discovers plugins from that directory automatically.
+
+3. Allow-list the plugin. Add this to `~/.hermes/config.yaml`:
+
+   ```yaml
+   plugins:
+     enabled:
+       - token-optimizer
+   ```
+
+   Alternatively, pass `--enable` to the installer and it adds the entry automatically:
+
+   ```bash
+   python3 token-optimizer/skills/token-optimizer/scripts/measure.py hermes-install --enable
+   ```
+
+   `--enable` is idempotent and backs up your config before touching it.
+
+</Steps>
+
+Preview what the installer will write without making any changes:
+
+```bash
+token-optimizer/install.sh --hermes --dry-run
+```
+
+If your Hermes home is not at `~/.hermes`, set `HERMES_HOME` before running:
+
+```bash
+HERMES_HOME=/path/to/.hermes python3 token-optimizer/skills/token-optimizer/scripts/measure.py hermes-install
+```
+
+The install is idempotent. Re-running replaces files in place without touching other plugins or state.
+
+## Verify the install
+
+```bash
+python3 token-optimizer/skills/token-optimizer/scripts/measure.py hermes-doctor
+```
+
+`hermes-doctor` checks: HERMES_HOME resolution, plugin directory presence, required files (manifest and all runtime modules), declared hooks, bridge smoke test, the `plugins.enabled` entry in config.yaml, `state.db` readability, and dashboard port availability.
+
+A healthy install passes all checks.
+
+## Dashboard
+
+URL: `http://localhost:24844`
+
+The Hermes dashboard uses the same shared Token Optimizer template (Overview, Quality, Waste, Sessions, Daily tabs) populated with Hermes session data. Open it with the CLI subcommand from your shell:
+
+```bash
+hermes token-optimizer
+```
+
+Pass `--port <n>` to override the default port.
+
+## Inside Hermes
+
+| Surface | How to use |
+|---|---|
+| `/token-optimizer` | Slash command inside any Hermes session. Prints token and cost summary for recent sessions. |
+| `hermes token-optimizer` | CLI subcommand from your shell. Opens the dashboard at `http://localhost:24844`. |
+
+A context nudge fires automatically before each turn via the `pre_llm_call` hook. At approximately 70% context fill, a one-line notice appears. At 85% or higher, it escalates with a suggestion to run `/compact`. The nudge fires at most once per session threshold crossing.
+
+The fill estimate uses an assumed window of 200,000 tokens by default, or a mapped window for known models, because Hermes does not expose the live context window size to plugins. Display is capped at 100%.
+
+## Auto-update
+
+Manual only. After pulling new changes:
+
+```bash
+git pull
+token-optimizer/install.sh --hermes
+```
+
+## Uninstall
+
+<Steps>
+
+1. Run the uninstaller:
+
+   ```bash
+   token-optimizer/install.sh --hermes --uninstall
+   ```
+
+2. Remove the allow-list entry from `~/.hermes/config.yaml`:
+
+   ```yaml
+   plugins:
+     enabled:
+       # remove: - token-optimizer
+   ```
+
+</Steps>
+
+## Known gaps
+
+These features are not available on Hermes due to the plugin API surface:
+
+- Smart compaction with PreCompact and PostCompact hooks: no such hooks exist in Hermes; Token Optimizer provides a pre-turn nudge via `pre_llm_call` instead
+- Quality status bar: no terminal status bar surface in Hermes
+- Fleet Auditor: does not scan Hermes sessions directly; Hermes data flows into the shared `trends.db` and is accessible via the Hermes dashboard
+- Keep-Warm automation, Delta read substitution, Structure Map, Bash output compression: not available
+- Quality nudges via `UserPromptSubmit`: Hermes has no equivalent hook; nudges use `pre_llm_call` only
+
+See [Hermes capabilities](/platforms/hermes/) for the full feature list, the 3-signal quality scoring subset, and data privacy details.

@@ -1,0 +1,125 @@
+---
+title: Read cache
+description: "Delta mode and structure map remove redundant file content on re-reads: a 2,000-token file becomes a 50-token diff, and a 720KB Python file becomes a 250-token skeleton."
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+The read cache stops the model from spending tokens re-reading files it already saw this session. It serves a diff when a file changed slightly, and a structural skeleton when a large code file is read again.
+
+## What it does
+
+A single session often reads the same file two to five times, and code-heavy sessions re-read large files three to seventeen times. Each full re-read pays the full token cost again. The read cache intercepts those re-reads through the PreToolUse Read hook and replaces the full content with a much smaller substitute, then falls back to the full read whenever a substitute could lose information the model needs.
+
+It has two substitution behaviors:
+
+**Delta mode** handles files that changed a little since the last read. It stores the file content on first read, then on re-read computes a unified diff with Python's `difflib` and serves only the diff. A 2,000-token re-read becomes about a 50-token diff, roughly 97% saved on that read.
+
+**Structure map** handles large code files read again whether or not they changed. It replaces the full source with a compact skeleton: function signatures, class hierarchy, imports, and module docstrings. A 720KB Python file (about 180,000 tokens) becomes a 250-token skeleton. On a 180K-token file re-read five times, that is roughly 900K tokens saved in one session.
+
+Structure map supports Python, JavaScript and TypeScript, JSON, YAML, TOML, and Markdown, and it uses the Python standard-library AST only, with no third-party parser.
+
+## The four modes
+
+The read cache runs in one of four modes, selected by `TOKEN_OPTIMIZER_STRUCTURE_MAP`. The default is `soft_block`. The mode table is defined once in the [configuration reference](/reference/configuration/#read-cache-modes); the summary below is for orientation.
+
+| Mode | What it does |
+|---|---|
+| `soft_block` (default) | Substitutes delta or structure map on re-reads, with full re-read fallback on large diffs or big files |
+| `warn` | Same substitution, plus a logged warning each time it fires |
+| `shadow` | Measures what substitution would save without changing the re-read, safe for evaluating before you commit |
+| `block` | Always serves the delta or skeleton on re-reads, with no fallback |
+
+<Aside type="note">
+`block` is the only mode that does not fall back to a full re-read. Use it when you have confirmed in `shadow` mode that substitution is safe for your workflow.
+</Aside>
+
+## When it fires
+
+Automatically, on the PreToolUse Read hook, whenever a file is read again in the same session. It is scoped to explicit full-file reads, so a narrow `offset`/`limit` request is never served a whole-file diff. The cache is cleared automatically on PreCompact and on a working-directory change, and invalidated after Edit, Write, MultiEdit, or NotebookEdit so a stale diff is never served after a write.
+
+## Default state
+
+On by default on Claude Code (CLI and VS Code), in `soft_block` mode, with delta mode on. On other platforms support varies with hook capability; see the [capability matrix](/reference/capability-matrix/).
+
+## How to turn off
+
+Three levels of off, from broadest to narrowest:
+
+```bash
+# Disable the entire read cache (no delta, no structure map) for one run
+TOKEN_OPTIMIZER_READ_CACHE=0 python3 measure.py report
+
+# Disable delta mode only, leaving structure map active
+TOKEN_OPTIMIZER_READ_CACHE_DELTA=0 python3 measure.py report
+```
+
+To persist the change, toggle the features through the suite manager:
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+python3 measure.py v5 disable delta_mode
+```
+
+All of these variables and their defaults live in the [configuration reference](/reference/configuration/). They are defined there once to avoid drift; this page links rather than restates them.
+
+## Before and after
+
+| Scenario | Full re-read | With read cache |
+|---|---|---|
+| Small file changed slightly, re-read | ~2,000 tokens | ~50-token diff |
+| 720KB Python file, re-read | ~180,000 tokens | ~250-token skeleton |
+| 180K-token file re-read 5 times | ~900,000 tokens | ~1,250 tokens total |
+
+## Management commands
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+
+# Hit and miss stats for the current session or a specific one
+python3 measure.py read-cache-stats
+python3 measure.py read-cache-stats --session SESSION_ID
+
+# Clear the read cache (all sessions, or one)
+python3 measure.py read-cache-clear
+python3 measure.py read-cache-clear --session SESSION_ID
+
+# Preview the skeleton and savings for a single file
+python3 measure.py structure-map path/to/file.py
+```
+
+## The .contextignore file
+
+To exclude specific files or paths from the read cache, add a `.contextignore` file to your project. Patterns in it keep matching files out of caching and substitution, so they are always read in full. Credential files such as `.env` are excluded automatically regardless of `.contextignore`.
+
+## Defaults and thresholds
+
+| Setting | Value |
+|---|---|
+| Default mode | `soft_block` |
+| Delta mode | On |
+| Per-file content cached | Up to 50KB |
+| Delta fallback to full read | Diff over 1,500 chars, or either file over 2,000 lines |
+| Structure map (Python) | Files up to 800KB / 20K lines |
+| Structure map (JS/TS) | Files up to 400KB / 5K lines |
+| Cache clear triggers | PreCompact, working-directory change |
+| Cache invalidation | After Edit, Write, MultiEdit, NotebookEdit |
+
+## Risk rating
+
+Low. The default `soft_block` mode fails open: when a diff is large or a file is big, it serves the full file. The one mode that does not fall back is `block`, which is opt-in. The cache invalidates after writes and clears on compaction and directory change, so a stale or misleading substitution does not persist. The realistic failure is a re-read where the model needed surrounding context the diff omitted, which `soft_block` already guards against by sizing the fallback.
+
+## Related environment variables
+
+`TOKEN_OPTIMIZER_READ_CACHE`, `TOKEN_OPTIMIZER_READ_CACHE_DELTA`, and `TOKEN_OPTIMIZER_STRUCTURE_MAP`. Config keys `v5_delta_mode`, `v5_structure_map_beta`, and `read_cache_enabled`. All defined in the [configuration reference](/reference/configuration/).
+
+## Platform availability
+
+Full behavior on Claude Code CLI and VS Code. On platforms where the PreToolUse Read hook cannot substitute transparently (such as Codex), use the `outline` helper for an equivalent file skeleton on demand. See the [capability matrix](/reference/capability-matrix/).
+
+## Related pages
+
+- [Active compression](/features/active-compression/): the suite this belongs to.
+- [Bash output compression](/features/bash-compression/): the same idea for CLI output.
+- [Tool result archive and expand](/features/tool-result-archive/): durability for large results.
+- [Configuration reference](/reference/configuration/): the canonical mode and variable tables.

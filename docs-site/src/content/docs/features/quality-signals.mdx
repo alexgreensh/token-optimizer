@@ -1,0 +1,155 @@
+---
+title: Quality signals
+description: "Four real-time signal features add structured notes and metadata to the session rather than rewriting content: Quality Nudges and Loop Detection surface warnings you see, while Activity Mode and Decision Extraction feed the compaction engine."
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Quality signals are the read-only alerting and metadata layer. The four features on this page add short notes or structured data to the session in real time, fired by hooks, with no content removed or rewritten.
+
+Two are user-visible alerters: Quality Nudges warn when the session is degrading, Loop Detection flags when the model is stuck. Two are internal infrastructure: Activity Mode classifies what kind of work the session is doing, and Decision Extraction captures decisions in real time so they survive compaction. All four are on by default and run across all supported platforms.
+
+## What each feature does
+
+**Quality Nudges** watch the running context quality score. When the score drops 15 or more points in a single measurement, or crosses below 60, a short inline note enters the context. The model surfaces it on the next turn, prompting a timely `/compact` before the session degrades further. The note is suppressed on the first check immediately after a compaction (to avoid false alarms right after the context was just cleaned).
+
+**Loop Detection** watches for repetition. It compares the last four user messages and the last five tool results for similarity, using a confidence threshold of 0.70. When confidence is met, a short warning enters the context. Post-hoc analysis of real sessions found that loop sessions average 47,000 wasted tokens before the user notices. The notes use fixed templates and never echo your content back.
+
+**Activity Mode Detection** classifies the current session into one of five modes: code, debug, review, infra, or general. Classification runs on a sliding window of the last ten tool calls after every PostToolUse event. The result feeds the [active compression](/features/active-compression/) compaction engine, which selects mode-aware PRESERVE and DROP priorities when `/compact` runs. The activity log auto-prunes at 30 rows to avoid unbounded growth.
+
+**Decision Extraction** monitors tool outputs in real time for decision statements, patterns like "chose X because Y", "going with Z over W", or "switched to". It runs only on outputs over 500 characters (to skip short noise). Detected decisions are stored in the session database via atomic read-modify-write (SQLite `BEGIN IMMEDIATE`) and injected as a CRITICAL DECISIONS block at compaction time, so the context stays decision-aware after every `/compact`.
+
+## When features fire
+
+All four run automatically via hooks. No manual invocation is needed.
+
+| Feature | Hook | Trigger |
+|---|---|---|
+| Quality Nudges | `UserPromptSubmit` (quality-cache) | Quality score drops 15+ points or crosses below 60 |
+| Loop Detection | `UserPromptSubmit` (quality-cache) | Similarity ≥ 0.70 across last 4 user messages or last 5 tool results |
+| Activity Mode | `PostToolUse` | Every tool call, no threshold |
+| Decision Extraction | `PostToolUse` | Tool output over 500 characters |
+
+## Default state
+
+All four features are on by default on all supported platforms. No setup is required after installation.
+
+## How to turn off
+
+Quality Nudges and Loop Detection can be disabled. Activity Mode and Decision Extraction are internal infrastructure with no user-facing disable path; they run silently and impose no visible output.
+
+**Quality Nudges: environment variable**
+
+```bash
+TOKEN_OPTIMIZER_QUALITY_NUDGES=0
+```
+
+Set in your shell profile or `.env` file. See the [configuration reference](/reference/configuration/) for where env vars are read.
+
+**Quality Nudges: CLI disable**
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+python3 measure.py v5 disable quality_nudges
+```
+
+**Loop Detection: environment variable**
+
+```bash
+TOKEN_OPTIMIZER_LOOP_DETECTION=0
+```
+
+**Loop Detection: CLI disable**
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+python3 measure.py v5 disable loop_detection
+```
+
+**Activity Mode and Decision Extraction** are internal-only. There is no disable path. They produce no user-visible output and carry zero risk (see Risk rating below).
+
+## Commands
+
+Check current status of the quality-cache hook and signal features:
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+python3 measure.py quality-cache status
+```
+
+Check session signal statistics (nudge count, loop count, decisions stored):
+
+```bash
+python3 measure.py compression-stats
+```
+
+Check which signal features are enabled:
+
+```bash
+python3 measure.py v5 status
+```
+
+Re-enable a disabled feature:
+
+```bash
+python3 measure.py v5 enable quality_nudges
+python3 measure.py v5 enable loop_detection
+```
+
+## Defaults and thresholds
+
+| Feature | Parameter | Value |
+|---|---|---|
+| Quality Nudges | Drop threshold | 15 points |
+| Quality Nudges | Floor threshold | 60 (score below this also fires) |
+| Quality Nudges | Cooldown | 5 minutes |
+| Quality Nudges | Session cap | 3 nudges |
+| Quality Nudges | Post-compact suppression | Yes (first check after compact skipped) |
+| Loop Detection | Similarity threshold | 0.70 confidence |
+| Loop Detection | User message window | Last 4 messages |
+| Loop Detection | Tool result window | Last 5 results |
+| Loop Detection | Session cap | 2 warnings |
+| Loop Detection | Note style | Fixed templates, no content echo |
+| Decision Extraction | Minimum output size | 500 characters |
+| Decision Extraction | Session cap | 10 decisions |
+| Decision Extraction | Write method | SQLite `BEGIN IMMEDIATE` (atomic) |
+| Activity Mode | Classification window | Last 10 tool calls |
+| Activity Mode | Activity log prune | 30 rows |
+| Activity Mode | Modes | code, debug, review, infra, general |
+
+## Risk rating
+
+**None.** The entire signal layer is read-only. Quality Nudges and Loop Detection add short inline notes. Activity Mode writes a local classification. Decision Extraction writes to a local SQLite database. No content is removed, rewritten, or sent anywhere. All writes are to local files you own.
+
+<Aside type="note" title="No content modification">
+Quality signals are the lowest-risk feature group in Token Optimizer. They observe and annotate. If you disable Quality Nudges and Loop Detection, you lose the early-warning layer but nothing else changes. Activity Mode and Decision Extraction continue regardless.
+</Aside>
+
+## Related environment variables
+
+| Variable | Effect | Default |
+|---|---|---|
+| `TOKEN_OPTIMIZER_QUALITY_NUDGES` | Set to `0` to disable Quality Nudges | `1` (enabled) |
+| `TOKEN_OPTIMIZER_LOOP_DETECTION` | Set to `0` to disable Loop Detection | `1` (enabled) |
+
+Full env var list with accepted values and load order: [configuration reference](/reference/configuration/).
+
+## Platform availability
+
+| Platform | Quality Nudges | Loop Detection | Activity Mode | Decision Extraction |
+|---|---|---|---|---|
+| Claude Code | Full | Full | Full | Full |
+| Codex | Partial (quality-cache runs, hook surface differs) | Partial | Full | Full |
+| Others | Verify | Verify | Full | Full |
+
+Codex has a different hook surface for `UserPromptSubmit`-based features. The quality-cache hook fires, but timing and trigger behavior may differ from Claude Code. Activity Mode and Decision Extraction use `PostToolUse`, which is consistent across platforms.
+
+See the [capability matrix](/reference/capability-matrix/) for a full platform breakdown.
+
+## Related pages
+
+- [Active compression](/features/active-compression/): overview of all compression and signal features, including Quality Nudges and Loop Detection in the features-at-a-glance table.
+- [Smart compaction](/features/smart-compaction/): where Decision Extraction output is injected as CRITICAL DECISIONS at compact time.
+- [Tool result archive and expand](/features/tool-result-archive/): durability for large results across compaction.
+- [Configuration reference](/reference/configuration/): env vars, config keys, and load order.
+- [CLI reference](/reference/cli/): `quality-cache status`, `compression-stats`, `v5 status`, `v5 enable`, `v5 disable`.

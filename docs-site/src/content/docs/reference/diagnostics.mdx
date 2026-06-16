@@ -1,0 +1,131 @@
+---
+title: Health and diagnostics
+description: "Commands for verifying the install, detecting config drift, snapshotting before and after, checking session health, killing stale sessions, and running the security self-assessment."
+---
+
+When something looks off, the diagnostic commands tell you what state Token Optimizer is actually in. They are all read-first; the ones that change anything say so and default to a dry run.
+
+## Doctor: verify the install
+
+`doctor` is the first command to run when anything seems wrong. It verifies every component is wired correctly and reports pass, warn, or fail per component: hooks, status line, smart compaction, dashboard daemon, and quality bar.
+
+```bash
+python3 measure.py doctor
+python3 measure.py doctor --json
+```
+
+On a non-default platform, `doctor` auto-routes to the matching adapter when `TOKEN_OPTIMIZER_RUNTIME` is set. The platform-specific doctors can also be called directly.
+
+| Platform | Command |
+|---|---|
+| Claude Code (CLI and VS Code) | `python3 measure.py doctor` |
+| Codex | `TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-doctor --project "$PWD"` |
+| GitHub Copilot | `TOKEN_OPTIMIZER_RUNTIME=copilot python3 measure.py copilot-doctor` |
+| Hermes | `python3 measure.py hermes-doctor` |
+| OpenClaw | `npx token-optimizer doctor --json` |
+| OpenCode | `token_status` inside OpenCode |
+
+`codex-doctor` is healthy at `0 FAIL`. `copilot-doctor` names which data source is active for each surface and shows capability freshness for the installed Copilot CLI version. `hermes-doctor` checks home resolution, plugin presence, required files, declared hooks, a bridge smoke test, the activation entry, state database readability, and dashboard port availability.
+
+## Session health
+
+`health` checks the session that is running right now: fill level, quality, and which hooks are active.
+
+```bash
+python3 measure.py health
+```
+
+`health-selfcheck` runs a self-test of the health collection system to confirm every component can be read without error. Use it when `health` itself behaves unexpectedly.
+
+```bash
+python3 measure.py health-selfcheck
+```
+
+`ensure-health` is the self-healer that runs automatically on SessionStart. You can run it by hand to force a repair pass: it reinstalls a missing status line (unless opted out) and fixes drifted hook wiring.
+
+```bash
+python3 measure.py ensure-health
+```
+
+## Drift, snapshot, and baseline
+
+Drift detection answers "what changed since last time." It compares the current setup against the last saved snapshot and reports differences in skill count, MCP servers, CLAUDE.md size, and token totals.
+
+```bash
+python3 measure.py drift
+python3 measure.py drift --json
+```
+
+The snapshot workflow captures a named before-and-after pair so you can prove an optimization worked.
+
+```bash
+python3 measure.py snapshot before   # capture current state as "before"
+# ... make changes ...
+python3 measure.py snapshot after    # capture current state as "after"
+python3 measure.py compare           # show the delta
+```
+
+`set-baseline` marks the current setup as the drift baseline that `drift` compares against.
+
+```bash
+python3 measure.py set-baseline
+```
+
+## Git context
+
+`git-context` analyzes the current git state (modified files, branch) and suggests the files most relevant to the task at hand.
+
+```bash
+python3 measure.py git-context
+python3 measure.py git-context --json
+```
+
+## Cleaning up
+
+`kill-stale` ends sessions older than a threshold that are still marked running. The default threshold is 12 hours. It is dry-run capable so you can see what would be killed first.
+
+```bash
+python3 measure.py kill-stale --dry-run
+python3 measure.py kill-stale --hours 6
+```
+
+`plugin-cleanup` removes stale or orphaned plugin cache entries from the plugin cache directory.
+
+```bash
+python3 measure.py plugin-cleanup --dry-run
+python3 measure.py plugin-cleanup
+```
+
+## Dashboard diagnostics
+
+`daemon-status` checks whether the dashboard daemon is genuinely running, with identity verification rather than a bare TCP probe. It returns one of `DAEMON_RUNNING`, `DAEMON_NOT_RUNNING`, or `DAEMON_FOREIGN` (a different process holds the port).
+
+```bash
+python3 measure.py daemon-status
+```
+
+`dashboard-diagnose` validates the JSON data shape that the engine injects into the dashboard HTML. Run it when a dashboard tab renders empty: it diagnoses the silent schema mismatch behind the blank panel.
+
+```bash
+python3 measure.py dashboard-diagnose
+```
+
+## Security self-assessment
+
+`security-report` runs an enterprise-style self-assessment covering credential patterns, data locality, hook permissions, and OWASP-style checks.
+
+```bash
+python3 measure.py security-report
+python3 measure.py security-report --json
+```
+
+For the underlying architecture this report checks against (loopback-only dashboard, token-gated POST endpoints, 0o700/0o600 permissions, credential redaction), see [Your data and privacy](/reference/data-and-privacy/).
+
+## Quick triage order
+
+1. `doctor` to confirm everything is installed.
+2. `health` to read the live session state.
+3. `drift` to see what changed since the last good state.
+4. `daemon-status` and `dashboard-diagnose` if the dashboard is misbehaving.
+5. `kill-stale` and `plugin-cleanup` to clear residue.
+6. `security-report` for a periodic posture check.

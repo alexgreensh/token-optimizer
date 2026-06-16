@@ -1,0 +1,84 @@
+---
+title: Cache TTL watchdog
+description: "cache-report measures prompt-cache expiry waste across your session history: tokens re-written because a session resumed after the provider TTL lapsed, broken down by provider."
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Every prompt-cache provider sets a TTL. When a session resumes after that window lapses, the entire cached prefix is re-written at the cache-write rate instead of being read at the cheaper cache-read rate. `cache-report` measures how much of that waste is in your own history, so you can decide whether it is worth changing your habits or arming a ping.
+
+## What it does
+
+A prompt cache stores your conversation prefix so each turn does not re-send it at full price. The store has a TTL: Anthropic's API cache entries last about an hour, with a shorter five-minute window. Resume inside the window and you pay the cache-read rate. Resume after it and the whole prefix is re-written at the cache-write rate, which runs 1.25 to 2 times the read cost.
+
+`cache-report` scans your session history for exactly this pattern: resumes that landed after the TTL lapsed, and the tokens that were re-written as a result. It reports the waste per provider, because TTLs and rates differ across Anthropic, Vertex, and Bedrock.
+
+This is an opportunity-tier number. It is what you could recover, not what Token Optimizer has already saved, so it is reported separately and never folded into the realized-savings headline.
+
+## Reading the report
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+python3 measure.py cache-report                 # last default window
+python3 measure.py cache-report --days 30       # widen the window
+python3 measure.py cache-report --fresh         # recompute, ignore any cached result
+python3 measure.py cache-report --verbose       # per-session detail
+python3 measure.py cache-report --json          # machine-readable
+```
+
+The report breaks down TTL waste per provider and surfaces the sessions where expiry cost the most. Use `--verbose` to see which sessions drove the number, and `--fresh` to force a recompute after a long run.
+
+## Behavioral versus API remedies
+
+`cache-report` separates two kinds of fix, because they ask different things of you.
+
+A **behavioral** remedy changes how you work: resume sooner, batch a paused thread back within the TTL, or close a session you will not return to instead of letting it lapse and re-write later. These cost nothing and carry no risk.
+
+An **API** remedy spends to keep the prefix warm: a Keep-Warm ping reads the cache before it expires, refreshing the TTL at roughly a tenth of the prefix cost. This recovers waste on a genuine pause-and-resume rhythm, but it issues model calls, so it is opt-in and API-billing only. See [Keep-Warm](/features/keep-warm/).
+
+<Aside type="tip" title="Measure before you ping">
+Run `cache-report` first. If your TTL waste is small or concentrated in sessions you could simply resume sooner, the behavioral fix is free. Reach for Keep-Warm only when the report shows recurring expiry on sessions you genuinely pause and return to.
+</Aside>
+
+## When to use it
+
+On demand. `cache-report` is a read-only analysis you run when you want to know whether prompt-cache expiry is costing you, typically before deciding to enable Keep-Warm or change your resume habits.
+
+## Default state
+
+Always available, read-only. There is no hook and no automatic firing; it reports on history you already have.
+
+Platform availability: `cache-report` runs anywhere Token Optimizer collects sessions. See the [capability matrix](/reference/capability-matrix/).
+
+## How to turn it on and off
+
+Nothing to disable. `cache-report` is a read-only command that runs only when you invoke it and never changes your setup or your sessions. To stop seeing it, simply do not run it.
+
+## Defaults and thresholds
+
+| Setting | Default | Notes |
+|---|---|---|
+| Window | default lookback | Widen with `--days N` |
+| Accounting tier | opportunity | Excluded from the realized-savings headline |
+| Anthropic API TTL | ~1 hour (5 min short window) | Per-provider rates differ |
+| Cold re-write cost | 1.25-2x the prefix | Versus the cheaper cache-read rate |
+| Result caching | reuses recent result | Force a recompute with `--fresh` |
+
+## Risk rating
+
+None. The watchdog only reads and reports. It issues no model calls and changes no configuration. The behavioral remedies it suggests are free; the only spending remedy, Keep-Warm, is a separate opt-in feature.
+
+## Related environment variables
+
+None specific to the watchdog. Provider rates follow the active pricing tier set with `pricing-tier`. See the [configuration reference](/reference/configuration/).
+
+## Platform availability
+
+Runs anywhere Token Optimizer collects session history (Claude Code, Codex, Copilot, Hermes, OpenCode, OpenClaw). See the [capability matrix](/reference/capability-matrix/).
+
+## Related
+
+- [Keep-Warm](/features/keep-warm/): the API remedy that pings the cache before it expires.
+- [Cache economics](/concepts/cache-economics/): why a lapsed prefix costs 1.25-2x to re-write.
+- [Usage and session analytics](/features/usage-analytics/): trends, savings, and per-turn cost.
+- [Configuration](/reference/configuration/): pricing tiers and provider rates.

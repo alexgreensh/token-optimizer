@@ -1,0 +1,161 @@
+---
+title: Keep-Warm
+description: "An opt-in cache-read ping for API-billed sessions. It keeps a paused prefix alive past its TTL so a later resume reads the cache instead of paying the full prefix re-write."
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+When a session pauses longer than its prompt-cache TTL and then resumes, the whole prefix is re-written at the cache-write rate, roughly 1.25 to 2 times the prefix cost on re-entry. A Keep-Warm ping reads the entry instead of writing it, refreshing the TTL at roughly a tenth of the prefix cost. On sessions with a pause-and-resume rhythm, that turns a recurring re-write into a recoverable saving.
+
+## What it does
+
+Prompt caches expire on a timer. Anthropic's API cache holds a prefix for about an hour (five minutes on the shorter window). Step away past the timer and the next turn re-writes the entire cached prefix from scratch.
+
+Keep-Warm watches sessions that have paused and, when one is about to lapse, fires a small cache-read ping that refreshes the TTL before it expires. The prefix stays warm, so when you come back the resume reads the cache at the cheap rate rather than re-writing it at the expensive one.
+
+This is the one feature that can spend tokens on your behalf, so it is opt-in, gated by consent, and capped. Everything else in Token Optimizer is measurement or context shaping. Keep-Warm is the exception that touches your bill, and it is built to be honest about it.
+
+<Aside type="caution" title="Spends tokens, opt-in only">
+Keep-Warm is the only Token Optimizer feature that issues model calls. It is off until you explicitly enable it, it asks for consent on first run, and it refuses to run on subscription billing where a ping would burn quota for no dollar benefit.
+</Aside>
+
+## API billing only
+
+Keep-Warm runs only on API-billed sessions, where a cache read is genuinely cheaper than a prefix re-write in dollars. It refuses on subscription billing, because a subscription is flat-rate: a ping there spends rate-limit quota without saving money.
+
+`keepwarm-enable` checks billing mode and will not arm pinging on a subscription. Subscription users get the [quota-value story](#the-subscription-quota-value-story) instead, which measures the right currency for that plan.
+
+Keep-Warm requires `ANTHROPIC_API_KEY` to be set, since the ping is an API call.
+
+## The 10-command surface
+
+Keep-Warm is one feature with ten verbs. They split into control, the automatic loop, consent, and reporting.
+
+### Control
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+python3 measure.py keepwarm-enable     # consent + install scheduler (macOS); refuses on subscription
+python3 measure.py keepwarm-disable    # terminal opt-out
+```
+
+`keepwarm-enable` records consent and installs the scheduler on macOS. `keepwarm-disable` is a terminal opt-out that stops all pinging.
+
+### The automatic loop
+
+Three pieces drive pinging without your involvement once enabled.
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+python3 measure.py keepwarm-arm --quiet          # Stop hook: record that a session paused (token-free)
+python3 measure.py keepwarm-tick --dry-run       # the brain: decide whether to ping, print decisions
+python3 measure.py keepwarm-scheduler status     # install | uninstall | status
+```
+
+`keepwarm-arm` fires on the Stop hook for every plugin user and just records that a session paused. It is token-free and does not ping; actual pinging stays gated by consent. `keepwarm-tick` is the brain, run by the scheduler every five minutes: it evaluates armed sessions and fires a ping only for those that are eligible (time since pause, projected expiry, tripwire). `keepwarm-scheduler` manages the macOS launchd agent that runs the tick.
+
+Use `keepwarm-tick --dry-run` to see exactly which sessions would be pinged and why, without firing anything.
+
+### Consent
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+python3 measure.py keepwarm-consent-status    # machine-readable: billing_mode, consent, should_ask
+python3 measure.py keepwarm-consent-asked     # mark the pitch as shown (idempotent)
+```
+
+`keepwarm-consent-status` returns JSON that skills read to decide whether to offer Keep-Warm at all. `keepwarm-consent-asked` records that the pitch was shown, and only ever moves the state from unasked to asked.
+
+### Reporting
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+python3 measure.py keepwarm-forecast --days 30   # projected savings from YOUR history (before enabling)
+python3 measure.py keepwarm-backfill --days 30   # replay the policy over real history
+python3 measure.py keepwarm-report               # full money report once running
+python3 measure.py keepwarm-quota-value          # subscription users: value in quota, not dollars
+```
+
+`keepwarm-forecast` projects savings from your own session history before you enable anything, conservatively and read-only. `keepwarm-backfill` replays the policy over your real history in three modes (probe-only, predictor-sustain, oracle-sustain) to set the sustain promotion fence; it reads transcripts and writes only its promotion sidecar. `keepwarm-report` is the running money report. `keepwarm-quota-value` is the subscription counterpart, covered next.
+
+## The subscription quota-value story
+
+On a subscription, dollars are the wrong yardstick. The plan is flat-rate, so a ping does not save money. The scarce resource is rate-limit quota, and a cold resume spends it: re-writing a lapsed prefix burns 1.25 to 2 times the prefix in quota that a warm read would have spared.
+
+`keepwarm-quota-value` measures Keep-Warm in that currency. It models the realized-versus-spend ratio from a prior and folds in measured meter samples, so the value it reports is the quota a warm prefix saves rather than a dollar figure that would read as zero.
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+python3 measure.py keepwarm-quota-value --json
+```
+
+Pinging itself still stays off on subscription billing. The quota-value report is the measurement instrument; it does not change the gate.
+
+## Honesty mechanisms
+
+Keep-Warm is engineered so it cannot quietly cost you more than it saves.
+
+- **Consent before firing.** Pinging requires explicit `keepwarm-enable`. The arm hook records pauses but never pings without consent.
+- **Spend ledger and NET reporting.** `keepwarm-report` shows pings, spend, realized savings, and the NET (savings minus ping cost) over 7 and 30 days, so the headline is what you actually netted, not gross savings.
+- **A tripwire.** If realized savings stop justifying the spend, the tripwire trips and pinging backs off. Tick counts only successful pings toward its accounting, so a transient failure does not poison the math.
+- **Forecast before you commit.** `keepwarm-forecast` and `keepwarm-backfill` let you see projected value from your own history before enabling.
+- **Subscription refusal.** Pinging refuses on subscription billing, where it would spend quota for no dollar return.
+
+## Default state
+
+Off. Keep-Warm does not ping until you run `keepwarm-enable`. The `keepwarm-arm` hook fires on Stop for plugin users to record pauses, but recording is token-free and does not ping. Reporting commands (`forecast`, `backfill`, `report`, `quota-value`, `consent-status`) are always available and read-only.
+
+Platform availability: the pinging loop and scheduler target Claude Code on macOS (launchd) and Windows (scheduled task). See the [capability matrix](/reference/capability-matrix/).
+
+## How to turn it on and off
+
+To enable (API billing, macOS shown):
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+python3 measure.py keepwarm-enable
+```
+
+To turn it off completely:
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+python3 measure.py keepwarm-disable
+python3 measure.py keepwarm-scheduler uninstall
+```
+
+`keepwarm-disable` is a terminal opt-out. Uninstalling the scheduler stops the tick loop so nothing evaluates armed sessions.
+
+## Defaults and thresholds
+
+| Setting | Default | Notes |
+|---|---|---|
+| Feature state | off | Opt-in via `keepwarm-enable` |
+| Billing requirement | API only | Refuses on subscription |
+| Tick interval | ~5 minutes | macOS launchd / Windows scheduled task |
+| Arm hook cost | token-free | Records pause, never pings |
+| Ping cost | ~0.1x prefix | Versus 1.25-2x for a cold re-write |
+| Cache TTL refreshed | ~1 hour (5 min short window) | Anthropic API cache |
+| Tripwire | counts successful pings only | Backs off when NET stops justifying spend |
+
+## Risk rating
+
+Low, by design, and the only feature that spends tokens. The risks are managed: consent gates firing, the NET-aware report and tripwire prevent runaway spend, and subscription billing is refused outright. The failure mode of a ping is a small wasted spend, capped by the tripwire and visible in `keepwarm-report`. If the tick or scheduler fails, no ping fires and you fall back to ordinary cold resumes.
+
+## Related environment variables
+
+- `ANTHROPIC_API_KEY` (required for pinging)
+- `TOKEN_OPTIMIZER_STAR_ASK` (the one-time GitHub star offer surfaced alongside first-run)
+
+Defined with defaults in the [configuration reference](/reference/configuration/#keep-warm).
+
+## Platform availability
+
+Claude Code on macOS and Windows for the pinging loop and scheduler. Reporting commands run anywhere Token Optimizer does. See the [capability matrix](/reference/capability-matrix/).
+
+## Related
+
+- [Cache TTL watchdog](/features/cache-watchdog/): `cache-report` measures the expiry waste Keep-Warm targets, before you decide to ping.
+- [Cache economics](/concepts/cache-economics/): why a cold resume costs 1.25-2x the prefix.
+- [Your data and privacy](/reference/data-and-privacy/): consent state and how to reset it.
+- [Configuration](/reference/configuration/): Keep-Warm variables and consent keys.

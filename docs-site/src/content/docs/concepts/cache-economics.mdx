@@ -1,0 +1,52 @@
+---
+title: Prompt cache economics
+description: "How the prompt cache works, why a resume past the cache window can cost 1.25-2x the prefix in re-write fees, and what that means for how you manage sessions."
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+The prompt cache is the single biggest lever on session cost, and it is the one most people manage by accident. Understanding it explains why two of Token Optimizer's features exist: Keep-Warm and the cache TTL watchdog.
+
+## How the cache works
+
+When you send a message, the agent reuses the stable prefix of your conversation from cache instead of reprocessing it. A cache read is far cheaper than fresh input, which is why a healthy session with a stable prefix stays cheap turn after turn.
+
+The cache is not free to fill and it does not last forever. Writing a block into the cache costs more than fresh input. Reading it back costs much less. The economics work because you write once and read many times.
+
+Using the current published Anthropic rates for the modeled profile, per million tokens:
+
+- Fresh input: $5
+- Cache read: $0.50
+- Cache write, 5-minute window: $6.25
+- Cache write, 1-hour window: $10
+- Output: $25
+
+A cache read is one tenth the price of fresh input. A cache write is 1.25x fresh input for the short window and 2x for the long one.
+
+## The penalty: resuming past the cache window
+
+Cache entries expire after their TTL, either 5 minutes or 1 hour. When a session pauses past its window and you resume, the prefix is no longer cached. The whole prefix has to be re-written into the cache, at the cache-write rate.
+
+That is the penalty. A resume after expiry pays 1.25x (short window) to 2x (long window) of the prefix in re-write fees, on top of whatever the turn itself costs. On a large prefix, this is the most expensive single thing a session does, and it happens silently every time you step away long enough.
+
+<Aside type="note">
+The penalty scales with prefix size, which is one more reason structural trimming pays off. A leaner prefix is a cheaper cache write when you do have to pay the re-write. See [Why install this first](/concepts/why-first/).
+</Aside>
+
+## The two remedies
+
+There are two ways to deal with the re-write penalty, and Token Optimizer offers both.
+
+**Behavioral: measure it and change when you resume.** The cache TTL watchdog analyzes your history and reports how many tokens you re-wrote because a session resumed after the window expired, broken down per provider. Often the cheapest fix is simply resuming sooner, or batching your work so you do not let the cache go cold mid-task. See [Cache TTL watchdog](/features/cache-watchdog/).
+
+**Automated: keep the cache warm.** Keep-Warm pings the cache just before expiry, at roughly a tenth of the prefix cost and capped per pause, so a resume stays warm instead of triggering a full re-write. It is opt-in, gated behind consent, and protected by a tripwire that turns it off if the pings ever stop paying for themselves. See [Keep-Warm](/features/keep-warm/).
+
+## What this means on a subscription
+
+If you pay per token (API, Bedrock, Vertex), the penalty is literal cash. If you are on a flat-rate subscription, the dollar figure is not the right currency, because the bill does not change. The scarce resource on a subscription is your rate-limit quota. A re-write burns quota you could have spent on real work, so the value of avoiding it shows up as capacity, not dollars. Keep-Warm reports this directly for subscription users with its quota-value view. See [Keep-Warm](/features/keep-warm/).
+
+## Next steps
+
+- [Keep-Warm](/features/keep-warm/): the automated remedy and how to project its value first.
+- [Cache TTL watchdog](/features/cache-watchdog/): measure your own re-write waste.
+- [The compaction problem](/concepts/compaction-model/): the other recurring cost of long sessions.

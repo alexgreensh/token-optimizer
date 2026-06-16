@@ -1,0 +1,112 @@
+---
+title: Waste detectors
+description: "The waste detectors find idle burns, runaway sessions, and config bloat. Eleven run on Claude Code and Codex; OpenClaw runs its own set of sixteen, which add security and supply-chain checks."
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+A waste detector is a single rule that looks at your sessions or your config and flags one specific way tokens leak. Token Optimizer ships eleven that run on Claude Code and Codex. OpenClaw runs its own set of sixteen detectors, the behavioral ones plus security and supply-chain checks, because a compromised OpenClaw instance can burn tokens you never see.
+
+## What they do
+
+Each detector takes parsed session data or a config file, looks for one pattern, and returns a finding with a confidence score. The findings feed three surfaces: [Token Coach](/features/token-coach/) names them in conversation, [Fleet Auditor](/features/fleet-auditor/) prices them across systems, and the [setup audit](/features/audit/) folds them into the full report.
+
+Detectors are conservative on purpose. A finding is suppressed below a 0.4 confidence threshold and flagged only when it affects a meaningful share of recent sessions, so the report shows real waste, not noise. Two detectors of the same family never double-count: if a model-routing finding already covers a session, the overlapping check stands down.
+
+## The eleven detectors on Claude Code and Codex
+
+These run on parsed session history and your project config.
+
+| Detector | What it catches |
+|---|---|
+| Retry churn | The same tool called with the same input three or more times while it keeps erroring. |
+| Tool cascade | Three or more consecutive tool errors forming a failure chain. |
+| Looping | High similarity between user messages with little forward progress, the signature of a stuck loop. |
+| Overpowered model | A top-tier model spent on tasks a cheaper model would have handled. |
+| Weak model | A cheap model used for work that needed a stronger one, causing rework. |
+| Bad decomposition | Monolithic prompts that try to do too much in one turn and should be split. |
+| Wasteful thinking | Extended-thinking tokens out of proportion to the output they produced. |
+| Output waste | Output tokens disproportionate to the complexity of the task. |
+| Cache instability | CLAUDE.md patterns that break Anthropic's prefix-based prompt cache, so the prefix is re-written. |
+| WebSearch routing | Heavy web search or fetch usage that a cheaper routing choice would serve. |
+| PDF ingestion | Large PDF or image reads that inflate context when a cached or trimmed read would do. |
+
+<Aside type="note" title="Two detectors run at the hook, not the report">
+Nine of the eleven run on aggregated session history. WebSearch routing is a post-hoc nudge over trend data, and PDF ingestion runs inline at the read-cache hook. All eleven surface through the same coach and audit reports.
+</Aside>
+
+## OpenClaw adds security and cost checks
+
+When Fleet Auditor detects OpenClaw, it layers on checks the other runtimes do not need, because OpenClaw's threat surface directly drives token spend.
+
+| Check | What it catches |
+|---|---|
+| Outdated gateway | OpenClaw older than the patched line, exposed to known agent-takeover vulnerabilities. A compromised instance runs rogue agents that burn tokens undetected. |
+| Malicious ClawHub skills | Installed skills matching known malicious campaign patterns that exfiltrate data through extra API calls, inflating spend. |
+| Rate limiting disabled | A gateway with rate limiting off, where brute force can spawn unlimited agent sessions. |
+
+<Aside type="caution" title="Security findings are flagged high">
+OpenClaw security findings are scored at high severity because the cost is open-ended: a hijacked instance keeps spending until you notice. Treat them as urgent, not advisory.
+</Aside>
+
+## When they fire
+
+The session detectors run when you ask for analysis: a setup audit, a coaching conversation, or a fleet audit. They do not run on every turn. The PDF-ingestion check runs at the read-cache hook as reads happen. The OpenClaw checks run only when Fleet Auditor detects OpenClaw.
+
+## Default state
+
+On by default wherever Token Optimizer collects session history, because they only read and report. They never block a turn or change a model on their own. See the [capability matrix](/reference/capability-matrix/).
+
+## How to turn it on and off
+
+The detectors are read-only analysis. There is nothing to disable in the sense of stopping a process: they run only when you request a report, and they change nothing.
+
+To stop seeing their findings, do not run the reports that surface them (`coach`, the audit, or the fleet audit). The PDF-ingestion check rides on the read-cache hook; disabling read-cache compression disables that one inline check. See [Read cache](/features/read-cache/) for that hook's controls.
+
+## Exact commands
+
+There is no per-detector command. They surface through the reports that consume them:
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+python3 measure.py coach --json                  # detector findings in the coach blob
+python3 measure.py report                         # detector findings in the full audit
+```
+
+For the fleet-wide detectors and dollar pricing:
+
+```bash
+cd ~/.claude/skills/fleet-auditor/scripts
+python3 fleet.py audit --json                     # cross-system waste findings with savings
+```
+
+On a non-Claude runtime, prefix the runtime, for example `TOKEN_OPTIMIZER_RUNTIME=codex`.
+
+## Defaults and thresholds
+
+| Setting | Default | Notes |
+|---|---|---|
+| Confidence floor | 0.4 | Findings below this are suppressed. |
+| Triage minimum | 5,000 tokens | A session must clear this to be triaged. |
+| Significance gate | >5% of sessions | A detector is flagged only when it affects a meaningful share. |
+| Overlap handling | de-duplicated | A weaker detector stands down when a stronger one covers the same session. |
+
+## Risk rating
+
+None. Every detector reads session data or config and returns a finding. None of them block a turn, call a model, or change your setup. The remedies they suggest are yours to apply.
+
+## Related environment variables
+
+None specific to the detectors. The read-cache hook that carries the PDF-ingestion check has its own variables, defined in the [configuration reference](/reference/configuration/).
+
+## Platform availability
+
+The eleven session detectors run on Claude Code and Codex and on any runtime where Token Optimizer collects sessions. The OpenClaw security checks run only when Fleet Auditor detects OpenClaw. See the [capability matrix](/reference/capability-matrix/).
+
+## Related
+
+- [Token Coach](/features/token-coach/): names these patterns in plain language during a coaching conversation.
+- [Fleet Auditor](/features/fleet-auditor/): prices the same patterns across every agent system with dollar figures.
+- [Setup audit](/features/audit/): the full report that folds in detector findings.
+- [Read cache](/features/read-cache/): the hook that carries the PDF-ingestion check.
+- [Configuration](/reference/configuration/): read-cache and runtime variables.

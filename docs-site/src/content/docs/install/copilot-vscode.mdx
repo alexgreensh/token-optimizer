@@ -1,0 +1,78 @@
+---
+title: GitHub Copilot (VS Code)
+description: "Token Optimizer for GitHub Copilot VS Code shares the CLI adapter. One manual settings step is required to enable per-request credit costs."
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+Copilot support is in beta. VS Code Copilot runs on the same adapter as Copilot CLI, so there is no separate install. It is treated as a distinct session population and is never merged with CLI sessions. One manual settings step unlocks per-request credit costs, and one optional step points the Claude Code status-bar extension at Copilot.
+
+## Prerequisites
+
+- GitHub Copilot in VS Code.
+- The Copilot adapter installed. Run the [Copilot (CLI)](/install/copilot-cli/) install; there is no VS Code-specific install beyond it.
+
+## Install
+
+Run `bash install.sh --copilot` from the cloned repo, exactly as on the [Copilot (CLI)](/install/copilot-cli/) page. That shared adapter install covers VS Code too.
+
+## Enable per-request credit costs
+
+The installer does not flip these settings for you, because they log full prompt text to disk. That is a VS Code and Copilot behavior, so the switch is yours to make.
+
+<Steps>
+
+1. Open VS Code settings.
+
+2. Enable both `github.copilot.chat.agentDebugLog` settings.
+
+</Steps>
+
+With debug logs on, the adapter reads per-request `copilotUsageNanoAiu` from `main.jsonl`, which is the authoritative cost figure. When debug logs are off, it falls back to the OTel `agent-traces.db`. On cost, the VS Code surface is actually richer than CLI, because CLI persists only an aggregate at session shutdown.
+
+## Per-request credit costs
+
+Cost figures use Copilot's own numbers. For VS Code that is the per-request nanoAIU value above. Tune the conversion rates with the same variables as CLI:
+
+```
+TOKEN_OPTIMIZER_COPILOT_USD_PER_CREDIT   (default 0.01)
+TOKEN_OPTIMIZER_COPILOT_PREMIUM_RATE     (default 0.04 per premium request)
+```
+
+See [Configuration](/reference/configuration/) for the full list.
+
+## Runtime switch in the status-bar extension
+
+If you also use the Claude Code status-bar VSIX, point it at Copilot in VS Code settings:
+
+```json
+"tokenOptimizer.runtime": "copilot"
+```
+
+The extension then reads from `~/.copilot/token-optimizer/` and resolves the active session from `~/.copilot/session-state/<id>/events.jsonl`. All status-bar items, quality scores, and usage-limit displays work the same way; only the source directory changes. The setting takes effect immediately, no reload.
+
+## Verify
+
+```bash
+TOKEN_OPTIMIZER_RUNTIME=copilot python3 skills/token-optimizer/scripts/measure.py copilot-doctor
+```
+
+`copilot-doctor` distinguishes which source is active per surface, CLI versus VS Code.
+
+<Aside type="note">
+The live fill ring in VS Code is in-memory only and never persisted, so the adapter cannot read it. The other upstream Copilot gaps from the CLI page apply here too. See the [Copilot platform reference](/platforms/copilot/).
+</Aside>
+
+## Uninstall
+
+```bash
+TOKEN_OPTIMIZER_RUNTIME=copilot python3 skills/token-optimizer/scripts/measure.py copilot-uninstall
+```
+
+Turn off both `github.copilot.chat.agentDebugLog` settings if you no longer want full prompt text written to disk.
+
+## See also
+
+- [Copilot (CLI)](/install/copilot-cli/) for the shared adapter install and the capability map.
+- [Copilot platform reference](/platforms/copilot/).
+- [Configuration](/reference/configuration/).

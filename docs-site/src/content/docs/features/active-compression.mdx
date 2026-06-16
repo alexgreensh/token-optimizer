@@ -1,0 +1,79 @@
+---
+title: Active compression
+description: "An overview of the compression features that cut runtime context bloat as you work: what each one does, its default state, and the one command that manages all of them."
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Active compression is the set of features that shrink content as it enters your context window, rather than after the fact. This page is the map; each feature has its own page with the full detail.
+
+## What it covers
+
+The setup audit reduces the overhead you start a session with. Active compression reduces the overhead you accumulate during the session: redundant file re-reads, verbose command output, and large tool results that survive into compaction. Each feature targets one source of mid-session bloat and each is on by default where it is safe to be.
+
+Three of these features are documented in depth on their own pages. This page exists so you can see them together, understand their defaults at a glance, and learn the single command that manages the whole suite.
+
+## At a glance
+
+| Feature | Default | Targets | Typical saving | Risk | Page |
+|---|---|---|---|---|---|
+| Read cache (delta mode) | On | Re-reading an unchanged or barely-changed file | A 2,000-token re-read becomes a 50-token diff | Low | [Read cache](/features/read-cache/) |
+| Read cache (structure map) | On (soft-block) | Re-reading a large code file | A 720KB file becomes a 250-token skeleton | Low | [Read cache](/features/read-cache/) |
+| Bash output compression | On | Verbose read-only CLI output | A 564-token pytest run becomes 115 tokens | Low | [Bash compression](/features/bash-compression/) |
+| Quality nudges | On | A sudden quality drop you should act on | A timely compact instead of a degraded context | None | [Quality signals](/features/quality-signals/) |
+| Loop detection | On | The agent stuck retrying the same thing | Caught before it burns more turns | None | [Quality signals](/features/quality-signals/) |
+
+## How to manage all of them
+
+One command controls the runtime compression features as a group. The CLI verb is `v5`, a legacy command name kept for compatibility. It is the verb you type; it is not a version label for the feature.
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+
+# Show the status of every active compression feature
+python3 measure.py v5 status
+
+# Turn one feature on or off
+python3 measure.py v5 disable delta_mode
+python3 measure.py v5 enable delta_mode
+
+# Full detail for one feature
+python3 measure.py v5 info delta_mode
+
+# First-run welcome and summary
+python3 measure.py v5 welcome
+```
+
+Feature names accepted by `enable` and `disable`: `bash_compress`, `delta_mode`, `structure_map_beta`, `quality_nudges`, `loop_detection`. Toggle state persists to `config.json`.
+
+<Aside type="note">
+You can also disable each feature with its own environment variable for a single run or in CI, without changing saved settings. The variables are listed per feature on the linked pages and defined once in the [configuration reference](/reference/configuration/).
+</Aside>
+
+## Default state
+
+Every active compression feature is on by default on Claude Code, where the PreToolUse and PostToolUse hooks can intercept tool calls. On platforms with reduced hook support, some features are approximated or unavailable; the [capability matrix](/reference/capability-matrix/) lists the per-platform reality.
+
+## How to turn off
+
+Turn off the whole behavior of one feature with its `v5 disable` verb above, or with its environment variable for a one-off. The two read-cache behaviors share `TOKEN_OPTIMIZER_READ_CACHE` (both off) and `TOKEN_OPTIMIZER_READ_CACHE_DELTA` (delta only). Bash compression uses `TOKEN_OPTIMIZER_BASH_COMPRESS`. Quality nudges and loop detection use `TOKEN_OPTIMIZER_QUALITY_NUDGES` and `TOKEN_OPTIMIZER_LOOP_DETECTION`. All are defined in the [configuration reference](/reference/configuration/).
+
+## Risk rating
+
+Low overall. Each compression feature fails open: when a substitution might lose information the model needs, the feature serves the full content instead. The two warning features (quality nudges, loop detection) only add a note for the model to read, so their risk is none. Per-feature failure modes are documented on each page.
+
+## Related environment variables
+
+`TOKEN_OPTIMIZER_BASH_COMPRESS`, `TOKEN_OPTIMIZER_READ_CACHE`, `TOKEN_OPTIMIZER_READ_CACHE_DELTA`, `TOKEN_OPTIMIZER_STRUCTURE_MAP`, `TOKEN_OPTIMIZER_QUALITY_NUDGES`, `TOKEN_OPTIMIZER_LOOP_DETECTION`. All defined in the [configuration reference](/reference/configuration/).
+
+## Platform availability
+
+Full suite on Claude Code CLI and VS Code. Approximated or partial on Codex, Copilot, Hermes, OpenClaw, and OpenCode depending on each platform's hook capabilities. See the [capability matrix](/reference/capability-matrix/).
+
+## Related pages
+
+- [Read cache](/features/read-cache/): delta mode and structure map in depth.
+- [Bash output compression](/features/bash-compression/): handlers and the credential-safety model.
+- [Quality nudges and loop detection](/features/quality-signals/): the two real-time alerters.
+- [Tool result archive and expand](/features/tool-result-archive/): durability for large results across compaction.
+- [Configuration reference](/reference/configuration/): every variable and config key.

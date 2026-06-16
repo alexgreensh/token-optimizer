@@ -1,0 +1,130 @@
+---
+title: GitHub Copilot (CLI)
+description: "Install Token Optimizer for GitHub Copilot CLI via a shallow clone. Features are gated per Copilot CLI version via an auto-updating capability map."
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Copilot support is in beta. Engine features sit behind a per-version capability map that auto-activates as upstream Copilot CLI fixes land. Two savers are deferred today because the upstream hook fields they need are broken. The install path depends on whether you already have Token Optimizer on this machine.
+
+## Prerequisites
+
+- GitHub Copilot CLI.
+- Python 3.x on your PATH.
+- For the fresh clone path: `git`.
+
+## Install
+
+<Tabs>
+<TabItem label="Fresh clone">
+
+Run from any folder. The clone creates a `token-optimizer/` folder, then you move into it and install.
+
+```bash
+git clone --depth 1 https://github.com/alexgreensh/token-optimizer.git
+cd token-optimizer
+bash install.sh --copilot
+```
+
+</TabItem>
+<TabItem label="Already installed">
+
+If Token Optimizer is already installed as a Claude Code plugin or script install, do not clone again. The `install.sh` script exists only at the repo root, not inside the skill folder, so call the engine directly:
+
+```bash
+TOKEN_OPTIMIZER_RUNTIME=copilot python3 ~/.claude/skills/token-optimizer/scripts/measure.py copilot-install
+```
+
+Or, if you used the Claude Code script install:
+
+```bash
+bash ~/.claude/token-optimizer/install.sh --copilot
+```
+
+</TabItem>
+</Tabs>
+
+The install is idempotent. It writes user-level hooks to `~/.copilot/hooks/token-optimizer.json`, the adapter to `~/.copilot/token-optimizer/plugin/`, and the capability map to `~/.copilot/token-optimizer/capabilities.json`. It never writes repo-level `.github/hooks/`, which would affect the whole team without consent.
+
+## Verify
+
+```bash
+TOKEN_OPTIMIZER_RUNTIME=copilot python3 skills/token-optimizer/scripts/measure.py copilot-doctor
+```
+
+`copilot-doctor` names which data source is active for each surface and shows capability freshness for your installed CLI version. To preview the install without writing anything:
+
+```bash
+bash install.sh --copilot --dry-run
+```
+
+### Engine commands
+
+All require the `TOKEN_OPTIMIZER_RUNTIME=copilot` prefix.
+
+```bash
+measure.py copilot-install     # wire hooks and seed capabilities
+measure.py copilot-doctor      # per-source readiness and capability freshness
+measure.py copilot-summary     # credits-led session summary
+measure.py copilot-rollup      # ingest sessions into trends.db (auto on the stop hook)
+measure.py copilot-uninstall   # remove only what was installed
+```
+
+## Capability map by CLI version
+
+Features activate as your Copilot CLI version gains the hook power they need. The map reseeds automatically on a version change, including downgrades. Status shown for CLI v1.0.60 (research date 2026-06-10).
+
+| Hook power | Status | Feature gated on it |
+|---|---|---|
+| `permissionDecision: deny/allow` | Works (allow at 1.0.18 and up) | rewrite approval suppression |
+| `updatedInput` (preToolUse) | Works at 1.0.24 and up | bash output compression |
+| `additionalContext` (sessionStart) | Works | continuity restore |
+| `additionalContext` (postToolUse) | Works at 1.0.49 and up | context-growth nudges |
+| `additionalContext` (preToolUse) | Broken upstream (#2585, open) | read interception, deferred |
+| `additionalContext` (userPromptSubmitted) | Regressed in v1.0.60 (#3727, open) | per-prompt quality steering |
+| `systemMessage` | Unconfirmed on CLI | not used |
+
+If an upstream fix lands before the map catches up, override it:
+
+```bash
+TOKEN_OPTIMIZER_COPILOT_CAPS_JSON='{"pretooluse_ctx": true}'
+```
+
+## Cost and rate variables
+
+Copilot bills in AI Credits, and cost figures always use Copilot's own numbers (`totalPremiumRequests` from `session.shutdown` on CLI). Tune the conversion rates:
+
+```
+TOKEN_OPTIMIZER_COPILOT_USD_PER_CREDIT   (default 0.01)
+TOKEN_OPTIMIZER_COPILOT_PREMIUM_RATE     (default 0.04 per premium request)
+```
+
+See [Configuration](/reference/configuration/) for the full variable list.
+
+## Auto-update
+
+Re-run the install after a `git pull` or when your Copilot CLI version changes:
+
+```bash
+bash install.sh --copilot
+```
+
+The capability map reseeds on each version change.
+
+## Uninstall
+
+```bash
+TOKEN_OPTIMIZER_RUNTIME=copilot python3 skills/token-optimizer/scripts/measure.py copilot-uninstall
+```
+
+`copilot-uninstall` removes only what the installer wrote.
+
+<Aside type="note">
+Crash-killed CLI sessions never write their shutdown totals. The postToolUse hook keeps an in-flight tally and the rollup recovers partial data flagged as `~est.`, never silently dropped, never silently exact.
+</Aside>
+
+## See also
+
+- [Copilot (VS Code)](/install/copilot-vscode/) for the per-request credit cost step.
+- [Copilot platform reference](/platforms/copilot/) for the full capability and gap list.
+- [Configuration](/reference/configuration/).

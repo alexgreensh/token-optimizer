@@ -1,0 +1,92 @@
+---
+title: Automatic hooks
+description: "Every hook event Token Optimizer registers on Claude Code, what each one fires automatically, and how to enable or disable individual triggers."
+---
+
+Most of what Token Optimizer does happens through hooks. The plugin registers them from `hooks/hooks.json` when it installs, and they run on the host platform's tool-call lifecycle without manual setup. This page documents every trigger on Claude Code, what it does, and how to turn it off.
+
+All hook paths use `${CLAUDE_PLUGIN_ROOT}` so they stay portable across machines. Plugin and marketplace users get the full set automatically. Script-only and skill-only users can install them with `measure.py setup-all-hooks`.
+
+## Hook trigger table
+
+Twenty triggers fire across nine hook events.
+
+| Hook event | Fires | What it does |
+|---|---|---|
+| `PreToolUse: Read` | `read_cache.py` | Intercepts file re-reads and substitutes a delta or structure map for unchanged content |
+| `PreToolUse: Bash` | `bash_hook.py` | Rewrites eligible read-only CLI commands through the compressor |
+| `PreToolUse: Agent\|Task` | `checkpoint-trigger` | Saves a milestone checkpoint before a sub-agent dispatch |
+| `PreCompact` | `dynamic-compact-instructions` | Injects mode-aware PRESERVE/DROP guidance into the compact prompt |
+| `PreCompact` | `compact-capture` | Saves a session checkpoint before compaction |
+| `PreCompact` | `read_cache.py --clear` | Clears the per-session read cache |
+| `SessionStart` | `ensure-health` (async) | Self-heals config drift and installs the status line if the slot is empty |
+| `SessionStart` | `quality-cache --force` | Pre-populates the quality score for the status line |
+| `SessionStart: compact` | `compact-restore --compact` | Restores the full checkpoint after a compaction |
+| `SessionStart` | `compact-restore --new-session-only` | Injects a keyword-matched checkpoint on a fresh session |
+| `Stop` | `compact-capture --trigger stop` | Saves a checkpoint when the session stops |
+| `Stop` | `session-end-flush --defer` | Defers data collection and dashboard regeneration to a background worker |
+| `Stop` | `keepwarm-arm` | Arms Keep-Warm for the paused session (pinging is gated by consent) |
+| `SessionEnd` | `session-end-flush` (async) | Collects sessions into the history database and regenerates the dashboard |
+| `StopFailure` | `compact-capture --trigger stop-failure` | Saves a checkpoint on a stop failure (crash or timeout) |
+| `UserPromptSubmit` | `quality-cache --warn` | Updates the quality score and warns if it dropped |
+| `UserPromptSubmit` | `prompt-continuity` | Injects a topic-matched hint from a prior session |
+| `PostToolUse: Bash\|Read\|Glob\|Grep\|Agent\|mcp__.*` | `archive_result.py` | Archives large tool results to disk so they survive compaction |
+| `PostToolUse: Bash\|Read\|Grep\|Glob\|mcp__.*` | `context_intel.py` | Summarizes large outputs into the Session Knowledge Store (shadow only) |
+| `PostToolUse: Edit\|Write\|MultiEdit\|NotebookEdit` | `read_cache.py --invalidate` | Invalidates stale read-cache entries after a write |
+| `PostToolUse: (all tools)` | `quality-cache --throttle-only` | Refreshes the quality score and runs the cohort tripwire evaluation |
+| `PostCompact` | `quality-cache --force` | Re-populates the quality score after compaction |
+| `CwdChanged` | `read_cache.py --clear` | Clears the read cache on a directory change |
+
+## What runs automatically, grouped by purpose
+
+**Compression on the way in.** The `PreToolUse: Read` and `PreToolUse: Bash` hooks are where active compression happens. A re-read returns a diff or skeleton instead of the full file; an eligible Bash command returns a compressed summary. Both are wall-clock guarded and fail open: on any error the original result passes through unchanged.
+
+**Checkpoint capture and restore.** `PreCompact`, `Stop`, and `StopFailure` capture checkpoints. The two `SessionStart` restore triggers inject the right one back: the full checkpoint after a compaction, or a keyword-matched checkpoint on a fresh session.
+
+**Quality scoring.** Quality refreshes on `SessionStart`, every `UserPromptSubmit`, after every tool call (throttled), and after compaction. The cached score drives the status line, the quality nudges, and the loop detector.
+
+**Data collection.** `Stop` defers a flush; `SessionEnd` runs the full collect, dashboard regen, and final checkpoint in one sequential process to avoid races on the history database.
+
+**Self-healing.** `ensure-health` runs on `SessionStart`, repairs drifted configuration, and reinstalls the status line if its slot is empty. It is internally throttled to roughly once per 24 hours, so most session starts are near no-ops.
+
+## Performance guards
+
+Hooks that inject context or do work on the critical path carry a wall-clock budget and exit early if they exceed it. `ensure-health` and `prompt-continuity` run on an 8-second budget; `keepwarm-arm` runs on a 2-second budget. The `context_intel.py` summarizer is shadow-only: it writes to the Session Knowledge Store but never injects into live context.
+
+## Enabling and disabling
+
+### All hooks at once
+
+```bash
+python3 measure.py setup-all-hooks          # install every hook
+python3 measure.py setup-all-hooks --dry-run # preview without writing
+python3 measure.py check-hook                # report what is wired
+python3 measure.py cleanup-duplicate-hooks   # remove hooks the plugin already provides
+```
+
+Plugin users do not need `setup-all-hooks`; the plugin loads `hooks/hooks.json` on install. Run `cleanup-duplicate-hooks` if you installed hooks manually and later added the plugin, to avoid double-firing.
+
+### Individual hook groups
+
+| Hook group | Install | Disable |
+|---|---|---|
+| Data collection (SessionEnd) | `setup-hook` | Remove from `settings.json` |
+| Smart Compaction (PreCompact, SessionStart, Stop) | `setup-smart-compact` | `setup-smart-compact --uninstall` |
+| Quality bar + quality cache (UserPromptSubmit, status line) | `setup-quality-bar` | `setup-quality-bar --uninstall` |
+
+`setup-quality-bar --uninstall` sets the sticky `quality_bar_disabled` flag so `ensure-health` does not reinstall the status line on the next start. The status line is also never overwritten if you set a custom one; the self-healer only fills an empty slot.
+
+### Individual compression features
+
+The compression that runs inside the Read and Bash hooks is gated by feature flags, not by removing the hook. Turn a feature off without touching the hook wiring:
+
+```bash
+python3 measure.py v5 disable bash_compress
+python3 measure.py v5 disable delta_mode
+```
+
+Or use the environment overrides documented in [Configuration](/reference/configuration/), for example `TOKEN_OPTIMIZER_BASH_COMPRESS=0`.
+
+## Other platforms
+
+Hook events differ by platform. Codex installs 3 to 5 events depending on the chosen profile (`balanced`, `quiet`, `telemetry`, `aggressive`) and has no `PreCompact` or `StopFailure` equivalent, so it approximates compaction survival with compact-prompt guidance plus Stop checkpoints. OpenCode uses its own hook names (`chat.message`, `tool.execute.before`, `tool.execute.after`, and several experimental hooks). Hermes injects a context nudge via `pre_llm_call` only. Copilot gates each hook power on a per-version capability map. See the [capability matrix](/reference/capability-matrix/) and [Platform support](/platforms/overview/) for the per-platform breakdown.

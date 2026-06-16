@@ -1,0 +1,54 @@
+---
+title: Choosing your install
+description: "One matrix of every platform, surface, and install command. Pick one method per platform and never combine plugin and script installs."
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Find your platform and surface in the matrix below, then open the matching install page. Each page carries the prerequisites, the exact commands, the verify step, and the uninstall path for that one surface.
+
+## The one rule
+
+Pick a single install method per platform. Never combine the plugin install and the script install on the same machine.
+
+On Claude Code the plugin lives in `~/.claude/plugins/marketplaces/alexgreensh-token-optimizer` and the script install lives in `~/.claude/token-optimizer/`. Running both produces two copies of the hooks, doubled session writes, and a status line that fights itself. Choose the plugin (every OS) or the script (macOS and Linux only), not both.
+
+## Platform and surface matrix
+
+| Platform | Surface | Recommended command | Install page |
+|---|---|---|---|
+| Claude Code | CLI, all OS | `/plugin marketplace add alexgreensh/token-optimizer` | [Claude Code (CLI)](/install/claude-code-cli/) |
+| Claude Code | VS Code, Cursor, Windsurf | `code --install-extension token-optimizer-statusline-<version>.vsix` | [Claude Code (VS Code)](/install/claude-code-vscode/) |
+| Codex | CLI | `codex plugin marketplace add alexgreensh/token-optimizer` | [Codex (CLI)](/install/codex-cli/) |
+| Codex | Desktop | Same adapter as CLI, no separate install | [Codex (Desktop)](/install/codex-desktop/) |
+| GitHub Copilot | CLI, beta | `bash install.sh --copilot` | [Copilot (CLI)](/install/copilot-cli/) |
+| GitHub Copilot | VS Code, beta | Same adapter, plus one manual settings step | [Copilot (VS Code)](/install/copilot-vscode/) |
+| OpenCode | plugin | `opencode plugin token-optimizer-opencode` | [OpenCode](/install/opencode/) |
+| OpenClaw | plugin | `openclaw plugins install github:alexgreensh/token-optimizer` | [OpenClaw](/install/openclaw/) |
+| Hermes | plugin, beta | `token-optimizer/install.sh --hermes` | [Hermes](/install/hermes/) |
+
+## Which surface do I have
+
+- **Claude Code in a terminal**: use [Claude Code (CLI)](/install/claude-code-cli/). The plugin install runs the engine and the hooks.
+- **Claude Code inside VS Code, Cursor, or Windsurf**: install the CLI plugin first, then add the [VS Code extension](/install/claude-code-vscode/) for the status bar. The extension surfaces what the plugin writes; it is not a standalone install.
+- **Codex Desktop**: install the [Codex CLI](/install/codex-cli/) hooks. Desktop loads the same `~/.codex/hooks.json`, so nothing extra installs. See [Codex (Desktop)](/install/codex-desktop/) for what differs.
+- **Copilot in VS Code**: run the [Copilot CLI](/install/copilot-cli/) install, then follow the one manual debug-log step on the [Copilot (VS Code)](/install/copilot-vscode/) page to turn on per-request credit costs.
+
+## Dashboard ports by platform
+
+Each platform serves its dashboard on its own port, so several can run at once without conflict.
+
+| Platform | Port | URL |
+|---|---|---|
+| Claude Code (CLI and VS Code) | 24842 | `http://localhost:24842/token-optimizer` |
+| Codex (CLI and Desktop) | 24843 | `http://localhost:24843/token-optimizer` |
+| Hermes | 24844 | `http://localhost:24844` |
+| Copilot | 24845 | `http://localhost:24845/token-optimizer` (verify) |
+
+<Aside type="tip">
+After any install, run the platform's doctor command to confirm it wired up correctly. Each install page lists the exact doctor for that surface, and [Configuration](/reference/configuration/) covers every environment variable in one place.
+</Aside>
+
+## Zero dependencies
+
+Every Python adapter (Claude Code, Codex, Hermes, Copilot) is pure standard library. No `pip install`, no telemetry. The TypeScript plugins (OpenCode, OpenClaw) add nothing beyond their host runtime. Minimum Python is 3.9 for Claude Code and Codex, 3.x for Hermes and Copilot.

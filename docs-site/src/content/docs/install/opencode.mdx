@@ -1,0 +1,121 @@
+---
+title: OpenCode
+description: "Install Token Optimizer for OpenCode via npm or a local bun build. Adds quality scoring, smart compaction, and the token_status and token_dashboard tools."
+---
+
+import { Tabs, TabItem, Aside, Steps } from '@astrojs/starlight/components';
+
+Token Optimizer for OpenCode is a native TypeScript plugin with full context-quality scoring, smart compaction with mode-aware context injection, session continuity, quality nudges, loop detection, and a built-in dashboard. It works with every model OpenCode supports.
+
+## Prerequisites
+
+- OpenCode installed
+- npm (for the npm install method) or [bun](https://bun.sh) (for the local build method)
+
+## Recommended method: npm install
+
+<Steps>
+
+1. Install the plugin:
+
+   ```bash
+   opencode plugin token-optimizer-opencode
+   ```
+
+2. Alternatively, add it directly to `opencode.json` or `.opencode/opencode.jsonc`:
+
+   ```jsonc
+   {
+     "plugin": ["token-optimizer-opencode"]
+   }
+   ```
+
+3. Restart OpenCode. The plugin loads automatically.
+
+</Steps>
+
+## Alternative method: local bun build
+
+Use this method if you do not have npm or want to build from source.
+
+<Steps>
+
+1. Clone the repo:
+
+   ```bash
+   git clone https://github.com/alexgreensh/token-optimizer.git
+   ```
+
+2. Run the bundled installer:
+
+   ```bash
+   token-optimizer/install.sh --opencode
+   ```
+
+</Steps>
+
+The installer runs `bun install --frozen-lockfile`, builds via `bun run build:bundle`, and copies `dist-bundle/token-optimizer.js` to `~/.config/opencode/plugins/token-optimizer.js`. OpenCode auto-loads plugins from that directory at startup.
+
+After any `git pull`, re-run `token-optimizer/install.sh --opencode` to update.
+
+## Configuration block
+
+All options are optional. Add this to `.opencode/opencode.jsonc` to customize:
+
+```jsonc
+{
+  "plugin": [
+    ["token-optimizer-opencode", {
+      "qualityWindow": 20,
+      "features": {
+        "qualityNudges": true,
+        "loopDetection": true,
+        "smartCompaction": true,
+        "continuity": true,
+        "activityTracking": true,
+        "trends": true
+      }
+    }]
+  ]
+}
+```
+
+## Environment variable overrides
+
+| Variable | Default | Description |
+|---|---|---|
+| `TOKEN_OPTIMIZER_QUALITY_WINDOW` | 20 | Rolling window size for ratio signals |
+| `TOKEN_OPTIMIZER_TOOL_CALL_WARN` | auto | Tool call warning threshold (scales with context window) |
+| `TOKEN_OPTIMIZER_TOOL_CALL_CRITICAL` | auto | Tool call critical threshold |
+| `TOKEN_OPTIMIZER_CHECKPOINT_RETENTION_DAYS` | 7 | Days to keep checkpoints |
+| `TOKEN_OPTIMIZER_CHECKPOINT_RETENTION_MAX` | 50 | Max checkpoints to scan for restore |
+| `TOKEN_OPTIMIZER_RELEVANCE_THRESHOLD` | 0.3 | Minimum relevance score for checkpoint restore |
+| `TOKEN_OPTIMIZER_NUDGES` | true | Enable quality nudges |
+| `TOKEN_OPTIMIZER_LOOP_DETECTION` | true | Enable retry loop detection |
+| `TOKEN_OPTIMIZER_SMART_COMPACTION` | true | Enable compaction context injection |
+| `TOKEN_OPTIMIZER_CONTINUITY` | true | Enable session continuity |
+| `TOKEN_OPTIMIZER_ACTIVITY` | true | Enable activity tracking |
+| `TOKEN_OPTIMIZER_TRENDS` | true | Enable trends collection |
+
+## Tools available inside OpenCode
+
+Two tools are available in every OpenCode session after install:
+
+- `token_status`: on-demand quality report for the current session
+- `token_dashboard`: generate and open the visual dashboard
+
+## Verify the install
+
+No separate `opencode-doctor` command is documented. Use `token_status` inside OpenCode to confirm the plugin loaded and data is flowing.
+
+## Auto-update
+
+npm install: update with standard npm tooling (`npm update token-optimizer-opencode` or equivalent).
+
+Local build: run `git pull` in the cloned repo, then re-run `install.sh --opencode`.
+
+## Model support
+
+Token Optimizer for OpenCode supports 30+ models: Anthropic, OpenAI, Google, DeepSeek, Qwen, Mistral, xAI, and local models via Ollama. MRCR quality curves are calibrated per model family, so the grade scale stays accurate regardless of which model you use.
+
+See [OpenCode capabilities](/platforms/opencode/) for the full feature list, hook details, and parity notes vs Claude Code.

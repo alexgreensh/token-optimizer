@@ -1,0 +1,102 @@
+---
+title: Memory health
+description: "memory-review audits your memory files for the seven ways they waste budget, starting with the line-200 truncation that silently drops everything past the first 200 lines of MEMORY.md."
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Claude auto-loads only the first 200 lines of MEMORY.md every session. Everything past line 200 is silently truncated and never reaches the model. `memory-review` finds that truncation and six other ways your memory files waste budget, and it can fix them with your say-so.
+
+## What it does
+
+`memory-review` reads your MEMORY.md and topic files, checks them against seven waste categories, and reports findings with an estimated token saving per category. By default it only reads and reports. Pass `--apply` and it archives stale entries and previews the actionable fixes.
+
+It also exports a rule inventory: the NEVER, ALWAYS, MUST, and CRITICAL lines it found, so the calling skill can spot contradictions in-session, two rules that pull in opposite directions.
+
+## The line-200 truncation
+
+Claude loads the first 200 lines of MEMORY.md and stops. Write 308 lines and the last 108 are loaded by nothing, present on disk but absent from the model's context.
+
+`memory-review` measures this directly. If your MEMORY.md is over 200 lines, it tells you how many lines fall past the cutoff and estimates the budget tied up in content that never loads. If you are under the limit, it tells you your headroom. The fix is to trim MEMORY.md to an index of high-signal entries and move detail into topic files that load on demand.
+
+<Aside type="caution" title="Past line 200 is invisible, not just expensive">
+The tail of an over-long MEMORY.md is not merely wasteful, it is unreachable. A rule on line 250 has no effect, because the model never sees it. Keep critical rules well inside the first 200 lines.
+</Aside>
+
+## The seven waste categories
+
+| Category | What it catches |
+|---|---|
+| Truncation waste | Content past the line-200 cutoff that never loads. |
+| Stale entries | Entries older than the staleness window or marked RESOLVED, SUPERSEDED, or DEPRECATED. |
+| Inline content | Long passages inlined into MEMORY.md that belong in a linked topic file. |
+| Duplicate rules | The same NEVER, ALWAYS, or MUST rule repeated inside MEMORY.md, or already present in CLAUDE.md. |
+| Task leakage | TODO, backlog, or action-item sections and checkboxes that belong in a task tracker, not memory. |
+| Orphan links | Links to topic files that no longer exist on disk. |
+| Taxonomy drift | Topic files that do not follow the known naming prefixes, so they are hard to find and maintain. |
+
+## Contradiction detection
+
+The duplicate-rules category does double duty. It normalizes your NEVER, ALWAYS, and MUST lines and cross-checks them against CLAUDE.md, which is always loaded. A rule duplicated across both files wastes MEMORY.md budget on something CLAUDE.md already says.
+
+Beyond duplicates, `memory-review` builds a rule inventory and hands it back so the skill can reason about contradictions in-session: two rules that conflict, where one says always and another says never about the same thing. The review surfaces the inventory; the skill flags the conflict in context.
+
+## The health cards
+
+The review groups findings into health cards by category, ordered by severity, each with a count, an estimated token saving, and the concrete fix. The cards are what the [setup audit](/features/audit/) and the dashboard render, so memory waste sits next to skill and MCP waste in one view.
+
+## When to use it
+
+Run it manually when MEMORY.md feels heavy, when you suspect rules are not taking effect (a sign they are past line 200), or as part of a setup audit. It never fires automatically.
+
+## Default state
+
+Read-only by default, on Claude Code and Codex (where it reviews Codex memories). It changes nothing until you pass `--apply`. See the [capability matrix](/reference/capability-matrix/).
+
+## How to turn it on and off
+
+Nothing to disable for the read-only review. It runs only when you invoke it and reports without changing files.
+
+The only mode that writes is `--apply`, which archives stale entries. To keep it read-only, never pass `--apply`. To undo an applied change, restore from the archive it writes before making changes.
+
+## Exact commands
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+python3 measure.py memory-review                       # read-only report
+python3 measure.py memory-review --json                # machine-readable findings
+python3 measure.py memory-review --stale-days 90        # tighten the staleness window
+python3 measure.py memory-review --project-dir PATH     # review a project's memory
+python3 measure.py memory-review --apply                # archive stale entries, preview fixes
+```
+
+On Codex, prefix the runtime, for example `TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py memory-review`.
+
+## Defaults and thresholds
+
+| Setting | Default | Notes |
+|---|---|---|
+| Mode | read-only | `--apply` required to change anything. |
+| Line limit | 200 | Claude loads only the first 200 lines of MEMORY.md. |
+| Staleness window | 180 days | Tighten with `--stale-days N`. |
+| Per-trimmed-line saving | ~15 tokens | Estimate used for the truncation saving. |
+| Scope | MEMORY.md plus topic files | Add `--project-dir` for project memory. |
+
+## Risk rating
+
+Low. The default is read-only and changes nothing. The only writing path, `--apply`, archives stale entries rather than deleting them, so the content is recoverable. Review the findings before applying, and the change is fully visible first.
+
+## Related environment variables
+
+`TOKEN_OPTIMIZER_RUNTIME` selects the runtime and the memory target. Defined in the [configuration reference](/reference/configuration/).
+
+## Platform availability
+
+Claude Code (MEMORY.md) and Codex (Codex memories). See the [capability matrix](/reference/capability-matrix/).
+
+## Related
+
+- [Attention optimizer](/features/attention-optimizer/): the same first-and-last bias, applied to CLAUDE.md ordering.
+- [Token Coach](/features/token-coach/): names the MEMORY.md overflow pattern in conversation.
+- [Setup audit](/features/audit/): renders the memory health cards alongside skill and MCP waste.
+- [Configuration](/reference/configuration/): runtime selection and memory targets.

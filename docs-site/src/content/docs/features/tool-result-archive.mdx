@@ -1,0 +1,96 @@
+---
+title: Tool result archive and expand
+description: "Large tool results are written to disk and replaced inline with a short pointer, so they survive compaction and the model can pull back the full output on demand with expand."
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+The tool result archive saves large tool outputs to disk and leaves a short pointer in their place, so a big result is not lost when the session compacts and the model can retrieve the full text whenever it needs it.
+
+## What it does
+
+A single large tool result, a 200KB grep or a long file read, can be discarded the next time the session compacts, taking information the model still needed with it. The archive prevents that. When a tool returns a result at or above 4,096 characters, the PostToolUse hook writes the full output to disk keyed by its `tool_use_id`, then leaves a compact pointer in the live context. The pointer carries an inline hint the model can act on: it names the `expand` command and the id to retrieve the full result later.
+
+This is a durability feature, not primarily a savings feature. The pointer is smaller than the original, so there is an incidental context reduction, but the purpose is keeping large results recoverable across compaction rather than shrinking them. The full output stays on disk and out of the live window until the model explicitly asks for it back.
+
+<Aside type="note" title="Durability, not savings">
+Archiving moves a large result to disk and replaces it with a recoverable pointer. Treat the token reduction as a side effect. The point is that a result you may need after `/compact` is still there, addressable by id, instead of gone.
+</Aside>
+
+## The model-actionable inline hint
+
+The pointer left in context is written for the model, not just for you. It states the `tool_use_id` and the exact `expand` invocation, so when the model later realizes it needs the full output, it can issue the retrieval itself without guessing. The hint is what makes the archive usable mid-session rather than only a manual recovery tool.
+
+## When it fires
+
+Automatically, on the PostToolUse hook, for any tool result at or above the size threshold. It covers Bash, Read, Glob, Grep, Agent, and MCP results. Retrieval with `expand` is manual: it runs only when the model or you call it.
+
+## Default state
+
+On by default on Claude Code (CLI and VS Code), through the PostToolUse hook. On platforms with reduced PostToolUse hook support, archiving is approximated or unavailable; the [capability matrix](/reference/capability-matrix/) lists the per-platform reality.
+
+## How to turn it on and off
+
+Archiving runs through the PostToolUse hook. To stop it, remove the hook wiring for your platform (see the [hooks reference](/reference/hooks/)). `expand` and `archive-cleanup` are read-and-maintenance commands that run only when invoked, so there is nothing to disable about them. Archives auto-purge after 24 hours regardless, so an archive you forget about does not persist.
+
+## Exact commands
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+
+# Retrieve a full archived result by its tool_use_id
+python3 measure.py expand TOOL_USE_ID
+
+# Retrieve from a specific session
+python3 measure.py expand TOOL_USE_ID --session SESSION_ID
+
+# List every archived result for the session
+python3 measure.py expand --list
+
+# List archives for a specific session
+python3 measure.py expand --list --session SESSION_ID
+
+# Manually archive the current pending result (normally automatic)
+python3 measure.py archive-result
+
+# Delete archives older than 24h, or all archives for one session
+python3 measure.py archive-cleanup
+python3 measure.py archive-cleanup SESSION_ID
+```
+
+On non-Claude platforms, prefix the runtime selector:
+
+```bash
+TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py expand --list
+```
+
+## Defaults and thresholds
+
+| Setting | Value |
+|---|---|
+| Archive threshold | Results at or above 4,096 characters |
+| Tools covered | Bash, Read, Glob, Grep, Agent, MCP |
+| Trigger | Automatic on PostToolUse |
+| Retrieval | Manual (`expand`) |
+| Auto-purge | After 24 hours |
+| Manual purge | `archive-cleanup` (all old, or one session) |
+
+## Risk rating
+
+Low. The archive writes the full result to a local file before replacing it inline, so the data is never destroyed, only relocated and made addressable. The realistic failure is the model not retrieving an archived result it needed, which the inline hint is built to prevent by naming the exact `expand` command and id. Auto-purge after 24 hours bounds disk use; a result you still need beyond that window should be saved out of the archive explicitly.
+
+## Related environment variables
+
+`TOKEN_OPTIMIZER_RUNTIME` selects the platform whose hooks and archive location are used. Defined in the [configuration reference](/reference/configuration/).
+
+## Platform availability
+
+Full on Claude Code CLI and VS Code. Other platforms vary with their PostToolUse hook support; see the [capability matrix](/reference/capability-matrix/).
+
+## Related pages
+
+- [Active compression](/features/active-compression/): the suite this belongs to.
+- [Read cache](/features/read-cache/): shrinks file re-reads rather than archiving results.
+- [Smart compaction](/features/smart-compaction/): what the archive lets results survive.
+- [Hooks reference](/reference/hooks/): the PostToolUse wiring that drives archiving.
+- [Configuration reference](/reference/configuration/): the canonical variable table.

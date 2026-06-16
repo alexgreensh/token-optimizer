@@ -1,0 +1,62 @@
+---
+title: OpenCode
+description: "OpenCode: a TypeScript plugin with 30-plus models, per-family MRCR quality curves, and in-session token_status and token_dashboard tools."
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+OpenCode runs Token Optimizer as a TypeScript plugin loaded from `~/.config/opencode/plugins/`. It carries the dual-score quality architecture, mode-aware compaction, and session continuity, exposed through two tools you call inside a session.
+
+## Supported surfaces
+
+OpenCode has one surface, the plugin. Install it from npm or build it locally with bun. See the [OpenCode install page](/install/opencode/). The cross-platform grid is at [/reference/capability-matrix/](/reference/capability-matrix/).
+
+## In-session tools
+
+Two tools work from inside any OpenCode session.
+
+| Tool | What it does |
+|---|---|
+| `token_status` | On-demand quality report |
+| `token_dashboard` | Generates the visual dashboard and opens it in the browser |
+
+There is no separate doctor command. Use `token_status` to confirm the plugin is live.
+
+## Models and MRCR curves
+
+OpenCode supports more than 30 models across Anthropic, OpenAI, Google, DeepSeek, Qwen, Mistral, xAI, and local models through Ollama. Quality scoring calibrates an MRCR curve per model family, so the context-fill signal reflects how each family actually degrades as context grows rather than a single shared assumption.
+
+## Full capability list
+
+These features work natively.
+
+- Quality scoring, 7 signals with per-family MRCR curves
+- Smart Compaction, mode-aware
+- Session continuity and checkpoints
+- Dashboard, via the `token_dashboard` tool
+- Cost tracking across the supported model set
+
+Feature toggles and retention thresholds are configured in `opencode.jsonc` or through environment variables. See the [configuration reference](/reference/configuration/).
+
+## Not yet ported
+
+These features are not in the OpenCode plugin. Each is blocked on a plugin-API surface OpenCode does not yet provide.
+
+- Quality Nudges and Loop Detection, which need a session-visible notification surface
+- Bash output compression, which needs a tool-input mutation hook
+- Context Intel Promotion, the post-compaction tool-output digest
+- MCP tool introspection, which is Claude Code specific
+- Live quality bar status line
+- Memory Health audit, Attention Optimizer, and the JSONL trim and dedup tools
+
+<Aside type="note">
+The OpenCode README claims full parity with the Claude Code plugin for the dual-score architecture and compaction, while the shared "not ported" list above is sourced from the OpenClaw notes. The exact OpenCode-specific overlap is not fully documented; treat the not-ported list as the conservative position. (verify)
+</Aside>
+
+## Runtime
+
+OpenCode loads the plugin directly; there is no `TOKEN_OPTIMIZER_RUNTIME` prefix for in-session tools. Run `token_status` or `token_dashboard` from the session.
+
+## Dashboard
+
+The dashboard opens through the `token_dashboard` tool. No dedicated daemon port is documented for OpenCode in the shared port map. (verify)

@@ -1,0 +1,285 @@
+---
+title: CLI reference
+description: "Complete reference for every Token Optimizer command verb, grouped by function: setup, dashboard, compaction, compression, coaching, fleet, memory, keep-warm, cache, diagnostics, and platform adapters."
+---
+
+This page lists every command the Token Optimizer engine dispatches. The engine is a single Python script, `measure.py`, that ships inside the skill. All commands run through it.
+
+## How to run a command
+
+The full invocation form is:
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts && python3 measure.py <command> [args]
+```
+
+The `cd` preamble matters. `measure.py` resolves sibling modules (`read_cache.py`, `bash_compress.py`, `injection.py`, and others) relative to its own directory, so running it from the scripts directory keeps imports clean. On Windows, use `python` instead of `python3`.
+
+Commands run for a non-default platform need the runtime prefix:
+
+```bash
+TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py report
+```
+
+`TOKEN_OPTIMIZER_RUNTIME` selects which platform adapter the engine targets (`claude`, `codex`, `copilot`, `hermes`). When unset, the engine defaults to Claude Code. The doctor and report commands auto-route to the matching adapter when the runtime is set, so `measure.py doctor` becomes `codex-doctor` under `TOKEN_OPTIMIZER_RUNTIME=codex`.
+
+Most read commands accept `--json` for machine-readable output. The flag is noted per command where the source confirms it.
+
+## Global flags
+
+These parse before command dispatch and apply to any command in the run.
+
+| Flag | Effect | Default |
+|---|---|---|
+| `--context-size N` | Override the detected context window size for this run | Auto-detected |
+| `--json` | Emit machine-readable JSON (where the command supports it) | Off (human output) |
+| `--version`, `-v` | Print the installed version string and exit | n/a |
+
+`--context-size` can also be set with the `TOKEN_OPTIMIZER_CONTEXT_SIZE` environment variable. See [Configuration](/reference/configuration/).
+
+## Setup and install
+
+Commands that wire Token Optimizer into a platform. Plugin and marketplace installs run the hook-level setup automatically; these are for script installs, manual repair, and non-Claude platforms.
+
+| Command | Description | Key flags |
+|---|---|---|
+| `setup-hook` | Install the SessionEnd data-collection hook into `settings.json` | `--dry-run` |
+| `setup-all-hooks` | Install every Token Optimizer hook at once; idempotent, reports added and skipped counts | `--dry-run`, `--verbose`, `--json` |
+| `check-hook` | Report whether the data-collection hooks are wired | `--json` |
+| `cleanup-duplicate-hooks` | Remove hooks from `settings.json` that the installed plugin already provides | `--dry-run`, `--json` |
+| `setup-smart-compact` | Install the PreCompact checkpoint capture and SessionStart restore hooks | `--dry-run`, `--status`, `--uninstall` |
+| `setup-quality-bar` | Install the status-line quality bar and the quality-cache hook | `--dry-run`, `--status`, `--uninstall` |
+| `setup-daemon` | Install the persistent dashboard server (macOS launchd, Linux systemd, Windows Task Scheduler) | `--dry-run`, `--uninstall` |
+| `setup-coach-injection` | Install the periodic coach-advice injection into CLAUDE.md | `--uninstall` |
+| `codex-install` | Install the Codex adapter hooks and compact prompt guidance | `--project DIR`, `--profile balanced\|quiet\|telemetry\|aggressive`, `--enable` |
+| `copilot-install` | Install the GitHub Copilot adapter into `~/.copilot/hooks/` | n/a |
+| `copilot-uninstall` | Remove the Copilot adapter (only what was installed) | n/a |
+| `hermes-install` | Install Token Optimizer as a Hermes plugin into `~/.hermes/plugins/` | `--enable` |
+
+`setup-quality-bar --uninstall` sets a sticky `quality_bar_disabled` opt-out so the SessionStart self-healer does not reinstall the status line.
+
+## Visibility and reports
+
+The core read commands. Run `report` (or no command) for the full picture.
+
+| Command | Description | Key flags |
+|---|---|---|
+| `report` | Full per-component token breakdown with calibration-gap detection and optimization suggestions. Runs when no command is given. | n/a |
+| `quick` | Fast scan: overhead total, degradation risk, top offenders | `--json` |
+| `trends` | Per-session usage trends from history (quality, cache hit rate, cost per session) | `--days N`, `--json` |
+| `savings` | Measured token and dollar savings from active compression, split into realized, estimated, and opportunity tiers | `--days N`, `--json` |
+| `conversation` | Per-API-call breakdown for a session (input, output, cache read/write, cost, model, tools) | `[SESSION_ID]`, `--json` |
+| `compression-stats` | Per-feature compression event counts, tokens saved, average ratio, quality-preserved percentage | `--days N`, `--json` |
+| `validate-impact` | Statistical before/after validation of session efficiency | `--strategy auto\|halves`, `--days N`, `--json` |
+| `pricing-tier` | Show or set the API pricing tier used for all cost math. No argument shows current. | `[TIER_NAME]` |
+| `version` | Print the installed version string | `--version`, `-v` |
+| `security-report` | Enterprise security self-assessment (credential patterns, data locality, hook permissions) | `--json` |
+
+Pricing tiers accepted by `pricing-tier`: `anthropic` (default), Vertex AI Global, Vertex AI Regional, AWS Bedrock, and subscription. See [Configuration](/reference/configuration/) for the full set.
+
+## Dashboard
+
+| Command | Description | Key flags |
+|---|---|---|
+| `dashboard` | Generate the single-file HTML dashboard; open in browser or serve over HTTP | `--serve`, `--port N`, `--host HOST`, `--quiet`, `--days N`, `--coord-path PATH` |
+| `daemon-status` | Check whether the dashboard daemon is running and identity-verified at the runtime port | n/a |
+| `daemon-consent` | Get or set consent for the persistent bookmarkable dashboard URL | `--get`, `--set yes\|no\|unset` |
+| `dashboard-diagnose` | Validate the JSON data shape injected into the dashboard; diagnoses empty-tab rendering | n/a |
+
+The default dashboard port is 24842 for Claude Code, 24843 for Codex, 24844 for Hermes, 24845 for Copilot. The daemon serves a bookmarkable URL at `http://localhost:<port>/token-optimizer`; without the daemon, the dashboard opens from a generated file.
+
+## Compaction and continuity
+
+Checkpoint capture and restore, plus the cold-resume path for reopening a forgotten session at zero token cost.
+
+| Command | Description | Key flags |
+|---|---|---|
+| `compact-capture` | Save a checkpoint of session state (decisions, errors, agent state, open TODOs) | `--trigger auto\|stop\|stop-failure`, `--quiet` |
+| `compact-restore` | Inject the most recent checkpoint as context on a new session | `--compact`, `--new-session-only` |
+| `checkpoint-trigger` | Save a milestone checkpoint (for example before sub-agent dispatch) | `--milestone NAME`, `--quiet` |
+| `list-checkpoints` | List saved checkpoints with age and filename, newest first | n/a |
+| `checkpoint-stats` | Checkpoint telemetry summary over a day window. Requires `TOKEN_OPTIMIZER_CHECKPOINT_TELEMETRY=1`. | `--days N`, `--json` |
+| `resume-lean` | Reconstruct a lean context block from checkpoints for a cold session, zero LLM cost. Lists candidates or emits a block. | `[#\|SESSION_ID]`, `--print`, `--json`, `--days N` |
+| `prompt-continuity` | Topic-match the current prompt against prior sessions and inject a lean hint. Runs automatically via hook. | n/a |
+| `continue-last` | Render a topic-matched prior-session hint for a Codex continuation prompt | `--topic TEXT` |
+| `codex-continue-last` | Codex alias for `continue-last` | `--topic TEXT` |
+| `compact-instructions` | Generate project-specific static compact instructions; optionally install into `settings.json` | `--json`, `--install`, `--dry-run` |
+| `dynamic-compact-instructions` | Generate and inject mode-aware PRESERVE/DROP instructions at compaction time. Runs automatically via hook. | `--quiet` |
+
+## Active compression
+
+Compression and read-cache run automatically through hooks. These commands manage their state and inspect their effect.
+
+| Command | Description | Key flags |
+|---|---|---|
+| `v5` | Show, enable, or disable the active compression features; show the first-run welcome | `status`, `enable`, `disable`, `welcome`, `info`, `[FEATURE_NAME]`, `--json` |
+| `read-cache-clear` | Clear the per-session read cache (all sessions or one). Also fires on PreCompact and directory change. | `--session ID`, `--quiet` |
+| `read-cache-stats` | Show read-cache hit and miss stats | `--session ID` |
+| `cohorts` | Show live edit-rate per language and size cohort, re-promote a cohort, or force re-evaluation | `status`, `promote LANG:BAND`, `evaluate`, `--force`, `--json` |
+| `archive-result` | Archive a large tool result to disk. Runs automatically via PostToolUse hook. | `--quiet` |
+| `expand` | Retrieve a full archived tool result by id, or list all archives for a session | `TOOL_USE_ID`, `--list`, `--session SID` |
+| `archive-cleanup` | Delete archived results older than 24h, or all archives for a session | `[SESSION_ID]` |
+| `structure-map` | Show the structure map (skeleton, signatures, digest) that would be generated for a file | `FILE` |
+| `structure-proof` | Replay local transcripts to simulate structure-map substitution and report would-be savings | `--json`, `--torture`, `[JSONL_PATH]` |
+
+The five active compression features managed by `v5` are: Quality Nudges, Loop Detection, Delta Mode, Structure Map, and Bash Compress. Each maps to a config key and an environment override documented in [Configuration](/reference/configuration/).
+
+## Transcript and JSONL tools
+
+| Command | Description | Key flags |
+|---|---|---|
+| `jsonl-inspect` | Show token stats, size, and structure summary for a session JSONL | `[ID\|PATH]`, `--json` |
+| `jsonl-trim` | Find or remove large tool results embedded in a session JSONL above a threshold; backs up first | `--apply`, `--threshold N`, `[ID\|PATH]` |
+| `jsonl-dedup` | Find or remove duplicate system-reminder blocks from a session JSONL | `--apply`, `[ID\|PATH]` |
+
+Both `jsonl-trim` and `jsonl-dedup` run in dry-run mode unless `--apply` is passed.
+
+## Quality and attention
+
+| Command | Description | Key flags |
+|---|---|---|
+| `quality` | Compute the 0-100 quality score for a session from 7 signals, with a quality-over-time chart | `[SESSION_ID\|current]`, `--json` |
+| `quality-cache` | Compute and cache the current session quality score (throttled). Runs automatically via hooks. | `--warn`, `--quiet`, `--throttle N`, `--force`, `--throttle-only` |
+| `attention-score` | Score a markdown file against the LLM attention curve | `[FILE]`, `--json` |
+| `attention-optimize` | Propose or apply section reordering to move critical content into high-attention zones; backs up first | `[FILE]`, `--apply`, `--dry-run` |
+
+`attention-score` and `attention-optimize` default to CLAUDE.md when no file is given. `attention-optimize` runs in dry-run mode unless `--apply` is passed.
+
+## Coaching
+
+| Command | Description | Key flags |
+|---|---|---|
+| `coach` | Generate the coaching data blob (health score, snapshot, detected patterns, questions, subagent costs) | `--json`, `--focus skills\|agentic` |
+| `inject-coach` | Inject auto-generated coaching advice into CLAUDE.md (or AGENTS.md) as a managed block with a 48h TTL | `--file PATH`, `--dry-run` |
+| `inject-routing` | Inject data-driven model-routing advice into CLAUDE.md as a managed block | `--file PATH`, `--dry-run` |
+| `check-staleness` | Check whether a managed block has expired its TTL and remove it if stale | `[SECTION]` |
+
+The interactive `/token-coach` skill reads `coach --json` to drive a coaching conversation. See [Token Coach](/features/token-coach/) and [Fleet Auditor](/features/fleet-auditor/).
+
+## Memory and config health
+
+| Command | Description | Key flags |
+|---|---|---|
+| `memory-review` | Audit memory files for stale entries, size issues, and CLAUDE.md overlap; optionally archive stale entries | `--apply`, `--stale-days N`, `--project-dir PATH`, `--json` |
+| `drift` | Compare the current setup against the last snapshot and report what changed | `--json` |
+| `git-context` | Analyze git state and suggest relevant files for the current task | `--json` |
+| `snapshot` | Take a named before or after snapshot of the current setup | `before`, `after` |
+| `set-baseline` | Set the current setup as the drift baseline | n/a |
+| `compare` | Compare the before and after snapshots and show the delta | n/a |
+| `skill` | Archive a skill out of the skills directory, or restore it | `archive NAME`, `restore NAME` |
+| `mcp` | Disable an MCP server (remove from settings) or re-enable it | `disable NAME`, `enable NAME` |
+
+`memory-review` is read-only unless `--apply` is passed. Stale defaults to entries older than 180 days.
+
+## Health and diagnostics
+
+| Command | Description | Key flags |
+|---|---|---|
+| `doctor` | Verify all components are correctly installed; pass, warn, or fail per component | `--json` |
+| `health` | Check the health of the current running session (fill, quality, active hooks) | n/a |
+| `health-selfcheck` | Self-test the health collection system | n/a |
+| `ensure-health` | SessionStart self-healer: repair drifted config, reinstall missing status line. Runs automatically via hook. | n/a |
+| `kill-stale` | Kill sessions older than a threshold (default 12h) still marked running | `--hours N`, `--dry-run` |
+| `plugin-cleanup` | Remove stale or orphaned plugin cache entries | `--dry-run` |
+| `collect` | Parse session JSONL files and ingest them into the history database | `--days N`, `--quiet`, `--rebuild` |
+| `session-end-flush` | SessionEnd entry point: collect, regenerate dashboard, and capture checkpoint in one process | `--defer` |
+
+See [Health and diagnostics](/reference/diagnostics/) for an operator-focused walkthrough.
+
+## Keep-Warm
+
+Keep-Warm is opt-in and API-billing only. It refuses to run on subscription billing because there is no cache-write premium to recover there. See [Keep-Warm](/features/keep-warm/).
+
+| Command | Description | Key flags |
+|---|---|---|
+| `keepwarm-enable` | Enable Keep-Warm: record consent and install the scheduler on macOS | `--limits-lab` |
+| `keepwarm-disable` | Disable Keep-Warm (terminal opt-out) | n/a |
+| `keepwarm-arm` | Record a keep-warm arm record on session pause. Runs automatically via Stop hook. | `--quiet` |
+| `keepwarm-tick` | The trigger loop: evaluate armed sessions and ping eligible ones. Runs every ~5 minutes via scheduler. | `--dry-run`, `--quiet` |
+| `keepwarm-scheduler` | Install, uninstall, or check the scheduler | `install`, `uninstall`, `status` |
+| `keepwarm-consent-status` | Return machine-readable consent and billing state for the first-run pitch | n/a |
+| `keepwarm-consent-asked` | Record that the keep-warm pitch was shown (idempotent) | `--quiet` |
+| `keepwarm-backfill` | Replay the keep-warm policy over real history in three modes; decide the sustain promotion fence | `--days N`, `--json`, `--no-fence` |
+| `keepwarm-report` | Full money report: mode, consent, scheduler, 7d and 30d ping/spend/realized/net, tripwire state | `--json` |
+| `keepwarm-quota-value` | Report keep-warm value in rate-limit quota for subscription users | `--json` |
+| `keepwarm-forecast` | Project savings from your own session history (probe-only, conservative). Read-only. | `--days N`, `--json` |
+
+## Cache health
+
+| Command | Description | Key flags |
+|---|---|---|
+| `cache-report` | Analyze prompt-cache expiry waste: tokens re-written after a cache window expired, per provider | `--days N`, `--fresh`, `--verbose`, `--json` |
+
+`cache-report` is an opportunity-tier signal. `--verbose` prints a per-session detail table so any headline figure traces to the sessions behind it. `--days` is clamped to the range 1 to 365.
+
+## Data and privacy
+
+| Command | Description | Key flags |
+|---|---|---|
+| `consent` | Show, grant, or reset the data-notice consent flag | `--show`, `--grant`, `--reset` |
+| `purge` | Delete all local Token Optimizer data. Dry-run by default. | `--confirm`, `--force` |
+
+`purge` lists what would be deleted on a dry run. `--confirm` deletes the history database, checkpoints, archives, and caches. `--force` also stops the daemon. It never deletes host-platform transcripts. See [Your data and privacy](/reference/data-and-privacy/).
+
+## Benchmarks and proofs
+
+| Command | Description | Key flags |
+|---|---|---|
+| `benchmark` | Run the compression benchmark fixtures against the real compressor and report pass/fail | `--json` |
+| `structure-proof` | Offline structure-map proof runner (also listed under Active compression) | `--json`, `--torture` |
+
+The historical backfill analyzer is a separate script:
+
+```bash
+python3 compression_backfill.py [--write-cohorts] [--write-events] [--json]
+```
+
+See [Benchmarks](/reference/benchmarks/) for the full reproduction workflow.
+
+## Platform adapters
+
+Adapter commands target a specific platform. All require the matching `TOKEN_OPTIMIZER_RUNTIME` prefix.
+
+### Codex
+
+| Command | Description | Key flags |
+|---|---|---|
+| `codex-doctor` | Check Codex readiness (hooks, compact prompt, status line, dashboard) | `--project DIR`, `--json` |
+| `codex-compact-prompt` | Render or install the Codex compact prompt guidance | n/a |
+| `codex-status-line` | Render the Codex status line (context % and quality) | n/a |
+| `codex-state` | Dump current Codex runtime state | `--json` |
+| `codex-rollup` | Ingest recent Codex sessions into the history database. Runs automatically via Codex Stop hook. | `--quiet` |
+| `codex-skill` | Disable or enable a skill in Codex | `disable\|enable NAME`, `--path PATH` |
+| `codex-mcp` | Disable or enable an MCP server in Codex | `disable\|enable NAME` |
+
+### GitHub Copilot
+
+| Command | Description | Key flags |
+|---|---|---|
+| `copilot-doctor` | Check Copilot readiness and per-source capability freshness | `--json` |
+| `copilot-summary` | Credits-led session summary | n/a |
+| `copilot-rollup` | Ingest recent Copilot sessions (CLI and VS Code) into the history database. Runs automatically via Stop hook. | `--quiet` |
+
+### Hermes
+
+| Command | Description | Key flags |
+|---|---|---|
+| `hermes-doctor` | Check Hermes plugin readiness | `--json` |
+| `hermes-rollup` | Ingest recent Hermes sessions into the history database. Runs automatically via Hermes hook. | `--quiet`, `--session ID`, `--days N` |
+| `hermes-summary` | Brief usage summary for recent Hermes sessions | `--quiet`, `--days N` |
+
+### Other platforms
+
+OpenClaw and OpenCode are TypeScript plugins with their own command surfaces, not driven through `measure.py`. OpenClaw exposes `npx token-optimizer <command>` (`detect`, `scan`, `audit`, `dashboard`, `context`, `quality`, `git-context`, `drift`, `validate`, `doctor`). OpenCode exposes the `token_status` and `token_dashboard` tools inside the session. See [Platform support](/platforms/overview/) and the [capability matrix](/reference/capability-matrix/).
+
+## Legacy and internal verbs
+
+A few verbs exist for compatibility or are called only by other code paths.
+
+| Verb | Notes |
+|---|---|
+| `v5` | The `v5` prefix is a legacy name for the active compression feature manager. The features it controls are current; the name is kept for compatibility. |
+| `session-end-flush-worker` | Internal background worker forked by `session-end-flush --defer`. Not called directly. |
+| `star-status`, `star-now`, `star-decline`, `star-consent-asked` | One-time GitHub star offer surface. Gated to ask exactly once. `TOKEN_OPTIMIZER_STAR_ASK=0` disables it entirely. |
+
+Internal libraries (`token_estimate.py`, `session_store.py`, `compression_log.py`, `injection.py`, `context_pressure.py`, `activity_tracker.py`) are imported by the engine and are not user-invoked commands. One exception is `outline.py PATH [--json]`, which renders a bounded structure-map outline for a file in Codex contexts where the read hook cannot substitute transparently.

@@ -1,0 +1,148 @@
+---
+title: Configuration
+description: "The single source of truth for every Token Optimizer environment variable and config.json key, with defaults and effects. Environment variables override config.json at runtime."
+---
+
+Token Optimizer reads configuration from two places: environment variables and a `config.json` file. Environment variables take precedence. When both set the same setting, the environment variable wins for that run, and `config.json` holds the persistent default.
+
+`config.json` lives at `~/.claude/token-optimizer/config.json`. It stores feature flags, consent status, the pricing tier, and timestamps. The `v5` command and the various `setup-*` and `consent` commands write to it. Most users never edit it by hand; the commands keep it consistent.
+
+## Active compression features
+
+The five active compression features each have a `config.json` key and an environment override. Setting the environment variable to `0` disables the feature for that run regardless of the persisted value.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `TOKEN_OPTIMIZER_BASH_COMPRESS` | enabled | Set to `0` to disable Bash output compression for eligible read-only commands |
+| `TOKEN_OPTIMIZER_READ_CACHE` | enabled | Set to `0` to disable the read cache entirely (no delta, no skeleton substitution) |
+| `TOKEN_OPTIMIZER_READ_CACHE_DELTA` | enabled | Set to `0` to disable delta mode only (re-reads return full content instead of a diff) |
+| `TOKEN_OPTIMIZER_READ_CACHE_MODE` | `soft_block` | Select the read-cache mode: `soft_block`, `warn`, `shadow`, or `block`. See the modes table below. |
+| `TOKEN_OPTIMIZER_STRUCTURE_MAP` | soft-block only | Set to `beta` to enable structure-map compression event logging. This is a separate measurement toggle, not the mode selector above. |
+| `TOKEN_OPTIMIZER_QUALITY_NUDGES` | enabled | Set to `0` to disable the quality-drop alerter |
+| `TOKEN_OPTIMIZER_LOOP_DETECTION` | enabled | Set to `0` to disable the retry-loop detector |
+| `TOKEN_OPTIMIZER_FIRST_READ_ACTIVE` | enabled | Set to `0` to disable active first-read skeleton serving for promoted cohorts |
+
+The matching `config.json` keys are: `v5_bash_compress`, `read_cache_enabled`, `v5_delta_mode`, `v5_structure_map_beta`, `v5_quality_nudges`, and `v5_loop_detection`. Manage them with `measure.py v5 enable|disable <feature>` rather than editing the file.
+
+### Read-cache modes
+
+The read cache operates in one of four modes, selected with `TOKEN_OPTIMIZER_READ_CACHE_MODE` (for example `TOKEN_OPTIMIZER_READ_CACHE_MODE=shadow`). The default is `soft_block`.
+
+| Mode | Behavior |
+|---|---|
+| `soft_block` | Default. On an unchanged re-read, substitute a compact result (delta or structure map) instead of the full file. Always allows the read to proceed. |
+| `warn` | Allow the full re-read, but emit a warning that the file was already read. No substitution. |
+| `shadow` | Measure what substitution would have saved without changing the result the model sees. Used for validation. |
+| `block` | Refuse the redundant re-read outright. Most aggressive; available on platforms that support read interception (for example OpenClaw). |
+
+## Context window
+
+| Variable | Default | Effect |
+|---|---|---|
+| `TOKEN_OPTIMIZER_CONTEXT_SIZE` | auto-detected | Override the assumed context window size for all commands. Equivalent to the `--context-size` flag. |
+| `TOKEN_OPTIMIZER_QUALITY_WINDOW` | 20 | Rolling window size for ratio-based quality signals |
+| `TOKEN_OPTIMIZER_TOOL_CALL_WARN` | auto | Tool-call warning threshold; scales with the context window |
+| `TOKEN_OPTIMIZER_TOOL_CALL_CRITICAL` | auto | Tool-call critical threshold; scales with the context window |
+| `TOKEN_OPTIMIZER_RELEVANCE_THRESHOLD` | 0.3 | Minimum relevance score for a checkpoint to be restored |
+
+## Checkpoints and continuity
+
+| Variable | Default | Effect |
+|---|---|---|
+| `TOKEN_OPTIMIZER_CHECKPOINT_RETENTION_DAYS` | 7 | Days to keep checkpoints before cleanup |
+| `TOKEN_OPTIMIZER_CHECKPOINT_RETENTION_MAX` | 50 | Maximum checkpoints to scan for restore |
+| `TOKEN_OPTIMIZER_CHECKPOINT_TELEMETRY` | off | Set to `1` to enable the `checkpoint-stats` telemetry summary |
+| `TOKEN_OPTIMIZER_PROGRESSIVE_CHECKPOINTS` | platform-dependent | Controls progressive checkpoint capture at fill bands (where the platform supports it) |
+| `TOKEN_OPTIMIZER_SMART_COMPACTION` | true | Set to disable compaction context injection |
+| `TOKEN_OPTIMIZER_CONTINUITY` | true | Set to disable session continuity |
+
+## Quality, nudges, and activity (cross-platform aliases)
+
+These shorter names are used by the TypeScript plugins (OpenCode, OpenClaw) and accepted as cross-platform aliases. They mirror the longer `TOKEN_OPTIMIZER_*` flags above.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `TOKEN_OPTIMIZER_NUDGES` | true | Enable quality nudges |
+| `TOKEN_OPTIMIZER_LOOP_DETECTION` | true | Enable retry-loop detection |
+| `TOKEN_OPTIMIZER_ACTIVITY` | true | Enable activity-mode tracking |
+| `TOKEN_OPTIMIZER_TRENDS` | true | Enable trends collection |
+
+## Dashboard and daemon
+
+| Variable | Default | Effect |
+|---|---|---|
+| `TOKEN_OPTIMIZER_HOST` | 127.0.0.1 | Bind host for the dashboard server |
+| `TOKEN_OPTIMIZER_DASHBOARD_HOST` | 127.0.0.1 | Dashboard-specific bind host; set to `0.0.0.0` for LAN access before `setup-daemon` |
+| `TOKEN_OPTIMIZER_DASHBOARD_TIMEOUT` | (engine default) | Timeout for the dashboard server request handling |
+
+Dashboard ports are fixed per runtime: 24842 (Claude Code), 24843 (Codex), 24844 (Hermes), 24845 (Copilot). They are not configured by environment variable; they are assigned by the engine so multiple runtimes can serve dashboards simultaneously without conflict. The `--port` flag on `dashboard` overrides the port for a one-off serve.
+
+## Data retention
+
+| Variable | Default | Effect |
+|---|---|---|
+| `TOKEN_OPTIMIZER_TRENDS_RETENTION_DAYS` | unlimited | Days to keep rows in the history database |
+| `TOKEN_OPTIMIZER_ARCHIVE_RETENTION_HOURS` | 24 | Hours to keep archived tool results |
+| `TOKEN_OPTIMIZER_QUALITY_CACHE_RETENTION_DAYS` | 7 | Days to keep quality-cache snapshots |
+
+Per-session file caches are auto-deleted after 48 hours and are not configurable. See [Your data and privacy](/reference/data-and-privacy/) for the full storage map.
+
+## Keep-Warm
+
+Keep-Warm is opt-in and managed by the `keepwarm-*` commands; there are no plain feature-flag environment variables for it. Consent and billing mode are persisted in `config.json` and read by `keepwarm-consent-status`.
+
+## Copilot cost rates
+
+| Variable | Default | Effect |
+|---|---|---|
+| `TOKEN_OPTIMIZER_COPILOT_USD_PER_CREDIT` | 0.01 | USD value of one Copilot AI credit, for cost display |
+| `TOKEN_OPTIMIZER_COPILOT_PREMIUM_RATE` | 0.04 | USD per premium request |
+| `TOKEN_OPTIMIZER_COPILOT_CAPS_JSON` | (unset) | JSON override of the Copilot capability map when upstream fixes outpace the shipped matrix, for example `'{"pretooluse_ctx": true}'` |
+
+## Pricing tier
+
+The pricing tier drives every cost and savings calculation. Set it with `measure.py pricing-tier <tier>`; the value persists in `config.json`. The default is `anthropic`.
+
+| Tier | Pricing basis |
+|---|---|
+| `anthropic` | Anthropic API direct rates (default) |
+| Vertex AI Global | Google Vertex AI global rates |
+| Vertex AI Regional | Vertex AI regional rates (a regional premium applies) |
+| AWS Bedrock | AWS Bedrock rates |
+| subscription | Flat-rate subscription; Keep-Warm dollar savings are not applicable and Keep-Warm stays off |
+
+## Install and update
+
+| Variable | Default | Effect |
+|---|---|---|
+| `TOKEN_OPTIMIZER_RUNTIME` | claude | Select the platform adapter: `claude`, `codex`, `copilot`, `hermes` |
+| `TOKEN_OPTIMIZER_SKIP_VERIFY` | off | Set to `1` to skip checksum verification during script install (not recommended) |
+| `TOKEN_OPTIMIZER_STAR_ASK` | enabled | Set to `0` to disable the one-time GitHub star offer entirely |
+| `HERMES_HOME` | ~/.hermes | Override the Hermes home directory for the Hermes adapter |
+
+## config.json keys
+
+The keys below are the persistent equivalents of the runtime flags. Edit through the commands rather than by hand; the table documents what each key holds.
+
+| Key | Holds | Set by |
+|---|---|---|
+| `v5_bash_compress` | Bash compression on/off | `v5 enable\|disable bash_compress` |
+| `read_cache_enabled` | Read cache on/off | `v5` and read-cache commands |
+| `v5_delta_mode` | Delta mode on/off | `v5 enable\|disable delta_mode` |
+| `v5_structure_map_beta` | Structure-map event logging on/off | `v5 enable\|disable structure_map` |
+| `v5_quality_nudges` | Quality nudges on/off | `v5 enable\|disable quality_nudges` |
+| `v5_loop_detection` | Loop detection on/off | `v5 enable\|disable loop_detection` |
+| `quality_bar_disabled` | Sticky status-line opt-out | `setup-quality-bar --uninstall` |
+| consent status | Data-notice acknowledgment | `consent --grant\|--reset` |
+| daemon consent | Bookmarkable-URL consent | `daemon-consent --set` |
+| pricing tier | Active pricing tier | `pricing-tier <tier>` |
+| keep-warm consent and billing mode | Keep-Warm enablement state | `keepwarm-enable`, `keepwarm-disable` |
+
+## Precedence summary
+
+1. Command-line flags (for example `--context-size`) win for the single command.
+2. Environment variables win over `config.json` for the run.
+3. `config.json` holds the persistent default.
+4. Engine defaults apply when nothing else is set.
+
+A value marked `(verify)` anywhere in these docs means the source did not state that detail definitively. None appear in this table; every default above is confirmed against the engine or the platform adapter source.

@@ -1,0 +1,87 @@
+---
+title: GitHub Copilot
+description: "GitHub Copilot: AI-credit cost tracking, session quality, and continuity across CLI and VS Code, with features gated on the Copilot CLI version."
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Beta">
+The Copilot adapter is in beta. Engine features sit behind a per-version capability map that auto-activates as upstream CLI fixes land. Two savers are deferred while upstream fields stay broken.
+</Aside>
+
+Token Optimizer supports GitHub Copilot through an adapter that tracks cost in Copilot's own AI Credits, scores session quality, and restores continuity. What works depends on your Copilot CLI version, because the adapter reads a capability map and only activates a feature once the hook it needs is confirmed working upstream.
+
+## Supported surfaces
+
+Copilot CLI and Copilot in VS Code share one adapter. They are separate session populations and are never merged, because the two surfaces record different data.
+
+Install from the [Copilot (CLI)](/install/copilot-cli/) or [Copilot (VS Code)](/install/copilot-vscode/) page. The cross-platform grid is at [/reference/capability-matrix/](/reference/capability-matrix/).
+
+## CLI and VS Code record cost differently
+
+Each surface has its own authoritative cost source. The adapter uses Copilot's own figures, never a token estimate.
+
+| Surface | Cost figure | Source |
+|---|---|---|
+| CLI | `totalPremiumRequests` | `session.shutdown` event |
+| VS Code | per-request `copilotUsageNanoAiu` | debug-log `main.jsonl` |
+
+VS Code is the more precise surface for cost, because it records a credit figure per request. The CLI only persists an aggregate at shutdown. Per-request token counts on the CLI are never written to disk; usage events are marked `ephemeral` and only the shutdown aggregate survives.
+
+Two rates are configurable. See the [configuration reference](/reference/configuration/) for `TOKEN_OPTIMIZER_COPILOT_USD_PER_CREDIT` and `TOKEN_OPTIMIZER_COPILOT_PREMIUM_RATE`.
+
+## Capability map gated by CLI version
+
+The adapter ships a capability map keyed to Copilot CLI versions. A feature turns on only when the hook it needs is confirmed on your installed version.
+
+| Hook power | Status | Feature it gates |
+|---|---|---|
+| `permissionDecision` deny/allow | Works | Approval suppression |
+| `updatedInput` on preToolUse | Works on supported versions | Bash output compression |
+| `additionalContext` on sessionStart | Works | Continuity restore |
+| `additionalContext` on postToolUse | Works on supported versions | Context-growth nudges |
+| `additionalContext` on preToolUse | Broken upstream, issue #2585 open | Read interception, deferred |
+| `additionalContext` on userPromptSubmitted | Regressed upstream, issue #3727 open | Per-prompt quality steering, deferred |
+
+When an upstream fix lands before the shipped map catches up, override it with `TOKEN_OPTIMIZER_COPILOT_CAPS_JSON`. See the [configuration reference](/reference/configuration/).
+
+## Explicit gaps
+
+Some Copilot internals are never exposed to a companion, so these cannot be approximated.
+
+| Gap | Reason |
+|---|---|
+| Per-request CLI token counts | Usage events are `ephemeral`; only `session.shutdown` aggregates persist |
+| Compaction steering | Compaction is server-side, with no injection point |
+| Tool-output substitution | No `updatedOutput` on postToolUse |
+| Live fill ring | In-memory only, never persisted |
+| Keep-Warm automation | Not available |
+| Status line quality bar | No terminal hook surface for a status line |
+
+## Crash recovery
+
+A crash-killed CLI session never writes its shutdown totals. The postToolUse hook keeps an in-flight tally, and rollup recovers that partial data flagged as `~est.`. Partial data is never silently dropped and never silently presented as exact.
+
+## Runtime prefix
+
+Every Copilot command needs the runtime prefix.
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+TOKEN_OPTIMIZER_RUNTIME=copilot python3 measure.py copilot-summary
+```
+
+On Windows use `python`, not `python3`.
+
+## Doctor command
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+TOKEN_OPTIMIZER_RUNTIME=copilot python3 measure.py copilot-doctor
+```
+
+`copilot-doctor` names which data source is active for each surface and shows capability freshness for your installed CLI version.
+
+## Dashboard
+
+The Copilot daemon port is 24845. Whether `setup-daemon` is wired for Copilot is not documented in the Copilot sources; the shared engine assigns the port. (verify)

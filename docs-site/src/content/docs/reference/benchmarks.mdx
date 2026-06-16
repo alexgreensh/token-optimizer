@@ -1,0 +1,168 @@
+---
+title: Benchmarks
+description: "How Token Optimizer measures savings, what the fixture suite covers, the production corpus behind the numbers, and the exact commands to reproduce every figure against your own session data."
+---
+
+Every number Token Optimizer publishes comes from local production telemetry, and every measurement tool ships in the repo. You can regenerate every figure against your own sessions. This page covers the methodology, the fixture suite, and the reproduction commands.
+
+## What it saved
+
+Two numbers, kept separate on purpose. One is directly metered (every event logged). The other estimates your full transformation. Figures are one user's 30 days (snapshot ending 2026-06-15); yours will differ, and the dashboard computes your own from your own sessions.
+
+| | 30-day savings | What it is |
+|---|---|---|
+| **Measured** | **~$313/mo** | Savings logged event by event. The proven floor. |
+| **Transformation** | **~$1,877/mo (~18%)** | Your whole workload, priced the old way versus now. Estimated. |
+
+### Measured, ~$313
+
+| Source | 30-day | How it was measured |
+|---|---|---|
+| Model routing (realized) | $260 | Every turn that ran on a lighter model than your baseline, priced at the real rate cards. |
+| Compression | $53 | Every output shrunk or evicted, logged with before and after token counts. |
+
+### Transformation, ~$1,877
+
+A current-volume counterfactual: your exact 30-day volume held constant, priced the way you work now versus the way you worked before Token Optimizer. Because the volume is identical on both arms, the gap is pure efficiency, never confounded by workload growth. It sums three non-overlapping pools (caching lives inside pool 1).
+
+| Pool | 30-day | |
+|---|---|---|
+| Main routing + caching | $1,076 | billed volume at current mix versus baseline mix; cache-write is a routing lever; no outlier drop |
+| Subagent (sidechain) routing | $741 | a separate sidechain pool, a documented gap on hosts without Claude-style sidechains (OpenClaw, OpenCode) |
+| Compression add-back | $60 | metered removals repriced at the baseline input mix, disjoint from the billed pool |
+| **Total** | **~$1,877** | |
+
+Combined actual is about $8,708/month; combined old-way about $10,585/month. Baseline Opus share 0.95, current 0.60. The measured routing ($260) is the proven slice of pool 1, never added on top. The measured compression ($53) is the floor of the $60 add-back. Pricing is at Opus 4.8 rates: $5/MTok input, $25/MTok output, $0.50/MTok cache-read.
+
+## Trust tiers
+
+Token Optimizer never sums different kinds of evidence into one number. Each table is labeled with its tier.
+
+| Tier | Meaning |
+|---|---|
+| Measured | Directly metered: realized model routing plus runtime compression events |
+| Estimated | The counterfactual transformation, grounded in the user's own behavior |
+| Opportunity | Realizable if the user acts on an audit recommendation; never folded into the headline |
+
+Two relationships keep the tiers from double-counting. The measured routing overlaps the transformation's pool-1 routing lever: it is the proven slice of the same model-mix shift, reported as a floor and never added on top. The measured compression is the proven floor of the compression add-back: the headline reprices those same metered dollars to the baseline input mix, so the measured figure and the headline contribution are the floor and the repriced value of one quantity, not two savings.
+
+Prompt-cache savings (`cache_read`) are never claimed as standalone Token Optimizer savings; the cache is free infrastructure. Inside pool 1 the counterfactual does redistribute caching at the baseline pool-hit rate, which is the modeled effect of lighter sessions, not a claim on the cache discount itself.
+
+## Baseline mix and platform parity
+
+The before-arm model mix is gated so a baseline is never fabricated. An Anthropic user with a measured frozen baseline is priced at that baseline; an Anthropic user with no baseline is priced at the 0.95 Opus owner default only after a one-time consent, otherwise at the user's own current mix. Non-Anthropic platforms (Codex, Hermes, Copilot, OpenClaw, OpenCode) are always priced at the user's own measured mix, never a fabricated Opus share.
+
+A parallel effort ports this methodology to OpenClaw and OpenCode (TypeScript). On those platforms the subagent pool is a documented platform gap: they have no Claude-style sidechain transcripts, so that pool reads zero rather than being estimated.
+
+## The fixture suite
+
+The compression benchmark validates that compression preserves what the model needs. The suite holds 57 fixtures across 10 categories. Each fixture defines raw output, a must-preserve list, a must-not-contain list (which catches hallucination), and a minimum compression ratio. A fixture passes only when all three checks hold.
+
+| Group | Fixtures | What it tests |
+|---|---|---|
+| build | 8 | cargo, make, webpack, tsc, gradle |
+| git | 7 | status, log, diff, merge conflicts |
+| lint | 7 | eslint, ruff, clippy, pylint |
+| logs | 7 | nginx, docker, systemd, application |
+| tree / directory listings | 7 | large listings, nested structures |
+| test runners | 6 | pytest, jest, go test, extensions |
+| tee-on-failure | 5 | failed commands keep full output |
+| progress / installs | 5 | npm, pip, package downloads |
+| security | 3 | AWS keys, GitHub PATs, Slack tokens (must NOT be stripped) |
+| error passthrough | 2 | non-zero exit, permission denied (must pass through raw) |
+
+The security fixtures are the load-bearing safety check: they verify credentials survive compression intact. Compression never removes what the model needs to see, and never strips a secret.
+
+## The production corpus
+
+| Measure | Value |
+|---|---|
+| Quality-scored sessions | 684 (30 days) &middot; 2,042 all-time |
+| Sessions with file reads | 5,814 (backfill corpus for skeleton analysis) |
+| First-reads analyzed | 30,771 |
+| Benchmark fixtures | 57 across 10 categories |
+| Average prompt-cache hit rate | 74.1% |
+
+The two corpora are distinct populations, not double-counted. The backfill corpus is larger because it includes historical sessions recovered from file-read logs. The production figures come from Claude Code CLI sessions, the author's primary platform. Quality scoring and savings tracking work on all platforms, but the signal count varies by platform (3 to 7 signals).
+
+### Live compression results (30 days)
+
+This is the directly-metered compression tier: output Token Optimizer shrank or evicted as the sessions actually ran.
+
+| Mechanism | Events | Tokens removed | Saved |
+|---|---|---|---|
+| Tool-output archive | 646 | 9.31M | $27.91 |
+| Lean session resumes | 7 | 3.22M | $16.11 |
+| Structure maps (re-reads) | 307 | 1.19M | $5.37 |
+| Checkpoint restores | 24 | 0.71M | $3.35 |
+| Delta reads | 6 | 5.9K | $0.03 |
+| **Total** | **990** | **14.44M** | **$52.77** |
+
+This is the metered floor (a 30-day snapshot ending 2026-06-15; your dashboard recomputes it live, so your numbers will differ). The headline transformation adds model routing and lighter sessions on top, as described above.
+
+## First-read skeleton promotion
+
+Large files on first read that are unlikely to be edited soon are served as a skeleton, with the full original archived and retrievable via `expand`. A cohort (language plus size band) is only promoted to active serving after proof from real history: the edit-within-5-turns rate must stay under 15% across 20 or more reads in 5 or more distinct sessions.
+
+A live tripwire watches every active cohort. If a cohort's live edit-after-skeleton rate ever crosses 15%, it auto-demotes to measure-only and logs a `cohort_demoted` event. Demotions are sticky to prevent flapping; re-promotion is explicit (`measure.py cohorts promote <lang:band>`) or happens on the next history backfill. The full original is always archived before any skeleton is served, and if archiving fails the full file is served unchanged (fail-open).
+
+Six cohorts are active by default. Two graduated by interpolation (zero edits in history plus a passing adjacent band) and are judged on a smaller tripwire floor, which the dashboard flags so the thinner basis is visible.
+
+## Quality grades
+
+The 7-signal quality score rolls up to an S/A/B/C/D/F grade. Across the last 30 days (684 sessions):
+
+| Grade | Sessions | Reading |
+|---|---|---|
+| S | 27 | Exceptional: minimal waste, high decision density |
+| A | 144 | Good: clean context, efficient tool use |
+| B | 225 | Normal: some bloat, recoverable |
+| C | 79 | Degraded: significant waste, coaching recommended |
+| D | 209 | Poor: heavy bloat, likely retries or loops |
+| F | 0 | Failing: near-total waste (none observed in this corpus) |
+
+All 2,042 sessions are graded on the same scale all-time. The grade scale is identical on every platform, so grades compare across hosts even when the underlying signal count differs.
+
+## Reproducing the numbers
+
+Run any of these against your own data. Results will differ based on your usage; that is the point.
+
+```bash
+# Fixture suite (validates compression quality)
+python3 scripts/benchmark.py
+python3 scripts/benchmark.py --json
+
+# Historical corpus replay (first-read skeleton analysis)
+python3 scripts/compression_backfill.py
+python3 scripts/compression_backfill.py --limit 100 --json
+
+# Structure-map proof from your own transcripts
+python3 scripts/measure.py structure-proof
+python3 scripts/measure.py structure-proof --torture
+
+# Live compression stats (from your history database)
+python3 scripts/measure.py compression-stats
+python3 scripts/measure.py compression-stats --days 7 --json
+
+# Cohort status and tripwire state
+python3 scripts/measure.py cohorts status --json
+
+# Full dashboard (all layers visualized)
+python3 scripts/measure.py dashboard
+```
+
+The `--write-cohorts` and `--write-events` flags on `compression_backfill.py` promote validated cohorts and write events to the history database; without them the backfill is read-only analysis.
+
+## Token counting
+
+Token counts use a `bytes / 4` BPE proxy, which carries roughly 15% error versus actual Claude tokenization. The proxy is applied consistently across every measurement, so before/after ratios are reliable even where the absolute count is approximate.
+
+## Known measurement gaps
+
+These are documented because honest measurement says where it is uncertain.
+
+- **Opus fast-mode cost is under-counted by roughly 50%.** Fast mode is billed at 2x the standard rate but is not exposed in session JSONL, the statusline input, or settings. Fast-mode sessions are priced at the standard rate until the transcript exposes the mode, so their real cost is understated.
+- **Cache-health waste is an opportunity-tier estimate.** The cache-report headline is built from a prefix-rewrite heuristic because JSONL does not expose cache-key identity. Run `cache-report --verbose` to break the headline down by affected session, with the widest waste-triggering gap and re-written token count per session, so any disputed figure traces to its source.
+- **Keep-Warm savings are a projection, not realized dollars.** The dollar figure is the shipping policy replayed over real pause history, not a separate model. On a subscription machine Keep-Warm stays off, so no dollars are realized and the figure reads as projected.
+
+For the full methodology including the per-provider cache profile registry and the Keep-Warm honesty rules, see the repository's `BENCHMARK.md`.

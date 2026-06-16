@@ -1,0 +1,114 @@
+---
+title: Token Coach
+description: "Token Coach is an interactive advisor that reads your real setup and session history, names the waste patterns it finds, and gives you a prioritized action plan with token and dollar figures."
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Token Coach is a conversation, not a report. You run `/token-coach`, it pulls your actual numbers, and it walks you through what is costing you context and what to do about it. It is the advisory front door to Token Optimizer: it diagnoses and recommends, where `/token-optimizer` audits and applies fixes.
+
+## What it does
+
+Token Coach reads two things: your static setup overhead (skills, MCP servers, CLAUDE.md, MEMORY.md loaded at startup) and your historical session habits (quality trend, cost per session, cache hit rate, model switching, session length). It then leads with the one or two findings that matter most for your situation instead of dumping everything at once.
+
+The numbers are real. The coach calls `coach --json` under the hood, which returns a health score, a snapshot of current measurements, detected patterns (good and bad), subagent costs, and your costliest prompts. When `trends.db` has enough history, it adds trend deltas: 7-day quality versus older quality, recent versus prior cache hit rate, cost per session, and the share of sessions that switched models mid-conversation.
+
+It names the anti-patterns. If you have 47 skills costing roughly 4,700 tokens at startup, it says so and calls it the 50-Skill Trap. If your quality is trending down, it leads with that, because a declining trend is more urgent than a single snapshot.
+
+## Static anti-patterns it catches
+
+These come from your setup, measured before you write a single prompt.
+
+| Anti-pattern | What it means |
+|---|---|
+| 50-Skill Trap | Too many skills auto-loading their frontmatter at startup, each costing tokens before you do any work. |
+| Heavy MCP load | MCP tool definitions consuming a large share of the context window on every session. |
+| Bloated CLAUDE.md | Project instructions large enough to crowd out working context. |
+| MEMORY.md overflow | Memory past the line-200 cutoff Claude auto-loads, so the tail never reaches the model. See [Memory health](/features/memory-health/). |
+| Duplicate installs | The same skill loaded from more than one path, paying its cost twice. |
+
+## Historical analysis
+
+When history is available, the coach grounds its advice in your own trend data rather than generic tips.
+
+| Signal | What the coach does with it |
+|---|---|
+| Quality declining | Leads with it. A falling 7-day quality average is more urgent than the current snapshot. |
+| High cost per session | Grounds advice in dollars: "at $X per session across Y sessions, routing alone could save $Z per month." |
+| Cache hit rate dropping | Points at the cause, usually mid-session model switching, which invalidates the prompt cache. |
+| Frequent model switching | Explains that switching models mid-session re-writes the cached prefix; set the model at session start. |
+| Duration-quality correlation | Surfaces the trade: "your short sessions score X versus Y for long ones." |
+| Grade distribution | "N% of your sessions scored D" lands harder than an abstract average. |
+| Compression opportunity gap | Shows measured savings against the tokens still left on the table. |
+
+<Aside type="note" title="Codex users get native advice">
+On Codex, the coach translates every recommendation to native concepts: AGENTS.md instead of CLAUDE.md, Codex memories instead of MEMORY.md, intelligence levels and reasoning effort instead of Opus, Sonnet, and Haiku routing, and compact prompt guidance instead of PreCompact hooks. It never mentions Claude-specific concepts to a Codex user.
+</Aside>
+
+## When to use it
+
+Run it manually when you are starting something new and want efficiency from the start, when an existing project feels sluggish or fills context too fast, when you are designing a multi-agent system, or when you just want a quick health check with real numbers. It never fires automatically.
+
+For running the full audit and applying fixes, use [`/token-optimizer`](/features/audit/) instead. The coach advises; the optimizer acts.
+
+## Default state
+
+Always available as a skill on Claude Code and Codex. It is invoked on demand and stays inactive until you call it. See the [capability matrix](/reference/capability-matrix/).
+
+## How to turn it on and off
+
+Nothing to disable. Token Coach is a skill that runs only when you type `/token-coach` and reads data you already have. It changes no configuration and touches no sessions on its own.
+
+The one action it can offer that spends tokens is enabling Keep-Warm, and only on API-billed Claude Code, only once, and only if you say yes. Decline and nothing is armed. See [Keep-Warm](/features/keep-warm/).
+
+## Exact commands
+
+The skill drives the conversation. To pull the same data directly:
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+python3 measure.py coach                         # human-readable coaching summary
+python3 measure.py coach --json                  # full data blob (health, patterns, subagents, costly prompts)
+python3 measure.py coach --focus skills          # narrow to skill and MCP overhead
+python3 measure.py coach --focus agentic         # narrow to multi-agent architecture
+```
+
+On Codex or another non-Claude runtime, prefix the runtime:
+
+```bash
+TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py coach --json
+```
+
+`coach --focus` steers which patterns the analysis prioritizes. `skills` focuses on setup overhead from skills and MCP. `agentic` focuses on subagent dispatch and multi-agent cost. `coach --json` is the machine-readable form the skill itself consumes; the blob includes `subagent_costs` and `costly_prompts` arrays.
+
+## Defaults and thresholds
+
+| Setting | Default | Notes |
+|---|---|---|
+| Invocation | manual | Never auto-fires. |
+| Output | human-readable | Add `--json` for the full data blob. |
+| Focus | all patterns | Narrow with `--focus skills` or `--focus agentic`. |
+| Quality floor for compaction nudge | 70 | Below 70, the action plan recommends Smart Compaction. |
+| Quality floor for clear nudge | 50 | Below 50, it recommends `/compact` or `/clear` before continuing. |
+| History source | `trends.db` | Trend deltas appear only when enough sessions exist. |
+
+## Risk rating
+
+None. The coach reads your setup and history and prints advice. It applies no fixes, issues no model calls on its own, and changes no files. Acting on its recommendations is your choice, and the one spending recommendation it makes, Keep-Warm, is opt-in with explicit consent.
+
+## Related environment variables
+
+`TOKEN_OPTIMIZER_RUNTIME` selects the runtime when you are not on Claude Code. Defined in the [configuration reference](/reference/configuration/).
+
+## Platform availability
+
+Claude Code and Codex as the `/token-coach` skill. The underlying `coach` command runs anywhere Token Optimizer collects session history. See the [capability matrix](/reference/capability-matrix/).
+
+## Related
+
+- [Setup audit](/features/audit/): the full `/token-optimizer` workflow that applies the fixes the coach recommends.
+- [Waste detectors](/features/waste-detectors/): the session-level detectors that feed the coach's pattern list.
+- [Fleet Auditor](/features/fleet-auditor/): the same advice across every agent system you run, not just Claude Code.
+- [Memory health](/features/memory-health/): the line-200 cutoff behind the MEMORY.md overflow pattern.
+- [Keep-Warm](/features/keep-warm/): the one opt-in spend the coach may offer.
+- [Configuration](/reference/configuration/): `TOKEN_OPTIMIZER_RUNTIME` and pricing tiers.

@@ -1,6 +1,7 @@
 // @ts-check
 import { defineConfig } from "astro/config";
 import starlight from "@astrojs/starlight";
+import rehypeBaseLinks from "./src/plugins/rehype-base-links.mjs";
 
 // Deploy target. Currently GitHub Pages project site:
 //   https://alexgreensh.github.io/token-optimizer/
@@ -17,6 +18,12 @@ export default defineConfig({
   site: SITE,
   base: BASE,
   trailingSlash: "ignore",
+  // Make root-absolute inline links/images in prose base-aware. Starlight only
+  // base-prefixes nav/sidebar links; inline `[…](/start/…)` links would otherwise
+  // 404 under the GitHub Pages base path. No-op when BASE === "" (custom domain).
+  markdown: {
+    rehypePlugins: [[rehypeBaseLinks, { base: BASE }]],
+  },
   integrations: [
     starlight({
       title: "Token Optimizer",

@@ -1252,6 +1252,9 @@ def _compress_cloud_cli(output):
     return "\n".join(out)
 
 
+_SEARCH_FILE_LINE_RE = re.compile(r'^(.+?):(\d+)[:](.*)$')
+
+
 def _compress_search_results(output):
     """Compress grep/ripgrep/ag/ack output: group by file, keep top matches per file.
 
@@ -1262,6 +1265,8 @@ def _compress_search_results(output):
     results: see which files have hits, see a few representative lines, skip
     the rest.
     """
+    if not output:
+        return output
     lines = output.strip().splitlines()
     if len(lines) < 30:
         return output
@@ -1272,12 +1277,11 @@ def _compress_search_results(output):
     if len(lines) < 30:
         return output
 
-    # Group lines by file (everything before the first colon on lines with colons)
-    _FILE_LINE_RE = re.compile(r'^([^:]+):(\d+)[:](.*)$')
+    # Group lines by file (non-greedy up to :digits: to handle colons in filenames)
     files: dict[str, list[str]] = {}
     no_file: list[str] = []
     for ln in lines:
-        m = _FILE_LINE_RE.match(ln)
+        m = _SEARCH_FILE_LINE_RE.match(ln)
         if m:
             fname = m.group(1)
             files.setdefault(fname, []).append(ln)
@@ -1574,7 +1578,7 @@ def main():
                 from archive_result import archive_original, build_archive_pointer
                 _session_id = os.environ.get("CLAUDE_SESSION_ID", "")
                 _archive_key = hashlib.sha256(
-                    f"{_session_id}|{command_str}|{time.time()}".encode("utf-8", errors="replace")
+                    f"{_session_id}|{command_str}|{time.time()}|{os.urandom(4).hex()}".encode("utf-8", errors="replace")
                 ).hexdigest()[:16]
                 if archive_original(raw_output, _session_id, _archive_key, "Bash") is not None:
                     compressed = build_archive_pointer(compressed, len(raw_output), _archive_key)

@@ -235,7 +235,11 @@ def _global_hooks_path(*, ensure_dir: bool = False) -> Path:
         home.mkdir(parents=True, exist_ok=True)
     hooks_path = home / "hooks.json"
     if hooks_path.exists() and hooks_path.is_symlink():
-        raise ValueError(f"{hooks_path} must not be a symlink")
+        resolved = hooks_path.resolve(strict=False)
+        user_home = Path.home().resolve(strict=True)
+        if not resolved.is_relative_to(user_home):
+            raise ValueError(f"{hooks_path} symlink target escapes user home")
+        return hooks_path
     resolved = hooks_path.resolve(strict=False)
     if not resolved.is_relative_to(Path.home()):
         raise ValueError(f"{hooks_path} escapes user home")

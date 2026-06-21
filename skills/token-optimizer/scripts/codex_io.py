@@ -9,13 +9,14 @@ from typing import Any
 
 def atomic_write(path: Path, content: str, mode: int = 0o600) -> None:
     """Write content to path atomically via tempfile+rename."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent), text=True)
+    write_path = path.resolve(strict=False) if path.is_symlink() else path
+    write_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{write_path.name}.", dir=str(write_path.parent), text=True)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(content)
         os.chmod(tmp_name, mode)
-        os.replace(tmp_name, path)
+        os.replace(tmp_name, write_path)
     except BaseException:
         try:
             os.unlink(tmp_name)
@@ -46,7 +47,11 @@ def validate_codex_path(path: Path, home: Path) -> None:
             raise ValueError(f"{parent} escapes Codex home")
     if path.exists():
         if path.is_symlink():
-            raise ValueError(f"{path} must not be a symlink")
+            target_resolved = path.resolve(strict=False)
+            user_home = Path.home().resolve(strict=True)
+            if not target_resolved.is_relative_to(user_home):
+                raise ValueError(f"{path} symlink target escapes user home")
+            return
         if not path.resolve(strict=True).is_relative_to(home_resolved):
             raise ValueError(f"{path} escapes Codex home")
 
@@ -71,7 +76,11 @@ def ensure_codex_child(home: Path, *parts: str, create: bool = True) -> Path:
     elif create:
         parent.mkdir(mode=0o700)
     if target.exists() and target.is_symlink():
-        raise ValueError(f"{target} must not be a symlink")
+        target_resolved = target.resolve(strict=False)
+        user_home = Path.home().resolve(strict=True)
+        if not target_resolved.is_relative_to(user_home):
+            raise ValueError(f"{target} symlink target escapes user home")
+        return target
     target_resolved = target.resolve(strict=target.exists())
     if not target_resolved.is_relative_to(home_resolved):
         raise ValueError(f"{target} escapes Codex home")

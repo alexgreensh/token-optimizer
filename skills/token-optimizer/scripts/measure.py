@@ -1868,40 +1868,37 @@ def _measure_codex_components():
             codex_config_tokens += tokens
             codex_config_files.append({"path": str(config_path), "tokens": tokens})
 
-    project_hooks = cwd / ".codex" / "hooks.json"
-    hook_names = []
+    hook_paths = (runtime_home() / "hooks.json", cwd / ".codex" / "hooks.json")
+    hook_names_set = set()
+    hook_path_labels = []
     hooks_configured = False
-    if project_hooks.exists():
+    for hook_path in hook_paths:
+        if not hook_path.exists():
+            continue
         try:
-            data = json.loads(project_hooks.read_text(encoding="utf-8"))
+            data = json.loads(hook_path.read_text(encoding="utf-8"))
             hooks = data.get("hooks", {}) if isinstance(data, dict) else {}
             if isinstance(hooks, dict):
-                hooks_configured = bool(hooks)
-                hook_names = sorted(hooks)
+                hooks_configured = hooks_configured or bool(hooks)
+                hook_names_set.update(hooks)
+                hook_path_labels.append(str(hook_path))
         except (json.JSONDecodeError, OSError):
             hooks_configured = True
+            hook_path_labels.append(str(hook_path))
 
     components["claude_md_global"] = {"path": str(CLAUDE_DIR / "CLAUDE.md"), "exists": False, "tokens": 0, "lines": 0}
     components["claude_md_home"] = {"path": str(HOME / "CLAUDE.md"), "exists": False, "tokens": 0, "lines": 0}
-    memory_root = runtime_home() / "memories"
-    memory_files = []
-    memory_tokens = 0
-    memory_lines = 0
-    if memory_root.exists():
-        for path in sorted(memory_root.rglob("*.md")):
-            if not path.is_file():
-                continue
-            tokens = estimate_tokens_from_file(path)
-            memory_tokens += tokens
-            memory_lines += count_lines(path)
-            memory_files.append({"path": str(path), "tokens": tokens})
+    state_memory = codex_state.memory_overhead()
     components["memory_md"] = {
-        "path": str(memory_root),
-        "exists": bool(memory_files),
-        "tokens": memory_tokens,
-        "lines": memory_lines,
-        "files": memory_files,
-        "note": "Codex local memories are injected as developer guidance only when the memory feature is active.",
+        "path": str(runtime_home() / "state_*.sqlite"),
+        "exists": bool(state_memory.get("available")),
+        "tokens": int(state_memory.get("total_memory_tokens", 0) or 0),
+        "lines": 0,
+        "files": state_memory.get("by_thread", []),
+        "note": (
+            "Codex memory overhead is measured from state_*.sqlite stage1_outputs; "
+            "legacy ~/.codex/memories files are not counted as automatic prompt overhead."
+        ),
     }
 
     skill_inventory = _collect_codex_skill_inventory(cfg, project=cwd.resolve(strict=False))
@@ -1970,10 +1967,10 @@ def _measure_codex_components():
     components["file_exclusion"] = {"global_deny_rules": deny_read, "project_deny_rules": [], "has_rules": bool(deny_read)}
     components["hooks"] = {
         "configured": hooks_configured,
-        "names": hook_names,
+        "names": sorted(hook_names_set),
         "warnings": [],
         "est_per_turn_tokens": 0,
-        "path": str(project_hooks),
+        "path": ", ".join(hook_path_labels),
     }
     components["rules"] = {"count": 0, "tokens": 0, "always_loaded_tokens": 0, "path_scoped_tokens": 0, "files": [], "always_loaded": 0}
     components["imports"] = {"count": 0, "tokens": 0, "files": []}

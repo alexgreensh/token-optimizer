@@ -542,6 +542,11 @@ def handle_stop(payload):
         return
     env = dict(os.environ)
     env["TOKEN_OPTIMIZER_RUNTIME"] = "copilot"
+    # Force UTF-8 in the spawned measure.py so non-ASCII session content can't crash it
+    # on a non-UTF-8 host (parity with run.py / the hermes bridge). measure.py also
+    # self-re-execs, but inject here so coverage doesn't hinge on os.execv being available.
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
     try:
         subprocess.Popen(
             [sys.executable, str(measure), "copilot-rollup", "--quiet"],

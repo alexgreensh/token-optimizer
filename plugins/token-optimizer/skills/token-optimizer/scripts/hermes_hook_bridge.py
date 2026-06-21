@@ -182,7 +182,8 @@ def run_rollup(session_id: str = "", platform: str = "hermes", reason: str = "")
     try:
         subprocess.Popen(
             cmd,
-            env={**os.environ, "TOKEN_OPTIMIZER_RUNTIME": "hermes"},
+            env={**os.environ, "TOKEN_OPTIMIZER_RUNTIME": "hermes",
+                 "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
@@ -222,7 +223,8 @@ def run_dashboard(session_id: str = "", port: int = DASHBOARD_PORT) -> None:
     try:
         subprocess.Popen(
             args,
-            env={**os.environ, "TOKEN_OPTIMIZER_RUNTIME": "hermes"},
+            env={**os.environ, "TOKEN_OPTIMIZER_RUNTIME": "hermes",
+                 "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,

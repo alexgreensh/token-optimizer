@@ -370,7 +370,7 @@ function qualityBand(score) {
     if (score >= 60)
         return { label: "Fair", color: "var(--c-warning)", grade };
     if (score >= 40)
-        return { label: "Needs Work", color: "#fb923c", grade };
+        return { label: "Needs Work", color: "var(--c-warning)", grade };
     return { label: "Poor", color: "var(--c-danger)", grade };
 }
 // ---------------------------------------------------------------------------
@@ -1312,7 +1312,7 @@ function renderCoach(data) {
     // --- Working Well (earned patterns) ---
     const earnedPatterns = coach.patterns_good.filter((p) => p.earned === true);
     const earnedHtml = earnedPatterns.length > 0
-        ? `<div class="card" style="border-color:rgba(0,240,255,0.2)">
+        ? `<div class="card" style="border-color:var(--c-accent-soft)">
         <div class="card-header"><span>Working Well</span></div>
         ${earnedPatterns.map((p) => `<div style="padding:var(--s-2) 0;border-bottom:1px solid var(--c-border)">
           <div style="font-weight:500;color:var(--c-accent-cyan)">${esc(p.name)}</div>
@@ -1488,7 +1488,14 @@ function renderSidebar(data) {
 // Full HTML document
 // ---------------------------------------------------------------------------
 function renderCSS() {
-    return `*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; outline: none; }
+    return `*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+/* Keyboard focus affordance. Only shows for keyboard users, never on mouse click. */
+:focus-visible { outline: 2px solid var(--c-accent-cyan); outline-offset: 2px; border-radius: 3px; }
+:focus:not(:focus-visible) { outline: none; }
+/* Respect reduced-motion: kill transitions and animations for users who ask the OS to minimise motion. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
+}
 :root {
   --c-bg: #0a0b10;
   --c-surface: #13151a;
@@ -1497,16 +1504,90 @@ function renderCSS() {
   --c-accent-blue: #0066ff;
   --c-accent-glow: rgba(0, 240, 255, 0.4);
   --c-text-main: #ffffff;
-  --c-text-dim: #7d8ca3;
+  /* Brightened from #7d8ca3 to ~9:1 so descriptions read clearly on dark. */
+  --c-text-dim: #a6b4cc;
+  /* Faint tier for de-emphasised-but-still-readable values. ~6:1, AA-safe. */
+  --c-text-faint: #8593a8;
   --c-border: rgba(255, 255, 255, 0.08);
   --c-success: #22c55e;
   --c-warning: #f59e0b;
   --c-danger: #ef4444;
+  --c-accent-soft: rgba(0, 240, 255, 0.1);
+  /* Vivid accent for large display numbers/headlines only (>=24px or bold). */
+  --c-accent-cyan-vivid: #00f0ff;
+  /* Left nav rail — subtle vertical elevation. */
+  --c-nav-bg: linear-gradient(180deg, #13161c, #0c0d12);
+  /* Card elevation — tokenized so light mode can swap in an ink-shadow lift. */
+  --c-card-shadow: 0 4px 20px rgba(0,0,0,0.3);
+  --c-card-shadow-hover: 0 6px 26px rgba(0,240,255,0.12);
+  --c-model-other: #aab8cf;
   --font-sans: 'Space Grotesk', sans-serif;
   --font-mono: 'JetBrains Mono', monospace;
   --s-1: 4px; --s-2: 8px; --s-3: 16px; --s-4: 24px; --s-5: 32px; --s-6: 64px;
   --glow-sm: 0 0 10px var(--c-accent-glow);
   --glow-text: 0 0 8px rgba(0, 240, 255, 0.6);
+  --c-title-grad-from: #fff;
+  --c-title-grad-to: #aaa;
+}
+/* ========== LIGHT THEME ==========
+   Same visual language (cyan-accent technical dashboard), inverted lightness.
+   Activation order (no FOUC, see inline boot script in <head>):
+     explicit toggle (localStorage 'to-theme') > prefers-color-scheme:light > dark. */
+[data-theme="light"] {
+  --c-bg: #eef1f6;
+  --c-surface: #ffffff;
+  --c-surface-hover: #e4e9f1;
+  --c-accent-cyan: #07697f;
+  --c-accent-blue: #0b62c4;
+  --c-accent-glow: rgba(11, 138, 168, 0.28);
+  --c-text-main: #0e1622;
+  --c-text-dim: #242b35;
+  --c-text-faint: #3f4856;
+  --c-border: rgba(14, 22, 34, 0.14);
+  --c-success: #0c6e2e;
+  --c-warning: #9a5b00;
+  --c-danger: #c4314b;
+  --c-accent-soft: rgba(11, 138, 168, 0.12);
+  --c-accent-cyan-vivid: #0a93b3;
+  --c-nav-bg: linear-gradient(180deg, #ffffff, #f4f7fb);
+  --c-card-shadow: 0 1px 2px rgba(14,22,34,0.06), 0 4px 14px rgba(14,22,34,0.08);
+  --c-card-shadow-hover: 0 2px 6px rgba(14,22,34,0.10), 0 10px 24px rgba(7,105,127,0.16);
+  --c-model-other: #424c5e;
+  --glow-text: none;
+  /* Re-derived status colors for light backgrounds. */
+  --c-savings: #0c6e2e;
+  --c-savings-strong: #0a5f28;
+  --c-waste: #c4314b;
+  --c-waste-strong: #b3203c;
+  --c-warning-soft: #a85d00;
+  --c-warning-2: #8a5a00;
+  --c-warning-yellow: #7d5a00;
+  --c-amber: #8a5a00;
+  --c-info: #0b62c4;
+  --c-info-strong: #0a57ad;
+  --c-warning-fill: rgba(154, 91, 0, 0.10);
+  --c-warning-fill-2: rgba(154, 91, 0, 0.08);
+  --c-waste-fill: rgba(196, 49, 75, 0.10);
+  --c-waste-strong-fill: rgba(179, 32, 60, 0.12);
+  --c-savings-fill: rgba(12, 110, 46, 0.12);
+  --c-chart-teal: #0d8a80;
+  --c-chart-coral: #c4314b;
+  --c-model-opus: #6d4bd1;
+  --c-model-haiku: #0f8a47;
+  --c-model-fable: #c2305a;
+  --c-cache-output: #0b62c4;
+  --c-cache-read: #0c6e2e;
+  --c-cache-create: #7c3aed;
+  --c-bg-glow: #dbe4f2;
+  --c-grid-line: rgba(14, 22, 34, 0.05);
+  --c-scrollbar: #b3bdcc;
+  --c-scrollbar-hover: #97a3b5;
+  --c-title-grad-from: #0e1622;
+  --c-title-grad-to: #55607a;
+  --c-badge-savings: #16a34a;
+  --c-badge-info: #5b9bff;
+  --c-badge-cyan: #2bc0da;
+  --c-badge-amber: #f59e0b;
 }
 body {
   background-color: var(--c-bg);
@@ -1555,8 +1636,7 @@ h1, h2, h3, h4 { font-weight: 400; }
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  background: linear-gradient(90deg, transparent, rgba(0,0,0,0.2));
-  backdrop-filter: blur(10px);
+  background: var(--c-nav-bg);
 }
 .brand {
   font-family: var(--font-sans);
@@ -1602,12 +1682,15 @@ h1, h2, h3, h4 { font-weight: 400; }
 .nav-item.active { font-weight: 600; }
 .nav-badge {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 12px;
+  font-weight: 600;
   color: var(--c-accent-cyan);
-  border: 1px solid var(--c-accent-cyan);
-  padding: 0 4px;
-  border-radius: 2px;
-  text-shadow: 0 0 5px var(--c-accent-cyan);
+  background: var(--c-accent-soft);
+  padding: 2px 9px;
+  border-radius: 999px;
+  line-height: 1.4;
+  min-width: 20px;
+  text-align: center;
 }
 .user-profile {
   font-size: 15px;
@@ -1644,7 +1727,7 @@ h1, h2, h3, h4 { font-weight: 400; }
   margin: var(--s-2) 0;
   line-height: 1;
   letter-spacing: -0.02em;
-  background: linear-gradient(180deg, #fff, #aaa);
+  background: linear-gradient(180deg, var(--c-title-grad-from, #fff), var(--c-title-grad-to, #aaa));
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
 }
@@ -1662,9 +1745,10 @@ h1, h2, h3, h4 { font-weight: 400; }
   border: 1px solid var(--c-border);
   border-radius: 12px;
   padding: var(--s-4);
-  transition: border-color 0.3s;
+  box-shadow: var(--c-card-shadow);
+  transition: border-color 0.3s, box-shadow 0.3s;
 }
-.card:hover { border-color: rgba(255,255,255,0.15); }
+.card:hover { border-color: var(--c-accent-cyan); box-shadow: var(--c-card-shadow-hover); }
 
 /* v5 Active Compression card */
 .v5-card { margin-top: var(--s-3); }
@@ -1756,7 +1840,7 @@ h1, h2, h3, h4 { font-weight: 400; }
   overflow: hidden;
   transition: border-color 0.3s;
 }
-.stat-card:hover { border-color: rgba(0, 240, 255, 0.2); }
+.stat-card:hover { border-color: var(--c-accent-cyan); }
 .stat-card::before {
   content: "";
   position: absolute;
@@ -1831,7 +1915,7 @@ h1, h2, h3, h4 { font-weight: 400; }
 }
 .waste-severity.critical { background: rgba(239,68,68,0.2); color: var(--c-danger); }
 .waste-severity.high { background: rgba(245,158,11,0.2); color: var(--c-warning); }
-.waste-severity.medium { background: rgba(0,240,255,0.1); color: var(--c-accent-cyan); }
+.waste-severity.medium { background: var(--c-accent-soft); color: var(--c-accent-cyan); }
 .waste-severity.low { background: rgba(125,140,163,0.1); color: var(--c-text-dim); }
 .waste-confidence {
   font-family: var(--font-mono);
@@ -1885,7 +1969,7 @@ h1, h2, h3, h4 { font-weight: 400; }
 .copy-fix-btn:hover {
   border-color: var(--c-accent-cyan);
   color: var(--c-accent-cyan);
-  box-shadow: 0 0 8px rgba(0,240,255,0.2);
+  box-shadow: 0 0 8px var(--c-accent-glow);
 }
 .copy-fix-btn.copied {
   border-color: #10b981;
@@ -1966,7 +2050,7 @@ h1, h2, h3, h4 { font-weight: 400; }
 .sba-before small, .sba-after small { font-size: 12px; opacity: 0.7; }
 .sba-arrow { color: var(--c-text-dim); }
 .sba-after { color: var(--c-text); }
-.sba-delta { font-size: 14px; color: var(--c-accent-cyan); background: rgba(0,240,255,0.08); padding: 2px 10px; border-radius: 999px; }
+.sba-delta { font-size: 14px; color: var(--c-accent-cyan); background: var(--c-accent-soft); padding: 2px 10px; border-radius: 999px; }
 .savings-opportunity-panel {
   background: rgba(245,158,11,0.07);
   border: 1px solid rgba(245,158,11,0.3);
@@ -2122,13 +2206,13 @@ h1, h2, h3, h4 { font-weight: 400; }
   display: inline-flex; align-items: center; gap: 7px; padding: 5px 12px;
   font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.04em; text-transform: none;
   color: var(--c-accent-cyan); text-decoration: none;
-  border: 1px solid rgba(0, 240, 255, 0.35); border-radius: 6px;
-  background: rgba(0, 240, 255, 0.07);
+  border: 1px solid var(--c-accent-soft); border-radius: 6px;
+  background: var(--c-accent-soft);
   transition: transform 0.2s, box-shadow 0.2s, background 0.2s, border-color 0.2s;
 }
-.gh-star:hover { transform: translateY(-1px); background: rgba(0, 240, 255, 0.14); border-color: var(--c-accent-cyan); box-shadow: 0 0 14px var(--c-accent-glow, rgba(0, 240, 255, 0.4)); }
+.gh-star:hover { transform: translateY(-1px); background: var(--c-accent-soft); border-color: var(--c-accent-cyan); box-shadow: 0 0 14px var(--c-accent-glow, rgba(0, 240, 255, 0.4)); }
 .gh-star-icon { filter: drop-shadow(0 0 4px var(--c-accent-glow, rgba(0, 240, 255, 0.4))); flex: none; }
-.gh-star-count { font-variant-numeric: tabular-nums; padding-left: 8px; border-left: 1px solid rgba(0, 240, 255, 0.25); color: var(--c-text-main); opacity: 0.92; }
+.gh-star-count { font-variant-numeric: tabular-nums; padding-left: 8px; border-left: 1px solid var(--c-accent-soft); color: var(--c-text-main); opacity: 0.92; }
 
 /* QUICK COMMANDS */
 .quick-cmd {
@@ -2144,7 +2228,7 @@ h1, h2, h3, h4 { font-weight: 400; }
 .chart-tooltip {
   position: fixed;
   z-index: 200;
-  background: #1c1f26;
+  background: var(--c-surface);
   border: 1px solid rgba(0,240,255,0.3);
   border-radius: 8px;
   padding: 10px 14px;
@@ -2180,7 +2264,7 @@ h1, h2, h3, h4 { font-weight: 400; }
   gap: 24px;
   z-index: 150;
   transition: transform 0.3s ease;
-  box-shadow: 0 -4px 30px rgba(0, 240, 255, 0.15);
+  box-shadow: 0 -4px 30px var(--c-accent-glow);
 }
 .manage-pending-bar.visible { transform: translateX(-50%) translateY(0); }
 .manage-pending-bar span {
@@ -2233,6 +2317,7 @@ h1, h2, h3, h4 { font-weight: 400; }
   border-collapse: collapse;
   font-size: 13px;
   font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
 }
 .session-table th {
   text-align: left;
@@ -2250,7 +2335,7 @@ h1, h2, h3, h4 { font-weight: 400; }
   color: var(--c-text-dim);
   white-space: nowrap;
 }
-.session-table tr:hover td { background: rgba(0,240,255,0.02); }
+.session-table tr:hover td { background: var(--c-accent-soft); }
 
 /* MANAGE BANNER */
 .manage-banner {
@@ -2258,8 +2343,8 @@ h1, h2, h3, h4 { font-weight: 400; }
   align-items: center;
   gap: var(--s-4);
   padding: var(--s-4) var(--s-5);
-  background: linear-gradient(135deg, rgba(0, 240, 255, 0.08), rgba(0, 102, 255, 0.06));
-  border: 1px solid rgba(0, 240, 255, 0.25);
+  background: linear-gradient(135deg, var(--c-accent-soft), rgba(0, 102, 255, 0.06));
+  border: 1px solid var(--c-accent-soft);
   border-radius: 12px;
   margin-bottom: var(--s-4);
 }
@@ -2302,7 +2387,7 @@ h1, h2, h3, h4 { font-weight: 400; }
   position: absolute;
   cursor: pointer;
   top: 0; left: 0; right: 0; bottom: 0;
-  background: #333;
+  background: var(--c-border);
   border-radius: 12px;
   transition: 0.3s;
 }
@@ -2311,7 +2396,7 @@ h1, h2, h3, h4 { font-weight: 400; }
   position: absolute;
   height: 18px; width: 18px;
   left: 3px; bottom: 3px;
-  background: white;
+  background: var(--c-bg);
   border-radius: 50%;
   transition: 0.3s;
 }
@@ -2336,10 +2421,82 @@ h1, h2, h3, h4 { font-weight: 400; }
   .stat-row { grid-template-columns: repeat(2, 1fr); }
   .y-axis { width: 44px; }
   .y-axis-label { font-size: 10px; }
-}`;
+}
+
+/* ========== THEME TOGGLE ========== */
+.theme-toggle {
+  position: fixed; top: 16px; right: 20px; z-index: 300;
+  display: inline-flex; align-items: center; gap: 7px;
+  font-family: var(--font-mono); font-size: 12px; letter-spacing: .04em;
+  color: var(--c-text-dim);
+  background: var(--c-surface); border: 1px solid var(--c-border);
+  border-radius: 8px; padding: 7px 11px; cursor: pointer;
+  transition: color .15s ease, border-color .15s ease, background .15s ease;
+}
+.theme-toggle:hover { color: var(--c-text-main); border-color: var(--c-accent-cyan); }
+.theme-toggle:focus-visible {
+  outline: 2px solid var(--c-accent-cyan); outline-offset: 2px;
+}
+.theme-toggle .theme-toggle-icon { width: 15px; height: 15px; display: block; }
+/* Show the sun in light mode, moon in dark mode (the icon for the theme you'd switch TO). */
+.theme-toggle .icon-sun { display: none; }
+.theme-toggle .icon-moon { display: block; }
+[data-theme="light"] .theme-toggle .icon-sun { display: block; }
+[data-theme="light"] .theme-toggle .icon-moon { display: none; }`;
 }
 function renderJS() {
     return `(function() {
+  // Theme toggle wiring. The boot script in <head> already applied the correct
+  // theme before first paint (no FOUC); here we sync the button label + aria-pressed
+  // and handle clicks, persisting the explicit choice.
+  (function setupThemeToggle() {
+    var btn = document.getElementById('theme-toggle');
+    if (!btn) return;
+    function currentTheme() {
+      return document.documentElement.getAttribute('data-theme') === 'light'
+        ? 'light' : 'dark';
+    }
+    function syncButton() {
+      var light = currentTheme() === 'light';
+      btn.setAttribute('aria-pressed', light ? 'true' : 'false');
+      var label = btn.querySelector('.theme-toggle-label');
+      if (label) label.textContent = light ? 'Light' : 'Dark';
+    }
+    function applyTheme(theme) {
+      if (theme === 'light') {
+        document.documentElement.setAttribute('data-theme', 'light');
+      } else {
+        document.documentElement.removeAttribute('data-theme');
+      }
+      try { window.localStorage.setItem('to-theme', theme); } catch (e) {}
+      syncButton();
+    }
+    btn.addEventListener('click', function() {
+      applyTheme(currentTheme() === 'light' ? 'dark' : 'light');
+    });
+    // Follow OS preference live only while the user hasn't made an explicit choice.
+    if (window.matchMedia) {
+      var mq = window.matchMedia('(prefers-color-scheme: light)');
+      function applyThemeNoPersist(theme) {
+        if (theme === 'light') {
+          document.documentElement.setAttribute('data-theme', 'light');
+        } else {
+          document.documentElement.removeAttribute('data-theme');
+        }
+        syncButton();
+      }
+      var onChange = function(e) {
+        var stored = null;
+        try { stored = window.localStorage.getItem('to-theme'); } catch (err) {}
+        if (stored === 'light' || stored === 'dark') return;
+        applyThemeNoPersist(e.matches ? 'light' : 'dark');
+      };
+      if (mq.addEventListener) mq.addEventListener('change', onChange);
+      else if (mq.addListener) mq.addListener(onChange);
+    }
+    syncButton();
+  })();
+
   // Nav switching
   document.querySelectorAll('.nav-item[data-view]').forEach(function(item) {
     item.addEventListener('click', function(e) {
@@ -2532,7 +2689,7 @@ function generateDashboardHtml(data) {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="color-scheme" content="dark">
+<meta name="color-scheme" content="dark light">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self' https://api.github.com; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'">
 <title>Token Optimizer - OpenClaw</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -2541,8 +2698,53 @@ function generateDashboardHtml(data) {
 <style>
 ${renderCSS()}
 </style>
+<script>
+/* No-FOUC theme boot. Runs before first paint: reads the persisted choice
+   ('to-theme' in localStorage), else honors prefers-color-scheme:light, else
+   the dark default. Sets data-theme on <html> so the CSS var layer resolves
+   correctly on the very first frame. */
+(function () {
+  try {
+    var stored = null;
+    try { stored = window.localStorage.getItem('to-theme'); } catch (e) {}
+    var theme;
+    if (stored === 'light' || stored === 'dark') {
+      theme = stored;
+    } else if (window.matchMedia &&
+               window.matchMedia('(prefers-color-scheme: light)').matches) {
+      theme = 'light';
+    } else {
+      theme = 'dark';
+    }
+    if (theme === 'light') {
+      document.documentElement.setAttribute('data-theme', 'light');
+    } else {
+      document.documentElement.removeAttribute('data-theme');
+    }
+  } catch (e) { /* dark default already applies */ }
+})();
+</script>
 </head>
 <body>
+
+<!-- Theme toggle. aria-pressed reflects light mode; the boot script above already
+     applied the right theme so this only wires the click + label state. -->
+<button type="button" id="theme-toggle" class="theme-toggle"
+        aria-pressed="false" aria-label="Toggle light and dark theme"
+        title="Toggle light / dark theme">
+  <svg class="theme-toggle-icon icon-moon" viewBox="0 0 24 24" fill="none"
+       stroke="currentColor" stroke-width="2" stroke-linecap="round"
+       stroke-linejoin="round" aria-hidden="true">
+    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+  </svg>
+  <svg class="theme-toggle-icon icon-sun" viewBox="0 0 24 24" fill="none"
+       stroke="currentColor" stroke-width="2" stroke-linecap="round"
+       stroke-linejoin="round" aria-hidden="true">
+    <circle cx="12" cy="12" r="5"/>
+    <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+  </svg>
+  <span class="theme-toggle-label">Dark</span>
+</button>
 
 <div class="layout">
   ${renderNav(data)}

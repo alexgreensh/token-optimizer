@@ -10,7 +10,16 @@
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;500&family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
 /* ========== RESET ========== */
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; outline: none; }
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+/* Keyboard focus affordance (was globally suppressed via outline:none, an a11y
+   gap -- WCAG 2.4.7). Only shows for keyboard users, never on mouse click. */
+:focus-visible { outline: 2px solid var(--c-accent-cyan); outline-offset: 2px; border-radius: 3px; }
+:focus:not(:focus-visible) { outline: none; }
+/* Respect reduced-motion: kill the bar/accordion/nav transitions and animations
+   for users who ask the OS to minimise motion. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
+}
 
 /* ========== THEME TOKENS ==========
    Dark is the DEFAULT and is pixel-unchanged: every value below is the exact
@@ -27,10 +36,21 @@
   --c-accent-blue: #0066ff;
   --c-accent-glow: rgba(0, 240, 255, 0.4);
   --c-text-main: #ffffff;
-  --c-text-dim: #7d8ca3;
+  /* Secondary/body text. Brightened from #7d8ca3 (~5.4:1, perceptually muddy)
+     to ~9:1 so descriptions and table context read clearly on dark, while
+     pure-white --c-text-main keeps an obvious primary/secondary hierarchy. */
+  --c-text-dim: #a6b4cc;
+  /* Faint tier for de-emphasized-but-still-readable values (e.g. unchanged
+     table numbers). Use INSTEAD of opacity on text: opacity blends toward the
+     background and silently fails AA in light mode. ~6:1 here, AA-safe. */
+  --c-text-faint: #8593a8;
   --c-border: rgba(255, 255, 255, 0.08);
   /* Accent alias (single token charts/links read; flips for light). */
   --c-accent: #00f0ff;
+  /* Vivid accent for LARGE display numbers/headlines only (>=24px or bold
+     >=18.66px, where WCAG needs just 3:1). Lets light mode POP like dark mode
+     without dropping small-text accents below AA. Same neon in dark. */
+  --c-accent-cyan-vivid: #00f0ff;
   /* Semi-transparent structural overlays (white-on-dark today). */
   --c-elev: rgba(255,255,255,0.04);
   --c-elev-2: rgba(255,255,255,0.05);
@@ -67,10 +87,19 @@
   --c-model-opus: #a78bfa;
   --c-model-haiku: #34d399;
   --c-model-fable: #fb7185;
-  --c-model-other: #94a3b8;
+  --c-model-other: #aab8cf;
   --c-cache-output: #3b82f6;
   --c-cache-read: #22c55e;
   --c-cache-create: #a855f7;
+  /* Left nav rail. Subtle VERTICAL elevation (gentle top-light), never a
+     horizontal dark smear -- the old 90deg rgba(0,0,0,.2) gradient read as a
+     dirty grey gradient, especially in light mode. */
+  --c-nav-bg: linear-gradient(180deg, #13161c, #0c0d12);
+  /* Card elevation. Tokenized so light mode gets a soft ink-shadow lift (white
+     cards were invisible on the near-white page) instead of the dark theme's
+     heavy black drop-shadow. Hover adds an accent-tinted lift. */
+  --c-card-shadow: 0 4px 20px rgba(0,0,0,0.3);
+  --c-card-shadow-hover: 0 6px 26px rgba(0,240,255,0.12);
   /* Page-level decorative backgrounds. */
   --c-bg-glow: #1a253a;
   --c-grid-line: rgba(255,255,255,0.03);
@@ -117,13 +146,22 @@
   --c-bg: #eef1f6;
   --c-surface: #ffffff;
   --c-surface-hover: #e4e9f1;
-  --c-accent-cyan: #0b8aa8;
+  /* Darkened from #0b8aa8 (4.03:1 as text on white = sub-AA). #07697f clears
+     4.5:1 as text everywhere it's used, and stays vivid enough for borders,
+     toggle knobs and glows (which only need 3:1). */
+  --c-accent-cyan: #07697f;
   --c-accent-blue: #0b62c4;
   --c-accent-glow: rgba(11, 138, 168, 0.28);
   --c-text-main: #0e1622;
-  --c-text-dim: #4f5a6b;
+  /* Secondary/body text. Pushed hard to ~14:1 (near-black) so the many small
+     10-13px description/detail lines read clearly on the light page -- 9:1 still
+     felt washed-out at small sizes. Titles sit at ~18:1 so a sliver of hierarchy
+     remains. */
+  --c-text-dim: #242b35;
+  --c-text-faint: #3f4856;
   --c-border: rgba(14, 22, 34, 0.14);
   --c-accent: #0b6e87;
+  --c-accent-cyan-vivid: #0a93b3;
   --c-elev: rgba(14, 22, 34, 0.035);
   --c-elev-2: rgba(14, 22, 34, 0.05);
   --c-elev-3: rgba(14, 22, 34, 0.08);
@@ -156,10 +194,15 @@
   --c-model-opus: #6d4bd1;
   --c-model-haiku: #0f8a47;
   --c-model-fable: #c2305a;
-  --c-model-other: #55607a;
+  --c-model-other: #424c5e;
   --c-cache-output: #0b62c4;
   --c-cache-read: #0c6e2e;
   --c-cache-create: #7c3aed;
+  --c-nav-bg: linear-gradient(180deg, #ffffff, #f4f7fb);
+  /* Soft ink-shadow so white cards lift off the #eef1f6 page; hover tints toward
+     the accent so it clearly reads as interactive. */
+  --c-card-shadow: 0 1px 2px rgba(14,22,34,0.06), 0 4px 14px rgba(14,22,34,0.08);
+  --c-card-shadow-hover: 0 2px 6px rgba(14,22,34,0.10), 0 10px 24px rgba(7,105,127,0.16);
   --c-bg-glow: #dbe4f2;
   --c-grid-line: rgba(14, 22, 34, 0.05);
   --c-config-rail: rgba(255, 255, 255, 0.85);
@@ -289,8 +332,7 @@ h1, h2, h3, h4 { font-weight: 400; }
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  background: linear-gradient(90deg, transparent, rgba(0,0,0,0.2));
-  backdrop-filter: blur(10px);
+  background: var(--c-nav-bg);
 }
 
 .brand {
@@ -322,10 +364,9 @@ h1, h2, h3, h4 { font-weight: 400; }
 .nav-item {
   padding: 12px var(--s-2);
   cursor: pointer;
-  opacity: 0.6;
   transition: all 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
   text-decoration: none;
-  color: var(--c-text-main);
+  color: var(--c-text-dim);
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -337,8 +378,8 @@ h1, h2, h3, h4 { font-weight: 400; }
 }
 
 .nav-item:hover, .nav-item.active {
-  opacity: 1;
-  background: linear-gradient(90deg, rgba(0,240,255,0.05), transparent);
+  color: var(--c-text-main);
+  background: var(--c-accent-soft);
   border-left-color: var(--c-accent-cyan);
   text-shadow: var(--glow-text);
 }
@@ -347,12 +388,15 @@ h1, h2, h3, h4 { font-weight: 400; }
 
 .nav-badge {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 12px;
+  font-weight: 600;
   color: var(--c-accent-cyan);
-  border: 1px solid var(--c-accent-cyan);
-  padding: 0 4px;
-  border-radius: 2px;
-  text-shadow: 0 0 5px var(--c-accent-cyan);
+  background: var(--c-accent-soft);
+  padding: 2px 9px;
+  border-radius: 999px;
+  line-height: 1.4;
+  min-width: 20px;
+  text-align: center;
 }
 
 .user-profile {
@@ -419,11 +463,11 @@ h1, h2, h3, h4 { font-weight: 400; }
   position: relative;
   border-radius: 12px;
   overflow: visible;
-  box-shadow: 0 4px 20px rgba(0,0,0,0.3);
-  transition: transform 0.2s, border-color 0.2s;
+  box-shadow: var(--c-card-shadow);
+  transition: transform 0.2s, border-color 0.2s, box-shadow 0.2s;
 }
 
-.card:hover { border-color: rgba(0,240,255,0.3); }
+.card:hover { border-color: var(--c-accent-cyan); box-shadow: var(--c-card-shadow-hover); }
 
 .card::before {
   content: "";
@@ -724,13 +768,15 @@ input:checked + .slider:before {
 
 .summary-metric {
   font-family: var(--font-mono);
-  font-size: 18px;
+  font-size: 20px;
   color: var(--c-text-dim);
   margin-bottom: var(--s-3);
 }
 
 .summary-metric .num {
-  color: var(--c-accent-cyan);
+  color: var(--c-accent-cyan-vivid);
+  font-weight: 700;
+  font-size: 1.15em;
   text-shadow: var(--glow-text);
 }
 
@@ -962,12 +1008,15 @@ input:checked + .slider:before {
   border-radius: 8px;
   background: var(--c-surface);
   cursor: pointer;
-  transition: border-color 0.2s;
+  box-shadow: var(--c-card-shadow);
+  transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
   overflow: hidden;
 }
 
 .component-card:hover {
-  border-color: rgba(0, 240, 255, 0.2);
+  border-color: var(--c-accent-cyan);
+  background: var(--c-accent-soft);
+  box-shadow: var(--c-card-shadow-hover);
 }
 
 .component-card-header {
@@ -1324,7 +1373,11 @@ input:checked + .slider:before {
   border-collapse: collapse;
   font-family: var(--font-mono);
   font-size: 16px;
+  /* Tabular figures so numeric columns line up digit-for-digit. */
+  font-variant-numeric: tabular-nums;
 }
+/* Right-align cells explicitly tagged numeric (opt-in via class="num"). */
+.session-table td.num, .session-table th.num { text-align: right; }
 
 .session-table th {
   text-align: left;
@@ -1485,7 +1538,7 @@ input:checked + .slider:before {
   transition: border-color 0.2s;
 }
 
-.skill-detail-row:hover { border-color: rgba(0,240,255,0.3); }
+.skill-detail-row:hover { border-color: var(--c-accent-cyan); }
 
 .skill-detail-header {
   display: flex;
@@ -4899,6 +4952,17 @@ var DB = (function() {
     bar.style.transform = 'translateX(-50%) translateY(0)';
   }
 
+  // Re-render the Manage view without yanking the scroll position back to the
+  // top. Toggling a skill/MCP rebuilds the whole list via innerHTML, which
+  // resets the scroll container; capturing and restoring .main-col's scrollTop
+  // lets the user keep disabling items down a long list without losing place.
+  function renderManagePreservingScroll() {
+    var sc = document.querySelector('.main-col');
+    var y = sc ? sc.scrollTop : 0;
+    renderManage();
+    if (sc) sc.scrollTop = y;
+  }
+
   function renderManage() {
     var el = document.getElementById('view-manage');
     if (!el) return;
@@ -5066,7 +5130,7 @@ var DB = (function() {
             '</div></div>';
         });
         codexDisabledSkills.slice(0, 40).forEach(function(sk) {
-          html += '<div class="hook-row" style="padding:8px var(--s-3);opacity:.6;">' +
+          html += '<div class="hook-row" style="padding:8px var(--s-3);">' +
             '<label class="hook-toggle">' +
             '<input type="checkbox" data-manage-cmd="' + esc(sk.enable_cmd || '') + '" data-manage-name="' + esc(sk.path || sk.name) + '" data-manage-type="skill-on">' +
             '<span class="hook-slider"></span></label>' +
@@ -5092,14 +5156,14 @@ var DB = (function() {
           '<div class="hook-info"><div class="hook-label" style="font-size:14px;font-family:var(--font-mono);">' + esc(server.name) + '</div><div style="color:var(--c-text-dim);font-size:12px;">' + esc(server.transport || '') + ' · ' + esc(server.command || '') + '</div></div></div>';
       });
       codexDisabledMcp.forEach(function(server) {
-        html += '<div class="hook-row" style="padding:8px 0;border-bottom:1px solid var(--c-border);opacity:.6;">' +
+        html += '<div class="hook-row" style="padding:8px 0;border-bottom:1px solid var(--c-border);">' +
           '<label class="hook-toggle"><input type="checkbox" data-manage-cmd="' + esc(server.enable_cmd || '') + '" data-manage-name="' + esc(server.name) + '" data-manage-type="mcp-on"><span class="hook-slider"></span></label>' +
           '<div class="hook-info"><div class="hook-label" style="font-size:14px;font-family:var(--font-mono);">' + esc(server.name) + ' <span style="color:var(--c-text-dim);font-size:12px;">disabled</span></div><div style="color:var(--c-text-dim);font-size:12px;">' + esc(server.transport || '') + ' · ' + esc(server.command || '') + '</div></div></div>';
       });
       html += '</div><div><h3 style="margin-top:0">Enabled Plugins</h3>';
       if (codexPlugins.length === 0) html += '<p style="color:var(--c-text-dim)">No Codex plugins found in config.toml.</p>';
       else codexPlugins.forEach(function(plugin) {
-        html += '<div style="padding:8px 0;border-bottom:1px solid var(--c-border);opacity:' + (plugin.enabled ? '1' : '.55') + ';"><strong>' + esc(plugin.name) + '</strong><br><span style="color:var(--c-text-dim);font-size:12px;">' + (plugin.enabled ? 'enabled' : 'disabled') + '</span></div>';
+        html += '<div style="padding:8px 0;border-bottom:1px solid var(--c-border);"><strong>' + esc(plugin.name) + '</strong><br><span style="color:var(--c-text-dim);font-size:12px;">' + (plugin.enabled ? 'enabled' : 'disabled') + '</span></div>';
       });
       html += '</div></div></div>';
     }
@@ -5202,7 +5266,7 @@ var DB = (function() {
         '<span class="label">from Claude Desktop</span></div>' +
         '<p style="font-size:13px;color:var(--c-text-dim);padding:0 var(--s-3) var(--s-2);">These come from Claude Desktop. Manage them in Desktop settings or set <code>ENABLE_CLAUDEAI_MCP_SERVERS=false</code> to disable all.</p>';
       cloudMcps.forEach(function(srv) {
-        html += '<div class="hook-row" style="padding:8px var(--s-3);opacity:0.6;">' +
+        html += '<div class="hook-row" style="padding:8px var(--s-3);">' +
           '<div style="width:44px;flex-shrink:0;text-align:center;color:var(--c-text-dim);font-size:11px;">cloud</div>' +
           '<div class="hook-info">' +
           '<div class="hook-label" style="font-size:14px;font-family:var(--font-mono);">' + esc(srv.name) + '</div>' +
@@ -5272,7 +5336,7 @@ var DB = (function() {
                 data.manage.v5_features[fname].enabled = newState;
               }
             }
-            renderManage();
+            renderManagePreservingScroll();
             // Toast
             var toast = document.getElementById('hook-toast');
             if (!toast) {
@@ -5326,7 +5390,7 @@ var DB = (function() {
                 preSkills.forEach(function(sk) { if (sk.name === mName) skillTok = sk.tokens || 100; });
               }
               data.manage = resp.manage;
-              renderManage();
+              renderManagePreservingScroll();
               // Track pending changes
               if (!window._managePending) window._managePending = new Set();
               if (isDisable) window._managePending.add(mName);
@@ -5663,8 +5727,8 @@ var DB = (function() {
         var gap = t.gap_since_prev_seconds == null ? 'start' : fmtGap(t.gap_since_prev_seconds);
         var crChanged = prevCR !== t.cache_read;
         var cwChanged = prevCW !== t.cache_creation;
-        var crStyle = crChanged ? 'color:var(--c-savings-strong, #22c55e)' : 'color:var(--c-text-dim);opacity:0.4';
-        var cwStyle = cwChanged ? 'color:var(--c-cache-create, #a855f7)' : 'color:var(--c-text-dim);opacity:0.4';
+        var crStyle = crChanged ? 'color:var(--c-savings-strong, #22c55e)' : 'color:var(--c-text-faint)';
+        var cwStyle = cwChanged ? 'color:var(--c-cache-create, #a855f7)' : 'color:var(--c-text-faint)';
         html += '<tr' + cls + '>' +
           '<td>' + t.turn_index + '</td>' +
           '<td style="font-family:var(--font-mono);font-size:11px;color:var(--c-text-dim)">' + esc(gap) + '</td>' +
@@ -6245,7 +6309,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
   var data = window.__TOKEN_DATA__;
   if (!data) {
-    document.body.innerHTML = '<div style="max-width:820px;margin:80px auto;padding:32px;border:1px solid #263044;border-radius:14px;background:#0f172a;color:#d6e4ff;font-family:system-ui,sans-serif;line-height:1.6;"><h1 style="margin-top:0;">Token Optimizer</h1><p><strong>You opened the dashboard template.</strong> This file intentionally contains no local metrics. Generate the runtime dashboard first, then open the generated file.</p><p style="margin-bottom:8px;color:#93a4c4;">From the Token Optimizer checkout:</p><code style="display:block;white-space:normal;background:#111827;padding:12px;border-radius:8px;color:#93c5fd;">TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py dashboard</code><p style="margin:18px 0 8px;color:#93a4c4;">Generated Codex dashboard path:</p><code style="display:block;white-space:normal;background:#111827;padding:12px;border-radius:8px;color:#93c5fd;">~/.codex/_backups/token-optimizer/dashboard.html</code></div>';
+    document.body.innerHTML = '<div style="max-width:820px;margin:80px auto;padding:32px;border:1px solid var(--c-border);border-radius:14px;background:var(--c-surface);color:var(--c-text-main);font-family:system-ui,sans-serif;line-height:1.6;"><h1 style="margin-top:0;">Token Optimizer</h1><p><strong>You opened the dashboard template.</strong> This file intentionally contains no local metrics. Generate the runtime dashboard first, then open the generated file.</p><p style="margin-bottom:8px;color:var(--c-text-dim);">From the Token Optimizer checkout:</p><code style="display:block;white-space:normal;background:var(--c-elev-3);padding:12px;border-radius:8px;color:var(--c-text-main);">TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py dashboard</code><p style="margin:18px 0 8px;color:var(--c-text-dim);">Generated Codex dashboard path:</p><code style="display:block;white-space:normal;background:var(--c-elev-3);padding:12px;border-radius:8px;color:var(--c-text-main);">~/.codex/_backups/token-optimizer/dashboard.html</code></div>';
     return;
   }
   var runtimeLabel = data.runtime_label || (data.runtime === 'codex' ? 'Codex' : 'Claude Code');

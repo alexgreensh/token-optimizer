@@ -17180,6 +17180,44 @@ def _collect_windows_claude_sessions():
     return sessions
 
 
+def _resolve_runtime_bin(process_name):
+    """Resolve a runtime CLI (`claude`/`codex`) to an absolute path, or None.
+
+    LIVE BUG: the dashboard's "installed version" showed `unknown` whenever
+    `_collect_health_data` ran from a minimal-PATH context. The auto-refresh
+    daemon (launchd / scheduled task) and SessionStart hooks inherit a
+    near-empty PATH that omits the modern native-installer dir
+    (`~/.local/bin`), so a bare `["claude", "--version"]` raised
+    FileNotFoundError and the version silently became None.
+
+    We resolve exactly like `_keepwarm_resolve_claude_bin`: `shutil.which`
+    first (honours the real PATH when run from a foreground shell), then the
+    common install locations launchd cannot see. Nothing is persisted (a
+    resolved path goes stale across npm/Homebrew/native updates); this runs
+    once per health collection. Returns the bare name as a last resort so the
+    historical `subprocess.run` behaviour is preserved when nothing resolves.
+    """
+    import shutil as _shutil
+    which = _shutil.which(process_name)
+    if which:
+        return which
+    home = Path.home()
+    candidates = [
+        home / ".local" / "bin" / process_name,
+        home / ".claude" / "local" / process_name,
+        Path("/opt/homebrew/bin") / process_name,
+        Path("/usr/local/bin") / process_name,
+        home / ".bun" / "bin" / process_name,
+    ]
+    for cand in candidates:
+        try:
+            if cand.is_file() and os.access(str(cand), os.X_OK):
+                return str(cand)
+        except OSError:
+            continue
+    return process_name
+
+
 def _collect_health_data():
     """Collect session health data.
 
@@ -17194,7 +17232,7 @@ def _collect_health_data():
     installed_version = None
     try:
         result = subprocess.run(
-            [process_name, "--version"],
+            [_resolve_runtime_bin(process_name), "--version"],
             capture_output=True, text=True, timeout=10,
         )
         if result.returncode == 0:
@@ -17219,6 +17257,24 @@ def _collect_health_data():
     else:
         for session in running_sessions:
             session["version"] = _find_session_version_for_pid(session["pid"])
+
+    # Zero-subprocess fallback: if `claude --version` could not run (locked-down
+    # PATH, sandbox, transient spawn failure), the running session JSONLs still
+    # carry the exact version that wrote them -- which IS the installed CLI.
+    # Use the highest detected session version so the dashboard never shows
+    # "unknown" while a Claude session is demonstrably running.
+    if not installed_version and runtime != "codex":
+        detected = [s["version"] for s in running_sessions if s.get("version")]
+        if detected:
+            def _ver_key(v):
+                parts = []
+                # Drop any pre-release suffix (2.1.0-rc.1) so it sorts BELOW the
+                # stable 2.1.0 per semver, not above it.
+                for part in str(v).split("-")[0].split("."):
+                    num = "".join(ch for ch in part if ch.isdigit())
+                    parts.append(int(num) if num else 0)
+                return parts
+            installed_version = max(detected, key=_ver_key)
 
     # Flag sessions
     for s in running_sessions:
@@ -17855,7 +17911,7 @@ def setup_hook(dry_run=False):
 
 # ========== Persistent Dashboard Daemon ==========
 
-TOKEN_OPTIMIZER_VERSION = "5.11.15"  # Keep in sync with plugin.json + marketplace.json
+TOKEN_OPTIMIZER_VERSION = "5.11.16"  # Keep in sync with plugin.json + marketplace.json
 _DASHBOARD_CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 # Per-runtime daemon identity. Each runtime gets a distinct port + label so a
 # dashboard under one runtime never collides with another's. Copilot uses 24845
@@ -18329,6 +18385,46 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self._json_response(200, {{"ok": True, "msg": state + ": " + name, "v5_features": v5_features}})
             else:
                 self._json_response(500, {{"ok": False, "msg": result.stderr.strip()}})
+            return
+        if clean in ("api/skill/archive", "api/skill/restore", "api/mcp/disable", "api/mcp/enable"):
+            # Skill/MCP management. The dashboard POSTs here; the daemon proxies
+            # to `measure.py api-manage <endpoint> <name>` (single runtime-aware
+            # source of truth) and forwards its JSON. Previously these paths fell
+            # through to the 403 below, which the page surfaced as a misleading
+            # "Authentication failed" -- breaking skill/MCP toggles for every
+            # daemon user even though auth was fine.
+            length = int(self.headers.get("Content-Length", 0))
+            if length > 4096:
+                self._json_response(413, {{"ok": False, "msg": "payload too large"}})
+                return
+            try:
+                body = json.loads(self.rfile.read(length).decode("utf-8")) if length else {{}}
+            except (ValueError, UnicodeDecodeError):
+                self._json_response(400, {{"ok": False, "msg": "invalid json"}})
+                return
+            name = body.get("name", "")
+            # Permit real skill/MCP names (hyphens, dots, slashes, @, spaces);
+            # passed as a single argv element (no shell) so this is belt-and-
+            # suspenders against absurd input, not a shell-injection guard.
+            import re as _re, subprocess
+            if not name or not _re.match(r'^[A-Za-z0-9_.@:/ -]{{1,160}}$', name):
+                self._json_response(400, {{"ok": False, "msg": "invalid name"}})
+                return
+            endpoint = clean[len("api/"):]  # e.g. "skill/archive"
+            try:
+                result = subprocess.run(
+                    [sys.executable, {measure_py_literal}, "api-manage", endpoint, name],
+                    capture_output=True, text=True, timeout=15
+                )
+            except (subprocess.TimeoutExpired, OSError) as e:
+                self._json_response(500, {{"ok": False, "msg": "manage backend unavailable: " + str(e)}})
+                return
+            try:
+                payload = json.loads(result.stdout)
+            except (ValueError, KeyError):
+                self._json_response(500, {{"ok": False, "msg": (result.stderr or result.stdout or "manage failed").strip()[:200]}})
+                return
+            self._json_response(200 if payload.get("ok") else 500, payload)
             return
         self.send_error(403, "Forbidden")
 
@@ -33707,6 +33803,68 @@ if __name__ == "__main__":
             sys.exit(0 if ok else 1)
         print(f"  Unknown codex-mcp action: {action}. Use 'disable' or 'enable'.")
         sys.exit(1)
+    elif args[0] == "api-manage" and len(args) >= 3:
+        # Headless skill/MCP management for the dashboard DAEMON to proxy to.
+        # The daemon is a standalone generated script and cannot call the
+        # in-process managers that `dashboard --serve` uses, so it shells out
+        # here. Mirrors that handler's runtime-aware logic and prints exactly
+        # the JSON the dashboard expects ({ok, message, manage}). Always emits
+        # one JSON object and exits 0; the daemon keys off JSON `ok`, not the
+        # exit code. Fixes the daemon-only bug where skill/MCP toggles 403'd
+        # because those endpoints were never ported from --serve to the daemon.
+        import json as _json, io as _io, contextlib as _ctx
+        endpoint = args[1]   # skill/archive | skill/restore | mcp/disable | mcp/enable
+        op_name = args[2]
+        is_codex = detect_runtime() == "codex"
+        # Path-traversal guard. Codex skill ops resolve op_name as a filesystem
+        # PATH (raw_path -> Path(...).resolve()), and the daemon's name regex
+        # permits '/' and '.', so reject any '..' segment or NUL before dispatch.
+        # Claude managers have their own guard; this closes the codex vector that
+        # the daemon would otherwise widen. Legitimate skill names/paths never
+        # contain '..'.
+        _parts = str(op_name).replace("\\", "/").split("/")
+        if "\0" in str(op_name) or ".." in _parts:
+            sys.stdout.write(_json.dumps({"ok": False, "message": f"Rejected unsafe name: {op_name}", "manage": None}))
+            sys.exit(0)
+        ok = False
+        msg = ""
+        manage = None
+        known = True
+        # The _manage_* helpers and _collect_management_data print human-readable
+        # progress to stdout; capture it so this command emits ONLY the JSON the
+        # daemon parses (a stray banner line was making json.loads(stdout) fail).
+        _buf = _io.StringIO()
+        try:
+            with _ctx.redirect_stdout(_buf):
+                if endpoint == "skill/archive":
+                    ok = _manage_codex_skill("disable", raw_path=op_name) if is_codex else _manage_skill("archive", op_name)
+                    msg = ((f"Disabled Codex skill: {op_name}" if is_codex else f"Archived skill: {op_name}")
+                           if ok else f"Failed to archive: {op_name}")
+                elif endpoint == "skill/restore":
+                    ok = _manage_codex_skill("enable", raw_path=op_name) if is_codex else _manage_skill("restore", op_name)
+                    msg = ((f"Enabled Codex skill: {op_name}" if is_codex else f"Restored skill: {op_name}")
+                           if ok else f"Failed to restore: {op_name}")
+                elif endpoint == "mcp/disable":
+                    ok = _manage_codex_mcp("disable", op_name) if is_codex else _manage_mcp("disable", op_name)
+                    msg = f"Disabled MCP server: {op_name}" if ok else f"Failed to disable: {op_name}"
+                elif endpoint == "mcp/enable":
+                    ok = _manage_codex_mcp("enable", op_name) if is_codex else _manage_mcp("enable", op_name)
+                    msg = f"Enabled MCP server: {op_name}" if ok else f"Failed to enable: {op_name}"
+                else:
+                    known = False
+                if known and ok:
+                    try:
+                        manage = _collect_management_data()
+                    except Exception:
+                        manage = None
+        except Exception as e:  # never crash the proxy; surface as JSON
+            sys.stdout.write(_json.dumps({"ok": False, "message": f"error: {e}", "manage": None}))
+            sys.exit(0)
+        if not known:
+            sys.stdout.write(_json.dumps({"ok": False, "message": f"Unknown endpoint: {endpoint}", "manage": None}))
+            sys.exit(0)
+        sys.stdout.write(_json.dumps({"ok": ok, "message": msg, "manage": manage}, default=str))
+        sys.exit(0)
     elif args[0] == "jsonl-inspect":
         output_json = "--json" in args
         target = None

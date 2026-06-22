@@ -91,26 +91,58 @@ export function generateDashboard(opts: DashboardOptions): string {
   --danger: #f85149; --purple: #a855f7;
   --radius: 8px; --s-1: 4px; --s-2: 8px; --s-3: 12px; --s-4: 16px; --s-6: 24px;
 }
+/* Light theme — activation order (no FOUC): localStorage 'to-theme' > prefers-color-scheme:light > dark default.
+   All color tokens re-derived for light backgrounds; secondary text (#242b35) pushed near-black so small
+   description text stays legible (canonical complaint: washed-out grey at 10-13px in light mode). */
+[data-theme="light"] {
+  --bg: #eef1f6; --bg-card: #ffffff; --bg-hover: #e4e9f1;
+  --border: rgba(14,22,34,0.14); --text: #0e1622; --text-dim: #242b35;
+  /* Teal accent verified WCAG AA (4.5:1) on white. */
+  --accent: #07697f;
+  /* Status colors re-derived for AA legibility on light background. */
+  --success: #1a7f37; --warning: #9a6700; --danger: #cf222e; --purple: #7c3aed;
+}
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 14px; line-height: 1.5; }
+/* Focus ring — visible for keyboard users; removed from mouse/touch paths by :focus-visible semantics. */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Respect user motion preference. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+}
 .container { max-width: 1200px; margin: 0 auto; padding: var(--s-6); }
 .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--s-6); padding-bottom: var(--s-4); border-bottom: 1px solid var(--border); }
 .header h1 { font-size: 20px; font-weight: 600; }
 .header .sub { color: var(--text-dim); font-size: 13px; }
-.nav { display: flex; gap: var(--s-2); margin-bottom: var(--s-6); flex-wrap: wrap; }
+.nav { display: flex; gap: var(--s-2); margin-bottom: var(--s-6); flex-wrap: wrap; align-items: center; }
 .nav a { padding: var(--s-2) var(--s-3); border-radius: var(--radius); color: var(--text-dim); text-decoration: none; font-size: 13px; cursor: pointer; transition: all 0.15s; }
 .nav a:hover { background: var(--bg-hover); color: var(--text); }
 .nav a.active { background: var(--accent); color: #fff; }
+/* Theme toggle — placed in nav row; shows moon icon in dark mode (click to go light) and sun icon in light mode. */
+.theme-toggle {
+  margin-left: auto; display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; color: var(--text-dim); background: var(--bg-card);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 5px 10px; cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.theme-toggle:hover { color: var(--text); border-color: var(--accent); }
+.theme-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.theme-toggle-icon { width: 14px; height: 14px; display: block; }
+.icon-sun { display: none; }
+.icon-moon { display: block; }
+[data-theme="light"] .icon-sun { display: block; }
+[data-theme="light"] .icon-moon { display: none; }
 .view { display: none; }
 .view.active { display: block; }
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: var(--s-4); margin-bottom: var(--s-6); }
 .stat { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--s-4); }
-.stat-value { font-size: 28px; font-weight: 700; margin-bottom: var(--s-1); }
+.stat-value { font-size: 28px; font-weight: 700; margin-bottom: var(--s-1); font-variant-numeric: tabular-nums; }
 .stat-label { font-size: 12px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
 .stat-sub { font-size: 11px; color: var(--text-dim); margin-top: var(--s-1); }
 table { width: 100%; border-collapse: collapse; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
 th { text-align: left; padding: var(--s-3) var(--s-4); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-dim); background: var(--bg-hover); border-bottom: 1px solid var(--border); }
-td { padding: var(--s-3) var(--s-4); border-bottom: 1px solid var(--border); font-size: 13px; }
+td { padding: var(--s-3) var(--s-4); border-bottom: 1px solid var(--border); font-size: 13px; font-variant-numeric: tabular-nums; }
 tr:last-child td { border-bottom: none; }
 tr:hover td { background: var(--bg-hover); }
 .grade { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 50%; font-weight: 700; font-size: 13px; color: #fff; }
@@ -132,6 +164,29 @@ tr:hover td { background: var(--bg-hover); }
 .oc-social a { color: var(--text-dim); display: inline-flex; transition: color 0.15s; }
 .oc-social a:hover { color: var(--text); }
 </style>
+<!-- No-FOUC theme boot: reads localStorage 'to-theme', falls back to prefers-color-scheme:light, defaults to dark.
+     Must run before first paint so CSS vars resolve correctly on frame 1. -->
+<script nonce="${nonce}">
+(function () {
+  try {
+    var stored = null;
+    try { stored = window.localStorage.getItem('to-theme'); } catch (e) {}
+    var theme;
+    if (stored === 'light' || stored === 'dark') {
+      theme = stored;
+    } else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
+      theme = 'light';
+    } else {
+      theme = 'dark';
+    }
+    if (theme === 'light') {
+      document.documentElement.setAttribute('data-theme', 'light');
+    } else {
+      document.documentElement.removeAttribute('data-theme');
+    }
+  } catch (e) { /* dark default already applies */ }
+})();
+</script>
 </head>
 <body>
 <div class="container">
@@ -149,6 +204,22 @@ tr:hover td { background: var(--bg-hover); }
     <a data-view="quality">Quality Trends</a>
     <a data-view="sessions">Sessions</a>
     <a data-view="daily">Daily Stats</a>
+    <button type="button" id="theme-toggle" class="theme-toggle"
+            aria-pressed="false" aria-label="Toggle light and dark theme"
+            title="Toggle light / dark theme">
+      <svg class="theme-toggle-icon icon-moon" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="2" stroke-linecap="round"
+           stroke-linejoin="round" aria-hidden="true">
+        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+      </svg>
+      <svg class="theme-toggle-icon icon-sun" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="2" stroke-linecap="round"
+           stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="5"/>
+        <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+      </svg>
+      <span class="theme-toggle-label">Dark</span>
+    </button>
   </div>
 
   <!-- OVERVIEW -->
@@ -436,6 +507,51 @@ document.querySelectorAll('.nav a').forEach(a => {
     document.getElementById('view-' + a.dataset.view).classList.add('active');
   });
 });
+// Theme toggle wiring. The boot script in <head> already applied the correct
+// theme before first paint (no FOUC); here we sync aria-pressed + label and wire the click.
+(function setupThemeToggle() {
+  var btn = document.getElementById('theme-toggle');
+  if (!btn) return;
+  function currentTheme() {
+    return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+  }
+  function syncButton() {
+    var light = currentTheme() === 'light';
+    btn.setAttribute('aria-pressed', light ? 'true' : 'false');
+    var label = btn.querySelector('.theme-toggle-label');
+    if (label) label.textContent = light ? 'Light' : 'Dark';
+  }
+  function applyTheme(theme) {
+    if (theme === 'light') {
+      document.documentElement.setAttribute('data-theme', 'light');
+    } else {
+      document.documentElement.removeAttribute('data-theme');
+    }
+    try { window.localStorage.setItem('to-theme', theme); } catch (e) {}
+    syncButton();
+  }
+  btn.addEventListener('click', function() {
+    applyTheme(currentTheme() === 'light' ? 'dark' : 'light');
+  });
+  // Follow OS preference live only while the user hasn't made an explicit choice.
+  if (window.matchMedia) {
+    var mq = window.matchMedia('(prefers-color-scheme: light)');
+    var onChange = function(e) {
+      var stored = null;
+      try { stored = window.localStorage.getItem('to-theme'); } catch (err) {}
+      if (stored === 'light' || stored === 'dark') return;
+      if (e.matches) {
+        document.documentElement.setAttribute('data-theme', 'light');
+      } else {
+        document.documentElement.removeAttribute('data-theme');
+      }
+      syncButton();
+    };
+    if (mq.addEventListener) mq.addEventListener('change', onChange);
+    else if (mq.addListener) mq.addListener(onChange);
+  }
+  syncButton();
+})();
 // Live GitHub star count (public CORS endpoint; degrades silently to no count).
 (function () {
   function fmt(n) { return (typeof n !== 'number' || !isFinite(n) || n < 0) ? null : (n >= 1000 ? (n / 1000).toFixed(1).replace(/\\.0$/, '') + 'k' : String(n)); }

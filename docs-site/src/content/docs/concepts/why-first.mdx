@@ -9,6 +9,9 @@ Every session starts with invisible overhead: system prompt, tool definitions, s
 
 ## A larger window did not make the problems go away
 
+![Your context stack per message: 15K fewer tokens per message once Token Optimizer is active](/images/before-after.svg)
+
+
 With Opus and Sonnet now at 1M context, the overhead feels like breathing room. It is not. The problems still compound, and a few of them get worse as the window grows.
 
 - **Quality degrades as context fills.** Long-context recall drops measurably as the window fills, from roughly 93% to 76% between 256K and 1M on the MRCR benchmark. The model gets quieter about it, but it gets less accurate.

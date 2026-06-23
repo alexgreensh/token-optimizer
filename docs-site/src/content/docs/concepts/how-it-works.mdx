@@ -27,6 +27,9 @@ A command-output compressor covers 15 to 25% of your context on a good day. The 
 
 ## How each kind is handled
 
+![Hooks intercept tool output automatically every session, with zero manual steps](/images/automated-flow.svg)
+
+
 **Structural waste** is found by the audit. Run `/token-optimizer` once and it produces a per-component token breakdown across CLAUDE.md, skills, MCP servers, and MEMORY.md, then fixes what it safely can and recommends the rest. See [Reading your first audit](/start/first-audit/).
 
 **Runtime waste** is cut in real time by active compression: delta re-reads return only what changed, structure maps replace large-file re-reads with a skeleton, and bash output compression strips verbose CLI output down to the essentials. See [Active compression overview](/features/active-compression/).

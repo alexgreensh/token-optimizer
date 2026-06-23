@@ -9,6 +9,9 @@ Bash output compression intercepts safe, read-only CLI commands and replaces the
 
 ## What it does
 
+![Bash output compression: a verbose command condensed to a compact summary, credentials preserved](/images/bash-compression.svg)
+
+
 Many commands produce far more output than the model needs to act. A test run prints every passing case; a lint run repeats the same rule across hundreds of lines; a directory listing scrolls for pages. Bash output compression catches these through the PreToolUse Bash hook and routes them through a compressor that keeps the signal and drops the repetition. A 564-token pytest run becomes about 115 tokens. Across a session, the handlers cover roughly 90% of the verbose CLI output real work produces.
 
 The hook only touches commands it recognizes as safe and read-only. Anything ambiguous passes through untouched and full.

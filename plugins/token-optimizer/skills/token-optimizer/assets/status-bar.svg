@@ -13,7 +13,7 @@
   <text x="400" y="50" fill="#585b70" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="11" text-anchor="middle">Colors shift as your context fills. Quality score drops as degradation kicks in.</text>
 
   <!-- ═══ State 1: Peak Zone (green) ═══ -->
-  <g opacity="0">
+  <g opacity="1">
     <animate attributeName="opacity" values="0;1" dur="0.3s" begin="0.3s" fill="freeze"/>
 
     <!-- Label -->
@@ -37,7 +37,7 @@
   </g>
 
   <!-- ═══ State 2: Degradation Starting (yellow) ═══ -->
-  <g opacity="0">
+  <g opacity="1">
     <animate attributeName="opacity" values="0;1" dur="0.3s" begin="0.7s" fill="freeze"/>
 
     <text x="16" y="130" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="10" font-weight="bold">WATCH</text>
@@ -58,7 +58,7 @@
   </g>
 
   <!-- ═══ State 3: Quality Dropping (orange) ═══ -->
-  <g opacity="0">
+  <g opacity="1">
     <animate attributeName="opacity" values="0;1" dur="0.3s" begin="1.1s" fill="freeze"/>
 
     <text x="16" y="176" fill="#fab387" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="10" font-weight="bold">ALERT</text>
@@ -81,7 +81,7 @@
   </g>
 
   <!-- ═══ State 4: Critical (red) ═══ -->
-  <g opacity="0">
+  <g opacity="1">
     <animate attributeName="opacity" values="0;1" dur="0.3s" begin="1.5s" fill="freeze"/>
 
     <text x="10" y="222" fill="#f38ba8" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="10" font-weight="bold">DANGER</text>

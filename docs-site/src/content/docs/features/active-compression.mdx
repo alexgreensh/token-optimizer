@@ -9,9 +9,12 @@ Active compression is the set of features that shrink content as it enters your 
 
 ## What it covers
 
+![Active compression: the surfaces Token Optimizer compresses, all on by default](/images/active-compression-hero.svg)
+
+
 The setup audit reduces the overhead you start a session with. Active compression reduces the overhead you accumulate during the session: redundant file re-reads, verbose command output, and large tool results that survive into compaction. Each feature targets one source of mid-session bloat and each is on by default where it is safe to be.
 
-Three of these features are documented in depth on their own pages. This page exists so you can see them together, understand their defaults at a glance, and learn the single command that manages the whole suite.
+Several of these features are documented in depth on their own pages. This page exists so you can see them together, understand their defaults at a glance, and learn the single command that manages the whole suite.
 
 ## At a glance
 
@@ -20,12 +23,14 @@ Three of these features are documented in depth on their own pages. This page ex
 | Read cache (delta mode) | On | Re-reading an unchanged or barely-changed file | A 2,000-token re-read becomes a 50-token diff | Low | [Read cache](/features/read-cache/) |
 | Read cache (structure map) | On (soft-block) | Re-reading a large code file | A 720KB file becomes a 250-token skeleton | Low | [Read cache](/features/read-cache/) |
 | Bash output compression | On | Verbose read-only CLI output | A 564-token pytest run becomes 115 tokens | Low | [Bash compression](/features/bash-compression/) |
+| Search result compression | On | Long grep/search results | 500-line result becomes 20 lines + count | Low | [Bash compression](/features/bash-compression/) |
 | Quality nudges | On | A sudden quality drop you should act on | A timely compact instead of a degraded context | None | [Quality signals](/features/quality-signals/) |
 | Loop detection | On | The agent stuck retrying the same thing | Caught before it burns more turns | None | [Quality signals](/features/quality-signals/) |
+| Lean-output nudges | On | Verbose model output at high context fill | 30-41% output reduction (live A/B tested) | None | (this page) |
 
 ## How to manage all of them
 
-One command controls the runtime compression features as a group. The CLI verb is `v5`, a legacy command name kept for compatibility. It is the verb you type; it is not a version label for the feature.
+One command controls the runtime compression features as a group. The CLI verb is `v5` (a legacy name kept for compatibility — it controls current features, not a version).
 
 ```bash
 cd ~/.claude/skills/token-optimizer/scripts
@@ -56,7 +61,7 @@ Every active compression feature is on by default on Claude Code, where the PreT
 
 ## How to turn off
 
-Turn off the whole behavior of one feature with its `v5 disable` verb above, or with its environment variable for a one-off. The two read-cache behaviors share `TOKEN_OPTIMIZER_READ_CACHE` (both off) and `TOKEN_OPTIMIZER_READ_CACHE_DELTA` (delta only). Bash compression uses `TOKEN_OPTIMIZER_BASH_COMPRESS`. Quality nudges and loop detection use `TOKEN_OPTIMIZER_QUALITY_NUDGES` and `TOKEN_OPTIMIZER_LOOP_DETECTION`. All are defined in the [configuration reference](/reference/configuration/).
+Turn off the whole behavior of one feature with its `v5 disable` verb above, or with its environment variable for a one-off. The two read-cache behaviors share `TOKEN_OPTIMIZER_READ_CACHE` (both off) and `TOKEN_OPTIMIZER_READ_CACHE_DELTA` (delta only). Bash compression uses `TOKEN_OPTIMIZER_BASH_COMPRESS`. Search compression uses `TOKEN_OPTIMIZER_BASH_COMPRESS_SEARCH`. Quality nudges and loop detection use `TOKEN_OPTIMIZER_QUALITY_NUDGES` and `TOKEN_OPTIMIZER_LOOP_DETECTION`. Lean-output nudges use `TOKEN_OPTIMIZER_VERBOSITY_STEER`. All are defined in the [configuration reference](/reference/configuration/).
 
 ## Risk rating
 
@@ -64,7 +69,7 @@ Low overall. Each compression feature fails open: when a substitution might lose
 
 ## Related environment variables
 
-`TOKEN_OPTIMIZER_BASH_COMPRESS`, `TOKEN_OPTIMIZER_READ_CACHE`, `TOKEN_OPTIMIZER_READ_CACHE_DELTA`, `TOKEN_OPTIMIZER_STRUCTURE_MAP`, `TOKEN_OPTIMIZER_QUALITY_NUDGES`, `TOKEN_OPTIMIZER_LOOP_DETECTION`. All defined in the [configuration reference](/reference/configuration/).
+`TOKEN_OPTIMIZER_BASH_COMPRESS`, `TOKEN_OPTIMIZER_BASH_COMPRESS_SEARCH`, `TOKEN_OPTIMIZER_READ_CACHE`, `TOKEN_OPTIMIZER_READ_CACHE_DELTA`, `TOKEN_OPTIMIZER_STRUCTURE_MAP`, `TOKEN_OPTIMIZER_QUALITY_NUDGES`, `TOKEN_OPTIMIZER_LOOP_DETECTION`, `TOKEN_OPTIMIZER_VERBOSITY_STEER`. All defined in the [configuration reference](/reference/configuration/).
 
 ## Platform availability
 

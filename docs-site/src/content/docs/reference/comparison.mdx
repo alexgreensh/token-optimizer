@@ -17,14 +17,31 @@ Token waste comes in three kinds. Most tools address one. This page defines each
 
 For how Token Optimizer audits and scores each kind, see [How it works](/concepts/how-it-works/).
 
-## Comparison table
+## Compression coverage
+
+Headroom and RTK both compress bash and command output. That single surface covers roughly 15-25% of the context a typical session wastes. The table below shows the full output stack and what each tool reaches. Status: 🟢 supported, 🟡 partial, 🔴 not supported.
+
+| Compression surface | Token Optimizer | Headroom | RTK |
+|---|---|---|---|
+| **Bash / command output** (git, test runners, lint, build, listings, logs) | 🟢 60+ command patterns, credential-safe; 564 → 115 tokens on a pytest run | 🟢 6 algorithms incl. model-based | 🟢 100+ command filters |
+| **Search / grep output** | 🟢 Web, grep, and search results condensed to top hits plus a count; 500 lines → 20 | 🔴 | 🔴 |
+| **Tabular and JSON output** (jq, yq, csvtool, mlr, CSV, YAML, TOML) | 🟢 Value-preserving columnar compression | 🟢 SmartCrusher | 🔴 |
+| **File re-reads, delta mode** (changed files read again this session) | 🟢 Serves only the unified diff; 2,000-token re-read → ~50 tokens | 🔴 | 🔴 |
+| **File re-reads, structure map** (large code files read repeatedly) | 🟢 Skeleton of signatures, classes, and imports; 720KB → 250 tokens | 🔴 | 🔴 |
+| **Large tool results** (Bash/Read/Grep/MCP output over 4K chars) | 🟢 Archived to disk, replaced by an inline pointer the model can expand on demand | 🔴 | 🔴 |
+| **Model output verbosity** (lean-output nudge at high context fill) | 🟢 10-15% typical, up to 30-41% measured, cache-safe tiered steering | 🔴 | 🔴 |
+| **Structural context** (configs, skills, MCP, MEMORY.md, before the session starts) | 🟢 Per-component audit: unused skills, dead MCP, stale memory, each scored | 🔴 | 🔴 |
+
+RTK reaches the first surface. Headroom reaches the first and the third. Token Optimizer covers all eight, and that is before the behavioral and compaction savings the others do not attempt.
+
+## Full feature comparison
 
 The table covers the five tools most often compared to Token Optimizer. Status: 🟢 supported, 🟡 partial, 🔴 not supported.
 
 | Feature | Token Optimizer | Headroom | RTK | context-mode | `/context` |
 |---|---|---|---|---|---|
 | Tool output compression | 🟢 30+ CLI families, credential-safe, toggleable | 🟢 6 algorithms incl. model-based | 🟢 100+ command filters | 🟢 Sandbox + summary | 🔴 |
-| First-read file skeletons | 🟢 History-validated, fail-open, full original retrievable | 🔴 | 🔴 | 🔴 | 🔴 |
+| Re-read file skeletons | 🟢 Structure map on repeat reads, fail-open, full original retrievable | 🔴 | 🔴 | 🔴 | 🔴 |
 | Tabular/JSON compression | 🟢 Value-preserving columnar | 🟢 SmartCrusher | 🔴 | 🟡 Generic summary | 🔴 |
 | Read dedup and delta diffs | 🟢 Re-reads serve diff only | 🔴 | 🔴 | 🔴 | 🔴 |
 | Compaction survival | 🟢 Progressive checkpoints, restore, tool-output digest | 🔴 | 🔴 | 🟡 Session guide only | 🔴 |

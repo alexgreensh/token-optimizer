@@ -1,151 +1,134 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 540" width="800" height="540">
-  <!--
-    Token Optimizer: What you control, what you save.
-    Power user baseline (~43K consumed, 38% unavailable) vs optimized (~28K, 30%).
-    10s loop. Catppuccin Mocha palette. Pure SMIL animations.
-    Sources: Anthropic docs, /context output.
-    Bar widths: % of 200K context mapped to 680px track.
-    Before: 43,000/200K = 21.5% consumed → 146px. After: 28,000/200K = 14% → 95px.
-    Component table rows sum correctly to 43,000 (before) and 28,000 (after).
-  -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 640" width="1000" height="640" role="img" aria-labelledby="ba-title ba-desc">
+  <title id="ba-title">Your Context Stack, Every Message</title>
+  <desc id="ba-desc">Per-message context overhead: 43K tokens before optimization versus 28K after, with 15K tokens saved per message.</desc>
 
-  <!-- Background -->
-  <rect width="800" height="540" rx="12" fill="#1e1e2e"/>
+  <defs>
+    <linearGradient id="ba-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#101318"/>
+      <stop offset="55%" stop-color="#171b24"/>
+      <stop offset="100%" stop-color="#0b0e13"/>
+    </linearGradient>
+    <linearGradient id="ba-orangeFill" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#ea580c"/>
+      <stop offset="100%" stop-color="#f97316"/>
+    </linearGradient>
+    <linearGradient id="ba-greenFill" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#10b981"/>
+      <stop offset="100%" stop-color="#34d399"/>
+    </linearGradient>
+    <linearGradient id="ba-tableHeader" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#1f2937"/>
+      <stop offset="100%" stop-color="#111827"/>
+    </linearGradient>
+
+    <filter id="ba-shadow" x="-12%" y="-12%" width="124%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000000" flood-opacity="0.34"/>
+    </filter>
+
+    <style>
+      .bgText { font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .mono { font-family: "SF Mono", "Fira Code", ui-monospace, monospace; }
+      .muted { fill: #d1d5db; }
+      .quiet { fill: #94a3b8; }
+      .strong { fill: #f8fafc; }
+      .headline { animation: baFadeHead 16000ms ease-in-out infinite; }
+      .card { animation-duration: 16000ms; animation-timing-function: cubic-bezier(.2,.9,.2,1); animation-iteration-count: infinite; }
+      .c1 { animation-name: baRiseBars; }
+      .c2 { animation-name: baRiseTable; }
+      @keyframes baFadeHead { 0%,96%,100% { opacity: 0; } 8%,90% { opacity: 1; } }
+      @keyframes baRiseBars { 0%,6%,96%,100% { opacity: 0; transform: translateY(16px); } 18%,90% { opacity: 1; transform: translateY(0); } }
+      @keyframes baRiseTable { 0%,14%,96%,100% { opacity: 0; transform: translateY(16px); } 26%,90% { opacity: 1; transform: translateY(0); } }
+      @media (prefers-reduced-motion: reduce) {
+        .headline, .card { animation: none; opacity: 1; transform: none; }
+      }
+    </style>
+  </defs>
+
+  <rect width="1000" height="640" rx="28" fill="url(#ba-bg)"/>
 
   <!-- Title -->
-  <text x="400" y="38" fill="#cdd6f4" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="20" font-weight="bold" text-anchor="middle">Your Config Stack, Every Message</text>
-  <text x="400" y="60" fill="#585b70" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="middle">What loads. What you control. What you save.</text>
-
-  <!-- BAR 1: Current (unaudited) -->
-  <g opacity="0">
-    <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.06;0.10;0.84;0.92;1" dur="10s" repeatCount="indefinite"/>
-    <text x="60" y="92" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12">Before optimization (typical power user setup)</text>
+  <g class="headline bgText">
+    <text x="60" y="72" class="strong" font-size="32" font-weight="850">Your Context Stack, Every Message</text>
+    <text x="60" y="108" class="muted" font-size="18" font-weight="560">15K fewer tokens per message. Across a day of coding, that compounds.</text>
   </g>
 
-  <rect x="60" y="98" width="680" height="32" rx="6" fill="#313244" opacity="0">
-    <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.06;0.10;0.84;0.92;1" dur="10s" repeatCount="indefinite"/>
-  </rect>
+  <!-- BARS CARD -->
+  <g class="bgText card c1" filter="url(#ba-shadow)">
+    <rect x="60" y="140" width="880" height="170" rx="24" fill="#0f172a" stroke="#334155" stroke-width="1.5"/>
 
-  <!-- 43,000/200K = 21.5% → 146px on 680px track -->
-  <rect x="60" y="98" width="0" height="32" rx="6" fill="#f9e2af" opacity="0.85">
-    <animate attributeName="width" values="0;0;0;146;146;146;0;0" keyTimes="0;0.06;0.10;0.20;0.40;0.84;0.92;1" dur="10s" repeatCount="indefinite"/>
-  </rect>
+    <!-- Before -->
+    <text x="84" y="170" class="strong" font-size="15" font-weight="800">BEFORE (unoptimized setup)</text>
+    <rect x="84" y="178" width="600" height="24" rx="12" fill="#1e293b"/>
+    <rect x="84" y="178" width="540" height="24" rx="12" fill="url(#ba-orangeFill)"/>
+    <text x="640" y="195" fill="#f97316" font-size="15" font-weight="900" text-anchor="start">43,000 tokens</text>
 
-  <text x="133" y="119" fill="#1e1e2e" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="15" font-weight="bold" text-anchor="middle" opacity="0">
-    22%
-    <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.19;0.23;0.84;0.92;1" dur="10s" repeatCount="indefinite"/>
-  </text>
+    <!-- After -->
+    <text x="84" y="232" fill="#34d399" font-size="15" font-weight="800">AFTER (Token Optimizer active)</text>
+    <rect x="84" y="240" width="600" height="24" rx="12" fill="#1e293b"/>
+    <rect x="84" y="240" width="350" height="24" rx="12" fill="url(#ba-greenFill)"/>
+    <text x="450" y="257" fill="#34d399" font-size="15" font-weight="900" text-anchor="start">28,000 tokens</text>
 
-  <text x="214" y="119" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" opacity="0">
-    43,000 tokens consumed
-    <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.19;0.23;0.84;0.92;1" dur="10s" repeatCount="indefinite"/>
-  </text>
-
-  <!-- BAR 2: After optimization -->
-  <g opacity="0">
-    <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.24;0.28;0.84;0.92;1" dur="10s" repeatCount="indefinite"/>
-    <text x="60" y="152" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12">After optimization</text>
+    <!-- Saved pill -->
+    <rect x="760" y="165" width="140" height="90" rx="16" fill="#10b981" opacity="0.18"/>
+    <rect x="760" y="165" width="140" height="90" rx="16" fill="none" stroke="#34d399" stroke-width="1.5"/>
+    <text x="830" y="195" fill="#34d399" font-size="14" font-weight="800" text-anchor="middle">SAVED</text>
+    <text x="830" y="222" fill="#34d399" font-size="22" font-weight="900" text-anchor="middle">15K</text>
+    <text x="830" y="242" fill="#34d399" font-size="12" font-weight="600" text-anchor="middle">per message</text>
   </g>
 
-  <rect x="60" y="158" width="680" height="32" rx="6" fill="#313244" opacity="0">
-    <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.24;0.28;0.84;0.92;1" dur="10s" repeatCount="indefinite"/>
-  </rect>
-
-  <!-- 28,000/200K = 14% → 95px -->
-  <rect x="60" y="158" width="0" height="32" rx="6" fill="#a6e3a1">
-    <animate attributeName="width" values="0;0;0;95;95;0;0" keyTimes="0;0.24;0.28;0.36;0.84;0.92;1" dur="10s" repeatCount="indefinite"/>
-  </rect>
-
-  <text x="145" y="179" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="15" font-weight="bold" opacity="0">
-    14%
-    <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.35;0.39;0.84;0.92;1" dur="10s" repeatCount="indefinite"/>
-  </text>
-
-  <text x="193" y="179" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" opacity="0">
-    28,000 tokens consumed
-    <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.35;0.39;0.84;0.92;1" dur="10s" repeatCount="indefinite"/>
-  </text>
-
-  <!-- Savings callout -->
-  <text x="400" y="216" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="16" font-weight="bold" text-anchor="middle" opacity="0">
-    15,000 fewer tokens every message. Compounds across every session.
-    <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.38;0.42;0.84;0.92;1" dur="10s" repeatCount="indefinite"/>
-  </text>
-
-  <!-- Divider -->
-  <line x1="30" y1="232" x2="770" y2="232" stroke="#313244" stroke-width="1" opacity="0">
-    <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.42;0.46;0.84;0.92;1" dur="10s" repeatCount="indefinite"/>
-  </line>
-
-  <!-- Component Table -->
-  <g opacity="0">
-    <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.44;0.50;0.84;0.92;1" dur="10s" repeatCount="indefinite"/>
+  <!-- TABLE CARD -->
+  <g class="bgText card c2" filter="url(#ba-shadow)">
+    <rect x="60" y="330" width="880" height="280" rx="24" fill="#0f172a" stroke="#263244" stroke-width="1.5"/>
 
     <!-- Header -->
-    <text x="60" y="256" fill="#585b70" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="11">COMPONENT</text>
-    <text x="430" y="256" fill="#585b70" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="11" text-anchor="end">BEFORE</text>
-    <text x="540" y="256" fill="#585b70" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="11" text-anchor="end">AFTER</text>
-    <text x="680" y="256" fill="#585b70" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="11" text-anchor="end">SAVED</text>
+    <rect x="60" y="330" width="880" height="38" rx="24" fill="url(#ba-tableHeader)"/>
+    <text x="84" y="354" fill="#94a3b8" font-size="11" font-weight="800">COMPONENT</text>
+    <text x="470" y="354" fill="#94a3b8" font-size="11" font-weight="800" text-anchor="end">BEFORE</text>
+    <text x="600" y="354" fill="#94a3b8" font-size="11" font-weight="800" text-anchor="end">AFTER</text>
+    <text x="840" y="354" fill="#94a3b8" font-size="11" font-weight="800" text-anchor="end">TOKENS SAVED / MSG</text>
 
-    <!-- Core system (fixed) — 15,000 both -->
-    <text x="60" y="280" fill="#585b70" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">Core system + tools</text>
-    <text x="430" y="280" fill="#585b70" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">15,000</text>
-    <text x="540" y="280" fill="#585b70" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">15,000</text>
-    <text x="680" y="280" fill="#585b70" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">fixed</text>
+    <!-- Row 1 -->
+    <text x="84" y="398" fill="#94a3b8" font-size="13" font-weight="600">Core system + tools (immutable)</text>
+    <text x="470" y="398" fill="#94a3b8" font-size="13" font-weight="600" text-anchor="end">15,000</text>
+    <text x="600" y="398" fill="#94a3b8" font-size="13" font-weight="600" text-anchor="end">15,000</text>
+    <text x="840" y="398" fill="#94a3b8" font-size="13" font-weight="600" text-anchor="end">0 (fixed)</text>
 
-    <!-- MCP tools: 9,000 → 6,000 = -3,000 -->
-    <text x="60" y="304" fill="#bac2de" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">MCP tools</text>
-    <text x="430" y="304" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">9,000</text>
-    <text x="540" y="304" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">6,000</text>
-    <text x="680" y="304" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">-3,000</text>
+    <!-- Row 2 -->
+    <text x="84" y="426" class="muted" font-size="13" font-weight="600">MCP tools overhead</text>
+    <text x="470" y="426" class="muted" font-size="13" font-weight="600" text-anchor="end">9,000</text>
+    <text x="600" y="426" class="muted" font-size="13" font-weight="600" text-anchor="end">6,000</text>
+    <text x="840" y="426" fill="#34d399" font-size="13" font-weight="800" text-anchor="end">-3,000 (-33%)</text>
 
-    <!-- Skills (60 → 30): 6,000 → 3,000 = -3,000 -->
-    <text x="60" y="328" fill="#bac2de" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">Skills (60 &#x2192; 30)</text>
-    <text x="430" y="328" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">6,000</text>
-    <text x="540" y="328" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">3,000</text>
-    <text x="680" y="328" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">-3,000</text>
+    <!-- Row 3 -->
+    <text x="84" y="454" class="muted" font-size="13" font-weight="600">Active skills loaded (60 vs 30)</text>
+    <text x="470" y="454" class="muted" font-size="13" font-weight="600" text-anchor="end">6,000</text>
+    <text x="600" y="454" class="muted" font-size="13" font-weight="600" text-anchor="end">3,000</text>
+    <text x="840" y="454" fill="#34d399" font-size="13" font-weight="800" text-anchor="end">-3,000 (-50%)</text>
 
-    <!-- CLAUDE.md: 3,500 → 800 = -2,700 -->
-    <text x="60" y="352" fill="#bac2de" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">CLAUDE.md</text>
-    <text x="430" y="352" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">3,500</text>
-    <text x="540" y="352" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">800</text>
-    <text x="680" y="352" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">-2,700</text>
+    <!-- Row 4 -->
+    <text x="84" y="482" class="muted" font-size="13" font-weight="600">CLAUDE.md guidelines</text>
+    <text x="470" y="482" class="muted" font-size="13" font-weight="600" text-anchor="end">3,500</text>
+    <text x="600" y="482" class="muted" font-size="13" font-weight="600" text-anchor="end">800</text>
+    <text x="840" y="482" fill="#34d399" font-size="13" font-weight="800" text-anchor="end">-2,700 (-77%)</text>
 
-    <!-- MEMORY.md: 3,500 → 1,000 = -2,500 -->
-    <text x="60" y="376" fill="#bac2de" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">MEMORY.md</text>
-    <text x="430" y="376" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">3,500</text>
-    <text x="540" y="376" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">1,000</text>
-    <text x="680" y="376" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">-2,500</text>
+    <!-- Row 5 -->
+    <text x="84" y="510" class="muted" font-size="13" font-weight="600">Memory guidelines / context snapshots</text>
+    <text x="470" y="510" class="muted" font-size="13" font-weight="600" text-anchor="end">3,500</text>
+    <text x="600" y="510" class="muted" font-size="13" font-weight="600" text-anchor="end">1,000</text>
+    <text x="840" y="510" fill="#34d399" font-size="13" font-weight="800" text-anchor="end">-2,500 (-71%)</text>
 
-    <!-- Commands (60 → 25): 3,000 → 1,200 = -1,800 -->
-    <text x="60" y="400" fill="#bac2de" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">Commands (60 &#x2192; 25)</text>
-    <text x="430" y="400" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">3,000</text>
-    <text x="540" y="400" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">1,200</text>
-    <text x="680" y="400" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">-1,800</text>
+    <!-- Row 6 -->
+    <text x="84" y="538" class="muted" font-size="13" font-weight="600">System prompts &amp; unmanaged instructions</text>
+    <text x="470" y="538" class="muted" font-size="13" font-weight="600" text-anchor="end">6,000</text>
+    <text x="600" y="538" class="muted" font-size="13" font-weight="600" text-anchor="end">2,200</text>
+    <text x="840" y="538" fill="#34d399" font-size="13" font-weight="800" text-anchor="end">-3,800 (-63%)</text>
 
-    <!-- System reminders: 3,000 → 1,000 = -2,000 (with permissions.deny) -->
-    <text x="60" y="424" fill="#bac2de" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">System reminders</text>
-    <text x="430" y="424" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">3,000</text>
-    <text x="540" y="424" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">1,000</text>
-    <text x="680" y="424" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="end">-2,000</text>
+    <line x1="74" y1="552" x2="926" y2="552" stroke="#263244" stroke-width="1.5"/>
 
-    <!-- Table divider -->
-    <line x1="60" y1="436" x2="680" y2="436" stroke="#313244" stroke-width="1"/>
-
-    <!-- TOTAL: 43,000 → 28,000 = -15,000 -->
-    <text x="60" y="456" fill="#cdd6f4" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14" font-weight="bold">TOTAL CONSUMED</text>
-    <text x="430" y="456" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14" font-weight="bold" text-anchor="end">43,000</text>
-    <text x="540" y="456" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14" font-weight="bold" text-anchor="end">28,000</text>
-    <text x="680" y="456" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14" font-weight="bold" text-anchor="end">-15,000</text>
-
-    <!-- Context % -->
-    <text x="60" y="476" fill="#585b70" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12">% of 200K context</text>
-    <text x="430" y="476" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12" text-anchor="end">22%</text>
-    <text x="540" y="476" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12" text-anchor="end">14%</text>
-    <text x="680" y="476" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12" text-anchor="end">-8%</text>
-
-    <!-- Footnotes -->
-    <text x="400" y="510" fill="#585b70" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="11" text-anchor="middle">Based on 200K context. At 1M, overhead is 4-7% but every token saved extends your peak quality zone.</text>
-    <text x="400" y="528" fill="#585b70" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="11" text-anchor="middle">Run python3 measure.py quick for your degradation risk at 1M.</text>
+    <!-- Total -->
+    <text x="84" y="574" class="strong" font-size="14" font-weight="850">TOTAL CONSUMED OVERHEAD</text>
+    <text x="470" y="574" fill="#f97316" font-size="14" font-weight="900" text-anchor="end">43,000</text>
+    <text x="600" y="574" fill="#34d399" font-size="14" font-weight="900" text-anchor="end">28,000</text>
+    <text x="840" y="574" fill="#34d399" font-size="14" font-weight="900" text-anchor="end">-15,000 tokens saved</text>
   </g>
 </svg>

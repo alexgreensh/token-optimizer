@@ -1,0 +1,157 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 800" width="1000" height="800" role="img" aria-labelledby="title desc">
+  <title id="title">Active Compression — nine features, all automatic</title>
+  <desc id="desc">Nine compression features, all on by default and handled automatically by hooks: delta mode, structure map, bash compression, search compression, lean-output nudges, quality nudges, loop detection, activity mode, decision extraction.</desc>
+
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#101318"/>
+      <stop offset="58%" stop-color="#171b24"/>
+      <stop offset="100%" stop-color="#0b0e13"/>
+    </linearGradient>
+    <linearGradient id="headGlow" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#7dd3fc"/>
+      <stop offset="48%" stop-color="#a7f3d0"/>
+      <stop offset="100%" stop-color="#c4b5fd"/>
+    </linearGradient>
+    <linearGradient id="gGreen" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#16a34a"/><stop offset="100%" stop-color="#86efac"/></linearGradient>
+    <linearGradient id="gEmerald" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#059669"/><stop offset="100%" stop-color="#6ee7b7"/></linearGradient>
+    <linearGradient id="gCyan" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#0891b2"/><stop offset="100%" stop-color="#67e8f9"/></linearGradient>
+    <linearGradient id="gSky" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#2563eb"/><stop offset="100%" stop-color="#93c5fd"/></linearGradient>
+    <linearGradient id="gAmber" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#d97706"/><stop offset="100%" stop-color="#fcd34d"/></linearGradient>
+    <linearGradient id="gRose" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#e11d48"/><stop offset="100%" stop-color="#fda4af"/></linearGradient>
+    <linearGradient id="gPurple" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#7c3aed"/><stop offset="100%" stop-color="#c4b5fd"/></linearGradient>
+    <linearGradient id="gIndigo" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#4f46e5"/><stop offset="100%" stop-color="#a5b4fc"/></linearGradient>
+    <linearGradient id="gViolet" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#9333ea"/><stop offset="100%" stop-color="#d8b4fe"/></linearGradient>
+    <filter id="softShadow" x="-12%" y="-12%" width="124%" height="140%">
+      <feDropShadow dx="0" dy="12" stdDeviation="16" flood-color="#000000" flood-opacity="0.34"/>
+    </filter>
+
+    <style>
+      .ui { font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .muted { fill: #cbd5e1; }
+      .quiet { fill: #94a3b8; }
+      .strong { fill: #f8fafc; }
+      .head { animation: fadeHead 22000ms ease-in-out infinite; }
+      .card { animation-duration: 22000ms; animation-timing-function: cubic-bezier(.2,.9,.2,1); animation-iteration-count: infinite; opacity: 1; }
+      .c1 { animation-name: rise1; } .c2 { animation-name: rise2; } .c3 { animation-name: rise3; }
+      .c4 { animation-name: rise4; } .c5 { animation-name: rise5; } .c6 { animation-name: rise6; }
+      .c7 { animation-name: rise7; } .c8 { animation-name: rise8; } .c9 { animation-name: rise9; }
+      @keyframes fadeHead { 0%, 97%, 100% { opacity: 0; } 5%, 92% { opacity: 1; } }
+      @keyframes rise1 { 0%, 6%, 97%, 100% { opacity: 0; transform: translateY(16px); } 13%, 92% { opacity: 1; transform: translateY(0); } }
+      @keyframes rise2 { 0%, 9%, 97%, 100% { opacity: 0; transform: translateY(16px); } 16%, 92% { opacity: 1; transform: translateY(0); } }
+      @keyframes rise3 { 0%, 12%, 97%, 100% { opacity: 0; transform: translateY(16px); } 19%, 92% { opacity: 1; transform: translateY(0); } }
+      @keyframes rise4 { 0%, 15%, 97%, 100% { opacity: 0; transform: translateY(16px); } 22%, 92% { opacity: 1; transform: translateY(0); } }
+      @keyframes rise5 { 0%, 18%, 97%, 100% { opacity: 0; transform: translateY(16px); } 25%, 92% { opacity: 1; transform: translateY(0); } }
+      @keyframes rise6 { 0%, 21%, 97%, 100% { opacity: 0; transform: translateY(16px); } 28%, 92% { opacity: 1; transform: translateY(0); } }
+      @keyframes rise7 { 0%, 24%, 97%, 100% { opacity: 0; transform: translateY(16px); } 31%, 92% { opacity: 1; transform: translateY(0); } }
+      @keyframes rise8 { 0%, 27%, 97%, 100% { opacity: 0; transform: translateY(16px); } 34%, 92% { opacity: 1; transform: translateY(0); } }
+      @keyframes rise9 { 0%, 30%, 97%, 100% { opacity: 0; transform: translateY(16px); } 37%, 92% { opacity: 1; transform: translateY(0); } }
+      @media (prefers-reduced-motion: reduce) {
+        .head, .card { animation: none; opacity: 1; transform: none; }
+      }
+      .card { transform-box: fill-box; }
+    </style>
+  </defs>
+
+  <rect width="1000" height="800" rx="28" fill="url(#bg)"/>
+  <path d="M70 120 C240 56 380 76 500 150 C636 230 770 214 936 116" fill="none" stroke="#334155" stroke-width="2" opacity=".30"/>
+
+  <!-- Header -->
+  <g class="head ui">
+    <text x="500" y="74" class="strong" font-size="44" font-weight="850" text-anchor="middle">Active Compression</text>
+    <text x="500" y="112" class="muted" font-size="21" font-weight="560" text-anchor="middle">Nine features · all on by default · the hooks handle everything</text>
+  </g>
+
+  <!-- ============ ROW 1 ============ -->
+  <!-- Card 1: Delta Mode -->
+  <g class="card c1 ui" filter="url(#softShadow)">
+    <rect x="36" y="152" width="294" height="186" rx="18" fill="#1c2230" stroke="#16a34a" stroke-width="1.6" opacity="0.9"/>
+    <text x="60" y="194" fill="#86efac" font-size="22" font-weight="850">Delta Mode</text>
+    <text x="60" y="232" class="muted" font-size="16" font-weight="520">Re-reads return only the diff.</text>
+    <text x="60" y="256" class="muted" font-size="16" font-weight="520">65%+ of reads are re-reads.</text>
+    <rect x="60" y="280" width="246" height="40" rx="11" fill="#0f2417"/>
+    <text x="183" y="306" fill="#bbf7d0" font-size="17" font-weight="850" text-anchor="middle">~20% on re-reads</text>
+  </g>
+
+  <!-- Card 2: Structure Map -->
+  <g class="card c2 ui" filter="url(#softShadow)">
+    <rect x="353" y="152" width="294" height="186" rx="18" fill="#1c2230" stroke="#059669" stroke-width="1.6" opacity="0.9"/>
+    <text x="377" y="194" fill="#6ee7b7" font-size="22" font-weight="850">Structure Map</text>
+    <text x="377" y="232" class="muted" font-size="16" font-weight="520">Code re-reads return a skeleton:</text>
+    <text x="377" y="256" class="muted" font-size="16" font-weight="520">signatures, imports, classes.</text>
+    <rect x="377" y="280" width="246" height="40" rx="11" fill="#082f24"/>
+    <text x="500" y="306" fill="#a7f3d0" font-size="17" font-weight="850" text-anchor="middle">up to 99% per file</text>
+  </g>
+
+  <!-- Card 3: Bash Compression -->
+  <g class="card c3 ui" filter="url(#softShadow)">
+    <rect x="670" y="152" width="294" height="186" rx="18" fill="#1c2230" stroke="#0891b2" stroke-width="1.6" opacity="0.9"/>
+    <text x="694" y="194" fill="#67e8f9" font-size="22" font-weight="850">Bash Compression</text>
+    <text x="694" y="232" class="muted" font-size="16" font-weight="520">CLI output to compact summary.</text>
+    <text x="694" y="256" class="muted" font-size="16" font-weight="520">Credentials always preserved.</text>
+    <rect x="694" y="280" width="246" height="40" rx="11" fill="#082832"/>
+    <text x="817" y="306" fill="#a5f3fc" font-size="17" font-weight="850" text-anchor="middle">~10% on CLI output</text>
+  </g>
+
+  <!-- ============ ROW 2 ============ -->
+  <!-- Card 4: Search Compression -->
+  <g class="card c4 ui" filter="url(#softShadow)">
+    <rect x="36" y="358" width="294" height="186" rx="18" fill="#1c2230" stroke="#2563eb" stroke-width="1.6" opacity="0.9"/>
+    <text x="60" y="400" fill="#93c5fd" font-size="22" font-weight="850">Search Compression</text>
+    <text x="60" y="438" class="muted" font-size="16" font-weight="520">grep/web results to top hits</text>
+    <text x="60" y="462" class="muted" font-size="16" font-weight="520">plus counts, not the full dump.</text>
+    <rect x="60" y="486" width="246" height="40" rx="11" fill="#0c1b3a"/>
+    <text x="183" y="512" fill="#bfdbfe" font-size="17" font-weight="850" text-anchor="middle">~15% on search</text>
+  </g>
+
+  <!-- Card 5: Lean-Output Nudges -->
+  <g class="card c5 ui" filter="url(#softShadow)">
+    <rect x="353" y="358" width="294" height="186" rx="18" fill="#1c2230" stroke="#d97706" stroke-width="1.6" opacity="0.9"/>
+    <text x="377" y="400" fill="#fcd34d" font-size="22" font-weight="850">Lean-Output Nudges</text>
+    <text x="377" y="438" class="muted" font-size="16" font-weight="520">Steers to concise output when</text>
+    <text x="377" y="462" class="muted" font-size="16" font-weight="520">context fills past 55%.</text>
+    <rect x="377" y="486" width="246" height="40" rx="11" fill="#3a2408"/>
+    <text x="500" y="512" fill="#fde68a" font-size="17" font-weight="850" text-anchor="middle">30–41% output cut</text>
+  </g>
+
+  <!-- Card 6: Quality Nudges -->
+  <g class="card c6 ui" filter="url(#softShadow)">
+    <rect x="670" y="358" width="294" height="186" rx="18" fill="#1c2230" stroke="#e11d48" stroke-width="1.6" opacity="0.9"/>
+    <text x="694" y="400" fill="#fda4af" font-size="22" font-weight="850">Quality Nudges</text>
+    <text x="694" y="438" class="muted" font-size="16" font-weight="520">Warns when context quality</text>
+    <text x="694" y="462" class="muted" font-size="16" font-weight="520">drops 15+ points.</text>
+    <rect x="694" y="486" width="246" height="40" rx="11" fill="#3a0c18"/>
+    <text x="817" y="512" fill="#fecdd3" font-size="17" font-weight="850" text-anchor="middle">prevents quality loss</text>
+  </g>
+
+  <!-- ============ ROW 3 ============ -->
+  <!-- Card 7: Loop Detection -->
+  <g class="card c7 ui" filter="url(#softShadow)">
+    <rect x="36" y="564" width="294" height="186" rx="18" fill="#1c2230" stroke="#7c3aed" stroke-width="1.6" opacity="0.9"/>
+    <text x="60" y="606" fill="#c4b5fd" font-size="22" font-weight="850">Loop Detection</text>
+    <text x="60" y="644" class="muted" font-size="16" font-weight="520">Catches retry loops before</text>
+    <text x="60" y="668" class="muted" font-size="16" font-weight="520">they burn tokens.</text>
+    <rect x="60" y="692" width="246" height="40" rx="11" fill="#23123a"/>
+    <text x="183" y="718" fill="#ddd6fe" font-size="17" font-weight="850" text-anchor="middle">measured per loop</text>
+  </g>
+
+  <!-- Card 8: Activity Mode -->
+  <g class="card c8 ui" filter="url(#softShadow)">
+    <rect x="353" y="564" width="294" height="186" rx="18" fill="#1c2230" stroke="#4f46e5" stroke-width="1.6" opacity="0.9"/>
+    <text x="377" y="606" fill="#a5b4fc" font-size="22" font-weight="850">Activity Mode</text>
+    <text x="377" y="644" class="muted" font-size="16" font-weight="520">Classifies session live:</text>
+    <text x="377" y="668" class="muted" font-size="16" font-weight="520">code / debug / review / infra.</text>
+    <rect x="377" y="692" width="246" height="40" rx="11" fill="#181a3a"/>
+    <text x="500" y="718" fill="#c7d2fe" font-size="17" font-weight="850" text-anchor="middle">adapts compaction</text>
+  </g>
+
+  <!-- Card 9: Decision Extraction -->
+  <g class="card c9 ui" filter="url(#softShadow)">
+    <rect x="670" y="564" width="294" height="186" rx="18" fill="#1c2230" stroke="#9333ea" stroke-width="1.6" opacity="0.9"/>
+    <text x="694" y="606" fill="#d8b4fe" font-size="22" font-weight="850">Decision Extraction</text>
+    <text x="694" y="644" class="muted" font-size="16" font-weight="520">Captures decisions in real</text>
+    <text x="694" y="668" class="muted" font-size="16" font-weight="520">time, kept through compaction.</text>
+    <rect x="694" y="692" width="246" height="40" rx="11" fill="#2a0f3a"/>
+    <text x="817" y="718" fill="#e9d5ff" font-size="17" font-weight="850" text-anchor="middle">survives compaction</text>
+  </g>
+</svg>

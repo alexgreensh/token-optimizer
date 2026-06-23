@@ -1,0 +1,162 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 560" width="1000" height="560" role="img" aria-labelledby="sdf-title sdf-desc">
+  <title id="sdf-title">Session database flow: tool calls compressed, archived, logged to SQLite, retrievable</title>
+  <desc id="sdf-desc">Two local SQLite databases: per-session DB with 8 tables, and trends DB for cross-session analytics. All data stays local.</desc>
+
+  <defs>
+    <linearGradient id="sdf-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#101318"/>
+      <stop offset="55%" stop-color="#171b24"/>
+      <stop offset="100%" stop-color="#0b0e13"/>
+    </linearGradient>
+    <linearGradient id="sdf-session" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#2563eb"/>
+      <stop offset="100%" stop-color="#60a5fa"/>
+    </linearGradient>
+    <linearGradient id="sdf-trends" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#7c3aed"/>
+      <stop offset="100%" stop-color="#c4b5fd"/>
+    </linearGradient>
+    <linearGradient id="sdf-input" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#059669"/>
+      <stop offset="100%" stop-color="#34d399"/>
+    </linearGradient>
+    <linearGradient id="sdf-output" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#d97706"/>
+      <stop offset="100%" stop-color="#fbbf24"/>
+    </linearGradient>
+
+    <filter id="sdf-shadow" x="-12%" y="-12%" width="124%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000000" flood-opacity="0.34"/>
+    </filter>
+
+    <style>
+      .bgText { font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .muted { fill: #d1d5db; }
+      .quiet { fill: #94a3b8; }
+      .strong { fill: #f8fafc; }
+      .headline { animation: sdfFadeHead 16000ms ease-in-out infinite; }
+      .card { animation-duration: 16000ms; animation-timing-function: cubic-bezier(.2,.9,.2,1); animation-iteration-count: infinite; }
+      .c1 { animation-name: sdfRise1; }
+      .c2 { animation-name: sdfRise2; }
+      .c3 { animation-name: sdfRise3; }
+      .c4 { animation-name: sdfRise4; }
+      .c5 { animation-name: sdfRise5; }
+      .flow { animation: sdfFlow 16000ms ease-in-out infinite; }
+      @keyframes sdfFadeHead { 0%,96%,100% { opacity: 0; } 8%,90% { opacity: 1; } }
+      @keyframes sdfRise1 { 0%,6%,96%,100% { opacity: 0; transform: translateY(16px); } 16%,90% { opacity: 1; transform: translateY(0); } }
+      @keyframes sdfRise2 { 0%,14%,96%,100% { opacity: 0; transform: translateY(16px); } 24%,90% { opacity: 1; transform: translateY(0); } }
+      @keyframes sdfRise3 { 0%,22%,96%,100% { opacity: 0; transform: translateY(16px); } 32%,90% { opacity: 1; transform: translateY(0); } }
+      @keyframes sdfRise4 { 0%,30%,96%,100% { opacity: 0; transform: translateY(16px); } 40%,90% { opacity: 1; transform: translateY(0); } }
+      @keyframes sdfRise5 { 0%,38%,96%,100% { opacity: 0; transform: translateY(16px); } 48%,90% { opacity: 1; transform: translateY(0); } }
+      @keyframes sdfFlow { 0%,12%,92%,100% { opacity: 0; } 20%,85% { opacity: 1; } }
+      @media (prefers-reduced-motion: reduce) {
+        .headline, .card, .flow { animation: none; opacity: 1; transform: none; }
+      }
+    </style>
+  </defs>
+
+  <rect width="1000" height="560" rx="28" fill="url(#sdf-bg)"/>
+
+  <!-- Title -->
+  <g class="headline bgText">
+    <text x="50" y="72" class="strong" font-size="32" font-weight="850">Session Database Flow</text>
+    <text x="50" y="108" class="muted" font-size="18" font-weight="560">Two local SQLite databases. Nothing leaves your machine. Zero network calls.</text>
+  </g>
+
+  <!-- Input -->
+  <g class="bgText card c1" filter="url(#sdf-shadow)">
+    <rect x="50" y="150" width="180" height="100" rx="18" fill="#0f172a" stroke="url(#sdf-input)" stroke-width="2.5"/>
+    <rect x="50" y="150" width="180" height="40" rx="18" fill="url(#sdf-input)" opacity="0.18"/>
+    <text x="140" y="178" fill="#34d399" font-size="14" font-weight="800" text-anchor="middle">INPUT</text>
+    <text x="140" y="210" class="strong" font-size="18" font-weight="850" text-anchor="middle">Tool Calls</text>
+    <text x="140" y="232" class="quiet" font-size="13" font-weight="560" text-anchor="middle">git, pytest, grep, ls</text>
+  </g>
+
+  <!-- Input -> Session arrow -->
+  <g class="flow">
+    <path d="M230 200 L260 200" stroke="#475569" stroke-width="3" fill="none"/>
+    <path d="M254 194 L264 200 L254 206" stroke="#94a3b8" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+
+  <!-- Session DB -->
+  <g class="bgText card c2" filter="url(#sdf-shadow)">
+    <rect x="260" y="140" width="400" height="280" rx="22" fill="#0f172a" stroke="url(#sdf-session)" stroke-width="2.5"/>
+    <rect x="260" y="140" width="400" height="52" rx="22" fill="url(#sdf-session)" opacity="0.15"/>
+    <text x="460" y="176" fill="#60a5fa" font-size="15" font-weight="800" text-anchor="middle">PER-SESSION DATABASE</text>
+    <text x="460" y="210" class="strong" font-size="17" font-weight="850" text-anchor="middle">~/.claude/token-optimizer/</text>
+    <text x="460" y="232" class="strong" font-size="17" font-weight="850" text-anchor="middle">session.db</text>
+
+    <!-- 8 tables with 40px internal padding -->
+    <rect x="300" y="252" width="155" height="34" rx="8" fill="#202635" stroke="#334155"/>
+    <text x="377.5" y="274" class="muted" font-size="13" font-weight="600" text-anchor="middle">file_reads</text>
+    <rect x="465" y="252" width="155" height="34" rx="8" fill="#202635" stroke="#334155"/>
+    <text x="542.5" y="274" class="muted" font-size="13" font-weight="600" text-anchor="middle">tool_outputs</text>
+    <rect x="300" y="292" width="155" height="34" rx="8" fill="#202635" stroke="#334155"/>
+    <text x="377.5" y="314" class="muted" font-size="13" font-weight="600" text-anchor="middle">command_outputs</text>
+    <rect x="465" y="292" width="155" height="34" rx="8" fill="#202635" stroke="#334155"/>
+    <text x="542.5" y="314" class="muted" font-size="13" font-weight="600" text-anchor="middle">cached_content</text>
+    <rect x="300" y="332" width="155" height="34" rx="8" fill="#202635" stroke="#334155"/>
+    <text x="377.5" y="354" class="muted" font-size="13" font-weight="600" text-anchor="middle">context_intel</text>
+    <rect x="465" y="332" width="155" height="34" rx="8" fill="#202635" stroke="#334155"/>
+    <text x="542.5" y="354" class="muted" font-size="13" font-weight="600" text-anchor="middle">activity_log</text>
+    <rect x="300" y="372" width="155" height="34" rx="8" fill="#202635" stroke="#334155"/>
+    <text x="377.5" y="394" class="muted" font-size="13" font-weight="600" text-anchor="middle">decision_log</text>
+    <rect x="465" y="372" width="155" height="34" rx="8" fill="#202635" stroke="#334155"/>
+    <text x="542.5" y="394" class="muted" font-size="13" font-weight="600" text-anchor="middle">hint_serves</text>
+  </g>
+
+  <!-- Session -> Trends arrow with readable label -->
+  <g class="flow">
+    <path d="M660 270 L730 270" stroke="#475569" stroke-width="3" fill="none" stroke-dasharray="6 4"/>
+    <path d="M724 264 L734 270 L724 276" stroke="#94a3b8" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="660" y="246" width="70" height="20" rx="10" fill="#0f172a" stroke="#475569"/>
+    <text x="695" y="260" fill="#94a3b8" font-size="11" font-weight="600" text-anchor="middle">aggregate</text>
+  </g>
+
+  <!-- Trends DB -->
+  <g class="bgText card c3" filter="url(#sdf-shadow)">
+    <rect x="730" y="150" width="220" height="200" rx="22" fill="#0f172a" stroke="url(#sdf-trends)" stroke-width="2.5"/>
+    <rect x="730" y="150" width="220" height="52" rx="22" fill="url(#sdf-trends)" opacity="0.15"/>
+    <text x="840" y="186" fill="#c4b5fd" font-size="15" font-weight="800" text-anchor="middle">TRENDS DATABASE</text>
+    <text x="840" y="220" class="strong" font-size="17" font-weight="850" text-anchor="middle">Cross-session</text>
+    <text x="840" y="242" class="strong" font-size="17" font-weight="850" text-anchor="middle">analytics</text>
+    <text x="840" y="276" class="quiet" font-size="13" font-weight="560" text-anchor="middle">Compression ratios</text>
+    <text x="840" y="296" class="quiet" font-size="13" font-weight="560" text-anchor="middle">Token trends over time</text>
+    <text x="840" y="316" class="quiet" font-size="13" font-weight="560" text-anchor="middle">Session patterns</text>
+    <text x="840" y="336" class="quiet" font-size="13" font-weight="560" text-anchor="middle">Cost projections</text>
+  </g>
+
+  <!-- Output -->
+  <g class="bgText card c4" filter="url(#sdf-shadow)">
+    <rect x="730" y="370" width="220" height="80" rx="16" fill="#202635" stroke="url(#sdf-output)"/>
+    <text x="840" y="402" fill="#fbbf24" font-size="17" font-weight="800" text-anchor="middle">Dashboard + Status Bar</text>
+    <text x="840" y="428" class="muted" font-size="14" font-weight="560" text-anchor="middle">Auto-refreshing, real-time</text>
+  </g>
+
+  <!-- Session -> Output arrow -->
+  <g class="flow">
+    <path d="M640 420 L730 410" stroke="#475569" stroke-width="2.5" fill="none" stroke-dasharray="4 4"/>
+    <path d="M724 404 L734 410 L724 416" stroke="#94a3b8" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+
+  <!-- Bottom properties -->
+  <g class="bgText card c5">
+    <rect x="50" y="470" width="280" height="78" rx="14" fill="#202635" stroke="#334155"/>
+    <text x="70" y="498" fill="#60a5fa" font-size="17" font-weight="800">WAL mode</text>
+    <text x="70" y="524" class="muted" font-size="14" font-weight="560">Concurrent read/write</text>
+    <text x="70" y="546" class="muted" font-size="14" font-weight="560">from hooks</text>
+  </g>
+
+  <g class="bgText card c5">
+    <rect x="360" y="470" width="280" height="78" rx="14" fill="#202635" stroke="#334155"/>
+    <text x="380" y="498" fill="#34d399" font-size="17" font-weight="800">50MB cap per session</text>
+    <text x="380" y="524" class="muted" font-size="14" font-weight="560">Auto-cleanup, no disk bloat</text>
+  </g>
+
+  <g class="bgText card c5">
+    <rect x="670" y="470" width="280" height="78" rx="14" fill="#202635" stroke="#334155"/>
+    <text x="690" y="498" fill="#c4b5fd" font-size="17" font-weight="800">Progressive disclosure</text>
+    <text x="690" y="524" class="muted" font-size="14" font-weight="560">Summary in context,</text>
+    <text x="690" y="546" class="muted" font-size="14" font-weight="560">full output on /recall</text>
+  </g>
+</svg>

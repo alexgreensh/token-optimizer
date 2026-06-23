@@ -26,6 +26,9 @@ These are read locally and never transmitted.
 
 ## Where data lives
 
+![Session database flow: two local SQLite databases, nothing leaves your machine](/images/session-database-flow.svg)
+
+
 Every store is created with restrictive permissions: directories `0o700` (owner only), files `0o600` (owner read/write only).
 
 | Store | Contents | Path | Retention |

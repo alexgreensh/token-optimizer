@@ -9,7 +9,7 @@ Token Optimizer reads configuration from two places: environment variables and a
 
 ## Active compression features
 
-The five active compression features each have a `config.json` key and an environment override. Setting the environment variable to `0` disables the feature for that run regardless of the persisted value.
+Each active compression feature has a `config.json` key and an environment override. Setting the environment variable to `0` disables the feature for that run regardless of the persisted value.
 
 | Variable | Default | Effect |
 |---|---|---|
@@ -21,8 +21,10 @@ The five active compression features each have a `config.json` key and an enviro
 | `TOKEN_OPTIMIZER_QUALITY_NUDGES` | enabled | Set to `0` to disable the quality-drop alerter |
 | `TOKEN_OPTIMIZER_LOOP_DETECTION` | enabled | Set to `0` to disable the retry-loop detector |
 | `TOKEN_OPTIMIZER_FIRST_READ_ACTIVE` | enabled | Set to `0` to disable active first-read skeleton serving for promoted cohorts |
+| `TOKEN_OPTIMIZER_BASH_COMPRESS_SEARCH` | enabled | Set to `0` to disable search result compression |
+| `TOKEN_OPTIMIZER_VERBOSITY_STEER` | enabled | Set to `0` to disable lean-output conciseness nudges |
 
-The matching `config.json` keys are: `v5_bash_compress`, `read_cache_enabled`, `v5_delta_mode`, `v5_structure_map_beta`, `v5_quality_nudges`, and `v5_loop_detection`. Manage them with `measure.py v5 enable|disable <feature>` rather than editing the file.
+The matching `config.json` keys are: `v5_bash_compress`, `read_cache_enabled`, `v5_delta_mode`, `v5_structure_map_beta`, `v5_quality_nudges`, and `v5_loop_detection` (the `v5_` prefix is a legacy naming convention; the features are current). Manage them with `measure.py v5 enable|disable <feature>` rather than editing the file.
 
 ### Read-cache modes
 

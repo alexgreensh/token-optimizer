@@ -1,0 +1,146 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 540" width="1000" height="540" role="img" aria-labelledby="af-title af-desc">
+  <title id="af-title">How Token Optimizer works automatically every session</title>
+  <desc id="af-desc">Hook intercepts tool output, compresses and archives it, logs to SQLite, updates dashboard — all automatic, no manual steps.</desc>
+
+  <defs>
+    <linearGradient id="af-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#101318"/>
+      <stop offset="55%" stop-color="#171b24"/>
+      <stop offset="100%" stop-color="#0b0e13"/>
+    </linearGradient>
+
+    <linearGradient id="af-step1" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#2563eb"/>
+      <stop offset="100%" stop-color="#60a5fa"/>
+    </linearGradient>
+    <linearGradient id="af-step2" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#7c3aed"/>
+      <stop offset="100%" stop-color="#a78bfa"/>
+    </linearGradient>
+    <linearGradient id="af-step3" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#059669"/>
+      <stop offset="100%" stop-color="#34d399"/>
+    </linearGradient>
+    <linearGradient id="af-step4" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#d97706"/>
+      <stop offset="100%" stop-color="#fbbf24"/>
+    </linearGradient>
+
+    <filter id="af-shadow" x="-12%" y="-12%" width="124%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000000" flood-opacity="0.34"/>
+    </filter>
+
+    <style>
+      .bgText { font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .muted { fill: #d1d5db; }
+      .quiet { fill: #94a3b8; }
+      .strong { fill: #f8fafc; }
+      .headline { animation: afFadeHead 16000ms ease-in-out infinite; }
+      .step { animation-duration: 16000ms; animation-timing-function: cubic-bezier(.2,.9,.2,1); animation-iteration-count: infinite; }
+      .s1 { animation-name: afRise1; }
+      .s2 { animation-name: afRise2; }
+      .s3 { animation-name: afRise3; }
+      .s4 { animation-name: afRise4; }
+      .arrow { animation: afArrowFlow 16000ms ease-in-out infinite; }
+      @keyframes afFadeHead { 0%,96%,100% { opacity: 0; } 8%,90% { opacity: 1; } }
+      @keyframes afRise1 { 0%,6%,96%,100% { opacity: 0; transform: translateY(16px); } 16%,90% { opacity: 1; transform: translateY(0); } }
+      @keyframes afRise2 { 0%,14%,96%,100% { opacity: 0; transform: translateY(16px); } 24%,90% { opacity: 1; transform: translateY(0); } }
+      @keyframes afRise3 { 0%,22%,96%,100% { opacity: 0; transform: translateY(16px); } 32%,90% { opacity: 1; transform: translateY(0); } }
+      @keyframes afRise4 { 0%,30%,96%,100% { opacity: 0; transform: translateY(16px); } 40%,90% { opacity: 1; transform: translateY(0); } }
+      @keyframes afArrowFlow { 0%,12%,92%,100% { opacity: 0; } 20%,85% { opacity: 1; } }
+      @media (prefers-reduced-motion: reduce) {
+        .headline, .step, .arrow { animation: none; opacity: 1; transform: none; }
+      }
+    </style>
+  </defs>
+
+  <rect width="1000" height="540" rx="28" fill="url(#af-bg)"/>
+
+  <!-- Title -->
+  <g class="headline bgText">
+    <text x="40" y="72" class="strong" font-size="32" font-weight="850">Automated Flow — Zero Manual Steps</text>
+    <text x="40" y="108" class="muted" font-size="18" font-weight="560">Hooks intercept tool output in real time. You never press a button.</text>
+  </g>
+
+  <!-- Top row: 4 cards of 200px, 40px gap, 40px margin -->
+  <g class="bgText step s1" filter="url(#af-shadow)">
+    <rect x="40" y="150" width="200" height="210" rx="18" fill="#0f172a" stroke="url(#af-step1)" stroke-width="2.5"/>
+    <rect x="40" y="150" width="200" height="54" rx="18" fill="url(#af-step1)" opacity="0.18"/>
+    <text x="140" y="185" fill="#60a5fa" font-size="15" font-weight="800" text-anchor="middle">STEP 1</text>
+    <text x="140" y="234" class="strong" font-size="19" font-weight="850" text-anchor="middle">Hook</text>
+    <text x="140" y="262" class="strong" font-size="19" font-weight="850" text-anchor="middle">Intercepts</text>
+    <text x="140" y="304" class="quiet" font-size="13" font-weight="560" text-anchor="middle">PostToolUse hook</text>
+    <text x="140" y="324" class="quiet" font-size="13" font-weight="560" text-anchor="middle">fires on every</text>
+    <text x="140" y="344" class="quiet" font-size="13" font-weight="560" text-anchor="middle">tool call</text>
+  </g>
+
+  <g class="arrow">
+    <path d="M240 255 L280 255" stroke="#475569" stroke-width="3" fill="none"/>
+    <path d="M274 249 L284 255 L274 261" stroke="#94a3b8" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+
+  <g class="bgText step s2" filter="url(#af-shadow)">
+    <rect x="280" y="150" width="200" height="210" rx="18" fill="#0f172a" stroke="url(#af-step2)" stroke-width="2.5"/>
+    <rect x="280" y="150" width="200" height="54" rx="18" fill="url(#af-step2)" opacity="0.18"/>
+    <text x="380" y="185" fill="#a78bfa" font-size="15" font-weight="800" text-anchor="middle">STEP 2</text>
+    <text x="380" y="234" class="strong" font-size="19" font-weight="850" text-anchor="middle">Compress</text>
+    <text x="380" y="262" class="strong" font-size="19" font-weight="850" text-anchor="middle">+ Archive</text>
+    <text x="380" y="304" class="quiet" font-size="13" font-weight="560" text-anchor="middle">Pattern-matched</text>
+    <text x="380" y="324" class="quiet" font-size="13" font-weight="560" text-anchor="middle">compression, original</text>
+    <text x="380" y="344" class="quiet" font-size="13" font-weight="560" text-anchor="middle">archived for recall</text>
+  </g>
+
+  <g class="arrow">
+    <path d="M480 255 L520 255" stroke="#475569" stroke-width="3" fill="none"/>
+    <path d="M514 249 L524 255 L514 261" stroke="#94a3b8" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+
+  <g class="bgText step s3" filter="url(#af-shadow)">
+    <rect x="520" y="150" width="200" height="210" rx="18" fill="#0f172a" stroke="url(#af-step3)" stroke-width="2.5"/>
+    <rect x="520" y="150" width="200" height="54" rx="18" fill="url(#af-step3)" opacity="0.18"/>
+    <text x="620" y="185" fill="#34d399" font-size="15" font-weight="800" text-anchor="middle">STEP 3</text>
+    <text x="620" y="234" class="strong" font-size="19" font-weight="850" text-anchor="middle">Log to</text>
+    <text x="620" y="262" class="strong" font-size="19" font-weight="850" text-anchor="middle">SQLite</text>
+    <text x="620" y="304" class="quiet" font-size="13" font-weight="560" text-anchor="middle">Session DB +</text>
+    <text x="620" y="324" class="quiet" font-size="13" font-weight="560" text-anchor="middle">Trends DB,</text>
+    <text x="620" y="344" class="quiet" font-size="13" font-weight="560" text-anchor="middle">all local</text>
+  </g>
+
+  <g class="arrow">
+    <path d="M720 255 L760 255" stroke="#475569" stroke-width="3" fill="none"/>
+    <path d="M754 249 L764 255 L754 261" stroke="#94a3b8" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+
+  <g class="bgText step s4" filter="url(#af-shadow)">
+    <rect x="760" y="150" width="200" height="210" rx="18" fill="#0f172a" stroke="url(#af-step4)" stroke-width="2.5"/>
+    <rect x="760" y="150" width="200" height="54" rx="18" fill="url(#af-step4)" opacity="0.18"/>
+    <text x="860" y="185" fill="#fbbf24" font-size="15" font-weight="800" text-anchor="middle">STEP 4</text>
+    <text x="860" y="234" class="strong" font-size="19" font-weight="850" text-anchor="middle">Dashboard</text>
+    <text x="860" y="262" class="strong" font-size="19" font-weight="850" text-anchor="middle">Updates</text>
+    <text x="860" y="304" class="quiet" font-size="13" font-weight="560" text-anchor="middle">Status bar +</text>
+    <text x="860" y="324" class="quiet" font-size="13" font-weight="560" text-anchor="middle">HTML dashboard</text>
+    <text x="860" y="344" class="quiet" font-size="13" font-weight="560" text-anchor="middle">refresh auto</text>
+  </g>
+
+  <!-- Bottom row: 3 cards of 280px, 40px gap, 40px margin -->
+  <g class="bgText step s1">
+    <rect x="40" y="400" width="280" height="88" rx="16" fill="#202635" stroke="#334155"/>
+    <text x="60" y="428" fill="#60a5fa" font-size="17" font-weight="800">Zero context cost</text>
+    <text x="60" y="454" class="muted" font-size="14" font-weight="560">External process,</text>
+    <text x="60" y="476" class="muted" font-size="14" font-weight="560">no tokens spent</text>
+  </g>
+
+  <g class="bgText step s2">
+    <rect x="360" y="400" width="280" height="88" rx="16" fill="#202635" stroke="#334155"/>
+    <text x="380" y="428" fill="#a78bfa" font-size="17" font-weight="800">Progressive disclosure</text>
+    <text x="380" y="454" class="muted" font-size="14" font-weight="560">Summary first, details</text>
+    <text x="380" y="476" class="muted" font-size="14" font-weight="560">on demand</text>
+  </g>
+
+  <g class="bgText step s3">
+    <rect x="680" y="400" width="280" height="88" rx="16" fill="#202635" stroke="#334155"/>
+    <text x="700" y="428" fill="#34d399" font-size="17" font-weight="800">Credential-safe</text>
+    <text x="700" y="454" class="muted" font-size="14" font-weight="560">Secrets detected,</text>
+    <text x="700" y="476" class="muted" font-size="14" font-weight="560">never compressed or logged</text>
+  </g>
+</svg>

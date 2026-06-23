@@ -42,7 +42,9 @@ Runtime savers that cut new content as it enters your window. All on by default.
 | Structure map | Large code re-reads return a function-and-class skeleton | On (soft-block) | [Read cache](/features/read-cache/) |
 | Read cache management | Clear or inspect the per-session read cache (`read-cache-clear`, `read-cache-stats`) | On demand | [Read cache](/features/read-cache/) |
 | Tool result archive | Large tool results saved to disk, retrievable with `expand` after compaction | On | [Tool result archive](/features/tool-result-archive/) |
-| Active compression manager | Status and toggles for the compression suite (`v5` command) | On demand | [Active compression](/features/active-compression/) |
+| Search result compression | Long grep/search output condensed to top hits + counts | On | [Bash compression](/features/bash-compression/) |
+| Lean-output nudges | Conciseness steer at high context fill, cache-safe | On | [Active compression](/features/active-compression/) |
+| Active compression manager | Status and toggles for the compression suite (`v5` command, legacy name) | On demand | [Active compression](/features/active-compression/) |
 | JSONL trim and dedup | Remove oversized results and duplicate reminders from transcripts (`jsonl-trim`, `jsonl-dedup`) | Dry-run | [Full CLI reference](/reference/cli/) |
 
 ## Smart compaction and continuity

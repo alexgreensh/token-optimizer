@@ -1,0 +1,125 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 540" width="1000" height="540" role="img" aria-labelledby="dm-title dm-desc">
+  <title id="dm-title">Delta Mode: Smart Re-reads</title>
+  <desc id="dm-desc">Comparison showing how Delta Mode replaces full file re-reads with compact 2-line diffs, saving 97.9% of tokens.</desc>
+
+  <defs>
+    <linearGradient id="dm-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#101318"/>
+      <stop offset="55%" stop-color="#171b24"/>
+      <stop offset="100%" stop-color="#0b0e13"/>
+    </linearGradient>
+    <linearGradient id="dm-redFill" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#ef4444"/>
+      <stop offset="100%" stop-color="#f87171"/>
+    </linearGradient>
+    <linearGradient id="dm-greenFill" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#10b981"/>
+      <stop offset="100%" stop-color="#34d399"/>
+    </linearGradient>
+    <linearGradient id="dm-blueFill" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#2563eb"/>
+      <stop offset="100%" stop-color="#60a5fa"/>
+    </linearGradient>
+
+    <filter id="dm-shadow" x="-12%" y="-12%" width="124%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000000" flood-opacity="0.34"/>
+    </filter>
+
+    <style>
+      .bgText { font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .mono { font-family: "SF Mono", "Fira Code", ui-monospace, monospace; }
+      .muted { fill: #d1d5db; }
+      .quiet { fill: #94a3b8; }
+      .strong { fill: #f8fafc; }
+      .headline { animation: dmFadeHead 16000ms ease-in-out infinite; }
+      .card { animation-duration: 16000ms; animation-timing-function: cubic-bezier(.2,.9,.2,1); animation-iteration-count: infinite; }
+      .c1 { animation-name: dmRiseLeft; }
+      .c2 { animation-name: dmRiseRight; }
+      .c3 { animation-name: dmRiseCallout; }
+      @keyframes dmFadeHead { 0%,96%,100% { opacity: 0; } 8%,90% { opacity: 1; } }
+      @keyframes dmRiseLeft { 0%,6%,96%,100% { opacity: 0; transform: translateY(16px); } 18%,90% { opacity: 1; transform: translateY(0); } }
+      @keyframes dmRiseRight { 0%,14%,96%,100% { opacity: 0; transform: translateY(16px); } 26%,90% { opacity: 1; transform: translateY(0); } }
+      @keyframes dmRiseCallout { 0%,22%,96%,100% { opacity: 0; transform: translateY(16px); } 34%,90% { opacity: 1; transform: translateY(0); } }
+      @media (prefers-reduced-motion: reduce) {
+        .headline, .card { animation: none; opacity: 1; transform: none; }
+      }
+    </style>
+  </defs>
+
+  <rect width="1000" height="540" rx="28" fill="url(#dm-bg)"/>
+
+  <!-- Title -->
+  <g class="headline bgText">
+    <text x="60" y="72" class="strong" font-size="32" font-weight="850">Delta Mode: Smart Re-reads</text>
+    <text x="60" y="108" class="muted" font-size="18" font-weight="560">65%+ of file Read calls are re-reads. Only send the diff.</text>
+  </g>
+
+  <!-- LEFT CARD: Before (full re-read) -->
+  <g class="bgText card c1" filter="url(#dm-shadow)">
+    <rect x="60" y="140" width="430" height="300" rx="20" fill="#0f172a" stroke="url(#dm-redFill)" stroke-width="2.5"/>
+    <rect x="60" y="140" width="430" height="52" rx="20" fill="url(#dm-redFill)" opacity="0.18"/>
+    <text x="84" y="174" fill="#f87171" font-size="15" font-weight="800">BEFORE: UNOPTIMIZED RE-READ</text>
+
+    <!-- Turn 1 -->
+    <rect x="80" y="202" width="390" height="56" rx="12" fill="#202635" stroke="#334155"/>
+    <text x="96" y="226" class="strong" font-size="15" font-weight="800">Turn 1: Read auth.py</text>
+    <text x="96" y="246" class="quiet" font-size="13">287 lines read into context</text>
+    <text x="454" y="236" fill="#f87171" font-size="18" font-weight="900" text-anchor="end">+2,100</text>
+
+    <!-- Edit indicator -->
+    <path d="M265 270 L285 270" stroke="#ef4444" stroke-width="2" fill="none"/>
+    <path d="M279 264 L285 270 L279 276" stroke="#ef4444" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="300" y="274" class="quiet" font-size="12" font-style="italic">Edit: 2 lines changed</text>
+
+    <!-- Turn 2 -->
+    <rect x="80" y="292" width="390" height="56" rx="12" fill="#202635" stroke="#ef4444" stroke-width="1.5"/>
+    <text x="96" y="316" fill="#f87171" font-size="15" font-weight="800">Turn 2: Read auth.py (again)</text>
+    <text x="96" y="336" class="quiet" font-size="13">Full 2,100 tokens re-sent again</text>
+    <text x="454" y="326" fill="#f87171" font-size="18" font-weight="900" text-anchor="end">+2,100</text>
+
+    <!-- Total -->
+    <rect x="80" y="368" width="390" height="42" rx="10" fill="#111827"/>
+    <text x="96" y="394" class="muted" font-size="14" font-weight="700">Total Context Added:</text>
+    <text x="454" y="396" fill="#f87171" font-size="20" font-weight="900" text-anchor="end">4,200 tokens</text>
+  </g>
+
+  <!-- RIGHT CARD: With Delta Mode -->
+  <g class="bgText card c2" filter="url(#dm-shadow)">
+    <rect x="530" y="140" width="430" height="300" rx="20" fill="#0f172a" stroke="url(#dm-greenFill)" stroke-width="2.5"/>
+    <rect x="530" y="140" width="430" height="52" rx="20" fill="url(#dm-greenFill)" opacity="0.18"/>
+    <text x="554" y="174" fill="#34d399" font-size="15" font-weight="800">WITH DELTA MODE (OPTIMIZED)</text>
+
+    <!-- Turn 1 -->
+    <rect x="550" y="202" width="390" height="56" rx="12" fill="#202635" stroke="#334155"/>
+    <text x="566" y="226" class="strong" font-size="15" font-weight="800">Turn 1: Read auth.py</text>
+    <text x="566" y="246" class="quiet" font-size="13">287 lines read into context (cached)</text>
+    <text x="924" y="236" fill="#34d399" font-size="18" font-weight="900" text-anchor="end">+2,100</text>
+
+    <!-- Edit indicator -->
+    <path d="M735 270 L755 270" stroke="#10b981" stroke-width="2" fill="none"/>
+    <path d="M749 264 L755 270 L749 276" stroke="#10b981" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="770" y="274" class="quiet" font-size="12" font-style="italic">Edit: 2 lines changed</text>
+
+    <!-- Turn 2 -->
+    <rect x="550" y="292" width="390" height="56" rx="12" fill="#202635" stroke="#10b981" stroke-width="1.5"/>
+    <text x="566" y="312" fill="#34d399" font-size="14" font-weight="800">Turn 2: Smart Re-read</text>
+    <!-- Code diff visual -->
+    <rect x="566" y="320" width="220" height="28" rx="4" fill="#0f172a"/>
+    <text x="572" y="333" fill="#a7f3d0" class="mono" font-size="9">- return jwt(user)</text>
+    <text x="572" y="344" fill="#a7f3d0" class="mono" font-size="9">+ return jwt(user, exp=ttl)</text>
+    <text x="924" y="328" fill="#34d399" font-size="18" font-weight="900" text-anchor="end">+45</text>
+
+    <!-- Total -->
+    <rect x="550" y="368" width="390" height="42" rx="10" fill="#111827"/>
+    <text x="566" y="394" class="muted" font-size="14" font-weight="700">Total Context Added:</text>
+    <text x="924" y="396" fill="#34d399" font-size="20" font-weight="900" text-anchor="end">2,145 tokens</text>
+  </g>
+
+  <!-- Savings callout -->
+  <g class="bgText card c3" filter="url(#dm-shadow)">
+    <rect x="60" y="460" width="880" height="70" rx="18" fill="#111827" stroke="url(#dm-blueFill)" stroke-width="1.5"/>
+    <text x="84" y="494" fill="#60a5fa" font-size="20" font-weight="900">SAVINGS ON RE-READ:</text>
+    <text x="334" y="494" class="strong" font-size="22" font-weight="900">2,055 tokens saved (97.9%)</text>
+    <text x="84" y="518" class="quiet" font-size="13" font-weight="560">Auto-falls back to full read if the diff exceeds 1,500 chars or the file is over 2,000 lines.</text>
+  </g>
+</svg>

@@ -65,6 +65,9 @@ All of these variables and their defaults live in the [configuration reference](
 
 ## Before and after
 
+![Delta mode: re-reads of changed files return only the diff](/images/delta-mode.svg)
+
+
 | Scenario | Full re-read | With read cache |
 |---|---|---|
 | Small file changed slightly, re-read | ~2,000 tokens | ~50-token diff |
@@ -111,7 +114,7 @@ Low. The default `soft_block` mode fails open: when a diff is large or a file is
 
 ## Related environment variables
 
-`TOKEN_OPTIMIZER_READ_CACHE`, `TOKEN_OPTIMIZER_READ_CACHE_DELTA`, and `TOKEN_OPTIMIZER_STRUCTURE_MAP`. Config keys `v5_delta_mode`, `v5_structure_map_beta`, and `read_cache_enabled`. All defined in the [configuration reference](/reference/configuration/).
+`TOKEN_OPTIMIZER_READ_CACHE`, `TOKEN_OPTIMIZER_READ_CACHE_DELTA`, and `TOKEN_OPTIMIZER_STRUCTURE_MAP`. Config keys `v5_delta_mode`, `v5_structure_map_beta`, and `read_cache_enabled` (the `v5_` prefix is a legacy naming convention; the features are current). All defined in the [configuration reference](/reference/configuration/).
 
 ## Platform availability
 

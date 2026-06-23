@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 700" width="1000" height="700" role="img" aria-labelledby="bc-title bc-desc">
+  <title id="bc-title">Bash Output Compression</title>
+  <desc id="bc-desc">Comparison of typical verbose CLI outputs and their corresponding Token Optimizer compressed representations, saving up to 80% of tokens.</desc>
+
+  <defs>
+    <linearGradient id="bc-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#101318"/>
+      <stop offset="55%" stop-color="#171b24"/>
+      <stop offset="100%" stop-color="#0b0e13"/>
+    </linearGradient>
+    <linearGradient id="bc-greenFill" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#10b981"/>
+      <stop offset="100%" stop-color="#34d399"/>
+    </linearGradient>
+    <linearGradient id="bc-yellowFill" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#d97706"/>
+      <stop offset="100%" stop-color="#fbbf24"/>
+    </linearGradient>
+    <linearGradient id="bc-blueFill" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#2563eb"/>
+      <stop offset="100%" stop-color="#60a5fa"/>
+    </linearGradient>
+
+    <filter id="bc-shadow" x="-12%" y="-12%" width="124%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000000" flood-opacity="0.34"/>
+    </filter>
+
+    <style>
+      .bgText { font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .mono { font-family: "SF Mono", "Fira Code", ui-monospace, monospace; }
+      .muted { fill: #d1d5db; }
+      .quiet { fill: #94a3b8; }
+      .strong { fill: #f8fafc; }
+      .headline { animation: bcFadeHead 16000ms ease-in-out infinite; }
+      .card { animation-duration: 16000ms; animation-timing-function: cubic-bezier(.2,.9,.2,1); animation-iteration-count: infinite; }
+      .c1 { animation-name: bcRiseRow1; }
+      .c2 { animation-name: bcRiseRow2; }
+      .c3 { animation-name: bcRiseCallout; }
+      @keyframes bcFadeHead { 0%,96%,100% { opacity: 0; } 8%,90% { opacity: 1; } }
+      @keyframes bcRiseRow1 { 0%,6%,96%,100% { opacity: 0; transform: translateY(16px); } 18%,90% { opacity: 1; transform: translateY(0); } }
+      @keyframes bcRiseRow2 { 0%,14%,96%,100% { opacity: 0; transform: translateY(16px); } 26%,90% { opacity: 1; transform: translateY(0); } }
+      @keyframes bcRiseCallout { 0%,22%,96%,100% { opacity: 0; transform: translateY(16px); } 34%,90% { opacity: 1; transform: translateY(0); } }
+      @media (prefers-reduced-motion: reduce) {
+        .headline, .card { animation: none; opacity: 1; transform: none; }
+      }
+    </style>
+  </defs>
+
+  <rect width="1000" height="700" rx="28" fill="url(#bc-bg)"/>
+
+  <!-- Title -->
+  <g class="headline bgText">
+    <text x="60" y="72" class="strong" font-size="32" font-weight="850">Bash Output Compression</text>
+    <text x="60" y="108" class="muted" font-size="18" font-weight="560">Lossy-but-safe command output compression. Whitelisted only. Credentials preserved.</text>
+  </g>
+
+  <!-- ROW 1: git status -->
+  <g class="bgText card c1" filter="url(#bc-shadow)">
+    <rect x="60" y="140" width="880" height="190" rx="20" fill="#0f172a" stroke="url(#bc-blueFill)" stroke-width="2"/>
+    <rect x="60" y="140" width="880" height="46" rx="20" fill="url(#bc-blueFill)" opacity="0.15"/>
+    <text x="84" y="170" fill="#60a5fa" font-size="17" font-weight="800">$ git status</text>
+    <text x="856" y="170" fill="#60a5fa" font-size="15" font-weight="800" text-anchor="end">SAVED 67% (114 &#8594; 37 tokens)</text>
+
+    <!-- Original -->
+    <rect x="100" y="206" width="410" height="100" rx="10" fill="#181825" stroke="#334155" stroke-width="1.5"/>
+    <text x="116" y="234" fill="#94a3b8" class="mono" font-size="12">On branch main</text>
+    <text x="116" y="252" fill="#a6e3a1" class="mono" font-size="12">    new file:   src/auth.py</text>
+    <text x="116" y="270" fill="#f9e2af" class="mono" font-size="12">    modified:   README.md</text>
+    <text x="116" y="288" fill="#585b70" class="mono" font-size="12">... (18 lines of boilerplate guidelines)</text>
+    <text x="494" y="300" fill="#585b70" class="mono" font-size="12" text-anchor="end">114 tokens</text>
+
+    <!-- Arrow -->
+    <path d="M510 256 L550 256" stroke="#475569" stroke-width="3" fill="none"/>
+    <path d="M544 250 L554 256 L544 262" stroke="#94a3b8" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <!-- Compressed -->
+    <rect x="570" y="206" width="350" height="100" rx="10" fill="#181825" stroke="#10b981" stroke-width="1.5"/>
+    <text x="586" y="234" fill="#34d399" class="mono" font-size="13" font-weight="bold">branch: main, ahead 2,</text>
+    <text x="586" y="256" fill="#34d399" class="mono" font-size="13">1 staged: src/auth.py,</text>
+    <text x="586" y="278" fill="#34d399" class="mono" font-size="13">1 unstaged: README.md</text>
+    <text x="908" y="300" fill="#34d399" class="mono" font-size="13" font-weight="bold" text-anchor="end">37 tokens</text>
+  </g>
+
+  <!-- ROW 2: pytest -->
+  <g class="bgText card c2" filter="url(#bc-shadow)">
+    <rect x="60" y="350" width="880" height="190" rx="20" fill="#0f172a" stroke="url(#bc-yellowFill)" stroke-width="2"/>
+    <rect x="60" y="350" width="880" height="46" rx="20" fill="url(#bc-yellowFill)" opacity="0.15"/>
+    <text x="84" y="380" fill="#fbbf24" font-size="17" font-weight="800">$ pytest tests/</text>
+    <text x="856" y="380" fill="#fbbf24" font-size="15" font-weight="800" text-anchor="end">SAVED 80% (564 &#8594; 115 tokens)</text>
+
+    <!-- Original -->
+    <rect x="100" y="416" width="410" height="100" rx="10" fill="#181825" stroke="#334155" stroke-width="1.5"/>
+    <text x="116" y="444" fill="#585b70" class="mono" font-size="11">===== test session starts =====</text>
+    <text x="116" y="460" fill="#a6e3a1" class="mono" font-size="11">tests/test_auth.py::test_login PASSED</text>
+    <text x="116" y="476" fill="#f38ba8" class="mono" font-size="11">tests/test_data.py::test_sync FAILED</text>
+    <text x="116" y="492" fill="#585b70" class="mono" font-size="11">... (112 PASSED lines omitted here)</text>
+    <text x="494" y="508" fill="#585b70" class="mono" font-size="12" text-anchor="end">564 tokens</text>
+
+    <!-- Arrow -->
+    <path d="M510 466 L550 466" stroke="#475569" stroke-width="3" fill="none"/>
+    <path d="M544 460 L554 466 L544 472" stroke="#94a3b8" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <!-- Compressed -->
+    <rect x="570" y="416" width="350" height="100" rx="10" fill="#181825" stroke="#10b981" stroke-width="1.5"/>
+    <text x="586" y="444" fill="#f87171" class="mono" font-size="12" font-weight="bold">26 passed, 1 failed in 3.4s</text>
+    <text x="586" y="464" fill="#94a3b8" class="mono" font-size="11">FAILED: test_data.py::test_sync</text>
+    <text x="586" y="482" fill="#f87171" class="mono" font-size="11">AssertionError: {'theme':'dark'} != {'theme':'light'}</text>
+    <text x="908" y="508" fill="#34d399" class="mono" font-size="12" font-weight="bold" text-anchor="end">115 tokens</text>
+  </g>
+
+  <!-- Callout -->
+  <g class="bgText card c3" filter="url(#bc-shadow)">
+    <rect x="60" y="560" width="880" height="100" rx="14" fill="#111827" stroke="url(#bc-greenFill)" stroke-width="1.5"/>
+    <text x="84" y="592" fill="#34d399" font-size="17" font-weight="900">CREDENTIAL SAFETY FIRST:</text>
+    <text x="84" y="618" class="strong" font-size="16" font-weight="720">Scans output first. Lines with API keys, AWS keys, or tokens</text>
+    <text x="84" y="640" class="strong" font-size="16" font-weight="720">are NEVER compressed.</text>
+  </g>
+</svg>

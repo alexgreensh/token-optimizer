@@ -14,7 +14,7 @@
   <text x="400" y="60" fill="#a6adc8" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" text-anchor="middle">Startup overhead is tiny. The degradation curve is what gets you.</text>
 
   <!-- ═══ Row 1: Session Start ═══ -->
-  <g opacity="0">
+  <g opacity="1">
     <animate attributeName="opacity" values="0;1" dur="0.4s" begin="0.3s" fill="freeze"/>
 
     <text x="60" y="100" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="15" font-weight="bold">Session Start</text>
@@ -35,7 +35,7 @@
   </g>
 
   <!-- ═══ Row 2: Mid-Session ═══ -->
-  <g opacity="0">
+  <g opacity="1">
     <animate attributeName="opacity" values="0;1" dur="0.4s" begin="0.9s" fill="freeze"/>
 
     <text x="60" y="182" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="15" font-weight="bold">~100 Messages In</text>
@@ -53,7 +53,7 @@
   </g>
 
   <!-- ═══ Row 3: Pre-Compact ═══ -->
-  <g opacity="0">
+  <g opacity="1">
     <animate attributeName="opacity" values="0;1" dur="0.4s" begin="1.5s" fill="freeze"/>
 
     <text x="60" y="264" fill="#f38ba8" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="15" font-weight="bold">~150 Messages In</text>
@@ -71,7 +71,7 @@
   </g>
 
   <!-- ═══ Row 4: After Compaction ═══ -->
-  <g opacity="0">
+  <g opacity="1">
     <animate attributeName="opacity" values="0;1" dur="0.4s" begin="2.1s" fill="freeze"/>
 
     <text x="60" y="346" fill="#cdd6f4" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="15" font-weight="bold">After Auto-Compact</text>
@@ -89,7 +89,7 @@
   </g>
 
   <!-- ═══ Legend ═══ -->
-  <g opacity="0">
+  <g opacity="1">
     <animate attributeName="opacity" values="0;1" dur="0.4s" begin="2.7s" fill="freeze"/>
 
     <line x1="60" y1="410" x2="740" y2="410" stroke="#313244" stroke-width="1"/>
@@ -110,7 +110,7 @@
   </g>
 
   <!-- ═══ Callout ═══ -->
-  <g opacity="0">
+  <g opacity="1">
     <animate attributeName="opacity" values="0;1" dur="0.4s" begin="3.2s" fill="freeze"/>
 
     <rect x="60" y="460" width="680" height="60" rx="8" fill="#181825" stroke="#89b4fa" stroke-width="1"/>

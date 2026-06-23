@@ -12,7 +12,7 @@
         <animate attributeName="width"
           values="0;0;800;800;800;0;0"
           keyTimes="0;0.03;0.12;0.84;0.88;0.88;1"
-          dur="16s" repeatCount="indefinite"/>
+          dur="32s" repeatCount="indefinite"/>
       </rect>
     </clipPath>
   </defs>
@@ -46,21 +46,21 @@
   <text clip-path="url(#ty)" x="28" y="128" fill="#89b4fa" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="16" font-weight="bold">&#x276F; python3 measure.py quick</text>
 
   <!-- Scan header -->
-  <g opacity="0">
+  <g opacity="1">
     <animate attributeName="opacity"
       values="0;0;1;1;0;0"
       keyTimes="0;0.14;0.17;0.84;0.88;1"
-      dur="16s" repeatCount="indefinite"/>
+      dur="32s" repeatCount="indefinite"/>
     <text x="28" y="158" fill="#cdd6f4" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14" font-weight="bold">TOKEN OPTIMIZER: QUICK SCAN</text>
     <line x1="28" y1="166" x2="400" y2="166" stroke="#313244" stroke-width="1"/>
   </g>
 
   <!-- Context window + overhead -->
-  <g opacity="0">
+  <g opacity="1">
     <animate attributeName="opacity"
       values="0;0;1;1;0;0"
       keyTimes="0;0.19;0.22;0.84;0.88;1"
-      dur="16s" repeatCount="indefinite"/>
+      dur="32s" repeatCount="indefinite"/>
     <text fill="#bac2de" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14">
       <tspan x="44" y="190">Context window:    </tspan>
       <tspan fill="#89b4fa">1,000,000 tokens (1M, auto-detected)</tspan>
@@ -76,20 +76,20 @@
   </g>
 
   <!-- DEGRADATION RISK header -->
-  <g opacity="0">
+  <g opacity="1">
     <animate attributeName="opacity"
       values="0;0;1;1;0;0"
       keyTimes="0;0.30;0.34;0.84;0.88;1"
-      dur="16s" repeatCount="indefinite"/>
+      dur="32s" repeatCount="indefinite"/>
     <text x="28" y="264" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14" font-weight="bold">DEGRADATION RISK</text>
   </g>
 
   <!-- Risk details -->
-  <g opacity="0">
+  <g opacity="1">
     <animate attributeName="opacity"
       values="0;0;1;1;0;0"
       keyTimes="0;0.36;0.40;0.84;0.88;1"
-      dur="16s" repeatCount="indefinite"/>
+      dur="32s" repeatCount="indefinite"/>
     <text fill="#bac2de" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14">
       <tspan x="44" y="288">Danger zone:       </tspan>
       <tspan fill="#f9e2af">500K (50%, quality starts dropping)</tspan>
@@ -105,41 +105,41 @@
   </g>
 
   <!-- TOP OFFENDERS header -->
-  <g opacity="0">
+  <g opacity="1">
     <animate attributeName="opacity"
       values="0;0;1;1;0;0"
       keyTimes="0;0.46;0.50;0.84;0.88;1"
-      dur="16s" repeatCount="indefinite"/>
+      dur="32s" repeatCount="indefinite"/>
     <text x="28" y="362" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14" font-weight="bold">TOP OFFENDERS</text>
   </g>
 
   <!-- Offender items -->
-  <g opacity="0">
+  <g opacity="1">
     <animate attributeName="opacity"
       values="0;0;1;1;0;0"
       keyTimes="0;0.52;0.55;0.84;0.88;1"
-      dur="16s" repeatCount="indefinite"/>
+      dur="32s" repeatCount="indefinite"/>
     <text fill="#bac2de" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14">
       <tspan x="44" y="386">1. 58 skills loaded </tspan><tspan fill="#585b70">(42 unused in 30d):</tspan><tspan fill="#f9e2af"> 18,200 tokens</tspan>
     </text>
   </g>
 
-  <g opacity="0">
+  <g opacity="1">
     <animate attributeName="opacity"
       values="0;0;1;1;0;0"
       keyTimes="0;0.56;0.59;0.84;0.88;1"
-      dur="16s" repeatCount="indefinite"/>
+      dur="32s" repeatCount="indefinite"/>
     <text fill="#bac2de" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14">
       <tspan x="44" y="406">2. 12 MCP servers </tspan><tspan fill="#585b70">(3 eager-loaded):</tspan><tspan fill="#f9e2af"> 11,400 tokens</tspan>
     </text>
   </g>
 
   <!-- Quick win -->
-  <g opacity="0">
+  <g opacity="1">
     <animate attributeName="opacity"
       values="0;0;1;1;0;0"
       keyTimes="0;0.66;0.70;0.84;0.88;1"
-      dur="16s" repeatCount="indefinite"/>
+      dur="32s" repeatCount="indefinite"/>
     <line x1="28" y1="424" x2="560" y2="424" stroke="#313244" stroke-width="0.5"/>
     <text x="28" y="446" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14" font-weight="bold">#1 Quick Win: Archive 42 unused skills &#x2192; save ~12,600 tokens</text>
   </g>

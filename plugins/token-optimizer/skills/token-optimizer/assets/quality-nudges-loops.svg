@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 540" width="1000" height="540" role="img" aria-labelledby="qnl-title qnl-desc">
+  <title id="qnl-title">Quality Nudges and Loop Detection</title>
+  <desc id="qnl-desc">Comparison of two core features: Quality Nudges warning you before context quality drops, and Loop Detection preventing costly AI repetition.</desc>
+
+  <defs>
+    <linearGradient id="qnl-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#101318"/>
+      <stop offset="55%" stop-color="#171b24"/>
+      <stop offset="100%" stop-color="#0b0e13"/>
+    </linearGradient>
+    <linearGradient id="qnl-purpleFill" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#7c3aed"/>
+      <stop offset="100%" stop-color="#c4b5fd"/>
+    </linearGradient>
+    <linearGradient id="qnl-greenFill" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#10b981"/>
+      <stop offset="100%" stop-color="#34d399"/>
+    </linearGradient>
+    <linearGradient id="qnl-orangeFill" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#ea580c"/>
+      <stop offset="100%" stop-color="#f97316"/>
+    </linearGradient>
+
+    <filter id="qnl-shadow" x="-12%" y="-12%" width="124%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000000" flood-opacity="0.34"/>
+    </filter>
+
+    <style>
+      .bgText { font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .mono { font-family: "SF Mono", "Fira Code", ui-monospace, monospace; }
+      .muted { fill: #d1d5db; }
+      .quiet { fill: #94a3b8; }
+      .strong { fill: #f8fafc; }
+      .headline { animation: qnlFadeHead 16000ms ease-in-out infinite; }
+      .card { animation-duration: 16000ms; animation-timing-function: cubic-bezier(.2,.9,.2,1); animation-iteration-count: infinite; }
+      .c1 { animation-name: qnlRiseLeft; }
+      .c2 { animation-name: qnlRiseRight; }
+      .c3 { animation-name: qnlRiseCallout; }
+      @keyframes qnlFadeHead { 0%,96%,100% { opacity: 0; } 8%,90% { opacity: 1; } }
+      @keyframes qnlRiseLeft { 0%,6%,96%,100% { opacity: 0; transform: translateY(16px); } 18%,90% { opacity: 1; transform: translateY(0); } }
+      @keyframes qnlRiseRight { 0%,14%,96%,100% { opacity: 0; transform: translateY(16px); } 26%,90% { opacity: 1; transform: translateY(0); } }
+      @keyframes qnlRiseCallout { 0%,22%,96%,100% { opacity: 0; transform: translateY(16px); } 34%,90% { opacity: 1; transform: translateY(0); } }
+      @media (prefers-reduced-motion: reduce) {
+        .headline, .card { animation: none; opacity: 1; transform: none; }
+      }
+    </style>
+  </defs>
+
+  <rect width="1000" height="540" rx="28" fill="url(#qnl-bg)"/>
+
+  <!-- Title -->
+  <g class="headline bgText">
+    <text x="60" y="72" class="strong" font-size="32" font-weight="850">Quality Nudges + Loop Detection</text>
+    <text x="60" y="108" class="muted" font-size="18" font-weight="560">Live warnings before context degradation or retry loop exhaustion.</text>
+  </g>
+
+  <!-- LEFT CARD: Quality Nudges -->
+  <g class="bgText card c1" filter="url(#qnl-shadow)">
+    <rect x="60" y="140" width="430" height="300" rx="20" fill="#0f172a" stroke="url(#qnl-purpleFill)" stroke-width="2.5"/>
+    <rect x="60" y="140" width="430" height="52" rx="20" fill="url(#qnl-purpleFill)" opacity="0.18"/>
+    <text x="84" y="174" fill="#c4b5fd" font-size="16" font-weight="800">LIVE QUALITY NUDGES</text>
+
+    <!-- Chart -->
+    <rect x="80" y="202" width="390" height="150" rx="12" fill="#181825" stroke="#334155" stroke-width="1"/>
+
+    <line x1="90" y1="232" x2="460" y2="232" stroke="#313244" stroke-width="1" stroke-dasharray="2,2"/>
+    <line x1="90" y1="282" x2="460" y2="282" stroke="#f97316" stroke-width="1.5" stroke-dasharray="3,3" opacity="0.6"/>
+    <text x="450" y="278" fill="#f97316" font-size="9" font-weight="700" text-anchor="end">Warning Threshold (60)</text>
+
+    <path d="M 100 222 L 180 226 L 260 242 L 330 274 L 360 322 L 400 227" fill="none" stroke="#34d399" stroke-width="3.5" stroke-linecap="round"/>
+    <path d="M 260 242 L 330 274 L 360 322" fill="none" stroke="#ef4444" stroke-width="3.5" stroke-linecap="round"/>
+
+    <!-- Warning bubble -->
+    <rect x="290" y="286" width="150" height="54" rx="8" fill="#0f172a" stroke="#f97316" stroke-width="1.5"/>
+    <text x="302" y="304" fill="#f97316" font-size="11" font-weight="800">Q-Nudge Alert:</text>
+    <text x="302" y="318" class="strong" font-size="10" font-weight="600">Q dropped to 58. Run</text>
+    <text x="302" y="330" fill="#60a5fa" font-size="10" font-weight="800">/compact to protect</text>
+
+    <!-- Recovery label -->
+    <text x="370" y="218" fill="#60a5fa" font-size="10" font-weight="800">/compact</text>
+    <text x="370" y="230" fill="#34d399" font-size="10" font-weight="800">Q: 96 recovered</text>
+
+    <!-- Bottom summary -->
+    <rect x="80" y="368" width="390" height="42" rx="10" fill="#111827"/>
+    <text x="96" y="394" class="muted" font-size="14" font-weight="720">Warns you before the compaction clip.</text>
+  </g>
+
+  <!-- RIGHT CARD: Loop Detection -->
+  <g class="bgText card c2" filter="url(#qnl-shadow)">
+    <rect x="530" y="140" width="430" height="300" rx="20" fill="#0f172a" stroke="url(#qnl-orangeFill)" stroke-width="2.5"/>
+    <rect x="530" y="140" width="430" height="52" rx="20" fill="url(#qnl-orangeFill)" opacity="0.18"/>
+    <text x="554" y="174" fill="#f97316" font-size="16" font-weight="800">AUTOMATIC LOOP DETECTION</text>
+
+    <!-- Terminal -->
+    <rect x="550" y="202" width="390" height="150" rx="12" fill="#181825" stroke="#334155" stroke-width="1"/>
+    <text x="566" y="228" fill="#94a3b8" class="mono" font-size="9">Turn 14: Bash("pytest") &#x2192; <tspan fill="#ef4444" font-weight="bold">FAILED</tspan></text>
+    <text x="566" y="242" fill="#94a3b8" class="mono" font-size="9">Turn 15: Bash("pytest") &#x2192; <tspan fill="#ef4444" font-weight="bold">FAILED</tspan></text>
+    <text x="566" y="256" fill="#94a3b8" class="mono" font-size="9">Turn 16: Bash("pytest") &#x2192; <tspan fill="#ef4444" font-weight="bold">FAILED</tspan></text>
+
+    <!-- Alert -->
+    <rect x="560" y="270" width="370" height="72" rx="8" fill="#0f172a" stroke="#fbbf24" stroke-width="1.5"/>
+    <text x="574" y="290" fill="#fbbf24" font-size="12" font-weight="800">[Token Optimizer] Retry Loop Alert:</text>
+    <text x="574" y="308" class="strong" font-size="11" font-weight="600">3 identical test failures in a row. AI is stuck in a loop.</text>
+    <text x="574" y="324" fill="#34d399" font-size="11" font-weight="800">Prompt override injected &#x2192; broke loop!</text>
+
+    <!-- Bottom summary -->
+    <rect x="550" y="368" width="390" height="42" rx="10" fill="#111827"/>
+    <text x="566" y="394" class="muted" font-size="14" font-weight="720">Saves massive token waste from retries.</text>
+  </g>
+
+  <!-- Savings callout -->
+  <g class="bgText card c3" filter="url(#qnl-shadow)">
+    <rect x="60" y="460" width="880" height="70" rx="18" fill="#111827" stroke="url(#qnl-greenFill)" stroke-width="1.5"/>
+    <text x="84" y="494" fill="#34d399" font-size="20" font-weight="900">LOOP PREVENTION SAVINGS:</text>
+    <text x="384" y="494" class="strong" font-size="22" font-weight="900">~47,000 tokens saved per caught loop</text>
+    <text x="84" y="518" class="quiet" font-size="13" font-weight="560">Injected guidelines break retry loops instantly. Fewer failed tool calls, less context bloat.</text>
+  </g>
+</svg>

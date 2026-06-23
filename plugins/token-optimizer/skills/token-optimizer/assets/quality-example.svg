@@ -22,20 +22,20 @@
   <rect x="0" y="544" width="800" height="1" fill="#313244"/>
 
   <!-- ═══ Command ═══ -->
-  <g opacity="0">
+  <g opacity="1">
     <animate attributeName="opacity" values="0;1" dur="0.3s" begin="0.2s" fill="freeze"/>
     <text x="28" y="64" fill="#89b4fa" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="15" font-weight="bold">&#x276F; python3 measure.py quality current</text>
   </g>
 
   <!-- ═══ Header ═══ -->
-  <g opacity="0">
+  <g opacity="1">
     <animate attributeName="opacity" values="0;1" dur="0.3s" begin="0.6s" fill="freeze"/>
     <text x="28" y="100" fill="#cdd6f4" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="15" font-weight="bold">Context Quality Report</text>
     <line x1="28" y1="108" x2="380" y2="108" stroke="#313244" stroke-width="1"/>
   </g>
 
   <!-- ═══ Top-level stats ═══ -->
-  <g opacity="0">
+  <g opacity="1">
     <animate attributeName="opacity" values="0;1" dur="0.3s" begin="1.0s" fill="freeze"/>
     <text font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14">
       <tspan x="28" y="134" fill="#bac2de">Content quality:     </tspan>
@@ -57,12 +57,12 @@
   </g>
 
   <!-- ═══ Signal breakdown ═══ -->
-  <g opacity="0">
+  <g opacity="1">
     <animate attributeName="opacity" values="0;1" dur="0.3s" begin="1.6s" fill="freeze"/>
     <text x="28" y="234" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14" font-weight="bold">Signal Breakdown</text>
   </g>
 
-  <g opacity="0">
+  <g opacity="1">
     <animate attributeName="opacity" values="0;1" dur="0.3s" begin="2.0s" fill="freeze"/>
 
     <!-- Context fill -->
@@ -123,7 +123,7 @@
   </g>
 
   <!-- ═══ Waste estimate ═══ -->
-  <g opacity="0">
+  <g opacity="1">
     <animate attributeName="opacity" values="0;1" dur="0.3s" begin="2.6s" fill="freeze"/>
     <line x1="28" y1="408" x2="600" y2="408" stroke="#313244" stroke-width="1"/>
     <text font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14">
@@ -134,7 +134,7 @@
   </g>
 
   <!-- ═══ The Insight ═══ -->
-  <g opacity="0">
+  <g opacity="1">
     <animate attributeName="opacity" values="0;1" dur="0.4s" begin="3.2s" fill="freeze"/>
     <rect x="28" y="454" width="744" height="76" rx="8" fill="#181825" stroke="#89b4fa" stroke-width="1" opacity="0.8"/>
     <text x="48" y="478" fill="#89b4fa" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" font-weight="bold">This session is running on fumes.</text>
@@ -143,7 +143,7 @@
   </g>
 
   <!-- ═══ Status bar content ═══ -->
-  <g opacity="0">
+  <g opacity="1">
     <animate attributeName="opacity" values="0;1" dur="0.3s" begin="0.2s" fill="freeze"/>
     <text x="14" y="568" fill="#6c7086" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12">Opus 4.6</text>
     <text x="100" y="568" fill="#313244" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12">|</text>

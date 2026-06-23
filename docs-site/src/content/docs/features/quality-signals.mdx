@@ -11,6 +11,9 @@ Two are user-visible alerters: Quality Nudges warn when the session is degrading
 
 ## What each feature does
 
+![Live quality nudges and automatic loop detection before context degradation or retry-loop waste](/images/quality-nudges-loops.svg)
+
+
 **Quality Nudges** watch the running context quality score. When the score drops 15 or more points in a single measurement, or crosses below 60, a short inline note enters the context. The model surfaces it on the next turn, prompting a timely `/compact` before the session degrades further. The note is suppressed on the first check immediately after a compaction (to avoid false alarms right after the context was just cleaned).
 
 **Loop Detection** watches for repetition. It compares the last four user messages and the last five tool results for similarity, using a confidence threshold of 0.70. When confidence is met, a short warning enters the context. Post-hoc analysis of real sessions found that loop sessions average 47,000 wasted tokens before the user notices. The notes use fixed templates and never echo your content back.
@@ -69,6 +72,9 @@ python3 measure.py v5 disable loop_detection
 **Activity Mode and Decision Extraction** are internal-only. There is no disable path. They produce no user-visible output and carry zero risk (see Risk rating below).
 
 ## Commands
+
+![Running measure.py quality current in the terminal](/images/quality-example.svg)
+
 
 Check current status of the quality-cache hook and signal features:
 
@@ -152,4 +158,4 @@ See the [capability matrix](/reference/capability-matrix/) for a full platform b
 - [Smart compaction](/features/smart-compaction/): where Decision Extraction output is injected as CRITICAL DECISIONS at compact time.
 - [Tool result archive and expand](/features/tool-result-archive/): durability for large results across compaction.
 - [Configuration reference](/reference/configuration/): env vars, config keys, and load order.
-- [CLI reference](/reference/cli/): `quality-cache status`, `compression-stats`, `v5 status`, `v5 enable`, `v5 disable`.
+- [CLI reference](/reference/cli/): `quality-cache status`, `compression-stats`, `v5 status`, `v5 enable`, `v5 disable` (the `v5` verb is a legacy command name).

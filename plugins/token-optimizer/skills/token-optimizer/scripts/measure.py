@@ -17911,7 +17911,7 @@ def setup_hook(dry_run=False):
 
 # ========== Persistent Dashboard Daemon ==========
 
-TOKEN_OPTIMIZER_VERSION = "5.11.17"  # Keep in sync with plugin.json + marketplace.json
+TOKEN_OPTIMIZER_VERSION = "5.11.18"  # Keep in sync with plugin.json + marketplace.json
 _DASHBOARD_CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 # Per-runtime daemon identity. Each runtime gets a distinct port + label so a
 # dashboard under one runtime never collides with another's. Copilot uses 24845
@@ -30233,32 +30233,30 @@ def _baseline_progress():
 
 
 def _estimate_before_after_savings(days=30):
-    """THE headline saving: your CURRENT 30-day volume, held constant, priced at your
-    PRE-TO efficiency (~95% Opus + baseline cache pattern) vs what it actually cost.
+    """THE headline saving: your FROZEN typical pre-TO session, priced at your PRE-TO
+    efficiency (~95% Opus + baseline cache pattern) vs what that same session costs now.
 
-    This is a CURRENT-VOLUME COUNTERFACTUAL, not a per-session period comparison. We
-    take the exact token volume you actually moved this period (current human sessions,
-    sidechains excluded), and ask: "had you worked it the way you did BEFORE Token
-    Optimizer — mostly Opus, with your pre-TO caching pattern — what would it have
-    cost?" Volume is identical on both arms; only EFFICIENCY (model mix + cache-hit)
-    differs, so the gap is pure behavioral transformation and is never confounded by
-    workload growth (the flaw in the old per-session method).
+    This is a PER-SESSION COMPARISON on a FROZEN volume anchor. The "old way / session"
+    figure is computed entirely from frozen inputs (the captured typical_session token
+    vector + frozen model mix + frozen cache pattern), so it is a STABLE, factual baseline
+    that does NOT re-roll when this period's workload changes. Only EFFICIENCY (model mix
+    + cache-hit) differs between the arms, so the per-session gap is pure behavioral
+    transformation. Volume (the current session count) re-enters ONLY as a multiplier for
+    the monthly total, never as a confounder of the per-session baseline.
 
-    Method (validated against the owner's own data):
-      1. CURRENT window = human session_log rows over `days`. Aggregate billed token
-         classes via `_session_token_vector`: F=fresh_input, CR=cache_read,
-         CW=cache_write, O=output. total_in = F + CR + CW.
-      2. ACTUAL = price(F, CR, CW, O) at the CURRENT model mix.
-      3. COUNTERFACTUAL ("the old way") = same volume, but caching redistributed over the
-         FRESH+CACHE_READ POOL (pool = total_in - CW) at the BASELINE pool-hit rate
-         (cf_CR = base_hit*pool; cf_F = pool - cf_CR), pool priced at the BASELINE model
-         mix (~95% Opus). CW count is held constant in tokens but priced at EACH ARM'S OWN
-         mix (baseline mix in the counterfactual, actual mix in actual): cache-write IS a
-         routing lever, since cache-creation tokens bill at the writing model's rate. The
-         invariant cf_F + cf_CR + CW == total_in holds exactly, so the counterfactual never
-         prices more volume than moved.
-      4. TRANSFORMATION (monthly) = COUNTERFACTUAL - ACTUAL. The window is already 30d,
-         so the figure is already monthly. Clamped >= 0 for display.
+    Method:
+      1. FROZEN anchor = baseline_state.json typical_session: bfi=fresh_input,
+         bcr=cache_read, bcw=cache_write, bout=output. The current window over `days` is
+         read ONLY for the session count (recent_n) and the CURRENT cache-hit (cur_hit).
+      2. OLD WAY / session (counterfactual) = price(bfi, bcr, bout) + cache-write, all at
+         the BASELINE (~95% Opus) mix. Depends only on frozen inputs + prices -> stable.
+      3. NOW / session (actual) = the SAME frozen tokens, but the fresh+cache_read pool
+         (t_pool = bfi + bcr) redistributed at cur_hit (cur_CR = cur_hit*t_pool; cur_F =
+         t_pool - cur_CR), priced at the CURRENT mix. Cache-write is held constant in
+         tokens but priced at each arm's OWN mix (cache-write bills at the writing model's
+         rate, so it is a routing lever). t_pool is exact, so neither arm prices more
+         volume than the typical session held.
+      4. MAIN TRANSFORMATION (monthly) = (old_cps - now_cps) * recent_n. Clamped >= 0.
 
     Baseline model mix is ~95% Opus: the product owner's confirmed pre-TO mix. We floor
     the frozen baseline's measured opus_share at 0.95 (the early window was already
@@ -30279,7 +30277,7 @@ def _estimate_before_after_savings(days=30):
                `label` is presentational and may change),
              breakdown_caveat (str), evidence}.
     On an empty result, `reason` is one of "insufficient_history" / "net_negative" /
-    "no_recent_sessions" (None when never computed).
+    "no_recent_sessions" / "no_mix" (None when never computed).
     """
     zero = {"before_cost_per_session": 0.0, "after_cost_per_session": 0.0,
             "savings_per_session": 0.0, "sessions_per_month": 0,
@@ -30379,31 +30377,14 @@ def _estimate_before_after_savings(days=30):
             return {**zero, "before_sessions": bn, "reason": "no_recent_sessions",
                     "baseline_building": _baseline_progress()}
 
-        # Aggregate the current window into billed token classes (sum, not mean): the
-        # counterfactual holds this TOTAL volume constant and swaps only efficiency.
-        #
-        # NO outlier drop. The metric is volume-held-constant: a heavy session's tokens
-        # are REAL volume that genuinely cost more at 95% Opus, so dropping them is a pure
-        # definitional undercount (it deletes exactly the sessions where routing saved the
-        # most absolute dollars). The former M4 guard (drop > 150*median) deleted ~24% of
-        # real billed tokens on Alex's data while leaving the efficiency RATE flat, proving
-        # it only suppressed dollars. Corrupt-row protection already lives in
-        # _session_token_vector's clamps (cw >= 0, cw <= inp, fi >= 0), so no guard is
-        # needed here. (Removed per the Opus transformation verdict, 2026-06-15.)
+        # Aggregate the current window into billed token classes (sum, not mean). The main
+        # pool is now priced PER FROZEN TYPICAL SESSION (see below), so the current-window
+        # totals are used only to (a) confirm the window is non-empty and (b) derive the
+        # CURRENT cache-hit rate (cur_hit), the one efficiency signal the "now" arm needs.
         _vectors = [_session_token_vector(r) for r in recent_rows]
-        F = CR = CW = O = 0.0
-        CW_5m = CW_1h = 0.0  # TTL split, so the counterfactual prices 1h writes at 2x.
-        for r, (fi, cw, cr, out) in zip(recent_rows, _vectors):
-            F += fi; CW += cw; CR += cr; O += out
-            # _session_token_vector may clamp cw down to <= inp; apportion the clamped CW
-            # across the raw 5m/1h split so CW_5m + CW_1h == CW exactly (TTL pricing).
-            raw_5m = float(r[2] or 0); raw_1h = float(r[3] or 0)
-            raw_cw = raw_5m + raw_1h
-            if raw_cw > 0 and cw > 0:
-                CW_5m += cw * (raw_5m / raw_cw)
-                CW_1h += cw * (raw_1h / raw_cw)
-            else:
-                CW_5m += cw  # no split info -> treat as 5m (conservative)
+        F = CR = CW = 0.0
+        for (fi, cw, cr, _out) in _vectors:  # output not aggregated; "now" arm uses frozen bout
+            F += fi; CW += cw; CR += cr
         total_in = F + CR + CW
         if total_in <= 0:
             return {**zero, "before_sessions": bn, "after_sessions": recent_n,
@@ -30450,51 +30431,55 @@ def _estimate_before_after_savings(days=30):
             # is per-token-linear, so aggregate totals price the whole window directly.
             return _cost_per_session(fi, 0.0, cr, out, shares, tier)
 
-        def price_cw(shares):
-            # Price cache-write at `shares`, TTL-aware: 1h writes bill at 2x input, 5m at
-            # 1.25x. _get_model_cost applies the split when both 1h and 5m are passed.
+        def cw_session_cost(shares):
+            # Price the FROZEN typical session's cache-write at `shares`. The pre-TO TTL
+            # split is not recorded in the baseline, so treat it as 5m (conservative,
+            # matching the current-window no-split fallback). Cache-write IS a routing
+            # lever (#2): cache-creation tokens bill at the WRITING model's rate (Opus
+            # $6.25 vs Sonnet $3.75 /MTok), so each arm prices CW at its OWN mix.
+            # Pass cache_write as the positional `cache_create`; with no 1h/5m split given,
+            # _get_model_cost prices the whole amount at the 5m rate (the conservative
+            # no-split fallback). bcw is clamped >= 0 against a corrupt baseline_state.json.
+            cw_tok = max(0, int(bcw))
             items = [(mdl, s) for mdl, s in (shares or {}).items() if s and s > 0]
             default_model = _default_model_for_runtime()
             if not items:
-                return _get_model_cost(default_model, 0, 0, 0, int(CW), tier=tier,
-                                       cache_create_1h=int(CW_1h),
-                                       cache_create_5m=int(CW_5m))
+                return _get_model_cost(default_model, 0, 0, 0, cw_tok, tier=tier)
             tot = sum(s for _, s in items)
             return sum(
                 s * _get_model_cost(
                     mdl if _is_priced_model(mdl, tier) else default_model,
-                    0, 0, 0, int(CW), tier=tier,
-                    cache_create_1h=int(CW_1h), cache_create_5m=int(CW_5m))
+                    0, 0, 0, cw_tok, tier=tier)
                 for mdl, s in items) / tot
 
-        # Cache-write IS a routing lever (#2): cache-creation tokens are billed at the
-        # WRITING model's rate (Opus $6.25 vs Sonnet $3.75 /MTok). Pre-TO those writes ran
-        # at Opus; routing lighter models also made the writes cheaper. So CW is held
-        # constant in TOKEN count across arms but priced at each arm's OWN mix -- baseline
-        # mix in the counterfactual, actual mix in actual -- exactly like fresh/cache_read/
-        # output. (Reverts the former H1 same-mix choice, which dropped ~$170/mo of real
-        # Opus-rate cache-write saving.)
-
-        # ACTUAL = current volume at the current model mix (what it really cost). The pool
-        # (fresh + cache_read) AND cache-write (TTL-aware) priced at the after mix.
-        actual_monthly = price(F, CR, O, after_shares) + price_cw(after_shares)
+        # --- PER-TYPICAL-SESSION pricing (FROZEN baseline volume = a factual anchor) ---
+        # Both arms price the SAME frozen typical session (bfi/bcr/bcw/bout from
+        # baseline_state.json), so the per-session figures move ONLY with efficiency
+        # (model mix + cache reuse), NEVER with this period's workload size. Volume
+        # re-enters solely as the session-count multiplier for the monthly total below.
+        # This makes "the old way / session" a stable, repeatable baseline rather than a
+        # number re-derived from whatever volume happened to fall in the current window.
+        t_pool = bfi + bcr  # frozen fresh + cache_read pool (cache_write priced separately)
+        # OLD WAY (counterfactual) = the typical session exactly as it was pre-TO: its
+        # native fresh/cache_read split, priced at the baseline (~95% Opus) mix.
+        old_cps = price(bfi, bcr, bout, before_shares) + cw_session_cost(before_shares)
+        # NOW (actual) = the SAME frozen tokens, but the pool redistributed at the CURRENT
+        # pool-hit rate and priced at the CURRENT mix. cf split keeps t_pool exact.
+        cur_CR_s = cur_hit * t_pool
+        cur_F_s = t_pool - cur_CR_s
+        now_cps = price(cur_F_s, cur_CR_s, bout, after_shares) + cw_session_cost(after_shares)
         # `NaN <= 0` is False, so a non-finite price (e.g. a corrupt custom pricing tier
-        # carrying inf/NaN) would slip past the guard and propagate NaN into the headline.
-        # Treat non-finite as insufficient_history and bail to zero.
-        if not math.isfinite(actual_monthly) or actual_monthly <= 0:
+        # carrying inf/NaN) would slip past the guard. Treat non-finite as insufficient.
+        # Bail if either arm is non-finite or non-positive. now_cps<=0 mirrors the old
+        # guard on actual_monthly (= now_cps * recent_n): a zero "now" arm would otherwise
+        # inflate main_transformation to the full counterfactual (a fake 100% saving).
+        if not all(math.isfinite(x) for x in (old_cps, now_cps)) or old_cps <= 0 or now_cps <= 0:
             return {**zero, "before_sessions": bn, "after_sessions": recent_n,
                     "reason": "insufficient_history"}
-
-        # COUNTERFACTUAL ("the old way") = the SAME volume, but caching redistributed over
-        # the FRESH+CACHE_READ POOL at the baseline pool-hit rate, the pool priced at the
-        # baseline (~95% Opus) mix, AND cache-write priced at the baseline mix too. CW is
-        # unchanged in count. C1/C2: redistributing over the pool (which excludes CW) keeps
-        # the volume invariant exact -- cf_F + cf_CR + CW == total_in -- and needs no floor,
-        # since base_hit in [0,1] keeps cf_F non-negative.
-        pool = total_in - CW  # = F + CR
-        cf_CR = base_hit * pool
-        cf_F = pool - cf_CR
-        counterfactual_monthly = price(cf_F, cf_CR, O, before_shares) + price_cw(before_shares)
+        # Monthly main arms = the per-session anchor x the current session count. The
+        # per-session anchors are stable; only the count (and efficiency) scale the total.
+        actual_monthly = now_cps * recent_n
+        counterfactual_monthly = old_cps * recent_n
 
         # COMPRESSION ADD-BACK (#4): the VOLUME-REDUCTION lever. Token Optimizer REMOVES
         # tokens from context (tool_archive, structure_map skeletons, resume_lean,
@@ -30560,6 +30545,13 @@ def _estimate_before_after_savings(days=30):
                     "after_opus": round(after_opus, 4),
                     "before_mix_label": _mix_label(before_shares),
                     "after_mix_label": _mix_label(after_shares),
+                    # These are known at this point; populate them so the CLI printer's
+                    # "Baseline:" line and any serialized caller see real values, not the
+                    # `zero` defaults (the dashboard card stays gated on monthly>0).
+                    "sessions_per_month": recent_n,
+                    "before_tokens": int(t_pool + bcw + bout),
+                    "after_tokens": int(t_pool + bcw + bout),
+                    "baseline_source": baseline_source,
                     "reason": "net_negative"}
         # Combined headline = main + subagent + compression add-back + verbosity
         # add-back (four separate, non-overlapping pools). The pct is over the
@@ -30580,13 +30572,14 @@ def _estimate_before_after_savings(days=30):
         # repriced from the baseline mix to today's mix), then caching at today's mix; the
         # two UNROUNDED steps telescope to the headline. Sequential attribution is
         # order-dependent (fixed + disclosed via `waterfall_index`).
-        # v_route = counterfactual footprint (pool + CW + output) repriced at today's mix.
-        # CW now carries the routing reprice (#2), so the routing lever captures the
-        # cache-write mix-delta too.
+        # v_route_s = the typical session's baseline cache split (bfi/bcr) + CW + output
+        # repriced at today's mix. CW carries the routing reprice (#2), so the routing lever
+        # captures the cache-write mix-delta too. Computed per-session, then x recent_n so
+        # the levers telescope to the per-session-based main_transformation exactly.
         if main_transformation > 0:
-            v_route = price(cf_F, cf_CR, O, after_shares) + price_cw(after_shares)
-            s_route = counterfactual_monthly - v_route  # before->after mix (incl. CW)
-            s_cache = v_route - actual_monthly  # remaining gap = caching
+            v_route_s = price(bfi, bcr, bout, after_shares) + cw_session_cost(after_shares)
+            s_route = (old_cps - v_route_s) * recent_n   # before->after mix (incl. CW)
+            s_cache = (v_route_s - now_cps) * recent_n   # remaining gap = caching
         else:
             # Main pool net-negative (clamped to 0); only the subagent lever carries the
             # headline. Zero the main levers so the breakdown still sums to the combined.
@@ -30615,26 +30608,25 @@ def _estimate_before_after_savings(days=30):
             key=lambda x: abs(x["monthly_usd"]), reverse=True,
         )
         breakdown_caveat = (
-            "Counterfactual attribution: your current 30-day volume is held constant and "
-            "priced two ways -- the way you work now, and the way you worked before Token "
-            "Optimizer (~95% Opus, your old cache pattern). The difference is split between "
-            "model routing (including cache-write, which is billed at the writing model's "
-            "rate) and caching. Subagent (sidechain) routing is counted as a separate pool "
-            "and added to the headline. A fourth pool adds the directly-metered tokens Token "
-            "Optimizer removed from context (tool archiving, skeletons, lean resumes) -- real "
-            "volume the old way would have re-read -- repriced at the baseline mix. A fifth "
-            "pool adds estimated output-token savings from lean-output conciseness nudges (the "
-            "counterfactual holds output constant, so reduced output is a separate lever). "
-            "The billed-volume levers are identical on both sides, so workload growth never "
-            "inflates or zeroes the figure -- only efficiency, metered removals, and "
-            "estimated output reduction do."
+            "Counterfactual attribution: your FROZEN typical pre-TO session is priced two "
+            "ways -- the way you work now, and the way you worked before Token Optimizer "
+            "(~95% Opus, your old cache pattern) -- then scaled by your session count this "
+            "period. The per-session difference is split between model routing (including "
+            "cache-write, which is billed at the writing model's rate) and caching. Subagent "
+            "(sidechain) routing is counted as a separate pool and added to the headline. A "
+            "fourth pool adds the directly-metered tokens Token Optimizer removed from context "
+            "(tool archiving, skeletons, lean resumes) -- real volume the old way would have "
+            "re-read -- repriced at the baseline mix. A fifth pool adds estimated output-token "
+            "savings from lean-output conciseness nudges. The per-session volume anchor is "
+            "frozen, so workload size never inflates or zeroes the baseline -- only efficiency, "
+            "your session count, metered removals, and estimated output reduction move it."
         )
 
-        # Keep the existing per-session keys populated (the dashboard reads them): divide
-        # the monthly aggregates by the current session count so the "per session" panel
-        # stays sensible. before_* now means "the old way", after_* means "now".
-        before_cps = counterfactual_monthly / recent_n
-        after_cps = actual_monthly / recent_n
+        # Per-session keys = the FROZEN typical-session anchors directly (not a re-division
+        # of the monthly aggregate, which would re-introduce rounding drift). before_* is
+        # "the old way" (stable across runs); after_* is "now" (moves only with efficiency).
+        before_cps = old_cps
+        after_cps = now_cps
         # Combined (main + subagent) spend on each arm: the dashboard/printer headline
         # ("est. $X now vs $Y the old way") spans both pools, so report the combined
         # actual/counterfactual while keeping the main-only figures available too.
@@ -30668,8 +30660,11 @@ def _estimate_before_after_savings(days=30):
             "after_opus": round(after_opus, 4),
             "before_mix_label": _mix_label(before_shares),
             "after_mix_label": _mix_label(after_shares),
-            "before_tokens": int(total_in + O),
-            "after_tokens": int(total_in + O),
+            # Per-session token footprint (the frozen typical session). Both arms hold the
+            # same volume, so before == after. This is genuinely PER SESSION, so the
+            # dashboard's "tokens/session" label is now correct (was the monthly total).
+            "before_tokens": int(t_pool + bcw + bout),
+            "after_tokens": int(t_pool + bcw + bout),
             "before_sessions": bn,
             "after_sessions": recent_n,
             "baseline_source": baseline_source,
@@ -30677,7 +30672,9 @@ def _estimate_before_after_savings(days=30):
             "breakdown_caveat": breakdown_caveat,
             "evidence": "estimated",
         }
-    except (sqlite3.Error, OSError, ValueError, TypeError, KeyError, OverflowError):
+    # ArithmeticError covers ZeroDivisionError + OverflowError + FloatingPointError, so the
+    # "Never raises" contract holds even if a future lever adds an unguarded division.
+    except (sqlite3.Error, OSError, ValueError, TypeError, KeyError, ArithmeticError):
         return zero
 
 
@@ -30985,12 +30982,12 @@ def savings_report(days=30, as_json=False):
     print(f"  {'=' * 58}")
     print(f"  Period: Last {days} days ({start} to {end})")
 
-    # Headline transformation (current 30d volume held constant, priced the old way vs now).
+    # Headline transformation (a frozen typical session priced the old way vs now, x session count).
     ba = summary.get("before_after") or {}
     if float(ba.get("monthly_savings_usd", 0.0) or 0.0) > 0:
         print()
         print(f"  YOUR TRANSFORMATION: ~${ba['monthly_savings_usd']:,.0f}/mo")
-        print(f"    Had you worked this 30-day period the way you did before Token Optimizer "
+        print(f"    Had you worked the way you did before Token Optimizer "
               f"(~{ba.get('before_opus', 0) * 100:.0f}% Opus, including subagents), you'd have paid "
               f"~${ba['monthly_savings_usd']:,.0f} more "
               f"— est. ${ba.get('actual_monthly_usd', 0):,.0f} now vs ${ba.get('counterfactual_monthly_usd', 0):,.0f} "

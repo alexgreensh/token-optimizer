@@ -3900,8 +3900,8 @@ var DB = (function() {
           '<span style="font-family:var(--font-mono);font-weight:300;font-size:84px;line-height:0.9;color:var(--c-accent-cyan);text-shadow:0 0 28px var(--c-accent-glow);letter-spacing:-0.02em;">' + money(ba.monthly_savings_usd) + '</span>' +
           '<span style="font-size:24px;color:var(--c-text-dim);font-family:var(--font-mono);">/mo</span>' +
         '</div>' +
-        '<div class="lede">Had you worked this 30-day period the way you did before Token Optimizer (~' + (Math.round((Number(ba.before_opus) || 0) * 100)) + '% Opus, including subagents and the lighter context Token Optimizer keeps for you), you\'d have paid about <strong>' + money(ba.monthly_savings_usd) + ' more</strong> — est. <strong>' + money(ba.actual_monthly_usd) + '</strong> now vs <strong>' + money(ba.counterfactual_monthly_usd) + '</strong> the old way. Your volume is held constant on both sides, so this is pure efficiency, not workload growth.</div>' +
-        '<div class="lede" style="margin-top:var(--s-2);">Across your <strong>' + (Number(ba.sessions_per_month) || 0).toLocaleString() + ' sessions</strong> this period, that works out to about <strong>' + money(ba.before_cost_per_session) + '/session</strong> the old way vs <strong>' + money(ba.after_cost_per_session) + '/session</strong> now.</div>' +
+        '<div class="lede">Had you worked the way you did before Token Optimizer (~' + (Math.round((Number(ba.before_opus) || 0) * 100)) + '% Opus, including subagents and the lighter context Token Optimizer keeps for you), you\'d have paid about <strong>' + money(ba.monthly_savings_usd) + ' more</strong> — est. <strong>' + money(ba.actual_monthly_usd) + '</strong> now vs <strong>' + money(ba.counterfactual_monthly_usd) + '</strong> the old way. Your old-way baseline is a <strong>fixed typical session</strong>, captured once from your own history and never re-measured, so it stays put run to run. The monthly figure scales that per-session efficiency by your session count and folds in separately-metered subagent and context savings — the breakdown below adds up to it.</div>' +
+        '<div class="lede" style="margin-top:var(--s-2);">A typical session costs about <strong>' + money(ba.after_cost_per_session) + '/session</strong> now vs <strong>' + money(ba.before_cost_per_session) + '/session</strong> the old way — your main-work routing and caching gain, the same every run. Multiplied across your <strong>' + (Number(ba.sessions_per_month) || 0).toLocaleString() + ' sessions</strong> that is the routing slice of the total above; subagent and context savings are added on top.</div>' +
         fold('What changed',
           '<p>Your earliest sessions ran heavier' + (beforeMix ? ', mostly ' + esc(beforeMix) : '') + '. Now sessions are lighter, sub-agents are lighter, and routine work runs on cheaper models. That compounds across every session you run.</p>' +
           '<p>Most of the old cost was long sessions re-reading their cached context, turn after turn. Shorter sessions cut that, and Token Optimizer flags when it is happening so you know to start fresh.</p>') +
@@ -3914,7 +3914,7 @@ var DB = (function() {
             '<div style="margin-top:var(--s-2);font-size:14px;color:var(--c-text-dim);font-family:var(--font-mono);line-height:1.95;">across ' + (Number(ba.sessions_per_month) || 0).toLocaleString() + ' sessions this period</div></div>' +
         '</div>' +
         fold('How we work this number out',
-          '<p>We take the exact token volume you actually moved this 30-day period and price it two ways: the way you work now, and the way you worked before Token Optimizer (~95% Opus, with your old caching pattern). The gap between them is this figure. Volume is identical on both sides, so workload growth never inflates or zeroes it — only efficiency does.</p>' +
+          '<p>We take a <strong>fixed typical session</strong> — captured once from your own pre-install history and frozen — and price it two ways: the way you work now, and the way you worked before Token Optimizer (~95% Opus, with your old caching pattern). The per-session gap is then scaled by how many sessions you ran this period. The session footprint is identical on both sides and never re-measured, so the old-way baseline stays put and only efficiency (and your session count) moves the total.</p>' +
           '<p>The pre-tool mix is conservative by design: ~95% Opus is your confirmed starting point, and your earliest recorded sessions were already partly optimized, so this understates the full gap rather than inflating it.</p>' +
           // Offer the set-baseline tip only when the user has not pinned one AND their
           // mix is Opus-based (the --opus flag is Anthropic-specific; hide it for Codex).
@@ -4056,13 +4056,13 @@ var DB = (function() {
     }
     if (avgQ !== null) {
       var barPct = Math.min(100, Math.max(0, avgQ));
-      html += '<div class="card wide" style="margin-top:var(--s-3);"><div class="card-header"><span>Context quality</span>' +
+      html += '<div class="card wide" style="margin-top:var(--s-3);"><div class="card-header"><span>Context quality &middot; 30-day average</span>' +
         (trendTxt ? '<span class="label">' + esc(trendTxt) + '</span>' : '') + '</div>';
       html += '<div style="display:flex;align-items:center;gap:var(--s-4);flex-wrap:wrap;">' +
           '<div style="font-family:var(--font-mono);font-weight:300;font-size:48px;line-height:1;color:var(--c-accent-cyan);">' + avgQ + '<span style="font-size:18px;color:var(--c-text-dim);">/100</span></div>' +
           '<div style="flex:1;min-width:220px;">' +
             '<div style="height:8px;border-radius:5px;background:rgba(255,255,255,0.06);overflow:hidden;"><div style="height:100%;width:' + barPct + '%;background:linear-gradient(90deg,var(--c-accent-blue),var(--c-accent-cyan));"></div></div>' +
-            '<div style="margin-top:var(--s-2);font-size:14px;color:var(--c-text-dim);line-height:1.6;">Savings are only half the story. Across your last ' + sessionsCounted + ' sessions, Token Optimizer kept your context averaging ' + avgQ + '/100. Tighter context means sharper answers and fewer compaction interruptions.</div>' +
+            '<div style="margin-top:var(--s-2);font-size:14px;color:var(--c-text-dim);line-height:1.6;">Savings are only half the story. Across your last ' + sessionsCounted + ' sessions, Token Optimizer kept your context averaging ' + avgQ + '/100. Tighter context means sharper answers and fewer compaction interruptions. <em>This is the average across sessions; the Health tab scores your single latest session.</em></div>' +
           '</div>' +
         '</div></div>';
     }
@@ -4418,8 +4418,8 @@ var DB = (function() {
       var sessionFile = q.session_file ? q.session_file.replace(/.*\//, '') : null;
       var runtimeLabel = q.runtime_label || data.runtime_label || 'Claude Code';
       var estimateNote = q.estimated ? ' Some Codex quality signals are inferred from local session events and should be read as an operational estimate, not model self-evaluation.' : '';
-      html += '<div class="card wide"><div class="card-header"><span>Context Quality</span><span class="label">v2.0</span></div>' +
-        '<div style="padding:8px var(--s-3) 0;font-size:12px;color:var(--c-text-dim);">This score measures your most recently active ' + esc(runtimeLabel) + ' session, not an average across sessions. It reflects context quality based on 7 signals.' + estimateNote + '</div>' +
+      html += '<div class="card wide"><div class="card-header"><span>Context quality &middot; latest session</span><span class="label">v2.0</span></div>' +
+        '<div style="padding:8px var(--s-3) 0;font-size:12px;color:var(--c-text-dim);">This score measures your most recently active ' + esc(runtimeLabel) + ' session, not an average across sessions. It reflects context quality based on 7 signals.' + estimateNote + ' <em>For the rolling cross-session average, see the Savings tab.</em></div>' +
         (sessionFile ? '<div style="padding:4px var(--s-3) 0;font-size:13px;color:var(--c-text-dim);">Session: <code style="font-family:var(--font-mono);color:var(--c-text-main);">' + esc(sessionFile) + '</code><span style="margin-left:8px;color:var(--c-text-dim);font-size:12px;">(most recently active)</span></div>' : '') +
         '<div style="text-align:center;padding:var(--s-3) 0;">' +
         '<div style="font-size:56px;font-weight:700;font-family:var(--font-mono);color:' + qColor + ';text-shadow:0 0 15px ' + qColor + ';">' + qs + '</div>' +

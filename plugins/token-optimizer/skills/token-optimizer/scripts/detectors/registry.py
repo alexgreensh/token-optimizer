@@ -1,4 +1,4 @@
-"""Detector registry: session-level waste detectors with run helper."""
+"""Detector registry: session and config detectors with run helper."""
 
 from detectors.retry_churn import detect_retry_churn
 from detectors.tool_cascade import detect_tool_cascade
@@ -28,7 +28,7 @@ _TRIAGE_MIN_TOKENS = 5000
 
 
 def run_all_detectors(session_data):
-    """Run all session-level detectors. Returns sorted, deduplicated findings list."""
+    """Run all session and config detectors. Returns sorted findings list."""
     findings = []
     for d in ALL_DETECTORS:
         try:
@@ -41,16 +41,24 @@ def run_all_detectors(session_data):
             print(f"[token-optimizer] detector {d['name']} failed: {type(e).__name__}: {e}", file=sys.stderr)
             continue
     findings.sort(key=lambda f: f.get("confidence", 0), reverse=True)
-    seen: set = set()
+    # Deduplicate config-check findings (always_show=True) only.
+    # Session-data detectors may emit multiple distinct findings with the same name.
+    seen_config: set = set()
     deduped = []
     for f in findings:
-        name = f.get("name")
-        if name not in seen:
-            seen.add(name)
+        if f.get("always_show"):
+            name = f.get("name")
+            if name not in seen_config:
+                seen_config.add(name)
+                deduped.append(f)
+        else:
             deduped.append(f)
     return deduped
 
 
 def triage(findings):
     """Filter findings to actionable ones."""
-    return [f for f in findings if f.get("savings_tokens", 0) > _TRIAGE_MIN_TOKENS]
+    return [
+        f for f in findings
+        if f.get("always_show") or f.get("savings_tokens", 0) > _TRIAGE_MIN_TOKENS
+    ]

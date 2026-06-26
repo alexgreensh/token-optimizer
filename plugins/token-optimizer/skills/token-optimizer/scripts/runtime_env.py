@@ -6,10 +6,13 @@ This module keeps runtime integration deliberately simple:
 - Codex activates when CODEX_HOME is set or TOKEN_OPTIMIZER_RUNTIME=codex.
 - Hermes activates when HERMES_HOME is set or TOKEN_OPTIMIZER_RUNTIME=hermes.
 - OpenCode activates when an OPENCODE_* env signal or an opencode ancestor process
-  is detected, or TOKEN_OPTIMIZER_RUNTIME=opencode. OpenCode loads ~/.claude/skills
+  is detected, or TOKEN_OPTIMIZER_RUNTIME=opencode. The ancestor scan reads full
+  command lines, so OpenCode launched through node/bun (its real launch shape) is
+  recognized, not only a bare ``opencode`` binary. OpenCode loads ~/.claude/skills
   by default, so this skill can be invoked from inside OpenCode; detecting it keeps
   the skill from scanning/mutating ~/.claude when the user is actually in OpenCode
-  (issue #57).
+  (issue #57). The ancestor signal is evaluated ahead of the Claude plugin-env
+  heuristic so a coexisting Claude install on the same host can't shadow it.
 - Copilot activates when COPILOT_HOME is set, a `copilot` ancestor process is
   detected, or TOKEN_OPTIMIZER_RUNTIME=copilot. The Copilot hook bridge always
   sets the explicit override; the other signals are a safety net so the skill
@@ -24,6 +27,7 @@ from __future__ import annotations
 
 import functools
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -159,15 +163,154 @@ def _ancestor_in_process_tree(basenames: frozenset) -> bool:
 _OPENCODE_BASENAMES = frozenset({"opencode", "opencode.exe"})
 _COPILOT_BASENAMES = frozenset({"copilot", "copilot.exe"})
 
+# Bare ``opencode`` binary names — trusted ONLY in executable position (argv[0]).
+# A bare "opencode" as a later argument is ambiguous (it could be a directory a
+# Claude user passed as `--dir /home/me/opencode`), so it never matches there.
+_OPENCODE_EXE_BASENAMES = frozenset({"opencode", "opencode.exe"})
+# JS/TS runtimes OpenCode can be launched through. When an ancestor's executable
+# is one of these, OpenCode's own basename ("opencode") is NOT the ancestor
+# basename — the launcher is ("node"/"bun"/…). So a basename-only scan misses it
+# (issue #57). We then inspect the launcher's arguments for an OpenCode entry.
+_JS_LAUNCHERS = frozenset(
+    {"node", "nodejs", "bun", "deno", "node.exe", "bun.exe", "deno.exe"}
+)
+# Named OpenCode entry SCRIPTS (carry a file extension). Unlike a bare
+# ``opencode`` token, these are unambiguous as a launcher argument, so they are
+# safe to match anywhere in the arg list.
+_OPENCODE_SCRIPT_BASENAMES = frozenset(
+    {"opencode.js", "opencode.mjs", "opencode.cjs", "opencode.ts"}
+)
+# OpenCode's npm package name (the dominant install shape:
+# .../node_modules/opencode-ai/dist/index.js, incl. pnpm's `opencode-ai@x.y.z`).
+_OPENCODE_PKG = "opencode-ai"
+# Parent directories an installed package legitimately lives under. Requiring one
+# of these stops a user's own project dir named `opencode-ai` from matching.
+_OPENCODE_PKG_PARENTS = frozenset({"node_modules", ".pnpm"})
+_PATH_SPLIT = re.compile(r"[\\/]+")
+
+
+def _looks_like_opencode_entrypoint(path_token: str) -> bool:
+    """True when an argument token is recognizably OpenCode's entry script.
+
+    Deliberately tight (issue #57, KTD-2): we match the *entry script* or the
+    *installed package*, never a bare occurrence of the word "opencode" anywhere
+    in the command line. A Claude Code user whose project is named ``opencode``
+    — even one with a stock ``index.js`` — must NOT be flipped into OpenCode
+    mode, so a generic entry filename under an ``opencode`` directory is NOT a
+    match. The trade-off: running OpenCode from an *uninstalled* source checkout
+    (e.g. ``bun /opt/opencode/src/index.ts``) is not auto-detected; such dev runs
+    set TOKEN_OPTIMIZER_RUNTIME=opencode explicitly. Installed users (npm package
+    or the ``opencode`` binary) are always detected.
+    """
+    p = path_token.strip().strip('"').strip("'")
+    if not p:
+        return False
+    base = os.path.basename(p).lower()
+    # The script itself is a named OpenCode entry (opencode.mjs, opencode.js, …).
+    if base in _OPENCODE_SCRIPT_BASENAMES:
+        return True
+    # The npm package directory — but only when it sits under node_modules / a
+    # pnpm store, which is how every real install looks. Requiring that parent
+    # rejects a user's own project directory that merely happens to be named
+    # `opencode-ai` (KTD-2 false-positive guard).
+    segs = [seg.lower() for seg in _PATH_SPLIT.split(p) if seg]
+    for i, s in enumerate(segs):
+        is_pkg = s == _OPENCODE_PKG or s.startswith(_OPENCODE_PKG + "@")
+        if is_pkg and i > 0 and segs[i - 1] in _OPENCODE_PKG_PARENTS:
+            return True
+    return False
+
+
+def _is_opencode_command(args: str) -> bool:
+    """True when a process command line is an OpenCode invocation.
+
+    ``args`` is a full command line (``ps -o args``). Matches either the bare
+    ``opencode`` binary in executable position, or a JS-runtime launcher with an
+    OpenCode entry script / package among ITS arguments. The launcher arg scan
+    checks every token (not just the first non-flag one) so value-taking flags
+    (``node --require x …``) and launcher subcommands (``bun run …``) don't hide
+    the real entry script. The entry check is strict enough that flags, flag
+    values, and bare directory arguments never match.
+    """
+    tokens = args.split()
+    if not tokens:
+        return False
+    exe_base = os.path.basename(tokens[0].strip('"').strip("'")).lower()
+    if exe_base in _OPENCODE_EXE_BASENAMES:
+        return True
+    if exe_base in _JS_LAUNCHERS:
+        for tok in tokens[1:]:
+            if _looks_like_opencode_entrypoint(tok):
+                return True
+    return False
+
 
 def _opencode_in_process_tree() -> bool:
-    """Best-effort: is an ``opencode`` binary an ancestor of this process?"""
-    return _ancestor_in_process_tree(_OPENCODE_BASENAMES)
+    """Best-effort: is OpenCode an ancestor of this process?
+
+    Scans the parent chain using full command lines (``ps -o args``) so that
+    OpenCode launched through ``node``/``bun`` is recognized, not only a bare
+    ``opencode`` binary (issue #57). Same safety envelope as
+    ``_ancestor_in_process_tree``: disabled on Windows, behind a short timeout,
+    skippable via TOKEN_OPTIMIZER_NO_PROC_SCAN, and never raises.
+    """
+    if os.environ.get(_PROC_SCAN_DISABLE_ENV, "").strip():
+        return False
+    if sys.platform.startswith("win"):
+        return False
+    try:
+        import subprocess
+
+        proc = subprocess.run(
+            ["ps", "-Ao", "pid=,ppid=,args="],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=2,
+        )
+        if proc.returncode != 0:
+            return False
+        parents: dict[int, int] = {}
+        cmdlines: dict[int, str] = {}
+        for line in proc.stdout.splitlines():
+            parts = line.split(None, 2)
+            if len(parts) < 3:
+                continue
+            try:
+                pid, ppid = int(parts[0]), int(parts[1])
+            except ValueError:
+                continue
+            parents[pid] = ppid
+            cmdlines[pid] = parts[2]
+        pid = os.getpid()
+        seen: set[int] = set()
+        depth = 0
+        while pid and pid > 1 and pid not in seen and depth < 40:
+            seen.add(pid)
+            depth += 1
+            if _is_opencode_command(cmdlines.get(pid, "")):
+                return True
+            pid = parents.get(pid, 0)
+        return False
+    except Exception:
+        return False
+
+
+def _opencode_process_signal() -> bool:
+    """Definitive OpenCode signal from the live process tree (issue #57).
+
+    Ground truth for "running under OpenCode *right now*" — unlike an env var or
+    a marker file, an OpenCode ancestor process can't be left behind by a prior
+    session or a merely-installed copy. Evaluated ahead of the soft Claude
+    plugin-env heuristic in ``detect_runtime`` (KTD-3).
+    """
+    return _opencode_in_process_tree()
 
 
 def _opencode_signal() -> bool:
-    """True when either an env signal or an opencode ancestor process is found."""
-    return _opencode_env_signal() or _opencode_in_process_tree()
+    """True when an OpenCode env signal or an OpenCode ancestor process is found."""
+    return _opencode_env_signal() or _opencode_process_signal()
 
 
 def _copilot_signal() -> bool:
@@ -189,21 +332,32 @@ def detect_runtime() -> str:
 
     Priority:
       1. Explicit override via TOKEN_OPTIMIZER_RUNTIME
-      2. Claude plugin env vars imply Claude Code
-      3. CODEX_HOME implies Codex
-      4. HERMES_HOME implies Hermes
-      5. OpenCode env signal or opencode ancestor process implies OpenCode
-      6. COPILOT_HOME or a copilot ancestor process implies Copilot
-      7. Default to Claude Code for backward compatibility
+      2. A definitive OpenCode signal — an opencode ancestor process — implies
+         OpenCode, evaluated BEFORE the soft Claude plugin-env heuristic so a
+         coexisting Claude Code install on the same host can't shadow it (#57)
+      3. Claude plugin env vars imply Claude Code
+      4. CODEX_HOME implies Codex
+      5. HERMES_HOME implies Hermes
+      6. An OPENCODE_* env signal implies OpenCode (env-only fallback)
+      7. COPILOT_HOME or a copilot ancestor process implies Copilot
+      8. Default to Claude Code for backward compatibility
 
-    Genuine Claude Code, Codex, and Hermes invocations all short-circuit before
-    the OpenCode and Copilot checks (steps 2-4), so adding those detections
-    cannot change how the earlier runtimes are detected. The process-tree scans
-    in steps 5-6 only run when none of those env signals are present.
+    Why step 2 is ahead of the Claude env check (KTD-3, issue #57): on a host
+    with BOTH Claude Code and OpenCode installed, a stray CLAUDE_PLUGIN_* env var
+    would otherwise resolve a genuine OpenCode session to Claude and let the
+    skill scan/mutate ~/.claude. An opencode ancestor process is ground truth
+    for what's actually running, so it wins. It cannot steal a genuine Claude,
+    Codex, or Hermes session: those have no opencode ancestor, so the scan
+    returns False and resolution falls through unchanged. The weaker OPENCODE_*
+    env signal stays at step 6 (after the Claude/Codex/Hermes env checks) so an
+    exported OPENCODE_* var alone never overrides a real Claude session.
     """
     override = os.environ.get(_RUNTIME_OVERRIDE, "").strip().lower()
     if override in _VALID_RUNTIMES:
         return override
+
+    if _opencode_process_signal():
+        return _RUNTIME_OPENCODE
 
     if any(os.environ.get(env_var) for env_var in _CLAUDE_PLUGIN_ENVS):
         return _RUNTIME_CLAUDE
@@ -214,7 +368,7 @@ def detect_runtime() -> str:
     if os.environ.get(_HERMES_HOME_ENV):
         return _RUNTIME_HERMES
 
-    if _opencode_signal():
+    if _opencode_env_signal():
         return _RUNTIME_OPENCODE
 
     if _copilot_signal():

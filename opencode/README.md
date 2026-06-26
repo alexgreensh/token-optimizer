@@ -16,17 +16,18 @@ Token Optimizer monitors your OpenCode sessions and helps you get the most out o
 
 ## Install
 
-```bash
-opencode plugin token-optimizer-opencode
-```
-
-Or add it to your `opencode.json` (or `.opencode/opencode.jsonc`) plugin array:
+Add the plugin to your `opencode.json` (or `.opencode/opencode.jsonc`) `plugin`
+array. OpenCode resolves and installs it from npm on the next launch:
 
 ```jsonc
 {
+  "$schema": "https://opencode.ai/config.json",
   "plugin": ["token-optimizer-opencode"]
 }
 ```
+
+The `plugin` array holds npm package names as **plain strings** — that is
+OpenCode's config schema. No separate install command is needed.
 
 ### Offline / no-npm install
 
@@ -44,27 +45,18 @@ Requires [bun](https://bun.sh) (OpenCode's own runtime). Re-run after a
 
 ## Configure
 
-Add plugin options in `.opencode/opencode.jsonc`:
+OpenCode's `plugin` array takes **package-name strings only** — it does not
+accept an inline options object, and a `["name", { … }]` tuple will fail config
+validation and stop OpenCode from starting. Configure Token Optimizer through
+environment variables instead (full list below):
 
-```jsonc
-{
-  "plugin": [
-    ["token-optimizer-opencode", {
-      "qualityWindow": 20,
-      "features": {
-        "qualityNudges": true,
-        "loopDetection": true,
-        "smartCompaction": true,
-        "continuity": true,
-        "activityTracking": true,
-        "trends": true
-      }
-    }]
-  ]
-}
+```bash
+# Example: widen the quality window and disable loop detection
+export TOKEN_OPTIMIZER_QUALITY_WINDOW=30
+export TOKEN_OPTIMIZER_LOOP_DETECTION=false
 ```
 
-All options are optional. Defaults are shown above.
+All settings are optional; defaults are shown in the table below.
 
 ## Environment Variables
 

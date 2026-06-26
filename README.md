@@ -77,9 +77,9 @@ codex plugin marketplace add alexgreensh/token-optimizer
 ```
 Then in the Codex TUI: `/plugins` and install Token Optimizer. See [`docs/codex.md`](docs/codex.md).
 
-**OpenCode:**
-```bash
-opencode plugin token-optimizer-opencode
+**OpenCode:** add `token-optimizer-opencode` to the `plugin` array in your `opencode.json`:
+```jsonc
+{ "$schema": "https://opencode.ai/config.json", "plugin": ["token-optimizer-opencode"] }
 ```
 See [`opencode/README.md`](opencode/README.md).
 

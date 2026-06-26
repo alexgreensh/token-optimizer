@@ -12,35 +12,41 @@ Audits a Claude Code or Codex setup, identifies context window waste, implements
 
 ---
 
-## Codex Runtime
+## Step 0: Resolve measure.py, then gate on runtime (run this first)
 
-If `TOKEN_OPTIMIZER_RUNTIME=codex` or Codex environment is detected, read `references/codex-workflow.md` and follow its chat-first workflow instead of the Claude Code phases below.
-
----
-
-## OpenCode Runtime
-
-OpenCode loads `~/.claude/skills` by default, so it can invoke this skill even though you are working in OpenCode, not Claude Code. If OpenCode is detected — `TOKEN_OPTIMIZER_RUNTIME=opencode`, any `OPENCODE_*` environment variable, or you are running inside OpenCode — **STOP** and read `references/opencode-workflow.md`. Do **not** run the Claude Code phases below: they scan and modify `~/.claude`, which is the wrong target when the user is in OpenCode (issue #57).
-
-Quick check before Phase 0:
-```bash
-python3 "$MEASURE_PY" report 2>/dev/null | head -1
-# If it prints "Token Optimizer — OpenCode runtime detected.", follow references/opencode-workflow.md and stop.
-```
-
----
-
-## Phase 0: Initialize (Claude Code)
-
-Resolve measure.py path:
+Resolve the script path **once, before any phase or runtime decision**. Every
+command below — including the runtime gate — depends on `$MEASURE_PY`, so it
+must be set first:
 ```bash
 MEASURE_PY=""
 for f in "$HOME/.claude/skills/token-optimizer/scripts/measure.py" \
          "$HOME/.claude/plugins/cache"/*/token-optimizer/*/skills/token-optimizer/scripts/measure.py; do
   [ -f "$f" ] && MEASURE_PY="$f" && break
 done
-[ -z "$MEASURE_PY" ] && { echo "[Error] measure.py not found."; exit 1; }
+[ -z "$MEASURE_PY" ] && { echo "[Error] measure.py not found. Is Token Optimizer installed?"; exit 1; }
 ```
+
+With `$MEASURE_PY` resolved, run the runtime gate as the **first executed
+command**. Its output is a hard stop, not a hint:
+```bash
+python3 "$MEASURE_PY" report 2>&1 | head -1
+```
+
+- Prints **"Token Optimizer — OpenCode runtime detected."** → **STOP. Run none
+  of the phases below.** Read `references/opencode-workflow.md` and follow it.
+  The Claude Code phases scan and mutate `~/.claude`, which is the wrong target
+  when the user is in OpenCode (issue #57).
+- Prints any other **"… runtime detected."** notice (for example GitHub
+  Copilot) → STOP and follow that runtime's guidance, for the same reason.
+- Otherwise continue: if `TOKEN_OPTIMIZER_RUNTIME=codex` or a Codex environment
+  is detected, read `references/codex-workflow.md` and follow its chat-first
+  workflow instead of the phases below. Genuine Claude Code proceeds to Phase 0.
+
+---
+
+## Phase 0: Initialize (Claude Code)
+
+`MEASURE_PY` was already resolved in Step 0 — do **not** re-resolve it.
 
 Read `references/phase0-setup.md` for the full setup sequence: context window detection, pre-check, backup, coordination folder, hook checks, daemon setup, and smart compaction.
 

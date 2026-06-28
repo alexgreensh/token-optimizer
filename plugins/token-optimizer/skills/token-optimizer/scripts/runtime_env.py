@@ -104,6 +104,14 @@ def _ancestor_in_process_tree(basenames: frozenset) -> bool:
     exporting an identifying env var. A single ``ps`` call is parsed in memory
     and the parent chain is walked from this PID upward.
 
+    Checks both the executable name (comm) and the full command line (args),
+    because some runtimes launch via a wrapper: OpenCode may run as
+    ``node /path/to/opencode`` or ``bun run opencode``, where comm is ``node``
+    or ``bun`` — not ``opencode``. For each ancestor process, the basename of
+    the executable AND the basename of each command-line argument is checked
+    against ``basenames`` (exact match, not substring, so a repo dir named
+    ``opencode`` in a file path does not trigger a false positive).
+
     Never raises and never blocks for long: disabled on Windows, behind a short
     timeout, and skippable via TOKEN_OPTIMIZER_NO_PROC_SCAN.
     """
@@ -114,8 +122,12 @@ def _ancestor_in_process_tree(basenames: frozenset) -> bool:
     try:
         import subprocess
 
+        # Use args= (full command line) instead of comm= (executable name only).
+        # comm is limited to 15 chars on Linux and misses wrapper-launched
+        # processes (node, bun, npx). args= gives the full command line so we
+        # can check every token's basename.
         proc = subprocess.run(
-            ["ps", "-Ao", "pid=,ppid=,comm="],
+            ["ps", "-Ao", "pid=,ppid=,args="],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -125,7 +137,7 @@ def _ancestor_in_process_tree(basenames: frozenset) -> bool:
         if proc.returncode != 0:
             return False
         parents: dict[int, int] = {}
-        names: dict[int, str] = {}
+        cmdlines: dict[int, str] = {}
         for line in proc.stdout.splitlines():
             parts = line.split(None, 2)
             if len(parts) < 3:
@@ -135,24 +147,30 @@ def _ancestor_in_process_tree(basenames: frozenset) -> bool:
             except ValueError:
                 continue
             parents[pid] = ppid
-            names[pid] = parts[2]
+            cmdlines[pid] = parts[2]
         pid = os.getpid()
         seen: set[int] = set()
         depth = 0
         while pid and pid > 1 and pid not in seen and depth < 40:
             seen.add(pid)
             depth += 1
-            # Exact basename match, not a substring: an unrelated binary like
-            # "my-opencode-helper" or a repo dir named "opencode" in argv must
-            # not flip a genuine Claude Code session into another runtime's
-            # mode. The real CLIs run under their bare binary name (or
-            # name.exe on Windows).
-            comm = os.path.basename(names.get(pid, "")).lower()
-            if comm in basenames:
-                return True
+            cmdline = cmdlines.get(pid, "")
+            # Check the basename of every token in the command line.
+            # This catches both direct invocation (``opencode``) and wrapper
+            # launches (``node /usr/local/bin/opencode``, ``bun run opencode``).
+            # Exact basename match, not substring: a path like
+            # ``/home/user/projects/opencode/server.js`` has basename
+            # ``server.js`` and will NOT match.
+            for token in cmdline.split():
+                token_base = os.path.basename(token).lower()
+                if token_base in basenames:
+                    return True
             pid = parents.get(pid, 0)
         return False
-    except Exception:
+    except (OSError, subprocess.SubprocessError, ValueError):
+        # OSError: ps not found or not executable (non-POSIX, restricted env).
+        # SubprocessError: timeout, broken pipe, etc.
+        # ValueError: unexpected ps output format.
         return False
 
 
@@ -165,9 +183,45 @@ def _opencode_in_process_tree() -> bool:
     return _ancestor_in_process_tree(_OPENCODE_BASENAMES)
 
 
+def _opencode_config_signal() -> bool:
+    """Tertiary fallback: does OpenCode's config directory exist?
+
+    When both env vars and the process-tree scan fail (e.g. OpenCode runs
+    inside a container, or ``ps`` doesn't list the ancestor), the presence of
+    ``~/.config/opencode/`` with real content is a reasonable hint that the
+    user is on an OpenCode host. This is intentionally weak — it only fires
+    when no Claude plugin env vars are set (those short-circuit earlier in
+    detect_runtime) and no other runtime was detected.
+
+    We require the directory to contain at least one file (not just exist),
+    so a stale empty dir from an uninstalled OpenCode doesn't trigger it.
+    """
+    if any(os.environ.get(env_var) for env_var in _CLAUDE_PLUGIN_ENVS):
+        return False
+    try:
+        cfg = opencode_config_home()
+        # Go straight to iterdir() — eliminates the is_dir() + iterdir() TOCTOU
+        # race. If the dir doesn't exist or disappears between check and use,
+        # iterdir() raises and we catch it.
+        return next(cfg.iterdir(), None) is not None
+    except (OSError, ValueError):
+        # OSError: dir doesn't exist, permission denied, or disappeared.
+        # ValueError: opencode_config_home returned an invalid path.
+        if os.environ.get("TOKEN_OPTIMIZER_DEBUG", "").strip():
+            sys.stderr.write(
+                "token-optimizer: _opencode_config_signal: "
+                f"{opencode_config_home()} not accessible\n"
+            )
+        return False
+
+
 def _opencode_signal() -> bool:
-    """True when either an env signal or an opencode ancestor process is found."""
-    return _opencode_env_signal() or _opencode_in_process_tree()
+    """True when an OpenCode signal is found (env, process tree, or config dir)."""
+    return (
+        _opencode_env_signal()
+        or _opencode_in_process_tree()
+        or _opencode_config_signal()
+    )
 
 
 def _copilot_signal() -> bool:

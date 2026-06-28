@@ -55,7 +55,7 @@ def reexec_in_utf8_mode() -> None:
     try:
         import locale
         enc = (locale.getpreferredencoding(False) or "").lower().replace("-", "").replace("_", "")
-    except Exception:
+    except (ImportError, LookupError):
         enc = ""
     # "cp65001"/"65001" = the Windows UTF-8 code page; treat as UTF-8 so Windows
     # users on it don't re-exec on every single hook invocation. "" = undetectable
@@ -66,10 +66,40 @@ def reexec_in_utf8_mode() -> None:
     os.environ["PYTHONUTF8"] = "1"
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
     try:
-        os.execv(sys.executable, [sys.executable, "-X", "utf8", *sys.argv])
-    except Exception:
-        # No execv (frozen / restricted): leave the sentinel set and let the
-        # caller's enforce_utf8_io() + explicit per-call encodings carry it.
+        import subprocess as _sp
+
+        if sys.platform.startswith("win"):
+            # On Windows, os.execv does not quote the executable path, so a
+            # path like "C:\Program Files\Python312\python.exe" gets split at
+            # the space and the relaunched interpreter dies with
+            # "can't open file '...\Files\Python312\python.exe'". Use
+            # subprocess.Popen (which quotes correctly) and exit immediately
+            # so the child takes over the role of this process.
+            child = _sp.Popen([sys.executable, "-X", "utf8", *sys.argv])
+            # Wait for the child to finish so output ordering is preserved and
+            # the parent's exit code reflects the child's result.
+            try:
+                child.wait()
+                rc = child.returncode
+            except (OSError, _sp.SubprocessError):
+                rc = 1
+            # Flush any parent-buffered output before exiting (os._exit skips
+            # normal cleanup / atexit handlers, matching os.execv semantics).
+            for stream in (sys.stdout, sys.stderr):
+                try:
+                    stream.flush()
+                except (OSError, ValueError):
+                    pass
+            os._exit(rc)
+        else:
+            os.execv(sys.executable, [sys.executable, "-X", "utf8", *sys.argv])
+    except ImportError:
+        # subprocess module unavailable (frozen / restricted): leave the sentinel
+        # set and let the caller's enforce_utf8_io() + explicit per-call encodings
+        # carry it.
+        pass
+    except (OSError, _sp.SubprocessError):
+        # execv/Popen failed: same fallback as above.
         pass
 
 

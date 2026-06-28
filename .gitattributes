@@ -1,0 +1,24 @@
+# Force LF line endings for shell scripts so they work on Windows (issue #78).
+# Without this, git's autocrlf converts install.sh to CRLF on clone, and
+# bash fails with "$'\r': command not found" on every line.
+*.sh text eol=lf
+*.py text eol=lf
+*.json text eol=lf
+*.jsonc text eol=lf
+*.md text eol=lf
+*.ts text eol=lf
+*.js text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.toml text eol=lf
+*.lock text eol=lf
+*.sha256 text eol=lf
+*.cfg text eol=lf
+*.ini text eol=lf
+*.env text eol=lf
+Dockerfile text eol=lf
+Dockerfile.* text eol=lf
+Makefile text eol=lf
+Makefile.* text eol=lf

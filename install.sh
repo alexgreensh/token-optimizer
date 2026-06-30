@@ -21,8 +21,13 @@ set -euo pipefail
 GITHUB_REPO="alexgreensh/token-optimizer"
 REPO_HTTPS="https://github.com/${GITHUB_REPO}.git"
 REPO_SSH="git@github.com:${GITHUB_REPO}.git"
-INSTALL_DIR="${HOME}/.claude/token-optimizer"
-SKILL_DIR="${HOME}/.claude/skills"
+# Honor a relocated Claude home (matches runtime_env.py:380-402 which reads
+# CLAUDE_CONFIG_DIR). OpenCode users without Claude Code, or anyone pointing
+# Claude at a non-default home, get the skill tree installed in the right
+# place instead of hard-failing on a missing ~/.claude.
+CLAUDE_HOME="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}"
+INSTALL_DIR="${CLAUDE_HOME}/token-optimizer"
+SKILL_DIR="${CLAUDE_HOME}/skills"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/token-optimizer.XXXXXX")"
 CHECKSUM_FILE="${TMP_DIR}/CHECKSUMS.sha256"
 RELEASE_TAG=""
@@ -264,16 +269,22 @@ if ! command -v curl &>/dev/null; then
     fail "curl not found. Install curl first."
 fi
 
-# Claude Code directory
-if [ ! -d "${HOME}/.claude" ]; then
-    fail "~/.claude/ not found. Install Claude Code first: https://claude.ai/download"
+# Claude home directory (skill-tree home; Claude Code creates this on first
+# run, and OpenCode loads $CLAUDE_HOME/skills directly). Don't hard-fail if
+# it's absent — create it so the shared skill tree has somewhere to live.
+# OpenCode users without Claude Code, or anyone following opencode/README's
+# "run the standard installer to refresh the skill tree" instruction, would
+# otherwise hit a fatal here (issue #57).
+if [ ! -d "$CLAUDE_HOME" ]; then
+    mkdir -p "$CLAUDE_HOME" || fail "Could not create ${CLAUDE_HOME}."
+    warn "Created ${CLAUDE_HOME} (skill-tree home). Claude Code also creates this on first run."
 fi
-info "~/.claude/ OK"
+info "${CLAUDE_HOME} OK"
 
 # ── Plugin Conflict Check ────────────────────────────────────
 
-if [ -d "${HOME}/.claude/plugins/cache" ]; then
-    if find "${HOME}/.claude/plugins/cache" -name "plugin.json" -exec grep -l '"name"[[:space:]]*:[[:space:]]*"token-optimizer"' {} \; 2>/dev/null | head -1 | grep -q .; then
+if [ -d "${CLAUDE_HOME}/plugins/cache" ]; then
+    if find "${CLAUDE_HOME}/plugins/cache" -name "plugin.json" -exec grep -l '"name"[[:space:]]*:[[:space:]]*"token-optimizer"' {} \; 2>/dev/null | head -1 | grep -q .; then
         warn "Token Optimizer is already installed as a Claude Code plugin."
         warn "The script installer creates a skill symlink, which would duplicate the plugin."
         warn "If you want the script version instead, first uninstall the plugin:"
@@ -343,6 +354,15 @@ rollback_install_update() {
 fail_verified_install() {
     rollback_install_update
     fail "$1"
+}
+
+# Dirty-tree-specific failure for update_repo (issue #57). The verified
+# checkout aborts with "local changes would be overwritten" when tracked
+# files are locally modified (e.g. a prior chmod flipped measure.py's mode).
+# Give the user an actionable message instead of the generic "check network".
+fail_dirty_tree_update() {
+    rollback_install_update
+    fail "Could not update to verified release ${RELEASE_TAG}: the working tree at ${INSTALL_DIR} has local changes that would be overwritten. Inspect with: git -C ${INSTALL_DIR} status — then either commit/stash your edits or re-clone from: https://github.com/${GITHUB_REPO}"
 }
 
 # ── Skill payload completeness check (U1, issue #57) ──────────
@@ -513,7 +533,28 @@ update_repo() {
         git -C "$INSTALL_DIR" fetch --force --depth 1 origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}" || return 1
         fetched_head=$(git -C "$INSTALL_DIR" rev-parse "${RELEASE_TAG}^{commit}" 2>/dev/null || echo "")
         [ -n "$fetched_head" ] && [ "$fetched_head" = "$VERIFIED_RELEASE_HEAD" ] || return 1
-        git -C "$INSTALL_DIR" checkout --detach -q "$VERIFIED_RELEASE_HEAD" || return 1
+        # Dirty-tree preflight (issue #57): a previous install's chmod of
+        # measure.py flips the git-tracked 100644 file to 100755; with
+        # core.fileMode=true git then sees it as locally modified and the
+        # detached checkout below aborts with "local changes would be
+        # overwritten". Stash (never discard) only the tracked runtime paths
+        # so the working tree is clean for the checkout, while any genuine
+        # local edit stays recoverable via `git -C "$INSTALL_DIR" stash list`.
+        # Never touches untracked user files or blanket-resets arbitrary edits.
+        if ! git -C "$INSTALL_DIR" diff --quiet -- skills hooks .claude-plugin .codex-plugin .codex 2>/dev/null; then
+            warn "Dirty working tree on tracked runtime paths. Stashing them before checkout (recover with: git -C ${INSTALL_DIR} stash list)..."
+            git -C "$INSTALL_DIR" stash push -q -m "token-optimizer-install-autostash" -- skills hooks .claude-plugin .codex-plugin .codex 2>/dev/null || true
+        fi
+        if ! git -C "$INSTALL_DIR" checkout --detach -q "$VERIFIED_RELEASE_HEAD" 2>"${TMP_DIR}/checkout.err"; then
+            # Checkout failed — distinguish a dirty-tree failure from a
+            # network issue so the user gets an actionable message (#57).
+            if ! git -C "$INSTALL_DIR" diff --quiet 2>/dev/null \
+               || ! git -C "$INSTALL_DIR" diff --cached --quiet 2>/dev/null; then
+                fail_dirty_tree_update
+            fi
+            warn "Checkout failed: $(cat "${TMP_DIR}/checkout.err" 2>/dev/null)"
+            return 1
+        fi
     else
         git -C "$INSTALL_DIR" pull --ff-only || {
             warn "git pull failed. Try: cd ${INSTALL_DIR} && git pull"
@@ -559,7 +600,7 @@ if [ -d "${INSTALL_DIR}/.git" ]; then
         fi
     fi
 
-    update_repo || fail_verified_install "Could not update to verified release ${RELEASE_TAG}. Check network connectivity or re-clone from: https://github.com/${GITHUB_REPO}"
+    update_repo || fail_verified_install "Could not update to verified release ${RELEASE_TAG}. The verified release checkout failed (a dirty working tree was already handled with an actionable message above; otherwise check network connectivity or re-clone from: https://github.com/${GITHUB_REPO})."
 
     # A release checkout can change sparse checkout behavior. Repair again after update.
     if [ ! -d "${INSTALL_DIR}/skills" ] || [ ! -d "${INSTALL_DIR}/hooks" ]; then
@@ -605,7 +646,7 @@ if verification_enabled; then
 fi
 
 # Log the current commit SHA so users can audit which version is installed.
-SHA_LOG_DIR="${HOME}/.claude/token-optimizer"
+SHA_LOG_DIR="$INSTALL_DIR"
 mkdir -p "$SHA_LOG_DIR"
 CURRENT_SHA=$(git -C "$INSTALL_DIR" rev-parse HEAD 2>/dev/null || echo "unknown")
 CURRENT_SHORT=$(git -C "$INSTALL_DIR" rev-parse --short HEAD 2>/dev/null || echo "unknown")
@@ -632,8 +673,12 @@ else
 fi
 
 # ── Make Scripts Executable ───────────────────────────────────
-
-chmod +x "${INSTALL_DIR}/skills/token-optimizer/scripts/measure.py" 2>/dev/null || true
+# No tracked script is invoked directly as ./file; every caller runs
+# `python3 measure.py`, so chmod is unnecessary and harmful: it flips the
+# git-tracked 100644 file to 100755, and with core.fileMode=true the next
+# verified-update checkout aborts with "local changes would be
+# overwritten" (issue #57). Leave chmod ONLY on files actually run as
+# ./file (none currently).
 
 # ── Setup Quality Bar (auto-install cache hook + status line) ─
 
@@ -651,8 +696,15 @@ fi
 # Upgrades from v4.x pick up v5 active compression hooks here.
 
 info "Installing all Token Optimizer hooks..."
+# Guard with set +e: under `set -euo pipefail` a failing command substitution
+# in a plain assignment would hard-exit before HOOK_EXIT is captured, so a
+# fresh empty $CLAUDE_HOME (e.g. an OpenCode user without Claude Code, whose
+# settings.json doesn't exist yet) would abort the install instead of
+# degrading to the warn branch below (issue #57).
+set +e
 HOOK_OUTPUT=$(python3 "${INSTALL_DIR}/skills/token-optimizer/scripts/measure.py" setup-all-hooks 2>&1)
 HOOK_EXIT=$?
+set -e
 if [ $HOOK_EXIT -eq 0 ]; then
     HOOK_SUMMARY=$(echo "$HOOK_OUTPUT" | grep -E "Added [0-9]+|All hooks already present" | head -1)
     if [ -n "$HOOK_SUMMARY" ]; then

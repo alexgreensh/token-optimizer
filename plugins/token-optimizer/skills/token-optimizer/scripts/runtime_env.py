@@ -171,9 +171,13 @@ _OPENCODE_EXE_BASENAMES = frozenset({"opencode", "opencode.exe"})
 # is one of these, OpenCode's own basename ("opencode") is NOT the ancestor
 # basename — the launcher is ("node"/"bun"/…). So a basename-only scan misses it
 # (issue #57). We then inspect the launcher's arguments for an OpenCode entry.
+# The "run" subcommand (bun run opencode) is skipped so the npm script name
+# after it is recognized. An absolute path to the opencode binary as a launcher
+# argument (node /usr/local/bin/opencode) is also matched.
 _JS_LAUNCHERS = frozenset(
     {"node", "nodejs", "bun", "deno", "node.exe", "bun.exe", "deno.exe"}
 )
+_JS_RUN_SUBCOMMANDS = frozenset({"run"})
 # Named OpenCode entry SCRIPTS (carry a file extension). Unlike a bare
 # ``opencode`` token, these are unambiguous as a launcher argument, so they are
 # safe to match anywhere in the arg list.
@@ -239,6 +243,18 @@ def _is_opencode_command(args: str) -> bool:
     if exe_base in _OPENCODE_EXE_BASENAMES:
         return True
     if exe_base in _JS_LAUNCHERS:
+        rest = [t.strip('"').strip("'") for t in tokens[1:]]
+        # `bun run opencode` — the script name sits at rest[1] after the `run` subcommand.
+        if rest and rest[0].lower() in _JS_RUN_SUBCOMMANDS:
+            if len(rest) >= 2 and os.path.basename(rest[1]).lower() in _OPENCODE_EXE_BASENAMES:
+                return True
+        # `node /abs/path/opencode` — the opencode binary as the IMMEDIATE first argument
+        # (rest[0]). Restricting to rest[0] (not a general scan) is what prevents a later
+        # flag value like `--dir /home/me/opencode` from false-matching (KTD-2 guard).
+        elif rest and os.path.isabs(rest[0]) and os.path.basename(rest[0]).lower() in _OPENCODE_EXE_BASENAMES:
+            return True
+        # Named entry scripts (opencode.mjs/.js) and the installed npm package
+        # (node_modules/opencode-ai) — tight check, safe to scan all tokens.
         for tok in tokens[1:]:
             if _looks_like_opencode_entrypoint(tok):
                 return True
@@ -308,6 +324,47 @@ def _opencode_process_signal() -> bool:
     return _opencode_in_process_tree()
 
 
+def _opencode_config_signal() -> bool:
+    """Weak OpenCode signal: a populated ~/.config/opencode directory.
+
+    Tertiary tier (issue #57): catches a real OpenCode install that exports
+    neither an OPENCODE_* env var nor an opencode ancestor (e.g. a host CLI
+    spawned outside OpenCode's process group). A populated config dir is a
+    weak signal — a stale uninstalled copy leaves an empty dir, which does
+    NOT trigger. Suppressed by Claude env vars (Claude takes priority) and by
+    CODEX_HOME/HERMES_HOME/COPILOT_HOME (those genuine runtimes win over this
+    weak tier), and by a real Claude Code home (settings.json or projects/).
+    Never raises; OSError/PermissionError -> False.
+    """
+    if any(os.environ.get(v) for v in _CLAUDE_PLUGIN_ENVS):
+        return False
+    if os.environ.get(_CODEX_HOME_ENV) or os.environ.get(_HERMES_HOME_ENV) or os.environ.get(_COPILOT_HOME_ENV):
+        return False
+    # A real Claude Code home (settings.json or projects/) means this is a Claude
+    # user; the weak config-dir tier must not flip them to opencode. A live OpenCode
+    # session is already caught by the ancestor (step 2) / OPENCODE_* env (step 4)
+    # tiers, so this only prevents a false stop, never masks a real OpenCode run.
+    # Bare ~/.claude existence is NOT used (OpenCode loads ~/.claude/skills).
+    ch = claude_home()
+    if ch.is_dir() and ((ch / "settings.json").is_file() or (ch / "projects").is_dir()):
+        return False
+    try:
+        d = opencode_config_home()
+        if not d.is_dir():
+            if os.environ.get("TOKEN_OPTIMIZER_DEBUG"):
+                print(f"[_opencode_config_signal] config dir not present: {d}", file=sys.stderr)
+            return False
+        if not any(d.iterdir()):
+            if os.environ.get("TOKEN_OPTIMIZER_DEBUG"):
+                print(f"[_opencode_config_signal] config dir empty: {d}", file=sys.stderr)
+            return False
+        return True
+    except OSError as exc:
+        if os.environ.get("TOKEN_OPTIMIZER_DEBUG"):
+            print(f"[_opencode_config_signal] OSError inspecting config dir: {exc}", file=sys.stderr)
+        return False
+
+
 def _opencode_signal() -> bool:
     """True when an OpenCode env signal or an OpenCode ancestor process is found."""
     return _opencode_env_signal() or _opencode_process_signal()
@@ -336,11 +393,15 @@ def detect_runtime() -> str:
          OpenCode, evaluated BEFORE the soft Claude plugin-env heuristic so a
          coexisting Claude Code install on the same host can't shadow it (#57)
       3. Claude plugin env vars imply Claude Code
-      4. CODEX_HOME implies Codex
-      5. HERMES_HOME implies Hermes
-      6. An OPENCODE_* env signal implies OpenCode (env-only fallback)
-      7. COPILOT_HOME or a copilot ancestor process implies Copilot
-      8. Default to Claude Code for backward compatibility
+      4. An OPENCODE_* env signal implies OpenCode (medium tier: beats
+         Codex/Hermes so a leftover CODEX_HOME can't shadow a genuine
+         OpenCode session — "Guy's bug", issue #57; still AFTER Claude env)
+      5. CODEX_HOME implies Codex
+      6. HERMES_HOME implies Hermes
+      7. A populated opencode config dir implies OpenCode (weak tertiary
+         tier; loses to Claude/Codex/Hermes/Copilot env, beats default)
+      8. COPILOT_HOME or a copilot ancestor process implies Copilot
+      9. Default to Claude Code for backward compatibility
 
     Why step 2 is ahead of the Claude env check (KTD-3, issue #57): on a host
     with BOTH Claude Code and OpenCode installed, a stray CLAUDE_PLUGIN_* env var
@@ -348,9 +409,13 @@ def detect_runtime() -> str:
     skill scan/mutate ~/.claude. An opencode ancestor process is ground truth
     for what's actually running, so it wins. It cannot steal a genuine Claude,
     Codex, or Hermes session: those have no opencode ancestor, so the scan
-    returns False and resolution falls through unchanged. The weaker OPENCODE_*
-    env signal stays at step 6 (after the Claude/Codex/Hermes env checks) so an
-    exported OPENCODE_* var alone never overrides a real Claude session.
+    returns False and resolution falls through unchanged. The OPENCODE_* env
+    signal (step 4) sits AFTER the Claude env check so an exported OPENCODE_*
+    var alone never overrides a real Claude session, but BEFORE Codex/Hermes
+    so a leftover CODEX_HOME/HERMES_HOME can't shadow a genuine OpenCode
+    session. The config-dir signal (step 7) is the weakest tier — it only
+    fires when no Claude/Codex/Hermes/Copilot env is set and no real Claude
+    Code home (settings.json or projects/) exists.
     """
     override = os.environ.get(_RUNTIME_OVERRIDE, "").strip().lower()
     if override in _VALID_RUNTIMES:
@@ -362,13 +427,16 @@ def detect_runtime() -> str:
     if any(os.environ.get(env_var) for env_var in _CLAUDE_PLUGIN_ENVS):
         return _RUNTIME_CLAUDE
 
+    if _opencode_env_signal():
+        return _RUNTIME_OPENCODE
+
     if os.environ.get(_CODEX_HOME_ENV):
         return _RUNTIME_CODEX
 
     if os.environ.get(_HERMES_HOME_ENV):
         return _RUNTIME_HERMES
 
-    if _opencode_env_signal():
+    if _opencode_config_signal():
         return _RUNTIME_OPENCODE
 
     if _copilot_signal():

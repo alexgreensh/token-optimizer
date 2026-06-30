@@ -54,6 +54,7 @@ _RUNTIME_MODULES = (
     "hermes_hook_bridge.py",
     "hermes_state.py",
     "hermes_session.py",
+    "runtime_env.py",
 )
 
 # Plain-text locator file written into the plugin dir: one line, the absolute

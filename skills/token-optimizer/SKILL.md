@@ -14,6 +14,33 @@ Audits a Claude Code or Codex setup, identifies context window waste, implements
 
 ## Step 0: Resolve measure.py, then gate on runtime (run this first)
 
+> **Runtime pre-gate (environment only — touches no `~/.claude` path).** Before resolving any script
+> path, check the environment directly. This keeps non-Claude runtimes from ever resolving a
+> `~/.claude` path (issue #57):
+> ```bash
+> # OpenCode / Copilot set these; detect them WITHOUT touching ~/.claude.
+> # Explicit TOKEN_OPTIMIZER_RUNTIME is authoritative and checked first (matches detect_runtime()).
+> # An explicit override to a Claude/Codex runtime is authoritative (matches detect_runtime); proceed.
+> if [ "${TOKEN_OPTIMIZER_RUNTIME:-}" = "claude" ] || [ "${TOKEN_OPTIMIZER_RUNTIME:-}" = "codex" ]; then
+>   :  # fall through to the measure.py resolver + authoritative gate below
+> elif [ "${TOKEN_OPTIMIZER_RUNTIME:-}" = "opencode" ]; then
+>   echo "Token Optimizer — OpenCode runtime detected."
+> elif [ "${TOKEN_OPTIMIZER_RUNTIME:-}" = "copilot" ]; then
+>   echo "Token Optimizer — GitHub Copilot runtime detected."
+> elif [ -n "${OPENCODE_BIN:-}${OPENCODE_CONFIG_DIR:-}${OPENCODE_DATA_DIR:-}${OPENCODE_CONFIG:-}${OPENCODE_CLIENT:-}" ]; then
+>   echo "Token Optimizer — OpenCode runtime detected."
+> elif [ -n "${COPILOT_HOME:-}" ]; then
+>   echo "Token Optimizer — GitHub Copilot runtime detected."
+> fi
+> ```
+> - Prints **"… OpenCode runtime detected."** → **STOP. Do not resolve `measure.py`, do not run any
+>   phase below.** Read `references/opencode-workflow.md` (bundled with this skill) and follow it.
+>   On OpenCode, Token Optimizer runs as a native plugin; the Claude audit must not run.
+> - Prints **"… GitHub Copilot runtime detected."** → **STOP** and follow the Copilot guidance for the
+>   same reason.
+> - Prints nothing → you are on Claude Code or Codex; continue to resolve `$MEASURE_PY` below. The
+>   `measure.py report` runtime gate that follows is the authoritative second check.
+
 Resolve the script path **once, before any phase or runtime decision**. Every
 command below — including the runtime gate — depends on `$MEASURE_PY`, so it
 must be set first:

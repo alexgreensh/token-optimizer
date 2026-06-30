@@ -17965,7 +17965,7 @@ def setup_hook(dry_run=False):
 
 # ========== Persistent Dashboard Daemon ==========
 
-TOKEN_OPTIMIZER_VERSION = "5.11.28"  # Keep in sync with plugin.json + marketplace.json
+TOKEN_OPTIMIZER_VERSION = "5.11.29"  # Keep in sync with plugin.json + marketplace.json
 _DASHBOARD_CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 # Per-runtime daemon identity. Each runtime gets a distinct port + label so a
 # dashboard under one runtime never collides with another's. Copilot uses 24845
@@ -28520,11 +28520,15 @@ def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=F
             # used by ensure-health clobber recovery when our cache hook is
             # still present, which is strong evidence the foreign statusLine
             # is a clobber rather than an intentional choice).
+            try:
+                _rt_seg = RUNTIME_DIR.relative_to(HOME).as_posix()
+            except ValueError:
+                _rt_seg = ".claude"
             warnings.append(
                 "You already have a custom status line configured.\n"
                 "  To integrate quality scoring, add this to your status line script:\n\n"
                 "    // Read context quality score\n"
-                "    const qFile = path.join(os.homedir(), '.claude', 'token-optimizer', 'quality-cache.json');\n"
+                f"    const qFile = path.join(os.homedir(), '{_rt_seg}', 'token-optimizer', 'quality-cache.json');\n"
                 "    let qScore = '';\n"
                 "    if (fs.existsSync(qFile)) {\n"
                 "      try {\n"

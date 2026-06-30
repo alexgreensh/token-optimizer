@@ -31,6 +31,7 @@ REQUIRED_PLUGIN_FILES = (
     "hermes_hook_bridge.py",
     "hermes_state.py",
     "hermes_session.py",
+    "runtime_env.py",
     # v5.11.1 (#58): the installer always writes the measure-path locator when
     # measure.py exists; its absence means a broken / payload-only install.
     "measure-path",

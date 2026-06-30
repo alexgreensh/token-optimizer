@@ -26,7 +26,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from runtime_env import claude_home
+from runtime_env import runtime_home
 
 # Dashboard port constant — single source of truth.
 try:
@@ -52,7 +52,7 @@ _MEASURE_LOCATOR = _SCRIPTS_DIR / "measure-path"
 # Fallback search paths if the primary location is missing (e.g. the bridge
 # is bundled into the install tree but measure.py is in the repo checkout).
 _FALLBACK_PATHS: list[Path] = [
-    claude_home() / "skills" / "token-optimizer" / "scripts" / "measure.py",
+    runtime_home() / "skills" / "token-optimizer" / "scripts" / "measure.py",
     Path.home() / ".hermes" / "plugins" / "token-optimizer" / "measure.py",
 ]
 

@@ -660,16 +660,40 @@ mkdir -p "$SKILL_DIR"
 SKILL_LINK="${SKILL_DIR}/token-optimizer"
 
 if [ -d "$SKILL_LINK" ] && [ ! -L "$SKILL_LINK" ]; then
-    warn "/token-optimizer skill directory exists (not a symlink). Skipping."
-    warn "To use the repo version, move it: mv ${SKILL_LINK} ${SKILL_LINK}.local"
+    _skill_backup="${SKILL_LINK}.pre-reconcile.$(date -u +%Y%m%dT%H%M%SZ).$$"
+    if mv "$SKILL_LINK" "$_skill_backup" 2>/dev/null; then
+        if ln -sfn "${INSTALL_DIR}/skills/token-optimizer" "$SKILL_LINK"; then
+            info "Replaced stale skill directory with symlink (old copy backed up to ${_skill_backup})"
+        else
+            if mv "$_skill_backup" "$SKILL_LINK" 2>/dev/null; then
+                warn "Could not create symlink at ${SKILL_LINK}; original directory restored."
+            else
+                warn "Could not create symlink at ${SKILL_LINK}; original is preserved at ${_skill_backup}."
+            fi
+            warn "To use the repo version, move it: mv ${SKILL_LINK} ${SKILL_LINK}.local"
+        fi
+    else
+        warn "/token-optimizer skill directory exists (not a symlink) and could not be moved. Skipping."
+        warn "To use the repo version, move it: mv ${SKILL_LINK} ${SKILL_LINK}.local"
+    fi
 elif [ -f "$SKILL_LINK" ] && [ ! -L "$SKILL_LINK" ]; then
     warn "Regular file exists at ${SKILL_LINK}. Moving to ${SKILL_LINK}.bak"
     mv "$SKILL_LINK" "${SKILL_LINK}.bak"
-    ln -sf "${INSTALL_DIR}/skills/token-optimizer" "$SKILL_LINK"
+    ln -sfn "${INSTALL_DIR}/skills/token-optimizer" "$SKILL_LINK"
     info "Linked /token-optimizer skill"
 else
-    ln -sf "${INSTALL_DIR}/skills/token-optimizer" "$SKILL_LINK"
+    ln -sfn "${INSTALL_DIR}/skills/token-optimizer" "$SKILL_LINK"
     info "Linked /token-optimizer skill"
+fi
+
+# ── Reconcile dev-symlink / plugin-cache skill shadow (issue #57) ─
+# A stale plugin-cache skill copy can shadow the fresh symlinked payload. The
+# reconcile pass is backup-first, foreign-runtime-guarded, idempotent, and a
+# no-op when there is nothing to reconcile. Tolerate any failure: a missing or
+# broken reconcile must never abort the install.
+if [ -f "${INSTALL_DIR}/skills/token-optimizer/scripts/install_reconcile.py" ]; then
+    python3 "${INSTALL_DIR}/skills/token-optimizer/scripts/install_reconcile.py" \
+        >"${INSTALL_DIR}/.last-reconcile.log" 2>&1 || true
 fi
 
 # ── Make Scripts Executable ───────────────────────────────────

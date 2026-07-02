@@ -256,11 +256,26 @@ def main():
     except ValueError:
         return
 
-    # Re-quote each token to handle paths with spaces safely (ARCH-F3)
+    # Re-quote each token to handle paths with spaces safely (ARCH-F3).
+    # Use the #80 bash-resolver form so the rewritten command survives a
+    # stripped/empty PATH (Claude runs updatedInput under `/bin/sh -c`).
+    #
+    # CRITICAL: this rewrites the USER's real Bash tool command, not an internal
+    # plugin hook. If no bash can be resolved (stripped PATH *and* bash absent
+    # from every probed path), we must NOT `exit 0` — that returns success with
+    # no output, and the agent reads it as "the command ran and produced nothing"
+    # (e.g. `git status` -> clean tree) when it never ran at all. Instead, when
+    # the resolver exhausts its candidates, fall through to running the ORIGINAL
+    # command unchanged under the current shell: compression degrades to plain
+    # execution, and a genuine failure still surfaces loudly. The leading `exec`
+    # on a hit means this fallback only runs when no bash was found.
     rewritten = (
-        "bash " + shlex.quote(str(launcher_path))
+        'for b in bash /bin/bash /usr/bin/bash /usr/local/bin/bash /opt/homebrew/bin/bash; '
+        'do command -v "$b" >/dev/null 2>&1 && exec "$b" '
+        + shlex.quote(str(launcher_path))
         + " " + shlex.quote(str(compress_path))
         + " " + " ".join(shlex.quote(t) for t in original_tokens)
+        + '; done; ' + command
     )
 
     # Log rewrite event to sidecar JSONL.

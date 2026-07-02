@@ -18202,7 +18202,7 @@ def setup_hook(dry_run=False):
 
 # ========== Persistent Dashboard Daemon ==========
 
-TOKEN_OPTIMIZER_VERSION = "5.11.30"  # Keep in sync with plugin.json + marketplace.json
+TOKEN_OPTIMIZER_VERSION = "5.11.31"  # Keep in sync with plugin.json + marketplace.json
 _DASHBOARD_CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 # Per-runtime daemon identity. Each runtime gets a distinct port + label so a
 # dashboard under one runtime never collides with another's. Copilot uses 24845
@@ -20873,7 +20873,25 @@ _CHECKPOINT_MAX_FILES = _int_env("TOKEN_OPTIMIZER_CHECKPOINT_FILES", 10)
 # fire-cooldown is handled separately by _CHECKPOINT_COOLDOWN_SECONDS.
 _CHECKPOINT_RETENTION_DAYS = _int_env("TOKEN_OPTIMIZER_CHECKPOINT_RETENTION_DAYS", 7)
 _CHECKPOINT_RETENTION_MAX = _int_env("TOKEN_OPTIMIZER_CHECKPOINT_RETENTION_MAX", 50)
-_RELEVANCE_THRESHOLD = _float_env("TOKEN_OPTIMIZER_RELEVANCE_THRESHOLD", 0.3)
+# Relevance gating (GitHub #82): the lightweight prompt-continuity hint used to
+# inject a full multi-line `[RECOVERED DATA ...]` block for any prior session
+# scoring as low as 0.30, even when the prior session was on a DIFFERENT topic.
+# A two-tier gate fixes that without losing the signal entirely:
+#   * _RELEVANCE_TEASER_FLOOR (env: TOKEN_OPTIMIZER_RELEVANCE_THRESHOLD, default
+#     0.3) -- the COLLECTION floor. Candidates at/above this are still gathered
+#     and ranked, so a 0.33 off-topic session stays visible as a one-line
+#     teaser. Back-compat: the original env var name still controls this floor.
+#   * _RELEVANCE_FULL_THRESHOLD (env: TOKEN_OPTIMIZER_RELEVANCE_FULL_THRESHOLD,
+#     default 0.5) -- the FULL-BLOCK threshold. Only the TOP session, when its
+#     score is at/above this, emits the multi-line RECOVERED block + the
+#     other-sessions list (byte-identical to the pre-fix behavior). Below it,
+#     the top session degrades to a single-line teaser and the other-sessions
+#     list is suppressed.
+_RELEVANCE_TEASER_FLOOR = _float_env("TOKEN_OPTIMIZER_RELEVANCE_THRESHOLD", 0.3)
+_RELEVANCE_FULL_THRESHOLD = _float_env("TOKEN_OPTIMIZER_RELEVANCE_FULL_THRESHOLD", 0.5)
+# Back-compat alias: existing internal references to _RELEVANCE_THRESHOLD keep
+# working and mean the teaser/collection floor (the historical 0.3 default).
+_RELEVANCE_THRESHOLD = _RELEVANCE_TEASER_FLOOR
 # Data-retention controls (enterprise compliance)
 _QUALITY_CACHE_RETENTION_DAYS = _int_env("TOKEN_OPTIMIZER_QUALITY_CACHE_RETENTION_DAYS", 0)  # 0 = unlimited (default); enterprise sets to e.g. 30
 _CHECKPOINT_EVENT_MAX = _int_env("TOKEN_OPTIMIZER_CHECKPOINT_EVENT_MAX", 1000)
@@ -24755,6 +24773,37 @@ def _neutralize_recovered_body(text, limit=4000):
     return text
 
 
+def _emit_codex_session_start(text):
+    """Emit SessionStart context as Codex-valid stdout (issue #81, marketplace path).
+
+    Codex requires SessionStart hook stdout to be EMPTY or valid JSON. When the
+    Codex marketplace plugin runs the shared ``hooks/hooks.json`` it calls
+    ``measure.py compact-restore`` directly (NOT via ``codex_hook_bridge``), and
+    ``compact_restore`` prints a raw ``[Token Optimizer] …`` text block — which
+    Codex rejects as invalid SessionStart JSON. This wraps that text in the Codex
+    envelope. Empty -> nothing; text already carrying a ``hookSpecificOutput``
+    envelope -> passthrough; otherwise -> wrap as ``additionalContext``.
+    Claude never calls this (it accepts the raw text as additionalContext).
+    """
+    text = (text or "").strip()
+    if not text:
+        return
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict) and parsed.get("hookSpecificOutput"):
+            print(text)
+            return
+    except (ValueError, TypeError):
+        pass
+    print(json.dumps({
+        "continue": True,
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": text,
+        },
+    }))
+
+
 def compact_restore(session_id=None, cwd=None, is_compact=False, new_session_only=False):
     """Restore context after compaction or for a new session.
 
@@ -25298,7 +25347,9 @@ def _continuity_prompt_hint(prompt_text="", session_id=None, cwd=None, max_age_m
             if sid_safe and sid_safe in checkpoint.get("filename", ""):
                 continue
             score, sidecar = _checkpoint_topic_score(text, checkpoint, cwd=cwd)
-            if score >= _RELEVANCE_THRESHOLD:
+            # Collect from the teaser floor (default 0.3); the full-block gate
+            # is applied later when rendering the TOP session (GitHub #82).
+            if score >= _RELEVANCE_TEASER_FLOOR:
                 # Project-scope when cwd is known: the lightweight hint must NOT
                 # surface checkpoints from OTHER projects (GitHub #61 -- a fresh
                 # prompt in project A was receiving project B's tasks/decisions).
@@ -25335,6 +25386,32 @@ def _continuity_prompt_hint(prompt_text="", session_id=None, cwd=None, max_age_m
     score = top["score"]
     checkpoint = top["checkpoint"]
     sidecar = top["sidecar"]
+
+    # GitHub #82 -- relevance gating for the lightweight prompt-continuity hint.
+    # The TOP session cleared the collection floor (_RELEVANCE_TEASER_FLOOR,
+    # default 0.3) but a low-relevance, cross-topic session should NOT inject a
+    # full multi-line `[RECOVERED DATA ...]` block by default. Below the
+    # full-block threshold (_RELEVANCE_FULL_THRESHOLD, default 0.5) we emit ONLY
+    # a single-line teaser and suppress both the RECOVERED block and the
+    # other-sessions list. The teaser is plain text (NOT fenced as recovered
+    # DATA) and carries no imperative prior-task text -- just enough signal for
+    # the user/agent to ask to load it if it actually is relevant. At/above the
+    # full-block threshold the rendering below is byte-identical to the pre-fix
+    # behavior. The deliberate "continue our work" (_resume_intent) path returns
+    # earlier and is intentionally NOT gated down here.
+    if score < _RELEVANCE_FULL_THRESHOLD:
+        teaser_topic = ""
+        if isinstance(sidecar, dict):
+            _task = sidecar.get("active_task") or sidecar.get("topic")
+            if _task:
+                _short = _safe_recovered_scalar(_task, 60)
+                if _short:
+                    teaser_topic = f", topic: {_short!r}"
+        return (
+            f"[Token Optimizer] Low-confidence prior session "
+            f"(relevance {score:.2f}{teaser_topic}). Ask to load if relevant."
+        )
+
     path = checkpoint["path"]
     quality = sidecar.get("quality") if isinstance(sidecar, dict) else {}
     active_task = sidecar.get("active_task") if isinstance(sidecar, dict) else None
@@ -33736,12 +33813,28 @@ if __name__ == "__main__":
         hook_input = _read_stdin_hook_input()
         sid = hook_input.get("session_id")
         new_session_only = "--new-session-only" in args
-        if new_session_only:
-            compact_restore(session_id=sid, new_session_only=True)
+        source = str(hook_input.get("source") or hook_input.get("hook_event_name") or "").lower()
+        is_compact = bool(hook_input.get("is_compact", False)) or source == "compact" or "--compact" in args
+
+        def _run_compact_restore():
+            if new_session_only:
+                compact_restore(session_id=sid, new_session_only=True)
+            else:
+                compact_restore(session_id=sid, is_compact=is_compact)
+
+        # Codex requires SessionStart stdout to be empty or valid JSON. Under the
+        # Codex marketplace plugin the shared hooks.json calls this directly (not
+        # via codex_hook_bridge), so capture the raw text and wrap it (issue #81).
+        # Claude keeps the raw-text stream unchanged.
+        if detect_runtime() == "codex":
+            import io as _io
+            from contextlib import redirect_stdout as _redirect_stdout
+            _buf = _io.StringIO()
+            with _redirect_stdout(_buf):
+                _run_compact_restore()
+            _emit_codex_session_start(_buf.getvalue())
         else:
-            source = str(hook_input.get("source") or hook_input.get("hook_event_name") or "").lower()
-            is_compact = bool(hook_input.get("is_compact", False)) or source == "compact" or "--compact" in args
-            compact_restore(session_id=sid, is_compact=is_compact)
+            _run_compact_restore()
     elif args[0] in ("continue-last", "codex-continue-last"):
         topic = ""
         for i, a in enumerate(args):

@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/read_cache.py --quiet"
+            "command": "for b in bash /bin/bash /usr/bin/bash /usr/local/bin/bash /opt/homebrew/bin/bash; do command -v \"$b\" >/dev/null 2>&1 && exec \"$b\" \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/read_cache.py --quiet; done; exit 0"
           }
         ]
       },
@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/bash_hook.py --quiet"
+            "command": "for b in bash /bin/bash /usr/bin/bash /usr/local/bin/bash /opt/homebrew/bin/bash; do command -v \"$b\" >/dev/null 2>&1 && exec \"$b\" \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/bash_hook.py --quiet; done; exit 0"
           }
         ]
       },
@@ -24,7 +24,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py checkpoint-trigger --milestone pre-fanout --quiet"
+            "command": "for b in bash /bin/bash /usr/bin/bash /usr/local/bin/bash /opt/homebrew/bin/bash; do command -v \"$b\" >/dev/null 2>&1 && exec \"$b\" \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py checkpoint-trigger --milestone pre-fanout --quiet; done; exit 0"
           }
         ]
       }
@@ -34,7 +34,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py dynamic-compact-instructions --quiet"
+            "command": "for b in bash /bin/bash /usr/bin/bash /usr/local/bin/bash /opt/homebrew/bin/bash; do command -v \"$b\" >/dev/null 2>&1 && exec \"$b\" \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py dynamic-compact-instructions --quiet; done; exit 0"
           }
         ]
       },
@@ -42,7 +42,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py compact-capture --trigger auto --quiet"
+            "command": "for b in bash /bin/bash /usr/bin/bash /usr/local/bin/bash /opt/homebrew/bin/bash; do command -v \"$b\" >/dev/null 2>&1 && exec \"$b\" \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py compact-capture --trigger auto --quiet; done; exit 0"
           }
         ]
       },
@@ -50,7 +50,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/read_cache.py --clear --quiet"
+            "command": "for b in bash /bin/bash /usr/bin/bash /usr/local/bin/bash /opt/homebrew/bin/bash; do command -v \"$b\" >/dev/null 2>&1 && exec \"$b\" \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/read_cache.py --clear --quiet; done; exit 0"
           }
         ]
       }
@@ -60,7 +60,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py ensure-health",
+            "command": "for b in bash /bin/bash /usr/bin/bash /usr/local/bin/bash /opt/homebrew/bin/bash; do command -v \"$b\" >/dev/null 2>&1 && exec \"$b\" \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py ensure-health; done; exit 0",
             "async": true,
             "timeout": 15000
           }
@@ -70,7 +70,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py quality-cache --force --quiet"
+            "command": "for b in bash /bin/bash /usr/bin/bash /usr/local/bin/bash /opt/homebrew/bin/bash; do command -v \"$b\" >/dev/null 2>&1 && exec \"$b\" \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py quality-cache --force --quiet; done; exit 0"
           }
         ]
       },
@@ -79,7 +79,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py compact-restore --compact"
+            "command": "for b in bash /bin/bash /usr/bin/bash /usr/local/bin/bash /opt/homebrew/bin/bash; do command -v \"$b\" >/dev/null 2>&1 && exec \"$b\" \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py compact-restore --compact; done; exit 0"
           }
         ]
       },
@@ -87,7 +87,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py compact-restore --new-session-only"
+            "command": "for b in bash /bin/bash /usr/bin/bash /usr/local/bin/bash /opt/homebrew/bin/bash; do command -v \"$b\" >/dev/null 2>&1 && exec \"$b\" \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py compact-restore --new-session-only; done; exit 0"
           }
         ]
       }
@@ -97,16 +97,16 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py compact-capture --trigger stop --quiet"
+            "command": "for b in bash /bin/bash /usr/bin/bash /usr/local/bin/bash /opt/homebrew/bin/bash; do command -v \"$b\" >/dev/null 2>&1 && exec \"$b\" \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py compact-capture --trigger stop --quiet; done; exit 0"
           },
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py session-end-flush --trigger stop --quiet --defer",
+            "command": "for b in bash /bin/bash /usr/bin/bash /usr/local/bin/bash /opt/homebrew/bin/bash; do command -v \"$b\" >/dev/null 2>&1 && exec \"$b\" \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py session-end-flush --trigger stop --quiet --defer; done; exit 0",
             "timeout": 8
           },
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py keepwarm-arm --quiet",
+            "command": "for b in bash /bin/bash /usr/bin/bash /usr/local/bin/bash /opt/homebrew/bin/bash; do command -v \"$b\" >/dev/null 2>&1 && exec \"$b\" \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py keepwarm-arm --quiet; done; exit 0",
             "timeout": 5
           }
         ]
@@ -117,7 +117,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py session-end-flush",
+            "command": "for b in bash /bin/bash /usr/bin/bash /usr/local/bin/bash /opt/homebrew/bin/bash; do command -v \"$b\" >/dev/null 2>&1 && exec \"$b\" \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py session-end-flush; done; exit 0",
             "async": true,
             "timeout": 60000
           }
@@ -129,7 +129,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py compact-capture --trigger stop-failure --quiet"
+            "command": "for b in bash /bin/bash /usr/bin/bash /usr/local/bin/bash /opt/homebrew/bin/bash; do command -v \"$b\" >/dev/null 2>&1 && exec \"$b\" \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py compact-capture --trigger stop-failure --quiet; done; exit 0"
           }
         ]
       }
@@ -139,7 +139,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py quality-cache --warn --quiet"
+            "command": "for b in bash /bin/bash /usr/bin/bash /usr/local/bin/bash /opt/homebrew/bin/bash; do command -v \"$b\" >/dev/null 2>&1 && exec \"$b\" \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py quality-cache --warn --quiet; done; exit 0"
           }
         ]
       },
@@ -147,7 +147,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py prompt-continuity --quiet"
+            "command": "for b in bash /bin/bash /usr/bin/bash /usr/local/bin/bash /opt/homebrew/bin/bash; do command -v \"$b\" >/dev/null 2>&1 && exec \"$b\" \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py prompt-continuity --quiet; done; exit 0"
           }
         ]
       },
@@ -155,7 +155,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py verbosity-steer --quiet"
+            "command": "for b in bash /bin/bash /usr/bin/bash /usr/local/bin/bash /opt/homebrew/bin/bash; do command -v \"$b\" >/dev/null 2>&1 && exec \"$b\" \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py verbosity-steer --quiet; done; exit 0"
           }
         ]
       }
@@ -166,7 +166,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/archive_result.py --quiet"
+            "command": "for b in bash /bin/bash /usr/bin/bash /usr/local/bin/bash /opt/homebrew/bin/bash; do command -v \"$b\" >/dev/null 2>&1 && exec \"$b\" \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/archive_result.py --quiet; done; exit 0"
           }
         ]
       },
@@ -175,7 +175,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/context_intel.py --quiet"
+            "command": "for b in bash /bin/bash /usr/bin/bash /usr/local/bin/bash /opt/homebrew/bin/bash; do command -v \"$b\" >/dev/null 2>&1 && exec \"$b\" \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/context_intel.py --quiet; done; exit 0"
           }
         ]
       },
@@ -184,7 +184,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/read_cache.py --invalidate --quiet"
+            "command": "for b in bash /bin/bash /usr/bin/bash /usr/local/bin/bash /opt/homebrew/bin/bash; do command -v \"$b\" >/dev/null 2>&1 && exec \"$b\" \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/read_cache.py --invalidate --quiet; done; exit 0"
           }
         ]
       },
@@ -193,7 +193,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py quality-cache --quiet --throttle-only"
+            "command": "for b in bash /bin/bash /usr/bin/bash /usr/local/bin/bash /opt/homebrew/bin/bash; do command -v \"$b\" >/dev/null 2>&1 && exec \"$b\" \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py quality-cache --quiet --throttle-only; done; exit 0"
           }
         ]
       }
@@ -203,7 +203,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py quality-cache --force --quiet"
+            "command": "for b in bash /bin/bash /usr/bin/bash /usr/local/bin/bash /opt/homebrew/bin/bash; do command -v \"$b\" >/dev/null 2>&1 && exec \"$b\" \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/measure.py quality-cache --force --quiet; done; exit 0"
           }
         ]
       }
@@ -213,7 +213,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/read_cache.py --clear --quiet"
+            "command": "for b in bash /bin/bash /usr/bin/bash /usr/local/bin/bash /opt/homebrew/bin/bash; do command -v \"$b\" >/dev/null 2>&1 && exec \"$b\" \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/read_cache.py --clear --quiet; done; exit 0"
           }
         ]
       }

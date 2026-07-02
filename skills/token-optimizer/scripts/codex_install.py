@@ -33,9 +33,23 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
+# Inline POSIX bash-resolver prefix/suffix (#80). When Claude/Codex runs a hook
+# command under `/bin/sh -c` with a stripped/empty PATH, bare `bash` is not
+# found → exit 127 spam on every tool call. The resolver probes `command -v`
+# for bash in PATH then a fixed list of absolute locations (POSIX guarantees
+# `command -v /abs/path` works without PATH). `exec` replaces the shell with
+# bash; the trailing `exit 0` is a quiet no-op when no bash exists anywhere.
+_BASH_RESOLVER_PREFIX = (
+    'for b in bash /bin/bash /usr/bin/bash /usr/local/bin/bash /opt/homebrew/bin/bash; '
+    'do command -v "$b" >/dev/null 2>&1 && '
+)
+_BASH_RESOLVER_SUFFIX = "; done; exit 0"
+
+
 def _hook_command(script: str, *args: str, redirect_quiet: bool = False) -> str:
     root = _repo_root()
     command_args = " ".join(shlex.quote(arg) for arg in (script, *args))
+    redirect = " >/dev/null 2>&1" if redirect_quiet else ""
     if _SEMVER_DIR_RE.match(root.name):
         # Marketplace install: root is .../token-optimizer/<X.Y.Z>/, which is
         # deleted when Codex installs a newer version. Pinning it here makes
@@ -46,20 +60,28 @@ def _hook_command(script: str, *args: str, redirect_quiet: bool = False) -> str:
         fallback = shlex.quote(str(root) + "/")
         # Only consider semver-named subdirs so a stray sibling (latest/, backup/,
         # __pycache__/) can't be picked by `sort -V | tail` over the real version.
-        resolve = (
-            f"R=\"$(ls -d {base}/*/ 2>/dev/null | grep -E '/[0-9]+[.][0-9]+[.][0-9]+/$' "
+        # $0 is set to the resolved bash binary (passed as the first arg after
+        # `-c`), so `exec "$0"` re-execs the same bash without needing PATH.
+        inner = (
+            f'R="$(ls -d {base}/*/ 2>/dev/null | grep -E \'/[0-9]+[.][0-9]+[.][0-9]+/$\' '
             f'| sort -V | tail -n 1)"; '
             f'[ -n "$R" ] || R={fallback}; '
-            f'TOKEN_OPTIMIZER_RUNTIME=codex exec bash "${{R}}hooks/python-launcher.sh" '
-            f'"${{R}}hooks/run.py" {command_args}'
+            f'exec "$0" "${{R}}hooks/python-launcher.sh" '
+            f'"${{R}}hooks/run.py" {command_args}{redirect}'
         )
-        command = f"bash -c {shlex.quote(resolve)}"
+        command = (
+            f"{_BASH_RESOLVER_PREFIX}"
+            f'TOKEN_OPTIMIZER_RUNTIME=codex exec "$b" -c {shlex.quote(inner)} "$b"'
+            f"{_BASH_RESOLVER_SUFFIX}"
+        )
     else:
         launcher = shlex.quote(str(root / "hooks" / "python-launcher.sh"))
         runner = shlex.quote(str(root / "hooks" / "run.py"))
-        command = f"TOKEN_OPTIMIZER_RUNTIME=codex bash {launcher} {runner} {command_args}"
-    if redirect_quiet:
-        command += " >/dev/null 2>&1"
+        command = (
+            f"{_BASH_RESOLVER_PREFIX}"
+            f'TOKEN_OPTIMIZER_RUNTIME=codex exec "$b" {launcher} {runner} {command_args}'
+            f"{redirect}{_BASH_RESOLVER_SUFFIX}"
+        )
     return command
 
 

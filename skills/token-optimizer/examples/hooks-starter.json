@@ -13,7 +13,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/token-optimizer}/hooks/python-launcher.sh\" '$MEASURE_PY' compact-capture --trigger auto --quiet"
+            "command": "for b in bash /bin/bash /usr/bin/bash /usr/local/bin/bash /opt/homebrew/bin/bash; do command -v \"$b\" >/dev/null 2>&1 && exec \"$b\" \"${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/token-optimizer}/hooks/python-launcher.sh\" '$MEASURE_PY' compact-capture --trigger auto --quiet; done; exit 0"
           }
         ]
       }
@@ -24,7 +24,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/token-optimizer}/hooks/python-launcher.sh\" '$MEASURE_PY' compact-restore --compact"
+            "command": "for b in bash /bin/bash /usr/bin/bash /usr/local/bin/bash /opt/homebrew/bin/bash; do command -v \"$b\" >/dev/null 2>&1 && exec \"$b\" \"${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/token-optimizer}/hooks/python-launcher.sh\" '$MEASURE_PY' compact-restore --compact; done; exit 0"
           }
         ]
       },
@@ -32,7 +32,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/token-optimizer}/hooks/python-launcher.sh\" '$MEASURE_PY' compact-restore --new-session-only"
+            "command": "for b in bash /bin/bash /usr/bin/bash /usr/local/bin/bash /opt/homebrew/bin/bash; do command -v \"$b\" >/dev/null 2>&1 && exec \"$b\" \"${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/token-optimizer}/hooks/python-launcher.sh\" '$MEASURE_PY' compact-restore --new-session-only; done; exit 0"
           }
         ]
       }
@@ -42,7 +42,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/token-optimizer}/hooks/python-launcher.sh\" '$MEASURE_PY' compact-capture --trigger stop --quiet"
+            "command": "for b in bash /bin/bash /usr/bin/bash /usr/local/bin/bash /opt/homebrew/bin/bash; do command -v \"$b\" >/dev/null 2>&1 && exec \"$b\" \"${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/token-optimizer}/hooks/python-launcher.sh\" '$MEASURE_PY' compact-capture --trigger stop --quiet; done; exit 0"
           }
         ]
       }
@@ -52,7 +52,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/token-optimizer}/hooks/python-launcher.sh\" '$MEASURE_PY' collect --quiet && $(command -v python3 || command -v python || echo py -3) '$MEASURE_PY' dashboard --quiet",
+            "command": "for b in bash /bin/bash /usr/bin/bash /usr/local/bin/bash /opt/homebrew/bin/bash; do command -v \"$b\" >/dev/null 2>&1 || continue; \"$b\" \"${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/token-optimizer}/hooks/python-launcher.sh\" '$MEASURE_PY' collect --quiet && $(command -v python3 || command -v python || echo py -3) '$MEASURE_PY' dashboard --quiet; exit; done; exit 0",
             "async": true
           }
         ]
@@ -61,7 +61,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/token-optimizer}/hooks/python-launcher.sh\" '$MEASURE_PY' compact-capture --trigger end --quiet",
+            "command": "for b in bash /bin/bash /usr/bin/bash /usr/local/bin/bash /opt/homebrew/bin/bash; do command -v \"$b\" >/dev/null 2>&1 && exec \"$b\" \"${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/token-optimizer}/hooks/python-launcher.sh\" '$MEASURE_PY' compact-capture --trigger end --quiet; done; exit 0",
             "async": true
           }
         ]
@@ -72,7 +72,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/token-optimizer}/hooks/python-launcher.sh\" '$MEASURE_PY' quality-cache --warn --quiet"
+            "command": "for b in bash /bin/bash /usr/bin/bash /usr/local/bin/bash /opt/homebrew/bin/bash; do command -v \"$b\" >/dev/null 2>&1 && exec \"$b\" \"${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/token-optimizer}/hooks/python-launcher.sh\" '$MEASURE_PY' quality-cache --warn --quiet; done; exit 0"
           }
         ]
       }

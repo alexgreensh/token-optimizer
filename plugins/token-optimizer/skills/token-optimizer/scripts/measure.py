@@ -18202,7 +18202,7 @@ def setup_hook(dry_run=False):
 
 # ========== Persistent Dashboard Daemon ==========
 
-TOKEN_OPTIMIZER_VERSION = "5.11.31"  # Keep in sync with plugin.json + marketplace.json
+TOKEN_OPTIMIZER_VERSION = "5.11.32"  # Keep in sync with plugin.json + marketplace.json
 _DASHBOARD_CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 # Per-runtime daemon identity. Each runtime gets a distinct port + label so a
 # dashboard under one runtime never collides with another's. Copilot uses 24845
@@ -28178,6 +28178,103 @@ def _set_daemon_disabled(disabled):
     _write_config_flag("daemon_disabled", bool(disabled))
 
 
+# ── VS Code status-bar extension auto-install ─────────────────────────────
+# The terminal status line never appears for people who live in a VS Code-family
+# editor's panel rather than its integrated terminal. The companion extension
+# `alexgreensh.token-optimizer-statusline` surfaces the same context/efficiency/
+# limits in the editor's own status bar. It's published on the VS Code Marketplace
+# (VS Code) and OpenVSX (Cursor / Windsurf / VSCodium), reading the data this
+# plugin already writes. ensure-health installs it automatically, once, when it
+# detects a VS Code-family editor with a usable CLI — silent, default-on, with a
+# sticky opt-out symmetric to the quality bar and dashboard daemon.
+_VSCODE_EXTENSION_ID = "alexgreensh.token-optimizer-statusline"
+
+
+def _set_vscode_ext_disabled(disabled):
+    """Persist the VS Code extension auto-install opt-out (sticky across
+    SessionStart), symmetric with `_set_quality_bar_disabled` /
+    `_set_daemon_disabled`. `setup-vscode-extension --uninstall` sets it; an
+    explicit `--install` clears it (opt back in)."""
+    _write_config_flag("vscode_ext_disabled", bool(disabled))
+
+
+def _detect_vscode_family_cli():
+    """Return (editor_label, cli_name) when running inside a VS Code-family editor
+    with an install-capable CLI on PATH, else (None, None).
+
+    VS Code, Cursor, Windsurf, and VSCodium all set TERM_PROGRAM=vscode (they are
+    VS Code forks) and export VSCODE_* markers in the integrated terminal. We pick
+    the fork-specific CLI first (its `--install-extension` resolves from the fork's
+    own registry — OpenVSX for Cursor/Windsurf), falling back to `code`.
+    """
+    import shutil  # noqa: PLC0415
+
+    term = os.environ.get("TERM_PROGRAM", "")
+    in_vscode = term == "vscode" or any(k.startswith("VSCODE_") for k in os.environ)
+    if not in_vscode:
+        return None, None
+    bundle = os.environ.get("__CFBundleIdentifier", "").lower()
+    ipc = os.environ.get("VSCODE_IPC_HOOK", "").lower() + os.environ.get(
+        "VSCODE_GIT_ASKPASS_MAIN", ""
+    ).lower()
+    label, preferred = "VS Code", []
+    if "cursor" in bundle or "cursor" in ipc:
+        label, preferred = "Cursor", ["cursor"]
+    elif "windsurf" in bundle or "exafunction" in bundle or "windsurf" in ipc:
+        label, preferred = "Windsurf", ["windsurf"]
+    elif "vscodium" in bundle or "codium" in ipc:
+        label, preferred = "VSCodium", ["codium"]
+    for name in preferred + ["code", "code-insiders", "cursor", "windsurf", "codium"]:
+        if shutil.which(name):
+            return label, name
+    return None, None
+
+
+def _ensure_vscode_extension():
+    """Auto-install the Token Optimizer VS Code status-bar extension (Claude only,
+    default-on, sticky opt-out `vscode_ext_disabled`, throttled to once/24h).
+    Idempotent: no-op when already installed or no VS Code-family CLI is present.
+    Never raises — a hook must never break the session."""
+    import time as _time  # noqa: PLC0415
+
+    if _read_config_flag("vscode_ext_disabled", False):
+        return
+    label, cli = _detect_vscode_family_cli()
+    if not cli:
+        return
+    # Throttle: at most one attempt per 24h. Installing once is enough; the window
+    # avoids per-session `--list-extensions` spawns while still re-offering to a
+    # user who removed it. Stamp BEFORE the work so a hang never re-fires next tick.
+    now = _time.time()
+    try:
+        if now - float(_read_config_flag("vscode_ext_last_check", 0) or 0) < 86400:
+            return
+    except (TypeError, ValueError):
+        pass
+    _write_config_flag("vscode_ext_last_check", now)
+    try:
+        listed = subprocess.run(
+            [cli, "--list-extensions"], capture_output=True, text=True, timeout=15
+        )
+    except (OSError, subprocess.SubprocessError):
+        return
+    if listed.returncode == 0 and _VSCODE_EXTENSION_ID.lower() in (listed.stdout or "").lower():
+        return  # already installed
+    try:
+        r = subprocess.run(
+            [cli, "--install-extension", _VSCODE_EXTENSION_ID],
+            capture_output=True, text=True, timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return
+    if r.returncode == 0:
+        print(
+            f"  [Token Optimizer] Installed the VS Code status-bar extension in {label}. "
+            "Reload the window to see it (Cmd/Ctrl+Shift+P -> Reload Window). "
+            "Opt out anytime: measure.py setup-vscode-extension --uninstall"
+        )
+
+
 def _read_config_flag(key, default=False):
     """Read a single flag from config.json. Returns default on any error."""
     try:
@@ -32154,6 +32251,17 @@ def run_ensure_health():
     except Exception as _e:
         print(f"  [Token Optimizer] dashboard daemon self-heal failed: {_e}", file=sys.stderr)
 
+    # VS Code-family status-bar extension auto-install. Only meaningful for the
+    # Claude runtime running inside a VS Code/Cursor/Windsurf editor; the detector
+    # no-ops everywhere else (plain terminal, foreign runtimes). Default-on with a
+    # sticky opt-out and a 24h throttle, mirroring the quality bar / daemon.
+    # Non-blocking (try/except) so an editor CLI hiccup never breaks SessionStart.
+    if _is_claude:
+        try:
+            _ensure_vscode_extension()
+        except Exception as _e:
+            print(f"  [Token Optimizer] VS Code extension self-install failed: {_e}", file=sys.stderr)
+
     # Keep-warm scheduler repair (U4 deliverable 3). ADDITIVE + consent-gated +
     # cheap. Regenerates a user-deleted/stale keep-warm agent ONLY when the
     # install marker exists AND consent allows (the #59 sticky-opt-out lesson:
@@ -34350,6 +34458,55 @@ if __name__ == "__main__":
         uninstall = "--uninstall" in args
         status = "--status" in args
         setup_quality_bar(dry_run=dry, uninstall=uninstall, status_only=status)
+    elif args[0] == "setup-vscode-extension":
+        # Manage the VS Code status-bar extension auto-install.
+        #   --uninstall : sticky opt-out (+ remove the extension if a CLI is present)
+        #   --install / --enable : clear the opt-out and install now
+        #   --status (default) : report opt-out + detected editor + install state
+        if "--uninstall" in args:
+            _set_vscode_ext_disabled(True)
+            _label, _cli = _detect_vscode_family_cli()
+            _removed = False
+            if _cli:
+                try:
+                    _r = subprocess.run(
+                        [_cli, "--uninstall-extension", _VSCODE_EXTENSION_ID],
+                        capture_output=True, text=True, timeout=60,
+                    )
+                    _removed = _r.returncode == 0
+                except (OSError, subprocess.SubprocessError):
+                    _removed = False
+            print("[Token Optimizer] VS Code extension auto-install disabled (sticky)."
+                  + (" Extension removed." if _removed else ""))
+        elif "--install" in args or "--enable" in args:
+            _set_vscode_ext_disabled(False)
+            _write_config_flag("vscode_ext_last_check", 0)  # force a fresh attempt
+            _label, _cli = _detect_vscode_family_cli()
+            if not _cli:
+                print("[Token Optimizer] Opted in. No VS Code-family editor CLI detected here; "
+                      "the extension will install on your next session inside VS Code/Cursor/Windsurf.")
+            else:
+                try:
+                    _ensure_vscode_extension()
+                except Exception as _e:
+                    print(f"[Token Optimizer] VS Code extension install failed: {_e}", file=sys.stderr)
+        else:
+            _disabled = _read_config_flag("vscode_ext_disabled", False)
+            _label, _cli = _detect_vscode_family_cli()
+            _state = "unknown"
+            if _cli:
+                try:
+                    _r = subprocess.run([_cli, "--list-extensions"], capture_output=True,
+                                        text=True, timeout=15)
+                    _state = ("installed" if _r.returncode == 0
+                              and _VSCODE_EXTENSION_ID.lower() in (_r.stdout or "").lower()
+                              else "not installed")
+                except (OSError, subprocess.SubprocessError):
+                    _state = "unknown"
+            print(f"[Token Optimizer] VS Code extension: auto-install "
+                  f"{'DISABLED' if _disabled else 'enabled'}; editor="
+                  f"{_label or 'none detected'}; state={_state}. "
+                  f"Marketplace/OpenVSX id: {_VSCODE_EXTENSION_ID}")
     elif args[0] == "list-checkpoints":
         cps = list_checkpoints()
         if not cps:

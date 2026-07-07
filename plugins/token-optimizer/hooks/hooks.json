@@ -160,7 +160,16 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Bash|Read|Glob|Grep|Agent|mcp__.*",
+        "matcher": "mcp__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "for b in bash /bin/bash /usr/bin/bash /usr/local/bin/bash /opt/homebrew/bin/bash; do command -v \"$b\" >/dev/null 2>&1 && exec \"$b\" \"${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" skills/token-optimizer/scripts/archive_result.py --quiet; done; exit 0"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|Read|Glob|Grep|Agent",
         "hooks": [
           {
             "type": "command",

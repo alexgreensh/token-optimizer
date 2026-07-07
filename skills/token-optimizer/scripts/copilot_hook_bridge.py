@@ -295,6 +295,21 @@ def load_capabilities(refresh=True):
         return _seed_capabilities(None)
 
     version, raw = _copilot_cli_version()
+
+    # Detection failure must NOT downgrade a previously-resolved matrix back to
+    # the conservative "unknown" seed. The sessionStart hook and `bash install.sh`
+    # often run in a WSL-root context where the native-Windows `copilot` binary
+    # isn't on PATH, so `copilot --version` returns nothing there even though the
+    # CLI is real and capable (issue #78). Erasing known-good caps in that context
+    # silently gates postToolUse/allow/updated-input off. Keep what we resolved.
+    if (
+        version is None
+        and isinstance(cached, dict)
+        and isinstance(cached.get("caps"), dict)
+        and cached.get("cli_version") not in (None, "", "unknown")
+    ):
+        return cached["caps"]
+
     version_key = ".".join(str(n) for n in version) if version else "unknown"
     if (
         isinstance(cached, dict)
@@ -303,7 +318,16 @@ def load_capabilities(refresh=True):
     ):
         return cached["caps"]
 
+    return _write_capabilities(version, raw, cap_path)
+
+
+def _write_capabilities(version, raw, cap_path=None):
+    """Seed caps for ``version`` and persist to ``cap_path``. Returns the caps."""
     caps = _seed_capabilities(version)
+    version_key = ".".join(str(n) for n in version) if version else "unknown"
+    if cap_path is None:
+        to_dir = _to_dir()
+        cap_path = to_dir / "capabilities.json" if to_dir else None
     if cap_path is not None:
         _atomic_write_json(
             cap_path,
@@ -316,6 +340,17 @@ def load_capabilities(refresh=True):
             },
         )
     return caps
+
+
+def reseed_capabilities(version, raw=""):
+    """Force-write the capability matrix for an externally-resolved version.
+
+    copilot-doctor calls this to self-heal a matrix stuck at "unknown" (or seeded
+    for an older CLI) the moment it HAS resolved the real version. The doctor runs
+    in the native shell where `copilot` is on PATH, unlike the WSL-root hook that
+    seeded "unknown" (issue #78). Returns the freshly-written caps.
+    """
+    return _write_capabilities(version, raw)
 
 
 # ---------------------------------------------------------------------------

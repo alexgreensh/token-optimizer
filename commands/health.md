@@ -12,16 +12,26 @@ Run a session health check and help the user manage running sessions safely.
 ```bash
 RUNTIME="${TOKEN_OPTIMIZER_RUNTIME:-}"
 if [ -z "$RUNTIME" ]; then
+  # Env signals are authoritative and checked before directory heuristics: a host
+  # with BOTH ~/.codex and ~/.config/opencode (running OpenCode) must resolve to
+  # opencode, not codex, so the tool never reaches into ~/.claude (issue #57).
   if [ -n "$CLAUDE_PLUGIN_ROOT" ] || [ -n "$CLAUDE_PLUGIN_DATA" ]; then
     RUNTIME="claude"
-  elif [ -n "$CODEX_HOME" ] || [ -d "$HOME/.codex" ]; then
+  elif [ -n "$OPENCODE" ] || [ -n "$OPENCODE_BIN" ] || [ -n "$OPENCODE_CONFIG_DIR" ] || [ -n "$OPENCODE_CONFIG" ]; then
+    RUNTIME="opencode"
+  elif [ -n "$CODEX_HOME" ]; then
+    RUNTIME="codex"
+  elif [ -d "$HOME/.config/opencode" ] && [ ! -d "$HOME/.codex" ]; then
+    RUNTIME="opencode"
+  elif [ -d "$HOME/.codex" ]; then
     RUNTIME="codex"
   else
     RUNTIME="claude"
   fi
 fi
 MEASURE_PY=""
-for f in "$HOME/.codex/plugins/cache"/*/token-optimizer/*/skills/token-optimizer/scripts/measure.py \
+for f in "$HOME/.config/opencode/plugins/cache"/*/token-optimizer/*/skills/token-optimizer/scripts/measure.py \
+         "$HOME/.codex/plugins/cache"/*/token-optimizer/*/skills/token-optimizer/scripts/measure.py \
          "$HOME/.codex/skills/token-optimizer/scripts/measure.py" \
          "$HOME/.claude/plugins/cache"/*/token-optimizer/*/skills/token-optimizer/scripts/measure.py \
          "$HOME/.claude/skills/token-optimizer/scripts/measure.py" \
@@ -31,9 +41,10 @@ done
 export TOKEN_OPTIMIZER_RUNTIME="$RUNTIME"
 ```
 
-2. Run:
+2. Run (use the resolved `$RUNTIME` — never hardcode a runtime; under OpenCode this
+   keeps the session scan scoped to OpenCode and never reaches into `~/.claude`):
    - Claude Code plugin: `bash "$CLAUDE_PLUGIN_ROOT/hooks/python-launcher.sh" $MEASURE_PY health`
-   - Codex or standalone: `TOKEN_OPTIMIZER_RUNTIME=codex python3 "$MEASURE_PY" health`
+   - Codex / OpenCode / standalone: `TOKEN_OPTIMIZER_RUNTIME="$RUNTIME" python3 "$MEASURE_PY" health`
 
 3. Present results clearly. For each session show: PID, elapsed time, version, and flags (STALE >24h, ZOMBIE >48h, OUTDATED, HEADLESS, TERMINAL).
 
@@ -46,7 +57,7 @@ export TOKEN_OPTIMIZER_RUNTIME="$RUNTIME"
    - Let the user pick specific PIDs to terminate, or offer "terminate all ZOMBIE-flagged sessions" as a batch option.
    - Always run a dry-run first to preview what would be terminated, then ask for confirmation before running without `--dry-run`.
    - Claude Code plugin dry-run: `bash "$CLAUDE_PLUGIN_ROOT/hooks/python-launcher.sh" $MEASURE_PY kill-stale --dry-run`
-   - Codex or standalone dry-run: `TOKEN_OPTIMIZER_RUNTIME=codex python3 "$MEASURE_PY" kill-stale --dry-run`
+   - Codex / OpenCode / standalone dry-run: `TOKEN_OPTIMIZER_RUNTIME="$RUNTIME" python3 "$MEASURE_PY" kill-stale --dry-run`
    - If the user says "kill all" or similar, still show the dry-run preview and confirm. No silent kills.
 
 6. If no stale or zombie sessions found, say: "All sessions look healthy. Your oldest is Xh old."

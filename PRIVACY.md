@@ -35,7 +35,7 @@ SQLite database containing per-session aggregates: token counts, model usage, co
 
 ### Per-Session File Cache (session stores)
 
-SQLite databases with file read records, content hashes, token estimates, and cached file content (up to 50KB per file). **Cached content is credential-redacted before storage** using 22 pattern types (AWS keys, API tokens, etc.).
+SQLite databases with file read records, content hashes, token estimates, and cached file content (up to 50KB per file). **Cached content is credential-redacted before storage** using 23 pattern types (AWS keys, API tokens, URL query/fragment auth params, etc.).
 
 - **Path:** `<plugin-data>/data/session-store/<session-id>.db`
 - **Retention:** Auto-deleted after 48 hours
@@ -76,7 +76,7 @@ JSON files with per-session quality score snapshots (6-signal metric).
 
 ## Credential Handling
 
-Token Optimizer scans for 22 credential patterns (AWS keys, API tokens, GitHub PATs, database URIs, JWTs, PEM keys, and more) and replaces them with `[CREDENTIAL REDACTED: <type>]` before writing to the session store and tool archive. This redaction is one-way and permanent in stored content.
+Token Optimizer scans for 23 credential patterns (AWS keys, API tokens, GitHub PATs, database URIs, JWTs, PEM keys, URL query/fragment auth params, and more) and replaces them with `[CREDENTIAL REDACTED: <type>]` before writing to the session store and tool archive. This redaction is one-way and permanent in stored content.
 
 **Known tradeoff:** Credential redaction in the read cache means delta reads against files containing credentials will produce non-empty diffs on every re-read (the stored version has the redacted placeholder, the live file has the actual credential). This is a deliberate security-over-efficiency tradeoff.
 

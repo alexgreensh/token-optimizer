@@ -210,18 +210,41 @@ def _capability_checks() -> list:
     try:
         import copilot_hook_bridge
 
-        version, _ = copilot_hook_bridge._copilot_cli_version()
+        version, raw = copilot_hook_bridge._copilot_cli_version()
         if version:
             current = ".".join(map(str, version))
             if data.get("cli_version") not in (current, None):
-                checks.append(
-                    _check(
-                        "warn",
-                        "capabilities freshness",
-                        f"Seeded for {data.get('cli_version')}, installed CLI is {current}.",
-                        "Start one Copilot session (the sessionStart hook reseeds) or re-run copilot-install.",
+                # The doctor runs in the native shell where `copilot` IS on PATH,
+                # so it can resolve the real version even when the WSL-root
+                # sessionStart hook could only seed "unknown" (issue #78). Rather
+                # than tell the user to "start a session" (which, in that WSL-root
+                # context, would just re-seed "unknown" again), self-heal now:
+                # persist the correct matrix so postToolUse/allow/etc. stop being
+                # gated off on a capable CLI.
+                healed = False
+                try:
+                    new_caps = copilot_hook_bridge.reseed_capabilities(version, raw)
+                    healed = isinstance(new_caps, dict) and bool(new_caps)
+                except Exception:
+                    healed = False
+                if healed:
+                    checks.append(
+                        _check(
+                            "ok",
+                            "capabilities freshness",
+                            f"Reseeded {data.get('cli_version')} -> {current} "
+                            "(matrix now matches the installed CLI).",
+                        )
                     )
-                )
+                else:
+                    checks.append(
+                        _check(
+                            "warn",
+                            "capabilities freshness",
+                            f"Seeded for {data.get('cli_version')}, installed CLI is {current}.",
+                            "Re-run `python3 measure.py copilot-install` to reseed the matrix.",
+                        )
+                    )
     except Exception:
         pass
 

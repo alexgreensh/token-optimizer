@@ -85,9 +85,9 @@ First-run data collection requires acknowledgment. Hooks exit early (fail-open, 
 
 ## Credential Protection
 
-Token Optimizer scans for and redacts 22 credential patterns before writing content to disk:
+Token Optimizer scans for and redacts 23 credential patterns before writing content to disk:
 
-AWS keys (`AKIA...`), OpenAI/Anthropic keys (`sk-...`), GitHub PATs (all 5 prefix types + fine-grained), npm tokens, Slack tokens (bot/user/app), Stripe keys (live/restricted), HuggingFace tokens, Bearer headers, Google API keys, Google OAuth tokens, JWTs, PEM private key headers, database URIs with embedded passwords, and HTTP basic auth URLs.
+AWS keys (`AKIA...`), OpenAI/Anthropic keys (`sk-...`), GitHub PATs (all 5 prefix types + fine-grained), npm tokens, Slack tokens (bot/user/app), Stripe keys (live/restricted), HuggingFace tokens, Bearer headers, Google API keys, Google OAuth tokens, JWTs, PEM private key headers, database URIs with embedded passwords, HTTP basic auth URLs, and credentials passed as URL query/fragment parameters (`?token=`, `?api_key=`, `#access_token=`, and similar — value redacted, parameter name preserved).
 
 Credentials are replaced with `[CREDENTIAL REDACTED: <type>]` in:
 - Read cache (session store SQLite)

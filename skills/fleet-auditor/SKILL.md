@@ -19,7 +19,13 @@ RUNTIME="${TOKEN_OPTIMIZER_RUNTIME:-}"
 if [ -z "$RUNTIME" ]; then
   if [ -n "$CLAUDE_PLUGIN_ROOT" ] || [ -n "$CLAUDE_PLUGIN_DATA" ]; then
     RUNTIME="claude"
-  elif [ -n "$CODEX_HOME" ] || [ -d "$HOME/.codex" ]; then
+  elif [ -n "$OPENCODE" ] || [ -n "$OPENCODE_BIN" ] || [ -n "$OPENCODE_CONFIG_DIR" ] || [ -n "$OPENCODE_CONFIG" ]; then
+    RUNTIME="opencode"
+  elif [ -n "$CODEX_HOME" ]; then
+    RUNTIME="codex"
+  elif [ -d "$HOME/.config/opencode" ] && [ ! -d "$HOME/.codex" ]; then
+    RUNTIME="opencode"
+  elif [ -d "$HOME/.codex" ]; then
     RUNTIME="codex"
   else
     RUNTIME="claude"
@@ -27,7 +33,8 @@ if [ -z "$RUNTIME" ]; then
 fi
 
 FLEET_PY=""
-for f in "$HOME/.codex/skills/fleet-auditor/scripts/fleet.py" \
+for f in "$HOME/.config/opencode/plugins/cache"/*/token-optimizer/*/skills/fleet-auditor/scripts/fleet.py \
+         "$HOME/.codex/skills/fleet-auditor/scripts/fleet.py" \
          "$HOME/.codex/plugins/cache"/*/token-optimizer/*/skills/fleet-auditor/scripts/fleet.py \
          "$HOME/.claude/skills/fleet-auditor/scripts/fleet.py" \
          "$HOME/.claude/plugins/cache"/*/token-optimizer/*/skills/fleet-auditor/scripts/fleet.py; do

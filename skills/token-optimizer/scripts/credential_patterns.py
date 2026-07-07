@@ -34,11 +34,23 @@ CREDENTIAL_PATTERNS: List[Tuple[str, "re.Pattern[str]"]] = [
     ("PEM private key",         re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
     ("Database URI",            re.compile(r"(?:postgres|postgresql|mysql|mongodb|mongodb\+srv|redis)://[^:\s/]+:[^@\s]+@", re.I)),
     ("HTTP basic auth URL",     re.compile(r"https?://[^:\s/@]+:[^@\s]+@", re.I)),
-    # Credentials passed as URL query parameters (e.g. ?token=..., ?api_key=...).
-    # The named `keep` group captures the "?name=" prefix so redaction preserves the
-    # parameter name and blanks only the value (see redact_credentials). The value
-    # match stops at the next `&`, whitespace, or quote so following params survive.
-    ("URL auth param",          re.compile(r"(?P<keep>[?&](?:token|key|api[_-]?key|access[_-]?token|auth)=)[^&\s\"']+", re.I)),
+    # Credentials passed as URL query/matrix parameters OR OAuth-implicit-flow
+    # fragment params (e.g. ?token=..., ?api_key=..., ;password=..., #access_token=...).
+    # The named `keep` group captures the "?name="/"#name=" prefix so redaction
+    # preserves the parameter name and blanks only the value (see redact_credentials).
+    # The value class stops at the next delimiter (& # ; whitespace quote < >) but
+    # otherwise matches EVERYTHING — including brackets — so a secret that itself
+    # contains a `[` (common in passwords) is redacted whole, not leaked past the
+    # bracket. To still avoid re-wrapping an already-inserted "[CREDENTIAL REDACTED:
+    # ...]" placeholder (when the value is itself another credential shape an earlier
+    # pattern redacted, e.g. ?token=<Bearer ...>), a negative lookahead skips a value
+    # that begins with the placeholder rather than excluding brackets from real values.
+    ("URL auth param",          re.compile(
+        r"(?P<keep>[?&#;](?:authorization|access[_-]?token|refresh[_-]?token|client[_-]?secret"
+        r"|session[_-]?token|id[_-]?token|api[_-]?key|sessionid|session|password|passwd|signature"
+        r"|secret|bearer|token|auth|sig|pwd|key|jwt)=)(?!\[CREDENTIAL REDACTED:)[^&#;\s\"'<>]+",
+        re.I,
+    )),
 ]
 
 # Bare compiled patterns list for backward compat with bash_compress.py

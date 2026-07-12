@@ -374,7 +374,7 @@ def print_report(report):
 # Agent/Task result compression backfill (WS4).
 #
 # Agent (sub-agent) results enter the parent context whole and are large
-# (Alex's 30d: ~1.3M tokens of Agent results). The proposed active treatment is
+# (a typical 30d sample: ~1.3M tokens of Agent results). The proposed active treatment is
 # a progressive-disclosure replacement: keep HEAD (first _AGENT_HEAD_CHARS) +
 # TAIL (last _AGENT_TAIL_CHARS) inline plus an expand pointer, archiving the full
 # result. The MIDDLE is elided. Because sub-agents often put findings in the
@@ -382,7 +382,7 @@ def print_report(report):
 # mandatory: how often does the parent's NEXT assistant turn quote text that
 # lives in the would-be-elided middle (>=_HARM_MIN_SPAN-char verbatim span)? If
 # that rate is >=15% we ship measure-only; below 15% we ship active. The data
-# decides, per Alex's exception clause.
+# decides, per the configured exception rule.
 # ---------------------------------------------------------------------------
 
 # C1: single source of truth — import the runtime gate constants from

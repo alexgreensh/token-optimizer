@@ -63,7 +63,7 @@ _STDIN_MAX_BYTES = _ARCHIVE_MAX_SIZE + 262_144  # 5MB response plus JSON overhea
 # parent's NEXT assistant turn quotes (>=20-char verbatim) text from the
 # would-be-elided MIDDLE. Sub-agents put their findings in the middle (head =
 # preamble, tail = usage/continuation block), so an active replacement would lose
-# content the parent needs. Per Alex's exception clause the DATA decides: 39.1%
+# content the parent needs. Per the configured exception rule the DATA decides: 39.1%
 # >> the 15% gate, so this ships measure-only. We log the would-be saving as an
 # OPPORTUNITY-tier event (never the realized headline) so the dashboard shows the
 # pool + the harm number; the full result is archived for `expand` either way.

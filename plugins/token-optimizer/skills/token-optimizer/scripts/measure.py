@@ -21048,79 +21048,59 @@ _RELEVANCE_FULL_THRESHOLD = _float_env("TOKEN_OPTIMIZER_RELEVANCE_FULL_THRESHOLD
 # working and mean the teaser/collection floor (the historical 0.3 default).
 _RELEVANCE_THRESHOLD = _RELEVANCE_TEASER_FLOOR
 
-# GitHub #12 -- cross-product coordination with Total Recall (TR). TR owns
-# durable cross-session memory when it's installed alongside Token Optimizer,
-# so TO's low-relevance continuity teaser is redundant noise in that setup.
-# Detection is best-effort and cached in a module global (computed once per
-# process); every FS/env check is guarded so detection can never raise.
-_TR_INSTALLED_CACHE = None
+# Cross-product coordination: when a co-installed tool owns durable
+# cross-session memory, Token Optimizer's low-relevance continuity teaser is
+# redundant noise, so it is suppressed. The other tool signals its presence by
+# dropping a neutral coordination marker file (auto-detected on disk) or by
+# exporting an opt-in env var; TO coordinates with whatever is present without
+# knowing or naming which tool it is. Detection is best-effort, cached once per
+# process, and fully guarded so it can never raise.
+_EXTERNAL_MEMORY_CACHE = None
 
 
-def _total_recall_installed() -> bool:
-    """Best-effort detection of a co-installed Total Recall plugin.
+def _external_memory_present() -> bool:
+    """Best-effort auto-detection of a co-installed durable-memory tool.
 
-    Checked in order (first decisive signal wins):
-      1. TOTAL_RECALL_INSTALLED env var -- an explicit 0/false/no/off FORCES
-         False (hard override, checked first, even if a binary or marker
-         file exists). An explicit 1/true/yes/on FORCES True without
-         touching the filesystem. Matching is case-insensitive.
-      2. TR brain binary at known default install locations:
-         `${TOTAL_RECALL_HOME}/plugins/total-recall/brain.dist/brain(.exe)`,
-         `~/.claude/total-recall/plugins/total-recall/brain.dist/brain(.exe)`,
-         `~/.total-recall/plugins/total-recall/brain.dist/brain(.exe)`.
-      3. TR coordination marker file at
-         `${TOTAL_RECALL_HOME:-~/.claude/total-recall}/coordination.json`.
+    Signalling (first decisive signal wins):
+      1. Env override TO_EXTERNAL_MEMORY -- explicit 0/false/no/off FORCES
+         absent, explicit 1/true/yes/on FORCES present (case-insensitive),
+         without touching the filesystem.
+      2. A neutral coordination marker file, whose mere existence means an
+         external durable-memory tool is active:
+         ``${TO_EXTERNAL_MEMORY_MARKER:-~/.claude/durable-memory.json}``.
 
-    Result is cached in a module global so repeated calls within one process
-    (e.g. one call per prompt-continuity hint in a long session) cost a
-    single filesystem check. Never raises -- any exception during detection
-    is treated as "not found".
+    The external tool writes the marker once (set-and-forget), so detection is
+    automatic with no per-session configuration. Cached in a module global so
+    repeated calls within one process cost a single check. Never raises -- any
+    exception during detection is treated as "absent".
     """
-    global _TR_INSTALLED_CACHE
-    if _TR_INSTALLED_CACHE is not None:
-        return _TR_INSTALLED_CACHE
-
+    global _EXTERNAL_MEMORY_CACHE
+    if _EXTERNAL_MEMORY_CACHE is not None:
+        return _EXTERNAL_MEMORY_CACHE
     result = False
     try:
-        raw = os.environ.get("TOTAL_RECALL_INSTALLED", "").strip().lower()
+        raw = os.environ.get("TO_EXTERNAL_MEMORY", "").strip().lower()
         if raw in ("0", "false", "no", "off"):
-            _TR_INSTALLED_CACHE = False
+            _EXTERNAL_MEMORY_CACHE = False
             return False
         if raw in ("1", "true", "yes", "on"):
-            _TR_INSTALLED_CACHE = True
+            _EXTERNAL_MEMORY_CACHE = True
             return True
 
-        tr_home_env = os.environ.get("TOTAL_RECALL_HOME", "").strip()
-        binary_bases = []
-        if tr_home_env:
-            binary_bases.append(Path(tr_home_env).expanduser())
-        binary_bases.append(Path.home() / ".claude" / "total-recall")
-        binary_bases.append(Path.home() / ".total-recall")
-
-        for home in binary_bases:
-            try:
-                brain = home / "plugins" / "total-recall" / "brain.dist" / "brain"
-                if brain.exists() or brain.with_suffix(".exe").exists():
-                    result = True
-                    break
-            except Exception:
-                continue
-
-        if not result:
-            marker_home = (
-                Path(tr_home_env).expanduser()
-                if tr_home_env
-                else Path.home() / ".claude" / "total-recall"
-            )
-            try:
-                if (marker_home / "coordination.json").exists():
-                    result = True
-            except Exception:
-                pass
+        marker_env = os.environ.get("TO_EXTERNAL_MEMORY_MARKER", "").strip()
+        marker = (
+            Path(marker_env).expanduser()
+            if marker_env
+            else Path.home() / ".claude" / "durable-memory.json"
+        )
+        try:
+            if marker.exists():
+                result = True
+        except Exception:
+            result = False
     except Exception:
         result = False
-
-    _TR_INSTALLED_CACHE = result
+    _EXTERNAL_MEMORY_CACHE = result
     return result
 
 
@@ -25115,7 +25095,7 @@ def compact_restore(session_id=None, cwd=None, is_compact=False, new_session_onl
         # New-session path: offer a pointer to a recent cross-session checkpoint.
         # Prefer one whose work lives under the CURRENT cwd, so a home-dir / catch-all
         # cwd does not surface an unrelated project's checkpoint (e.g. a token-optimizer
-        # checkpoint leaking into a Total Recall session run from the same home dir).
+        # checkpoint leaking into an unrelated tool's session run from the same home dir).
         # When cwd cannot disambiguate, fall back to the most recent but LABEL it with its
         # project + branch so an irrelevant pointer is self-evidently ignorable, not a
         # mystery the next session investigates.
@@ -25232,7 +25212,7 @@ def _checkpoint_descriptor(checkpoint_path):
         # Project = the most frequent meaningful path segment (commonpath collapses to
         # $HOME when a session also touches a sibling tree like ~/.claude, so frequency is
         # more robust). Generic container/scaffolding segments are excluded.
-        generic = {"Users", "home", "CascadeProjects", "Prompts", "Claude-Skills",
+        generic = {"Users", "home",
                    ".claude", "projects", "src", "tests", "test", "scripts", "memory",
                    "assets", "skills", "commands", "docs", "node_modules", "dist", "lib",
                    Path.home().name, cwd_to_project_dir_name().lstrip("-")}
@@ -25632,16 +25612,16 @@ def _continuity_prompt_hint(prompt_text="", session_id=None, cwd=None, max_age_m
     # behavior. The deliberate "continue our work" (_resume_intent) path returns
     # earlier and is intentionally NOT gated down here.
     #
-    # GitHub #12 -- when Total Recall is installed, it owns durable
-    # cross-session memory, so raise the effective full-block bar to 0.6 and
-    # suppress even the one-line teaser below it (not just the full block --
-    # TR makes the teaser noise too). TR-absent behavior is unchanged.
-    _tr_installed = _total_recall_installed()
+    # When a co-installed tool owns durable cross-session memory, the
+    # low-confidence teaser is redundant: raise the effective full-block bar to
+    # 0.6 and suppress even the one-line teaser below it. Default behavior (no
+    # such tool present) is unchanged.
+    _ext_memory = _external_memory_present()
     _effective_full_threshold = (
-        max(0.6, _RELEVANCE_FULL_THRESHOLD) if _tr_installed else _RELEVANCE_FULL_THRESHOLD
+        max(0.6, _RELEVANCE_FULL_THRESHOLD) if _ext_memory else _RELEVANCE_FULL_THRESHOLD
     )
     if score < _effective_full_threshold:
-        if _tr_installed:
+        if _ext_memory:
             return ""
         teaser_topic = ""
         if isinstance(sidecar, dict):
@@ -30956,7 +30936,7 @@ def _subagent_pool_savings(days=30, baseline_opus_share=0.95, tier=None, fresh=F
     Subagents run in sidechain transcripts (isSidechain:true), are NOT stored as
     standalone session_log rows (the collector only walks top-level project JSONL),
     and were therefore entirely excluded from the transformation. They are real spend
-    that Token Optimizer routes: Alex's CLAUDE.md routes subagents to Haiku/Sonnet;
+    that Token Optimizer routes: a user's CLAUDE.md may route subagents to Haiku/Sonnet;
     pre-TO they would have run on Opus. This pool prices that delta.
 
     Method (separate from, and summed with, the main pool — no token overlap because
@@ -31207,8 +31187,8 @@ def _estimate_before_after_savings(days=30):
         # a non-Anthropic user is priced at their own measured mix, never fabricated Opus.
         anthropic = detect_runtime() not in {"codex", "hermes", "copilot", "opencode"}
         if frozen_opus and frozen_opus > 0:
-            # A real measured baseline share exists -> trust it (this is Alex's case:
-            # Anthropic + frozen ~0.95, resolves to ~0.95).
+            # A real measured baseline share exists -> trust it (e.g. an Anthropic
+            # user with a frozen ~0.95 Opus share resolves to ~0.95).
             baseline_opus_share = frozen_opus
             before_shares = {"opus": baseline_opus_share,
                              "sonnet": round(1.0 - baseline_opus_share, 4)}
@@ -33992,7 +33972,7 @@ if __name__ == "__main__":
             print(f"    {qv.get('recommendation')}")
         sys.exit(0)
     elif args[0] == "keepwarm-quota-value":
-        # Subscription QUOTA value of keep-warm (Alex's headline correction):
+        # Subscription QUOTA value of keep-warm:
         # meter SAVED vs meter SPENT, the right currency on a subscription where a
         # ping "saves $0" in dollars. Advisory + read-only; never flips the gate.
         as_json = "--json" in args

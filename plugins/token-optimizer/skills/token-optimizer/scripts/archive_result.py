@@ -845,9 +845,15 @@ def archive_result(quiet: bool = False) -> None:
         preview = _compress_mcp_preview(safe_response, output_type)
         suffix = f" ({output_type})" if output_type != "text" else ""
         if original_char_count > _ARCHIVE_MAX_SIZE:
-            replacement = preview + f"\n\n[Full result archived ({original_char_count:,} chars{suffix}, truncated to 5MB).]"
+            replacement = preview + (
+                f"\n\n[Full result archived ({original_char_count:,} chars{suffix}, truncated to 5MB). "
+                f"Retrieve with: expand {tool_use_id}]"
+            )
         else:
-            replacement = preview + f"\n\n[Full result archived ({char_count:,} chars{suffix}).]"
+            replacement = preview + (
+                f"\n\n[Full result archived ({char_count:,} chars{suffix}). "
+                f"Retrieve with: expand {tool_use_id}]"
+            )
         original_tokens = int(original_char_count / CODE_CHARS_PER_TOKEN)
         replacement_tokens = int(len(replacement) / CODE_CHARS_PER_TOKEN)
         tokens_saved = max(0, original_tokens - replacement_tokens)

@@ -16,6 +16,9 @@ export function restoreCheckpoint(
   userPrompt: string,
   currentSessionId: string,
   config: TokenOptimizerConfig,
+  /** Project slug for scoping session scans under sessions/{slug}/. Derived
+   *  from ctx.project.worktree by the caller (hashProjectDir). */
+  projectSlug?: string,
   /** Optional: when supplied and the prompt shows resume-intent, the lean
    *  reconstruction path fires and savings are credited to trends.db. */
   trendsStore?: TrendsStore,
@@ -25,7 +28,9 @@ export function restoreCheckpoint(
 ): CheckpointMatch | null {
   if (!config.features.continuity) return null;
 
-  const sessDir = join(dataDir, "token-optimizer", "sessions");
+  const sessDir = projectSlug
+    ? join(dataDir, "token-optimizer", "sessions", projectSlug)
+    : join(dataDir, "token-optimizer", "sessions");
   if (!existsSync(sessDir)) return null;
 
   // DB filenames are the sanitized session id, so compare like-for-like or a
@@ -44,6 +49,7 @@ export function restoreCheckpoint(
         userPrompt,
         dataDir,
         safeCurrentId,
+        projectSlug,
         cwd,
         config.checkpointRetentionDays,
         config.checkpointRetentionMax,

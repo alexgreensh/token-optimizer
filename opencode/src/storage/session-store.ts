@@ -94,8 +94,9 @@ export class SessionStore {
   private db: Database | null = null;
   private dbPath: string;
 
-  constructor(dataDir: string, sessionId: string) {
-    const sessDir = join(dataDir, "token-optimizer", "sessions");
+  constructor(dataDir: string, sessionId: string, projectSlug?: string) {
+    const base = join(dataDir, "token-optimizer", "sessions");
+    const sessDir = projectSlug ? join(base, projectSlug) : base;
     if (!existsSync(sessDir)) {
       mkdirSync(sessDir, { recursive: true });
     }

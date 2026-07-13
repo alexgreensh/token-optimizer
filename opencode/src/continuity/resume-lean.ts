@@ -410,13 +410,17 @@ export function buildResumeLeanBlock(
   userPrompt: string,
   dataDir: string,
   currentSessionId: string,
+  /** Project slug for scoping session scans under sessions/{slug}/. */
+  projectSlug: string | undefined,
   cwd: string,
   retentionDays: number = 7,
   maxCandidates: number = 50,
 ): [string, string] {
   if (!cwd) return ["", ""];
 
-  const sessDir = join(dataDir, "token-optimizer", "sessions");
+  const sessDir = projectSlug
+    ? join(dataDir, "token-optimizer", "sessions", projectSlug)
+    : join(dataDir, "token-optimizer", "sessions");
   if (!existsSync(sessDir)) return ["", ""];
 
   const candidates = loadSameProjectCheckpoints(

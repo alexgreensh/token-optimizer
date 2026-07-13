@@ -1,6 +1,15 @@
+import { homedir, platform } from "node:os";
+import { join } from "node:path";
 import type { PluginOptions } from "@opencode-ai/plugin";
 
 export interface TokenOptimizerConfig {
+  /**
+   * Override the data directory. Defaults to the platform-appropriate global
+   * location (XDG_DATA_HOME on Linux, ~/Library/Application Support on macOS,
+   * %LOCALAPPDATA% on Windows). When unset, the resolved value is cached.
+   */
+  dataDir?: string;
+
   qualityWindow: number;
   toolCallWarnThreshold: number | null;
   toolCallCriticalThreshold: number | null;
@@ -51,6 +60,42 @@ function boolEnv(key: string, fallback: boolean): boolean {
   if (["0", "false", "no", "off"].includes(raw)) return false;
   if (["1", "true", "yes", "on"].includes(raw)) return true;
   return fallback;
+}
+
+export function resolveDataDir(config: TokenOptimizerConfig): string {
+  if (config.dataDir) return config.dataDir;
+  const env = process.env.TOKEN_OPTIMIZER_DATA_DIR;
+  if (env) return env;
+  const home = homedir();
+  switch (platform()) {
+    case "darwin":
+      return join(home, "Library", "Application Support", "token-optimizer");
+    case "win32":
+      return join(
+        process.env.LOCALAPPDATA ?? join(home, "AppData", "Local"),
+        "token-optimizer",
+      );
+    default:
+      return join(
+        process.env.XDG_DATA_HOME ?? join(home, ".local", "share"),
+        "token-optimizer",
+      );
+  }
+}
+
+/**
+ * Encode a project path the same way Claude Code does: replace every
+ * non-alphanumeric character with `-`. Matching this convention means the
+ * token-optimizer session directory structure follows the same project
+ * identity scheme as Claude Code's own `~/.claude/projects/` directories,
+ * making cross-tool project identification consistent.
+ *
+ * Examples:
+ *   /Users/alex/my project  →  -Users-alex-my-project
+ *   D:\\Code\\my app        →  D--Code-my-app
+ */
+export function hashProjectDir(worktree: string): string {
+  return worktree.replace(/[^A-Za-z0-9]/g, "-");
 }
 
 export function resolveConfig(options?: PluginOptions): TokenOptimizerConfig {

@@ -24739,19 +24739,32 @@ def compact_capture(transcript_path=None, session_id=None, trigger="auto", cwd=N
     sid = sanitize_session_id(session_id) if session_id else sanitize_session_id(filepath.stem)
     quality_summary = None
     try:
-        quality_data = _parse_jsonl_for_quality(filepath)
-        if quality_data:
-            quality_summary = compute_quality_score(quality_data)
+        # Prefer the per-session quality cache over re-parsing the whole transcript.
+        # _parse_jsonl_for_quality is O(file): a ~200MB session costs ~8s, and this
+        # runs on the synchronous Stop hook, so an unbounded reparse shows up as
+        # Claude Code "hanging" on the stop hook. The cache is refreshed on every
+        # UserPromptSubmit and throttled PostToolUse, so at Stop time it is at most
+        # one turn old, and it already holds the compute_quality_score shape (score,
+        # grade, breakdown, signals, topic, model). Reuse it and skip the reparse;
+        # only fall back to the full parse on a cold cache (e.g. brand-new session).
+        cached = _read_quality_cache(_quality_cache_path_for(filepath))
+        if cached and cached.get("score") is not None:
+            quality_summary = cached
+        else:
+            quality_data = _parse_jsonl_for_quality(filepath)
+            if quality_data:
+                quality_summary = compute_quality_score(quality_data)
+                quality_summary["total_messages"] = len(quality_data.get("messages", []))
+                quality_summary["decisions_found"] = len(quality_data.get("decisions", []))
+                quality_summary["topic"] = quality_data.get("topic")
+                quality_summary["model"] = quality_data.get("model")
+                quality_summary["compactions"] = quality_data.get("compactions", 0)
+        if quality_summary:
             if quality_score is None:
                 quality_score = quality_summary.get("score")
             if fill_pct is None:
                 cfd = quality_summary.get("breakdown", {}).get("context_fill_degradation", {})
                 fill_pct = cfd.get("fill_pct")
-            quality_summary["total_messages"] = len(quality_data.get("messages", []))
-            quality_summary["decisions_found"] = len(quality_data.get("decisions", []))
-            quality_summary["topic"] = quality_data.get("topic")
-            quality_summary["model"] = quality_data.get("model")
-            quality_summary["compactions"] = quality_data.get("compactions", 0)
     except Exception:
         quality_summary = None
     if backfill_tools:
@@ -33727,15 +33740,29 @@ if __name__ == "__main__":
         for i, a in enumerate(args):
             if a == "--trigger" and i + 1 < len(args):
                 trigger = args[i + 1]
-        # Read hook input from stdin (JSON with session_id, transcript_path, etc.)
-        hook_input = _read_stdin_hook_input()
-        transcript = hook_input.get("transcript_path") or transcript
-        sid = hook_input.get("session_id") or sid
-        result = compact_capture(transcript_path=transcript, session_id=sid, trigger=trigger)
-        if result:
-            # Only print for non-hook invocations (hooks should be quiet)
-            if "--quiet" not in args:
+        # Wall-clock backstop. compact_capture reads the transcript, which on a very
+        # large session or a slow/contended disk can run long. This dispatch is wired
+        # to the synchronous Stop hook, so an unbounded call surfaces as Claude Code
+        # "hanging" on the stop hook (run.py's 120s subprocess cap is far too coarse to
+        # feel like anything but a freeze). Cap it and fail open: a skipped checkpoint on
+        # a single Stop is invisible (progressive checkpoints already cover the session),
+        # a frozen hook is not. Mirrors the keepwarm-arm budget in the block below.
+        _tok_hook_old_sig = _install_hook_budget(8)
+        try:
+            # Read hook input from stdin (JSON with session_id, transcript_path, etc.)
+            hook_input = _read_stdin_hook_input()
+            transcript = hook_input.get("transcript_path") or transcript
+            sid = hook_input.get("session_id") or sid
+            result = compact_capture(transcript_path=transcript, session_id=sid, trigger=trigger)
+            if result and "--quiet" not in args:
+                # Only print for non-hook invocations (hooks should be quiet)
                 print(f"[Token Optimizer] Checkpoint saved: {result}")
+        except _HookTimeout:
+            pass
+        except Exception:
+            pass
+        finally:
+            _clear_hook_budget(_tok_hook_old_sig)
     elif args[0] == "keepwarm-arm":
         # Called by the Stop hook (additive, U2). Appends one arm record to the
         # keep-warm sidecar so the keepwarm-tick loop can later decide whether to

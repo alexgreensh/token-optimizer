@@ -63,22 +63,26 @@ function boolEnv(key: string, fallback: boolean): boolean {
 }
 
 export function resolveDataDir(config: TokenOptimizerConfig): string {
-  if (config.dataDir) return config.dataDir;
-  const env = process.env.TOKEN_OPTIMIZER_DATA_DIR;
-  if (env) return env;
+  const from = config.dataDir ?? process.env.TOKEN_OPTIMIZER_DATA_DIR;
+  if (from) {
+    // Strip trailing "token-optimizer" so storage code can safely
+    // join(dataDir, "token-optimizer", ...) without double nesting.
+    // ponytail: guard, remove when storage paths are refactored to take base dir once
+    if (from.endsWith("token-optimizer") || from.endsWith("token-optimizer/"))
+      return from.replace(/\/?token-optimizer\/?$/, "");
+    return from;
+  }
   const home = homedir();
   switch (platform()) {
     case "darwin":
-      return join(home, "Library", "Application Support", "token-optimizer");
+      return join(home, "Library", "Application Support");
     case "win32":
       return join(
         process.env.LOCALAPPDATA ?? join(home, "AppData", "Local"),
-        "token-optimizer",
       );
     default:
       return join(
         process.env.XDG_DATA_HOME ?? join(home, ".local", "share"),
-        "token-optimizer",
       );
   }
 }

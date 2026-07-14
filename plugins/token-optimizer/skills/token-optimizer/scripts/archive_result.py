@@ -18,6 +18,9 @@ SOURCE OF TRUTH for read_stdin_hook_input: hook_io.py.
 from __future__ import annotations
 
 import fnmatch
+import heapq
+import io
+import itertools
 import json
 import os
 import re
@@ -38,6 +41,7 @@ except ImportError:
 from bash_compress import _TOKEN_PATTERNS
 from hook_io import read_stdin_hook_input
 from plugin_env import resolve_snapshot_dir
+from refetch_fingerprint import ARGS_HASH_KEY, expand_command, tool_fingerprint
 from runtime_env import claude_home
 from session_store import SessionStore, _sanitize_session_id as sanitize_sid
 
@@ -198,6 +202,10 @@ def _log_savings_event(event_type: str, tokens_saved: int, session_id: str | Non
         conn = sqlite3.connect(str(TRENDS_DB), timeout=_SAVINGS_DB_TIMEOUT_SECONDS)
         _chmod_private_file(TRENDS_DB)
         conn.execute(f"PRAGMA busy_timeout={_SAVINGS_DB_BUSY_TIMEOUT_MS}")
+        # WAL lets a savings write proceed while a dashboard reader holds the DB,
+        # instead of silently dropping the event on SQLITE_BUSY under parallel MCP
+        # calls. (The -wal/-shm chmod below already assumed WAL; this enables it.)
+        conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.executescript(_SAVINGS_SCHEMA)
         cost_per_mtok = _estimate_savings_cost_per_mtok()
@@ -495,12 +503,28 @@ def derive_archive_key(session_id: str | None, file_path: str, mtime_ns: int) ->
     return hashlib.sha256(raw).hexdigest()[:16]
 
 
+def _expand_instruction(key: str, tool_name: str | None = None) -> str:
+    """The actionable retrieval line for an archive footer (issue #88).
+
+    The prior footer said only "Retrieve with: expand <id>", but `expand` is a
+    measure.py subcommand, not a callable tool — the model had no way to act on it
+    and re-fetched instead. Emit the exact runnable Bash command (shared with the
+    re-fetch guard via expand_command, so the two can never diverge) plus an
+    explicit anti-re-fetch instruction so the correct path is unambiguous.
+    """
+    dont = f"Do NOT call {tool_name} again" if tool_name else "Do NOT re-run the original tool"
+    return (
+        f"{dont} to get this data — read the saved copy by running this in Bash:\n"
+        f"    {expand_command(key)}"
+    )
+
+
 def build_archive_pointer(preview: str, original_chars: int, key: str) -> str:
     """Standard progressive-disclosure pointer appended after a compressed preview."""
     return (
         f"{preview}\n\n"
-        f"[Full result archived ({original_chars:,} chars). "
-        f"Retrieve with: expand {key}]"
+        f"[Full result archived ({original_chars:,} chars) — saved to disk, not lost.\n"
+        f"{_expand_instruction(key)}]"
     )
 
 
@@ -532,6 +556,7 @@ def archive_original(content: str, session_id: str | None, key: str,
         meta = {
             "tool_name": tool_name,
             "tool_use_id": key,
+            ARGS_HASH_KEY: None,  # non-MCP progressive-disclosure path; guard skips these.
             "file_path": safe_path,
             "language": language,
             "chars": len(safe_response),
@@ -587,6 +612,14 @@ def _log_agent_result_opportunity(tool_response: str, session_id: str | None) ->
 # Structure-aware MCP output compression
 # ---------------------------------------------------------------------------
 
+# Bounds for the synchronous PostToolUse hot path. splitlines() / sort over a
+# multi-MB MCP payload measured ~865ms (perf regression on a 5MB / 290k-line path
+# listing); these caps keep classification + preview under the 500ms hook budget.
+# The FULL result is archived regardless, so `expand` loses nothing.
+_DETECT_HEAD_CHARS = 16_384    # classify line type from the head slice, not the whole payload
+_PATHS_SAMPLE_LINES = 10_000   # lines sampled for the path preview
+
+
 def _detect_output_type(text: str) -> str:
     stripped = text.strip()
     if stripped.startswith("{") or stripped.startswith("["):
@@ -595,7 +628,9 @@ def _detect_output_type(text: str) -> str:
             return "json"
         except (json.JSONDecodeError, RecursionError):
             pass
-    lines = stripped.splitlines()[:50]
+    # Bound the scan: splitlines() over a multi-MB payload is a hot-path latency
+    # trap; the first lines in the head slice are enough to classify.
+    lines = stripped[:_DETECT_HEAD_CHARS].splitlines()[:50]
     if len(lines) > 5:
         path_like = sum(1 for ln in lines if "/" in ln or "\\" in ln)
         if path_like > len(lines) * 0.6:
@@ -723,20 +758,29 @@ def _compress_mcp_json(text: str) -> str:
 
 
 def _compress_mcp_paths(text: str) -> str:
-    lines = text.strip().splitlines()
+    # Exact total via a single C-level scan (no full materialization), then tally
+    # directories over a bounded SAMPLE of lines so a 290k-line listing can't stall
+    # the synchronous hook. heapq.nlargest avoids sorting the whole dir dict.
+    total_lines = text.count("\n") + 1
     dirs: dict[str, int] = {}
-    for line in lines:
+    sampled = 0
+    for line in itertools.islice(io.StringIO(text), _PATHS_SAMPLE_LINES):
+        sampled += 1
         stripped = line.strip()
         if "/" in stripped:
-            dir_name = stripped.rsplit("/", 1)[0] if "/" in stripped else "."
+            dir_name = stripped.rsplit("/", 1)[0]
             dirs[dir_name] = dirs.get(dir_name, 0) + 1
+    truncated = total_lines > sampled
+    plus = "+" if truncated else ""
 
-    parts = [f"{len(lines)} paths across {len(dirs)} directories:"]
-    sorted_dirs = sorted(dirs.items(), key=lambda x: -x[1])
-    for dir_name, count in sorted_dirs[:10]:
-        parts.append(f"  {dir_name}/ ({count} files)")
-    if len(sorted_dirs) > 10:
-        parts.append(f"  ... ({len(sorted_dirs) - 10} more directories)")
+    header = f"{total_lines} paths across {len(dirs)}{plus} directories"
+    if truncated:
+        header += f" (dirs sampled from first {sampled:,} lines)"
+    parts = [header + ":"]
+    for dir_name, count in heapq.nlargest(10, dirs.items(), key=lambda kv: kv[1]):
+        parts.append(f"  {dir_name}/ ({count}{plus} files)")
+    if len(dirs) > 10:
+        parts.append(f"  ... ({len(dirs) - 10} more directories)")
 
     result = "\n".join(parts)
     return result[:_ARCHIVE_PREVIEW_SIZE] if len(result) > _ARCHIVE_PREVIEW_SIZE else result
@@ -820,9 +864,20 @@ def archive_result(quiet: bool = False) -> None:
             print(f"[Tool Archive] Unsafe archive directory for {tool_name}; leaving output unchanged.", file=sys.stderr)
         return
 
+    # Fingerprint the call (name + args) so the PreToolUse re-fetch guard can
+    # detect an identical re-fetch of this result (issue #88 self-healing).
+    # ONLY for MCP tools whose result we actually replace with a preview. Exempt
+    # allowlisted tools serve their full fresh result (see below), so the guard
+    # must NOT block a re-call of them — record args_hash=None so it never matches.
+    if "__" in tool_name and not _is_archive_exempt(tool_name):
+        args_hash = tool_fingerprint(tool_name, hook_input.get("tool_input", {}))
+    else:
+        args_hash = None
+
     meta = {
         "tool_name": tool_name,
         "tool_use_id": tool_use_id,
+        ARGS_HASH_KEY: args_hash,
         "chars": char_count,
         "original_chars": original_char_count,
         "tokens_est": token_est,
@@ -864,13 +919,17 @@ def archive_result(quiet: bool = False) -> None:
     try:
         tool_type = "mcp" if "__" in tool_name else tool_name.lower()
         command_or_path = hook_input.get("tool_input", {}).get("command") or hook_input.get("tool_input", {}).get("file_path") or tool_name
-        output_hash = hashlib.sha256(tool_response[:10000].encode("utf-8", errors="replace")).hexdigest()[:16]
+        # Redact before persisting: a command/path can embed a token or secret, and
+        # SessionStore is durable. Hash the REDACTED response so the identity hash
+        # matches the redacted preview/archive rather than pre-redaction plaintext.
+        safe_command_or_path = _redact_credentials(str(command_or_path))
+        output_hash = hashlib.sha256(safe_response[:10000].encode("utf-8", errors="replace")).hexdigest()[:16]
         store = SessionStore(session_id)
         store.insert_tool_output(
             tool_use_id=tool_use_id,
             tool_name=tool_name,
             tool_type=tool_type,
-            command_or_path=str(command_or_path)[:500],
+            command_or_path=safe_command_or_path[:500],
             output_hash=output_hash,
             output_chars=char_count,
             output_tokens_est=token_est,
@@ -900,13 +959,13 @@ def archive_result(quiet: bool = False) -> None:
         suffix = f" ({output_type})" if output_type != "text" else ""
         if original_char_count > _ARCHIVE_MAX_SIZE:
             replacement = preview + (
-                f"\n\n[Full result archived ({original_char_count:,} chars{suffix}, truncated to 5MB). "
-                f"Retrieve with: expand {tool_use_id}]"
+                f"\n\n[Full result archived ({original_char_count:,} chars{suffix}, truncated to 5MB) — "
+                f"saved to disk, not lost.\n{_expand_instruction(tool_use_id, tool_name)}]"
             )
         else:
             replacement = preview + (
-                f"\n\n[Full result archived ({char_count:,} chars{suffix}). "
-                f"Retrieve with: expand {tool_use_id}]"
+                f"\n\n[Full result archived ({char_count:,} chars{suffix}) — saved to disk, not lost.\n"
+                f"{_expand_instruction(tool_use_id, tool_name)}]"
             )
         original_tokens = int(original_char_count / CODE_CHARS_PER_TOKEN)
         replacement_tokens = int(len(replacement) / CODE_CHARS_PER_TOKEN)

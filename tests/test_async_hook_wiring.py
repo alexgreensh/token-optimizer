@@ -44,6 +44,9 @@ EXPECTED_ASYNC = {
     ("PreToolUse", "Read", "read_cache.py --quiet"): False,
     ("PreToolUse", "Bash", "bash_hook.py --quiet"): False,
     ("PreToolUse", "Agent|Task", "checkpoint-trigger"): True,
+    # MUST be sync: the re-fetch guard's whole job is to return a permissionDecision
+    # (deny) BEFORE the duplicate MCP call runs. An async guard couldn't block it.
+    ("PreToolUse", "mcp__.*", "refetch_guard.py"): False,
     ("PreCompact", None, "dynamic-compact-instructions"): False,
     ("PreCompact", None, "compact-capture --trigger auto"): True,
     ("PreCompact", None, "read_cache.py --clear"): False,

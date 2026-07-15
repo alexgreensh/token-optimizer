@@ -131,12 +131,54 @@ def _is_safe_home_dir(path: Path) -> bool:
         return False
 
 
+# Default-off explicit override: on containerized deploys (Docker/Umbrel)
+# the runtime home may be a PARENT of $HOME (e.g. HERMES_HOME=/opt/data with
+# HOME=/opt/data/home). This drops ONLY the under-$HOME containment policy;
+# every other safety check (absolute, resolve, exists, is_dir, not symlink)
+# is still enforced by _is_safe_home_dir_relaxed below. Mirrors runtime_env.py
+# so the read-only state.db reader agrees with the installer.
+_UNSAFE_RUNTIME_HOME_OVERRIDE_ENV = "TOKEN_OPTIMIZER_ALLOW_UNSAFE_RUNTIME_HOME"
+
+
+def _truthy_env(env_var: str) -> bool:
+    """Parse a truthy env var (1/true/yes/on, case-insensitive). Mirrors the
+    parser style in measure.py/runtime_env.py without importing either (keeps
+    hermes_state dependency-light)."""
+    val = os.environ.get(env_var)
+    return isinstance(val, str) and val.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _is_safe_home_dir_relaxed(path: Path) -> bool:
+    """Like _is_safe_home_dir but DROPS the under-$HOME containment check.
+
+    Keeps every other guard: absolute path, resolve(strict=False), must exist,
+    must be a real dir, must NOT be a symlink. Used only when the explicit
+    TOKEN_OPTIMIZER_ALLOW_UNSAFE_RUNTIME_HOME override is truthy, for
+    containerized deploys where the runtime home is a parent of $HOME.
+    """
+    try:
+        if not path.is_absolute():
+            return False
+        path.resolve(strict=False)
+        if path.exists():
+            return path.is_dir() and not path.is_symlink()
+        return False
+    except (OSError, ValueError):
+        return False
+
+
 def hermes_home() -> Path:
     """Return the Hermes data directory, safely honoring HERMES_HOME when valid."""
     raw = os.environ.get(_HERMES_HOME_ENV, "").strip()
     if raw:
         candidate = Path(raw).expanduser()
         if _is_safe_home_dir(candidate):
+            return candidate.resolve(strict=False)
+        # Override: on containerized deploys (Docker/Umbrel) the runtime
+        # home may be a PARENT of $HOME. When the explicit override env var is
+        # truthy, re-validate with the under-$HOME requirement DROPPED but all
+        # other checks kept (absolute, resolve, exists, is_dir, not symlink).
+        if _truthy_env(_UNSAFE_RUNTIME_HOME_OVERRIDE_ENV) and _is_safe_home_dir_relaxed(candidate):
             return candidate.resolve(strict=False)
         logger.warning(
             "[Token Optimizer] HERMES_HOME=%r rejected (not a safe directory). Using default.",

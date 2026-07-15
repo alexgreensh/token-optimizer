@@ -7,6 +7,7 @@ import argparse
 import json
 import re
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -48,6 +49,18 @@ _BASH_RESOLVER_SUFFIX = "; done; exit 0"
 
 def _hook_command(script: str, *args: str, redirect_quiet: bool = False) -> str:
     root = _repo_root()
+    if sys.platform == "win32":
+        # Codex runs command hooks through cmd.exe on native Windows. Invoke the
+        # current interpreter directly so the hot path does not traverse MSYS
+        # bash and python-launcher.sh (several CreateProcess calls per hook).
+        # list2cmdline applies native Windows quoting for paths with spaces.
+        argv = [sys.executable, str(root / "hooks" / "run.py"), script, *args]
+        redirect = " >NUL 2>&1" if redirect_quiet else ""
+        return (
+            'set "TOKEN_OPTIMIZER_RUNTIME=codex" && '
+            f"{subprocess.list2cmdline(argv)}{redirect}"
+        )
+
     command_args = " ".join(shlex.quote(arg) for arg in (script, *args))
     redirect = " >/dev/null 2>&1" if redirect_quiet else ""
     if _SEMVER_DIR_RE.match(root.name):
@@ -66,8 +79,8 @@ def _hook_command(script: str, *args: str, redirect_quiet: bool = False) -> str:
             f'R="$(ls -d {base}/*/ 2>/dev/null | grep -E \'/[0-9]+[.][0-9]+[.][0-9]+/$\' '
             f'| sort -V | tail -n 1)"; '
             f'[ -n "$R" ] || R={fallback}; '
-            f'exec "$0" "${{R}}hooks/python-launcher.sh" '
-            f'"${{R}}hooks/run.py" {command_args}{redirect}'
+            f'T="${{R}}hooks/python-launcher.sh"; [ -x "$T" ] || exit 0; '
+            f'exec "$0" "$T" "${{R}}hooks/run.py" {command_args}{redirect}'
         )
         command = (
             f"{_BASH_RESOLVER_PREFIX}"

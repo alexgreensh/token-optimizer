@@ -62,7 +62,7 @@ EXPECTED_ASYNC = {
     ("UserPromptSubmit", None, "quality-cache --warn"): False,
     ("UserPromptSubmit", None, "prompt-continuity"): False,
     ("UserPromptSubmit", None, "verbosity-steer"): False,
-    ("PostToolUse", "mcp__.*", "archive_result.py"): False,
+    ("PostToolUse", "mcp__.*", "archive_result.py"): True,
     ("PostToolUse", "Bash|Read|Glob|Grep|Agent", "archive_result.py"): True,
     ("PostToolUse", "Bash|Read|Grep|Glob|mcp__.*", "context_intel.py"): True,
     ("PostToolUse", "Edit|Write|MultiEdit|NotebookEdit", "read_cache.py --invalidate"): False,
@@ -114,10 +114,10 @@ def test_every_expected_hook_has_the_right_async_value():
     assert not missing, f"hooks.json no longer contains expected entries: {missing}"
 
 
-def test_total_async_count_is_six():
+def test_total_async_count_is_seven():
     count = sum(1 for *_, is_async in _flatten(HOOKS_JSON) if is_async)
-    assert count == 6, (
-        f"expected exactly 6 async hook entries, found {count}. "
+    assert count == 7, (
+        f"expected exactly 7 async hook entries, found {count}. "
         "If you added or removed one intentionally, update this test and "
         "EXPECTED_ASYNC together."
     )

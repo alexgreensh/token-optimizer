@@ -184,7 +184,19 @@ def _hook_config_checks(root: Path) -> list[dict[str, str]]:
 
 
 def _command_mentions_missing_path(root: Path, command: str) -> bool:
+    # Absolute paths (e.g. a stale version-pinned marketplace install path whose
+    # version dir was deleted on upgrade) must be checked as-is, NOT re-rooted
+    # under the doctor's own repo root — re-rooting always "finds" the trailing
+    # hooks/... tail and masks the real missing path. Capture the FULL
+    # absolute path (including the /.../<version>/ prefix), not just the tail.
+    for match in re.findall(r"/[A-Za-z0-9_./-]+/(?:hooks|skills)/[A-Za-z0-9_./-]+", command):
+        if not Path(match).exists():
+            return True
+    # Relative paths (dev/install.sh installs use legitimate relative paths and
+    # must not become false positives) are re-rooted under root as before.
     for match in re.findall(r"(?:(?:\\.|/)?(?:hooks|skills)/[A-Za-z0-9_./-]+)", command):
+        if match.startswith("/"):
+            continue  # already handled by the absolute-path pass above
         candidate = root / match.lstrip("./")
         if not candidate.exists():
             return True

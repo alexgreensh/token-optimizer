@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -29,6 +30,41 @@ from pathlib import Path
 # so later imports don't explode with confusing SyntaxError noise.
 if sys.version_info < (3, 9):
     sys.exit(0)
+
+
+# Module-level handle so the signal handler can reach the active child when
+# Claude Code (or any parent) sends SIGTERM/SIGINT to run.py itself. Without
+# this, an external kill reaps run.py but orphans the measure.py grandchild,
+# which keeps the inherited stdout pipe open and makes the parent hang waiting
+# for EOF (the multi-minute stop-hook hang).
+_child_proc: subprocess.Popen | None = None
+
+
+def _forward_and_exit(signum, frame):
+    """Forward SIGTERM/SIGINT to the child's process group, then exit.
+
+    The child is started with ``start_new_session=True`` so it leads its own
+    process group; killing the group reaps any grandchildren (the launcher
+    chain uses ``exec``, so run.py's PID is the one the host tracks). Falls
+    back to a single ``proc.kill()`` on platforms without ``os.killpg`` or
+    when the group is already gone.
+    """
+    global _child_proc
+    if _child_proc is not None and _child_proc.poll() is None:
+        if hasattr(os, "killpg"):
+            try:
+                os.killpg(os.getpgid(_child_proc.pid), signal.SIGTERM)
+            except (ProcessLookupError, OSError):
+                try:
+                    _child_proc.kill()
+                except OSError:
+                    pass
+        else:
+            try:
+                _child_proc.kill()
+            except OSError:
+                pass
+    os._exit(0)
 
 
 def _check_consent() -> bool:
@@ -163,19 +199,35 @@ def main() -> int:
     child_env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
 
     proc = None
+    global _child_proc
+    # Install SIGTERM/SIGINT handlers BEFORE spawning the child so an external
+    # kill from Claude Code reaps the whole child process group instead of
+    # orphaning the grandchild.
+    signal.signal(signal.SIGTERM, _forward_and_exit)
+    signal.signal(signal.SIGINT, _forward_and_exit)
     try:
-        proc = subprocess.Popen(cmd, env=child_env)
+        # start_new_session=True puts the child in its own process group so a
+        # timeout/external kill can reap the whole group (grandchildren included)
+        # via os.killpg. Do NOT add stdout=/stderr=/stdin= here: several hooks
+        # inject via stdout and MUST inherit run.py's stdio.
+        proc = subprocess.Popen(cmd, env=child_env, start_new_session=True)
+        _child_proc = proc
         try:
             proc.wait(timeout=120)
         except subprocess.TimeoutExpired:
             # Important: Popen.wait doesn't auto-kill on timeout. Leaving
             # the child alive would leak a process holding the trends.db
-            # SQLite lock, starving the next hook invocation.
+            # SQLite lock, starving the next hook invocation. Kill the whole
+            # process group so any grandchildren die with the child.
             try:
-                # Guard: check if process already exited between TimeoutExpired
-                # and this point — avoids killing a reused PID on some POSIX impl.
                 if proc.poll() is None:
-                    proc.kill()
+                    if hasattr(os, "killpg"):
+                        try:
+                            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                        except (ProcessLookupError, OSError):
+                            proc.kill()
+                    else:
+                        proc.kill()
                 proc.wait(timeout=5)
             except (subprocess.SubprocessError, OSError):
                 pass

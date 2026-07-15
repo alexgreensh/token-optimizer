@@ -135,6 +135,41 @@ def _is_safe_home_dir(path: Path) -> bool:
         return False
 
 
+# Default-off explicit override: on containerized deploys (Docker/Umbrel)
+# the runtime home may be a PARENT of $HOME (e.g. HERMES_HOME=/opt/data with
+# HOME=/opt/data/home). This drops ONLY the under-$HOME containment policy;
+# every other safety check (absolute, resolve, exists, is_dir, not symlink)
+# is still enforced by _is_safe_home_dir_relaxed below.
+_UNSAFE_RUNTIME_HOME_OVERRIDE_ENV = "TOKEN_OPTIMIZER_ALLOW_UNSAFE_RUNTIME_HOME"
+
+
+def _truthy_env(env_var: str) -> bool:
+    """Parse a truthy env var (1/true/yes/on, case-insensitive). Mirrors the
+    _keepwarm_llm_ping_disabled() parser style in measure.py without importing
+    it (keeps runtime_env dependency-light)."""
+    val = os.environ.get(env_var)
+    return isinstance(val, str) and val.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _is_safe_home_dir_relaxed(path: Path) -> bool:
+    """Like _is_safe_home_dir but DROPS the under-$HOME containment check.
+
+    Keeps every other guard: absolute path, resolve(strict=False), must exist,
+    must be a real dir, must NOT be a symlink. Used only when the explicit
+    TOKEN_OPTIMIZER_ALLOW_UNSAFE_RUNTIME_HOME override is truthy, for
+    containerized deploys where the runtime home is a parent of $HOME.
+    """
+    try:
+        if not path.is_absolute():
+            return False
+        path.resolve(strict=False)
+        if path.exists():
+            return path.is_dir() and not path.is_symlink()
+        return False
+    except (OSError, ValueError):
+        return False
+
+
 def _is_wsl_context() -> bool:
     """True when this process is running inside Windows Subsystem for Linux.
 
@@ -329,6 +364,21 @@ def _safe_home_from_env(env_var: str, fallback: Path, *, mnt_root: Path | None =
     mnt_result = _wsl_mnt_safe_home(candidate, mnt_root=mnt_root)
     if mnt_result is not None:
         return mnt_result
+    # Override (scoped to HERMES_HOME only): on containerized
+    # deploys (Docker/Umbrel) HERMES_HOME may be a PARENT of $HOME. When the
+    # explicit override env var is truthy, re-validate with the under-$HOME
+    # requirement DROPPED but all other checks kept (absolute, resolve, exists,
+    # is_dir, not symlink). Deliberately gated to HERMES_HOME only so the opt-in
+    # never relaxes CODEX_HOME/COPILOT_HOME/OPENCODE_* containment — those feed
+    # write paths (e.g. codex hooks.json), and least-privilege says don't widen
+    # them for a Hermes-only deployment need. Other runtimes get their own scoped
+    # opt-in if/when a container issue is actually reported for them.
+    if (
+        env_var == _HERMES_HOME_ENV
+        and _truthy_env(_UNSAFE_RUNTIME_HOME_OVERRIDE_ENV)
+        and _is_safe_home_dir_relaxed(candidate)
+    ):
+        return candidate.resolve(strict=False)
     # Name the most common reason so the fix is obvious (assafbem, #78): a
     # ``/mnt/...`` value is a WSL mount path and is only honored inside WSL; on
     # native Windows it points nowhere, so it is rejected. The /mnt opt-in above

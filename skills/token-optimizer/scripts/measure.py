@@ -7824,6 +7824,18 @@ def _parse_session_jsonl(filepath):
                 if record.get("isSidechain") is True:
                     is_sidechain = True
 
+                # Detect outsourcerer delegation sessions by content marker.
+                # The outsourcerer skill injects an OSRC::PROGRESS protocol
+                # block into every delegation prompt. This is a reliable
+                # content-based marker (unlike path-based detection which
+                # false-positives on developers working ON the outsourcerer
+                # skill itself). These sessions inflate session count and
+                # token volume if counted as main-pool human sessions.
+                if not is_sidechain:
+                    _content = json.dumps(record)
+                    if "OSRC::PROGRESS" in _content or "OSRC::DONE" in _content:
+                        is_sidechain = True
+
                 # Extract version (take the first non-None we see)
                 if version is None:
                     v = record.get("version")
@@ -8404,9 +8416,13 @@ def _scan_jsonl_is_sidechain(filepath, max_lines=200):
     """Return True if the transcript at `filepath` is a subagent sidechain.
 
     isSidechain:true is stamped on every record of a sidechain transcript, so a
-    short head-scan is conclusive. Reads at most `max_lines` lines to keep the
-    one-time backfill fast over thousands of files. Missing/unreadable → None
-    (caller leaves the row unclassified rather than guessing).
+    short head-scan is conclusive. Also detects outsourcerer delegation
+    sessions by content marker (OSRC::PROGRESS protocol block injected by the
+    outsourcerer skill into every delegation prompt). These are not flagged
+    isSidechain:true in their JSONL but are delegation calls, not human work.
+    Reads at most `max_lines` lines to keep the one-time backfill fast over
+    thousands of files. Missing/unreadable → None (caller leaves the row
+    unclassified rather than guessing).
     """
     try:
         parsed = 0
@@ -8425,6 +8441,9 @@ def _scan_jsonl_is_sidechain(filepath, max_lines=200):
                     continue
                 parsed += 1
                 if rec.get("isSidechain") is True:
+                    return True
+                # Content-based outsourcerer delegation detection
+                if "OSRC::PROGRESS" in line or "OSRC::DONE" in line:
                     return True
         return False
     except (OSError, ValueError):
@@ -8459,6 +8478,32 @@ def _backfill_is_sidechain(conn):
         )
         conn.commit()
     return (len(updates), missing)
+
+
+def _backfill_outsourcerer_sidechain(conn):
+    """Reclassify existing outsourcerer delegation sessions as is_sidechain=1.
+
+    One-time fix for rows collected before the content-based detection was
+    added. Scans the JSONL of each unclassified human session for the
+    OSRC::PROGRESS protocol marker injected by the outsourcerer skill.
+    Idempotent: once all rows are fixed, re-running scans only rows that
+    were added since the last run. Returns count of reclassified rows.
+    """
+    rows = conn.execute(
+        "SELECT id, jsonl_path FROM session_log "
+        "WHERE is_sidechain = 0 AND jsonl_path IS NOT NULL"
+    ).fetchall()
+    updates = []
+    for row_id, jpath in rows:
+        verdict = _scan_jsonl_is_sidechain(jpath)
+        if verdict is True:
+            updates.append((1, row_id))
+    if updates:
+        conn.executemany(
+            "UPDATE session_log SET is_sidechain = ? WHERE id = ?", updates
+        )
+        conn.commit()
+    return len(updates)
 
 
 def _recompute_session_tokens(conn, rel_tol=0.1, limit=None):
@@ -8636,6 +8681,13 @@ def _init_trends_db():
     # after upgrade; once every row is classified there is nothing to do.
     try:
         _backfill_is_sidechain(conn)
+    except (sqlite3.Error, OSError):
+        pass
+    # U2b: one-time backfill of outsourcerer sessions collected before the
+    # path-based detection was added. Reclassifies them as is_sidechain=1 so
+    # they stop inflating the human-session pool. Idempotent.
+    try:
+        _backfill_outsourcerer_sidechain(conn)
     except (sqlite3.Error, OSError):
         pass
     # Migrate: add quality columns to daily_stats for existing DBs
@@ -29808,11 +29860,15 @@ def _estimate_uncaptured_runtime(days=30, compression=None, savings=None):
         conn = _init_trends_db()
         try:
             session_count = conn.execute(
-                "SELECT COUNT(*) FROM session_log WHERE date >= ?", (cutoff,)
+                "SELECT COUNT(*) FROM session_log WHERE date >= ? "
+                "AND COALESCE(is_sidechain, 0) = 0 "
+                + _SESSION_QUALITY_FILTER, (cutoff,)
             ).fetchone()[0] or 0
             rows = conn.execute(
                 "SELECT subagents_json FROM session_log "
-                "WHERE date >= ? AND subagents_json IS NOT NULL AND subagents_json != ''",
+                "WHERE date >= ? AND subagents_json IS NOT NULL AND subagents_json != '' "
+                "AND COALESCE(is_sidechain, 0) = 0 "
+                + _SESSION_QUALITY_FILTER,
                 (cutoff,),
             ).fetchall()
         finally:
@@ -30291,7 +30347,8 @@ def _session_output_fraction(days=30):
                 "SELECT input_tokens, output_tokens, cache_create_5m_tokens, "
                 "cache_create_1h_tokens, cache_hit_rate FROM session_log "
                 "WHERE input_tokens IS NOT NULL AND date >= ? "
-                "AND COALESCE(is_sidechain, 0) = 0",
+                "AND COALESCE(is_sidechain, 0) = 0 "
+                + _SESSION_QUALITY_FILTER,
                 (cutoff,),
             ).fetchall()
         finally:
@@ -30635,7 +30692,9 @@ def _estimate_cache_drop_savings(days=30):
         try:
             drop_sessions = conn.execute(
                 "SELECT COUNT(*) FROM session_log "
-                "WHERE date >= ? AND max_call_gap_seconds > ?",
+                "WHERE date >= ? AND max_call_gap_seconds > ? "
+                "AND COALESCE(is_sidechain, 0) = 0 "
+                + _SESSION_QUALITY_FILTER,
                 (cutoff, _CACHE_DROP_GAP_SECONDS),
             ).fetchone()[0] or 0
         finally:
@@ -30694,6 +30753,19 @@ _BASELINE_MIN_STABLE_SESSIONS = _int_env("TOKEN_OPTIMIZER_BASELINE_MIN_SESSIONS"
 # Matched to a sane floor so the recent-side estimate is not built on a handful of
 # sessions (a thin after-window otherwise swings the headline session to session).
 _AFTER_MIN_SESSIONS = _int_env("TOKEN_OPTIMIZER_AFTER_MIN_SESSIONS", 10)
+# Quality gates for the human-session pool. Sessions below these thresholds
+# are not real interactive work — they are empty transcripts, headless API
+# calls, or transient sessions that inflate count and skew per-session costs.
+# Applied as additional WHERE filters alongside is_sidechain = 0.
+_MIN_INPUT_TOKENS = _int_env("TOKEN_OPTIMIZER_MIN_INPUT_TOKENS", 1000)
+_MIN_DURATION_MINUTES = _float_env("TOKEN_OPTIMIZER_MIN_DURATION_MINUTES", 1.0)
+# Shared SQL fragment appended to every human-session query to exclude
+# empty/transient sessions that inflate count and skew per-session costs.
+# Used alongside COALESCE(is_sidechain, 0) = 0.
+_SESSION_QUALITY_FILTER = (
+    "AND COALESCE(input_tokens, 0) >= {} "
+    "AND COALESCE(duration_minutes, 0) >= {} "
+).format(_MIN_INPUT_TOKENS, _MIN_DURATION_MINUTES)
 # Depth of the ONE-TIME initial backfill (first flush after install/upgrade). A
 # long-time user has months of transcripts still on disk; grab them all so the baseline
 # freezes from their real earliest sessions immediately rather than waiting for a fresh
@@ -30819,7 +30891,8 @@ def _compute_baseline_state():
                 # heavy sidechain/subagent volume can't inflate the frozen typical-session
                 # vector or qualify the window before the human-session count is actually met.
                 "WHERE input_tokens IS NOT NULL AND COALESCE(is_sidechain, 0) = 0 "
-                "ORDER BY date, id"
+                + _SESSION_QUALITY_FILTER
+                + "ORDER BY date, id"
             ).fetchall()
         finally:
             conn.close()
@@ -30988,7 +31061,8 @@ def _mix_from_session_rows(cutoff):
         try:
             rows = conn.execute(
                 "SELECT all_model_usage_json, model_usage_json FROM session_log "
-                "WHERE date >= ? AND COALESCE(is_sidechain, 0) = 0", (cutoff,)
+                "WHERE date >= ? AND COALESCE(is_sidechain, 0) = 0 "
+                + _SESSION_QUALITY_FILTER, (cutoff,)
             ).fetchall()
         finally:
             conn.close()
@@ -31307,7 +31381,8 @@ def _baseline_progress():
         try:
             rows = conn.execute(
                 "SELECT date FROM session_log WHERE input_tokens IS NOT NULL "
-                "AND COALESCE(is_sidechain, 0) = 0 ORDER BY date, id"
+                "AND COALESCE(is_sidechain, 0) = 0 "
+                + _SESSION_QUALITY_FILTER + "ORDER BY date, id"
             ).fetchall()
         finally:
             conn.close()
@@ -31471,7 +31546,8 @@ def _estimate_before_after_savings(days=30):
                 "SELECT input_tokens, output_tokens, cache_create_5m_tokens, "
                 "cache_create_1h_tokens, cache_hit_rate FROM session_log "
                 "WHERE input_tokens IS NOT NULL AND date >= ? "
-                "AND COALESCE(is_sidechain, 0) = 0", (cutoff,)
+                "AND COALESCE(is_sidechain, 0) = 0 "
+                + _SESSION_QUALITY_FILTER, (cutoff,)
             ).fetchall()
         finally:
             conn.close()

@@ -105,6 +105,20 @@ def _warned_registry() -> set:
     return registry
 
 
+def __getattr__(name):
+    """Lazily expose ``_warned_messages`` as the process-singleton registry.
+
+    Callers/tests reference ``runtime_env._warned_messages`` to snapshot/reset
+    warning dedup. Resolving it through the module ``__getattr__`` (PEP 562)
+    returns the same set ``_warn_once`` mutates, while keeping import
+    side-effect-free: the ``sys`` registry is created on first warning or first
+    access, never merely by importing this module (strict POSIX invariance).
+    """
+    if name == "_warned_messages":
+        return _warned_registry()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 def _warn_once(msg: str) -> None:
     """Print ``msg`` to stderr the first time it is seen this process."""
     registry = _warned_registry()

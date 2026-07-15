@@ -230,14 +230,16 @@ def test_per_session_reconciles_to_main_not_headline(measure):
     assert r["monthly_savings_usd"] > r["savings_per_session"] * n  # headline strictly exceeds
 
 
-def test_caching_regression_can_zero_main(measure):
-    """HIGH-1 path: a current cache-hit far BELOW the frozen baseline native hit makes the
-    caching penalty exceed the routing win, clamping main to 0 (net_negative). before_* then
-    fall back to the gated zero defaults (the headline card is hidden in this state)."""
+def test_caching_regression_reports_negative_main_and_hides_headline(measure):
+    """A cache regression stays visible in the main-pool accounting, while the hero hides.
+
+    The headline must not claim a saving by clamping a net-negative pool to zero: its arms
+    and attribution use the same honest (counterfactual - actual) value.
+    """
     mod, tmp = measure
     r = _run(mod, tmp, n_sessions=40, per_session_input=4_000_000, opus_share=0.90, hit=0.40)
-    # main transformation clamped to 0 -> headline gate (monthly>0) would hide the card.
-    assert r["main_transformation_usd"] == 0.0
+    assert r["main_transformation_usd"] < 0
+    assert r["main_actual_monthly_usd"] > r["main_counterfactual_monthly_usd"]
     assert r["before_cost_per_session"] == 0.0  # gated zero default, not a crash
     # And crucially it does NOT raise / returns a well-formed dict.
     assert r["reason"] == "net_negative"

@@ -18092,7 +18092,16 @@ def kill_stale_sessions(threshold_hours=12, dry_run=False):
 
 SETTINGS_PATH = CLAUDE_DIR / "settings.json"
 MEASURE_PY_PATH = Path(__file__).resolve()
-HOOK_COMMAND = f"python3 '{MEASURE_PY_PATH}' collect --quiet && python3 '{MEASURE_PY_PATH}' dashboard --quiet"
+if sys.platform == "win32":
+    _collect_cmd = subprocess.list2cmdline(
+        [sys.executable, str(MEASURE_PY_PATH), "collect", "--quiet"]
+    )
+    _dashboard_cmd = subprocess.list2cmdline(
+        [sys.executable, str(MEASURE_PY_PATH), "dashboard", "--quiet"]
+    )
+    HOOK_COMMAND = f"{_collect_cmd} && {_dashboard_cmd} >NUL 2>&1"
+else:
+    HOOK_COMMAND = f"python3 '{MEASURE_PY_PATH}' collect --quiet && python3 '{MEASURE_PY_PATH}' dashboard --quiet"
 # Recognizes Token Optimizer's SessionEnd hook command: a script named
 # ``measure.py`` invoked with the ``collect`` or ``session-end-flush``
 # subcommand as its first positional argument. The path may be single-quoted
@@ -18518,7 +18527,7 @@ def setup_hook(dry_run=False, uninstall=False):
 
 # ========== Persistent Dashboard Daemon ==========
 
-TOKEN_OPTIMIZER_VERSION = "5.11.47"  # Keep in sync with plugin.json + marketplace.json
+TOKEN_OPTIMIZER_VERSION = "5.11.48"  # Keep in sync with plugin.json + marketplace.json
 _DASHBOARD_CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 # Per-runtime daemon identity. Each runtime gets a distinct port + label so a
 # dashboard under one runtime never collides with another's. Copilot uses 24845
@@ -19213,9 +19222,41 @@ def _resolve_hook_command(template_cmd, plugin_root):
     """
     if not template_cmd:
         return template_cmd
+    if platform.system() == "Windows":
+        return _windows_hook_command(template_cmd, plugin_root)
     resolved = template_cmd.replace("${CLAUDE_PLUGIN_ROOT}", str(plugin_root))
     resolved = resolved.replace("$CLAUDE_PLUGIN_ROOT", str(plugin_root))
     return resolved
+
+
+def _windows_hook_command(template_cmd, plugin_root):
+    """Convert a hooks.json bash launcher command to a native Windows command."""
+    match = re.search(
+        r'["\']?\$\{?CLAUDE_PLUGIN_ROOT\}?/hooks/run\.py["\']?\s+'
+        r'(.*?);\s*done;\s*exit\s+0\s*$',
+        template_cmd,
+    )
+    if not match:
+        # Non-Python hooks (for example an intentional echo command) retain
+        # their original semantics; only the known launcher shape is rewritten.
+        return template_cmd.replace("${CLAUDE_PLUGIN_ROOT}", str(plugin_root)).replace(
+            "$CLAUDE_PLUGIN_ROOT", str(plugin_root)
+        )
+
+    args = shlex.split(match.group(1), posix=True)
+    while args and args[-1] in (">/dev/null", "2>&1"):
+        args.pop()
+    argv = [sys.executable, str(Path(plugin_root) / "hooks" / "run.py"), *args]
+    return subprocess.list2cmdline(argv) + " >NUL 2>&1"
+
+
+def _windows_hook_command_is_stale(existing_cmd, resolved_cmd):
+    """True when SessionStart should replace a legacy Windows bash launcher."""
+    return (
+        platform.system() == "Windows"
+        and existing_cmd != resolved_cmd
+        and "python-launcher.sh" in existing_cmd
+    )
 
 
 # Flags that don't distinguish functionally different hooks (output control only).
@@ -19589,7 +19630,13 @@ def setup_all_hooks(dry_run=False, verbose=False):
                     existing_group, existing_hook = existing_entries[matcher][ident]
                     existing_cmd = existing_hook.get("command", "")
                     has_path = ".py" in existing_cmd or ".py" in resolved_cmd
-                    if not has_path or plugin_root_str in existing_cmd:
+                    # On Windows, an existing command can point at the current
+                    # root yet still be the legacy Git-Bash launcher. Replace
+                    # it with the native direct-Python form during ensure-health.
+                    windows_command_stale = _windows_hook_command_is_stale(
+                        existing_cmd, resolved_cmd
+                    )
+                    if (not has_path or plugin_root_str in existing_cmd) and not windows_command_stale:
                         skipped += 1
                         if verbose:
                             print(f"  [skip] {event}[{matcher}] {ident} (already present)")

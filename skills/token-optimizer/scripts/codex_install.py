@@ -79,7 +79,10 @@ def _hook_command(script: str, *args: str, redirect_quiet: bool = False) -> str:
             f'R="$(ls -d {base}/*/ 2>/dev/null | grep -E \'/[0-9]+[.][0-9]+[.][0-9]+/$\' '
             f'| sort -V | tail -n 1)"; '
             f'[ -n "$R" ] || R={fallback}; '
-            f'T="${{R}}hooks/python-launcher.sh"; [ -x "$T" ] || exit 0; '
+            # bash READS the launcher script (exec "$0" = bash "$T" ...), so it
+            # only needs to be readable, not executable; -x would wrongly no-op a
+            # readable-but-not-+x launcher (e.g. after an extraction dropped the bit).
+            f'T="${{R}}hooks/python-launcher.sh"; [ -r "$T" ] || exit 0; '
             f'exec "$0" "$T" "${{R}}hooks/run.py" {command_args}{redirect}'
         )
         command = (

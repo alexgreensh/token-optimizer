@@ -8483,12 +8483,32 @@ def _backfill_is_sidechain(conn):
 def _backfill_outsourcerer_sidechain(conn):
     """Reclassify existing outsourcerer delegation sessions as is_sidechain=1.
 
-    One-time fix for rows collected before the content-based detection was
-    added. Scans the JSONL of each unclassified human session for the
-    OSRC::PROGRESS protocol marker injected by the outsourcerer skill.
-    Idempotent: once all rows are fixed, re-running scans only rows that
-    were added since the last run. Returns count of reclassified rows.
+    One-time migration for rows collected before content-based detection existed.
+    Scans each already-human (is_sidechain=0) row's JSONL for the OSRC::PROGRESS
+    marker injected by the outsourcerer skill and flips true matches to 1.
+
+    Gated by a persistent completion marker so it content-scans transcripts at
+    most ONCE. Without the gate the `is_sidechain = 0` predicate matches every
+    human session forever (non-matches are never updated, so they never drain),
+    which re-opened and re-read up to 200 lines of every human transcript on
+    every _init_trends_db() call (~38 call sites; twice per SessionEnd). New
+    sessions are classified at collect time, so a single pass over the
+    pre-existing rows is sufficient. Returns count of reclassified rows.
     """
+    # One-time gate. On any error establishing it, skip the scan entirely rather
+    # than risk re-reading the whole history (fail toward NOT rescanning).
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS token_optimizer_meta "
+            "(key TEXT PRIMARY KEY, value TEXT)"
+        )
+        if conn.execute(
+            "SELECT 1 FROM token_optimizer_meta WHERE key = 'osrc_backfill_done'"
+        ).fetchone() is not None:
+            return 0
+    except sqlite3.Error:
+        return 0
+
     rows = conn.execute(
         "SELECT id, jsonl_path FROM session_log "
         "WHERE is_sidechain = 0 AND jsonl_path IS NOT NULL"
@@ -8502,7 +8522,12 @@ def _backfill_outsourcerer_sidechain(conn):
         conn.executemany(
             "UPDATE session_log SET is_sidechain = ? WHERE id = ?", updates
         )
-        conn.commit()
+    # Mark the pass complete regardless of match count so it never re-scans.
+    conn.execute(
+        "INSERT OR REPLACE INTO token_optimizer_meta (key, value) "
+        "VALUES ('osrc_backfill_done', datetime('now'))"
+    )
+    conn.commit()
     return len(updates)
 
 
@@ -18527,7 +18552,7 @@ def setup_hook(dry_run=False, uninstall=False):
 
 # ========== Persistent Dashboard Daemon ==========
 
-TOKEN_OPTIMIZER_VERSION = "5.11.49"  # Keep in sync with plugin.json + marketplace.json
+TOKEN_OPTIMIZER_VERSION = "5.11.50"  # Keep in sync with plugin.json + marketplace.json
 _DASHBOARD_CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 # Per-runtime daemon identity. Each runtime gets a distinct port + label so a
 # dashboard under one runtime never collides with another's. Copilot uses 24845

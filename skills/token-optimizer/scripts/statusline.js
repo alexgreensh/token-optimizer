@@ -7,7 +7,8 @@
 // Install: python3 measure.py setup-quality-bar
 // The quality score is updated by a UserPromptSubmit hook every ~2 minutes.
 // Reads from the most recent per-session quality-cache-*.json for accuracy.
-// Reads effortLevel from settings.json (not available in stdin data).
+// Effort level comes from the stdin payload (data.effort.level) when Claude
+// Code provides it, falling back to settings.json effortLevel on older versions.
 
 const fs = require('fs');
 const path = require('path');
@@ -36,18 +37,26 @@ process.stdin.on('end', () => {
     const SEP = ` ${DIM}|${RESET} `;
     const gradeFor = (s) => s >= 90 ? 'S' : s >= 80 ? 'A' : s >= 70 ? 'B' : s >= 55 ? 'C' : s >= 40 ? 'D' : 'F';
 
-    // Effort level (read from settings.json, not in stdin data)
+    // Effort level: prefer the LIVE session value Claude Code now passes in the
+    // statusline stdin (data.effort.level — reflects mid-session /effort changes,
+    // values low/medium/high/xhigh/max). Fall back to settings.json effortLevel
+    // for older Claude Code versions that don't send it (a session-only /effort
+    // there won't show, but it's the best available). 'max' is short enough to
+    // wear its own name.
     let effort = '';
     try {
-      const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
-      if (fs.existsSync(settingsPath)) {
-        const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-        const level = settings.effortLevel;
-        if (level) {
-          const effortMap = { low: 'lo', medium: 'med', high: 'hi' };
-          const effortLabel = effortMap[level] || level;
-          effort = `${SEP}${DIM}${effortLabel}${RESET}`;
+      let level = data.effort?.level;
+      if (!level) {
+        const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
+        if (fs.existsSync(settingsPath)) {
+          const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+          level = settings.effortLevel;
         }
+      }
+      if (level) {
+        const effortMap = { low: 'lo', medium: 'med', high: 'hi', xhigh: 'xhi' };
+        const effortLabel = effortMap[level] || level;
+        effort = `${SEP}${DIM}${effortLabel}${RESET}`;
       }
     } catch (e) {}
 

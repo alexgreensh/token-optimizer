@@ -11,7 +11,14 @@ import { homedir, platform } from "node:os";
 import { join } from "node:path";
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, readdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { resolveDataDir, hashProjectDir, resolveConfig } from "./env.js";
+import {
+  resolveDataDir,
+  hashProjectDir,
+  resolveConfig,
+  platformDataDir,
+  stripDataFolderSuffix,
+  type HostContext,
+} from "./env.js";
 import { migrateLegacyDataDir } from "./migrate.js";
 
 const ENV_KEYS = ["TOKEN_OPTIMIZER_DATA_DIR", "XDG_DATA_HOME", "LOCALAPPDATA"];
@@ -45,7 +52,7 @@ test("blank values fall through to the platform default", () => {
   expect(resolved.startsWith(homedir()) || resolved.length > 0).toBe(true);
 });
 
-test("platform default is the documented global location", () => {
+test("platform default matches the real host", () => {
   delete process.env.TOKEN_OPTIMIZER_DATA_DIR;
   delete process.env.XDG_DATA_HOME;
   const resolved = resolveDataDir({});
@@ -58,11 +65,60 @@ test("platform default is the documented global location", () => {
   }
 });
 
-test("XDG_DATA_HOME is honoured on non-darwin platforms", () => {
-  if (platform() === "darwin" || platform() === "win32") return;
-  delete process.env.TOKEN_OPTIMIZER_DATA_DIR;
-  process.env.XDG_DATA_HOME = "/xdg/data";
-  expect(resolveDataDir({})).toBe("/xdg/data");
+// --- every platform branch, forced, on whatever host runs this ------------
+//
+// These previously could not run: platform() was read inline, so on a mac the
+// Windows and Linux branches shipped without ever executing once. HostContext
+// is injectable precisely so that is no longer true.
+
+const MAC: HostContext = { platform: "darwin", home: "/Users/alex", env: {}, sep: "/" };
+const WIN: HostContext = { platform: "win32", home: "C:\\Users\\alex", env: {}, sep: "\\" };
+const LINUX: HostContext = { platform: "linux", home: "/home/alex", env: {}, sep: "/" };
+
+test("BRANCH darwin: Library/Application Support", () => {
+  expect(platformDataDir(MAC)).toBe("/Users/alex/Library/Application Support");
+});
+
+test("BRANCH win32: LOCALAPPDATA wins, else AppData/Local", () => {
+  expect(platformDataDir({ ...WIN, env: { LOCALAPPDATA: "D:\\AppData" } })).toBe("D:\\AppData");
+  // Falls back when unset or blank rather than producing a bare/blank path.
+  expect(platformDataDir(WIN)).toBe(join("C:\\Users\\alex", "AppData", "Local"));
+  expect(platformDataDir({ ...WIN, env: { LOCALAPPDATA: "   " } })).toBe(
+    join("C:\\Users\\alex", "AppData", "Local"),
+  );
+});
+
+test("BRANCH linux: XDG_DATA_HOME wins, else ~/.local/share", () => {
+  expect(platformDataDir({ ...LINUX, env: { XDG_DATA_HOME: "/xdg/data" } })).toBe("/xdg/data");
+  expect(platformDataDir(LINUX)).toBe("/home/alex/.local/share");
+  expect(platformDataDir({ ...LINUX, env: { XDG_DATA_HOME: "  " } })).toBe("/home/alex/.local/share");
+});
+
+test("BRANCH unknown platform falls back to the POSIX layout", () => {
+  expect(platformDataDir({ ...LINUX, platform: "freebsd" })).toBe("/home/alex/.local/share");
+});
+
+test("BRANCH win32 strips a trailing segment across BOTH separators", () => {
+  expect(stripDataFolderSuffix("C:\\data\\token-optimizer", WIN)).toBe("C:\\data");
+  expect(stripDataFolderSuffix("C:/data/token-optimizer", WIN)).toBe("C:\\data");
+  // A merely-ending-in name is still left intact on Windows.
+  expect(stripDataFolderSuffix("C:\\data\\my-token-optimizer", WIN)).toBe("C:\\data\\my-token-optimizer");
+});
+
+test("BRANCH posix treats a backslash as a filename character, not a separator", () => {
+  // The bug this guards: splitting on "\" under POSIX turns the single legal
+  // segment `weird\name` into two and rejoins with "/", rewriting the path.
+  expect(stripDataFolderSuffix("/Users/alex/weird\\name/token-optimizer", LINUX)).toBe(
+    "/Users/alex/weird\\name",
+  );
+});
+
+test("BRANCH env override is read from the injected host, not the real process", () => {
+  // Proves resolveDataDir consults host.env, so the branch tests above are
+  // genuinely exercising the same path production uses.
+  expect(resolveDataDir({}, { ...LINUX, env: { TOKEN_OPTIMIZER_DATA_DIR: "/injected" } })).toBe(
+    "/injected",
+  );
 });
 
 // --- resolveDataDir: trailing-segment stripping (M1 regression) ------------

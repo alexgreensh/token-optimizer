@@ -73,17 +73,51 @@ const DATA_FOLDER = "token-optimizer";
  * the tail of `my-token-optimizer`, silently truncating a legitimate directory
  * name to `my-`. Splitting on separators can only ever match a whole segment.
  */
-function stripDataFolderSuffix(dir: string): string {
+/**
+ * The host facts this module branches on.
+ *
+ * Injected rather than read inline so every platform branch is reachable from a
+ * test on any one machine. Reading `platform()` directly inside the resolver
+ * meant the Windows and Linux paths shipped without ever executing.
+ */
+export interface HostContext {
+  platform: string;
+  home: string;
+  env: Record<string, string | undefined>;
+  /** Separator used when rejoining a split path. */
+  sep: string;
+}
+
+function hostContext(): HostContext {
+  return { platform: platform(), home: homedir(), env: process.env, sep };
+}
+
+export function stripDataFolderSuffix(dir: string, host: HostContext = hostContext()): string {
   // Split on what is actually a separator for THIS platform. Treating "\" as a
   // separator on POSIX would split the single legal segment `weird\name` in two
   // and rejoin it with "/", silently rewriting an explicitly configured dataDir.
-  const parts = dir.split(platform() === "win32" ? /[\\/]/ : /\//);
+  const parts = dir.split(host.platform === "win32" ? /[\\/]/ : /\//);
   while (parts.length > 1 && parts[parts.length - 1] === "") parts.pop();
   if (parts.length > 1 && parts[parts.length - 1] === DATA_FOLDER) {
     parts.pop();
-    return parts.join(sep) || sep;
+    return parts.join(host.sep) || host.sep;
   }
   return dir;
+}
+
+/**
+ * The platform-global base directory, with no config or env override applied.
+ * Split out from resolveDataDir purely so each branch is directly testable.
+ */
+export function platformDataDir(host: HostContext = hostContext()): string {
+  switch (host.platform) {
+    case "darwin":
+      return join(host.home, "Library", "Application Support");
+    case "win32":
+      return host.env.LOCALAPPDATA?.trim() || join(host.home, "AppData", "Local");
+    default:
+      return host.env.XDG_DATA_HOME?.trim() || join(host.home, ".local", "share");
+  }
 }
 
 /**
@@ -95,19 +129,13 @@ function stripDataFolderSuffix(dir: string): string {
  * Previously this was the project directory, which meant session DBs and
  * trends.db landed inside whatever repo you happened to be working in.
  */
-export function resolveDataDir(config?: Pick<TokenOptimizerConfig, "dataDir">): string {
-  const explicit = config?.dataDir ?? process.env.TOKEN_OPTIMIZER_DATA_DIR;
-  if (explicit && explicit.trim()) return stripDataFolderSuffix(explicit.trim());
-
-  const home = homedir();
-  switch (platform()) {
-    case "darwin":
-      return join(home, "Library", "Application Support");
-    case "win32":
-      return process.env.LOCALAPPDATA?.trim() || join(home, "AppData", "Local");
-    default:
-      return process.env.XDG_DATA_HOME?.trim() || join(home, ".local", "share");
-  }
+export function resolveDataDir(
+  config?: Pick<TokenOptimizerConfig, "dataDir">,
+  host: HostContext = hostContext(),
+): string {
+  const explicit = config?.dataDir ?? host.env.TOKEN_OPTIMIZER_DATA_DIR;
+  if (explicit && explicit.trim()) return stripDataFolderSuffix(explicit.trim(), host);
+  return platformDataDir(host);
 }
 
 /**

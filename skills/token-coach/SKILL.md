@@ -207,4 +207,4 @@ After the conversation, generate a prioritized action plan:
 If measure.py generated a coach dashboard tab, mention it:
 "Your Token Health Score and pattern analysis are in the dashboard. Run `python3 $MEASURE_PY dashboard` to see it."
 
-For Codex, also give the generated file location: `~/.codex/_backups/token-optimizer/dashboard.html`.
+For Codex, also give the generated file location. Never hardcode it: cite the `  Dashboard: ` line printed by `TOKEN_OPTIMIZER_RUNTIME=codex python3 $MEASURE_PY dashboard`.

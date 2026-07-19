@@ -55,10 +55,9 @@ python3 "$MEASURE_PY" collect --quiet && python3 "$MEASURE_PY" dashboard
 
 This collects the latest session data into the trends database, regenerates the dashboard HTML, and opens it in your default browser.
 
-3. **Tell the user** the dashboard is open. URL-first ordering (v5.3.3+):
+3. **Tell the user** the dashboard is open. Probe the daemon BEFORE mentioning any URL (v5.3.3+):
    - Probe daemon: `python3 "$MEASURE_PY" daemon-status 2>/dev/null`
    - If DAEMON_RUNNING: lead with `URL: http://localhost:24842/token-optimizer` (bookmarkable, auto-updates), then mention the file fallback.
-   - For Claude Code file fallback: `File: ~/.claude/_backups/token-optimizer/dashboard.html`.
-   - For Codex file fallback: `File: ~/.codex/_backups/token-optimizer/dashboard.html`.
-   - If DAEMON_NOT_RUNNING in Claude Code: suggest `python3 $MEASURE_PY setup-daemon` (macOS and Windows).
-   - If DAEMON_NOT_RUNNING in Codex: do not imply the Claude daemon is required; the generated file works, and Stop hooks refresh it when balanced hooks are installed.
+   - If DAEMON_NOT_RUNNING: do NOT print the `localhost:24842` URL. Tell the user the dashboard opened as a file, and suggest `python3 $MEASURE_PY setup-daemon` (macOS and Windows) if they want a bookmarkable URL.
+   - File path: never hardcode it. It is install-dependent. Cite the `  Dashboard: ` line from the step-2 output.
+   - For Codex when DAEMON_NOT_RUNNING: do not imply the Claude daemon is required; the generated file works, and Stop hooks refresh it when balanced hooks are installed.

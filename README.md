@@ -221,7 +221,7 @@ Every claim is tested against real sessions and a 57-fixture compression suite y
 
 ![Token Optimizer Dashboard](skills/token-optimizer/assets/dashboard-demo.gif)
 
-One HTML page, auto-regenerates after every session via the SessionEnd hook, no manual trigger needed. Bookmark `http://localhost:24842/token-optimizer` and it's always current.
+One HTML page, auto-regenerates after every session via the SessionEnd hook, no manual trigger needed. The bookmarkable URL `http://localhost:24842/token-optimizer` is opt-in: it only works after you run `python3 skills/token-optimizer/scripts/measure.py setup-daemon` to start the local server. Until then, open the file path that `measure.py dashboard` prints on the `  Dashboard: ` line.
 
 Per-turn token breakdowns, cost across four pricing tiers, cache analysis with TTL mix and hit rate, quality scores overlaid on every session, subagent cost breakdown, savings tracker with four non-overlapping pools. Zero setup after install. [Full dashboard docs →](https://alexgreensh.github.io/token-optimizer/reference/dashboard/)
 

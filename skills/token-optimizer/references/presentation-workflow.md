@@ -55,14 +55,15 @@ If DAEMON_RUNNING:
 ```
 Your persistent dashboard (auto-updated every session):
   URL:    http://localhost:24842/token-optimizer
-  File:   ~/.claude/_backups/token-optimizer/dashboard.html
+  File:   <read from `measure.py dashboard` output, line beginning `  Dashboard: `>
 ```
 
 If DAEMON_NOT_RUNNING:
 ```
 Your persistent dashboard (auto-updated every session):
-  File:   ~/.claude/_backups/token-optimizer/dashboard.html
+  File:   <read from `measure.py dashboard` output, line beginning `  Dashboard: `>
 ```
+Never hardcode the file path. It is install-dependent, so cite the path the command actually printed.
 On macOS only, suggest: "Want a bookmarkable URL? Run: `python3 $MEASURE_PY setup-daemon`"
 Do NOT mention `localhost:24842` if daemon is not running.
 

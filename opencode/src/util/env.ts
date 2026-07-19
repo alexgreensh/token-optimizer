@@ -1,6 +1,15 @@
+import { homedir, platform } from "node:os";
+import { join, sep } from "node:path";
+import { createHash } from "node:crypto";
 import type { PluginOptions } from "@opencode-ai/plugin";
 
 export interface TokenOptimizerConfig {
+  /**
+   * Base directory under which the `token-optimizer/` data folder is created.
+   * Unset means "resolve the platform-global location" (see resolveDataDir).
+   * Set it via PluginOptions.dataDir or TOKEN_OPTIMIZER_DATA_DIR.
+   */
+  dataDir?: string;
   qualityWindow: number;
   toolCallWarnThreshold: number | null;
   toolCallCriticalThreshold: number | null;
@@ -53,11 +62,90 @@ function boolEnv(key: string, fallback: boolean): boolean {
   return fallback;
 }
 
+const DATA_FOLDER = "token-optimizer";
+
+/**
+ * Drop a trailing `token-optimizer` path segment if the caller already included
+ * one, so storage code can always `join(base, DATA_FOLDER, ...)` without ending
+ * up with `.../token-optimizer/token-optimizer/`.
+ *
+ * Segment-aware on purpose. A regex like /\/?token-optimizer\/?$/ also matches
+ * the tail of `my-token-optimizer`, silently truncating a legitimate directory
+ * name to `my-`. Splitting on separators can only ever match a whole segment.
+ */
+function stripDataFolderSuffix(dir: string): string {
+  // Split on what is actually a separator for THIS platform. Treating "\" as a
+  // separator on POSIX would split the single legal segment `weird\name` in two
+  // and rejoin it with "/", silently rewriting an explicitly configured dataDir.
+  const parts = dir.split(platform() === "win32" ? /[\\/]/ : /\//);
+  while (parts.length > 1 && parts[parts.length - 1] === "") parts.pop();
+  if (parts.length > 1 && parts[parts.length - 1] === DATA_FOLDER) {
+    parts.pop();
+    return parts.join(sep) || sep;
+  }
+  return dir;
+}
+
+/**
+ * Resolve the base directory that holds the `token-optimizer/` data folder.
+ *
+ * Precedence: explicit config.dataDir -> TOKEN_OPTIMIZER_DATA_DIR -> platform
+ * global location. Returns the BASE; callers append DATA_FOLDER themselves.
+ *
+ * Previously this was the project directory, which meant session DBs and
+ * trends.db landed inside whatever repo you happened to be working in.
+ */
+export function resolveDataDir(config?: Pick<TokenOptimizerConfig, "dataDir">): string {
+  const explicit = config?.dataDir ?? process.env.TOKEN_OPTIMIZER_DATA_DIR;
+  if (explicit && explicit.trim()) return stripDataFolderSuffix(explicit.trim());
+
+  const home = homedir();
+  switch (platform()) {
+    case "darwin":
+      return join(home, "Library", "Application Support");
+    case "win32":
+      return process.env.LOCALAPPDATA?.trim() || join(home, "AppData", "Local");
+    default:
+      return process.env.XDG_DATA_HOME?.trim() || join(home, ".local", "share");
+  }
+}
+
+/**
+ * Encode a project path into a single filesystem-safe directory name, matching
+ * Claude Code's `~/.claude/projects/` convention so the same project resolves to
+ * the same slug across both tools.
+ *
+ *   /Users/alex/my project  ->  -Users-alex-my-project
+ *   D:\Code\my app          ->  D--Code-my-app
+ *
+ * Returns "unknown-project" for empty input rather than "", which would collapse
+ * the scoped path back onto the unscoped parent directory.
+ */
+export function hashProjectDir(worktree: string): string {
+  const raw = worktree ?? "";
+  const slug = raw.replace(/[^A-Za-z0-9]/g, "-");
+  const readable = slug.replace(/^-+$/, "") ? slug : "unknown-project";
+
+  // The readable slug alone is NOT a safe isolation key. Collapsing every
+  // non-alphanumeric to "-" maps `client-a`, `client.a` and `client_a` onto one
+  // identical slug, and since this is the only boundary between projects in a
+  // shared global data dir, colliding projects would read each other's
+  // checkpoints. The digest restores uniqueness; the slug stays for debuggability.
+  //
+  // Note this intentionally diverges from Claude Code's plain encoding, which
+  // tolerates collisions because it never uses them as a security boundary.
+  const digest = createHash("sha256").update(raw).digest("hex").slice(0, 10);
+  return `${readable}-${digest}`;
+}
+
 export function resolveConfig(options?: PluginOptions): TokenOptimizerConfig {
   const opts = (options ?? {}) as Record<string, unknown>;
   const features = (opts.features ?? {}) as Record<string, unknown>;
 
   return {
+    // Explicit opts win; env var is picked up later by resolveDataDir so that
+    // TOKEN_OPTIMIZER_DATA_DIR still works when no options are passed at all.
+    dataDir: typeof opts.dataDir === "string" && opts.dataDir.trim() ? opts.dataDir.trim() : undefined,
     qualityWindow: intEnv(
       "TOKEN_OPTIMIZER_QUALITY_WINDOW",
       typeof opts.qualityWindow === "number" ? opts.qualityWindow : 20,

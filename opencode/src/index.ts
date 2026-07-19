@@ -2,7 +2,8 @@ import type { Plugin, Hooks, PluginInput, PluginOptions } from "@opencode-ai/plu
 import type { Event } from "@opencode-ai/sdk";
 import { SessionStore } from "./storage/session-store.js";
 import { TrendsStore } from "./storage/trends.js";
-import { resolveConfig } from "./util/env.js";
+import { resolveConfig, resolveDataDir, hashProjectDir } from "./util/env.js";
+import { migrateLegacyDataDir } from "./util/migrate.js";
 import { contextWindowForModel } from "./util/context-window.js";
 import { computeQualityScore, enforceMonotonicity, type QualityResult } from "./quality/scoring.js";
 import {
@@ -95,7 +96,12 @@ export const TokenOptimizerPlugin: Plugin = async (
   options?: PluginOptions,
 ) => {
   const config = resolveConfig(options);
-  const dataDir = ctx.directory;
+  // Data lives in a platform-global location, not inside the user's repo. The
+  // project only decides which sessions/ subdirectory this run writes to.
+  const projectDir = ctx.project?.worktree || ctx.directory;
+  const dataDir = resolveDataDir(config);
+  const projectSlug = hashProjectDir(projectDir);
+  migrateLegacyDataDir(projectDir, dataDir, projectSlug);
 
   const sessions = new Map<string, SessionState>();
   let currentSessionId = "";
@@ -124,7 +130,7 @@ export const TokenOptimizerPlugin: Plugin = async (
       }
     }
 
-    const store = new SessionStore(dataDir, sessionId);
+    const store = new SessionStore(dataDir, sessionId, projectSlug);
     state = {
       store,
       sessionId,
@@ -565,7 +571,8 @@ export const TokenOptimizerPlugin: Plugin = async (
               // and scope the same-project filter. ctx.project.worktree is the
               // working directory of the project (the canonical cwd for this session).
               trendsStore ?? undefined,
-              ctx.project.worktree,
+              projectDir,
+              projectSlug,
             );
             if (match) {
               // Fence restored content as untrusted DATA so it can't act as an

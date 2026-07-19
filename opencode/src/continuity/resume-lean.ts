@@ -413,10 +413,14 @@ export function buildResumeLeanBlock(
   cwd: string,
   retentionDays: number = 7,
   maxCandidates: number = 50,
+  /** Optional: scopes the scan to one project's session subdirectory. Appended
+   *  last so existing call sites keep their argument order. */
+  projectSlug?: string,
 ): [string, string] {
   if (!cwd) return ["", ""];
 
-  const sessDir = join(dataDir, "token-optimizer", "sessions");
+  const sessBase = join(dataDir, "token-optimizer", "sessions");
+  const sessDir = projectSlug ? join(sessBase, projectSlug) : sessBase;
   if (!existsSync(sessDir)) return ["", ""];
 
   const candidates = loadSameProjectCheckpoints(

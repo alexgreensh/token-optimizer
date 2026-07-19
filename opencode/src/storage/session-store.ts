@@ -94,8 +94,15 @@ export class SessionStore {
   private db: Database | null = null;
   private dbPath: string;
 
-  constructor(dataDir: string, sessionId: string) {
-    const sessDir = join(dataDir, "token-optimizer", "sessions");
+  /**
+   * @param projectSlug Optional. When supplied, session DBs are scoped into a
+   *   per-project subdirectory so a global dataDir cannot leak one project's
+   *   checkpoints into another's. Appended (not inserted) so existing two-arg
+   *   call sites keep working unchanged.
+   */
+  constructor(dataDir: string, sessionId: string, projectSlug?: string) {
+    const base = join(dataDir, "token-optimizer", "sessions");
+    const sessDir = projectSlug ? join(base, projectSlug) : base;
     if (!existsSync(sessDir)) {
       mkdirSync(sessDir, { recursive: true });
     }

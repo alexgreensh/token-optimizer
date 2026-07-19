@@ -22,10 +22,14 @@ export function restoreCheckpoint(
   /** Working directory for same-project scoping. Comes from ctx.project.path
    *  or process.cwd() at call time (the caller decides). */
   cwd?: string,
+  /** Optional: scopes the scan to one project's session subdirectory. Appended
+   *  last so existing call sites keep their argument order. */
+  projectSlug?: string,
 ): CheckpointMatch | null {
   if (!config.features.continuity) return null;
 
-  const sessDir = join(dataDir, "token-optimizer", "sessions");
+  const sessBase = join(dataDir, "token-optimizer", "sessions");
+  const sessDir = projectSlug ? join(sessBase, projectSlug) : sessBase;
   if (!existsSync(sessDir)) return null;
 
   // DB filenames are the sanitized session id, so compare like-for-like or a
@@ -47,6 +51,7 @@ export function restoreCheckpoint(
         cwd,
         config.checkpointRetentionDays,
         config.checkpointRetentionMax,
+        projectSlug,
       );
       if (leanBlock && targetSid) {
         // Credit the avoided cold-resume cost. Best-effort: never breaks injection.

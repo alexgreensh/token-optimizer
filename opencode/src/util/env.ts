@@ -65,15 +65,6 @@ function boolEnv(key: string, fallback: boolean): boolean {
 const DATA_FOLDER = "token-optimizer";
 
 /**
- * Drop a trailing `token-optimizer` path segment if the caller already included
- * one, so storage code can always `join(base, DATA_FOLDER, ...)` without ending
- * up with `.../token-optimizer/token-optimizer/`.
- *
- * Segment-aware on purpose. A regex like /\/?token-optimizer\/?$/ also matches
- * the tail of `my-token-optimizer`, silently truncating a legitimate directory
- * name to `my-`. Splitting on separators can only ever match a whole segment.
- */
-/**
  * The host facts this module branches on.
  *
  * Injected rather than read inline so every platform branch is reachable from a
@@ -92,6 +83,15 @@ function hostContext(): HostContext {
   return { platform: platform(), home: homedir(), env: process.env, sep };
 }
 
+/**
+ * Drop a trailing `token-optimizer` path segment if the caller already included
+ * one, so storage code can always `join(base, DATA_FOLDER, ...)` without ending
+ * up with `.../token-optimizer/token-optimizer/`.
+ *
+ * Segment-aware on purpose. A regex like /\/?token-optimizer\/?$/ also matches
+ * the tail of `my-token-optimizer`, silently truncating a legitimate directory
+ * name to `my-`. Splitting on separators can only ever match a whole segment.
+ */
 export function stripDataFolderSuffix(dir: string, host: HostContext = hostContext()): string {
   // Split on what is actually a separator for THIS platform. Treating "\" as a
   // separator on POSIX would split the single legal segment `weird\name` in two

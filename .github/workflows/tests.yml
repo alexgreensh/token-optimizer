@@ -1,0 +1,51 @@
+name: Tests
+
+# Runs the Python suite in tests/ on every push and pull request.
+#
+# Until now nothing ran these tests automatically. The suite existed and passed
+# locally, but a regression could only be caught by someone remembering to run
+# pytest by hand. Guards that nothing enforces are decoration.
+#
+# The matrix floor is measured, not guessed: the suite was verified passing on
+# 3.11 and 3.14 locally, so the interpreters in between are covered by the same
+# range. Hooks run under whatever python3 a user happens to have, so version
+# spread is a real portability signal for this project, not ceremony.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# Least privilege: this job only reads the repo.
+permissions:
+  contents: read
+
+# A newer push to the same ref makes the in-flight run irrelevant.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      # One red interpreter should not hide the result on the others.
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # The suite imports only the standard library plus the repo's own modules,
+      # so pytest is the entire dependency footprint.
+      - name: Install pytest
+        run: python -m pip install --upgrade pip pytest
+
+      # Run from the repo root: the tests resolve the scripts under
+      # skills/token-optimizer/scripts/ relative to it.
+      - name: Run tests
+        run: python -m pytest tests/ -q

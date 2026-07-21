@@ -23,7 +23,7 @@ Headroom and RTK both compress bash and command output. That single surface cove
 
 | Compression surface | Token Optimizer | Headroom | RTK |
 |---|---|---|---|
-| **Bash / command output** (git, test runners, lint, build, listings, logs) | 🟢 60+ command patterns, credential-safe; 564 → 115 tokens on a pytest run | 🟢 6 algorithms incl. model-based | 🟢 100+ command filters |
+| **Bash / command output** (git, test runners, lint, build, listings, logs) | 🟢 110+ commands across 22 pattern families, credential-safe; 564 → 115 tokens on a pytest run | 🟢 6 algorithms incl. model-based | 🟢 100+ command filters |
 | **Search / grep output** | 🟢 Web, grep, and search results condensed to top hits plus a count; 500 lines → 20 | 🔴 | 🔴 |
 | **Tabular and JSON output** (jq, yq, csvtool, mlr, CSV, YAML, TOML) | 🟢 Value-preserving columnar compression | 🟢 SmartCrusher | 🔴 |
 | **File re-reads, delta mode** (changed files read again this session) | 🟢 Serves only the unified diff; 2,000-token re-read → ~50 tokens | 🔴 | 🔴 |
@@ -40,13 +40,13 @@ The table covers the five tools most often compared to Token Optimizer. Status: 
 
 | Feature | Token Optimizer | Headroom | RTK | context-mode | `/context` |
 |---|---|---|---|---|---|
-| Tool output compression | 🟢 30+ CLI families, credential-safe, toggleable | 🟢 6 algorithms incl. model-based | 🟢 100+ command filters | 🟢 Sandbox + summary | 🔴 |
+| Tool output compression | 🟢 110+ commands across 22 pattern families, credential-safe, toggleable | 🟢 6 algorithms incl. model-based | 🟢 100+ command filters | 🟢 Sandbox + summary | 🔴 |
 | Re-read file skeletons | 🟢 Structure map on repeat reads, fail-open, full original retrievable | 🔴 | 🔴 | 🔴 | 🔴 |
 | Tabular/JSON compression | 🟢 Value-preserving columnar | 🟢 SmartCrusher | 🔴 | 🟡 Generic summary | 🔴 |
 | Read dedup and delta diffs | 🟢 Re-reads serve diff only | 🔴 | 🔴 | 🔴 | 🔴 |
 | Compaction survival | 🟢 Progressive checkpoints, restore, tool-output digest | 🔴 | 🔴 | 🟡 Session guide only | 🔴 |
 | Conversation history | 🟢 Progressive checkpoints + compaction restore | 🔴 | 🔴 | 🟡 Session guide | 🔴 |
-| Model routing and behavioral coaching | 🟢 11 detectors, subagent cost breakdown, anti-patterns | 🔴 | 🔴 | 🔴 | 🟡 Basic suggestions |
+| Model routing and behavioral coaching | 🟢 12 detectors, subagent cost breakdown, anti-patterns | 🔴 | 🔴 | 🔴 | 🟡 Basic suggestions |
 | Historical trend analysis | 🟢 30-day trends, quality/cost/cache/duration correlation, model-switch detection | 🔴 | 🔴 | 🔴 | 🔴 |
 | Loop and spin detection | 🟢 Catches behavioral loops before they burn | 🔴 | 🔴 | 🔴 | 🔴 |
 | Context quality scoring | 🟢 7-signal quality score with grades | 🔴 | 🔴 | 🔴 | 🟡 Capacity % only |

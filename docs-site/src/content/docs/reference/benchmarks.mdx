@@ -59,20 +59,32 @@ A parallel effort ports this methodology to OpenClaw and OpenCode (TypeScript). 
 
 ## The fixture suite
 
-The compression benchmark validates that compression preserves what the model needs. The suite holds 57 fixtures across 10 categories. Each fixture defines raw output, a must-preserve list, a must-not-contain list (which catches hallucination), and a minimum compression ratio. A fixture passes only when all three checks hold.
+The compression benchmark validates that compression preserves what the model needs. The suite holds 87 fixtures across 22 categories. Each fixture defines raw output, a must-preserve list, a must-not-contain list (which catches hallucination), and a minimum compression ratio. A fixture passes only when all three checks hold.
 
-| Group | Fixtures | What it tests |
+| Category | Fixtures | What it tests |
 |---|---|---|
+| test_exts | 10 | test-runner variants across file extensions |
 | build | 8 | cargo, make, webpack, tsc, gradle |
 | git | 7 | status, log, diff, merge conflicts |
 | lint | 7 | eslint, ruff, clippy, pylint |
 | logs | 7 | nginx, docker, systemd, application |
-| tree / directory listings | 7 | large listings, nested structures |
-| test runners | 6 | pytest, jest, go test, extensions |
-| tee-on-failure | 5 | failed commands keep full output |
-| progress / installs | 5 | npm, pip, package downloads |
+| tee_on_failure | 5 | failed commands keep full output |
+| json | 4 | value-preserving structured compression |
+| csv | 4 | columnar compression |
+| stack_trace | 4 | frame-limited tracebacks |
+| cloud_cli | 4 | aws, gcloud, az output |
+| search_results | 4 | grep and web search condensed to top hits |
 | security | 3 | AWS keys, GitHub PATs, Slack tokens (must NOT be stripped) |
-| error passthrough | 2 | non-zero exit, permission denied (must pass through raw) |
+| tree | 3 | nested directory structures |
+| progress | 3 | download and install progress bars |
+| list | 3 | long listings |
+| k8s | 3 | kubectl output |
+| test_runner | 2 | pytest, jest, go test |
+| error | 2 | non-zero exit, permission denied (must pass through raw) |
+| package_install | 1 | pip and package managers |
+| directory_listing | 1 | large `ls` output |
+| npm_install | 1 | npm ci and install |
+| test | 1 | generic test output |
 
 The security fixtures are the load-bearing safety check: they verify credentials survive compression intact. Compression never removes what the model needs to see, and never strips a secret.
 
@@ -83,7 +95,7 @@ The security fixtures are the load-bearing safety check: they verify credentials
 | Quality-scored sessions | 684 (30 days) &middot; 2,042 all-time |
 | Sessions with file reads | 5,814 (backfill corpus for skeleton analysis) |
 | First-reads analyzed | 30,771 |
-| Benchmark fixtures | 57 across 10 categories |
+| Benchmark fixtures | 87 across 22 categories |
 | Average prompt-cache hit rate | 74.1% |
 
 The two corpora are distinct populations, not double-counted. The backfill corpus is larger because it includes historical sessions recovered from file-read logs. The production figures come from Claude Code CLI sessions, the author's primary platform. Quality scoring and savings tracking work on all platforms, but the signal count varies by platform (3 to 7 signals).

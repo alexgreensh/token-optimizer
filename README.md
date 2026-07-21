@@ -200,7 +200,7 @@ RTK reaches the first surface. Headroom reaches the first and the third. Token O
 |---|---|---|---|---|---|
 | **Compaction survival** | 🟢 Progressive checkpoints, restore, tool output digest | 🔴 | 🔴 | 🟡 Session guide only | 🔴 |
 | **Session continuity** | 🟢 Cross-session hints, cold-resume, checkpoint scoring | 🔴 | 🔴 | 🟡 Session guide | 🔴 |
-| **Model routing and behavioral coaching** | 🟢 11 detectors, subagent cost breakdown, anti-patterns | 🔴 | 🔴 | 🔴 | 🟡 Basic suggestions |
+| **Model routing and behavioral coaching** | 🟢 12 detectors, subagent cost breakdown, anti-patterns | 🔴 | 🔴 | 🔴 | 🟡 Basic suggestions |
 | **Keep-Warm (cache TTL refresh)** | 🟢 Opt-in ping before cache expiry, tripwire auto-off | 🔴 | 🔴 | 🔴 | 🔴 |
 | **Historical trend analysis** | 🟢 30-day trends, quality/cost/cache/duration correlation, model-switch detection | 🔴 | 🔴 | 🔴 | 🔴 |
 | **Loop and spin detection** | 🟢 Catches behavioral loops before they burn | 🔴 | 🔴 | 🔴 | 🔴 |

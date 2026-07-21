@@ -16,7 +16,7 @@ Two are user-visible alerters: Quality Nudges warn when the session is degrading
 
 **Quality Nudges** watch the running context quality score. When the score drops 15 or more points in a single measurement, or crosses below 60, a short inline note enters the context. The model surfaces it on the next turn, prompting a timely `/compact` before the session degrades further. The note is suppressed on the first check immediately after a compaction (to avoid false alarms right after the context was just cleaned).
 
-**Loop Detection** watches for repetition. It compares the last four user messages and the last five tool results for similarity, using a confidence threshold of 0.6. When confidence is met, a short warning enters the context. Post-hoc analysis of real sessions found that loop sessions average 47,000 wasted tokens before the user notices. The notes use fixed templates and never echo your content back.
+**Loop Detection** watches for repetition across the last four user messages and the last five tool results. It does not compute semantic similarity. A message loop is flagged when those recent messages all sit within 20% of their average length, a cheap proxy for the same request being retyped. Retry churn is flagged when at least three of the recent tool results are short failures from the same tool. Each signal carries a fixed confidence, 0.7 for a message loop and 0.75 for retry churn, and a warning fires only when the strongest signal is at least 0.6. When it fires, a short warning enters the context. Post-hoc analysis of real sessions found that loop sessions average 47,000 wasted tokens before the user notices. The notes use fixed templates and never echo your content back.
 
 **Activity Mode Detection** classifies the current session into one of five modes: code, debug, review, infra, or general. Classification runs on a sliding window of the last ten tool calls after every PostToolUse event. The result feeds the [active compression](/features/active-compression/) compaction engine, which selects mode-aware PRESERVE and DROP priorities when `/compact` runs. The activity log auto-prunes at 30 rows to avoid unbounded growth.
 
@@ -29,7 +29,7 @@ All four run automatically via hooks. No manual invocation is needed.
 | Feature | Hook | Trigger |
 |---|---|---|
 | Quality Nudges | `UserPromptSubmit` (quality-cache) | Quality score drops 15+ points or crosses below 60 |
-| Loop Detection | `UserPromptSubmit` (quality-cache) | Similarity ≥ 0.6 across last 4 user messages or last 5 tool results |
+| Loop Detection | `UserPromptSubmit` (quality-cache) | Last 4 user messages within 20% of average length, or 3+ short failures from one tool in the last 5 results |
 | Activity Mode | `PostToolUse` | Every tool call, no threshold |
 | Decision Extraction | `PostToolUse` | Tool output over 500 characters |
 
@@ -111,7 +111,9 @@ python3 measure.py v5 enable loop_detection
 | Quality Nudges | Cooldown | 5 minutes |
 | Quality Nudges | Session cap | 3 nudges |
 | Quality Nudges | Post-compact suppression | Yes (first check after compact skipped) |
-| Loop Detection | Similarity threshold | 0.6 confidence |
+| Loop Detection | Message-loop rule | Recent messages within 20% of average length (average above 50 chars) |
+| Loop Detection | Retry-churn rule | 3+ short (<400 char) failures from the same tool |
+| Loop Detection | Firing floor | Strongest signal ≥ 0.6 (message loop 0.7, retry churn 0.75) |
 | Loop Detection | User message window | Last 4 messages |
 | Loop Detection | Tool result window | Last 5 results |
 | Loop Detection | Session cap | 2 warnings |

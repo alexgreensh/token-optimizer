@@ -31,7 +31,7 @@ On by default on Claude Code (CLI and VS Code), through the PostToolUse hook. On
 
 ## How to turn it on and off
 
-Archiving runs through the PostToolUse hook. To stop it, remove the hook wiring for your platform (see the [hooks reference](/reference/hooks/)). `expand` and `archive-cleanup` are read-and-maintenance commands that run only when invoked, so there is nothing to disable about them. Archives auto-purge after 48 hours regardless, so an archive you forget about does not persist.
+Archiving runs through the PostToolUse hook. To stop it, remove the hook wiring for your platform (see the [hooks reference](/reference/hooks/)). `expand` and `archive-cleanup` are read-and-maintenance commands that run only when invoked, so there is nothing to disable about them. An archive you forget about does not persist either way: the archiver itself purges archives older than 48 hours whenever it writes a new one, and the manual `archive-cleanup` command deletes on a stricter default of 24 hours, adjustable with `TOKEN_OPTIMIZER_ARCHIVE_RETENTION_HOURS`.
 
 ## Exact commands
 
@@ -53,7 +53,8 @@ python3 measure.py expand --list --session SESSION_ID
 # Manually archive the current pending result (normally automatic)
 python3 measure.py archive-result
 
-# Delete archives older than 48h, or all archives for one session
+# Delete archives older than 24h (default; TOKEN_OPTIMIZER_ARCHIVE_RETENTION_HOURS
+# overrides), or all archives for one session
 python3 measure.py archive-cleanup
 python3 measure.py archive-cleanup SESSION_ID
 ```
@@ -72,16 +73,16 @@ TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py expand --list
 | Tools covered | Bash, Read, Glob, Grep, Agent, MCP |
 | Trigger | Automatic on PostToolUse |
 | Retrieval | Manual (`expand`) |
-| Auto-purge | After 48 hours |
-| Manual purge | `archive-cleanup` (all old, or one session) |
+| Auto-purge | After 48 hours, applied when the hook writes a new archive |
+| Manual purge | `archive-cleanup`: older than 24 hours by default (`TOKEN_OPTIMIZER_ARCHIVE_RETENTION_HOURS` overrides), or all archives for one session |
 
 ## Risk rating
 
-Low. The archive writes the full result to a local file before replacing it inline, so the data is never destroyed, only relocated and made addressable. The realistic failure is the model not retrieving an archived result it needed, which the inline hint is built to prevent by naming the exact `expand` command and id. Auto-purge after 48 hours bounds disk use; a result you still need beyond that window should be saved out of the archive explicitly.
+Low. The archive writes the full result to a local file before replacing it inline, so the data is never destroyed, only relocated and made addressable. The realistic failure is the model not retrieving an archived result it needed, which the inline hint is built to prevent by naming the exact `expand` command and id. Automatic purge after 48 hours bounds disk use, and `archive-cleanup` trims on a 24-hour default; a result you still need beyond those windows should be saved out of the archive explicitly.
 
 ## Related environment variables
 
-`TOKEN_OPTIMIZER_RUNTIME` selects the platform whose hooks and archive location are used. Defined in the [configuration reference](/reference/configuration/).
+`TOKEN_OPTIMIZER_RUNTIME` selects the platform whose hooks and archive location are used. `TOKEN_OPTIMIZER_ARCHIVE_RETENTION_HOURS` sets the age cutoff for the manual `archive-cleanup` command (default 24; the automatic 48-hour purge is not affected). Both are defined in the [configuration reference](/reference/configuration/).
 
 ## Platform availability
 

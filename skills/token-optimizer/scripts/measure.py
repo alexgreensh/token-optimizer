@@ -27771,7 +27771,29 @@ _NUDGE_COOLDOWN_SECONDS = 300  # 5 minutes between nudges
 # before the context is a quarter full, and the quality gate keeps a healthy
 # session quiet regardless. Named + env-tunable rather than inline, because the
 # previous magic 25 was documented as three different numbers across the docs.
-_VERBOSITY_NUDGE_MIN_FILL = _int_env("TOKEN_OPTIMIZER_VERBOSITY_MIN_FILL", 20)
+def _verbosity_nudge_min_fill() -> int:
+    """Resolve the gentle-tier floor, clamped to the range where it means
+    anything.
+
+    Unclamped this is a foot-gun in both directions. At 0 or negative the
+    gentle tier fires at ANY fill, including the first prompt of an empty
+    session -- the exact failure the session-identity guard was written to
+    stop. At >= 75 the strong tier already owns the range, so the gentle tier
+    becomes unreachable and the feature silently does nothing. Both are
+    misconfigurations a user would never see, so clamp loudly instead.
+    """
+    raw = _int_env("TOKEN_OPTIMIZER_VERBOSITY_MIN_FILL", 20)
+    clamped = max(1, min(raw, 74))
+    if clamped != raw:
+        print(
+            f"[Token Optimizer] Warning: TOKEN_OPTIMIZER_VERBOSITY_MIN_FILL={raw} "
+            f"is outside the useful range 1-74, clamped to {clamped}.",
+            file=sys.stderr,
+        )
+    return clamped
+
+
+_VERBOSITY_NUDGE_MIN_FILL = _verbosity_nudge_min_fill()
 _NUDGE_SESSION_CAP = 3
 # Fresh-session nudge: when a session is BOTH long (high fill) and degraded
 # (quality < threshold), suggest starting a fresh session -- cold-resume-lean

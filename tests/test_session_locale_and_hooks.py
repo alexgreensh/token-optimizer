@@ -170,6 +170,29 @@ def test_lean_nudge_boundary_is_20pct():
     assert "NOIDENT:0" in out, f"unverifiable session must not nudge: {out!r}"
 
 
+def test_verbosity_min_fill_is_clamped():
+    """A misconfigured floor must not turn the nudge into background noise or
+    silently disable it. 0/negative would fire on the first prompt of an empty
+    session (the bug the identity guard exists to stop); >= 75 would hand the
+    range to the strong tier and make the gentle tier unreachable."""
+    probe = (
+        "import sys; sys.path.insert(0, '.')\n"
+        "import measure\n"
+        "print('V:' + str(measure._VERBOSITY_NUDGE_MIN_FILL))\n"
+    )
+    for raw, want in (("-5", 1), ("0", 1), ("20", 20), ("74", 74), ("999", 74), ("abc", 20)):
+        env = dict(os.environ, TOKEN_OPTIMIZER_VERBOSITY_MIN_FILL=raw)
+        r = subprocess.run(
+            [sys.executable, "-c", probe], cwd=str(MEASURE.parent),
+            capture_output=True, text=True, env=env,
+        )
+        assert r.returncode == 0, f"probe crashed for {raw!r}: {r.stderr}"
+        assert f"V:{want}" in r.stdout, (
+            f"TOKEN_OPTIMIZER_VERBOSITY_MIN_FILL={raw!r} should resolve to "
+            f"{want}, got: {r.stdout!r}"
+        )
+
+
 # ---------- 4. Dual-tree parity ----------
 
 def test_measure_py_dual_tree_parity():

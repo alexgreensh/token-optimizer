@@ -124,15 +124,22 @@ class _P:
         return True
 measure._find_current_session_jsonl = lambda: pathlib.Path(measure.__file__)
 measure._quality_cache_path_for = lambda fp=None: _P()
-def _probe(fill):
+def _probe(fill, **kw):
     measure._read_quality_cache = lambda cp: {
         'fill_pct': fill, 'score': 50, 'nudge_count': 0, 'last_nudge_time': 0,
     }
-    return measure.run_verbosity_steer(quiet=True)
-print('AT30:' + ('1' if _probe(30) else '0'))
-print('AT25:' + ('1' if _probe(25) else '0'))
-print('AT24:' + ('1' if _probe(24) else '0'))
-print('AT20:' + ('1' if _probe(20) else '0'))
+    return measure.run_verbosity_steer(quiet=True, **kw)
+# A known transcript, as every real caller supplies. Without one the session
+# identity guard refuses to speak (see NOIDENT below), so the tier boundaries
+# have to be probed on the trusted path.
+_TP = measure.__file__
+print('AT30:' + ('1' if _probe(30, transcript_path=_TP) else '0'))
+print('AT25:' + ('1' if _probe(25, transcript_path=_TP) else '0'))
+print('AT24:' + ('1' if _probe(24, transcript_path=_TP) else '0'))
+print('AT20:' + ('1' if _probe(20, transcript_path=_TP) else '0'))
+# Guard: no transcript_path and no session_id means the transcript was inferred
+# and cannot be verified. A brand-new session must not inherit these numbers.
+print('NOIDENT:' + ('1' if _probe(30) else '0'))
 """
 
 
@@ -144,6 +151,11 @@ def test_lean_nudge_boundary_is_25pct():
     assert "AT25:1" in out, f"gentle nudge should fire at exactly 25% fill: {out!r}"
     assert "AT24:0" in out, f"gentle nudge should NOT fire at 24% fill: {out!r}"
     assert "AT20:0" in out, f"gentle nudge should NOT fire at 20% fill: {out!r}"
+    # Session identity guard: an inferred transcript with no session_id to verify
+    # it against must stay silent, even at a fill that would otherwise nudge.
+    # This is the observed bug -- a nudge fired on the first prompt of an empty
+    # session quoting another session's numbers.
+    assert "NOIDENT:0" in out, f"unverifiable session must not nudge: {out!r}"
 
 
 # ---------- 4. Dual-tree parity ----------

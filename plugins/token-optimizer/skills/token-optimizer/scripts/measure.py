@@ -33256,10 +33256,15 @@ def run_verbosity_steer(transcript_path=None, quiet=True, session_id=None):
     """
     try:
         filepath = None
+        # Whether this transcript was told to us or inferred. _find_current_session_jsonl()
+        # returns the most recently active transcript, which on a brand-new session
+        # is somebody else's -- so a guessed path must clear a higher bar below.
+        guessed = False
         if transcript_path and Path(transcript_path).exists():
             filepath = Path(transcript_path)
         else:
             filepath = _find_current_session_jsonl()
+            guessed = True
         if not filepath:
             return ""
         cache_path = _quality_cache_path_for(filepath)
@@ -33268,6 +33273,45 @@ def run_verbosity_steer(transcript_path=None, quiet=True, session_id=None):
             return ""
         fill_pct = cached.get("fill_pct", 0) or 0
         score = cached.get("score", 100) or 100
+        # Session identity guard.
+        #
+        # This path reported another session's fill and quality as the user's own:
+        # a nudge fired on the FIRST prompt of an empty session quoting fill 47%
+        # / score 73, numbers that session could not have produced. The cache is
+        # keyed by the resolved transcript, and nothing checked that the resolved
+        # transcript was the live one.
+        #
+        # Silence is the correct failure mode. A missing nudge costs a small
+        # optimization; a wrong one makes the assistant conserve tokens that were
+        # never scarce, for the rest of the session.
+        # sanitize_session_id() returns the sentinel "unknown" for empty or
+        # unusable input, and "unknown" is truthy. Treating that as an identity
+        # would make every caller that omits session_id fail the comparison and
+        # silently kill all nudges -- the same class of invisible failure this
+        # guard exists to prevent.
+        raw_sid = str(session_id or "").strip()
+        want_sid = sanitize_session_id(raw_sid) if raw_sid else ""
+        if want_sid == "unknown":
+            want_sid = ""
+        if want_sid:
+            # Identity known: it must match, and a cache too old to carry one
+            # cannot be vouched for either. Derived only when needed, and failing
+            # closed on its own rather than by raising into the outer handler --
+            # an exception here would look identical to "no nudge today".
+            have_sid = ""
+            try:
+                have_sid = sanitize_session_id(
+                    Path(str(cache_path)).stem.replace("quality-cache-", "", 1)
+                )
+            except (TypeError, ValueError):
+                have_sid = ""
+            if not have_sid or have_sid == "unknown" or have_sid != want_sid:
+                return ""
+        elif guessed:
+            # No identity to check AND the transcript was inferred. Never fall
+            # back to a guess: that combination is exactly the observed failure.
+            return ""
+
         window_note = _format_window_note(cached)
 
         # The window is provably wrong: more tokens were observed than it can
@@ -34711,7 +34755,13 @@ if __name__ == "__main__":
         try:
             hook_input = _read_stdin_hook_input()
             transcript_path = hook_input.get("transcript_path")
-            payload = run_verbosity_steer(transcript_path=transcript_path, quiet=False)
+            # Claude Code supplies session_id on every hook payload; passing it
+            # lets the identity guard verify rather than infer.
+            payload = run_verbosity_steer(
+                transcript_path=transcript_path,
+                quiet=False,
+                session_id=hook_input.get("session_id"),
+            )
             if payload:
                 print(payload)
         except Exception:

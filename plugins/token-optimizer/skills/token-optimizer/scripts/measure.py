@@ -21816,6 +21816,10 @@ def compute_quality_score(quality_data, session_id=None):
     # Set when observed tokens exceed the window: that is not a full context, it
     # is a wrong window, and it must not be reported as a percentage.
     window_contradicted = False
+    # Set when the host supplied the fill, so we can compare our own arithmetic
+    # against it afterwards.
+    host_fill_pct = None
+    host_disagreement = None
     try:
         live_fill_path = QUALITY_CACHE_DIR / "live-fill.json"
         if live_fill_path.exists():
@@ -21825,6 +21829,11 @@ def compute_quality_score(quality_data, session_id=None):
             want_sid = sanitize_session_id(str(session_id or ""))
             if age < 10 and want_sid and live_sid == want_sid:
                 fill_pct = min(1.0, max(0.0, live["used_percentage"] / 100.0))
+                # The host knows the real window; we only infer it. When the
+                # host rescues us from a bad denominator the user sees a correct
+                # number and the misconfiguration stays invisible, so record the
+                # disagreement rather than quietly accepting the save.
+                host_fill_pct = fill_pct
     except (json.JSONDecodeError, OSError, KeyError):
         pass
     if fill_pct is None:
@@ -21848,6 +21857,26 @@ def compute_quality_score(quality_data, session_id=None):
         total_chars += sum(ssize for _, _, ssize in quality_data["system_reminders"])
         estimated_tokens = total_chars / CHARS_PER_TOKEN
         fill_pct = min(1.0, estimated_tokens / ctx_window) if ctx_window > 0 else 0
+    # Cross-check: if the host told us the fill and our own arithmetic would have
+    # produced a materially different one, our window is wrong even though the
+    # displayed number is right. Recorded, never used to overrule the host.
+    if host_fill_pct is not None:
+        try:
+            _tokens = quality_data.get("context_tokens")
+            if _tokens is not None and model_context_window:
+                _ours = min(1.0, max(0.0, float(_tokens) / float(model_context_window)))
+                # Wide margin on purpose: this fires on denominator errors, which
+                # are multiples, not on rounding.
+                if abs(_ours - host_fill_pct) > 0.10:
+                    host_disagreement = {
+                        "host_pct": round(host_fill_pct * 100, 1),
+                        "computed_pct": round(_ours * 100, 1),
+                        "window": model_context_window,
+                        "window_source": model_context_window_source,
+                    }
+        except (TypeError, ValueError):
+            pass
+
     model_name = quality_data.get("model") or quality_data.get("current_model")
     fill_quality, curve_name = _estimate_quality_with_curve(
         fill_pct,
@@ -21998,6 +22027,7 @@ def compute_quality_score(quality_data, session_id=None):
             "model_context_window": quality_data.get("model_context_window") or ctx_window,
             "model_context_window_source": model_context_window_source,
             "window_contradicted": window_contradicted,
+            "host_disagreement": host_disagreement,
             "band": band_name,
             "detail": f"{round(fill_pct * 100)}% fill, {band_name.lower()} ({curve_name})",
         },

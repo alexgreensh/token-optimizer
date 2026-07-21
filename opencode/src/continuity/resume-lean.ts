@@ -419,7 +419,7 @@ export function buildResumeLeanBlock(
 ): [string, string] {
   if (!cwd) return ["", ""];
 
-  const sessBase = join(dataDir, "token-optimizer", "sessions");
+  const sessBase = join(dataDir, "sessions");
   const sessDir = projectSlug ? join(sessBase, projectSlug) : sessBase;
   if (!existsSync(sessDir)) return ["", ""];
 

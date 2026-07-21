@@ -101,7 +101,7 @@ export class SessionStore {
    *   call sites keep working unchanged.
    */
   constructor(dataDir: string, sessionId: string, projectSlug?: string) {
-    const base = join(dataDir, "token-optimizer", "sessions");
+    const base = join(dataDir, "sessions");
     const sessDir = projectSlug ? join(base, projectSlug) : base;
     if (!existsSync(sessDir)) {
       mkdirSync(sessDir, { recursive: true });

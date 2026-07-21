@@ -40,13 +40,16 @@ const SQLITE_SIDECARS = ["", "-wal", "-shm"];
  */
 export function migrateLegacyDataDir(
   projectDir: string,
-  newBase: string,
+  targetRoot: string,
   projectSlug: string,
 ): boolean {
-  if (!projectDir || !newBase || !projectSlug) return false;
+  if (!projectDir || !targetRoot || !projectSlug) return false;
 
   const legacy = join(projectDir, DATA_FOLDER);
-  const target = join(newBase, DATA_FOLDER);
+  // targetRoot is already the resolved data root (see resolveDataDir); it is the
+  // destination as-is, never `targetRoot/token-optimizer`. Appending here was the
+  // old model and would strand data one level deep under a custom dataDir.
+  const target = targetRoot;
   if (legacy === target) return false;
 
   let lockDir = "";

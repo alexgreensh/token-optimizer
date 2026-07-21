@@ -29,6 +29,51 @@ array. OpenCode resolves and installs it from npm on the next launch:
 The `plugin` array holds npm package names as **plain strings** — that is
 OpenCode's config schema. No separate install command is needed.
 
+## Where your data goes
+
+By default, nothing is written into your project. Data (session history and
+`trends.db`) lives in a per-user location outside any repo:
+
+| OS      | Default location                              |
+| ------- | --------------------------------------------- |
+| macOS   | `~/Library/Application Support/token-optimizer/` |
+| Linux   | `~/.local/share/token-optimizer/` (or `$XDG_DATA_HOME`) |
+| Windows | `%LOCALAPPDATA%\token-optimizer\`             |
+
+### Put it somewhere else
+
+Set `dataDir` to the **exact folder** you want. What you type is where data
+goes — the full path, including the folder name.
+
+To pass options, OpenCode uses a `[package-name, options]` pair in the `plugin`
+array (in place of the plain string):
+
+```jsonc
+// opencode.json
+{
+  "plugin": [
+    ["token-optimizer-opencode", { "dataDir": ".opencode/token-optimizer" }]
+  ]
+}
+```
+
+Want a hidden folder in your repo? Type it literally:
+
+```jsonc
+{ "plugin": [["token-optimizer-opencode", { "dataDir": ".token-optimizer" }]] }
+```
+
+Prefer an environment variable? `TOKEN_OPTIMIZER_DATA_DIR` does the same thing,
+needs no tuple, and takes precedence when both are set:
+
+```bash
+export TOKEN_OPTIMIZER_DATA_DIR=~/.token-optimizer
+```
+
+Existing project-local data from older versions is copied to the new location
+automatically on first run; the originals are left in place so you can delete
+them yourself once your history looks right.
+
 ### Offline / no-npm install
 
 If you can't (or don't want to) install from npm, clone the repo and run the

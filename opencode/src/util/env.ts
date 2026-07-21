@@ -84,28 +84,6 @@ function hostContext(): HostContext {
 }
 
 /**
- * Drop a trailing `token-optimizer` path segment if the caller already included
- * one, so storage code can always `join(base, DATA_FOLDER, ...)` without ending
- * up with `.../token-optimizer/token-optimizer/`.
- *
- * Segment-aware on purpose. A regex like /\/?token-optimizer\/?$/ also matches
- * the tail of `my-token-optimizer`, silently truncating a legitimate directory
- * name to `my-`. Splitting on separators can only ever match a whole segment.
- */
-export function stripDataFolderSuffix(dir: string, host: HostContext = hostContext()): string {
-  // Split on what is actually a separator for THIS platform. Treating "\" as a
-  // separator on POSIX would split the single legal segment `weird\name` in two
-  // and rejoin it with "/", silently rewriting an explicitly configured dataDir.
-  const parts = dir.split(host.platform === "win32" ? /[\\/]/ : /\//);
-  while (parts.length > 1 && parts[parts.length - 1] === "") parts.pop();
-  if (parts.length > 1 && parts[parts.length - 1] === DATA_FOLDER) {
-    parts.pop();
-    return parts.join(host.sep) || host.sep;
-  }
-  return dir;
-}
-
-/**
  * The platform-global base directory, with no config or env override applied.
  * Split out from resolveDataDir purely so each branch is directly testable.
  */
@@ -121,21 +99,29 @@ export function platformDataDir(host: HostContext = hostContext()): string {
 }
 
 /**
- * Resolve the base directory that holds the `token-optimizer/` data folder.
+ * Resolve the data ROOT: the exact directory that holds trends.db and the
+ * sessions/ tree. Callers use it as-is and never append a folder name.
  *
- * Precedence: explicit config.dataDir -> TOKEN_OPTIMIZER_DATA_DIR -> platform
- * global location. Returns the BASE; callers append DATA_FOLDER themselves.
+ * Precedence:
+ *   1. explicit config.dataDir / TOKEN_OPTIMIZER_DATA_DIR -> used VERBATIM.
+ *   2. nothing set -> platform-global location + `token-optimizer/`.
  *
- * Previously this was the project directory, which meant session DBs and
- * trends.db landed inside whatever repo you happened to be working in.
+ * Verbatim is the whole point of #94: what you type is where data goes, leaf
+ * name and all. Set `.opencode/token-optimizer` and that is the folder; set
+ * `.token-optimizer` and you get a hidden folder with that exact name. The old
+ * behaviour force-appended `token-optimizer`, so the dotted name the user asked
+ * for was literally unreachable (it produced `.token-optimizer/token-optimizer/`).
+ *
+ * Unset still defaults OUT of the repo, so a folder only lands in a project when
+ * the user explicitly points it there.
  */
 export function resolveDataDir(
   config?: Pick<TokenOptimizerConfig, "dataDir">,
   host: HostContext = hostContext(),
 ): string {
   const explicit = config?.dataDir ?? host.env.TOKEN_OPTIMIZER_DATA_DIR;
-  if (explicit && explicit.trim()) return stripDataFolderSuffix(explicit.trim(), host);
-  return platformDataDir(host);
+  if (explicit && explicit.trim()) return explicit.trim();
+  return join(platformDataDir(host), DATA_FOLDER);
 }
 
 /**

@@ -16,7 +16,6 @@ import {
   hashProjectDir,
   resolveConfig,
   platformDataDir,
-  stripDataFolderSuffix,
   type HostContext,
 } from "./env.js";
 import { migrateLegacyDataDir } from "./migrate.js";
@@ -49,19 +48,20 @@ test("blank values fall through to the platform default", () => {
   process.env.TOKEN_OPTIMIZER_DATA_DIR = "   ";
   const resolved = resolveDataDir({ dataDir: "  " });
   expect(resolved).not.toBe("   ");
-  expect(resolved.startsWith(homedir()) || resolved.length > 0).toBe(true);
+  // Default is the platform location WITH the token-optimizer leaf applied.
+  expect(resolved.endsWith("token-optimizer")).toBe(true);
 });
 
-test("platform default matches the real host", () => {
+test("platform default matches the real host and appends the leaf", () => {
   delete process.env.TOKEN_OPTIMIZER_DATA_DIR;
   delete process.env.XDG_DATA_HOME;
   const resolved = resolveDataDir({});
   if (platform() === "darwin") {
-    expect(resolved).toBe(join(homedir(), "Library", "Application Support"));
+    expect(resolved).toBe(join(homedir(), "Library", "Application Support", "token-optimizer"));
   } else if (platform() === "win32") {
-    expect(resolved.length).toBeGreaterThan(0);
+    expect(resolved.endsWith("token-optimizer")).toBe(true);
   } else {
-    expect(resolved).toBe(join(homedir(), ".local", "share"));
+    expect(resolved).toBe(join(homedir(), ".local", "share", "token-optimizer"));
   }
 });
 
@@ -98,21 +98,6 @@ test("BRANCH unknown platform falls back to the POSIX layout", () => {
   expect(platformDataDir({ ...LINUX, platform: "freebsd" })).toBe("/home/alex/.local/share");
 });
 
-test("BRANCH win32 strips a trailing segment across BOTH separators", () => {
-  expect(stripDataFolderSuffix("C:\\data\\token-optimizer", WIN)).toBe("C:\\data");
-  expect(stripDataFolderSuffix("C:/data/token-optimizer", WIN)).toBe("C:\\data");
-  // A merely-ending-in name is still left intact on Windows.
-  expect(stripDataFolderSuffix("C:\\data\\my-token-optimizer", WIN)).toBe("C:\\data\\my-token-optimizer");
-});
-
-test("BRANCH posix treats a backslash as a filename character, not a separator", () => {
-  // The bug this guards: splitting on "\" under POSIX turns the single legal
-  // segment `weird\name` into two and rejoins with "/", rewriting the path.
-  expect(stripDataFolderSuffix("/Users/alex/weird\\name/token-optimizer", LINUX)).toBe(
-    "/Users/alex/weird\\name",
-  );
-});
-
 test("BRANCH env override is read from the injected host, not the real process", () => {
   // Proves resolveDataDir consults host.env, so the branch tests above are
   // genuinely exercising the same path production uses.
@@ -121,21 +106,23 @@ test("BRANCH env override is read from the injected host, not the real process",
   );
 });
 
-// --- resolveDataDir: trailing-segment stripping (M1 regression) ------------
+// --- resolveDataDir: explicit path is honored VERBATIM (#94) ---------------
 
-test("a trailing token-optimizer segment is stripped to avoid double nesting", () => {
-  expect(resolveDataDir({ dataDir: "/data/token-optimizer" })).toBe("/data");
-  expect(resolveDataDir({ dataDir: "/data/token-optimizer/" })).toBe("/data");
+test("#94: an explicit dataDir is used exactly as typed, no leaf appended", () => {
+  // The whole point of #94: what the user types is where data goes.
+  expect(resolveDataDir({ dataDir: "/data/token-optimizer" })).toBe("/data/token-optimizer");
+  expect(resolveDataDir({ dataDir: ".opencode/token-optimizer" })).toBe(".opencode/token-optimizer");
 });
 
-test("REGRESSION: a directory merely ENDING in token-optimizer is left intact", () => {
-  // A naive /\/?token-optimizer\/?$/ truncates these to "/foo/bar-" and "/srv/my-".
+test("#94: a hidden/dotted leaf is reachable, not nested under token-optimizer", () => {
+  // The exact request in #94. The old force-append produced
+  // `.token-optimizer/token-optimizer/`, so the dotted name was unreachable.
+  expect(resolveDataDir({ dataDir: ".token-optimizer" })).toBe(".token-optimizer");
+});
+
+test("an explicit dataDir named anything else is left intact", () => {
   expect(resolveDataDir({ dataDir: "/foo/bar-token-optimizer" })).toBe("/foo/bar-token-optimizer");
-  expect(resolveDataDir({ dataDir: "/srv/my-token-optimizer" })).toBe("/srv/my-token-optimizer");
-  expect(resolveDataDir({ dataDir: "/opt/xtoken-optimizer" })).toBe("/opt/xtoken-optimizer");
-});
-
-test("a path that is only token-optimizer is not stripped to nothing", () => {
+  expect(resolveDataDir({ dataDir: "/srv/my-data" })).toBe("/srv/my-data");
   expect(resolveDataDir({ dataDir: "token-optimizer" })).toBe("token-optimizer");
 });
 
@@ -210,7 +197,7 @@ test("legacy project-local data is copied, not moved", () => {
   const project = seedLegacy(root);
   const newBase = join(root, "global");
 
-  expect(migrateLegacyDataDir(project, newBase, SLUG)).toBe(true);
+  expect(migrateLegacyDataDir(project, join(newBase, "token-optimizer"), SLUG)).toBe(true);
   expect(readFileSync(join(newBase, "token-optimizer", "trends.db"), "utf8")).toBe("TRENDS");
   // Originals survive so a bad migration stays recoverable.
   expect(existsSync(join(project, "token-optimizer", "trends.db"))).toBe(true);
@@ -225,7 +212,7 @@ test("REGRESSION: migrated sessions land where the scoped reader actually looks"
   const project = seedLegacy(root);
   const newBase = join(root, "global");
 
-  expect(migrateLegacyDataDir(project, newBase, SLUG)).toBe(true);
+  expect(migrateLegacyDataDir(project, join(newBase, "token-optimizer"), SLUG)).toBe(true);
 
   const readerPath = join(newBase, "token-optimizer", "sessions", SLUG, "abc.db");
   expect(existsSync(readerPath)).toBe(true);
@@ -241,7 +228,7 @@ test("REGRESSION: WAL sidecars migrate with their database", () => {
   const project = seedLegacy(root, { wal: true });
   const newBase = join(root, "global");
 
-  expect(migrateLegacyDataDir(project, newBase, SLUG)).toBe(true);
+  expect(migrateLegacyDataDir(project, join(newBase, "token-optimizer"), SLUG)).toBe(true);
   const to = join(newBase, "token-optimizer");
   expect(readFileSync(join(to, "trends.db-wal"), "utf8")).toBe("TRENDS_WAL");
   expect(readFileSync(join(to, "sessions", SLUG, "abc.db-wal"), "utf8")).toBe("SESSION_WAL");
@@ -251,10 +238,10 @@ test("migration runs at most once and never clobbers newer data", () => {
   const root = mkdtempSync(join(tmpdir(), "to-migrate-once-"));
   const project = seedLegacy(root);
   const newBase = join(root, "global");
-  expect(migrateLegacyDataDir(project, newBase, SLUG)).toBe(true);
+  expect(migrateLegacyDataDir(project, join(newBase, "token-optimizer"), SLUG)).toBe(true);
 
   writeFileSync(join(newBase, "token-optimizer", "trends.db"), "NEW");
-  expect(migrateLegacyDataDir(project, newBase, SLUG)).toBe(false);
+  expect(migrateLegacyDataDir(project, join(newBase, "token-optimizer"), SLUG)).toBe(false);
   expect(readFileSync(join(newBase, "token-optimizer", "trends.db"), "utf8")).toBe("NEW");
 });
 
@@ -264,7 +251,7 @@ test("no temp files survive a successful migration", () => {
   const root = mkdtempSync(join(tmpdir(), "to-migrate-tmp-"));
   const project = seedLegacy(root, { wal: true });
   const newBase = join(root, "global");
-  expect(migrateLegacyDataDir(project, newBase, SLUG)).toBe(true);
+  expect(migrateLegacyDataDir(project, join(newBase, "token-optimizer"), SLUG)).toBe(true);
 
   const to = join(newBase, "token-optimizer");
   const strays = readdirSync(to).filter((f) => f.includes(".tmp-"));
@@ -289,7 +276,7 @@ test("SECURITY: a symlinked database is skipped, not read through", () => {
   symlinkSync(secret, join(legacy, "sessions", "leak.db"));
 
   const newBase = join(root, "global");
-  migrateLegacyDataDir(project, newBase, SLUG);
+  migrateLegacyDataDir(project, join(newBase, "token-optimizer"), SLUG);
 
   const to = join(newBase, "token-optimizer");
   expect(existsSync(join(to, "trends.db"))).toBe(false);
@@ -307,7 +294,7 @@ test("SECURITY: a symlinked legacy directory is not traversed", () => {
   symlinkSync(elsewhere, join(project, "token-optimizer"));
 
   const newBase = join(root, "global");
-  expect(migrateLegacyDataDir(project, newBase, SLUG)).toBe(false);
+  expect(migrateLegacyDataDir(project, join(newBase, "token-optimizer"), SLUG)).toBe(false);
   expect(existsSync(join(newBase, "token-optimizer", "trends.db"))).toBe(false);
 });
 

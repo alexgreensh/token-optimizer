@@ -32,7 +32,7 @@ function freshDataDir(): string {
 
 /** Write a real checkpoint DB in the layout the readers expect. */
 function seedCheckpoint(dataDir: string, slug: string, sessionId: string, cwd: string): void {
-  const dir = join(dataDir, "token-optimizer", "sessions", slug);
+  const dir = join(dataDir, "sessions", slug);
   mkdirSync(dir, { recursive: true });
   const db = new Database(join(dir, `${sessionId}.db`));
   db.exec(`CREATE TABLE IF NOT EXISTS checkpoints (
@@ -68,14 +68,14 @@ function seedCheckpoint(dataDir: string, slug: string, sessionId: string, cwd: s
 test("SessionStore writes into the per-project subdirectory", () => {
   const dataDir = freshDataDir();
   new SessionStore(dataDir, "sess-1", SLUG_A);
-  expect(existsSync(join(dataDir, "token-optimizer", "sessions", SLUG_A))).toBe(true);
+  expect(existsSync(join(dataDir, "sessions", SLUG_A))).toBe(true);
 });
 
 test("two projects never share a session directory", () => {
   const dataDir = freshDataDir();
   new SessionStore(dataDir, "sess-1", SLUG_A);
   new SessionStore(dataDir, "sess-2", SLUG_B);
-  const sessions = join(dataDir, "token-optimizer", "sessions");
+  const sessions = join(dataDir, "sessions");
   expect(existsSync(join(sessions, SLUG_A))).toBe(true);
   expect(existsSync(join(sessions, SLUG_B))).toBe(true);
 });
@@ -85,7 +85,7 @@ test("omitting the slug keeps the legacy unscoped layout", () => {
   // two-argument callers keep working.
   const dataDir = freshDataDir();
   new SessionStore(dataDir, "sess-1");
-  expect(existsSync(join(dataDir, "token-optimizer", "sessions"))).toBe(true);
+  expect(existsSync(join(dataDir, "sessions"))).toBe(true);
 });
 
 test("LOAD-BEARING: a checkpoint in the project's scoped dir IS retrieved", () => {

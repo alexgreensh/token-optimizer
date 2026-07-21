@@ -586,7 +586,7 @@ document.querySelectorAll('.nav a').forEach(a => {
 }
 
 export function writeDashboard(opts: DashboardOptions): string {
-  const outputPath = opts.outputPath ?? join(opts.dataDir, "token-optimizer", "dashboard.html");
+  const outputPath = opts.outputPath ?? join(opts.dataDir, "dashboard.html");
   const dir = dirname(outputPath);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 

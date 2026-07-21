@@ -64,7 +64,7 @@ export class TrendsStore {
   private dbPath: string;
 
   constructor(dataDir: string) {
-    const trendsDir = join(dataDir, "token-optimizer");
+    const trendsDir = dataDir;
     if (!existsSync(trendsDir)) {
       mkdirSync(trendsDir, { recursive: true });
     }

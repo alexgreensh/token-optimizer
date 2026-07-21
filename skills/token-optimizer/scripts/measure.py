@@ -21804,8 +21804,14 @@ def compute_quality_score(quality_data, session_id=None):
 
     # 0. Context fill degradation
     # Priority: live fill from statusline (real-time) > JSONL context_tokens (previous turn) > char-length estimate
-    ctx_window = detect_context_window()[0]
+    ctx_window, ctx_window_source = detect_context_window()
     model_context_window = quality_data.get("model_context_window") or ctx_window
+    # Provenance follows whichever window we actually divide by. Without it a
+    # wrong denominator is indistinguishable from a right one (issue #95): the
+    # numerator looks correct, so the percentage looks plausible.
+    model_context_window_source = (
+        "session data" if quality_data.get("model_context_window") else ctx_window_source
+    )
     fill_pct = None
     try:
         live_fill_path = QUALITY_CACHE_DIR / "live-fill.json"
@@ -21980,6 +21986,7 @@ def compute_quality_score(quality_data, session_id=None):
             "quality_curve": curve_name,
             "model": model_name or "unknown",
             "model_context_window": quality_data.get("model_context_window") or ctx_window,
+            "model_context_window_source": model_context_window_source,
             "band": band_name,
             "detail": f"{round(fill_pct * 100)}% fill, {band_name.lower()} ({curve_name})",
         },
@@ -28201,6 +28208,10 @@ def quality_cache(throttle_seconds=120, warn_threshold=70, quiet=False, session_
     # cacheReader, the dashboard) read `model_context_window` here; without it they
     # fall back to a 200k guess and inflate every 1M-context session ~5x.
     result["model_context_window"] = cfd.get("model_context_window") or detect_context_window()[0]
+    # The window alone cannot be sanity-checked by a reader; the source can.
+    result["model_context_window_source"] = (
+        cfd.get("model_context_window_source") or detect_context_window()[1]
+    )
 
     # Dampen ResourceHealth swings within a session.
     # Fill_pct fluctuates between measurements (context adds/removes, compaction).
@@ -33179,6 +33190,43 @@ def run_ensure_health():
         pass
 
 
+def _format_window_note(cached):
+    """Render the denominator and its origin, e.g. " (1M window, source: default 1M)".
+
+    A fill percentage is only as trustworthy as the window it was divided by, and
+    until now the window was never shown. Someone seeing "89% capacity" had no way
+    to tell whether the denominator was 200k or 1M -- the numerator is correct in
+    both cases, so a 5x-wrong reading looks exactly as plausible as a right one
+    (issue #95). detect_context_window() already computes a provenance string;
+    every call site discarded it.
+
+    Returns "" for a cache written before this field existed, so an older cache
+    degrades to the previous message rather than raising.
+    """
+    window = cached.get("model_context_window")
+    if not window:
+        return ""
+    try:
+        window = int(window)
+    except (TypeError, ValueError):
+        return ""
+    if window <= 0:
+        return ""
+
+    if window >= 1_000_000 and window % 1_000_000 == 0:
+        size = f"{window // 1_000_000}M"
+    elif window >= 1000:
+        size = f"{window // 1000}k"
+    else:
+        size = str(window)
+
+    # This string is injected into the very context window it reports on, so keep
+    # the origin clause and drop the override hint that follows it.
+    source = (cached.get("model_context_window_source") or "")
+    source = source.split(".")[0].split("(")[0].strip()
+    return f" ({size} window, source: {source})" if source else f" ({size} window)"
+
+
 def run_verbosity_steer(transcript_path=None, quiet=True, session_id=None):
     """Tiered conciseness nudge for UserPromptSubmit.
 
@@ -33208,6 +33256,7 @@ def run_verbosity_steer(transcript_path=None, quiet=True, session_id=None):
             return ""
         fill_pct = cached.get("fill_pct", 0) or 0
         score = cached.get("score", 100) or 100
+        window_note = _format_window_note(cached)
 
         # Cooldown check
         import time as _vs_time
@@ -33225,7 +33274,7 @@ def run_verbosity_steer(transcript_path=None, quiet=True, session_id=None):
         if fill_pct >= 90:
             if not quiet:
                 sys.stderr.write(
-                    f"[Token Optimizer] Context at {fill_pct:.0f}% — consider /compact or /clear. "
+                    f"[Token Optimizer] Context at {fill_pct:.0f}%{window_note} — consider /compact or /clear. "
                     f"Verbosity nudge suppressed to avoid adding tokens.\n"
                 )
             return ""
@@ -33233,13 +33282,13 @@ def run_verbosity_steer(transcript_path=None, quiet=True, session_id=None):
         # Determine nudge tier
         if fill_pct >= 75:
             nudge = (
-                f"[Token Optimizer] Context at {fill_pct:.0f}% capacity, quality {score:.0f}/100. "
+                f"[Token Optimizer] Context at {fill_pct:.0f}% capacity{window_note}, quality {score:.0f}/100. "
                 "Reason as deeply as you need — but keep your visible output lean: no preamble, "
                 "no restating the request, no explanations unless asked. Every token saved extends the session."
             )
         elif fill_pct >= 25 and score < 75:
             nudge = (
-                f"[Token Optimizer] Context at {fill_pct:.0f}% capacity, quality {score:.0f}/100. "
+                f"[Token Optimizer] Context at {fill_pct:.0f}% capacity{window_note}, quality {score:.0f}/100. "
                 "Reason fully, then keep your output lean — skip restating the request and "
                 "omit unnecessary preamble. Every token saved extends the session."
             )

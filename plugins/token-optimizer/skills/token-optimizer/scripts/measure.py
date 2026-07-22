@@ -29760,6 +29760,43 @@ def _active_model_cache_rates():
         return 0.5, 6.25, 10.0
 
 
+def _mix_cache_rates(days=30):
+    """(cache_read, cache_write_5m, cache_write_1h) USD/MTok blended by the
+    current model mix.
+
+    _active_model_cache_rates() prices at whatever model THE REPORTING SESSION
+    runs, so the same structural opportunity swung 26 <-> 193 $/mo between a
+    Sonnet session and a Fable session (Fable cache rates are 5x Sonnet's)
+    with zero underlying change. The prefix is re-read by every session in the
+    window, so the defensible rate is the window's own model mix -- the same
+    mix the transformation pool prices its "now" arm at. Unpriced models
+    blend at the runtime default's rate; no mix falls back to the
+    session-model rates rather than 0.
+    """
+    try:
+        shares = (_model_mix_shares(days=days).get("shares") or {})
+        items = [(mdl, s) for mdl, s in shares.items() if s and s > 0]
+        if not items:
+            return _active_model_cache_rates()
+        tier = _load_pricing_tier()
+        tier_data = PRICING_TIERS.get(tier, PRICING_TIERS.get("anthropic", {}))
+        models = tier_data.get("claude_models", {})
+        default_rates = models.get(_default_model_for_runtime()) \
+            or models.get("sonnet", {})
+        tot = sum(s for _, s in items)
+        read = w5m = w1h = 0.0
+        for mdl, s in items:
+            rates = models.get(_strip_provider_prefixes(str(mdl)) or mdl) \
+                or models.get(mdl) or default_rates
+            r5 = float(rates.get("cache_write", 2.5))
+            read += s * float(rates.get("cache_read", 0.2))
+            w5m += s * r5
+            w1h += s * float(rates.get("cache_write_1h", r5 * 1.6))
+        return read / tot, w5m / tot, w1h / tot
+    except Exception:
+        return _active_model_cache_rates()
+
+
 _OVERHEAD_CACHE_TTL_SECONDS = _int_env("TOKEN_OPTIMIZER_OVERHEAD_CACHE_TTL", 3600)
 
 # In-process cache for measure_components(): a filesystem scan of
@@ -29861,7 +29898,10 @@ def _compound_structural(s, days, fallback_prefix):
     sum_cc_5m = int(row[2] or 0)
 
     per_session_prefix = _per_session_prefix_tokens(fallback=fallback_prefix)
-    read_rate, write_5m_rate, write_1h_rate = _active_model_cache_rates()
+    # Blended by the window's model mix, NOT the reporting session's model:
+    # session-model rates made the same opportunity print $26 from a Sonnet
+    # session and $193 from a Fable one (5x cache rates), run minutes apart.
+    read_rate, write_5m_rate, write_1h_rate = _mix_cache_rates(days=days)
     # Clamp to 1.0: the prefix trim S can never cache-write more than a full
     # per-session prefix worth of tokens. An unclamped ratio (S > prefix, e.g.
     # a stale/small prefix baseline) overstated the structural write-tier >2x.
@@ -33464,38 +33504,42 @@ def run_verbosity_steer(transcript_path=None, quiet=True, session_id=None):
 
         # Determine nudge tier.
         #
-        # Wording is deliberate, and it changed on 2026-07-22 after the old text
-        # had fired 1,227 times with no measurable effect on output length:
-        #   - A number beats an adjective. "Lean" is unfalsifiable to a model;
-        #     "under 120 words" is checkable, so it actually binds.
-        #   - Positive directive first ("answer first"), because a list of
-        #     prohibitions still leaves the model guessing what TO do.
-        #   - Reasoning is explicitly protected in both tiers. Cutting thinking
-        #     to save output tokens trades a cheap token for a wrong answer.
-        #   - No motivational filler. The old text ended "Every token saved
-        #     extends the session", which costs tokens to say and changes
-        #     nothing about behaviour.
-        #   - The two tiers now differ in kind, not just in tone: the strong
-        #     tier sets a hard ceiling and drops closing summaries entirely.
-        #   - The ceiling binds PROSE only. A model asked to write a 300-line
-        #     file under an 80-word cap must either ignore the cap (and learn
-        #     the nudge is noise) or truncate the deliverable. Exempting
-        #     requested code and artifacts keeps the cap credible without
-        #     capping the work product.
+        # Wording is measured, not argued. On 2026-07-22 four candidate texts
+        # were A/B'd against a no-nudge control on identical prompts:
+        #   Sonnet, 2 tasks:  padding-focused -28%, "every sentence must earn
+        #                     its place" -27%, spartan/ADHD -55%
+        #   Opus, 5 tasks:    spartan/ADHD -31% total (mean -30%, median -31%)
+        # The spartan/ADHD phrasing (Alex's) won every arm on both models, so
+        # it is used verbatim. Notes on what the data showed:
+        #   - Word ceilings were REMOVED. An earlier draft capped answers at
+        #     80/120 words. A cap makes a model either truncate a genuinely
+        #     complex answer or ignore the nudge, and a nudge that gets ignored
+        #     is the original failure this rewrite exists to fix.
+        #   - The real waste is elaboration, not preamble. The padding-focused
+        #     wording targeted preamble and restatement and cut half as much,
+        #     because verbose answers mostly repeat themselves rather than
+        #     restate the question.
+        #   - Quality held. On the hardest fixture (prompt-caching explainer,
+        #     1159 -> 759 words) the spartan answer kept every concept and
+        #     covered TTL MORE; what it dropped was the same point made six
+        #     times instead of three.
+        #   - Reasoning and deliverables are fenced off explicitly, because the
+        #     nudge fires mid-task where "spartan" could otherwise be read as
+        #     "write less code".
+        #   - Opus is roughly half as responsive as Sonnet here. Do not quote
+        #     the Sonnet figure as the product number.
         if fill_pct >= 75:
             nudge = (
                 f"[Token Optimizer] Context {fill_pct:.0f}%{window_note}, quality {score:.0f}/100. "
-                "Think as long as you need. Then answer in under 80 words of prose: answer "
-                "first, no preamble, no restating the request, no recap of what you just did, "
-                "no closing summary. Code, diffs, or commands the task asks for do not count "
-                "against the cap — where one is the answer, give it and stop."
+                "Answer in a focused and spartan way, as if the user has ADHD. Cut everything "
+                "that is not the answer itself. Think as long as you need, and size code, "
+                "diffs and file contents to the task."
             )
         elif fill_pct >= _VERBOSITY_NUDGE_MIN_FILL and score < 75:
             nudge = (
                 f"[Token Optimizer] Context {fill_pct:.0f}%{window_note}, quality {score:.0f}/100. "
-                "Think as long as you need. Then answer first, in under 120 words of prose, "
-                "no preamble, no restating the request. Code or file contents the task asks "
-                "for do not count against the cap."
+                "Answer in a focused and spartan way, as if the user has ADHD. "
+                "Think as long as you need, and size code, diffs and file contents to the task."
             )
         else:
             return ""

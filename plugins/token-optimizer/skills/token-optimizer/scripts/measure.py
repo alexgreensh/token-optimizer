@@ -315,10 +315,9 @@ else:
     _CONFIG_BASE = None  # resolved below after constants
 
 DASHBOARD_PATH = SNAPSHOT_DIR / "dashboard.html"
-# Headline-shape marker for the current dashboard data contract (4-pool superset:
-# routing + caching + subagent + compression add-back). Bumped only when the data
+# Headline-shape marker for the current dashboard data contract. Bumped only when the data
 # shape changes; ensure-health regenerates any dashboard whose sidecar meta lacks it.
-_DASHBOARD_SHAPE_MARKER = "compression_transformation_usd"
+_DASHBOARD_SHAPE_MARKER = "estimated_volume_transformation_usd"
 
 
 def _dashboard_meta_path(html_path):
@@ -15790,8 +15789,8 @@ def _collect_hermes_sessions(days=90, quiet=False, rebuild=False):
                     avg_call_gap_seconds, max_call_gap_seconds, p95_call_gap_seconds,
                     skills_json, subagents_json, tool_calls_json, model_usage_json,
                     all_model_usage_json, model_usage_breakdown_json, version, slug, topic, collected_at,
-                    quality_score, quality_grade, stale_waste_tokens)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    quality_score, quality_grade, stale_waste_tokens, platform)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     dedup_key, date, project_name,
                     parsed["duration_minutes"],
@@ -15819,6 +15818,7 @@ def _collect_hermes_sessions(days=90, quiet=False, rebuild=False):
                     parsed.get("quality_score", 0),
                     parsed.get("quality_grade", "F"),
                     0,
+                    "hermes",
                 ),
             )
             if cur.rowcount != 1:
@@ -16164,7 +16164,7 @@ def _collect_copilot_sessions(days=90, quiet=False, rebuild=False):
                         parsed.get("cost_usd", 0.0),
                         parsed.get("cost_source"),
                         parsed.get("credits"),
-                        parsed.get("token_source"),
+                        "copilot",
                         is_incomplete,
                     ),
                 )
@@ -16308,6 +16308,12 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
         # B1: persist reclaimable stale-read waste (opportunity tier, not realized).
         stale_waste = _session_stale_waste_tokens(filepath)
 
+        # Resolve the platform for this session. Codex transcripts carry
+        # "runtime": "codex" in their parsed dict; Claude transcripts do not
+        # set the key, so detect_runtime() (which returns the active runtime,
+        # e.g. "claude" or "opencode") is the correct fallback.
+        session_platform = parsed.get("runtime") or detect_runtime()
+
         # Insert session_log
         cur = conn.execute(
             """INSERT OR IGNORE INTO session_log
@@ -16317,8 +16323,8 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
                 avg_call_gap_seconds, max_call_gap_seconds, p95_call_gap_seconds,
                 skills_json, subagents_json, tool_calls_json, model_usage_json,
                 all_model_usage_json, model_usage_breakdown_json, version, slug, topic, collected_at,
-                quality_score, quality_grade, stale_waste_tokens, is_sidechain)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                quality_score, quality_grade, stale_waste_tokens, is_sidechain, platform)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 str(filepath), date, project_name,
                 parsed["duration_minutes"],
@@ -16347,6 +16353,7 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
                 sq["grade"],
                 int(stale_waste or 0),
                 1 if parsed.get("is_sidechain") else 0,
+                session_platform,
             ),
         )
         if cur.rowcount != 1:
@@ -29775,6 +29782,43 @@ def _resolve_structural_baseline(days=30):
     return None
 
 
+def _input_rate_mix_ratio(days=30):
+    """Baseline/current input-rate ratio over the complete current workload.
+
+    model_daily includes parent and delegated usage, so this is the global model
+    mix ratio used for workload-wide counterfactuals. Main-pool pricing must keep
+    using _mix_from_session_rows because that pool excludes delegated work.
+    Returns None when either mix cannot be priced. Never raises.
+    """
+    try:
+        tier_data = PRICING_TIERS.get(_load_pricing_tier(), PRICING_TIERS["anthropic"])
+        models = tier_data.get("claude_models", {})
+
+        def _burn(mix):
+            if isinstance(mix, dict) and isinstance(mix.get("shares"), dict):
+                mix = mix["shares"]
+            families = {}
+            for model, share in (mix or {}).items():
+                family = _normalize_model_name(str(model)) or "sonnet"
+                families[family] = families.get(family, 0.0) + float(share or 0.0)
+            total = sum(families.values())
+            if total <= 0:
+                return 0.0
+            return sum(
+                share * float(models.get(family, models.get("sonnet", {})).get("input", 3.0))
+                for family, share in families.items()
+            ) / total
+
+        baseline = _pretool_baseline_mix() or _earliest_model_mix()
+        current = (_model_mix_shares(days=days).get("shares") or {})
+        before_rate, current_rate = _burn(baseline), _burn(current)
+        if before_rate <= 0 or current_rate <= 0:
+            return None
+        return before_rate / current_rate
+    except Exception:
+        return None
+
+
 def runway_snapshot(days=30, now=None):
     """Subscription runway: how much of your rate-limit window Token Optimizer
     hands back, and what the same windows would read without it.
@@ -29836,28 +29880,9 @@ def runway_snapshot(days=30, now=None):
         context_mult = (consumed + saved) / consumed
 
         # --- routing lever: this user's own shift, priced by input rates ---
-        tier_data = PRICING_TIERS.get(_load_pricing_tier(), PRICING_TIERS["anthropic"])
-        models = tier_data.get("claude_models", {})
-
-        def _burn(mix):
-            tot = sum(mix.values()) or 1.0
-            return sum(
-                share * float((models.get(_strip_provider_prefixes(str(m)) or m)
-                               or models.get("sonnet", {})).get("input", 3.0))
-                for m, share in mix.items()) / tot
-
-        baseline = _pretool_baseline_mix() or _earliest_model_mix()
-        current = (_model_mix_shares(days=days).get("shares") or {})
-        if not baseline or not current:
+        routing_mult = _input_rate_mix_ratio(days=days)
+        if routing_mult is None or routing_mult <= 0:
             return None
-        fam_now = {}
-        for m, share in current.items():
-            fam = _normalize_model_name(m) or "sonnet"
-            fam_now[fam] = fam_now.get(fam, 0.0) + share
-        b, n = _burn(baseline), _burn(fam_now)
-        if b <= 0 or n <= 0:
-            return None
-        routing_mult = b / n
 
         mult = context_mult * routing_mult
         # Below ~1.02 there is no story worth telling and rounding noise would
@@ -31888,7 +31913,7 @@ def _baseline_progress():
         return None
 
 
-def _estimate_before_after_savings(days=30):
+def _estimate_before_after_savings(days=30, estimated_pools=None):
     """THE headline saving: your FROZEN typical pre-TO session, priced at your PRE-TO
     efficiency (~95% Opus + baseline cache pattern) vs what that same session costs now.
 
@@ -31947,6 +31972,9 @@ def _estimate_before_after_savings(days=30):
             "after_sessions": 0, "baseline_source": None, "breakdown": [],
             "breakdown_caveat": "", "reason": None, "evidence": "estimated",
             "verbosity_transformation_usd": 0.0, "verbosity_measured_usd": 0.0,
+            "compression_reprice_ratio": 1.0,
+            "estimated_volume_transformation_usd": 0.0,
+            "estimated_volume_pools": {},
             "short_session_transformation_usd": 0.0,
             "short_session_actual_usd": 0.0,
             "short_session_counterfactual_usd": 0.0,
@@ -32172,20 +32200,48 @@ def _estimate_before_after_savings(days=30):
         # than today's mix did. The measured figure is the proven floor of this lever; the
         # reprice (baseline_input_rate / current_input_rate) is the only estimated step and
         # is disclosed. actual for this pool is 0 (the tokens were never billed), so its
-        # whole repriced value is transformation. (Spec #4, enabled per owner decision
-        # 2026-06-15: keep volume-reduction IN the headline so it is a true superset.)
+        # whole repriced value is transformation. Volume reduction remains in the
+        # headline as its own labelled pool.
         comp = _get_savings_summary(days=days)
         comp_measured = float((comp or {}).get("total_cost_usd", 0.0) or 0.0)
-        in_after = price(1_000_000.0, 0.0, 0.0, after_shares)
-        in_before = price(1_000_000.0, 0.0, 0.0, before_shares)
-        # KNOWN LIMITATION (cross-provider only): the reprice uses the FRESH-INPUT rate ratio,
-        # but most removed tokens were avoided cache-READ re-reads. For Claude tiers this is
-        # exact -- input and cache_read rates are proportional within a tier, so the ratio is
-        # identical either way. For mixed OpenAI/Gemini baselines (where cache_read is not a
-        # clean fraction of input) it can over/understate. Acceptable now (headline is Claude-
-        # centric); revisit by repricing at the cache_read ratio or blending by event class.
-        comp_reprice = (in_before / in_after) if in_after > 0 else 1.0
+        # Use the same complete-workload input-rate ratio as subscription runway.
+        # The main pool's after_shares intentionally excludes delegated work, so
+        # using it here measured a different population and understated this reprice.
+        comp_reprice = _input_rate_mix_ratio(days=days) or 1.0
         compression_addback = max(0.0, comp_measured * comp_reprice)
+
+        # Estimated avoided-volume pools that no billed-volume arm can observe.
+        # Each stays separately labelled and signed. MCP output capping is not a
+        # Token Optimizer action, so it remains disclosed in the estimated tier
+        # but is deliberately absent from the transformation counterfactual.
+        if estimated_pools is None:
+            estimated_pools = {
+                "uncaptured_runtime": _estimate_uncaptured_runtime(days=days),
+                "behavioral_loops": _estimate_behavioral_savings(days=days),
+                "hint_followed": (comp or {}).get("hint_followed_estimated") or {},
+                "handover_rerun": _estimate_handover_rerun_savings(days=days),
+                "retrieval_serve": _estimate_retrieval_serve_savings(days=days),
+            }
+        pool_labels = {
+            "uncaptured_runtime": "Compressed subagent context (estimated)",
+            "behavioral_loops": "Prevented loop continuations (estimated)",
+            "hint_followed": "Followed context hints (estimated)",
+            "handover_rerun": "Continuity handovers (estimated)",
+            "retrieval_serve": "Direct context retrieval (estimated)",
+        }
+        estimated_volume_pools = {}
+        for key, label in pool_labels.items():
+            current_mix_usd = float((estimated_pools.get(key) or {}).get("cost_saved_usd", 0.0) or 0.0)
+            delta = current_mix_usd * comp_reprice
+            estimated_volume_pools[key] = {
+                "label": label,
+                "actual_usd": 0.0,
+                "counterfactual_usd": round(delta, 2),
+                "transformation_usd": round(delta, 2),
+                "current_mix_usd": round(current_mix_usd, 4),
+            }
+        estimated_volume_addback = sum(
+            pool["transformation_usd"] for pool in estimated_volume_pools.values())
 
         # Verbosity-steer add-back: estimated output tokens never produced due to
         # conciseness nudges. The main counterfactual holds output volume constant
@@ -32224,11 +32280,12 @@ def _estimate_before_after_savings(days=30):
         sub_delta = sub_cf - sub_actual
         premium_delegation_cost = float(
             sub_pool.get("premium_delegation_usd", 0.0) or 0.0)
-        # Combined arms span every estimated pool, so the displayed counterfactual
-        # and actual values reconcile to the net.
+        # Combined arms span every included transformation pool, so the displayed
+        # counterfactual and actual values reconcile to the net.
         combined_actual = actual_monthly + sub_actual + short_actual
         combined_cf = (counterfactual_monthly + sub_cf + short_cf
-                       + compression_addback + verbosity_addback)
+                       + compression_addback + verbosity_addback
+                       + estimated_volume_addback)
         net = combined_cf - combined_actual
         # Gate the entire counterfactual hero on a GENUINE net win. When net <= 0 (efficiency
         # roughly flat, or the frozen baseline would have been marginally cheaper this period),
@@ -32247,6 +32304,9 @@ def _estimate_before_after_savings(days=30):
                     "premium_delegation_cost_usd": round(premium_delegation_cost, 2),
                     "compression_transformation_usd": 0.0,
                     "compression_measured_usd": round(comp_measured, 2),
+                    "compression_reprice_ratio": round(comp_reprice, 4),
+                    "estimated_volume_transformation_usd": 0.0,
+                    "estimated_volume_pools": estimated_volume_pools,
                     "verbosity_transformation_usd": 0.0,
                     "verbosity_measured_usd": round(vs_measured, 2),
                     "short_session_transformation_usd": round(short_delta, 2),
@@ -32314,6 +32374,10 @@ def _estimate_before_after_savings(days=30):
             ("short_sessions", "Quick one-shot sessions (lighter mix)",
              "Quick one-shot sessions (costlier mix)", short_delta),
         ]
+        _levers.extend(
+            (key, pool["label"], pool["label"], pool["transformation_usd"])
+            for key, pool in estimated_volume_pools.items()
+        )
         breakdown = sorted(
             ({"key": k, "waterfall_index": i,
               "label": (pos if d >= 0 else neg),
@@ -32335,6 +32399,10 @@ def _estimate_before_after_savings(days=30):
             "from context (tool archiving, skeletons, lean resumes) -- real volume the old "
             "way would have re-read -- repriced at the baseline mix. A fifth pool adds "
             "estimated output-token savings from lean-output conciseness nudges. The "
+            "remaining estimated pools add avoided subagent context, loop continuations, "
+            "followed hints, continuity reruns, and exploratory retrieval reads as separate "
+            "lines. Host-runtime MCP capping and opportunity-tier items stay outside the "
+            "transformation. The "
             "per-session volume anchor is frozen, so workload size never inflates or zeroes "
             "the baseline."
         )
@@ -32365,6 +32433,9 @@ def _estimate_before_after_savings(days=30):
             "premium_delegation_cost_usd": round(premium_delegation_cost, 2),
             "compression_transformation_usd": round(compression_addback, 2),
             "compression_measured_usd": round(comp_measured, 2),
+            "compression_reprice_ratio": round(comp_reprice, 4),
+            "estimated_volume_transformation_usd": round(estimated_volume_addback, 2),
+            "estimated_volume_pools": estimated_volume_pools,
             "verbosity_transformation_usd": round(verbosity_addback, 2),
             "verbosity_measured_usd": round(vs_measured, 2),
             "short_session_transformation_usd": round(short_delta, 2),
@@ -32564,7 +32635,13 @@ def _get_merged_savings(days=30):
     model_routing = _compute_model_routing_savings(days=days)
     output_waste = _estimate_output_waste(days=days)
     cache_drop = _estimate_cache_drop_savings(days=days)
-    before_after = _estimate_before_after_savings(days=days)
+    before_after = _estimate_before_after_savings(days=days, estimated_pools={
+        "uncaptured_runtime": uncaptured,
+        "behavioral_loops": behavioral,
+        "hint_followed": savings.get("hint_followed_estimated") or {},
+        "handover_rerun": handover_rerun,
+        "retrieval_serve": retrieval_serve,
+    })
     stale_reads_reclaimable = _estimate_stale_reads_reclaimable(days=days)
 
     return {
@@ -33194,10 +33271,8 @@ def run_ensure_health():
     # numbers. We also check for a SHAPE marker keyed to the newest data
     # contract, so a dashboard generated before that contract is always
     # rebuilt even if its version string somehow matches. The marker tracks
-    # the latest headline shape: "compression_transformation_usd" is the
-    # 4-pool superset key (routing + caching + subagent + compression
-    # add-back) introduced with the current methodology, so any dashboard
-    # missing it predates the corrected calculation and is force-refreshed.
+    # the latest headline shape, so any dashboard missing the marker predates
+    # the corrected calculation and is force-refreshed.
     try:
         if DASHBOARD_PATH.exists():
             # Cheap staleness check via the sidecar meta (~40 bytes) instead of

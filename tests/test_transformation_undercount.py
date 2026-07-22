@@ -277,6 +277,91 @@ def test_short_session_pool_joins_headline_reconciliation(measure):
         + r["short_session_actual_usd"], abs=0.05)
 
 
+def test_estimated_avoided_volume_pools_join_headline_separately(measure):
+    """Optimizer-caused estimates outside billed-volume pools must be explicit arms."""
+    mod, tmp = measure
+    conn = _fresh_env(tmp)
+    _insert_quality_sessions(conn, tmp, n_sessions=40,
+                             per_session_input=4_000_000, opus_share=0.30)
+    conn.commit()
+    conn.close()
+
+    mod._estimate_uncaptured_runtime = lambda **kw: {"cost_saved_usd": 2.60}
+    mod._estimate_behavioral_savings = lambda **kw: {"cost_saved_usd": 0.57}
+    mod._estimate_handover_rerun_savings = lambda **kw: {"cost_saved_usd": 0.25}
+    mod._estimate_retrieval_serve_savings = lambda **kw: {"cost_saved_usd": 0.08}
+    original_summary = mod._get_savings_summary
+
+    def savings_summary(**kw):
+        summary = original_summary(**kw)
+        summary["hint_followed_estimated"] = {"cost_saved_usd": 0.63}
+        summary["mcp_cap_estimated"] = {"cost_saved_usd": 1.81}
+        return summary
+
+    mod._get_savings_summary = savings_summary
+    r = mod._estimate_before_after_savings(days=30)
+    pools = {
+        "uncaptured_runtime": 2.60,
+        "behavioral_loops": 0.57,
+        "hint_followed": 0.63,
+        "handover_rerun": 0.25,
+        "retrieval_serve": 0.08,
+    }
+    ratio = r["compression_reprice_ratio"]
+    breakdown = {item["key"]: item["monthly_usd"] for item in r["breakdown"]}
+    for key, current_mix_usd in pools.items():
+        assert breakdown[key] == pytest.approx(current_mix_usd * ratio, abs=0.01)
+    assert "mcp_cap_estimated" not in breakdown
+    assert r["estimated_volume_transformation_usd"] == pytest.approx(
+        sum(pools.values()) * ratio, abs=0.01)
+    assert r["monthly_savings_usd"] == pytest.approx(
+        r["main_transformation_usd"] + r["subagent_transformation_usd"]
+        + r["short_session_transformation_usd"]
+        + r["compression_transformation_usd"]
+        + r["verbosity_transformation_usd"]
+        + r["estimated_volume_transformation_usd"], abs=0.05)
+
+
+def test_compression_reprice_and_runway_use_same_complete_mix_ratio(measure):
+    """The global input-rate ratio includes delegated usage on both surfaces."""
+    mod, tmp = measure
+    conn = _fresh_env(tmp)
+    _insert_quality_sessions(conn, tmp, n_sessions=40,
+                             per_session_input=4_000_000, opus_share=0.60)
+    conn.commit()
+    conn.close()
+
+    baseline = {"opus": 0.95, "sonnet": 0.05}
+    complete_current = {OPUS: 0.20, SONNET: 0.80}
+    main_only_current = {OPUS: 0.60, SONNET: 0.40}
+    mod._pretool_baseline_mix = lambda: dict(baseline)
+    mod._model_mix_shares = lambda **kw: {
+        "shares": dict(complete_current), "total_tokens": 1_000_000, "days": 30}
+    mod._mix_from_session_rows = lambda cutoff: dict(main_only_current)
+    mod._keepwarm_read_meters = lambda **kw: {
+        "available": True, "stale": False, "five_hour_pct": 10.0,
+        "seven_day_pct": 20.0, "age_s": 1.0}
+    original_summary = mod._get_savings_summary
+
+    def savings_summary(**kw):
+        summary = original_summary(**kw)
+        summary["total_cost_usd"] = 10.0
+        return summary
+
+    mod._get_savings_summary = savings_summary
+    transformation = mod._estimate_before_after_savings(days=30)
+    runway = mod.runway_snapshot(days=30)
+
+    rates = mod.PRICING_TIERS[mod._load_pricing_tier()]["claude_models"]
+    expected = ((0.95 * rates["opus"]["input"] + 0.05 * rates["sonnet"]["input"])
+                / (0.20 * rates["opus"]["input"] + 0.80 * rates["sonnet"]["input"]))
+    main_only = ((0.95 * rates["opus"]["input"] + 0.05 * rates["sonnet"]["input"])
+                 / (0.60 * rates["opus"]["input"] + 0.40 * rates["sonnet"]["input"]))
+    assert transformation["compression_reprice_ratio"] == pytest.approx(expected, rel=1e-4)
+    assert runway["routing_multiplier"] == pytest.approx(expected, abs=0.001)
+    assert transformation["compression_reprice_ratio"] != pytest.approx(main_only, rel=1e-4)
+
+
 def test_short_sessions_without_breakdown_contribute_nothing(measure):
     """Rows with no stored per-model breakdown cannot be priced; they must be
     skipped (conservative), never guessed."""

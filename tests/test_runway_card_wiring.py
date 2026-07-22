@@ -78,3 +78,20 @@ def test_runway_headline_carries_no_dark_glow():
     assert "text-shadow:none" in headline.group(1), (
         "runway headline must cancel the inherited text-shadow"
     )
+
+
+def test_runway_card_validates_numbers_before_rendering():
+    """The template does not produce these numbers, so it must not trust them.
+
+    The outer guard proves the payload SHAPE only. A window carrying a missing or
+    non-numeric field would interpolate "NaN%" into the page, which is worse for
+    the reader than the card not appearing at all.
+    """
+    html = (ASSETS / "dashboard.html").read_text(encoding="utf-8")
+    start = html.index("function runwayCardHtml(")
+    body = html[start:start + 12000]
+    assert "isFinite(" in body, "runway card renders window numbers unvalidated"
+    # Every interpolation must go through a coerced local, never the raw field.
+    for raw in ("' + w.headroom_pct + '", "' + w.without_headroom_pct + '",
+                "' + w.used_pct + '"):
+        assert raw not in body, f"raw interpolation of {raw!r} bypasses validation"

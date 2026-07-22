@@ -3791,10 +3791,18 @@ var DB = (function() {
       // point of the card, so it carries the display type rather than sitting in a
       // footnote below the meters.
       var RW_NAMES = { five_hour: '5-hour limit', seven_day: 'Weekly limit' };
+      // Validate the numbers this template did not produce. The guard above only
+      // proves the payload SHAPE; a window missing a numeric field would render
+      // "NaN%" to the user, which is worse than the card being absent. Every
+      // figure here originates in runway_snapshot, so a bad window means that
+      // contract changed and the honest response is to drop the window.
       var rwCards = rw.windows.map(function (w) {
+        var headPct = Number(w.headroom_pct);
+        var offPct = w.would_be_capped ? 0 : Number(w.without_headroom_pct);
+        var usedPct = Number(w.used_pct);
+        if (!isFinite(headPct) || !isFinite(offPct) || !isFinite(usedPct)) return '';
         var name = RW_NAMES[w.key] || (esc(w.label) + ' limit');
-        var offPct = w.would_be_capped ? 0 : w.without_headroom_pct;
-        var kept = Math.round((w.headroom_pct - offPct) * 10) / 10;
+        var kept = Math.round((headPct - offPct) * 10) / 10;
         return '<div style="background:rgba(255,255,255,.02);border:1px solid var(--c-border);border-radius:8px;padding:var(--s-3);">' +
           '<div class="label" style="display:block;margin-bottom:var(--s-3);">' + name + '</div>' +
           '<div style="display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:var(--s-3);">' +
@@ -3803,8 +3811,8 @@ var DB = (function() {
               // small sizes was the least readable text on the card, and it is the
               // label that tells the reader which number is theirs.
               '<div style="font-size:15px;font-weight:500;letter-spacing:.08em;text-transform:uppercase;color:var(--c-accent-cyan);margin-bottom:8px;">With Token Optimizer</div>' +
-              '<div style="font-weight:300;font-size:46px;line-height:1;color:var(--c-accent-cyan);text-shadow:0 0 24px rgba(0,240,255,.35);">' + w.headroom_pct + '%<span style="font-size:16px;color:var(--c-text-dim);margin-left:5px;">left</span></div>' +
-              '<div style="height:8px;border-radius:4px;background:rgba(255,255,255,.07);margin-top:12px;overflow:hidden;"><i style="display:block;height:100%;border-radius:4px;background:var(--c-accent-cyan);width:' + w.headroom_pct + '%;"></i></div>' +
+              '<div style="font-weight:300;font-size:46px;line-height:1;color:var(--c-accent-cyan);text-shadow:0 0 24px rgba(0,240,255,.35);">' + headPct + '%<span style="font-size:16px;color:var(--c-text-dim);margin-left:5px;">left</span></div>' +
+              '<div style="height:8px;border-radius:4px;background:rgba(255,255,255,.07);margin-top:12px;overflow:hidden;"><i style="display:block;height:100%;border-radius:4px;background:var(--c-accent-cyan);width:' + headPct + '%;"></i></div>' +
             '</div>' +
             '<div style="color:var(--c-text-faint);font-size:22px;opacity:.55;">&rarr;</div>' +
             '<div>' +

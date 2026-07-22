@@ -16027,7 +16027,8 @@ def _copilot_summary():
         print("  CLI: run a `copilot` session. VS Code: enable the two")
         print('  "github.copilot.chat.agentDebugLog" settings for per-request cost.')
     print()
-    print("  Full trends: measure.py copilot-rollup, then the dashboard.")
+    print("  Full trends: measure.py copilot-rollup (sessions land in trends.db;")
+    print("  cost figures are Copilot's own, never a repriced token estimate).")
 
 
 def _collect_copilot_sessions(days=90, quiet=False, rebuild=False):
@@ -31687,7 +31688,8 @@ def _subagent_model_cost(model, fi, cr, out, cw, cw1h, cw5m, shares, tier):
         for mdl, s in items) / tot
 
 
-def _subagent_pool_savings(days=30, baseline_opus_share=0.95, tier=None, fresh=False):
+def _subagent_pool_savings(days=30, baseline_opus_share=0.95, tier=None, fresh=False,
+                           baseline_mix_available=True):
     """Subagent (sidechain) routing pool — the big missing lever.
 
     Subagents run in sidechain transcripts (isSidechain:true), are NOT stored as
@@ -31721,10 +31723,18 @@ def _subagent_pool_savings(days=30, baseline_opus_share=0.95, tier=None, fresh=F
             "transformation_usd": 0.0, "premium_delegation_usd": 0.0,
             "sessions": 0, "by_model": {}}
     try:
+        # Sidechain transcripts are a Claude Code artifact: isSidechain-flagged
+        # JSONL under ~/.claude/projects. Every other runtime keeps its session
+        # data in its own home and has no such transcripts, so this pool is an
+        # honest zero there -- scanning ~/.claude anyway would price a
+        # coexisting Claude Code install's delegated spend into another
+        # runtime's savings headline.
+        if detect_runtime() != "claude":
+            return zero
         if tier is None:
             tier = _load_pricing_tier()
         key = (round(float(days), 3), round(float(baseline_opus_share), 4),
-               detect_runtime(), str(tier))
+               detect_runtime(), str(tier), bool(baseline_mix_available))
         now = time.time()
         if (not fresh and _subagent_pool_memo["payload"] is not None
                 and _subagent_pool_memo["key"] == key
@@ -31791,7 +31801,12 @@ def _subagent_pool_savings(days=30, baseline_opus_share=0.95, tier=None, fresh=F
             _write_subagent_pool_sidecar(key, payload)
             return payload
 
-        # actual = each model at its own rate; counterfactual = same tokens at 95% Opus.
+        # actual = each model at its own rate; counterfactual = same tokens at the
+        # measured pre-TO baseline mix. When NO genuinely measured baseline mix
+        # exists (baseline_mix_available False: the before-arm merely tracks the
+        # actual mix), there is no honest counterfactual to price, so each
+        # bundle's counterfactual equals its actual (pool delta 0) instead of a
+        # fabricated opus/sonnet mix nobody ran.
         before_shares = _opus_baseline_shares(baseline_opus_share)
         actual = 0.0
         counterfactual = 0.0
@@ -31806,7 +31821,7 @@ def _subagent_pool_savings(days=30, baseline_opus_share=0.95, tier=None, fresh=F
                 cw5m = cw
             a = _subagent_model_cost(model, fi, cr, out, cw, cw1h, cw5m,
                                      {model: 1.0}, tier)
-            c = _subagent_model_cost(
+            c = a if not baseline_mix_available else _subagent_model_cost(
                 model, fi, cr, out, cw, cw1h, cw5m, before_shares, tier)
             actual += a
             counterfactual += c
@@ -31832,7 +31847,8 @@ def _subagent_pool_savings(days=30, baseline_opus_share=0.95, tier=None, fresh=F
         return zero
 
 
-def _short_session_pool_savings(cutoff, baseline_opus_share=0.95, tier=None):
+def _short_session_pool_savings(cutoff, baseline_opus_share=0.95, tier=None,
+                                baseline_mix_available=True):
     """Below-threshold (short/low-input) main sessions as their own routing pool.
 
     The quality gates keep sub-minute one-shot sessions out of the session COUNT
@@ -31883,6 +31899,12 @@ def _short_session_pool_savings(cutoff, baseline_opus_share=0.95, tier=None):
                 slot["out"] += float(bd.get("output", 0) or 0)
         if not by_model:
             return dict(zero, sessions=len(rows))
+        # Counterfactual mix: only a genuinely measured pre-TO baseline may
+        # reprice these bundles. Without one (baseline_mix_available False),
+        # counterfactual equals actual -- the sessions' real spend still shows
+        # in both arms, but no transformation is claimed on a mix nobody
+        # measured (on a non-Anthropic runtime that fabricated mix would even
+        # be a different provider's rate card).
         before_shares = _opus_baseline_shares(baseline_opus_share)
         actual = 0.0
         counterfactual = 0.0
@@ -31890,10 +31912,11 @@ def _short_session_pool_savings(cutoff, baseline_opus_share=0.95, tier=None):
             cw1h, cw5m = s["cw1h"], s["cw5m"]
             if cw1h + cw5m <= 0:
                 cw5m = s["cw"]  # no TTL split recorded: bill at 5m (conservative)
-            actual += _subagent_model_cost(
+            a = _subagent_model_cost(
                 model, s["fi"], s["cr"], s["out"], s["cw"], cw1h, cw5m,
                 {model: 1.0}, tier)
-            counterfactual += _subagent_model_cost(
+            actual += a
+            counterfactual += a if not baseline_mix_available else _subagent_model_cost(
                 model, s["fi"], s["cr"], s["out"], s["cw"], cw1h, cw5m,
                 before_shares, tier)
         return {"actual_usd": round(actual, 2),
@@ -31995,7 +32018,9 @@ def _estimate_before_after_savings(days=30, estimated_pools=None):
                `label` is presentational and may change),
              breakdown_caveat (str), evidence}.
     On an empty result, `reason` is one of "insufficient_history" / "net_negative" /
-    "no_recent_sessions" / "no_mix" (None when never computed).
+    "no_recent_sessions" / "no_mix" / "unsupported_billing" (None when never
+    computed). "unsupported_billing" is the GitHub Copilot case: premium-request
+    metering has no token-dollar counterfactual, so nothing is rendered there.
     """
     zero = {"before_cost_per_session": 0.0, "after_cost_per_session": 0.0,
             "savings_per_session": 0.0, "sessions_per_month": 0,
@@ -32015,6 +32040,12 @@ def _estimate_before_after_savings(days=30, estimated_pools=None):
             "short_session_counterfactual_usd": 0.0,
             "short_session_count": 0}
     try:
+        # GitHub Copilot meters premium requests / AI credits, not tokens, so a
+        # token-priced counterfactual has no meaning in that billing model. The
+        # transformation renders NOTHING under Copilot (reason discloses why);
+        # the measured tiers still pass through Copilot's own cost figures.
+        if detect_runtime() == "copilot":
+            return {**zero, "reason": "unsupported_billing"}
         if not TRENDS_DB.exists():
             return zero
 
@@ -32145,6 +32176,16 @@ def _estimate_before_after_savings(days=30, estimated_pools=None):
         after_opus = float(after_shares.get("opus", 0.0))
         tier = _load_pricing_tier()  # resolve once; reused across the waterfall levers
 
+        # Whether a genuinely DISTINCT pre-TO mix exists for the per-bundle pools'
+        # counterfactual arm: a measured frozen share, or the consented Anthropic
+        # default. In tracking mode (before-arm follows the actual mix) the routing
+        # lever is zero by definition, so the sidechain and short-session pools must
+        # not reprice bundles at an {opus, sonnet} mix nobody measured -- on a
+        # non-Anthropic runtime that mix is a different provider's rate card and the
+        # resulting delta is a fabricated savings claim.
+        baseline_mix_available = bool(frozen_opus and frozen_opus > 0) or (
+            anthropic and _opus_floor_consented())
+
         # SUBAGENT (sidechain) pool (#3), read from sidechain transcripts and priced at
         # each subagent's real model vs the ~95% Opus baseline. Subagent tokens do roll
         # up into session_log rows (v5.4.9), but the main pool prices only the FROZEN
@@ -32152,7 +32193,8 @@ def _estimate_before_after_savings(days=30, estimated_pools=None):
         # parent-only, so the pools do not double-price these dollars. Summed into the
         # headline below. Memoized for dashboard perf.
         sub_pool = _subagent_pool_savings(
-            days=days, baseline_opus_share=baseline_opus_share, tier=tier)
+            days=days, baseline_opus_share=baseline_opus_share, tier=tier,
+            baseline_mix_available=baseline_mix_available)
         sub_window_actual = float(sub_pool.get("actual_usd", 0.0) or 0.0)
         sub_window_cf = float(sub_pool.get("counterfactual_usd", 0.0) or 0.0)
         sub_sessions = int(sub_pool.get("sessions", 0) or 0)
@@ -32163,7 +32205,8 @@ def _estimate_before_after_savings(days=30, estimated_pools=None):
         # whose routing delta belongs in the headline. Priced on their own real
         # volume, parent-thread bundles only (no overlap with the sidechain pool).
         short_pool = _short_session_pool_savings(
-            cutoff, baseline_opus_share=baseline_opus_share, tier=tier)
+            cutoff, baseline_opus_share=baseline_opus_share, tier=tier,
+            baseline_mix_available=baseline_mix_available)
         short_actual = float(short_pool.get("actual_usd", 0.0) or 0.0)
         short_cf = float(short_pool.get("counterfactual_usd", 0.0) or 0.0)
         short_delta = short_cf - short_actual

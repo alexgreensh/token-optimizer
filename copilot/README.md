@@ -1,6 +1,6 @@
 # Token Optimizer for GitHub Copilot
 
-**Beta.** Per-session cost and token tracking, context-quality scoring, capability-gated context savers, before/after savings measurement, and a dashboard for **GitHub Copilot** — both the **CLI** and **VS Code**.
+**Beta.** Per-session cost and token tracking, context-quality scoring, capability-gated context savers, and a dashboard for **GitHub Copilot**, both the **CLI** and **VS Code**.
 
 Native Python. Reads Copilot's own data read-only. No telemetry. No dependencies.
 
@@ -21,7 +21,7 @@ The two are **separate session populations** — never merged, never summed.
 - **Context-quality scoring.** S/A/B/C/D/F grades from the available session signals, with a Copilot-correct context-window table (128K default, never the 1M Claude fallback).
 - **Capability-gated hook engine** (CLI). Bash output compression and session-start continuity restore activate only when your installed Copilot CLI version actually supports the hook field they need — and auto-activate when upstream fixes land. See "The capability map" in [`docs/copilot.md`](../docs/copilot.md).
 - **Crash recovery.** A per-session in-flight tally recovers partial token counts for sessions that end without a clean shutdown, flagged honestly as estimated.
-- **Dashboard + savings.** Copilot sessions flow into the shared Token Optimizer dashboard and savings engine, with a credits-led summary command.
+- **Dashboard + trends.** Copilot sessions flow into the local trends database and dashboard, with a credits-led summary command. Every cost figure is Copilot's own (premium requests / AI credits). The token-priced before/after transformation is intentionally not computed for Copilot: premium-request billing has no token-dollar counterfactual, so no savings headline is shown rather than a wrong one.
 
 ## Install
 

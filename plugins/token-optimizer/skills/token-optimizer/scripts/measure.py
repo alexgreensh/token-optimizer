@@ -5803,7 +5803,18 @@ def generate_standalone_dashboard(days=30, quiet=False, force=False):
     except Exception:
         pass
 
+    # Subscription runway. This generator produces the dashboard the CLI writes,
+    # so the key must be assembled here too: the template gates the card on
+    # `data.runway` and silently renders nothing when it is absent, which is
+    # indistinguishable from the card being switched off. None on API-billed
+    # setups or a missing/stale meter, and the template omits the card.
+    try:
+        runway = runway_snapshot(days=30)
+    except Exception:
+        runway = None
+
     data = {
+        "runway": runway,
         "snapshot": snapshot,
         "audit": {},
         "plan": auto_plan if auto_plan else None,

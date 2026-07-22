@@ -962,7 +962,16 @@ if verification_enabled; then
     resolve_latest_release || fail_verified_install "Could not resolve the latest GitHub Release and checksum asset. Integrity verification is required. Set TOKEN_OPTIMIZER_SKIP_VERIFY=1 only if you explicitly accept this risk."
     info "Latest verified release: ${RELEASE_TAG}"
 else
-    warn "Skipping integrity verification (TOKEN_OPTIMIZER_SKIP_VERIFY=1)"
+    # Loud stderr announcement so a user who was socially engineered into
+    # setting the env var sees that verification is off. stdout is captured
+    # as program output; stderr is where a human scans for problems.
+    printf '!\n' >&2
+    printf '!  WARNING: TOKEN_OPTIMIZER_SKIP_VERIFY=1 is set.\n' >&2
+    printf '!  Release-tag pinning AND checksum verification are BOTH skipped.\n' >&2
+    printf '!  The clone pulls the default branch HEAD with no integrity check.\n' >&2
+    printf '!  Only use this for air-gapped or development installs where you\n' >&2
+    printf '!  control the source. Unset the variable for a verified install.\n' >&2
+    printf '!\n' >&2
 fi
 
 # ── Clone or Update ───────────────────────────────────────────
@@ -1120,6 +1129,12 @@ if verification_enabled; then
     else
         fail_verified_install "Could not fetch CHECKSUMS.sha256 from the latest GitHub Release. Integrity verification is required. Set TOKEN_OPTIMIZER_SKIP_VERIFY=1 only if you explicitly accept this risk."
     fi
+else
+    # Repeated here because the first warning (at clone time) may have
+    # scrolled past. A user checking whether checksums ran needs to see
+    # this at the verification step, not just at the clone step.
+    printf '!  Skipping checksum verification (TOKEN_OPTIMIZER_SKIP_VERIFY=1).\n' >&2
+    printf '!  File integrity was NOT checked for this install.\n' >&2
 fi
 
 # Log the current commit SHA so users can audit which version is installed.

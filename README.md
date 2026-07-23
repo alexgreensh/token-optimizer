@@ -9,6 +9,8 @@
   <a href="https://github.com/alexgreensh/token-optimizer/tree/main/openclaw"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Falexgreensh%2Ftoken-optimizer%2Fmain%2Fopenclaw%2Fpackage.json&query=%24.version&prefix=v&label=OpenClaw&color=brightgreen" alt="OpenClaw version"></a>
   <a href="https://github.com/alexgreensh/token-optimizer/tree/main/opencode"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Falexgreensh%2Ftoken-optimizer%2Fmain%2Fopencode%2Fpackage.json&query=%24.version&prefix=v&label=OpenCode&color=58a6ff" alt="OpenCode version"></a>
   <a href="https://github.com/alexgreensh/token-optimizer/blob/main/docs/codex.md"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Falexgreensh%2Ftoken-optimizer%2Fmain%2F.codex-plugin%2Fplugin.json&query=%24.version&prefix=v&label=Codex&color=orange" alt="Codex version"></a>
+  <a href="https://github.com/alexgreensh/token-optimizer/tree/main/hermes"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Falexgreensh%2Ftoken-optimizer%2Fmain%2F.claude-plugin%2Fplugin.json&query=%24.version&prefix=v&label=Hermes&color=0d9488" alt="Hermes version"></a>
+  <a href="https://github.com/alexgreensh/token-optimizer/blob/main/docs/copilot.md"><img src="https://img.shields.io/badge/Copilot-beta-dfb317?logo=githubcopilot&logoColor=white" alt="GitHub Copilot (beta)"></a>
 </p>
 <p align="center">
   <img src="https://img.shields.io/badge/cuts%20context%20waste-3fb950" alt="Cuts context waste">
@@ -25,7 +27,7 @@
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="Platform">
   <a href="https://github.com/alexgreensh/token-optimizer/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue.svg" alt="License: PolyForm Noncommercial"></a>
   <a href="https://github.com/alexgreensh/token-optimizer/stargazers"><img src="https://badgen.net/github/stars/alexgreensh/token-optimizer" alt="GitHub Stars"></a>
-  <a href="https://github.com/alexgreensh/token-optimizer/commits/main"><img src="https://img.shields.io/github/commit-activity/m/alexgreensh/token-optimizer" alt="Commit Activity"></a>
+  <a href="https://github.com/alexgreensh/token-optimizer/commits/main"><img src="https://badgen.net/github/commits/alexgreensh/token-optimizer?label=commits" alt="Commits"></a>
   <a href="https://linkedin.com/in/alexgreensh"><img src="https://img.shields.io/badge/LinkedIn-Connect-0A66C2?logo=linkedin&logoColor=white" alt="Connect on LinkedIn"></a>
 </p>
 <p align="center">

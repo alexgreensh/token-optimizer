@@ -21,6 +21,8 @@ default (standard significance, never a cheap model) so a routing hiccup can
 never block or mislead the caller.
 """
 
+import re
+
 # --- effort and tier ordering -------------------------------------------------
 
 # Low to high. A floor names the minimum acceptable rung on each axis.
@@ -121,31 +123,50 @@ _GENERIC_ROW = {
 
 
 def platform_row(runtime):
-    return ROUTING_TABLES.get(runtime, _GENERIC_ROW)
+    try:
+        return ROUTING_TABLES.get(runtime, _GENERIC_ROW)
+    except TypeError:
+        # An unhashable runtime can't index the table; treat as unknown.
+        return _GENERIC_ROW
 
 
 # --- significance + category classification (U1) -----------------------------
 
+# Signals are matched as whole words or whole phrases, not raw substrings, so
+# "author" never triggers "auth" and "reproduction" never triggers "production".
+# Word forms are listed explicitly (authentication, migration, ...) rather than
+# relying on prefixes.
 _HARD_SIGNALS = (
-    "security", "auth", "authentication", "authorization", "crypto", "credential",
-    "production", "prod ", "migrat", "schema change", "architecture", "redesign",
-    "concurren", "race condition", "deadlock", "thread", "payment", "billing",
-    "irreversible", "data loss", "delete all", "drop table", "refactor across",
-    "multi-file", "distributed", "rollout", "backfill",
+    "security", "auth", "authentication", "authorization", "oauth", "crypto",
+    "credential", "credentials", "production", "migrate", "migration", "migrating",
+    "schema change", "architecture", "redesign", "concurrent", "concurrency",
+    "deadlock", "race condition", "payment", "payments", "billing", "irreversible",
+    "data loss", "delete all", "drop table", "refactor across", "multi-file",
+    "distributed", "rollout", "backfill",
 )
 
 _EASY_SIGNALS = (
     "typo", "rename", "one-liner", "one liner", "single file", "single-file",
-    "format", "reformat", "lint", "list ", "count ", "summarize", "summary of",
-    "grep", "find the", "print", "echo", "comment", "docstring", "readme",
+    "format", "reformat", "lint", "list", "count", "summarize", "summary",
+    "grep", "print", "echo", "comment", "docstring", "readme",
 )
 
 _CODE_SIGNALS = ("code", "function", "class", "bug", "refactor", "implement", "test", "compile", "api")
 _REASONING_SIGNALS = ("why", "analyze", "design", "trade-off", "tradeoff", "compare", "evaluate", "plan", "prove")
 
 
-def _count_hits(text, signals):
-    return sum(1 for s in signals if s in text)
+def _compile(signals):
+    return tuple(re.compile(r"\b" + re.escape(s) + r"\b") for s in signals)
+
+
+_HARD_RE = _compile(_HARD_SIGNALS)
+_EASY_RE = _compile(_EASY_SIGNALS)
+_CODE_RE = _compile(_CODE_SIGNALS)
+_REASONING_RE = _compile(_REASONING_SIGNALS)
+
+
+def _count_hits(text, patterns):
+    return sum(1 for p in patterns if p.search(text))
 
 
 def classify_significance(task):
@@ -156,8 +177,8 @@ def classify_significance(task):
     """
     try:
         text = (task or "").lower()
-        hard = _count_hits(text, _HARD_SIGNALS)
-        easy = _count_hits(text, _EASY_SIGNALS)
+        hard = _count_hits(text, _HARD_RE)
+        easy = _count_hits(text, _EASY_RE)
 
         # Structural nudges: very short with no hard signal leans easy; long or
         # multi-step leans away from easy.
@@ -188,8 +209,8 @@ def classify_category(task):
     """Coarse task kind: 'reasoning' | 'code' | 'simple'. Never raises."""
     try:
         text = (task or "").lower()
-        r = _count_hits(text, _REASONING_SIGNALS)
-        c = _count_hits(text, _CODE_SIGNALS)
+        r = _count_hits(text, _REASONING_RE)
+        c = _count_hits(text, _CODE_RE)
         if r == 0 and c == 0:
             return "simple"
         return "reasoning" if r > c else "code"

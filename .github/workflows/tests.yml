@@ -49,3 +49,30 @@ jobs:
       # skills/token-optimizer/scripts/ relative to it.
       - name: Run tests
         run: python -m pytest tests/ -q
+
+  # Build the docs site here, not only in Deploy Docs.
+  #
+  # A single unescaped "<400" in an .mdx file broke the Astro build on 2026-07-22.
+  # Deploy Docs went red on every run and the published site sat frozen at the
+  # 2026-06-30 deploy for three weeks while documentation work kept landing on main.
+  # It failed loudly in a workflow nobody was watching, which is the same as failing
+  # quietly. Building here puts a broken page in front of the check that gates PRs,
+  # so the break is caught before it reaches main instead of after it stops the world.
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: docs-site/package-lock.json
+
+      - name: Install docs dependencies
+        working-directory: docs-site
+        run: npm ci
+
+      - name: Build docs site
+        working-directory: docs-site
+        run: npm run build

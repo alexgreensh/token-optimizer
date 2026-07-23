@@ -152,6 +152,7 @@ Both `jsonl-trim` and `jsonl-dedup` run in dry-run mode unless `--apply` is pass
 | `coach` | Generate the coaching data blob (health score, snapshot, detected patterns, questions, subagent costs) | `--json`, `--focus skills\|agentic` |
 | `inject-coach` | Inject auto-generated coaching advice into CLAUDE.md (or AGENTS.md) as a managed block with a 48h TTL | `--file PATH`, `--dry-run` |
 | `inject-routing` | Inject data-driven model-routing advice into CLAUDE.md as a managed block | `--file PATH`, `--dry-run` |
+| `route` | Recommend a model and reasoning effort for one task, in the current platform's own model names and effort knob | `--task "..."`, `--json` |
 | `check-staleness` | Check whether a managed block has expired its TTL and remove it if stale | `[SECTION]` |
 
 The interactive `/token-coach` skill reads `coach --json` to drive a coaching conversation. See [Token Coach](/features/token-coach/) and [Fleet Auditor](/features/fleet-auditor/).

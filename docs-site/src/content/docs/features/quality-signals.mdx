@@ -112,7 +112,7 @@ python3 measure.py v5 enable loop_detection
 | Quality Nudges | Session cap | 3 nudges |
 | Quality Nudges | Post-compact suppression | Yes (first check after compact skipped) |
 | Loop Detection | Message-loop rule | Recent messages within 20% of average length (average above 50 chars) |
-| Loop Detection | Retry-churn rule | 3+ short (<400 char) failures from the same tool |
+| Loop Detection | Retry-churn rule | 3+ short (&lt;400 char) failures from the same tool |
 | Loop Detection | Firing floor | Strongest signal ≥ 0.6 (message loop 0.7, retry churn 0.75) |
 | Loop Detection | User message window | Last 4 messages |
 | Loop Detection | Tool result window | Last 5 results |

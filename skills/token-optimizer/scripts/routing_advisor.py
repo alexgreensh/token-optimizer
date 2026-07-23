@@ -207,10 +207,24 @@ _BASE = {
     "hard":     ("capable",  "high"),
 }
 
-# Low confidence promotes significance one step before the floor is read: a hard
-# task mis-scored cheap costs more than an easy task mis-scored expensive, so the
-# adjustment only ever moves up.
-_PROMOTE = {"easy": "standard", "standard": "hard", "hard": "hard"}
+# Low confidence promotes only at the easy boundary, where a wrong call is
+# expensive: a task scored easy but actually significant would otherwise get a
+# cheap model and low effort. Standard and hard already sit above the cheap
+# floor, so an uncertain one stays put rather than over-spending toward the top.
+_PROMOTE = {"easy": "standard", "standard": "standard", "hard": "hard"}
+
+
+def baseline(significance, runtime):
+    """Canonical (model, effort) for a significance level on a platform, with no
+    confidence or category adjustment. Used to describe the routing policy."""
+    row = platform_row(runtime)
+    tier, effort = _BASE.get(significance, _BASE["standard"])
+    model = row["models"].get(tier, row["models"]["mid"])
+    if effort not in row["efforts"]:
+        higher = [e for e in EFFORT_ORDER if e in row["efforts"]
+                  and _rank(e, EFFORT_ORDER, "medium") >= _rank(effort, EFFORT_ORDER, "medium")]
+        effort = higher[0] if higher else row["efforts"][-1]
+    return model, effort
 
 
 def recommend(task, runtime):

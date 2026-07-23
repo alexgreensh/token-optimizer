@@ -7376,42 +7376,84 @@ def generate_coach_data(focus=None, components=None, trends=None):
     return result
 
 
-def generate_model_routing_block(trends=None):
-    """Generate a model routing advice block from trends data.
+def _cmd_route(args):
+    """Recommend a model and reasoning effort for a task on the CURRENT platform.
 
-    Returns markdown string suitable for CLAUDE.md injection.
+    Works on every supported runtime (it reads only the task text and the
+    detected platform, never the Claude tree), so it is intentionally NOT a
+    Claude-targeting command. Fails open to a safe middle recommendation.
     """
+    import json as _json
+    as_json = "--json" in args
+    task = ""
+    if "--task" in args:
+        i = args.index("--task")
+        if i + 1 < len(args):
+            task = args[i + 1]
+    else:
+        task = " ".join(a for a in args[1:] if not a.startswith("--"))
+    try:
+        import routing_advisor
+        rec = routing_advisor.recommend(task, detect_runtime())
+    except Exception as _e:
+        rec = {
+            "model": "standard", "effort": "medium", "significance": "standard",
+            "confidence": "low", "effort_knob": "effort",
+            "why": f"router unavailable ({type(_e).__name__}); safe default",
+        }
+    if as_json:
+        print(_json.dumps(rec))
+        return
+    print(f"  model:  {rec.get('model')}")
+    print(f"  effort: {rec.get('effort')}  ({rec.get('effort_knob', 'effort')})")
+    print(f"  why:    {rec.get('why')}")
+
+
+def generate_model_routing_block(trends=None):
+    """Generate the model + effort routing block for the CURRENT platform.
+
+    Renders the current platform's own model ladder and effort control, states
+    the easy-only rule for the cheapest models and lowest efforts, and points at
+    the live `route` command. Recent model-mix stats are added as evidence when
+    available. Returns markdown suitable for instruction-file injection.
+    """
+    try:
+        import routing_advisor
+    except Exception:
+        return None
+
+    runtime = detect_runtime()
+    row = routing_advisor.platform_row(runtime)
+    models = row["models"]
+
+    easy_m, easy_e = routing_advisor.baseline("easy", runtime)
+    std_m, std_e = routing_advisor.baseline("standard", runtime)
+    hard_m, hard_e = routing_advisor.baseline("hard", runtime)
+    knob = row["effort_knob"]
+
+    lines = [
+        "## Model & Effort Routing (by Token Optimizer)",
+        f"For each task pick both a model and an effort level. Effort maps to this "
+        f"platform's {knob}.",
+        f"- Easy (typo, rename, format, grep, single-file): {easy_m} at {easy_e} effort.",
+        f"- Standard (a bounded feature or fix): {std_m} at {std_e} effort.",
+        f"- Hard (security, migrations, concurrency, architecture): {hard_m} at {hard_e} effort.",
+        f"- The cheapest models ({models.get('budget')}) and the lowest efforts are for "
+        f"easy work only. Never route a significant task there.",
+        "- For a specific task, run: `measure.py route --task \"...\"`.",
+    ]
+
     if trends is None:
         try:
             trends = _collect_trends_data(days=30)
         except Exception:
-            return None
-
-    if not trends:
-        return None
-
-    model_mix = trends.get("model_mix", {})
+            trends = None
+    model_mix = (trends or {}).get("model_mix", {})
     total = sum(model_mix.values()) if model_mix else 0
-    if total == 0:
-        return None
-
-    opus_pct = round(model_mix.get("opus", 0) / total * 100)
-    sonnet_pct = round(model_mix.get("sonnet", 0) / total * 100)
-    haiku_pct = round(model_mix.get("haiku", 0) / total * 100)
-
-    lines = [
-        "## Model & Thinking Routing (by Token Optimizer)",
-        f"Based on last 30 days: {opus_pct}% Opus, {sonnet_pct}% Sonnet, {haiku_pct}% Haiku.",
-        "- Simple edits, grep, formatting: Sonnet, no extended thinking",
-        "- Architecture, debugging, synthesis: Opus with thinking",
-        "- Subagents for data gathering: Haiku",
-    ]
-
-    # Add specific advice if heavily skewed
-    if opus_pct > 70:
-        lines.append(f"- WARNING: {opus_pct}% Opus is likely overkill. Route simple tasks to Sonnet.")
-    if haiku_pct == 0:
-        lines.append("- Consider Haiku for subagents to reduce cost by 80-90%.")
+    if total:
+        top = ", ".join(f"{round(v / total * 100)}% {k}"
+                        for k, v in sorted(model_mix.items(), key=lambda kv: -kv[1])[:3])
+        lines.append(f"- Your last 30 days: {top}.")
 
     return "\n".join(lines)
 
@@ -34327,6 +34369,8 @@ if __name__ == "__main__":
     elif args[0] == "quick":
         output_json = "--json" in args
         quick_scan(as_json=output_json)
+    elif args[0] == "route":
+        _cmd_route(args)
     elif args[0] == "doctor":
         output_json = "--json" in args
         if detect_runtime() == "codex":

@@ -105,14 +105,28 @@ _UNKNOWN_MODEL = "unknown"
 # Conservative context window used when model is unrecognised.
 _DEFAULT_CONTEXT_WINDOW = 200_000
 
+# Fail-safe window for an unrecognised *modern* Claude (non-haiku) model. Every
+# non-haiku Claude family since the 4.x GA line ships at 1M, so this is the
+# right value AND the safe direction: too large only understates fill, whereas
+# the 200K default cries "100% CRITICAL" wolf on a 1M model (bug #97).
+_LARGE_CONTEXT_WINDOW = 1_000_000
+
 # Known Hermes model → approximate context window (tokens).
 # Claude context windows; OpenAI/Gemini models handled via measure.py pricing.
 _MODEL_CONTEXT_WINDOWS: dict[str, int] = {
-    # Claude 4.x non-haiku is 1M GA (since March 2026). Prefix-match below
+    # Claude 4.x/5 non-haiku is 1M GA (since March 2026). Prefix-match below
     # propagates these to versioned ids (e.g. claude-opus-4-8, sonnet-4-6).
     # Claude 3.x and all haiku genuinely stay 200K -- do NOT promote them.
+    # The Claude 5 family shares no prefix with any 4.x key, so it needs
+    # explicit entries; the _claude family fallback in _context_window_for_model
+    # is the durable backstop for whatever ships next (opus-6, sonnet-6, ...).
+    "claude-fable-5": 1_000_000,
+    "claude-mythos-5": 1_000_000,
+    "claude-opus-5": 1_000_000,
+    "claude-sonnet-5": 1_000_000,
     "claude-opus-4-5": 1_000_000,
     "claude-sonnet-4-5": 1_000_000,
+    "claude-haiku-4-5": 200_000,
     "claude-haiku-3-5": 200_000,
     "claude-opus-4": 1_000_000,
     "claude-sonnet-4": 1_000_000,
@@ -159,6 +173,11 @@ def _context_window_for_model(model: str) -> int:
     if not model or model == _UNKNOWN_MODEL:
         return _DEFAULT_CONTEXT_WINDOW
     low = model.lower().strip()
+    # Strip a provider prefix (e.g. "anthropic/claude-fable-5",
+    # "openrouter/anthropic/claude-sonnet-5") so vendor-qualified ids resolve
+    # like their bare form instead of falling through to the default.
+    if "/" in low:
+        low = low.rsplit("/", 1)[-1]
     # Direct lookup first.
     if low in _MODEL_CONTEXT_WINDOWS:
         return _MODEL_CONTEXT_WINDOWS[low]
@@ -166,6 +185,17 @@ def _context_window_for_model(model: str) -> int:
     for key, window in _MODEL_CONTEXT_WINDOWS.items():
         if low.startswith(key):
             return window
+    # Durable fallback for a Claude family that shares no prefix with any known
+    # key. Modern non-haiku Claude (4.x/5 and whatever comes next) is 1M; only
+    # haiku, and the legacy 2.x/3.x lines, stay at 200K. This stops each new
+    # family from silently regressing to a false-CRITICAL 200K (bug #97). See
+    # _LARGE_CONTEXT_WINDOW for why failing large is the safe direction.
+    if (
+        low.startswith("claude-")
+        and "haiku" not in low
+        and not low.startswith(("claude-2", "claude-3"))
+    ):
+        return _LARGE_CONTEXT_WINDOW
     return _DEFAULT_CONTEXT_WINDOW
 
 

@@ -329,39 +329,73 @@ def _resolve_mcp_cap_tokens() -> int | None:
     return None
 
 
+# Built-in exemptions for MCP servers whose whole purpose is returning large
+# verbatim code/docs the agent must read inline — compressing those to a preview
+# defeats the reason they were called. Kept deliberately narrow (only tools whose
+# PRIMARY output is verbatim source/docs) so the optimizer still compresses chatty
+# general MCPs. The user's TOKEN_OPTIMIZER_ARCHIVE_EXEMPT_TOOLS is ADDITIVE to
+# this list, so opting more tools out stays a one-line change. To drop a default,
+# set TOKEN_OPTIMIZER_ARCHIVE_EXEMPT_DEFAULTS=off.
+_DEFAULT_EXEMPT_PATTERNS: tuple[str, ...] = (
+    # Scoped to the specific verbatim content-fetch tools only — NOT whole
+    # servers. octocode/github/deepwiki also expose search/tree/list tools whose
+    # compression is desirable, so exempting the whole server would bloat context
+    # and defeat the optimizer. Only tools whose PRIMARY output is verbatim
+    # code/docs the agent must read inline are listed.
+    "mcp__context7__query-docs",            # context7: verbatim library docs
+    "mcp__octocode__githubGetFileContent",  # octocode: full remote file content
+    "mcp__octocode__localGetFileContent",   # octocode: full local file content
+    "mcp__github__get_file_contents",       # official github MCP file fetcher
+    "mcp__deepwiki__read_wiki_contents",    # deepwiki: verbatim repo docs
+)
+
 _EXEMPT_PATTERNS_UNSET: tuple[str, ...] | None = ("\0__unset__",)
 _EXEMPT_PATTERNS_CACHE: tuple[str, ...] | None = _EXEMPT_PATTERNS_UNSET
 
 
 def _resolve_exempt_tool_patterns() -> tuple[str, ...]:
-    """Resolve the per-tool archive allowlist from env or user settings.json.
+    """Resolve the per-tool archive allowlist (built-in defaults + user opt-ins).
 
     Some tools are *documented* to return large verbatim payloads (source
     fetchers, doc retrievers). Compressing those to a metadata preview defeats
-    the reason they were called, so a user can opt specific tools out of the
-    MCP output replacement (issue #88 follow-up).
+    the reason they were called, so they are exempt from MCP output replacement
+    (issues #88 / #91 follow-up).
 
-    Value is a comma-separated list of fnmatch globs matched against the full
-    tool name, e.g. ``mcp__context7__*,*github_repository_file``. Resolution
-    mirrors _resolve_mcp_cap_tokens: process env first, then the settings.json
-    "env" block. Default is empty — a token optimizer never lets large payloads
-    through unless the user explicitly opts a tool in. Never raises.
+    The list is the union of ``_DEFAULT_EXEMPT_PATTERNS`` (well-known code/doc
+    MCPs, on by default) and the user's ``TOKEN_OPTIMIZER_ARCHIVE_EXEMPT_TOOLS``
+    — a comma-separated list of fnmatch globs matched against the full tool name,
+    e.g. ``mcp__mytool__*,*my_repo_file``. The user value is ADDITIVE, so opting
+    another tool out is a one-line change. Set
+    ``TOKEN_OPTIMIZER_ARCHIVE_EXEMPT_DEFAULTS=off`` to drop the built-ins.
+    Resolution mirrors _resolve_mcp_cap_tokens: process env first, then the
+    settings.json "env" block. Never raises.
     """
     global _EXEMPT_PATTERNS_CACHE
     if _EXEMPT_PATTERNS_CACHE is not _EXEMPT_PATTERNS_UNSET:
         return _EXEMPT_PATTERNS_CACHE
 
     raw = os.environ.get("TOKEN_OPTIMIZER_ARCHIVE_EXEMPT_TOOLS", "").strip()
-    if not raw:
+    defaults_flag = os.environ.get("TOKEN_OPTIMIZER_ARCHIVE_EXEMPT_DEFAULTS", "").strip()
+    if not raw or not defaults_flag:
         # settings.json "env" block — for out-of-process callers.
         try:
             with open(claude_home() / "settings.json", "r", encoding="utf-8") as f:
                 settings = json.load(f)
-            raw = str(settings.get("env", {}).get("TOKEN_OPTIMIZER_ARCHIVE_EXEMPT_TOOLS", "")).strip()
+            env_block = settings.get("env", {})
+            if not raw:
+                raw = str(env_block.get("TOKEN_OPTIMIZER_ARCHIVE_EXEMPT_TOOLS", "")).strip()
+            if not defaults_flag:
+                defaults_flag = str(env_block.get("TOKEN_OPTIMIZER_ARCHIVE_EXEMPT_DEFAULTS", "")).strip()
         except Exception:
-            raw = ""
+            pass
 
-    patterns = tuple(p.strip() for p in raw.split(",") if p.strip())
+    user_patterns = tuple(p.strip() for p in raw.split(",") if p.strip())
+    base = () if defaults_flag.lower() in ("off", "false", "0", "none") else _DEFAULT_EXEMPT_PATTERNS
+    # Union, preserving order, defaults first.
+    seen: dict[str, None] = {}
+    for p in (*base, *user_patterns):
+        seen.setdefault(p, None)
+    patterns = tuple(seen)
     _EXEMPT_PATTERNS_CACHE = patterns
     return patterns
 

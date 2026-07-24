@@ -3779,7 +3779,8 @@ var DB = (function() {
     // ---- RUNWAY: leads for rate-limited plans, where dollars are the wrong
     // currency. A flat fee buys a rate-limit budget, so the unit that matters is
     // how much work fits inside the plan you already paid for. Omitted entirely
-    // when the meter is missing/stale or there is no measurable shift.
+    // when there is no meter reading at all or no measurable shift; a stale-but-
+    // present reading is shown, dated with its own age (warning colour when old).
     // Deliberately NOT rendering a headroom ratio: it is a hyperbola near the
     // cap (a 7% move in the multiplier swings it 3.4x -> 16.3x), so the stable
     // "extra work" figure leads and the raw window states are shown as-is.
@@ -3846,6 +3847,33 @@ var DB = (function() {
         // already establish which limits are meant.
         '<p style="margin:0 0 var(--s-4);color:var(--c-text-dim);font-size:17px;line-height:1.6;text-wrap:pretty;">Token Optimizer keeps junk out of context and runs routine turns on lighter models, so more of your plan goes to real work instead of waste.</p>' +
         '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:var(--s-3);">' + rwCards + '</div>' +
+        // Freshness of the WINDOW reading itself (not the dashboard build). The
+        // meter only refreshes while Claude Code is actively running, so a
+        // dashboard opened later shows the last real reading -- label it with its
+        // own age (and warn when stale) so a day-old "90% left" can never read as
+        // your current usage. This is the fix for the "section shows old numbers"
+        // report: the numbers are the last true reading, dated honestly.
+        (function () {
+          var ts = Number(rw.meter_ts);
+          if (!isFinite(ts) || ts <= 0) return '';
+          var ageMin = Math.max(0, Math.round((Date.now() / 1000 - ts) / 60));
+          var ageStr = ageMin < 1 ? 'moments ago'
+            : ageMin < 60 ? ageMin + ' min ago'
+            : ageMin < 1440 ? Math.round(ageMin / 60) + 'h ago'
+            : Math.round(ageMin / 1440) + 'd ago';
+          var whenStr = '';
+          try { whenStr = new Date(ts * 1000).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }); }
+          catch (e) { whenStr = ''; }
+          // Judge staleness LIVE from the reading's age, not the meter_stale flag
+          // baked at generation time -- a bookmarked/reopened page must show the
+          // warning colour when the reading has since gone stale, not a calm grey
+          // "3d ago". 30 min matches the generator's own stale threshold.
+          var stale = ageMin > 30 || !!rw.meter_stale;
+          var col = stale ? 'var(--c-waste)' : 'var(--c-text-dim)';
+          return '<div style="margin-top:var(--s-3);font-size:13px;color:' + col + ';">' +
+            (stale ? '⚠ ' : '') + 'Window reading as of ' + esc(whenStr) + ' (' + ageStr + ')' +
+            (stale ? ' · run Claude Code to refresh' : '') + '</div>';
+        })() +
         '<div style="margin-top:var(--s-4);padding-top:var(--s-3);border-top:1px solid var(--c-border);font-size:14px;color:var(--c-text-dim);line-height:1.7;text-wrap:pretty;">' +
           'Your usage is measured. The comparison is estimated: ' + esc(rw.proxy) + ' ' +
           'Where the ' + rw.extra_work_pct + '% comes from: lighter context &times;' + rw.context_multiplier + ' (metered) &middot; lighter models &times;' + rw.routing_multiplier + ' (your own model-mix shift).' +

@@ -4437,7 +4437,8 @@ def generate_dashboard(coord_path):
 
     # Subscription runway: leads the savings surface for rate-limited plans,
     # where a dollar figure is the wrong currency. None on API-billed setups or
-    # when the meter is missing/stale, and the template simply omits the card.
+    # when the meter has never been read at all (a stale-but-present reading is
+    # kept and dated on the card), and the template simply omits the card.
     try:
         runway = runway_snapshot(days=30)
     except Exception:
@@ -5815,7 +5816,8 @@ def generate_standalone_dashboard(days=30, quiet=False, force=False):
     # so the key must be assembled here too: the template gates the card on
     # `data.runway` and silently renders nothing when it is absent, which is
     # indistinguishable from the card being switched off. None on API-billed
-    # setups or a missing/stale meter, and the template omits the card.
+    # setups or when the meter has never been read (a stale-but-present reading is
+    # kept and dated on the card), and the template omits the card.
     try:
         runway = runway_snapshot(days=30)
     except Exception:
@@ -30158,14 +30160,23 @@ def runway_snapshot(days=30, now=None):
     result estimated. `proxy` in the returned dict says so out loud; any surface
     rendering this MUST carry that through rather than printing a bare number.
 
-    Returns None when there is nothing trustworthy to say: no meter file, a
-    stale meter, or no measurable routing shift. Silence beats a wrong number.
-    Never raises.
+    Returns None when there is nothing trustworthy to say: no meter reading at
+    all, or no measurable routing shift. A stale-but-present meter is NOT dropped
+    -- this is the ONLY caller of the meter for the dashboard, which is viewed at
+    arbitrary times (the statusline only refreshes the meter while you are
+    actively working, so by the time you open the dashboard the reading is
+    routinely >30 min old). Vanishing then is exactly the "section doesn't
+    update" failure; instead the last real reading is carried through with
+    `meter_stale` + `meter_ts` so the card can label its freshness honestly and
+    refresh the instant a newer reading lands. A per-window guard below drops any
+    window whose reading is older than the window itself (its limit has reset).
+    Silence only when there is no reading to show. Never raises.
     """
     try:
         meters = _keepwarm_read_meters(now=now)
-        if not meters.get("available") or meters.get("stale"):
+        if not meters.get("available"):
             return None
+        meter_stale = bool(meters.get("stale"))
 
         # --- context lever: measured, never estimated ---
         consumed = saved = 0
@@ -30205,9 +30216,17 @@ def runway_snapshot(days=30, now=None):
             return None
 
         windows = []
+        meter_age_s = meters.get("age_s")
         for key, label, span_h in (("five_hour", "5h", 5), ("seven_day", "7d", 168)):
             used = meters.get("five_hour_pct" if key == "five_hour" else "seven_day_pct")
             if used is None:
+                continue
+            # Drop a window whose reading is older than the window itself: once a
+            # 5h reading is >5h old the 5h limit has certainly reset, so "12% used"
+            # is meaningless and "you'd already be cut off" is a lie. Per-window so
+            # a day-old reading still keeps the 7d window (valid for a week) while
+            # dropping the reset 5h one. If both drop, the card falls away (below).
+            if meter_age_s is not None and meter_age_s > span_h * 3600:
                 continue
             counterfactual = min(100.0, used * mult)
             head_now = max(0.0, 100.0 - used)
@@ -30237,6 +30256,8 @@ def runway_snapshot(days=30, now=None):
             "tokens_saved": int(saved),
             "windows": windows,
             "meter_age_s": meters.get("age_s"),
+            "meter_ts": meters.get("ts"),
+            "meter_stale": meter_stale,
             "proxy": ("Model weighting inside the provider's rate-limit windows is "
                       "not published; public input-rate ratios are used as a "
                       "stand-in. Window state is measured, the counterfactual is "

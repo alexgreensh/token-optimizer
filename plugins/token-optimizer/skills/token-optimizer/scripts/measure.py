@@ -21239,6 +21239,21 @@ def _daemon_ensure_throttle_seconds():
     return _int_env("TOKEN_OPTIMIZER_DAEMON_ENSURE_THROTTLE", 24 * 3600)
 
 
+def _daemon_pulse_probe_seconds():
+    """Cadence (seconds) of the mid-session liveness PROBE. Within this window the
+    per-turn pulse is a single config read -- no stat, no socket. Overridable via
+    TOKEN_OPTIMIZER_DAEMON_PULSE_PROBE (tests)."""
+    return _int_env("TOKEN_OPTIMIZER_DAEMON_PULSE_PROBE", 60)
+
+
+def _daemon_pulse_revive_seconds():
+    """Cadence (seconds) of the mid-session REVIVE. A persistently-dead daemon
+    (e.g. its port stolen by a foreign process) is retried at most this often so
+    the pulse never spawns a revive every minute. Independent of the 24h
+    SessionStart ensure throttle. Overridable via TOKEN_OPTIMIZER_DAEMON_PULSE_REVIVE."""
+    return _int_env("TOKEN_OPTIMIZER_DAEMON_PULSE_REVIVE", 300)
+
+
 def _ensure_dashboard_daemon(force=False):
     """SessionStart self-heal: INSTALL the dashboard daemon if missing, RESTART
     it if installed-but-dead, NO-OP when healthy. Default-on for every Claude
@@ -21394,6 +21409,98 @@ def _daemon_served_version(port=None, total_timeout=None):
             time.sleep(0.2)
             continue
     return None
+
+
+def _daemon_midsession_pulse():
+    """Per-turn liveness pulse (UserPromptSubmit) that revives a dashboard daemon
+    which died MID-session.
+
+    `_ensure_dashboard_daemon` self-heals only at SessionStart, so a daemon that
+    dies during a long session stays dead until the next session begins. This runs
+    once per user turn with its OWN short cadence, reuses the same tombstone-safe /
+    opt-out-respecting primitive, and NEVER blocks the turn:
+
+      * Probe throttle (60s): within the window the whole pulse is one config read.
+        No stat, no socket -- the per-turn hot-path cost is ~a small JSON read.
+      * Once per window: a sleepless 1s port probe. Alive -> done.
+      * Dead AND revive throttle (300s) open: spawn a DETACHED `daemon-revive`
+        subprocess (fire-and-forget) so kickstart + landing-verification run OFF
+        the hot path. The next probe (<=60s later) confirms it came back.
+
+    Concurrency: the throttle timestamps live in the shared config.json (machine-
+    wide, not per-session), so cadence is bounded across parallel sessions. A rare
+    two-session race just spawns two detached revives, which are idempotent
+    (`kickstart -k`) and self-serialise on `_daemon_install_lock` inside the
+    installer. Returns a short status string. Never raises, never blocks.
+    """
+    try:
+        # SAFETY gates run EVERY turn, BEFORE the probe throttle: a
+        # disabled/uninstalled/thrashing daemon must NEVER be revived, not even on
+        # the 59/60 throttled turns. All are cheap (a stat + a small config read +
+        # platform.system()); detect_runtime is paid by quality-cache regardless.
+        if _is_foreign_runtime() or detect_runtime() != "claude":
+            return "noop-foreign"
+        # Filesystem tombstone is AUTHORITATIVE and independent of config.json: a
+        # corrupt config would make `daemon_disabled` read False and defeat the
+        # opt-out (CORR-1). The breadcrumb is present after uninstall (size 0) or
+        # during a thrash back-off (>0); either way, do NOT revive.
+        try:
+            if os.path.exists(str(DAEMON_THRASH_BREADCRUMB)):
+                return "noop-tombstoned"
+        except OSError:
+            pass
+        if _read_config_flag("daemon_disabled", False):
+            return "noop-disabled"
+        if _normalized_platform() not in ("Darwin", "Linux", "Windows"):
+            return "noop-unsupported"
+        # Probe throttle: within the window the remaining cost is one config read.
+        now = time.time()
+        last_probe = _read_config_flag("last_daemon_midsession_probe", 0)
+        try:
+            if now - float(last_probe or 0) < _daemon_pulse_probe_seconds():
+                return "pulse-throttled"
+        except (TypeError, ValueError):
+            pass
+        # Stamp BEFORE the socket work so a slow/hung probe can't let the next turn
+        # through the throttle and pile up socket checks.
+        _write_config_flag("last_daemon_midsession_probe", int(now))
+        # Cheap sleepless liveness probe (identity-checked inside _verify_daemon_port).
+        if _verify_daemon_port(timeout_seconds=1, retries=1, retry_sleep=0):
+            return "noop-healthy"
+        # Dead. Revive throttle bounds the costly path independently of the probe.
+        last_revive = _read_config_flag("last_daemon_midsession_revive", 0)
+        try:
+            if now - float(last_revive or 0) < _daemon_pulse_revive_seconds():
+                return "revive-throttled"
+        except (TypeError, ValueError):
+            pass
+        _write_config_flag("last_daemon_midsession_revive", int(now))
+        # Detached fire-and-forget revive (or first-time install) -- the user's turn
+        # must NEVER block on kickstart + landing verification. POSIX detaches via
+        # start_new_session; Windows ignores that, so it needs creationflags
+        # (DETACHED_PROCESS + CREATE_NEW_PROCESS_GROUP + CREATE_BREAKAWAY_FROM_JOB)
+        # or the child dies with the hook's job object (CXP-1). The child runs
+        # `daemon-revive`, which calls _ensure_dashboard_daemon(force=True).
+        try:
+            _popen_kwargs = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                 stdin=subprocess.DEVNULL)
+            if os.name == "nt":
+                _flags = 0
+                for _f in ("DETACHED_PROCESS", "CREATE_NEW_PROCESS_GROUP",
+                           "CREATE_BREAKAWAY_FROM_JOB"):
+                    _flags |= getattr(subprocess, _f, 0)
+                if _flags:
+                    _popen_kwargs["creationflags"] = _flags
+            else:
+                _popen_kwargs["start_new_session"] = True
+            subprocess.Popen(
+                [sys.executable, str(MEASURE_PY_PATH), "daemon-revive"],
+                **_popen_kwargs)
+        except Exception:
+            return "revive-spawn-failed"
+        return "revive-spawned"
+    except Exception:
+        return "pulse-error"
 
 
 def _restart_dashboard_daemon(system):
@@ -35743,11 +35850,40 @@ if __name__ == "__main__":
         uninstall = "--uninstall" in args
         status = "--status" in args
         setup_smart_compact(dry_run=dry, uninstall=uninstall, status_only=status)
+    elif args[0] == "daemon-revive":
+        # Detached child spawned by _daemon_midsession_pulse. Revives a dead
+        # dashboard daemon OFF the hot path: force=True bypasses the 24h
+        # SessionStart ensure throttle; the parent's 5-min revive throttle bounds
+        # how often we are spawned. Silent + fail-open (never disrupts anything).
+        _revive_status = "error"
+        try:
+            _revive_status = _ensure_dashboard_daemon(force=True) or "unknown"
+        except Exception as _e:
+            _revive_status = "exception:" + type(_e).__name__
+        # OBS-1: record the last mid-session revive outcome so a persistently-
+        # failing revive is visible (doctor / manual inspection) instead of
+        # vanishing into DEVNULL. One overwritten line = naturally bounded.
+        try:
+            SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+            (SNAPSHOT_DIR / "daemon-revive-last.json").write_text(
+                json.dumps({"ts": int(time.time()), "status": _revive_status}),
+                encoding="utf-8")
+        except Exception:
+            pass
     elif args[0] == "quality-cache":
         # Hook wall-clock guard: the handler exits gracefully after 8s to
         # keep SessionStart / UserPromptSubmit responsive even under lock
         # contention or a pathologically slow filesystem.
         _tok_hook_old_sig = _install_hook_budget(8)
+        # Mid-session dashboard-daemon liveness pulse. quality-cache is the
+        # per-turn UserPromptSubmit handler, so piggybacking here adds NO new hook
+        # process (zero extra per-turn interpreter spawn). Cheap + throttled +
+        # detached revive, wrapped so it can never affect quality-cache output or
+        # timing. See _daemon_midsession_pulse.
+        try:
+            _daemon_midsession_pulse()
+        except Exception:
+            pass
         try:
             quiet = "--quiet" in args or "-q" in args
             warn = "--warn" in args

@@ -2598,17 +2598,18 @@ def quick_scan(as_json=False):
         if eager > 0:
             detail += f" ({eager} with eager-loaded tools)"
         offenders.append(("mcp", mcp_count, mcp.get("tokens", 0), detail))
-    claude_md_tokens = sum(
-        components[k].get("tokens", 0)
-        for k in components if k.startswith("claude_md") and components[k].get("exists")
-    )
-    claude_md_lines = sum(
-        components[k].get("lines", 0)
-        for k in components if k.startswith("claude_md") and components[k].get("exists")
-    )
-    if claude_md_tokens > 0:
-        offenders.append(("claude_md", claude_md_lines, claude_md_tokens,
-                         f"CLAUDE.md ({claude_md_lines} lines)"))
+    # Per-file CLAUDE.md offenders (don't blend multiple ancestor files into
+    # one "CLAUDE.md" entry — measure_components keys each one separately).
+    for k in sorted(components):
+        if not k.startswith("claude_md") or not components[k].get("exists"):
+            continue
+        f_tokens = components[k].get("tokens", 0)
+        f_lines = components[k].get("lines", 0)
+        f_path = components[k].get("path", "") or k
+        f_label = f_path.replace(str(HOME), "~") if f_path else k
+        if f_tokens > 0:
+            offenders.append(("claude_md", f_lines, f_tokens,
+                             f"{f_label} ({f_lines} lines)"))
     if detect_runtime() == "codex":
         agents_md_tokens = sum(
             components[k].get("tokens", 0)
@@ -2666,14 +2667,31 @@ def quick_scan(as_json=False):
                 "detail": f"save ~{savings:,} tokens/session",
                 "extend": f"Improves stable prompt-cache prefix and extends peak quality by ~{savings:,} tokens",
             }
-    if not quick_win and claude_md_tokens > 5000:
-        savings = claude_md_tokens - 4500
-        quick_win = {
-            "action": f"Slim CLAUDE.md from {claude_md_lines} lines to ~300",
-            "savings": savings,
-            "detail": f"save ~{savings:,} tokens/session",
-            "extend": f"Extends peak quality zone by ~{savings:,} tokens",
-        }
+    if not quick_win:
+        # Pick the largest single CLAUDE.md file over the internal ~4,500-token
+        # heuristic (per-file, not blended across ancestor files).
+        largest_claude_md = max(
+            (
+                (k, components[k])
+                for k in components
+                if k.startswith("claude_md") and components[k].get("exists")
+            ),
+            key=lambda kv: kv[1].get("tokens", 0),
+            default=(None, None),
+        )
+        if largest_claude_md[1] is not None:
+            lc_path = largest_claude_md[1].get("path", "") or largest_claude_md[0]
+            lc_label = lc_path.replace(str(HOME), "~") if lc_path else largest_claude_md[0]
+            lc_tokens = largest_claude_md[1].get("tokens", 0)
+            lc_lines = largest_claude_md[1].get("lines", 0)
+            if lc_tokens > 5000:
+                savings = lc_tokens - 4500
+                quick_win = {
+                    "action": f"Slim {lc_label} from {lc_lines} lines to ~300",
+                    "savings": savings,
+                    "detail": f"save ~{savings:,} tokens/session",
+                    "extend": f"Extends peak quality zone by ~{savings:,} tokens",
+                }
 
     # Coaching insight
     coaching = None
@@ -6169,33 +6187,39 @@ def generate_auto_recommendations(components, trends=None, days=30):
             f"Keep MEMORY.md as an index of high-signal, frequently-referenced items."
         )
 
-    # --- Rule 2: CLAUDE.md too large ---
-    claude_tokens = 0
-    claude_lines = 0
-    for key in components:
-        if key.startswith("claude_md") and components[key].get("exists"):
-            claude_tokens += components[key].get("tokens", 0)
-            claude_lines += components[key].get("lines", 0)
-    if claude_tokens > 6000:
-        quick.append(
-            f"**Slim CLAUDE.md ({claude_tokens:,} tokens, target ~4,500 / ~300 lines)**: "
-            f"Everything in CLAUDE.md loads every single message you send. "
-            f"Anthropic recommends under ~500 lines. The aggressive optimization target is ~300 lines (~4,500 tokens).\n"
-            f"  Move to skills (loaded on-demand, ~100 tokens in menu): workflow guides, coding standards, "
-            f"deployment procedures, detailed templates. "
-            f"Move to reference files (zero cost until read): API docs, config examples, architecture notes. "
-            f"Keep in CLAUDE.md: identity/personality, critical behavioral rules, key file paths, "
-            f"and short pointers to skills and references. "
-            f"Don't delete content, reorganize it. A 2-line pointer to a skill costs 100x less than "
-            f"the same content inline. ~{claude_tokens - 4500:,} tokens recoverable."
-        )
-    elif claude_tokens > 5000:
-        medium.append(
-            f"**Consider slimming CLAUDE.md ({claude_tokens:,} tokens)**: "
-            f"Your CLAUDE.md is above the ~4,500 token (~300 line) optimized target but not critically large. "
-            f"Review for any sections that could become skills or reference files. "
-            f"Focus on content that's only relevant for specific workflows."
-        )
+    # --- Rule 2: CLAUDE.md too large (per-file) ---
+    # measure_components() keys each ancestor CLAUDE.md as its own component
+    # (claude_md_global, claude_md_home, claude_md_project_<dir>), mirroring how
+    # Claude Code loads CLAUDE.md files up the directory tree. Report per-file
+    # instead of blending N files into one "Slim CLAUDE.md" number — a summed
+    # count isn't actionable on any single file someone owns.
+    for key in sorted(components):
+        if not key.startswith("claude_md") or not components[key].get("exists"):
+            continue
+        file_path = components[key].get("path", "") or key
+        file_lines = components[key].get("lines", 0)
+        file_tokens = components[key].get("tokens", 0)
+        file_label = file_path.replace(str(HOME), "~") if file_path else key
+        if file_tokens > 6000:
+            quick.append(
+                f"**Slim {file_label} ({file_tokens:,} tokens, {file_lines} lines; target ~4,500 / ~300 lines)**: "
+                f"Everything in this CLAUDE.md loads every single message you send. "
+                f"Anthropic recommends under ~500 lines. The aggressive optimization target is ~300 lines (~4,500 tokens).\n"
+                f"  Move to skills (loaded on-demand, ~100 tokens in menu): workflow guides, coding standards, "
+                f"deployment procedures, detailed templates. "
+                f"Move to reference files (zero cost until read): API docs, config examples, architecture notes. "
+                f"Keep in CLAUDE.md: identity/personality, critical behavioral rules, key file paths, "
+                f"and short pointers to skills and references. "
+                f"Don't delete content, reorganize it. A 2-line pointer to a skill costs 100x less than "
+                f"the same content inline. ~{file_tokens - 4500:,} tokens recoverable."
+            )
+        elif file_tokens > 5000:
+            medium.append(
+                f"**Consider slimming {file_label} ({file_tokens:,} tokens, {file_lines} lines)**: "
+                f"This CLAUDE.md is above the ~4,500 token (~300 line) optimized target but not critically large. "
+                f"Review for any sections that could become skills or reference files. "
+                f"Focus on content that's only relevant for specific workflows."
+            )
 
     # --- Rule 3: Unused skills (requires trends data) ---
     # Use actual measured avg if available, else fallback to constant

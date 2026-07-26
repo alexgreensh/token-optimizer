@@ -18,7 +18,6 @@ misleading string.
 Run: python3 -m pytest tests/test_claude_md_aggregation.py -v
 """
 
-import importlib
 import sys
 from pathlib import Path
 
@@ -90,6 +89,17 @@ def test_quick_scan_offenders_split_per_file(monkeypatch):
     monkeypatch.setattr(measure, "measure_components", lambda: _COMPONENTS_TWO_LARGE)
     monkeypatch.setattr(measure, "detect_context_window", lambda: (200_000, "test"))
     monkeypatch.setattr(measure, "detect_runtime", lambda: "claude")
+    # Stub the unmocked collaborators quick_scan() also calls so the test is
+    # hermetic: calculate_totals feeds overhead math, _collect_trends_data hits
+    # the real session/SQLite tree, and _auto_snapshot writes a real snap_*.json
+    # into SNAPSHOT_DIR/auto-snapshots/ on the host.
+    monkeypatch.setattr(
+        measure,
+        "calculate_totals",
+        lambda c: {"controllable_tokens": 0, "fixed_tokens": 0, "estimated_total": 0},
+    )
+    monkeypatch.setattr(measure, "_collect_trends_data", lambda *a, **k: None)
+    monkeypatch.setattr(measure, "_auto_snapshot", lambda *a, **k: None)
 
     result = measure.quick_scan(as_json=True)
 

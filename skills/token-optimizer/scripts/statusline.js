@@ -13,6 +13,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { execFileSync } = require('child_process');
 
 let input = '';
 process.stdin.setEncoding('utf8');
@@ -35,6 +36,17 @@ process.stdin.on('end', () => {
     const DIM = '\x1b[38;5;245m';
     const RESET = '\x1b[0m';
     const SEP = ` ${DIM}|${RESET} `;
+
+    let branch = '';
+    try {
+      const b = execFileSync('git', ['branch', '--show-current'], {
+        cwd: dir,
+        encoding: 'utf8',
+        timeout: 200,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+      if (b) branch = `${SEP}${DIM}(${b})${RESET}`;
+    } catch (e) {}
     const gradeFor = (s) => s >= 90 ? 'S' : s >= 80 ? 'A' : s >= 70 ? 'B' : s >= 55 ? 'C' : s >= 40 ? 'D' : 'F';
 
     // Effort level: prefer the LIVE session value Claude Code now passes in the
@@ -184,7 +196,7 @@ process.stdin.on('end', () => {
     }
 
     const dirname = path.basename(dir);
-    const row1 = `${DIM}${model}${RESET}${effort}${SEP}${DIM}${dirname}${RESET}${ctx}${qScore}`;
+    const row1 = `${DIM}${model}${RESET}${effort}${SEP}${DIM}${dirname}${RESET}${branch}${ctx}${qScore}`;
 
     // ---- ROW 2: Session details ----
     const row2Parts = [];

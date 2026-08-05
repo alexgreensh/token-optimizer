@@ -39,11 +39,8 @@ CHECKSUM_FILE="${REPO_ROOT}/CHECKSUMS.sha256"
 # mirror drifted from canonical root — a stale mirror ships outdated skills to Codex
 # users. See scripts/sync-codex-marketplace-plugin.sh and issue #51.
 echo "Verifying Codex marketplace plugin parity..."
-bash "${REPO_ROOT}/scripts/sync-codex-marketplace-plugin.sh" >/dev/null
-if ! git -C "$REPO_ROOT" diff --quiet -- plugins/token-optimizer; then
-    echo "Error: plugins/token-optimizer/ is out of sync with root skills/ or hooks/."
-    echo "Run scripts/sync-codex-marketplace-plugin.sh, commit the result, re-tag, then retry."
-    git -C "$REPO_ROOT" diff --stat -- plugins/token-optimizer
+if ! bash "${REPO_ROOT}/scripts/check-mirror-sync.sh"; then
+    echo "Error: mirror drift detected. Commit the regenerated mirror, re-tag, then retry."
     exit 1
 fi
 echo "Codex marketplace plugin parity OK."

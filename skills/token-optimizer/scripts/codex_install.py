@@ -54,6 +54,14 @@ def _hook_command(script: str, *args: str, redirect_quiet: bool = False) -> str:
         # current interpreter directly so the hot path does not traverse MSYS
         # bash and python-launcher.sh (several CreateProcess calls per hook).
         # list2cmdline applies native Windows quoting for paths with spaces.
+        #
+        # Verified 2026-08-05 against Codex CLI source: codex-rs/hooks/src/
+        # engine/command_runner.rs default_shell_command() spawns hooks as
+        # `%COMSPEC% /C <command>` (fallback cmd.exe) on Windows unless the
+        # user overrides the hook shell in config. So the cmd.exe syntax below
+        # (setlocal, for /f, 2^>NUL, >NUL 2>&1) is CORRECT here — do NOT
+        # "bash-ify" it. #118 was the inverse bug: Claude Code runs hooks via
+        # Git Bash, so measure.py's Claude-facing commands are POSIX-shaped.
         if _SEMVER_DIR_RE.match(root.name):
             # CMD needs a Windows-native counterpart to the POSIX runtime
             # resolver below. Keep the baked path as a fail-open fallback when

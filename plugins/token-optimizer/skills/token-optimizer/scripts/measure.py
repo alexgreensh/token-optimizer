@@ -17987,7 +17987,10 @@ def _windows_process_creation(pid):
             "| ForEach-Object { $_.ToString('o') }"
         )
         result = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", ps_cmd],
+            # -ExecutionPolicy Bypass for parity with the other PowerShell
+            # spawns: an AllSigned host would otherwise block this per-PID
+            # fallback and leave the session flagged UNKNOWN_AGE.
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
             capture_output=True, text=True, timeout=10, errors="replace", creationflags=_NO_WINDOW,
         )
         if result.returncode == 0 and result.stdout.strip():
@@ -18001,19 +18004,30 @@ def _windows_process_creation(pid):
 
 
 def _collect_windows_claude_sessions():
-    """Collect running Claude CLI sessions on Windows via tasklist + wmic.
+    """Collect running Claude CLI sessions on Windows via PowerShell Get-Process.
 
     Safety invariants (per adversarial review 2026-04-13):
-    - Only matches on the Image Name column (claude.exe / claude-*.exe).
+    - Only matches on the process image name (claude / claude-*).
       Matching on Window Title would catch Chrome tabs viewing claude.ai,
       editors with 'claude' in the filename, etc. kill_stale_sessions
       would then TerminateProcess those apps -> unsaved-work data loss.
       POSIX parity: ps-based match requires command == 'claude'; Windows
-      requires the same strictness.
-    - Uses Session # column (numeric) to detect service-hosted processes.
-      Services run in session 0; literal 'Services' string localizes.
-    - subprocess calls use errors='replace' so non-ASCII tasklist output
+      requires the same strictness. The PowerShell-side wildcard pre-filter
+      is a performance optimization only; the strict matcher below is the
+      security layer.
+    - Uses SessionId (numeric) to detect service-hosted processes.
+      Services run in session 0; unlike the literal 'Services' string,
+      SessionId never localizes.
+    - subprocess calls use errors='replace' so non-ASCII PowerShell output
       on localized Windows can't raise UnicodeDecodeError.
+
+    #117: the previous `tasklist /v` enumeration was pathologically slow for
+    standard (non-elevated) users on Win11 -- /v queries verbose info (incl.
+    window titles) for EVERY process, hitting access-denied retries on
+    protected and other-user processes. Get-Process -Name 'claude*' filters
+    server-side, so only candidate processes are materialized, and StartTime
+    is dereferenced inside a try/catch so protected processes can't fail the
+    query.
 
     Returns a list of session dicts. On subprocess failure returns an
     empty list (not None) so the Health tab still renders.
@@ -18022,9 +18036,21 @@ def _collect_windows_claude_sessions():
     import io as _io
 
     sessions = []
+    ps_cmd = (
+        # -Name 'claude*' filters server-side (only candidate processes are
+        # ever materialized), so the "touches only candidates" claim is real,
+        # not a post-enumeration Where-Object. -ErrorAction SilentlyContinue
+        # keeps a zero-match run from erroring.
+        "Get-Process -Name 'claude*' -ErrorAction SilentlyContinue | "
+        "Select-Object Id, ProcessName, SessionId, "
+        "@{N='StartTime';E={try { $_.StartTime.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') } catch { '' }}} | "
+        "ConvertTo-Csv -NoTypeInformation"
+    )
     try:
         result = subprocess.run(
-            ["tasklist", "/v", "/fo", "csv", "/nh"],
+            # -ExecutionPolicy Bypass so a locked-down host (AllSigned policy)
+            # can still run this inline -Command (tasklist needed no policy).
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
             capture_output=True, text=True, timeout=10, errors="replace", creationflags=_NO_WINDOW,
         )
     except (subprocess.SubprocessError, OSError, FileNotFoundError):
@@ -18033,18 +18059,15 @@ def _collect_windows_claude_sessions():
         return sessions
 
     try:
-        reader = list(_csv.reader(_io.StringIO(result.stdout)))
+        reader = list(_csv.DictReader(_io.StringIO(result.stdout)))
     except (_csv.Error, ValueError):
         return sessions
 
     for row in reader:
-        if len(row) < 9:
-            continue
-        image_name = row[0].strip()
-        pid_str = row[1]
-        session_name = row[2].strip()
-        session_num = row[3].strip() if len(row) > 3 else ""
-        window_title = row[8].strip()
+        image_name = (row.get("ProcessName") or "").strip()
+        pid_str = row.get("Id") or ""
+        session_id_str = (row.get("SessionId") or "").strip()
+        start_time = (row.get("StartTime") or "").strip()
         image_lower = image_name.lower()
         # Strict image-name match only. See docstring invariants.
         if not (image_lower == "claude.exe"
@@ -18058,24 +18081,28 @@ def _collect_windows_claude_sessions():
             continue
         if pid <= 0:
             continue
-        creation = _windows_process_creation(pid)
+        creation = _parse_iso_process_datetime(start_time) if start_time else None
+        if creation is None:
+            # StartTime unreadable (protected process) or unparseable: fall
+            # back to the per-PID wmic/CIM lookup.
+            creation = _windows_process_creation(pid)
         elapsed_seconds = int(creation.get("elapsed_seconds") or 0)
-        # Session # 0 is the Services session (language-independent); any
-        # other numeric value indicates a user session. Falls back to a
-        # non-empty session_name heuristic if the column is absent.
-        if session_num.isdigit():
-            has_terminal = session_num != "0"
-        else:
-            has_terminal = bool(session_name)
-        command = (image_name + " " + window_title).strip()
+        # SessionId 0 is the Services session (language-independent); any
+        # other value indicates a user session. A missing/unparseable
+        # SessionId assumes a user session (services always report 0).
+        try:
+            session_id = int(session_id_str)
+        except ValueError:
+            session_id = -1
+        has_terminal = session_id != 0
         sessions.append({
             "pid": pid,
             "started": creation.get("started", "unknown"),
             "elapsed_seconds": elapsed_seconds,
             "elapsed_human": _format_elapsed(elapsed_seconds) if elapsed_seconds else "unknown",
-            "command": command,
+            "command": image_name if image_lower.endswith(".exe") else image_name + ".exe",
             "has_terminal": has_terminal,
-            "tty": session_name if has_terminal and session_name else None,
+            "tty": f"session-{session_id}" if has_terminal and session_id > 0 else None,
         })
     return sessions
 
@@ -18340,17 +18367,22 @@ def health_selfcheck():
 
     # Live process-listing command
     if system == "Windows":
-        # tasklist probe
+        # Get-Process probe (same pipeline shape as
+        # _collect_windows_claude_sessions; #117 retired tasklist /v, which is
+        # pathologically slow for standard users on Win11)
         try:
             res = subprocess.run(
-                ["tasklist", "/v", "/fo", "csv", "/nh"],
-                capture_output=True, text=True, timeout=10, creationflags=_NO_WINDOW,
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+                 "Get-Process -ErrorAction SilentlyContinue | "
+                 "Select-Object -First 1 Id, ProcessName, SessionId | "
+                 "ConvertTo-Csv -NoTypeInformation"],
+                capture_output=True, text=True, timeout=10, errors="replace", creationflags=_NO_WINDOW,
             )
-            ok = res.returncode == 0 and len(res.stdout.strip()) > 0
-            check("tasklist /v /fo csv", ok,
+            ok = res.returncode == 0 and "ProcessName" in res.stdout
+            check("Get-Process csv probe", ok,
                   f"exit={res.returncode}, bytes={len(res.stdout)}")
         except (subprocess.SubprocessError, OSError, FileNotFoundError) as e:
-            check("tasklist /v /fo csv", False, f"exception: {e!r}")
+            check("Get-Process csv probe", False, f"exception: {e!r}")
 
         # _collect_windows_claude_sessions end-to-end
         try:
@@ -18523,13 +18555,18 @@ def kill_stale_sessions(threshold_hours=12, dry_run=False):
 SETTINGS_PATH = CLAUDE_DIR / "settings.json"
 MEASURE_PY_PATH = Path(__file__).resolve()
 if sys.platform == "win32":
-    _collect_cmd = subprocess.list2cmdline(
-        [sys.executable, str(MEASURE_PY_PATH), "collect", "--quiet"]
+    # #118: Claude Code runs hooks through Git Bash even on native Windows, so
+    # this must be POSIX-shell syntax: >/dev/null (a cmd null redirect would
+    # become a literal file named NUL in the CWD) and forward-slash,
+    # single-quoted paths (not cmd.exe list2cmdline quoting). sys.executable
+    # with forward slashes runs fine from Git Bash; bare `python3` often does
+    # not exist there.
+    _py = shlex.quote(str(sys.executable).replace("\\", "/"))
+    _mp = shlex.quote(str(MEASURE_PY_PATH).replace("\\", "/"))
+    HOOK_COMMAND = (
+        f"{_py} {_mp} collect --quiet && {_py} {_mp} dashboard --quiet"
+        f" >/dev/null 2>&1"
     )
-    _dashboard_cmd = subprocess.list2cmdline(
-        [sys.executable, str(MEASURE_PY_PATH), "dashboard", "--quiet"]
-    )
-    HOOK_COMMAND = f"{_collect_cmd} && {_dashboard_cmd} >NUL 2>&1"
 else:
     HOOK_COMMAND = f"python3 '{MEASURE_PY_PATH}' collect --quiet && python3 '{MEASURE_PY_PATH}' dashboard --quiet"
 # Recognizes Token Optimizer's SessionEnd hook command: a script named
@@ -18644,6 +18681,15 @@ def _is_hook_current(settings=None):
         for hook in hook_list:
             cmd = hook.get("command", "") if isinstance(hook, dict) else ""
             if "measure.py" in cmd and "collect" in cmd and "dashboard" in cmd:
+                # #118: the pre-fix win32 SessionEnd command matched all three
+                # substrings but used a cmd.exe NUL-device redirect that breaks
+                # under Git Bash (literal NUL file + silent failure). Treat that
+                # legacy form as NOT current so setup_hook's upgrade branch
+                # rewrites it to the bash-safe >/dev/null form. Existing broken
+                # installs are the whole reported #118 population, so this is the
+                # only path that heals them.
+                if sys.platform == "win32" and re.search(r">\s*NUL\b", cmd):
+                    return False
                 return True
     return False
 
@@ -20191,43 +20237,38 @@ def _resolve_hook_command(template_cmd, plugin_root):
 
     Script installs don't use Claude Code's plugin loader, so we need to
     substitute ${CLAUDE_PLUGIN_ROOT} ourselves with the install directory.
+
+    #118: Claude Code runs hooks through Git Bash on Windows too, so the bash
+    launcher template is already the correct form there. The only
+    Windows-specific hardening is substituting a forward-slash root, so
+    backslash sequences in user names (\\t, \\n, ...) can't be mangled inside
+    bash double quotes. The pre-fix native cmd.exe conversion (list2cmdline +
+    cmd null redirect) created a literal NUL file and silently broke hooks.
     """
     if not template_cmd:
         return template_cmd
+    root = str(plugin_root)
     if platform.system() == "Windows":
-        return _windows_hook_command(template_cmd, plugin_root)
-    resolved = template_cmd.replace("${CLAUDE_PLUGIN_ROOT}", str(plugin_root))
-    resolved = resolved.replace("$CLAUDE_PLUGIN_ROOT", str(plugin_root))
+        root = root.replace("\\", "/")
+    # No shell-metachar escaping needed here: the sole caller (setup_all_hooks)
+    # rejects roots containing ' " ` $ ; & | < > (SEC-001) before this runs, so
+    # the substituted root is always inert in the bash double-quote context.
+    resolved = template_cmd.replace("${CLAUDE_PLUGIN_ROOT}", root)
+    resolved = resolved.replace("$CLAUDE_PLUGIN_ROOT", root)
     return resolved
 
 
-def _windows_hook_command(template_cmd, plugin_root):
-    """Convert a hooks.json bash launcher command to a native Windows command."""
-    match = re.search(
-        r'["\']?\$\{?CLAUDE_PLUGIN_ROOT\}?/hooks/run\.py["\']?\s+'
-        r'(.*?);\s*done;\s*exit\s+0\s*$',
-        template_cmd,
-    )
-    if not match:
-        # Non-Python hooks (for example an intentional echo command) retain
-        # their original semantics; only the known launcher shape is rewritten.
-        return template_cmd.replace("${CLAUDE_PLUGIN_ROOT}", str(plugin_root)).replace(
-            "$CLAUDE_PLUGIN_ROOT", str(plugin_root)
-        )
-
-    args = shlex.split(match.group(1), posix=True)
-    while args and args[-1] in (">/dev/null", "2>&1"):
-        args.pop()
-    argv = [sys.executable, str(Path(plugin_root) / "hooks" / "run.py"), *args]
-    return subprocess.list2cmdline(argv) + " >NUL 2>&1"
-
-
 def _windows_hook_command_is_stale(existing_cmd, resolved_cmd):
-    """True when SessionStart should replace a legacy Windows bash launcher."""
+    """True when SessionStart should replace a legacy Windows hook command.
+
+    Legacy means the pre-#118 native cmd.exe form (list2cmdline argv + a cmd
+    null redirect), which fails under Git Bash. The current form is the bash
+    launcher, identical in shape to POSIX.
+    """
     return (
         platform.system() == "Windows"
         and existing_cmd != resolved_cmd
-        and "python-launcher.sh" in existing_cmd
+        and re.search(r">\s*NUL\b", existing_cmd) is not None
     )
 
 
@@ -20603,12 +20644,20 @@ def setup_all_hooks(dry_run=False, verbose=False):
                     existing_cmd = existing_hook.get("command", "")
                     has_path = ".py" in existing_cmd or ".py" in resolved_cmd
                     # On Windows, an existing command can point at the current
-                    # root yet still be the legacy Git-Bash launcher. Replace
-                    # it with the native direct-Python form during ensure-health.
+                    # root yet still be the legacy native cmd.exe form (#118).
+                    # Replace it with the Git-Bash launcher during ensure-health.
                     windows_command_stale = _windows_hook_command_is_stale(
                         existing_cmd, resolved_cmd
                     )
-                    if (not has_path or plugin_root_str in existing_cmd) and not windows_command_stale:
+                    # #118 follow-up: _resolve_hook_command now embeds a
+                    # forward-slash root on Windows, but plugin_root_str keeps
+                    # native backslashes, so a raw substring test never matches
+                    # post-fix and every hook would be "replaced" on every run
+                    # (perpetual settings.json rewrite). Normalize separators.
+                    root_in_cmd = (
+                        plugin_root_str.replace("\\", "/") in existing_cmd.replace("\\", "/")
+                    )
+                    if (not has_path or root_in_cmd) and not windows_command_stale:
                         skipped += 1
                         if verbose:
                             print(f"  [skip] {event}[{matcher}] {ident} (already present)")

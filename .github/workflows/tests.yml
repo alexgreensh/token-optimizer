@@ -59,6 +59,19 @@ jobs:
       - name: Run tests
         run: python -m pytest tests/ -q
 
+  # plugins/token-optimizer/ is a generated mirror of root skills/ + hooks/
+  # (scripts/sync-codex-marketplace-plugin.sh). Until now drift was only
+  # caught at release-signing time, so a canonical-only edit could land on
+  # main and ship a stale mirror to Codex users until the next release.
+  # Regenerate and diff on every push/PR instead. ~5s, pure file copy + git.
+  mirror-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Verify Codex marketplace mirror is in sync
+        run: bash scripts/check-mirror-sync.sh
+
   # Windows leg: runs the same suite plus a real-spawn smoke test that
   # exercises spawn_utils.spawn_detached against an actual child process.
   # Catches console-flash regressions and CREATE_BREAKAWAY_FROM_JOB failures

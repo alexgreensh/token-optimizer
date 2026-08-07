@@ -2295,6 +2295,33 @@ def _is_1m_model(model_str):
     return True
 
 
+def _context_window_for_model_str(model_str):
+    """Resolve a context-window size for a SPECIFIC model string (e.g. one
+    parsed straight out of a transcript message), honoring the same
+    explicit-override precedence as detect_context_window() -- but keyed to
+    the model that actually produced the tokens being measured, not an
+    env/config global that may name a different model entirely (e.g. a
+    1M-context variant like "claude-opus-5[1m]" running while
+    CLAUDE_MODEL/settings.json still say plain "opus").
+    """
+    if os.environ.get("CLAUDE_CODE_DISABLE_1M_CONTEXT") == "1":
+        return 200_000
+    raw = os.environ.get("TOKEN_OPTIMIZER_CONTEXT_SIZE", "").strip()
+    if raw:
+        try:
+            return int(raw)
+        except ValueError:
+            pass
+    if _cli_context_size:
+        return _cli_context_size
+    m = (model_str or "").lower().strip()
+    if not m:
+        return None
+    if "haiku" in m:
+        return 200_000
+    return 1_000_000 if _is_1m_model(m) else 200_000
+
+
 _codex_config_cache: tuple[float, dict] | None = None
 
 
@@ -24263,6 +24290,12 @@ def _parse_jsonl_for_quality(filepath):
         "total_entries": idx,
         "context_tokens": context_tokens,
         "model": current_model,
+        # Context-window size for THIS session's actual model, not the
+        # env/config global that detect_context_window() falls back to.
+        # See _context_window_for_model_str() -- fixes fill%/quality scoring
+        # for sessions whose live model differs from CLAUDE_MODEL/settings.json
+        # (e.g. a 1M-context variant while the global default says plain).
+        "model_context_window": _context_window_for_model_str(current_model),
     }
 
 

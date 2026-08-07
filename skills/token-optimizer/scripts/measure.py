@@ -28125,7 +28125,19 @@ def compact_restore(session_id=None, cwd=None, is_compact=False, new_session_onl
             return
         desc = _checkpoint_descriptor(latest["path"])
         about = f" (prior work on {desc})" if desc else ""
-        print(f"[Token Optimizer] A recent checkpoint is available{about} at {latest['path']}. Load it only if it matches what you are working on now.")
+        # Make the cross-session nature explicit: project+branch alone is not
+        # distinguishing in a shared checkout with many concurrent sessions in
+        # the same cwd/branch, so an unlabeled pointer reads as "your own prior
+        # work" even when it never is (own-session checkpoints are excluded from
+        # `chosen` above by construction). Name the source session so a reader
+        # cannot mistake it for continuity of the current session.
+        src_sid_match = re.match(r'^([0-9a-fA-F-]{8,36})-\d{8}-\d{6}-', latest["filename"])
+        src_sid_short = src_sid_match.group(1)[:8] if src_sid_match else None
+        if src_sid_short and (not sid_safe or not sid_safe.startswith(src_sid_short)):
+            print(f"[Token Optimizer] A checkpoint from a DIFFERENT session ({src_sid_short}){about} is available at {latest['path']}. "
+                  f"This is NOT your own session's prior work -- load it only if you intend to resume that other session's work.")
+        else:
+            print(f"[Token Optimizer] A recent checkpoint is available{about} at {latest['path']}. Load it only if it matches what you are working on now.")
         return
 
     if is_compact and sid_safe:

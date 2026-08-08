@@ -30886,9 +30886,10 @@ _LOOP_LAST_MESSAGES = 4
 # Transient nudge/loop/warning state that must survive across the separate
 # UserPromptSubmit and PostCompact hook processes. compute_quality_score() builds
 # a fresh result each run, so quality_cache() carries these forward from the prior
-# on-disk cache. Any new "_nudge_*"/"_loop_*"/warning-dedup key set in _maybe_nudge
-# or _maybe_loop_warning MUST be registered here — a sibling key silently missing
-# from this set is exactly what broke the nudge follow-through credit (A6).
+# on-disk cache. Any new "_nudge_*"/"_loop_*"/"_warn_*"/warning-dedup key set in
+# _maybe_nudge, _maybe_loop_warning, or _maybe_quality_warn MUST be registered
+# here — a sibling key silently missing from this set is exactly what broke the
+# nudge follow-through credit (A6).
 _CARRY_KEYS = (
     "_nudge_fill_pct_at_fire",
     "_nudge_fire_epoch",
@@ -30900,6 +30901,9 @@ _CARRY_KEYS = (
     "progressive_bands_captured",
     "_last_fill_warn_level",
     "_last_tool_call_warn_level",
+    "_warn_count",
+    "_warn_last_epoch",
+    "_warn_last_band",
 )
 
 
@@ -31153,6 +31157,53 @@ def _maybe_nudge(result, cache_path, quality_data, quiet=False):
     )
 
 
+def _maybe_quality_warn(result, warn_threshold):
+    """Gate the `quality-cache --warn` CLI message with the same guardrails
+    _maybe_nudge already has: session cap + cooldown + "only re-fire on a NEW
+    lower quality band."
+
+    Without this, the plain-text warning ("Context quality: N/100. Stale reads
+    and bloated results building up. Consider /compact.") re-printed on every
+    UserPromptSubmit where score < warn_threshold -- no cap, no cooldown, no
+    "only if it got worse" check. A session hovering in one band under the
+    default warn_threshold=70 (e.g. 69 -> 66 -> 64 -> 62) nagged on every
+    single prompt. _maybe_nudge, its sibling above, already solved this exact
+    problem for the proactive nudge; this reuses the same constants
+    (_NUDGE_SESSION_CAP, _NUDGE_COOLDOWN_SECONDS) so both paths behave
+    consistently. A later drop into a new lower 10-point band (e.g. from the
+    60s into the 50s) still warns again, since that is new information worth
+    surfacing even mid-cooldown-window.
+
+    Returns True if the CLI should print the warning this tick.
+    """
+    score = result.get("score")
+    if score is None or score >= warn_threshold:
+        return False
+
+    warn_count = result.get("_warn_count", 0)
+    last_warn_epoch = result.get("_warn_last_epoch", 0)
+    last_band = result.get("_warn_last_band")
+    band = int(score // 10)
+
+    if warn_count >= _NUDGE_SESSION_CAP:
+        return False
+
+    now = time.time()
+    if now - last_warn_epoch < _NUDGE_COOLDOWN_SECONDS:
+        return False
+
+    # Only re-warn once quality has dropped into a NEW lower band since the
+    # last warning fired (e.g. from the 60s into the 50s). Repeated ticks
+    # within the same band are exactly the spam this guards against.
+    if last_band is not None and band >= last_band:
+        return False
+
+    result["_warn_count"] = warn_count + 1
+    result["_warn_last_epoch"] = now
+    result["_warn_last_band"] = band
+    return True
+
+
 def _maybe_loop_warning(result, cache_path, quality_data, quiet=False):
     """Check for real-time loops. Returns systemMessage string or None."""
     if not _is_v5_feature_enabled("loop_detection"):
@@ -31242,7 +31293,7 @@ def _release_quality_lock(lock):
     lock.release()
 
 
-def quality_cache(throttle_seconds=120, warn_threshold=70, quiet=False, session_jsonl=None, force=False, pure_time_throttle=False, session_id=None):
+def quality_cache(throttle_seconds=120, warn_threshold=70, quiet=False, session_jsonl=None, force=False, pure_time_throttle=False, session_id=None, warn=False):
     """Run quality analysis and write score to cache file for status line.
 
     Skips analysis if cache is younger than throttle_seconds (unless force=True).
@@ -31250,6 +31301,10 @@ def quality_cache(throttle_seconds=120, warn_threshold=70, quiet=False, session_
         session_jsonl: Path string to the session JSONL (from hook transcript_path).
                        If provided, used directly instead of guessing by mtime.
         force: If True, bypass throttle (used by PostCompact hook for immediate refresh).
+        warn: If True and the (possibly just-recomputed) score is below warn_threshold,
+                       print the plain-text "Context quality: N/100..." CLI warning --
+                       gated by _maybe_quality_warn (cap + cooldown + band-drop) the
+                       same way the proactive nudge below is gated.
         pure_time_throttle: If True, throttle purely on cache age and ignore whether
                        the transcript changed. The default (False) recomputes whenever
                        the session changed, which is right for the infrequent
@@ -31481,6 +31536,28 @@ def quality_cache(throttle_seconds=120, warn_threshold=70, quiet=False, session_
                 print(json.dumps({"systemMessage": fresh_msg}))
             except Exception:
                 pass
+
+        # `quality-cache --warn` plain-text CLI warning (distinct from the
+        # systemMessage JSON above -- this is what the UserPromptSubmit hook
+        # actually installs: `quality-cache --warn --quiet`). Gated by
+        # _maybe_quality_warn so it no longer re-prints on every prompt while a
+        # session sits in one quality band; see that function for the rationale.
+        if warn and _maybe_quality_warn(result, warn_threshold):
+            _emit_warn = True
+            try:
+                from context_pressure import should_inject, get_pressure_level, log_suppression
+                _wf = str(filepath) if filepath else None
+                if not should_inject(_wf, session_id=_session_id, priority="informational"):
+                    log_suppression("quality_warning", get_pressure_level(_wf, session_id=_session_id))
+                    _emit_warn = False
+            except Exception:
+                pass
+            if _emit_warn:
+                if result["score"] < 50:
+                    print(f"[Token Optimizer] Context quality: {result['score']}/100 (critical). Heavy rot detected. Consider /clear with checkpoint.")
+                else:
+                    print(f"[Token Optimizer] Context quality: {result['score']}/100. Stale reads and bloated results building up. Consider /compact.")
+            _write_quality_cache(cache_path, result)
 
         # Nudge follow-through: if PostCompact triggered this run (force=True)
         # and a nudge preceded the compact, measure the actual fill_pct recovery.
@@ -38989,7 +39066,12 @@ if __name__ == "__main__":
                     session_id_from_hook = payload.get("session_id")
                 except (json.JSONDecodeError, OSError):
                     pass
-            score = quality_cache(throttle_seconds=throttle, warn_threshold=warn_threshold, quiet=quiet, session_jsonl=session_jsonl, force=force, pure_time_throttle=throttle_only, session_id=session_id_from_hook)
+            # The --warn print itself now happens inside quality_cache() (gated by
+            # _maybe_quality_warn: session cap + cooldown + band-drop), so it can
+            # reuse the already-resolved filepath/cache_path/result instead of
+            # re-deriving them here. See quality_cache()'s `warn` handling for the
+            # actual message text and gating.
+            score = quality_cache(throttle_seconds=throttle, warn_threshold=warn_threshold, quiet=quiet, session_jsonl=session_jsonl, force=force, pure_time_throttle=throttle_only, session_id=session_id_from_hook, warn=warn)
             # Tripwire piggyback: the --throttle-only invocation fires on the
             # PostToolUse Edit/Write path (where active first-read follow-ups are
             # resolved), so this is the natural place to refresh the per-cohort
@@ -39000,20 +39082,6 @@ if __name__ == "__main__":
                     evaluate_cohort_tripwire()
                 except Exception:
                     pass
-            if warn and score is not None and score < warn_threshold:
-                _emit_warn = True
-                try:
-                    from context_pressure import should_inject, get_pressure_level, log_suppression
-                    if not should_inject(session_jsonl, priority="informational"):
-                        log_suppression("quality_warning", get_pressure_level(session_jsonl))
-                        _emit_warn = False
-                except Exception:
-                    pass
-                if _emit_warn:
-                    if score < 50:
-                        print(f"[Token Optimizer] Context quality: {score}/100 (critical). Heavy rot detected. Consider /clear with checkpoint.")
-                    else:
-                        print(f"[Token Optimizer] Context quality: {score}/100. Stale reads and bloated results building up. Consider /compact.")
         except _HookTimeout:
             print(
                 "[Token Optimizer] hook budget exceeded; skipping quality-cache tick to keep session responsive",

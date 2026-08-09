@@ -1,0 +1,44 @@
+[
+  {
+    "name": "korean_multichar_word",
+    "prompt": "데이터베이스 마이그레이션 이어서 해줘",
+    "checkpoint": "데이터베이스 마이그레이션 스크립트 작성 계속",
+    "expect_match": true,
+    "why": "#127: 4+char Hangul words (데이터베이스, 마이그레이션) now tokenize and match; the old ASCII-only class returned [] and scored a hard 0.0."
+  },
+  {
+    "name": "spanish_accented_latin",
+    "prompt": "continuar la migración del módulo de pago",
+    "checkpoint": "refactor de la migración del módulo de pago",
+    "expect_match": true,
+    "why": "#127: accented Latin (migración, módulo) stays whole instead of splitting at the accent into 'dulo'-style fragments."
+  },
+  {
+    "name": "chinese_identical_run",
+    "prompt": "继续数据库迁移工作",
+    "checkpoint": "继续数据库迁移工作 已完成部分",
+    "expect_match": true,
+    "why": "#127: a Han run is captured as one token, so an identical run in the checkpoint matches. (Word-level matching across differing runs still needs a segmenter — see chinese_segmentation_limit.)"
+  },
+  {
+    "name": "ascii_regression",
+    "prompt": "continue the keepwarm experiment",
+    "checkpoint": "keepwarm experiment daemon notes",
+    "expect_match": true,
+    "why": "Regression guard: pure-ASCII scoring is unchanged by the two-branch tokenizer."
+  },
+  {
+    "name": "chinese_segmentation_limit",
+    "prompt": "继续重构支付模块",
+    "checkpoint": "支付模块重构 的后续",
+    "expect_match": false,
+    "why": "KNOWN LIMIT: Chinese/Japanese have no word spaces, so a whole run only matches an identical run. '继续重构支付模块' != '支付模块重构'. True word-level parity needs morphological segmentation (jieba/mecab), tracked as a follow-up."
+  },
+  {
+    "name": "korean_short_noun_limit",
+    "prompt": "결제 모듈 확인",
+    "checkpoint": "결제 모듈 배포",
+    "expect_match": false,
+    "why": "KNOWN LIMIT: the len>3 filter (an English stopword heuristic) drops 2-char Korean nouns 결제/모듈, so continuity built only on short nouns still scores 0. Lowering the CJK length floor is the morphology follow-up; issue #127 deliberately left it."
+  }
+]

@@ -11,7 +11,7 @@
  * known limits (Chinese cross-run matching, short-Korean-noun len>3 floor).
  */
 import { test, expect } from "bun:test";
-import { resumeTopicScore } from "./continuity.js";
+import { resumeTopicScore, keywordRelevanceScore } from "./continuity.js";
 import i18nFixtureJson from "../../tests/fixtures/i18n_topic_score_parity.json";
 
 type Row = { name: string; prompt: string; checkpoint: string; expect_match: boolean; why: string };
@@ -20,6 +20,15 @@ const I18N_FIXTURE = i18nFixtureJson as Row[];
 test("resumeTopicScore matches the shared i18n parity fixture (#127)", () => {
   for (const row of I18N_FIXTURE) {
     const score = resumeTopicScore(row.prompt, row.checkpoint);
+    expect(score > 0).toBe(row.expect_match);
+  }
+});
+
+test("keywordRelevanceScore matches the shared i18n parity fixture (#127)", () => {
+  // Third changed site, live in cross-session scoring. Pass checkpoint as precomputedContent
+  // so no file I/O is needed. Same rows, same verdicts as Python + resumeTopicScore.
+  for (const row of I18N_FIXTURE) {
+    const score = keywordRelevanceScore(row.prompt, "unused-path", row.checkpoint);
     expect(score > 0).toBe(row.expect_match);
   }
 });

@@ -264,10 +264,11 @@ export function resumeTopicScore(prompt: string, content: string): number {
   const residual = (prompt ?? "").toLowerCase().replace(RESUME_INTENT_RE, " ");
 
   // Extract words: len > 3, not in glue stopwords.
-  // Regex: hyphen last = literal (avoids unintended range +-); no bare + char.
-  // Mirrors Python: re.findall(r"[a-zA-Z0-9_./:-]+", ...).
+  // Two-branch tokenizer (#127): ASCII/accented-Latin run OR a whole non-ASCII
+  // (CJK) run as one token, so continuity fires on Korean/Chinese/Japanese prompts.
+  // Ranges skip x U+00D7 / ÷ U+00F7 (symbols). Mirrors Python measure.py exactly.
   const topicTokens = new Set(
-    (residual.match(/[a-zA-Z0-9_./:-]+/g) ?? [])
+    (residual.match(/[a-zA-Z0-9_.:À-ÖØ-öø-ÿĀ-ɏ/-]+|[^\x00-\x7F]+/g) ?? [])
       .filter((w) => w.length > 3 && !RESUME_TOPIC_STOPWORDS.has(w)),
   );
 
@@ -277,7 +278,7 @@ export function resumeTopicScore(prompt: string, content: string): number {
   // len > 3 filter mirrors Python's cp_tokens set; also enables the cpTokens.size === 0
   // early-exit guard to work correctly on thin/empty checkpoints.
   const cpTokens = new Set(
-    ((content ?? "").toLowerCase().match(/[a-zA-Z0-9_./:-]+/g) ?? [])
+    ((content ?? "").toLowerCase().match(/[a-zA-Z0-9_.:À-ÖØ-öø-ÿĀ-ɏ/-]+|[^\x00-\x7F]+/g) ?? [])
       .filter((w) => w.length > 3),
   );
   if (cpTokens.size === 0) return 0.0;

@@ -323,9 +323,11 @@ export function keywordRelevanceScore(
     if (lower.includes(phrase)) return 1.0;
   }
 
-  // Content-word extraction: tokens >3 chars (avoids stopword list)
+  // Content-word extraction: tokens >3 chars (avoids stopword list).
+  // Two-branch tokenizer (#127), mirrors Python measure.py: ASCII/accented-Latin
+  // run OR a whole non-ASCII (CJK) run as one token; ranges skip x U+00D7 / ÷ U+00F7.
   function contentWords(s: string): Set<string> {
-    const matches = s.toLowerCase().match(/[a-zA-Z0-9_./:-]+/g) ?? [];
+    const matches = s.toLowerCase().match(/[a-zA-Z0-9_.:À-ÖØ-öø-ÿĀ-ɏ/-]+|[^\x00-\x7F]+/g) ?? [];
     return new Set(matches.filter((w) => w.length > 3));
   }
 
@@ -906,14 +908,15 @@ const RESUME_TOPIC_BAR = Number.parseFloat(
 export function resumeTopicScore(promptText: string, checkpointContent: string): number {
   const residual = (promptText ?? "").toLowerCase().replace(RESUME_INTENT_RE, " ");
   const topicTokens = new Set(
-    (residual.match(/[a-zA-Z0-9_./:-]+/g) ?? []).filter(
+    // Two-branch tokenizer (#127) — see contentWords for the range rationale.
+    (residual.match(/[a-zA-Z0-9_.:À-ÖØ-öø-ÿĀ-ɏ/-]+|[^\x00-\x7F]+/g) ?? []).filter(
       (w) => w.length > 3 && !RESUME_TOPIC_STOPWORDS.has(w)
     )
   );
   if (topicTokens.size === 0) return 0.0;
 
   const cpTokens = new Set(
-    (checkpointContent.toLowerCase().match(/[a-zA-Z0-9_./:-]+/g) ?? []).filter(
+    (checkpointContent.toLowerCase().match(/[a-zA-Z0-9_.:À-ÖØ-öø-ÿĀ-ɏ/-]+|[^\x00-\x7F]+/g) ?? []).filter(
       (w) => w.length > 3
     )
   );

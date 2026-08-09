@@ -28687,8 +28687,13 @@ def _resume_topic_score(text, checkpoint_path):
     keepwarm one") scores higher than a vague "continue last session" (-> 0.0).
     """
     residual = _RESUME_INTENT_RE.sub(" ", str(text or "").lower())
+    # Two-branch tokenizer (#127): an ASCII/accented-Latin run, OR a whole non-ASCII
+    # run (CJK etc.) as one token. A token never mixes ASCII and non-ASCII, so
+    # "measure.py" still matches even when a Korean particle abuts it ("measure.py를").
+    # The Latin-1/Extended-A ranges deliberately skip U+00D7 (x) and U+00F7 (÷),
+    # which sit inside the block but are math symbols, not letters.
     topic_tokens = {
-        w for w in re.findall(r"[a-zA-Z0-9_./:-]+", residual)
+        w for w in re.findall(r"[a-zA-Z0-9_.:À-ÖØ-öø-ÿĀ-ɏ/-]+|[^\x00-\x7F]+", residual)
         if len(w) > 3 and w not in _RESUME_TOPIC_STOPWORDS
     }
     if not topic_tokens:
@@ -28697,7 +28702,7 @@ def _resume_topic_score(text, checkpoint_path):
         content = checkpoint_path.read_text(encoding="utf-8").lower()
     except (PermissionError, OSError):
         return 0.0
-    cp_tokens = {w for w in re.findall(r"[a-zA-Z0-9_./:-]+", content) if len(w) > 3}
+    cp_tokens = {w for w in re.findall(r"[a-zA-Z0-9_.:À-ÖØ-öø-ÿĀ-ɏ/-]+|[^\x00-\x7F]+", content) if len(w) > 3}
     if not cp_tokens:
         return 0.0
     return len(topic_tokens & cp_tokens) / len(topic_tokens)
@@ -30085,9 +30090,11 @@ def keyword_relevance_score(text, checkpoint_path):
     """
     text_lower = text.lower()
 
-    # Extract content words (>3 chars, filters most stopwords without a list)
+    # Extract content words (>3 chars, filters most stopwords without a list).
+    # Two-branch tokenizer (#127): keeps non-ASCII (CJK) as its own token and folds
+    # accented Latin into the run; ranges skip U+00D7 (x) / U+00F7 (÷) symbols.
     def content_words(s):
-        return {w for w in re.findall(r'[a-zA-Z0-9_./:-]+', s.lower()) if len(w) > 3}
+        return {w for w in re.findall(r'[a-zA-Z0-9_.:À-ÖØ-öø-ÿĀ-ɏ/-]+|[^\x00-\x7F]+', s.lower()) if len(w) > 3}
 
     text_tokens = content_words(text)
 

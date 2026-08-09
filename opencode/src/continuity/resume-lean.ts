@@ -45,7 +45,7 @@ export const RESUME_INTENT_RE = new RegExp(
     "|last time",
     "|where we left off",
     "|pick(?:ing)? up where",
-    "|continue (?:working|where|on|our|the|with|that|this)",
+    "|continue (?:working|where|on|our|the|with|that|this|from)",
     "|carry on (?:with|where)",
     "|what we (?:discussed|talked about|were (?:doing|working))",
     "|resume (?:our|that|this|work|the (?:work|session|project|task|conversation|thread|discussion))",
@@ -440,7 +440,10 @@ export function buildLeanResumeContext(
   // Extract topic summary from content text (it's after "## Topic Summary\n")
   // Run through safeScalar to strip control chars before injection (prompt-injection defense).
   let topicSummary = "";
-  const topicMatch = cp.content.match(/^## Topic Summary\s*\n([\s\S]*?)(?:^##|\z)/m);
+  // Terminate at the next "## " heading OR end of input. JS has no \z; the old regex used
+  // it as a literal "z", truncating the summary at its first "z" (amazing -> "ama") or failing
+  // outright when no trailing heading existed. $(?![\s\S]) is a true end-of-string assertion.
+  const topicMatch = cp.content.match(/^## Topic Summary\s*\n([\s\S]*?)(?:^##|$(?![\s\S]))/m);
   if (topicMatch) {
     topicSummary = safeScalar(topicMatch[1].trim(), 200);
   }

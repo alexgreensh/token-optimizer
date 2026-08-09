@@ -828,7 +828,7 @@ function extractHintedPaths(checkpointContent) {
 // on "resume the nginx process".  `resume the X` only fires when X is a
 // session/work noun, not an arbitrary process or command name.
 // Mirrors Python _RESUME_INTENT_RE (just fixed in measure.py).
-exports.RESUME_INTENT_RE = /\b(last session|previous session|prior session|earlier session|last time|where we left off|pick(?:ing)? up where|continue (?:working|where|on|our|the|with|that|this)|carry on (?:with|where)|what we (?:discussed|talked about|were (?:doing|working))|resume (?:our|that|this|work|the (?:work|session|project|task|conversation|thread|discussion))|recap (?:of )?(?:our|the|last)|yesterday we|earlier we|we were working on)\b/i;
+exports.RESUME_INTENT_RE = /\b(last session|previous session|prior session|earlier session|last time|where we left off|pick(?:ing)? up where|continue (?:working|where|on|our|the|with|that|this|from)|carry on (?:with|where)|what we (?:discussed|talked about|were (?:doing|working))|resume (?:our|that|this|work|the (?:work|session|project|task|conversation|thread|discussion))|recap (?:of )?(?:our|the|last)|yesterday we|earlier we|we were working on)\b/i;
 /**
  * True when the prompt asks to continue or recall prior work.
  * Exported for tests.

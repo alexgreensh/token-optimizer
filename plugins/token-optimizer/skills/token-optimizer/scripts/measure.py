@@ -28680,6 +28680,39 @@ _RESUME_TOPIC_STOPWORDS = frozenset({
 })
 
 
+# --- Non-English topic tokenizer (#127) — single source of truth on the Python side ---
+# Two branches: an ASCII/accented-Latin run, OR a whole non-ASCII run (CJK etc.) as one
+# token, so a token never mixes ASCII and non-ASCII ("measure.py를" -> "measure.py" + "를").
+# The Latin-1/Extended-A ranges deliberately skip U+00D7 (×) and U+00F7 (÷): they sit inside
+# the block but are math symbols, not letters. U+0100–U+024F is Latin Extended-A/B, all letters.
+_TOPIC_TOKEN_RE = re.compile(r"[a-zA-Z0-9_.:À-ÖØ-öø-ÿĀ-ɏ/-]+|[^\x00-\x7F]+")
+# Script-aware length floor. CJK scripts (Hangul/Han/Kana, all >= U+3000) carry a full topic
+# word in two characters — 결제 (payment), 모듈 (module) — so they are kept at len>=2. ASCII and
+# accented Latin keep the len>3 English stopword heuristic (a 2-char Latin token like "ré" is
+# stopword-like, not content). This is why the floor cannot be a single constant.
+_CJK_MIN = 0x3000
+
+
+def _topic_token_kept(w):
+    if any(ord(ch) >= _CJK_MIN for ch in w):
+        return len(w) >= 2
+    return len(w) > 3
+
+
+def _topic_tokens(text, stopwords=frozenset()):
+    """Distinctive topic tokens: two-branch tokenizer + script-aware length floor.
+
+    The one place the non-English topic tokenizer lives on the Python side. OpenClaw and
+    OpenCode mirror it as ``extractTopicTokens``; the shared parity fixture
+    (tests/fixtures/i18n_topic_score_parity.json) proves all three agree.
+    """
+    return {
+        w
+        for w in _TOPIC_TOKEN_RE.findall(str(text or "").lower())
+        if _topic_token_kept(w) and w not in stopwords
+    }
+
+
 def _resume_topic_score(text, checkpoint_path):
     """Precision of the prompt's RESIDUAL topic words (after removing resume cues)
     against a checkpoint's content. Unlike keyword_relevance_score, the resume/
@@ -28687,22 +28720,17 @@ def _resume_topic_score(text, checkpoint_path):
     keepwarm one") scores higher than a vague "continue last session" (-> 0.0).
     """
     residual = _RESUME_INTENT_RE.sub(" ", str(text or "").lower())
-    # Two-branch tokenizer (#127): an ASCII/accented-Latin run, OR a whole non-ASCII
-    # run (CJK etc.) as one token. A token never mixes ASCII and non-ASCII, so
-    # "measure.py" still matches even when a Korean particle abuts it ("measure.py를").
-    # The Latin-1/Extended-A ranges deliberately skip U+00D7 (x) and U+00F7 (÷),
-    # which sit inside the block but are math symbols, not letters.
-    topic_tokens = {
-        w for w in re.findall(r"[a-zA-Z0-9_.:À-ÖØ-öø-ÿĀ-ɏ/-]+|[^\x00-\x7F]+", residual)
-        if len(w) > 3 and w not in _RESUME_TOPIC_STOPWORDS
-    }
+    topic_tokens = _topic_tokens(residual, _RESUME_TOPIC_STOPWORDS)
     if not topic_tokens:
         return 0.0
     try:
-        content = checkpoint_path.read_text(encoding="utf-8").lower()
+        # errors="replace": a non-UTF-8 checkpoint (cp1252 export, stray byte) must score 0.0
+        # for itself, never raise UnicodeDecodeError and abort scoring for every other
+        # candidate. Matches the TS runtimes, which decode with U+FFFD replacement.
+        content = checkpoint_path.read_text(encoding="utf-8", errors="replace").lower()
     except (PermissionError, OSError):
         return 0.0
-    cp_tokens = {w for w in re.findall(r"[a-zA-Z0-9_.:À-ÖØ-öø-ÿĀ-ɏ/-]+|[^\x00-\x7F]+", content) if len(w) > 3}
+    cp_tokens = _topic_tokens(content)
     if not cp_tokens:
         return 0.0
     return len(topic_tokens & cp_tokens) / len(topic_tokens)
@@ -28761,9 +28789,12 @@ def _checkpoint_in_project(sidecar, cwd):
     return False
 
 
-# Tokenizer for the per-item keep/drop rule. SAME regex as the resume-topic
-# tokenizer (measure.py:26336 / :27438) so a decision/file naming the current
-# project overlaps the keep set on identical token boundaries across runtimes.
+# Tokenizer for the per-item keep/drop rule. DELIBERATELY ASCII-only, and DELIBERATELY
+# NOT the (wider) resume-topic tokenizer _TOPIC_TOKEN_RE. Do not "unify" them (#127):
+# widening this to match non-ASCII would make a non-Latin item produce 3+ tokens that then
+# fail the ASCII-only keep-set overlap test, dropping needed lines from the selected session.
+# The keep set is built from the prompt + cwd + in-project paths, which are ASCII in practice,
+# so a non-Latin item must stay inconclusive (<3 tokens) and be kept, not overlap-tested.
 _RECOVER_TOKEN_RE = re.compile(r"[a-zA-Z0-9_./:-]+")
 
 
@@ -30090,11 +30121,10 @@ def keyword_relevance_score(text, checkpoint_path):
     """
     text_lower = text.lower()
 
-    # Extract content words (>3 chars, filters most stopwords without a list).
-    # Two-branch tokenizer (#127): keeps non-ASCII (CJK) as its own token and folds
-    # accented Latin into the run; ranges skip U+00D7 (x) / U+00F7 (÷) symbols.
+    # Content words via the shared non-English tokenizer (#127): two-branch class +
+    # script-aware floor (CJK kept at len>=2, ASCII/Latin at len>3). See _topic_tokens.
     def content_words(s):
-        return {w for w in re.findall(r'[a-zA-Z0-9_.:À-ÖØ-öø-ÿĀ-ɏ/-]+|[^\x00-\x7F]+', s.lower()) if len(w) > 3}
+        return _topic_tokens(s)
 
     text_tokens = content_words(text)
 
@@ -30128,7 +30158,9 @@ def keyword_relevance_score(text, checkpoint_path):
         return 0.0
 
     try:
-        checkpoint_content = checkpoint_path.read_text(encoding="utf-8")
+        # errors="replace" (#127): a non-UTF-8 checkpoint scores 0.0 for itself instead of
+        # raising UnicodeDecodeError and aborting scoring for the whole candidate loop.
+        checkpoint_content = checkpoint_path.read_text(encoding="utf-8", errors="replace")
     except (PermissionError, OSError):
         return 0.0
 

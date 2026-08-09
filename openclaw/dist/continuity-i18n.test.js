@@ -25,4 +25,12 @@ const I18N_FIXTURE = i18n_topic_score_parity_json_1.default;
         (0, bun_test_1.expect)(score > 0).toBe(row.expect_match);
     }
 });
+(0, bun_test_1.test)("keywordRelevanceScore matches the shared i18n parity fixture (#127)", () => {
+    // Third changed site, live in cross-session scoring. Pass checkpoint as precomputedContent
+    // so no file I/O is needed. Same rows, same verdicts as Python + resumeTopicScore.
+    for (const row of I18N_FIXTURE) {
+        const score = (0, continuity_js_1.keywordRelevanceScore)(row.prompt, "unused-path", row.checkpoint);
+        (0, bun_test_1.expect)(score > 0).toBe(row.expect_match);
+    }
+});
 //# sourceMappingURL=continuity-i18n.test.js.map

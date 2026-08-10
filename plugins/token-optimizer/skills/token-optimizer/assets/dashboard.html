@@ -3953,8 +3953,13 @@ var DB = (function() {
             '<div id="to-regen-error" hidden style="margin-top:10px;padding:10px 14px;font-size:15px;font-weight:500;color:var(--c-waste);background:rgba(255,95,95,.08);border:1px solid rgba(255,95,95,.35);border-radius:8px;line-height:1.5;text-wrap:pretty;"></div></div>';
         })() +
         '<div style="margin-top:var(--s-4);padding-top:var(--s-3);border-top:1px solid var(--c-border);font-size:14px;color:var(--c-text-dim);line-height:1.7;text-wrap:pretty;">' +
-          'Your usage is measured. The window comparison and the routing dollars are estimated: ' + esc(rw.proxy) + ' ' +
-          'Per-window dollars reuse the metered savings ledger (context tokens never sent, priced at input rates) plus an estimated model-routing counterfactual; they are not derived from the throughput multipliers. The &asymp;' + rw.extra_work_pct + '% is a separate per-token throughput multiplier, not a sum of the per-window figures.' +
+          // rw.proxy is now the single source of the measured-vs-estimated boundary
+          // AND the ledger detail (deduped: this used to repeat the ledger sentence
+          // and re-state "usage is measured"). We add only the one fact proxy can't
+          // carry -- the throughput-% is its own unit, not a sum of the dollars --
+          // because it needs the live JS value.
+          esc(rw.proxy) + ' ' +
+          'The &asymp;' + rw.extra_work_pct + '% is a separate per-token throughput multiplier, not a sum of the per-window dollar figures.' +
         '</div>' +
       '</div>';
     }

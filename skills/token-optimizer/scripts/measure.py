@@ -28664,6 +28664,39 @@ _RESUME_INTENT_RE = re.compile(
 # session") so we fall back to the most-recent same-project checkpoint.
 _RESUME_NAMED_TOPIC_BAR = _float_env("TOKEN_OPTIMIZER_RESUME_TOPIC_BAR", 0.22)
 
+# Staleness cap for the VAGUE-continue fallback (GitHub #129): when the prompt
+# names no distinguishing topic we may only surface the most-recent same-project
+# checkpoint if it is fresher than this. Beyond it, blindly reopening whichever
+# sibling session was last active in the same folder is how an UNRELATED session's
+# checkpoint gets injected -- so we return nothing instead of guessing. The
+# keyword-winner path (topic named) is NOT capped; only the recency fallback is.
+_RESUME_RECENCY_CAP_MIN = _int_env("TOKEN_OPTIMIZER_RESUME_RECENCY_MIN", 480)
+
+# A session id named IN the prompt ("continue session 328c85e9", full UUID, or
+# "session id: <uuid>"). Two shapes: an 8-40 hex run (or full 8-4-4-4-12 UUID)
+# that immediately follows the word "session" (optionally "id"), OR a bare full
+# UUID anywhere. A bare short hex token NOT after "session" is deliberately NOT
+# matched, so ordinary hex words in the prompt aren't mistaken for a session id.
+# The "session" branch is listed first and captures a full UUID greedily so
+# "...session <uuid>" yields the whole id, not just its first 8-hex chunk.
+_UUID_RE_SRC = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+_PROMPT_SESSION_ID_RE = re.compile(
+    r"\bsession(?:[\s_-]*id)?[\s:#]+(" + _UUID_RE_SRC + r"|[0-9a-f]{8,40})\b"
+    r"|\b(" + _UUID_RE_SRC + r")\b",
+    re.IGNORECASE,
+)
+
+
+def _extract_session_id_from_prompt(text):
+    """Return a session id token the user named in the prompt, or None.
+
+    Group 1 = id after "session"; group 2 = a bare full UUID. Lowercased so it
+    matches sanitize_session_id output. Never raises."""
+    m = _PROMPT_SESSION_ID_RE.search(str(text or ""))
+    if not m:
+        return None
+    return (m.group(1) or m.group(2)).lower()
+
 
 def _resume_intent(text):
     """True when the prompt asks to continue/recall prior work."""
@@ -28968,12 +29001,50 @@ def _continuity_resume_block(text, checkpoints, sid_safe, cwd):
     reconstruction of the right same-project session, or "" to fall through to
     the lightweight hint.
 
-    Selection ("both"): keyword winner when the prompt names a topic
-    (best same-project score >= _RESUME_NAMED_TOPIC_BAR), else the most-recent
-    same-project session. Token-free: reuses build_lean_resume_context.
+    Selection order (GitHub #129): (1) a session id NAMED in the prompt wins and
+    is scoped strictly to that session -- never silently substituted; (2) else the
+    keyword winner when the prompt names a topic (best same-project score >=
+    _RESUME_NAMED_TOPIC_BAR); (3) else the most-recent same-project session, but
+    ONLY if fresher than _RESUME_RECENCY_CAP_MIN -- otherwise "" (blindly reopening
+    the last-active sibling in the folder is how an UNRELATED session leaks in).
+    A topic/recency guess carries the CONDITIONAL footer; an explicitly named
+    session carries the confident one. Token-free: reuses build_lean_resume_context.
     """
     if not cwd:
         return ""
+
+    # (1) Explicit session id in the prompt -> scope strictly to it. Honor it
+    # exactly and never fall back to a different session; if no on-disk checkpoint
+    # matches, return "" rather than silently substituting an unrelated one (#129).
+    named_id = _extract_session_id_from_prompt(text)
+    if named_id:
+        for cp in checkpoints:
+            fn = cp.get("filename", "")
+            if sid_safe and sid_safe in fn:
+                continue  # same-session recovery is SessionStart/compact's job
+            if fn.lower().startswith(named_id):
+                # Reconstruct the session whose FILENAME the named id matched, using the
+                # filename-derived id -- NOT _checkpoint_session_id, which prefers a
+                # sidecar session_id that, if it disagreed with the filename, would
+                # confidently reopen a DIFFERENT session (the #129 harm via another
+                # trigger). The user named this id, so a match warrants confident wording.
+                m = re.match(r"([0-9a-fA-F-]{8,})-\d{8}-\d{6}-", fn)
+                cp_sid = m.group(1) if m else None
+                if not cp_sid:
+                    continue
+                block = build_lean_resume_context(cp_sid, prompt_text=text, cwd=cwd,
+                                                  footer_mode="confident")
+                if block:
+                    _log_resume_lean_savings(cp_sid, block)
+                    return block
+        # No checkpoint matches the named id. If the id was the WHOLE ask (no separate
+        # resume verb) never substitute a different session -- return "" (#129). But when
+        # the prompt independently asks to resume ("continue the auth refactor ... the
+        # failing test references session a1b2c3d4"), the id is incidental, so fall
+        # through to the topic/recency selection below instead of suppressing a good match.
+        if not _resume_intent(text):
+            return ""
+
     same_project = []
     for cp in checkpoints[:50]:
         if sid_safe and sid_safe in cp.get("filename", ""):
@@ -28988,13 +29059,17 @@ def _continuity_resume_block(text, checkpoints, sid_safe, cwd):
 
     best_score = max(s for s, _, _ in same_project)
     if best_score >= _RESUME_NAMED_TOPIC_BAR:
-        # Named a topic -> keyword winner (recency breaks ties).
+        # (2) Named a topic -> keyword winner (recency breaks ties).
         same_project.sort(key=lambda x: (x[0], x[1]["created"].timestamp()), reverse=True)
         chosen = same_project[0]
     else:
-        # Vague "continue last session" -> most-recent same-project (list is
-        # already recency-sorted by list_checkpoints).
+        # (3) Vague "continue last session" -> most-recent same-project, but only
+        # if fresh. A stale freshest pick is almost certainly an unrelated sibling
+        # session (GitHub #129), so decline rather than guess.
         chosen = max(same_project, key=lambda x: x[1]["created"].timestamp())
+        age_min = (datetime.now() - chosen[1]["created"]).total_seconds() / 60
+        if age_min > _RESUME_RECENCY_CAP_MIN:
+            return ""
 
     _, cp, sidecar = chosen
     sid = sidecar.get("session_id") if isinstance(sidecar, dict) else None
@@ -29003,7 +29078,9 @@ def _continuity_resume_block(text, checkpoints, sid_safe, cwd):
         sid = m.group(1) if m else None
     if not sid:
         return ""
-    block = build_lean_resume_context(sid, prompt_text=text, cwd=cwd)
+    # Topic/recency match is a best guess -> CONDITIONAL footer so the assistant
+    # verifies against the user's actual request before claiming a reopen (#129).
+    block = build_lean_resume_context(sid, prompt_text=text, cwd=cwd, footer_mode="conditional")
     if block:
         # Count the cold-resume cost this lean reconstruction avoided (idempotent
         # per target session). Token-free; never blocks the injection.
@@ -29060,7 +29137,11 @@ def _continuity_prompt_hint(prompt_text="", session_id=None, cwd=None, max_age_m
     sid_safe = sanitize_session_id(session_id) if session_id else None
 
     # Deliberate "continue prior work" path: full lean reconstruction, same project.
-    if _resume_intent(text):
+    # An explicit session id named in the prompt ("continue session <id>", "resume
+    # session <id>") is its own resume cue: _RESUME_INTENT_RE's verb list does not
+    # include "session", so without this the strict id-scoped branch (#129 Fix 3)
+    # would never fire for the exact phrasing a user types to name a session.
+    if _resume_intent(text) or _extract_session_id_from_prompt(text):
         try:
             block = _continuity_resume_block(text, checkpoints, sid_safe, cwd)
         except Exception:
@@ -29489,7 +29570,8 @@ def _lean_list(items, n, width=140, keep_tokens=None):
     return cleaned
 
 
-def build_lean_resume_context(session_id, max_chars=3500, prompt_text=None, cwd=None):
+def build_lean_resume_context(session_id, max_chars=3500, prompt_text=None, cwd=None,
+                              footer_mode="confident"):
     """Reconstruct a LEAN, paste-ready context block for a cold session.
 
     Faithful tier (checkpoint present): active task, continuation/handover, open
@@ -29644,11 +29726,24 @@ def build_lean_resume_context(session_id, max_chars=3500, prompt_text=None, cwd=
             except (json.JSONDecodeError, ValueError, TypeError):
                 pass
 
-    footer = [
-        "Use this to re-orient a fresh session on the prior work. Tell the user "
-        "you reopened the cold session (mention its date/topic) so the recovery "
-        "is transparent.",
-    ]
+    if footer_mode == "conditional":
+        # Auto-injected best-guess match (#129): the plugin GUESSED which prior
+        # session the user meant, so the assistant must verify before claiming a
+        # reopen. Mirrors the lightweight-hint / compact_restore wording.
+        footer = [
+            "Use this only if it matches the user's current request. If you do use "
+            "it, briefly tell the user you found a relevant prior session (mention "
+            "its date/topic) so the recovery is transparent, not silent. If it does "
+            "not match what you are working on now, ignore it silently.",
+        ]
+    else:
+        # Confident path: the caller named this exact session (CLI --resume-lean, or
+        # an explicit session id in the prompt), so a reopen claim is warranted.
+        footer = [
+            "Use this to re-orient a fresh session on the prior work. Tell the user "
+            "you reopened the cold session (mention its date/topic) so the recovery "
+            "is transparent.",
+        ]
 
     # Assemble within the char budget: header + as many body lines as fit + footer.
     out = list(header)
@@ -33673,13 +33768,18 @@ def runway_snapshot(days=30, now=None):
             "meter_age_s": meters.get("age_s"),
             "meter_ts": meters.get("ts"),
             "meter_stale": meter_stale,
-            "proxy": ("Model weighting inside the provider's rate-limit windows is "
-                      "not published; public input-rate ratios are used as a "
-                      "stand-in. Window state is measured, the counterfactual is "
-                      "estimated. Per-window dollars reuse the metered savings "
-                      "ledger (context tokens never sent, priced at input rates, "
-                      "plus an estimated model-routing counterfactual) and are not "
-                      "derived from the throughput multipliers."),
+            # Single authoritative methodology note (GitHub: dashboard wall-of-text
+            # fix). Folds the measured-vs-estimated boundary in here so the HTML no
+            # longer repeats it. Keep the phrases "metered savings ledger" and "not
+            # derived from the throughput multipliers" -- guarded by
+            # test_proxy_disclosure_mentions_ledger_reuse.
+            "proxy": ("Your window usage is measured; the “without” "
+                      "comparison and routing dollars are estimated (the provider "
+                      "does not publish how it weights models inside a window, so "
+                      "public input-rate ratios stand in). Per-window dollars reuse "
+                      "the metered savings ledger (context tokens never sent, priced "
+                      "at input rates, plus a routing estimate) and are not derived "
+                      "from the throughput multipliers."),
         }
     except Exception:
         return None

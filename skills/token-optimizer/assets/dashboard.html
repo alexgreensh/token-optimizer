@@ -3885,17 +3885,17 @@ var DB = (function() {
         // No glow on this headline. `.metric-large` carries a text-shadow built
         // from --c-border-strong, which is a light veil on dark but resolves to a
         // DARK halo in light mode, so the words read as smudged rather than lit.
-        // USD-per-window is the headline; the throughput multiplier is
-        // demoted to the secondary line below.
-        (usdHeadline
-          ? '<div class="metric-large" style="text-wrap:balance;text-shadow:none;">' + usdHeadline + '</div>'
-          : '<div class="metric-large" style="text-wrap:balance;text-shadow:none;"><em style="font-style:normal;color:var(--c-accent-cyan);">' + rw.extra_work_pct + '%</em> more work</div>') +
-        // Demoted secondary: the per-token throughput multiplier is real but
-        // a DIFFERENT unit from the window headroom points and the dollar figure.
-        // Stated as a separate line with a one-line units note so it is never
-        // presented as combinable with the per-window numbers (the old
-        // 40.2 / 8.4 / 20.1 display implied 8.4 + 20.1 combined into 40.2).
-        '<div style="margin-top:var(--s-2);font-size:15px;color:var(--c-text-dim);line-height:1.5;text-wrap:pretty;">&asymp;' + rw.extra_work_pct + '% more work per token (lighter context &times;' + rw.context_multiplier + ' &middot; lighter models &times;' + rw.routing_multiplier + '). A per-token throughput multiplier, shown separately from the window headroom and dollar figures below.</div>' +
+        // Headline = the per-token throughput multiplier ("X% more work per token").
+        // The dollar figures live in the per-window cards below, NOT the headline, so
+        // the top line stays a single honest unit (a %) instead of mixing $ and %.
+        // The USD-per-window string is kept only as a fallback for the rare case where
+        // the throughput multiplier is not yet computable.
+        ((isFinite(Number(rw.extra_work_pct)) && Number(rw.extra_work_pct) > 0)
+          ? '<div class="metric-large" style="text-wrap:balance;text-shadow:none;"><em style="font-style:normal;color:var(--c-accent-cyan);">&asymp;' + rw.extra_work_pct + '%</em> more work per token</div>'
+          : '<div class="metric-large" style="text-wrap:balance;text-shadow:none;">' + (usdHeadline || '<em style="font-style:normal;color:var(--c-accent-cyan);">more work</em>') + '</div>') +
+        // Secondary: the composition of the multiplier, plus a one-line units note so it
+        // is never presented as combinable with the per-window dollar/headroom numbers.
+        '<div style="margin-top:var(--s-2);font-size:15px;color:var(--c-text-dim);line-height:1.5;text-wrap:pretty;">lighter context &times;' + rw.context_multiplier + ' &middot; lighter models &times;' + rw.routing_multiplier + '. A per-token throughput multiplier, shown separately from the window headroom and dollar figures below.</div>' +
         // Stands alone. An earlier revision opened with "before you hit your usage
         // limits.", a continuation of the headline that reads as a truncated
         // fragment once it wraps to its own line, and the limit panels below

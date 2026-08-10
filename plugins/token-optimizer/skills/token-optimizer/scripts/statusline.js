@@ -262,7 +262,19 @@ process.stdin.on('end', () => {
     }
 
     const dirname = path.basename(dir);
-    const row1 = `${DIM}${model}${RESET}${effort}${SEP}${DIM}${dirname}${RESET}${branch}${ctx}${qScore}`;
+    // Row 1 as BARE segments (no baked-in SEP) so a narrow terminal can reflow them
+    // across physical rows instead of the host clipping the overflow. The effort/
+    // branch/ctx/qScore builders each prepend SEP, so strip that leading separator;
+    // packRows re-inserts it between whatever segments land on the same row.
+    const _stripLeadSep = s => (s && s.startsWith(SEP) ? s.slice(SEP.length) : s);
+    const row1Segs = [
+      `${DIM}${model}${RESET}`,
+      _stripLeadSep(effort),
+      `${DIM}${dirname}${RESET}`,
+      _stripLeadSep(branch),
+      _stripLeadSep(ctx),
+      _stripLeadSep(qScore),
+    ].filter(Boolean);
 
     // ---- ROW 2: Session details ----
     const row2Parts = [];
@@ -369,8 +381,30 @@ process.stdin.on('end', () => {
       row2Parts.push(`${DIM}7d:${p}%${RESET}`);
     }
 
-    const row2 = row2Parts.join(SEP);
-    process.stdout.write(`${row1}\n${row2}`);
+    // Responsive layout: when Claude Code exports COLUMNS (v2.1.153+), greedily pack
+    // each row's segments into physical rows no wider than the terminal, so narrow
+    // windows drop segments to the next line instead of the host clipping them.
+    // COLUMNS unset (older Claude Code) -> the exact prior two-row output, byte-for-byte.
+    const vlen = s => stripAnsi(s).length;   // visible width; SEP (" | ") is 3 cols
+    const packRows = (segs, width) => {
+      const rows = [];
+      let cur = '';
+      for (const seg of segs) {
+        if (cur === '') { cur = seg; continue; }
+        if (vlen(cur) + 3 + vlen(seg) <= width) cur += SEP + seg;
+        else { rows.push(cur); cur = seg; }   // a lone over-wide segment still clips (unsplittable)
+      }
+      if (cur !== '') rows.push(cur);
+      return rows;
+    };
+    const _cols = parseInt(process.env.COLUMNS, 10);
+    const _width = Number.isFinite(_cols) && _cols > 4 ? _cols : null;
+    if (_width) {
+      const rows = [...packRows(row1Segs, _width), ...packRows(row2Parts, _width)];
+      process.stdout.write(rows.join('\n'));
+    } else {
+      process.stdout.write(`${row1Segs.join(SEP)}\n${row2Parts.join(SEP)}`);
+    }
   } catch (e) {
     // Silent fail - never break the status line
   }

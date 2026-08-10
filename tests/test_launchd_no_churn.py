@@ -60,7 +60,11 @@ def test_write_file_if_changed_applies_mode_even_when_unchanged(tmp_path):
     p.write_text("BODY", encoding="utf-8")
     os.chmod(p, 0o600)
     assert measure._write_file_if_changed(p, "BODY", 0o755) is False
-    assert stat.S_IMODE(p.stat().st_mode) == 0o755
+    # POSIX file modes are not meaningful on Windows: os.chmod only toggles the
+    # read-only bit, so S_IMODE reports 0o666 rather than 0o755. The mode-application
+    # path being exercised here only exists on POSIX.
+    if os.name != "nt":
+        assert stat.S_IMODE(p.stat().st_mode) == 0o755
 
 
 def test_daemon_install_guards_reload_when_current():

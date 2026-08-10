@@ -24,6 +24,14 @@ if str(HOOKS) not in sys.path:
     sys.path.insert(0, str(HOOKS))
 
 
+def _set_home(monkeypatch, path):
+    """Redirect ~ for the test on every OS. Path.home() reads HOME on POSIX but
+    USERPROFILE on Windows, so setting only HOME leaves ~ pointing at the real
+    profile on Windows and the ~/.claude fallback reads the wrong settings.json."""
+    monkeypatch.setenv("HOME", str(path))
+    monkeypatch.setenv("USERPROFILE", str(path))
+
+
 @pytest.fixture()
 def plugin_meta(tmp_path, monkeypatch):
     """Build a fake plugin root with .claude-plugin/{plugin,marketplace}.json
@@ -71,7 +79,7 @@ def _write_settings_config_dir(config_dir: Path, settings: dict) -> Path:
 
 def test_disabled_when_settings_says_false(plugin_meta, tmp_path, monkeypatch):
     """Baseline: ~/.claude/settings.json with enabledPlugins[key]=false -> True."""
-    monkeypatch.setenv("HOME", str(tmp_path))
+    _set_home(monkeypatch, tmp_path)
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     _write_settings_home(tmp_path, _settings_with_disabled(disabled=True))
     import run
@@ -79,7 +87,7 @@ def test_disabled_when_settings_says_false(plugin_meta, tmp_path, monkeypatch):
 
 
 def test_not_disabled_when_settings_says_true(plugin_meta, tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
+    _set_home(monkeypatch, tmp_path)
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     _write_settings_home(tmp_path, _settings_with_disabled(disabled=False))
     import run
@@ -87,7 +95,7 @@ def test_not_disabled_when_settings_says_true(plugin_meta, tmp_path, monkeypatch
 
 
 def test_fail_open_when_no_settings(plugin_meta, tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
+    _set_home(monkeypatch, tmp_path)
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     import run
     assert run._plugin_disabled_by_host() is False
@@ -99,7 +107,7 @@ def test_claude_config_dir_honored_when_disabled(plugin_meta, tmp_path, monkeypa
     home = tmp_path / "home"
     relocated = tmp_path / "relocated"
     relocated.mkdir()
-    monkeypatch.setenv("HOME", str(home))
+    _set_home(monkeypatch, home)
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(relocated))
     # ~/.claude has an ENABLED settings.json (would mask the bug).
     _write_settings_home(home, _settings_with_disabled(disabled=False))
@@ -117,7 +125,7 @@ def test_claude_config_dir_honored_when_enabled(plugin_meta, tmp_path, monkeypat
     home = tmp_path / "home"
     relocated = tmp_path / "relocated"
     relocated.mkdir()
-    monkeypatch.setenv("HOME", str(home))
+    _set_home(monkeypatch, home)
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(relocated))
     _write_settings_home(home, _settings_with_disabled(disabled=True))
     _write_settings_config_dir(relocated, _settings_with_disabled(disabled=False))
@@ -133,7 +141,7 @@ def test_claude_config_dir_symlink_rejected(plugin_meta, tmp_path, monkeypatch):
     real.mkdir()
     link = tmp_path / "linked-claude"
     link.symlink_to(real)
-    monkeypatch.setenv("HOME", str(home))
+    _set_home(monkeypatch, home)
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(link))
     # ~/.claude says disabled; the symlink target has no settings.json.
     _write_settings_home(home, _settings_with_disabled(disabled=True))
@@ -146,7 +154,7 @@ def test_claude_config_dir_symlink_rejected(plugin_meta, tmp_path, monkeypatch):
 def test_claude_config_dir_relative_rejected(plugin_meta, tmp_path, monkeypatch):
     """A relative CLAUDE_CONFIG_DIR must be rejected -> ~/.claude fallback."""
     home = tmp_path / "home"
-    monkeypatch.setenv("HOME", str(home))
+    _set_home(monkeypatch, home)
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", "relative/claude")
     _write_settings_home(home, _settings_with_disabled(disabled=True))
     import run

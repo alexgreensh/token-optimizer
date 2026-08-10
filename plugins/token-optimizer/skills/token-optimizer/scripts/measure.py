@@ -36603,10 +36603,19 @@ def _live_savings_payload(days=30):
             cache_health["keepwarm"] = keepwarm_cache_health_block(days=days)
     except Exception:
         pass
+    # Window/runway card (5h/7d): include it in the LIVE payload so an open dashboard
+    # picks up a fresh rate-limit reading the instant the statusline writes one (the
+    # figure is only ever fresh while Claude is actively running). Same builder the
+    # full regen uses; fail-open to None so a slow/failed read never breaks /api/savings.
+    try:
+        runway = runway_snapshot(days=days)
+    except Exception:
+        runway = None
     return {
         "ok": True,
         "savings": savings_data,
         "cache_health": cache_health,
+        "runway": runway,
         "generated_at": datetime.now().isoformat(),
     }
 

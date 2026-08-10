@@ -6255,6 +6255,13 @@ var DB = (function() {
     if (payload.cache_health && typeof payload.cache_health === 'object') {
       data.cache_health = payload.cache_health;
     }
+    // Live window/runway card: pick up a fresher 5h/7d reading the instant the
+    // statusline writes one, so an open dashboard auto-updates instead of needing
+    // a manual Regenerate. safeRender('Savings') below repaints runwayCardHtml, and
+    // its "as of / N ago" label recomputes live from the new meter_ts.
+    if (payload.runway && typeof payload.runway === 'object') {
+      data.runway = payload.runway;
+    }
     safeRender('Savings', 'savings', renderSavings);
     safeRender('Overview', 'overview', renderOverview);
     var stamp = document.getElementById('to-live-stamp');
@@ -6651,6 +6658,18 @@ document.addEventListener('DOMContentLoaded', function() {
     document.addEventListener('visibilitychange', function() {
       if (document.visibilityState === 'visible') refreshSavingsLive();
     });
+  }
+
+  // Auto-refresh the live tiles (incl. the 5h/7d window card) every ~60s while the
+  // tab is open, so a new rate-limit reading surfaces on its own instead of needing
+  // a manual Regenerate. refreshSavingsLive is a no-op unless __TOKEN_API_LIVE, and
+  // is a small JSON GET (never a full-page regen); skip while the tab is hidden.
+  if (typeof setInterval === 'function') {
+    setInterval(function() {
+      if (typeof document === 'undefined' || document.visibilityState !== 'hidden') {
+        refreshSavingsLive();
+      }
+    }, 60000);
   }
 
   // Probe for our custom API server before init.

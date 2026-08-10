@@ -119,6 +119,19 @@ def test_non_utf8_checkpoint_scores_zero_not_crash():
     assert isinstance(mod.keyword_relevance_score("some topic here", bad), float)
 
 
+def test_resume_topic_score_strips_all_intent_phrases():
+    """Locks the Python behavior the TS ports must mirror: re.sub strips EVERY intent phrase,
+    so a second phrase's content word ("conversation") never leaks into the topic set.
+    A non-global JS .replace stripped only the first phrase and diverged (1.0 -> 0.5)."""
+    mod = _measure()
+    tmp = Path(tempfile.mkdtemp(prefix="to-127-strip-"))
+    cp = tmp / "cp.md"
+    cp.write_text("parser module notes", encoding="utf-8")
+    assert mod._resume_topic_score(
+        "continue on the parser, resume the conversation", cp
+    ) == 1.0
+
+
 def test_recover_token_re_left_unchanged():
     """Regression guard: the recover/keep tokenizer stays ASCII-only and is NOT the wider
     topic tokenizer, per the issue's data-loss reasoning."""

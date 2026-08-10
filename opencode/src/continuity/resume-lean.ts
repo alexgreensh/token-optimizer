@@ -58,6 +58,11 @@ export const RESUME_INTENT_RE = new RegExp(
   "i",
 );
 
+// Strip ALL intent phrases from a prompt (Python's re.sub replaces every match). Separate
+// global-flagged copy on purpose: never put `g` on RESUME_INTENT_RE itself — resumeIntent()
+// calls .test() on it, and a global regex makes .test() stateful via lastIndex.
+const RESUME_INTENT_STRIP_RE = new RegExp(RESUME_INTENT_RE.source, "gi");
+
 /** True when the prompt asks to continue/recall prior work. */
 export function resumeIntent(text: string): boolean {
   return RESUME_INTENT_RE.test(text ?? "");
@@ -283,7 +288,7 @@ function formatDisclosure(
  */
 export function resumeTopicScore(prompt: string, content: string): number {
   // Strip resume-intent phrases from the prompt, leaving only topic words.
-  const residual = (prompt ?? "").toLowerCase().replace(RESUME_INTENT_RE, " ");
+  const residual = (prompt ?? "").toLowerCase().replace(RESUME_INTENT_STRIP_RE, " ");
 
   // Extract topic words via the shared non-English tokenizer (#127): two-branch class +
   // script-aware floor (CJK kept at len>=2, ASCII/Latin at len>3), minus glue stopwords.

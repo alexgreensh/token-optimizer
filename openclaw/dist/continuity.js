@@ -829,6 +829,10 @@ function extractHintedPaths(checkpointContent) {
 // session/work noun, not an arbitrary process or command name.
 // Mirrors Python _RESUME_INTENT_RE (just fixed in measure.py).
 exports.RESUME_INTENT_RE = /\b(last session|previous session|prior session|earlier session|last time|where we left off|pick(?:ing)? up where|continue (?:working|where|on|our|the|with|that|this|from)|carry on (?:with|where)|what we (?:discussed|talked about|were (?:doing|working))|resume (?:our|that|this|work|the (?:work|session|project|task|conversation|thread|discussion))|recap (?:of )?(?:our|the|last)|yesterday we|earlier we|we were working on)\b/i;
+// Strip ALL intent phrases from a prompt (Python's re.sub replaces every match). Separate
+// global-flagged copy on purpose: never put `g` on RESUME_INTENT_RE itself — isResumeIntent()
+// calls .test() on it, and a global regex makes .test() stateful via lastIndex.
+const RESUME_INTENT_STRIP_RE = new RegExp(exports.RESUME_INTENT_RE.source, "gi");
 /**
  * True when the prompt asks to continue or recall prior work.
  * Exported for tests.
@@ -863,7 +867,7 @@ const RESUME_TOPIC_BAR = Number.parseFloat(process.env.TOKEN_OPTIMIZER_RESUME_TO
  * Mirrors Python _resume_topic_score in measure.py.
  */
 function resumeTopicScore(promptText, checkpointContent) {
-    const residual = (promptText ?? "").toLowerCase().replace(exports.RESUME_INTENT_RE, " ");
+    const residual = (promptText ?? "").toLowerCase().replace(RESUME_INTENT_STRIP_RE, " ");
     const topicTokens = extractTopicTokens(residual, RESUME_TOPIC_STOPWORDS);
     if (topicTokens.size === 0)
         return 0.0;

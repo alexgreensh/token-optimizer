@@ -39315,19 +39315,32 @@ if __name__ == "__main__":
             else:
                 compact_restore(session_id=sid, is_compact=is_compact)
 
-        # Codex requires SessionStart stdout to be empty or valid JSON. Under the
-        # Codex marketplace plugin the shared hooks.json calls this directly (not
-        # via codex_hook_bridge), so capture the raw text and wrap it (issue #81).
-        # Claude keeps the raw-text stream unchanged.
-        if detect_runtime() == "codex":
-            import io as _io
-            from contextlib import redirect_stdout as _redirect_stdout
-            _buf = _io.StringIO()
-            with _redirect_stdout(_buf):
+        # Cap this SessionStart hook's wall-clock like every other hook. It was the
+        # ONLY synchronous first-prompt hook with no internal budget -- just the
+        # harness 20s timeout -- so under disk/CPU contention (many parallel sessions
+        # on one project dir) it was the dominant contributor to a ~36s first-prompt
+        # stall. Its output is a best-effort re-orientation hint, so a budget-exit
+        # (no hint) degrades gracefully. Env-overridable.
+        _tok_hook_deadline = _install_hook_budget(
+            _int_env("TOKEN_OPTIMIZER_COMPACT_RESTORE_BUDGET", 8))
+        try:
+            # Codex requires SessionStart stdout to be empty or valid JSON. Under the
+            # Codex marketplace plugin the shared hooks.json calls this directly (not
+            # via codex_hook_bridge), so capture the raw text and wrap it (issue #81).
+            # Claude keeps the raw-text stream unchanged.
+            if detect_runtime() == "codex":
+                import io as _io
+                from contextlib import redirect_stdout as _redirect_stdout
+                _buf = _io.StringIO()
+                with _redirect_stdout(_buf):
+                    _run_compact_restore()
+                _emit_codex_session_start(_buf.getvalue())
+            else:
                 _run_compact_restore()
-            _emit_codex_session_start(_buf.getvalue())
-        else:
-            _run_compact_restore()
+        except _HookTimeout:
+            pass
+        finally:
+            _clear_hook_budget(_tok_hook_deadline)
     elif args[0] in ("continue-last", "codex-continue-last"):
         topic = ""
         for i, a in enumerate(args):

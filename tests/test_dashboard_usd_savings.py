@@ -237,10 +237,10 @@ def test_proxy_disclosure_mentions_ledger_reuse(m, tmp_path, monkeypatch):
     assert "not derived from the throughput multipliers" in r["proxy"]
 
 
-# ----- extra_work_pct kept, demoted in the surface -----
+# ----- extra_work_pct is the headline surface -----
 
 def test_extra_work_pct_still_present(m, tmp_path, monkeypatch):
-    """The throughput multiplier is kept as a demoted secondary, not deleted."""
+    """The throughput multiplier is present in the snapshot; it drives the headline."""
     _temp_trends(m, tmp_path, monkeypatch)
     monkeypatch.setattr(m, "_input_rate_mix_ratio", lambda days=30: 1.4)
     monkeypatch.setattr(m, "_keepwarm_read_meters", _fresh_meters())
@@ -253,24 +253,28 @@ def test_extra_work_pct_still_present(m, tmp_path, monkeypatch):
     assert r["routing_multiplier"] is not None
 
 
-# ----- surface: USD headline, demoted %, no combination implication -----
+# ----- surface: % throughput headline, USD in per-window cards, no combination implication -----
 
-def test_dashboard_renders_usd_per_window_headline():
-    """The USD-per-window is the headline; the % is demoted to a secondary line."""
+def test_dashboard_leads_with_pct_headline_usd_in_cards():
+    """The per-token throughput % is the headline; the $ figures live in the per-window
+    cards, not the lead line. (Reversed the earlier USD-lead design at product's request:
+    a headline that mixed $ and % read as confusing.)"""
     html = (Path(SCRIPTS).parent / "assets" / "dashboard.html").read_text(encoding="utf-8")
     start = html.index("function runwayCardHtml(")
     body = html[start:start + 16000]
-    # USD headline construction from the windows' saved_usd.
+    # The headline metric-large leads with the throughput %, phrased "more work per token".
+    assert "more work per token</div>" in body, (
+        "the % throughput is not the headline metric-large"
+    )
+    # It is built from extra_work_pct in the PRIMARY (truthy) branch of the headline.
+    assert "rw.extra_work_pct + '%</em> more work per token</div>'" in body, (
+        "the headline is not driven by extra_work_pct as the lead metric-large"
+    )
+    # The USD-per-window string is kept only as the FALLBACK, never the lead.
+    assert "usdHeadline" in body, "usdHeadline fallback construction missing"
+    # The dollar figures still come from the per-window saved_usd (rendered in the cards).
     assert "w.saved_usd" in body, "surface no longer reads per-window saved_usd"
-    assert "usdHeadline" in body, "USD headline construction missing"
-    # The headline uses the USD figure when present, falls back to the % otherwise.
-    assert "usdHeadline" in body and "? '<div class=\"metric-large" in body, (
-        "USD headline is not the lead metric-large"
-    )
-    # The % is demoted to a secondary line with a units note.
-    assert "more work per token" in body, (
-        "extra_work_pct is not demoted to a per-token secondary line"
-    )
+    # The units note distinguishing the multiplier from the window figures stays.
     assert "shown separately" in body, (
         "the units note distinguishing the multiplier from the window figures is missing"
     )

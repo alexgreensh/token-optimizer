@@ -39,6 +39,18 @@ LIFECYCLE_CEILING = 60
 # mid-run and the feature would silently stop working.
 FLOOR = 5
 
+# Codex executes SessionEnd synchronously and clamps it to three seconds even
+# when the source hook is async. The Codex mirror must honor that host limit.
+CODEX_SESSION_END_MAX = 3
+
+
+def _is_codex_session_end(tree, event, command):
+    return (
+        tree == "codex-mirror"
+        and event == "SessionEnd"
+        and "session-end-flush" in command
+    )
+
 
 def _flatten(path):
     """Yield (event, matcher, command, hook_dict) for every hook command entry."""
@@ -115,13 +127,17 @@ def test_timeouts_leave_room_for_a_healthy_run():
     for tree, path in _both_trees():
         for event, matcher, command, hook in _flatten(path):
             value = hook.get("timeout")
-            if isinstance(value, int) and value < FLOOR:
+            if (
+                isinstance(value, int)
+                and value < FLOOR
+                and not _is_codex_session_end(tree, event, command)
+            ):
                 tight.append(f"{tree}: {_label(event, matcher, command)} -> {value}s")
     assert not tight, f"timeouts below the {FLOOR}s floor:\n  " + "\n  ".join(tight)
 
 
 def test_mirror_timeouts_match_the_root():
-    """The Codex mirror strips async, never timeouts. Any drift is a bug."""
+    """The Codex mirror preserves timeouts except for Codex host limits."""
     root = {
         (e, m, c): h.get("timeout") for e, m, c, h in _flatten(HOOKS_JSON)
     }
@@ -133,5 +149,10 @@ def test_mirror_timeouts_match_the_root():
         f"{_label(*key)}: root={root[key]}s mirror={mirror[key]}s"
         for key in root
         if root[key] != mirror[key]
+        and not (
+            key[0] == "SessionEnd"
+            and "session-end-flush" in key[2]
+            and mirror[key] == CODEX_SESSION_END_MAX
+        )
     ]
     assert not drifted, "timeout drift:\n  " + "\n  ".join(drifted)

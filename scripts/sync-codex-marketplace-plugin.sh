@@ -86,7 +86,19 @@ def strip_async(o):
     elif isinstance(o, list):
         for v in o:
             strip_async(v)
+
+def clamp_codex_session_end(o):
+    if isinstance(o, dict):
+        command = o.get("command")
+        if isinstance(command, str) and "session-end-flush --trigger end --defer" in command:
+            o["timeout"] = 3
+        for v in o.values():
+            clamp_codex_session_end(v)
+    elif isinstance(o, list):
+        for v in o:
+            clamp_codex_session_end(v)
 strip_async(data)
+clamp_codex_session_end(data)
 with open(p, "w", encoding="utf-8") as f:
     json.dump(data, f, indent=2)
     f.write("\n")

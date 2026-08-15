@@ -6,7 +6,7 @@ Status: supported
 
 *Find the ghost tokens. Survive compaction. Track the quality decay.*
 
-Token Optimizer for Codex audits local Codex context usage, tracks real session token/cost data from Codex JSONL logs, and installs a balanced hook profile for quality tracking and session continuity. Pure Python stdlib, zero dependencies, zero telemetry.
+Token Optimizer for Codex audits local Codex context usage, tracks real session token/cost data from Codex JSONL logs, and installs a selectable hook profile for quality tracking and session continuity. Pure Python stdlib, zero dependencies, zero telemetry.
 
 ## Status
 
@@ -32,21 +32,21 @@ TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py 
 
 This installs hooks to `~/.codex/hooks.json`, which Codex loads for all projects regardless of trust level. For per-project overrides, use `--project "$PWD"` instead.
 
-The default profile is `balanced`. It installs:
-
-- `SessionStart` for session recovery context.
-- `UserPromptSubmit` for prompt-quality and loop nudges.
-- `Stop` for throttled dashboard refresh and continuity checkpointing.
-- Codex compact prompt guidance in `~/.codex/config.toml`.
+The default profile is `aggressive`. It installs the balanced hooks plus
+PostToolUse telemetry. All profiles install Codex compact prompt guidance in
+`~/.codex/config.toml` unless you pass `--skip-compact-prompt`.
 
 ### Hook profiles
 
 | Profile | What it installs | Noise level |
 |---------|-----------------|-------------|
-| `balanced` (default) | SessionStart + UserPromptSubmit + Stop + compact prompt | Low, 3 hook events |
+| `balanced` | SessionStart + UserPromptSubmit + SubagentStart + SubagentStop + Stop | Low, session continuity and subagent tracking |
 | `quiet` | Stop only | Minimal, 1 hook event |
-| `telemetry` | Balanced + PostToolUse | Medium, visible rows in Desktop |
-| `aggressive` | All hooks including experimental Bash PreToolUse | High, full coverage |
+| `telemetry` | Stop + PostToolUse | Medium, local tool-output telemetry |
+| `aggressive` (default) | Balanced + PostToolUse | High, full non-experimental coverage |
+
+Experimental Bash command compression is separate from every profile and
+requires `--enable-bash-compression`; Codex cannot rewrite tool input yet.
 
 ```bash
 TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py codex-install --profile quiet
@@ -163,9 +163,9 @@ Codex and Claude Code have different hook surfaces, so some features work differ
 | Config file | `CLAUDE.md` | `AGENTS.md` | Different platforms |
 | Memory system | `MEMORY.md` + project memory dirs | `~/.codex/memories/**/*.md` | Different storage |
 | Model routing advice | Opus/Sonnet/Haiku per-agent routing | Intelligence levels (Low/Medium/High/Extra High) + model selection (GPT-5.6 Sol/Terra/Luna, GPT-5.5, 5.4, 5.4-Mini, 5.3-Codex, 5.2) | Different model families |
-| Hook install | Auto via plugin, 8 hook events | `codex-install` command (global by default), 4 profiles, 3-5 hook events | Codex hooks are newer, fewer events |
+| Hook install | Auto via plugin, 8 hook events | `codex-install` command (global by default), 4 profiles, 1-6 hook event types | Codex hooks are newer, fewer events |
 | Compact lifecycle | PreCompact + PostCompact hooks capture/restore | Compact prompt guidance + Stop checkpoints | Codex lacks PreCompact/PostCompact |
-| Tool result archive | PostToolUse archives immediately per tool call | Stop-time backfill from JSONL (balanced), or PostToolUse (telemetry profile) | Different timing |
+| Tool result archive | PostToolUse archives immediately per tool call | Stop-time backfill from JSONL (quiet/balanced), or immediate PostToolUse (telemetry/aggressive) | Different timing |
 | Dashboard refresh | SessionEnd hook + daemon at `localhost:24842` | Stop hook + daemon at `localhost:24843` | Both support bookmarkable URL via `setup-daemon` |
 | Plugin install | `/plugin marketplace add alexgreensh/token-optimizer` | `codex plugin marketplace add alexgreensh/token-optimizer` | Same concept, different CLI |
 | Auto-update | Claude Code marketplace auto-update | Codex marketplace `git ls-remote` on startup | Both work |

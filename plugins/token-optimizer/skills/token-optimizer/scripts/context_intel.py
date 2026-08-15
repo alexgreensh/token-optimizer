@@ -26,6 +26,7 @@ import re
 import time
 
 from hook_io import read_stdin_hook_input
+from credential_patterns import redact_credentials
 from session_store import SessionStore
 
 _OUTPUT_THRESHOLD = 8192  # Only summarize outputs >= 8K chars
@@ -196,6 +197,16 @@ _MAX_DECISIONS = 10
 _SENTENCE_SPLIT_RE = re.compile(r"[.!?\n]+")
 
 
+def _load_redacted_decisions(store: SessionStore) -> list:
+    """Load decisions and repair credential-bearing records from older versions."""
+    existing_raw = store.get_meta("session_decisions")
+    existing = json.loads(existing_raw) if existing_raw else []
+    redacted = [redact_credentials(d) if isinstance(d, str) else d for d in existing]
+    if redacted != existing:
+        store.set_meta("session_decisions", json.dumps(redacted, ensure_ascii=False))
+    return redacted
+
+
 def _extract_decisions(text: str, store: SessionStore) -> None:
     """Extract decision statements from tool output and store incrementally.
 
@@ -205,34 +216,34 @@ def _extract_decisions(text: str, store: SessionStore) -> None:
     to avoid conflicting with the implicit transaction from log_tool_use on
     the same shared connection.
     """
-    if len(text) < 50:
-        return
-    sample = text[:5000]
-    if not _DECISION_RE.search(sample):
-        return
-
-    sentences = [
-        s.strip() for s in _SENTENCE_SPLIT_RE.split(sample)
-        if 20 <= len(s.strip()) <= 200
-    ]
-    new_decisions = []
-    for sentence in sentences:
-        if _DECISION_RE.search(sentence):
-            new_decisions.append(sentence.strip()[:150])
-        if len(new_decisions) >= 3:
-            break
-
-    if not new_decisions:
-        return
-
     try:
-        existing_raw = store.get_meta("session_decisions")
-        existing = json.loads(existing_raw) if existing_raw else []
+        existing = _load_redacted_decisions(store)
+
+        if len(text) < 50:
+            return
+        sample = text[:5000]
+        if not _DECISION_RE.search(sample):
+            return
+
+        sentences = [
+            s.strip() for s in _SENTENCE_SPLIT_RE.split(sample)
+            if 20 <= len(s.strip()) <= 200
+        ]
+        new_decisions = []
+        for sentence in sentences:
+            if _DECISION_RE.search(sentence):
+                new_decisions.append(sentence.strip()[:150])
+            if len(new_decisions) >= 3:
+                break
+
+        if not new_decisions:
+            return
 
         if len(existing) >= _MAX_DECISIONS:
             return
 
         for d in new_decisions:
+            d = redact_credentials(d)
             if d not in existing:
                 existing.append(d)
                 if len(existing) >= _MAX_DECISIONS:

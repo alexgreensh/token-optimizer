@@ -123,10 +123,14 @@ def _check_consent() -> bool:
                 return True  # Path outside home = skip (fail-open)
             config_path = pd / "config" / "config.json"
         else:
-            # Legacy / Codex fallback
-            codex_home = os.environ.get("CODEX_HOME", "")
-            if codex_home:
-                ch = Path(codex_home).resolve()
+            # Codex hooks set TOKEN_OPTIMIZER_RUNTIME=codex, but Codex does
+            # not guarantee CODEX_HOME is exported to every hook process.
+            # Honor the explicit runtime and fall back to ~/.codex so a valid
+            # Codex consent record is not silently skipped in favor of Claude's.
+            codex_home = os.environ.get("CODEX_HOME", "").strip()
+            runtime = os.environ.get("TOKEN_OPTIMIZER_RUNTIME", "").strip().lower()
+            if codex_home or runtime == "codex":
+                ch = Path(codex_home).expanduser().resolve() if codex_home else home / ".codex"
                 if not str(ch).startswith(str(home)):
                     return True
                 config_path = ch / "token-optimizer" / "config.json"

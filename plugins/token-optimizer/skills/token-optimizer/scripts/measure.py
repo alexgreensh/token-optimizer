@@ -40572,14 +40572,22 @@ if __name__ == "__main__":
                 _buf = _io.StringIO()
                 with _redirect_stdout(_buf):
                     _run_compact_restore()
-                # Fable #1 follow-up (future-proof, no live impact today): the emitted
-                # event is chosen statically because Cowork fires this only from the
-                # UserPromptSubmit-registered entry and desktop/codex only from
-                # SessionStart. If #40495 is ever fixed and SessionStart starts firing in
-                # Cowork, derive the event from stdin hook_event_name instead so the
-                # envelope hookEventName always matches the firing hook.
+                # Derive the envelope event from the firing hook's stdin payload so
+                # the emitted hookEventName always matches the hook that actually
+                # fired. Previously this was hardcoded from is_cowork()
+                # ("UserPromptSubmit" if cowork else "SessionStart"), which assumed
+                # is_cowork() is accurate on every host. It is not: on the local CLI,
+                # hook subprocesses inherit the harness AI_AGENT marker
+                # (claude-code_*_harness), so is_cowork() false-positives and the
+                # SessionStart:compact hook emits a UserPromptSubmit envelope, which
+                # Claude Code rejects ("expected SessionStart but got
+                # UserPromptSubmit"), discarding the post-compaction recovery context.
+                # Reading hook_event_name from stdin removes the dependency on runtime
+                # detection being right. Falls back to SessionStart if the field is
+                # absent (older harnesses).
                 _emit_additional_context(
-                    _buf.getvalue(), event="UserPromptSubmit" if _cw else "SessionStart")
+                    _buf.getvalue(),
+                    event=str(hook_input.get("hook_event_name") or "SessionStart"))
             else:
                 _run_compact_restore()
         except _HookTimeout:

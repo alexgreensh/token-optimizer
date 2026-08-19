@@ -7,6 +7,8 @@
 #   - Windows Store Python (real installs proven alive via a flash-free
 #     GUI-twin proof-of-life probe, console --version probe as the fallback
 #     authority; non-functional AppExecutionAlias stubs skipped automatically)
+#   - mise (https://mise.jdx.dev) shims at their default per-platform data-dir
+#     location (Windows/macOS/Linux)
 # On Windows (Git Bash/MSYS), exec prefers the GUI-subsystem twin over the
 # console binary to avoid the per-hook console-window flash and orphaned
 # conhost.exe: python.exe/python3.exe swap to pythonw.exe, and py.exe (the
@@ -59,6 +61,19 @@ _is_safe_prefix() {
         # Exact filename keeps the anti-hijack intent (no wildcard in that dir).
         /[a-zA-Z]/Windows/py.exe)                                      return 0 ;;
         /[a-zA-Z]/Windows/pyw.exe)                                     return 0 ;;
+        # mise (https://mise.jdx.dev) shim directory, default Windows data dir.
+        # Hardcoded default location only -- never derived from MISE_DATA_DIR/
+        # MISE_SHIMS_DIR, which would reopen the PATH-hijack vector this
+        # allowlist exists to close.
+        /[a-zA-Z]/Users/*/AppData/Local/mise/shims/*)                  return 0 ;;
+    esac
+    # mise (https://mise.jdx.dev) shim directory, default macOS/Linux data dir
+    # (XDG: ~/.local/share/mise/shims). Needs its own case block (not
+    # _SAFE_PREFIXES) because it requires a per-user wildcard component.
+    # Hardcoded default location only, same rationale as the Windows entry above.
+    case "$binpath" in
+        /Users/*/.local/share/mise/shims/*)                            return 0 ;;
+        /home/*/.local/share/mise/shims/*)                             return 0 ;;
     esac
     # C8: case-insensitive WindowsApps allow for Windows-style drive-letter
     # paths. On a case-insensitive FS the dir can be any casing; the drive-

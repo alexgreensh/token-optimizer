@@ -48,8 +48,7 @@ The table covers the six tools most often compared to Token Optimizer. Status: �
 | Re-read file skeletons | 🟢 Structure map on repeat reads, fail-open, full original retrievable | 🔴 | 🔴 | — | 🔴 | 🔴 |
 | Tabular/JSON compression | 🟢 Value-preserving columnar | 🟢 SmartCrusher | 🔴 | — | 🟡 Generic summary | 🔴 |
 | Read dedup and delta diffs | 🟢 Re-reads serve diff only | 🔴 | 🔴 | — | 🔴 | 🔴 |
-| Compaction survival | 🟢 Progressive checkpoints, restore, tool-output digest | 🔴 | 🔴 | — | 🟡 Session guide only | 🔴 |
-| Conversation history | 🟢 Progressive checkpoints + compaction restore | 🔴 | 🔴 | — | 🟡 Session guide | 🔴 |
+| Session continuity | 🟢 Progressive checkpoints before compaction + restore after, cross-session hints, cold-resume, tool-output digest; measured ~3.9M tokens / ~$19 recovered in a 30-day snapshot (checkpoint restores + lean resumes) | 🔴 | 🔴 | — | 🟡 Session guide only | 🔴 |
 | Model routing and behavioral coaching | 🟢 12 detectors, subagent cost breakdown, anti-patterns | 🔴 | 🔴 | — | 🔴 | 🟡 Basic suggestions |
 | Per-task model and effort advice | 🟢 `route` recommends the tier and effort a task needs, before you spend | — | — | — | — | — |
 | Historical trend analysis | 🟢 30-day trends, quality/cost/cache/duration correlation, model-switch detection | 🔴 | 🔴 | — | 🔴 | 🔴 |

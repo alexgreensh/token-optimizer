@@ -210,8 +210,7 @@ These ten rows are the ones where Token Optimizer is the only 🟢 in the row: w
 
 |  | Token Optimizer | Headroom | RTK | Boost | context-mode | `/context` |
 |---|---|---|---|---|---|---|
-| Compaction survival | 🟢 Progressive checkpoints, restore, tool output digest | 🔴 | 🔴 | — | 🟡 Session guide only | 🔴 |
-| Session continuity | 🟢 Cross-session hints, cold-resume, checkpoint scoring | 🔴 | 🔴 | — | 🟡 Session guide | 🔴 |
+| Session continuity | 🟢 Progressive checkpoints before compaction + restore after, cross-session hints, cold-resume, tool-output digest; measured ~3.9M tokens / ~$19 recovered in a 30-day snapshot (checkpoint restores + lean resumes) | 🔴 | 🔴 | — | 🟡 Session guide only | 🔴 |
 | Structural waste audit | 🟢 Deep per-component (CLAUDE.md, skills, MCP, memory) | 🔴 | 🔴 | 🔴 | 🔴 | 🟡 Summary only |
 | CLAUDE.md and MEMORY.md health | 🟢 8 auditors + attention-curve scoring | 🔴 | 🔴 | 🔴 | 🔴 | 🔴 |
 | Model routing and behavioral coaching | 🟢 12 detectors, subagent cost breakdown, anti-patterns | 🔴 | 🔴 | — | 🔴 | 🟡 Basic suggestions |

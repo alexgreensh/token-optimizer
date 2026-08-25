@@ -34260,6 +34260,43 @@ def _is_malformed_to_hook(cmd):
     return has_subshell or has_double_home
 
 
+# Marker substrings that prove a UserPromptSubmit hook already drives the
+# quality-cache update. Two shapes exist in the wild and BOTH must count as
+# "installed", or ensure-health appends a duplicate legacy hook every session
+# (GitHub #155):
+#   * legacy standalone hook  -> `python3 '<mp>' quality-cache --quiet`
+#     (pre-5.11.93 script installs; the literal "quality-cache" is present).
+#   * #139 consolidated dispatcher (a299bf7, v5.11.93+) ->
+#     `... hooks/userpromptsubmit_runner.py ...`, which runs quality-cache
+#     *inside* the runner, so "quality-cache" NEVER appears in the command.
+# Matching only the first shape made every detection site treat the shipped
+# consolidated dispatcher as "hook missing", regressing #139.
+_QUALITY_CACHE_HOOK_MARKERS = ("quality-cache", "userpromptsubmit_runner.py")
+
+
+def _command_drives_quality_cache(command):
+    """True if a hook *command string* already runs the quality-cache update.
+
+    Recognizes both the legacy standalone hook and the #139 consolidated
+    in-process dispatcher (see `_QUALITY_CACHE_HOOK_MARKERS`).
+    """
+    blob = command or ""
+    return any(marker in blob for marker in _QUALITY_CACHE_HOOK_MARKERS)
+
+
+def _quality_cache_hook_present(groups):
+    """True if any UserPromptSubmit hook *group* already drives quality-cache.
+
+    `groups` is a settings.json / hooks.json ``UserPromptSubmit`` list. This is
+    the two-marker generalization of the old ``any("quality-cache" in str(h)
+    for h in groups)`` scan: it stringifies each group so it stays robust to the
+    canonical ``{"hooks": [{"command": ...}]}`` shape and any bare/legacy entry,
+    while recognizing the consolidated dispatcher that carries no literal
+    "quality-cache" substring (GitHub #155).
+    """
+    return any(_command_drives_quality_cache(str(group)) for group in (groups or []))
+
+
 def _is_quality_bar_installed(settings=None):
     """Check which quality bar components are installed.
 
@@ -34276,11 +34313,12 @@ def _is_quality_bar_installed(settings=None):
     if "statusline.js" in cmd and "token-optimizer" in cmd:
         result["statusline"] = True
 
-    # Check UserPromptSubmit hook (settings.json)
+    # Check UserPromptSubmit hook (settings.json). Recognizes both the legacy
+    # standalone hook and the #139 consolidated dispatcher (GitHub #155).
     hooks = (settings.get("hooks") or {})
     for group in (hooks.get("UserPromptSubmit") or []):
         for hook in (group.get("hooks") or []):
-            if "quality-cache" in (hook.get("command") or ""):
+            if _command_drives_quality_cache(hook.get("command") or ""):
                 result["hook"] = True
                 break
 
@@ -34295,7 +34333,7 @@ def _is_quality_bar_installed(settings=None):
                         plugin_hooks = json.load(f).get("hooks", {})
                     for group in (plugin_hooks.get("UserPromptSubmit") or []):
                         for hook in (group.get("hooks") or []):
-                            if "quality-cache" in (hook.get("command") or ""):
+                            if _command_drives_quality_cache(hook.get("command") or ""):
                                 result["hook"] = True
                                 break
                 except (json.JSONDecodeError, PermissionError, OSError):
@@ -39565,7 +39603,10 @@ def run_ensure_health():
                         statusline_cmd = (settings.get("statusLine") or {}).get("command", "") or ""
                         statusline_is_ours = "statusline.js" in statusline_cmd and "token-optimizer" in statusline_cmd
                         hooks = settings.get("hooks", {}).get("UserPromptSubmit", [])
-                        has_cache_hook = any("quality-cache" in str(h) for h in hooks)
+                        # Recognize the #139 consolidated dispatcher as well as
+                        # the legacy standalone hook, else this re-adds the
+                        # legacy hook every SessionStart (GitHub #155).
+                        has_cache_hook = _quality_cache_hook_present(hooks)
                         if has_statusline and not statusline_is_ours and has_cache_hook:
                             print(
                                 "  [Token Optimizer] Statusline was replaced (e.g., by /statusline). "
@@ -41601,7 +41642,10 @@ if __name__ == "__main__":
                 if not _is_plugin and not _qb_disabled and SETTINGS_PATH.exists():
                     _sh_settings = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
                     _sh_hooks = _sh_settings.get("hooks", {}).get("UserPromptSubmit", [])
-                    if not any("quality-cache" in str(h) for h in _sh_hooks):
+                    # Recognize the #139 consolidated dispatcher too, so a script
+                    # install whose canonical hook is already present is not
+                    # "healed" by appending a duplicate legacy hook (GitHub #155).
+                    if not _quality_cache_hook_present(_sh_hooks):
                         setup_quality_bar(quiet=True)
             except Exception:
                 pass

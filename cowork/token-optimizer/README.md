@@ -210,8 +210,7 @@ These ten rows are the ones where Token Optimizer is the only 🟢 in the row: w
 
 |  | Token Optimizer | Headroom | RTK | Boost | context-mode | `/context` |
 |---|---|---|---|---|---|---|
-| Compaction survival | 🟢 Progressive checkpoints, restore, tool output digest | 🔴 | 🔴 | — | 🟡 Session guide only | 🔴 |
-| Session continuity | 🟢 Cross-session hints, cold-resume, checkpoint scoring | 🔴 | 🔴 | — | 🟡 Session guide | 🔴 |
+| Session continuity | 🟢 Progressive checkpoints before compaction + restore after, cross-session hints, cold-resume, tool-output digest; measured ~3.9M tokens / ~$19 recovered in a 30-day snapshot (checkpoint restores + lean resumes) | 🔴 | 🔴 | — | 🟡 Session guide only | 🔴 |
 | Structural waste audit | 🟢 Deep per-component (CLAUDE.md, skills, MCP, memory) | 🔴 | 🔴 | 🔴 | 🔴 | 🟡 Summary only |
 | CLAUDE.md and MEMORY.md health | 🟢 8 auditors + attention-curve scoring | 🔴 | 🔴 | 🔴 | 🔴 | 🔴 |
 | Model routing and behavioral coaching | 🟢 12 detectors, subagent cost breakdown, anti-patterns | 🔴 | 🔴 | — | 🔴 | 🟡 Basic suggestions |
@@ -237,11 +236,11 @@ These ten rows are the ones where Token Optimizer is the only 🟢 in the row: w
 | Multi-platform | 🟢 Claude Code, VS Code, Codex, OpenClaw, OpenCode, Hermes, Copilot | 🟢 Claude Code, Cursor, Codex, Aider, Copilot | 🟢 15 integrations | 🟡 Cursor, Claude Code, Copilot, Codex CLI | 🟢 17 integrations | 🔴 Claude Code only |
 | Per-task model and effort advice | 🟢 `route` sizes the task before you spend | — | — | — | — | — |
 | Keep-Warm (cache TTL refresh) | 🟢 Opt-in ping before cache expiry, tripwire auto-off | 🔴 | 🔴 | — | 🔴 | 🔴 |
-| End-to-end task-outcome benchmark | 🔴 Output-token A/B only | — | — | 🟢 Vendor reports Terminal-Bench 2.0 with the same pass rate and ~12% lower cost | — | N/A |
+| End-to-end task-outcome benchmark | 🟡 Controlled A/B on 7 real tasks (output tokens) + measured real-session with/without savings; pass-rate study not yet run | — | — | 🟢 Vendor reports Terminal-Bench 2.0 with the same pass rate and ~12% lower cost | — | N/A |
 | Signed and checksum-verified install | 🟢 `CHECKSUMS.sha256` per release, verified at install, CI-enforced | — | — | 🔴 Installer verifies neither a checksum nor a signature | — | N/A |
 
 </details>
-An em dash means the capability was not verified from first-party material in the 2026-07-26 source audit; it is not a claim that the capability is absent. Boost's "pre-shell" and "shell-level" cells are sourced from its documented wrapper form (`boost <command>`); the mechanism `boost init` uses to wire an agent is not described in its first-party material. Token Optimizer's compression claims are tested against real sessions and an 87-fixture suite you can run yourself. **[Full benchmark methodology and results →](BENCHMARK.md)**
+An em dash means the capability was not verified from first-party material in the 2026-07-26 source audit (Boost's first-party material re-verified 2026-08-26); it is not a claim that the capability is absent. This page scores command-output compression only; JFrog Boost's separately-shipped BoostGraph, a local code-map its agent queries on request, is a different capability and out of scope here. Boost's "pre-shell" and "shell-level" cells are sourced from its documented wrapper form (`boost <command>`); the mechanism `boost init` uses to wire an agent is not described in its first-party material. Token Optimizer's compression claims are tested against real sessions and an 87-fixture suite you can run yourself. **[Full benchmark methodology and results →](BENCHMARK.md)**
 
 <p align="center">
   <a href="https://alexgreensh.github.io/token-optimizer/reference/comparison/"><img src="https://img.shields.io/badge/Read%20the%20official%20full%20comparison-in%20our%20docs-0b7285?style=for-the-badge" alt="Read the official full comparison page in our documentation"></a>

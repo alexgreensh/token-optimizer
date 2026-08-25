@@ -58,7 +58,7 @@ The table covers the six tools most often compared to Token Optimizer. Status: �
 | Structural waste audit | 🟢 Per-component (CLAUDE.md, skills, MCP, memory) | 🔴 | 🔴 | 🔴 | 🔴 | 🟡 Summary only |
 | CLAUDE.md and MEMORY.md health | 🟢 8 auditors + attention-curve scoring | 🔴 | 🔴 | 🔴 | 🔴 | 🔴 |
 | Measures if compression helped | 🟢 Local telemetry, before/after tokens, dollar savings | 🔴 | 🟡 `rtk gain` (token counts only) | 🟡 `boost report`, vendor-side | 🔴 | 🔴 |
-| End-to-end agent task-outcome benchmark | 🔴 Output-token A/B only (7 tasks, two models) | — | — | 🟢 Vendor reports Terminal-Bench 2.0 with the same pass rate and ~12% lower cost | — | N/A |
+| End-to-end agent task-outcome benchmark | 🟡 Controlled A/B on 7 real tasks (output tokens, two models) + measured real-session with/without savings; task pass-rate study not yet run | — | — | 🟢 Vendor reports Terminal-Bench 2.0 with the same pass rate and ~12% lower cost | — | N/A |
 | Fleet-level cross-agent analysis | 🟢 | 🔴 | 🔴 | — | 🔴 | 🔴 |
 | Cache-safe | 🟢 Never modifies existing context prefix | 🟡 Proxy mode rewrites in-flight | 🟢 Pre-shell only | 🟢 Pre-shell only | 🟡 MCP overhead | 🟢 |
 | Zero baseline context overhead | 🟢 External process, no context injection | 🔴 Injects instructions | 🟢 Shell-level only | 🟢 Shell-level only | 🔴 MCP server overhead | 🟢 Native |

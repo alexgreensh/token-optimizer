@@ -6524,7 +6524,7 @@ def _dispatch_collect(args):
             pass
 
 
-def _spawn_detached_dashboard_selfheal(days=30):
+def _spawn_detached_dashboard_selfheal(days=30, force=False):
     """Rebuild the dashboard in a DETACHED, unbounded background process.
 
     Bug B self-heal: when a bounded hook-path regen is killed by the 20s budget
@@ -6539,6 +6539,12 @@ def _spawn_detached_dashboard_selfheal(days=30):
       * is quiet and never opens a browser.
     The child is unbounded, so it cannot itself time out and re-spawn -- no loop.
     Fire-and-forget; never raises (a failed self-heal must not break the hook).
+
+    ``force`` appends ``--force`` so the child bypasses the 60s write throttle.
+    Used by the version-bump self-heal: a stale file written seconds ago by a
+    just-killed regen must not throttle-skip the heal. The PR #154 version guard
+    still applies inside generate_standalone_dashboard (force governs the throttle,
+    not version precedence), so a forced heal never clobbers a newer dashboard.
     """
     try:
         env = dict(os.environ)
@@ -6547,13 +6553,16 @@ def _spawn_detached_dashboard_selfheal(days=30):
         # Detach so the child outlives the killed hook: POSIX new session, or
         # (on Windows) DETACHED_PROCESS. start_new_session is POSIX-only.
         popen_kw = {} if os.name == "nt" else {"start_new_session": True}
+        argv = [sys.executable, os.path.abspath(__file__),
+                "dashboard", "--quiet", "--days", str(int(days))]
+        if force:
+            argv.append("--force")
         # creationflags MUST be inlined and mention _NO_WINDOW (CREATE_NO_WINDOW,
         # 0 off-Windows) so a console-less Windows host never flashes a cmd window
         # -- and so the spawn-site invariant test can see it. DETACHED_PROCESS is 0
         # off-Windows, so this evaluates to 0 on POSIX (the only valid value there).
         subprocess.Popen(
-            [sys.executable, os.path.abspath(__file__),
-             "dashboard", "--quiet", "--days", str(int(days))],
+            argv,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -6599,6 +6608,10 @@ def _dispatch_dashboard(args):
     if not cp:
         days = 30
         quiet = "--quiet" in args or "-q" in args
+        # --force bypasses the 60s write throttle. The detached version-bump
+        # self-heal passes it so a stale file just written by a killed regen
+        # cannot throttle-skip the heal (the PR #154 version guard still applies).
+        force = "--force" in args
         for i, a in enumerate(args):
             if a == "--days" and i + 1 < len(args):
                 try:
@@ -6610,7 +6623,7 @@ def _dispatch_dashboard(args):
         )
         timed_out = False
         try:
-            out = generate_standalone_dashboard(days=days, quiet=quiet)
+            out = generate_standalone_dashboard(days=days, quiet=quiet, force=force)
         except _HookTimeout:
             out = None
             timed_out = True
@@ -21115,22 +21128,48 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             _regen_inflight = True
             try:
                 for step in ("collect", "dashboard"):
-                    r = subprocess.run(
-                        [sys.executable, target, step, "--quiet"],
-                        capture_output=True, text=True, timeout=REGEN_STEP_TIMEOUT,
-                        creationflags=_NO_WINDOW,
-                        # A human pressed Regenerate and is waiting: mark it
-                        # INTERACTIVE so the child is not killed by the 20s hook
-                        # budget (Bug B). The daemon's own REGEN_STEP_TIMEOUT is
-                        # the real, saner cap here.
-                        env={{**os.environ, "TOKEN_OPTIMIZER_INTERACTIVE": "1"}},
-                    )
+                    # A human pressed Regenerate: the "dashboard" step MUST carry
+                    # --force so the 60s write throttle can never silently no-op the
+                    # click into serving the same stale file (the very ambiguity that
+                    # let a two-day-old dashboard look freshly regenerated). collect
+                    # has no such throttle, so it needs no flag.
+                    argv = [sys.executable, target, step, "--quiet"]
+                    if step == "dashboard":
+                        argv.append("--force")
+                    # Retry ONCE on an intermittent hang (observed live: lock
+                    # contention makes the normally-~9s build blow past a single
+                    # REGEN_STEP_TIMEOUT shot), with a doubled cap on the retry,
+                    # rather than failing the whole click on one timed attempt.
+                    r = None
+                    _timeout_exc = None
+                    for _attempt in range(2):
+                        _to = REGEN_STEP_TIMEOUT if _attempt == 0 else REGEN_STEP_TIMEOUT * 2
+                        try:
+                            r = subprocess.run(
+                                argv,
+                                capture_output=True, text=True, timeout=_to,
+                                creationflags=_NO_WINDOW,
+                                # A human pressed Regenerate and is waiting: mark it
+                                # INTERACTIVE so the child is not killed by the 20s
+                                # hook budget (Bug B). The daemon's own per-attempt
+                                # timeout is the real, saner cap here.
+                                env={{**os.environ, "TOKEN_OPTIMIZER_INTERACTIVE": "1"}},
+                            )
+                            _timeout_exc = None
+                            break
+                        except subprocess.TimeoutExpired as _te:
+                            _timeout_exc = _te
+                            _log_regen("MANUAL regen %s timed out after %d seconds (attempt %d/2)" % (step, _to, _attempt + 1))
+                    if _timeout_exc is not None:
+                        _log_regen("MANUAL regen error: %s" % _timeout_exc)
+                        self._json_response(500, {{"ok": False, "step": step, "msg": "regeneration timed out: " + str(_timeout_exc)}})
+                        return
                     if r.returncode != 0:
                         msg = (r.stderr or r.stdout or "").strip()[:300] or ("%s exited %d" % (step, r.returncode))
                         _log_regen("MANUAL regen failed at %s: %s" % (step, msg))
                         self._json_response(500, {{"ok": False, "step": step, "msg": msg}})
                         return
-            except (subprocess.TimeoutExpired, OSError) as e:
+            except OSError as e:
                 _log_regen("MANUAL regen error: %s" % e)
                 self._json_response(500, {{"ok": False, "msg": "regeneration failed: " + str(e)}})
                 return
@@ -39116,9 +39155,22 @@ def run_ensure_health():
                 except OSError:
                     _fresh = False
             if not _fresh:
+                # Hand the ~9s rebuild to a DETACHED, unbounded, FORCED child
+                # instead of running it in-process. run_ensure_health() runs under
+                # an 8s SIGALRM budget (see the ensure-health dispatch), and this
+                # rebuild is ~9s, so an in-process call reliably tripped
+                # _HookTimeout (a BaseException the local `except Exception` cannot
+                # catch). That aborted the WHOLE ensure-health tick BEFORE the
+                # daemon-script auto-update block below ever ran -- so on a version
+                # bump both the HTML AND the daemon script stayed stale, and unlike
+                # the CLI dashboard path there was no detached-child fallback here
+                # to ever catch the HTML up. The detached child finishes the forced
+                # rebuild off the hot path (re-reading a now-healthy meter, which
+                # clears the runway placeholder), and this cheap spawn returns at
+                # once so execution always reaches the daemon-script update.
                 try:
-                    generate_standalone_dashboard(quiet=True, force=True)
-                    print(f"  [Token Optimizer] Refreshed dashboard to v{TOKEN_OPTIMIZER_VERSION}")
+                    _spawn_detached_dashboard_selfheal(days=30, force=True)
+                    print(f"  [Token Optimizer] Refreshing dashboard to v{TOKEN_OPTIMIZER_VERSION} in the background")
                 except Exception as _e:
                     print(f"  [Token Optimizer] dashboard refresh failed: {_e}", file=sys.stderr)
     except Exception as _e:

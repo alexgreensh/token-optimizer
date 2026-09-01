@@ -269,15 +269,20 @@ def _crossturn_dedup(command: str, output: str):
             return None
         from session_store import SessionStore
         from delta_diff import content_hash, compute_delta
+        from archive_result import _redact_credentials
 
         store = SessionStore(session_id)
         try:
             cmd_h = content_hash(command.strip())
-            out_h = content_hash(output)
+            out_h = content_hash(output)  # identical-detection stays on raw bytes
+            # Redact before anything is persisted or diffed, mirroring the
+            # archive path (archive_result._redact_credentials), so a secret in
+            # command output never reaches the on-disk dedup store.
+            safe_output = _redact_credentials(output)
             prior = store.get_command_output(cmd_h)
-            # Record THIS run (full output) for the next comparison BEFORE we
+            # Record THIS run (redacted output) for the next comparison BEFORE we
             # return a delta, so deltas always chain off full outputs, not refs.
-            store.insert_command_output(cmd_h, command[:500], out_h, len(output), output)
+            store.insert_command_output(cmd_h, command[:500], out_h, len(output), safe_output)
             if not prior or not prior.get("compressed_output"):
                 return None
             # Recency guard: only reference a run from the last hour, a rough
@@ -290,7 +295,7 @@ def _crossturn_dedup(command: str, output: str):
                        f"output this session; unchanged.]")
             else:
                 delta, _stats = compute_delta(
-                    prior["compressed_output"], output, filename=label)
+                    prior["compressed_output"], safe_output, filename=label)
                 if not delta:
                     return None
                 ref = (f"[Token Optimizer: same as your previous `{label}` output "

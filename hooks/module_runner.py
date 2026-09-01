@@ -44,13 +44,23 @@ def _warn_readonly_scripts_dir_once(scripts_dir: str) -> None:
             fresh = False
         if fresh:
             return
-        # Open with O_NOFOLLOW so a symlink pre-created at this predictable,
-        # world-shared temp path by another local user is refused (raises
-        # ELOOP, swallowed by the outer `except Exception` below -> we just skip
-        # the warning) rather than followed to a victim file (CWE-377). O_TRUNC
-        # matches the "w" truncation. O_NOFOLLOW is absent on Windows; the
-        # getattr fallback of 0 makes it a no-op flag there.
-        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+        # This marker lives at a predictable, world-shared temp path, so another
+        # local user can pre-plant something hostile there (CWE-377). Defend
+        # against all of it: unlink any existing entry first (drops a planted
+        # symlink, FIFO, or hardlink by name -- a hardlink's target is left
+        # untouched), then create our own EXCLUSIVELY. O_EXCL means we only ever
+        # open a file we just created; O_NOFOLLOW + O_NONBLOCK close the tiny
+        # unlink->open race (a re-planted symlink fails ELOOP, a re-planted FIFO
+        # fails ENXIO instead of blocking the hook forever). Every failure here
+        # is swallowed by the outer `except Exception` -> the hook stays
+        # fail-open and just skips the once-a-day warning. O_NOFOLLOW/O_NONBLOCK
+        # are absent on Windows; the getattr fallback of 0 makes them no-ops.
+        try:
+            os.unlink(marker)
+        except OSError:
+            pass
+        flags = (os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                 | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
         fd = os.open(marker, flags, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(str(time.time()))

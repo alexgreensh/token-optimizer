@@ -21,7 +21,8 @@ SECURITY (post-adversarial-review hardening):
   env, command, xargs, tee, awk, aws, gcloud, az removed.
 - Cloud CLIs require explicit read-only subcommand allow-list.
 - git uses an explicit ALLOW-list (not deny-list).
-- git branch rejects -d/-D/--delete/-m/-M flags.
+- git branch rejects delete (-d/-D/--delete), rename (-m/-M/--move),
+  copy (-c/-C/--copy) and --force/-f flags.
 - find rejects -delete/-exec/-ok/-fprint/-fls.
 - sqlite3 rejects replace, vacuum, .import, .restore, pragma.
 - npm run / terraform state / git config / kubectl config / docker pull
@@ -345,8 +346,16 @@ _GIT_READ_ONLY_SUBCMDS = frozenset({
     "stash", "remote",
 })
 
-# git branch destructive flags.
-_GIT_BRANCH_DESTRUCTIVE_FLAGS = frozenset({"-d", "-D", "--delete", "-m", "-M"})
+# git branch destructive flags. Covers delete (-d/-D/--delete), rename
+# (-m/-M/--move) and copy (-c/-C/--copy, which are copy/force-copy, not
+# "create"), plus --force/-f. All are state-changing and must not pass the
+# read-only gate.
+_GIT_BRANCH_DESTRUCTIVE_FLAGS = frozenset({
+    "-d", "-D", "--delete",
+    "-m", "-M", "--move",
+    "-c", "-C", "--copy",
+    "-f", "--force",
+})
 
 # find destructive flags.
 _FIND_DESTRUCTIVE_FLAGS = frozenset({"-delete", "-exec", "-execdir", "-ok", "-okdir",

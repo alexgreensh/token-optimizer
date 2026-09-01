@@ -44,7 +44,15 @@ def _warn_readonly_scripts_dir_once(scripts_dir: str) -> None:
             fresh = False
         if fresh:
             return
-        with open(marker, "w", encoding="utf-8") as fh:
+        # Open with O_NOFOLLOW so a symlink pre-created at this predictable,
+        # world-shared temp path by another local user is refused (raises
+        # ELOOP, swallowed by the outer `except Exception` below -> we just skip
+        # the warning) rather than followed to a victim file (CWE-377). O_TRUNC
+        # matches the "w" truncation. O_NOFOLLOW is absent on Windows; the
+        # getattr fallback of 0 makes it a no-op flag there.
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(marker, flags, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(str(time.time()))
         sys.stderr.write(
             f"[Token Optimizer] note: {scripts_dir} is not writable, so Python "

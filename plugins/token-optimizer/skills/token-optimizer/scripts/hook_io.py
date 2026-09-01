@@ -46,14 +46,44 @@ def read_stdin_hook_input(max_bytes: int = 1_048_576) -> dict:
         if sys.platform == "win32":
             data = _read_stdin_windows(max_bytes=max_bytes)
         else:
+            import os
             import select
-            if select.select([sys.stdin], [], [], _STDIN_TIMEOUT)[0]:
-                # Decode from the raw buffer as UTF-8 so a non-UTF-8 host locale
-                # can't corrupt or crash on non-ASCII hook payloads (e.g. Hebrew
-                # cwd / tool args). Mirrors the Windows path above.
-                data = sys.stdin.buffer.read(max_bytes).decode("utf-8", errors="replace")
-            else:
+            import time
+            if not select.select([sys.stdin], [], [], _STDIN_TIMEOUT)[0]:
                 return {}
+            try:
+                fd = sys.stdin.fileno()
+            except (OSError, ValueError, AttributeError):
+                fd = None
+            if fd is not None:
+                # select() only guarantees one byte is ready; a blocking
+                # read(max_bytes) would then hang until max_bytes or EOF, so a
+                # host that writes a partial payload and holds the pipe open
+                # defeats the timeout. Read what is actually available in a loop
+                # bounded by the same deadline, assembling chunked payloads
+                # without ever blocking past _STDIN_TIMEOUT.
+                deadline = time.monotonic() + _STDIN_TIMEOUT
+                chunks = []
+                total = 0
+                while total < max_bytes:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    if not select.select([sys.stdin], [], [], remaining)[0]:
+                        break  # timed out with no further data
+                    chunk = os.read(fd, max_bytes - total)
+                    if not chunk:
+                        break  # EOF: host closed stdin, payload complete
+                    chunks.append(chunk)
+                    total += len(chunk)
+                raw = b"".join(chunks)
+            else:
+                # Non-fd stdin (e.g. a test double): no pipe to hang on.
+                raw = sys.stdin.buffer.read(max_bytes)
+            # Decode from raw bytes as UTF-8 so a non-UTF-8 host locale can't
+            # corrupt or crash on non-ASCII hook payloads (e.g. Hebrew cwd /
+            # tool args). Mirrors the Windows path above.
+            data = raw.decode("utf-8", errors="replace")
         if not data:
             return {}
         parsed = json.loads(data)

@@ -439,16 +439,26 @@ def _write_dashboard_meta_atomic(meta_path):
     try:
         meta_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_fd, tmp_name = tempfile.mkstemp(dir=str(meta_path.parent), prefix=".dashmeta-", suffix=".tmp")
+        fd_owned = False  # True once fdopen's file object owns (and will close) tmp_fd
         try:
             if hasattr(os, "fchmod"):  # POSIX only (os.fchmod is absent on Windows)
                 os.fchmod(tmp_fd, 0o600)
             with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                fd_owned = True
                 f.write(blob)
             os.replace(tmp_name, str(meta_path))
         except BaseException:
             # BaseException, not OSError: writers under a hook budget can raise
             # _HookTimeout mid-write; clean up the temp then re-raise so the
             # timeout still propagates (same contract as the HTML write).
+            # If we failed BEFORE fdopen took ownership (e.g. fchmod raised, or a
+            # budget fired between mkstemp and fdopen), the raw fd would leak;
+            # close it here. Once fdopen owns it, its `with` already closed it.
+            if not fd_owned:
+                try:
+                    os.close(tmp_fd)
+                except OSError:
+                    pass
             try:
                 os.unlink(tmp_name)
             except OSError:

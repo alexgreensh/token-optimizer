@@ -398,11 +398,18 @@ def _handler_deadline(seconds: float):
             signal.signal(alarm_signal, previous_handler)
             previous_remaining, previous_interval = previous_timer
             if previous_remaining > 0:
-                setitimer(
-                    timer_kind,
-                    max(0.0, previous_remaining - elapsed),
-                    previous_interval,
-                )
+                outer_remaining = previous_remaining - elapsed
+                if outer_remaining > 0:
+                    # Outer deadline still has budget: re-arm it for what's left.
+                    setitimer(timer_kind, outer_remaining, previous_interval)
+                elif callable(previous_handler):
+                    # Outer deadline already elapsed while the inner block ran.
+                    # Passing max(0.0, ...) -> 0.0 to setitimer would DISARM it,
+                    # silently dropping the outer budget. Deliver it now instead
+                    # via the just-restored outer handler. (Skipped when the
+                    # previous handler is SIG_DFL/SIG_IGN, so we never turn an
+                    # expired timer into a process-killing default SIGALRM.)
+                    os.kill(os.getpid(), alarm_signal)
         except (OSError, ValueError):
             pass
         if elapsed >= seconds:

@@ -259,8 +259,9 @@ def _crossturn_dedup(command: str, output: str):
     identical case becomes a one-line note, a small change becomes just the diff.
     Reuses the (previously dormant) command_outputs store + delta_diff. The
     caller still attaches the progressive-disclosure pointer, so `expand`
-    recovers the full output even if the referenced run has scrolled out of
-    context -- the reference is self-sufficient, never a dangling pointer.
+    recovers the full (credential-redacted) output even if the referenced run
+    has scrolled out of context -- the reference is self-sufficient, never a
+    dangling pointer.
     Never raises (fail-open): any trouble returns None and normal output stands.
     """
     try:
@@ -279,10 +280,17 @@ def _crossturn_dedup(command: str, output: str):
             # archive path (archive_result._redact_credentials), so a secret in
             # command output never reaches the on-disk dedup store.
             safe_output = _redact_credentials(output)
+            # The command itself can carry inline secrets (an auth header, a
+            # -pPASSWORD, a connection string). Redact BEFORE truncating so a
+            # secret split across the 500-char cutoff can't survive, matching the
+            # archive path which redacts the command too. cmd_h stays on the raw
+            # command -- the hash is non-reversible, like out_h.
+            safe_command = _redact_credentials(command)[:500]
             prior = store.get_command_output(cmd_h)
             # Record THIS run (redacted output) for the next comparison BEFORE we
-            # return a delta, so deltas always chain off full outputs, not refs.
-            store.insert_command_output(cmd_h, command[:500], out_h, len(output), safe_output)
+            # return a delta, so deltas always chain off full (redacted) outputs,
+            # not refs.
+            store.insert_command_output(cmd_h, safe_command, out_h, len(output), safe_output)
             if not prior or not prior.get("compressed_output"):
                 return None
             # Recency guard: only reference a run from the last hour, a rough

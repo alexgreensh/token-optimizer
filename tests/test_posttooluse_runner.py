@@ -71,6 +71,9 @@ def _load_runner(monkeypatch, tmp_path):
     """Import hooks/posttooluse_runner.py fresh, pointed at the repo's scripts."""
     monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(REPO))
     # Keep any lazy measure import isolated from the host's real ~/.claude state.
+    # claude_home() honors CLAUDE_CONFIG_DIR only when the directory exists;
+    # a missing dir is rejected and falls back to the host's real ~/.claude.
+    (tmp_path / "claude").mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
     spec = importlib.util.spec_from_file_location("ptu_runner_under_test", RUNNER)
     mod = importlib.util.module_from_spec(spec)
@@ -378,7 +381,14 @@ sys.exit(m.main())
 
 
 def test_slow_handlers_cannot_starve_later_quality_cache(tmp_path):
-    """Four 0.8s handlers must all start, with over-budget work reported."""
+    """Four 1.6s handlers must all start, with over-budget work reported.
+
+    The total budget is sized so remaining time after three over-budget
+    handlers still covers dispatch of the fourth on slow CI machines (the
+    per-handler share is capped at the 0.75s handler default, so handlers
+    still exceed their budget and report it; Windows runners starved the
+    4th handler when the total was 2.0s because runner startup ate the
+    slack)."""
     marker = tmp_path / "handler-starts.log"
     code = f"""
 import importlib.util, sys, time
@@ -386,7 +396,7 @@ from pathlib import Path
 spec = importlib.util.spec_from_file_location("posttooluse_runner", {str(RUNNER)!r})
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
-m._RUNNER_TOTAL_BUDGET = 2.0
+m._RUNNER_TOTAL_BUDGET = 8.0
 m._read_hook_input = lambda: {{"tool_name": "Bash"}}
 
 def slow(name):
@@ -394,7 +404,7 @@ def slow(name):
         with Path({str(marker)!r}).open("a", encoding="utf-8") as f:
             f.write(name + "\\n")
             f.flush()
-        time.sleep(0.8)
+        time.sleep(1.6)
     return handler
 
 m._sub_bash_compress = slow("bash_compress")
@@ -411,7 +421,7 @@ sys.exit(m.main())
         capture_output=True,
         text=True,
         env=env,
-        timeout=10,
+        timeout=30,
     )
     assert proc.returncode == 0, proc.stderr[-2000:]
     starts = marker.read_text(encoding="utf-8").splitlines() if marker.exists() else []

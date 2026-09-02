@@ -648,6 +648,12 @@ def test_last_healthy_sighting_recorded(measure):
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="POSIX mode bits: os.chmod on Windows only toggles the read-only "
+    "attribute, so the heal dir reports 0o777 regardless of the 0o700 umask "
+    "the product applies.",
+)
 def test_heal_dir_has_restricted_permissions(measure):
     """The heal directory must be 0o700 and heal files 0o600 to protect
     secrets that may be in the high-water mark snapshot."""

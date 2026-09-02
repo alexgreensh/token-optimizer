@@ -55,6 +55,12 @@ def m(monkeypatch):
     """Load measure.py fresh with a tmp snapshot/trends dir."""
     tmp = Path(tempfile.mkdtemp(prefix="to-card-parity-"))
     monkeypatch.setenv("TOKEN_OPTIMIZER_SNAPSHOT_DIR", str(tmp))
+    # Isolate from the host's real ~/.claude: the card walks CLAUDE_DIR/projects
+    # and the state dirs under claude_home(). The override is honored only when
+    # the directory exists (runtime_env.claude_home), so create it first.
+    claude_dir = tmp / "claude"
+    claude_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_dir))
     sys.path.insert(0, str(SCRIPTS))
     if "measure" in sys.modules:
         del sys.modules["measure"]
@@ -412,8 +418,12 @@ def test_card_cowork_same_as_claude(m, monkeypatch):
     _build_claude_fixture(m, monkeypatch)
     result_cowork = m._estimate_before_after_savings(days=30)
 
+    # A full result carries reason=None (same key set as the zero result).
+    assert result_claude["reason"] is None, \
+        f"Claude fixture should yield a full card, got reason={result_claude['reason']}"
     assert result_claude["reason"] == result_cowork["reason"]
-    assert result_claude.get("monthly_savings_usd", 0) == result_cowork.get("monthly_savings_usd", 0)
+    assert result_claude["monthly_savings_usd"] > 0
+    assert result_claude["monthly_savings_usd"] == result_cowork["monthly_savings_usd"]
 
 
 # ---------------------------------------------------------------------------

@@ -401,8 +401,16 @@ def test_hook_payload_bakes_absolute_python(gi, tmp_path):
 def test_override_env_is_honored_when_trusted(gi, monkeypatch):
     resolved = gi._resolve_safe_python()
     monkeypatch.setenv("TOKEN_OPTIMIZER_PYTHON", resolved)
-    assert gi._resolve_safe_python() == os.path.abspath(resolved)
+    assert gi._resolve_safe_python() == os.path.realpath(resolved)
+    # When the override is invalid, the resolver falls through to other
+    # candidates. In CI (hostedtoolcache python is world-writable) no
+    # candidate passes the gate, so mock the gate to verify the fallthrough
+    # path produces a real file.
     monkeypatch.setenv("TOKEN_OPTIMIZER_PYTHON", "/nonexistent/python3")
+    # Mock the trust gate to accept any existing file (CI hostedtoolcache
+    # python is world-writable and fails the real gate).
+    monkeypatch.setattr(gi, "_py_path_is_trusted",
+                        lambda p: os.path.isfile(os.path.realpath(p)))
     assert os.path.isfile(gi._resolve_safe_python())
 
 

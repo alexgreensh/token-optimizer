@@ -214,7 +214,7 @@ _OPENCODE_CLAUDE_TARGET_CMDS = _CLAUDE_TARGET_CMDS
 # before this, trends/savings/quality/drift/coach fell through to the
 # CLAUDE_DIR scan path in measure_components()/_find_all_jsonl_files() and
 # produced empty output against the wrong tree (the #57 isolation leak).
-_FOREIGN_RUNTIMES = frozenset({"opencode", "copilot", "hermes", "cursor"})
+_FOREIGN_RUNTIMES = frozenset({"opencode", "copilot", "hermes", "cursor", "antigravity"})
 
 # Per-runtime exemptions: foreign-runtime subcommands that a NATIVE flow
 # invokes as a TOP-LEVEL subcommand AND that are runtime-aware (do not scan
@@ -237,6 +237,16 @@ _FOREIGN_RUNTIMES = frozenset({"opencode", "copilot", "hermes", "cursor"})
 # components() and _find_all_jsonl_files() returns [] under cursor — sessions
 # come from the tally + cursor-rollup, never ~/.claude/projects JSONL.
 #
+# Antigravity exempts ``dashboard`` for the same reason as Hermes: its Stop
+# hook (antigravity_hook_bridge.handle_stop) shells to ``measure.py dashboard``
+# with TOKEN_OPTIMIZER_RUNTIME=antigravity. The dashboard is antigravity-aware
+# — daemon identity is runtime-suffixed (port 24847, label
+# com.token-optimizer.antigravity-dashboard), measure_components() routes to
+# _measure_antigravity_components() (no ~/.claude scan), and
+# _find_all_jsonl_files() returns [] under antigravity (sessions come from the
+# read-only conversation store via antigravity-rollup, not ~/.claude/projects
+# JSONL). So allowing it does not violate the #57 isolation principle.
+#
 # OpenCode and Copilot exempt NOTHING: their native flows (the OpenCode TS
 # plugin; copilot_hook_bridge.py) never invoke a _CLAUDE_TARGET_CMDS
 # subcommand as a top-level command — they shell to copilot-rollup /
@@ -245,6 +255,7 @@ _FOREIGN_RUNTIMES = frozenset({"opencode", "copilot", "hermes", "cursor"})
 _FOREIGN_RUNTIME_EXEMPTIONS: dict[str, frozenset[str]] = {
     "hermes": frozenset({"dashboard"}),
     "cursor": frozenset({"dashboard"}),
+    "antigravity": frozenset({"dashboard"}),
 }
 
 
@@ -298,6 +309,7 @@ def _foreign_audit_notice() -> None:
         "copilot": _copilot_audit_notice,
         "hermes": _hermes_audit_notice,
         "cursor": _cursor_audit_notice,
+        "antigravity": _antigravity_audit_notice,
     }
     handler = notices.get(detect_runtime())
     if handler is not None:
@@ -349,6 +361,31 @@ def _hermes_audit_notice() -> None:
     print("  measure.py hermes-doctor     — readiness + hook capability probe")
     print("  measure.py hermes-install    — wire Token Optimizer into ~/.hermes/plugins/")
     print("  measure.py dashboard         — open the Hermes dashboard (port 24844)")
+    print()
+    print("To force this skill onto a specific runtime, set TOKEN_OPTIMIZER_RUNTIME.")
+
+
+def _antigravity_audit_notice() -> None:
+    """Explain why the Claude audit does not run under Antigravity, and where to go.
+
+    Printed instead of scanning/mutating ~/.claude when Antigravity is detected.
+    Antigravity sessions live in the read-only conversation store under
+    ~/.gemini (read via the antigravity_state adapter), not ~/.claude/projects
+    JSONL, so the Claude-targeting scan commands would scan the wrong tree and
+    produce empty output.
+    """
+    print("Token Optimizer — Google Antigravity runtime detected.")
+    print()
+    print("This audit targets a Claude Code / Codex setup (it scans ~/.claude), so it")
+    print("will not run here and will not modify ~/.claude or your Antigravity config.")
+    print()
+    print("On Antigravity, use the Antigravity-native commands instead:")
+    print("  measure.py antigravity-summary    — session cost/quality summary")
+    print("  measure.py antigravity-rollup     — collect sessions into trends")
+    print("  measure.py antigravity-doctor     — readiness + hook capability probe")
+    print("  measure.py antigravity-install    — wire Token Optimizer into ~/.gemini/config/plugins/")
+    print("  measure.py antigravity-home       — print resolved Antigravity home (override via TOKEN_OPTIMIZER_ANTIGRAVITY_HOME)")
+    print("  measure.py dashboard              — open the Antigravity dashboard (port 24846)")
     print()
     print("To force this skill onto a specific runtime, set TOKEN_OPTIMIZER_RUNTIME.")
 
@@ -580,6 +617,11 @@ def _use_copilot_session_adapter():
 def _use_cursor_session_adapter():
     """True when sessions should be loaded from the Cursor adapters."""
     return detect_runtime() == "cursor"
+
+
+def _use_antigravity_session_adapter():
+    """True when sessions should be loaded from the Antigravity store adapter."""
+    return detect_runtime() == "antigravity"
 
 # Tokens per skill frontmatter (loaded at startup)
 TOKENS_PER_SKILL_APPROX = 100
@@ -1460,6 +1502,10 @@ def get_session_baselines(limit=10):
     # row renders empty without scanning CLAUDE_DIR.
     if _use_hermes_session_adapter():
         return []
+    # Antigravity (issue #57): sessions live in the read-only conversation
+    # store under ~/.gemini, not ~/.claude/projects/*.jsonl.
+    if _use_antigravity_session_adapter():
+        return []
     projects_dir = find_projects_dir()
     if not projects_dir:
         return []
@@ -2029,6 +2075,8 @@ def measure_components():
         return _measure_hermes_components()
     if runtime == "cursor":
         return _measure_cursor_components()
+    if runtime == "antigravity":
+        return _measure_antigravity_components()
 
     components = {}
     seen_real_paths = set()
@@ -2806,6 +2854,57 @@ def _measure_hermes_components():
     components["core_system"] = {
         "tokens": 0,
         "note": "Hermes base instructions are not exposed for measurement; no ~/.claude scan.",
+    }
+    return components
+
+
+def _measure_antigravity_components():
+    """Measure Antigravity-relevant startup/config components without reading Claude config.
+
+    Mirrors ``_measure_hermes_components()`` for the Antigravity runtime.
+    Antigravity has no Claude-style CLAUDE.md / skills / MCP / settings.json
+    startup overhead: its session data lives in the read-only conversation
+    store under ``~/.gemini`` (read by the antigravity_state adapter) and Token
+    Optimizer ships as a plugin under ``~/.gemini/config/plugins/token-optimizer/``.
+    The dashboard (the _CLAUDE_TARGET_CMDS subcommand Antigravity exempts — see
+    _FOREIGN_RUNTIME_EXEMPTIONS) calls this so it never scans ``~/.claude``
+    (issue #57 cross-platform universality). Returns a minimal but valid
+    component dict so the dashboard template renders without CLAUDE_DIR access.
+    """
+    components: dict = {}
+    home = runtime_home()  # ~/.gemini (or TOKEN_OPTIMIZER_ANTIGRAVITY_HOME when safe)
+
+    # Token Optimizer plugin payload under ~/.gemini/config/plugins/token-optimizer/.
+    plugin_dir = home / "config" / "plugins" / "token-optimizer"
+    plugin_tokens = 0
+    plugin_files: list[dict] = []
+    if plugin_dir.is_dir():
+        for f in sorted(plugin_dir.rglob("*.py")):
+            try:
+                # Defense-in-depth (issue #57): skip symlinked entries so a
+                # planted symlink can't leak a path outside the plugin dir into
+                # the dashboard.
+                if f.is_symlink():
+                    continue
+                if not f.is_file():
+                    continue
+                tok = estimate_tokens_from_file(f)
+                plugin_tokens += tok
+                plugin_files.append({"path": str(f), "tokens": tok})
+            except OSError:
+                continue
+
+    components["antigravity_plugin"] = {
+        "path": str(plugin_dir),
+        "exists": plugin_dir.is_dir(),
+        "tokens": plugin_tokens,
+        "files": plugin_files,
+        "note": "Token Optimizer plugin under ~/.gemini/config/plugins/token-optimizer/.",
+    }
+
+    components["core_system"] = {
+        "tokens": 0,
+        "note": "Antigravity base instructions are not exposed for measurement; no ~/.claude scan.",
     }
     return components
 
@@ -5336,6 +5435,8 @@ def _collect_hook_status_for_dashboard():
         return _collect_copilot_hook_status_for_dashboard()
     if detect_runtime() == "cursor":
         return _collect_cursor_hook_status_for_dashboard()
+    if detect_runtime() == "antigravity":
+        return _collect_antigravity_hook_status_for_dashboard()
 
     settings, _ = _read_settings_json()
 
@@ -5598,6 +5699,60 @@ def _collect_hermes_hook_status_for_dashboard():
             "label": "Dashboard Port 24844",
             "description": "Confirms that port 24844 is available or already serving the Hermes Token Optimizer dashboard.",
             "install_cmd": f"TOKEN_OPTIMIZER_RUNTIME=hermes python3 {mp_cmd} open-dashboard",
+            "uninstall_cmd": "",
+        },
+    }
+
+
+def _collect_antigravity_hook_status_for_dashboard():
+    """Antigravity plugin hook status for the dashboard toggle panel.
+
+    Mirrors _collect_hermes_hook_status_for_dashboard(). Uses antigravity_doctor
+    to determine whether the plugin payload is installed and wired, and exposes
+    the same install/uninstall command surface. antigravity_doctor reports
+    lowercase statuses ("ok"/"warn"/"fail").
+    """
+    import antigravity_doctor  # noqa: PLC0415
+
+    mp_cmd = shlex.quote(str(Path(__file__).resolve()))
+    checks = antigravity_doctor.run_checks()
+    by_name = {check["name"]: check for check in checks}
+
+    def _ok(name):
+        return by_name.get(name, {}).get("status") == "ok"
+
+    install_cmd = f"TOKEN_OPTIMIZER_RUNTIME=antigravity python3 {mp_cmd} antigravity-install"
+    doctor_cmd = f"TOKEN_OPTIMIZER_RUNTIME=antigravity python3 {mp_cmd} antigravity-doctor"
+
+    return {
+        "antigravity_plugin": {
+            "installed": _ok("plugin directory") and _ok("plugin payload"),
+            "label": "Antigravity Plugin",
+            "description": "Installs the Token Optimizer plugin into ~/.gemini/config/plugins/token-optimizer/. Provides continuity restore, context nudges, bash compression, and stop rollup.",
+            "install_cmd": install_cmd,
+            "uninstall_cmd": f"TOKEN_OPTIMIZER_RUNTIME=antigravity python3 {mp_cmd} antigravity-uninstall",
+        },
+        "antigravity_hooks": {
+            "installed": _ok("plugin hooks"),
+            "partial": by_name.get("plugin hooks", {}).get("status") == "warn",
+            "label": "Antigravity Hook Declarations",
+            "description": "Verifies hooks.json declares PreInvocation, PreToolUse (run_command matcher), and Stop.",
+            "install_cmd": install_cmd,
+            "uninstall_cmd": f"TOKEN_OPTIMIZER_RUNTIME=antigravity python3 {mp_cmd} antigravity-uninstall",
+        },
+        "antigravity_consent": {
+            "installed": _ok("consent record"),
+            "partial": by_name.get("consent record", {}).get("status") == "warn",
+            "label": "Data Consent",
+            "description": "Checks that the install-time consent record exists, which gates data collection.",
+            "install_cmd": install_cmd,
+            "uninstall_cmd": doctor_cmd,
+        },
+        "antigravity_dashboard_port": {
+            "installed": _ok(f"Dashboard port {antigravity_doctor.DAEMON_PORT}"),
+            "label": "Dashboard Port 24846",
+            "description": "Confirms that port 24846 is available or already serving the Antigravity Token Optimizer dashboard.",
+            "install_cmd": f"TOKEN_OPTIMIZER_RUNTIME=antigravity python3 {mp_cmd} open-dashboard",
             "uninstall_cmd": "",
         },
     }
@@ -9095,6 +9250,10 @@ def _find_all_jsonl_files(days=30):
     # defense-in-depth for the dispatch-blocked scan subcommands.
     if _use_hermes_session_adapter():
         return []
+    # Antigravity sessions are read from ~/.gemini via antigravity-rollup and
+    # _collect_antigravity_sessions, never ~/.claude/projects JSONL.
+    if _use_antigravity_session_adapter():
+        return []
 
     # Cursor (issue #57 cross-platform universality, same as Hermes): sessions
     # live in the hook tally and are ingested via cursor-rollup, not
@@ -10771,6 +10930,11 @@ def _init_trends_db():
             "UPDATE session_log SET platform = 'cursor' "
             "WHERE platform IS NULL "
             "AND jsonl_path LIKE 'cursor:%'"
+        )
+        conn.execute(
+            "UPDATE session_log SET platform = 'antigravity' "
+            "WHERE platform IS NULL "
+            "AND jsonl_path LIKE 'antigravity:%'"
         )
         conn.commit()
     except sqlite3.Error:
@@ -17553,6 +17717,11 @@ _CACHE_COVERAGE_GAP_REASONS = {
         "is best-effort (staff: often zero, no cache split) — so cache-TTL "
         "waste cannot be measured, only a chars-over-four estimate is visible."
     ),
+    "antigravity": (
+        "Antigravity exposes per-generation cache_read totals in gen_metadata "
+        "but no per-turn cache+timestamp series, so cache-TTL collapse waste "
+        "cannot be measured."
+    ),
 }
 
 
@@ -22586,8 +22755,8 @@ _DASHBOARD_CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'uns
 # (matching copilot_doctor.DAEMON_PORT); the `dashboard` command is also blocked
 # for foreign runtimes in _CLAUDE_TARGET_CMDS, so this is defense-in-depth.
 _DAEMON_RUNTIME = detect_runtime()
-_DAEMON_SUFFIX_BY_RUNTIME = {"codex": "codex", "hermes": "hermes", "copilot": "copilot", "cursor": "cursor"}
-_DAEMON_PORT_BY_RUNTIME = {"codex": 24843, "hermes": 24844, "copilot": 24845, "cursor": 24846}
+_DAEMON_SUFFIX_BY_RUNTIME = {"codex": "codex", "hermes": "hermes", "copilot": "copilot", "cursor": "cursor", "antigravity": "antigravity"}
+_DAEMON_PORT_BY_RUNTIME = {"codex": 24843, "hermes": 24844, "copilot": 24845, "cursor": 24846, "antigravity": 24847}
 _DAEMON_RUNTIME_SUFFIX = _DAEMON_SUFFIX_BY_RUNTIME.get(_DAEMON_RUNTIME, "claude")
 DAEMON_LABEL = (
     f"com.token-optimizer.{_DAEMON_RUNTIME_SUFFIX}-dashboard"
@@ -22667,7 +22836,7 @@ DAEMON_IDENTITY_MAGIC = (
 # not just the currently-resolved runtime's. The per-runtime label/unit/task
 # names are derived from the suffix the same way DAEMON_LABEL /
 # SYSTEMD_UNIT_NAME / WINDOWS_TASK_NAME are above.
-_DAEMON_ALL_SUFFIXES = ("claude", "codex", "hermes", "copilot", "cursor")
+_DAEMON_ALL_SUFFIXES = ("claude", "codex", "hermes", "copilot", "cursor", "antigravity")
 _ALL_LAUNCH_AGENT_LABELS = tuple(
     "com.token-optimizer.dashboard" if s == "claude"
     else f"com.token-optimizer.{s}-dashboard"
@@ -22678,13 +22847,15 @@ _ALL_SYSTEMD_UNIT_NAMES = tuple(
     else f"token-optimizer-{s}-dashboard.service"
     for s in _DAEMON_ALL_SUFFIXES
 )
-# Windows task names mirror the WINDOWS_TASK_NAME ternary below: copilot has
-# no dedicated branch there (it falls into the `else` -> TokenOptimizerDashboard
-# bucket), so the variant set is these three.
+# Windows task names mirror the WINDOWS_TASK_NAME ternary below: copilot and
+# opencode have no dedicated branch there (they fall into the `else` ->
+# TokenOptimizerDashboard bucket), so the variant set is: Claude (+ copilot/
+# opencode fallback), Codex, Hermes, and Antigravity.
 _ALL_WINDOWS_TASK_NAMES = (
     "TokenOptimizerDashboard",
     "TokenOptimizerCodexDashboard",
     "TokenOptimizerHermesDashboard",
+    "TokenOptimizerAntigravityDashboard",
 )
 
 
@@ -25332,7 +25503,8 @@ def _uninstall_launchd_daemon(this_install_only=False, dry_run=False):
 WINDOWS_TASK_NAME = (
     "TokenOptimizerCodexDashboard" if _DAEMON_RUNTIME == "codex"
     else ("TokenOptimizerHermesDashboard" if _DAEMON_RUNTIME == "hermes"
-          else "TokenOptimizerDashboard")
+          else ("TokenOptimizerAntigravityDashboard" if _DAEMON_RUNTIME == "antigravity"
+                else "TokenOptimizerDashboard"))
 )
 WINDOWS_LAUNCHER_NAME = "dashboard-launcher.cmd"
 
@@ -28806,6 +28978,9 @@ def _find_current_session_jsonl():
     # Hermes: no ~/.claude/projects JSONL to scan (sessions live in state.db).
     if _use_hermes_session_adapter():
         return None
+    # Antigravity: no ~/.claude/projects JSONL (sessions live in ~/.gemini).
+    if _use_antigravity_session_adapter():
+        return None
 
     projects_base = CLAUDE_DIR / "projects"
     if not projects_base.exists():
@@ -28830,6 +29005,9 @@ def _find_session_jsonl_by_id(session_id):
 
     # Hermes: no ~/.claude/projects JSONL to scan (sessions live in state.db).
     if _use_hermes_session_adapter():
+        return None
+    # Antigravity: no ~/.claude/projects JSONL (sessions live in ~/.gemini).
+    if _use_antigravity_session_adapter():
         return None
 
     projects_base = CLAUDE_DIR / "projects"
@@ -41821,9 +41999,12 @@ def _estimate_before_after_savings(days=30, estimated_pools=None):
                `label` is presentational and may change),
              breakdown_caveat (str), evidence}.
     On an empty result, `reason` is one of "insufficient_history" / "net_negative" /
-    "no_recent_sessions" / "no_mix" / "unsupported_billing" (None when never
-    computed). "unsupported_billing" is the GitHub Copilot case: premium-request
-    metering has no token-dollar counterfactual, so nothing is rendered there.
+    "no_recent_sessions" / "no_mix" / "unsupported_billing" / "estimated_billing"
+    (None when never computed). "unsupported_billing" is the GitHub Copilot case:
+    premium-request metering has no token-dollar counterfactual, so nothing is
+    rendered there. "estimated_billing" is the Antigravity case: it is
+    subscription/credit metered, so only the labelled list-price estimate (R8)
+    exists and no token-savings headline is claimable.
     """
     zero = {"before_cost_per_session": 0.0, "after_cost_per_session": 0.0,
             "savings_per_session": 0.0, "sessions_per_month": 0,
@@ -41853,6 +42034,14 @@ def _estimate_before_after_savings(days=30, estimated_pools=None):
         # (reason discloses why); bash compression events are still counted.
         if detect_runtime() in ("copilot", "cursor"):
             return {**zero, "reason": "unsupported_billing"}
+        # Antigravity is subscription/credit metered; only a labelled USD
+        # estimate exists (R8). The token-priced counterfactual has no meaning
+        # there, but (unlike Copilot's opaque credits) a list-price estimate is
+        # still surfaced by the collector — so the transformation renders
+        # nothing with an explicit "estimated_billing" reason instead of a
+        # token-savings headline.
+        if detect_runtime() == "antigravity":
+            return {**zero, "reason": "estimated_billing"}
         if not TRENDS_DB.exists():
             return zero
 
@@ -41887,7 +42076,7 @@ def _estimate_before_after_savings(days=30, estimated_pools=None):
         # Baseline (pre-TO) model mix: floor to ~95% Opus ONLY for an Anthropic runtime
         # with no usable measured baseline. A real frozen baseline share is trusted as-is;
         # a non-Anthropic user is priced at their own measured mix, never fabricated Opus.
-        anthropic = detect_runtime() not in {"codex", "hermes", "copilot", "opencode", "cursor"}
+        anthropic = detect_runtime() not in {"codex", "hermes", "copilot", "opencode", "cursor", "antigravity"}
         if anthropic and frozen_opus and frozen_opus > 0:
             # A real measured baseline share exists -> trust it (e.g. an Anthropic
             # user with a frozen ~0.95 Opus share resolves to ~0.95). Gated on

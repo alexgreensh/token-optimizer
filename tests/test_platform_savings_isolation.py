@@ -44,7 +44,7 @@ SCRIPTS = Path(__file__).resolve().parent.parent / "skills" / "token-optimizer" 
 OPUS = "claude-opus-4-7"
 GPT = "gpt-5"
 
-FOREIGN_RUNTIMES = ("codex", "hermes", "copilot", "opencode", "cursor")
+FOREIGN_RUNTIMES = ("codex", "hermes", "copilot", "opencode", "cursor", "antigravity")
 
 # Frozen typical session with NO measured Opus-era mix (opus_share 0): the shape a
 # non-Anthropic runtime's own history produces, and the mix-tracking shape on Claude.
@@ -310,13 +310,14 @@ def test_estimated_tier_surfaces_blocked_for_foreign_runtimes(monkeypatch, tmp_p
     mod, _snap, _claude = _import_measure(monkeypatch, tmp_path, "claude")
     for cmd in ("savings", "dashboard", "trends", "report", "validate-impact"):
         assert cmd in mod._CLAUDE_TARGET_CMDS
-    assert {"copilot", "opencode", "hermes", "cursor"} <= set(mod._FOREIGN_RUNTIMES)
-    # Copilot, OpenCode and Cursor exempt nothing except the runtimes' own
-    # runtime-aware dashboard; Hermes exempts only its own dashboard.
+    assert {"copilot", "opencode", "hermes", "cursor", "antigravity"} <= set(mod._FOREIGN_RUNTIMES)
+    # Copilot and OpenCode exempt nothing; Hermes, Cursor and Antigravity exempt
+    # only their own runtime-aware dashboard.
     assert not mod._FOREIGN_RUNTIME_EXEMPTIONS.get("copilot")
     assert not mod._FOREIGN_RUNTIME_EXEMPTIONS.get("opencode")
     assert mod._FOREIGN_RUNTIME_EXEMPTIONS.get("hermes") == frozenset({"dashboard"})
     assert mod._FOREIGN_RUNTIME_EXEMPTIONS.get("cursor") == frozenset({"dashboard"})
+    assert mod._FOREIGN_RUNTIME_EXEMPTIONS.get("antigravity") == frozenset({"dashboard"})
 
 
 def test_copilot_transformation_renders_nothing_even_with_data(monkeypatch, tmp_path):

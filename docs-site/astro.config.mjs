@@ -3,15 +3,9 @@ import { defineConfig } from "astro/config";
 import starlight from "@astrojs/starlight";
 import rehypeBaseLinks from "./src/plugins/rehype-base-links.mjs";
 
-// Deploy target. Currently GitHub Pages project site:
-//   https://alexgreensh.github.io/token-optimizer/
-// When a custom (sub)domain is added later, this is a one-line switch:
-//   1. set `site` to the custom domain (e.g. https://docs.tokenoptimizer.xyz)
-//   2. set BASE = "" below
-//   3. add a CNAME file to docs-site/public/ with the domain
-// Everything that references BASE (base + the icon <link>s) updates with it.
-const SITE = "https://alexgreensh.github.io";
-const BASE = "/token-optimizer";
+// Deploy target: the custom domain configured for GitHub Pages.
+const SITE = "https://token-optimizer.dev";
+const BASE = "";
 
 // https://astro.build/config
 export default defineConfig({

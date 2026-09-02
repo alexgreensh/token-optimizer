@@ -82,6 +82,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -393,6 +394,27 @@ def _seed_state(home: Path) -> None:
         }), encoding="utf-8")
 
 
+def _hook_runtime_bash():
+    """The bash the hosts actually run hooks under on Windows is Git Bash,
+    NOT WSL's C:\\Windows\\System32\\bash.exe. shutil.which("bash") often
+    resolves the WSL launcher first on GitHub runners; with no WSL distro
+    installed it prints a UTF-16 "no installed distributions" banner and
+    exits 1, which masquerades as a hook failure. Same resolution as
+    tests/test_windows_hook_launcher.py::_hook_runtime_bash."""
+    for c in (
+        r"C:\Program Files\Git\bin\bash.exe",
+        r"C:\Program Files (x86)\Git\bin\bash.exe",
+        "/bin/bash",
+        "/usr/bin/bash",
+    ):
+        if Path(c).exists():
+            return c
+    b = shutil.which("bash")
+    if b and "System32" in b:  # WSL launcher — not the hook shell
+        return None
+    return b
+
+
 def _run_hook(argv, source: str, home: Path) -> subprocess.CompletedProcess:
     """Invoke one SessionStart entry exactly as the host does.
 
@@ -419,8 +441,11 @@ def _run_hook(argv, source: str, home: Path) -> subprocess.CompletedProcess:
         "source": source,
         "transcript_path": None,
     })
+    bash = _hook_runtime_bash()
+    if bash is None:
+        pytest.skip("Git Bash (the Windows hook runtime) unavailable; WSL bash is not the hook shell")
     return subprocess.run(
-        ["bash", str(LAUNCHER), str(RUN_PY), *argv],
+        [bash, str(LAUNCHER), str(RUN_PY), *argv],
         input=payload, text=True, capture_output=True, env=env, timeout=180,
     )
 

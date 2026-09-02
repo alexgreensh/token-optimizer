@@ -20,6 +20,7 @@ Fail-closed: any structural overrun, unknown wire type, recursion-depth overrun,
 or sanity-gate failure returns ``None``. Rows that fail are counted by the
 reader as ``undecodable`` and excluded, never guessed.
 """
+
 from __future__ import annotations
 
 DECODER_VERSION = "ag-v1"
@@ -119,7 +120,7 @@ def _decode_message(data: bytes, depth: int):
             if pos + 8 > n:
                 return None
             fields.setdefault(field_number, []).append(
-                (_WIRETYPE_FIXED64, data[pos:pos + 8])
+                (_WIRETYPE_FIXED64, data[pos : pos + 8])
             )
             pos += 8
         elif wire_type == _WIRETYPE_LENGTH_DELIMITED:
@@ -129,7 +130,7 @@ def _decode_message(data: bytes, depth: int):
             pos = pos3
             if length < 0 or pos + length > n:
                 return None
-            payload = data[pos:pos + length]
+            payload = data[pos : pos + length]
             pos += length
             if (depth, field_number) in _DESCEND_PATHS and depth < _MAX_DEPTH:
                 sub = _decode_message(payload, depth + 1)
@@ -146,7 +147,7 @@ def _decode_message(data: bytes, depth: int):
             if pos + 4 > n:
                 return None
             fields.setdefault(field_number, []).append(
-                (_WIRETYPE_FIXED32, data[pos:pos + 4])
+                (_WIRETYPE_FIXED32, data[pos : pos + 4])
             )
             pos += 4
         else:
@@ -302,7 +303,6 @@ def _skip_group(data: bytes, pos: int) -> int | None:
         if key is None:
             return None
         pos = pos2
-        field_number = key >> 3
         wire_type = key & 0x07
         if wire_type == _WIRETYPE_START_GROUP:
             depth += 1
@@ -359,7 +359,7 @@ def _walk_wire(data: bytes):
         elif wire_type == _WIRETYPE_FIXED64:
             if pos + 8 > n:
                 return
-            yield (field_number, wire_type, data[pos:pos + 8])
+            yield (field_number, wire_type, data[pos : pos + 8])
             pos += 8
         elif wire_type == _WIRETYPE_LENGTH_DELIMITED:
             length, pos3 = _read_varint(data, pos)
@@ -368,7 +368,7 @@ def _walk_wire(data: bytes):
             pos = pos3
             if length < 0 or pos + length > n:
                 return
-            payload = data[pos:pos + length]
+            payload = data[pos : pos + length]
             pos += length
             yield (field_number, wire_type, payload)
         elif wire_type == _WIRETYPE_START_GROUP:
@@ -380,7 +380,7 @@ def _walk_wire(data: bytes):
         elif wire_type == _WIRETYPE_FIXED32:
             if pos + 4 > n:
                 return
-            yield (field_number, wire_type, data[pos:pos + 4])
+            yield (field_number, wire_type, data[pos : pos + 4])
             pos += 4
         else:
             return

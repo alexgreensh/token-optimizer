@@ -18,6 +18,7 @@ bash_hook, spawn_utils). ``measure.py`` is never imported here — the Stop hook
 locates it through the ``measure-path`` locator written by the installer (KTD5,
 the Hermes #58 precedent).
 """
+
 from __future__ import annotations
 
 import json
@@ -25,25 +26,29 @@ import os
 import shlex
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
 try:
     from utf8_io import enforce_utf8_io  # noqa: PLC0415
 except Exception:  # pragma: no cover
+
     def enforce_utf8_io() -> None:
         pass
+
 
 _CONVERSATION_ID_RE = None
 try:
     import re as _re
+
     _CONVERSATION_ID_RE = _re.compile(r"^[0-9a-f-]{1,64}$")
 except Exception:  # pragma: no cover
     pass
 
 _STDIN_MAX_BYTES = 4 * 1024 * 1024  # 4 MB (R15)
-_RESTORE_MAX_BYTES = 16 * 1024      # 16 KB (R11)
-_FIELD_MAX_CHARS = 200              # R22 per-field cap
+_RESTORE_MAX_BYTES = 16 * 1024  # 16 KB (R11)
+_FIELD_MAX_CHARS = 200  # R22 per-field cap
 _NUDGE_STATE_TTL_SECONDS = 7 * 86400
 _ROLLUP_LEASE_SECONDS = 30
 
@@ -106,10 +111,14 @@ def _emit(obj: dict) -> None:
 # PreInvocation
 # ---------------------------------------------------------------------------
 
+
 def _restore_message(home: Path) -> str | None:
     restore_path = _to_dir(home) / "restore-context.md"
     try:
-        if not restore_path.is_file() or restore_path.stat().st_size > _RESTORE_MAX_BYTES:
+        if (
+            not restore_path.is_file()
+            or restore_path.stat().st_size > _RESTORE_MAX_BYTES
+        ):
             return None
         content = restore_path.read_text(encoding="utf-8", errors="replace")
     except OSError:
@@ -176,6 +185,7 @@ def _nudge_already_sent(home: Path, conversation_id: str, threshold: str) -> boo
 
 
 def _record_nudge(home: Path, conversation_id: str, threshold: str) -> None:
+    _sweep_nudge_state(home)
     path = _nudge_state_path(home, conversation_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     state: dict = {}
@@ -187,7 +197,6 @@ def _record_nudge(home: Path, conversation_id: str, threshold: str) -> None:
     except (OSError, json.JSONDecodeError, ValueError):
         state = {}
     state[threshold] = True
-    import tempfile
     fd, tmp = tempfile.mkstemp(prefix=".nudge.", suffix=".tmp", dir=str(path.parent))
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -238,7 +247,6 @@ def handle_pre_invocation(payload: dict) -> dict:
     if invocation_num <= 1:
         return {}
 
-    _sweep_nudge_state(home)
     fill = _current_fill_from_payload(home, payload)
     try:
         if fill is None or not (0.0 <= fill <= 1.0):
@@ -252,23 +260,36 @@ def handle_pre_invocation(payload: dict) -> dict:
         if _nudge_already_sent(home, conversation_id, "85"):
             return {}
         _record_nudge(home, conversation_id, "85")
-        return {"injectSteps": [{"ephemeralMessage": (
-            "[Token Optimizer] Context is above 85% full. Prefer small, focused "
-            "changes; start a fresh conversation soon to avoid truncation."
-        )}]}
+        return {
+            "injectSteps": [
+                {
+                    "ephemeralMessage": (
+                        "[Token Optimizer] Context is above 85% full. Prefer small, focused "
+                        "changes; start a fresh conversation soon to avoid truncation."
+                    )
+                }
+            ]
+        }
     if fill >= 0.70:
         if _nudge_already_sent(home, conversation_id, "70"):
             return {}
         _record_nudge(home, conversation_id, "70")
-        return {"injectSteps": [{"ephemeralMessage": (
-            "[Token Optimizer] Context is above 70% full. Keep prompts tight."
-        )}]}
+        return {
+            "injectSteps": [
+                {
+                    "ephemeralMessage": (
+                        "[Token Optimizer] Context is above 70% full. Keep prompts tight."
+                    )
+                }
+            ]
+        }
     return {}
 
 
 # ---------------------------------------------------------------------------
 # PreToolUse
 # ---------------------------------------------------------------------------
+
 
 def handle_pre_tool_use(payload: dict) -> dict:
     if os.name == "nt":
@@ -312,7 +333,8 @@ def handle_pre_tool_use(payload: dict) -> dict:
         shlex.quote(sys.executable)
         + " -E -s "
         + shlex.quote(str(compress_path))
-        + " " + " ".join(shlex.quote(t) for t in original_tokens)
+        + " "
+        + " ".join(shlex.quote(t) for t in original_tokens)
     )
     # decision "ask" defers to the user's permission mode + "always allow" cache
     # (R13); we never emit allow/permissionOverrides or forward model fields.
@@ -322,6 +344,7 @@ def handle_pre_tool_use(payload: dict) -> dict:
 # ---------------------------------------------------------------------------
 # Stop
 # ---------------------------------------------------------------------------
+
 
 def _locate_measure_py() -> Path | None:
     if _MEASURE_LOCATOR.is_file():
@@ -408,6 +431,7 @@ def handle_stop(payload: dict) -> dict:
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+
 
 def main(argv=None) -> int:
     try:

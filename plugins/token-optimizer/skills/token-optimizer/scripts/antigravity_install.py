@@ -19,6 +19,7 @@ Usage:
     python3 antigravity_install.py install [--dry-run]
     python3 antigravity_install.py uninstall [--dry-run]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -62,8 +63,12 @@ _PAYLOAD_MODULES = (
 
 # System install dirs: root-owned and not user-writable, so trusted by prefix.
 _TRUSTED_PY_PREFIXES = (
-    "/usr/bin/", "/usr/local/bin/", "/opt/homebrew/bin/", "/opt/homebrew/opt/",
-    "/home/linuxbrew/.linuxbrew/bin/", "/opt/hostedtoolcache/",
+    "/usr/bin/",
+    "/usr/local/bin/",
+    "/opt/homebrew/bin/",
+    "/opt/homebrew/opt/",
+    "/home/linuxbrew/.linuxbrew/bin/",
+    "/opt/hostedtoolcache/",
 )
 
 
@@ -174,13 +179,21 @@ def _write_consent(home: Path) -> None:
     try:
         config_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
     except OSError as exc:
-        raise RuntimeError(f"failed to write consent record {config_path}: {exc}") from exc
+        raise RuntimeError(
+            f"failed to write consent record {config_path}: {exc}"
+        ) from exc
 
 
 def install(*, dry_run: bool = False, home: Path | None = None) -> dict:
     """Install the adapter. Returns a summary dict of actions taken."""
     root = home if home is not None else antigravity_home()
-    actions = {"copied": [], "plugin_dir": None, "consent": None, "skipped": [], "dry_run": dry_run}
+    actions = {
+        "copied": [],
+        "plugin_dir": None,
+        "consent": None,
+        "skipped": [],
+        "dry_run": dry_run,
+    }
 
     pdir = plugin_dir(root)
     if pdir.exists() and (pdir.is_symlink() or not pdir.is_dir()):
@@ -231,7 +244,8 @@ def install(*, dry_run: bool = False, home: Path | None = None) -> dict:
         # registers hooks (R1/U5).
         try:
             (pdir / "hooks.json").write_text(
-                json.dumps(_hooks_config(pdir / "antigravity_hook_bridge.py"), indent=2) + "\n",
+                json.dumps(_hooks_config(pdir / "antigravity_hook_bridge.py"), indent=2)
+                + "\n",
                 encoding="utf-8",
             )
         except OSError as exc:
@@ -246,7 +260,7 @@ def install(*, dry_run: bool = False, home: Path | None = None) -> dict:
         _write_consent(root)
         actions["consent"] = str(data_dir(root) / "config.json")
 
-    actions["plugin_dir"] = str(pdir) if not dry_run else str(pdir)
+    actions["plugin_dir"] = str(pdir)
     return actions
 
 

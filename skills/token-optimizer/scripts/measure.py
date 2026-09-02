@@ -6827,9 +6827,64 @@ def _run_session_end_flush_worker(args):
                 pass
     except _HookTimeout:
         pass
+    # Optional local post-flush extensions (admin-placed, OFF by default).
+    # See _run_post_flush_extensions: nothing is loaded unless the file exists,
+    # every failure is swallowed, and extensions get the remaining flush budget.
+    try:
+        _run_post_flush_extensions(
+            time_left_fn=old_budget.remaining,
+            version=TOKEN_OPTIMIZER_VERSION)
+    except Exception:
+        pass
     finally:
         _clear_hook_budget(old_budget)
         _release_session_end_flush_lock(lock_dir)
+
+
+def _run_post_flush_extensions(time_left_fn=None, version="unknown"):
+    """Load and run an optional local extension after the flush work.
+
+    A user or admin may place a single file at
+    ``<CONFIG_DIR>/extensions/post_flush.py`` defining ``run(context)``. It is
+    OFF by default: with no file present this function does nothing (no import,
+    no I/O beyond one existence check). The file is loaded ONLY from that exact
+    path — never from the repo, the snapshot dir, or an env override — and only
+    when it is not group/world-writable (a writable extension file would be
+    local code injection). Everything is fail-open: any exception the extension
+    raises (or the load itself) is swallowed; the hook always completes. The
+    extension receives the remaining flush budget via ``context["time_left_fn"]``
+    and should defer work that does not fit; the watchdog may hard-exit the
+    worker when the budget expires.
+
+    context keys: trends_db, snapshot_dir, config_dir, runtime, version,
+    time_left_fn. Token Optimizer ships no extensions and takes no
+    responsibility for third-party ones; they run with the user's privileges.
+    """
+    ext_path = CONFIG_DIR / "extensions" / "post_flush.py"
+    try:
+        if not ext_path.is_file():
+            return None
+        st = ext_path.stat()
+        if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            return None
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("_to_post_flush_ext", str(ext_path))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        run = getattr(module, "run", None)
+        if not callable(run):
+            return None
+        context = {
+            "trends_db": TRENDS_DB,
+            "snapshot_dir": SNAPSHOT_DIR,
+            "config_dir": CONFIG_DIR,
+            "runtime": detect_runtime(),
+            "version": version,
+            "time_left_fn": time_left_fn,
+        }
+        return run(context)
+    except Exception:
+        return None
 
 
 def _defer_session_end_flush(args):

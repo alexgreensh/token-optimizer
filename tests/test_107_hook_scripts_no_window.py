@@ -393,6 +393,81 @@ def test_bash_compress_wrapper_child_has_no_console(tmp_path):
     )
 
 
+_CONSOLE_PROBE_PY = r"""
+import ctypes, sys
+user32 = ctypes.windll.user32
+sys.exit(0 if user32.GetConsoleWindow() == 0 else 1)
+"""
+
+
+@pytest.mark.skipif(os.name != "nt", reason="console allocation is Windows-only")
+def test_bash_compress_wrapper_child_has_no_live_console(tmp_path):
+    """Live console verdict through the full wrapper chain.
+
+    A whitelisted `git diff` runs inside the wrapper; GIT_EXTERNAL_DIFF points
+    at a probe whose exit code reports GetConsoleWindow() for the process tree
+    the wrapper spawned (0 = no console, 1 = console attached). This proves
+    the no-console guarantee end-to-end: if the wrapper ever dropped
+    CREATE_NO_WINDOW, git (and the probe under it) would gain a console and
+    this test would fail with a live verdict, not a source-composition claim.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=str(repo), check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "to@example.com"], cwd=str(repo), check=True
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Token Optimizer"], cwd=str(repo), check=True
+    )
+    (repo / "file.txt").write_text("hello\n", encoding="utf-8")
+    subprocess.run(["git", "add", "file.txt"], cwd=str(repo), check=True)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=str(repo), check=True)
+    (repo / "file.txt").write_text("hello world\n", encoding="utf-8")
+
+    probe_py = tmp_path / "console_probe.py"
+    probe_py.write_text(_CONSOLE_PROBE_PY, encoding="utf-8")
+    probe_cmd = tmp_path / "console_probe.cmd"
+    probe_cmd.write_text(
+        '@"{}" "{}" %*\n'.format(sys.executable, probe_py), encoding="utf-8"
+    )
+
+    env = dict(os.environ)
+    env["TOKEN_OPTIMIZER_SNAPSHOT_DIR"] = str(tmp_path)
+    env["GIT_EXTERNAL_DIFF"] = str(probe_cmd)
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "bash_compress.py"), "git", "diff"],
+        capture_output=True,
+        timeout=60,
+        env=env,
+        cwd=str(repo),
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    assert proc.returncode == 0, (
+        "wrapper's git-diff child reported a live console (rc=%s, stderr=%r)"
+        % (proc.returncode, proc.stderr)
+    )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="console allocation is Windows-only")
+def test_console_probe_detects_a_real_console(tmp_path):
+    """Negative control for the live probe: the same probe MUST report a
+    console when one is allocated (CREATE_NEW_CONSOLE), proving a 0 exit in
+    the wrapper test means 'no console' and not 'probe cannot tell'."""
+    probe_py = tmp_path / "console_probe.py"
+    probe_py.write_text(_CONSOLE_PROBE_PY, encoding="utf-8")
+    proc = subprocess.run(
+        [sys.executable, str(probe_py)],
+        capture_output=True,
+        timeout=30,
+        creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
+    )
+    assert proc.returncode == 1, (
+        "probe returned %s under CREATE_NEW_CONSOLE; it cannot detect consoles "
+        "and the wrapper no-console verdict is meaningless" % proc.returncode
+    )
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows flag constants only exist on nt")
 def test_real_detach_spawn_kwargs_has_no_window():
     """On a real Windows runner, detach_spawn_kwargs() carries CREATE_NO_WINDOW."""

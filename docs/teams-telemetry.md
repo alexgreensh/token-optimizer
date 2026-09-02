@@ -32,7 +32,12 @@ python3 fleet_emitter.py --status
 `--enable` writes `fleet.json` at mode 0600. The token may instead come from a
 secret manager via `"token_env": "ACME_FLEET_TOKEN"` in the file; the hash key
 likewise via `"hash_key_env"`. A group- or world-readable `fleet.json` is
-ignored. Kill switch on one machine: `TO_FLEET_DISABLE=1`.
+ignored. **Windows note:** win32 does not enforce POSIX file modes, and
+`os.stat` there reports group/world read bits on ordinary files, so the 0600
+check fails and `fleet.json` is ignored — emission is fail-closed and
+effectively unavailable on Windows until a platform-aware check lands. That is
+the accepted behaviour: an unverifiable config never enables telemetry.
+Kill switch on one machine: `TO_FLEET_DISABLE=1`.
 
 Inspect what would be sent: `python3 fleet_emitter.py --dry-run` (output is
 sensitive — pseudonymous org aggregates; share deliberately).

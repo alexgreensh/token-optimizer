@@ -504,8 +504,13 @@ def gd(monkeypatch):
 
 
 def test_parse_hook_command_accepts_expected_shape(gd):
-    py = "/usr/bin/python3"
-    bridge = "/Users/x/.grok/token-optimizer/plugin/grok_hook_bridge.py"
+    # Use platform-appropriate absolute paths so os.path.isabs passes on
+    # both POSIX and Windows.
+    py = str(Path("/usr/bin/python3").resolve() if os.name != "nt"
+             else Path("C:/bin/python3"))
+    bridge = str(Path("/Users/x/.grok/token-optimizer/plugin/grok_hook_bridge.py").resolve()
+                 if os.name != "nt"
+                 else Path("C:/Users/x/.grok/token-optimizer/plugin/grok_hook_bridge.py"))
     argv = gd._parse_hook_command(
         f"TOKEN_OPTIMIZER_RUNTIME=grok {py} {bridge} Stop"
     )

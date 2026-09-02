@@ -363,10 +363,23 @@ def test_main_unknown_event_returns_zero(gb):
 
 
 @pytest.fixture()
-def gi(monkeypatch):
+def gi(monkeypatch, tmp_path):
     sys.path.insert(0, str(SCRIPTS))
     sys.modules.pop("grok_install", None)
-    monkeypatch.delenv("TOKEN_OPTIMIZER_PYTHON", raising=False)
+    # The host's real interpreter is not guaranteed to pass the trust gate --
+    # hosted-CI tool caches extract python world-writable. Point
+    # TOKEN_OPTIMIZER_PYTHON at a tmp interpreter with clean modes (0755 file
+    # in a 0755 euid-owned dir) so install/_resolve_safe_python works in CI.
+    if os.name != "nt" and hasattr(os, "geteuid"):
+        d = tmp_path / "trusted-bin"
+        d.mkdir(mode=0o755)
+        f = d / "python3"
+        f.write_bytes(b"#!/bin/sh\n")
+        os.chmod(f, 0o755)
+        os.chmod(d, 0o755)
+        monkeypatch.setenv("TOKEN_OPTIMIZER_PYTHON", str(f))
+    else:
+        monkeypatch.delenv("TOKEN_OPTIMIZER_PYTHON", raising=False)
     import grok_install as g
     return g
 
@@ -422,6 +435,7 @@ def test_trust_gate_accepts_owned_unwritable_file(gi):
     assert gi._py_path_is_trusted(f) is True
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Grok install refuses native Windows (POSIX-shell quoted command)")
 def test_install_writes_our_five_event_hooks_file(gi, tmp_path):
     home = tmp_path / "grok-home"
     result = gi.install(home=home)
@@ -441,6 +455,7 @@ def test_install_writes_our_five_event_hooks_file(gi, tmp_path):
     assert (home / "token-optimizer" / "plugin" / "measure-path").is_file()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Grok install refuses native Windows (POSIX-shell quoted command)")
 def test_uninstall_removes_only_our_files(gi, tmp_path):
     home = tmp_path / "grok-home"
     gi.install(home=home)

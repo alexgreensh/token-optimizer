@@ -235,39 +235,55 @@ def install(*, dry_run: bool = False, home: Path | None = None) -> dict:
         )
 
     if not dry_run:
+        # Build the payload in a staging dir and swap it in atomically. Two
+        # concurrent installs (or an install racing a reader) must never see a
+        # half-copied plugin dir: hooks.json and plugin.json would register
+        # against a partial payload and the bridge would fail on every fire.
+        import tempfile
+        _ensure_config_dir_permissions(pdir.parent)
+        staging = Path(tempfile.mkdtemp(prefix=f".{pdir.name}.stage.", dir=str(pdir.parent)))
+        trash: Path | None = None
+        staging_moved = False
         try:
-            _ensure_config_dir_permissions(pdir)
-            for name in _PAYLOAD_MODULES:
-                src = _SCRIPT_DIR / name
-                shutil.copy2(src, pdir / name)
-                actions["copied"].append(name)
-        except (OSError, RuntimeError) as exc:
-            raise RuntimeError(f"failed copying payload: {exc}") from exc
+            try:
+                for name in _PAYLOAD_MODULES:
+                    src = _SCRIPT_DIR / name
+                    shutil.copy2(src, staging / name)
+                    actions["copied"].append(name)
 
-        # measure-path locator: name the checkout's measure.py (KTD5).
-        try:
-            (pdir / "measure-path").write_text(
-                str(_SCRIPT_DIR / "measure.py") + "\n", encoding="utf-8"
-            )
-        except OSError as exc:
-            raise RuntimeError(f"failed writing measure-path locator: {exc}") from exc
+                # measure-path locator: name the checkout's measure.py (KTD5).
+                (staging / "measure-path").write_text(
+                    str(_SCRIPT_DIR / "measure.py") + "\n", encoding="utf-8"
+                )
 
-        # Write hooks.json, then plugin.json LAST so a partial payload never
-        # registers hooks (R1/U5).
-        try:
-            (pdir / "hooks.json").write_text(
-                json.dumps(_hooks_config(pdir / "antigravity_hook_bridge.py"), indent=2)
-                + "\n",
-                encoding="utf-8",
-            )
-        except OSError as exc:
-            raise RuntimeError(f"failed writing hooks.json: {exc}") from exc
-        try:
-            (pdir / "plugin.json").write_text(
-                json.dumps({"name": HOOK_NAME}, indent=2) + "\n", encoding="utf-8"
-            )
-        except OSError as exc:
-            raise RuntimeError(f"failed writing plugin.json: {exc}") from exc
+                # Write hooks.json, then plugin.json LAST so a partial payload
+                # never registers hooks (R1/U5).
+                (staging / "hooks.json").write_text(
+                    json.dumps(_hooks_config(staging / "antigravity_hook_bridge.py"), indent=2)
+                    + "\n",
+                    encoding="utf-8",
+                )
+                (staging / "plugin.json").write_text(
+                    json.dumps({"name": HOOK_NAME}, indent=2) + "\n", encoding="utf-8"
+                )
+                os.chmod(staging, 0o700)
+            except OSError as exc:
+                raise RuntimeError(f"failed staging plugin payload: {exc}") from exc
+
+            # Swap: move any existing dir aside, move staging in, delete aside.
+            if pdir.exists():
+                trash = pdir.parent / f".{pdir.name}.old.{os.getpid()}"
+                os.replace(pdir, trash)
+            try:
+                os.replace(staging, pdir)
+                staging_moved = True
+            except OSError as exc:
+                raise RuntimeError(f"failed activating plugin dir: {exc}") from exc
+        finally:
+            if trash is not None and trash.exists():
+                shutil.rmtree(trash, ignore_errors=True)
+            if not staging_moved:
+                shutil.rmtree(staging, ignore_errors=True)
 
         _write_consent(root)
         actions["consent"] = str(data_dir(root) / "config.json")
@@ -285,10 +301,13 @@ def uninstall(*, dry_run: bool = False, home: Path | None = None) -> dict:
     if pdir.exists() or pdir.is_symlink():
         if not dry_run:
             # rmtree on the symlink itself raises; rmdir is used for symlinks.
-            if pdir.is_symlink() or pdir.is_file():
-                pdir.unlink()
-            else:
-                shutil.rmtree(pdir)
+            try:
+                if pdir.is_symlink() or pdir.is_file():
+                    pdir.unlink()
+                else:
+                    shutil.rmtree(pdir)
+            except OSError as exc:
+                raise RuntimeError(f"failed removing {pdir}: {exc}") from exc
         actions["removed"].append(str(pdir))
     return actions
 

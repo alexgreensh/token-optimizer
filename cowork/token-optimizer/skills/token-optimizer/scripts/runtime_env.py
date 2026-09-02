@@ -1,4 +1,5 @@
-"""Runtime home detection shared by Claude Code, Codex, Hermes, OpenCode, and Copilot adapters.
+"""Runtime home detection shared by Claude Code, Codex, Hermes, OpenCode, Copilot,
+and Google Antigravity adapters.
 
 This module keeps runtime integration deliberately simple:
 
@@ -30,6 +31,15 @@ This module keeps runtime integration deliberately simple:
   sets the explicit override; the env pair is a weak safety net below the
   CLAUDECODE tier so a Cursor launched from a CC Bash tool still resolves to
   `cursor` only at the weak tier.
+- Antigravity activates when TOKEN_OPTIMIZER_ANTIGRAVITY_HOME is set, an `agy`
+  ancestor process is detected, or TOKEN_OPTIMIZER_RUNTIME=antigravity. The
+  hook bridge always pins the explicit override (same safety-net pattern as
+  Copilot); TOKEN_OPTIMIZER_ANTIGRAVITY_HOME sits above the CLAUDECODE tier so a
+  genuine Antigravity session launched from a Claude Code Bash tool (which
+  inherits CLAUDECODE=1) still resolves to antigravity, and the `agy` ancestor
+  signal stays at the weak tier so it never shadows a coexisting Claude install.
+  Antigravity IS distinct from Gemini CLI (different binary, different hooks
+  format), so one home resolver covers only Antigravity, never Gemini CLI.
 - Cowork is NOT a separate runtime: Claude Cowork runs the same Claude Code
   engine inside a cloud/local VM, reads ~/.claude, and uses the Claude model
   ladder. So ``detect_runtime()`` still returns ``"claude"`` inside Cowork.
@@ -63,6 +73,7 @@ _RUNTIME_HERMES = "hermes"
 _RUNTIME_OPENCODE = "opencode"
 _RUNTIME_COPILOT = "copilot"
 _RUNTIME_CURSOR = "cursor"
+_RUNTIME_ANTIGRAVITY = "antigravity"
 _VALID_RUNTIMES = frozenset(
     {
         _RUNTIME_CLAUDE,
@@ -71,6 +82,7 @@ _VALID_RUNTIMES = frozenset(
         _RUNTIME_OPENCODE,
         _RUNTIME_COPILOT,
         _RUNTIME_CURSOR,
+        _RUNTIME_ANTIGRAVITY,
     }
 )
 _CLAUDE_PLUGIN_ENVS = ("CLAUDE_PLUGIN_ROOT", "CLAUDE_PLUGIN_DATA")
@@ -132,6 +144,12 @@ _CURSOR_HOOK_ENVS = ("CURSOR_PROJECT_DIR", "CURSOR_VERSION")
 # weak tier below CLAUDECODE, since a process scan ahead of CLAUDECODE would
 # re-introduce the #57 OpenCode-shadowing problem for the copilot path too.
 _COPILOT_HOME_ENVS = (_COPILOT_HOME_ENV, _TO_COPILOT_HOME_ENV)
+# Google Antigravity CLI/app/IDE home override. Antigravity is a distinct
+# product from Gemini CLI and ships its own `agy` binary; its data lives under
+# ~/.gemini (antigravity-cli/, antigravity/, antigravity-ide/). This is TO's own
+# namespaced override so the adapter never depends on a host-owned variable.
+_TO_ANTIGRAVITY_HOME_ENV = "TOKEN_OPTIMIZER_ANTIGRAVITY_HOME"
+_AGY_BASENAMES = frozenset({"agy", "agy.exe"})
 # Windows profile names under /mnt/c/Users that are never a real user home.
 _WINDOWS_NONUSER_PROFILES = frozenset(
     {"public", "all users", "default", "default user", "windows", "wpsystem"}
@@ -928,6 +946,7 @@ def _opencode_config_signal() -> bool:
             os.environ.get(_CURSOR_HOOK_ENVS[0])
             and os.environ.get(_CURSOR_HOOK_ENVS[1])
         )
+        or os.environ.get(_TO_ANTIGRAVITY_HOME_ENV)
     ):
         return False
     # A real Claude Code home (settings.json or projects/) means this is a Claude
@@ -990,6 +1009,19 @@ def _cursor_signal() -> bool:
     )
 
 
+def _antigravity_signal() -> bool:
+    """True when TOKEN_OPTIMIZER_ANTIGRAVITY_HOME is set or an `agy` ancestor runs.
+
+    The Antigravity hook bridge always sets TOKEN_OPTIMIZER_RUNTIME=antigravity
+    explicitly; this signal is the safety net for direct invocations from inside
+    an Antigravity session (the same #57 class of bugs: never let an
+    unrecognized host fall through to the Claude default and write ~/.claude).
+    """
+    if os.environ.get(_TO_ANTIGRAVITY_HOME_ENV):
+        return True
+    return _ancestor_in_process_tree(_AGY_BASENAMES)
+
+
 @functools.lru_cache(maxsize=None)
 def detect_runtime() -> str:
     """Return the active runtime name.
@@ -1026,6 +1058,8 @@ def detect_runtime() -> str:
       11. CURSOR_PROJECT_DIR + CURSOR_VERSION both set implies Cursor (weak
           hook-spawned tier, BELOW CLAUDECODE -- no ancestor scan since the
           Cursor CLI binary `agent` is too generic)
+      11b. TOKEN_OPTIMIZER_ANTIGRAVITY_HOME or an `agy` ancestor process
+           implies Antigravity (weak tier, below CLAUDECODE)
       12. Default to Claude Code for backward compatibility
 
     Why step 2 is ahead of the Claude env check (KTD-3, issue #57): on a host
@@ -1073,6 +1107,13 @@ def detect_runtime() -> str:
     if os.environ.get(_TO_CURSOR_HOME_ENV):
         return _RUNTIME_CURSOR
 
+    # Antigravity explicit config-dir env: ABOVE the CLAUDECODE tier (same
+    # guard Codex/Hermes/Copilot get) so a genuine Antigravity session launched
+    # from a Claude Code Bash tool (which inherits CLAUDECODE=1) still resolves
+    # to antigravity, never writes ~/.claude.
+    if os.environ.get(_TO_ANTIGRAVITY_HOME_ENV):
+        return _RUNTIME_ANTIGRAVITY
+
     if any(os.environ.get(v) for v in _CLAUDE_CODE_ENVS):
         return _RUNTIME_CLAUDE
 
@@ -1084,6 +1125,11 @@ def detect_runtime() -> str:
 
     if _cursor_signal():
         return _RUNTIME_CURSOR
+
+    # `agy` ancestor process: the weak-tier safety net (same as the copilot
+    # ancestor signal), below CLAUDECODE so a coexisting Claude install wins.
+    if _antigravity_signal():
+        return _RUNTIME_ANTIGRAVITY
 
     return _RUNTIME_CLAUDE
 
@@ -1212,6 +1258,17 @@ def copilot_home(*, mnt_root: Path | None = None) -> Path:
     return fallback
 
 
+def antigravity_home() -> Path:
+    """Return Google Antigravity's home directory (~/.gemini by default).
+
+    Honors TOKEN_OPTIMIZER_ANTIGRAVITY_HOME under the strict under-``$HOME``
+    guard. This is where Antigravity's own data lives (antigravity-cli/,
+    antigravity/, antigravity-ide/) AND where Token Optimizer's Antigravity data
+    lives (<home>/token-optimizer/) — never ~/.claude.
+    """
+    return _safe_home_from_env(_TO_ANTIGRAVITY_HOME_ENV, _safe_home() / ".gemini")
+
+
 def _xdg_base(env_var: str, default_rel: str) -> Path:
     """Resolve an XDG base dir, falling back to ~/<default_rel>.
 
@@ -1278,6 +1335,9 @@ def runtime_home() -> Path:
     if runtime == _RUNTIME_CURSOR:
         return cursor_home()
 
+    if runtime == _RUNTIME_ANTIGRAVITY:
+        return antigravity_home()
+
     return claude_home()
 
 
@@ -1289,6 +1349,7 @@ def plugin_data_env_vars() -> tuple[str, ...]:
         _RUNTIME_OPENCODE,
         _RUNTIME_COPILOT,
         _RUNTIME_CURSOR,
+        _RUNTIME_ANTIGRAVITY,
     ):
         return ("TOKEN_OPTIMIZER_PLUGIN_DATA",)
     return ("CLAUDE_PLUGIN_DATA", "TOKEN_OPTIMIZER_PLUGIN_DATA")
@@ -1307,6 +1368,8 @@ def runtime_name_for_humans() -> str:
         return "GitHub Copilot"
     if runtime == _RUNTIME_CURSOR:
         return "Cursor"
+    if runtime == _RUNTIME_ANTIGRAVITY:
+        return "Google Antigravity"
     # Cowork is the claude runtime in a VM; label the refinement without changing
     # the runtime it resolves to.
     if runtime == _RUNTIME_CLAUDE and is_cowork():

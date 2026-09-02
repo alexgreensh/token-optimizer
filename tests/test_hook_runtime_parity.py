@@ -407,7 +407,7 @@ def test_owner_hard_exit_recovers_only_after_lease_expiry(tmp_path):
     code = """
 import os, sys
 from hook_runtime import LeaseLock
-lock = LeaseLock(sys.argv[1], acquire_timeout=0, lease_seconds=0.25, reclaim_grace=0)
+lock = LeaseLock(sys.argv[1], acquire_timeout=0, lease_seconds=2.0, reclaim_grace=0)
 if not lock.acquire():
     raise SystemExit(2)
 os._exit(0)
@@ -416,7 +416,7 @@ os._exit(0)
     env["PYTHONPATH"] = str(SCRIPTS)
     subprocess.run([sys.executable, "-c", code, str(path)], env=env, check=True)
     immediate = LeaseLock(path, acquire_timeout=0, reclaim_grace=0).acquire()
-    time.sleep(0.3)
+    time.sleep(2.2)
     recovered_lock = LeaseLock(path, acquire_timeout=0, reclaim_grace=0)
     recovered = recovered_lock.acquire()
     recovered_lock.release()

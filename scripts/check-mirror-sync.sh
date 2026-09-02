@@ -38,3 +38,23 @@ if [ -n "$(git -C "${REPO_ROOT}" status --porcelain -- plugins/token-optimizer)"
 fi
 
 echo "mirror-sync OK: plugins/token-optimizer matches canonical skills/ + hooks/"
+
+# Cowork mirror: same drift check, regenerated in place by the installer's
+# committed-plugin builder (idempotent; clean tree re-runs leave no diff).
+export REPO_ROOT
+python3 - <<'PYCOWORK' || { echo "ERROR: cowork mirror regeneration failed" >&2; exit 1; }
+import os
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(os.environ["REPO_ROOT"]) / "skills" / "token-optimizer" / "scripts"))
+import cowork_install
+cowork_install.build_committed_plugin(Path(os.environ["REPO_ROOT"]).resolve())
+PYCOWORK
+if [ -n "$(git -C "${REPO_ROOT}" status --porcelain -- cowork/token-optimizer)" ]; then
+  echo "ERROR: cowork/token-optimizer/ is out of sync with root skills/ + hooks/." >&2
+  echo "Run: python3 skills/token-optimizer/scripts/cowork_install.py (or the build_committed_plugin helper), commit the result, then retry." >&2
+  git -C "${REPO_ROOT}" status --porcelain -- cowork/token-optimizer >&2
+  exit 1
+fi
+
+echo "mirror-sync OK: cowork/token-optimizer matches canonical skills/ + hooks/"

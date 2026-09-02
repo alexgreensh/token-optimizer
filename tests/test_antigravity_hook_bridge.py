@@ -217,3 +217,32 @@ def test_clean_field_caps_length_and_strips_nonprintable(ab):
     assert len(s) <= ab._FIELD_MAX_CHARS
     assert "\x00" not in s and "\x01" not in s
     assert "a" in s
+
+
+def test_record_nudge_two_process_race_keeps_both_thresholds(ab, tmp_path):
+    """Two concurrent writers must not lose each other's threshold key: the
+    read-modify-write is serialized on a sidecar lock, so a duplicate nudge
+    (same threshold firing twice) cannot happen."""
+    import multiprocessing as mp
+
+    def _writer(home_str, threshold):
+        import sys as _sys
+        _sys.path.insert(0, str(SCRIPTS))
+        import antigravity_hook_bridge as _ab
+        _ab._record_nudge(Path(home_str), "c" * 32, threshold)
+
+    ctx = mp.get_context("fork")
+    procs = [
+        ctx.Process(target=_writer, args=(str(tmp_path), thr))
+        for thr in ("85%", "95%")
+    ]
+    for p in procs:
+        p.start()
+    for p in procs:
+        p.join(timeout=60)
+        assert p.exitcode == 0
+
+    state_path = tmp_path / "token-optimizer" / "nudge-state" / ("c" * 32 + ".json")
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state.get("85%") is True
+    assert state.get("95%") is True

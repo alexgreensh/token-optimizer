@@ -188,25 +188,52 @@ def _record_nudge(home: Path, conversation_id: str, threshold: str) -> None:
     _sweep_nudge_state(home)
     path = _nudge_state_path(home, conversation_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    state: dict = {}
+    # Two hook processes can fire for the same conversation concurrently; an
+    # unlocked read-modify-write loses one writer's threshold key and the
+    # nudge fires twice. Serialize the whole RMW on a sidecar lock file.
+    lock_fd = None
     try:
-        if path.is_file():
-            state = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(state, dict):
-                state = {}
-    except (OSError, json.JSONDecodeError, ValueError):
-        state = {}
-    state[threshold] = True
-    fd, tmp = tempfile.mkstemp(prefix=".nudge.", suffix=".tmp", dir=str(path.parent))
+        lock_fd = os.open(str(path.parent / f".{path.name}.lock"), os.O_CREAT | os.O_RDWR, 0o600)
+        import fcntl
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+    except Exception:
+        if lock_fd is not None:
+            try:
+                os.close(lock_fd)
+            except OSError:
+                pass
+        lock_fd = None  # no lock available: proceed, best-effort
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(state, fh)
-        os.replace(tmp, str(path))
-    except OSError:
+        state: dict = {}
         try:
-            os.unlink(tmp)
+            if path.is_file():
+                state = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(state, dict):
+                    state = {}
+        except (OSError, json.JSONDecodeError, ValueError):
+            state = {}
+        state[threshold] = True
+        fd, tmp = tempfile.mkstemp(prefix=".nudge.", suffix=".tmp", dir=str(path.parent))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(state, fh)
+            os.replace(tmp, str(path))
         except OSError:
-            pass
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+    finally:
+        if lock_fd is not None:
+            try:
+                import fcntl
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            except Exception:
+                pass
+            try:
+                os.close(lock_fd)
+            except OSError:
+                pass
 
 
 def _sweep_nudge_state(home: Path) -> None:

@@ -14,8 +14,11 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
+
+import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 INSTALL_SH = REPO / "install.sh"
@@ -25,6 +28,29 @@ def _detail(r: subprocess.CompletedProcess) -> str:
     """Render both streams so a Windows runner failure names the real cause
     instead of an empty stderr (install.sh's `fail` writes to stdout)."""
     return "\n--- stdout ---\n" + r.stdout + "\n--- stderr ---\n" + r.stderr
+
+
+def _install_bash():
+    """Resolve the bash install.sh actually targets on each platform. On
+    Windows, shutil.which("bash") often resolves WSL's
+    C:\\Windows\\System32\\bash.exe first (it exits 1 with "WSL has no
+    installed distributions" on GitHub runners), while the supported runtime
+    for install.sh is Git Bash — same resolution rule as
+    test_windows_hook_launcher._hook_runtime_bash."""
+    if os.name != "nt":
+        return shutil.which("bash") or "bash"
+    for c in (
+        os.environ.get("GIT_BASH"),
+        r"C:\Program Files\Git\bin\bash.exe",
+        r"C:\Program Files\Git\usr\bin\bash.exe",
+        r"C:\Program Files (x86)\Git\bin\bash.exe",
+    ):
+        if c and Path(c).exists():
+            return c
+    b = shutil.which("bash")
+    if b and "System32" in b:  # WSL launcher — not the install runtime
+        return None
+    return b
 
 
 def _run(home: Path, *flags: str) -> subprocess.CompletedProcess:
@@ -54,8 +80,14 @@ def _run(home: Path, *flags: str) -> subprocess.CompletedProcess:
             env["HOMEDRIVE"] = drive
             env["HOMEPATH"] = os.sep + tail
     env.pop("TOKEN_OPTIMIZER_ANTIGRAVITY_HOME", None)
+    bash = _install_bash()
+    if bash is None:
+        pytest.skip(
+            "Git Bash (the supported Windows runtime for install.sh) not found; "
+            "only WSL's System32 bash.exe is available"
+        )
     return subprocess.run(
-        ["bash", str(INSTALL_SH), "--antigravity", *flags],
+        [bash, str(INSTALL_SH), "--antigravity", *flags],
         cwd=str(REPO),
         env=env,
         capture_output=True,

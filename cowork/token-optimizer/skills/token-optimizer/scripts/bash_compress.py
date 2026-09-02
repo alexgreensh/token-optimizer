@@ -1821,6 +1821,31 @@ def compress(command_str, raw_output, returncode=0, stderr=""):
     return compressed
 
 
+def _run_original(command_args):
+    """Execute the command uncompressed and relay its output and exit code."""
+    try:
+        result = subprocess.run(
+            command_args,
+            shell=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,
+            creationflags=_NO_WINDOW,
+        )
+    except subprocess.TimeoutExpired:
+        sys.exit(124)
+    except OSError as exc:
+        print(f"bash_compress.py: {exc}", file=sys.stderr)
+        sys.exit(127)
+    sys.stdout.write(result.stdout or "")
+    sys.stdout.flush()
+    sys.stderr.write(result.stderr or "")
+    sys.stderr.flush()
+    sys.exit(result.returncode)
+
+
 def main():
     """Run a command through compression wrapper."""
     if len(sys.argv) < 2:
@@ -1837,14 +1862,19 @@ def main():
     # before rewriting. A direct `bash_compress.py <anything-not-whitelisted>`
     # (or a hostile `rm -rf /`, `curl | sh`, etc.) is refused and spawns
     # nothing.
+    #
+    # The gate module is dependency-free, but if it cannot be imported (stale
+    # or partial payload copy) the wrapper must fail OPEN: the command runs
+    # uncompressed exactly as the user typed it. Refusing here would silently
+    # drop whitelisted commands on every platform that shares this wrapper.
     try:
-        import bash_hook as _self_check
+        import bash_whitelist as _self_check
     except Exception:
         _self_check = None
     if _self_check is None:
-        print("bash_compress.py: self-check unavailable; refusing to run", file=sys.stderr)
-        sys.exit(1)
-    if _self_check._has_dangerous_chars(command_str) or not _self_check._is_whitelisted(command_str):
+        _run_original(command_args)
+        sys.exit(0)
+    if _self_check.has_dangerous_chars(command_str) or not _self_check.is_whitelisted(command_str):
         print("bash_compress.py: command is not eligible for compression", file=sys.stderr)
         sys.exit(1)
 

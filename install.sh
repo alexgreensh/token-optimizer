@@ -354,6 +354,81 @@ install_hermes() {
     exit 0
 }
 
+# ── Antigravity plugin install ────────────────────────────────
+# `install.sh --antigravity` installs the Token Optimizer plugin into
+# ~/.gemini/config/plugins/token-optimizer/, which the Antigravity CLI (agy),
+# the Antigravity 2.0 app, and the Antigravity IDE all auto-load. Data
+# collection stays consent-gated (R20): the installer records consent in
+# ~/.gemini/token-optimizer/config.json; the hook bridge and rollup are no-ops
+# until that record exists. --dry-run and --uninstall are forwarded to the
+# measure.py verbs; any other flag is ignored (never reaches argparse).
+install_antigravity() {
+    command -v python3 &>/dev/null || fail "python3 not found. Token Optimizer for Antigravity needs Python 3."
+
+    local script_dir measure_py
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    measure_py="${script_dir}/skills/token-optimizer/scripts/measure.py"
+
+    if [ ! -f "$measure_py" ] && [ -d "${script_dir}/.git" ]; then
+        warn "skills/ not in this checkout. Adding it to sparse-checkout..."
+        git -C "$script_dir" sparse-checkout add skills/ 2>/dev/null || true
+        git -C "$script_dir" pull --ff-only 2>/dev/null || true
+    fi
+    [ -f "$measure_py" ] || fail "$(printf 'Run install.sh from inside a token-optimizer checkout, not on its own. From any folder:\n    git clone --depth 1 %s\n    cd token-optimizer\n    bash install.sh --antigravity' "$REPO_HTTPS")"
+
+    if [ -d "${script_dir}/.git" ]; then
+        local ag_sha
+        ag_sha="$(git -C "$script_dir" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+        info "Installing from commit ${ag_sha}"
+    else
+        warn "Not a git checkout — cannot verify source provenance."
+    fi
+
+    # Antigravity home is ~/.gemini by default. Warn-only for WSL root (no env
+    # recovery): the native agy binary owns its own home resolution, unlike the
+    # Copilot hooks.json that lives at a cross-host path. A user who genuinely
+    # relocated Antigravity sets TOKEN_OPTIMIZER_ANTIGRAVITY_HOME, which
+    # runtime_env honors under the strict under-$HOME guard.
+    _wsl_root_wrong_home_warning "Antigravity" ".gemini" "TOKEN_OPTIMIZER_ANTIGRAVITY_HOME" "--antigravity"
+
+    local ag_verb="antigravity-install"
+    local ag_args=()
+    for a in "$@"; do
+        case "$a" in
+            --uninstall) ag_verb="antigravity-uninstall" ;;
+            --dry-run) ag_args+=("--dry-run") ;;
+        esac
+    done
+
+    if [ "$ag_verb" = "antigravity-uninstall" ]; then
+        info "Removing Token Optimizer from Google Antigravity..."
+        if ! TOKEN_OPTIMIZER_RUNTIME=antigravity python3 "$measure_py" antigravity-uninstall "${ag_args[@]+"${ag_args[@]}"}"; then
+            fail "Antigravity uninstall failed."
+        fi
+        echo ""
+        printf "${BOLD}${GREEN}Token Optimizer for Google Antigravity removed.${NC}\n"
+        echo "  (Conversation data under ~/.gemini/ and session rows in trends.db are left in place by design.)"
+        echo ""
+        exit 0
+    fi
+
+    info "Installing Token Optimizer into Google Antigravity (~/.gemini/config/plugins/token-optimizer/)..."
+    if ! TOKEN_OPTIMIZER_RUNTIME=antigravity python3 "$measure_py" antigravity-install "${ag_args[@]+"${ag_args[@]}"}"; then
+        fail "Antigravity install failed."
+    fi
+
+    echo ""
+    printf "${BOLD}${GREEN}Token Optimizer for Google Antigravity installed (beta)!${NC}\n"
+    echo ""
+    echo "  Plugin:    ~/.gemini/config/plugins/token-optimizer/ (auto-loaded by agy + Antigravity 2.0 app + IDE)"
+    echo "  Verify:    TOKEN_OPTIMIZER_RUNTIME=antigravity python3 ${measure_py} antigravity-doctor"
+    echo "  Summary:   TOKEN_OPTIMIZER_RUNTIME=antigravity python3 ${measure_py} antigravity-summary"
+    echo "  Consent:   ~/.gemini/token-optimizer/config.json (collection is off until the install records it)"
+    echo "  Re-run this command after a git pull to update."
+    echo ""
+    exit 0
+}
+
 # ── WSL-root wrong-home warning (issue #78, generalized cross-platform) ─
 # `bash install.sh` (or --opencode / --hermes / --copilot) on native Windows
 # runs WSL bash as root, so $HOME=/root and the install lands in /root/<subpath>
@@ -806,9 +881,9 @@ uninstall_cursor() {
     exit 0
 }
 
-# Route --opencode / --hermes / --copilot / --cursor / --cowork before the
+# Route --opencode / --hermes / --copilot / --cursor / --antigravity / --cowork before the
 # Claude Code prerequisite checks (OpenCode needs bun; Hermes, Copilot, Cursor,
-# and the Cowork packager need python3, not the Claude Code plugin env).
+# Antigravity, and the Cowork packager need python3, not the Claude Code plugin env).
 
 # Allow tests to source this script for function unit-testing (e.g.
 # _copilot_wsl_root_warning) without triggering the install flow or
@@ -835,6 +910,7 @@ for arg in "$@"; do
             done
             install_cursor "$@"
             ;;
+        --antigravity) install_antigravity "$@" ;;
         --cowork) install_cowork "$@" ;;
     esac
 done

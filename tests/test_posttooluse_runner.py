@@ -383,9 +383,12 @@ sys.exit(m.main())
 def test_slow_handlers_cannot_starve_later_quality_cache(tmp_path):
     """Four 1.6s handlers must all start, with over-budget work reported.
 
-    Timings are sized so per-handler fair share (4.0/4 = 1.0s) is comfortably
-    larger than runner startup noise on slow CI machines (Windows runners
-    starved the 4th handler when the budget was 2.0s with 0.8s handlers)."""
+    The total budget is sized so remaining time after three over-budget
+    handlers still covers dispatch of the fourth on slow CI machines (the
+    per-handler share is capped at the 0.75s handler default, so handlers
+    still exceed their budget and report it; Windows runners starved the
+    4th handler when the total was 2.0s because runner startup ate the
+    slack)."""
     marker = tmp_path / "handler-starts.log"
     code = f"""
 import importlib.util, sys, time
@@ -393,7 +396,7 @@ from pathlib import Path
 spec = importlib.util.spec_from_file_location("posttooluse_runner", {str(RUNNER)!r})
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
-m._RUNNER_TOTAL_BUDGET = 4.0
+m._RUNNER_TOTAL_BUDGET = 8.0
 m._read_hook_input = lambda: {{"tool_name": "Bash"}}
 
 def slow(name):

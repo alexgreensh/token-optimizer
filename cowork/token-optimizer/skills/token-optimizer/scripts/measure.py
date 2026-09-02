@@ -145,6 +145,7 @@ def _detached_python_exe():
     return _windows_gui_python() or sys.executable or "python3"
 
 
+import antigravity_session
 import codex_io
 import codex_session
 import codex_state
@@ -385,7 +386,7 @@ def _antigravity_audit_notice() -> None:
     print("  measure.py antigravity-doctor     — readiness + hook capability probe")
     print("  measure.py antigravity-install    — wire Token Optimizer into ~/.gemini/config/plugins/")
     print("  measure.py antigravity-home       — print resolved Antigravity home (override via TOKEN_OPTIMIZER_ANTIGRAVITY_HOME)")
-    print("  measure.py dashboard              — open the Antigravity dashboard (port 24846)")
+    print("  measure.py dashboard              — open the Antigravity dashboard (port 24847)")
     print()
     print("To force this skill onto a specific runtime, set TOKEN_OPTIMIZER_RUNTIME.")
 
@@ -5750,8 +5751,8 @@ def _collect_antigravity_hook_status_for_dashboard():
         },
         "antigravity_dashboard_port": {
             "installed": _ok(f"Dashboard port {antigravity_doctor.DAEMON_PORT}"),
-            "label": "Dashboard Port 24846",
-            "description": "Confirms that port 24846 is available or already serving the Antigravity Token Optimizer dashboard.",
+            "label": "Dashboard Port 24847",
+            "description": "Confirms that port 24847 is available or already serving the Antigravity Token Optimizer dashboard.",
             "install_cmd": f"TOKEN_OPTIMIZER_RUNTIME=antigravity python3 {mp_cmd} open-dashboard",
             "uninstall_cmd": "",
         },

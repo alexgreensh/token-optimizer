@@ -37,4 +37,4 @@ def test_capability_matrix_has_antigravity_column_and_port():
         REPO / "docs-site/src/content/docs/reference/capability-matrix.mdx"
     ).read_text(encoding="utf-8")
     assert "Antigravity (beta)" in matrix
-    assert "| Antigravity | 24846 |" in matrix
+    assert "| Antigravity | 24847 |" in matrix

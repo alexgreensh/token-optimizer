@@ -24,7 +24,7 @@ session is tagged with its surface.
 - **Context-quality scoring.** S/A/B/C/D/F grades from the same three-signal subset the Hermes and Copilot adapters use.
 - **Bash output compression.** The `run_command` hook rewrites whitelisted commands through `bash_compress.py`, and that wrapper re-validates its argv itself (R13a), so a cached "always allow" can never turn it into an unguarded runner.
 - **Continuity restore.** The `PreInvocation #1` hook injects a one-line summary of your previous session; titles and workspace paths are filtered through the same printable-only, length-capped `R22` filter as every other adapter.
-- **Stop-time rollup + dashboard.** Sessions flow into the local trends DB on Stop; the dashboard daemon runs on port **24846**.
+- **Stop-time rollup + dashboard.** Sessions flow into the local trends DB on Stop; the dashboard daemon runs on port **24847**.
 
 ## Install
 

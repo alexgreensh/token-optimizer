@@ -13,7 +13,7 @@ Checks:
   consent record present
   conversation store readable + decodable on the newest database per surface
   conversation summaries database readable per surface
-  dashboard daemon port (24846)
+  dashboard daemon port (24847)
 
 Usage:
     python3 antigravity_doctor.py [--json]
@@ -35,7 +35,7 @@ sys.path.insert(0, str(_SCRIPT_DIR))
 
 from runtime_env import antigravity_home  # noqa: E402
 
-DAEMON_PORT = 24846
+DAEMON_PORT = 24847
 _VERSION_TIMEOUT_SECONDS = 5
 
 

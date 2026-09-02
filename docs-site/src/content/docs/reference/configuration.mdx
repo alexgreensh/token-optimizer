@@ -109,7 +109,7 @@ These seven names are read by `opencode/src/util/env.ts` and exist only there; t
 | `TOKEN_OPTIMIZER_DASHBOARD_TIMEOUT` | 30 seconds | Total retry budget when opening the dashboard server |
 | `TOKEN_OPTIMIZER_TURN_PRELOAD_MAX` | 40 | Maximum recent sessions whose per-turn data is embedded in a static dashboard |
 
-Dashboard ports are fixed per runtime: 24842 (Claude Code), 24843 (Codex), 24844 (Hermes), 24845 (Copilot), 24846 (Antigravity). They are not configured by environment variable; they are assigned by the engine so multiple runtimes can serve dashboards simultaneously without conflict. The `--port` flag on `dashboard` overrides the port for a one-off serve.
+Dashboard ports are fixed per runtime: 24842 (Claude Code), 24843 (Codex), 24844 (Hermes), 24845 (Copilot), 24846 (Cursor), 24847 (Antigravity). They are not configured by environment variable; they are assigned by the engine so multiple runtimes can serve dashboards simultaneously without conflict. The `--port` flag on `dashboard` overrides the port for a one-off serve.
 
 ## Data retention
 

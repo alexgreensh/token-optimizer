@@ -72,7 +72,7 @@ persisted. See `PRIVACY.md`.
 | Per-session tokens (in / out / cache-read / thinking) | 🟢 green | decoded from `gen_metadata` |
 | Model + duration + tool-call counts | 🟢 green | |
 | Context fill + quality grade | 🟢 green | 3-signal subset, like Hermes/Copilot |
-| Trends DB + dashboard (port 24846) | 🟢 green | `platform=antigravity`, keyed per surface |
+| Trends DB + dashboard (port 24847) | 🟢 green | `platform=antigravity`, keyed per surface |
 | Continuity restore | 🟢 green | `PreInvocation #1` injects a capped, R22-filtered summary |
 | Bash output compression | 🟢 green | `PreToolUse` `run_command` rewrite, wrapper re-validates its argv (R13a) |
 | Stop-time rollup | 🟢 green | detached, 60s budget, lease-debounced |

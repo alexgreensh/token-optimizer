@@ -5750,7 +5750,10 @@ def _collect_antigravity_hook_status_for_dashboard():
             "uninstall_cmd": doctor_cmd,
         },
         "antigravity_dashboard_port": {
-            "installed": _ok(f"Dashboard port {antigravity_doctor.DAEMON_PORT}"),
+            # The doctor's check name is "dashboard daemon" (lowercase, with
+            # the port in the detail text, not the name) — the lookup must
+            # match it exactly or the toggle can never turn green.
+            "installed": _ok("dashboard daemon"),
             "label": "Dashboard Port 24847",
             "description": "Confirms that port 24847 is available or already serving the Antigravity Token Optimizer dashboard.",
             "install_cmd": f"TOKEN_OPTIMIZER_RUNTIME=antigravity python3 {mp_cmd} open-dashboard",

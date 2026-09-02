@@ -280,3 +280,23 @@ def test_json_output_parses_and_carries_status(doctor, monkeypatch, tmp_path, ca
     for item in data:
         assert item["status"] in {"ok", "warn", "fail"}
         assert item["name"] and item["detail"]
+
+
+def test_dashboard_toggle_lookup_matches_doctor_check_name(doctor, monkeypatch, tmp_path):
+    """The dashboard toggle panel looks its status up by the doctor's check
+    name; a typo'd lookup means the toggle shows not-installed forever."""
+    import measure
+
+    _install(doctor, tmp_path)
+    checks = doctor.run_checks()
+    names = {c["name"] for c in checks}
+    # measure's collector imports antigravity_doctor locally, resolving to
+    # this same module object, so patching here covers both.
+    monkeypatch.setattr(doctor, "run_checks", lambda: [
+        {**c, "status": "ok"} for c in checks
+    ])
+    panel = measure._collect_antigravity_hook_status_for_dashboard()
+    toggle = panel["antigravity_dashboard_port"]
+    # The lookup name must be a name the doctor actually emits.
+    assert "dashboard daemon" in names
+    assert toggle["installed"] is True

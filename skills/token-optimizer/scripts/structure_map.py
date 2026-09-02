@@ -1663,7 +1663,8 @@ def _render_top_level(
 
     # Build (label, name, lineno) triples so centrality can order symbols
     # before the MAX_TOP_LEVEL_SYMBOLS truncation, keeping the most-referenced
-    # symbols instead of the first-N-by-source-order triples: List[Tuple[str, str, int]] = []
+    # symbols instead of the first-N-by-source-order.
+    triples: List[Tuple[str, str, int]] = []
     for cls in classes:
         triples.append((f"{cls.signature} @ L{cls.lineno}", cls.name, cls.lineno))
     for func in functions:

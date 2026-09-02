@@ -44,3 +44,4 @@ decisions.md
 # Internal working dirs — never ship (Alex Mode hard rule)
 handoff/
 scratchpad/
+.sprint-scratch/

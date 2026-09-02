@@ -373,6 +373,14 @@ def test_acquire_never_retries_after_timeout(tmp_path, monkeypatch):
     assert attempts == 1
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="12 cold interpreter spawns must finish inside wait(timeout=2) and "
+    "elapsed < 1.2s: not achievable on slow Windows CI runners (observed "
+    "TimeoutExpired, run 33595318811). Same load-sensitivity family as the "
+    "win32-skipped 12-process reclaim tests in this file and "
+    "test_defeat_exit_cleanup.py; the one-winner invariant is guarded on POSIX.",
+)
 def test_many_contenders_have_one_winner_and_bounded_losers(tmp_path):
     lock_path = tmp_path / "race.lease"
     wins_path = tmp_path / "wins.txt"

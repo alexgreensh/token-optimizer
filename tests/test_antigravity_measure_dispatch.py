@@ -285,6 +285,19 @@ def test_summary_per_surface(capsys, monkeypatch, tmp_path):
     assert "No Antigravity sessions found yet" not in out
 
 
+def test_summary_prices_list_price_sessions(capsys, monkeypatch, tmp_path):
+    """A list-price session must show a real dollar estimate, not the
+    normalizer's placeholder zero (the summary prices, like the collector)."""
+    mod, _snap = _import_measure(monkeypatch, tmp_path)
+    _patch_homes(monkeypatch, mod, tmp_path)
+    _patch_sessions(monkeypatch, [_session(conv_id="a", surface="antigravity")])
+    mod._antigravity_summary()
+    out = capsys.readouterr().out
+    cost_line = next(line for line in out.splitlines() if "Estimated cost" in line)
+    assert "Estimated cost: ~$0.00" not in cost_line
+    assert "Estimated cost" in cost_line
+
+
 # ---------------------------------------------------------------------------
 # dispatch wiring (read-only smoke: the module must route, not crash)
 # ---------------------------------------------------------------------------

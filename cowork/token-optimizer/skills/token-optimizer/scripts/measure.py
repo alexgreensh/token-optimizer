@@ -19668,9 +19668,11 @@ def _antigravity_summary():
     print("Token Optimizer — Google Antigravity summary")
     raw_by_surface: dict[str, list] = {}
     undecodable = 0
+    decodable = 0
     for raw in _ags.read_all_sessions():
         raw_by_surface.setdefault(str(raw.get("surface") or "unknown"), []).append(raw)
         undecodable += raw.get("undecodable_rows", 0)
+        decodable += len(raw.get("generations") or [])
 
     any_data = False
     for surface in ("antigravity-cli", "antigravity", "antigravity-ide"):
@@ -19680,6 +19682,16 @@ def _antigravity_summary():
         if not normalized:
             continue
         any_data = True
+        # Price list-price sessions at Gemini card rates so the "estimated cost"
+        # line is a real dollar figure, not the normalizer's placeholder zero
+        # (the normalizer never prices — KTD12; the collector does it).
+        for s in normalized:
+            if s.get("cost_source") == "antigravity_list_price_estimate" and s.get("model_id"):
+                fresh = max(0, s["total_input_tokens"] - s.get("total_cache_read", 0))
+                s["cost_usd"] = _get_model_cost(
+                    s["model_id"], fresh, s["total_output_tokens"],
+                    cache_read=s.get("total_cache_read", 0),
+                )
         total_in = sum(s.get("total_input_tokens", 0) for s in normalized)
         total_out = sum(s.get("total_output_tokens", 0) for s in normalized)
         total_cache = sum(s.get("total_cache_read", 0) for s in normalized)
@@ -19696,8 +19708,10 @@ def _antigravity_summary():
         print(f"  {surface}: {len(normalized)} session(s)")
         if credits:
             print(f"    Antigravity credits: {credits:,.2f}")
-        else:
+        elif cost > 0.0:
             print(f"    Estimated cost: ~${cost:,.2f} (Gemini list-price estimate)")
+        else:
+            print("    Cost: unavailable (no model with a known Gemini rate card)")
         print(f"    Tokens: {total_in:,} in / {total_out:,} out / {total_cache:,} cache-read")
         if top_models:
             print("    Models: " + ", ".join(f"{m} ({v:,})" for m, v in top_models))
@@ -19706,14 +19720,14 @@ def _antigravity_summary():
     if not any_data:
         print()
         print("  No Antigravity sessions found yet.")
-    if undecodable:
+    if decodable or undecodable:
         try:
             from antigravity_proto import DECODER_VERSION  # noqa: PLC0415
         except Exception:
             DECODER_VERSION = "ag-v1"
         print()
-        print(f"  Decoder health: {undecodable} undecodable gen_metadata row(s) "
-              f"(decoder {DECODER_VERSION}).")
+        print(f"  Decoder health: {decodable} decodable, {undecodable} undecodable "
+              f"gen_metadata row(s) (decoder {DECODER_VERSION}).")
     print()
     print("  Full trends: measure.py antigravity-rollup (sessions land in trends.db).")
 
@@ -45947,6 +45961,39 @@ if __name__ == "__main__":
     elif args[0] == "copilot-doctor":
         import copilot_doctor
         sys.exit(copilot_doctor.main(args[1:]))
+    elif args[0] == "antigravity-doctor":
+        import antigravity_doctor
+        sys.exit(antigravity_doctor.main(args[1:]))
+    elif args[0] == "antigravity-install":
+        import antigravity_install
+        sys.exit(antigravity_install.main(["install"] + args[1:]))
+    elif args[0] == "antigravity-uninstall":
+        import antigravity_install
+        sys.exit(antigravity_install.main(["uninstall"] + args[1:]))
+    elif args[0] == "antigravity-home":
+        from runtime_env import antigravity_home  # noqa: PLC0415
+        print(str(antigravity_home()))
+        sys.exit(0)
+    elif args[0] == "antigravity-rollup":
+        # Ingest recent Antigravity sessions into trends.db. Fired by the stop
+        # hook via antigravity_hook_bridge.handle_stop(). Wall-clock backstop:
+        # same 60s rationale as copilot-rollup — the bridge spawns this
+        # fire-and-forget, so cap it and fail open (the next Stop re-collects
+        # idempotently).
+        quiet = "--quiet" in args or "-q" in args
+        _tok_hook_deadline = _install_hook_budget(60)
+        try:
+            _collect_antigravity_sessions(days=90, quiet=quiet)
+        except _HookTimeout:
+            pass
+        except Exception:
+            pass
+        finally:
+            _clear_hook_budget(_tok_hook_deadline)
+        sys.exit(0)
+    elif args[0] == "antigravity-summary":
+        _antigravity_summary()
+        sys.exit(0)
     elif args[0] == "copilot-install":
         # Intercept copilot-install to support a --home <path> flag that
         # overrides the copilot home (issue #78). copilot_install.main() uses
@@ -46079,39 +46126,6 @@ if __name__ == "__main__":
             )
             sys.exit(0)
         _cursor_summary()
-        sys.exit(0)
-    elif args[0] == "antigravity-doctor":
-        import antigravity_doctor
-        sys.exit(antigravity_doctor.main(args[1:]))
-    elif args[0] == "antigravity-install":
-        import antigravity_install
-        sys.exit(antigravity_install.main(args[1:]))
-    elif args[0] == "antigravity-uninstall":
-        import antigravity_install
-        sys.exit(antigravity_install.main(["uninstall"] + args[1:]))
-    elif args[0] == "antigravity-home":
-        from runtime_env import antigravity_home  # noqa: PLC0415
-        print(str(antigravity_home()))
-        sys.exit(0)
-    elif args[0] == "antigravity-rollup":
-        # Ingest recent Antigravity sessions into trends.db. Fired by the stop
-        # hook via antigravity_hook_bridge.handle_stop(). Wall-clock backstop:
-        # same 60s rationale as copilot-rollup — the bridge spawns this
-        # fire-and-forget, so cap it and fail open (the next Stop re-collects
-        # idempotently).
-        quiet = "--quiet" in args or "-q" in args
-        _tok_hook_deadline = _install_hook_budget(60)
-        try:
-            _collect_antigravity_sessions(days=90, quiet=quiet)
-        except _HookTimeout:
-            pass
-        except Exception:
-            pass
-        finally:
-            _clear_hook_budget(_tok_hook_deadline)
-        sys.exit(0)
-    elif args[0] == "antigravity-summary":
-        _antigravity_summary()
         sys.exit(0)
     elif args[0] == "hermes-doctor":
         import hermes_doctor

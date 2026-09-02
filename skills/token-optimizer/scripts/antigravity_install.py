@@ -79,19 +79,39 @@ def _py_path_is_trusted(p: str) -> bool:
 
 
 def _resolve_safe_python() -> str:
-    """An ABSOLUTE, trusted python for the persisted hook command."""
+    """An ABSOLUTE, trusted python for the persisted Antigravity hook command.
+
+    Never emit a bare "python3": that string is resolved via $PATH every time
+    the hook fires, so a hijacked PATH entry runs attacker code. Resolution
+    order:
+      1. TOKEN_OPTIMIZER_PYTHON, if it names a trusted file;
+      2. sys.executable (absolute path baked in ONCE) -- but only through the
+         same trust gate: a writable venv interpreter must never be persisted;
+      3. a $PATH search, accepting only a candidate that passes the gate.
+    The RESOLVED realpath is persisted, not abspath: the gate validated
+    realpath(cand) (the symlink target + its parent dir), so persisting the
+    original symlink path would leave a swap window between install and hook
+    fire. Raises RuntimeError rather than persist an unsafe command.
+    """
     override = os.environ.get("TOKEN_OPTIMIZER_PYTHON", "").strip()
-    if override and _py_path_is_trusted(override):
-        return os.path.abspath(override)
-    if sys.executable and os.path.isfile(sys.executable):
-        return os.path.abspath(sys.executable)
+    candidates = []
+    if override:
+        candidates.append(("TOKEN_OPTIMIZER_PYTHON", override))
+    if sys.executable:
+        candidates.append(("sys.executable", sys.executable))
     for name in ("python3", "python"):
         cand = shutil.which(name)
-        if cand and _py_path_is_trusted(cand):
-            return os.path.abspath(cand)
+        if cand:
+            candidates.append((name, cand))
+    for _label, cand in candidates:
+        if _py_path_is_trusted(cand):
+            return os.path.realpath(cand)
+    reasons = [f"{label}={cand}: {_py_trust_reason(cand)}"
+               for label, cand in candidates]
     raise RuntimeError(
         "no trusted python interpreter found for the Antigravity hook; "
-        "set TOKEN_OPTIMIZER_PYTHON to an absolute python3 path and re-run install"
+        "set TOKEN_OPTIMIZER_PYTHON to an absolute python3 path and re-run install. "
+        "Candidates: " + "; ".join(reasons)
     )
 
 

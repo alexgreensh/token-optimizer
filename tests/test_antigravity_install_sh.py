@@ -21,6 +21,12 @@ REPO = Path(__file__).resolve().parent.parent
 INSTALL_SH = REPO / "install.sh"
 
 
+def _detail(r: subprocess.CompletedProcess) -> str:
+    """Render both streams so a Windows runner failure names the real cause
+    instead of an empty stderr (install.sh's `fail` writes to stdout)."""
+    return "\n--- stdout ---\n" + r.stdout + "\n--- stderr ---\n" + r.stderr
+
+
 def _run(home: Path, *flags: str) -> subprocess.CompletedProcess:
     tmp = home / "tmp"
     tmp.mkdir(parents=True, exist_ok=True)
@@ -38,6 +44,15 @@ def _run(home: Path, *flags: str) -> subprocess.CompletedProcess:
         "TOKEN_OPTIMIZER_RUNTIME": "antigravity",
         "TOKEN_OPTIMIZER_NO_PROC_SCAN": "1",
     })
+    # Windows resolves Path.home() from USERPROFILE (+ HOMEDRIVE/HOMEPATH), not
+    # HOME, so pin those too or the measure.py subprocess reads the real
+    # runner profile and installs into the wrong ~/.gemini tree.
+    if os.name == "nt":
+        drive, _, tail = str(home).partition(os.sep)
+        env["USERPROFILE"] = str(home)
+        if ":" in drive:
+            env["HOMEDRIVE"] = drive
+            env["HOMEPATH"] = os.sep + tail
     env.pop("TOKEN_OPTIMIZER_ANTIGRAVITY_HOME", None)
     return subprocess.run(
         ["bash", str(INSTALL_SH), "--antigravity", *flags],
@@ -57,8 +72,8 @@ def test_dry_run_prints_would_install_and_writes_nothing(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     r = _run(home, "--dry-run")
-    assert r.returncode == 0, r.stderr
-    assert "Would install" in r.stdout
+    assert r.returncode == 0, _detail(r)
+    assert "Would install" in r.stdout, _detail(r)
     assert not (home / _PLUGIN).exists()
     assert not (home / _CONSENT).exists()
 
@@ -67,7 +82,7 @@ def test_install_then_uninstall_is_idempotent_and_keeps_data(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     r = _run(home)
-    assert r.returncode == 0, r.stderr
+    assert r.returncode == 0, _detail(r)
 
     pdir = home / _PLUGIN
     assert pdir.is_dir()
@@ -82,7 +97,7 @@ def test_install_then_uninstall_is_idempotent_and_keeps_data(tmp_path):
     assert cfg["antigravity_consent"] is True
 
     r2 = _run(home, "--uninstall")
-    assert r2.returncode == 0, r2.stderr
+    assert r2.returncode == 0, _detail(r2)
     assert not pdir.exists()
     # Consent + session/trends data are deliberately left in place: an
     # uninstall must never delete collected data.
@@ -93,7 +108,7 @@ def test_unknown_flag_degrades_to_install_without_traceback(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     r = _run(home, "--bogus")
-    assert r.returncode == 0, r.stderr
-    assert "Traceback" not in r.stderr
-    assert "installed" in r.stdout.lower()
+    assert r.returncode == 0, _detail(r)
+    assert "Traceback" not in r.stderr, _detail(r)
+    assert "installed" in r.stdout.lower(), _detail(r)
     assert (home / _PLUGIN).is_dir()

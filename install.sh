@@ -363,30 +363,47 @@ install_hermes() {
 # until that record exists. --dry-run and --uninstall are forwarded to the
 # measure.py verbs; any other flag is ignored (never reaches argparse).
 
-# Resolve a Python interpreter that can run measure.py. Native-Windows Git
-# Bash exposes `python`/`py`, not a `python3` alias, so fall back in that order
-# and verify 3.9+ (COPILOT/HERMES parity). Prints the resolved interpreter to
-# stdout; callers capture it into local `python_bin`.
+# Resolve a Python interpreter that can run measure.py.
+#
+# Native-Windows Git Bash is the trap: the `python3` name is frequently the
+# WindowsApps app-execution alias (a Microsoft Store stub that opens the Store
+# rather than running), while `python` is the real interpreter setup-python
+# installs. The stub even writes its notice straight to the console, bypassing
+# a command-substitution pipe, so naively probing `python3` first both fails the
+# version check AND splatters UTF-16 text onto install.sh's stdout. Therefore:
+#   - On MSYS/MINGW/CYGWIN, probe `python` FIRST, then `python3`.
+#   - Everywhere else keep the conventional `python3` first.
+#   - Skip any candidate that won't run, or that reports < 3.9, and only fail
+#     once every candidate is exhausted.
+#
+# Prints the resolved interpreter to stdout; callers capture it into a local.
 _resolve_python() {
-    local python_bin=""
-    if command -v python3 &>/dev/null; then
-        python_bin="python3"
-    elif command -v python &>/dev/null; then
-        python_bin="python"
-    else
-        fail "python3 not found. Token Optimizer for Antigravity needs Python 3.9+."
-    fi
-    local py_version py_major py_minor
-    py_version="$("$python_bin" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null)"
-    py_major="$(echo "$py_version" | cut -d. -f1)"
-    py_minor="$(echo "$py_version" | cut -d. -f2)"
-    if [ -z "$py_version" ]; then
-        fail "${python_bin} was found but could not execute. Check the Python installation."
-    fi
-    if [ "$py_major" -lt 3 ] 2>/dev/null || { [ "$py_major" -eq 3 ] && [ "$py_minor" -lt 9 ]; } 2>/dev/null; then
-        fail "Python ${py_version} found, but 3.9+ is required."
-    fi
-    printf '%s\n' "$python_bin"
+    local candidates="python3 python"
+    case "$(uname -s 2>/dev/null)" in
+        MINGW*|MSYS*|CYGWIN*) candidates="python python3" ;;
+    esac
+
+    local cand py_version py_major py_minor
+    for cand in $candidates; do
+        command -v "$cand" >/dev/null 2>&1 || continue
+        py_version="$("$cand" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null)" || py_version=""
+        [ -n "$py_version" ] || continue
+        py_major="$(echo "$py_version" | cut -d. -f1)"
+        py_minor="$(echo "$py_version" | cut -d. -f2)"
+        # The numeric comparison below only makes sense for a clean `major.minor`
+        # string; a stub/launcher that echoes prose would otherwise slip past the
+        # `-lt`/`-eq` tests (which error on non-integers) and be mis-accepted.
+        [ -n "$py_major" ] && [ -n "$py_minor" ] || continue
+        case "$py_major$py_minor" in
+            *[!0-9]*) continue ;;
+        esac
+        if [ "$py_major" -lt 3 ] 2>/dev/null || { [ "$py_major" -eq 3 ] && [ "$py_minor" -lt 9 ]; } 2>/dev/null; then
+            continue
+        fi
+        printf '%s\n' "$cand"
+        return 0
+    done
+    fail "python3 not found. Token Optimizer for Antigravity needs Python 3.9+."
 }
 
 install_antigravity() {

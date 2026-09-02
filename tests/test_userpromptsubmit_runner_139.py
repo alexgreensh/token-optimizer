@@ -47,6 +47,9 @@ def _load_runner(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(REPO))
     # Keep the measure import deterministic and isolated from the host's real
     # ~/.claude state by pointing config dirs at a tmp dir.
+    # claude_home() honors CLAUDE_CONFIG_DIR only when the directory exists;
+    # a missing dir is rejected and falls back to the host's real ~/.claude.
+    (tmp_path / "claude").mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
     spec = importlib.util.spec_from_file_location("ups_runner_under_test", RUNNER)
     mod = importlib.util.module_from_spec(spec)
@@ -319,15 +322,37 @@ def test_userpromptsubmit_runner_session_marker_gate(monkeypatch, tmp_path):
     assert calls["compact_restore"] == [], "compact-restore must skip when marker exists"
 
 
+def _isolate_quality_cache(monkeypatch, runner, tmp_path, sid, *, present):
+    """Point the per-session quality cache at tmp and create it (or not).
+
+    Returns the hook input carrying the transcript_path that
+    ``measure._quality_cache_path_for`` derives the cache path from, the same
+    way a real UserPromptSubmit payload does.
+    """
+    qcd = tmp_path / "quality-cache"
+    qcd.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(runner.measure, "QUALITY_CACHE_DIR", qcd)
+    transcript = tmp_path / f"{sid}.jsonl"
+    cache_path = runner.measure._quality_cache_path_for(str(transcript))
+    assert cache_path.parent == qcd
+    if present:
+        cache_path.write_text("{}", encoding="utf-8")
+    return {"session_id": sid, "prompt": "x", "transcript_path": str(transcript)}
+
+
 def test_userpromptsubmit_runner_harness_guard_skips_gated(monkeypatch, tmp_path):
     """When the harness guard fails, the three gated subcommands are skipped
     entirely (replicating the shell `exit 0` that used to prefix entries 4/5/6)
-    while the three always-on subcommands still run."""
+    while the three always-on subcommands still run.
+
+    Precondition: a quality cache already exists for the session. Without one
+    the runner takes the bootstrap branch instead (covered below)."""
     runner = _load_runner(monkeypatch, tmp_path)
     _stub_budget(monkeypatch, runner)
     calls = _install_call_recorder(monkeypatch, runner)
-    monkeypatch.setattr(runner, "_read_hook_input",
-                        lambda: {"session_id": "sess-noguard-139", "prompt": "x"})
+    hook_input = _isolate_quality_cache(monkeypatch, runner, tmp_path,
+                                        "sess-noguard-139", present=True)
+    monkeypatch.setattr(runner, "_read_hook_input", lambda: hook_input)
     monkeypatch.setattr(runner, "_harness_only_context", lambda: False)
 
     rc = runner.main()
@@ -339,6 +364,50 @@ def test_userpromptsubmit_runner_harness_guard_skips_gated(monkeypatch, tmp_path
     assert calls["ensure_health"] == []
     assert calls["quality_cache_force"] == []
     assert calls["compact_restore"] == []
+
+
+def test_userpromptsubmit_runner_bootstraps_missing_cache_outside_harness(monkeypatch, tmp_path):
+    """Guard fails AND no quality cache exists: the ONE recovery
+    (`quality-cache --force`) runs so ContextQ is not blank for the whole
+    session after a missed SessionStart. ensure-health and compact-restore stay
+    skipped: the harness gate still owns them."""
+    runner = _load_runner(monkeypatch, tmp_path)
+    _stub_budget(monkeypatch, runner)
+    calls = _install_call_recorder(monkeypatch, runner)
+    hook_input = _isolate_quality_cache(monkeypatch, runner, tmp_path,
+                                        "sess-bootstrap-139", present=False)
+    monkeypatch.setattr(runner, "_read_hook_input", lambda: hook_input)
+    monkeypatch.setattr(runner, "_harness_only_context", lambda: False)
+
+    rc = runner.main()
+    assert rc == 0
+
+    assert len(calls["quality_cache_warn"]) == 1
+    assert len(calls["prompt_continuity"]) == 1
+    assert len(calls["verbosity_steer"]) == 1
+    assert calls["ensure_health"] == [], "bootstrap must not unlock ensure-health"
+    assert len(calls["quality_cache_force"]) == 1, "missing cache -> exactly one force"
+    assert calls["quality_cache_force"][0].get("force") is True
+    assert calls["compact_restore"] == [], "bootstrap must not unlock compact-restore"
+
+
+def test_userpromptsubmit_runner_harness_true_missing_cache_forces_once(monkeypatch, tmp_path):
+    """Guard passes AND no cache: the harness branch already runs
+    `quality-cache --force`; the bootstrap `elif` must not run it a second time."""
+    runner = _load_runner(monkeypatch, tmp_path)
+    _stub_budget(monkeypatch, runner)
+    calls = _install_call_recorder(monkeypatch, runner)
+    hook_input = _isolate_quality_cache(monkeypatch, runner, tmp_path,
+                                        "sess-harness-nocache-139", present=False)
+    monkeypatch.setattr(runner, "_read_hook_input", lambda: hook_input)
+    monkeypatch.setattr(runner, "_harness_only_context", lambda: True)
+
+    rc = runner.main()
+    assert rc == 0
+
+    assert len(calls["ensure_health"]) == 1
+    assert len(calls["quality_cache_force"]) == 1, "force must run once, not twice"
+    assert len(calls["compact_restore"]) == 1
 
 
 # --------------------------------------------------------------------------- #

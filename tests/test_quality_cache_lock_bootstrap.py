@@ -30,6 +30,9 @@ SCRIPTS = REPO / "skills" / "token-optimizer" / "scripts"
 @pytest.fixture()
 def measure(tmp_path, monkeypatch):
     monkeypatch.setenv("TOKEN_OPTIMIZER_SNAPSHOT_DIR", str(tmp_path / "snap"))
+    # claude_home() honors CLAUDE_CONFIG_DIR only when the directory exists;
+    # a missing dir is rejected and falls back to the host's real ~/.claude.
+    (tmp_path / "cfg").mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "cfg"))
     monkeypatch.syspath_prepend(str(SCRIPTS))
     sys.modules.pop("measure", None)

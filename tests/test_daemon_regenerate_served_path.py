@@ -19,7 +19,10 @@ from pathlib import Path
 def _replace_constant(source, name, value):
     pattern = rf"^{name} = .*$"
     literal = value if isinstance(value, (int, float)) else str(value)
-    updated, count = re.subn(pattern, f"{name} = {literal!r}", source, count=1, flags=re.MULTILINE)
+    # Lambda replacement: a string template would re-process backslash escapes
+    # in the repr'd path, collapsing C:\\Users to C:\Users and producing an
+    # invalid '\U...' unicode escape on Windows.
+    updated, count = re.subn(pattern, lambda m: f"{name} = {literal!r}", source, count=1, flags=re.MULTILINE)
     assert count == 1, f"missing generated daemon constant: {name}"
     return updated
 

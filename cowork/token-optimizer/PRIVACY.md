@@ -1,6 +1,6 @@
 # Privacy Policy
 
-**Token Optimizer** is a source-available developer tool that runs entirely on your local machine. It optimizes AI coding assistant context windows across Claude Code, Codex, OpenClaw, OpenCode, and Hermes.
+**Token Optimizer** is a source-available developer tool that runs entirely on your local machine. It optimizes AI coding assistant context windows across Claude Code, Codex, OpenClaw, OpenCode, Hermes, and Google Antigravity.
 
 ## No External Data Transmission
 
@@ -18,6 +18,12 @@ To perform its analysis, Token Optimizer reads files that already exist on your 
 - `~/.claude/CLAUDE.md`, project-level `CLAUDE.md`, and `~/.claude/MEMORY.md`
 - Skill and command directories under `~/.claude/`
 - MCP server configurations
+- Google Antigravity's `~/.gemini/{antigravity-cli,antigravity,antigravity-ide}/`
+  conversation stores: only `gen_metadata.data`, `steps.step_type` and step
+  timestamps, and a fixed set of summaries columns (`title`, `workspace_uris`,
+  `killed`, `not_fully_idle`, `last_modified_time`, `nesting_depth`). Prompt
+  text (`history.jsonl` `display`, summaries `preview`), tool arguments in step
+  metadata, and `trajectory_metadata_blob` are never read or stored.
 
 These files are read locally and never transmitted.
 
@@ -74,6 +80,21 @@ JSON files with per-session quality score snapshots (6-signal metric).
 - **Daemon token:** `<plugin-data>/data/daemon-token` (32-byte random secret, 0600 permissions)
 - **Daemon logs:** `<plugin-data>/data/logs/` (stdout/stderr from dashboard server)
 
+### Antigravity adapter data
+
+The Google Antigravity adapter keeps its own minimal state under
+`~/.gemini/token-optimizer/`:
+
+- **Consent record:** `config.json` with the `antigravity_consent` flag (R20)
+- **Continuity restore:** `restore-context.md`, a capped summary of the most
+  recent session (model, token totals, and — title/workspace permitting — a
+  200-character topic and workspace path). Titles and workspace paths originate
+  from Antigravity's own summaries and are filtered to printable characters
+  before this file is written.
+
+The installed plugin payload lives at `~/.gemini/config/plugins/token-optimizer/`
+and is removed by `antigravity-uninstall`.
+
 ## Credential Handling
 
 Token Optimizer scans for 23 credential patterns (AWS keys, API tokens, GitHub PATs, database URIs, JWTs, PEM keys, URL query/fragment auth params, and more) and replaces them with `[CREDENTIAL REDACTED: <type>]` before writing to the session store and tool archive. This redaction is one-way and permanent in stored content.
@@ -116,14 +137,15 @@ Manual deletion: remove the following directories:
 - For Codex: `~/.codex/token-optimizer/`
 - For OpenCode: `~/.local/share/opencode/token-optimizer/`
 - For Cursor: `~/.cursor/token-optimizer/`
+- For Antigravity: `~/.gemini/token-optimizer/` (and, to also remove the hook wiring, `~/.gemini/config/plugins/token-optimizer/`)
 
 ## Cross-Platform
 
 Locally installed extensions (see `docs/local-extensions.md`) may run inside the session-end flush worker; Token Optimizer ships none by default.
 
-The same privacy guarantees apply across all supported platforms (Claude Code, Codex, OpenCode, Hermes, Copilot, Cursor). Data paths vary by platform but the architecture is identical: local-only, zero network, credential-redacted storage.
+The same privacy guarantees apply across all supported platforms (Claude Code, Codex, OpenCode, Hermes, Copilot, Cursor, Google Antigravity). Data paths vary by platform but the architecture is identical: local-only, zero network, credential-redacted storage.
 
-Consent is tracked per-runtime. A user running both Claude Code and Codex must acknowledge consent separately in each runtime.
+Consent is tracked per-runtime. A user running both Claude Code and Codex must acknowledge consent separately in each runtime. Antigravity collection is additionally gated by the bridge itself (R20): the Antigravity hooks and rollup no-op until `~/.gemini/token-optimizer/config.json` records `antigravity_consent: true`.
 
 ## Source Available
 

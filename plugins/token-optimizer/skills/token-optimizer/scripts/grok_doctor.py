@@ -41,6 +41,7 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_SCRIPT_DIR))
 
 from runtime_env import grok_home  # noqa: E402
+from grok_install import _py_path_is_trusted  # noqa: E402
 
 DAEMON_PORT = 24847
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -229,12 +230,12 @@ def _persisted_python_check() -> list:
         return checks
     for _event, cmd in commands.items():
         argv = _parse_hook_command(cmd)
-        if argv and Path(argv[0]).is_file():
+        if argv and Path(argv[0]).is_file() and _py_path_is_trusted(argv[0]):
             checks.append(_check("ok", "persisted python", argv[0]))
             return checks
     checks.append(
         _check("fail", "persisted python",
-               "The wired hook command does not use an absolute python path.",
+               "The wired hook command does not use a trusted absolute python path.",
                "Run `python3 measure.py grok-install` to re-persist a trusted interpreter.")
     )
     return checks
@@ -438,6 +439,14 @@ def _run_probe_command(command: str, payload: dict, probe_home: Path) -> dict:
         return {"status": "fail",
                 "detail": "hook command is not the expected "
                           "TOKEN_OPTIMIZER_RUNTIME=grok <abs-python> <abs-bridge> <event> shape; refusing to run it"}
+    # Trust gate (mirrors cursor_doctor P0-2): a tampered hooks file that keeps
+    # a legitimate bridge path but points at an untrusted interpreter must NOT
+    # be executed by --probe. The installer persists a realpath-resolved,
+    # admin-owned interpreter; this check enforces that invariant at probe time.
+    if not _py_path_is_trusted(argv[0]):
+        return {"status": "fail",
+                "detail": f"persisted python {argv[0]} is not trusted "
+                          f"(ownership/writability); refusing to execute it"}
     env = dict(os.environ)
     env.update({
         "PYTHONUTF8": "1",

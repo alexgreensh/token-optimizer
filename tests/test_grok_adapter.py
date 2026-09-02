@@ -498,3 +498,38 @@ def test_parse_hook_command_accepts_expected_shape(gd):
 ])
 def test_parse_hook_command_rejects_malformed(gd, cmd):
     assert gd._parse_hook_command(cmd) is None
+
+
+# ---------------------------------------------------------------------------
+# grok_doctor: --probe trust gate (P0-2 — refuse untrusted interpreter)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(not hasattr(os, "geteuid"), reason="POSIX ownership test")
+def test_probe_refuses_untrusted_interpreter(gd, monkeypatch, tmp_path):
+    """A tampered hooks file pointing at a world-writable interpreter must NOT
+    be executed by --probe (mirrors cursor_doctor P0-2)."""
+    # Create a world-writable fake interpreter (fails the trust gate).
+    fake_py = tmp_path / "evil-python"
+    fake_py.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_py.chmod(0o777)
+    bridge = tmp_path / "bridge.py"
+    bridge.write_text("pass", encoding="utf-8")
+    cmd = f"TOKEN_OPTIMIZER_RUNTIME=grok {fake_py} {bridge} Stop"
+    result = gd._run_probe_command(cmd, {"hookEventName": "stop"}, tmp_path)
+    assert result["status"] == "fail"
+    assert "not trusted" in result["detail"]
+
+
+def test_resolver_persists_realpath_not_abspath(gi, monkeypatch, tmp_path):
+    """The installer must persist the resolved realpath, not abspath, so a
+    symlinked interpreter can't be swapped after install (P1-1/54a3456d)."""
+    # Create a symlink to the real python3 and set it as the override.
+    real = gi._resolve_safe_python()
+    link = tmp_path / "python-link"
+    link.symlink_to(real)
+    monkeypatch.setenv("TOKEN_OPTIMIZER_PYTHON", str(link))
+    resolved = gi._resolve_safe_python()
+    # Must be the realpath (target), not the symlink path itself.
+    assert resolved == os.path.realpath(str(link))
+    assert resolved != str(link)

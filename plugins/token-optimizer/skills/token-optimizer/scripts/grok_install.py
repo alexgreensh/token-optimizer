@@ -125,7 +125,10 @@ def _py_trust_reason(p: str) -> str | None:
                     f"the user does not control (uid {st_dir.st_uid}, "
                     f"gid {st_dir.st_gid})")
         return None
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
+        # ValueError: embedded null byte in path (realpath raises it, not
+        # OSError). Without catching it, one bad candidate aborts the entire
+        # resolver search instead of being rejected and skipped.
         return f"stat failed: {exc}"
 
 
@@ -155,7 +158,12 @@ def _resolve_safe_python() -> str:
             candidates.append((name, cand))
     for _label, cand in candidates:
         if _py_path_is_trusted(cand):
-            return os.path.abspath(cand)
+            # Persist the RESOLVED realpath, not abspath: the gate validated
+            # realpath(cand) (the symlink target + its parent dir), so persisting
+            # the original symlink path would leave a swap window between install
+            # and hook fire (an attacker with write access to the symlink's parent
+            # dir could redirect the symlink to a malicious interpreter).
+            return os.path.realpath(cand)
     reasons = [f"{label}={cand}: {_py_trust_reason(cand)}"
                for label, cand in candidates]
     raise RuntimeError(

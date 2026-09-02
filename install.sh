@@ -503,9 +503,23 @@ install_grok() {
     measure_py="${script_dir}/skills/token-optimizer/scripts/measure.py"
 
     if [ ! -f "$measure_py" ] && [ -d "${script_dir}/.git" ]; then
-        warn "skills/ not in this checkout. Adding it to sparse-checkout..."
+        warn "skills/ not in this checkout. Materializing it from the pinned commit..."
+        # Supply-chain pin (mirrors install_cursor P1-7): materialize skills/
+        # from the commit this checkout is AT, never from a moving branch. A
+        # `git pull` here would let a moved/compromised upstream deliver
+        # arbitrary code into the plugin dir, executed on every hook. Network
+        # is touched only if the local objects are missing (shallow clone),
+        # and then only to fetch that exact SHA.
+        local pin_sha
+        pin_sha="$(git -C "$script_dir" rev-parse HEAD 2>/dev/null || true)"
         git -C "$script_dir" sparse-checkout add skills/ grok/ 2>/dev/null || true
-        git -C "$script_dir" pull --ff-only 2>/dev/null || true
+        if [ -n "$pin_sha" ]; then
+            git -C "$script_dir" checkout "$pin_sha" -- skills/ grok/ 2>/dev/null || true
+            if [ ! -f "$measure_py" ]; then
+                git -C "$script_dir" fetch --depth 1 origin "$pin_sha" 2>/dev/null || true
+                git -C "$script_dir" checkout "$pin_sha" -- skills/ grok/ 2>/dev/null || true
+            fi
+        fi
     fi
     [ -f "$measure_py" ] || fail "$(printf 'Run install.sh from inside a token-optimizer checkout, not on its own. From any folder:\n    git clone --depth 1 %s\n    cd token-optimizer\n    bash install.sh --grok' "$REPO_HTTPS")"
 

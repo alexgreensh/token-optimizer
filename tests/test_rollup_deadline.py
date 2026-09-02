@@ -116,6 +116,7 @@ def _run_rollup_subprocess(subcommand, collect_name, tmp_path, *, block, budget)
     ("copilot-rollup", "_collect_copilot_sessions"),
     ("hermes-rollup", "_collect_hermes_sessions"),
     ("cursor-rollup", "_collect_cursor_sessions"),
+    ("grok-rollup", "_collect_grok_sessions"),
 ])
 @pytest.mark.skipif(
     sys.platform == "win32",
@@ -149,6 +150,7 @@ def test_rollup_bounded_on_blocking_collect(subcommand, collect_name, tmp_path):
     ("copilot-rollup", "_collect_copilot_sessions"),
     ("hermes-rollup", "_collect_hermes_sessions"),
     ("cursor-rollup", "_collect_cursor_sessions"),
+    ("grok-rollup", "_collect_grok_sessions"),
 ])
 def test_rollup_normal_completion_exits_zero_no_diagnostic(subcommand, collect_name, tmp_path):
     """A fast collect completes, exits 0, and clears the budget -- no spurious
@@ -171,7 +173,7 @@ def test_both_rollup_branches_install_and_clear_budget_source():
     _install_hook_budget( and _clear_hook_budget( (mirrors the
     test_all_three_user_prompt_handlers_install_and_clear_budgets pattern)."""
     source = MEASURE.read_text(encoding="utf-8")
-    names = ["copilot-rollup", "hermes-rollup", "cursor-rollup"]
+    names = ["copilot-rollup", "hermes-rollup", "cursor-rollup", "grok-rollup"]
     blocks = []
     for name in names:
         start = source.index(f'elif args[0] == "{name}":')

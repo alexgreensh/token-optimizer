@@ -215,7 +215,7 @@ _OPENCODE_CLAUDE_TARGET_CMDS = _CLAUDE_TARGET_CMDS
 # before this, trends/savings/quality/drift/coach fell through to the
 # CLAUDE_DIR scan path in measure_components()/_find_all_jsonl_files() and
 # produced empty output against the wrong tree (the #57 isolation leak).
-_FOREIGN_RUNTIMES = frozenset({"opencode", "copilot", "hermes", "cursor", "antigravity"})
+_FOREIGN_RUNTIMES = frozenset({"opencode", "copilot", "hermes", "cursor", "antigravity", "grok"})
 
 # Per-runtime exemptions: foreign-runtime subcommands that a NATIVE flow
 # invokes as a TOP-LEVEL subcommand AND that are runtime-aware (do not scan
@@ -257,6 +257,7 @@ _FOREIGN_RUNTIME_EXEMPTIONS: dict[str, frozenset[str]] = {
     "hermes": frozenset({"dashboard"}),
     "cursor": frozenset({"dashboard"}),
     "antigravity": frozenset({"dashboard"}),
+    "grok": frozenset({"dashboard"}),
 }
 
 
@@ -295,6 +296,21 @@ def _cursor_audit_notice() -> None:
     print("  measure.py cursor-doctor     — readiness + hook firing probe")
     print("  measure.py cursor-install    — wire Token Optimizer into ~/.cursor/hooks.json")
     print("  measure.py cursor-uninstall  — remove Token Optimizer's Cursor entries")
+
+
+def _grok_audit_notice() -> None:
+    """Explain why the Claude audit does not run under Grok Build, and where to go."""
+    print("Token Optimizer — Grok Build runtime detected.")
+    print()
+    print("This audit targets a Claude Code / Codex setup (it scans ~/.claude), so it")
+    print("will not run here and will not modify ~/.claude or your Grok config.")
+    print()
+    print("On Grok Build, use the Grok-native commands instead:")
+    print("  measure.py grok-summary   — session token/cost summary")
+    print("  measure.py grok-rollup    — collect sessions into trends")
+    print("  measure.py grok-doctor    — readiness + hook probe")
+    print("  measure.py grok-install   — wire Token Optimizer into $GROK_HOME/hooks/")
+    print("  measure.py grok-home      — print resolved Grok home (override via TOKEN_OPTIMIZER_GROK_HOME)")
     print()
     print("To force this skill onto a specific runtime, set TOKEN_OPTIMIZER_RUNTIME.")
 
@@ -311,6 +327,7 @@ def _foreign_audit_notice() -> None:
         "hermes": _hermes_audit_notice,
         "cursor": _cursor_audit_notice,
         "antigravity": _antigravity_audit_notice,
+        "grok": _grok_audit_notice,
     }
     handler = notices.get(detect_runtime())
     if handler is not None:
@@ -623,6 +640,11 @@ def _use_cursor_session_adapter():
 def _use_antigravity_session_adapter():
     """True when sessions should be loaded from the Antigravity store adapter."""
     return detect_runtime() == "antigravity"
+
+
+def _use_grok_session_adapter():
+    """True when sessions should be loaded from the Grok Build adapter."""
+    return detect_runtime() == "grok"
 
 # Tokens per skill frontmatter (loaded at startup)
 TOKENS_PER_SKILL_APPROX = 100
@@ -5438,6 +5460,8 @@ def _collect_hook_status_for_dashboard():
         return _collect_cursor_hook_status_for_dashboard()
     if detect_runtime() == "antigravity":
         return _collect_antigravity_hook_status_for_dashboard()
+    if detect_runtime() == "grok":
+        return _collect_grok_hook_status_for_dashboard()
 
     settings, _ = _read_settings_json()
 
@@ -5648,6 +5672,62 @@ def _collect_cursor_hook_status_for_dashboard():
             "description": "Best-effort token counts from state.vscdb (IDE) with a chars-over-four transcript estimate as fallback; the hook tally is always authoritative for calls/turns/compactions.",
             "install_cmd": doctor_cmd,
             "uninstall_cmd": doctor_cmd,
+        },
+    }
+
+
+def _collect_grok_hook_status_for_dashboard():
+    """Hook status for the dashboard toggle panel under the Grok Build runtime.
+
+    Mirrors the Codex/Hermes collectors. grok_doctor uses uppercase statuses
+    ("OK"/"WARN"/"FAIL") and check names from grok_doctor.py.
+    """
+    import grok_doctor  # noqa: PLC0415
+
+    mp_cmd = shlex.quote(str(Path(__file__).resolve()))
+    checks = grok_doctor.run_checks()
+    by_name = {check["name"]: check for check in checks}
+
+    def _ok(name):
+        return by_name.get(name, {}).get("status") == "OK"
+
+    install_cmd = f"TOKEN_OPTIMIZER_RUNTIME=grok python3 {mp_cmd} grok-install"
+    doctor_cmd = f"TOKEN_OPTIMIZER_RUNTIME=grok python3 {mp_cmd} grok-doctor"
+
+    return {
+        "grok_hooks": {
+            "installed": _ok("Hook config"),
+            "partial": by_name.get("Hook config", {}).get("status") == "WARN",
+            "label": "Grok Build Hooks",
+            "description": "Wires Token Optimizer into $GROK_HOME/hooks/token-optimizer.json: sessionStart continuity restore, userPromptSubmit quality tracking, preToolUse bash compression (capability-gated), postToolUse crash-recovery tally + nudges, stop-time rollup.",
+            "install_cmd": install_cmd,
+            "uninstall_cmd": f"TOKEN_OPTIMIZER_RUNTIME=grok python3 {mp_cmd} grok-uninstall",
+        },
+        "grok_capabilities": {
+            "installed": _ok("Capability matrix"),
+            "partial": any(
+                by_name.get(n, {}).get("status") == "WARN"
+                for n in ("Capability matrix", "Capability matrix freshness", "Capability matrix age")
+            ),
+            "label": "Hook Capability Matrix",
+            "description": "Documented-capability gate for Grok hooks (upstream fields shift release to release). Engine features auto-gate on it; reseeds when the docs/source contract changes.",
+            "install_cmd": install_cmd,
+            "uninstall_cmd": doctor_cmd,
+        },
+        "grok_session_store": {
+            "installed": _ok("Session store"),
+            "partial": by_name.get("Session store", {}).get("status") == "WARN",
+            "label": "Grok Build Sessions",
+            "description": "Reads $GROK_HOME/sessions/ for per-session token totals (updates.jsonl), signals, compactions, and cost (costUsdTicks). Crash-killed sessions recovered from partial data.",
+            "install_cmd": doctor_cmd,
+            "uninstall_cmd": doctor_cmd,
+        },
+        "grok_dashboard_port": {
+            "installed": _ok("Dashboard port 24847"),
+            "label": "Dashboard Port 24847",
+            "description": "Confirms that port 24847 is available or already serving the Grok Build Token Optimizer dashboard.",
+            "install_cmd": f"TOKEN_OPTIMIZER_RUNTIME=grok python3 {mp_cmd} open-dashboard",
+            "uninstall_cmd": "",
         },
     }
 
@@ -17728,6 +17808,12 @@ _CACHE_COVERAGE_GAP_REASONS = {
         "but no per-turn cache+timestamp series, so cache-TTL collapse waste "
         "cannot be measured."
     ),
+    "grok": (
+        "Grok Build's updates.jsonl turn_completed records expose per-turn "
+        "cachedRead/cacheCreation tokens, but the Python cache-report engine "
+        "has no per-turn cache+timestamp read path into $GROK_HOME/sessions/ "
+        "— only aggregate token/cost reaches trends.db."
+    ),
 }
 
 
@@ -19129,6 +19215,221 @@ def _write_copilot_restore_context(sessions, quiet=False):
             print(f"[Token Optimizer] restore-context update skipped: {exc}")
 
 
+def _grok_summary():
+    """Token/cost-led session summary for Grok Build.
+
+    Grok Build ships authoritative per-turn usage (updates.jsonl) with a USD
+    cost in 1e10 ticks, so both tokens and cost lead here — unlike Copilot's
+    credits-only summary.
+    """
+    import grok_state as _gs  # noqa: PLC0415
+    import grok_session  # noqa: PLC0415
+    from runtime_env import grok_home as _gh  # noqa: PLC0415
+
+    raw_sessions = list(_gs.read_all_sessions())
+    normalized = [s for s in (grok_session.normalize_session(r) for r in raw_sessions) if s]
+
+    print("Token Optimizer — Grok Build summary")
+    if not normalized:
+        print()
+        print("  No Grok Build sessions found yet.")
+        print(f"  Sessions live under {_gh()}/sessions/.")
+        print()
+        print("  Full trends: measure.py grok-rollup (sessions land in trends.db).")
+        return
+
+    total_cost = sum(s.get("cost_usd") or 0.0 for s in normalized)
+    cost_known = sum(1 for s in normalized if s.get("cost_source") == "grok_cost_usd_ticks")
+    total_in = sum(s.get("total_input_tokens", 0) for s in normalized)
+    total_out = sum(s.get("total_output_tokens", 0) for s in normalized)
+    incomplete = sum(1 for s in normalized if s.get("incomplete"))
+    estimated = sum(1 for s in normalized if s.get("estimated"))
+    models = {}
+    for s in normalized:
+        for m, v in (s.get("model_usage") or {}).items():
+            models[m] = models.get(m, 0) + v
+    top_models = sorted(models.items(), key=lambda kv: -kv[1])[:3]
+
+    print()
+    print(f"  {len(normalized)} session(s)")
+    if cost_known:
+        print(f"    Cost: ~${total_cost:,.2f} ({cost_known} session(s) with authoritative cost)")
+    else:
+        print("    Cost: no authoritative billing data recorded (costUsdTicks scrubbed)")
+    print(f"    Tokens: {total_in:,} in / {total_out:,} out")
+    if top_models:
+        print("    Models: " + ", ".join(f"{m} ({v:,})" for m, v in top_models))
+    if incomplete:
+        print(f"    {incomplete} session(s) ended without clean shutdown (usageIsIncomplete)")
+    if estimated:
+        print(f"    {estimated} session(s) use estimated token counts (~est.)")
+    print()
+    print("  Full trends: measure.py grok-rollup (sessions land in trends.db).")
+
+
+def _collect_grok_sessions(days=90, quiet=False, rebuild=False):
+    """Collect Grok Build sessions from $GROK_HOME/sessions into the trends DB.
+
+    Mirrors _collect_copilot_sessions: dedup via the jsonl_path column
+    (``grok:<session-uuid>``), platform ``grok``, idempotent. Cost is
+    token-derived from the authoritative costUsdTicks field (not credits).
+    """
+    import grok_state as _gs  # noqa: PLC0415
+    import grok_session  # noqa: PLC0415
+
+    try:
+        conn = _init_trends_db()
+    except sqlite3.DatabaseError:
+        if TRENDS_DB.exists():
+            try:
+                stamp = int(datetime.now().timestamp())
+                TRENDS_DB.rename(TRENDS_DB.with_suffix(f".db.corrupt.{stamp}"))
+            except OSError:
+                pass
+        conn = _init_trends_db()
+    try:
+        if rebuild:
+            if not quiet:
+                print("[Token Optimizer] Rebuilding Grok trends DB...")
+            conn.execute("PRAGMA user_version = 3")
+            conn.execute("DELETE FROM session_log WHERE jsonl_path LIKE 'grok:%'")
+            conn.commit()
+
+        try:
+            raw_sessions = list(_gs.read_all_sessions())
+        except Exception as exc:
+            if not quiet:
+                print(f"[Token Optimizer] Grok Build scan failed: {exc}")
+            raw_sessions = []
+
+        cutoff = datetime.now().timestamp() - days * 86400
+        new_count = 0
+        normalized = []
+        for raw in raw_sessions:
+            parsed = grok_session.normalize_session(raw)
+            if not parsed:
+                continue
+            normalized.append(parsed)
+
+            slug = parsed.get("slug") or ""
+            if not slug:
+                continue
+            dedup_key = f"grok:{slug}"
+            is_incomplete = 1 if parsed.get("incomplete") else 0
+            if _is_file_collected(conn, dedup_key):
+                if not is_incomplete:
+                    try:
+                        existing = conn.execute(
+                            "SELECT incomplete FROM session_log WHERE jsonl_path = ?",
+                            (dedup_key,),
+                        ).fetchone()
+                    except sqlite3.Error:
+                        existing = None
+                    if existing is not None and existing[0]:
+                        try:
+                            conn.execute(
+                                """UPDATE session_log SET
+                                     input_tokens=?, output_tokens=?, message_count=?,
+                                     api_calls=?, cache_hit_rate=?, cache_create_1h_tokens=?,
+                                     duration_minutes=?, quality_score=?, quality_grade=?,
+                                     cost_usd=?, cost_source=?, credits=?, incomplete=0
+                                   WHERE jsonl_path=? AND incomplete=1""",
+                                (
+                                    parsed["total_input_tokens"], parsed["total_output_tokens"],
+                                    parsed["message_count"], parsed.get("api_calls", 0),
+                                    parsed["cache_hit_rate"], parsed.get("total_cache_create_1h", 0),
+                                    parsed["duration_minutes"], parsed.get("quality_score", 0),
+                                    parsed.get("quality_grade", "F"), parsed.get("cost_usd", 0.0),
+                                    parsed.get("cost_source"), parsed.get("credits"), dedup_key,
+                                ),
+                            )
+                            new_count += 1
+                        except sqlite3.Error as exc:
+                            if not quiet:
+                                print(f"[Token Optimizer] could not upgrade a Grok session: {exc}")
+                continue
+
+            first_ts = parsed.get("first_ts")
+            date = None
+            if first_ts:
+                try:
+                    dt = datetime.fromisoformat(first_ts)
+                    if dt.timestamp() < cutoff:
+                        continue
+                    date = dt.astimezone().strftime("%Y-%m-%d")
+                except (TypeError, ValueError):
+                    date = None
+            if date is None:
+                date = datetime.now().strftime("%Y-%m-%d")
+            project_name = str(parsed.get("cwd") or "grok")
+
+            try:
+                cur = conn.execute(
+                    """INSERT OR IGNORE INTO session_log
+                       (jsonl_path, date, project, duration_minutes, input_tokens,
+                        output_tokens, message_count, api_calls, cache_hit_rate,
+                        cache_create_1h_tokens, cache_create_5m_tokens, cache_ttl_scanned,
+                        avg_call_gap_seconds, max_call_gap_seconds, p95_call_gap_seconds,
+                        skills_json, subagents_json, tool_calls_json, model_usage_json,
+                        all_model_usage_json, model_usage_breakdown_json, version, slug, topic, collected_at,
+                        quality_score, quality_grade, stale_waste_tokens,
+                        cost_usd, cost_source, credits, platform, incomplete)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        dedup_key, date, project_name,
+                        parsed["duration_minutes"],
+                        parsed["total_input_tokens"],
+                        parsed["total_output_tokens"],
+                        parsed["message_count"],
+                        parsed.get("api_calls", 0),
+                        parsed["cache_hit_rate"],
+                        parsed.get("total_cache_create_1h", 0),
+                        parsed.get("total_cache_create_5m", 0),
+                        1,
+                        parsed.get("avg_call_gap_seconds"),
+                        parsed.get("max_call_gap_seconds"),
+                        parsed.get("p95_call_gap_seconds"),
+                        json.dumps(parsed.get("skills_used", {})),
+                        json.dumps(parsed.get("subagents_used", {})),
+                        json.dumps(parsed.get("tool_calls", {})),
+                        json.dumps(parsed.get("model_usage", {})),
+                        json.dumps(parsed.get("model_usage", {})),
+                        json.dumps(parsed.get("model_usage_breakdown", {})),
+                        parsed.get("version"),
+                        parsed.get("slug"),
+                        parsed.get("topic"),
+                        datetime.now().isoformat(),
+                        parsed.get("quality_score", 0),
+                        parsed.get("quality_grade", "F"),
+                        0,
+                        parsed.get("cost_usd", 0.0),
+                        parsed.get("cost_source"),
+                        parsed.get("credits"),
+                        "grok",
+                        is_incomplete,
+                    ),
+                )
+            except sqlite3.Error as exc:
+                if not quiet:
+                    print(f"[Token Optimizer] skipped a Grok session: {exc}")
+                continue
+            if cur.rowcount != 1:
+                continue
+            new_count += 1
+
+        if new_count > 0:
+            _rebuild_aggregate_tables(conn)
+        conn.commit()
+        conn.execute("PRAGMA user_version = 3")
+        conn.commit()
+    finally:
+        conn.close()
+
+    if not quiet:
+        print(f"[Token Optimizer] Collected {new_count} new Grok Build sessions.")
+    return new_count
+
+
 def _copilot_summary():
     """Credits-led session summary for GitHub Copilot (CLI + VS Code planes).
 
@@ -19947,6 +20248,9 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
 
     if _use_antigravity_session_adapter():
         return _collect_antigravity_sessions(days=days, quiet=quiet, rebuild=rebuild)
+
+    if _use_grok_session_adapter():
+        return _collect_grok_sessions(days=days, quiet=quiet, rebuild=rebuild)
 
     conn = _init_trends_db()
 
@@ -23089,8 +23393,8 @@ _DASHBOARD_CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'uns
 # (matching copilot_doctor.DAEMON_PORT); the `dashboard` command is also blocked
 # for foreign runtimes in _CLAUDE_TARGET_CMDS, so this is defense-in-depth.
 _DAEMON_RUNTIME = detect_runtime()
-_DAEMON_SUFFIX_BY_RUNTIME = {"codex": "codex", "hermes": "hermes", "copilot": "copilot", "cursor": "cursor", "antigravity": "antigravity"}
-_DAEMON_PORT_BY_RUNTIME = {"codex": 24843, "hermes": 24844, "copilot": 24845, "cursor": 24846, "antigravity": 24847}
+_DAEMON_SUFFIX_BY_RUNTIME = {"codex": "codex", "hermes": "hermes", "copilot": "copilot", "cursor": "cursor", "antigravity": "antigravity", "grok": "grok"}
+_DAEMON_PORT_BY_RUNTIME = {"codex": 24843, "hermes": 24844, "copilot": 24845, "cursor": 24846, "antigravity": 24847, "grok": 24848}
 _DAEMON_RUNTIME_SUFFIX = _DAEMON_SUFFIX_BY_RUNTIME.get(_DAEMON_RUNTIME, "claude")
 DAEMON_LABEL = (
     f"com.token-optimizer.{_DAEMON_RUNTIME_SUFFIX}-dashboard"
@@ -23170,7 +23474,7 @@ DAEMON_IDENTITY_MAGIC = (
 # not just the currently-resolved runtime's. The per-runtime label/unit/task
 # names are derived from the suffix the same way DAEMON_LABEL /
 # SYSTEMD_UNIT_NAME / WINDOWS_TASK_NAME are above.
-_DAEMON_ALL_SUFFIXES = ("claude", "codex", "hermes", "copilot", "cursor", "antigravity")
+_DAEMON_ALL_SUFFIXES = ("claude", "codex", "hermes", "copilot", "cursor", "antigravity", "grok")
 _ALL_LAUNCH_AGENT_LABELS = tuple(
     "com.token-optimizer.dashboard" if s == "claude"
     else f"com.token-optimizer.{s}-dashboard"
@@ -42449,7 +42753,7 @@ def _estimate_before_after_savings(days=30, estimated_pools=None):
         # Baseline (pre-TO) model mix: floor to ~95% Opus ONLY for an Anthropic runtime
         # with no usable measured baseline. A real frozen baseline share is trusted as-is;
         # a non-Anthropic user is priced at their own measured mix, never fabricated Opus.
-        anthropic = detect_runtime() not in {"codex", "hermes", "copilot", "opencode", "cursor", "antigravity"}
+        anthropic = detect_runtime() not in {"codex", "hermes", "copilot", "opencode", "cursor", "antigravity", "grok"}
         if anthropic and frozen_opus and frozen_opus > 0:
             # A real measured baseline share exists -> trust it (e.g. an Anthropic
             # user with a frozen ~0.95 Opus share resolves to ~0.95). Gated on
@@ -46162,6 +46466,38 @@ if __name__ == "__main__":
         finally:
             _clear_hook_budget(_tok_hook_deadline)
         sys.exit(0)
+    elif args[0] == "grok-doctor":
+        import grok_doctor
+        sys.exit(grok_doctor.main(args[1:]))
+    elif args[0] == "grok-install":
+        import grok_install
+        sys.exit(grok_install.main(["install"] + args[1:]))
+    elif args[0] == "grok-uninstall":
+        import grok_install
+        sys.exit(grok_install.main(["uninstall"] + args[1:]))
+    elif args[0] == "grok-home":
+        # Print the resolved Grok home directory (honors GROK_HOME via
+        # runtime_env.grok_home() → TOKEN_OPTIMIZER_GROK_HOME → GROK_HOME →
+        # ~/.grok). Used by install.sh to show the TRUE hook destination.
+        from runtime_env import grok_home as _gh  # noqa: PLC0415
+
+        print(str(_gh()))
+        sys.exit(0)
+    elif args[0] == "grok-rollup":
+        # Ingest recent Grok Build sessions into trends.db. Fired by the stop
+        # hook via grok_hook_bridge.handle_stop(). Mirrors copilot-rollup:
+        # idempotent (INSERT OR IGNORE), 60s wall-clock cap, fail open.
+        quiet = "--quiet" in args or "-q" in args
+        _tok_hook_deadline = _install_hook_budget(60)
+        try:
+            _collect_grok_sessions(days=90, quiet=quiet)
+        except _HookTimeout:
+            pass
+        except Exception:
+            pass
+        finally:
+            _clear_hook_budget(_tok_hook_deadline)
+        sys.exit(0)
     elif args[0] == "cursor-summary":
         if detect_runtime() != "cursor":
             print(
@@ -46171,6 +46507,9 @@ if __name__ == "__main__":
             )
             sys.exit(0)
         _cursor_summary()
+        sys.exit(0)
+    elif args[0] == "grok-summary":
+        _grok_summary()
         sys.exit(0)
     elif args[0] == "hermes-doctor":
         import hermes_doctor
@@ -48363,6 +48702,11 @@ if __name__ == "__main__":
         print("  python3 measure.py antigravity-home      # Print resolved Antigravity home")
         print("  python3 measure.py antigravity-rollup    # Ingest Antigravity sessions into trends DB")
         print("  python3 measure.py antigravity-summary   # Antigravity session cost/quality summary")
+        print("  python3 measure.py grok-doctor           # Grok Build readiness + hook probe")
+        print("  python3 measure.py grok-install         # Install Grok hooks into $GROK_HOME/hooks/")
+        print("  python3 measure.py grok-home            # Print resolved Grok home (honors GROK_HOME)")
+        print("  python3 measure.py grok-summary         # Grok Build session token/cost summary")
+        print("  python3 measure.py grok-rollup           # Ingest Grok sessions into trends DB")
         print("  python3 measure.py codex-compact-prompt # Render/install Codex compact prompt")
         print("  python3 measure.py drift                # Drift report: compare against last snapshot")
         print("  python3 measure.py drift --json          # Machine-readable drift output")

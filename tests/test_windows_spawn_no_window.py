@@ -660,6 +660,21 @@ def cursor(monkeypatch):
             del sys.modules[_mod]
 
 
+# ---------------------------------------------------------------------------
+# grok_hook_bridge.py: _spawn_rollup / _spawn_dashboard -- spawn_detached
+# ---------------------------------------------------------------------------
+@pytest.fixture()
+def grok(monkeypatch):
+    for _mod in ("grok_hook_bridge", "spawn_utils", "runtime_env"):
+        if _mod in sys.modules:
+            del sys.modules[_mod]
+    mod = importlib.import_module("grok_hook_bridge")
+    yield mod
+    for _mod in ("grok_hook_bridge", "spawn_utils", "runtime_env"):
+        if _mod in sys.modules:
+            del sys.modules[_mod]
+
+
 def _cursor_stop_payload():
     return {"hook_event_name": "stop", "conversation_id": "sid"}
 
@@ -683,11 +698,44 @@ def test_cursor_stop_nt_uses_creationflags(cursor, monkeypatch):
     assert "start_new_session" not in cap
 
 
+def test_grok_rollup_nt_uses_creationflags(grok, monkeypatch):
+    _set_nt_spawn_utils(monkeypatch)
+    cap = _capture_spawn_detached_popen(monkeypatch)
+    grok._spawn_rollup()
+    assert "creationflags" in cap
+    assert cap["creationflags"] == _DETACH_FLAGS
+    assert "start_new_session" not in cap
+
+
 def test_cursor_stop_posix_uses_start_new_session(cursor, monkeypatch):
     _set_posix_spawn_utils(monkeypatch)
     cap = _capture_spawn_detached_popen(monkeypatch)
     _silence_cursor_stop_side_effects(cursor, monkeypatch)
     cursor.handle_stop(_cursor_stop_payload())
+    assert cap.get("start_new_session") is True
+    assert "creationflags" not in cap
+
+
+def test_grok_rollup_posix_uses_start_new_session(grok, monkeypatch):
+    _set_posix_spawn_utils(monkeypatch)
+    cap = _capture_spawn_detached_popen(monkeypatch)
+    grok._spawn_rollup()
+    assert cap.get("start_new_session") is True
+    assert "creationflags" not in cap
+
+
+def test_grok_dashboard_nt_uses_creationflags(grok, monkeypatch):
+    _set_nt_spawn_utils(monkeypatch)
+    cap = _capture_spawn_detached_popen(monkeypatch)
+    grok._spawn_dashboard()
+    assert "creationflags" in cap
+    assert "start_new_session" not in cap
+
+
+def test_grok_dashboard_posix_uses_start_new_session(grok, monkeypatch):
+    _set_posix_spawn_utils(monkeypatch)
+    cap = _capture_spawn_detached_popen(monkeypatch)
+    grok._spawn_dashboard()
     assert cap.get("start_new_session") is True
     assert "creationflags" not in cap
 

@@ -58,7 +58,7 @@ Token Optimizer cuts the tokens your AI coding assistant wastes, keeps your work
 
 **Why not just use Headroom or RTK?** They compress command output, which covers 15-25% of your context. Token Optimizer covers that plus the other 75%: bloated configs, unused skills, stale memory, compaction loss, model misrouting, behavioral waste. Every saving is cache-safe and measured. The dashboard updates after every session, automatically.
 
-Works on **Claude Code** (CLI and VS Code), **OpenCode**, **OpenClaw**, **Codex**, **Hermes**, **GitHub Copilot**, **Cursor**, and **Google Antigravity** (beta). Windsurf is next on the roadmap.
+Works on **Claude Code** (CLI and VS Code), **OpenCode**, **OpenClaw**, **Codex**, **Hermes**, **GitHub Copilot**, **Cursor**, **Google Antigravity** (beta), and **Grok Build** (beta). Windsurf is next on the roadmap.
 
 <p align="center">
   <img src="skills/token-optimizer/assets/hero-terminal.svg" alt="Token Optimizer Quick Scan" width="800">
@@ -143,6 +143,14 @@ cd token-optimizer
 bash install.sh --antigravity
 ```
 See [`docs/antigravity.md`](docs/antigravity.md).
+
+**Grok Build (beta, contract-only):**
+```bash
+git clone --depth 1 https://github.com/alexgreensh/token-optimizer.git
+cd token-optimizer
+bash install.sh --grok
+```
+See [`docs/grok.md`](docs/grok.md).
 
 **macOS/Linux script install (alternative to plugin):**
 ```bash

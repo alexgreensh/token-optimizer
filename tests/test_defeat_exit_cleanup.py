@@ -206,6 +206,7 @@ def _run_rollup_subprocess(subcommand, collect_name, tmp_path, *, block, budget)
     ("copilot-rollup", "_collect_copilot_sessions"),
     ("hermes-rollup", "_collect_hermes_sessions"),
     ("cursor-rollup", "_collect_cursor_sessions"),
+    ("grok-rollup", "_collect_grok_sessions"),
 ])
 @pytest.mark.skipif(
     sys.platform == "win32",
@@ -247,6 +248,7 @@ def test_defeat_bug_a_deadline_fires_emits_diagnostic(subcommand, collect_name, 
     ("copilot-rollup", "_collect_copilot_sessions"),
     ("hermes-rollup", "_collect_hermes_sessions"),
     ("cursor-rollup", "_collect_cursor_sessions"),
+    ("grok-rollup", "_collect_grok_sessions"),
 ])
 def test_defeat_bug_a_normal_completion_spared(subcommand, collect_name, tmp_path):
     """ADVERSARIAL: a fast collect must NOT be spuriously killed.  A 5s budget
@@ -271,7 +273,7 @@ def test_defeat_bug_a_budget_value_is_60_source():
     of 0 would fire instantly (kill normal completion); a missing/negative
     budget would be a regression.  The literal 60 is the contract."""
     source = MEASURE.read_text(encoding="utf-8")
-    for name in ("copilot-rollup", "hermes-rollup", "cursor-rollup"):
+    for name in ("copilot-rollup", "hermes-rollup", "cursor-rollup", "grok-rollup"):
         start = source.index(f'elif args[0] == "{name}":')
         nxt = source.find('elif args[0] ==', start + 1)
         end = nxt if nxt != -1 else len(source)

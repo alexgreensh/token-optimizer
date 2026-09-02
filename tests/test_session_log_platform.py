@@ -155,6 +155,21 @@ def test_cursor_collector_writes_platform_and_cursor_dedup_key():
     )
 
 
+def test_grok_insert_writes_platform_not_token_source():
+    """Source inspection: the Grok INSERT must write the platform name, not token_source."""
+    src = Path(SCRIPTS, "measure.py").read_text(encoding="utf-8")
+    insert_start = src.index("def _collect_grok_sessions")
+    insert_end = src.index("\ndef ", insert_start + 1)
+    grok_section = src[insert_start:insert_end]
+
+    assert "token_source" not in grok_section, (
+        "Grok collector must not write token_source into the platform column"
+    )
+    assert '"grok"' in grok_section or "'grok'" in grok_section, (
+        "Grok collector must write platform='grok'"
+    )
+
+
 def test_main_claude_insert_includes_platform():
     """Source inspection: the main Claude/Codex INSERT must include the platform column."""
     src = Path(SCRIPTS, "measure.py").read_text(encoding="utf-8")

@@ -1,5 +1,5 @@
 """Runtime home detection shared by Claude Code, Codex, Hermes, OpenCode, Copilot,
-and Google Antigravity adapters.
+Google Antigravity, and Grok Build adapters.
 
 This module keeps runtime integration deliberately simple:
 
@@ -40,6 +40,10 @@ This module keeps runtime integration deliberately simple:
   signal stays at the weak tier so it never shadows a coexisting Claude install.
   Antigravity IS distinct from Gemini CLI (different binary, different hooks
   format), so one home resolver covers only Antigravity, never Gemini CLI.
+- Grok Build activates when GROK_HOME or TOKEN_OPTIMIZER_GROK_HOME is set, or
+  TOKEN_OPTIMIZER_RUNTIME=grok. GROK_HOME is Grok Build's OWN variable — TO reads
+  it but never asks users to set it; TOKEN_OPTIMIZER_GROK_HOME is TO's own
+  collision-free override.
 - Cowork is NOT a separate runtime: Claude Cowork runs the same Claude Code
   engine inside a cloud/local VM, reads ~/.claude, and uses the Claude model
   ladder. So ``detect_runtime()`` still returns ``"claude"`` inside Cowork.
@@ -74,6 +78,7 @@ _RUNTIME_OPENCODE = "opencode"
 _RUNTIME_COPILOT = "copilot"
 _RUNTIME_CURSOR = "cursor"
 _RUNTIME_ANTIGRAVITY = "antigravity"
+_RUNTIME_GROK = "grok"
 _VALID_RUNTIMES = frozenset(
     {
         _RUNTIME_CLAUDE,
@@ -83,6 +88,7 @@ _VALID_RUNTIMES = frozenset(
         _RUNTIME_COPILOT,
         _RUNTIME_CURSOR,
         _RUNTIME_ANTIGRAVITY,
+        _RUNTIME_GROK,
     }
 )
 _CLAUDE_PLUGIN_ENVS = ("CLAUDE_PLUGIN_ROOT", "CLAUDE_PLUGIN_DATA")
@@ -150,6 +156,14 @@ _COPILOT_HOME_ENVS = (_COPILOT_HOME_ENV, _TO_COPILOT_HOME_ENV)
 # namespaced override so the adapter never depends on a host-owned variable.
 _TO_ANTIGRAVITY_HOME_ENV = "TOKEN_OPTIMIZER_ANTIGRAVITY_HOME"
 _AGY_BASENAMES = frozenset({"agy", "agy.exe"})
+# GROK_HOME is Grok Build's OWN config variable (docs.x.ai/build/settings/reference:
+# it relocates the whole ~/.grok tree). Token Optimizer reads it but never asks
+# users to set it; TO exposes its own namespaced override for the same reason as
+# Copilot (a WSL /mnt value set for TO's benefit would also break Grok's own
+# session logging on native Windows).
+_GROK_HOME_ENV = "GROK_HOME"
+_TO_GROK_HOME_ENV = "TOKEN_OPTIMIZER_GROK_HOME"
+_GROK_HOME_ENVS = (_GROK_HOME_ENV, _TO_GROK_HOME_ENV)
 # Windows profile names under /mnt/c/Users that are never a real user home.
 _WINDOWS_NONUSER_PROFILES = frozenset(
     {"public", "all users", "default", "default user", "windows", "wpsystem"}
@@ -1114,6 +1128,11 @@ def detect_runtime() -> str:
     if os.environ.get(_TO_ANTIGRAVITY_HOME_ENV):
         return _RUNTIME_ANTIGRAVITY
 
+    # Grok Build explicit config-dir env: same guard as Copilot — a Grok session
+    # launched from a CC Bash tool (inherits CLAUDECODE=1) still resolves to grok.
+    if any(os.environ.get(v) for v in _GROK_HOME_ENVS):
+        return _RUNTIME_GROK
+
     if any(os.environ.get(v) for v in _CLAUDE_CODE_ENVS):
         return _RUNTIME_CLAUDE
 
@@ -1269,6 +1288,57 @@ def antigravity_home() -> Path:
     return _safe_home_from_env(_TO_ANTIGRAVITY_HOME_ENV, _safe_home() / ".gemini")
 
 
+def _warn_mnt_grok_home(raw: str) -> None:
+    """Warn that a /mnt GROK_HOME breaks native-Windows Grok Build.
+
+    Grok Build reads GROK_HOME itself; a WSL ``/mnt/...`` value — meaningless on
+    native Windows — relocates Grok's own sessions/hooks/config into a path that
+    doesn't exist, so it silently stops persisting. Steer the user to unset it
+    or to use Token Optimizer's own TOKEN_OPTIMIZER_GROK_HOME.
+    """
+    if not _looks_like_mnt_path(raw):
+        return
+    _warn_once(
+        f"[Token Optimizer] Warning: GROK_HOME={raw!r} is a WSL /mnt path. "
+        "Grok Build reads GROK_HOME too, and a /mnt value breaks its own "
+        "session persistence on native Windows. Unset GROK_HOME, or use "
+        "TOKEN_OPTIMIZER_GROK_HOME for Token Optimizer only."
+    )
+
+
+def grok_home(*, mnt_root: Path | None = None) -> Path:
+    """Return Grok Build's home directory (~/.grok by default).
+
+    Resolution precedence:
+      1. TOKEN_OPTIMIZER_GROK_HOME — Token Optimizer's own override (strict
+         under-``$HOME`` guard, or the WSL-root ``/mnt/`` opt-in). The only var
+         users should set for Token Optimizer's benefit.
+      2. GROK_HOME — Grok Build's OWN config variable (back-compat location
+         hint); a WSL ``/mnt/`` value earns a guardrail warning because the
+         native Grok CLI reads the same var and a /mnt value breaks its own
+         session persistence.
+      3. ``$HOME/.grok`` — the default.
+
+    This is where Token Optimizer's own Grok data lives
+    (``<home>/token-optimizer/``) — never ~/.claude. ``mnt_root`` is a
+    test-injection parameter (never set in production).
+    """
+    fallback = _safe_home() / ".grok"
+
+    # 1. TO's own namespaced override wins (no collision with Grok's config).
+    if os.environ.get(_TO_GROK_HOME_ENV, "").strip():
+        return _safe_home_from_env(_TO_GROK_HOME_ENV, fallback, mnt_root=mnt_root)
+
+    # 2. Grok's own GROK_HOME — back-compat location hint, guarded.
+    grok_raw = os.environ.get(_GROK_HOME_ENV, "").strip()
+    if grok_raw:
+        _warn_mnt_grok_home(grok_raw)
+        return _safe_home_from_env(_GROK_HOME_ENV, fallback, mnt_root=mnt_root)
+
+    # 3. Default.
+    return fallback
+
+
 def _xdg_base(env_var: str, default_rel: str) -> Path:
     """Resolve an XDG base dir, falling back to ~/<default_rel>.
 
@@ -1338,6 +1408,9 @@ def runtime_home() -> Path:
     if runtime == _RUNTIME_ANTIGRAVITY:
         return antigravity_home()
 
+    if runtime == _RUNTIME_GROK:
+        return grok_home()
+
     return claude_home()
 
 
@@ -1350,6 +1423,7 @@ def plugin_data_env_vars() -> tuple[str, ...]:
         _RUNTIME_COPILOT,
         _RUNTIME_CURSOR,
         _RUNTIME_ANTIGRAVITY,
+        _RUNTIME_GROK,
     ):
         return ("TOKEN_OPTIMIZER_PLUGIN_DATA",)
     return ("CLAUDE_PLUGIN_DATA", "TOKEN_OPTIMIZER_PLUGIN_DATA")
@@ -1370,6 +1444,8 @@ def runtime_name_for_humans() -> str:
         return "Cursor"
     if runtime == _RUNTIME_ANTIGRAVITY:
         return "Google Antigravity"
+    if runtime == _RUNTIME_GROK:
+        return "Grok Build"
     # Cowork is the claude runtime in a VM; label the refinement without changing
     # the runtime it resolves to.
     if runtime == _RUNTIME_CLAUDE and is_cowork():

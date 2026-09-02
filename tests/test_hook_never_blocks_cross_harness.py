@@ -13,9 +13,9 @@ OpenClaw, OpenCode). They fall into two hook-contract classes:
     `python-launcher.sh run.py <script>`. The COMMAND'S EXIT CODE is the contract.
     It must be 0 no matter what (missing Python, broken override, script crash).
 
-  * BRIDGE harnesses (Hermes, Copilot): a Python bridge shells to our scripts and
-    decides its own exit / permission decision. On any internal failure it must
-    swallow the error, never propagate a non-zero exit or a deny.
+  * BRIDGE harnesses (Hermes, Copilot, Grok Build): a Python bridge shells to
+    our scripts and decides its own exit / permission decision. On any internal
+    failure it must swallow the error, never propagate a non-zero exit or a deny.
 
 These tests assert both invariants at the source and behavioral level so the bug
 cannot regress into ANY supported harness.
@@ -221,7 +221,7 @@ def test_every_hooks_json_command_routes_through_launcher_and_exits_zero(hooks_p
 # ---- Bridge harnesses (Hermes, Copilot): source-level non-propagation guard ------
 
 @pytest.mark.parametrize("bridge", ["hermes_hook_bridge.py", "copilot_hook_bridge.py",
-                                     "cursor_hook_bridge.py"])
+                                     "cursor_hook_bridge.py", "grok_hook_bridge.py"])
 def test_bridge_swallows_subprocess_failure(bridge):
     path = SCRIPTS / bridge
     if not path.exists():

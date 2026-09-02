@@ -489,6 +489,86 @@ install_antigravity() {
     exit 0
 }
 
+# ── Grok Build plugin install ─────────────────────────────────
+# `install.sh --grok` installs Token Optimizer into $GROK_HOME/hooks/ and
+# copies the payload into $GROK_HOME/token-optimizer/plugin/, which Grok Build
+# auto-loads via ~/.grok/hooks/*.json. Beta (contract-only; no live probe).
+# Needs python3 and a checkout of this repo. Extra flags (--dry-run) are
+# forwarded to the underlying grok-install command.
+install_grok() {
+    command -v python3 &>/dev/null || fail "python3 not found. Token Optimizer for Grok Build needs Python 3."
+
+    local script_dir measure_py
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    measure_py="${script_dir}/skills/token-optimizer/scripts/measure.py"
+
+    if [ ! -f "$measure_py" ] && [ -d "${script_dir}/.git" ]; then
+        warn "skills/ not in this checkout. Adding it to sparse-checkout..."
+        git -C "$script_dir" sparse-checkout add skills/ grok/ 2>/dev/null || true
+        git -C "$script_dir" pull --ff-only 2>/dev/null || true
+    fi
+    [ -f "$measure_py" ] || fail "$(printf 'Run install.sh from inside a token-optimizer checkout, not on its own. From any folder:\n    git clone --depth 1 %s\n    cd token-optimizer\n    bash install.sh --grok' "$REPO_HTTPS")"
+
+    if [ -d "${script_dir}/.git" ]; then
+        local g_sha
+        g_sha="$(git -C "$script_dir" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+        info "Installing from commit ${g_sha}"
+    else
+        warn "Not a git checkout — cannot verify source provenance."
+    fi
+
+    # Forward only recognized flags after --grok.
+    local extra=()
+    for a in "$@"; do
+        case "$a" in
+            --dry-run) extra+=("$a") ;;
+        esac
+    done
+
+    # WSL-root wrong-home recovery + warning (issue #78, generalized). GROK_HOME
+    # is Grok Build's OWN variable — setting it to a WSL /mnt path breaks Grok's
+    # own session persistence — so Token Optimizer uses its own
+    # TOKEN_OPTIMIZER_GROK_HOME and never exports GROK_HOME. Recovery order:
+    #   1. TOKEN_OPTIMIZER_GROK_HOME from the Windows env, plus single-profile
+    #      autodetect under /mnt/c/Users/.
+    #   2. Legacy GROK_HOME from the Windows env (back-compat), EXPORTED as
+    #      TOKEN_OPTIMIZER_GROK_HOME so we never re-set Grok's own var.
+    _recover_home_from_windows_env TOKEN_OPTIMIZER_GROK_HOME ".grok"
+    _recover_home_from_windows_env GROK_HOME "" TOKEN_OPTIMIZER_GROK_HOME
+    _wsl_root_wrong_home_warning "Grok Build" ".grok" "TOKEN_OPTIMIZER_GROK_HOME" "--grok"
+
+    # Resolve the Grok home via measure.py so the banner shows the TRUE hook
+    # destination (honors TOKEN_OPTIMIZER_GROK_HOME → GROK_HOME → ~/.grok).
+    local resolved_grok_home
+    resolved_grok_home="$(TOKEN_OPTIMIZER_RUNTIME=grok python3 "$measure_py" grok-home 2>/dev/null || true)"
+    [ -n "$resolved_grok_home" ] || resolved_grok_home="${HOME}/.grok"
+    # Create the resolved home so a fresh (no-Grok-yet) target and the default
+    # ~/.grok both exist by the time grok-install writes the hooks file. The
+    # resolved path is either already confined-to-$HOME by grok-home's guard or
+    # is the ~/.grok default, so this mkdir never escapes the safe-home bound.
+    mkdir -p "$resolved_grok_home"
+
+    info "Installing Token Optimizer into Grok Build (${resolved_grok_home})..."
+    if ! TOKEN_OPTIMIZER_RUNTIME=grok python3 "$measure_py" grok-install --home "$resolved_grok_home" "${extra[@]+"${extra[@]}"}"; then
+        fail "Grok Build install failed."
+    fi
+
+    echo ""
+    printf "${BOLD}${GREEN}Token Optimizer for Grok Build installed (beta)!${NC}\n"
+    echo ""
+    echo "  Hooks:    ${resolved_grok_home}/hooks/token-optimizer.json (auto-loaded by Grok Build)"
+    echo "  Verify:   TOKEN_OPTIMIZER_RUNTIME=grok python3 ${measure_py} grok-doctor"
+    echo "  Probe:    TOKEN_OPTIMIZER_RUNTIME=grok python3 ${measure_py} grok-doctor --probe"
+    echo "  Summary:  TOKEN_OPTIMIZER_RUNTIME=grok python3 ${measure_py} grok-summary"
+    echo "  Re-run this command after a git pull to update."
+    echo ""
+    echo "  Contract-only beta: no live Grok probe was possible;"
+    echo "  ${resolved_grok_home}/hooks/ is wired to the documented hook contract"
+    echo "  (see docs/grok.md)."
+    echo ""
+    exit 0
+}
+
 # ── WSL-root wrong-home warning (issue #78, generalized cross-platform) ─
 # `bash install.sh` (or --opencode / --hermes / --copilot) on native Windows
 # runs WSL bash as root, so $HOME=/root and the install lands in /root/<subpath>
@@ -925,9 +1005,9 @@ uninstall_cursor() {
     exit 0
 }
 
-# Route --opencode / --hermes / --copilot / --cursor / --antigravity / --cowork before the
+# Route --opencode / --hermes / --copilot / --cursor / --antigravity / --grok / --cowork before the
 # Claude Code prerequisite checks (OpenCode needs bun; Hermes, Copilot, Cursor,
-# Antigravity, and the Cowork packager need python3, not the Claude Code plugin env).
+# Antigravity, Grok, and the Cowork packager need python3, not the Claude Code plugin env).
 
 # Allow tests to source this script for function unit-testing (e.g.
 # _copilot_wsl_root_warning) without triggering the install flow or
@@ -956,6 +1036,7 @@ for arg in "$@"; do
             ;;
         --antigravity) install_antigravity "$@" ;;
         --cowork) install_cowork "$@" ;;
+        --grok) install_grok "$@" ;;
     esac
 done
 

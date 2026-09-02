@@ -24,6 +24,11 @@ No data leaves the machine at any point in this flow.
 - `settings.json`, `CLAUDE.md`, `MEMORY.md` for audit measurements
 - Skill and MCP server directories for token inventory
 - Tool call inputs/outputs passed via hook stdin
+- Google Antigravity's `~/.gemini/{antigravity-cli,antigravity,antigravity-ide}/`
+  conversation stores: only `gen_metadata.data`, `steps.step_type` and step
+  timestamps, and a fixed set of summaries columns (`title`, `workspace_uris`,
+  `killed`, `not_fully_idle`, `last_modified_time`, `nesting_depth`). Prompt
+  text, tool arguments, and `trajectory_metadata_blob` are never selected.
 
 ### What Token Optimizer Writes
 
@@ -36,6 +41,8 @@ No data leaves the machine at any point in this flow.
 | Quality cache (JSON) | Per-session quality score snapshots | Configurable (`TOKEN_OPTIMIZER_QUALITY_CACHE_RETENTION_DAYS`, default: 7 days) | `~/.claude/token-optimizer/quality-cache-*.json` |
 | Config (JSON) | Feature flags, consent status, pricing tier | Persistent until purge | `~/.claude/token-optimizer/config.json` |
 | Dashboard (HTML) | Generated visualization | Regenerated on demand | `<plugin-data>/data/dashboard.html` |
+| Antigravity adapter (JSON) | Consent flag (R20) + capped-context restore file, under `~/.gemini/token-optimizer/` | Persistent until purge | `~/.gemini/token-optimizer/` |
+| Antigravity plugin (payload) | Copied adapter modules + `hooks.json` + `plugin.json` | Removed by `antigravity-uninstall` | `~/.gemini/config/plugins/token-optimizer/` |
 
 ### What Token Optimizer Never Does
 

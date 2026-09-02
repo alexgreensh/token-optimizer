@@ -256,7 +256,7 @@ THRESHOLDS = [
 
 def docs() -> list[Path]:
     """Every surface that quotes numbers at a reader: the docs site and all
-    six READMEs (root plus the five per-platform ones)."""
+    seven READMEs (root plus the six per-platform ones)."""
     out = list((REPO / "docs-site" / "src" / "content" / "docs").rglob("*.mdx"))
     out += [p for p in REPO.rglob("README*.md") if not _is_scratch(p)]
     out += [REPO / "PRIVACY.md", REPO / "SECURITY.md"]

@@ -22,10 +22,11 @@ On a non-default platform, `doctor` auto-routes to the matching adapter when `TO
 | Codex | `TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-doctor --project "$PWD"` |
 | GitHub Copilot | `TOKEN_OPTIMIZER_RUNTIME=copilot python3 measure.py copilot-doctor` |
 | Hermes | `python3 measure.py hermes-doctor` |
+| Google Antigravity | `TOKEN_OPTIMIZER_RUNTIME=antigravity python3 measure.py antigravity-doctor` |
 | OpenClaw | `npx token-optimizer doctor --json` |
 | OpenCode | `token_status` inside OpenCode |
 
-`codex-doctor` is healthy at `0 FAIL`. `copilot-doctor` names which data source is active for each surface and shows capability freshness for the installed Copilot CLI version. `hermes-doctor` checks home resolution, plugin presence, required files, declared hooks, a bridge smoke test, the activation entry, state database readability, and dashboard port availability.
+`codex-doctor` is healthy at `0 FAIL`. `copilot-doctor` names which data source is active for each surface and shows capability freshness for the installed Copilot CLI version. `hermes-doctor` checks home resolution, plugin presence, required files, declared hooks, a bridge smoke test, the activation entry, state database readability, and dashboard port availability. `antigravity-doctor` checks home resolution, the `agy` binary, plugin presence, the consent record, conversation-store readability (including undecodable-row counts), and dashboard port availability.
 
 ## Session health
 

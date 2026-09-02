@@ -1,0 +1,130 @@
+---
+title: Google Antigravity
+description: "Install Token Optimizer for Google Antigravity (agy CLI, 2.0 app, IDE) via a shallow clone. Data collection is consent-gated and off until the install records consent."
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Antigravity support is in beta. The adapter installs a user-level plugin at
+`~/.gemini/config/plugins/token-optimizer/`, wires PreInvocation / PreToolUse /
+Stop hooks, and records the R20 consent flag. Data collection stays off until that
+consent record exists.
+
+## Prerequisites
+
+- The `agy` CLI, Antigravity 2.0 app, or Antigravity IDE.
+- Python 3.x on your PATH.
+- For the fresh clone path: `git`.
+
+## Install
+
+<Tabs>
+<TabItem label="Fresh clone">
+
+Run from any folder. The clone creates a `token-optimizer/` folder, then you move into it and install.
+
+```bash
+git clone --depth 1 https://github.com/alexgreensh/token-optimizer.git
+cd token-optimizer
+bash install.sh --antigravity
+```
+
+</TabItem>
+<TabItem label="Already installed">
+
+If Token Optimizer is already installed as a Claude Code plugin or script install, do not clone again. The `install.sh` script exists only at the repo root, so call the engine directly:
+
+```bash
+TOKEN_OPTIMIZER_RUNTIME=antigravity python3 ~/.claude/skills/token-optimizer/scripts/measure.py antigravity-install
+```
+
+Or, if you used the Claude Code script install:
+
+```bash
+bash ~/.claude/token-optimizer/install.sh --antigravity
+```
+
+</TabItem>
+</Tabs>
+
+The install is idempotent. It writes only `~/.gemini/config/plugins/token-optimizer/`
+(the plugin payload, `hooks.json`, `plugin.json`) and records consent in
+`~/.gemini/token-optimizer/config.json`. It never touches your own
+`~/.gemini/config/hooks.json`, `config.json`, or `settings.json`.
+
+## Verify
+
+```bash
+TOKEN_OPTIMIZER_RUNTIME=antigravity python3 skills/token-optimizer/scripts/measure.py antigravity-doctor
+```
+
+Confirm Antigravity accepts the plugin:
+
+```bash
+agy plugin validate ~/.gemini/config/plugins/token-optimizer
+```
+
+To preview the install without writing anything:
+
+```bash
+bash install.sh --antigravity --dry-run
+```
+
+### Engine commands
+
+All require the `TOKEN_OPTIMIZER_RUNTIME=antigravity` prefix.
+
+```bash
+measure.py antigravity-install     # wire the plugin and record consent
+measure.py antigravity-doctor      # readiness check
+measure.py antigravity-summary     # per-surface session summary
+measure.py antigravity-rollup      # ingest sessions into trends.db (auto on Stop)
+measure.py antigravity-uninstall   # remove only what was installed
+measure.py antigravity-home        # print the resolved Antigravity home
+```
+
+## Consent (R20)
+
+Collection is opt-in. The installer records `antigravity_consent: true` in
+`~/.gemini/token-optimizer/config.json`; the hooks and rollup are no-ops until that
+record exists.
+
+## Config variables
+
+```
+TOKEN_OPTIMIZER_ANTIGRAVITY_HOME   (default ~/.gemini)
+TOKEN_OPTIMIZER_ANTIGRAVITY_BIN    (override the agy binary the doctor probes)
+TOKEN_OPTIMIZER_BASH_COMPRESS      (set 0 to disable command-output compression)
+```
+
+See [Configuration](/reference/configuration/) for the full variable list.
+
+## Auto-update
+
+Re-run the install after a `git pull`:
+
+```bash
+bash install.sh --antigravity
+```
+
+## Uninstall
+
+```bash
+TOKEN_OPTIMIZER_RUNTIME=antigravity python3 skills/token-optimizer/scripts/measure.py antigravity-uninstall
+```
+
+`antigravity-uninstall` removes only `~/.gemini/config/plugins/token-optimizer/`.
+Conversation data under `~/.gemini/` and Token Optimizer's collected data and
+trends are left in place by design.
+
+<Aside type="note">
+Antigravity's hooks are synchronous and command-only. There is no PreCompact, no
+PostToolUse output rewrite, and no status-line surface, so compaction steering,
+read-interception, and the status-line bar are not available on Antigravity. See
+the parity table on the platform page.
+</Aside>
+
+## See also
+
+- [Antigravity platform reference](/platforms/antigravity/) for the full capability and gap list.
+- [Configuration](/reference/configuration/).

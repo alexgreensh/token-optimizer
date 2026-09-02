@@ -35,6 +35,8 @@ Audits a Claude Code or Codex setup, identifies context window waste, implements
 >   echo "Token Optimizer — GitHub Copilot runtime detected."
 > elif [ "${TOKEN_OPTIMIZER_RUNTIME:-}" = "cursor" ]; then
 >   echo "Token Optimizer — Cursor runtime detected."
+> elif [ "${TOKEN_OPTIMIZER_RUNTIME:-}" = "antigravity" ]; then
+>   echo "Token Optimizer — Google Antigravity runtime detected."
 > elif [ -n "${CLAUDE_PLUGIN_ROOT:-}${CLAUDE_PLUGIN_DATA:-}" ]; then
 >   :  # genuine Claude Code session; fall through to measure.py (step 3 beats step 4)
 > elif [ -n "${OPENCODE_BIN:-}${OPENCODE_CONFIG_DIR:-}${OPENCODE_DATA_DIR:-}${OPENCODE_CONFIG:-}${OPENCODE_CLIENT:-}" ]; then
@@ -45,6 +47,8 @@ Audits a Claude Code or Codex setup, identifies context window waste, implements
 >   echo "Token Optimizer — Cursor runtime detected."
 > elif [ -n "${CURSOR_PROJECT_DIR:-}" ] && [ -n "${CURSOR_VERSION:-}" ]; then
 >   echo "Token Optimizer — Cursor runtime detected."
+> elif [ -n "${TOKEN_OPTIMIZER_ANTIGRAVITY_HOME:-}" ]; then
+>   echo "Token Optimizer — Google Antigravity runtime detected."
 > fi
 > ```
 > - Prints **"… OpenCode runtime detected."** → **STOP. Do not resolve `measure.py`, do not run any
@@ -55,6 +59,8 @@ Audits a Claude Code or Codex setup, identifies context window waste, implements
 > - Prints **"… Cursor runtime detected."** → **STOP. Do not resolve `measure.py`, do not run any
 >   phase below.** Read `references/cursor-workflow.md` (bundled with this skill) and follow it.
 >   On Cursor, Token Optimizer runs through the Cursor hook bridge; the Claude audit must not run.
+> - Prints **"… Google Antigravity runtime detected."** → **STOP** and follow `docs/antigravity.md`
+>   for the same reason: on Antigravity, Token Optimizer runs as a native plugin, not a Claude audit.
 > - Prints nothing → continue to resolve `$MEASURE_PY` below. This env-only pre-gate does NOT
 >   check the process tree, so OpenCode launched without exporting `OPENCODE_*` env vars (e.g. a
 >   bare `opencode` binary or `node /path/to/opencode`) prints nothing here. The

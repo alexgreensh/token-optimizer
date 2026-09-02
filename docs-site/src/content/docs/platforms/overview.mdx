@@ -20,6 +20,7 @@ Claude Code is the reference platform. Every feature ships there first, and ever
 | [Hermes](/platforms/hermes/) | Slash command, CLI | Beta |
 | [GitHub Copilot](/platforms/copilot/) | CLI, VS Code | Beta |
 | [Cursor](/platforms/cursor/) | IDE (Composer), CLI | Beta |
+| [Google Antigravity](/platforms/antigravity/) | CLI, App, IDE | Beta |
 | [Cowork](/platforms/cowork/) | Plugin, org console or personal upload | Experimental |
 
 Claude Cowork runs the same Claude Code engine in a VM, so it is not a separate runtime. It reaches Cowork sessions through the org plugin console rather than a local install, and it runs the hook subset that fires in Cowork. It is experimental and not yet verified on a live build. See the [Cowork page](/platforms/cowork/) for the distribution path and the hook set.
@@ -28,7 +29,7 @@ The VS Code companion extension that surfaces Claude Code data also runs in Curs
 
 ## Native per platform, not a shim
 
-Each adapter maps Token Optimizer features onto the host's own primitives. Codex reads `AGENTS.md` where Claude Code reads `CLAUDE.md`. Hermes opens its session database read-only because that is the access Hermes grants plugins. Copilot bills in AI Credits, so cost figures use Copilot's own numbers rather than a token estimate.
+Each adapter maps Token Optimizer features onto the host's own primitives. Codex reads `AGENTS.md` where Claude Code reads `CLAUDE.md`. Hermes opens its session database read-only because that is the access Hermes grants plugins. Copilot bills in AI Credits, so cost figures use Copilot's own numbers rather than a token estimate. Antigravity decodes its per-conversation SQLite store read-only and prices sessions at Gemini list rates unless Antigravity reports its own credit figure.
 
 The result is honest asymmetry. A feature that depends on a hook the platform does not expose is marked unavailable on that platform, with the upstream blocker named.
 

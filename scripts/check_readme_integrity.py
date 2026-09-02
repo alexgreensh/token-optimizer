@@ -34,6 +34,7 @@ MIN_LINES = {
     "openclaw/README.md": 60,
     "opencode/README.md": 40,
     "hermes/README.md": 40,
+    "antigravity/README.md": 40,
 }
 
 # Substrings that preserve required licensing and attribution information.

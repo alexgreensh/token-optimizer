@@ -109,7 +109,7 @@ These seven names are read by `opencode/src/util/env.ts` and exist only there; t
 | `TOKEN_OPTIMIZER_DASHBOARD_TIMEOUT` | 30 seconds | Total retry budget when opening the dashboard server |
 | `TOKEN_OPTIMIZER_TURN_PRELOAD_MAX` | 40 | Maximum recent sessions whose per-turn data is embedded in a static dashboard |
 
-Dashboard ports are fixed per runtime: 24842 (Claude Code), 24843 (Codex), 24844 (Hermes), 24845 (Copilot). They are not configured by environment variable; they are assigned by the engine so multiple runtimes can serve dashboards simultaneously without conflict. The `--port` flag on `dashboard` overrides the port for a one-off serve.
+Dashboard ports are fixed per runtime: 24842 (Claude Code), 24843 (Codex), 24844 (Hermes), 24845 (Copilot), 24846 (Antigravity). They are not configured by environment variable; they are assigned by the engine so multiple runtimes can serve dashboards simultaneously without conflict. The `--port` flag on `dashboard` overrides the port for a one-off serve.
 
 ## Data retention
 
@@ -140,6 +140,14 @@ The two Keep-Warm names found in the Python core are internal execution markers 
 | `TOKEN_OPTIMIZER_COPILOT_BIN` | `copilot` | Override the Copilot CLI executable used by doctor and hook-bridge checks |
 | `TOKEN_OPTIMIZER_COPILOT_HOME` | `~/.copilot` or auto-detected | Override the Copilot home used by Token Optimizer; validated before use |
 
+## Antigravity adapter
+
+| Variable | Default | Effect |
+|---|---|---|
+| `TOKEN_OPTIMIZER_ANTIGRAVITY_HOME` | `~/.gemini` | Override the Antigravity home used by the adapter; accepted only under `$HOME` |
+| `TOKEN_OPTIMIZER_ANTIGRAVITY_BIN` | first `agy` on `PATH` | Override the `agy` binary the doctor probes; must be an absolute, trusted path |
+| `TOKEN_OPTIMIZER_BASH_COMPRESS` | `1` (on) | Set `0` to disable command-output compression on Antigravity |
+
 ## Pricing tier
 
 The pricing tier drives every cost and savings calculation. Set it with `measure.py pricing-tier <tier>`; the value persists in `config.json`. The default is `anthropic`.
@@ -156,7 +164,7 @@ The pricing tier drives every cost and savings calculation. Set it with `measure
 
 | Variable | Default | Effect |
 |---|---|---|
-| `TOKEN_OPTIMIZER_RUNTIME` | claude | Select the platform adapter: `claude`, `codex`, `opencode`, `copilot`, or `hermes` |
+| `TOKEN_OPTIMIZER_RUNTIME` | claude | Select the platform adapter: `claude`, `codex`, `opencode`, `copilot`, `hermes`, or `antigravity` |
 | `TOKEN_OPTIMIZER_SKIP_VERIFY` | off | Set to `1` to skip checksum verification during script install (not recommended) |
 | `TOKEN_OPTIMIZER_STAR_ASK` | enabled | Set to `0` to disable the one-time GitHub star offer entirely |
 | `TOKEN_OPTIMIZER_STAR_MIN_SESSIONS` | 3 | Minimum logged sessions before the one-time star offer's value-history gate is satisfied |

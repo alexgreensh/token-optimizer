@@ -23,6 +23,7 @@ On Claude Code the plugin lives in `~/.claude/plugins/marketplaces/alexgreensh-t
 | Codex | Desktop | Same adapter as CLI, no separate install | [Codex (Desktop)](/install/codex-desktop/) |
 | GitHub Copilot | CLI, beta | `bash install.sh --copilot` | [Copilot (CLI)](/install/copilot-cli/) |
 | GitHub Copilot | VS Code, beta | Same adapter, plus one manual settings step | [Copilot (VS Code)](/install/copilot-vscode/) |
+| Google Antigravity | CLI, app, IDE, beta | `bash install.sh --antigravity` | [Antigravity](/install/antigravity/) |
 | OpenCode | plugin | `opencode plugin token-optimizer-opencode` | [OpenCode](/install/opencode/) |
 | OpenClaw | plugin | `openclaw plugins install github:alexgreensh/token-optimizer` | [OpenClaw](/install/openclaw/) |
 | Hermes | plugin, beta | `token-optimizer/install.sh --hermes` | [Hermes](/install/hermes/) |
@@ -44,6 +45,7 @@ Each platform serves its dashboard on its own port, so several can run at once w
 | Codex (CLI and Desktop) | 24843 | `http://localhost:24843/token-optimizer` |
 | Hermes | 24844 | `http://localhost:24844` |
 | Copilot | 24845 | `http://localhost:24845/token-optimizer` (verify) |
+| Antigravity | 24846 | `http://localhost:24846/token-optimizer` |
 
 <Aside type="tip">
 After any install, run the platform's doctor command to confirm it wired up correctly. Each install page lists the exact doctor for that surface, and [Configuration](/reference/configuration/) covers every environment variable in one place.
@@ -51,4 +53,4 @@ After any install, run the platform's doctor command to confirm it wired up corr
 
 ## Zero dependencies
 
-Every Python adapter (Claude Code, Codex, Hermes, Copilot) is pure standard library. No `pip install`, no telemetry. The TypeScript plugins (OpenCode, OpenClaw) add nothing beyond their host runtime. Minimum Python is 3.9 for Claude Code and Codex, 3.x for Hermes and Copilot.
+Every Python adapter (Claude Code, Codex, Hermes, Copilot, Antigravity) is pure standard library. No `pip install`, no telemetry. The TypeScript plugins (OpenCode, OpenClaw) add nothing beyond their host runtime. Minimum Python is 3.9 for Claude Code and Codex, 3.x for Hermes, Copilot, and Antigravity.

@@ -1,0 +1,103 @@
+---
+title: Google Antigravity
+description: "Google Antigravity: per-session token totals, list-price cost estimates, quality scoring, and continuity across the agy CLI, the 2.0 app, and the IDE."
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Beta">
+The Antigravity adapter is in beta. It reads Antigravity's own conversation store
+read-only and wires three hook events; every cost figure is either Antigravity's own
+credit figure or a list-price estimate, never presented as a measured bill.
+</Aside>
+
+Token Optimizer supports **Google Antigravity** — the `agy` CLI, the Antigravity
+2.0 desktop app, and the Antigravity IDE — through one adapter that decodes
+Antigravity's per-conversation SQLite store and wires a user-level plugin.
+
+## Supported surfaces
+
+The three surfaces share one `hooks.json` and one adapter payload, but they are
+separate session populations — never merged, never summed — because each keeps its
+own conversation store.
+
+| Surface | Storage | Cost source |
+|---|---|---|
+| `agy` CLI | `~/.gemini/antigravity-cli/conversations/*.db` | `credit_cost` / `consumed_credits` or Gemini list-price estimate |
+| Antigravity 2.0 app | `~/.gemini/antigravity/conversations/*.db` | same |
+| Antigravity IDE | `~/.gemini/antigravity-ide/conversations/*.db` | same |
+
+Install from the [Antigravity](/install/antigravity/) page. The cross-platform grid
+is at [/reference/capability-matrix/](/reference/capability-matrix/).
+
+## Cost: credits when present, list-price otherwise
+
+Antigravity is subscription/credit-metered. When the decoded `gen_metadata` rows
+carry a non-zero `credit_cost` or `consumed_credits`, that figure is shown as the
+platform's own cost. Otherwise the adapter prices the session at the Gemini rate
+card and labels it a list-price **estimate**. A model with no known rate card is
+shown as "cost unavailable" rather than priced against a made-up number.
+
+## Capability map by hook surface, not version
+
+Antigravity's hook contract is synchronous and command-only. The adapter does not
+version-gate individual features the way the Copilot adapter does; instead each
+surface is green, partial, or red based on what Antigravity's hook events
+structurally allow.
+
+| Hook power | Status | Token Optimizer feature |
+|---|---|---|
+| `PreInvocation` `injectSteps` | Works | Continuity restore (invocation 1) + context nudges |
+| `PreToolUse` `overwrite` on `run_command` | Works | Bash output compression (R13a wrapper re-validates argv) |
+| `Stop` | Works | Detached, lease-debounced rollup + dashboard regeneration |
+| `PreCompact` | Not exposed | Compaction steering — unavailable |
+| `PostToolUse` output rewrite | Not exposed | Read-interception (Delta/Structure Map) — unavailable |
+| status line | Not exposed | Status line quality bar — unavailable |
+
+Every hook handler is fail-open: it exits 0 and emits valid JSON or nothing on any
+error, malformed stdin, oversize stdin, or a missing dependency. Data collection is
+consent-gated (R20); the bridge and rollup no-op until
+`~/.gemini/token-optimizer/config.json` records `antigravity_consent: true`.
+
+## Explicit gaps
+
+| Gap | Reason |
+|---|---|
+| Compaction steering | No `PreCompact` hook event |
+| Read-interception (Delta / Structure Map) | No `PostToolUse` output rewrite |
+| Status line | Antigravity owns its status-line data model |
+| Keep-Warm automation | No cache-TTL ping surface |
+
+## Crash recovery
+
+A killed conversation still has its `gen_metadata` rows on disk, so there is no
+in-flight tally to lose. The rollup flags a `killed` / `not_fully_idle` conversation
+as incomplete and upgrades it in place when clean totals arrive. Partial data is
+never silently dropped and never silently presented as exact.
+
+## Runtime prefix
+
+Every Antigravity command needs the runtime prefix.
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+TOKEN_OPTIMIZER_RUNTIME=antigravity python3 measure.py antigravity-summary
+```
+
+On Windows use `python`, not `python3`.
+
+## Doctor command
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+TOKEN_OPTIMIZER_RUNTIME=antigravity python3 measure.py antigravity-doctor
+```
+
+`antigravity-doctor` checks the `agy` binary, the Antigravity home, the three
+surface directories, the plugin payload and hooks, the consent record, the
+conversation store, and dashboard port availability.
+
+## Dashboard
+
+The Antigravity daemon port is **24846** and its label ends
+`antigravity-dashboard`. See the [configuration reference](/reference/configuration/).

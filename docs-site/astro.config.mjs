@@ -22,7 +22,7 @@ export default defineConfig({
     starlight({
       title: "Token Optimizer",
       description:
-        "Cut the tokens you waste. Keep the work you'd lose. A fully local context optimizer for Claude Code, Codex, OpenCode, OpenClaw, Hermes, Copilot, and Cursor.",
+        "Cut the tokens you waste. Keep the work you'd lose. A fully local context optimizer for Claude Code, Codex, OpenCode, OpenClaw, Hermes, Copilot, Cursor, and Google Antigravity.",
       tagline: "Cut the tokens you waste. Keep the work you'd lose.",
       logo: {
         src: "./src/assets/logo.png",
@@ -126,6 +126,7 @@ export default defineConfig({
             { label: "Codex (Desktop)", slug: "install/codex-desktop" },
             { label: "GitHub Copilot (CLI)", slug: "install/copilot-cli" },
             { label: "GitHub Copilot (VS Code)", slug: "install/copilot-vscode" },
+            { label: "Google Antigravity", slug: "install/antigravity" },
             { label: "OpenCode", slug: "install/opencode" },
             { label: "OpenClaw", slug: "install/openclaw" },
             { label: "Hermes", slug: "install/hermes" },
@@ -139,6 +140,7 @@ export default defineConfig({
             { label: "Claude Code", slug: "platforms/claude-code" },
             { label: "Codex", slug: "platforms/codex" },
             { label: "GitHub Copilot", slug: "platforms/copilot" },
+            { label: "Google Antigravity", slug: "platforms/antigravity" },
             { label: "OpenCode", slug: "platforms/opencode" },
             { label: "OpenClaw", slug: "platforms/openclaw" },
             { label: "Hermes", slug: "platforms/hermes" },

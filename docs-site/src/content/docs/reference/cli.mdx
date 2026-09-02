@@ -21,7 +21,7 @@ Commands run for a non-default platform need the runtime prefix:
 TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py report
 ```
 
-`TOKEN_OPTIMIZER_RUNTIME` selects which platform adapter the engine targets (`claude`, `codex`, `copilot`, `hermes`). When unset, the engine defaults to Claude Code. The doctor and report commands auto-route to the matching adapter when the runtime is set, so `measure.py doctor` becomes `codex-doctor` under `TOKEN_OPTIMIZER_RUNTIME=codex`.
+`TOKEN_OPTIMIZER_RUNTIME` selects which platform adapter the engine targets (`claude`, `codex`, `copilot`, `hermes`, `antigravity`). When unset, the engine defaults to Claude Code. The doctor and report commands auto-route to the matching adapter when the runtime is set, so `measure.py doctor` becomes `codex-doctor` under `TOKEN_OPTIMIZER_RUNTIME=codex`.
 
 Most read commands accept `--json` for machine-readable output. The flag is noted per command where the source confirms it.
 
@@ -55,6 +55,8 @@ Commands that wire Token Optimizer into a platform. Plugin and marketplace insta
 | `copilot-install` | Install the GitHub Copilot adapter into `~/.copilot/hooks/` | n/a |
 | `copilot-uninstall` | Remove the Copilot adapter (only what was installed) | n/a |
 | `hermes-install` | Install Token Optimizer as a Hermes plugin into `~/.hermes/plugins/` | `--enable` |
+| `antigravity-install` | Install the Antigravity plugin into `~/.gemini/config/plugins/token-optimizer/` | n/a |
+| `antigravity-uninstall` | Remove the Antigravity plugin (only what was installed) | n/a |
 
 `setup-quality-bar --uninstall` sets a sticky `quality_bar_disabled` opt-out so the SessionStart self-healer does not reinstall the status line.
 
@@ -86,7 +88,7 @@ Pricing tiers accepted by `pricing-tier`: `anthropic` (default), Vertex AI Globa
 | `daemon-consent` | Get or set consent for the persistent bookmarkable dashboard URL | `--get`, `--set yes\|no\|unset` |
 | `dashboard-diagnose` | Validate the JSON data shape injected into the dashboard; diagnoses empty-tab rendering | n/a |
 
-The default dashboard port is 24842 for Claude Code, 24843 for Codex, 24844 for Hermes, 24845 for Copilot. The daemon serves a bookmarkable URL at `http://localhost:<port>/token-optimizer`; without the daemon, the dashboard opens from a generated file.
+The default dashboard port is 24842 for Claude Code, 24843 for Codex, 24844 for Hermes, 24845 for Copilot, and 24846 for Antigravity. The daemon serves a bookmarkable URL at `http://localhost:<port>/token-optimizer`; without the daemon, the dashboard opens from a generated file.
 
 ## Compaction and continuity
 
@@ -268,6 +270,15 @@ Adapter commands target a specific platform. All require the matching `TOKEN_OPT
 | `hermes-doctor` | Check Hermes plugin readiness | `--json` |
 | `hermes-rollup` | Ingest recent Hermes sessions into the history database. Runs automatically via Hermes hook. | `--quiet`, `--session ID`, `--days N` |
 | `hermes-summary` | Brief usage summary for recent Hermes sessions | `--quiet`, `--days N` |
+
+### Google Antigravity
+
+| Command | Description | Key flags |
+|---|---|---|
+| `antigravity-doctor` | Check Antigravity readiness (home, plugin, consent, `agy` binary, store readability, dashboard port) | `--json` |
+| `antigravity-summary` | Token and cost summary for recent Antigravity conversations | n/a |
+| `antigravity-rollup` | Ingest recent Antigravity conversations into the history database. Runs automatically via the Stop hook. | `--quiet` |
+| `antigravity-home` | Print the resolved Antigravity home (override via `TOKEN_OPTIMIZER_ANTIGRAVITY_HOME`) | n/a |
 
 ### Other platforms
 

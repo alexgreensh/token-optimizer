@@ -438,7 +438,11 @@ _BADGES = {"ok": "[OK]  ", "warn": "[WARN]", "fail": "[FAIL]"}
 
 
 def _print_text(checks: list) -> None:
-    print("Token Optimizer — Google Antigravity doctor")
+    # Banner and summary are ASCII-only on purpose: measure.py re-execs into
+    # UTF-8 mode, but the doctor can also be invoked directly by a hook or
+    # shell whose stdout is an ANSI codepage. An em-dash there mojibakes into a
+    # replacement glyph, so keep the two stable lines safe for every console.
+    print("Token Optimizer - Google Antigravity doctor")
     print()
     for c in checks:
         print(f"  {_BADGES.get(c['status'], '[?]   ')} {c['name']}: {c['detail']}")
@@ -447,7 +451,7 @@ def _print_text(checks: list) -> None:
     fails = sum(1 for c in checks if c["status"] == "fail")
     warns = sum(1 for c in checks if c["status"] == "warn")
     print()
-    print(f"  {len(checks)} checks — {fails} fail, {warns} warn")
+    print(f"  {len(checks)} checks - {fails} fail, {warns} warn")
 
 
 def build_parser() -> argparse.ArgumentParser:

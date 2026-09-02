@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import importlib
 import json
-import sys
+import os
 from pathlib import Path
 
 import pytest
@@ -53,6 +53,14 @@ def test_pre_tool_use_rewrites_whitelisted_run_command(ab):
     out = ab.handle_pre_tool_use({
         "toolCall": {"name": "run_command", "args": {"CommandLine": "git status --porcelain"}},
     })
+    # The bash-compression rewrite is POSIX-only: Antigravity's Windows
+    # run_command is not the bash tool the wrapper rewrites, so the bridge
+    # deliberately no-ops there (same policy as the Copilot adapter, which
+    # skips Windows `powershell`). Assert the platform contract instead of
+    # skipping, so the Windows leg still exercises the handler end-to-end.
+    if os.name == "nt":
+        assert out == {}
+        return
     assert out["decision"] == "ask"
     assert "bash_compress.py" in out["overwrite"]["CommandLine"]
     assert "git status --porcelain" in out["overwrite"]["CommandLine"]
@@ -169,6 +177,11 @@ def test_main_consent_grants_rewrite(ab, monkeypatch, capsys, tmp_path):
     )
     assert ab.main(["pre-tool-use"]) == 0
     out = json.loads(capsys.readouterr().out)
+    # POSIX-only rewrite; on Windows the bridge no-ops with an empty object
+    # (see test_pre_tool_use_rewrites_whitelisted_run_command).
+    if os.name == "nt":
+        assert out == {}
+        return
     assert out["decision"] == "ask"
 
 

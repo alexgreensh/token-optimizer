@@ -341,14 +341,17 @@ def test_dispatch_antigravity_summary_exits_zero(tmp_path):
 def test_dispatch_antigravity_doctor_routes_to_doctor(tmp_path):
     out = subprocess.run(
         [sys.executable, str(SCRIPTS / "measure.py"), "antigravity-doctor"],
-        capture_output=True, text=True, env=_antigravity_env(tmp_path), timeout=180,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        env=_antigravity_env(tmp_path), timeout=180,
     )
     # The doctor exits 1 when the (fixture) host is not ready; the point of this
     # smoke test is that the dispatch reached antigravity_doctor.main and ran its
     # full check set, not an import/argument crash. So assert on the banner and
-    # the summary line, not on a ready exit code.
-    assert "Token Optimizer — Google Antigravity doctor" in out.stdout
-    assert "checks —" in out.stdout
+    # the summary line, not on a ready exit code. measure.py re-execs its child
+    # into UTF-8 mode, so decode the capture as UTF-8 instead of the Windows
+    # ANSI codepage (which turned the old em-dash into a replacement glyph).
+    assert "Token Optimizer - Google Antigravity doctor" in out.stdout
+    assert "checks -" in out.stdout
     assert "Traceback" not in out.stdout + out.stderr
     assert out.returncode in (0, 1)
 

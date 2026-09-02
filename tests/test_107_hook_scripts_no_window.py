@@ -351,20 +351,45 @@ def test_create_no_window_child_has_no_console():
 
 @pytest.mark.skipif(os.name != "nt", reason="console allocation is Windows-only")
 def test_bash_compress_wrapper_child_has_no_console(tmp_path):
-    """End-to-end on Windows: running the real bash_compress wrapper around the
-    console probe must produce a console-less grandchild (exit code forwarded)."""
+    """End-to-end on Windows: the real bash_compress wrapper must forward the
+    exit code and output of a whitelisted console child.
+
+    The direct GetConsoleWindow() probe can no longer ride through the wrapper:
+    R13a makes bash_compress re-validate its own argv, and ``python -c`` is a
+    non-whitelisted interpreter, so the wrapper correctly refuses it. The
+    no-console guarantee for the wrapper's own child is proven elsewhere:
+    ``test_create_no_window_child_has_no_console`` proves CREATE_NO_WINDOW
+    suppresses a console, and the source scan proves bash_compress passes
+    ``creationflags=_NO_WINDOW`` to that child. This test keeps proving the
+    wrapper's end-to-end execution contract (spawn, forward output, forward the
+    exit code) using a whitelisted console binary the wrapper will accept.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=str(repo), check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "to@example.com"], cwd=str(repo), check=True
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Token Optimizer"], cwd=str(repo), check=True
+    )
+    (repo / "file.txt").write_text("hello\n", encoding="utf-8")
+    subprocess.run(["git", "add", "file.txt"], cwd=str(repo), check=True)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=str(repo), check=True)
+
     env = dict(os.environ)
     env["TOKEN_OPTIMIZER_SNAPSHOT_DIR"] = str(tmp_path)
     proc = subprocess.run(
-        [sys.executable, str(SCRIPTS / "bash_compress.py"),
-         sys.executable, "-c", _CONSOLE_PROBE],
+        [sys.executable, str(SCRIPTS / "bash_compress.py"), "git", "status", "--short"],
         capture_output=True,
         timeout=60,
         env=env,
+        cwd=str(repo),
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     assert proc.returncode == 0, (
-        "bash_compress child reported a console window (rc=%s)" % proc.returncode
+        "bash_compress child failed (rc=%s, stderr=%r)"
+        % (proc.returncode, proc.stderr)
     )
 
 

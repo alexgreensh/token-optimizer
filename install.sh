@@ -362,8 +362,36 @@ install_hermes() {
 # ~/.gemini/token-optimizer/config.json; the hook bridge and rollup are no-ops
 # until that record exists. --dry-run and --uninstall are forwarded to the
 # measure.py verbs; any other flag is ignored (never reaches argparse).
+
+# Resolve a Python interpreter that can run measure.py. Native-Windows Git
+# Bash exposes `python`/`py`, not a `python3` alias, so fall back in that order
+# and verify 3.9+ (COPILOT/HERMES parity). Prints the resolved interpreter to
+# stdout; callers capture it into local `python_bin`.
+_resolve_python() {
+    local python_bin=""
+    if command -v python3 &>/dev/null; then
+        python_bin="python3"
+    elif command -v python &>/dev/null; then
+        python_bin="python"
+    else
+        fail "python3 not found. Token Optimizer for Antigravity needs Python 3.9+."
+    fi
+    local py_version py_major py_minor
+    py_version="$("$python_bin" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null)"
+    py_major="$(echo "$py_version" | cut -d. -f1)"
+    py_minor="$(echo "$py_version" | cut -d. -f2)"
+    if [ -z "$py_version" ]; then
+        fail "${python_bin} was found but could not execute. Check the Python installation."
+    fi
+    if [ "$py_major" -lt 3 ] 2>/dev/null || { [ "$py_major" -eq 3 ] && [ "$py_minor" -lt 9 ]; } 2>/dev/null; then
+        fail "Python ${py_version} found, but 3.9+ is required."
+    fi
+    printf '%s\n' "$python_bin"
+}
+
 install_antigravity() {
-    command -v python3 &>/dev/null || fail "python3 not found. Token Optimizer for Antigravity needs Python 3."
+    local python_bin
+    python_bin="$(_resolve_python)"
 
     local script_dir measure_py
     script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -402,7 +430,7 @@ install_antigravity() {
 
     if [ "$ag_verb" = "antigravity-uninstall" ]; then
         info "Removing Token Optimizer from Google Antigravity..."
-        if ! TOKEN_OPTIMIZER_RUNTIME=antigravity python3 "$measure_py" antigravity-uninstall "${ag_args[@]+"${ag_args[@]}"}"; then
+        if ! TOKEN_OPTIMIZER_RUNTIME=antigravity "$python_bin" "$measure_py" antigravity-uninstall "${ag_args[@]+"${ag_args[@]}"}"; then
             fail "Antigravity uninstall failed."
         fi
         echo ""
@@ -413,7 +441,7 @@ install_antigravity() {
     fi
 
     info "Installing Token Optimizer into Google Antigravity (~/.gemini/config/plugins/token-optimizer/)..."
-    if ! TOKEN_OPTIMIZER_RUNTIME=antigravity python3 "$measure_py" antigravity-install "${ag_args[@]+"${ag_args[@]}"}"; then
+    if ! TOKEN_OPTIMIZER_RUNTIME=antigravity "$python_bin" "$measure_py" antigravity-install "${ag_args[@]+"${ag_args[@]}"}"; then
         fail "Antigravity install failed."
     fi
 
@@ -421,8 +449,8 @@ install_antigravity() {
     printf "${BOLD}${GREEN}Token Optimizer for Google Antigravity installed (beta)!${NC}\n"
     echo ""
     echo "  Plugin:    ~/.gemini/config/plugins/token-optimizer/ (auto-loaded by agy + Antigravity 2.0 app + IDE)"
-    echo "  Verify:    TOKEN_OPTIMIZER_RUNTIME=antigravity python3 ${measure_py} antigravity-doctor"
-    echo "  Summary:   TOKEN_OPTIMIZER_RUNTIME=antigravity python3 ${measure_py} antigravity-summary"
+    echo "  Verify:    TOKEN_OPTIMIZER_RUNTIME=antigravity ${python_bin} ${measure_py} antigravity-doctor"
+    echo "  Summary:   TOKEN_OPTIMIZER_RUNTIME=antigravity ${python_bin} ${measure_py} antigravity-summary"
     echo "  Consent:   ~/.gemini/token-optimizer/config.json (collection is off until the install records it)"
     echo "  Re-run this command after a git pull to update."
     echo ""

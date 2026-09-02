@@ -39,8 +39,26 @@ def clean_env(monkeypatch):
     runtime_env.detect_runtime.cache_clear()
 
 
-def test_runtime_override_antigravity(clean_env, tmp_path, monkeypatch):
+def _redirect_home(monkeypatch, tmp_path):
+    """Point every home signal at the fixture so Path.home() agrees on every OS.
+
+    Path.home() reads HOME on POSIX but USERPROFILE (+ HOMEDRIVE/HOMEPATH) on
+    Windows, so setting only HOME leaves ~ pinned to the real profile on a
+    Windows runner and the under-$HOME confinement resolves against the wrong
+    root. Set the full set so antigravity_home()'s fallback and guard see the
+    same fixture directory the test asserts against.
+    """
     monkeypatch.setenv("HOME", str(tmp_path))
+    if os.name == "nt":
+        drive, _, tail = str(tmp_path).partition(os.sep)
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        if ":" in drive:
+            monkeypatch.setenv("HOMEDRIVE", drive)
+            monkeypatch.setenv("HOMEPATH", os.sep + tail)
+
+
+def test_runtime_override_antigravity(clean_env, tmp_path, monkeypatch):
+    _redirect_home(monkeypatch, tmp_path)
     monkeypatch.setenv("TOKEN_OPTIMIZER_RUNTIME", "antigravity")
     assert runtime_env.detect_runtime() == "antigravity"
     assert str(runtime_env.runtime_home()).endswith(".gemini")
@@ -48,7 +66,7 @@ def test_runtime_override_antigravity(clean_env, tmp_path, monkeypatch):
 
 
 def test_home_env_resolves_under_home(clean_env, tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
+    _redirect_home(monkeypatch, tmp_path)
     gemini = tmp_path / ".gemini"
     gemini.mkdir()
     monkeypatch.setenv("TOKEN_OPTIMIZER_ANTIGRAVITY_HOME", str(gemini))
@@ -57,7 +75,7 @@ def test_home_env_resolves_under_home(clean_env, tmp_path, monkeypatch):
 
 
 def test_home_env_outside_home_falls_back(clean_env, tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
+    _redirect_home(monkeypatch, tmp_path)
     monkeypatch.setenv(
         "TOKEN_OPTIMIZER_ANTIGRAVITY_HOME", str(tmp_path.parent / "escape")
     )
@@ -68,7 +86,7 @@ def test_home_env_outside_home_falls_back(clean_env, tmp_path, monkeypatch):
 
 
 def test_home_env_beats_claudecode(clean_env, tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
+    _redirect_home(monkeypatch, tmp_path)
     gemini = tmp_path / ".gemini"
     gemini.mkdir()
     monkeypatch.setenv("TOKEN_OPTIMIZER_ANTIGRAVITY_HOME", str(gemini))
@@ -77,7 +95,7 @@ def test_home_env_beats_claudecode(clean_env, tmp_path, monkeypatch):
 
 
 def test_claude_plugin_env_beats_agy_ancestor(clean_env, tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
+    _redirect_home(monkeypatch, tmp_path)
     monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(tmp_path / ".claude" / "plugins"))
     monkeypatch.setattr(
         runtime_env, "_antigravity_signal", lambda: True
@@ -86,6 +104,6 @@ def test_claude_plugin_env_beats_agy_ancestor(clean_env, tmp_path, monkeypatch):
 
 
 def test_plugin_data_env_vars_antigravity(clean_env, tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
+    _redirect_home(monkeypatch, tmp_path)
     monkeypatch.setenv("TOKEN_OPTIMIZER_RUNTIME", "antigravity")
     assert runtime_env.plugin_data_env_vars() == ("TOKEN_OPTIMIZER_PLUGIN_DATA",)

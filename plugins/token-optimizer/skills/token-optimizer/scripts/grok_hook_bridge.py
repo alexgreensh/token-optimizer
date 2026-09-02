@@ -137,6 +137,9 @@ CAP_SESSIONSTART_CTX = "sessionstart_ctx"  # passive: stdout ignored (10-hooks.m
 CAP_USERPROMPT_CTX = "userprompt_ctx"   # allowing stdout discarded (10-hooks.md "UserPromptSubmit Decision Control")
 
 
+_CAPABILITIES = None
+
+
 def _documented_caps() -> dict:
     """The documented Grok hook contract (static — no live host in this mode)."""
     return {
@@ -152,8 +155,12 @@ def load_capabilities():
 
     Unlike the Copilot bridge (which re-probes a live CLI version), Grok's
     capability matrix is static in contract-only mode, so there is no refresh.
+    Cached at first call to avoid allocating a fresh dict on every tool event.
     """
-    return _documented_caps()
+    global _CAPABILITIES
+    if _CAPABILITIES is None:
+        _CAPABILITIES = _documented_caps()
+    return _CAPABILITIES
 
 
 # ---------------------------------------------------------------------------
@@ -254,13 +261,27 @@ def decode_payload(payload):
 # ---------------------------------------------------------------------------
 
 
+_TO_DIR_HOME = None
+_TO_DIR_CACHED = None
+
+
 def _to_dir():
-    """Token Optimizer's data dir under the Grok home. None if unavailable."""
+    """Token Optimizer's data dir under the Grok home. None if unavailable.
+
+    Memoized on the resolved grok_home() path so the hot path (3+ calls per
+    tool event via _record_observed, _tally_path, _update_tally) does one
+    mkdir, not three.
+    """
+    global _TO_DIR_HOME, _TO_DIR_CACHED
     if grok_home is None:
         return None
     try:
-        d = grok_home() / "token-optimizer"
+        home = grok_home()
+        if _TO_DIR_CACHED is not None and _TO_DIR_HOME == home:
+            return _TO_DIR_CACHED
+        d = home / "token-optimizer"
         d.mkdir(parents=True, exist_ok=True)
+        _TO_DIR_HOME, _TO_DIR_CACHED = home, d
         return d
     except OSError:
         return None
@@ -270,7 +291,11 @@ def _atomic_write_json(path, obj):
     if _atomic_write_json_impl is None:
         return False
     try:
-        _atomic_write_json_impl(path, obj)
+        # replace_symlink=True: even if an attacker plants a symlink at the
+        # tally/observed-events path between calls, os.replace swaps the
+        # symlink itself, never its target. Matches _copy_no_follow in the
+        # installer and the hooks-file write.
+        _atomic_write_json_impl(path, obj, replace_symlink=True)
         return True
     except OSError:
         return False
@@ -308,7 +333,7 @@ def _tally_path(fields):
 
 
 def _load_tally(path):
-    if path is None or not path.exists():
+    if path is None:
         return None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -466,7 +491,9 @@ def _locate_measure_py():
     return None
 
 
-def _spawn_rollup():
+def _spawn_measure(command, *, interactive=False):
+    """Shared spawn path for rollup and dashboard (probe guard + measure
+    lookup + detach). Collapses the two near-duplicate helpers."""
     if os.environ.get("TOKEN_OPTIMIZER_PROBE") == "1":
         return
     measure = _locate_measure_py()
@@ -474,30 +501,22 @@ def _spawn_rollup():
         return
     try:
         spawn_detached(
-            [sys.executable, str(measure), "grok-rollup", "--quiet"],
-            env=_measure_env(),
+            [sys.executable, str(measure)] + command,
+            env=_measure_env(interactive=interactive),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
     except (OSError, subprocess.SubprocessError):
-        logger.warning("[grok_hook_bridge] detached rollup spawn failed", exc_info=True)
+        logger.warning("[grok_hook_bridge] detached %s spawn failed",
+                       command[0], exc_info=True)
+
+
+def _spawn_rollup():
+    _spawn_measure(["grok-rollup", "--quiet"])
 
 
 def _spawn_dashboard():
-    if os.environ.get("TOKEN_OPTIMIZER_PROBE") == "1":
-        return
-    measure = _locate_measure_py()
-    if measure is None:
-        return
-    try:
-        spawn_detached(
-            [sys.executable, str(measure), "dashboard", "--quiet"],
-            env=_measure_env(interactive=True),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except (OSError, subprocess.SubprocessError):
-        logger.warning("[grok_hook_bridge] detached dashboard spawn failed", exc_info=True)
+    _spawn_measure(["dashboard", "--quiet"], interactive=True)
 
 
 _STOP_ROLLUP_SECS = 120  # at most one stop rollup per machine per 120s

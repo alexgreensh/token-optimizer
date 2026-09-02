@@ -56,11 +56,7 @@ def _default_context_window() -> int:
     return _GROK_DEFAULT_CONTEXT_WINDOW
 
 
-def _safe_int(value: Any, default: int = 0) -> int:
-    try:
-        return int(value) if value is not None else default
-    except (TypeError, ValueError):
-        return default
+from grok_state import _safe_int as _safe_int  # noqa: E402,F401 — shared helper
 
 
 def _parse_ts(value: Any) -> Optional[str]:
@@ -91,37 +87,49 @@ def _parse_ts(value: Any) -> Optional[str]:
     return None
 
 
+try:
+    from hermes_session import compute_quality_score as _compute_quality_score
+except Exception:
+    _compute_quality_score = None
+
+
 def _quality(input_tokens, output_tokens, message_count, model, ctx_window, cache_read):
     """Quality score from Grok's session-level fields (mirrors copilot_session)."""
-    try:
-        from hermes_session import compute_quality_score
-
-        return compute_quality_score(
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            message_count=message_count,
-            model=model,
-            context_window=ctx_window,
-            cache_read=cache_read,
-        )
-    except Exception as exc:  # pragma: no cover - defensive fallback
-        logger.debug("[grok_session] quality scorer unavailable: %s", exc)
-        fill = min(1.0, (input_tokens + cache_read) / ctx_window) if ctx_window else 0.0
-        score = max(0.0, 100.0 - fill * 50.0)
-        band = "healthy" if score >= 70 else ("watch" if score >= 50 else "critical")
-        grade = "A" if score >= 90 else ("B" if score >= 75 else ("C" if score >= 60 else "D"))
-        return {
-            "score": round(score, 1),
-            "grade": grade,
-            "band": band,
-            "fill_ratio": round(fill, 4),
-            "context_window_used": ctx_window,
-            "signals": {"fill": round(fill, 4)},
-            "signal_scores": {"fill": round(fill * 100, 1)},
-            "signals_active": ["context_fill"],
-            "signals_omitted": [],
-            "estimated": True,
-        }
+    if _compute_quality_score is not None:
+        try:
+            return _compute_quality_score(
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                message_count=message_count,
+                model=model,
+                context_window=ctx_window,
+                cache_read=cache_read,
+            )
+        except Exception as exc:  # pragma: no cover - defensive fallback
+            logger.debug("[grok_session] quality scorer unavailable: %s", exc)
+    fill = min(1.0, (input_tokens + cache_read) / ctx_window) if ctx_window else 0.0
+    score = max(0.0, 100.0 - fill * 50.0)
+    band = "healthy" if score >= 70 else ("watch" if score >= 50 else "critical")
+    if score >= 90:
+        grade = "A"
+    elif score >= 75:
+        grade = "B"
+    elif score >= 60:
+        grade = "C"
+    else:
+        grade = "D"
+    return {
+        "score": round(score, 1),
+        "grade": grade,
+        "band": band,
+        "fill_ratio": round(fill, 4),
+        "context_window_used": ctx_window,
+        "signals": {"fill": round(fill, 4)},
+        "signal_scores": {"fill": round(fill * 100, 1)},
+        "signals_active": ["context_fill"],
+        "signals_omitted": [],
+        "estimated": True,
+    }
 
 
 def _base_canonical(slug: str, token_source: str) -> dict:
@@ -213,7 +221,7 @@ def normalize_session(raw: dict) -> Optional[dict]:
         out = _safe_int(row.get("output_tokens"))
         cr = _safe_int(row.get("cache_read_tokens"))
         cc = _safe_int(row.get("cache_create_tokens"))
-        key = str(model) or _UNKNOWN_MODEL
+        key = str(model) if model is not None and str(model) != "" else _UNKNOWN_MODEL
         model_usage[key] = inp + out
         model_usage_breakdown[key] = {
             "fresh_input": max(0, inp - cr),

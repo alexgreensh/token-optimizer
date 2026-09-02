@@ -314,7 +314,7 @@ def _copy_no_follow(src: Path, dest: Path) -> None:
         raise
 
 
-def install(*, dry_run: bool = False, home: Path = None) -> dict:
+def install(*, dry_run: bool = False, home: Path | None = None) -> dict:
     """Install the adapter. Returns a summary dict of actions taken."""
     if os.name == "nt":
         raise RuntimeError(
@@ -377,7 +377,7 @@ def install(*, dry_run: bool = False, home: Path = None) -> dict:
     return actions
 
 
-def uninstall(*, dry_run: bool = False, home: Path = None) -> dict:
+def uninstall(*, dry_run: bool = False, home: Path | None = None) -> dict:
     """Remove OUR hooks file and the payload dir. Session data stays."""
     root = home if home is not None else grok_home()
     actions = {"removed": [], "dry_run": dry_run}

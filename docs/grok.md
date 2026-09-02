@@ -74,7 +74,7 @@ TO never emits `deny`/`block`: every handler is fail-open, and a timed-out or
 crashed hook never blocks a tool call (10-hooks.md "How a Hook Resolves",
 step 4).
 
-## What Grove exposes to companions
+## What Grok exposes to companions
 
 | Surface | Authoritative | Never |
 |---|---|---|

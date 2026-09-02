@@ -184,8 +184,6 @@ def read_usage_totals(session_dir: Path) -> dict:
         "model_usage": {},
     }
     updates_path = session_dir / _UPDATES_FILE
-    if not updates_path.is_file():
-        return out
 
     for line in _stream_updates(updates_path):
         update = line.get("update")
@@ -219,8 +217,9 @@ def read_usage_totals(session_dir: Path) -> dict:
             for model, row in model_usage.items():
                 if not isinstance(row, dict):
                     continue
+                model_name = str(model) if model is not None and str(model) != "" else "unknown"
                 slot = out["model_usage"].setdefault(
-                    str(model),
+                    model_name,
                     {
                         "input_tokens": 0,
                         "output_tokens": 0,

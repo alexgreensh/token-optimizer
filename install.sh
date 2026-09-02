@@ -1019,6 +1019,38 @@ uninstall_cursor() {
     exit 0
 }
 
+uninstall_grok() {
+    command -v python3 &>/dev/null || fail "python3 not found. Token Optimizer uninstall needs Python 3."
+
+    local script_dir measure_py
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    measure_py="${script_dir}/skills/token-optimizer/scripts/measure.py"
+    [ -f "$measure_py" ] || fail "Run install.sh from inside a token-optimizer checkout."
+
+    local extra=()
+    for a in "$@"; do
+        case "$a" in
+            --dry-run) extra+=("$a") ;;
+        esac
+    done
+
+    local resolved_grok_home
+    resolved_grok_home="$(TOKEN_OPTIMIZER_RUNTIME=grok python3 "$measure_py" grok-home 2>/dev/null || true)"
+    [ -n "$resolved_grok_home" ] || resolved_grok_home="${HOME}/.grok"
+
+    info "Removing Token Optimizer from Grok Build (${resolved_grok_home})..."
+    if ! TOKEN_OPTIMIZER_RUNTIME=grok python3 "$measure_py" grok-uninstall --home "$resolved_grok_home" "${extra[@]+"${extra[@]}"}"; then
+        fail "Grok uninstall failed."
+    fi
+
+    echo ""
+    echo "Token Optimizer removed from Grok Build. Session data (if any) remains at:"
+    echo "  ${TOKEN_OPTIMIZER_GROK_HOME:-${HOME}/.grok}/token-optimizer/"
+    echo "  Remove it manually with: rm -rf ${TOKEN_OPTIMIZER_GROK_HOME:-${HOME}/.grok}/token-optimizer"
+    echo ""
+    exit 0
+}
+
 # Route --opencode / --hermes / --copilot / --cursor / --antigravity / --grok / --cowork before the
 # Claude Code prerequisite checks (OpenCode needs bun; Hermes, Copilot, Cursor,
 # Antigravity, Grok, and the Cowork packager need python3, not the Claude Code plugin env).
@@ -1050,7 +1082,13 @@ for arg in "$@"; do
             ;;
         --antigravity) install_antigravity "$@" ;;
         --cowork) install_cowork "$@" ;;
-        --grok) install_grok "$@" ;;
+        --grok)
+            # Route --grok --uninstall to the uninstaller; otherwise install.
+            for a in "$@"; do
+                [ "$a" = "--uninstall" ] && uninstall_grok "$@"
+            done
+            install_grok "$@"
+            ;;
     esac
 done
 

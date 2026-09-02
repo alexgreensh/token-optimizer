@@ -281,9 +281,9 @@ def test_detached_sites_still_route_through_spawn_utils():
     """
     # +1 each for the Gap-2 session-end dashboard regen (also via spawn_detached).
     # Cursor: one rollup + one dashboard spawn (stop shares both throttle paths).
-    # Grok: one rollup + one dashboard spawn (same pattern as Cursor).
+    # Grok: one shared _spawn_measure helper (rollup + dashboard collapsed).
     expected = {"hermes_hook_bridge.py": 3, "copilot_hook_bridge.py": 2,
-                "cursor_hook_bridge.py": 2, "grok_hook_bridge.py": 2}
+                "cursor_hook_bridge.py": 2, "grok_hook_bridge.py": 1}
     for name, count in expected.items():
         tree = _parse(name)
         calls = [

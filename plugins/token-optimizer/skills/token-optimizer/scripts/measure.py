@@ -19598,6 +19598,317 @@ def _collect_cursor_sessions(days=90, quiet=False, rebuild=False):
     return new_count
 
 
+def _antigravity_restore_clean(value) -> str:
+    """R22 filter: printable-only, single-line, 200-char cap.
+
+    Conversation titles and workspace paths are untrusted input injected into
+    the next session's context, so newlines/control chars are stripped and the
+    length is capped exactly like the Copilot continuity filter.
+    """
+    text = str(value or "")
+    text = "".join(ch for ch in text if ch == " " or ch.isprintable())
+    return " ".join(text.split())[:200]
+
+
+def _write_antigravity_restore_context(sessions, quiet=False):
+    """Maintain the continuity file the PreInvocation hook injects.
+
+    Summarizes the most recent completed Antigravity session so a new session
+    starts grounded. Capped well under the bridge's 16KB read limit.
+    """
+    try:
+        from runtime_env import antigravity_home  # noqa: PLC0415
+
+        complete = [s for s in sessions if not s.get("incomplete")]
+        pool = complete or sessions
+        if not pool:
+            return
+        latest = max(
+            pool,
+            key=lambda s: (s.get("first_ts") is not None, s.get("first_ts") or ""),
+        )
+
+        lines = ["[Token Optimizer] Continuity from your previous Antigravity session:"]
+        if latest.get("topic"):
+            lines.append(f"- Topic: {_antigravity_restore_clean(latest['topic'])}")
+        if latest.get("cwd"):
+            lines.append(f"- Working dir: {_antigravity_restore_clean(latest['cwd'])}")
+        lines.append(
+            f"- Model: {_antigravity_restore_clean(latest.get('model', 'unknown'))}; "
+            f"{latest.get('total_input_tokens', 0):,} in / "
+            f"{latest.get('total_output_tokens', 0):,} out tokens"
+        )
+        if latest.get("incomplete"):
+            lines.append("- NOTE: that session ended without a clean shutdown (crash/kill).")
+
+        path = antigravity_home() / "token-optimizer" / "restore-context.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        import tempfile  # noqa: PLC0415
+
+        fd, tmp_name = tempfile.mkstemp(prefix=".restore-context.", suffix=".tmp", dir=str(path.parent))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write("\n".join(lines) + "\n")
+            os.replace(tmp_name, str(path))
+        except OSError:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
+    except Exception as exc:
+        if not quiet:
+            print(f"[Token Optimizer] restore-context update skipped: {exc}")
+
+
+def _antigravity_summary():
+    """Per-surface session summary for Antigravity plus decoder health."""
+    import antigravity_state as _ags  # noqa: PLC0415
+
+    print("Token Optimizer — Google Antigravity summary")
+    raw_by_surface: dict[str, list] = {}
+    undecodable = 0
+    for raw in _ags.read_all_sessions():
+        raw_by_surface.setdefault(str(raw.get("surface") or "unknown"), []).append(raw)
+        undecodable += raw.get("undecodable_rows", 0)
+
+    any_data = False
+    for surface in ("antigravity-cli", "antigravity", "antigravity-ide"):
+        if surface not in raw_by_surface:
+            continue
+        normalized = [s for s in (antigravity_session.normalize_session(r) for r in raw_by_surface[surface]) if s]
+        if not normalized:
+            continue
+        any_data = True
+        total_in = sum(s.get("total_input_tokens", 0) for s in normalized)
+        total_out = sum(s.get("total_output_tokens", 0) for s in normalized)
+        total_cache = sum(s.get("total_cache_read", 0) for s in normalized)
+        cost = sum(s.get("cost_usd") or 0.0 for s in normalized)
+        credits = sum(s.get("credits") or 0.0 for s in normalized if s.get("credits"))
+        incomplete = sum(1 for s in normalized if s.get("incomplete"))
+        models: dict[str, int] = {}
+        for s in normalized:
+            for m, v in (s.get("model_usage") or {}).items():
+                models[m] = models.get(m, 0) + v
+        top_models = sorted(models.items(), key=lambda kv: -kv[1])[:3]
+
+        print()
+        print(f"  {surface}: {len(normalized)} session(s)")
+        if credits:
+            print(f"    Antigravity credits: {credits:,.2f}")
+        else:
+            print(f"    Estimated cost: ~${cost:,.2f} (Gemini list-price estimate)")
+        print(f"    Tokens: {total_in:,} in / {total_out:,} out / {total_cache:,} cache-read")
+        if top_models:
+            print("    Models: " + ", ".join(f"{m} ({v:,})" for m, v in top_models))
+        if incomplete:
+            print(f"    {incomplete} session(s) ended without clean shutdown (partial data)")
+    if not any_data:
+        print()
+        print("  No Antigravity sessions found yet.")
+    if undecodable:
+        try:
+            from antigravity_proto import DECODER_VERSION  # noqa: PLC0415
+        except Exception:
+            DECODER_VERSION = "ag-v1"
+        print()
+        print(f"  Decoder health: {undecodable} undecodable gen_metadata row(s) "
+              f"(decoder {DECODER_VERSION}).")
+    print()
+    print("  Full trends: measure.py antigravity-rollup (sessions land in trends.db).")
+
+
+def _collect_antigravity_sessions(days=90, quiet=False, rebuild=False):
+    """Collect Antigravity sessions into the trends DB, priced per R8.
+
+    Mirrors _collect_copilot_sessions. The three surfaces are separate session
+    populations with distinct dedup keys (``antigravity:<surface>:<conversation_id>``)
+    — never merged, never summed. Idempotent via the jsonl_path dedup column.
+    """
+    import antigravity_state as _ags  # noqa: PLC0415
+
+    # R20: no consent record -> no collection, no restore-context write.
+    try:
+        from runtime_env import antigravity_home  # noqa: PLC0415
+
+        consent_path = antigravity_home() / "token-optimizer" / "config.json"
+        consent = False
+        if consent_path.is_file():
+            cfg = json.loads(consent_path.read_text(encoding="utf-8"))
+            consent = bool(isinstance(cfg, dict) and cfg.get("antigravity_consent"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        consent = False
+    if not consent:
+        if not quiet:
+            print("[Token Optimizer] Antigravity data collection is consent-gated; "
+                  "run `bash install.sh --antigravity` to record consent.")
+        return 0
+
+    try:
+        conn = _init_trends_db()
+    except sqlite3.DatabaseError:
+        if TRENDS_DB.exists():
+            try:
+                stamp = int(datetime.now().timestamp())
+                TRENDS_DB.rename(TRENDS_DB.with_suffix(f".db.corrupt.{stamp}"))
+            except OSError:
+                pass
+        conn = _init_trends_db()
+    try:
+        if rebuild:
+            if not quiet:
+                print("[Token Optimizer] Rebuilding Antigravity trends rows...")
+            conn.execute("PRAGMA user_version = 3")
+            conn.execute("DELETE FROM session_log WHERE jsonl_path LIKE 'antigravity:%'")
+            conn.commit()
+
+        try:
+            raw_sessions = list(_ags.read_all_sessions())
+        except Exception as exc:
+            if not quiet:
+                print(f"[Token Optimizer] Antigravity scan failed: {exc}")
+            raw_sessions = []
+
+        cutoff = datetime.now().timestamp() - days * 86400
+        new_count = 0
+        normalized = []
+        for raw in raw_sessions:
+            parsed = antigravity_session.normalize_session(raw)
+            if not parsed:
+                continue
+            normalized.append(parsed)
+
+            # R8 pricing: only the list-price-estimate path is denominated in
+            # USD; credits are Antigravity's own figure and stay USD-less.
+            if parsed.get("cost_source") == "antigravity_list_price_estimate" and parsed.get("model_id"):
+                fresh = max(0, parsed["total_input_tokens"] - parsed.get("total_cache_read", 0))
+                parsed["cost_usd"] = _get_model_cost(
+                    parsed["model_id"],
+                    fresh,
+                    parsed["total_output_tokens"],
+                    cache_read=parsed.get("total_cache_read", 0),
+                )
+
+            dedup_key = parsed.get("dedup_key")
+            if not dedup_key:
+                continue
+            is_incomplete = 1 if parsed.get("incomplete") else 0
+            if _is_file_collected(conn, dedup_key):
+                if not is_incomplete:
+                    try:
+                        existing = conn.execute(
+                            "SELECT incomplete FROM session_log WHERE jsonl_path = ?",
+                            (dedup_key,),
+                        ).fetchone()
+                    except sqlite3.Error:
+                        existing = None
+                    if existing is not None and existing[0]:
+                        try:
+                            conn.execute(
+                                """UPDATE session_log SET
+                                     input_tokens=?, output_tokens=?, message_count=?,
+                                     api_calls=?, cache_hit_rate=?, cache_create_1h_tokens=?,
+                                     duration_minutes=?, quality_score=?, quality_grade=?,
+                                     cost_usd=?, cost_source=?, credits=?, incomplete=0
+                                   WHERE jsonl_path=? AND incomplete=1""",
+                                (
+                                    parsed["total_input_tokens"], parsed["total_output_tokens"],
+                                    parsed["message_count"], parsed.get("api_calls", 0),
+                                    parsed["cache_hit_rate"], parsed.get("total_cache_create_1h", 0),
+                                    parsed["duration_minutes"], parsed.get("quality_score", 0),
+                                    parsed.get("quality_grade", "F"), parsed.get("cost_usd", 0.0),
+                                    parsed.get("cost_source"), parsed.get("credits"), dedup_key,
+                                ),
+                            )
+                            new_count += 1
+                        except sqlite3.Error as exc:
+                            if not quiet:
+                                print(f"[Token Optimizer] could not upgrade an Antigravity session: {exc}")
+                continue
+
+            first_ts = parsed.get("first_ts")
+            date = None
+            if first_ts:
+                try:
+                    dt = datetime.fromisoformat(first_ts)
+                    if dt.timestamp() < cutoff:
+                        continue
+                    date = dt.astimezone().strftime("%Y-%m-%d")
+                except (TypeError, ValueError):
+                    date = None
+            if date is None:
+                date = datetime.now().strftime("%Y-%m-%d")
+            project_name = str(parsed.get("cwd") or "antigravity")
+
+            try:
+                cur = conn.execute(
+                    """INSERT OR IGNORE INTO session_log
+                       (jsonl_path, date, project, duration_minutes, input_tokens,
+                        output_tokens, message_count, api_calls, cache_hit_rate,
+                        cache_create_1h_tokens, cache_create_5m_tokens, cache_ttl_scanned,
+                        avg_call_gap_seconds, max_call_gap_seconds, p95_call_gap_seconds,
+                        skills_json, subagents_json, tool_calls_json, model_usage_json,
+                        all_model_usage_json, model_usage_breakdown_json, version, slug, topic, collected_at,
+                        quality_score, quality_grade, stale_waste_tokens,
+                        cost_usd, cost_source, credits, platform, incomplete)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        dedup_key, date, project_name,
+                        parsed["duration_minutes"],
+                        parsed["total_input_tokens"],
+                        parsed["total_output_tokens"],
+                        parsed["message_count"],
+                        parsed.get("api_calls", 0),
+                        parsed["cache_hit_rate"],
+                        parsed.get("total_cache_create_1h", 0),
+                        parsed.get("total_cache_create_5m", 0),
+                        1,
+                        parsed.get("avg_call_gap_seconds"),
+                        parsed.get("max_call_gap_seconds"),
+                        parsed.get("p95_call_gap_seconds"),
+                        json.dumps(parsed.get("skills_used", {})),
+                        json.dumps(parsed.get("subagents_used", {})),
+                        json.dumps(parsed.get("tool_calls", {})),
+                        json.dumps(parsed.get("model_usage", {})),
+                        json.dumps(parsed.get("model_usage", {})),
+                        json.dumps(parsed.get("model_usage_breakdown", {})),
+                        parsed.get("version"),
+                        parsed.get("slug"),
+                        parsed.get("topic"),
+                        datetime.now().isoformat(),
+                        parsed.get("quality_score", 0),
+                        parsed.get("quality_grade", "F"),
+                        0,
+                        parsed.get("cost_usd", 0.0),
+                        parsed.get("cost_source"),
+                        parsed.get("credits"),
+                        "antigravity",
+                        is_incomplete,
+                    ),
+                )
+            except sqlite3.Error as exc:
+                if not quiet:
+                    print(f"[Token Optimizer] skipped an Antigravity session: {exc}")
+                continue
+            if cur.rowcount != 1:
+                continue
+            new_count += 1
+
+        if new_count > 0:
+            _rebuild_aggregate_tables(conn)
+        conn.commit()
+        conn.execute("PRAGMA user_version = 3")
+        conn.commit()
+    finally:
+        conn.close()
+
+    _write_antigravity_restore_context(normalized, quiet=quiet)
+
+    if not quiet:
+        print(f"[Token Optimizer] Collected {new_count} new Antigravity sessions.")
+    return new_count
+
+
 def collect_sessions(days=90, quiet=False, rebuild=False):
     """Parse new JSONL files and insert into SQLite. Zero token cost.
 
@@ -19613,6 +19924,9 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
 
     if _use_cursor_session_adapter():
         return _collect_cursor_sessions(days=days, quiet=quiet, rebuild=rebuild)
+
+    if _use_antigravity_session_adapter():
+        return _collect_antigravity_sessions(days=days, quiet=quiet, rebuild=rebuild)
 
     conn = _init_trends_db()
 
@@ -45766,6 +46080,39 @@ if __name__ == "__main__":
             sys.exit(0)
         _cursor_summary()
         sys.exit(0)
+    elif args[0] == "antigravity-doctor":
+        import antigravity_doctor
+        sys.exit(antigravity_doctor.main(args[1:]))
+    elif args[0] == "antigravity-install":
+        import antigravity_install
+        sys.exit(antigravity_install.main(args[1:]))
+    elif args[0] == "antigravity-uninstall":
+        import antigravity_install
+        sys.exit(antigravity_install.main(["uninstall"] + args[1:]))
+    elif args[0] == "antigravity-home":
+        from runtime_env import antigravity_home  # noqa: PLC0415
+        print(str(antigravity_home()))
+        sys.exit(0)
+    elif args[0] == "antigravity-rollup":
+        # Ingest recent Antigravity sessions into trends.db. Fired by the stop
+        # hook via antigravity_hook_bridge.handle_stop(). Wall-clock backstop:
+        # same 60s rationale as copilot-rollup — the bridge spawns this
+        # fire-and-forget, so cap it and fail open (the next Stop re-collects
+        # idempotently).
+        quiet = "--quiet" in args or "-q" in args
+        _tok_hook_deadline = _install_hook_budget(60)
+        try:
+            _collect_antigravity_sessions(days=90, quiet=quiet)
+        except _HookTimeout:
+            pass
+        except Exception:
+            pass
+        finally:
+            _clear_hook_budget(_tok_hook_deadline)
+        sys.exit(0)
+    elif args[0] == "antigravity-summary":
+        _antigravity_summary()
+        sys.exit(0)
     elif args[0] == "hermes-doctor":
         import hermes_doctor
         sys.exit(hermes_doctor.main(args[1:]))
@@ -47951,6 +48298,12 @@ if __name__ == "__main__":
         print("  python3 measure.py cursor-install        # Install Cursor hooks (merged into ~/.cursor/hooks.json)")
         print("  python3 measure.py cursor-summary        # Token/quality Cursor session summary")
         print("  python3 measure.py cursor-rollup         # Ingest Cursor sessions into trends DB")
+        print("  python3 measure.py antigravity-doctor    # Google Antigravity adapter readiness check")
+        print("  python3 measure.py antigravity-install   # Install Antigravity hooks (consent-gated)")
+        print("  python3 measure.py antigravity-uninstall # Remove Antigravity hooks + trend rows")
+        print("  python3 measure.py antigravity-home      # Print resolved Antigravity home")
+        print("  python3 measure.py antigravity-rollup    # Ingest Antigravity sessions into trends DB")
+        print("  python3 measure.py antigravity-summary   # Antigravity session cost/quality summary")
         print("  python3 measure.py codex-compact-prompt # Render/install Codex compact prompt")
         print("  python3 measure.py drift                # Drift report: compare against last snapshot")
         print("  python3 measure.py drift --json          # Machine-readable drift output")

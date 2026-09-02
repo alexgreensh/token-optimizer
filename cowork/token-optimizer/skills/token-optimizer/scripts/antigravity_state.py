@@ -227,6 +227,8 @@ def read_conversation(db_path: Path, *, surface: str = "") -> Optional[dict]:
         "cache_read_tokens": 0,
         "thinking_tokens": 0,
     }
+    credit_cost = 0
+    consumed_credits = 0
     model_volumes: dict[str, int] = {}
     undecodable_rows = 0
     last_fill: Optional[float] = None
@@ -270,6 +272,8 @@ def read_conversation(db_path: Path, *, surface: str = "") -> Optional[dict]:
             totals["output_tokens"] += rec["output_tokens"]
             totals["cache_read_tokens"] += rec["cache_read_tokens"]
             totals["thinking_tokens"] += rec["thinking_tokens"]
+            credit_cost += rec.get("credit_cost", 0)
+            consumed_credits += rec.get("consumed_credits", 0)
             model = rec.get("model_display_name") or "unknown"
             model_volumes[model] = model_volumes.get(model, 0) + rec["output_tokens"]
             if rec["max_context_tokens"] and rec["max_context_tokens"] > 0:
@@ -318,6 +322,8 @@ def read_conversation(db_path: Path, *, surface: str = "") -> Optional[dict]:
         "output_tokens": totals["output_tokens"],
         "cache_read_tokens": totals["cache_read_tokens"],
         "thinking_tokens": totals["thinking_tokens"],
+        "credit_cost": credit_cost,
+        "consumed_credits": consumed_credits,
         "last_fill": last_fill,
         "last_max_context": last_max_context,
         "model_display_name": model_display_name,

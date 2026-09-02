@@ -118,9 +118,21 @@ Manual deletion: remove the following directories:
 
 ## Cross-Platform
 
-The same privacy guarantees apply across all supported platforms (Claude Code, Codex, OpenCode, Hermes). Data paths vary by platform but the architecture is identical: local-only, zero network, credential-redacted storage.
+The same privacy guarantees apply across all supported platforms (Claude Code, Codex, OpenCode, Hermes). Data paths vary by platform but the architecture is identical: local-only, zero network by default, credential-redacted storage. The one exception is the admin-enabled org telemetry channel described below.
 
 Consent is tracked per-runtime. A user running both Claude Code and Codex must acknowledge consent separately in each runtime.
+
+## Teams edition: admin-enabled org telemetry
+
+Token Optimizer has a separate Teams edition for organizations. It is **admin-enabled, not opt-in by the individual**: nothing is emitted unless an org admin has placed a `fleet.json` (mode 0600) in Token Optimizer's config dir holding a collector `endpoint`, an ingest `token` (or `token_env`), and a per-org `hash_key` (or `hash_key_env`). Environment variables alone never enable emission; `TO_FLEET_DISABLE=1` on one machine overrides everything. When active, the local dashboard shows a banner ("Org telemetry active: sending session aggregates to ...") and `fleet_emitter.py --status` reports the state.
+
+**Exactly what is sent, per session** (aggregates Token Optimizer already computes and stores locally): platform, pseudonymous user/host/project identifiers (HMAC-SHA256 keyed by the org's `hash_key`, truncated), token counts (input, output, cache read, cache create, reported), model names and per-model token split, cost in USD with its `cost_source`, counted savings (tokens and USD) with a `savings_coverage` marker, quality score/grade, timestamps, and one account-level limit-meter reading when the meter is available. The envelope also carries `billing_mode` (`api`/`subscription`/`unknown`), `savings_method`, and a `models_redacted` count. If the admin sets `send_user_label: true`, the canonical identity string (config user, else `TO_FLEET_USER`, else gitconfig email, else OS username) travels as `user_label`; it is absent otherwise.
+
+**Never sent**: prompts, assistant responses, file contents, file paths, command text, tool output, topics, slugs. The allowlist is enforced on keys AND values before serialisation; model names not matching a strict pattern are replaced with `custom-<hmac>` and counted in `models_redacted`.
+
+**Pseudonymity**: identifiers are pseudonymous, re-identifiable by the org's collector operator by design (the operator holds the `hash_key`). Delivery is fail-open and bounded: events queue in a local outbox (0600) and drain with at most two 3-second POSTs per session-end flush; a down collector never blocks a hook. Inspect exactly what would be sent with `python3 fleet_emitter.py --dry-run` — the output is sensitive (it contains your org's aggregates) and is meant to be shared deliberately with whoever runs the collector. A one-line entry per flush lands in `fleet.log`.
+
+Claude Code's own OTel exporter can also point at the collector (OTLP/HTTP) as a second ingest path; only `api_request` metrics are retained. See `docs/teams-telemetry.md` for admin setup, credential placement and rotation.
 
 ## Source Available
 

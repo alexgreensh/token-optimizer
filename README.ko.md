@@ -29,7 +29,7 @@
 </p>
 <p align="center">
   <img src="https://img.shields.io/badge/dependencies-zero-brightgreen" alt="의존성 없음">
-  <img src="https://img.shields.io/badge/telemetry-none-brightgreen" alt="텔레메트리 없음">
+  <img src="https://img.shields.io/badge/telemetry-off_by_default-brightgreen" alt="텔레메트리 기본 꺼짐">
   <img src="https://img.shields.io/badge/python-3.9+-blue" alt="Python 3.9 이상">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="플랫폼">
   <a href="https://github.com/alexgreensh/token-optimizer/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue.svg" alt="라이선스: PolyForm Noncommercial"></a>
@@ -231,7 +231,7 @@ RTK와 Boost는 첫 번째 표면에 도달합니다. Headroom은 첫 번째와 
 | 캐시 안전 | 🟢 기존 컨텍스트 접두사 수정 안 함 | 🟡 프록시 모드가 진행 중 재작성 | 🟢 사전 셸만 | 🟢 사전 셸만 | 🟡 MCP 오버헤드 | 🟢 |
 | 기준선 컨텍스트 오버헤드 없음 | 🟢 외부 프로세스, 컨텍스트 주입 없음 | 🔴 지시 주입 | 🟢 셸 수준만 | 🟢 셸 수준만 | 🔴 MCP 서버 오버헤드 | 🟢 네이티브 |
 | 런타임 의존성 없음 | 🟢 순수 표준 라이브러리 (Python/TypeScript) | 🟡 Python + Rust + 선택적 모델 | 🟢 단일 Rust 바이너리 | 🟢 단일 바이너리 | 🟡 SQLite 어댑터 필요 | 🟢 N/A |
-| 텔레메트리 없음 | 🟢 기계 밖으로 아무것도 나가지 않음 | 🟡 `HEADROOM_TELEMETRY` 옵트인, 기본 꺼짐 | 🟡 옵트인 | 🔴 호출된 명령, 명령 인자, 종료 코드, 지속 시간, CI 속성, IP 수집 | 🟡 다양함 | 🟢 |
+| 기본 텔레메트리 없음 | 🟢 조직 관리자가 Teams 에디션 수집기를 활성화하지 않는 한 기계 밖으로 아무것도 나가지 않음 (PRIVACY.md 참조) | 🟡 `HEADROOM_TELEMETRY` 옵트인, 기본 꺼짐 | 🟡 옵트인 | 🔴 호출된 명령, 명령 인자, 종료 코드, 지속 시간, CI 속성, IP 수집 | 🟡 다양함 | 🟢 |
 | 멀티 플랫폼 | 🟢 Claude Code, VS Code, Codex, OpenClaw, OpenCode, Hermes, Copilot | 🟢 Claude Code, Cursor, Codex, Aider, Copilot | 🟢 15개 통합 | 🟡 Cursor, Claude Code, Copilot, Codex CLI | 🟢 17개 통합 | 🔴 Claude Code만 |
 | 작업별 모델 및 노력 조언 | 🟢 `route`가 돈 쓰기 전에 작업 크기 측정 | — | — | — | — | — |
 | 킵 웜(Keep-Warm) (캐시 TTL 갱신) | 🟢 캐시 만료 전 옵트인 핑, 트립와이어 자동 꺼짐 | 🔴 | 🔴 | — | 🔴 | 🔴 |
@@ -612,7 +612,7 @@ python3 measure.py inject-routing              # 주입
 <details>
 <summary><b>📡 어디론가 데이터를 보내나요?</b></summary>
 
-분석 없음, 텔레메트리 엔드포인트 없음, 제품 데이터가 기계 밖으로 나가지 않음. 측정 이벤트는 사용자가 소유한 로컬 SQLite 행. 네트워크 호출 없음.
+기본적으로 분석 없음, 텔레메트리 엔드포인트 없음, 제품 데이터가 기계 밖으로 나가지 않음. 측정 이벤트는 사용자가 소유한 로컬 SQLite 행. 네트워크 호출 없음——조직 관리자가 Teams 에디션 조직 텔레메트리 수집기를 활성화한 경우는 예외입니다 (PRIVACY.md 참조). 그 경우 세션별 집계(프롬프트나 콘텐츠는 절대 제외)가 관리자가 지정한 수집기로 전송되며 대시보드에 배너가 표시됩니다.
 
 </details>
 

@@ -29,7 +29,7 @@
 </p>
 <p align="center">
   <img src="https://img.shields.io/badge/dependencies-zero-brightgreen" alt="依存関係ゼロ">
-  <img src="https://img.shields.io/badge/telemetry-none-brightgreen" alt="テレメトリゼロ">
+  <img src="https://img.shields.io/badge/telemetry-off_by_default-brightgreen" alt="テレメトリデフォルトオフ">
   <img src="https://img.shields.io/badge/python-3.9+-blue" alt="Python 3.9+">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="プラットフォーム">
   <a href="https://github.com/alexgreensh/token-optimizer/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue.svg" alt="ライセンス: PolyForm Noncommercial"></a>
@@ -231,7 +231,7 @@ RTKとBoostは最初の面に到達します。Headroomは最初と3番目に到
 | キャッシュセーフ | 🟢 既存のコンテキストプレフィックスを変更しない | 🟡 プロキシモードが進行中を書き換え | 🟢 pre-shellのみ | 🟢 pre-shellのみ | 🟡 MCPオーバーヘッド | 🟢 |
 | ゼロベースラインコンテキストオーバーヘッド | 🟢 外部プロセス、コンテキスト注入なし | 🔴 指示を注入 | 🟢 シェルレベルのみ | 🟢 シェルレベルのみ | 🔴 MCPサーバーオーバーヘッド | 🟢 ネイティブ |
 | ゼロランタイム依存 | 🟢 純標準ライブラリ(Python/TypeScript) | 🟡 Python + Rust + オプションモデル | 🟢 単一Rustバイナリ | 🟢 単一バイナリ | 🟡 SQLiteアダプタが必要 | 🟢 N/A |
-| ゼロテレメトリ | 🟢 マシンから何も出ない | 🟡 `HEADROOM_TELEMETRY`オプトイン、デフォルトオフ | 🟡 オプトイン | 🔴 呼び出されたコマンド、コマンド引数、終了コード、期間、CI属性、IPを収集 | 🟡 様々 | 🟢 |
+| デフォルトでテレメトリなし | 🟢 組織の管理者が Teams 版コレクターを有効化しない限り、マシンから何も出ない(PRIVACY.md 参照) | 🟡 `HEADROOM_TELEMETRY`オプトイン、デフォルトオフ | 🟡 オプトイン | 🔴 呼び出されたコマンド、コマンド引数、終了コード、期間、CI属性、IPを収集 | 🟡 様々 | 🟢 |
 | マルチプラットフォーム | 🟢 Claude Code、VS Code、Codex、OpenClaw、OpenCode、Hermes、Copilot | 🟢 Claude Code、Cursor、Codex、Aider、Copilot | 🟢 15統合 | 🟡 Cursor、Claude Code、Copilot、Codex CLI | 🟢 17統合 | 🔴 Claude Codeのみ |
 | タスク別のモデルとeffortの助言 | 🟢 `route`がお金を使う前にタスクを計量 | — | — | — | — | — |
 | Keep-Warm(キャッシュTTLリフレッシュ) | 🟢 キャッシュ期限前のオプトインping、トリップワイヤー自動オフ | 🔴 | 🔴 | — | 🔴 | 🔴 |
@@ -612,7 +612,7 @@ python3 measure.py inject-routing              # 注入
 <details>
 <summary><b>📡 どこかにデータを送信しますか?</b></summary>
 
-分析なし、テレメトリエンドポイントなし、製品データはマシンから出ません。計測イベントはあなたが所有するローカルSQLiteの行です。ゼロのネットワーク呼び出し。
+デフォルトでは、分析なし、テレメトリエンドポイントなし、製品データはマシンから出ません。計測イベントはあなたが所有するローカルSQLiteの行です。ゼロのネットワーク呼び出し——ただし組織の管理者が Teams 版の組織テレメトリコレクターを有効化した場合を除きます(PRIVACY.md 参照)。その場合、セッションごとの集計(プロンプトや内容は決して含まない)が管理者指定のコレクターに送信され、ダッシュボードにバナーが表示されます。
 
 </details>
 

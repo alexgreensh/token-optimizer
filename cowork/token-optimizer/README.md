@@ -29,7 +29,7 @@
 </p>
 <p align="center">
   <img src="https://img.shields.io/badge/dependencies-zero-brightgreen" alt="Zero Dependencies">
-  <img src="https://img.shields.io/badge/telemetry-none-brightgreen" alt="Zero Telemetry">
+  <img src="https://img.shields.io/badge/telemetry-off_by_default-brightgreen" alt="Telemetry off by default">
   <img src="https://img.shields.io/badge/python-3.9+-blue" alt="Python 3.9+">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="Platform">
   <a href="https://github.com/alexgreensh/token-optimizer/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue.svg" alt="License: PolyForm Noncommercial"></a>
@@ -157,7 +157,7 @@ Quickest path (Claude Code plugin install):
 - 🗄️ **Session Continuity**: cross-session hints, cold-resume, checkpoint scoring
 - 📦 **Active Compression**: 9 features, all on by default (delta diffs, skeletons, bash/search compression, lean-output nudges, quality nudges, loop detection, activity mode, decision extraction)
 - 📊 **Quality Scoring**: 7 signals, real-time, letter grades S–F
-- 🗃️ **Session Database**: SQLite, 15 tables, full audit trail, zero network
+- 🗃️ **Session Database**: SQLite, 15 tables, full audit trail, zero network by default
 - 🔍 **Progressive Disclosure**: large outputs archived, expand on demand
 - 🧠 **Context Intel Digest**: post-compaction re-orientation without re-reads
 - 🔀 **Model Routing Nudges**: steers to the right tier for the task
@@ -232,7 +232,7 @@ These ten rows are the ones where Token Optimizer is the only 🟢 in the row: w
 | Cache-safe | 🟢 Never modifies existing context prefix | 🟡 Proxy mode rewrites in-flight | 🟢 Pre-shell only | 🟢 Pre-shell only | 🟡 MCP overhead | 🟢 |
 | Zero baseline context overhead | 🟢 External process, no context injection | 🔴 Injects instructions | 🟢 Shell-level only | 🟢 Shell-level only | 🔴 MCP server overhead | 🟢 Native |
 | Zero runtime dependencies | 🟢 Pure stdlib (Python/TypeScript) | 🟡 Python + Rust + optional model | 🟢 Single Rust binary | 🟢 Single binary | 🟡 SQLite adapter required | 🟢 N/A |
-| Zero telemetry | 🟢 Nothing leaves the machine | 🟡 `HEADROOM_TELEMETRY` opt-in, off by default | 🟡 Opt-in | 🔴 Collects commands invoked, command arguments, exit codes, duration, CI attributes, IP | 🟡 Varies | 🟢 |
+| Zero telemetry by default | 🟢 Nothing leaves the machine unless an org admin enables the Teams-edition collector (see PRIVACY.md) | 🟡 `HEADROOM_TELEMETRY` opt-in, off by default | 🟡 Opt-in | 🔴 Collects commands invoked, command arguments, exit codes, duration, CI attributes, IP | 🟡 Varies | 🟢 |
 | Multi-platform | 🟢 Claude Code, VS Code, Cowork, Codex, OpenClaw, OpenCode, Hermes, Copilot | 🟢 Claude Code, Cursor, Codex, Aider, Copilot | 🟢 15 integrations | 🟡 Cursor, Claude Code, Copilot, Codex CLI | 🟢 17 integrations | 🔴 Claude Code only |
 | Per-task model and effort advice | 🟢 `route` sizes the task before you spend | — | — | — | — | — |
 | Keep-Warm (cache TTL refresh) | 🟢 Opt-in ping before cache expiry, tripwire auto-off | 🔴 | 🔴 | — | 🔴 | 🔴 |
@@ -655,7 +655,7 @@ No. Token Optimizer never touches content already in your context. It works on n
 <details>
 <summary><b>📡 Does it send any data anywhere?</b></summary>
 
-No analytics, no telemetry endpoint, no product data leaves your machine. Measurement events are local SQLite rows you own. Zero network calls.
+No analytics, no telemetry endpoint, no product data leaves your machine by default. Measurement events are local SQLite rows you own. Zero network calls — unless your org admin has enabled the Teams-edition org telemetry collector (see PRIVACY.md), in which case per-session aggregates (never prompts, never content) are sent to the collector your admin chose, and the dashboard shows a banner saying so.
 
 </details>
 

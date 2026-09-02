@@ -62,7 +62,7 @@ The table covers the six tools most often compared to Token Optimizer. Status: �
 | Cache-safe | 🟢 Never modifies existing context prefix | 🟡 Proxy mode rewrites in-flight | 🟢 Pre-shell only | 🟢 Pre-shell only | 🟡 MCP overhead | 🟢 |
 | Zero baseline context overhead | 🟢 External process, no context injection | 🔴 Injects instructions | 🟢 Shell-level only | 🟢 Shell-level only | 🔴 MCP server overhead | 🟢 Native |
 | Zero runtime dependencies | 🟢 Pure stdlib (Python/TypeScript) | 🟡 Python + Rust + optional model | 🟢 Single Rust binary | 🟢 Single binary | 🟡 SQLite adapter required | 🟢 N/A |
-| Zero telemetry | 🟢 Nothing leaves the machine | 🟡 Anonymous aggregate telemetry, opt-in via `HEADROOM_TELEMETRY`, off by default | 🟡 Opt-in | 🔴 Beta Agreement §6 covers commands invoked, command arguments, exit codes, duration, CI attributes, IP | 🟡 Varies | 🟢 |
+| Zero telemetry by default | 🟢 Nothing leaves the machine unless an org admin enables the Teams-edition collector (see PRIVACY.md) | 🟡 Anonymous aggregate telemetry, opt-in via `HEADROOM_TELEMETRY`, off by default | 🟡 Opt-in | 🔴 Beta Agreement §6 covers commands invoked, command arguments, exit codes, duration, CI attributes, IP | 🟡 Varies | 🟢 |
 | Signed and checksum-verified install | 🟢 `CHECKSUMS.sha256` on every release, verified at install; CI fails a release that cannot be installed | — | — | 🔴 `install.sh` verifies neither a checksum nor a signature on either download path | — | N/A |
 | Multi-platform | 🟢 Claude Code, VS Code, Cowork, Codex, OpenClaw, OpenCode, Hermes, Copilot | 🟢 Claude Code, Cursor, Codex, Aider, Copilot | 🟢 15 integrations | 🟡 Cursor, Claude Code, Copilot, Codex CLI | 🟢 17 integrations | 🔴 Claude Code only |
 

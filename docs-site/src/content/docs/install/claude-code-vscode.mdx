@@ -59,7 +59,7 @@ Everything the CLI does, the extension does, because the same hooks run in the V
 
 ## Dashboard bookmark
 
-Click either status-bar item to open the dashboard at `http://localhost:24842/token-optimizer`. The extension does zero network activity except one localhost probe to that port, and only when you click. To keep the URL live between sessions, set up the daemon from the CLI:
+Click either status-bar item to open the dashboard at `http://localhost:24842/token-optimizer`. By default the extension does zero network activity except one localhost probe to that port, and only when you click. To keep the URL live between sessions, set up the daemon from the CLI:
 
 ```bash
 python3 measure.py setup-daemon

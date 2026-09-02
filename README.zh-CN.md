@@ -29,7 +29,7 @@
 </p>
 <p align="center">
   <img src="https://img.shields.io/badge/dependencies-zero-brightgreen" alt="零依赖">
-  <img src="https://img.shields.io/badge/telemetry-none-brightgreen" alt="零遥测">
+  <img src="https://img.shields.io/badge/telemetry-off_by_default-brightgreen" alt="遥测默认关闭">
   <img src="https://img.shields.io/badge/python-3.9+-blue" alt="Python 3.9+">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="平台">
   <a href="https://github.com/alexgreensh/token-optimizer/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue.svg" alt="许可证: PolyForm Noncommercial"></a>
@@ -231,7 +231,7 @@ RTK 和 Boost 到达第一个面。Headroom 到达第一个和第三个。Token 
 | 缓存安全 | 🟢 从不修改现有上下文前缀 | 🟡 代理模式重写进行中的 | 🟢 仅 pre-shell | 🟢 仅 pre-shell | 🟡 MCP 开销 | 🟢 |
 | 零基线上下文开销 | 🟢 外部进程,无上下文注入 | 🔴 注入指令 | 🟢 仅 shell 级 | 🟢 仅 shell 级 | 🔴 MCP 服务器开销 | 🟢 原生 |
 | 零运行时依赖 | 🟢 纯标准库(Python/TypeScript) | 🟡 Python + Rust + 可选模型 | 🟢 单个 Rust 二进制 | 🟢 单个二进制 | 🟡 需要 SQLite 适配器 | 🟢 N/A |
-| 零遥测 | 🟢 不离开机器 | 🟡 `HEADROOM_TELEMETRY` opt-in,默认关 | 🟡 opt-in | 🔴 收集调用的命令、命令参数、退出码、时长、CI 属性、IP | 🟡 各异 | 🟢 |
+| 默认零遥测 | 🟢 除非组织管理员启用 Teams 版收集器,否则不离开机器(见 PRIVACY.md) | 🟡 `HEADROOM_TELEMETRY` opt-in,默认关 | 🟡 opt-in | 🔴 收集调用的命令、命令参数、退出码、时长、CI 属性、IP | 🟡 各异 | 🟢 |
 | 多平台 | 🟢 Claude Code、VS Code、Codex、OpenClaw、OpenCode、Hermes、Copilot | 🟢 Claude Code、Cursor、Codex、Aider、Copilot | 🟢 15 个集成 | 🟡 Cursor、Claude Code、Copilot、Codex CLI | 🟢 17 个集成 | 🔴 仅 Claude Code |
 | 按任务的模型和力度建议 | 🟢 `route` 在你花钱前衡量任务 | — | — | — | — | — |
 | Keep-Warm(缓存 TTL 刷新) | 🟢 缓存过期前 opt-in ping,绊线自动关 | 🔴 | 🔴 | — | 🔴 | 🔴 |
@@ -612,7 +612,7 @@ python3 measure.py inject-routing              # 注入
 <details>
 <summary><b>📡 它会把任何数据发到任何地方吗?</b></summary>
 
-无分析,无遥测端点,无产品数据离开你的机器。测量事件是你拥有的本地 SQLite 行。零网络调用。
+默认情况下,无分析,无遥测端点,无产品数据离开你的机器。测量事件是你拥有的本地 SQLite 行。零网络调用——除非你的组织管理员启用了 Teams 版组织遥测收集器(见 PRIVACY.md),此时每会话聚合数据(绝不包含提示词或内容)会发送到管理员指定的收集器,并且仪表板会显示横幅。
 
 </details>
 

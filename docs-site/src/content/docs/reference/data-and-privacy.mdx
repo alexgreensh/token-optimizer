@@ -26,7 +26,7 @@ These are read locally and never transmitted.
 
 ## Where data lives
 
-![Session database flow: two local SQLite databases, nothing leaves your machine](/images/session-database-flow.svg)
+![Session database flow: two local SQLite databases, by default nothing leaves your machine](/images/session-database-flow.svg)
 
 
 Every store is created with restrictive permissions: directories `0o700` (owner only), files `0o600` (owner read/write only).
@@ -96,7 +96,7 @@ To delete by hand instead, remove these directories:
 
 ## Cross-platform
 
-The same guarantees hold on every supported platform: local-only, zero network, credential-redacted storage. Data paths vary by platform; the architecture is identical. On Hermes, the adapter opens `state.db` read-only and immutable (`mode=ro&immutable=1` with `PRAGMA query_only = ON`) and never writes back to it.
+The same guarantees hold on every supported platform: local-only, zero network by default, credential-redacted storage. Data paths vary by platform; the architecture is identical. On Hermes, the adapter opens `state.db` read-only and immutable (`mode=ro&immutable=1` with `PRAGMA query_only = ON`) and never writes back to it. The one exception to zero network is the admin-enabled org telemetry channel (Teams edition): when an org admin places a `fleet.json` on the machine, per-session aggregates (never prompts, never content) POST to the org's collector. See PRIVACY.md and `docs/teams-telemetry.md`.
 
 ## Source available
 

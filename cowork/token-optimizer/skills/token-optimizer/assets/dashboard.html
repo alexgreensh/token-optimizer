@@ -2046,6 +2046,8 @@ window.__TOKEN_DATA__ = null;
 
   <!-- MAIN -->
   <main class="main-col">
+    <!-- Org telemetry banner (Teams edition): rendered only when active -->
+    <div id="fleet-telemetry-banner" style="display:none;font-size:12px;font-family:var(--font-mono);padding:6px 12px;border:1px solid var(--c-border);border-radius:6px;margin:8px 0 0;color:var(--c-text-dim);"></div>
     <!-- Overview View -->
     <div class="view active" id="view-overview">
       <header class="header">
@@ -7009,6 +7011,14 @@ document.addEventListener('DOMContentLoaded', function() {
     if (data.version) brandParts.push('v' + data.version);
     if (data.runtime === 'codex') brandParts.push('Codex');
     brandMeta.textContent = brandParts.join(' \u00b7 ');
+  }
+  // Org telemetry banner (Teams edition): visible only when an admin-enabled
+  // fleet.json is active on this machine. textContent only, never innerHTML.
+  var fleetBanner = document.getElementById('fleet-telemetry-banner');
+  if (fleetBanner && data.fleet_telemetry && data.fleet_telemetry.active) {
+    fleetBanner.textContent = 'Org telemetry active: sending session aggregates to '
+      + (data.fleet_telemetry.endpoint_host || 'unknown endpoint');
+    fleetBanner.style.display = 'block';
   }
 
   function startApp() { DB.init(data); refreshSavingsLive(); }

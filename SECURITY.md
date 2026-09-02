@@ -101,7 +101,7 @@ Bash compression output preserves credential-containing lines verbatim (not reda
 
 **At rest:** Token Optimizer does not encrypt local data stores. Data protection relies on filesystem permissions (`0o700` directories, `0o600` files). For environments requiring encryption at rest, enable FileVault (macOS) or LUKS (Linux) at the OS level.
 
-**In transit:** No data is transmitted. The dashboard server uses plain HTTP but is bound to loopback only (`127.0.0.1`), so traffic never leaves the network stack.
+**In transit:** No data is transmitted by default. The dashboard server uses plain HTTP but is bound to loopback only (`127.0.0.1`), so traffic never leaves the network stack. The one exception is the admin-enabled org telemetry channel (Teams edition, see PRIVACY.md): when an admin has placed a `fleet.json`, per-session aggregates POST to that collector over at most two 3-second bounded requests per flush.
 
 ---
 
@@ -175,7 +175,7 @@ Token Optimizer installs hooks into the host platform's `settings.json` via the 
 | No encryption at rest | Filesystem permissions (0o700/0o600). Use OS-level encryption for additional protection. |
 | No admin policy enforcement / MDM | Single-user local tool. Config is per-user, no org-wide lockdown. |
 | No structured audit log | Functional telemetry (checkpoint events, compression events) provides partial coverage. |
-| No TLS on dashboard | Loopback-only binding. Traffic never leaves the machine. |
+| No TLS on dashboard | Loopback-only binding. Traffic never leaves the machine. Org telemetry (admin-enabled fleet.json) posts to the admin's collector instead; see PRIVACY.md. |
 | settings.json is user-writable | Hook registrations have no integrity verification. A local attacker with filesystem access could modify hook configuration. |
 | Transcript preservation | Token Optimizer sets `cleanupPeriodDays=99999` in settings.json to preserve transcripts for trend analysis. This is intentional and documented. Users can override this setting. Transcripts are the host platform's data, not Token Optimizer's. |
 

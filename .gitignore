@@ -44,3 +44,7 @@ decisions.md
 # Internal working dirs — never ship (Alex Mode hard rule)
 handoff/
 scratchpad/
+fleet.json
+fleet-outbox.jsonl
+fleet-cursor.json
+fleet.log

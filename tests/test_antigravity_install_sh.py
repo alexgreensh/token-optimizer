@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -28,6 +27,11 @@ def _run(home: Path, *flags: str) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     env.update({
         "HOME": str(home),
+        # Pin the Claude config root as well. The antigravity installer never
+        # reads ~/.claude, but measure.py's runtime_env resolves a Claude home
+        # as a shared fallback, so pinning both keeps the subprocess fully
+        # isolated from this machine (host-safety guard, incident 2026-07-30).
+        "CLAUDE_CONFIG_DIR": str(home),
         "TMPDIR": str(tmp),
         # Deterministic runtime for the measure.py subprocess; no host process
         # scan, no chance of auto-detecting the real ~/.gemini on this box.

@@ -144,3 +144,17 @@ def test_unknown_flag_degrades_to_install_without_traceback(tmp_path):
     assert "Traceback" not in r.stderr, _detail(r)
     assert "installed" in r.stdout.lower(), _detail(r)
     assert (home / _PLUGIN).is_dir()
+
+
+def test_no_unpinned_pull_in_any_sparse_materialization_path():
+    """Every sparse-checkout materialization path must pin to the commit the
+    checkout is at. An unpinned `git pull` would let a moved upstream deliver
+    arbitrary code into the plugin dir, executed on every hook."""
+    text = INSTALL_SH.read_text(encoding="utf-8")
+    assert "git pull --ff-only" not in text
+    # Every sparse-checkout add lives inside the pinned helper.
+    adds = [ln for ln in text.splitlines() if "sparse-checkout add" in ln]
+    assert adds, "materialization paths vanished from install.sh"
+    helper_body = text.split("_materialize_from_pin() {", 1)[1].split("}", 1)[0]
+    assert "rev-parse HEAD" in helper_body
+    assert "pull" not in helper_body

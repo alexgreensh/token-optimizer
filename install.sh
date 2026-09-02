@@ -53,6 +53,25 @@ info()  { printf "${GREEN}>${NC} %s\n" "$1"; }
 warn()  { printf "${YELLOW}!${NC} %s\n" "$1"; }
 fail()  { printf "${RED}x${NC} %s\n" "$1"; exit 1; }
 
+# Materialize sparse-checkout paths from the commit this checkout is AT, never
+# from a moving branch. A `git pull` here would let a moved/compromised
+# upstream deliver arbitrary code into the plugin dir, executed on every hook.
+# Network is touched only if the local objects are missing (shallow clone),
+# and then only to fetch that exact SHA. Args: checkout_dir, existence_probe
+# (a file that must exist afterwards), then the sparse paths.
+_materialize_from_pin() {
+    local script_dir="$1" check_file="$2"; shift 2
+    local pin_sha
+    pin_sha="$(git -C "$script_dir" rev-parse HEAD 2>/dev/null || true)"
+    git -C "$script_dir" sparse-checkout add "$@" 2>/dev/null || true
+    [ -n "$pin_sha" ] || return 0
+    git -C "$script_dir" checkout "$pin_sha" -- "$@" 2>/dev/null || true
+    if [ ! -f "$check_file" ]; then
+        git -C "$script_dir" fetch --depth 1 origin "$pin_sha" 2>/dev/null || true
+        git -C "$script_dir" checkout "$pin_sha" -- "$@" 2>/dev/null || true
+    fi
+}
+
 # ── OpenCode local-dir install (no npm) ───────────────────────
 # `install.sh --opencode` builds the TypeScript plugin and drops a single
 # bundled file into ~/.config/opencode/plugins/, which OpenCode auto-loads
@@ -71,9 +90,8 @@ install_opencode() {
     # If the source isn't present (e.g. a sparse Claude Code checkout), try to
     # add it to the sparse-checkout cone and pull it.
     if [ ! -d "$oc_src" ] && [ -d "${script_dir}/.git" ]; then
-        warn "opencode/ not in this checkout. Adding it to sparse-checkout..."
-        git -C "$script_dir" sparse-checkout add opencode/ 2>/dev/null || true
-        git -C "$script_dir" pull --ff-only 2>/dev/null || true
+        warn "opencode/ not in this checkout. Materializing it from the pinned commit..."
+        _materialize_from_pin "$script_dir" "$script_dir/opencode/package.json" opencode/
     fi
     [ -d "$oc_src" ] || fail "opencode/ source not found. Clone the full repo: git clone ${REPO_HTTPS}"
 
@@ -278,9 +296,8 @@ install_cowork() {
     installer="${script_dir}/skills/token-optimizer/scripts/cowork_install.py"
 
     if [ ! -f "$installer" ] && [ -d "${script_dir}/.git" ]; then
-        warn "skills/ not in this checkout. Adding it to sparse-checkout..."
-        git -C "$script_dir" sparse-checkout add skills/ cowork/ 2>/dev/null || true
-        git -C "$script_dir" pull --ff-only 2>/dev/null || true
+        warn "skills/ not in this checkout. Materializing it from the pinned commit..."
+        _materialize_from_pin "$script_dir" "$script_dir/skills/token-optimizer/scripts/cowork_install.py" skills/ cowork/
     fi
     [ -f "$installer" ] || fail "$(printf 'Run install.sh from inside a token-optimizer checkout, not on its own. From any folder:\n    git clone --depth 1 %s\n    cd token-optimizer\n    bash install.sh --cowork' "$REPO_HTTPS")"
 
@@ -305,9 +322,8 @@ install_hermes() {
     measure_py="${script_dir}/skills/token-optimizer/scripts/measure.py"
 
     if [ ! -f "$measure_py" ] && [ -d "${script_dir}/.git" ]; then
-        warn "skills/ not in this checkout. Adding it to sparse-checkout..."
-        git -C "$script_dir" sparse-checkout add skills/ hermes/ 2>/dev/null || true
-        git -C "$script_dir" pull --ff-only 2>/dev/null || true
+        warn "skills/ not in this checkout. Materializing it from the pinned commit..."
+        _materialize_from_pin "$script_dir" "$measure_py" skills/ hermes/
     fi
     [ -f "$measure_py" ] || fail "$(printf 'Run install.sh from inside a token-optimizer checkout, not on its own. From any folder:\n    git clone --depth 1 %s\n    cd token-optimizer\n    bash install.sh --hermes' "$REPO_HTTPS")"
 
@@ -415,9 +431,8 @@ install_antigravity() {
     measure_py="${script_dir}/skills/token-optimizer/scripts/measure.py"
 
     if [ ! -f "$measure_py" ] && [ -d "${script_dir}/.git" ]; then
-        warn "skills/ not in this checkout. Adding it to sparse-checkout..."
-        git -C "$script_dir" sparse-checkout add skills/ 2>/dev/null || true
-        git -C "$script_dir" pull --ff-only 2>/dev/null || true
+        warn "skills/ not in this checkout. Materializing it from the pinned commit..."
+        _materialize_from_pin "$script_dir" "$measure_py" skills/
     fi
     [ -f "$measure_py" ] || fail "$(printf 'Run install.sh from inside a token-optimizer checkout, not on its own. From any folder:\n    git clone --depth 1 %s\n    cd token-optimizer\n    bash install.sh --antigravity' "$REPO_HTTPS")"
 
@@ -763,9 +778,8 @@ install_copilot() {
     measure_py="${script_dir}/skills/token-optimizer/scripts/measure.py"
 
     if [ ! -f "$measure_py" ] && [ -d "${script_dir}/.git" ]; then
-        warn "skills/ not in this checkout. Adding it to sparse-checkout..."
-        git -C "$script_dir" sparse-checkout add skills/ copilot/ 2>/dev/null || true
-        git -C "$script_dir" pull --ff-only 2>/dev/null || true
+        warn "skills/ not in this checkout. Materializing it from the pinned commit..."
+        _materialize_from_pin "$script_dir" "$measure_py" skills/ copilot/
     fi
     [ -f "$measure_py" ] || fail "$(printf 'Run install.sh from inside a token-optimizer checkout, not on its own. From any folder:\n    git clone --depth 1 %s\n    cd token-optimizer\n    bash install.sh --copilot' "$REPO_HTTPS")"
 
@@ -842,22 +856,7 @@ install_cursor() {
 
     if [ ! -f "$measure_py" ] && [ -d "${script_dir}/.git" ]; then
         warn "skills/ not in this checkout. Materializing it from the pinned commit..."
-        # Supply-chain pin (gauntlet P1-7): materialize skills/ from the commit
-        # this checkout is AT, never from a moving branch. A `git pull` here
-        # would let a moved/compromised upstream deliver arbitrary code into
-        # the plugin dir, executed on every hook. Network is touched only if
-        # the local objects are missing (shallow clone), and then only to fetch
-        # that exact SHA.
-        local pin_sha
-        pin_sha="$(git -C "$script_dir" rev-parse HEAD 2>/dev/null || true)"
-        git -C "$script_dir" sparse-checkout add skills/ 2>/dev/null || true
-        if [ -n "$pin_sha" ]; then
-            git -C "$script_dir" checkout "$pin_sha" -- skills/ 2>/dev/null || true
-            if [ ! -f "$measure_py" ]; then
-                git -C "$script_dir" fetch --depth 1 origin "$pin_sha" 2>/dev/null || true
-                git -C "$script_dir" checkout "$pin_sha" -- skills/ 2>/dev/null || true
-            fi
-        fi
+        _materialize_from_pin "$script_dir" "$measure_py" skills/
     fi
     [ -f "$measure_py" ] || fail "$(printf 'Run install.sh from inside a token-optimizer checkout, not on its own. From any folder:\n    git clone --depth 1 %s\n    cd token-optimizer\n    bash install.sh --cursor' "$REPO_HTTPS")"
 

@@ -716,7 +716,7 @@ def test_bash_compress_post_prune_serves_full_result_not_lossy(monkeypatch, tmp_
 
     # Sanity: confirm this fixture really compresses lossily via the same
     # compress() main() calls, so the test doesn't pass vacuously.
-    compressed_preview = bc.compress("someunknowncmd", raw_stdout, returncode=0, stderr="")
+    compressed_preview = bc.compress("git status --porcelain", raw_stdout, returncode=0, stderr="")
     assert compressed_preview != raw_stdout
     assert middle_line not in compressed_preview, (
         "test fixture's compressed preview unexpectedly kept the middle line"
@@ -728,7 +728,7 @@ def test_bash_compress_post_prune_serves_full_result_not_lossy(monkeypatch, tmp_
         returncode = 0
 
     monkeypatch.setattr(bc.subprocess, "run", lambda *a, **k: _FakeResult())
-    monkeypatch.setattr(bc.sys, "argv", ["bash_compress.py", "someunknowncmd"])
+    monkeypatch.setattr(bc.sys, "argv", ["bash_compress.py", "git", "status", "--porcelain"])
 
     # Real prune, timed to land between archive_original()'s write and
     # main()'s post-write archive_entry_exists() re-check -- simulates a

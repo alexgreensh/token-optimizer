@@ -1830,6 +1830,24 @@ def main():
     command_args = sys.argv[1:]
     command_str = shlex.join(command_args)
 
+    # R13a: independently re-validate the argv before running anything, so a
+    # cached "always allow" on this wrapper's command prefix can never turn
+    # bash_compress.py into an unguarded command runner. Exact same whitelist +
+    # dangerous-character gate the Antigravity / Copilot / Claude bridges apply
+    # before rewriting. A direct `bash_compress.py <anything-not-whitelisted>`
+    # (or a hostile `rm -rf /`, `curl | sh`, etc.) is refused and spawns
+    # nothing.
+    try:
+        import bash_hook as _self_check
+    except Exception:
+        _self_check = None
+    if _self_check is None:
+        print("bash_compress.py: self-check unavailable; refusing to run", file=sys.stderr)
+        sys.exit(1)
+    if _self_check._has_dangerous_chars(command_str) or not _self_check._is_whitelisted(command_str):
+        print("bash_compress.py: command is not eligible for compression", file=sys.stderr)
+        sys.exit(1)
+
     try:
         result = subprocess.run(
             command_args,

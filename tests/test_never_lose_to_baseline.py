@@ -18,6 +18,7 @@ from __future__ import annotations
 import importlib
 import json
 import re
+import shlex
 from pathlib import Path
 
 import pytest
@@ -73,7 +74,11 @@ def _run_main(monkeypatch, tmp_path, capsys, command: str, raw_stdout: str) -> s
         returncode = 0
 
     monkeypatch.setattr(bc.subprocess, "run", lambda *a, **k: _FakeResult())
-    monkeypatch.setattr(bc.sys, "argv", ["bash_compress.py", command])
+    # Simulate a real shell invocation: each word is a separate argv element,
+    # exactly like `bash_compress.py ls -la /usr/bin` from a launcher. The
+    # R13a self-check re-joins argv, so a single fused string would be seen
+    # as one (non-whitelisted) command and refused.
+    monkeypatch.setattr(bc.sys, "argv", ["bash_compress.py", *shlex.split(command)])
 
     with pytest.raises(SystemExit) as exc_info:
         bc.main()
@@ -97,10 +102,13 @@ def _archive_key_from_output(out: str) -> str | None:
 
 def test_small_output_to_wins_big(monkeypatch, tmp_path, capsys):
     """~5KB output: baseline shows it in full; TO must compress well below it."""
-    raw = _generic_fixture(200)  # ~5KB of unmatched output
+    raw = _generic_fixture(200)  # ~5KB of unmatched (generic-path) output
     assert 4000 <= len(raw) <= 7000, f"fixture size wrong: {len(raw)}"
 
-    out = _run_main(monkeypatch, tmp_path, capsys, "some-unmatched-cmd", raw)
+    # A whitelisted command whose output has no dedicated pattern handler routes
+    # through the generic compressor, exercising the baseline guard on the same
+    # "unmatched output" path without tripping the R13a self-check.
+    out = _run_main(monkeypatch, tmp_path, capsys, "git status --porcelain", raw)
 
     assert len(out) <= _baseline(raw), (
         f"baseline-size invariant violated on ~5KB output: TO={len(out)} "

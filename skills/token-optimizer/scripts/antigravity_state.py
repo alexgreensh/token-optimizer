@@ -31,6 +31,7 @@ Design constraints (mirroring ``hermes_state.py`` / ``copilot_state.py``):
 The three surface directories are SEPARATE populations and are never summed:
 the reader tags every session with its ``surface``.
 """
+
 from __future__ import annotations
 
 import json
@@ -38,7 +39,7 @@ import logging
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +133,7 @@ def _clean_workspace(raw: Any) -> Optional[str]:
         if not isinstance(uri, str):
             continue
         if uri.startswith("file://"):
-            path = uri[len("file://"):]
+            path = uri[len("file://") :]
             if path:
                 return path
     return None
@@ -177,9 +178,14 @@ def read_summaries(surface_dir: Path) -> dict[str, dict]:
         return {}
     result: dict[str, dict] = {}
     try:
-        conn = sqlite3.connect(_ro_uri(db_path, immutable=True), uri=True, timeout=_BUSY_TIMEOUT_SECONDS)
+        conn = sqlite3.connect(
+            _ro_uri(db_path, immutable=True), uri=True, timeout=_BUSY_TIMEOUT_SECONDS
+        )
         try:
-            cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(conversation_summaries)")}
+            cols = {
+                str(r[1])
+                for r in conn.execute("PRAGMA table_info(conversation_summaries)")
+            }
         except sqlite3.Error:
             return result
         select_cols = [c for c in _SUMMARY_COLUMNS if c in cols]
@@ -252,14 +258,21 @@ def read_conversation(db_path: Path, *, surface: str = "") -> Optional[dict]:
 
     try:
         try:
-            tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            tables = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
         except sqlite3.Error:
             return None
         if "gen_metadata" not in tables:
             return None
 
         try:
-            gen_rows = conn.execute("SELECT data FROM gen_metadata ORDER BY idx").fetchall()
+            gen_rows = conn.execute(
+                "SELECT data FROM gen_metadata ORDER BY idx"
+            ).fetchall()
         except sqlite3.Error:
             gen_rows = []
         for (data,) in gen_rows:
@@ -345,7 +358,6 @@ def read_live_conversation(db_path: Path) -> Optional[dict]:
     """
     if db_path is None:
         return None
-    marker = object()
     db_path = Path(db_path)
     try:
         if not db_path.is_file() or db_path.is_symlink():
@@ -356,7 +368,7 @@ def read_live_conversation(db_path: Path) -> Optional[dict]:
     # of idleness. We reuse read_conversation's core by temporarily computing
     # liveness is irrelevant here -> small wrapper opens without immutable.
     try:
-        from antigravity_proto import decode_generation, decode_step_metadata  # noqa: F401
+        from antigravity_proto import decode_generation
     except Exception:
         return None
 
@@ -367,22 +379,28 @@ def read_live_conversation(db_path: Path) -> Optional[dict]:
     except (sqlite3.Error, OSError):
         return None
     try:
-        conn.execute("PRAGMA query_only = ON")
-    except sqlite3.Error:
-        pass
-    try:
-        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        try:
+            conn.execute("PRAGMA query_only = ON")
+        except sqlite3.Error:
+            pass
+        tables = {
+            r[0]
+            for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
         if "gen_metadata" not in tables:
             return None
         gen_rows = conn.execute("SELECT data FROM gen_metadata ORDER BY idx").fetchall()
     except sqlite3.Error:
         return None
     finally:
-        pass
+        conn.close()
 
-    from antigravity_proto import decode_generation
-
-    totals = {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0, "thinking_tokens": 0}
+    totals = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_tokens": 0,
+        "thinking_tokens": 0,
+    }
     last_fill: Optional[float] = None
     for (data,) in gen_rows:
         rec = decode_generation(data)
@@ -394,7 +412,6 @@ def read_live_conversation(db_path: Path) -> Optional[dict]:
         totals["thinking_tokens"] += rec["thinking_tokens"]
         if rec["max_context_tokens"] and rec["max_context_tokens"] > 0:
             last_fill = rec["estimated_tokens_used"] / rec["max_context_tokens"]
-    conn.close()
     return {"last_fill": last_fill, "totals": totals, "conversation_id": db_path.stem}
 
 
@@ -418,7 +435,9 @@ def read_all_sessions(explicit_home: Optional[Path] = None) -> list[dict]:
             try:
                 session = read_conversation(db_path, surface=surface)
             except Exception as exc:
-                logger.debug("[antigravity_state] read_conversation(%s): %s", db_path, exc)
+                logger.debug(
+                    "[antigravity_state] read_conversation(%s): %s", db_path, exc
+                )
                 continue
             if session is None:
                 continue
@@ -437,11 +456,31 @@ if __name__ == "__main__":
     sessions = read_all_sessions()
     print(f"surfaces: {[s for s, _ in surface_dirs()]}")
     print(f"sessions: {len(sessions)}")
-    with_tokens = [s for s in sessions if s["totals"]["input_tokens"] or s["totals"]["output_tokens"]]
+    with_tokens = [
+        s
+        for s in sessions
+        if s["totals"]["input_tokens"] or s["totals"]["output_tokens"]
+    ]
     print(f"sessions with any tokens: {len(with_tokens)}")
     if with_tokens:
         s = with_tokens[0]
-        print("sample:", json.dumps(
-            {k: s[k] for k in ("conversation_id", "surface", "totals", "model_display_name",
-                               "tool_call_count", "user_input_count", "last_fill", "killed")},
-            default=str, indent=2))
+        print(
+            "sample:",
+            json.dumps(
+                {
+                    k: s[k]
+                    for k in (
+                        "conversation_id",
+                        "surface",
+                        "totals",
+                        "model_display_name",
+                        "tool_call_count",
+                        "user_input_count",
+                        "last_fill",
+                        "killed",
+                    )
+                },
+                default=str,
+                indent=2,
+            ),
+        )

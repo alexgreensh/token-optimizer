@@ -20,6 +20,7 @@ recognized model, and ``antigravity_no_cost_data`` for an unknown model. The
 normalizer only classifies: it returns ``model_id`` (or None) and ``credits``
 (or None); the collector in ``measure.py`` does the pricing (KTD12).
 """
+
 from __future__ import annotations
 
 import logging
@@ -106,8 +107,14 @@ def _parse_ts(value: Any) -> Optional[str]:
         return None
 
 
-def _quality(input_tokens: int, output_tokens: int, message_count: int, model: str,
-             ctx_window: int, cache_read: int) -> dict:
+def _quality(
+    input_tokens: int,
+    output_tokens: int,
+    message_count: int,
+    model: str,
+    ctx_window: int,
+    cache_read: int,
+) -> dict:
     """Three-signal quality score (same constrained-signal path as Hermes/Copilot)."""
     try:
         from hermes_session import compute_quality_score
@@ -125,7 +132,14 @@ def _quality(input_tokens: int, output_tokens: int, message_count: int, model: s
         fill = min(1.0, (input_tokens + cache_read) / ctx_window) if ctx_window else 0.0
         score = max(0.0, 100.0 - fill * 50.0)
         band = "healthy" if score >= 70 else ("watch" if score >= 50 else "critical")
-        grade = "A" if score >= 90 else ("B" if score >= 75 else ("C" if score >= 60 else "D"))
+        if score >= 90:
+            grade = "A"
+        elif score >= 75:
+            grade = "B"
+        elif score >= 60:
+            grade = "C"
+        else:
+            grade = "D"
         return {
             "score": round(score, 1),
             "grade": grade,
@@ -201,7 +215,9 @@ def normalize_session(raw: dict) -> Optional[dict]:
     thinking_tokens = max(0, _safe_int(raw.get("thinking_tokens")))
     user_inputs = max(0, _safe_int(raw.get("user_input_count")))
     tool_calls = max(0, _safe_int(raw.get("tool_call_count")))
-    generations = raw.get("generations") if isinstance(raw.get("generations"), list) else []
+    generations = (
+        raw.get("generations") if isinstance(raw.get("generations"), list) else []
+    )
 
     if len(generations) == 0 and user_inputs == 0:
         return None
@@ -217,7 +233,9 @@ def normalize_session(raw: dict) -> Optional[dict]:
     model_id = model_id_for_display_name(display_name)
     model = model_id or display_name or _UNKNOWN_MODEL
 
-    ctx_window = _safe_int(raw.get("last_max_context")) or context_window_for_model(model_id)
+    ctx_window = _safe_int(raw.get("last_max_context")) or context_window_for_model(
+        model_id
+    )
 
     # Cost classification (pricing itself is the collector's job, KTD12).
     credit_cost = max(0, _safe_int(raw.get("credit_cost")))
@@ -239,7 +257,11 @@ def normalize_session(raw: dict) -> Optional[dict]:
 
     surface = str(raw.get("surface") or "")
     conversation_id = str(raw.get("conversation_id") or "")
-    dedup_key = f"antigravity:{surface}:{conversation_id}" if surface and conversation_id else None
+    dedup_key = (
+        f"antigravity:{surface}:{conversation_id}"
+        if surface and conversation_id
+        else None
+    )
 
     st = raw.get("start_time")
     et = raw.get("end_time")
@@ -251,7 +273,9 @@ def normalize_session(raw: dict) -> Optional[dict]:
             duration_minutes = 0.0
 
     cache_hit_rate = (total_cache_read / total_input) if total_input > 0 else 0.0
-    quality = _quality(total_input, total_output, user_inputs, model, ctx_window, total_cache_read)
+    quality = _quality(
+        total_input, total_output, user_inputs, model, ctx_window, total_cache_read
+    )
 
     killed = bool(raw.get("killed"))
     not_fully_idle = bool(raw.get("not_fully_idle"))
@@ -293,7 +317,8 @@ def normalize_session(raw: dict) -> Optional[dict]:
             "message_count": user_inputs,
             "api_calls": len(generations),
             "tool_calls": {"total": tool_calls},
-            "estimated": cost_source == "antigravity_list_price_estimate" or cost_source == "antigravity_credits",
+            "estimated": cost_source == "antigravity_list_price_estimate"
+            or cost_source == "antigravity_credits",
             "cwd": raw.get("workspace"),
             "incomplete": killed or not_fully_idle,
             "end_reason": end_reason,

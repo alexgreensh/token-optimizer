@@ -37,7 +37,6 @@ from runtime_env import antigravity_home  # noqa: E402
 
 DAEMON_PORT = 24847
 _VERSION_TIMEOUT_SECONDS = 5
-_SURFACES = ("antigravity-cli", "antigravity", "antigravity-ide")
 
 
 def _check(status: str, name: str, detail: str, hint: str = "") -> dict:
@@ -137,7 +136,9 @@ def _home_checks() -> list:
     try:
         from antigravity_state import surface_dirs
     except Exception:
-        checks.append(_check("warn", "surface directories", "antigravity_state unavailable."))
+        checks.append(
+            _check("warn", "surface directories", "antigravity_state unavailable.")
+        )
         return checks
     surfaces = surface_dirs(root)
     present = sorted(s for s, _ in surfaces)
@@ -160,7 +161,9 @@ def _plugin_checks() -> list:
     try:
         from antigravity_install import plugin_dir as _plugin_dir, _PAYLOAD_MODULES
     except Exception:
-        checks.append(_check("warn", "plugin directory", "antigravity_install unavailable."))
+        checks.append(
+            _check("warn", "plugin directory", "antigravity_install unavailable.")
+        )
         return checks
 
     pdir = _plugin_dir(antigravity_home())
@@ -193,7 +196,11 @@ def _plugin_checks() -> list:
             expected = {"PreInvocation", "PreToolUse", "Stop"}
             if not expected <= set(events):
                 raise ValueError(f"missing events: {sorted(expected - set(events))}")
-            checks.append(_check("ok", "plugin hooks", f"{hooks_path} (events: {', '.join(events)})"))
+            checks.append(
+                _check(
+                    "ok", "plugin hooks", f"{hooks_path} (events: {', '.join(events)})"
+                )
+            )
         except (OSError, json.JSONDecodeError, ValueError) as exc:
             checks.append(
                 _check(
@@ -223,11 +230,21 @@ def _config_enabled_check() -> list:
     root = antigravity_home()
     config_path = root / "config" / "config.json"
     if not config_path.is_file():
-        return [_check("ok", "plugin enabled", f"{config_path} absent (plugins enabled by default)")]
+        return [
+            _check(
+                "ok",
+                "plugin enabled",
+                f"{config_path} absent (plugins enabled by default)",
+            )
+        ]
     try:
         config = json.loads(config_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, ValueError):
-        return [_check("warn", "plugin enabled", f"{config_path} unreadable (read-only check).")]
+        return [
+            _check(
+                "warn", "plugin enabled", f"{config_path} unreadable (read-only check)."
+            )
+        ]
     plugins = config.get("plugins") if isinstance(config, dict) else None
     entry = plugins.get("token-optimizer") if isinstance(plugins, dict) else None
     enabled = entry.get("enabled") if isinstance(entry, dict) else None
@@ -278,11 +295,12 @@ def _consent_check() -> list:
 def _conversation_store_checks() -> list:
     checks = []
     try:
-        from antigravity_install import plugin_dir  # noqa: F401  (unused, keeps imports local)
         from antigravity_state import surface_dirs, read_conversation
         from antigravity_proto import DECODER_VERSION
     except Exception:
-        checks.append(_check("warn", "conversation store", "antigravity_state unavailable."))
+        checks.append(
+            _check("warn", "conversation store", "antigravity_state unavailable.")
+        )
         return checks
 
     root = antigravity_home()
@@ -293,7 +311,9 @@ def _conversation_store_checks() -> list:
             continue
         any_surface = True
         try:
-            dbs = sorted(conv_dir.glob("*.db"), key=lambda p: p.stat().st_mtime, reverse=True)
+            dbs = sorted(
+                conv_dir.glob("*.db"), key=lambda p: p.stat().st_mtime, reverse=True
+            )
         except OSError:
             dbs = []
         if not dbs:
@@ -337,7 +357,13 @@ def _conversation_store_checks() -> list:
         else:
             checks.append(_check("ok", f"conversation store ({surface})", detail))
     if not any_surface:
-        checks.append(_check("warn", "conversation store", "no surface directories with conversations/ found."))
+        checks.append(
+            _check(
+                "warn",
+                "conversation store",
+                "no surface directories with conversations/ found.",
+            )
+        )
     return checks
 
 
@@ -346,7 +372,9 @@ def _summaries_checks() -> list:
     try:
         from antigravity_state import surface_dirs, read_summaries
     except Exception:
-        checks.append(_check("warn", "summaries database", "antigravity_state unavailable."))
+        checks.append(
+            _check("warn", "summaries database", "antigravity_state unavailable.")
+        )
         return checks
     root = antigravity_home()
     surfaces = surface_dirs(root)
@@ -363,9 +391,17 @@ def _summaries_checks() -> list:
             )
             continue
         summaries = read_summaries(surface_path)
-        checks.append(_check("ok", f"summaries database ({surface})", f"{len(summaries)} conversation summary row(s)"))
+        checks.append(
+            _check(
+                "ok",
+                f"summaries database ({surface})",
+                f"{len(summaries)} conversation summary row(s)",
+            )
+        )
     if not surfaces:
-        checks.append(_check("warn", "summaries database", "no surface directories to inspect."))
+        checks.append(
+            _check("warn", "summaries database", "no surface directories to inspect.")
+        )
     return checks
 
 
@@ -378,7 +414,11 @@ def _daemon_check() -> dict:
         in_use = False
     if in_use:
         return _check("ok", "dashboard daemon", f"port {DAEMON_PORT} serving")
-    return _check("ok", "dashboard daemon", f"port {DAEMON_PORT} free (daemon not running — optional)")
+    return _check(
+        "ok",
+        "dashboard daemon",
+        f"port {DAEMON_PORT} free (daemon not running — optional)",
+    )
 
 
 def run_checks() -> list:

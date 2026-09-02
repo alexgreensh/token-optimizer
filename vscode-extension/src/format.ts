@@ -144,10 +144,10 @@ export function buildTooltip(s: Snapshot, opts: RenderOptions): string {
     lines.push(`| Context | \`${fillBar(s.fillPct)}\` ${s.fillPct}%${src} |`);
   }
   if (s.contextQ) {
-    lines.push(`| ContextQ | ${s.contextQ.grade} (${s.contextQ.score})${s.contextQ.stale ? ' _(cached)_' : ''} |`);
+    lines.push(`| ContextQ | ${escapeMd(String(s.contextQ.grade))} (${escapeMd(String(s.contextQ.score))})${s.contextQ.stale ? ' _(cached)_' : ''} |`);
   }
   if (s.eff) {
-    lines.push(`| Efficiency | ${s.eff.grade} (${s.eff.score}) |`);
+    lines.push(`| Efficiency | ${escapeMd(String(s.eff.grade))} (${escapeMd(String(s.eff.score))}) |`);
   }
   // Say so when fill is present but scores aren't yet — reads as "pending" not "broken".
   if (qualityPending(s)) {
@@ -263,11 +263,11 @@ function warningParts(s: Snapshot): string[] {
   const parts: string[] = [];
   if (s.fillWarning) {
     const bang = s.fillWarning.level === 'CRITICAL' ? '!' : '';
-    parts.push(`Fill ${s.fillWarning.value}%${bang}`);
+    parts.push(`Fill ${escapeMd(String(s.fillWarning.value))}%${bang}`);
   }
   if (s.toolWarning) {
     const bang = s.toolWarning.level === 'CRITICAL' ? '!' : '';
-    parts.push(`Tools ${s.toolWarning.value}${bang}`);
+    parts.push(`Tools ${escapeMd(String(s.toolWarning.value))}${bang}`);
   }
   return parts;
 }

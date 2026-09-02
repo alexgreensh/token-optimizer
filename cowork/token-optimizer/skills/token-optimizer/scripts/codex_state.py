@@ -101,7 +101,14 @@ def _ro_connect(path: Path) -> Iterator[sqlite3.Connection]:
     Never writes, never checkpoints, never attaches. The caller must keep the
     open window minimal: introspect + one query + fetch, then exit.
     """
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=_BUSY_TIMEOUT_SECONDS)
+    # Build the file: URI via Path.as_uri() rather than string interpolation:
+    # with uri=True, characters like ?, #, % and spaces in the path are URI
+    # syntax, so a path containing '?' would start the query string early and
+    # could drop or override mode=ro (opening the wrong DB, or read-write).
+    # as_uri() percent-encodes those, keeping the whole path in the path
+    # component. (Discovered DB paths are absolute, which as_uri() requires.)
+    db_uri = Path(path).as_uri()
+    conn = sqlite3.connect(f"{db_uri}?mode=ro", uri=True, timeout=_BUSY_TIMEOUT_SECONDS)
     try:
         # Defense-in-depth: `mode=ro` blocks writes to this DB but not ATTACH;
         # `query_only` also blocks ATTACH and any write through the connection,

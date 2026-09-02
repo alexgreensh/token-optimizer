@@ -68,6 +68,9 @@ def _load_runner(monkeypatch, tmp_path):
         "Stop is still wired as three separate hooks.json entries."
     )
     monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(REPO))
+    # claude_home() honors CLAUDE_CONFIG_DIR only when the directory exists;
+    # a missing dir is rejected and falls back to the host's real ~/.claude.
+    (tmp_path / "claude").mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
     spec = importlib.util.spec_from_file_location("stop_runner_under_test", RUNNER)
     mod = importlib.util.module_from_spec(spec)

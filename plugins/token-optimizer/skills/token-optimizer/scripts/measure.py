@@ -41877,6 +41877,9 @@ def _estimate_before_after_savings(days=30, estimated_pools=None):
             # Distinguishes a genuine positive result from the net-negative empty state
             # and from "no baseline yet" -- all three used to be an all-zero payload.
             "transformation_state": "ok",
+            # Same key set as `zero`: a full result has no bail-out reason. Callers
+            # index `["reason"]` on both shapes without a KeyError.
+            "reason": None,
             # Session-weight pool disclosure. The headline is the work-normalized
             # (per-API-call, constant-price) delta; `capacity_assumption` is the
             # disclosure sentence the card MUST surface next to the headline rather

@@ -190,8 +190,13 @@ def _safe_int(value: Any, default: int = 0) -> int:
     if value is None:
         return default
     try:
-        return int(value)
-    except (TypeError, ValueError):
+        # Parse through float first so a float-shaped string ("1234.0",
+        # common in JSON exports) doesn't collapse to the default the way
+        # int("1234.0") would. int() still truncates toward zero, matching
+        # prior behavior for genuine float inputs. OverflowError guards
+        # against float("inf")-style values.
+        return int(float(value))
+    except (TypeError, ValueError, OverflowError):
         return default
 
 

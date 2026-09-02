@@ -6602,6 +6602,18 @@ def generate_standalone_dashboard(days=30, quiet=False, force=False):
         "runtime": detect_runtime(),
         "runtime_label": runtime_name_for_humans(),
     }
+    # Teams edition (R2d): when org telemetry is active on this machine, the
+    # developer whose sessions are emitted sees it on the local dashboard.
+    try:
+        import fleet_emitter as _fleet
+        _fcfg = _fleet.load_config(config_dir=str(CONFIG_DIR))
+        data["fleet_telemetry"] = {
+            "active": _fcfg is not None,
+            "endpoint_host": (_fcfg["endpoint"].split("://", 1)[-1].split("/")[0]
+                              if _fcfg else ""),
+        }
+    except Exception:
+        data["fleet_telemetry"] = {"active": False, "endpoint_host": ""}
     data = _sanitize_dashboard_paths(data)
 
     template = template_path.read_text(encoding="utf-8")
@@ -6826,6 +6838,21 @@ def _run_session_end_flush_worker(args):
             except Exception:
                 pass
     except _HookTimeout:
+        pass
+    # Teams-edition org telemetry (admin-enabled, OFF by default). Runs in the
+    # worker tail, outside the refresh block's exception paths: fail-open, and
+    # the network step is skipped when the 20s budget is nearly spent. The
+    # watchdog's os._exit(0) never unwinds here, so the emitter writes its
+    # outbox atomically before any POST.
+    try:
+        import fleet_emitter
+        fleet_emitter.emit_after_flush(
+            trends_db=TRENDS_DB, snapshot_dir=SNAPSHOT_DIR, config_dir=CONFIG_DIR,
+            runtime=detect_runtime(), version=TOKEN_OPTIMIZER_VERSION,
+            cost_fn=_cost_from_model_breakdown, model_cost_fn=_get_model_cost,
+            meters_fn=_keepwarm_read_meters, billing_mode=fleet_billing_mode(),
+            time_left_fn=old_budget.remaining)
+    except Exception:
         pass
     finally:
         _clear_hook_budget(old_budget)
@@ -12700,6 +12727,33 @@ def keepwarm_billing_mode(env=None, claude_json_path=None, settings_path=None):
         return "subscription"
     # Rung 4: nothing detectable -> conservative subscription (off).
     return "subscription"
+
+
+def fleet_billing_mode(env=None, claude_json_path=None, settings_path=None):
+    """Billing class for the org-telemetry emitter (Teams edition).
+
+    Same ladder as keepwarm_billing_mode, but the 'nothing detectable' rung
+    maps to 'unknown', never 'subscription': keep-warm must assume the worst
+    (an unknown user is subscription and stays off), while telemetry must not
+    claim a billing mode it cannot see.
+    """
+    if env is None:
+        env = os.environ
+    if _keepwarm_env_says_api(env):
+        return "api"
+    json_verdict = _keepwarm_json_says_api(
+        claude_json_path if claude_json_path is not None
+        else _keepwarm_default_claude_json_path())
+    if json_verdict == "api":
+        return "api"
+    settings_verdict = _keepwarm_json_says_api(
+        settings_path if settings_path is not None
+        else _keepwarm_default_settings_path())
+    if settings_verdict == "api":
+        return "api"
+    if json_verdict == "subscription":
+        return "subscription"
+    return "unknown"
 
 
 def keepwarm_consent():

@@ -27,13 +27,13 @@ import json
 import os
 import shlex
 import shutil
-import stat as _stat
 import sys
 from pathlib import Path
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_SCRIPT_DIR))
 
+from py_trust import py_path_is_trusted, py_trust_reason  # noqa: E402
 from runtime_env import antigravity_home  # noqa: E402
 
 HOOK_NAME = "token-optimizer"
@@ -56,44 +56,26 @@ _PAYLOAD_MODULES = (
     "plugin_env.py",
     "bash_hook.py",
     "bash_compress.py",
+    # Dependency-free whitelist gate shared by bash_hook + bash_compress.
+    "bash_whitelist.py",
     "command_filters.py",
     "spawn_utils.py",
     "utf8_io.py",
 )
 
-# System install dirs: root-owned and not user-writable, so trusted by prefix.
-_TRUSTED_PY_PREFIXES = (
-    "/usr/bin/",
-    "/usr/local/bin/",
-    "/opt/homebrew/bin/",
-    "/opt/homebrew/opt/",
-    "/home/linuxbrew/.linuxbrew/bin/",
-    "/opt/hostedtoolcache/",
-)
+
+def _py_trust_reason(p: str) -> str | None:
+    """None when trusted, else a short human-readable rejection reason."""
+    return py_trust_reason(p)
 
 
 def _py_path_is_trusted(p: str) -> bool:
-    """Trusted iff the resolved interpreter is under a system prefix, OR it and
-    its dir are owned by us and not group/other-writable. Pure stat, never runs
-    the target. (Copied from copilot_install.py.)"""
-    try:
-        real = os.path.realpath(p)
-        if not os.path.isfile(real):
-            return False
-        if os.name == "nt" or not hasattr(os, "geteuid"):
-            return True
-        if real.startswith(_TRUSTED_PY_PREFIXES):
-            return True
-        euid = os.geteuid()
-        for target in (real, os.path.dirname(real)):
-            st = os.stat(target)
-            if st.st_uid != euid:
-                return False
-            if st.st_mode & (_stat.S_IWGRP | _stat.S_IWOTH):
-                return False
-        return True
-    except OSError:
-        return False
+    """Trusted iff the interpreter's bytes are admin-owned (euid or root) and
+    not group/other-writable, and its dir is not world-writable and not
+    group-writable by a third party. Pure stat, never runs the target. On
+    Windows, stat ownership is unreliable under Git-Bash, so require only that
+    the path is a real file."""
+    return py_path_is_trusted(p)
 
 
 def _resolve_safe_python() -> str:
@@ -186,6 +168,16 @@ def _write_consent(home: Path) -> None:
 
 def install(*, dry_run: bool = False, home: Path | None = None) -> dict:
     """Install the adapter. Returns a summary dict of actions taken."""
+    # Windows refusal (deferred quoting: cmd.exe would not parse shlex.quote,
+    # and the env-prefix form of the persisted hook command is POSIX-only).
+    # Refuse loudly rather than register hooks that can never fire.
+    if os.name == "nt":
+        raise RuntimeError(
+            "Antigravity install on native Windows is not supported yet: the "
+            "persisted hook command is POSIX-shell quoted and cmd.exe would "
+            "not parse it. Install from a POSIX shell or WSL."
+        )
+
     root = home if home is not None else antigravity_home()
     actions = {
         "copied": [],

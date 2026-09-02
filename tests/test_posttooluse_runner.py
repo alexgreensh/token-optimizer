@@ -381,7 +381,11 @@ sys.exit(m.main())
 
 
 def test_slow_handlers_cannot_starve_later_quality_cache(tmp_path):
-    """Four 0.8s handlers must all start, with over-budget work reported."""
+    """Four 1.6s handlers must all start, with over-budget work reported.
+
+    Timings are sized so per-handler fair share (4.0/4 = 1.0s) is comfortably
+    larger than runner startup noise on slow CI machines (Windows runners
+    starved the 4th handler when the budget was 2.0s with 0.8s handlers)."""
     marker = tmp_path / "handler-starts.log"
     code = f"""
 import importlib.util, sys, time
@@ -389,7 +393,7 @@ from pathlib import Path
 spec = importlib.util.spec_from_file_location("posttooluse_runner", {str(RUNNER)!r})
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
-m._RUNNER_TOTAL_BUDGET = 2.0
+m._RUNNER_TOTAL_BUDGET = 4.0
 m._read_hook_input = lambda: {{"tool_name": "Bash"}}
 
 def slow(name):
@@ -397,7 +401,7 @@ def slow(name):
         with Path({str(marker)!r}).open("a", encoding="utf-8") as f:
             f.write(name + "\\n")
             f.flush()
-        time.sleep(0.8)
+        time.sleep(1.6)
     return handler
 
 m._sub_bash_compress = slow("bash_compress")
@@ -414,7 +418,7 @@ sys.exit(m.main())
         capture_output=True,
         text=True,
         env=env,
-        timeout=10,
+        timeout=30,
     )
     assert proc.returncode == 0, proc.stderr[-2000:]
     starts = marker.read_text(encoding="utf-8").splitlines() if marker.exists() else []

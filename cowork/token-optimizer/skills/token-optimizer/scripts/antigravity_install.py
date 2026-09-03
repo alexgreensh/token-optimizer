@@ -242,7 +242,7 @@ def install(*, dry_run: bool = False, home: Path | None = None) -> dict:
         import tempfile
         _ensure_config_dir_permissions(pdir.parent)
         staging = Path(tempfile.mkdtemp(prefix=f".{pdir.name}.stage.", dir=str(pdir.parent)))
-        trash: Path | None = None
+        trash_dirs: list[Path] = []
         staging_moved = False
         try:
             try:
@@ -270,18 +270,33 @@ def install(*, dry_run: bool = False, home: Path | None = None) -> dict:
             except OSError as exc:
                 raise RuntimeError(f"failed staging plugin payload: {exc}") from exc
 
-            # Swap: move any existing dir aside, move staging in, delete aside.
-            if pdir.exists():
-                trash = pdir.parent / f".{pdir.name}.old.{os.getpid()}"
-                os.replace(pdir, trash)
-            try:
-                os.replace(staging, pdir)
-                staging_moved = True
-            except OSError as exc:
-                raise RuntimeError(f"failed activating plugin dir: {exc}") from exc
+            # Swap: move any existing dir aside, move staging in. Concurrent
+            # installers interleave the two renames, so a losing os.replace
+            # (target re-populated between exists-check and rename) retries
+            # until it wins or the budget is spent.
+            last_swap_error: OSError | None = None
+            for _attempt in range(10):
+                if pdir.exists():
+                    trash = pdir.parent / f".{pdir.name}.old.{os.getpid()}.{_attempt}"
+                    try:
+                        os.replace(pdir, trash)
+                    except FileNotFoundError:
+                        pass  # another installer moved it aside first
+                    except OSError as exc:
+                        raise RuntimeError(f"failed activating plugin dir: {exc}") from exc
+                    trash_dirs.append(trash)
+                try:
+                    os.replace(staging, pdir)
+                    staging_moved = True
+                    break
+                except OSError as exc:
+                    last_swap_error = exc
+            if not staging_moved:
+                raise RuntimeError(f"failed activating plugin dir: {last_swap_error}")
         finally:
-            if trash is not None and trash.exists():
-                shutil.rmtree(trash, ignore_errors=True)
+            for trash in trash_dirs:
+                if trash.exists():
+                    shutil.rmtree(trash, ignore_errors=True)
             if not staging_moved:
                 shutil.rmtree(staging, ignore_errors=True)
 

@@ -30,7 +30,6 @@ import json
 import os
 import shlex
 import shutil
-import stat as _stat
 import sys
 from contextlib import contextmanager
 from pathlib import Path
@@ -38,6 +37,7 @@ from pathlib import Path
 _SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_SCRIPT_DIR))
 
+from py_trust import py_path_is_trusted, py_trust_reason  # noqa: E402
 from runtime_env import grok_home  # noqa: E402
 
 # Observe hooks default to 5s; PostToolUse/Stop default to 600s in grok. TO's
@@ -86,56 +86,6 @@ def _hooks_file(root: Path) -> Path:
     return root / "hooks" / "token-optimizer.json"
 
 
-def _py_trust_reason(p: str) -> str | None:
-    """None when trusted, else a short human-readable rejection reason.
-
-    Same hardening as cursor_install._py_trust_reason: the interpreter's bytes
-    must be admin-owned (euid or root) and not group/other-writable, and its
-    dir must not be world-writable nor group-writable by a party the user does
-    not control. Pure stat — never runs the target.
-    """
-    try:
-        real = os.path.realpath(p)
-        if not os.path.isfile(real):
-            return f"{real} does not exist"
-        if os.name == "nt" or not hasattr(os, "geteuid"):
-            return None
-        euid = os.geteuid()
-
-        def _admin_owned(uid: int) -> bool:
-            return uid == euid or uid == 0
-
-        st_file = os.stat(real)
-        st_dir = os.stat(os.path.dirname(real))
-        if st_file.st_mode & _stat.S_IWOTH:
-            return f"{real} is world-writable"
-        if st_file.st_mode & _stat.S_IWGRP and not (
-            st_file.st_uid == euid and st_file.st_gid == os.getegid()
-        ):
-            return f"{real} is group-writable by a foreign group"
-        if not _admin_owned(st_file.st_uid):
-            return f"{real} is owned by uid {st_file.st_uid}, not by us or root"
-        if st_dir.st_mode & _stat.S_IWOTH:
-            return f"{os.path.dirname(real)} is world-writable"
-        if st_dir.st_mode & _stat.S_IWGRP and not (
-            st_dir.st_uid == 0
-            or (st_dir.st_uid == euid and st_dir.st_gid == os.getegid())
-        ):
-            return (f"{os.path.dirname(real)} is group-writable by a group "
-                    f"the user does not control (uid {st_dir.st_uid}, "
-                    f"gid {st_dir.st_gid})")
-        return None
-    except (OSError, ValueError) as exc:
-        # ValueError: embedded null byte in path (realpath raises it, not
-        # OSError). Without catching it, one bad candidate aborts the entire
-        # resolver search instead of being rejected and skipped.
-        return f"stat failed: {exc}"
-
-
-def _py_path_is_trusted(p: str) -> bool:
-    return _py_trust_reason(p) is None
-
-
 def _resolve_safe_python() -> str:
     """An ABSOLUTE, trusted python for the persisted Grok hook command.
 
@@ -157,14 +107,14 @@ def _resolve_safe_python() -> str:
         if cand:
             candidates.append((name, cand))
     for _label, cand in candidates:
-        if _py_path_is_trusted(cand):
+        if py_path_is_trusted(cand):
             # Persist the RESOLVED realpath, not abspath: the gate validated
             # realpath(cand) (the symlink target + its parent dir), so persisting
             # the original symlink path would leave a swap window between install
             # and hook fire (an attacker with write access to the symlink's parent
             # dir could redirect the symlink to a malicious interpreter).
             return os.path.realpath(cand)
-    reasons = [f"{label}={cand}: {_py_trust_reason(cand)}"
+    reasons = [f"{label}={cand}: {py_trust_reason(cand)}"
                for label, cand in candidates]
     raise RuntimeError(
         "no trusted python interpreter found for the Grok hook; "

@@ -41,7 +41,7 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_SCRIPT_DIR))
 
 from runtime_env import grok_home  # noqa: E402
-from grok_install import _py_path_is_trusted  # noqa: E402
+from py_trust import py_path_is_trusted  # noqa: E402
 
 DAEMON_PORT = 24848
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -230,7 +230,7 @@ def _persisted_python_check() -> list:
         return checks
     for _event, cmd in commands.items():
         argv = _parse_hook_command(cmd)
-        if argv and Path(argv[0]).is_file() and _py_path_is_trusted(argv[0]):
+        if argv and Path(argv[0]).is_file() and py_path_is_trusted(argv[0]):
             checks.append(_check("ok", "persisted python", argv[0]))
             return checks
     checks.append(
@@ -443,7 +443,7 @@ def _run_probe_command(command: str, payload: dict, probe_home: Path) -> dict:
     # a legitimate bridge path but points at an untrusted interpreter must NOT
     # be executed by --probe. The installer persists a realpath-resolved,
     # admin-owned interpreter; this check enforces that invariant at probe time.
-    if not _py_path_is_trusted(argv[0]):
+    if not py_path_is_trusted(argv[0]):
         return {"status": "fail",
                 "detail": f"persisted python {argv[0]} is not trusted "
                           f"(ownership/writability); refusing to execute it"}

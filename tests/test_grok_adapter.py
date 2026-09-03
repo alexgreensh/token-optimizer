@@ -409,20 +409,21 @@ def test_override_env_is_honored_when_trusted(gi, monkeypatch):
     monkeypatch.setenv("TOKEN_OPTIMIZER_PYTHON", "/nonexistent/python3")
     # Mock the trust gate to accept any existing file (CI hostedtoolcache
     # python is world-writable and fails the real gate).
-    monkeypatch.setattr(gi, "_py_path_is_trusted",
+    monkeypatch.setattr("py_trust.py_path_is_trusted",
                         lambda p: os.path.isfile(os.path.realpath(p)))
     assert os.path.isfile(gi._resolve_safe_python())
 
 
 @pytest.mark.skipif(not hasattr(os, "geteuid"), reason="POSIX ownership test")
 def test_trust_gate_rejects_hijackable_paths(gi):
+    import py_trust
     # world-writable DIR -> anyone can swap the file
     d = tempfile.mkdtemp()
     os.chmod(d, 0o777)
     f = os.path.join(d, "python3")
     open(f, "w").close()
     os.chmod(f, 0o755)
-    assert gi._py_path_is_trusted(f) is False
+    assert py_trust.py_path_is_trusted(f) is False
 
     # world-writable FILE in an owned dir -> anyone can rewrite its bytes
     d2 = tempfile.mkdtemp()
@@ -430,17 +431,38 @@ def test_trust_gate_rejects_hijackable_paths(gi):
     f2 = os.path.join(d2, "python3")
     open(f2, "w").close()
     os.chmod(f2, 0o777)
-    assert gi._py_path_is_trusted(f2) is False
+    assert py_trust.py_path_is_trusted(f2) is False
 
 
 @pytest.mark.skipif(not hasattr(os, "geteuid"), reason="POSIX ownership test")
 def test_trust_gate_accepts_owned_unwritable_file(gi):
+    import py_trust
     d = tempfile.mkdtemp()
     os.chmod(d, 0o755)
     f = os.path.join(d, "python3")
     open(f, "w").close()
     os.chmod(f, 0o755)
-    assert gi._py_path_is_trusted(f) is True
+    assert py_trust.py_path_is_trusted(f) is True
+
+
+def test_grok_install_uses_shared_trust_gate(gi, monkeypatch, tmp_path):
+    """grok_install delegates to the shared py_trust gate, not a private copy.
+
+    Monkeypatch py_trust.py_path_is_trusted and assert grok_install's
+    _resolve_safe_python honors the patched gate. This proves the adapter
+    calls through the shared module — a private copy would not be affected.
+    """
+    import py_trust
+
+    sentinel = str(tmp_path / "sentinel-python")
+    Path(sentinel).write_bytes(b"#!/bin/sh\n")
+    os.chmod(sentinel, 0o755)
+
+    monkeypatch.setattr(py_trust, "py_path_is_trusted",
+                        lambda p: p == sentinel)
+    monkeypatch.setenv("TOKEN_OPTIMIZER_PYTHON", sentinel)
+    resolved = gi._resolve_safe_python()
+    assert resolved == os.path.realpath(sentinel)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Grok install refuses native Windows (POSIX-shell quoted command)")

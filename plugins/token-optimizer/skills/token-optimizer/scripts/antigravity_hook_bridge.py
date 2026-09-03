@@ -494,7 +494,15 @@ def main(argv=None) -> int:
             return 0
         _emit(out)
     except Exception:
-        # Fail open: never break the Antigravity loop (R15).
+        # Fail open: never break the Antigravity loop (R15). But never
+        # silently: a hook that never fires is undiagnosable without a trace.
+        # Guarded — a closed/full stderr must not turn fail-open into
+        # fail-hung.
+        try:
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+        except Exception:
+            pass
         return 0
     return 0
 

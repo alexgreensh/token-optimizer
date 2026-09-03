@@ -246,3 +246,14 @@ def test_record_nudge_two_process_race_keeps_both_thresholds(ab, tmp_path):
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert state.get("85%") is True
     assert state.get("95%") is True
+
+
+def test_handler_exception_is_logged_then_fails_open(ab, monkeypatch, capsys):
+    """A crashing handler must still exit 0 with empty output (fail-open), but
+    leave a traceback on stderr so a never-firing hook is diagnosable."""
+    monkeypatch.setattr(ab, "_consent_ok", lambda home: True)
+    monkeypatch.setattr(ab, "handle_pre_invocation", lambda payload: (_ for _ in ()).throw(RuntimeError("boom")))
+    rc = ab.main(["pre-invocation"])
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "boom" in err or "RuntimeError" in err

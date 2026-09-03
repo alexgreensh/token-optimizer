@@ -421,6 +421,79 @@ def _daemon_check() -> dict:
     )
 
 
+def _bridge_selftest_check() -> dict:
+    """Invoke the installed bridge once with an empty payload.
+
+    File-and-key validation above cannot catch a wrong interpreter, a stale
+    payload import, or a crash-on-startup: the only proof a hook can fire is
+    running it. The bridge must exit 0 (fail-open contract) and emit valid
+    JSON on stdout.
+    """
+    try:
+        from antigravity_install import plugin_dir as _plugin_dir
+    except Exception:
+        return _check("warn", "bridge self-test", "antigravity_install unavailable.")
+    bridge = _plugin_dir(antigravity_home()) / "antigravity_hook_bridge.py"
+    if not bridge.is_file():
+        return _check(
+            "warn",
+            "bridge self-test",
+            f"{bridge} missing.",
+            "Run `python3 measure.py antigravity-install`.",
+        )
+    try:
+        env = {
+            **os.environ,
+            "TOKEN_OPTIMIZER_RUNTIME": "antigravity",
+            # Probe the SAME home this doctor run is validating, never
+            # whatever the subprocess would resolve on its own.
+            "TOKEN_OPTIMIZER_ANTIGRAVITY_HOME": str(antigravity_home()),
+        }
+        proc = subprocess.Popen(
+            [sys.executable, str(bridge), "pre-tool-use"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            stdout, stderr = proc.communicate(input="{}", timeout=15)
+        except subprocess.SubprocessError:
+            proc.kill()
+            proc.wait()
+            raise
+        proc.stdout = stdout
+        proc.stderr = stderr
+    except (OSError, subprocess.SubprocessError) as exc:
+        return _check(
+            "fail",
+            "bridge self-test",
+            f"invocation failed: {exc}.",
+            "Re-run `python3 measure.py antigravity-install` to refresh the payload.",
+        )
+    if proc.returncode != 0:
+        return _check(
+            "fail",
+            "bridge self-test",
+            f"exit {proc.returncode} (stderr: {proc.stderr.strip()[:200]}).",
+            "Re-run `python3 measure.py antigravity-install` to refresh the payload.",
+        )
+    out = (proc.stdout or "").strip()
+    if out:
+        try:
+            json.loads(out)
+        except (json.JSONDecodeError, ValueError):
+            return _check(
+                "fail",
+                "bridge self-test",
+                f"stdout is not valid JSON; the host would read the hook as "
+                f"malformed (stdout: {out[:200]!r}).",
+                "Re-run `python3 measure.py antigravity-install` to refresh the payload.",
+            )
+    return _check("ok", "bridge self-test", "exit 0, valid JSON output")
+
+
 def run_checks() -> list:
     checks = []
     checks.extend(_binary_checks())
@@ -431,6 +504,7 @@ def run_checks() -> list:
     checks.extend(_conversation_store_checks())
     checks.extend(_summaries_checks())
     checks.append(_daemon_check())
+    checks.append(_bridge_selftest_check())
     return checks
 
 

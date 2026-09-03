@@ -300,3 +300,19 @@ def test_dashboard_toggle_lookup_matches_doctor_check_name(doctor, monkeypatch, 
     # The lookup name must be a name the doctor actually emits.
     assert "dashboard daemon" in names
     assert toggle["installed"] is True
+
+
+def test_bridge_selftest_ok_after_install(doctor, tmp_path):
+    """The self-test must pass on a healthy install: exit 0, valid JSON."""
+    _install(doctor, tmp_path)
+    check = doctor._bridge_selftest_check()
+    assert check["status"] == "ok", check["detail"]
+
+
+def test_bridge_selftest_fails_on_broken_payload(doctor, tmp_path, monkeypatch):
+    """A stale payload (bridge crashes on start) must surface as fail, not ok."""
+    _install(doctor, tmp_path)
+    bridge = tmp_path / "config" / "plugins" / "token-optimizer" / "antigravity_hook_bridge.py"
+    bridge.write_text("import sys\nsys.exit(3)\n", encoding="utf-8")
+    check = doctor._bridge_selftest_check()
+    assert check["status"] == "fail"

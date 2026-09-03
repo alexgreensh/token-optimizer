@@ -11,6 +11,7 @@ prove the gate fires BEFORE subprocess.run, so nothing is ever spawned.
 from __future__ import annotations
 
 import importlib
+import sys
 from pathlib import Path
 
 import pytest
@@ -87,3 +88,40 @@ def test_whitelisted_command_passes_gate_and_spawns(bc, monkeypatch, capsys, tmp
     args, kwargs = calls[0]
     assert args[0] == ["ls", "-la", "/usr/bin"]
     assert kwargs["shell"] is False, "capopt path must keep shell=False"
+
+
+def test_persisted_command_pattern_is_redacted(bc, monkeypatch, capsys, tmp_path):
+    """The command pattern written to trends.db must be redacted before it
+    reaches disk: an inline secret in a whitelisted command must never be
+    persisted in cleartext."""
+    captured = {}
+    monkeypatch.setenv("CLAUDE_SESSION_ID", "")
+    monkeypatch.setattr(
+        bc, "_detect_pattern", lambda cmd: None, raising=False
+    )
+    import builtins
+    real_import = builtins.__import__
+
+    def fake_log(**kwargs):
+        captured.update(kwargs)
+
+    # Intercept the measure import inside main()'s savings block.
+    import types
+    measure_stub = types.ModuleType("measure")
+    measure_stub._log_compression_event = fake_log
+    monkeypatch.setitem(sys.modules, "measure", measure_stub)
+
+    class _FakeResult:
+        stdout = "x" * 2000
+        stderr = ""
+        returncode = 0
+
+    monkeypatch.setattr(bc.subprocess, "run", lambda *a, **k: _FakeResult())
+    monkeypatch.setattr(
+        bc.sys,
+        "argv",
+        ["bash_compress.py", "git", "log", "--grep=mysql", "-pSECRETPW"],
+    )
+    with pytest.raises(SystemExit):
+        bc.main()
+    assert "SECRETPW" not in str(captured.get("command_pattern", ""))

@@ -18,7 +18,7 @@ Checks:
   P1  installed payload integrity (bridge, atomic-writer, compress)
   P1  observed-events ledger (which events fired)
   P2  session store (~/.grok/sessions readable)
-  P2  daemon port 24847 availability
+  P2  daemon port 24848 availability
 
 Usage:
     python3 grok_doctor.py [--json]
@@ -43,7 +43,7 @@ sys.path.insert(0, str(_SCRIPT_DIR))
 from runtime_env import grok_home  # noqa: E402
 from grok_install import _py_path_is_trusted  # noqa: E402
 
-DAEMON_PORT = 24847
+DAEMON_PORT = 24848
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 # The five events the installer wires (order = probe order = docs order).

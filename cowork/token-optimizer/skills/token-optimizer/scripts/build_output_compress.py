@@ -118,7 +118,7 @@ _SHAPE_FALLBACK_KEYWORDS = frozenset({
     "clippy", "tsc", "eslint", "ruff", "mypy", "pytest", "cargo", "go",
     "npm", "yarn", "pnpm", "mvn", "gradle", "cmake", "ninja", "gcc",
     "g++", "cc", "clang", "rustc", "dotnet", "swift", "rspec", "rake",
-    "tox", "nox", "webpack", "vite", "rollup", "esbuild", "next", "tsc",
+    "tox", "nox", "webpack", "vite", "rollup", "esbuild", "next",
 })
 
 # ---------------------------------------------------------------------------

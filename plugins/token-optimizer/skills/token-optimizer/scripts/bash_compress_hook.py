@@ -526,18 +526,19 @@ def _try_build_output_compress(command: str, stdout: str) -> str | None:
                     build_archive_pointer,
                 )
                 _session_id = os.environ.get("CLAUDE_SESSION_ID", "")
-                _archive_key = hashlib.sha256(
+                _key = hashlib.sha256(
                     f"{_session_id}|{command}|{time.time()}|{os.urandom(4).hex()}".encode("utf-8", errors="replace")
                 ).hexdigest()[:16]
-                if archive_original(stdout, _session_id, _archive_key, "Bash") is not None:
-                    if archive_entry_exists(_session_id, _archive_key):
-                        compressed = build_archive_pointer(compressed, len(stdout), _archive_key)
-                    else:
-                        _archive_key = None
-                else:
-                    _archive_key = None
+                # _archive_key stays None until both archive write and
+                # existence check succeed, so any failure path (exception,
+                # archive_original returning None, entry pruned) leaves it
+                # None and the post-block check returns raw.
+                if archive_original(stdout, _session_id, _key, "Bash") is not None:
+                    if archive_entry_exists(_session_id, _key):
+                        compressed = build_archive_pointer(compressed, len(stdout), _key)
+                        _archive_key = _key
             except Exception:
-                _archive_key = None
+                pass
 
         # F6: archive failure -> raw, never lossy preview.
         if _archive_attempted and _archive_key is None:

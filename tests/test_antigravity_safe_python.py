@@ -32,6 +32,7 @@ def mod():
     return _load()
 
 
+@pytest.mark.skipif(not hasattr(os, "geteuid"), reason="POSIX ownership test")
 def test_untrusted_sys_executable_is_not_persisted(mod, monkeypatch, tmp_path):
     """A writable venv interpreter as sys.executable must be skipped in favor
     of a trusted PATH candidate."""
@@ -70,6 +71,7 @@ def test_persists_realpath_not_symlink(mod, monkeypatch, tmp_path):
     assert not resolved.startswith(str(link.parent))
 
 
+@pytest.mark.skipif(not hasattr(os, "geteuid"), reason="POSIX ownership test")
 def test_no_trusted_candidate_lists_reasons(mod, monkeypatch, tmp_path):
     """When every candidate fails the gate, the error names each candidate."""
     bad = tmp_path / "bad" / "python3"

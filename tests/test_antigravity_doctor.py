@@ -19,6 +19,10 @@ from pathlib import Path
 
 import pytest
 
+# antigravity_install refuses native Windows by design (the persisted hook
+# command is POSIX-shell quoted); install/uninstall/doctor paths are POSIX-only.
+pytestmark = pytest.mark.skipif(os.name == "nt", reason="install paths are POSIX-only on this adapter")
+
 REPO = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO / "skills" / "token-optimizer" / "scripts"
 

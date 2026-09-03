@@ -219,6 +219,7 @@ def test_clean_field_caps_length_and_strips_nonprintable(ab):
     assert "a" in s
 
 
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="fork start method is POSIX-only")
 def test_record_nudge_two_process_race_keeps_both_thresholds(ab, tmp_path):
     """Two concurrent writers must not lose each other's threshold key: the
     read-modify-write is serialized on a sidecar lock, so a duplicate nudge

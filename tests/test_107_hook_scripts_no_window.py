@@ -393,10 +393,17 @@ def test_bash_compress_wrapper_child_has_no_console(tmp_path):
     )
 
 
+# The probe reports through a file, not its exit code: git treats any
+# non-zero exit from GIT_EXTERNAL_DIFF as fatal and returns 128 itself,
+# which would make a "console attached" verdict indistinguishable from a
+# broken probe.
 _CONSOLE_PROBE_PY = r"""
-import ctypes, sys
+import ctypes, os, sys
 user32 = ctypes.windll.user32
-sys.exit(0 if user32.GetConsoleWindow() == 0 else 1)
+verdict = "0" if user32.GetConsoleWindow() == 0 else "1"
+with open(os.environ["TO_CONSOLE_PROBE_OUT"], "w", encoding="utf-8") as fh:
+    fh.write(verdict)
+sys.exit(0)
 """
 
 
@@ -432,9 +439,11 @@ def test_bash_compress_wrapper_child_has_no_live_console(tmp_path):
         '@"{}" "{}" %*\n'.format(sys.executable, probe_py), encoding="utf-8"
     )
 
+    verdict_file = tmp_path / "console_verdict.txt"
     env = dict(os.environ)
     env["TOKEN_OPTIMIZER_SNAPSHOT_DIR"] = str(tmp_path)
     env["GIT_EXTERNAL_DIFF"] = str(probe_cmd)
+    env["TO_CONSOLE_PROBE_OUT"] = str(verdict_file)
     proc = subprocess.run(
         [sys.executable, str(SCRIPTS / "bash_compress.py"), "git", "diff"],
         capture_output=True,
@@ -444,8 +453,11 @@ def test_bash_compress_wrapper_child_has_no_live_console(tmp_path):
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     assert proc.returncode == 0, (
-        "wrapper's git-diff child reported a live console (rc=%s, stderr=%r)"
-        % (proc.returncode, proc.stderr)
+        "wrapper's git-diff child failed (rc=%s, stderr=%r)" % (proc.returncode, proc.stderr)
+    )
+    assert verdict_file.is_file(), "the external-diff probe never ran under the wrapper"
+    assert verdict_file.read_text(encoding="utf-8") == "0", (
+        "wrapper's git-diff child reported a live console"
     )
 
 
@@ -456,15 +468,18 @@ def test_console_probe_detects_a_real_console(tmp_path):
     the wrapper test means 'no console' and not 'probe cannot tell'."""
     probe_py = tmp_path / "console_probe.py"
     probe_py.write_text(_CONSOLE_PROBE_PY, encoding="utf-8")
+    verdict_file = tmp_path / "console_verdict.txt"
+    env = dict(os.environ, TO_CONSOLE_PROBE_OUT=str(verdict_file))
     proc = subprocess.run(
         [sys.executable, str(probe_py)],
         capture_output=True,
         timeout=30,
+        env=env,
         creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
     )
-    assert proc.returncode == 1, (
-        "probe returned %s under CREATE_NEW_CONSOLE; it cannot detect consoles "
-        "and the wrapper no-console verdict is meaningless" % proc.returncode
+    assert proc.returncode == 0 and verdict_file.read_text(encoding="utf-8") == "1", (
+        "probe did not report a console under CREATE_NEW_CONSOLE; it cannot detect "
+        "consoles and the wrapper no-console verdict is meaningless"
     )
 
 

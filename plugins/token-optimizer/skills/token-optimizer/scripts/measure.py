@@ -5679,8 +5679,9 @@ def _collect_cursor_hook_status_for_dashboard():
 def _collect_grok_hook_status_for_dashboard():
     """Hook status for the dashboard toggle panel under the Grok Build runtime.
 
-    Mirrors the Codex/Hermes collectors. grok_doctor uses uppercase statuses
-    ("OK"/"WARN"/"FAIL") and check names from grok_doctor.py.
+    Mirrors the Codex/Hermes/Antigravity collectors. grok_doctor reports
+    lowercase statuses ("ok"/"warn"/"fail") and check names matching
+    grok_doctor.py's emitted names exactly.
     """
     import grok_doctor  # noqa: PLC0415
 
@@ -5689,43 +5690,35 @@ def _collect_grok_hook_status_for_dashboard():
     by_name = {check["name"]: check for check in checks}
 
     def _ok(name):
-        return by_name.get(name, {}).get("status") == "OK"
+        return by_name.get(name, {}).get("status") == "ok"
 
     install_cmd = f"TOKEN_OPTIMIZER_RUNTIME=grok python3 {mp_cmd} grok-install"
     doctor_cmd = f"TOKEN_OPTIMIZER_RUNTIME=grok python3 {mp_cmd} grok-doctor"
 
     return {
         "grok_hooks": {
-            "installed": _ok("Hook config"),
-            "partial": by_name.get("Hook config", {}).get("status") == "WARN",
+            "installed": _ok("TO hook config"),
+            "partial": by_name.get("TO hook config", {}).get("status") == "warn",
             "label": "Grok Build Hooks",
             "description": "Wires Token Optimizer into $GROK_HOME/hooks/token-optimizer.json: sessionStart continuity restore, userPromptSubmit quality tracking, preToolUse bash compression (capability-gated), postToolUse crash-recovery tally + nudges, stop-time rollup.",
             "install_cmd": install_cmd,
             "uninstall_cmd": f"TOKEN_OPTIMIZER_RUNTIME=grok python3 {mp_cmd} grok-uninstall",
         },
-        "grok_capabilities": {
-            "installed": _ok("Capability matrix"),
-            "partial": any(
-                by_name.get(n, {}).get("status") == "WARN"
-                for n in ("Capability matrix", "Capability matrix freshness", "Capability matrix age")
-            ),
-            "label": "Hook Capability Matrix",
-            "description": "Documented-capability gate for Grok hooks (upstream fields shift release to release). Engine features auto-gate on it; reseeds when the docs/source contract changes.",
-            "install_cmd": install_cmd,
-            "uninstall_cmd": doctor_cmd,
-        },
         "grok_session_store": {
-            "installed": _ok("Session store"),
-            "partial": by_name.get("Session store", {}).get("status") == "WARN",
+            "installed": _ok("session store"),
+            "partial": by_name.get("session store", {}).get("status") == "warn",
             "label": "Grok Build Sessions",
             "description": "Reads $GROK_HOME/sessions/ for per-session token totals (updates.jsonl), signals, compactions, and cost (costUsdTicks). Crash-killed sessions recovered from partial data.",
             "install_cmd": doctor_cmd,
             "uninstall_cmd": doctor_cmd,
         },
         "grok_dashboard_port": {
-            "installed": _ok("Dashboard port 24847"),
-            "label": "Dashboard Port 24847",
-            "description": "Confirms that port 24847 is available or already serving the Grok Build Token Optimizer dashboard.",
+            # The doctor's check name is "dashboard daemon" (lowercase, with
+            # the port in the detail text, not the name) — the lookup must
+            # match it exactly or the toggle can never turn green.
+            "installed": _ok("dashboard daemon"),
+            "label": "Dashboard Port 24848",
+            "description": "Confirms that port 24848 is available or already serving the Grok Build Token Optimizer dashboard.",
             "install_cmd": f"TOKEN_OPTIMIZER_RUNTIME=grok python3 {mp_cmd} open-dashboard",
             "uninstall_cmd": "",
         },

@@ -55,6 +55,11 @@ _PAYLOAD_MODULES = (
     "grok_session.py",
     "bash_hook.py",
     "bash_compress.py",
+    # Dependency-free whitelist gate shared by bash_hook + bash_compress.
+    # Without it, `import bash_hook` fails in the installed path, the bridge
+    # sets _bash_hook = None, and the entire PreToolUse bash compression
+    # feature silently no-ops.
+    "bash_whitelist.py",
     "hook_io.py",
     "plugin_env.py",
     "runtime_env.py",

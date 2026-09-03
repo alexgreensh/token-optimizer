@@ -612,3 +612,131 @@ def test_read_session_accepts_snake_case_summary(tmp_path):
         (sd / "summary.json").write_text(_json.dumps(payload), encoding="utf-8")
         rec = gs.read_session(sd)
         assert rec["title"] == "t" and rec["num_messages"] == 3 and rec["model_id"] == "grok-4", (spelling, rec)
+
+
+# ---------------------------------------------------------------------------
+# grok_install: bash_whitelist.py in payload (bash compression feature)
+# ---------------------------------------------------------------------------
+
+
+def test_bash_whitelist_in_payload_modules(gi):
+    """bash_whitelist.py must be in _PAYLOAD_MODULES so the installed bridge
+    can import bash_hook (which does an unguarded top-level import of it).
+    Without it, bash compression silently no-ops in every Grok install."""
+    assert "bash_whitelist.py" in gi._PAYLOAD_MODULES, (
+        "bash_whitelist.py missing from _PAYLOAD_MODULES — bash_hook import "
+        "fails in the installed path and PreToolUse compression is dead"
+    )
+
+
+def test_install_copies_bash_whitelist(gi, tmp_path):
+    """install() must actually place bash_whitelist.py next to the bridge."""
+    home = tmp_path / "grok-home"
+    gi.install(home=home)
+    whitelist = home / "token-optimizer" / "plugin" / "bash_whitelist.py"
+    assert whitelist.is_file(), "bash_whitelist.py not copied to plugin dir"
+    # Verify it's the real module, not an empty stub.
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("bw_check", whitelist)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert hasattr(mod, "is_whitelisted"), (
+        "installed bash_whitelist.py is not the real module"
+    )
+
+
+# ---------------------------------------------------------------------------
+# grok dashboard collector: toggle lookups match doctor's emitted names
+# ---------------------------------------------------------------------------
+
+
+def test_dashboard_collector_toggle_names_match_doctor(gd, gi, monkeypatch, tmp_path):
+    """Every dashboard toggle must look up a check name the doctor actually
+    emits, with the correct lowercase status. Before the fix, the collector
+    used uppercase statuses and wrong names (copy-pasted from another adapter),
+    so every toggle permanently showed installed:False."""
+    import measure
+
+    # Install grok so the doctor has a real install to check.
+    home = tmp_path / "grok-home"
+    gi.install(home=home)
+    monkeypatch.setenv("GROK_HOME", str(home))
+
+    # Get the real check names the doctor emits.
+    checks = gd.run_checks()
+    names = {c["name"] for c in checks}
+    statuses = {c["status"] for c in checks}
+
+    # The doctor must emit lowercase statuses (the collector depends on this).
+    assert statuses.issubset({"ok", "warn", "fail"}), (
+        f"doctor emits non-lowercase statuses: {statuses}"
+    )
+
+    # Patch all checks to "ok" so we can verify every toggle CAN turn green.
+    monkeypatch.setattr(gd, "run_checks", lambda: [
+        {**c, "status": "ok"} for c in checks
+    ])
+
+    panel = measure._collect_grok_hook_status_for_dashboard()
+
+    # Every toggle's lookup name must exist in the doctor's emitted names.
+    for key, toggle in panel.items():
+        # The toggle must reference a real doctor check name. We verify by
+        # checking that installed is True (meaning the name was found AND
+        # status was "ok"). If the name were wrong, _ok would return False.
+        assert toggle["installed"] is True, (
+            f"toggle {key} lookup name doesn't match any doctor check — "
+            f"toggle can never show installed:True. Doctor names: {names}"
+        )
+
+
+def test_dashboard_collector_no_capability_toggle(gd, gi, monkeypatch, tmp_path):
+    """The collector must NOT have a grok_capabilities toggle — grok_doctor
+    has no capability matrix check. A toggle looking up a non-existent check
+    name permanently shows installed:False."""
+    import measure
+
+    home = tmp_path / "grok-home"
+    gi.install(home=home)
+    monkeypatch.setenv("GROK_HOME", str(home))
+
+    panel = measure._collect_grok_hook_status_for_dashboard()
+    assert "grok_capabilities" not in panel, (
+        "grok_capabilities toggle exists but grok_doctor has no capability "
+        "check — this toggle can never turn green"
+    )
+
+
+def test_dashboard_collector_port_label_matches_grok_port(gd, gi, monkeypatch, tmp_path):
+    """The dashboard port toggle must reference grok's own port (24848), not
+    antigravity's port (24847) which was copy-pasted."""
+    import measure
+
+    home = tmp_path / "grok-home"
+    gi.install(home=home)
+    monkeypatch.setenv("GROK_HOME", str(home))
+
+    panel = measure._collect_grok_hook_status_for_dashboard()
+    port_toggle = panel["grok_dashboard_port"]
+
+    # The label and description must reference 24848, never 24847.
+    assert "24848" in port_toggle["label"], (
+        f"port label doesn't reference grok's port 24848: {port_toggle['label']}"
+    )
+    assert "24848" in port_toggle["description"], (
+        f"port description doesn't reference grok's port 24848: {port_toggle['description']}"
+    )
+    assert "24847" not in port_toggle["label"], (
+        "port label references antigravity's port 24847"
+    )
+    assert "24847" not in port_toggle["description"], (
+        "port description references antigravity's port 24847"
+    )
+
+    # The lookup name must be "dashboard daemon" (what grok_doctor emits).
+    checks = gd.run_checks()
+    daemon_check = [c for c in checks if c["name"] == "dashboard daemon"]
+    assert daemon_check, (
+        "grok_doctor doesn't emit a 'dashboard daemon' check — "
+        "the port toggle lookup name is wrong"
+    )

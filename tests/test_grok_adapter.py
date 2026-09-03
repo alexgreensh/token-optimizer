@@ -409,7 +409,7 @@ def test_override_env_is_honored_when_trusted(gi, monkeypatch):
     monkeypatch.setenv("TOKEN_OPTIMIZER_PYTHON", "/nonexistent/python3")
     # Mock the trust gate to accept any existing file (CI hostedtoolcache
     # python is world-writable and fails the real gate).
-    monkeypatch.setattr("py_trust.py_path_is_trusted",
+    monkeypatch.setattr(gi, "py_path_is_trusted",
                         lambda p: os.path.isfile(os.path.realpath(p)))
     assert os.path.isfile(gi._resolve_safe_python())
 
@@ -448,17 +448,24 @@ def test_trust_gate_accepts_owned_unwritable_file(gi):
 def test_grok_install_uses_shared_trust_gate(gi, monkeypatch, tmp_path):
     """grok_install delegates to the shared py_trust gate, not a private copy.
 
-    Monkeypatch py_trust.py_path_is_trusted and assert grok_install's
-    _resolve_safe_python honors the patched gate. This proves the adapter
-    calls through the shared module — a private copy would not be affected.
+    Two proofs:
+    1. Identity: gi.py_path_is_trusted IS py_trust.py_path_is_trusted (same
+       function object), proving the import came from the shared module.
+    2. Functional: patching gi.py_path_is_trusted changes _resolve_safe_python
+       behavior, proving the resolver calls through that name.
     """
     import py_trust
 
+    # Proof 1: the imported name is the shared function object.
+    assert gi.py_path_is_trusted is py_trust.py_path_is_trusted
+
+    # Proof 2: patching the name in grok_install's namespace controls the
+    # resolver. A private copy would not be affected by this patch.
     sentinel = str(tmp_path / "sentinel-python")
     Path(sentinel).write_bytes(b"#!/bin/sh\n")
     os.chmod(sentinel, 0o755)
 
-    monkeypatch.setattr(py_trust, "py_path_is_trusted",
+    monkeypatch.setattr(gi, "py_path_is_trusted",
                         lambda p: p == sentinel)
     monkeypatch.setenv("TOKEN_OPTIMIZER_PYTHON", sentinel)
     resolved = gi._resolve_safe_python()

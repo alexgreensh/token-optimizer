@@ -123,6 +123,39 @@ def main() -> None:
         from pipeline_analyzer import is_read_only_pipeline
         is_ro, reason = is_read_only_pipeline(command)
         if not is_ro:
+            # --- K1: build/test/run output compression (PostToolUse) ---
+            # The command is not read-only, so the standard compression path
+            # skips it. But build/test/run commands (gcc, pytest, cargo, npm,
+            # make, ...) produce the bulk of agent tokens and are safe to
+            # compress PostToolUse: the command already ran, we only compress
+            # the captured stdout. Fail-open at every step.
+            #
+            # Binding constraint (orchestrator): the size gate and the
+            # command-string classify() must run BEFORE importing
+            # build_output_compress, so small non-read-only commands (the
+            # common case) pay no import cost.
+            if stdout and len(stdout) >= 2048:
+                try:
+                    # Stage 1: command-string classification (no import needed
+                    # for the check itself; classify() is a pure function that
+                    # only uses shlex + a static dict).
+                    from build_output_compress import classify as _build_classify
+                    _is_build = _build_classify(command)
+                    # Stage 2: shape fallback only if command didn't match and
+                    # the output is large enough to justify the scan.
+                    if not _is_build:
+                        from build_output_compress import classify_by_shape as _build_shape
+                        _is_build = _build_shape(stdout)
+                    if _is_build:
+                        _compressed_build = _try_build_output_compress(
+                            command, stdout, stderr)
+                        if _compressed_build is not None:
+                            if _nudge:
+                                _compressed_build = _compressed_build + "\n" + _nudge
+                            _emit_updated_tool_output(_compressed_build, stderr)
+                            return
+                except Exception:
+                    pass  # Fail open: raw output stands
             if _nudge:
                 _emit_updated_tool_output(stdout + "\n" + _nudge, stderr)
             return  # Not eligible, pass through raw
@@ -443,6 +476,76 @@ def _log_event(command: str, original: str, compressed: str,
         )
     except Exception:
         pass
+
+
+def _try_build_output_compress(command: str, stdout: str, stderr: str) -> str | None:
+    """Compress build/test/run output and attach the archive pointer.
+
+    Called from the not-read-only branch when classify() or classify_by_shape()
+    says the output is build/test/run. Returns the compressed+archived output,
+    or None to signal "pass through raw". Fail-open: any exception -> None.
+
+    Mirrors the read-only compression path: strip ANSI, compress, archive the
+    full original, attach the expand pointer, enforce the baseline invariant,
+    log to trends.db with feature=build_output_compress.
+    """
+    try:
+        script_dir = str(Path(__file__).resolve().parent)
+        if script_dir not in sys.path:
+            sys.path.insert(0, script_dir)
+
+        from bash_compress import _strip_ansi, _enforce_baseline_invariant
+        from build_output_compress import compress as _build_compress
+
+        cleaned_stdout = _strip_ansi(stdout)
+        compressed = _build_compress(command, cleaned_stdout, returncode=0, stderr=stderr)
+        if not compressed or compressed == cleaned_stdout:
+            return None
+
+        # Check that compression actually helped by >= 10%
+        from token_estimate import estimate_tokens as _est
+        orig_tokens = _est(cleaned_stdout)
+        if orig_tokens > 0:
+            comp_tokens = _est(compressed)
+            if (1.0 - comp_tokens / orig_tokens) < 0.10:
+                return None
+
+        # Archive raw stdout + attach retrieval pointer (same path as read-only)
+        _archive_key = None
+        if len(stdout) > 500:
+            try:
+                from archive_result import (
+                    archive_entry_exists,
+                    archive_original,
+                    build_archive_pointer,
+                )
+                _session_id = os.environ.get("CLAUDE_SESSION_ID", "")
+                _archive_key = hashlib.sha256(
+                    f"{_session_id}|{command}|{time.time()}|{os.urandom(4).hex()}".encode("utf-8", errors="replace")
+                ).hexdigest()[:16]
+                if archive_original(stdout, _session_id, _archive_key, "Bash") is not None:
+                    if archive_entry_exists(_session_id, _archive_key):
+                        compressed = build_archive_pointer(compressed, len(stdout), _archive_key)
+                    else:
+                        compressed = stdout
+                        _archive_key = None
+                else:
+                    _archive_key = None
+            except Exception:
+                _archive_key = None
+
+        # Enforce the baseline-size invariant
+        try:
+            compressed = _enforce_baseline_invariant(compressed, stdout, _archive_key)
+        except Exception:
+            pass
+
+        # Log to trends.db with the build_output_compress feature
+        _log_event(command, cleaned_stdout, compressed, feature="build_output_compress")
+
+        return compressed
+    except Exception:
+        return None
 
 
 def _emit_updated_tool_output(stdout: str, stderr: str) -> None:

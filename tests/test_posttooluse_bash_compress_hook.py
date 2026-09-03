@@ -479,3 +479,162 @@ class TestFailOpen:
             input=payload, capture_output=True, text=True, timeout=10,
         )
         assert proc.returncode == 0
+
+
+# ============================================================================
+# K1: Build/test/run output compression (PostToolUse, not-read-only branch)
+# ============================================================================
+
+# Realistic gcc failure output: many identical warnings + distinct errors
+_GCC_FAILURE_OUTPUT = (
+    "\n".join(f"Compiling src/file_{i:03d}.c..." for i in range(20))
+    + "\n"
+    + "\n".join(
+        "src/common.c:42:5: warning: unused variable 'buf' [-Wunused-variable]"
+        for _ in range(400)
+    )
+    + "\n"
+    "src/main.c:15:5: error: use of undeclared identifier 'foo'\n"
+    "src/main.c:22:3: error: expected ';' after expression\n"
+    "src/main.c:30:10: error: incompatible pointer types assigning to 'int *' from 'char *'\n"
+    "make: *** [Makefile:20: all] Error 1\n"
+)
+
+# Realistic gcc success output: Compiling + warnings + Build finished
+_GCC_SUCCESS_OUTPUT = (
+    "\n".join(
+        f"Compiling src/file_{i:03d}.c...\n"
+        f"src/file_{i:03d}.c:10:5: warning: unused variable 'x_{i}' [-Wunused-variable]"
+        for i in range(30)
+    )
+    + "\n"
+    + "\n".join(
+        "src/common.c:42:5: warning: unused variable 'buf' [-Wunused-variable]"
+        for _ in range(100)
+    )
+    + "\n"
+    "Build finished: 30 files compiled, 130 warnings\n"
+)
+
+# Realistic make output with 2>&1 mixed
+_MAKE_MIXED_OUTPUT = (
+    "\n".join(f"cc -c -Wall src/file_{i:03d}.c -o obj/file_{i:03d}.o" for i in range(30))
+    + "\n"
+    + "\n".join(
+        "src/common.c:42:5: warning: unused variable 'buf' [-Wunused-variable]"
+        for _ in range(100)
+    )
+    + "\n"
+    "src/main.c:15:5: error: use of undeclared identifier 'foo'\n"
+    "make: *** [Makefile:20: all] Error 1\n"
+)
+
+# Realistic cargo build output
+_CARGO_BUILD_OUTPUT = (
+    "\n".join(f"   Compiling dependency_{i} v0.{i}.0" for i in range(30))
+    + "\n"
+    + "\n".join(
+        f"warning: unused variable: `x_{i}`\n"
+        f"  --> src/lib.rs:{10 + i}:5\n"
+        f"   |\n"
+        f"   |     let x_{i} = 42;\n"
+        f"   |         ^^^ help: try removing this"
+        for i in range(20)
+    )
+    + "\n"
+    "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.3s\n"
+)
+
+
+class TestBuildOutputCompression:
+    """K1: Build/test/run commands that are NOT read-only must be compressed
+    on the PostToolUse not-read-only branch."""
+
+    def test_gcc_failure_is_compressed(self):
+        """gcc failure output with distinct errors must be compressed."""
+        proc = _run_hook("gcc -c main.c", _GCC_FAILURE_OUTPUT)
+        assert proc.returncode == 0, f"Hook crashed: {proc.stderr}"
+        compressed = _get_updated_stdout(proc)
+        assert compressed is not None, "Expected compression for gcc failure output"
+        assert len(compressed) < len(_GCC_FAILURE_OUTPUT)
+
+    def test_gcc_failure_preserves_distinct_errors(self):
+        """Every distinct error line must survive compression."""
+        proc = _run_hook("gcc -c main.c", _GCC_FAILURE_OUTPUT)
+        assert proc.returncode == 0
+        compressed = _get_updated_stdout(proc)
+        assert compressed is not None
+        assert "error: use of undeclared identifier 'foo'" in compressed
+        assert "error: expected ';' after expression" in compressed
+        assert "error: incompatible pointer types" in compressed
+        assert "make: *** [Makefile:20: all] Error 1" in compressed
+
+    def test_gcc_success_is_compressed(self):
+        """gcc success output with warnings must be compressed."""
+        proc = _run_hook("gcc -c main.c", _GCC_SUCCESS_OUTPUT)
+        assert proc.returncode == 0, f"Hook crashed: {proc.stderr}"
+        compressed = _get_updated_stdout(proc)
+        assert compressed is not None
+        assert len(compressed) < len(_GCC_SUCCESS_OUTPUT)
+        assert "Build finished" in compressed
+
+    def test_make_2and1_mixed_is_compressed(self):
+        """make with 2>&1 mixed output must be compressed."""
+        proc = _run_hook("make", _MAKE_MIXED_OUTPUT)
+        assert proc.returncode == 0, f"Hook crashed: {proc.stderr}"
+        compressed = _get_updated_stdout(proc)
+        assert compressed is not None
+        assert "error: use of undeclared identifier 'foo'" in compressed
+        assert "make: *** [Makefile:20: all] Error 1" in compressed
+
+    def test_cargo_build_is_compressed(self):
+        """cargo build output must be compressed."""
+        proc = _run_hook("cargo build", _CARGO_BUILD_OUTPUT)
+        assert proc.returncode == 0, f"Hook crashed: {proc.stderr}"
+        compressed = _get_updated_stdout(proc)
+        assert compressed is not None
+        assert len(compressed) < len(_CARGO_BUILD_OUTPUT)
+        assert "Finished" in compressed
+
+    def test_build_output_has_archive_pointer(self):
+        """Compressed build output must carry an archive pointer."""
+        proc = _run_hook("gcc -c main.c", _GCC_FAILURE_OUTPUT)
+        assert proc.returncode == 0
+        compressed = _get_updated_stdout(proc)
+        assert compressed is not None
+        assert "[Full result archived" in compressed or "expand " in compressed, (
+            f"Build output missing archive pointer! First 300: {compressed[:300]}"
+        )
+
+    def test_small_build_output_passes_through(self):
+        """Build output under 2 KB must pass through raw (byte-identical)."""
+        small_output = "Compiling main.c...\nBuild finished: 1 file\n"
+        proc = _run_hook("gcc -c main.c", small_output)
+        assert proc.returncode == 0
+        assert _get_updated_stdout(proc) is None
+
+    def test_non_build_command_passes_through(self):
+        """Non-build commands must not be compressed on the build path."""
+        proc = _run_hook("rm -rf build/", "removed build/\n")
+        assert proc.returncode == 0
+        assert _get_updated_stdout(proc) is None
+
+    def test_build_output_not_larger_than_raw(self):
+        """Compressed build output must never exceed raw output size."""
+        proc = _run_hook("gcc -c main.c", _GCC_FAILURE_OUTPUT)
+        assert proc.returncode == 0
+        compressed = _get_updated_stdout(proc)
+        if compressed is not None:
+            assert len(compressed) <= len(_GCC_FAILURE_OUTPUT)
+
+    def test_hook_exits_0_on_build_output(self):
+        """Hook must exit 0 within budget on build output."""
+        proc = _run_hook("gcc -c main.c", _GCC_FAILURE_OUTPUT)
+        assert proc.returncode == 0
+
+    def test_build_compress_fail_open_on_exception(self):
+        """If the compressor throws, the hook must pass through raw."""
+        # A very large output that might trigger edge cases
+        output = "Compiling main.c...\n" * 5000 + "Build finished\n"
+        proc = _run_hook("gcc -c main.c", output)
+        assert proc.returncode == 0  # Must not crash

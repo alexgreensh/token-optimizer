@@ -57,7 +57,7 @@ The repeated **No** entries fall into a few clear groups.
 
 **Read interception (delta and structure map)** needs a hook that can rewrite the result of a file read before the model sees it. Claude Code supports this; Codex lacks `updatedInput` on its Read hook; Copilot's `additionalContext` on `preToolUse` is broken upstream (issue #2585). Cursor, OpenCode and OpenClaw have no equivalent hook in their APIs.
 
-**Bash output compression** needs a hook that can rewrite tool input silently. Available on Claude Code, experimental opt-in on Codex, gated on a Copilot CLI version, observed on Cursor (every Shell rewrite is recorded as `honoured` or `ignored`), and unavailable on the TypeScript platforms and Hermes.
+**Bash output compression** needs a hook that can rewrite tool input silently. Available on Claude Code, experimental opt-in on Codex, gated on a Copilot CLI version, observed on Cursor (every Shell rewrite is recorded as `honoured` or `ignored`), and unavailable on the TypeScript platforms and Hermes. On Claude Code, build and test commands (gcc, cargo, npm, make, go, mvn, and more) are also compressed PostToolUse even when they are not read-only: the command already ran, so the hook collapses repetition in the captured output while preserving every distinct error line, exit status, and summary.
 
 **Quality Nudges and Loop Detection** need a session-visible notification surface to inject a warning the model can act on. Claude Code has it via `UserPromptSubmit`; Cursor's `postToolUse` context surface fires on a tool-call-count proxy when `preCompact` has not supplied real context numbers. OpenCode, OpenClaw, and Hermes do not yet expose one.
 

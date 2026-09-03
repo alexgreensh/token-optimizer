@@ -30,9 +30,11 @@ The compressor has a dedicated handler per command family, so each kind of outpu
 | Build | JS/TS and Go build output | Errors and summary view |
 | Misc | `tree`, `docker pull` | Depth truncation, progress filtering |
 
+A second PostToolUse pass covers build, test, and run commands that are not read-only (gcc, cargo, npm, make, go, mvn, and more). The command already ran, so the hook collapses repetition in the captured output while preserving every distinct error line, exit status, and summary. The full original is archived behind an expand pointer.
+
 ## When it fires
 
-Automatically, on the PreToolUse Bash hook, when you run a recognized read-only command. The hook tokenizes the command with `shlex.split()`, checks it against a whitelist, and rewrites the output through the compression wrapper. Commands it does not recognize run normally with full output.
+Automatically, on the PreToolUse Bash hook, when you run a recognized read-only command. The hook tokenizes the command with `shlex.split()`, checks it against a whitelist, and rewrites the output through the compression wrapper. Commands it does not recognize run normally with full output. Build and test commands are compressed PostToolUse on the not-read-only branch, after the command has executed.
 
 ## Default state
 

@@ -359,6 +359,8 @@ Disable serving (keep measurement): `TOKEN_OPTIMIZER_FIRST_READ_ACTIVE=0`. Disab
 
 Rewrites common CLI commands to return compressed summaries. Covers lint, log tails, tree, docker pull, long listings, build output, and test runners. A 564-token pytest output becomes 115 tokens.
 
+Build and test commands (gcc, cargo, npm, make, go, mvn, and more) are compressed PostToolUse even when they are not read-only: the command already ran, so the hook collapses repetition in the captured output while preserving every distinct error line, exit status, and summary. The full original is archived behind an expand pointer.
+
 ![Bash Output Compression](skills/token-optimizer/assets/bash-compression.svg)
 
 Disable: `TOKEN_OPTIMIZER_BASH_COMPRESS=0`

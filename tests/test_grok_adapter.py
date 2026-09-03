@@ -629,6 +629,7 @@ def test_bash_whitelist_in_payload_modules(gi):
     )
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Grok install refuses native Windows (POSIX-shell quoted command)")
 def test_install_copies_bash_whitelist(gi, tmp_path):
     """install() must actually place bash_whitelist.py next to the bridge."""
     home = tmp_path / "grok-home"
@@ -650,6 +651,7 @@ def test_install_copies_bash_whitelist(gi, tmp_path):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Grok install refuses native Windows (POSIX-shell quoted command)")
 def test_dashboard_collector_toggle_names_match_doctor(gd, gi, monkeypatch, tmp_path):
     """Every dashboard toggle must look up a check name the doctor actually
     emits, with the correct lowercase status. Before the fix, the collector
@@ -690,6 +692,7 @@ def test_dashboard_collector_toggle_names_match_doctor(gd, gi, monkeypatch, tmp_
         )
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Grok install refuses native Windows (POSIX-shell quoted command)")
 def test_dashboard_collector_no_capability_toggle(gd, gi, monkeypatch, tmp_path):
     """The collector must NOT have a grok_capabilities toggle — grok_doctor
     has no capability matrix check. A toggle looking up a non-existent check
@@ -707,6 +710,7 @@ def test_dashboard_collector_no_capability_toggle(gd, gi, monkeypatch, tmp_path)
     )
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Grok install refuses native Windows (POSIX-shell quoted command)")
 def test_dashboard_collector_port_label_matches_grok_port(gd, gi, monkeypatch, tmp_path):
     """The dashboard port toggle must reference grok's own port (24848), not
     antigravity's port (24847) which was copy-pasted."""

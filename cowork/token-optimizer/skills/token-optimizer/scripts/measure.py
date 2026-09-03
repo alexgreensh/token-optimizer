@@ -6465,6 +6465,8 @@ def generate_standalone_dashboard(days=30, quiet=False, force=False):
                 return str(DASHBOARD_PATH)
         except OSError:
             pass
+    if _running_under_hook():
+        _arm_dashboard_selfheal_on_timeout(days=days)
 
     # Version-downgrade guard: never let an OLDER build overwrite a dashboard a
     # NEWER build already wrote (the "fixed but still broken" regression -- a
@@ -7417,7 +7419,7 @@ def _dispatch_dashboard(args):
                 except ValueError:
                     pass
         deadline = (
-            None if (serve or not _running_under_hook()) else _install_hook_budget(20)
+            None if (serve or not _running_under_hook()) else _install_hook_budget(_dashboard_hook_budget_seconds())
         )
         timed_out = False
         try:
@@ -7442,7 +7444,7 @@ def _dispatch_dashboard(args):
             _open_dashboard(fallback_filepath=out)
         sys.exit(0 if out else 1)
     deadline = (
-        None if (serve or not _running_under_hook()) else _install_hook_budget(20)
+        None if (serve or not _running_under_hook()) else _install_hook_budget(_dashboard_hook_budget_seconds())
     )
     timed_out = False
     try:
@@ -35726,9 +35728,48 @@ class _HookTimeout(BaseException):
     pass
 
 
-def _install_hook_budget(seconds=8):
+def _install_hook_budget(seconds=8, on_timeout=None):
     """Start the cross-platform hard wall-clock guard."""
-    return HookDeadline(seconds).start()
+    return HookDeadline(seconds, on_timeout=on_timeout).start()
+
+
+def _dashboard_hook_budget_seconds(default=20):
+    """Wall-clock budget for a hook-run dashboard rebuild.
+
+    TOKEN_OPTIMIZER_DASHBOARD_HOOK_BUDGET overrides it (seconds). A rebuild
+    the budget kills is finished by a detached child, so this only decides
+    how much of the work happens inside the hook itself."""
+    raw = os.environ.get("TOKEN_OPTIMIZER_DASHBOARD_HOOK_BUDGET", "").strip()
+    try:
+        value = float(raw) if raw else float(default)
+    except ValueError:
+        value = float(default)
+    return max(1.0, min(value, 600.0))
+
+
+def _arm_dashboard_selfheal_on_timeout(days=30):
+    """Make the active hook deadline hand the rebuild to the detached child
+    if it fires. The hard watchdog exits the process without unwinding the
+    stack, so this is the only path that runs when a rebuild is killed;
+    nothing downstream of the kill can spawn anything. force=True because a
+    killed rebuild may have just written a stale file inside the 60s throttle
+    window; the on-disk version guard still applies inside the child."""
+    try:
+        from hook_runtime import current_deadline
+        deadline = current_deadline()
+    except Exception:
+        return
+    if deadline is None:
+        return
+
+    def _spawn():
+        try:
+            if _dashboard_heal_spawn_due():
+                _spawn_detached_dashboard_selfheal(days=days, force=True)
+        except Exception:
+            pass
+
+    deadline.add_on_timeout(_spawn)
 
 
 def _running_under_hook():

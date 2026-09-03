@@ -286,9 +286,13 @@ def classify(command: str) -> bool:
         if not tokens:
             return False
 
-        # Strip leading env var assignments (FOO=bar)
+        # Strip leading env var assignments (FOO=bar) and `env` command
         cmd_start = 0
-        while cmd_start < len(tokens) and "=" in tokens[cmd_start] and not tokens[cmd_start].startswith("-"):
+        if tokens[cmd_start] == "env":
+            cmd_start += 1
+        while (cmd_start < len(tokens)
+               and "=" in tokens[cmd_start]
+               and not tokens[cmd_start].startswith("-")):
             cmd_start += 1
         if cmd_start >= len(tokens):
             return False
@@ -300,8 +304,8 @@ def classify(command: str) -> bool:
         if "/" in cmd:
             cmd = cmd.rsplit("/", 1)[-1]
 
-        # Python -m <module>
-        if cmd in ("python", "python3", "python2") and subcmd == "-m":
+        # Python -m <module> (handles python, python3, python2, python3.11, etc.)
+        if cmd.startswith("python") and subcmd == "-m":
             if cmd_start + 2 < len(tokens):
                 module = tokens[cmd_start + 2]
                 return module in _PYTHON_M_BUILD_MODULES

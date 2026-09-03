@@ -504,7 +504,7 @@ install_grok() {
 
     if [ ! -f "$measure_py" ] && [ -d "${script_dir}/.git" ]; then
         warn "skills/ not in this checkout. Materializing it from the pinned commit..."
-        # Supply-chain pin (mirrors install_cursor P1-7): materialize skills/
+        # Supply-chain pin (same rule as the Cursor path): materialize skills/
         # from the commit this checkout is AT, never from a moving branch. A
         # `git pull` here would let a moved/compromised upstream deliver
         # arbitrary code into the plugin dir, executed on every hook. Network

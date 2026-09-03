@@ -13,9 +13,9 @@ wires:
 
 Contract notes (source: the cloned ``github.com/xai-org/grok-build`` repo,
 ``crates/codegen/xai-grok-pager/docs/user-guide/10-hooks.md`` — the only source
-of truth; TO is built in NO-INSTALL / contract-only mode, so every assumed
-shape below cites that file and is marked "needs live verification" in
-G-STATUS.md):
+of truth; this adapter is built against the documented contract without a
+live Grok install, so every assumed shape below cites that file and should be
+re-checked against a live session when one is available):
 
 - Payloads arrive on stdin as ONE JSON object with a camelCase envelope:
   ``hookEventName`` (grok's snake_case name, e.g. ``pre_tool_use``),
@@ -127,8 +127,8 @@ def _sanitize_session_id(sid):
 # Unlike the Copilot bridge, Grok hooks are NOT version-gated against a live
 # ``grok --version`` (there is no Grok host to probe in NO-INSTALL mode). The
 # gate keys EVERY assumed capability to the cloned source's documented contract
-# (10-hooks.md) so each assumption is traceable. All entries are marked
-# "needs live verification" in G-STATUS.md.
+# (10-hooks.md) so each assumption is traceable and can be re-checked against
+# a live session when one is available.
 # ---------------------------------------------------------------------------
 
 CAP_UPDATED_INPUT = "updated_input"     # 10-hooks.md "Output (Blocking Hooks)"

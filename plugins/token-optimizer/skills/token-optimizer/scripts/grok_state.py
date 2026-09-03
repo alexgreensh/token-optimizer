@@ -4,12 +4,12 @@
 Grok Build persists every session under ``$GROK_HOME/sessions/<encoded-cwd>/<uuid>/``
 (17-sessions.md). The files this adapter reads, all optional / missing-tolerant:
 
-  summary.json   — ``Summary`` (camelCase): ``info.id``, ``info.cwd``,
-                   ``sessionSummary``, ``createdAt``, ``updatedAt``,
-                   ``numMessages``, ``numChatMessages``, ``currentModelId``,
-                   ``agentName``, ``lastTurnSummary``, ``lastRecap``.
-                   Source: crates/codegen/xai-grok-shell/src/session/persistence.rs
-                   (``Summary`` struct, ``#[serde(rename_all = "camelCase")]``).
+  summary.json   — ``Summary``: ``info.id``, ``info.cwd``, the session title,
+                   created/updated timestamps, message counts, current model id
+                   and agent name. Upstream currently writes it with plain
+                   serde_json (snake_case field names); older builds used
+                   camelCase, so both spellings are accepted on read.
+                   Source: crates/codegen/xai-grok-shell/src/session/persistence.rs.
   signals.json   — ``SessionSignals`` (camelCase): ``turnCount``, ``toolCallCount``,
                    ``toolsUsed``, ``modelsUsed``, ``primaryModelId``,
                    ``contextTokensUsed``, ``contextWindowTokens``,
@@ -254,16 +254,23 @@ def read_session(session_dir: Path) -> dict:
     info = summary.get("info") if isinstance(summary.get("info"), dict) else {}
     cwd = info.get("cwd") if isinstance(info.get("cwd"), str) else None
 
+    def field(camel, snake):
+        # Upstream serializes Summary with plain serde_json today (snake_case
+        # names) and earlier builds used camelCase; accept either so a rename
+        # on their side never silently zeroes the session record.
+        value = summary.get(camel)
+        return value if value is not None else summary.get(snake)
+
     return {
         "session_id": session_id,
         "cwd": cwd,
-        "title": summary.get("sessionSummary"),
-        "created_at": summary.get("createdAt"),
-        "updated_at": summary.get("updatedAt"),
-        "num_messages": _safe_int(summary.get("numMessages")),
-        "num_chat_messages": _safe_int(summary.get("numChatMessages")),
-        "model_id": summary.get("currentModelId"),
-        "agent_name": summary.get("agentName"),
+        "title": field("sessionSummary", "session_summary"),
+        "created_at": field("createdAt", "created_at"),
+        "updated_at": field("updatedAt", "updated_at"),
+        "num_messages": _safe_int(field("numMessages", "num_messages")),
+        "num_chat_messages": _safe_int(field("numChatMessages", "num_chat_messages")),
+        "model_id": field("currentModelId", "current_model_id"),
+        "agent_name": field("agentName", "agent_name"),
         "signals": signals,
         "usage": usage,
         "data_source": "grok_session_store",

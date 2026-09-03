@@ -560,3 +560,26 @@ def test_resolver_persists_realpath_not_abspath(gi, monkeypatch, tmp_path):
     # Must be the realpath (target), not the symlink path itself.
     assert resolved == os.path.realpath(str(link))
     assert resolved != str(link)
+
+
+def test_read_session_accepts_snake_case_summary(tmp_path):
+    """Upstream writes summary.json with plain serde_json (snake_case); older
+    builds wrote camelCase. Both must populate the session record."""
+    import json as _json
+    import importlib
+    import sys as _sys
+    _sys.path.insert(0, str(SCRIPTS))
+    gs = importlib.import_module("grok_state")
+    for spelling, payload in (
+        ("snake", {"info": {"id": "s1", "cwd": "/w"}, "session_summary": "t", "created_at": "2026-09-03T00:00:00Z",
+                   "updated_at": "2026-09-03T00:01:00Z", "num_messages": 3, "num_chat_messages": 2,
+                   "current_model_id": "grok-4", "agent_name": "default"}),
+        ("camel", {"info": {"id": "s1", "cwd": "/w"}, "sessionSummary": "t", "createdAt": "2026-09-03T00:00:00Z",
+                   "updatedAt": "2026-09-03T00:01:00Z", "numMessages": 3, "numChatMessages": 2,
+                   "currentModelId": "grok-4", "agentName": "default"}),
+    ):
+        sd = tmp_path / spelling / "s1"
+        sd.mkdir(parents=True)
+        (sd / "summary.json").write_text(_json.dumps(payload), encoding="utf-8")
+        rec = gs.read_session(sd)
+        assert rec["title"] == "t" and rec["num_messages"] == 3 and rec["model_id"] == "grok-4", (spelling, rec)

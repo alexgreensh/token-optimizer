@@ -439,7 +439,7 @@ def _run_probe_command(command: str, payload: dict, probe_home: Path) -> dict:
         return {"status": "fail",
                 "detail": "hook command is not the expected "
                           "TOKEN_OPTIMIZER_RUNTIME=grok <abs-python> <abs-bridge> <event> shape; refusing to run it"}
-    # Trust gate (mirrors cursor_doctor P0-2): a tampered hooks file that keeps
+    # Trust gate (same rule as the Cursor doctor): a tampered hooks file that keeps
     # a legitimate bridge path but points at an untrusted interpreter must NOT
     # be executed by --probe. The installer persists a realpath-resolved,
     # admin-owned interpreter; this check enforces that invariant at probe time.

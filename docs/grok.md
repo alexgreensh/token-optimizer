@@ -103,7 +103,7 @@ on a live Grok host**. A future tester should confirm each one with a single
 short Grok session; `grok-doctor --probe` covers the hook-firing items offline.
 
 1. `updates.jsonl` `turn_completed` lines actually carry the `SessionNotification` camelCase envelope with a snake_case-tagged `update.sessionUpdate == "turn_completed"`.
-2. `summary.json` matches the `Summary` camelCase shape (`info.id`, `info.cwd`, `sessionSummary`, `createdAt`, `updatedAt`, `numMessages`, `numChatMessages`, `currentModelId`, `agentName`).
+2. `summary.json` matches the `Summary` struct in `persistence.rs` (`info.id`, `info.cwd`, session summary, created/updated timestamps, message counts, current model id, agent name). Upstream currently serializes it with plain `serde_json`, so the field names are snake_case; the adapter also accepts the camelCase spelling older builds wrote.
 3. `signals.json` matches `SessionSignals` camelCase (`turnCount`, `toolCallCount`, `toolsUsed`, `modelsUsed`, `primaryModelId`, `contextTokensUsed`, `contextWindowTokens`, `contextWindowUsage`, `compactionCount`, `sessionDurationSeconds`).
 4. Hook stdin actually uses the camelCase envelope (`hookEventName` snake_case value, `hook_event_name` PascalCase value, `sessionId`, `cwd`, `workspaceRoot`, `timestamp`, `permissionMode`, `promptId`; tool events add `toolName`/`toolInput`/`toolUseId`).
 5. PreToolUse `updatedInput` and PostToolUse `additionalContext` actually reach the model (the `--probe` proves the wire exits 0, not that Grok applies the fields).

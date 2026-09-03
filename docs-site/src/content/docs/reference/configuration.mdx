@@ -180,6 +180,7 @@ These controls change estimates, cohort gates, collection bounds, or cache behav
 | Variable | Default | Effect |
 |---|---|---|
 | `TOKEN_OPTIMIZER_OVERHEAD_CACHE_TTL` | 3600 seconds | TTL for cached structural-overhead calculations |
+| `TOKEN_OPTIMIZER_DASHBOARD_HOOK_BUDGET` | 20 seconds | Wall-clock budget for a dashboard rebuild that runs inside a hook (Stop / SessionEnd). A rebuild the budget stops is finished by a detached background process, so raising this only changes how much of the work happens inside the hook itself. Clamped to 1..600 |
 | `TOKEN_OPTIMIZER_COMPONENTS_CACHE_TTL` | 60 seconds | In-process TTL for repeated component scans |
 | `TOKEN_OPTIMIZER_LOOP_CONTINUATION_FACTOR` | 1.0 | Multiplier applied to measured looped volume for the separately labelled avoided-continuation estimate |
 | `TOKEN_OPTIMIZER_COHORT_MIN` | 3 | Minimum size for each compared cohort in contamination and retrieval estimates |

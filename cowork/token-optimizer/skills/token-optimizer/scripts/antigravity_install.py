@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import stat as _stat
 import shlex
 import shutil
 import sys
@@ -208,12 +209,21 @@ def install(*, dry_run: bool = False, home: Path | None = None) -> dict:
     }
 
     pdir = plugin_dir(root)
-    if pdir.exists() and (pdir.is_symlink() or not pdir.is_dir()):
+    # One lstat, not exists()+is_dir(): a concurrent installer can move the
+    # directory aside between two stat calls, and the second one would then
+    # report "not a directory" for a path that simply vanished.
+    try:
+        _pdir_st = os.lstat(pdir)
+    except FileNotFoundError:
+        _pdir_st = None
+    if _pdir_st is not None and (
+        _stat.S_ISLNK(_pdir_st.st_mode) or not _stat.S_ISDIR(_pdir_st.st_mode)
+    ):
         raise RuntimeError(
             f"{pdir} exists but is not a directory — refusing to install. "
             "Move it aside and re-run."
         )
-    if pdir.exists():
+    if _pdir_st is not None:
         try:
             resolved = pdir.resolve(strict=False)
             if not resolved.is_relative_to(root.resolve(strict=False)):

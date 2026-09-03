@@ -103,3 +103,22 @@ def _pin_trusted_python(trusted_python):
     """Pin a gate-trusted interpreter for every install in this file (the
     hosted-CI system interpreter is world-writable and correctly rejected)."""
     return trusted_python
+
+
+def test_precheck_tolerates_plugin_dir_vanishing(mod, tmp_path, monkeypatch):
+    """The plugin dir can disappear between two stat calls when installers race.
+    The pre-check must treat a vanished path as absent, never as "not a dir"."""
+    home = tmp_path / "home"
+    home.mkdir()
+    real_exists = Path.exists
+
+    def lying_exists(self):
+        # Pretend the plugin dir is there even though it is not: the old
+        # exists()+is_dir() pair would have raised here.
+        if self == mod.plugin_dir(home):
+            return True
+        return real_exists(self)
+
+    monkeypatch.setattr(Path, "exists", lying_exists)
+    actions = mod.install(home=home)
+    assert Path(actions["plugin_dir"]).is_dir()

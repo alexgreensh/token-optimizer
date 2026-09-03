@@ -123,7 +123,6 @@ _SHAPE_MARKER_PATTERNS = [
     re.compile(r"ld:\s*(error|warning)"),    # linker
     re.compile(r"note:"),                    # Rust/gcc note
     re.compile(r"error: could not compile"), # Rust
-    re.compile(r"error: could not compile"), # Rust (dup-safe)
     re.compile(r"Collecting\s"),             # pip install
     re.compile(r"Downloading\s"),            # pip/npm download
     re.compile(r"Using cached\s"),           # pip
@@ -131,6 +130,15 @@ _SHAPE_MARKER_PATTERNS = [
     re.compile(r"added \d+ package"),        # npm
     re.compile(r"removed \d+ package"),      # npm
 ]
+
+# Combined shape-marker regex for the classify_by_shape fallback (single
+# DFA pass per line instead of 29 separate searches).
+_COMBINED_SHAPE_RE = re.compile(
+    "|".join(
+        f"(?i:{p.pattern})" if p.flags & re.I else f"(?:{p.pattern})"
+        for p in _SHAPE_MARKER_PATTERNS
+    ),
+)
 
 # ---------------------------------------------------------------------------
 # Error line patterns — every DISTINCT line matching one of these is preserved.
@@ -161,9 +169,14 @@ _ERROR_LINE_PATTERNS = [
     re.compile(r"thread '.*' panicked"),     # Rust panic
 ]
 
-# Combined error regex for fast scanning.
+# Combined error regex for fast scanning. Preserves per-pattern case
+# sensitivity via inline (?i:...) groups, matching the approach in
+# bash_compress_hook._get_combined_error_re.
 _COMBINED_ERROR_RE = re.compile(
-    "|".join(f"(?:{p.pattern})" for p in _ERROR_LINE_PATTERNS),
+    "|".join(
+        f"(?i:{p.pattern})" if p.flags & re.I else f"(?:{p.pattern})"
+        for p in _ERROR_LINE_PATTERNS
+    ),
     re.MULTILINE,
 )
 
@@ -230,9 +243,10 @@ _PROGRESS_NOISE_PATTERNS = [
     re.compile(r"^\s*\.+\s*$"),                     # dots spinner
     re.compile(r"^\s*collecting\s*\.\.\.\s*$", re.I),  # pytest collecting
     re.compile(r"^\s*running\s+\d+.*", re.I),       # test running
-    re.compile(r"^\s*::\s*PASSED\s*$"),             # pytest PASSED (verbose)
-    re.compile(r"^\s*::\s*SKIPPED\s*$"),
-    re.compile(r"^\s*::\s*XFAIL\s*$"),
+    re.compile(r"PASSED\s*$"),                       # pytest per-test PASSED
+    re.compile(r"SKIPPED\s*$"),                       # pytest per-test SKIPPED
+    re.compile(r"XFAIL\s*$"),                         # pytest per-test XFAIL
+    re.compile(r"XPASS\s*$"),                         # pytest per-test XPASS
     # Cargo progress: "   Compiling foo v0.1.0"
     re.compile(r"^\s+Compiling\s+\S+\s+v\S+"),
     re.compile(r"^\s+Running\s+`?unittests`?"),
@@ -329,12 +343,10 @@ def classify_by_shape(output: str) -> bool:
             return False
         match_count = 0
         for line in lines:
-            for pat in _SHAPE_MARKER_PATTERNS:
-                if pat.search(line):
-                    match_count += 1
-                    break
-            if match_count >= 3:
-                return True
+            if _COMBINED_SHAPE_RE.search(line):
+                match_count += 1
+                if match_count >= 3:
+                    return True
         return match_count >= 3
     except Exception:
         return False
@@ -389,28 +401,33 @@ def _collapse_near_identical_warnings(lines: list[str]) -> list[str]:
       "warning: unused variable: `x` (at 20:8)"
     -> "warning: unused variable: `x` (at 10:5)  [+2 near-identical warnings]"
 
-    Single O(n) walk: pre-compute normalized forms in one pass, then collapse
-    in a second pass that advances the index past each group.
+    Single O(n) walk with lazy normalization: only warning lines get
+    normalized, and only as the run grows.
     """
     if len(lines) < 3:
         return list(lines)
 
-    norms = [_NORMALIZE_RE.sub("N:N", ln) for ln in lines]
-    norms = [_BARE_NUM_RE.sub("N", s) for s in norms]
-    norms = [_HEX_RE.sub("0xADDR", s).strip() for s in norms]
+    def _normalize(ln: str) -> str:
+        s = _NORMALIZE_RE.sub("N:N", ln)
+        s = _BARE_NUM_RE.sub("N", s)
+        s = _HEX_RE.sub("0xADDR", s)
+        return s.strip()
 
     result: list[str] = []
     i = 0
     while i < len(lines):
         current = lines[i]
-        norm_current = norms[i]
-        run = 1
-        # Only collapse lines that look like warnings (contain "warning")
-        if "warning" not in norm_current.lower():
+        # Only collapse lines that look like warnings; skip normalization
+        # for non-warning lines (the common case in build output).
+        if "warning" not in current.lower():
             result.append(current)
             i += 1
             continue
-        while i + run < len(lines) and norms[i + run] == norm_current:
+        norm_current = _normalize(current)
+        run = 1
+        while (i + run < len(lines)
+               and "warning" in lines[i + run].lower()
+               and _normalize(lines[i + run]) == norm_current):
             run += 1
         if run > 1:
             result.append(f"{current}  [+{run - 1} near-identical warnings]")
@@ -446,35 +463,13 @@ def _find_summary_lines(lines: list[str]) -> list[str]:
     return summaries
 
 
-def _reinject_preserved(compressed: str, original_lines: list[str],
-                        preserved_indices: set[int]) -> str:
-    """Re-inject credential-bearing lines that were dropped by compression.
-
-    Uses the same re-injection path as bash_compress.compress(): exact-line
-    membership check so a short preserved line that is contained inside a
-    longer compressed line is still emitted on its own.
-    """
-    if not preserved_indices:
-        return compressed
-    compressed_set = set(compressed.splitlines())
-    appended: list[str] = []
-    for idx in preserved_indices:
-        if idx < len(original_lines):
-            line = original_lines[idx]
-            if line and line not in compressed_set:
-                appended.append(line)
-                compressed_set.add(line)
-    if appended:
-        return compressed + "\n" + "\n".join(appended)
-    return compressed
 
 
 # ---------------------------------------------------------------------------
 # Main compression entry point
 # ---------------------------------------------------------------------------
 
-def compress(command: str, output: str, returncode: int = 0,
-             stderr: str = "") -> str | None:
+def compress(command: str, output: str) -> str | None:
     """Compress build/test/run output.
 
     Returns the compressed string, or None to signal "pass through raw".
@@ -504,6 +499,13 @@ def compress(command: str, output: str, returncode: int = 0,
         except Exception:
             _TOKEN_PATTERNS = ()
 
+        # Fast literal pre-filter for credentials: most build output lines
+        # contain none of these substrings, so the regex loop is skipped.
+        _CRED_LITERALS = ("AKIA", "api_key", "apikey", "API_KEY",
+                          "password", "PASSWORD", "secret", "token",
+                          "Bearer", "BEGIN PRIVATE KEY", "ghp_", "gho_",
+                          "sk-", "xoxb-", "xoxp-")
+
         kept_lines: list[str] = []
         noise_dropped = 0
         distinct_errors: list[str] = []
@@ -519,13 +521,11 @@ def compress(command: str, output: str, returncode: int = 0,
                 continue
             kept_lines.append(line)
 
-            # Error line: keep distinct
+            # Error line: keep distinct (bounded)
             if _COMBINED_ERROR_RE.search(line):
-                if line not in _error_seen:
+                if line not in _error_seen and len(_error_seen) < _MAX_ERROR_LINES:
                     _error_seen.add(line)
                     distinct_errors.append(line)
-                    if len(distinct_errors) >= _MAX_ERROR_LINES:
-                        pass  # still scan for credentials/summaries
 
             # Summary line: keep distinct
             if _COMBINED_SUMMARY_RE.search(line):
@@ -533,11 +533,13 @@ def compress(command: str, output: str, returncode: int = 0,
                     _summary_seen.add(line)
                     summary_lines.append(line)
 
-            # Credential check: never drop a credential-bearing line
-            for pat in _TOKEN_PATTERNS:
-                if pat.search(line):
-                    preserved_lines.append(line)
-                    break
+            # Credential check: literal pre-filter then regex loop.
+            # Most build output lines have no credential substrings.
+            if _TOKEN_PATTERNS and any(lit in line for lit in _CRED_LITERALS):
+                for pat in _TOKEN_PATTERNS:
+                    if pat.search(line):
+                        preserved_lines.append(line)
+                        break
 
         # --- collapse repetition (each pass is O(n) over kept_lines) ---
         collapsed = _collapse_identical_runs(kept_lines)
@@ -549,8 +551,8 @@ def compress(command: str, output: str, returncode: int = 0,
             # Still re-inject preserved lines in case they were dropped.
             result = "\n".join(collapsed)
             if preserved_lines:
-                result_set = set(result.splitlines())
-                appended = [p for p in preserved_lines if p not in result_set]
+                collapsed_set = set(collapsed)
+                appended = [p for p in preserved_lines if p not in collapsed_set]
                 if appended:
                     result = result + "\n" + "\n".join(appended)
             if result != output:

@@ -140,6 +140,7 @@ def main() -> None:
                     # for the check itself; classify() is a pure function that
                     # only uses shlex + a static dict).
                     from build_output_compress import classify as _build_classify
+                    from build_output_compress import _MIN_COMPRESS_BYTES
                     _is_build = _build_classify(command)
                     # Stage 2: shape fallback only if command didn't match and
                     # the output is large enough to justify the scan.
@@ -148,7 +149,7 @@ def main() -> None:
                         _is_build = _build_shape(stdout)
                     if _is_build:
                         _compressed_build = _try_build_output_compress(
-                            command, stdout, stderr)
+                            command, stdout)
                         if _compressed_build is not None:
                             if _nudge:
                                 _compressed_build = _compressed_build + "\n" + _nudge
@@ -478,7 +479,7 @@ def _log_event(command: str, original: str, compressed: str,
         pass
 
 
-def _try_build_output_compress(command: str, stdout: str, stderr: str) -> str | None:
+def _try_build_output_compress(command: str, stdout: str) -> str | None:
     """Compress build/test/run output and attach the archive pointer.
 
     Called from the not-read-only branch when classify() or classify_by_shape()
@@ -498,7 +499,7 @@ def _try_build_output_compress(command: str, stdout: str, stderr: str) -> str | 
         from build_output_compress import compress as _build_compress
 
         cleaned_stdout = _strip_ansi(stdout)
-        compressed = _build_compress(command, cleaned_stdout, returncode=0, stderr=stderr)
+        compressed = _build_compress(command, cleaned_stdout)
         if not compressed or compressed == cleaned_stdout:
             return None
 

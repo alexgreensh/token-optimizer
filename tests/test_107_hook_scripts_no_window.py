@@ -399,8 +399,8 @@ def test_bash_compress_wrapper_child_has_no_console(tmp_path):
 # broken probe.
 _CONSOLE_PROBE_PY = r"""
 import ctypes, os, sys
-user32 = ctypes.windll.user32
-verdict = "0" if user32.GetConsoleWindow() == 0 else "1"
+kernel32 = ctypes.windll.kernel32
+verdict = "0" if kernel32.GetConsoleWindow() == 0 else "1"
 with open(os.environ["TO_CONSOLE_PROBE_OUT"], "w", encoding="utf-8") as fh:
     fh.write(verdict)
 sys.exit(0)
@@ -434,15 +434,21 @@ def test_bash_compress_wrapper_child_has_no_live_console(tmp_path):
 
     probe_py = tmp_path / "console_probe.py"
     probe_py.write_text(_CONSOLE_PROBE_PY, encoding="utf-8")
-    probe_cmd = tmp_path / "console_probe.cmd"
+    # Git for Windows runs GIT_EXTERNAL_DIFF through sh.exe, so the probe
+    # launcher is a POSIX shell script with forward-slash paths, not a .cmd.
+    probe_cmd = tmp_path / "console_probe.sh"
     probe_cmd.write_text(
-        '@"{}" "{}" %*\n'.format(sys.executable, probe_py), encoding="utf-8"
+        '#!/bin/sh\nexec "{}" "{}"\n'.format(
+            sys.executable.replace("\\", "/"), str(probe_py).replace("\\", "/")
+        ),
+        encoding="utf-8",
+        newline="\n",
     )
 
     verdict_file = tmp_path / "console_verdict.txt"
     env = dict(os.environ)
     env["TOKEN_OPTIMIZER_SNAPSHOT_DIR"] = str(tmp_path)
-    env["GIT_EXTERNAL_DIFF"] = str(probe_cmd)
+    env["GIT_EXTERNAL_DIFF"] = str(probe_cmd).replace("\\", "/")
     env["TO_CONSOLE_PROBE_OUT"] = str(verdict_file)
     proc = subprocess.run(
         [sys.executable, str(SCRIPTS / "bash_compress.py"), "git", "diff"],

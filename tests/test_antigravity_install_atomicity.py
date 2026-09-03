@@ -92,3 +92,10 @@ def test_uninstall_converts_oserror_to_runtime_error(mod, tmp_path, monkeypatch)
     monkeypatch.setattr(mod.shutil, "rmtree", lambda *a, **k: (_ for _ in ()).throw(OSError("disk gone")))
     with pytest.raises(RuntimeError):
         mod.uninstall(home=home)
+
+
+@pytest.fixture(autouse=True)
+def _pin_trusted_python(trusted_python):
+    """Pin a gate-trusted interpreter for every install in this file (the
+    hosted-CI system interpreter is world-writable and correctly rejected)."""
+    return trusted_python

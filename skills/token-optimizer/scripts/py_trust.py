@@ -35,18 +35,6 @@ def py_trust_reason(p: str) -> str | None:
 
         st_file = os.stat(real)
         st_dir = os.stat(os.path.dirname(real))
-        # Root-controlled tool caches (hosted-CI hostedtoolcache) ship the
-        # interpreter group/world-writable by distribution policy. That is
-        # acceptable ONLY when both the interpreter and its directory are
-        # root-owned and the directory itself is not world-writable: then the
-        # writability comes from root's tool-cache policy, and only root can
-        # modify the directory contents, so no peer user can swap the bytes.
-        # A user-owned writable interpreter stays a swap vector and is
-        # rejected below.
-        if st_file.st_uid == 0 and st_dir.st_uid == 0 and not (
-            st_dir.st_mode & _stat.S_IWOTH
-        ):
-            return None
         # The interpreter's BYTES must never be world-writable, and must be
         # admin-owned. Group-writable is accepted ONLY in the self-group case
         # (owner is us AND the group is our own primary group): hosted-CI tool

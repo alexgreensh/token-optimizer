@@ -316,3 +316,10 @@ def test_bridge_selftest_fails_on_broken_payload(doctor, tmp_path, monkeypatch):
     bridge.write_text("import sys\nsys.exit(3)\n", encoding="utf-8")
     check = doctor._bridge_selftest_check()
     assert check["status"] == "fail"
+
+
+@pytest.fixture(autouse=True)
+def _pin_trusted_python(trusted_python):
+    """Pin a gate-trusted interpreter for every install in this file (the
+    hosted-CI system interpreter is world-writable and correctly rejected)."""
+    return trusted_python

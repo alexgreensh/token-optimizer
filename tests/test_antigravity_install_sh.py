@@ -158,3 +158,10 @@ def test_no_unpinned_pull_in_any_sparse_materialization_path():
     helper_body = text.split("_materialize_from_pin() {", 1)[1].split("}", 1)[0]
     assert "rev-parse HEAD" in helper_body
     assert "pull" not in helper_body
+
+
+@pytest.fixture(autouse=True)
+def _pin_trusted_python(trusted_python):
+    """Pin a gate-trusted interpreter for every install in this file (the
+    hosted-CI system interpreter is world-writable and correctly rejected)."""
+    return trusted_python

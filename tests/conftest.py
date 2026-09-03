@@ -209,3 +209,21 @@ def pytest_sessionfinish(session, exitstatus):
     """
     if mutations_since_session_start() and exitstatus == 0:
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
+
+@pytest.fixture()
+def trusted_python(tmp_path_factory, monkeypatch):
+    """A gate-trusted interpreter for installer tests.
+
+    Hosted-CI tool caches ship the real interpreter world-writable, which the
+    shared trust gate (correctly) rejects as a swap vector. Installer tests
+    pin TOKEN_OPTIMIZER_PYTHON to a trusted scratch interpreter instead,
+    exactly as the cursor/copilot suites do."""
+    import os as _os
+    d = tmp_path_factory.mktemp("trusted-bin")
+    f = d / "python3"
+    f.write_text("#!/bin/sh\n")
+    _os.chmod(f, 0o755)
+    _os.chmod(d, 0o755)
+    monkeypatch.setenv("TOKEN_OPTIMIZER_PYTHON", str(f))
+    return Path(f)

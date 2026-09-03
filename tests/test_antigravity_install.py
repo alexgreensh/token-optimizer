@@ -191,3 +191,10 @@ def test_main_install_and_uninstall_return_zero(ai, tmp_path, capsys):
     # real actions return 0 on success.
     rc = ai.main(["uninstall", "--dry-run"])
     assert rc == 0
+
+
+@pytest.fixture(autouse=True)
+def _pin_trusted_python(trusted_python):
+    """Pin a gate-trusted interpreter for every install in this file (the
+    hosted-CI system interpreter is world-writable and correctly rejected)."""
+    return trusted_python

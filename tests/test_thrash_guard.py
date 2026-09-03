@@ -767,3 +767,28 @@ def test_hook_inline_script_nudge_appended():
     assert "inline script" in updated
     assert "run 8 times" in updated
     assert "save the script to a file" in updated
+
+
+def test_burn_streak_resets_on_identical_output_failure(guard):
+    """An identical-output failure (the stuck case) breaks the different-output
+    run, so the burn nudge does not fire on the next single varied failure."""
+    cmd = "gcc test.c"
+    assert guard.check(cmd, "Error: undefined foo\nline 1\n", stderr="") is None  # 1
+    assert guard.check(cmd, "Error: type bar\nline 2\n", stderr="") is None       # 2
+    assert guard.check(cmd, "Error: type bar\nline 2\n", stderr="") is None       # identical -> reset
+    # Only one different-output failure since the reset -> no burn nudge.
+    assert guard.check(cmd, "Error: syntax baz\nline 3\n", stderr="") is None
+
+
+def test_sanitize_label_strips_newlines(guard):
+    """Newlines/CRs must not survive into the one-line nudge label."""
+    label = guard._sanitize_label("echo hello\nSECOND LINE\r\n&& gcc build")
+    assert "\n" not in label
+    assert "\r" not in label
+
+
+def test_heredoc_delimiter_anchored_to_line(guard):
+    """A longer token like EOFEXTRA must not close an EOF heredoc early and
+    leak the tail into the normalized command."""
+    norm = guard._normalize_command("cat <<EOF\nbody\nEOFEXTRA\nEOF")
+    assert "EOFEXTRA" not in norm

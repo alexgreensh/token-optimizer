@@ -100,7 +100,10 @@ _INLINE_SCRIPT_NUDGE_TEMPLATE = (
 # hash as one command. The rest of the opener line (e.g. `> file.c`) is kept.
 # Group 1 = delimiter, group 2 = body (for _heredoc_body).
 _HEREDOC_RE = re.compile(
-    r"<<-?\s*['\"]?(\w+)['\"]?[^\n]*\n(.*?)\n\1",
+    # The closing delimiter must be the whole line (followed by a newline or
+    # end of string), so a longer token like `EOFEXTRA` does not close an
+    # `EOF` heredoc early and leak the tail into the normalized command.
+    r"<<-?\s*['\"]?(\w+)['\"]?[^\n]*\n(.*?)\n\1(?:\n|$)",
     re.DOTALL,
 )
 
@@ -146,6 +149,9 @@ def _sanitize_label(command: str) -> str:
     label = command[:60]
     # Remove backticks so the label cannot break out of the template's code span.
     label = label.replace("`", "'")
+    # Collapse newlines so a multi-line command cannot break the one-line nudge
+    # (or inject a second line into the template).
+    label = label.replace("\n", " ").replace("\r", " ")
     return label
 
 
@@ -279,12 +285,12 @@ def check(
                 fail_streak = 0
                 fail_nudged = None
             elif prior and prior.get("output_hash") == out_h:
-                # Failure with byte-identical output: stuck case. The burn
-                # streak does not advance (output is not different) and does
-                # not reset (it is still a failure). The identical-output
-                # nudge handles this domain.
-                fail_streak = int(prior.get("fail_streak") or 0)
-                fail_nudged = _int_or_none(prior.get("fail_nudged_streak"))
+                # Failure with byte-identical output: the "stuck" case, which
+                # belongs to the identical-output nudge. It breaks the run of
+                # DIFFERENT-output failures the burn nudge tracks, so reset the
+                # burn streak; a later varied failure starts a fresh count.
+                fail_streak = 0
+                fail_nudged = None
             else:
                 # Failure with different output: the consecutive failure
                 # streak advances.

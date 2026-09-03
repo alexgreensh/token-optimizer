@@ -387,23 +387,21 @@ def test_burn_nudge_uses_stderr_for_failure_detection(guard):
 
 
 def test_burn_nudge_fail_open_on_unwritable_store(guard, monkeypatch):
-    """When the store is unwritable, no nudge, no exception."""
+    """When the store write fails, no nudge and no exception (fail-open).
+
+    Forces the write to raise instead of relying on directory permissions,
+    which POSIX chmod cannot enforce on Windows CI.
+    """
+    import session_store
     cmd = "gcc -o image image.c -lm && ./image"
-    # Corrupt the session store by making the directory unwritable
-    sid = os.environ["CLAUDE_SESSION_ID"]
-    from session_store import SessionStore, SESSION_STORE_DIR
-    store = SessionStore(sid)
-    store.close()
-    # Make the store dir read-only so writes fail
-    store_dir = SESSION_STORE_DIR
-    store_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        store_dir.chmod(0o500)
-        for i in range(5):
-            result = guard.check(cmd, f"Error: fail {i}\nline {i}\n", stderr="")
-            assert result is None  # fail-open: no nudge
-    finally:
-        store_dir.chmod(0o700)
+
+    def _raise(self, *a, **k):
+        raise OSError("store unwritable")
+
+    monkeypatch.setattr(session_store.SessionStore, "upsert_command_streak", _raise)
+    for i in range(5):
+        result = guard.check(cmd, f"Error: fail {i}\nline {i}\n", stderr="")
+        assert result is None  # fail-open: no nudge
 
 
 def test_burn_nudge_concurrent_no_double_nudge(guard):
@@ -545,21 +543,21 @@ def test_inline_script_priority_below_burn(guard):
 
 
 def test_inline_script_fail_open_on_unwritable_store(guard, monkeypatch):
-    """When the store is unwritable, no nudge, no exception."""
+    """When the store write fails, no nudge and no exception (fail-open).
+
+    Forces the write to raise instead of relying on directory permissions,
+    which POSIX chmod cannot enforce on Windows CI.
+    """
+    import session_store
     cmd = _make_inline_cmd(400)
-    sid = os.environ["CLAUDE_SESSION_ID"]
-    from session_store import SessionStore, SESSION_STORE_DIR
-    store = SessionStore(sid)
-    store.close()
-    store_dir = SESSION_STORE_DIR
-    store_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        store_dir.chmod(0o500)
-        for i in range(10):
-            result = guard.check(cmd, f"output {i}\nline {i}\n", stderr="")
-            assert result is None  # fail-open: no nudge
-    finally:
-        store_dir.chmod(0o700)
+
+    def _raise(self, *a, **k):
+        raise OSError("store unwritable")
+
+    monkeypatch.setattr(session_store.SessionStore, "upsert_command_streak", _raise)
+    for i in range(10):
+        result = guard.check(cmd, f"output {i}\nline {i}\n", stderr="")
+        assert result is None  # fail-open: no nudge
 
 
 # ---------------------------------------------------------------------------

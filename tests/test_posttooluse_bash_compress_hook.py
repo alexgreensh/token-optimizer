@@ -638,3 +638,36 @@ class TestBuildOutputCompression:
         output = "Compiling main.c...\n" * 5000 + "Build finished\n"
         proc = _run_hook("gcc -c main.c", output)
         assert proc.returncode == 0  # Must not crash
+
+
+# ============================================================================
+# F6 regression: archive failure must return raw, not a lossy preview
+# ============================================================================
+
+class TestRegressionF6ArchiveFailureReturnsRaw:
+    """F6 (P1): if archiving fails, _try_build_output_compress must return
+    None (pass through raw), never a lossy preview with no archive pointer."""
+
+    def test_archive_exception_returns_none(self):
+        """Direct test: patch archive_original to raise, verify None."""
+        import sys
+        scripts_dir = REPO / "skills" / "token-optimizer" / "scripts"
+        if str(scripts_dir) not in sys.path:
+            sys.path.insert(0, str(scripts_dir))
+        import archive_result
+        import bash_compress_hook
+
+        original = archive_result.archive_original
+
+        def _raising_archive(*args, **kwargs):
+            raise OSError("simulated archive failure")
+
+        archive_result.archive_original = _raising_archive
+        try:
+            result = bash_compress_hook._try_build_output_compress(
+                "gcc -c main.c", _GCC_FAILURE_OUTPUT)
+            assert result is None, (
+                "Archive failure returned a lossy preview instead of None (F6)"
+            )
+        finally:
+            archive_result.archive_original = original

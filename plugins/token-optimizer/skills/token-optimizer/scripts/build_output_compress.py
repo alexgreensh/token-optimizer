@@ -21,14 +21,29 @@ Safety (same stack as bash_compress.py):
   - _enforce_baseline_invariant is applied by the hook
 
 Architecture:
-  classify(command) -> bool          # Stage 1: command match
-  classify_by_shape(output) -> bool  # Stage 2: output shape fallback
+  classify(command) -> bool                # Stage 1: command match
+  classify_by_shape(output, command) -> bool  # Stage 2: output shape fallback
   compress(command, output, ...) -> str | None  # Main entry point
 """
 from __future__ import annotations
 
 import re
 import shlex
+
+# ---------------------------------------------------------------------------
+# Credential patterns — imported from the shared credential_patterns module.
+# F7: fail-closed. If credential_patterns cannot be imported, compress() must
+# return None (pass through raw) rather than compressing with no credential
+# scanning. A line carrying a secret must never be silently dropped.
+# ---------------------------------------------------------------------------
+try:
+    from credential_patterns import PATTERNS_ONLY as _CRED_PATTERNS
+    from credential_patterns import _text_may_contain_credentials as _cred_prefilter
+    _CRED_PATTERNS_AVAILABLE = True
+except Exception:
+    _CRED_PATTERNS = ()
+    _cred_prefilter = None
+    _CRED_PATTERNS_AVAILABLE = False
 
 # ---------------------------------------------------------------------------
 # Minimum size gate: outputs below this are never compressed.
@@ -40,7 +55,6 @@ _MIN_COMPRESS_BYTES = 2048  # ~2 KB
 # ---------------------------------------------------------------------------
 _HEAD_LINES = 20
 _TAIL_LINES = 20
-_MAX_ERROR_LINES = 200  # bound on pathological error dumps
 
 # ---------------------------------------------------------------------------
 # Stage 1: command-based eligibility.
@@ -90,6 +104,21 @@ _BUILD_TEST_COMMANDS: dict[str, frozenset[str] | None] = {
 _PYTHON_M_BUILD_MODULES = frozenset({
     "pytest", "unittest", "tox", "nox", "mypy", "ruff",
     "pip", "setuptools", "build", "wheel",
+})
+
+# F5: command-name keywords that make a command eligible for the shape
+# fallback. The shape fallback catches unknown build/test tools by output
+# shape, but must not compress side-effecting commands (deploy, publish,
+# git push, etc.) whose output the model needs verbatim. A command whose
+# basename contains one of these keywords is plausibly a build/test/run
+# tool and may be shape-compressed; everything else is left raw.
+_SHAPE_FALLBACK_KEYWORDS = frozenset({
+    "build", "test", "compile", "check", "lint", "make", "run", "bench",
+    "ci", "clean", "install", "pack", "bundle", "dist", "fmt", "vet",
+    "clippy", "tsc", "eslint", "ruff", "mypy", "pytest", "cargo", "go",
+    "npm", "yarn", "pnpm", "mvn", "gradle", "cmake", "ninja", "gcc",
+    "g++", "cc", "clang", "rustc", "dotnet", "swift", "rspec", "rake",
+    "tox", "nox", "webpack", "vite", "rollup", "esbuild", "next", "tsc",
 })
 
 # ---------------------------------------------------------------------------
@@ -142,32 +171,51 @@ _COMBINED_SHAPE_RE = re.compile(
 
 # ---------------------------------------------------------------------------
 # Error line patterns — every DISTINCT line matching one of these is preserved.
+# F8: generic error/warning markers are case-insensitive so Error:, ERROR:,
+# FATAL: etc. are caught. Specific identifiers (FAILED, Traceback,
+# AssertionError) stay case-sensitive to avoid false positives.
 # ---------------------------------------------------------------------------
 _ERROR_LINE_PATTERNS = [
     re.compile(r"error\[E\d{4}\]"),          # Rust
-    re.compile(r"^error:", re.MULTILINE),    # generic
-    re.compile(r"^fatal error:", re.MULTILINE),
-    re.compile(r"\bFAILED\b"),               # test failure
-    re.compile(r"\bTraceback\b"),            # Python
+    re.compile(r"^error:", re.MULTILINE | re.I),    # generic (case-insensitive)
+    re.compile(r"^fatal error:", re.MULTILINE | re.I),
+    re.compile(r"\bFAILED\b"),               # test failure (case-sensitive)
+    re.compile(r"\bTraceback\b"),            # Python (case-sensitive)
     re.compile(r"AssertionError"),
     re.compile(r"AssertionFailedError"),
-    re.compile(r"\w+:\d+:\d+:\s*(error|fatal error)"),  # gcc/clang
-    re.compile(r"\w+:\d+:\s*(error|fatal error)"),       # gcc/clang short
-    re.compile(r"make:\s*\*\*\*.*Error"),    # make error
+    re.compile(r"\w+:\d+:\d+:\s*(error|fatal error)", re.I),  # gcc/clang
+    re.compile(r"\w+:\d+:\s*(error|fatal error)", re.I),       # gcc/clang short
+    re.compile(r"make:\s*\*\*\*.*Error", re.I),    # make error
     re.compile(r"npm\s+ERR!"),               # npm error
-    re.compile(r"undefined reference to"),   # linker
-    re.compile(r"cannot find -l"),           # linker
-    re.compile(r"ld:\s*error"),              # linker
-    re.compile(r"Exception in thread"),
+    re.compile(r"undefined reference to", re.I),   # linker
+    re.compile(r"cannot find -l", re.I),           # linker
+    re.compile(r"ld:\s*error", re.I),              # linker
+    re.compile(r"Exception in thread", re.I),
     re.compile(r"BUILD\s+FAILED", re.I),     # gradle/maven
     re.compile(r"BUILD\s+FAILURE", re.I),    # maven
-    re.compile(r"error: could not compile"), # Rust
-    re.compile(r"error: aborting"),          # Rust/gcc
-    re.compile(r"note: previous declaration"),  # Rust/gcc note
-    re.compile(r"help: "),                   # Rust help
-    re.compile(r"panicked at"),              # Rust panic
-    re.compile(r"thread '.*' panicked"),     # Rust panic
+    re.compile(r"error: could not compile", re.I), # Rust
+    re.compile(r"error: aborting", re.I),          # Rust/gcc
+    re.compile(r"note: previous declaration", re.I),  # Rust/gcc note
+    re.compile(r"help: ", re.I),                   # Rust help
+    re.compile(r"panicked at", re.I),              # Rust panic
+    re.compile(r"thread '.*' panicked", re.I),     # Rust panic
 ]
+
+# F4: import foreign-language and localized error markers from bash_compress
+# so non-English errors (Dutch fout:, French erreur:, German Fehler:, CJK
+# variants, etc.) are preserved instead of silently dropped in the truncated
+# middle. _ERROR_STDERR_PATTERNS covers French/German/Italian/Russian/CJK;
+# _FOREIGN_ERROR_PATTERNS covers Dutch/Swedish/Finnish/Hungarian/Turkish/etc.
+# F8: _ERROR_STDERR_PATTERNS also includes \bfatal\s*: (re.I) which catches
+# bare "FATAL:" that the case-sensitive ^fatal error: pattern misses.
+try:
+    from bash_compress import _ERROR_STDERR_PATTERNS as _STDERR_ERRORS
+    from bash_compress import _FOREIGN_ERROR_PATTERNS as _FOREIGN_ERRORS
+except Exception:
+    _STDERR_ERRORS = []
+    _FOREIGN_ERRORS = []
+_ERROR_LINE_PATTERNS.extend(_STDERR_ERRORS)
+_ERROR_LINE_PATTERNS.extend(_FOREIGN_ERRORS)
 
 # Combined error regex for fast scanning. Preserves per-pattern case
 # sensitivity via inline (?i:...) groups, matching the approach in
@@ -333,14 +381,59 @@ def classify(command: str) -> bool:
         return False
 
 
-def classify_by_shape(output: str) -> bool:
+def _command_eligible_for_shape_fallback(command: str) -> bool:
+    """F5: check if the command name is plausibly a build/test/run tool.
+
+    The shape fallback must not compress side-effecting commands (deploy,
+    publish, git push, etc.) whose output the model needs verbatim. Only
+    commands whose basename contains a build/test keyword are eligible.
+    Never raises.
+    """
+    try:
+        tokens = shlex.split(command)
+        if not tokens:
+            return False
+        cmd_start = 0
+        if tokens[cmd_start] == "env":
+            cmd_start += 1
+        while (cmd_start < len(tokens)
+               and "=" in tokens[cmd_start]
+               and not tokens[cmd_start].startswith("-")):
+            cmd_start += 1
+        if cmd_start >= len(tokens):
+            return False
+        cmd = tokens[cmd_start]
+        if "/" in cmd:
+            cmd = cmd.rsplit("/", 1)[-1]
+        # Strip common extensions so ./build.sh -> "build"
+        for ext in (".sh", ".py", ".bash", ".zsh"):
+            if cmd.endswith(ext):
+                cmd = cmd[: -len(ext)]
+        # Check if the basename (or any hyphen/underscore-separated part)
+        # contains a known build/test keyword.
+        parts = re.split(r"[-_.\s]+", cmd.lower())
+        for part in parts:
+            if part in _SHAPE_FALLBACK_KEYWORDS:
+                return True
+        return False
+    except Exception:
+        return False
+
+
+def classify_by_shape(output: str, command: str = "") -> bool:
     """Stage 2: generic fallback on output shape.
 
     Returns True when the output has >= 3 lines matching build/test markers
-    and is large enough to justify compression. Never raises.
+    and is large enough to justify compression. F5: the command must also
+    be plausibly a build/test/run tool (checked via
+    _command_eligible_for_shape_fallback) so side-effecting commands like
+    ``./deploy.sh`` are never shape-compressed. Never raises.
     """
     try:
         if not output or len(output) < _MIN_COMPRESS_BYTES:
+            return False
+        # F5: gate on command name to avoid compressing side-effecting commands
+        if command and not _command_eligible_for_shape_fallback(command):
             return False
         lines = output.splitlines()
         if len(lines) < 10:
@@ -442,7 +535,11 @@ def _collapse_near_identical_warnings(lines: list[str]) -> list[str]:
 
 
 def _find_distinct_error_lines(lines: list[str]) -> list[str]:
-    """Find every DISTINCT error line (deduplicated by exact text)."""
+    """Find every DISTINCT error line (deduplicated by exact text).
+
+    F3: no cap — every distinct error line must survive. Duplicates are
+    collapsed by the caller's _collapse_identical_runs, not dropped here.
+    """
     seen: set[str] = set()
     errors: list[str] = []
     for line in lines:
@@ -450,8 +547,6 @@ def _find_distinct_error_lines(lines: list[str]) -> list[str]:
             if line not in seen:
                 seen.add(line)
                 errors.append(line)
-                if len(errors) >= _MAX_ERROR_LINES:
-                    break
     return errors
 
 
@@ -490,26 +585,22 @@ def compress(command: str, output: str) -> str | None:
         if not output or len(output) < _MIN_COMPRESS_BYTES:
             return None
 
+        # F7: fail-closed. If credential_patterns could not be imported at
+        # module load time, do not compress — pass through raw so a secret
+        # is never silently dropped.
+        if not _CRED_PATTERNS_AVAILABLE:
+            return None
+
         lines = output.splitlines()
         if len(lines) < 10:
             return None
 
-        # --- single O(n) pass: noise drop + error/summary/credential scan ---
-        # Combines what was 4 separate full scans into one walk. Each line is
-        # tested against at most 3 combined regexes (progress, error, summary)
-        # plus credential patterns, with early exit on progress noise.
-        try:
-            from bash_compress import _TOKEN_PATTERNS
-        except Exception:
-            _TOKEN_PATTERNS = ()
-
-        # Fast literal pre-filter for credentials: most build output lines
-        # contain none of these substrings, so the regex loop is skipped.
-        _CRED_LITERALS = ("AKIA", "api_key", "apikey", "API_KEY",
-                          "password", "PASSWORD", "secret", "token",
-                          "Bearer", "BEGIN PRIVATE KEY", "ghp_", "gho_",
-                          "sk-", "xoxb-", "xoxp-")
-
+        # --- single O(n) pass: credential scan + noise drop + error/summary ---
+        # F1: credential scan runs FIRST, before the progress-noise drop. A
+        # line matching a credential pattern is always preserved and never
+        # dropped as noise. F2: the pre-filter uses the shared
+        # credential_patterns._text_may_contain_credentials (covering ~30
+        # prefixes) instead of a hand-maintained 13-token list.
         kept_lines: list[str] = []
         noise_dropped = 0
         distinct_errors: list[str] = []
@@ -519,15 +610,27 @@ def compress(command: str, output: str) -> str | None:
         preserved_lines: list[str] = []
 
         for line in lines:
-            # Progress noise: drop immediately (cheapest check, most common)
-            if _COMBINED_PROGRESS_RE.search(line):
+            # F1: credential check FIRST — a credential-bearing line is
+            # never dropped, even if it also matches progress noise.
+            is_credential = False
+            if _CRED_PATTERNS and _cred_prefilter(line):
+                for pat in _CRED_PATTERNS:
+                    if pat.search(line):
+                        preserved_lines.append(line)
+                        is_credential = True
+                        break
+
+            # Progress noise: drop immediately (cheapest check, most common).
+            # But never drop a credential-bearing line (F1).
+            if not is_credential and _COMBINED_PROGRESS_RE.search(line):
                 noise_dropped += 1
                 continue
             kept_lines.append(line)
 
-            # Error line: keep distinct (bounded)
+            # Error line: keep distinct. F3: no cap — every distinct error
+            # line must survive. Duplicates are collapsed later.
             if _COMBINED_ERROR_RE.search(line):
-                if line not in _error_seen and len(_error_seen) < _MAX_ERROR_LINES:
+                if line not in _error_seen:
                     _error_seen.add(line)
                     distinct_errors.append(line)
 
@@ -536,14 +639,6 @@ def compress(command: str, output: str) -> str | None:
                 if line not in _summary_seen:
                     _summary_seen.add(line)
                     summary_lines.append(line)
-
-            # Credential check: literal pre-filter then regex loop.
-            # Most build output lines have no credential substrings.
-            if _TOKEN_PATTERNS and any(lit in line for lit in _CRED_LITERALS):
-                for pat in _TOKEN_PATTERNS:
-                    if pat.search(line):
-                        preserved_lines.append(line)
-                        break
 
         # --- collapse repetition (each pass is O(n) over kept_lines) ---
         collapsed = _collapse_identical_runs(kept_lines)

@@ -146,7 +146,7 @@ def main() -> None:
                     # the output is large enough to justify the scan.
                     if not _is_build:
                         from build_output_compress import classify_by_shape as _build_shape
-                        _is_build = _build_shape(stdout)
+                        _is_build = _build_shape(stdout, command)
                     if _is_build:
                         _compressed_build = _try_build_output_compress(
                             command, stdout)
@@ -512,8 +512,13 @@ def _try_build_output_compress(command: str, stdout: str) -> str | None:
                 return None
 
         # Archive raw stdout + attach retrieval pointer (same path as read-only)
+        # F6: if archiving was attempted but failed (exception, or archive
+        # returned None, or the entry was pruned after write), return None so
+        # the caller serves raw stdout. Never return a lossy preview with no
+        # archive pointer — the model would have no way to retrieve the original.
+        _archive_attempted = len(stdout) > 500
         _archive_key = None
-        if len(stdout) > 500:
+        if _archive_attempted:
             try:
                 from archive_result import (
                     archive_entry_exists,
@@ -528,12 +533,15 @@ def _try_build_output_compress(command: str, stdout: str) -> str | None:
                     if archive_entry_exists(_session_id, _archive_key):
                         compressed = build_archive_pointer(compressed, len(stdout), _archive_key)
                     else:
-                        compressed = stdout
                         _archive_key = None
                 else:
                     _archive_key = None
             except Exception:
                 _archive_key = None
+
+        # F6: archive failure -> raw, never lossy preview.
+        if _archive_attempted and _archive_key is None:
+            return None
 
         # Enforce the baseline-size invariant
         try:

@@ -561,3 +561,161 @@ class TestHelpers:
         assert _is_progress_noise("Downloading package-1.0.0.tgz...") is True
         assert _is_progress_noise("error: something") is False
         assert _is_progress_noise("90 passed in 2.34s") is False
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for gauntlet findings F1-F8 (P0/P1 fixes)
+# ---------------------------------------------------------------------------
+
+class TestRegressionF1CredentialInNoiseLine:
+    """F1 (P0): a credential on a progress-noise line must survive."""
+
+    def test_credential_in_downloading_line_survives(self):
+        lines = [f"Compiling src/file_{i:03d}.c..." for i in range(120)]
+        # "Downloading ..." matches progress noise, but carries a credential
+        lines.append("Downloading https://pypi.org/simple/?api_key=AKIAIOSFODNN7EXAMPLE")
+        lines.append("Build finished: 120 files compiled")
+        output = "\n".join(lines)
+        result = compress("gcc -c *.c", output)
+        assert result is not None
+        assert "AKIAIOSFODNN7EXAMPLE" in result, (
+            "Credential on a progress-noise line was dropped (F1)"
+        )
+
+
+class TestRegressionF2CredentialPrefilterCoverage:
+    """F2 (P0): credentials with prefixes not in the old 13-token list
+    must be scanned (e.g. github_pat_, ya29., hf_)."""
+
+    def test_github_pat_credential_survives(self):
+        # github_pat_ was NOT in the old _CRED_LITERALS list.
+        # Place it on a non-error, non-summary line in the middle so it
+        # would only survive if the credential scan catches it.
+        cred = "github_pat_" + "A" * 82
+        lines = [f"Compiling src/file_{i:03d}.c..." for i in range(30)]
+        lines += [f"src/file_{i:03d}.c:10:5: warning: unused variable x_{i}" for i in range(80)]
+        lines.append(f"Config: token={cred}")
+        lines += [f"src/file_{i:03d}.c:10:5: warning: unused variable x_{i}" for i in range(80, 160)]
+        lines.append("Build finished: 160 files compiled")
+        output = "\n".join(lines)
+        result = compress("gcc -c main.c", output)
+        assert result is not None
+        assert cred in result, (
+            "github_pat_ credential was not scanned (F2 pre-filter gap)"
+        )
+
+
+class TestRegressionF3NoErrorCap:
+    """F3 (P1): every distinct error line survives, even with >200 of them."""
+
+    def test_250_distinct_errors_all_survive(self):
+        lines = [f"Compiling src/file_{i:03d}.c..." for i in range(20)]
+        lines += ["src/common.c:42:5: warning: unused variable 'buf'"] * 400
+        lines += [f"src/main.c:{i}:5: error: use of undeclared identifier var_{i}"
+                  for i in range(250)]
+        lines.append("make: *** [Makefile:20: all] Error 1")
+        output = "\n".join(lines)
+        result = compress("gcc -c main.c", output)
+        assert result is not None
+        # Every distinct error must appear
+        for i in range(250):
+            assert f"var_{i}" in result, f"Distinct error var_{i} was dropped (F3 cap)"
+
+
+class TestRegressionF4ForeignErrorLines:
+    """F4 (P1): non-English error lines in the truncated middle must survive."""
+
+    def test_dutch_french_german_errors_survive(self):
+        lines = [f"Compiling src/file_{i:03d}.c..." for i in range(30)]
+        lines += [f"src/file_{i:03d}.c:10:5: warning: unused variable x_{i}" for i in range(80)]
+        lines += [
+            "src/main.c:15:5: fout: niet-gedeclareerde identifier",
+            "src/main.c:22:3: erreur: identifiant non declare",
+            "src/main.c:30:10: Fehler: nicht deklarierter Bezeichner",
+        ]
+        lines += [f"src/file_{i:03d}.c:10:5: warning: unused variable x_{i}" for i in range(80, 160)]
+        lines.append("Build finished: 160 files compiled")
+        output = "\n".join(lines)
+        result = compress("gcc -c main.c", output)
+        assert result is not None
+        assert "fout:" in result, "Dutch error 'fout:' was dropped (F4)"
+        assert "erreur:" in result, "French error 'erreur:' was dropped (F4)"
+        assert "Fehler:" in result, "German error 'Fehler:' was dropped (F4)"
+
+
+class TestRegressionF5ShapeFallbackCommandGate:
+    """F5 (P1): classify_by_shape must not compress non-build commands."""
+
+    def test_deploy_script_not_shape_compressed(self):
+        # Output with 3+ build-like shape markers, but from a side-effecting
+        # command (./deploy.sh) — must NOT be shape-compressed.
+        lines = []
+        for i in range(100):
+            lines.append(f"src/file_{i:03d}.c:10:5: error: something went wrong {i}")
+        lines.append("FAILED: deployment step 1")
+        lines.append("make: *** [Makefile:20: all] Error 1")
+        output = "\n".join(lines)
+        assert len(output) >= 2048
+        assert classify_by_shape(output, "./deploy.sh") is False, (
+            "Side-effecting command was shape-compressed (F5)"
+        )
+
+    def test_build_script_shape_compressed(self):
+        # Same output, but from ./build.sh — should be shape-compressed.
+        lines = []
+        for i in range(100):
+            lines.append(f"src/file_{i:03d}.c:10:5: error: something went wrong {i}")
+        lines.append("FAILED: build step 1")
+        lines.append("make: *** [Makefile:20: all] Error 1")
+        output = "\n".join(lines)
+        assert len(output) >= 2048
+        assert classify_by_shape(output, "./build.sh") is True
+
+    def test_no_command_passes_shape_check(self):
+        # Backward compat: no command argument -> shape-only check (no gate).
+        output = _gcc_failure_output()
+        assert classify_by_shape(output) is True
+
+
+class TestRegressionF7FailClosedOnMissingCredentialPatterns:
+    """F7 (P1): if credential_patterns can't be imported, compress() must
+    return None (pass through raw), never compress with no credential scan."""
+
+    def test_compress_returns_none_when_credential_patterns_unavailable(self, monkeypatch):
+        # Simulate the import-failure path by setting the availability flag
+        # to False, then verify compress() refuses to compress.
+        import build_output_compress as _boc
+        monkeypatch.setattr(_boc, "_CRED_PATTERNS_AVAILABLE", False)
+        output = _gcc_failure_output()
+        result = _boc.compress("gcc -c main.c", output)
+        assert result is None, (
+            "compress() compressed with no credential patterns (F7 fail-open)"
+        )
+
+
+class TestRegressionF8CaseInsensitiveErrors:
+    """F8 (P1): Error:, ERROR:, FATAL: must be caught, not just lowercase."""
+
+    def test_case_variant_error_markers_survive(self):
+        lines = [f"Compiling src/file_{i:03d}.c..." for i in range(30)]
+        lines += [f"src/file_{i:03d}.c:10:5: warning: unused variable x_{i}" for i in range(80)]
+        # Case-variant error markers that the old case-sensitive regexes missed
+        lines += [
+            "src/main.c:15:5: Error: undeclared identifier",
+            "src/main.c:22:3: ERROR: syntax error",
+            "src/main.c:30:10: FATAL: cannot continue",
+        ]
+        lines += [f"src/file_{i:03d}.c:10:5: warning: unused variable x_{i}" for i in range(80, 160)]
+        lines.append("Build finished: 160 files compiled")
+        output = "\n".join(lines)
+        result = compress("gcc -c main.c", output)
+        assert result is not None
+        assert "Error: undeclared identifier" in result, (
+            "Case-variant 'Error:' was dropped (F8)"
+        )
+        assert "ERROR: syntax error" in result, (
+            "Case-variant 'ERROR:' was dropped (F8)"
+        )
+        assert "FATAL: cannot continue" in result, (
+            "Case-variant 'FATAL:' was dropped (F8)"
+        )

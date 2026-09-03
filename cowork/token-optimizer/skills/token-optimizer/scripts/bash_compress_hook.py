@@ -102,7 +102,7 @@ def main() -> None:
     _nudge = None
     try:
         from thrash_guard import check as _thrash_check
-        _nudge = _thrash_check(command, stdout)
+        _nudge = _thrash_check(command, stdout, stderr=stderr)
     except Exception:
         pass  # Fail open: the raw output stands
 

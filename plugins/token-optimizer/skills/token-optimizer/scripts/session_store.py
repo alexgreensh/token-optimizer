@@ -94,7 +94,11 @@ CREATE TABLE IF NOT EXISTS command_run_streaks (
     output_hash TEXT NOT NULL,
     streak INTEGER NOT NULL,
     nudged_streak INTEGER,
-    last_ts REAL NOT NULL
+    last_ts REAL NOT NULL,
+    fail_streak INTEGER NOT NULL DEFAULT 0,
+    fail_nudged_streak INTEGER,
+    inline_run_count INTEGER NOT NULL DEFAULT 0,
+    inline_nudged_count INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS cached_content (
@@ -227,6 +231,8 @@ class SessionStore:
         self._ensure_tool_output_columns(conn)
         # F1b: add last_tool_use_id to file_reads for double-fire idempotency.
         self._ensure_file_reads_columns(conn)
+        # Burn nudge: add fail_streak / fail_nudged_streak to command_run_streaks.
+        self._ensure_command_streaks_columns(conn)
         # U6/fix-1: probe + setup the external-content FTS5 mirror (LIKE
         # fallback). Backfills legacy rows once, gated on prior_version < 2.
         self._ensure_fts5_index(conn, prior_version)
@@ -290,6 +296,31 @@ class SessionStore:
                 conn.execute("ALTER TABLE file_reads ADD COLUMN last_tool_use_id TEXT DEFAULT ''")
             except sqlite3.OperationalError:
                 pass
+
+    def _ensure_command_streaks_columns(self, conn: sqlite3.Connection) -> None:
+        """Add fail_streak and fail_nudged_streak to command_run_streaks if
+        absent (burn nudge). Idempotent ALTER TABLE, same pattern as the
+        tool_outputs and file_reads migrations. Never raises.
+        """
+        try:
+            cols = {r[1] for r in conn.execute(
+                "PRAGMA table_info(command_run_streaks)"
+            ).fetchall()}
+        except sqlite3.DatabaseError:
+            return
+        for col, decl in (
+            ("fail_streak", "INTEGER NOT NULL DEFAULT 0"),
+            ("fail_nudged_streak", "INTEGER"),
+            ("inline_run_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("inline_nudged_count", "INTEGER"),
+        ):
+            if col not in cols:
+                try:
+                    conn.execute(
+                        f"ALTER TABLE command_run_streaks ADD COLUMN {col} {decl}"
+                    )
+                except sqlite3.OperationalError:
+                    pass
 
     # U6/fix-1: external-content FTS5 mirror over the archive.
     _fts5_available: Optional[bool] = None
@@ -709,6 +740,10 @@ class SessionStore:
         streak: int,
         nudged_streak: Optional[int],
         last_ts: float,
+        fail_streak: int = 0,
+        fail_nudged_streak: Optional[int] = None,
+        inline_run_count: int = 0,
+        inline_nudged_count: Optional[int] = None,
     ) -> None:
         if self._is_over_size_cap():
             # Cap hit: delete the stale row so the thrash guard fails open to
@@ -728,12 +763,14 @@ class SessionStore:
         conn.execute(
             """INSERT OR REPLACE INTO command_run_streaks
                (command_hash, command_text, output_hash, streak,
-                nudged_streak, last_ts)
-               VALUES (?, ?, ?, ?, ?, ?)
+                nudged_streak, last_ts, fail_streak, fail_nudged_streak,
+                inline_run_count, inline_nudged_count)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 command_hash, command_text[:500], output_hash, streak,
-                nudged_streak, last_ts,
+                nudged_streak, last_ts, fail_streak, fail_nudged_streak,
+                inline_run_count, inline_nudged_count,
             ),
         )
         conn.commit()

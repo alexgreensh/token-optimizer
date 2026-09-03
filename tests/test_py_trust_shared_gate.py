@@ -117,3 +117,55 @@ def test_antigravity_windows_refusal_is_module_constant_consistent(adapters):
     mod = adapters["antigravity_install"]
     src = inspect.getsource(mod.install)
     assert 'os.name == "nt"' in src
+
+
+@pytest.mark.parametrize("module", ADAPTER_MODULES)
+def test_trust_gate_accepts_root_owned_toolcache_interpreter(adapters, module, tmp_path, monkeypatch):
+    """Root-owned toolcache interpreters (hosted-CI hostedtoolcache) ship
+    world-writable by distribution policy. When both the interpreter and its
+    directory are root-owned and the directory is not world-writable, only
+    root can modify the directory contents, so the bytes are trusted."""
+    mod = adapters[module]
+    if os.name == "nt" or not hasattr(os, "geteuid"):
+        pytest.skip("ownership semantics are POSIX-only")
+    d = tmp_path / "bin"
+    d.mkdir()
+    f = d / "python3"
+    f.write_text("#!/bin/sh\n")
+    os.chmod(f, 0o777)
+    os.chmod(d, 0o755)
+    import py_trust
+    real_stat = os.stat
+    dir_stat = real_stat(d)
+    file_stat = real_stat(f)
+
+    def fake_stat(path, *a, **k):
+        st = real_stat(path, *a, **k)
+        if str(path) == str(d):
+            fields = list(st)[:10]; fields[4] = 0
+            return os.stat_result(tuple(fields))
+        if str(path) == str(f):
+            fields = list(st)[:10]; fields[4] = 0
+            return os.stat_result(tuple(fields))
+        return st
+
+    monkeypatch.setattr(py_trust.os, "stat", fake_stat)
+    assert mod._py_path_is_trusted(str(f)) is True
+
+
+@pytest.mark.parametrize("module", ADAPTER_MODULES)
+def test_trust_gate_rejects_user_owned_world_writable_interpreter(adapters, module, tmp_path):
+    """A world-writable interpreter owned by a non-root user stays a swap
+    vector even in a root-owned directory."""
+    mod = adapters[module]
+    if os.name == "nt" or not hasattr(os, "geteuid"):
+        pytest.skip("ownership semantics are POSIX-only")
+    if os.geteuid() == 0:
+        pytest.skip("root bypasses ownership checks")
+    d = tmp_path / "bin"
+    d.mkdir()
+    f = d / "python3"
+    f.write_text("#!/bin/sh\n")
+    os.chmod(f, 0o777)
+    os.chmod(d, 0o755)
+    assert mod._py_path_is_trusted(str(f)) is False

@@ -130,7 +130,7 @@ def main() -> None:
             # compress PostToolUse: the command already ran, we only compress
             # the captured stdout. Fail-open at every step.
             #
-            # Binding constraint (orchestrator): the size gate and the
+            # Performance guard: the size gate and the
             # command-string classify() must run BEFORE importing
             # build_output_compress, so small non-read-only commands (the
             # common case) pay no import cost.

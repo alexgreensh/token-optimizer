@@ -11,6 +11,7 @@ pinned by the tests below.
 
 import importlib.util
 import ast
+import json
 import os
 import re
 import shlex
@@ -123,25 +124,13 @@ def test_windows_versioned_marketplace_hook_resolves_newest_install(monkeypatch,
     assert "hooks" in command and "run.py" in command
 
 
-def _execute_cmd_runner(command: str, newest: str) -> str:
-    """Execute CMD's relevant expansion stages for the generated hook command."""
-    parsed = re.sub(r"%TOKEN_OPTIMIZER_RUNTIME_ROOT%", "", command)
-    fallback = re.search(
-        r'set "TOKEN_OPTIMIZER_RUNTIME_ROOT=([^"]+)"', command
-    ).group(1)
-    selected = fallback
-    if "setlocal enabledelayedexpansion" in command.lower():
-        selected = re.search(
-            r'do @set "TOKEN_OPTIMIZER_RUNTIME_ROOT=([^"]+)\\%R"', command
-        ).group(1) + "\\" + newest
-        parsed = parsed.replace("!TOKEN_OPTIMIZER_RUNTIME_ROOT!", selected)
-    runner = re.search(r'"([^"]*\\hooks\\run\.py)"', parsed)
-    assert runner, f"runner path was not quoted and executable: {parsed}"
-    return runner.group(1)
-
-
-def test_windows_versioned_hook_executes_live_delayed_path_with_spaces(monkeypatch):
-    """CMD expands %VAR% before a compound line executes; !VAR! is live."""
+def test_windows_versioned_hook_avoids_same_line_expansion(monkeypatch):
+    """cmd.exe parses a /C command line ONCE, before anything on it runs:
+    %VAR% expands to the pre-line value, and `setlocal EnableDelayedExpansion`
+    only takes effect from the NEXT line, so !VAR! on the same line reaches
+    python as the literal text "!TOKEN_OPTIMIZER_RUNTIME_ROOT!" (issue #180).
+    The runner path must be built from the FOR variable %R inside the
+    do-body, with no expansion form of TOKEN_OPTIMIZER_RUNTIME_ROOT."""
     module = _load_codex_install(monkeypatch, "win32")
     root = PureWindowsPath(
         r"C:\Users\Test User\.codex\plugins\market\token-optimizer\5.11.75"
@@ -149,12 +138,160 @@ def test_windows_versioned_hook_executes_live_delayed_path_with_spaces(monkeypat
     monkeypatch.setattr(module, "_repo_root", lambda: root)
 
     command = module._hook_command("skills/token-optimizer/scripts/read_cache.py")
-    runner = _execute_cmd_runner(command, "5.11.76")
 
-    assert runner == (
-        r"C:\Users\Test User\.codex\plugins\market\token-optimizer"
-        r"\5.11.76\hooks\run.py"
+    assert "!TOKEN_OPTIMIZER_RUNTIME_ROOT!" not in command
+    assert "setlocal" not in command.lower()
+    assert r"%R\hooks\run.py" in command
+    # Fail-open: the resolver prints the baked install directory when the
+    # version scan finds nothing, so the do-body still runs the baked path.
+    assert "else { '5.11.75' }" in command
+
+
+def _generated_resolver_argv(monkeypatch, root):
+    """Capture the exact argv vector the generator hands to cmd for the
+    version resolver (the `powershell -NoProfile -Command ...` inside the
+    for /f in-clause)."""
+    module = _load_codex_install(monkeypatch, "win32")
+    monkeypatch.setattr(module, "_repo_root", lambda: root)
+    recorded = []
+    real = subprocess.list2cmdline
+    monkeypatch.setattr(
+        module.subprocess,
+        "list2cmdline",
+        lambda argv: (recorded.append(list(argv)), real(argv))[1],
     )
+    module._hook_command("skills/token-optimizer/scripts/read_cache.py")
+    return next(a for a in recorded if a[0] == "powershell")
+
+
+def _pwsh():
+    for name in ("pwsh", "powershell"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return None
+
+
+def _run_version_resolver(monkeypatch, base: Path, baked: str) -> str:
+    pwsh = _pwsh()
+    if not pwsh:
+        pytest.skip("PowerShell (the Windows version-resolver runtime) unavailable")
+    argv = _generated_resolver_argv(monkeypatch, base / baked)
+    proc = subprocess.run(
+        [pwsh, *argv[1:]], capture_output=True, text=True, timeout=60
+    )
+    assert proc.returncode == 0, f"version resolver failed: {proc.stderr}"
+    return proc.stdout.strip()
+
+
+def test_version_resolver_picks_newest_semver(monkeypatch, tmp_path):
+    """Live resolver proof: numeric [version] sort (5.11.76 > 5.11.9, which
+    lexicographic order would get backwards) and non-semver siblings ignored,
+    under a base path with spaces."""
+    base = tmp_path / "plugin cache" / "token-optimizer"
+    for version in ("5.11.9", "5.11.75", "5.11.76", "latest"):
+        (base / version).mkdir(parents=True)
+
+    assert _run_version_resolver(monkeypatch, base, "5.11.75") == "5.11.76"
+
+
+def test_version_resolver_falls_back_to_baked_install(monkeypatch, tmp_path):
+    """When the scan finds no semver sibling (e.g. the marketplace cache is
+    unreadable), the resolver prints the baked install directory so the hook
+    still runs the install it was generated from."""
+    base = tmp_path / "plugin cache" / "token-optimizer"
+    (base / "latest").mkdir(parents=True)
+
+    assert _run_version_resolver(monkeypatch, base, "5.11.75") == "5.11.75"
+
+
+def _make_fake_runner(version_dir: Path) -> None:
+    """A stand-in hooks/run.py that records how it was invoked, in a marker
+    file next to itself. Per-version markers make a stale version executing
+    (or a double execution) detectable."""
+    hooks = version_dir / "hooks"
+    hooks.mkdir(parents=True)
+    (hooks / "run.py").write_text(
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        "Path(__file__).with_name(\'invoked.json\').write_text(json.dumps({\n"
+        "    \'root\': os.environ.get(\'TOKEN_OPTIMIZER_RUNTIME_ROOT\'),\n"
+        "    \'runtime\': os.environ.get(\'TOKEN_OPTIMIZER_RUNTIME\'),\n"
+        "    \'argv\': sys.argv[1:],\n"
+        "    \'stdin\': sys.stdin.read(),\n"
+        "}))\n",
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="cmd.exe semantics are Windows-only")
+def test_windows_versioned_hook_executes_through_comspec_with_spaces(monkeypatch, tmp_path):
+    """Killer regression for issue #180: execute the generated command through
+    %COMSPEC% /D /C exactly as Codex does, from a versioned marketplace layout
+    under a path WITH SPACES, and assert the newest version's run.py actually
+    executes with TOKEN_OPTIMIZER_RUNTIME_ROOT pointing at it.
+
+    Sibling versions 5.11.9 and 5.11.76 guard the numeric [version] sort
+    (lexicographic order would pick 5.11.9 over 5.11.76), and a non-semver
+    "latest" sibling must never be picked. redirect_quiet=True exercises the
+    production-shaped command, trailing >NUL 2>&1 and all.
+    """
+    base = tmp_path / "plugin cache" / "token-optimizer"
+    for version in ("5.11.9", "5.11.75", "5.11.76", "latest"):
+        _make_fake_runner(base / version)
+
+    module = _load_codex_install(monkeypatch, "win32")
+    monkeypatch.setattr(module, "_repo_root", lambda: base / "5.11.75")
+
+    command = module._hook_command(
+        "skills/token-optimizer/scripts/read_cache.py", "--quiet",
+        redirect_quiet=True,
+    )
+
+    proc = subprocess.run(
+        [os.environ.get("COMSPEC", "cmd.exe"), "/D", "/C", command],
+        input="{}",
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert proc.returncode == 0, f"hook command failed: {proc.stderr}\n{command}"
+    newest = base / "5.11.76" / "hooks" / "invoked.json"
+    assert newest.exists(), f"newest version's run.py did not execute: {command}"
+    payload = json.loads(newest.read_text(encoding="utf-8"))
+    assert payload["root"] == str(base / "5.11.76")
+    assert payload["runtime"] == "codex"
+    assert payload["argv"] == ["skills/token-optimizer/scripts/read_cache.py", "--quiet"]
+    assert payload["stdin"] == "{}"
+    for version in ("5.11.9", "5.11.75", "latest"):
+        stale = base / version / "hooks" / "invoked.json"
+        assert not stale.exists(), f"{version} executed instead of or before 5.11.76"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="cmd.exe semantics are Windows-only")
+def test_windows_versioned_hook_falls_back_to_baked_install(monkeypatch, tmp_path):
+    """When the marketplace cache holds only the baked install, the generated
+    command still runs it (through %COMSPEC% /D /C, spaces in path)."""
+    base = tmp_path / "plugin cache" / "token-optimizer"
+    _make_fake_runner(base / "5.11.75")
+
+    module = _load_codex_install(monkeypatch, "win32")
+    monkeypatch.setattr(module, "_repo_root", lambda: base / "5.11.75")
+
+    command = module._hook_command("skills/token-optimizer/scripts/read_cache.py")
+
+    proc = subprocess.run(
+        [os.environ.get("COMSPEC", "cmd.exe"), "/D", "/C", command],
+        input="{}",
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert proc.returncode == 0, f"hook command failed: {proc.stderr}\n{command}"
+    payload = json.loads((base / "5.11.75" / "hooks" / "invoked.json").read_text(encoding="utf-8"))
+    assert payload["root"] == str(base / "5.11.75")
 
 
 def test_posix_hook_command_keeps_bash_resolver(monkeypatch):

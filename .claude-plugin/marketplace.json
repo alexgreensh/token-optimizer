@@ -13,7 +13,7 @@
       "name": "token-optimizer",
       "source": "./",
       "description": "Audit, fix, and monitor Claude Code context window usage. Find the ghost tokens.",
-      "version": "5.13.11",
+      "version": "5.13.12",
       "author": {
         "name": "Alex Greenshpun",
         "url": "https://linkedin.com/in/alexgreensh"
@@ -55,7 +55,7 @@
       "name": "token-optimizer-cowork",
       "source": "./cowork/token-optimizer",
       "description": "Token Optimizer for Claude Cowork \u2014 full skills + Cowork-native hooks (beta). Install THIS in Cowork; the standard token-optimizer entry is for desktop Claude Code.",
-      "version": "5.13.11",
+      "version": "5.13.12",
       "author": {
         "name": "Alex Greenshpun",
         "url": "https://linkedin.com/in/alexgreensh"

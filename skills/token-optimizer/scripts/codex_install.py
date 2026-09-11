@@ -61,7 +61,7 @@ def _hook_command(script: str, *args: str, redirect_quiet: bool = False,
         # engine/command_runner.rs default_shell_command() spawns hooks as
         # `%COMSPEC% /C <command>` (fallback cmd.exe) on Windows unless the
         # user overrides the hook shell in config. So the cmd.exe syntax below
-        # (setlocal, for /f, 2^>NUL, >NUL 2>&1) is CORRECT here — do NOT
+        # (for /f, 2^>NUL, >NUL 2>&1) is CORRECT here — do NOT
         # "bash-ify" it. The inverse bug: Claude Code runs hooks via
         # Git Bash, so measure.py's Claude-facing commands are POSIX-shaped.
         _win_env = ''.join(
@@ -69,32 +69,52 @@ def _hook_command(script: str, *args: str, redirect_quiet: bool = False,
         )
         if _SEMVER_DIR_RE.match(root.name):
             # CMD needs a Windows-native counterpart to the POSIX runtime
-            # resolver below. Keep the baked path as a fail-open fallback when
-            # the version scan cannot run.
+            # resolver below. cmd.exe parses a /C command line ONCE, before
+            # anything on it runs: %VAR% expands to the pre-line value, and
+            # `setlocal EnableDelayedExpansion` only takes effect from the
+            # NEXT line, so a !VAR! reference on the same line is passed
+            # through literally (issue #180: python received the verbatim
+            # path "...\\!TOKEN_OPTIMIZER_RUNTIME_ROOT!\\hooks\\run.py" and
+            # exited 1). Neither expansion form can see the for-loop
+            # assignment on the same line. The one value that DOES land is
+            # the FOR variable itself, so the runner path is built from %R
+            # inside the do-body and no expansion form is needed.
+            #
+            # Fallback: the resolver always prints exactly one directory name
+            # - the newest semver install, or the baked install directory
+            # when the scan finds none - so the do-body still runs against
+            # the baked path. (If powershell.exe itself cannot start, the
+            # loop body never runs and the hook no-ops, the same fail-quiet
+            # contract as the POSIX resolver's missing-bash path.)
+            #
+            # Only the version LEAF NAME crosses the cmd/PowerShell pipe, and
+            # it is always ASCII (it matched the semver regex); the base path
+            # travels baked into the command line (Unicode-safe via
+            # CreateProcessW), so non-ASCII install paths - e.g. a Hebrew or
+            # CJK user profile name - are never mangled by a console-codepage
+            # round-trip. Exactly one line is printed, so python runs once.
             base = str(root.parent)
             ps_base = base.replace("'", "''")
+            ps_fallback = root.name.replace("'", "''")
             ps_command = (
                 "$ErrorActionPreference='SilentlyContinue'; "
-                f"Get-ChildItem -LiteralPath '{ps_base}' -Directory | "
+                f"$v = Get-ChildItem -LiteralPath '{ps_base}' -Directory | "
                 "Where-Object { $_.Name -match '^\\d+\\.\\d+\\.\\d+$' } | "
                 "Sort-Object { [version]$_.Name } -Descending | "
-                "Select-Object -First 1 -ExpandProperty Name"
+                "Select-Object -First 1 -ExpandProperty Name; "
+                f"if ($v) {{ $v }} else {{ '{ps_fallback}' }}"
             )
             resolver = subprocess.list2cmdline(
                 ["powershell", "-NoProfile", "-Command", ps_command]
             )
-            prefix = (
-                'setlocal EnableDelayedExpansion && '
-                'set "TOKEN_OPTIMIZER_RUNTIME=codex" && '
-                f'set "TOKEN_OPTIMIZER_RUNTIME_ROOT={root}" && '
-                f'for /f "delims=" %R in (\'{resolver} 2^>NUL\') '
-                f'do @set "TOKEN_OPTIMIZER_RUNTIME_ROOT={base}\\%R" && '
-                f'{_win_env}'
-            )
             python = subprocess.list2cmdline([sys.executable])
             script_args = subprocess.list2cmdline([script, *args])
             command = (
-                f'{prefix}{python} "!TOKEN_OPTIMIZER_RUNTIME_ROOT!\\hooks\\run.py" '
+                'set "TOKEN_OPTIMIZER_RUNTIME=codex" && '
+                f'for /f "delims=" %R in (\'{resolver} 2^>NUL\') '
+                f'do @set "TOKEN_OPTIMIZER_RUNTIME_ROOT={base}\\%R" && '
+                f'{_win_env}'
+                f'{python} "{base}\\%R\\hooks\\run.py" '
                 f"{script_args}"
             )
         else:

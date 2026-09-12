@@ -286,8 +286,12 @@ def test_windows_versioned_hook_executes_through_comspec_with_spaces(monkeypatch
         redirect_quiet=True,
     )
 
+    # Codex hands cmd.exe the command as ONE raw /C string. A Python argv
+    # LIST would go through list2cmdline (backslash-double-quote escaping),
+    # which cmd.exe does not parse: it chokes on \"delims=\" before the
+    # for-loop ever runs. Reproduce the production invocation exactly.
     proc = subprocess.run(
-        [os.environ.get("COMSPEC", "cmd.exe"), "/D", "/C", command],
+        f'{os.environ.get("COMSPEC", "cmd.exe")} /d /s /c "{command}"',
         input="{}",
         capture_output=True,
         text=True,
@@ -319,8 +323,10 @@ def test_windows_versioned_hook_falls_back_to_baked_install(monkeypatch, tmp_pat
 
     command = module._hook_command("skills/token-optimizer/scripts/read_cache.py")
 
+    # Raw /C string, not an argv list -- see the sibling test for why a list
+    # (CRT backslash-quote escaping) cannot express this command to cmd.exe.
     proc = subprocess.run(
-        [os.environ.get("COMSPEC", "cmd.exe"), "/D", "/C", command],
+        f'{os.environ.get("COMSPEC", "cmd.exe")} /d /s /c "{command}"',
         input="{}",
         capture_output=True,
         text=True,

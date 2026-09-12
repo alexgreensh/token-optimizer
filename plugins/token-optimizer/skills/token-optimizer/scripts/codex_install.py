@@ -86,6 +86,14 @@ def _hook_command(script: str, *args: str, redirect_quiet: bool = False,
             # the baked path. (If powershell.exe itself cannot start, the
             # loop body never runs and the hook no-ops, the same fail-quiet
             # contract as the POSIX resolver's missing-bash path.)
+            # The fallback is silent by design; TOKEN_OPTIMIZER_DEBUG=1 makes
+            # it observable by appending a line to
+            # <base>\token-optimizer-codex-resolver.log. A file is the only
+            # channel that reaches the user here: resolver stderr is 2^>NUL'd
+            # inside the for /f in-clause, and every extra stdout line would
+            # run the do-body again with junk as %R. The added syntax is
+            # deliberately free of ()<>%&| so cmd.exe's /C line parser never
+            # sees it.
             #
             # Only the version LEAF NAME crosses the cmd/PowerShell pipe, and
             # it is always ASCII (it matched the semver regex); the base path
@@ -102,7 +110,12 @@ def _hook_command(script: str, *args: str, redirect_quiet: bool = False,
                 "Where-Object { $_.Name -match '^\\d+\\.\\d+\\.\\d+$' } | "
                 "Sort-Object { [version]$_.Name } -Descending | "
                 "Select-Object -First 1 -ExpandProperty Name; "
-                f"if ($v) {{ $v }} else {{ '{ps_fallback}' }}"
+                "if ($v) { $v } else { "
+                "if ($env:TOKEN_OPTIMIZER_DEBUG) { $t = Get-Date -Format o; "
+                f"Add-Content -LiteralPath '{ps_base}\\token-optimizer-codex-resolver.log' "
+                f'-Value "$t codex hook resolver found no semver install; using baked {ps_fallback}" '
+                "-ErrorAction SilentlyContinue }; "
+                f"'{ps_fallback}' }}"
             )
             resolver = subprocess.list2cmdline(
                 ["powershell", "-NoProfile", "-Command", ps_command]
@@ -374,21 +387,47 @@ def _load_hooks(path: Path) -> dict[str, Any]:
     return data
 
 
+# Anchors for the generated Windows versioned-install command signature.
+# _hook_command has emitted exactly two such shapes: the current one, which
+# invokes the consolidated runner through the FOR variable
+# ("{base}\%R\hooks\run.py"), and the pre-5.13.12 broken one, which invoked it
+# through the delayed-expansion var ("!TOKEN_OPTIMIZER_RUNTIME_ROOT!\hooks\
+# run.py"). Both always carry the quoted set-assignment AND a hooks\run.py
+# runner invocation rooted under a token-optimizer directory (or through one
+# of OUR OWN variables, which a foreign command cannot use). Matching on the
+# assignment alone silently deletes a user's own hook that merely references
+# our env var, so all anchors must hold TOGETHER. (The patterns run on the
+# JSON-serialized group, where a literal " arrives as \" and \ as \\, hence
+# the escaped-quote and separator-class spellings.)
+_WIN_ROOT_SET_RE = re.compile(r'set \\"TOKEN_OPTIMIZER_RUNTIME_ROOT=')
+_WIN_RUNNER_RE = re.compile(r'hooks[/\\]+run\.py')
+_WIN_TO_DIR_RE = re.compile(r'token-optimizer[/\\]')
+_WIN_RUNNER_VIA_VAR_RE = re.compile(
+    r'(?:!TOKEN_OPTIMIZER_RUNTIME_ROOT!|%R)[/\\]+hooks[/\\]+run\.py'
+)
+
+
 def _is_token_optimizer_group(group: Any) -> bool:
     # The path marker misses generated Windows commands: on versioned
     # marketplace installs the baked paths use backslashes
     # (...\token-optimizer\X.Y.Z\hooks\run.py) and consolidated-runner args
     # like hooks/stop_runner.py, so "token-optimizer/scripts" never appears
-    # in them. Match the full QUOTED set-assignment our generator always
-    # emits -- set "TOKEN_OPTIMIZER_RUNTIME_ROOT= -- rather than the bare
-    # env-var name, so a user's own hook that merely references the variable
-    # (echo %TOKEN_OPTIMIZER_RUNTIME_ROOT%, a POSIX-style VAR=x prefix) is
-    # never swept up by reinstall or uninstall. (In the serialized JSON the
-    # quote arrives as \", hence the escaped-quote pattern.)
+    # in them. Those commands are instead identified by their full generated
+    # signature, so a foreign hook that merely contains
+    # set "TOKEN_OPTIMIZER_RUNTIME_ROOT= (or %TOKEN_OPTIMIZER_RUNTIME_ROOT%,
+    # or a POSIX-style VAR=x prefix) is never swept up by reinstall/uninstall.
     serialized = json.dumps(group, sort_keys=True)
-    return (TOKEN_OPTIMIZER_MARKER in serialized
-            or re.search(r'set \\"TOKEN_OPTIMIZER_RUNTIME_ROOT=', serialized)
-            is not None)
+    if TOKEN_OPTIMIZER_MARKER in serialized:
+        return True
+    if not _WIN_ROOT_SET_RE.search(serialized):
+        return False
+    return (
+        _WIN_RUNNER_VIA_VAR_RE.search(serialized) is not None
+        or (
+            _WIN_RUNNER_RE.search(serialized) is not None
+            and _WIN_TO_DIR_RE.search(serialized) is not None
+        )
+    )
 
 
 def _merge_hooks(

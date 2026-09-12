@@ -144,7 +144,8 @@ def test_windows_versioned_hook_avoids_same_line_expansion(monkeypatch):
     assert r"%R\hooks\run.py" in command
     # Fail-open: the resolver prints the baked install directory when the
     # version scan finds nothing, so the do-body still runs the baked path.
-    assert "else { '5.11.75' }" in command
+    # The else-branch may carry debug-gated logging before the baked name.
+    assert re.search(r"else \{ .* '5\.11\.75' \}", command), command
 
 
 def test_legacy_markerless_windows_groups_are_replaced_on_reinstall(monkeypatch):
@@ -153,9 +154,10 @@ def test_legacy_markerless_windows_groups_are_replaced_on_reinstall(monkeypatch)
     and consolidated-runner args are "hooks/<name>_runner.py", so the old
     marker-only _is_token_optimizer_group missed them entirely. Reinstall
     then kept the broken issue-#180 command AND appended the fixed one, and
-    uninstall left the broken one behind. The widened marker
-    (the full quoted `set "TOKEN_OPTIMIZER_RUNTIME_ROOT=` assignment, which
-    only our generated commands emit) must evict them while never touching a
+    uninstall left the broken one behind. The widened marker -- the full
+    generated-command signature (quoted `set "TOKEN_OPTIMIZER_RUNTIME_ROOT=`
+    assignment AND a hooks\\run.py runner invocation under a token-optimizer
+    path, or via the FOR variable) -- must evict them while never touching a
     foreign group."""
     module = _load_codex_install(monkeypatch, "win32")
     legacy = {
@@ -190,8 +192,11 @@ def test_foreign_hook_referencing_runtime_root_env_is_never_touched(monkeypatch)
     """The widened marker must not become a new footgun: a user's OWN hook
     that merely contains the env var -- a bare reference
     (%TOKEN_OPTIMIZER_RUNTIME_ROOT%), a POSIX-style VAR=x prefix assignment,
-    or an UNQUOTED set -- is not a generated Token Optimizer command and must
-    survive both reinstall-merge and uninstall-remove."""
+    an UNQUOTED set, or even the full QUOTED `set "TOKEN_OPTIMIZER_RUNTIME_ROOT=`
+    assignment our generator emits -- is not a generated Token Optimizer
+    command and must survive both reinstall-merge and uninstall-remove. The
+    assignment alone matched the pre-fix marker, so the quoted-set cases are
+    the regression this test exists to pin."""
     module = _load_codex_install(monkeypatch, "win32")
     user_hooks = [
         {"hooks": [{"type": "command",
@@ -200,6 +205,17 @@ def test_foreign_hook_referencing_runtime_root_env_is_never_touched(monkeypatch)
                     "command": "TOKEN_OPTIMIZER_RUNTIME_ROOT=/x python3 mine.py"}]},
         {"hooks": [{"type": "command",
                     "command": "set TOKEN_OPTIMIZER_RUNTIME_ROOT=C:\\x && python mine.py"}]},
+        # The confirmed false-positive: quoted set-assignment, no runner.
+        {"hooks": [{"type": "command",
+                    "command": 'set "TOKEN_OPTIMIZER_RUNTIME_ROOT=C:\\x" && python mine.py'}]},
+        # Quoted assignment AND a hooks\run.py call, but under the user's own
+        # directory -- not a token-optimizer path and not our FOR/delayed-var
+        # invocation shape.
+        {"hooks": [{"type": "command",
+                    "command": (
+                        'set "TOKEN_OPTIMIZER_RUNTIME_ROOT=D:\\tools\\mine" && '
+                        "python \"D:\\tools\\mine\\hooks\\run.py\" mine.py"
+                    )}]},
     ]
     for user_hook in user_hooks:
         assert not module._is_token_optimizer_group(user_hook), user_hook
@@ -210,6 +226,111 @@ def test_foreign_hook_referencing_runtime_root_env_is_never_touched(monkeypatch)
     assert merged["hooks"]["Stop"] == [*user_hooks, fixed]
     removed = module._remove_hooks({"hooks": {"Stop": list(user_hooks)}})
     assert removed == {"hooks": {"Stop": user_hooks}}
+
+
+def test_generated_command_shape_satisfies_matcher_contract(monkeypatch, tmp_path):
+    """Generator-to-matcher contract: every Windows command shape
+    _hook_command can emit must be claimed by _is_token_optimizer_group, or
+    reinstall/uninstall silently keeps stale copies. If the generator's
+    command shape changes, this fails until the matcher's anchors are updated
+    in the same commit."""
+    module = _load_codex_install(monkeypatch, "win32")
+
+    # Versioned marketplace root: the cmd resolver shape (the only shape that
+    # relies on the signature anchors rather than the path marker).
+    versioned_root = tmp_path / "plugin cache" / "token-optimizer" / "5.13.12"
+    monkeypatch.setattr(module, "_repo_root", lambda: versioned_root)
+    for script in (
+        "hooks/stop_runner.py",
+        "hooks/sessionstart_runner.py",
+        "skills/token-optimizer/scripts/codex_hook_bridge.py",
+    ):
+        command = module._hook_command(script, redirect_quiet=True)
+        group = {"hooks": [{"type": "command", "command": command}]}
+        assert "token-optimizer/scripts" not in json.dumps(group) or script.startswith("skills/")
+        assert module._is_token_optimizer_group(group), command
+
+    # Non-versioned root: runner path is literal; claimed via the path marker
+    # for marker-bearing script args (consolidated-runner args on a
+    # non-token-optimizer root remain a known gap -- see PR follow-ups).
+    plain_root = tmp_path / "checkout" / "token-optimizer"
+    monkeypatch.setattr(module, "_repo_root", lambda: plain_root)
+    command = module._hook_command("skills/token-optimizer/scripts/read_cache.py", "--quiet")
+    assert module._is_token_optimizer_group(
+        {"hooks": [{"type": "command", "command": command}]}
+    ), command
+
+
+def test_version_resolver_fallback_debug_log_is_debug_gated(monkeypatch):
+    """The baked-install fallback is silent by design; the only observable
+    channel is a TOKEN_OPTIMIZER_DEBUG-gated line appended to
+    token-optimizer-codex-resolver.log next to the version dirs. Assert the
+    generated command carries that instrumentation, inside the else-branch,
+    with no cmd-hostile metacharacters in the added syntax."""
+    module = _load_codex_install(monkeypatch, "win32")
+    root = PureWindowsPath(
+        r"C:\Users\Test User\.codex\plugins\market\token-optimizer\5.11.75"
+    )
+    monkeypatch.setattr(module, "_repo_root", lambda: root)
+
+    command = module._hook_command("skills/token-optimizer/scripts/read_cache.py")
+
+    assert "$env:TOKEN_OPTIMIZER_DEBUG" in command
+    assert "token-optimizer-codex-resolver.log" in command
+    # The log write must sit inside the else-branch so a healthy resolve
+    # stays quiet, and the baked name must still be the branch's last word.
+    assert re.search(
+        r"else \{ if \(\$env:TOKEN_OPTIMIZER_DEBUG\) .* \}; '5\.11\.75' \}",
+        command,
+    ), command
+    # for /f runs the in-clause via cmd /c: parens, redirects, %, and & in
+    # the added syntax would break the command line. The single-quoted
+    # -Command payload may legitimately contain | and > inside PowerShell
+    # operators we already rely on, so scope the check to the new fragment.
+    fragment = re.search(
+        r"if \(\$env:TOKEN_OPTIMIZER_DEBUG\) \{ (.*?) \}; '", command
+    ).group(1)
+    assert not re.search(r"[()<>%&]", fragment), fragment
+
+
+def test_version_resolver_fallback_writes_debug_log_when_enabled(monkeypatch, tmp_path):
+    """Live proof (where PowerShell exists): with TOKEN_OPTIMIZER_DEBUG set,
+    the fallback appends a line to the resolver log; without it, nothing is
+    written. Skips where no PowerShell runtime is available."""
+    pwsh = _pwsh()
+    if not pwsh:
+        pytest.skip("PowerShell (the Windows version-resolver runtime) unavailable")
+    base = tmp_path / "plugin cache" / "token-optimizer"
+    (base / "latest").mkdir(parents=True)
+    argv = _generated_resolver_argv(monkeypatch, base / "5.11.75")
+    # On Windows the log is a real child of the version-dirs parent; under
+    # pwsh-on-POSIX the backslash separator lands in the file NAME, so match
+    # by suffix in the directory listing instead of a fixed child path.
+    def _resolver_logs():
+        return [
+            p for p in base.iterdir()
+            if p.name.endswith("token-optimizer-codex-resolver.log")
+        ]
+
+    env = {**os.environ, "TOKEN_OPTIMIZER_DEBUG": "1"}
+    proc = subprocess.run(
+        [pwsh, *argv[1:]], capture_output=True, text=True, timeout=60, env=env
+    )
+    assert proc.returncode == 0, f"resolver failed: {proc.stderr}"
+    assert proc.stdout.strip() == "5.11.75"
+    logs = _resolver_logs()
+    assert logs, "debug-enabled fallback did not write the resolver log"
+    assert "5.11.75" in logs[0].read_text(encoding="utf-8")
+
+    for p in logs:
+        p.unlink()
+    env_off = {k: v for k, v in os.environ.items() if k != "TOKEN_OPTIMIZER_DEBUG"}
+    proc = subprocess.run(
+        [pwsh, *argv[1:]], capture_output=True, text=True, timeout=60, env=env_off
+    )
+    assert proc.returncode == 0, f"resolver failed: {proc.stderr}"
+    assert proc.stdout.strip() == "5.11.75"
+    assert not _resolver_logs(), "resolver log written without TOKEN_OPTIMIZER_DEBUG"
 
 
 def _generated_resolver_argv(monkeypatch, root):

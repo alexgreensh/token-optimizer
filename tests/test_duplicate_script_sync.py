@@ -1,28 +1,35 @@
-"""The two script trees must stay byte-identical.
+"""The three script trees must stay byte-identical.
 
-`skills/token-optimizer/scripts/` and
-`plugins/token-optimizer/skills/token-optimizer/scripts/` ship the same files to
-different install paths. Nothing in the build copies one to the other, so a fix
-applied to one copy and not the other is invisible until a user on the other
-install path reports the bug a second time. measure.py alone is ~35k lines;
-that drift is silent under a manual diff.
+`skills/token-optimizer/scripts/`,
+`plugins/token-optimizer/skills/token-optimizer/scripts/` (the Codex
+marketplace mirror), and
+`cowork/token-optimizer/skills/token-optimizer/scripts/` (the Cowork mirror)
+ship the same files to different install paths. Nothing in the build copies
+one to the others, so a fix applied to one copy and not the rest is invisible
+until a user on the other install path reports the bug a second time.
+measure.py alone is ~35k lines; that drift is silent under a manual diff.
 
 This converts the invariant from discipline into a red test.
 
-Intentional one-sided files are listed in ONE_SIDED. Adding a file to only one
-tree is a deliberate act, so it must be a deliberate edit here too -- otherwise
-a file silently missing from an install path reads as "not duplicated yet"
-rather than as a bug.
+Intentional one-sided files are listed in ONE_SIDED. Adding a file to only
+some trees is a deliberate act, so it must be a deliberate edit here too --
+otherwise a file silently missing from an install path reads as "not
+duplicated yet" rather than as a bug.
 """
 
 import hashlib
 import os
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-TREE_A = os.path.join(REPO_ROOT, "skills", "token-optimizer", "scripts")
-TREE_B = os.path.join(
-    REPO_ROOT, "plugins", "token-optimizer", "skills", "token-optimizer", "scripts"
-)
+TREES = {
+    "skills": os.path.join(REPO_ROOT, "skills", "token-optimizer", "scripts"),
+    "plugins": os.path.join(
+        REPO_ROOT, "plugins", "token-optimizer", "skills", "token-optimizer", "scripts"
+    ),
+    "cowork": os.path.join(
+        REPO_ROOT, "cowork", "token-optimizer", "skills", "token-optimizer", "scripts"
+    ),
+}
 
 # Files that legitimately live in only one tree, relative to that tree's root.
 # benchmark.py is a development harness, not shipped to the plugin install path.
@@ -51,38 +58,52 @@ def _digest(path):
 
 
 def test_shared_scripts_are_byte_identical():
-    """A file present in both trees must be the same file in both trees."""
-    shared = _relative_files(TREE_A) & _relative_files(TREE_B)
+    """A file present in more than one tree must be the same file everywhere."""
+    files_by_tree = {name: _relative_files(root) for name, root in TREES.items()}
+    all_files = set().union(*files_by_tree.values())
+    shared = {
+        rel for rel in all_files if sum(rel in f for f in files_by_tree.values()) > 1
+    }
     assert shared, "found no shared files -- the tree paths are probably wrong"
 
-    drifted = [
-        rel
-        for rel in sorted(shared)
-        if _digest(os.path.join(TREE_A, rel)) != _digest(os.path.join(TREE_B, rel))
-    ]
+    drifted = []
+    for rel in sorted(shared):
+        digests = {
+            name: _digest(os.path.join(root, rel))
+            for name, root in TREES.items()
+            if rel in files_by_tree[name]
+        }
+        if len(set(digests.values())) > 1:
+            drifted.append(f"{rel} (differs across: {', '.join(sorted(digests))})")
 
+    tree_list = "\n".join(
+        f"  {os.path.relpath(root, REPO_ROOT)}/<file>" for root in TREES.values()
+    )
     assert not drifted, (
-        "These files differ between the two script trees:\n  "
+        "These files differ between the script trees:\n  "
         + "\n  ".join(drifted)
-        + "\n\nApply the change to BOTH copies:\n"
-        f"  {os.path.relpath(TREE_A, REPO_ROOT)}/<file>\n"
-        f"  {os.path.relpath(TREE_B, REPO_ROOT)}/<file>"
+        + "\n\nApply the change to ALL copies:\n"
+        + tree_list
     )
 
 
 def test_one_sided_files_are_declared():
-    """A file in only one tree must be an explicitly declared exception.
+    """A file not present in every tree must be an explicitly declared exception.
 
     Catches the other half of the drift class: not a changed file, but a NEW
-    file added to one install path and forgotten in the other.
+    file added to one install path and forgotten in the others.
     """
-    only_a = _relative_files(TREE_A) - _relative_files(TREE_B)
-    only_b = _relative_files(TREE_B) - _relative_files(TREE_A)
-    undeclared = sorted((only_a | only_b) - ONE_SIDED)
+    files_by_tree = {name: _relative_files(root) for name, root in TREES.items()}
+    all_files = set().union(*files_by_tree.values())
+    partial = sorted(
+        rel for rel in all_files
+        if sum(rel in f for f in files_by_tree.values()) < len(TREES)
+    )
+    undeclared = [rel for rel in partial if rel not in ONE_SIDED]
 
     assert not undeclared, (
-        "These files exist in only one script tree:\n  "
+        "These files are missing from at least one script tree:\n  "
         + "\n  ".join(undeclared)
-        + "\n\nEither copy them to the other tree, or add them to ONE_SIDED in "
-        "this test to record that the asymmetry is deliberate."
+        + "\n\nEither copy them to the other trees, or add them to ONE_SIDED "
+        "in this test to record that the asymmetry is deliberate."
     )

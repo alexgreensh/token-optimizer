@@ -71,6 +71,10 @@ _EXEMPT = {
     # execute the real hook command whose name also appears in the file.
     "test_cowork_hardening.py",
     "test_hook_entry_budgets.py",
+    # Spawns pwsh/cmd.exe/bash only against fake fixture runners under
+    # tmp_path. Runner names like 'hooks/sessionstart_runner.py' appear as
+    # string args to _hook_command (command GENERATION), never executed.
+    "test_windows_hook_launcher.py",
 }
 
 

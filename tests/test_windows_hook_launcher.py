@@ -147,6 +147,44 @@ def test_windows_versioned_hook_avoids_same_line_expansion(monkeypatch):
     assert "else { '5.11.75' }" in command
 
 
+def test_legacy_markerless_windows_groups_are_replaced_on_reinstall(monkeypatch):
+    """Pre-fix versioned Windows commands carry NO "token-optimizer/scripts"
+    path marker: the baked paths use backslashes (..\\token-optimizer\\X.Y.Z)
+    and consolidated-runner args are "hooks/<name>_runner.py", so the old
+    marker-only _is_token_optimizer_group missed them entirely. Reinstall
+    then kept the broken issue-#180 command AND appended the fixed one, and
+    uninstall left the broken one behind. The widened marker
+    ("TOKEN_OPTIMIZER_RUNTIME_ROOT=" only ever appears in our generated
+    commands) must evict them while never touching a foreign group."""
+    module = _load_codex_install(monkeypatch, "win32")
+    legacy = {
+        "hooks": [{
+            "type": "command",
+            "command": (
+                'setlocal EnableDelayedExpansion && '
+                'set "TOKEN_OPTIMIZER_RUNTIME=codex" && '
+                'set "TOKEN_OPTIMIZER_RUNTIME_ROOT=C:\\market\\token-optimizer\\5.13.2" && '
+                "for /f \"delims=\" %R in ('powershell -NoProfile -Command Get-ChildItem') "
+                'do @set "TOKEN_OPTIMIZER_RUNTIME_ROOT=C:\\market\\token-optimizer\\%R" && '
+                'python.exe "!TOKEN_OPTIMIZER_RUNTIME_ROOT!\\hooks\\run.py" '
+                'hooks/stop_runner.py >NUL 2>&1'
+            ),
+        }],
+    }
+    foreign = {"hooks": [{"type": "command", "command": "echo not ours"}]}
+    # The guard the old marker-only check failed: no forward-slash path marker.
+    assert "token-optimizer/scripts" not in json.dumps(legacy)
+    assert module._is_token_optimizer_group(legacy)
+    assert not module._is_token_optimizer_group(foreign)
+
+    fixed = {"hooks": [{"type": "command", "command": "fixed"}]}
+    monkeypatch.setattr(module, "_managed_hooks", lambda **kw: {"Stop": [fixed]})
+    merged = module._merge_hooks({"hooks": {"Stop": [legacy, foreign]}})
+    assert merged["hooks"]["Stop"] == [foreign, fixed]
+    removed = module._remove_hooks({"hooks": {"Stop": [legacy, foreign]}})
+    assert removed == {"hooks": {"Stop": [foreign]}}
+
+
 def _generated_resolver_argv(monkeypatch, root):
     """Capture the exact argv vector the generator hands to cmd for the
     version resolver (the `powershell -NoProfile -Command ...` inside the

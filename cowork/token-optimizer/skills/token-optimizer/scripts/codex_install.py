@@ -379,12 +379,16 @@ def _is_token_optimizer_group(group: Any) -> bool:
     # marketplace installs the baked paths use backslashes
     # (...\token-optimizer\X.Y.Z\hooks\run.py) and consolidated-runner args
     # like hooks/stop_runner.py, so "token-optimizer/scripts" never appears
-    # in them. The env-assignment string is ours either way, so match it too
-    # -- reinstall must REPLACE the pre-5.13.12 commands that were broken by
-    # same-line expansion (issue #180), and uninstall must remove them.
+    # in them. Match the full QUOTED set-assignment our generator always
+    # emits -- set "TOKEN_OPTIMIZER_RUNTIME_ROOT= -- rather than the bare
+    # env-var name, so a user's own hook that merely references the variable
+    # (echo %TOKEN_OPTIMIZER_RUNTIME_ROOT%, a POSIX-style VAR=x prefix) is
+    # never swept up by reinstall or uninstall. (In the serialized JSON the
+    # quote arrives as \", hence the escaped-quote pattern.)
     serialized = json.dumps(group, sort_keys=True)
     return (TOKEN_OPTIMIZER_MARKER in serialized
-            or "TOKEN_OPTIMIZER_RUNTIME_ROOT=" in serialized)
+            or re.search(r'set \\"TOKEN_OPTIMIZER_RUNTIME_ROOT=', serialized)
+            is not None)
 
 
 def _merge_hooks(

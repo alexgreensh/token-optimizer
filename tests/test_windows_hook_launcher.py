@@ -154,8 +154,9 @@ def test_legacy_markerless_windows_groups_are_replaced_on_reinstall(monkeypatch)
     marker-only _is_token_optimizer_group missed them entirely. Reinstall
     then kept the broken issue-#180 command AND appended the fixed one, and
     uninstall left the broken one behind. The widened marker
-    ("TOKEN_OPTIMIZER_RUNTIME_ROOT=" only ever appears in our generated
-    commands) must evict them while never touching a foreign group."""
+    (the full quoted `set "TOKEN_OPTIMIZER_RUNTIME_ROOT=` assignment, which
+    only our generated commands emit) must evict them while never touching a
+    foreign group."""
     module = _load_codex_install(monkeypatch, "win32")
     legacy = {
         "hooks": [{
@@ -183,6 +184,32 @@ def test_legacy_markerless_windows_groups_are_replaced_on_reinstall(monkeypatch)
     assert merged["hooks"]["Stop"] == [foreign, fixed]
     removed = module._remove_hooks({"hooks": {"Stop": [legacy, foreign]}})
     assert removed == {"hooks": {"Stop": [foreign]}}
+
+
+def test_foreign_hook_referencing_runtime_root_env_is_never_touched(monkeypatch):
+    """The widened marker must not become a new footgun: a user's OWN hook
+    that merely contains the env var -- a bare reference
+    (%TOKEN_OPTIMIZER_RUNTIME_ROOT%), a POSIX-style VAR=x prefix assignment,
+    or an UNQUOTED set -- is not a generated Token Optimizer command and must
+    survive both reinstall-merge and uninstall-remove."""
+    module = _load_codex_install(monkeypatch, "win32")
+    user_hooks = [
+        {"hooks": [{"type": "command",
+                    "command": "echo %TOKEN_OPTIMIZER_RUNTIME_ROOT% && python mine.py"}]},
+        {"hooks": [{"type": "command",
+                    "command": "TOKEN_OPTIMIZER_RUNTIME_ROOT=/x python3 mine.py"}]},
+        {"hooks": [{"type": "command",
+                    "command": "set TOKEN_OPTIMIZER_RUNTIME_ROOT=C:\\x && python mine.py"}]},
+    ]
+    for user_hook in user_hooks:
+        assert not module._is_token_optimizer_group(user_hook), user_hook
+
+    fixed = {"hooks": [{"type": "command", "command": "fixed"}]}
+    monkeypatch.setattr(module, "_managed_hooks", lambda **kw: {"Stop": [fixed]})
+    merged = module._merge_hooks({"hooks": {"Stop": list(user_hooks)}})
+    assert merged["hooks"]["Stop"] == [*user_hooks, fixed]
+    removed = module._remove_hooks({"hooks": {"Stop": list(user_hooks)}})
+    assert removed == {"hooks": {"Stop": user_hooks}}
 
 
 def _generated_resolver_argv(monkeypatch, root):

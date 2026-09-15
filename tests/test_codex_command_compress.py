@@ -219,17 +219,29 @@ def test_rewritten_command_failure_streams_verbatim(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# Item 19: launcher decode diagnostic + rebuild-based signature
+# Item 19: legacy launcher decode diagnostic + version-normalized signature
 # --------------------------------------------------------------------------- #
 
-def test_decode_launcher_roundtrips_the_bootstrap(tmp_path):
+def _legacy_base64_command(code: str) -> str:
+    """Construct a command in the retired (pre-#183) base64 -c shape."""
+    blob = base64.b64encode(code.encode()).decode()
+    return (
+        'python -c "'
+        + "exec(__import__('base64').b64decode('" + blob + "'))"
+        + '" token-optimizer/scripts/windows-launcher'
+    )
+
+
+def test_decode_launcher_reads_legacy_base64_commands_only(tmp_path):
+    """--decode-launcher remains the audit channel for hooks.json entries
+    baked by the retired base64 launcher. Launcher-file commands carry no
+    payload: they are self-auditing plain source, so decode returns None."""
+    code = "import os\nos.environ['TOKEN_OPTIMIZER_RUNTIME'] = 'codex'\n"
+    assert installer.decode_launcher_command(_legacy_base64_command(code)) == code
+    assert installer.decode_launcher_command('echo hello') is None
     command = installer._windows_launcher_command(
         tmp_path / '5.9.0', 'hooks/run.py', ['hooks/stop_runner.py'], {'TO_TEST': 'v'})
-    decoded = installer.decode_launcher_command(command)
-    assert decoded == installer._windows_bootstrap(
-        tmp_path / '5.9.0', 'hooks/run.py', ['hooks/stop_runner.py'], {'TO_TEST': 'v'})
-    assert 'runpy.run_path' in decoded
-    assert installer.decode_launcher_command('echo hello') is None
+    assert installer.decode_launcher_command(command) is None
 
 
 def test_launcher_signature_normalizes_version_only(tmp_path):
@@ -245,16 +257,24 @@ def test_launcher_signature_normalizes_version_only(tmp_path):
         assert installer._launcher_signature(other) != installer._launcher_signature(cmd_a)
 
 
-def test_launcher_signature_rejects_tampered_bootstrap(tmp_path):
-    """A command whose embedded code deviates from the generator cannot pass
-    as equivalent -- it compares verbatim and triggers the trust review."""
-    command = installer._windows_launcher_command(tmp_path / '5.9.0', 'hooks/run.py', [], {})
-    code = installer.decode_launcher_command(command)
-    tampered_code = code.replace("'codex'", "'evil'")
-    tampered = command.replace(
-        base64.b64encode(code.encode()).decode(),
-        base64.b64encode(tampered_code.encode()).decode())
-    assert installer._launcher_signature(tampered) != installer._launcher_signature(command)
+def test_launcher_signature_rejects_tampered_commands(tmp_path):
+    """Any deviation from the generated command text -- a swapped blob in a
+    legacy command, an edited env value or appended payload in a
+    launcher-file command -- cannot pass as equivalent: signatures compare
+    verbatim outside the normalized --baked-root version leaf, so tampering
+    triggers the trust review it should."""
+    legacy = _legacy_base64_command("print('a')")
+    tampered_legacy = _legacy_base64_command("print('evil')")
+    assert installer._launcher_signature(tampered_legacy) != installer._launcher_signature(legacy)
+
+    command = installer._windows_launcher_command(tmp_path / '5.9.0', 'hooks/run.py', [], {'K': '1'})
+    assert installer._launcher_signature(command.replace('K=1', 'K=2')) \
+        != installer._launcher_signature(command)
+    assert installer._launcher_signature(command + ' & echo hi') \
+        != installer._launcher_signature(command)
+    # A swapped baked-root leaf that is not semver-shaped is not normalized.
+    assert installer._launcher_signature(command.replace('5.9.0', 'tampered')) \
+        != installer._launcher_signature(command)
     # Non-semver roots and foreign commands compare verbatim.
     assert installer._launcher_signature('echo hi') == 'echo hi'
 
@@ -273,13 +293,34 @@ def test_install_preserves_equivalent_version_resolver_but_not_changed_logic(mon
 
 def test_decode_launcher_cli(tmp_path):
     script = SCRIPTS / 'codex_install.py'
-    command = installer._windows_launcher_command(tmp_path / '5.9.0', 'hooks/run.py', [], {})
-    ok = subprocess.run([sys.executable, str(script), '--decode-launcher', command],
+    legacy = _legacy_base64_command("import runpy\n")
+    ok = subprocess.run([sys.executable, str(script), '--decode-launcher', legacy],
                         capture_output=True, text=True, timeout=30)
-    assert ok.returncode == 0 and 'runpy.run_path' in ok.stdout
+    assert ok.returncode == 0 and 'runpy' in ok.stdout
+    # Launcher-file shape: nothing embedded; the CLI points at the plain
+    # source instead of failing.
+    command = installer._windows_launcher_command(tmp_path / '5.9.0', 'hooks/run.py', [], {})
+    self_audit = subprocess.run([sys.executable, str(script), '--decode-launcher', command],
+                                capture_output=True, text=True, timeout=30)
+    assert self_audit.returncode == 0 and 'nothing embedded' in self_audit.stdout
     bad = subprocess.run([sys.executable, str(script), '--decode-launcher', 'echo hi'],
                          capture_output=True, text=True, timeout=30)
     assert bad.returncode == 1
+
+
+def test_default_shell_skips_unreadable_path_entries(tmp_path, monkeypatch):
+    """An unreadable PATH entry (e.g. another user's private bin dir on a
+    shared machine) must not crash shell resolution: a PermissionError from
+    stat is treated like any other non-match, and resolution moves on."""
+    blocked = tmp_path / 'blocked'
+    blocked.mkdir()
+    (blocked / 'bash').write_text('#!/bin/sh\n', encoding='utf-8')
+    blocked.chmod(0o000)
+    monkeypatch.setenv('PATH', str(blocked))
+    try:
+        assert compression._default_shell() is None
+    finally:
+        blocked.chmod(0o700)
 
 
 # --------------------------------------------------------------------------- #

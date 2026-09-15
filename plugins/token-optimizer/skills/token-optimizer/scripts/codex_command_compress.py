@@ -145,12 +145,16 @@ def _default_shell():
                 continue
             try:
                 candidate = (Path(directory) / name).resolve()
+                if (candidate.name.lower() == name and candidate.is_file()
+                        and os.access(candidate, os.X_OK)
+                        and any(candidate.is_relative_to(root)
+                                for root in roots)):
+                    return str(candidate)
             except OSError:
+                # Unreadable PATH entries (e.g. another user's ~/.cargo/bin on
+                # a shared machine) must not crash shell resolution -- skip
+                # them like any other non-match and keep scanning.
                 continue
-            if (candidate.name.lower() == name and candidate.is_file()
-                    and os.access(candidate, os.X_OK)
-                    and any(candidate.is_relative_to(root) for root in roots)):
-                return str(candidate)
     return None
 
 

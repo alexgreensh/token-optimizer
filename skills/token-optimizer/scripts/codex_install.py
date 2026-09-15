@@ -4,13 +4,14 @@
 from __future__ import annotations
 
 import argparse
-import ast
 import base64
 import json
+import os
 import re
 import shlex
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -49,89 +50,56 @@ _BASH_RESOLVER_PREFIX = (
 _BASH_RESOLVER_SUFFIX = "; done; exit 0"
 
 # Marker baked into every generated Windows launcher command so install,
-# uninstall, doctor, and dashboard ownership checks can recognize it.
+# uninstall, doctor, and dashboard ownership checks can recognize it. The
+# launcher strips it from the argv it forwards to the runner.
 _LAUNCHER_MARKER = "token-optimizer/scripts/windows-launcher"
+# Filename of the readable launcher codex_install copies NEXT TO the
+# versioned install dirs (issue #183); canonical source ships in hooks/.
+_LAUNCHER_FILENAME = "windows-launcher.py"
 _LAUNCHER_B64_RE = re.compile(r"b64decode\('([A-Za-z0-9+/=]+)'\)")
 # Sentinel version leaf used when normalizing a launcher for signature
 # comparison (see _launcher_signature).
 _SIGNATURE_VERSION = "0.0.0"
 
 
-def _windows_bootstrap(root: Path, script: str, args: list, extra_env: dict) -> str:
-    """The plaintext Python bootstrap embedded in Windows launcher commands.
-
-    cmd.exe parses a /C command line ONCE, before anything on it runs: %VAR%
-    expands to the pre-line value and `setlocal EnableDelayedExpansion` only
-    takes effect from the NEXT line, so neither expansion form can carry a
-    resolved version directory into the runner path on the same line (issue
-    #180). Resolving the newest semver sibling inside Python removes the
-    nested-quoting problem entirely -- no for/f, no PowerShell hop.
-
-    The generated code below is ALL the base64 payload ever does:
-      1. `root` starts as the baked install dir (.../token-optimizer/<X.Y.Z>/).
-      2. Scan root's parent for sibling directories named X.Y.Z; pick the
-         highest semver. On any listing failure keep the baked dir (fail-open).
-         A fallback resolve is observable only via a TOKEN_OPTIMIZER_DEBUG-
-         gated line appended to token-optimizer-codex-resolver.log next to
-         the version dirs (the channel the old PowerShell resolver had).
-      3. Export TOKEN_OPTIMIZER_RUNTIME=codex, TOKEN_OPTIMIZER_RUNTIME_ROOT
-         = resolved root, plus any extra_env the hook needs.
-      4. runpy.run_path the resolved hooks/run.py with sys.argv =
-         [runner, script, *args].
-
-    Audit any emitted command without executing it:
-      codex_install.py --decode-launcher "<command>"
-    """
-    return (
-        "import os, re, runpy, sys\n"
-        "from pathlib import Path\n"
-        f"root = Path({str(root)!r})\n"
-        "baked = root\n"
-        "try:\n"
-        "    versions = [p for p in root.parent.iterdir() if p.is_dir() "
-        "and re.fullmatch(r'\\d+\\.\\d+\\.\\d+', p.name)]\n"
-        "    root = max(versions, key=lambda p: tuple(map(int, p.name.split('.'))), default=root)\n"
-        "except OSError:\n"
-        "    pass\n"
-        "if root == baked and os.environ.get('TOKEN_OPTIMIZER_DEBUG'):\n"
-        "    try:\n"
-        "        with (root.parent / 'token-optimizer-codex-resolver.log').open('a', encoding='utf-8') as _log:\n"
-        "            _log.write(str(root) + '\\n')\n"
-        "    except OSError:\n"
-        "        pass\n"
-        "os.environ['TOKEN_OPTIMIZER_RUNTIME'] = 'codex'\n"
-        "os.environ['TOKEN_OPTIMIZER_RUNTIME_ROOT'] = str(root)\n"
-        f"os.environ.update({extra_env!r})\n"
-        "runner = root / 'hooks' / 'run.py'\n"
-        f"sys.argv = [str(runner), {script!r}, *{list(args)!r}]\n"
-        "sys.path.insert(0, str(runner.parent))\n"
-        "runpy.run_path(str(runner), run_name='__main__')\n"
-    )
-
-
 def _windows_launcher_command(root: Path, script: str, args, extra_env: dict) -> str:
     """Build the baked Windows hook command for a versioned marketplace root.
 
-    The base64 blob is exactly the readable output of _windows_bootstrap()
-    above -- encoding keeps paths/arguments containing CMD metacharacters out
-    of the cmd.exe /C parser (spaces, &, %, !, quotes all survive untouched).
-    The trailing marker keeps the command recognizable to ownership checks.
+    The command invokes the readable launcher file that install() copies to
+    the STABLE parent of the version dirs (.../token-optimizer/
+    windows-launcher.py, which survives the marketplace swapping
+    .../token-optimizer/<X.Y.Z>/ on upgrade) by quoted path -- issue #183:
+    the retired base64 `python -c` exec-bootstrap tripped
+    generic-loader antivirus signatures on the literal encoded-exec
+    string. Paths and arguments are plainly list2cmdline-quoted argv, so
+    cmd.exe metacharacters need no encoding and the /C single-parse problem
+    (issue #180) needs no expansion form at all. The launcher resolves the
+    newest semver sibling of the baked root at runtime; --baked-root is the
+    fail-open fallback only. The trailing marker keeps the command
+    recognizable to ownership checks; the launcher strips it before
+    dispatching, so the runner's sys.argv stays exactly [run.py, script,
+    *args].
     """
-    encoded = base64.b64encode(
-        _windows_bootstrap(root, script, list(args), extra_env).encode("utf-8")
-    ).decode("ascii")
-    python = subprocess.list2cmdline([sys.executable])
-    return (
-        f"{python} -c \"exec(__import__('base64').b64decode('{encoded}'))\""
-        f" {_LAUNCHER_MARKER}"
-    )
+    argv = [
+        sys.executable,
+        str(root.parent / _LAUNCHER_FILENAME),
+        "--baked-root",
+        str(root),
+    ]
+    for key, value in extra_env.items():
+        argv += ["--env", f"{key}={value}"]
+    argv += ["--", script, *list(args), _LAUNCHER_MARKER]
+    return subprocess.list2cmdline(argv)
 
 
 def decode_launcher_command(command: str) -> str | None:
-    """Decode the embedded Python bootstrap of a generated Windows launcher.
+    """Decode the embedded Python bootstrap of a LEGACY generated launcher.
 
-    Returns None when `command` is not one of ours (no launcher marker or no
-    base64 payload). Pure decode-and-print for audits; never executes.
+    Only pre-launcher-file commands (the base64 `python -c` bootstrap retired
+    for issue #183) carry a payload to decode; launcher-file commands are
+    self-auditing (the invoked .py is plain source). Returns None when
+    `command` is not a legacy one of ours (no launcher marker or no base64
+    payload). Pure decode-and-print for audits; never executes.
     """
     if _LAUNCHER_MARKER not in command:
         return None
@@ -164,12 +132,14 @@ def _hook_command(script: str, *args: str, redirect_quiet: bool = False,
             # resolver below. cmd.exe parses a /C command line ONCE, before
             # anything on it runs, so neither %VAR% nor a same-line !VAR!
             # (setlocal does not apply outside batch files) can carry the
-            # resolved version into the runner path (issue #180). The base64
-            # payload decodes to the fixed, readable bootstrap in
-            # _windows_bootstrap() -- it resolves the newest semver install in
-            # the Python process we are already launching, which removes the
-            # nested-quoting and console-codepage problems entirely. Audit any
-            # baked command with: codex_install.py --decode-launcher "<cmd>".
+            # resolved version into the runner path (issue #180). The command
+            # instead invokes the readable launcher file installed next to the
+            # version dirs by quoted path (issue #183: the base64 -c bootstrap
+            # tripped generic-loader antivirus signatures) -- the launcher
+            # resolves the newest semver install in the Python process we are
+            # already launching, which removes the nested-quoting and
+            # console-codepage problems entirely. Audit by reading the file;
+            # legacy base64 commands still decode via --decode-launcher.
             command = _windows_launcher_command(root, script, args, extra_env)
         else:
             prefix = f'set "TOKEN_OPTIMIZER_RUNTIME=codex" && {_win_env}'
@@ -472,60 +442,48 @@ def _is_token_optimizer_group(group: Any) -> bool:
     )
 
 
-def _parse_launcher_bootstrap(code: str):
-    """Extract the four interpolated fields from a bootstrap we generated.
+# Matches the --baked-root token of a generated launcher-file command, as
+# list2cmdline emitted it: quoted when the path carries spaces or cmd
+# metacharacters, bare otherwise.
+_BAKED_ROOT_ARG_RE = re.compile(
+    r'--baked-root\s+(?:"(?P<quoted>[^"]*)"|(?P<bare>[^\s]+))'
+)
 
-    Returns (root, env, script, args) or None. These are the only values
-    _windows_bootstrap() interpolates; anything unparseable is not ours.
-    """
-    try:
-        lines = code.split("\n")
-        root = Path(ast.literal_eval(
-            next(l for l in lines if l.startswith("root = Path("))[len("root = Path("):-1]))
-        env = ast.literal_eval(
-            next(l for l in lines if l.startswith("os.environ.update("))[len("os.environ.update("):-1])
-        argv_line = next(l for l in lines if l.startswith("sys.argv = [str(runner), "))
-        script_repr, args_repr = argv_line[len("sys.argv = [str(runner), "):-1].split(", *[", 1)
-        script = ast.literal_eval(script_repr)
-        args = ast.literal_eval("[" + args_repr)
-    except (ValueError, SyntaxError, StopIteration, IndexError):
-        return None
-    if not isinstance(env, dict) or not isinstance(script, str) or not isinstance(args, list):
-        return None
-    return root, env, script, args
+
+def _normalize_baked_root(match: "re.Match[str]") -> str:
+    """Replace a semver --baked-root leaf with the signature sentinel,
+    preserving the original separator style and quoting."""
+    value = match.group("quoted")
+    quoted = value is not None
+    if not quoted:
+        value = match.group("bare")
+    leaf = re.search(r"^(.*[/\\])\d+\.\d+\.\d+$", value)
+    if leaf is None:
+        return match.group(0)
+    normalized = f"--baked-root {leaf.group(1)}{_SIGNATURE_VERSION}"
+    return f'--baked-root "{leaf.group(1)}{_SIGNATURE_VERSION}"' if quoted else normalized
 
 
 def _launcher_signature(command):
     """Canonical form of a generated Windows launcher, modulo the version dir.
 
     Preserving an equivalent installed command avoids an unnecessary trust
-    review on upgrade. Instead of regex-splicing the embedded base64 (which
-    silently degrades when the embedded format drifts), decode the bootstrap,
-    pull out the four interpolated fields, verify the decoded text is EXACTLY
-    what _windows_bootstrap() regenerates for them, and rebuild the payload
-    with the version leaf normalized to a sentinel. Installed commands then
-    compare equal across upgrades iff interpreter, install parent, env,
-    script, args, redirect, and the bootstrap template itself all match. A
-    command whose embedded code deviates from the generator compares verbatim
-    and still triggers the trust review it should.
+    review on upgrade. Launcher-file shape: the only versioned path in the
+    command is the --baked-root fallback (the launcher itself lives at the
+    stable parent of the version dirs), so normalize just that leaf to a
+    sentinel. Everything else -- interpreter, launcher path, env, script,
+    args, redirect, marker -- must match verbatim, so any tampering forces
+    the trust review it should. Legacy base64 launchers compare verbatim:
+    they are never equivalent to the launcher-file shape, so the next
+    install replaces them (the one-time change that ships the issue #183
+    fix), and a blob tampered in any way differs from the untampered
+    command.
     """
-    match = _LAUNCHER_B64_RE.search(command)
-    if not match or _LAUNCHER_MARKER not in command:
+    if _LAUNCHER_MARKER not in command:
         return command
-    code = decode_launcher_command(command)
-    if code is None:
+    if _LAUNCHER_B64_RE.search(command):
         return command
-    fields = _parse_launcher_bootstrap(code)
-    if fields is None:
-        return command
-    root, env, script, args = fields
-    if not _SEMVER_DIR_RE.fullmatch(root.name):
-        return command
-    if code != _windows_bootstrap(root, script, args, env):
-        return command
-    canonical = _windows_bootstrap(root.parent / _SIGNATURE_VERSION, script, args, env)
-    normalized = base64.b64encode(canonical.encode("utf-8")).decode("ascii")
-    return command[:match.start(1)] + normalized + command[match.end(1):]
+    return _BAKED_ROOT_ARG_RE.sub(_normalize_baked_root, command)
 
 
 def _merge_hooks(
@@ -579,6 +537,54 @@ def _remove_hooks(existing: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _windows_launcher_install_path(root: Path) -> Path:
+    """Stable launcher location: NEXT TO the versioned install dirs, so the
+    marketplace swapping .../token-optimizer/<X.Y.Z>/ on upgrade never takes
+    the file the baked commands invoke."""
+    return root.parent / _LAUNCHER_FILENAME
+
+
+def _install_windows_launcher(root: Path) -> str:
+    """Copy the canonical hooks/windows-launcher.py to its stable install
+    path. Idempotent (no rewrite when already current) and atomic
+    (unique same-directory temp + replace, always cleaned up), so a
+    concurrent hook run never reads a half-written launcher."""
+    source = _repo_root() / "hooks" / _LAUNCHER_FILENAME
+    target = _windows_launcher_install_path(root)
+    try:
+        content = source.read_bytes()
+    except OSError as exc:
+        raise ValueError(f"cannot read Windows launcher {source}: {exc}") from exc
+    try:
+        if target.read_bytes() == content:
+            return f"already current: {target}"
+    except OSError:
+        pass
+    # Unique same-directory temp (concurrent installers never contend on a
+    # fixed name), always cleaned up; os.replace within one filesystem is
+    # atomic, so a concurrent hook run never reads a half-written launcher.
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=target.parent, prefix=f"{target.name}.", suffix=".tmp",
+            delete=False,
+        ) as handle:
+            tmp = Path(handle.name)
+            handle.write(content)
+        os.replace(tmp, target)
+    except OSError as exc:
+        raise ValueError(
+            f"cannot install Windows launcher to {target}: {exc}"
+        ) from exc
+    finally:
+        if tmp is not None:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+    return f"installed: {target}"
+
+
 def install(
     project: Path,
     *,
@@ -611,6 +617,16 @@ def install(
         "compact_prompt": "skipped" if skip_compact_prompt else None,
         "status_line": "skipped" if not enable_status_line else None,
     }
+    root = _repo_root()
+    if sys.platform == "win32" and _SEMVER_DIR_RE.match(root.name):
+        # The baked commands invoke the launcher by path; it must exist
+        # before hooks.json points at it. A failed write aborts the install
+        # loudly instead of leaving hooks that cannot start.
+        details["windows_launcher"] = (
+            f"would install: {_windows_launcher_install_path(root)}"
+            if dry_run
+            else _install_windows_launcher(root)
+        )
     if dry_run and not skip_compact_prompt:
         details["compact_prompt"] = codex_compact_prompt.plan_install(force=force_compact_prompt)
     if dry_run and enable_status_line:
@@ -655,9 +671,11 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="COMMAND",
         default=None,
         help=(
-            "Print the decoded Python bootstrap embedded in a generated Windows "
-            "launcher command (the base64 in `python -c \"exec(...b64decode...)\"`). "
-            "Audit/diagnostic only: decodes and prints, never executes."
+            "Print the decoded Python bootstrap embedded in a LEGACY generated "
+            "Windows launcher command (the base64 `python -c` exec-bootstrap retired "
+            "for issue #183). Audit/diagnostic only: decodes and prints, "
+            "never executes. Launcher-file commands are self-auditing: the "
+            "invoked .py is plain source at the path in the command."
         ),
     )
     parser.add_argument(
@@ -706,6 +724,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.decode_launcher is not None:
         decoded = decode_launcher_command(args.decode_launcher)
         if decoded is None:
+            if _LAUNCHER_MARKER in args.decode_launcher:
+                # Launcher-file shape: the invoked .py IS the audit trail.
+                print(
+                    "[Token Optimizer] launcher-file command: nothing embedded "
+                    "to decode -- audit the plain source at the invoked "
+                    f"{_LAUNCHER_FILENAME} path"
+                )
+                return 0
             print("[Token Optimizer] not a generated windows-launcher command", file=sys.stderr)
             return 1
         print(decoded, end="")

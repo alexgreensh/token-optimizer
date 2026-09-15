@@ -1,5 +1,6 @@
 """Execute generated marketplace hooks under native cmd.exe, not CRT quoting."""
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -8,6 +9,17 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'skills/token-optimizer/scripts'))
 import codex_install as ci
+
+
+REPO = Path(__file__).resolve().parents[1]
+
+
+def _install_test_launcher(base: Path) -> Path:
+    """Place the canonical launcher where install() would: next to the
+    version dirs, at the stable path the generated command invokes."""
+    target = base / 'windows-launcher.py'
+    shutil.copyfile(REPO / 'hooks' / 'windows-launcher.py', target)
+    return target
 
 
 @pytest.mark.skipif(sys.platform != 'win32', reason='requires native cmd.exe')
@@ -23,9 +35,17 @@ def test_marketplace_command_runs_with_stdin_and_environment(tmp_path, monkeypat
             "print(json.dumps(dict(root=os.environ['TOKEN_OPTIMIZER_RUNTIME_ROOT'], "
             "runtime=os.environ['TOKEN_OPTIMIZER_RUNTIME'], extra=os.environ['TO_TEST'], "
             "args=sys.argv[1:], stdin=sys.stdin.read())))\n", encoding='utf-8')
+    _install_test_launcher(base)
     monkeypatch.setattr(ci, '_repo_root', lambda: root)
-    argument = 'space & pipe| quote" percent% bang!'
-    command = ci._hook_command('hooks/test.py', argument, extra_env={'TO_TEST': argument})
+    # Metachar coverage stays within what a real generated command can carry:
+    # Windows forbids '"' in file names and the generator's own args/env
+    # never contain one (list2cmdline escapes it as \", which cmd.exe does
+    # NOT parse), and exactly ONE '%' may appear in the whole /C line -- cmd
+    # expands %name% pairs across the line even inside quotes, so a second
+    # '%' would pair with the first and eat the text between them.
+    argument = 'space & pipe| percent% bang! caret^'
+    env_value = 'space & pipe| bang! caret^'
+    command = ci._hook_command('hooks/test.py', argument, extra_env={'TO_TEST': env_value})
     assert ci._is_token_optimizer_group({'command': command})
     if upgrade:
         (root / 'hooks/run.py').unlink()
@@ -40,7 +60,7 @@ def test_marketplace_command_runs_with_stdin_and_environment(tmp_path, monkeypat
     data = json.loads(result.stdout)
     assert Path(data['root']) == base / '5.10.0'
     assert data['runtime'] == 'codex'
-    assert data['extra'] == argument
+    assert data['extra'] == env_value
     assert data['args'] == ['hooks/test.py', argument]
     assert data['stdin'] == '{"test": true}'
 
@@ -81,6 +101,7 @@ def test_quiet_command_executes_without_output(tmp_path, monkeypatch):
     (hooks / 'run.py').write_text(
         f"from pathlib import Path; Path({str(marker)!r}).touch(); print('noise')",
         encoding='utf-8')
+    _install_test_launcher(tmp_path)
     monkeypatch.setattr(ci, '_repo_root', lambda: root)
     command = ci._hook_command('hooks/stop_runner.py', redirect_quiet=True)
     result = subprocess.run(f'cmd.exe /d /s /c "{command}"',

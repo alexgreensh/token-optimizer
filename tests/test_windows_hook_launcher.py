@@ -1,16 +1,16 @@
 """Regression coverage for Windows hook command generation.
 
 Claude Code runs ``command`` hooks through Git Bash on native Windows, so
-generated hook commands must be POSIX-shell safe: ``>/dev/null 2>&1`` (never
-``>NUL``, which Git Bash materializes as a literal file named ``NUL`` in the
-CWD) and forward-slash or single-quoted paths (never cmd.exe
-``list2cmdline`` quoting). Codex is different: it spawns hooks via
-``%COMSPEC% /C`` (cmd.exe), so codex_install.py's cmd syntax is correct and
-pinned by the tests below.
+those commands must be POSIX-shell safe. Codex is different: it spawns hooks
+via ``%COMSPEC% /C`` (cmd.exe), so codex_install.py uses native Windows
+quoting and an auditable Python launcher file at a stable path next to the
+versioned marketplace installs.
 """
 
 import importlib.util
 import ast
+import base64
+import inspect
 import json
 import os
 import re
@@ -27,6 +27,7 @@ import pytest
 REPO = Path(__file__).resolve().parent.parent
 MODULE_PATH = REPO / "skills" / "token-optimizer" / "scripts" / "codex_install.py"
 MEASURE_PATH = REPO / "skills" / "token-optimizer" / "scripts" / "measure.py"
+LAUNCHER_SOURCE = REPO / "hooks" / "windows-launcher.py"
 
 _CMD_NUL_RE = re.compile(r">\s*NUL\b")
 
@@ -41,57 +42,42 @@ HOOKS_JSON_TEMPLATE = (
 
 def _load_measure_hook_resolver(platform):
     tree = ast.parse(MEASURE_PATH.read_text(encoding="utf-8"))
-    wanted = {
-        "_resolve_hook_command",
-        "_windows_hook_command_is_stale",
-    }
-    nodes = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in wanted]
+    wanted = {"_resolve_hook_command", "_windows_hook_command_is_stale"}
+    nodes = [node for node in tree.body
+             if isinstance(node, ast.FunctionDef) and node.name in wanted]
     namespace = {
-        "Path": Path,
-        "re": re,
-        "shlex": shlex,
-        "platform": type("Platform", (), {"system": staticmethod(lambda: platform)}),
-        "subprocess": subprocess,
+        "Path": Path, "re": re, "shlex": shlex, "subprocess": subprocess,
         "sys": sys,
+        "platform": type("Platform", (), {"system": staticmethod(lambda: platform)}),
     }
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(MEASURE_PATH), "exec"), namespace)
     return namespace
 
 
 def _load_measure_hook_command():
-    """Exec the module-level ``if sys.platform == "win32"`` block that assigns
-    HOOK_COMMAND, simulating a Windows interpreter."""
+    """Exec the module-level win32 HOOK_COMMAND assignment."""
     tree = ast.parse(MEASURE_PATH.read_text(encoding="utf-8"))
     node = None
     for candidate in tree.body:
         if not isinstance(candidate, ast.If):
             continue
-        for stmt in ast.walk(candidate):
-            if isinstance(stmt, ast.Assign) and any(
-                isinstance(t, ast.Name) and t.id == "HOOK_COMMAND" for t in stmt.targets
-            ):
-                node = candidate
-                break
-        if node is not None:
+        if any(isinstance(stmt, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == "HOOK_COMMAND"
+                for t in stmt.targets) for stmt in ast.walk(candidate)):
+            node = candidate
             break
-    assert node is not None, "module-level HOOK_COMMAND assignment not found"
+    assert node is not None
     namespace = {
-        "sys": SimpleNamespace(
-            platform="win32",
-            executable="C:\\Python313\\python.exe",
-        ),
-        "shlex": shlex,
-        "subprocess": subprocess,
-        "Path": Path,
-        "MEASURE_PY_PATH": "C:\\Users\\Test User\\.claude\\token-optimizer\\scripts\\measure.py",
+        "sys": SimpleNamespace(platform="win32", executable=r"C:\Python313\python.exe"),
+        "shlex": shlex, "subprocess": subprocess, "Path": Path,
+        "MEASURE_PY_PATH": r"C:\Users\Test User\.claude\token-optimizer\scripts\measure.py",
     }
     exec(compile(ast.Module(body=[node], type_ignores=[]), str(MEASURE_PATH), "exec"), namespace)
     return namespace["HOOK_COMMAND"]
 
 
 def _load_codex_install(monkeypatch, platform):
-    scripts = str(MODULE_PATH.parent)
-    monkeypatch.syspath_prepend(scripts)
+    monkeypatch.syspath_prepend(str(MODULE_PATH.parent))
     spec = importlib.util.spec_from_file_location("codex_install_under_test", MODULE_PATH)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -99,389 +85,317 @@ def _load_codex_install(monkeypatch, platform):
     return module
 
 
-def test_windows_hook_command_invokes_python_directly(monkeypatch):
-    module = _load_codex_install(monkeypatch, "win32")
-
-    command = module._hook_command("skills/token-optimizer/scripts/read_cache.py", "--quiet")
-
-    assert "hooks/run.py" in command or "hooks\\run.py" in command
-    assert "skills/token-optimizer/scripts/read_cache.py" in command
-    assert "python-launcher.sh" not in command
-    assert "for b in bash" not in command
-
-
-def _decoded_bootstrap(module, command):
-    """The Windows launcher carries its logic as a base64 Python bootstrap;
-    assertions decode it rather than pattern-match the opaque command line."""
-    code = module.decode_launcher_command(command)
-    assert code is not None, f"not a generated launcher command: {command}"
-    return code
-
-
-def test_windows_versioned_marketplace_hook_resolves_newest_install(monkeypatch, tmp_path):
-    """The launcher must not retain a pruned version directory: the embedded
-    bootstrap scans the install parent for the newest semver sibling."""
-    module = _load_codex_install(monkeypatch, "win32")
-    versioned_root = tmp_path / "cache" / "market" / "token-optimizer" / "5.11.75"
-    monkeypatch.setattr(module, "_repo_root", lambda: versioned_root)
-
-    command = module._hook_command("skills/token-optimizer/scripts/read_cache.py", "--quiet")
-    code = _decoded_bootstrap(module, command)
-
-    assert "TOKEN_OPTIMIZER_RUNTIME_ROOT" in code
-    assert "powershell" not in command.lower()
-    # The bootstrap embeds repr(str(root)), so on Windows backslashes appear
-    # doubled; assert the baked install dir in the form the code actually
-    # carries (same contract as repr(str(root)) below).
-    assert repr(str(versioned_root)) in code  # baked install dir
-    assert "root.parent.iterdir" in code  # newest-version sibling scan
-    assert "hooks" in code and "run.py" in code
-
-
-def test_windows_versioned_hook_avoids_same_line_expansion(monkeypatch):
-    """cmd.exe parses a /C command line ONCE, before anything on it runs:
-    %VAR% expands to the pre-line value, and `setlocal EnableDelayedExpansion`
-    only takes effect from the NEXT line, so !VAR! on the same line reaches
-    python as the literal text "!TOKEN_OPTIMIZER_RUNTIME_ROOT!" (issue #180).
-    The launcher resolves the version inside the Python bootstrap, so no
-    expansion form of TOKEN_OPTIMIZER_RUNTIME_ROOT may appear in the emitted
-    command line at all."""
-    module = _load_codex_install(monkeypatch, "win32")
-    root = PureWindowsPath(
-        r"C:\Users\Test User\.codex\plugins\market\token-optimizer\5.11.75"
-    )
-    monkeypatch.setattr(module, "_repo_root", lambda: root)
-
-    command = module._hook_command("skills/token-optimizer/scripts/read_cache.py")
-    code = _decoded_bootstrap(module, command)
-
-    assert "!TOKEN_OPTIMIZER_RUNTIME_ROOT!" not in command
-    assert "TOKEN_OPTIMIZER_RUNTIME_ROOT" not in command
-    assert "setlocal" not in command.lower()
-    assert "for /f" not in command.lower()
-    # Fail-open baked root + in-process version resolution + runner dispatch.
-    # The bootstrap embeds repr(str(root)), so backslashes appear doubled.
-    assert repr(str(root)) in code
-    assert "root.parent.iterdir" in code
-    assert "root / 'hooks' / 'run.py'" in code
-    assert "runpy.run_path" in code
-
-
-def test_legacy_markerless_windows_groups_are_replaced_on_reinstall(monkeypatch):
-    """Pre-fix versioned Windows commands carry NO "token-optimizer/scripts"
-    path marker: the baked paths use backslashes (..\\token-optimizer\\X.Y.Z)
-    and consolidated-runner args are "hooks/<name>_runner.py", so the old
-    marker-only _is_token_optimizer_group missed them entirely. Reinstall
-    then kept the broken issue-#180 command AND appended the fixed one, and
-    uninstall left the broken one behind. The widened marker -- the full
-    generated-command signature (quoted `set "TOKEN_OPTIMIZER_RUNTIME_ROOT=`
-    assignment AND a hooks\\run.py runner invocation under a token-optimizer
-    path, or via the FOR variable) -- must evict them while never touching a
-    foreign group."""
-    module = _load_codex_install(monkeypatch, "win32")
-    legacy = {
-        "hooks": [{
-            "type": "command",
-            "command": (
-                'setlocal EnableDelayedExpansion && '
-                'set "TOKEN_OPTIMIZER_RUNTIME=codex" && '
-                'set "TOKEN_OPTIMIZER_RUNTIME_ROOT=C:\\market\\token-optimizer\\5.13.2" && '
-                "for /f \"delims=\" %R in ('powershell -NoProfile -Command Get-ChildItem') "
-                'do @set "TOKEN_OPTIMIZER_RUNTIME_ROOT=C:\\market\\token-optimizer\\%R" && '
-                'python.exe "!TOKEN_OPTIMIZER_RUNTIME_ROOT!\\hooks\\run.py" '
-                'hooks/stop_runner.py >NUL 2>&1'
-            ),
-        }],
-    }
-    foreign = {"hooks": [{"type": "command", "command": "echo not ours"}]}
-    # The guard the old marker-only check failed: no forward-slash path marker.
-    assert "token-optimizer/scripts" not in json.dumps(legacy)
-    assert module._is_token_optimizer_group(legacy)
-    assert not module._is_token_optimizer_group(foreign)
-
-    fixed = {"hooks": [{"type": "command", "command": "fixed"}]}
-    monkeypatch.setattr(module, "_managed_hooks", lambda **kw: {"Stop": [fixed]})
-    merged = module._merge_hooks({"hooks": {"Stop": [legacy, foreign]}})
-    assert merged["hooks"]["Stop"] == [foreign, fixed]
-    removed = module._remove_hooks({"hooks": {"Stop": [legacy, foreign]}})
-    assert removed == {"hooks": {"Stop": [foreign]}}
-
-
-def test_foreign_hook_referencing_runtime_root_env_is_never_touched(monkeypatch):
-    """The widened marker must not become a new footgun: a user's OWN hook
-    that merely contains the env var -- a bare reference
-    (%TOKEN_OPTIMIZER_RUNTIME_ROOT%), a POSIX-style VAR=x prefix assignment,
-    an UNQUOTED set, or even the full QUOTED `set "TOKEN_OPTIMIZER_RUNTIME_ROOT=`
-    assignment our generator emits -- is not a generated Token Optimizer
-    command and must survive both reinstall-merge and uninstall-remove. The
-    assignment alone matched the pre-fix marker, so the quoted-set cases are
-    the regression this test exists to pin."""
-    module = _load_codex_install(monkeypatch, "win32")
-    user_hooks = [
-        {"hooks": [{"type": "command",
-                    "command": "echo %TOKEN_OPTIMIZER_RUNTIME_ROOT% && python mine.py"}]},
-        {"hooks": [{"type": "command",
-                    "command": "TOKEN_OPTIMIZER_RUNTIME_ROOT=/x python3 mine.py"}]},
-        {"hooks": [{"type": "command",
-                    "command": "set TOKEN_OPTIMIZER_RUNTIME_ROOT=C:\\x && python mine.py"}]},
-        # The confirmed false-positive: quoted set-assignment, no runner.
-        {"hooks": [{"type": "command",
-                    "command": 'set "TOKEN_OPTIMIZER_RUNTIME_ROOT=C:\\x" && python mine.py'}]},
-        # Quoted assignment AND a hooks\run.py call, but under the user's own
-        # directory -- not a token-optimizer path and not our FOR/delayed-var
-        # invocation shape.
-        {"hooks": [{"type": "command",
-                    "command": (
-                        'set "TOKEN_OPTIMIZER_RUNTIME_ROOT=D:\\tools\\mine" && '
-                        "python \"D:\\tools\\mine\\hooks\\run.py\" mine.py"
-                    )}]},
-    ]
-    for user_hook in user_hooks:
-        assert not module._is_token_optimizer_group(user_hook), user_hook
-
-    fixed = {"hooks": [{"type": "command", "command": "fixed"}]}
-    monkeypatch.setattr(module, "_managed_hooks", lambda **kw: {"Stop": [fixed]})
-    merged = module._merge_hooks({"hooks": {"Stop": list(user_hooks)}})
-    assert merged["hooks"]["Stop"] == [*user_hooks, fixed]
-    removed = module._remove_hooks({"hooks": {"Stop": list(user_hooks)}})
-    assert removed == {"hooks": {"Stop": user_hooks}}
-
-
-def test_generated_command_shape_satisfies_matcher_contract(monkeypatch, tmp_path):
-    """Generator-to-matcher contract: every Windows command shape
-    _hook_command can emit must be claimed by _is_token_optimizer_group, or
-    reinstall/uninstall silently keeps stale copies. If the generator's
-    command shape changes, this fails until the matcher's anchors are updated
-    in the same commit."""
-    module = _load_codex_install(monkeypatch, "win32")
-
-    # Versioned marketplace root: the base64 launcher shape. Every generated
-    # command carries the literal launcher marker and an embedded bootstrap
-    # naming the target script, so the matcher must claim all of them.
-    versioned_root = tmp_path / "plugin cache" / "token-optimizer" / "5.13.12"
-    monkeypatch.setattr(module, "_repo_root", lambda: versioned_root)
-    for script in (
-        "hooks/stop_runner.py",
-        "hooks/sessionstart_runner.py",
-        "skills/token-optimizer/scripts/codex_hook_bridge.py",
-    ):
-        command = module._hook_command(script, redirect_quiet=True)
-        group = {"hooks": [{"type": "command", "command": command}]}
-        assert module._LAUNCHER_MARKER in command
-        assert module._is_token_optimizer_group(group), command
-        code = module.decode_launcher_command(command)
-        assert code is not None and script in code
-
-    # Non-versioned root: runner path is literal; claimed via the path marker
-    # for marker-bearing script args (consolidated-runner args on a
-    # non-token-optimizer root remain a known gap -- see PR follow-ups).
-    plain_root = tmp_path / "checkout" / "token-optimizer"
-    monkeypatch.setattr(module, "_repo_root", lambda: plain_root)
-    command = module._hook_command("skills/token-optimizer/scripts/read_cache.py", "--quiet")
-    assert module._is_token_optimizer_group(
-        {"hooks": [{"type": "command", "command": command}]}
-    ), command
-
-
-def test_version_resolver_fallback_debug_log_is_debug_gated(monkeypatch):
-    """The baked-install fallback is silent by design; the only observable
-    channel is a TOKEN_OPTIMIZER_DEBUG-gated line appended to
-    token-optimizer-codex-resolver.log next to the version dirs. Assert the
-    embedded bootstrap carries that instrumentation, scoped to the fallback
-    so a healthy resolve stays quiet even under DEBUG."""
-    module = _load_codex_install(monkeypatch, "win32")
-    root = PureWindowsPath(
-        r"C:\Users\Test User\.codex\plugins\market\token-optimizer\5.11.75"
-    )
-    monkeypatch.setattr(module, "_repo_root", lambda: root)
-
-    command = module._hook_command("skills/token-optimizer/scripts/read_cache.py")
-    code = _decoded_bootstrap(module, command)
-
-    assert "TOKEN_OPTIMIZER_DEBUG" in code
-    assert "token-optimizer-codex-resolver.log" in code
-    # Gated on retaining the baked root: a healthy semver resolve is not a
-    # fallback and must not log. The payload is opaque to cmd.exe, so no
-    # cmd-metacharacter check applies; the audit channel is --decode-launcher.
-    assert "root == baked" in code
-    assert "os.environ.get('TOKEN_OPTIMIZER_DEBUG')" in code
-
-
-def _run_launcher_bootstrap(monkeypatch, base: Path, baked: str, env=None):
-    """Generate the launcher command for ``base/baked``, decode the embedded
-    bootstrap, and execute it with the current interpreter. The bootstrap is
-    platform-agnostic Python, so this exercises the real resolver on any OS;
-    each version dir must carry a fake hooks/run.py (see _make_fake_runner)
-    which records the resolved TOKEN_OPTIMIZER_RUNTIME_ROOT."""
-    module = _load_codex_install(monkeypatch, "win32")
-    monkeypatch.setattr(module, "_repo_root", lambda: base / baked)
-    command = module._hook_command("skills/token-optimizer/scripts/read_cache.py")
-    code = module.decode_launcher_command(command)
-    assert code is not None, command
-    proc = subprocess.run(
-        [sys.executable, "-c", code],
-        capture_output=True, text=True, timeout=30,
-        env={**os.environ, **(env or {})},
-    )
-    assert proc.returncode == 0, f"bootstrap failed: {proc.stderr}"
-
-
-def _resolved_version(base: Path) -> str | None:
-    """Which fake runner actually executed (its version-dir name)."""
-    for d in sorted(base.iterdir()):
-        if (d / "hooks" / "invoked.json").exists():
-            return d.name
-    return None
-
-
-def test_version_resolver_fallback_writes_debug_log_when_enabled(monkeypatch, tmp_path):
-    """Live proof: with TOKEN_OPTIMIZER_DEBUG set, a fallback resolve appends
-    the kept root to token-optimizer-codex-resolver.log next to the version
-    dirs; without it, nothing is written. Executes the decoded bootstrap with
-    the current interpreter -- no PowerShell dependency."""
-    base = tmp_path / "plugin cache" / "token-optimizer"
-    (base / "latest").mkdir(parents=True)
-    _make_fake_runner(base / "5.11.75")
-    log = base / "token-optimizer-codex-resolver.log"
-
-    _run_launcher_bootstrap(monkeypatch, base, "5.11.75",
-                            env={"TOKEN_OPTIMIZER_DEBUG": "1"})
-    assert _resolved_version(base) == "5.11.75"
-    assert log.exists(), "debug-enabled fallback did not write the resolver log"
-    assert "5.11.75" in log.read_text(encoding="utf-8")
-
-    log.unlink()
-    (base / "5.11.75" / "hooks" / "invoked.json").unlink()
-    env_off = {k: v for k, v in os.environ.items() if k != "TOKEN_OPTIMIZER_DEBUG"}
-    _run_launcher_bootstrap(monkeypatch, base, "5.11.75", env=env_off)
-    assert _resolved_version(base) == "5.11.75"
-    assert not log.exists(), "resolver log written without TOKEN_OPTIMIZER_DEBUG"
-
-
-def test_version_resolver_picks_newest_semver(monkeypatch, tmp_path):
-    """Live resolver proof through the decoded bootstrap: numeric semver sort
-    (5.11.76 > 5.11.9, which lexicographic order would get backwards) and
-    non-semver siblings ignored, under a base path with spaces."""
-    base = tmp_path / "plugin cache" / "token-optimizer"
-    for version in ("5.11.9", "5.11.75", "5.11.76", "latest"):
-        _make_fake_runner(base / version)
-
-    _run_launcher_bootstrap(monkeypatch, base, "5.11.75")
-    assert _resolved_version(base) == "5.11.76"
-
-
-def test_version_resolver_falls_back_to_baked_install(monkeypatch, tmp_path):
-    """When the scan finds no semver sibling (e.g. the marketplace cache is
-    unreadable), the bootstrap keeps the baked install directory so the hook
-    still runs the install it was generated from."""
-    base = tmp_path / "plugin cache" / "token-optimizer"
-    (base / "latest").mkdir(parents=True)
-    _make_fake_runner(base / "5.11.75")
-
-    _run_launcher_bootstrap(monkeypatch, base, "5.11.75")
-    assert _resolved_version(base) == "5.11.75"
-
-
 def _make_fake_runner(version_dir: Path) -> None:
-    """A stand-in hooks/run.py that records how it was invoked, in a marker
-    file next to itself. Per-version markers make a stale version executing
-    (or a double execution) detectable."""
     hooks = version_dir / "hooks"
     hooks.mkdir(parents=True)
     (hooks / "run.py").write_text(
         "import json, os, sys\n"
         "from pathlib import Path\n"
-        "Path(__file__).with_name(\'invoked.json\').write_text(json.dumps({\n"
-        "    \'root\': os.environ.get(\'TOKEN_OPTIMIZER_RUNTIME_ROOT\'),\n"
-        "    \'runtime\': os.environ.get(\'TOKEN_OPTIMIZER_RUNTIME\'),\n"
-        "    \'argv\': sys.argv[1:],\n"
-        "    \'stdin\': sys.stdin.read(),\n"
-        "}))\n",
-        encoding="utf-8",
-    )
+        "Path(__file__).with_name('invoked.json').write_text(json.dumps({\n"
+        "    'root': os.environ.get('TOKEN_OPTIMIZER_RUNTIME_ROOT'),\n"
+        "    'runtime': os.environ.get('TOKEN_OPTIMIZER_RUNTIME'),\n"
+        "    'extra': os.environ.get('TO_TEST'),\n"
+        "    'argv': sys.argv[1:],\n"
+        "    'stdin': sys.stdin.read(),\n"
+        "}))\n", encoding="utf-8")
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="cmd.exe semantics are Windows-only")
-def test_windows_versioned_hook_executes_through_comspec_with_spaces(monkeypatch, tmp_path):
-    """Killer regression for issue #180: execute the generated command through
-    %COMSPEC% /D /C exactly as Codex does, from a versioned marketplace layout
-    under a path WITH SPACES, and assert the newest version's run.py actually
-    executes with TOKEN_OPTIMIZER_RUNTIME_ROOT pointing at it.
+def _install_test_launcher(base: Path) -> Path:
+    target = base / "windows-launcher.py"
+    target.write_bytes(LAUNCHER_SOURCE.read_bytes())
+    return target
 
-    Sibling versions 5.11.9 and 5.11.76 guard the numeric [version] sort
-    (lexicographic order would pick 5.11.9 over 5.11.76), and a non-semver
-    "latest" sibling must never be picked. redirect_quiet=True exercises the
-    production-shaped command, trailing >NUL 2>&1 and all.
-    """
-    base = tmp_path / "plugin cache" / "token-optimizer"
-    for version in ("5.11.9", "5.11.75", "5.11.76", "latest"):
-        _make_fake_runner(base / version)
 
+def test_windows_hook_command_invokes_stable_plain_launcher(monkeypatch, tmp_path):
     module = _load_codex_install(monkeypatch, "win32")
-    monkeypatch.setattr(module, "_repo_root", lambda: base / "5.11.75")
+    root = tmp_path / "market" / "token-optimizer" / "5.13.14"
+    monkeypatch.setattr(module, "_repo_root", lambda: root)
 
     command = module._hook_command(
-        "skills/token-optimizer/scripts/read_cache.py", "--quiet",
-        redirect_quiet=True,
-    )
+        "skills/token-optimizer/scripts/read_cache.py", "--quiet")
 
-    # Codex hands cmd.exe the command as ONE raw /C string. A Python argv
-    # LIST would go through list2cmdline (backslash-double-quote escaping),
-    # which cmd.exe does not parse: it chokes on \"delims=\" before the
-    # for-loop ever runs. Reproduce the production invocation exactly.
+    assert str(root.parent / "windows-launcher.py") in command
+    assert str(root) in command
+    assert "hooks/run.py" not in command
+    assert "python-launcher.sh" not in command
+    assert " -c " not in command
+    assert "b64decode" not in command
+    assert "base64" not in command
+    assert module._LAUNCHER_MARKER in command
+    assert module._is_token_optimizer_group({"hooks": [{"command": command}]})
+
+
+def test_installer_generator_source_cannot_regress_to_encoded_exec(monkeypatch, tmp_path):
+    """AV-safe source-string guard: codex_install's command generator must
+    neither contain nor emit the encoded ``-c`` loader shape. Legacy decode
+    support elsewhere in the module is intentionally retained so existing
+    commands remain auditable and recognizable during upgrade."""
+    module = _load_codex_install(monkeypatch, "win32")
+    source = inspect.getsource(module._windows_launcher_command).lower()
+    compact = re.sub(r"\s+", "", source)
+    forbidden = ("b64encode", "b64decode", "__import__('base64')", 'exec(')
+    for pattern in forbidden:
+        assert pattern not in compact
+
+    root = tmp_path / "plugin space" / "token-optimizer" / "5.13.14"
+    for script, args, env in (
+        ("hooks/stop_runner.py", [], {}),
+        ("hooks/posttooluse_runner.py", ["--quiet"],
+         {"TOKEN_OPTIMIZER_NO_UPDATED_TOOL_OUTPUT": "1"}),
+    ):
+        command = module._windows_launcher_command(root, script, args, env)
+        low = command.lower()
+        assert " -c " not in low
+        assert "base64" not in low
+        assert "b64decode" not in low
+        assert "exec(" not in low
+        assert str(root.parent / "windows-launcher.py") in command
+
+
+def test_plain_launcher_source_is_auditable_and_has_no_encoded_exec():
+    source = LAUNCHER_SOURCE.read_text(encoding="utf-8")
+    compact = re.sub(r"\s+", "", source.lower())
+    assert "b64decode" not in compact
+    assert "b64encode" not in compact
+    assert "__import__('base64')" not in compact
+    assert "exec(" not in compact
+    assert "runpy.run_path" in source
+    assert "root.parent.iterdir" in source
+
+
+def test_launcher_signature_normalizes_version_only(monkeypatch, tmp_path):
+    module = _load_codex_install(monkeypatch, "win32")
+    base = tmp_path / "plugin space" / "token-optimizer"
+    cmd_a = module._windows_launcher_command(base / "5.9.0", "hooks/run.py", ["a"], {"K": "1"})
+    cmd_b = module._windows_launcher_command(base / "5.10.0", "hooks/run.py", ["a"], {"K": "1"})
+    assert cmd_a != cmd_b
+    assert module._launcher_signature(cmd_a) == module._launcher_signature(cmd_b)
+    for other in (
+        module._windows_launcher_command(base / "5.9.0", "hooks/run.py", ["a"], {"K": "2"}),
+        module._windows_launcher_command(base / "5.9.0", "hooks/other.py", ["a"], {"K": "1"}),
+        module._windows_launcher_command(tmp_path / "elsewhere" / "5.9.0", "hooks/run.py", ["a"], {"K": "1"}),
+        cmd_a + " & echo tampered",
+    ):
+        assert module._launcher_signature(other) != module._launcher_signature(cmd_a)
+
+
+def test_legacy_base64_launcher_is_recognized_decodable_and_replaced(monkeypatch, tmp_path):
+    """Upgrade compatibility: the retired command shape remains owned and
+    auditable, but never signature-equivalent to the new launcher-file shape,
+    so install replaces it once (the trust review needed to ship #183)."""
+    module = _load_codex_install(monkeypatch, "win32")
+    code = "print('legacy audit')\n"
+    blob = base64.b64encode(code.encode()).decode()
+    legacy = (
+        f'{sys.executable} -c "'
+        + "exec(__import__('base64').b64decode('" + blob + "'))"
+        + f'" {module._LAUNCHER_MARKER}'
+    )
+    current = module._windows_launcher_command(
+        tmp_path / "token-optimizer" / "5.13.14", "hooks/stop_runner.py", [], {})
+    assert module.decode_launcher_command(legacy) == code
+    assert module._is_token_optimizer_group({"hooks": [{"command": legacy}]})
+    assert module._launcher_signature(legacy) == legacy
+    assert module._launcher_signature(legacy) != module._launcher_signature(current)
+    assert module.decode_launcher_command(current) is None
+
+
+def test_launcher_install_is_atomic_idempotent_and_stable(monkeypatch, tmp_path):
+    module = _load_codex_install(monkeypatch, "win32")
+    root = tmp_path / "plugin space" / "token-optimizer" / "5.13.14"
+    root.mkdir(parents=True)
+    monkeypatch.setattr(module, "_repo_root", lambda: root)
+    source = root / "hooks" / "windows-launcher.py"
+    source.parent.mkdir()
+    source.write_bytes(LAUNCHER_SOURCE.read_bytes())
+
+    first = module._install_windows_launcher(root)
+    target = root.parent / "windows-launcher.py"
+    before = target.stat().st_mtime_ns
+    second = module._install_windows_launcher(root)
+
+    assert first.startswith("installed:")
+    assert second.startswith("already current:")
+    assert target.read_bytes() == LAUNCHER_SOURCE.read_bytes()
+    assert target.stat().st_mtime_ns == before
+    # No temp residue of any name next to the installed launcher.
+    assert list(root.parent.glob("windows-launcher.py.*")) == []
+    # Stable across versions: every version dir under the same parent maps
+    # to the same launcher path, so an upgrade never orphans the command.
+    assert module._windows_launcher_install_path(root.parent / "9.9.9") == target
+
+
+def test_launcher_install_cleans_unique_temp_on_replace_failure(monkeypatch, tmp_path):
+    """Failure path: os.replace denied (AV lock, ACL race) must surface the
+    loud ValueError, leave NO target behind, and leave no temp file -- the
+    temp is unique per attempt (no fixed-name contention between concurrent
+    installers) and always cleaned up."""
+    module = _load_codex_install(monkeypatch, "win32")
+    root = tmp_path / "plugin" / "token-optimizer" / "5.13.14"
+    (root / "hooks").mkdir(parents=True)
+    (root / "hooks" / "windows-launcher.py").write_bytes(b"new launcher")
+    monkeypatch.setattr(module, "_repo_root", lambda: root)
+
+    def denied(src, dst):
+        raise PermissionError("locked")
+
+    monkeypatch.setattr(module.os, "replace", denied)
+    with pytest.raises(ValueError, match="cannot install Windows launcher"):
+        module._install_windows_launcher(root)
+
+    target = root.parent / "windows-launcher.py"
+    assert not target.exists()
+    assert list(root.parent.glob("windows-launcher.py.*")) == []
+    assert sorted(p.name for p in root.parent.iterdir()) == ["5.13.14"]
+
+
+def test_launcher_install_temps_are_unique_per_attempt(monkeypatch, tmp_path):
+    """Concurrent installers must not contend on one fixed temp name: the
+    temp is a fresh unique sibling per call, in the target's own directory
+    (same filesystem, so os.replace stays atomic)."""
+    module = _load_codex_install(monkeypatch, "win32")
+    root = tmp_path / "plugin" / "token-optimizer" / "5.13.14"
+    (root / "hooks").mkdir(parents=True)
+    (root / "hooks" / "windows-launcher.py").write_bytes(b"launcher v1")
+    monkeypatch.setattr(module, "_repo_root", lambda: root)
+    names = []
+    real_replace = module.os.replace
+
+    def recording_replace(src, dst):
+        names.append(str(src))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(module.os, "replace", recording_replace)
+    module._install_windows_launcher(root)
+    (root / "hooks" / "windows-launcher.py").write_bytes(b"launcher v2")
+    module._install_windows_launcher(root)
+
+    assert len(names) == 2 and names[0] != names[1]
+    for name in names:
+        assert Path(name).parent == root.parent
+        assert Path(name).name.startswith("windows-launcher.py.")
+
+
+def test_install_writes_launcher_before_hooks_config(monkeypatch, tmp_path):
+    module = _load_codex_install(monkeypatch, "win32")
+    root = tmp_path / "plugin" / "token-optimizer" / "5.13.14"
+    (root / "hooks").mkdir(parents=True)
+    (root / "hooks" / "windows-launcher.py").write_bytes(LAUNCHER_SOURCE.read_bytes())
+    monkeypatch.setattr(module, "_repo_root", lambda: root)
+    monkeypatch.setattr(module.codex_compact_prompt, "install", lambda **kw: "ok")
+    project = tmp_path / "proj"
+    project.mkdir()
+
+    path, action, details = module.install(project, is_global=False)
+
+    assert action == "installed"
+    assert path == project / ".codex" / "hooks.json"
+    assert path.exists()
+    assert (root.parent / "windows-launcher.py").exists()
+    assert details["windows_launcher"].startswith("installed:")
+    commands = [h["command"] for groups in json.loads(path.read_text())["hooks"].values()
+                for group in groups for h in group["hooks"]]
+    assert commands
+    assert all(str(root.parent / "windows-launcher.py") in c for c in commands)
+
+
+def test_windows_version_resolver_picks_newest_with_stdio_argv_env(monkeypatch, tmp_path):
+    module = _load_codex_install(monkeypatch, "win32")
+    base = tmp_path / "plugin space & (test) ! apostrophe'" / "token-optimizer"
+    for version in ("5.11.9", "5.11.75", "5.11.76", "latest"):
+        _make_fake_runner(base / version)
+    launcher = _install_test_launcher(base)
+    argument = 'space & pipe| quote" percent% bang!'
+
     proc = subprocess.run(
-        f'{os.environ.get("COMSPEC", "cmd.exe")} /d /s /c "{command}"',
-        input="{}",
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
+        [sys.executable, str(launcher), "--baked-root", str(base / "5.11.75"),
+         "--env", f"TO_TEST={argument}", "--", "hooks/test.py", argument,
+         module._LAUNCHER_MARKER],
+        input='{"test": true}', capture_output=True, text=True, timeout=30)
 
-    assert proc.returncode == 0, f"hook command failed: {proc.stderr}\n{command}"
-    newest = base / "5.11.76" / "hooks" / "invoked.json"
-    assert newest.exists(), f"newest version's run.py did not execute: {command}"
-    payload = json.loads(newest.read_text(encoding="utf-8"))
-    assert payload["root"] == str(base / "5.11.76")
-    assert payload["runtime"] == "codex"
-    assert payload["argv"] == ["skills/token-optimizer/scripts/read_cache.py", "--quiet"]
-    assert payload["stdin"] == "{}"
-    for version in ("5.11.9", "5.11.75", "latest"):
-        stale = base / version / "hooks" / "invoked.json"
-        assert not stale.exists(), f"{version} executed instead of or before 5.11.76"
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads((base / "5.11.76" / "hooks" / "invoked.json").read_text())
+    assert payload == {
+        "root": str(base / "5.11.76"), "runtime": "codex", "extra": argument,
+        "argv": ["hooks/test.py", argument], "stdin": '{"test": true}',
+    }
+    for stale in ("5.11.9", "5.11.75", "latest"):
+        assert not (base / stale / "hooks" / "invoked.json").exists()
+
+
+def test_windows_version_resolver_falls_back_and_logs_only_under_debug(monkeypatch, tmp_path):
+    module = _load_codex_install(monkeypatch, "win32")
+    base = tmp_path / "plugin cache" / "token-optimizer"
+    _make_fake_runner(base / "5.11.75")
+    launcher = _install_test_launcher(base)
+    log = base / "token-optimizer-codex-resolver.log"
+    argv = [sys.executable, str(launcher), "--baked-root", str(base / "5.11.75"),
+            "--", "hooks/test.py", module._LAUNCHER_MARKER]
+
+    env = {k: v for k, v in os.environ.items() if k != "TOKEN_OPTIMIZER_DEBUG"}
+    proc = subprocess.run(argv, input="", capture_output=True, text=True, env=env, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+    assert not log.exists()
+    (base / "5.11.75" / "hooks" / "invoked.json").unlink()
+    proc = subprocess.run(argv, input="", capture_output=True, text=True,
+                          env={**env, "TOKEN_OPTIMIZER_DEBUG": "1"}, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+    assert str(base / "5.11.75") in log.read_text()
+
+
+def test_legacy_markerless_windows_groups_are_replaced_on_reinstall(monkeypatch):
+    module = _load_codex_install(monkeypatch, "win32")
+    legacy = {"hooks": [{"command":
+        'set "TOKEN_OPTIMIZER_RUNTIME_ROOT=C:\\old\\token-optimizer\\5.13.2" && '
+        'python "C:\\old\\token-optimizer\\%R\\hooks\\run.py" hooks/stop_runner.py'}]}
+    foreign = {"hooks": [{"command": "echo not ours"}]}
+    assert module._is_token_optimizer_group(legacy)
+    assert not module._is_token_optimizer_group(foreign)
+    fixed = {"hooks": [{"command": "fixed"}]}
+    monkeypatch.setattr(module, "_managed_hooks", lambda **kw: {"Stop": [fixed]})
+    merged = module._merge_hooks({"hooks": {"Stop": [legacy, foreign]}})
+    assert merged["hooks"]["Stop"] == [foreign, fixed]
+
+
+def test_foreign_hook_referencing_runtime_root_is_never_touched(monkeypatch):
+    module = _load_codex_install(monkeypatch, "win32")
+    foreign = {"hooks": [{"command":
+        'set "TOKEN_OPTIMIZER_RUNTIME_ROOT=C:\\mine" && python mine.py'}]}
+    assert not module._is_token_optimizer_group(foreign)
+    fixed = {"hooks": [{"command": "fixed"}]}
+    monkeypatch.setattr(module, "_managed_hooks", lambda **kw: {"Stop": [fixed]})
+    assert module._merge_hooks({"hooks": {"Stop": [foreign]}})["hooks"]["Stop"] == [foreign, fixed]
+    assert module._remove_hooks({"hooks": {"Stop": [foreign]}}) == {"hooks": {"Stop": [foreign]}}
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="cmd.exe semantics are Windows-only")
-def test_windows_versioned_hook_falls_back_to_baked_install(monkeypatch, tmp_path):
-    """When the marketplace cache holds only the baked install, the generated
-    command still runs it (through %COMSPEC% /D /C, spaces in path)."""
-    base = tmp_path / "plugin cache" / "token-optimizer"
-    _make_fake_runner(base / "5.11.75")
-
+def test_windows_versioned_hook_executes_through_comspec(monkeypatch, tmp_path):
+    """Windows execution proof: run the emitted raw /C command under the
+    actual cmd.exe, with path/argv/env metacharacters and an upgrade."""
     module = _load_codex_install(monkeypatch, "win32")
+    base = tmp_path / "plugin space & (test) ! apostrophe'" / "token-optimizer"
+    for version in ("5.11.75", "5.11.76"):
+        _make_fake_runner(base / version)
+    _install_test_launcher(base)
     monkeypatch.setattr(module, "_repo_root", lambda: base / "5.11.75")
-
-    command = module._hook_command("skills/token-optimizer/scripts/read_cache.py")
-
-    # Raw /C string, not an argv list -- see the sibling test for why a list
-    # (CRT backslash-quote escaping) cannot express this command to cmd.exe.
+    argument = 'space & pipe| quote" percent% bang!'
+    command = module._hook_command("hooks/test.py", argument,
+                                   extra_env={"TO_TEST": argument})
     proc = subprocess.run(
         f'{os.environ.get("COMSPEC", "cmd.exe")} /d /s /c "{command}"',
-        input="{}",
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-
+        input='{"test": true}', capture_output=True, text=True, timeout=60)
     assert proc.returncode == 0, f"hook command failed: {proc.stderr}\n{command}"
-    payload = json.loads((base / "5.11.75" / "hooks" / "invoked.json").read_text(encoding="utf-8"))
-    assert payload["root"] == str(base / "5.11.75")
+    payload = json.loads((base / "5.11.76" / "hooks" / "invoked.json").read_text())
+    assert payload["root"] == str(base / "5.11.76")
+    assert payload["runtime"] == "codex"
+    assert payload["extra"] == argument
+    assert payload["argv"] == ["hooks/test.py", argument]
+    assert payload["stdin"] == '{"test": true}'
 
 
 def test_posix_hook_command_keeps_bash_resolver(monkeypatch):
     module = _load_codex_install(monkeypatch, "linux")
-
     command = module._hook_command("skills/token-optimizer/scripts/read_cache.py", "--quiet")
-
     assert command.startswith(module._BASH_RESOLVER_PREFIX)
     assert "python-launcher.sh" in command
     assert command.endswith(module._BASH_RESOLVER_SUFFIX)

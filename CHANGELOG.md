@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+- Fix: the Hermes context-fill nudge measured the session-CUMULATIVE input tally instead of the live
+  prompt, so it reported a context emergency that did not exist. Every host re-sends the whole
+  conversation on each turn, so that sum climbs past the model window regardless of real occupancy:
+  on a 129-call Hermes session the cumulative figure reached 1,285,803 against a 1,000,000 window
+  ("Context ~100% full ... Grade: F", the percentage being capped at 100) while Hermes itself
+  reported 278,545 / 1,000,000 = 28% for the same session. The nudge now uses the prompt the last
+  call actually sent (fresh + cached prompt tokens, since cached tokens occupy the same window), and
+  says so in the message ("last request prompt ~N tokens vs model window M"). The cumulative tally
+  is unchanged for cost and usage reporting. Regression tests:
+  `tests/test_hermes_context_fill_nudge.py` (3 of the 5 cases fail on the previous code).
+
 ## [5.13.14] - 2026-09-14
 
 - Fix: the Codex log-index now self-heals on Windows instead of crashing on a locked or corrupt database. The open path closes the broken connection before rebuilding (Windows refuses to unlink an open file, so the rebuild previously reconnected to the same corrupt DB), retries each unlink briefly to ride out transient share locks, and no longer misdiagnoses a merely-locked database as corruption and deletes it out from under a live process. Transient lock contention (concurrent first-opens racing journal-mode/schema setup, a writer mid-commit, or a lock-upgrade deadlock that returns BUSY without consulting the busy handler) now retries on a deadline at both the connect and write-transaction stages instead of surfacing "database is locked" to callers -- follow-up hardening on #175.

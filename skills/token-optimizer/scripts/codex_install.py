@@ -62,6 +62,24 @@ _LAUNCHER_B64_RE = re.compile(r"b64decode\('([A-Za-z0-9+/=]+)'\)")
 _SIGNATURE_VERSION = "0.0.0"
 
 
+def _cmd_quote(token: str) -> str:
+    """Quote a token so it survives BOTH cmd.exe's /C metachar parse and the
+    MSVCRT argv parser the Python runner is launched through.
+
+    list2cmdline gives MSVCRT-correct quoting but only wraps a token that
+    contains whitespace, so a space-free install path carrying a cmd
+    metacharacter (& | < > ^) reaches cmd bare and is parsed as a command
+    separator (the base64 form never had this: paths lived inside the encoded
+    payload). Force the wrap. Our values never contain a literal " (illegal in
+    a Windows path; the generated argv/env values are fixed and quote-free) and
+    never end in a backslash, so a plain double-quote wrap stays MSVCRT-safe.
+    A literal % still expands inside quotes -- a documented, install-path-only
+    limitation, unchanged here.
+    """
+    quoted = subprocess.list2cmdline([token])
+    return quoted if quoted.startswith('"') else f'"{quoted}"'
+
+
 def _windows_launcher_command(root: Path, script: str, args, extra_env: dict) -> str:
     """Build the baked Windows hook command for a versioned marketplace root.
 
@@ -71,25 +89,29 @@ def _windows_launcher_command(root: Path, script: str, args, extra_env: dict) ->
     .../token-optimizer/<X.Y.Z>/ on upgrade) by quoted path -- issue #183:
     the retired base64 `python -c` exec-bootstrap tripped
     generic-loader antivirus signatures on the literal encoded-exec
-    string. Paths and arguments are plainly list2cmdline-quoted argv, so
-    cmd.exe metacharacters need no encoding and the /C single-parse problem
-    (issue #180) needs no expansion form at all. The launcher resolves the
-    newest semver sibling of the baked root at runtime; --baked-root is the
-    fail-open fallback only. The trailing marker keeps the command
+    string. Every value token is force-quoted (see _cmd_quote): the runner
+    path and --baked-root can contain cmd.exe metacharacters (& | < > ^)
+    with no surrounding space, which list2cmdline alone leaves bare and cmd
+    then parses as command separators -- the base64 form hid them inside the
+    payload, so this restores that safety. Quoting keeps the /C single-parse
+    problem (issue #180) solved with no expansion form. The launcher resolves
+    the newest semver sibling of the baked root at runtime; --baked-root is
+    the fail-open fallback only. The trailing marker keeps the command
     recognizable to ownership checks; the launcher strips it before
     dispatching, so the runner's sys.argv stays exactly [run.py, script,
     *args].
     """
-    argv = [
-        sys.executable,
-        str(root.parent / _LAUNCHER_FILENAME),
+    parts = [
+        _cmd_quote(sys.executable),
+        _cmd_quote(str(root.parent / _LAUNCHER_FILENAME)),
         "--baked-root",
-        str(root),
+        _cmd_quote(str(root)),
     ]
     for key, value in extra_env.items():
-        argv += ["--env", f"{key}={value}"]
-    argv += ["--", script, *list(args), _LAUNCHER_MARKER]
-    return subprocess.list2cmdline(argv)
+        parts += ["--env", _cmd_quote(f"{key}={value}")]
+    parts += ["--", _cmd_quote(script), *(_cmd_quote(a) for a in args),
+              _cmd_quote(_LAUNCHER_MARKER)]
+    return " ".join(parts)
 
 
 def decode_launcher_command(command: str) -> str | None:

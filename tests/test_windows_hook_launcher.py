@@ -401,6 +401,31 @@ def test_windows_versioned_hook_executes_through_comspec(monkeypatch, tmp_path):
     assert payload["stdin"] == '{"test": true}'
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="cmd.exe semantics are Windows-only")
+def test_windows_hook_executes_with_spaceless_metachar_path(monkeypatch, tmp_path):
+    """Regression: an install path carrying a cmd metacharacter (& ( ) ^) but NO
+    space must still run. list2cmdline only wraps tokens that contain whitespace,
+    so a space-free metachar path was emitted bare and cmd parsed the `&` as a
+    command separator ('is not recognized as an internal or external command').
+    _cmd_quote force-quotes every value token; cmd treats these as literal inside
+    quotes. Distinct from the spacey-path proof above, which quotes by accident of
+    the space."""
+    module = _load_codex_install(monkeypatch, "win32")
+    base = tmp_path / "plugin&tools(x)^y" / "token-optimizer"  # legal, no spaces
+    for version in ("5.11.75", "5.11.76"):
+        _make_fake_runner(base / version)
+    _install_test_launcher(base)
+    monkeypatch.setattr(module, "_repo_root", lambda: base / "5.11.75")
+    command = module._hook_command("hooks/test.py", "--flag")
+    proc = subprocess.run(
+        f'{os.environ.get("COMSPEC", "cmd.exe")} /d /s /c "{command}"',
+        input='{"ok": true}', capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, f"hook command failed: {proc.stderr}\n{command}"
+    payload = json.loads((base / "5.11.76" / "hooks" / "invoked.json").read_text())
+    assert payload["root"] == str(base / "5.11.76")
+    assert payload["argv"] == ["hooks/test.py", "--flag"]
+
+
 def test_posix_hook_command_keeps_bash_resolver(monkeypatch):
     module = _load_codex_install(monkeypatch, "linux")
     command = module._hook_command("skills/token-optimizer/scripts/read_cache.py", "--quiet")

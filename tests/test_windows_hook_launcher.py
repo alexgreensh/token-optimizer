@@ -378,7 +378,15 @@ def test_windows_versioned_hook_executes_through_comspec(monkeypatch, tmp_path):
         _make_fake_runner(base / version)
     _install_test_launcher(base)
     monkeypatch.setattr(module, "_repo_root", lambda: base / "5.11.75")
-    argument = 'space & pipe| quote" percent% bang!'
+    # Metacharacters that legitimately occur in a real install path / hook arg
+    # and MUST survive %COMSPEC% /C. All are literal inside cmd's double quotes.
+    # Excluded on purpose (documented, production-impossible under this command
+    # shape): an embedded double-quote (illegal in a Windows path, and cmd has
+    # no \"-escape so it desyncs quote parity) and a percent (cmd expands %..%
+    # even inside quotes). The generated argv/env values are fixed and quote-
+    # free, so neither can appear in practice -- see _windows_launcher_command's
+    # compatibility notes.
+    argument = "space & pipe| paren() bang! caret^ semi;"
     command = module._hook_command("hooks/test.py", argument,
                                    extra_env={"TO_TEST": argument})
     proc = subprocess.run(

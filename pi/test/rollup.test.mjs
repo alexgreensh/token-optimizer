@@ -34,3 +34,19 @@ test('native rate fallback only for missing costs, zero native cost preserved',(
  const m=rollup(rows,()=>({input:1000000,output:0,cacheRead:0,cacheWrite:0})).models[0];
  assert.equal(m.nativeCost,0);assert.equal(m.estimatedCost,10);assert.equal(m.estimatedCalls,1);assert.equal(m.unpricedCalls,0);
 });
+
+test('Pi compaction and branch-summary usage is counted in an unattributed native bucket',()=>{
+ const a=msg('a',null,'opus',1);
+ const c={id:'c',parentId:'a',type:'compaction',usage:usage(.2)};
+ const b={id:'b',parentId:'c',type:'branch_summary',usage:usage(.3)};
+ const m=rollup(activeBranch([a,c,b],'b')).models;
+ assert.equal(m.find(x=>x.model==='compaction-unknown').nativeCost,.5);
+ assert.equal(m.reduce((n,x)=>n+x.nativeCost,0),1.5);
+});
+
+test('JSONL rejects duplicate IDs and stray roots do not contaminate chosen branch',()=>{
+ const a=msg('a',null,'opus',1), b=msg('b','a','sonnet',2), duplicate=msg('a',null,'haiku',100), other=msg('x',null,'haiku',30);
+ const r=parseSession([a,b,duplicate,other].map(x=>JSON.stringify(x)).join('\n'),'b');
+ assert.equal(r.invalidLines,1);
+ assert.deepEqual(r.models.map(x=>x.model),['opus','sonnet']);
+});

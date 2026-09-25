@@ -40,16 +40,20 @@ export function rollup(entries: Entry[], prices?: PricingLookup): Rollup {
   for (const entry of entries) {
     const isAssistant = entry.type === "message" && entry.message?.role === "assistant";
     const isUsage = entry.type === "usage";
-    if (!isAssistant && !isUsage) continue;
+    const isSummary = (entry.type === "compaction" || entry.type === "branch_summary") && entry.usage !== undefined;
+    if (!isAssistant && !isUsage && !isSummary) continue;
     const m = entry.message;
     const usage = isAssistant ? m?.usage : entry.usage;
     const model = isAssistant ? m?.model : entry.model;
     const provider = isAssistant ? m?.provider : entry.provider;
-    if (!usage || !model || !provider) continue;
-    const key = `${provider}\0${model}`;
+    if (!usage) continue;
+    if ((!model || !provider) && !isSummary) continue;
+    const namedModel = model || "compaction-unknown";
+    const namedProvider = provider || "pi";
+    const key = `${namedProvider}\0${namedModel}`;
     let result = models.get(key);
     if (!result) {
-      result = { provider, model, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, nativeCost: 0, estimatedCost: 0, estimatedCalls: 0, unpricedCalls: 0, calls: 0 };
+      result = { provider: namedProvider, model: namedModel, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, nativeCost: 0, estimatedCost: 0, estimatedCalls: 0, unpricedCalls: 0, calls: 0 };
       models.set(key, result);
     }
     result.input += finite(usage.input);
@@ -59,7 +63,7 @@ export function rollup(entries: Entry[], prices?: PricingLookup): Rollup {
     result.totalTokens += finite(usage.totalTokens);
     if (typeof usage.cost?.total === "number" && Number.isFinite(usage.cost.total) && usage.cost.total >= 0) result.nativeCost += usage.cost.total;
     else {
-      const estimate = pricedFallback(usage, prices?.(provider, model));
+      const estimate = pricedFallback(usage, prices?.(namedProvider, namedModel));
       if (estimate === undefined) result.unpricedCalls++;
       else { result.estimatedCost += estimate; result.estimatedCalls++; }
     }
@@ -71,13 +75,16 @@ export function rollup(entries: Entry[], prices?: PricingLookup): Rollup {
 export function parseSession(text: string, leafId?: string | null, prices?: PricingLookup): Rollup {
   let invalidLines = 0;
   const entries: Entry[] = [];
+  const ids = new Set<string>();
   for (const line of text.split("\n")) {
     if (!line.trim()) continue;
     try {
       const item: unknown = JSON.parse(line);
       if (!item || typeof item !== "object") { invalidLines++; continue; }
       const e = item as Partial<Entry>;
-      if (typeof e.id === "string" && typeof e.type === "string" && (e.parentId === null || typeof e.parentId === "string")) entries.push(e as Entry);
+      if (typeof e.id === "string" && typeof e.type === "string" && (e.parentId === null || typeof e.parentId === "string") && !ids.has(e.id)) {
+        ids.add(e.id); entries.push(e as Entry);
+      } else if (e.type !== "session") invalidLines++;
     } catch { invalidLines++; }
   }
   return { ...rollup(activeBranch(entries, leafId), prices), invalidLines };

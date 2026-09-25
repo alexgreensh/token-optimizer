@@ -6,8 +6,9 @@ export type Settings = {
   enabled: boolean;
   retainDays: number;
   archiveToolOutput: boolean;
+  continuity: boolean;
 };
-export const DEFAULT_SETTINGS: Settings = { enabled: false, retainDays: 7, archiveToolOutput: false };
+export const DEFAULT_SETTINGS: Settings = { enabled: false, retainDays: 7, archiveToolOutput: false, continuity: false };
 export function dataDir(env: NodeJS.ProcessEnv = process.env): string {
   return env.TOKEN_OPTIMIZER_PI_HOME || join(homedir(), ".pi", "agent", "token-optimizer");
 }
@@ -20,6 +21,7 @@ export function readSettings(root = dataDir()): Settings {
       enabled: v.enabled === true,
       retainDays: Number.isSafeInteger(v.retainDays) && v.retainDays! >= 1 && v.retainDays! <= 365 ? v.retainDays! : 7,
       archiveToolOutput: v.archiveToolOutput === true,
+      continuity: v.continuity === true,
     };
   } catch { return { ...DEFAULT_SETTINGS }; }
 }

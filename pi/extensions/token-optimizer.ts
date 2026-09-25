@@ -3,8 +3,9 @@ import { dataDir, readSettings, saveSettings } from "../src/state.ts";
 import { IncrementalRollup, type Entry } from "../src/rollup.ts";
 import { repeatedCall, safeTrim, qualityScore } from "../src/signals.ts";
 import { archive, recover, pruneArchives } from "../src/archive.ts";
-import { checkpointFromBranch, writeCheckpoint, readCheckpoint } from "../src/checkpoint.ts";
+import { checkpointFromBranch, writeCheckpoint, readCheckpoint, pruneCheckpoints } from "../src/checkpoint.ts";
 import { audit } from "../src/audit.ts";
+import { redact } from "../src/redact.ts";
 
 /** All hooks run in Pi's process, without a Python subprocess or alternate compactor. */
 export default function tokenOptimizer(pi: ExtensionAPI): void {
@@ -17,7 +18,7 @@ export default function tokenOptimizer(pi: ExtensionAPI): void {
   pi.on("session_start", (_event, ctx) => { calls = []; seenResults.clear(); pendingCheckpoint = undefined; if (readSettings().enabled) snapshot(ctx); });
   pi.on("session_shutdown", () => { calls = []; pendingCheckpoint = undefined; });
   pi.on("session_before_compact", (event, ctx) => {
-    if (!readSettings().enabled) return;
+    if (!readSettings().enabled || !readSettings().continuity) return;
     const leaf = event.branchEntries.at(-1)?.id;
     if (!leaf) return;
     const messages = event.branchEntries.flatMap(e => {
@@ -25,9 +26,10 @@ export default function tokenOptimizer(pi: ExtensionAPI): void {
       return [typeof e.message.content === "string" ? e.message.content : e.message.content.filter(c => c.type === "text").map(c => c.text).join("\n")];
     });
     writeCheckpoint(checkpointFromBranch(ctx.sessionManager.getSessionId(), leaf, messages));
+    pruneCheckpoints(readSettings().retainDays);
   });
   pi.on("session_compact", (event, ctx) => {
-    if (!readSettings().enabled) return;
+    if (!readSettings().enabled || !readSettings().continuity) return;
     const leaf = event.compactionEntry.parentId;
     if (!leaf) return;
     const cp = readCheckpoint(ctx.sessionManager.getSessionId(), leaf);
@@ -37,7 +39,7 @@ export default function tokenOptimizer(pi: ExtensionAPI): void {
     }
   });
   pi.on("before_agent_start", (_event, _ctx) => {
-    if (!readSettings().enabled || !pendingCheckpoint) return;
+    if (!readSettings().enabled || !readSettings().continuity || !pendingCheckpoint) return;
     const content = pendingCheckpoint;
     pendingCheckpoint = undefined;
     return { message: { customType: "token-optimizer-continuity", content, display: false } };
@@ -61,7 +63,7 @@ export default function tokenOptimizer(pi: ExtensionAPI): void {
       if (!trimmed) return item;
       const pointer = archive(item.text);
       changed = true;
-      return { ...item, text: `${trimmed}\n\n[Token Optimizer: trimmed output. Redacted local archive: ${pointer}; recover with /token-optimizer recover ${pointer}]` };
+      return { ...item, text: `${redact(trimmed)}\n\n[Token Optimizer: trimmed output. Redacted local archive: ${pointer}; recover with /token-optimizer recover ${pointer}]` };
     });
     if (changed) pruneArchives(settings.retainDays);
     return changed ? { content } : undefined;
@@ -92,6 +94,15 @@ export default function tokenOptimizer(pi: ExtensionAPI): void {
         ctx.ui.notify(`Token Optimizer ${action === "enable" ? "enabled" : "disabled"}`, "info");
         return;
       }
+      if (action === "continuity") {
+        if (!settings.enabled) { ctx.ui.notify("Enable Token Optimizer first", "warning"); return; }
+        const value = rest[0];
+        if (value !== "on" && value !== "off") { ctx.ui.notify("Usage: /token-optimizer continuity on|off", "info"); return; }
+        if (value === "on" && ctx.hasUI && !(await ctx.ui.confirm("Local continuity", "Store redacted goal markers from your session locally and reintroduce them after native Pi compaction?"))) return;
+        saveSettings({ ...settings, continuity: value === "on" });
+        if (value === "off") pendingCheckpoint = undefined;
+        ctx.ui.notify(`Local continuity ${value}`, "info"); return;
+      }
       if (action === "archive") {
         if (!settings.enabled) { ctx.ui.notify("Enable Token Optimizer first", "warning"); return; }
         const value = rest[0];
@@ -107,7 +118,7 @@ export default function tokenOptimizer(pi: ExtensionAPI): void {
         return;
       }
       if (action === "doctor") {
-        ctx.ui.notify(`Token Optimizer: ${settings.enabled ? "enabled" : "disabled"}; Pi mode: ${ctx.mode}; local data: ${dataDir()}; session: ${ctx.sessionManager.getSessionFile() ?? "not persisted"}; archive: ${settings.archiveToolOutput ? "on" : "off"}; retention: ${settings.retainDays}d`, "info"); return;
+        ctx.ui.notify(`Token Optimizer: ${settings.enabled ? "enabled" : "disabled"}; Pi mode: ${ctx.mode}; local data: ${dataDir()}; session: ${ctx.sessionManager.getSessionFile() ?? "not persisted"}; archive: ${settings.archiveToolOutput ? "on" : "off"}; retention: ${settings.retainDays}d; continuity: ${settings.continuity ? "on" : "off"}`, "info"); return;
       }
       if (action === "audit" || action === "coach") {
         const a = audit(ctx.sessionManager.getBranch() as Entry[], snapshot(ctx));
@@ -119,7 +130,7 @@ export default function tokenOptimizer(pi: ExtensionAPI): void {
         ctx.ui.notify(lines.length ? lines.join("\n") : "No model usage on this branch", "info"); return;
       }
       const fill = ctx.getContextUsage()?.percent;
-      ctx.ui.notify(`Token Optimizer for Pi: ${settings.enabled ? "enabled" : "disabled"}. ${fill == null ? "Context usage unavailable" : `Context fill ${fill.toFixed(1)}%`}. Commands: enable, disable, doctor, usage, audit, coach, archive on|off, recover POINTER`, "info");
+      ctx.ui.notify(`Token Optimizer for Pi: ${settings.enabled ? "enabled" : "disabled"}. ${fill == null ? "Context usage unavailable" : `Context fill ${fill.toFixed(1)}%`}. Commands: enable, disable, doctor, usage, audit, coach, continuity on|off, archive on|off, recover POINTER`, "info");
     },
   });
 }

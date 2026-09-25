@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { dataDir } from "./state.ts";
 import { redact } from "./redact.ts";
@@ -28,4 +28,16 @@ export function checkpointFromBranch(session: string, branchLeaf: string, messag
   const goals = messages.filter(m => /\b(?:todo|next|goal|blocker|decision)\s*:/i.test(m)).slice(-8).map(m => m.slice(0, 500));
   const files = [...new Set(messages.flatMap(m => (m.match(/(?:^|\s)(?:\.?\.?\/)?[\w./-]+\.(?:ts|tsx|js|py|md|json)(?=\s|$)/g) ?? []).map(x => x.trim())))].slice(-25);
   return { session, branchLeaf, goals, files, createdAt: new Date().toISOString() };
+}
+
+export function pruneCheckpoints(retainDays: number, root = dataDir(), now = Date.now()): number {
+  const dir = join(root, "checkpoints"); let count = 0;
+  try {
+    for (const file of readdirSync(dir)) {
+      if (!/^[0-9a-f]{24}\.json$/.test(file)) continue;
+      const target = join(dir, file);
+      if (now - statSync(target).mtimeMs > retainDays * 86400000) { unlinkSync(target); count++; }
+    }
+  } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  return count;
 }

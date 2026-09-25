@@ -44,6 +44,10 @@ export default function tokenOptimizer(pi: ExtensionAPI): void {
     pendingCheckpoint = undefined;
     return { message: { customType: "token-optimizer-continuity", content, display: false } };
   });
+  pi.on("context", (event) => {
+    if (readSettings().enabled && readSettings().continuity) return;
+    return { messages: event.messages.filter(m => m.role !== "custom" || m.customType !== "token-optimizer-continuity") };
+  });
   pi.on("tool_call", (event, ctx) => {
     if (!readSettings().enabled) return;
     const signature = JSON.stringify([event.toolName, event.input]);

@@ -55,4 +55,10 @@ test('native compaction is not replaced; branch-scoped markers injected once aft
  assert.equal(handlers.session_compact({compactionEntry:{parentId:'other'}},ctx),undefined);
  assert.equal(handlers.before_agent_start({},ctx),undefined);
 });
+test('disabled continuity filters old injected markers from model context',()=>{
+ saveSettings({enabled:false,archiveToolOutput:false,continuity:false,retainDays:7},root);
+ const old={role:'custom',customType:'token-optimizer-continuity',content:'Goal: old',display:false};
+ const normal={role:'user',content:'new'};
+ assert.deepEqual(handlers.context({messages:[old,normal]},ctx).messages,[normal]);
+});
 test('cleanup',()=>{ rmSync(root,{recursive:true,force:true}); });

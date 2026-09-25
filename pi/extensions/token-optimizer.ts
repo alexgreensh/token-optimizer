@@ -13,13 +13,14 @@ export default function tokenOptimizer(pi: ExtensionAPI): void {
   const usage = new IncrementalRollup();
   let calls: string[] = [];
   let lastNudge = 0;
+  let archiveWarningSent = false;
   let pendingCheckpoint: { content: string; session: string; leaf: string; approved: boolean } | undefined;
   const validPending = (ctx: { sessionManager: { getSessionId(): string; getBranch(): unknown[] } }) => pendingCheckpoint?.session === ctx.sessionManager.getSessionId() && (ctx.sessionManager.getBranch() as Entry[]).some(e => e.id === pendingCheckpoint?.leaf);
   const seenResults = new Set<string>();
   const readCache = new ReadCache();
   const fingerprint = (path: string): string | undefined => { try { const s = statSync(path); return `${s.dev}:${s.ino}:${s.size}:${s.mtimeMs}`; } catch { return; } };
   const snapshot = (ctx: { sessionManager: { getBranch(): unknown[] }; modelRegistry: { find(provider: string, model: string): { cost: { input: number; output: number; cacheRead: number; cacheWrite: number } } | undefined } }) => usage.update(ctx.sessionManager.getBranch() as Entry[], (provider, model) => ctx.modelRegistry.find(provider, model)?.cost);
-  pi.on("session_start", (_event, ctx) => { calls = []; readCache.clear(); seenResults.clear(); pendingCheckpoint = undefined; if (readSettings().enabled) snapshot(ctx); });
+  pi.on("session_start", (_event, ctx) => { calls = []; readCache.clear(); seenResults.clear(); pendingCheckpoint = undefined; archiveWarningSent = false; if (readSettings().enabled) snapshot(ctx); });
   pi.on("session_tree", () => { pendingCheckpoint = undefined; readCache.clear(); });
   pi.on("session_before_switch", () => { pendingCheckpoint = undefined; });
   pi.on("session_before_fork", () => { pendingCheckpoint = undefined; });
@@ -86,8 +87,16 @@ export default function tokenOptimizer(pi: ExtensionAPI): void {
     if (seenResults.size > 1000) seenResults.clear();
     // Archive is storage only. Never replace a result the agent needs to act on.
     // Unknown secrets or quota failures fail closed without changing the tool response.
-    for (const item of event.content) if (item.type === "text") archive(item.text);
-    pruneArchives(settings.retainDays);
+    try {
+      for (const item of event.content) if (item.type === "text") archive(item.text);
+      pruneArchives(settings.retainDays);
+    } catch {
+      // Never interrupt a tool result for optional local storage.
+      if (!archiveWarningSent) {
+        archiveWarningSent = true;
+        try { ctx.ui.notify("Token Optimizer: local archiving unavailable; full tool result unchanged", "warning"); } catch { /* UI unavailable */ }
+      }
+    }
   });
   pi.on("message_end", (event, ctx) => {
     if (!readSettings().enabled || event.message.role !== "assistant") return;
@@ -138,7 +147,7 @@ export default function tokenOptimizer(pi: ExtensionAPI): void {
         if (!settings.enabled) { ctx.ui.notify("Enable Token Optimizer first", "warning"); return; }
         const value = rest[0];
         if (value !== "on" && value !== "off") { ctx.ui.notify("Usage: /token-optimizer archive on|off", "info"); return; }
-        if (value === "on" && ctx.hasUI && !(await ctx.ui.confirm("Local archives", "Store full redacted tool-output text locally (up to 64 KiB per result and 10 MiB total)? Suspected secrets are skipped. This does not trim the result seen by the agent."))) return;
+        if (value === "on" && ctx.hasUI && !(await ctx.ui.confirm("Local archives", "Store full redacted tool-output text locally (up to 64 KiB per result and approximately 10 MiB total (best-effort across concurrent Pi processes))? Suspected secrets are skipped. This does not trim the result seen by the agent."))) return;
         saveSettings({ ...settings, archiveToolOutput: value === "on" });
         ctx.ui.notify(`Local tool-output archives ${value}${value === "off" ? "; existing archives remain until purged or expired" : ""}`, "info"); return;
       }

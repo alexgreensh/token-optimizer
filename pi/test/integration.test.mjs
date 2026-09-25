@@ -33,6 +33,19 @@ test('archive consent never mutates tool result and recovery is redacted', async
  assert.ok(notices.at(-1).msg.includes('[REDACTED]'));
  assert.ok(!notices.at(-1).msg.includes('ghp_'));
 });
+test('archive I/O errors do not change successful tool results', async()=>{
+ // Supply a valid settings file but make the archives path a regular file.
+ rmSync(join(root,'archives'),{recursive:true,force:true});
+ writeFileSync(join(root,'archives'),'not a directory');
+ const event={toolCallId:'archive-error',toolName:'bash',isError:false,content:[{type:'text',text:'ordinary output'}]};
+ assert.equal(handlers.tool_result(event,ctx),undefined);
+ assert.equal(event.content[0].text,'ordinary output');
+ assert.ok(notices.at(-1).msg.includes('archiving unavailable'));
+ const warnings=notices.filter(n=>n.msg.includes('archiving unavailable')).length;
+ assert.equal(handlers.tool_result({...event,toolCallId:'archive-error-2'},ctx),undefined);
+ assert.equal(notices.filter(n=>n.msg.includes('archiving unavailable')).length,warnings);
+ rmSync(join(root,'archives'));
+});
 test('read-cache recognizes unchanged file and invalidates on edit',()=>{
  const path=join(root,'sample.txt'); writeFileSync(path,'same');
  handlers.tool_result({toolCallId:'cache-a',toolName:'read',input:{path},isError:false,content:[{type:'text',text:'same'}]}, {...ctx,cwd:root});

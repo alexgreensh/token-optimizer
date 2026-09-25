@@ -20,9 +20,11 @@ export function redact(text: string): string {
 /** Unknown secrets are not archived. This gate is intentionally conservative. */
 export function suspiciousSecret(text: string): boolean {
   if (/-----BEGIN [^-]*PRIVATE KEY-----/i.test(text)) return true;
-  // No attempt to redact generic assignments: skip the whole result instead.
-  if (/(?:^|[\s,{])(?:[\w.-]+[_-])?(?:secret|token|password|passwd|private[_-]?key|api[_-]?key|credential|access[_-]?key|auth)(?:[_-]?[\w.-]+)?\s*[:=]\s*['"]?[^\s,'"}]{8,}/im.test(text)) return true;
-  if (/(?:^|[\s,{])[\w.-]*(?:secret|token|password|passwd|credential|api[_-]?key|private[_-]?key)[\w.-]*\s*[:=]\s*['"]?[^\s,'"}]{8,}/im.test(text)) return true;
+  // A sensitive key is enough to reject persistence. Values can be short,
+  // quoted, contain spaces or start on the next line (JSON/YAML/env formats).
+  // Check the raw input before redaction, or a known-token replacement can
+  // leave an otherwise unknown secret in the same output.
+  if (/(?:^|[\s,{])['"]?[\w.-]*(?:secret|token|password|passwd|credential|api[_-]?key|private[_-]?key|access[_-]?key|auth)[\w.-]*['"]?\s*[:=]/im.test(text)) return true;
   if (/\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/.test(text)) return true;
   // Very long opaque strings may be an unknown provider secret.
   if (/[A-Za-z0-9_+/=-]{80,}/.test(text)) return true;

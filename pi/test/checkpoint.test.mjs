@@ -12,3 +12,15 @@ test('historical goals and retractions are not revived',()=>{
  assert.deepEqual(checkpointFromBranch('s','a',['Goal: old','normal user prompt']).goals,[]);
  assert.deepEqual(checkpointFromBranch('s','a',['Goal: CUSTOM_SECRET=supersecretkey123456789']).goals,[]);
 });
+
+test('checkpoint skips secret assignments even when caller provides them directly',()=>{
+ const root=mkdtempSync(join(tmpdir(),'cp-secrets-'));try {
+  for(const value of ['CUSTOM_SECRET="a very long secret value"','CUSTOM_SECRET=x','CUSTOM_SECRET="a\nvery long secret value"','{"CUSTOM_SECRET": "multi word"}','CUSTOM_SECRET: multiline\n  value']) {
+    const cp=checkpointFromBranch('s','leaf',['Goal: '+value]);
+    assert.deepEqual(cp.goals,[],`candidate: ${value}`);
+    assert.deepEqual(cp.files,[]);
+    assert.equal(writeCheckpoint({...cp,goals:[value]},root),undefined,`written: ${value}`);
+  }
+  assert.equal(readCheckpoint('s','leaf',root),undefined);
+ }finally{rmSync(root,{recursive:true,force:true});}
+});

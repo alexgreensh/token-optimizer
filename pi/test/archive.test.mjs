@@ -39,3 +39,20 @@ test('total archive quota fails closed without mutating original text',()=>{
   assert.equal(purge('archives',root),created);
  }finally{rmSync(root,{recursive:true,force:true});}
 });
+
+test('secret-named keys reject quoted, short, multiline, JSON and YAML values',()=>{
+ const samples=[
+  'CUSTOM_SECRET="a very long secret value"',
+  'CUSTOM_SECRET=x',
+  'CUSTOM_SECRET="a\nvery long secret value"',
+  '{"CUSTOM_SECRET": "a very long secret value"}',
+  'CUSTOM_SECRET: a very long secret value',
+  'api-key: short',
+  'myToken: a very long secret value',
+  'password =',
+ ];
+ const root=mkdtempSync(join(tmpdir(),'pi-shapes-'));try {
+  for (const value of samples) assert.equal(archive(value,root),undefined,`persisted: ${value}`);
+  assert.equal(readdirSync(root).length,0);
+ }finally{rmSync(root,{recursive:true,force:true});}
+});

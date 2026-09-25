@@ -17,3 +17,14 @@ export function redact(text: string): string {
   for (const pattern of PATTERNS) result = result.replace(pattern, '[REDACTED]');
   return result;
 }
+/** Unknown secrets are not archived. This gate is intentionally conservative. */
+export function suspiciousSecret(text: string): boolean {
+  if (/-----BEGIN [^-]*PRIVATE KEY-----/i.test(text)) return true;
+  // No attempt to redact generic assignments: skip the whole result instead.
+  if (/(?:^|[\s,{])(?:[\w.-]+[_-])?(?:secret|token|password|passwd|private[_-]?key|api[_-]?key|credential|access[_-]?key|auth)(?:[_-]?[\w.-]+)?\s*[:=]\s*['"]?[^\s,'"}]{8,}/im.test(text)) return true;
+  if (/(?:^|[\s,{])[\w.-]*(?:secret|token|password|passwd|credential|api[_-]?key|private[_-]?key)[\w.-]*\s*[:=]\s*['"]?[^\s,'"}]{8,}/im.test(text)) return true;
+  if (/\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/.test(text)) return true;
+  // Very long opaque strings may be an unknown provider secret.
+  if (/[A-Za-z0-9_+/=-]{80,}/.test(text)) return true;
+  return false;
+}

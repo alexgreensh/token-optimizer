@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { dataDir } from "./state.ts";
-import { redact } from "./redact.ts";
+import { redact, suspiciousSecret } from "./redact.ts";
 export type Checkpoint = { session: string; branchLeaf: string; goals: string[]; files: string[]; createdAt: string };
 const hash = (text: string) => createHash("sha256").update(text).digest("hex").slice(0, 24);
 /** Keep branch-specific, redacted lightweight state. Pi remains the compactor. */
@@ -28,8 +28,11 @@ export function readCheckpoint(session: string, branchLeaf: string, root = dataD
 }
 export function checkpointFromBranch(session: string, branchLeaf: string, messages: string[]): Checkpoint {
   // Extract bounded, explicit markers only: no LLM summarizer or raw transcript dump.
-  const goals = messages.filter(m => /\b(?:todo|next|goal|blocker|decision)\s*:/i.test(m)).slice(-8).map(m => m.slice(0, 500));
-  const files = [...new Set(messages.flatMap(m => (m.match(/(?:^|\s)(?:\.?\.?\/)?[\w./-]+\.(?:ts|tsx|js|py|md|json)(?=\s|$)/g) ?? []).map(x => x.trim())))].slice(-25);
+  // Only the newest explicit user marker is a candidate; earlier plans may be canceled.
+  // The extension requires an explicit user review before any candidate is reintroduced.
+  const latest = messages.at(-1) ?? "";
+  const goals = !suspiciousSecret(latest) && /\b(?:todo|next|goal|blocker|decision)\s*:/i.test(latest) && !/\b(?:cancel|ignore|never mind|no longer|scratch that|retract)\b/i.test(latest) ? [latest.slice(0, 500)] : [];
+  const files = [...new Set((goals.length ? [latest] : []).filter(m => !suspiciousSecret(m)).flatMap(m => (m.match(/(?:^|\s)(?:\.?\.?\/)?[\w./-]+\.(?:ts|tsx|js|py|md|json)(?=\s|$)/g) ?? []).map(x => x.trim())))].slice(-25);
   return { session, branchLeaf, goals, files, createdAt: new Date().toISOString() };
 }
 

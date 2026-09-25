@@ -15,7 +15,7 @@ test('historical goals and retractions are not revived',()=>{
 
 test('checkpoint skips secret assignments even when caller provides them directly',()=>{
  const root=mkdtempSync(join(tmpdir(),'cp-secrets-'));try {
-  for(const value of ['CUSTOM_SECRET="a very long secret value"','CUSTOM_SECRET=x','CUSTOM_SECRET="a\nvery long secret value"','{"CUSTOM_SECRET": "multi word"}','CUSTOM_SECRET: multiline\n  value','API Key: abcd123456789','<password>secret123</password>','password abc123456789','Client Secret: some spaced value','ACCESS_KEY=abcd123456789','SESSION_KEY=abcd123456789','AWS_ACCESS_KEY_ID=AKIA1234567890123456']) {
+  for(const value of ['CUSTOM_SECRET="a very long secret value"','CUSTOM_SECRET=x','CUSTOM_SECRET="a\nvery long secret value"','{"CUSTOM_SECRET": "multi word"}','CUSTOM_SECRET: multiline\n  value','API Key: abcd123456789','<password>secret123</password>','password abc123456789','Client Secret: some spaced value','ACCESS_KEY=abcd123456789','SESSION_KEY=abcd123456789','AWS_ACCESS_KEY_ID=AKIA1234567890123456','aPi\tKeY: abcd123456789','API\u00A0Key: abcd123456789','vault.token=abcdef1234567890']) {
     const cp=checkpointFromBranch('s','leaf',['Goal: '+value]);
     assert.deepEqual(cp.goals,[],`candidate: ${value}`);
     assert.deepEqual(cp.files,[]);

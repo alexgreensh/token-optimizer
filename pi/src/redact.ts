@@ -27,20 +27,24 @@ const SECRET_LABELS = [
 function sensitiveLabel(value: string): boolean {
   // Preserve word boundaries: secretary, tokenizer, tokenized and authentication
   // are not secret labels. CamelCase keys such as myToken count as two words.
-  const words = value.replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase().split(/[\s_-]+/).filter(Boolean);
-  return SECRET_LABELS.some(label => words.some((_, i) => label.every((word, j) => words[i + j] === word)));
+  const matches = (words: string[]) => SECRET_LABELS.some(label => words.some((_, i) => label.every((word, j) => words[i + j] === word)));
+  const words = value.toLowerCase().split(/[\s_.-]+/).filter(Boolean);
+  if (matches(words)) return true;
+  // A second pass handles myToken without breaking mixed-case API labels.
+  return matches(value.replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase().split(/[\s_.-]+/).filter(Boolean));
 }
 /** Unknown formats remain possible; opt-in storage is never a secret vault. */
 export function suspiciousSecret(text: string): boolean {
   if (/-----BEGIN [^-]*PRIVATE KEY-----/i.test(text)) return true;
+  const normalized = text.replace(/\s/gu, " ");
   // Key-value labels in environment files, YAML, JSON, logs, and prose.
   // Quoted/multiline/short values are caught by inspecting the label alone.
-  const assignments = /(?:^|[\s,{])(?:["']?)([A-Za-z][A-Za-z0-9_-]*(?:[ \t_-]+[A-Za-z0-9_-]+){0,5})["']?[ \t]*[:=]/gm;
-  for (const match of text.matchAll(assignments)) if (sensitiveLabel(match[1])) return true;
+  const assignments = /(?:^|[ ,{])(?:["']?)([A-Za-z][A-Za-z0-9_.-]*(?:[ _.-]+[A-Za-z0-9_.-]+){0,5})["']? *[:=]/gm;
+  for (const match of normalized.matchAll(assignments)) if (sensitiveLabel(match[1])) return true;
   // XML tags and bare label-value lines such as "password abc123...".
-  for (const match of text.matchAll(/<\s*([A-Za-z][A-Za-z0-9_-]*)\s*>/g)) if (sensitiveLabel(match[1])) return true;
+  for (const match of normalized.matchAll(/< *([A-Za-z][A-Za-z0-9_.-]*) *>/g)) if (sensitiveLabel(match[1])) return true;
   for (const line of text.split(/\r?\n/)) {
-    const bare = line.match(/(?:^|\bgoal:[ \t]*)(password|passwd|api[ _-]+key|access[ _-]+key|session[ _-]+key|signing[ _-]+key|client[ _-]+secret)[ \t]+[^\s:={}<]{8,}/i);
+    const bare = line.replace(/\s/gu, " ").match(/(?:^|\bgoal: *)(password|passwd|api[ _.-]+key|access[ _.-]+key|session[ _.-]+key|signing[ _.-]+key|client[ _.-]+secret) +[^ :={}<]{8,}/i);
     if (bare && sensitiveLabel(bare[1])) return true;
   }
   if (/\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/.test(text)) return true;

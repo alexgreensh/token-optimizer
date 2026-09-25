@@ -60,6 +60,9 @@ test('secret-named keys reject quoted, short, multiline, JSON and YAML values',(
   'AWS_ACCESS_KEY_ID=AKIA1234567890123456',
   'SIGNING_KEY: abcdefgh',
   'client_id: visible-but-paired-credential',
+  'aPi\tKeY: abcd123456789',
+  'API\u00A0Key: abcd123456789',
+  'vault.token=abcdef1234567890',
  ];
  const root=mkdtempSync(join(tmpdir(),'pi-shapes-'));try {
   for (const value of samples) assert.equal(archive(value,root),undefined,`persisted: ${value}`);

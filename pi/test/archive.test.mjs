@@ -50,6 +50,11 @@ test('secret-named keys reject quoted, short, multiline, JSON and YAML values',(
   'api-key: short',
   'myToken: a very long secret value',
   'password =',
+  'API Key: abcd123456789',
+  'Access Token = x',
+  'Client Secret: a very long secret',
+  '<password>secret123</password>',
+  'password abc123456789',
  ];
  const root=mkdtempSync(join(tmpdir(),'pi-shapes-'));try {
   for (const value of samples) assert.equal(archive(value,root),undefined,`persisted: ${value}`);

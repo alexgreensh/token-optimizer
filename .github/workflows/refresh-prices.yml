@@ -97,6 +97,11 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           VERSION=$(python3 scripts/bump_patch_version.py)
           TAG="v${VERSION}"
+          # The bump also updates the OpenClaw fallback in TypeScript. The
+          # earlier build/test ran before it; rebuild the shipped dist and gate
+          # the new labels before tagging and publishing.
+          (cd openclaw && npm run build)
+          python -m pytest tests/test_version_constant_tracks_manifest.py -q
           bash scripts/sync-codex-marketplace-plugin.sh
           python3 - <<'PY'
           import sys

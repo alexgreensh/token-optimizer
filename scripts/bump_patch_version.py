@@ -19,6 +19,8 @@ REPO = Path(__file__).resolve().parent.parent
 PLUGIN = REPO / ".claude-plugin" / "plugin.json"
 CODEX = REPO / ".codex-plugin" / "plugin.json"
 MARKETPLACE = REPO / ".claude-plugin" / "marketplace.json"
+OPENCODE_DASHBOARD = REPO / "opencode" / "src" / "dashboard" / "generator.ts"
+OPENCLAW_DASHBOARD = REPO / "openclaw" / "src" / "dashboard.ts"
 # Marketplace entries that ship at the plugin's own version.
 MARKETPLACE_ENTRIES = ("token-optimizer", "token-optimizer-cowork")
 SEMVER = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
@@ -30,6 +32,15 @@ def _set_version(path: Path, old: str, new: str, expected: int) -> None:
     updated, count = pattern.subn(lambda m: m.group(1) + new + '"', text)
     if count != expected:
         raise SystemExit(f"{path.name}: expected {expected} version field(s) at {old}, found {count}")
+    path.write_text(updated, encoding="utf-8")
+
+
+def _set_core_fallback(path: Path, constant: str, old: str, new: str) -> None:
+    text = path.read_text(encoding="utf-8")
+    pattern = re.compile(r"^(const " + re.escape(constant) + r' = ")' + re.escape(old) + r'(";)$', re.MULTILINE)
+    updated, count = pattern.subn(lambda m: m.group(1) + new + m.group(2), text)
+    if count != 1:
+        raise SystemExit(f"{path}: expected one {constant} at {old}, found {count}")
     path.write_text(updated, encoding="utf-8")
 
 
@@ -49,6 +60,8 @@ def main() -> int:
     _set_version(PLUGIN, current, new, 1)
     _set_version(CODEX, current, new, 1)
     _set_version(MARKETPLACE, current, new, len(MARKETPLACE_ENTRIES))
+    _set_core_fallback(OPENCODE_DASHBOARD, "CORE_VERSION", current, new)
+    _set_core_fallback(OPENCLAW_DASHBOARD, "CORE_VERSION_FALLBACK", current, new)
     print(new)
     return 0
 

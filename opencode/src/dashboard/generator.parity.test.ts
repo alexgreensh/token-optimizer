@@ -2,7 +2,7 @@
  * Dashboard parity tests (OpenCode generator).
  *
  * Pins the three bounded-parity requirements from the platform-parity audit:
- *   1. Persistent version labels: Core v5.13.10 + Adapter v1.1.7 in the
+ *   1. Persistent version labels: Core v5.13.24 + Adapter v1.1.7 in the
  *      generated HTML (header + footer), independent and both visible.
  *   2. Static regeneration instruction: the dashboard tells the user to rerun
  *      the `token_dashboard` tool. No fake Regenerate button, no HTTP server,
@@ -196,18 +196,18 @@ function addVerbosityEvents(dir: string, now: number, count: number, costEach: n
 // 1. Version labels
 // ---------------------------------------------------------------------------
 
-test("version labels: Core v5.13.10 and Adapter v1.1.7 both present in header and footer", () => {
+test("version labels: Core v5.13.24 and Adapter v1.1.7 both present in header and footer", () => {
   const now = Date.now();
   seed(dir, now, 200, 35, 29, 40, 0.6, 4_000_000, 0.56);
   const html = generateDashboard({ dataDir: dir });
 
   // Header (persistent across all views)
-  expect(html).toContain("Core v5.13.10");
+  expect(html).toContain("Core v5.13.24");
   expect(html).toContain("Adapter v1.1.7");
   // Footer (second persistence point)
   const footerStart = html.indexOf("oc-footer");
   const footerHtml = html.slice(footerStart);
-  expect(footerHtml).toContain("Core v5.13.10");
+  expect(footerHtml).toContain("Core v5.13.24");
   expect(footerHtml).toContain("Adapter v1.1.7");
 });
 
@@ -216,7 +216,7 @@ test("version labels are independent: adapter does not echo the core number", ()
   seed(dir, now, 200, 35, 29, 40, 0.6, 4_000_000, 0.56);
   const html = generateDashboard({ dataDir: dir });
 
-  // The adapter label must show 1.1.7, NOT 5.13.10 (no copy-paste of the core
+  // The adapter label must show 1.1.7, NOT 5.13.24 (no copy-paste of the core
   // version into the adapter slot). Target the header sub-line via its class
   // selector — the <title> tag also contains "OpenCode Dashboard" but is
   // followed by </title> immediately, so a bare /OpenCode Dashboard[^<]*/
@@ -224,7 +224,7 @@ test("version labels are independent: adapter does not echo the core number", ()
   const headerLine = html.match(/class="sub">OpenCode Dashboard[^<]*/);
   expect(headerLine).toBeTruthy();
   expect(headerLine![0]).toContain("Adapter v1.1.7");
-  expect(headerLine![0]).not.toContain("Adapter v5.13.10");
+  expect(headerLine![0]).not.toContain("Adapter v5.13.24");
 });
 
 // ---------------------------------------------------------------------------

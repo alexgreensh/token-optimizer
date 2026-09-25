@@ -12,6 +12,9 @@ reach this constant. This test is the gate that was missing.
 
 import importlib
 import json
+import re
+import subprocess
+import shutil
 import sys
 from pathlib import Path
 
@@ -64,3 +67,53 @@ def test_version_read_falls_back_without_manifest(tmp_path):
     assert _load()._read_plugin_version.__doc__
     mod = _load()
     assert mod._read_plugin_version(default="0.0.0") == _manifest_version()
+
+
+def test_bundled_dashboard_core_versions_match_plugin_manifest():
+    """Bundled labels need synchronized fallbacks when the manifest is absent."""
+    for source, name in (
+        (ROOT / "opencode" / "src" / "dashboard" / "generator.ts", "CORE_VERSION"),
+        (ROOT / "openclaw" / "src" / "dashboard.ts", "CORE_VERSION_FALLBACK"),
+    ):
+        text = source.read_text(encoding="utf-8")
+        versions = re.findall(rf'^const {name} = "([^"]+)";', text, re.MULTILINE)
+        assert versions == [_manifest_version()], f"{source}: {name} must match shipped manifest"
+    compiled = (ROOT / "openclaw" / "dist" / "dashboard.js").read_text(encoding="utf-8")
+    assert f'const CORE_VERSION_FALLBACK = "{_manifest_version()}";' in compiled
+
+
+def test_patch_bump_updates_dashboard_core_labels(tmp_path):
+    """A release bump cannot leave installed dashboard labels one version behind."""
+    for relative in (
+        ".claude-plugin/plugin.json", ".claude-plugin/marketplace.json",
+        ".codex-plugin/plugin.json", "opencode/src/dashboard/generator.ts",
+        "openclaw/src/dashboard.ts", "scripts/bump_patch_version.py",
+    ):
+        dest = tmp_path / relative
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / relative, dest)
+    old = _manifest_version()
+    bumped = subprocess.run(
+        [sys.executable, str(tmp_path / "scripts" / "bump_patch_version.py")],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert bumped != old
+    assert json.loads((tmp_path / ".claude-plugin/plugin.json").read_text())["version"] == bumped
+    for relative, name in (
+        ("opencode/src/dashboard/generator.ts", "CORE_VERSION"),
+        ("openclaw/src/dashboard.ts", "CORE_VERSION_FALLBACK"),
+    ):
+        text = (tmp_path / relative).read_text()
+        assert f'const {name} = "{bumped}";' in text
+        assert f'const {name} = "{old}";' not in text
+
+
+def test_auto_release_rebuilds_and_guards_after_version_bump():
+    """The release job must verify its final built version before pushing a tag."""
+    workflow = (ROOT / ".github/workflows/refresh-prices.yml").read_text(encoding="utf-8")
+    release_step = workflow.split("      - name: Release the new prices", 1)[1].split("      - name: Open a review PR instead", 1)[0]
+    bump = release_step.index("VERSION=$(python3 scripts/bump_patch_version.py)")
+    build = release_step.index("(cd openclaw && npm run build)", bump)
+    guard = release_step.index("python -m pytest tests/test_version_constant_tracks_manifest.py -q", build)
+    publish = release_step.index("git push --atomic", guard)
+    assert bump < build < guard < publish

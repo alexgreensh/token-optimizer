@@ -55,9 +55,25 @@ test('secret-named keys reject quoted, short, multiline, JSON and YAML values',(
   'Client Secret: a very long secret',
   '<password>secret123</password>',
   'password abc123456789',
+  'ACCESS_KEY=abcd123456789',
+  'SESSION_KEY=abcd123456789',
+  'AWS_ACCESS_KEY_ID=AKIA1234567890123456',
+  'SIGNING_KEY: abcdefgh',
+  'client_id: visible-but-paired-credential',
  ];
  const root=mkdtempSync(join(tmpdir(),'pi-shapes-'));try {
   for (const value of samples) assert.equal(archive(value,root),undefined,`persisted: ${value}`);
   assert.equal(readdirSync(root).length,0);
+ }finally{rmSync(root,{recursive:true,force:true});}
+});
+
+test('ordinary labels and prose remain archivable',()=>{
+ const root=mkdtempSync(join(tmpdir(),'pi-ordinary-'));try {
+  for (const text of ['secretary: Amanda','tokenized: false','authentication: failed',
+    'tokenizer: true','authorization header discussion','the secret sauce']) {
+    const stored=archive(text,root);
+    assert.ok(stored,`skipped ordinary: ${text}`);
+    assert.equal(recover(stored.pointer,root),text);
+  }
  }finally{rmSync(root,{recursive:true,force:true});}
 });

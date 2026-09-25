@@ -2,9 +2,18 @@
   "name": "token-optimizer-pi-package",
   "version": "5.13.24",
   "private": true,
-  "type": "module",
   "license": "PolyForm-Noncommercial-1.0.0",
-  "keywords": ["pi-package", "token-optimizer"],
-  "pi": { "extensions": ["./pi/extensions/token-optimizer.ts"], "skills": [] },
-  "peerDependencies": { "@earendil-works/pi-coding-agent": "*" }
+  "keywords": [
+    "pi-package",
+    "token-optimizer"
+  ],
+  "pi": {
+    "extensions": [
+      "./pi/extensions/token-optimizer.ts"
+    ],
+    "skills": []
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
 }

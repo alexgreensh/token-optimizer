@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import extension from '../extensions/token-optimizer.ts';
@@ -31,6 +31,16 @@ test('trim on consent archives redacted recovery, does not repeat transform', as
  await commands['token-optimizer'].handler('recover '+pointer,ctx);
  assert.ok(notices.at(-1).msg.includes('[REDACTED]'));
  assert.ok(!notices.at(-1).msg.includes('ghp_'));
+});
+test('read-cache recognizes unchanged file and invalidates on edit',()=>{
+ const path=join(root,'sample.txt'); writeFileSync(path,'same');
+ handlers.tool_result({toolCallId:'cache-a',toolName:'read',input:{path},isError:false,content:[{type:'text',text:'same'}]}, {...ctx,cwd:root});
+ handlers.tool_call({toolName:'read',input:{path}}, {...ctx,cwd:root});
+ assert.ok(notices.at(-1).msg.includes('repeated unchanged'));
+ handlers.tool_call({toolName:'edit',input:{path}}, {...ctx,cwd:root});
+ const n=notices.length;
+ handlers.tool_call({toolName:'read',input:{path}}, {...ctx,cwd:root});
+ assert.equal(notices.length,n);
 });
 test('usage branch switch excludes inactive fork and estimates only missing costs', async()=>{
  const ua={ input:10,output:2,cacheRead:0,cacheWrite:0,totalTokens:12,cost:{total:1} };

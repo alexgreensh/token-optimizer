@@ -1,7 +1,9 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { dataDir, readSettings, saveSettings } from "../src/state.ts";
 import { IncrementalRollup, type Entry } from "../src/rollup.ts";
-import { repeatedCall, safeTrim, qualityScore } from "../src/signals.ts";
+import { repeatedCall, safeTrim, qualityScore, ReadCache } from "../src/signals.ts";
+import { statSync } from "node:fs";
+import { resolve } from "node:path";
 import { archive, recover, pruneArchives } from "../src/archive.ts";
 import { checkpointFromBranch, writeCheckpoint, readCheckpoint, pruneCheckpoints } from "../src/checkpoint.ts";
 import { audit } from "../src/audit.ts";
@@ -14,9 +16,11 @@ export default function tokenOptimizer(pi: ExtensionAPI): void {
   let lastNudge = 0;
   let pendingCheckpoint: string | undefined;
   const seenResults = new Set<string>();
+  const readCache = new ReadCache();
+  const fingerprint = (path: string): string | undefined => { try { const s = statSync(path); return `${s.dev}:${s.ino}:${s.size}:${s.mtimeMs}`; } catch { return; } };
   const snapshot = (ctx: { sessionManager: { getBranch(): unknown[] }; modelRegistry: { find(provider: string, model: string): { cost: { input: number; output: number; cacheRead: number; cacheWrite: number } } | undefined } }) => usage.update(ctx.sessionManager.getBranch() as Entry[], (provider, model) => ctx.modelRegistry.find(provider, model)?.cost);
-  pi.on("session_start", (_event, ctx) => { calls = []; seenResults.clear(); pendingCheckpoint = undefined; if (readSettings().enabled) snapshot(ctx); });
-  pi.on("session_shutdown", () => { calls = []; pendingCheckpoint = undefined; });
+  pi.on("session_start", (_event, ctx) => { calls = []; readCache.clear(); seenResults.clear(); pendingCheckpoint = undefined; if (readSettings().enabled) snapshot(ctx); });
+  pi.on("session_shutdown", () => { calls = []; readCache.clear(); pendingCheckpoint = undefined; });
   pi.on("session_before_compact", (event, ctx) => {
     if (!readSettings().enabled || !readSettings().continuity) return;
     const leaf = event.branchEntries.at(-1)?.id;
@@ -53,9 +57,24 @@ export default function tokenOptimizer(pi: ExtensionAPI): void {
     const signature = JSON.stringify([event.toolName, event.input]);
     if (repeatedCall(calls, signature)) ctx.ui.notify(`Token Optimizer: repeated ${event.toolName} call; check for a loop`, "warning");
     calls = [...calls.slice(-7), signature];
+    if (event.toolName === "read" && typeof event.input?.path === "string") {
+      const path = resolve(ctx.cwd, event.input?.path);
+      const stamp = fingerprint(path);
+      if (stamp && readCache.get(path, stamp) !== undefined) ctx.ui.notify("Token Optimizer: repeated unchanged file read", "info");
+    }
+    if (event.toolName === "edit" || event.toolName === "write") {
+      if (typeof event.input?.path === "string") readCache.invalidate(resolve(ctx.cwd, event.input?.path));
+    }
+    if (event.toolName === "bash" || event.toolName === "powershell") readCache.clear();
   });
   pi.on("tool_result", (event, ctx) => {
     const settings = readSettings();
+    if (settings.enabled && event.toolName === "read" && !event.isError && typeof event.input?.path === "string" && event.input?.offset === undefined && event.input?.limit === undefined) {
+      const path = resolve(ctx.cwd, event.input?.path);
+      const stamp = fingerprint(path);
+      const text = event.content.length === 1 && event.content[0].type === "text" ? event.content[0].text : undefined;
+      if (stamp && text) readCache.set(path, stamp, text.slice(0, 512));
+    }
     if (!settings.enabled || !settings.archiveToolOutput || event.isError || !["read", "grep", "find", "ls", "bash"].includes(event.toolName)) return;
     if (seenResults.has(event.toolCallId)) return;
     seenResults.add(event.toolCallId);

@@ -78,6 +78,8 @@ def test_bundled_dashboard_core_versions_match_plugin_manifest():
         text = source.read_text(encoding="utf-8")
         versions = re.findall(rf'^const {name} = "([^"]+)";', text, re.MULTILINE)
         assert versions == [_manifest_version()], f"{source}: {name} must match shipped manifest"
+    compiled = (ROOT / "openclaw" / "dist" / "dashboard.js").read_text(encoding="utf-8")
+    assert f'const CORE_VERSION_FALLBACK = "{_manifest_version()}";' in compiled
 
 
 def test_patch_bump_updates_dashboard_core_labels(tmp_path):
@@ -104,3 +106,14 @@ def test_patch_bump_updates_dashboard_core_labels(tmp_path):
         text = (tmp_path / relative).read_text()
         assert f'const {name} = "{bumped}";' in text
         assert f'const {name} = "{old}";' not in text
+
+
+def test_auto_release_rebuilds_and_guards_after_version_bump():
+    """The release job must verify its final built version before pushing a tag."""
+    workflow = (ROOT / ".github/workflows/refresh-prices.yml").read_text(encoding="utf-8")
+    release_step = workflow.split("      - name: Release the new prices", 1)[1].split("      - name: Open a review PR instead", 1)[0]
+    bump = release_step.index("VERSION=$(python3 scripts/bump_patch_version.py)")
+    build = release_step.index("(cd openclaw && npm run build)", bump)
+    guard = release_step.index("python -m pytest tests/test_version_constant_tracks_manifest.py -q", build)
+    publish = release_step.index("git push --atomic", guard)
+    assert bump < build < guard < publish

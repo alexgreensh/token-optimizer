@@ -59,6 +59,22 @@ jobs:
       - name: Run tests
         run: python -m pytest tests/ -q
 
+  pi-native:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: pi/package-lock.json
+      - name: Install Pi adapter test dependencies
+        run: npm ci --prefix pi
+      - name: Typecheck Pi extension
+        run: npm run typecheck --prefix pi
+      - name: Test Pi adapter
+        run: npm test --prefix pi
+
   # Every bug that has shipped before is re-introduced into a throwaway copy
   # and the guard tests must fail on it. A guard that passes on broken code is
   # decoration; this job turns red the moment one stops guarding.

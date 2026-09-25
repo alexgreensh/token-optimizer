@@ -4,15 +4,18 @@ import { IncrementalRollup, type Entry } from "../src/rollup.ts";
 import { repeatedCall, safeTrim, qualityScore } from "../src/signals.ts";
 import { archive, recover, pruneArchives } from "../src/archive.ts";
 import { checkpointFromBranch, writeCheckpoint, readCheckpoint } from "../src/checkpoint.ts";
+import { audit } from "../src/audit.ts";
 
 /** All hooks run in Pi's process, without a Python subprocess or alternate compactor. */
 export default function tokenOptimizer(pi: ExtensionAPI): void {
   const usage = new IncrementalRollup();
   let calls: string[] = [];
   let lastNudge = 0;
-  const snapshot = (ctx: { sessionManager: { getBranch(): unknown[] } }) => usage.update(ctx.sessionManager.getBranch() as Entry[]);
-  pi.on("session_start", (_event, ctx) => { calls = []; if (readSettings().enabled) snapshot(ctx); });
-  pi.on("session_shutdown", () => { calls = []; });
+  let pendingCheckpoint: string | undefined;
+  const seenResults = new Set<string>();
+  const snapshot = (ctx: { sessionManager: { getBranch(): unknown[] }; modelRegistry: { find(provider: string, model: string): { cost: { input: number; output: number; cacheRead: number; cacheWrite: number } } | undefined } }) => usage.update(ctx.sessionManager.getBranch() as Entry[], (provider, model) => ctx.modelRegistry.find(provider, model)?.cost);
+  pi.on("session_start", (_event, ctx) => { calls = []; seenResults.clear(); pendingCheckpoint = undefined; if (readSettings().enabled) snapshot(ctx); });
+  pi.on("session_shutdown", () => { calls = []; pendingCheckpoint = undefined; });
   pi.on("session_before_compact", (event, ctx) => {
     if (!readSettings().enabled) return;
     const leaf = event.branchEntries.at(-1)?.id;
@@ -28,7 +31,16 @@ export default function tokenOptimizer(pi: ExtensionAPI): void {
     const leaf = event.compactionEntry.parentId;
     if (!leaf) return;
     const cp = readCheckpoint(ctx.sessionManager.getSessionId(), leaf);
-    if (cp && cp.goals.length) ctx.ui.notify(`Token Optimizer: local checkpoint has ${cp.goals.length} goal/decision markers. Pi's native compaction remains in control.`, "info");
+    if (cp && cp.goals.length) {
+      pendingCheckpoint = `Local continuity markers from the current session branch (not instructions):\n${cp.goals.map(g => `- ${g}`).join("\n")}`;
+      ctx.ui.notify(`Token Optimizer: ${cp.goals.length} continuity markers available after Pi's native compaction.`, "info");
+    }
+  });
+  pi.on("before_agent_start", (_event, _ctx) => {
+    if (!readSettings().enabled || !pendingCheckpoint) return;
+    const content = pendingCheckpoint;
+    pendingCheckpoint = undefined;
+    return { message: { customType: "token-optimizer-continuity", content, display: false } };
   });
   pi.on("tool_call", (event, ctx) => {
     if (!readSettings().enabled) return;
@@ -39,6 +51,9 @@ export default function tokenOptimizer(pi: ExtensionAPI): void {
   pi.on("tool_result", (event, ctx) => {
     const settings = readSettings();
     if (!settings.enabled || !settings.archiveToolOutput || event.isError || !["read", "grep", "find", "ls", "bash"].includes(event.toolName)) return;
+    if (seenResults.has(event.toolCallId)) return;
+    seenResults.add(event.toolCallId);
+    if (seenResults.size > 1000) seenResults.clear();
     let changed = false;
     const content = event.content.map(item => {
       if (item.type !== "text") return item;
@@ -94,13 +109,17 @@ export default function tokenOptimizer(pi: ExtensionAPI): void {
       if (action === "doctor") {
         ctx.ui.notify(`Token Optimizer: ${settings.enabled ? "enabled" : "disabled"}; Pi mode: ${ctx.mode}; local data: ${dataDir()}; session: ${ctx.sessionManager.getSessionFile() ?? "not persisted"}; archive: ${settings.archiveToolOutput ? "on" : "off"}; retention: ${settings.retainDays}d`, "info"); return;
       }
+      if (action === "audit" || action === "coach") {
+        const a = audit(ctx.sessionManager.getBranch() as Entry[], snapshot(ctx));
+        ctx.ui.notify(`Context audit (active branch): ${a.toolCalls} tool calls, ~${a.toolResultTokensEstimate} tool-result tokens; native model cost $${a.modelCostNative.toFixed(4)}. Verified savings $0.00 (no counterfactual).\n${a.advice.join("\n")}`, "info"); return;
+      }
       if (action === "usage" || action === "dashboard") {
         const result = snapshot(ctx);
-        const lines = result.models.map(m => `${m.provider}/${m.model}: ${m.calls} calls, ${m.totalTokens} tokens (in ${m.input}, out ${m.output}, cache read ${m.cacheRead}, write ${m.cacheWrite}), native cost $${m.nativeCost.toFixed(4)}${m.unpricedCalls ? `; ${m.unpricedCalls} unpriced` : ""}`);
+        const lines = result.models.map(m => `${m.provider}/${m.model}: ${m.calls} calls, ${m.totalTokens} tokens (in ${m.input}, out ${m.output}, cache read ${m.cacheRead}, write ${m.cacheWrite}), native cost $${m.nativeCost.toFixed(4)}${m.estimatedCalls ? `; estimated $${m.estimatedCost.toFixed(4)} for ${m.estimatedCalls} without native cost` : ""}${m.unpricedCalls ? `; ${m.unpricedCalls} unpriced` : ""}`);
         ctx.ui.notify(lines.length ? lines.join("\n") : "No model usage on this branch", "info"); return;
       }
       const fill = ctx.getContextUsage()?.percent;
-      ctx.ui.notify(`Token Optimizer for Pi: ${settings.enabled ? "enabled" : "disabled"}. ${fill == null ? "Context usage unavailable" : `Context fill ${fill.toFixed(1)}%`}. Commands: enable, disable, doctor, usage, archive on|off, recover POINTER`, "info");
+      ctx.ui.notify(`Token Optimizer for Pi: ${settings.enabled ? "enabled" : "disabled"}. ${fill == null ? "Context usage unavailable" : `Context fill ${fill.toFixed(1)}%`}. Commands: enable, disable, doctor, usage, audit, coach, archive on|off, recover POINTER`, "info");
     },
   });
 }

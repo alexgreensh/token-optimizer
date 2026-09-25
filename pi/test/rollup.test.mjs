@@ -28,3 +28,9 @@ test('incremental snapshot does not double-count and rebuilds on fork', () => {
  assert.equal(i.update(activeBranch(rows,'b')).models.reduce((n,m)=>n+m.nativeCost,0),3);
  assert.equal(i.update(activeBranch([...rows,msg('c','a','haiku',4)],'c')).models.reduce((n,m)=>n+m.nativeCost,0),5);
 });
+
+test('native rate fallback only for missing costs, zero native cost preserved',()=>{
+ const rows=[msg('a',null,'opus',0),msg('b','a','opus')];
+ const m=rollup(rows,()=>({input:1000000,output:0,cacheRead:0,cacheWrite:0})).models[0];
+ assert.equal(m.nativeCost,0);assert.equal(m.estimatedCost,10);assert.equal(m.estimatedCalls,1);assert.equal(m.unpricedCalls,0);
+});

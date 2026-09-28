@@ -170,7 +170,7 @@ install_opencode() {
 # `install.sh --opencode --uninstall` removes the bundled
 # token-optimizer.js from ~/.config/opencode/plugins/ (the file the
 # offline installer copied) and reverts the `token-optimizer-opencode`
-# entry it may have added to opencode.json's `plugin` array. Idempotent
+# entry it may have added to opencode.json's `plugin` or `plugins` array. Idempotent
 # and --dry-run aware. Does NOT touch the ~/.claude/skills tree (that is
 # owned by the standard installer; see opencode/README "Update").
 
@@ -218,17 +218,23 @@ try:
         data = json.load(f)
 except (json.JSONDecodeError, OSError):
     sys.exit(0)  # not valid JSON or unreadable -> leave untouched
-plugins = data.get("plugin")
-if not isinstance(plugins, list):
-    sys.exit(0)
 target = "token-optimizer-opencode"
-if target not in plugins:
+changed = False
+for key in ("plugin", "plugins"):
+    entries = data.get(key)
+    if not isinstance(entries, list):
+        continue
+    retained = [entry for entry in entries if not (
+        entry == target or (isinstance(entry, dict) and entry.get("package") == target)
+    )]
+    if len(retained) != len(entries):
+        changed = True
+        if retained:
+            data[key] = retained
+        else:
+            data.pop(key, None)
+if not changed:
     sys.exit(0)
-plugins = [x for x in plugins if x != target]
-if plugins:
-    data["plugin"] = plugins
-else:
-    data.pop("plugin", None)
 with open(p, "w", encoding="utf-8") as f:
     json.dump(data, f, indent=2)
     f.write("\n")
@@ -244,11 +250,11 @@ try:
         data = json.load(f)
 except (json.JSONDecodeError, OSError):
     sys.exit(0)
-plugins = data.get("plugin")
-if isinstance(plugins, list) and "token-optimizer-opencode" in plugins:
-    print("would-remove")
-else:
-    print("noop")
+target = "token-optimizer-opencode"
+found = any(isinstance(data.get(key), list) and any(
+    entry == target or (isinstance(entry, dict) and entry.get("package") == target)
+    for entry in data[key]) for key in ("plugin", "plugins"))
+print("would-remove" if found else "noop")
 PYCHECK
                 )"
             fi
@@ -256,7 +262,7 @@ PYCHECK
                 removed+=("${config_json} (plugin entry: token-optimizer-opencode)")
             fi
         elif [ "$dry_run" -eq 0 ]; then
-            warn "python3 not found; cannot auto-edit ${config_json}. If it has a \"plugin\" array, remove the \"token-optimizer-opencode\" entry by hand."
+            warn "python3 not found; cannot auto-edit ${config_json}. If it has a \"plugin\" or \"plugins\" array, remove the \"token-optimizer-opencode\" entry by hand."
         fi
     fi
 

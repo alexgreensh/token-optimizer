@@ -1,7 +1,7 @@
 {
   "name": "token-optimizer-opencode",
-  "version": "1.1.8",
-  "description": "Context quality scoring, smart compaction, and session continuity for OpenCode. Full parity with the Claude Code Token Optimizer plugin.",
+  "version": "1.2.0",
+  "description": "Context quality scoring, smart compaction, and session continuity for OpenCode V1 and V2.",
   "type": "module",
   "main": "dist/plugin.js",
   "types": "dist/plugin.d.ts",
@@ -17,7 +17,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "build:bundle": "bun build src/plugin.ts --target=bun --format=esm --external @opencode-ai/plugin --external @opencode-ai/sdk --external bun:sqlite --outfile dist-bundle/token-optimizer.js",
+    "build:bundle": "bun build src/plugin.ts --target=bun --format=esm --external bun:sqlite --outfile dist-bundle/token-optimizer.js",
     "dev": "tsc --watch",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
@@ -52,12 +52,14 @@
       "experimental.session.compacting",
       "experimental.compaction.autocontinue",
       "experimental.chat.system.transform",
-      "event"
+      "event",
+      "shell.env"
     ]
   },
   "dependencies": {
     "@opencode-ai/plugin": "^1.3.0",
-    "@opencode-ai/sdk": "^1.3.0"
+    "@opencode-ai/sdk": "^1.3.0",
+    "@opencode/plugin": "2.0.18"
   },
   "overrides": {
     "toml": "4.2.0"

@@ -21,11 +21,11 @@ export const isFileReadTool = (tool: string): boolean => FILE_READ_TOOLS.has(too
 export const isFileWriteTool = (tool: string): boolean => EDIT_TOOLS.has(tool);
 export const isAgentDispatchTool = (tool: string): boolean => AGENT_DISPATCH_TOOLS.has(tool);
 
-/** Read a file-path argument under either naming convention (filePath | file_path). */
+/** Read a file-path argument under either naming convention (filePath | file_path | path). */
 export function extractFilePath(args: unknown): string | null {
   if (!args || typeof args !== "object") return null;
   const a = args as Record<string, unknown>;
-  const p = a.filePath ?? a.file_path;
+  const p = a.filePath ?? a.file_path ?? a.path;
   return typeof p === "string" ? p : null;
 }
 

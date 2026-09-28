@@ -757,7 +757,23 @@ export const TokenOptimizerPlugin: Plugin = async (
     },
   };
 
-  return hooks;
+  const statusForSession = async (sessionID: string, args: { detail?: boolean }) => {
+    const state = sessions.get(sessionID);
+    const tool = createTokenStatusTool(() => ({
+      store: state?.store ?? null, lastQuality: state?.lastQuality ?? null, sessionId: sessionID,
+    }));
+    return tool.execute(args, {} as never);
+  };
+
+  const dispose = async () => {
+    for (const [sid, state] of sessions) {
+      flushSession(sid, state);
+      state.store.close();
+    }
+    sessions.clear();
+    trendsStore?.close();
+  };
+  return Object.assign(hooks, { dispose, statusForSession });
 };
 
 function estimateFillFromSession(store: SessionStore, model?: string): number {

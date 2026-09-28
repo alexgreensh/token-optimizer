@@ -59,6 +59,19 @@ jobs:
       - name: Run tests
         run: python -m pytest tests/ -q
 
+  opencode-native:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: opencode
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - name: Install pinned adapter dependencies
+        run: bun install --frozen-lockfile --ignore-scripts
+      - name: Typecheck and test both entrypoints
+        run: bun run typecheck && bun test && bun run build
+
   pi-native:
     runs-on: ubuntu-latest
     steps:

@@ -5,32 +5,26 @@ description: "Install Token Optimizer for OpenCode via npm or a local bun build.
 
 import { Tabs, TabItem, Aside, Steps } from '@astrojs/starlight/components';
 
-Token Optimizer for OpenCode is a native TypeScript plugin with full context-quality scoring, smart compaction with mode-aware context injection, session continuity, quality nudges, loop detection, and a built-in dashboard. It works with every model OpenCode supports.
+Token Optimizer for OpenCode is a native TypeScript plugin with context-quality scoring, mode-aware compaction guidance, session continuity, quality nudges, loop detection, and a built-in dashboard. Version 1.2 adds an OpenCode V2 entrypoint while retaining V1 support. The offline bundle has been tested with V2 2.0.18 and V1 1.18.33; registry delivery remains unverified.
 
 ## Prerequisites
 
 - OpenCode installed
-- npm (for the npm install method) or [bun](https://bun.sh) (for the local build method)
+- [bun](https://bun.sh) for the local build method
 
-## Recommended method: npm install
+## Package configuration (after version 1.2 is published)
 
 <Steps>
 
-1. Install the plugin:
-
-   ```bash
-   opencode plugin token-optimizer-opencode
-   ```
-
-2. Alternatively, add it directly to `opencode.json` or `.opencode/opencode.jsonc`:
+1. Add it to `opencode.json` or `.opencode/opencode.jsonc` in OpenCode V2:
 
    ```jsonc
    {
-     "plugin": ["token-optimizer-opencode"]
+     "plugins": ["token-optimizer-opencode"]
    }
    ```
 
-3. Restart OpenCode. The plugin loads automatically.
+2. Restart OpenCode. It resolves the package from npm. On V1 1.18.29+, use `plugin` (singular) with the same package. Do not add the npm entry alongside the offline bundle, or both may load.
 
 </Steps>
 
@@ -60,12 +54,13 @@ After any `git pull`, re-run `token-optimizer/install.sh --opencode` to update.
 
 ## Configuration block
 
-All options are optional. Add this to `.opencode/opencode.jsonc` to customize:
+All options are optional. For OpenCode V2, put a package object in the `plugins` array:
 
 ```jsonc
 {
-  "plugin": [
-    ["token-optimizer-opencode", {
+  "plugins": [{
+    "package": "token-optimizer-opencode",
+    "options": {
       "qualityWindow": 20,
       "features": {
         "qualityNudges": true,
@@ -75,10 +70,14 @@ All options are optional. Add this to `.opencode/opencode.jsonc` to customize:
         "activityTracking": true,
         "trends": true
       }
-    }]
-  ]
+    }
+  }]
 }
 ```
+
+For V1 use `plugin` (singular) with the plain package name. The old array-of-tuples form is not a valid OpenCode config.
+
+By default, data stays in a per-user directory. Checkpoints can retain short prompt excerpts and absolute file paths locally. If you set `dataDir` inside a repo, add the directory to `.gitignore` to avoid committing private session data.
 
 ## Environment variable overrides
 

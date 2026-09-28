@@ -82,5 +82,16 @@ if printf '%s' "$out2" | grep -q "nothing to remove"; then ok "idempotent-second
 rm -rf "${tmp5}"
 unset OPENCODE_CONFIG_DIR
 
+# --- 6. V2 plural config and package/options object -------------------------
+tmp6="$(mktemp -d)"
+cat > "${tmp6}/opencode.json" <<'JSON'
+{"plugins":["other",{"package":"token-optimizer-opencode","options":{"dataDir":"/tmp/keep"}},"token-optimizer-opencode"]}
+JSON
+OPENCODE_CONFIG_DIR="${tmp6}" out="$(uninstall_opencode 2>&1)" || true
+remaining="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("plugins"))' "${tmp6}/opencode.json" 2>/dev/null)"
+if [ "$remaining" = "['other']" ]; then ok "v2-reverts-package-entries-keeps-others"; else nok "v2-reverts-package-entries-keeps-others" "remaining='$remaining'"; fi
+rm -rf "${tmp6}"
+unset OPENCODE_CONFIG_DIR
+
 printf '\n%d/%d passed\n' "$pass" "$((pass+fail))"
 [ "$fail" -eq 0 ]

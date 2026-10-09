@@ -46,6 +46,7 @@ from hook_io import read_stdin_hook_input
 from hook_runtime import LeaseLock
 from plugin_env import resolve_snapshot_dir, snapshot_dir_candidates
 from refetch_fingerprint import ARGS_HASH_KEY, expand_command, is_live_state_tool, tool_fingerprint
+from recovery_output import is_recovery_output
 from runtime_env import detect_runtime, settings_env_value
 from session_store import SessionStore, _sanitize_session_id as sanitize_sid
 
@@ -1327,6 +1328,9 @@ def archive_result(quiet: bool = False) -> None:
         return
 
     tool_name = hook_input.get("tool_name", "")
+    # Recovery must finish in one call: never archive or replace the original again.
+    if is_recovery_output(tool_name, hook_input.get("tool_input", {})):
+        return
     tool_use_id = hook_input.get("tool_use_id", "")
     raw_response = hook_input.get("tool_response", "")
     # Screenshots and other media pass through untouched: no archive, no

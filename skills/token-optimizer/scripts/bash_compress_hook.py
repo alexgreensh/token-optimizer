@@ -133,6 +133,10 @@ def _run(payload: dict) -> None:
     if tool_name != "Bash":
         return
 
+    from recovery_output import is_recovery_output
+    if is_recovery_output(tool_name, payload.get("tool_input", {})):
+        return
+
     # Extract tool response across ALL host payload shapes so the thrash guard
     # records EVERY Bash run (not just the ones with a shape we recognize):
     #   - Claude Code PostToolUse: dict with stdout/stderr/exit_code

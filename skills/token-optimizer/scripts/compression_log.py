@@ -148,14 +148,23 @@ def log_compression_event(
         # DB boundary: command_pattern/detail can embed a file name or label
         # carrying a credential shape. Redact here so no caller can persist
         # them raw; on a redactor refusal the text columns go NULL while the
-        # token counts still land.
+        # token counts still land. feature/session_id are caller text too —
+        # redaction is a no-op on the real inputs (constant feature names,
+        # host-generated session ids, so joins still hold) but a tainted value
+        # can no longer reach disk verbatim.
         try:
             from credential_patterns import redact_credentials as _ce_redact
+            if feature:
+                feature = _ce_redact(feature)
+            if session_id:
+                session_id = _ce_redact(session_id)
             if command_pattern:
                 command_pattern = _ce_redact(command_pattern)
             if detail:
                 detail = _ce_redact(detail)
         except Exception:
+            feature = "unknown"
+            session_id = None
             command_pattern = None
             detail = None
 

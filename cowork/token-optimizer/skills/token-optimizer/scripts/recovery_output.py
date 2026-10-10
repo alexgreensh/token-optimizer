@@ -29,7 +29,12 @@ def is_recovery_tool(tool_name: str) -> bool:
 
 
 # An id never starts with a dash, so --list and --search keep the normal pipeline.
-_HINT_TAIL = re.compile(r'[a-zA-Z0-9_][a-zA-Z0-9_-]*(?: --session [a-zA-Z0-9_][a-zA-Z0-9_-]*)?\Z')
+# One optional trailing ']' is tolerated: pointers shipped before the bracket
+# moved to its own line ended "expand <id>]", and those stale hints are still in
+# live transcripts — a Bash call copied from one is a recovery attempt (whose
+# failed output must never be archived), not new tool output.
+_HINT_TAIL = re.compile(
+    r'[a-zA-Z0-9_][a-zA-Z0-9_-]*(?: --session [a-zA-Z0-9_][a-zA-Z0-9_-]*)?\]?\Z')
 
 
 def _is_printed_hint(command: str) -> bool:
@@ -70,10 +75,14 @@ def is_expand_command(command: str) -> bool:
             return False
         if not _PYTHON.fullmatch(Path(tokens[0]).name):
             return False
-        if tokens[3].startswith('-') or not re.fullmatch(r'[a-zA-Z0-9_-]+', tokens[3]):
+        # Tolerate one trailing ']' — the stale pointer format ended that way.
+        key = tokens[3][:-1] if tokens[3].endswith(']') else tokens[3]
+        if key.startswith('-') or not re.fullmatch(r'[a-zA-Z0-9_-]+', key):
             return False
-        if len(tokens) == 6 and (tokens[4] != '--session' or not re.fullmatch(r'[a-zA-Z0-9_-]+', tokens[5])):
-            return False
+        if len(tokens) == 6:
+            sid = tokens[5][:-1] if tokens[5].endswith(']') else tokens[5]
+            if tokens[4] != '--session' or not re.fullmatch(r'[a-zA-Z0-9_-]+', sid):
+                return False
         expected = Path(__file__).resolve().parent / 'measure.py'
         return Path(tokens[1]).is_absolute() and Path(tokens[1]).resolve() == expected
     except (ValueError, OSError, RuntimeError):

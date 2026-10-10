@@ -9,7 +9,9 @@ import { Aside } from '@astrojs/starlight/components';
 The Cowork adapter is experimental and not yet verified on a live Cowork build. Which hooks fire in Cowork is confirmed by a diagnostic probe, not from code, so install `to-hook-probe` first and confirm the fire matrix before relying on any automatic feature. See the rollout steps below.
 </Aside>
 
-Claude Cowork runs the same Claude Code engine inside a cloud or local VM. It reads the same `~/.claude` conventions, uses the same Claude model ladder, and loads Token Optimizer as the same plugin. So Cowork is not a separate runtime: `detect_runtime()` still returns `claude` inside Cowork, and `is_cowork()` is a refinement signal layered on top of it. The work to run on Cowork is packaging and distribution plus the hook subset that fires there, not a rewrite of the engine.
+Claude Cowork runs the same Claude Code engine inside a cloud or local VM. It uses the same Claude model ladder and runs Token Optimizer as the same plugin, but the plugin arrives by account sync, not from local files: Cowork does not read `~/.claude`. So Cowork is not a separate runtime: `detect_runtime()` still returns `claude` inside Cowork, and `is_cowork()` is a refinement signal layered on top of it. The work to run on Cowork is packaging and distribution plus the hook subset that fires there, not a rewrite of the engine.
+
+Since October 6, 2026, new Cowork tasks on Pro and Max plans run in the cloud. A cloud session leaves no local transcript on your machine.
 
 ## How Token Optimizer reaches Cowork
 
@@ -34,8 +36,9 @@ Inside Cowork, `is_cowork()` returns true while `detect_runtime()` still resolve
 |---|---|
 | `CLAUDE_CODE_REMOTE=true` | The only documented cloud-vs-desktop signal. Primary. |
 | `CLAUDE_CODE_CONTAINER_ID` | Observed in every Cowork VM, undocumented. Fallback. |
-| `AI_AGENT` carrying the harness marker | The VM sets the `..._harness` variant; the local CLI's `..._agent` variant is deliberately not a match. |
 | `CLAUDE_PLUGIN_ROOT` under `/plugins/synced/` | Where org-console account-synced plugins land. |
+
+`AI_AGENT` is deliberately not a signal: the local Claude Code CLI also exports `AI_AGENT=claude-code_<version>_harness` into every hook subprocess, so that marker cannot tell a Cowork VM from a desktop session.
 
 Model-routing advice carries a `cowork` row that mirrors the Claude ladder exactly, with native thinking-budget effort, so a caller that has resolved `is_cowork()` gets a consistent table rather than a generic fallback.
 

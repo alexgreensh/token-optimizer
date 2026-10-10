@@ -9,13 +9,14 @@ All hook paths use `${CLAUDE_PLUGIN_ROOT}` so they stay portable across machines
 
 ## Hook trigger table
 
-Twenty triggers fire across nine hook events.
+Twenty-six triggers fire across eleven hook events.
 
 | Hook event | Fires | What it does |
 |---|---|---|
 | `PreToolUse: Read` | `read_cache.py` | Intercepts file re-reads and substitutes a delta or structure map for unchanged content |
 | `PreToolUse: Bash` | `bash_hook.py` | Rewrites eligible read-only CLI commands through the compressor |
 | `PreToolUse: Agent\|Task` | `checkpoint-trigger` | Saves a milestone checkpoint before a sub-agent dispatch |
+| `PreToolUse: mcp__.*` | `refetch_guard.py` | Denies an exact repeat of an MCP call whose large result was already archived, and hands back the `expand` command |
 | `PreCompact` | `dynamic-compact-instructions` | Injects mode-aware PRESERVE/DROP guidance into the compact prompt |
 | `PreCompact` | `compact-capture` | Saves a session checkpoint before compaction |
 | `PreCompact` | `read_cache.py --clear` | Clears the per-session read cache |
@@ -30,10 +31,12 @@ Twenty triggers fire across nine hook events.
 | `StopFailure` | `compact-capture --trigger stop-failure` | Saves a checkpoint on a stop failure (crash or timeout) |
 | `UserPromptSubmit` | `quality-cache --warn` | Updates the quality score and warns if it dropped |
 | `UserPromptSubmit` | `prompt-continuity` | Injects a topic-matched hint from a prior session |
+| `UserPromptSubmit` | `verbosity-steer` | Injects a lean-output steer when the context is already deep |
 | `PostToolUse: Bash\|Read\|Glob\|Grep\|Agent\|mcp__.*` | `archive_result.py` | Archives large tool results to disk so they survive compaction |
 | `PostToolUse: Bash\|Read\|Grep\|Glob\|mcp__.*` | `context_intel.py` | Summarizes large outputs into the Session Knowledge Store (shadow only) |
 | `PostToolUse: Edit\|Write\|MultiEdit\|NotebookEdit` | `read_cache.py --invalidate` | Invalidates stale read-cache entries after a write |
 | `PostToolUse: (all tools)` | `quality-cache --throttle-only` | Refreshes the quality score and runs the cohort tripwire evaluation |
+| `PostToolUseFailure: Bash` | `posttooluse_runner.py` (failure branch) | Archives failed Bash output uncompressed so the error text survives |
 | `PostCompact` | `quality-cache --force` | Re-populates the quality score after compaction |
 | `CwdChanged` | `read_cache.py --clear` | Clears the read cache on a directory change |
 
@@ -51,7 +54,7 @@ Twenty triggers fire across nine hook events.
 
 ## Performance guards
 
-Hooks that inject context or do work on the critical path carry a wall-clock budget and exit early if they exceed it. `ensure-health` and `prompt-continuity` run on an 8-second budget; `keepwarm-arm` runs on a 2-second budget. The `context_intel.py` summarizer is shadow-only: it writes to the Session Knowledge Store but never injects into live context.
+Hooks that inject context or do work on the critical path carry a wall-clock budget and exit early if they exceed it. Each consolidated hook runner holds one shared budget: 18 seconds for the SessionStart and UserPromptSubmit runners (a 2-second margin under their 20-second `hooks.json` timeout), 13 seconds for the Stop runner (under its 15-second timeout), 58 seconds for SessionEnd (under its 60-second timeout), and 2.5 seconds for the PostToolUse runner. Remaining time is shared fairly across the subcommands still pending. The `context_intel.py` summarizer is shadow-only: it writes to the Session Knowledge Store but never injects into live context.
 
 ## Enabling and disabling
 

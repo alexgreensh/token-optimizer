@@ -40,7 +40,7 @@ Three signals are omitted on purpose.
 
 ## Pre-turn context nudge
 
-The nudge fires through the `pre_llm_call` hook before each turn. Hermes owns compression. Token Optimizer stays silent while the native compressor is enabled and healthy. If native compression is disabled, failed, or ineffective, a one-line notice can fire at roughly 70 percent usage and escalate at 85 percent. It fires at most once per session.
+The nudge fires through the `pre_llm_call` hook before each turn. Hermes owns compression. Token Optimizer stays silent while the native compressor is enabled and healthy. If native compression is disabled, failed, or ineffective, a one-line notice can fire at roughly 70 percent usage and escalate at 85 percent. It fires at most once per session and does not re-arm: a later drop back under the threshold and a second crossing stay silent.
 
 The numerator uses provider-reported prompt tokens from the latest request. Hermes does not expose the live context-window size to plugins, so the denominator is a mapped model window or a 200,000-token fallback. Displays mark any locally estimated numerator with `~`; cumulative session token totals are never used as occupancy.
 

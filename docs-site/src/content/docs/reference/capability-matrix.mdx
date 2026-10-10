@@ -49,7 +49,7 @@ Each runtime serves its dashboard on a fixed port, so multiple runtimes run side
 | Impact validation | No (verify) | No | No | No | No | Yes | No | No | No | No | No |
 | Agent cost breakdown | No (verify) | No | No | No | No | Yes | No | No | No | No | No |
 | Model-switch simulation | No (verify) | No | No | No | No | Yes | No | No | No | No | No |
-| Proactive context nudge | Yes | Yes | Yes | Yes | Yes | No (verify) | Yes (at 70%) | Part (version-gated) | No | Part (30/80 tool calls) | Part (from last decoded generation) |
+| Proactive context nudge | Yes | Yes | Yes | Yes | Yes | No (verify) | Limited (at 70%, only when native compression needs help) | Part (version-gated) | No | Part (30/80 tool calls) | Part (from last decoded generation) |
 | Crash recovery | Yes (StopFailure) | Yes | Approx. (Stop + compact) | Approx. | verify | verify | verify | Yes (in-flight tally) | Yes (debug-log source) | Yes (in-flight tally) | Part (killed/incomplete flagged) |
 
 ## How to read the gaps

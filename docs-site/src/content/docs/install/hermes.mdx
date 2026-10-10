@@ -96,7 +96,7 @@ Pass `--port <n>` to override the default port.
 | `/token-optimizer` | Slash command inside any Hermes session. Prints token and cost summary for recent sessions. |
 | `hermes token-optimizer` | CLI subcommand from your shell. Opens the dashboard at `http://localhost:24844`. |
 
-A context nudge fires automatically before each turn via the `pre_llm_call` hook. Hermes owns compression, so Token Optimizer stays silent while the native compressor is enabled and healthy. If native compression is disabled, failed, or ineffective, a one-line notice can appear at approximately 70% context usage and escalate at 85% or higher. It fires at most once per session.
+A context nudge fires automatically before each turn via the `pre_llm_call` hook. Hermes owns compression, so Token Optimizer stays silent while the native compressor is enabled and healthy. If native compression is disabled, failed, or ineffective, a one-line notice can appear at approximately 70% context usage and escalate at 85% or higher. It fires at most once per session and does not re-arm within that session.
 
 The latest provider-reported prompt size is the occupancy numerator. Hermes does not expose the live context-window size to plugins, so the denominator is a mapped model window or a 200,000-token fallback. Cumulative session totals are never used as occupancy.
 

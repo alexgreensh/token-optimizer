@@ -38,6 +38,7 @@ try:
         is_live_state_tool,
         tool_fingerprint,
     )
+    from recovery_output import is_recovery_tool
     from session_store import _sanitize_session_id as sanitize_sid
 except Exception:
     # If our own modules can't load, never block a tool call.
@@ -209,7 +210,7 @@ def refetch_guard() -> None:
     # Live-state tools (browser, screen) return new data for the same arguments,
     # so a repeat is never a re-fetch. Checked here too, not only at archive
     # time, so manifests written by older versions cannot block them either.
-    if "__" not in tool_name or is_live_state_tool(tool_name):
+    if "__" not in tool_name or is_live_state_tool(tool_name) or is_recovery_tool(tool_name):
         _emit()
         return
 

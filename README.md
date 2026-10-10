@@ -480,6 +480,8 @@ Every compression event, every saving, every quality measurement is a row you ca
 
 Large tool results (>4KB) are archived to disk and replaced with a short preview plus a retrieval pointer. The full output survives compaction. When the model needs it, it pulls the original via `expand`, with no command re-run and no lost output.
 
+Recovery is not compressed a second time. The optimizer's own `measure.py expand <id>` command (including `--session <id>`) and known original-recovery tools pass through without a new archive, dedup replacement or re-fetch denial. Ordinary memory search and document retrieval keep their existing behavior.
+
 This isn't just storage. The system tracks how many results were archived vs re-expanded, so you can see the net tokens that stayed collapsed. Re-expansions are netted out of the savings total, so you only count what actually stayed compressed.
 
 ```bash

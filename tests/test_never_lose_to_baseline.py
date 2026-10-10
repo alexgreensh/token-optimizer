@@ -228,3 +228,52 @@ def test_guard_shrinks_preview_but_keeps_pointer_intact():
     )
     assert out.startswith("p"), "preview head must be kept"
     assert key in out, "expand key must survive the cap"
+
+
+@pytest.mark.parametrize('cluster', ['e\u0301', 'e\u0301\u0308', '\U0001f469\u200d\U0001f4bb',
+    '\U0001f44d\U0001f3fd', '\u2764\ufe0f', 'e\u200b', 'e\u200c', 'e\u2060'])
+def test_baseline_cap_never_changes_boundary_cluster(cluster):
+    bc = _load('bash_compress')
+    cap = bc.CC_PERSISTED_OUTPUT_STUB_CHARS
+    # Every interior boundary of a cluster must drop it whole, not emit a
+    # different glyph; the archive still holds the original.
+    for interior in range(1, len(cluster)):
+        prefix = 'x' * (cap - interior)
+        text = prefix + cluster + 'tail' * 100
+        out = bc._enforce_baseline_invariant(text, 'r' * 40_000, None)
+        assert out == prefix
+        assert len(out) <= cap
+
+
+def test_baseline_cap_keeps_pointer_without_detached_accent():
+    bc = _load('bash_compress')
+    ar = _load('archive_result')
+    raw = 'r' * 40_000
+    pointer = ar.build_archive_pointer('', len(raw), 'unicode-key')
+    prefix = 'x' * (bc.CC_PERSISTED_OUTPUT_STUB_CHARS - len(pointer) - 1)
+    text = prefix + 'e\u0301' + 'tail' * 100 + pointer
+    out = bc._enforce_baseline_invariant(text, raw, 'unicode-key')
+    assert out == prefix + pointer
+    assert len(out) <= bc.CC_PERSISTED_OUTPUT_STUB_CHARS
+
+
+def test_baseline_pathological_marks_stay_bounded():
+    bc = _load('bash_compress')
+    text = 'e' + '\u0301' * 100_000 + 'tail'
+    out = bc._enforce_baseline_invariant(text, 'r' * 200_000, None)
+    assert out == ''
+
+
+def test_baseline_safe_prefix_is_maximal_for_plain_text():
+    bc = _load('bash_compress')
+    cap = bc.CC_PERSISTED_OUTPUT_STUB_CHARS
+    assert bc._enforce_baseline_invariant('x' * cap + 'Z', 'r' * 40_000, None) == 'x' * cap
+    assert bc._unicode_safe_head('x' * cap + 'Z', cap) == 'x' * cap
+
+
+@pytest.mark.parametrize('cluster', ['e\u0301', '\U0001f469\u200d\U0001f4bb'])
+def test_baseline_safe_prefix_is_maximal_at_complete_cluster_end(cluster):
+    bc = _load('bash_compress')
+    cap = bc.CC_PERSISTED_OUTPUT_STUB_CHARS
+    text = 'x' * (cap - len(cluster)) + cluster + 'Z'
+    assert bc._enforce_baseline_invariant(text, 'r' * 40_000, None) == text[:-1]

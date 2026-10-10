@@ -3998,6 +3998,15 @@ def doctor(as_json=False):
     else:
         checks.append(("!!", "SessionEnd hook", "missing (fix: python3 measure.py setup-hook)"))
 
+    # Advisory only: do not change proxy/tool-search settings or infer a bill.
+    from tool_search_diagnostic import diagnose_tool_search
+    _search_check = diagnose_tool_search(os.environ, settings, runtime=detect_runtime())
+    if _search_check is not None:
+        checks.append(_search_check)
+        total += 1
+        if _search_check[0] == "OK":
+            score += 1
+
     # 5. Smart Compaction
     total += 1
     sc_status = _is_smart_compact_installed(settings)

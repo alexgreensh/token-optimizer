@@ -252,10 +252,13 @@ function buildCheckpointBody(
       const ts = msg.timestamp ? ` (${msg.timestamp})` : "";
       lines.push(`## ${role}${ts}`);
       lines.push("");
+      // Redact BEFORE cutting: a secret straddling the 2000-char cut is a
+      // prefix no pattern recognises.
+      const redactedContent = redact(msg.content);
       const content =
-        msg.content.length > 2000
-          ? msg.content.slice(0, 2000) + "\n\n[...truncated]"
-          : msg.content;
+        redactedContent.length > 2000
+          ? redactedContent.slice(0, 2000) + "\n\n[...truncated]"
+          : redactedContent;
       lines.push(content);
       lines.push("");
     }
@@ -509,8 +512,10 @@ function extractIntelligent(
     const content = msg.content;
     if (!content) continue;
 
-    // Truncate very long messages for pattern matching
-    const sample = content.slice(0, 3000);
+    // Truncate very long messages for pattern matching. Redact first: the
+    // extracted lines are persisted, and a secret straddling the 3000-char
+    // cut is a prefix no pattern recognises.
+    const sample = redact(content).slice(0, 3000);
 
     if (msg.role === "assistant") {
       if (matchesAny(sample, DECISION_PATTERNS)) {
@@ -652,10 +657,12 @@ export function captureCheckpointV2(
     const ts = msg.timestamp ? ` (${msg.timestamp})` : "";
     lines.push(`### ${role}${ts}`);
     lines.push("");
+    // Redact BEFORE cutting (see buildCheckpointBody).
+    const redactedContent = redact(msg.content);
     const content =
-      msg.content.length > 1500
-        ? msg.content.slice(0, 1500) + "\n\n[...truncated]"
-        : msg.content;
+      redactedContent.length > 1500
+        ? redactedContent.slice(0, 1500) + "\n\n[...truncated]"
+        : redactedContent;
     lines.push(content);
     lines.push("");
   }

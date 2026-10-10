@@ -10924,18 +10924,18 @@ def _extract_topic(text):
         if line:
             text = line
             break
-    # Truncate
-    if len(text) > 120:
-        text = text[:117] + "..."
     # The topic is user text persisted to session_log/quality-cache and
     # rendered into checkpoints — credentials must not ride along. If the
     # shared redactor is unavailable or refuses, drop the topic rather than
-    # persist it raw.
+    # persist it raw. Redact BEFORE truncating: a secret that straddles the
+    # cut is a prefix no pattern recognises.
     try:
         from credential_patterns import redact_credentials as _topic_redact
         text = _topic_redact(text)
     except Exception:
         return None
+    if len(text) > 120:
+        text = text[:117] + "..."
     return text or None
 
 
@@ -36367,17 +36367,20 @@ def _codex_backfill_tool_archive(filepath=None, session_id=None, max_outputs=20)
             if entry_path.exists():
                 continue
 
-            if len(output_text) > 5_242_880:
-                output_text = output_text[:5_242_880] + "\n[... truncated by Token Optimizer archive cap]"
+            over_cap = len(output_text) > 5_242_880
 
             try:
                 # Redact BEFORE hashing/summarizing/persisting so the archive
                 # entry, manifest, and SessionStore row all carry the same
                 # safe bytes. A redactor refusal (broken custom pattern
                 # config) skips this output rather than storing it raw.
-                output_text = _bf_redact(output_text)
+                # Redact a window past the cap and cut AFTER: a secret
+                # straddling the cap is otherwise a prefix no pattern sees.
+                output_text = _bf_redact(output_text[:5_242_880 + 4096] if over_cap else output_text)
             except Exception:
                 continue
+            if over_cap:
+                output_text = output_text[:5_242_880] + "\n[... truncated by Token Optimizer archive cap]"
 
             char_count = len(output_text)
             token_est = int(char_count / CHARS_PER_TOKEN)
@@ -37171,6 +37174,16 @@ def _extract_session_state(filepath, tail_lines=500):
 
     question_re = re.compile(r'\?|TODO|FIXME|HACK|XXX', re.IGNORECASE)
 
+    # Redact each transcript string where it ENTERS the state, before any of
+    # the width cuts below (200/300/500...). A cut first leaves a secret that
+    # straddles it as a prefix no pattern recognises (a token shorter than its
+    # shape, a database URI cut before its "@", a PEM block cut before END).
+    # No redactor means no state: the caller writes nothing rather than raw text.
+    try:
+        from credential_patterns import redact_credentials as _ingest_redact
+    except Exception:
+        return None
+
     active_files = []  # (path, action, line_range)
     recent_reads = []  # paths of recently-Read files (pointer-only)
     decisions = []     # text snippets
@@ -37217,7 +37230,7 @@ def _extract_session_state(filepath, tail_lines=500):
 
         # User messages
         if rec_type == "user":
-            text = _extract_user_text(record)
+            text = _ingest_redact(_extract_user_text(record))
             if text.strip():
                 last_user_msg = text.strip()
             # Check for questions
@@ -37240,7 +37253,7 @@ def _extract_session_state(filepath, tail_lines=500):
                         continue
 
                     if block.get("type") == "text":
-                        txt = block.get("text", "")
+                        txt = _ingest_redact(block.get("text", ""))
                         assistant_text += txt + " "
 
                         # Decisions
@@ -37289,7 +37302,7 @@ def _extract_session_state(filepath, tail_lines=500):
                         # Track agent dispatches
                         if tool_name in ("Task", "Agent"):
                             agent_type = inp.get("subagent_type", inp.get("description", "unknown"))
-                            desc = inp.get("description", "")[:100]
+                            desc = _ingest_redact(inp.get("description", ""))[:100]
                             agent_state.append((agent_type, desc))
 
                         # Track TodoWrite state (keep the latest snapshot only)
@@ -37297,7 +37310,7 @@ def _extract_session_state(filepath, tail_lines=500):
                             todo_list = inp.get("todos", [])
                             if isinstance(todo_list, list):
                                 todos = [
-                                    (t.get("content", "")[:120], t.get("status", ""))
+                                    (_ingest_redact(t.get("content", ""))[:120], t.get("status", ""))
                                     for t in todo_list
                                     if isinstance(t, dict)
                                 ]
@@ -37466,8 +37479,16 @@ def compact_capture(transcript_path=None, session_id=None, trigger="auto", cwd=N
             return None
         return str(checkpoint_path)
 
-    # Parse session state
-    state = _extract_session_state(filepath)
+    # Parse session state. The extractor redacts as it reads; a configured-but-
+    # broken custom pattern file makes it raise, and then nothing is written.
+    try:
+        from credential_patterns import RedactionConfigError as _ExtractCfgErr
+    except Exception:
+        return None
+    try:
+        state = _extract_session_state(filepath)
+    except _ExtractCfgErr:
+        return None
     if not state:
         return None
 

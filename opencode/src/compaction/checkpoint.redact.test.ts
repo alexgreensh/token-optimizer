@@ -79,3 +79,34 @@ test("checkpoint row redacts secrets in topic, decisions, and file paths", () =>
     store.close();
   }
 });
+
+// Redact BEFORE the sanitize/cut steps. buildTopicSummary strips characters
+// outside \w\s.,;:!?()'"- and caps each message at 300 chars. A database URI
+// loses its "@" and "/" (and so its credential shape) in the strip, and a token
+// straddling the cap is a prefix no pattern recognises.
+function topicFor(message: string): string {
+  const store = new SessionStore(tmpDir(), "sess-cut-test");
+  try {
+    const cp = captureCheckpoint(store, "sess-cut-test", "stop", "general", 80, 0.5, [message]);
+    const row = store
+      .connect()
+      .query("SELECT content FROM checkpoints ORDER BY id DESC LIMIT 1")
+      .get() as { content: string };
+    return row.content + "\n" + cp.content;
+  } finally {
+    store.close();
+  }
+}
+
+test("topic summary: a secret straddling the 300-char cap is redacted", () => {
+  const token = j("ghp_", "Q7r8T9u0V1w2X3y4Z5a6B7c8D9e0F1g2H3i4");
+  const out = topicFor("a".repeat(300 - 12) + " " + token + " tail words here");
+  expect(out).not.toContain("Q7r8T9u0");
+  expect(out).not.toContain("ghp_");
+});
+
+test("topic summary: a database URI credential is redacted before the character strip", () => {
+  const pw = "Sup3rS3cretPw";
+  const out = topicFor(`please connect with postgres://svc:${pw}!@db.internal/app and report back`);
+  expect(out).not.toContain(pw);
+});

@@ -34,7 +34,10 @@ function buildTopicSummary(recentUserMessages: string[]): string {
   // tags, prompt-injection keywords, or control characters.
   const sanitized = sample
     .map((m) =>
-      m
+      // Redact first: the strips below remove the "@" and "/" a URI credential
+      // is recognised by, and the cap would leave a straddling token as a
+      // prefix no pattern matches.
+      redact(m)
         .replace(/<[^>]*>/g, " ")           // strip XML/HTML tags
         .replace(/[^\w\s.,;:!?()'"-]/g, " ") // keep safe punctuation only
         .replace(/\s+/g, " ")

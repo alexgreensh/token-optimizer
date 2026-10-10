@@ -97,7 +97,9 @@ export function logCompressionEvent(input: LogCompressionEventInput): boolean {
         ? Math.round((1 - compressedTokens / originalTokens) * 10000) / 10000
         : 0;
 
-    const detailRaw = input.detail ?? null;
+    // Redact BEFORE cutting: a secret straddling the cut is a prefix no
+    // pattern recognises.
+    const detailRaw = input.detail ? redact(input.detail) : null;
     const detail =
       detailRaw && detailRaw.length > MAX_DETAIL_LEN
         ? detailRaw.slice(0, MAX_DETAIL_LEN)
@@ -117,7 +119,7 @@ export function logCompressionEvent(input: LogCompressionEventInput): boolean {
       compression_ratio: ratio,
       quality_preserved: input.qualityPreserved === false ? 0 : 1,
       verified: input.verified ? 1 : 0,
-      detail: detail ? redact(detail) : null,
+      detail: detail || null,
     };
 
     ensureDir();

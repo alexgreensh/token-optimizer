@@ -1195,10 +1195,26 @@ _KNOWN_PROVIDER_PREFIXES = {
     "openrouter", "gateway", "litellm", "azure", "aws",
 }
 
+# Bedrock inference-profile ids are DOT-qualified
+# ("us.anthropic.claude-haiku-4-5", "global.anthropic.claude-sonnet-4-5"):
+# a leading chain of known provider/region tokens separated by dots. Dots stay
+# out of the slash/colon loop so ids like "claude-3.5-sonnet" or "gpt-4.1"
+# are never cut on a version dot.
+_DOTTED_PROVIDER_TOKENS = _KNOWN_PROVIDER_PREFIXES | {
+    "amazon", "us", "us-gov", "eu", "ap", "apac", "au", "ca", "cn",
+    "global", "jp", "sa", "me", "af", "il",
+}
+_DOTTED_PROVIDER_PREFIX_RE = re.compile(
+    r"^(?:(?:" + "|".join(sorted(_DOTTED_PROVIDER_TOKENS)) + r")\.)+")
+
 
 def _strip_provider_prefixes(model):
     value = str(model).strip().lower()
     while True:
+        dotted = _DOTTED_PROVIDER_PREFIX_RE.match(value)
+        if dotted:
+            value = value[dotted.end():]
+            continue
         slash = value.find("/")
         colon = value.find(":")
         if slash == -1 and colon == -1:
@@ -3277,7 +3293,7 @@ def _claude_model_window(model_str):
     that detect_context_window() documents (most users are on 1M-native
     models); override with TOKEN_OPTIMIZER_CONTEXT_SIZE.
     """
-    m = (model_str or "").lower().strip()
+    m = _strip_provider_prefixes(str(model_str or "").split("/")[-1])
     if not m:
         return 200_000
     one_m_suffix = "[1m]" in m or "1000k" in m
@@ -3348,7 +3364,7 @@ def _configured_model_string():
 
 def _plain_46_family(model_str):
     """'opus' / 'sonnet' when model_str is a 4.6 id WITHOUT the [1m] suffix."""
-    m = (model_str or "").lower().strip()
+    m = _strip_provider_prefixes(str(model_str or "").split("/")[-1])
     if not m or "[1m]" in m or "1000k" in m:
         return None
     m = re.sub(r"[-@]\d{8}$", "", m).strip()
@@ -3518,7 +3534,8 @@ def _canonical_compact_model_id(model):
     m = str(model or "").strip().lower()
     if not m:
         return ""
-    m = m.split("/")[-1]                    # provider-prefixed ids
+    # provider-prefixed ids ("anthropic/x", "us.anthropic.x", "bedrock:x")
+    m = _strip_provider_prefixes(m.split("/")[-1])
     m = m.replace("[1m]", "").strip()
     m = re.sub(r"[-@]\d{8}$", "", m)        # -20250929 / @20250929 date suffix
     if m and not m.startswith("claude-"):

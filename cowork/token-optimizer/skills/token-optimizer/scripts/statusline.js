@@ -156,10 +156,16 @@ function _parseCompactWindow(v) {
 // down (it can never raise it). Returns the window in tokens ONLY when a real
 // user override shrank it below the model window (the tuned ~967K default is
 // not an override of the host's own number); otherwise null.
+// Bedrock inference-profile ids are dot/colon-qualified
+// ("us.anthropic.claude-haiku-4-5", "bedrock:claude-sonnet-4-5"): a leading
+// chain of KNOWN provider/region tokens. Version dots ("gpt-4.1",
+// "claude-3.5-sonnet") are never cut. Mirror of measure.py's
+// _canonical_compact_model_id.
+const _PROVIDER_PREFIX_RE = /^(?:(?:anthropic|openai|google|gemini|vertex|bedrock|openrouter|gateway|litellm|azure|aws|amazon|us|us-gov|eu|ap|apac|au|ca|cn|global|jp|sa|me|af|il)[.:])+/;
 function _canonModelId(model) {
   let m = String(model || '').trim().toLowerCase();
   if (!m) return '';
-  m = m.split('/').pop().replace('[1m]', '').trim().replace(/[-@]\d{8}$/, '');
+  m = m.split('/').pop().replace(_PROVIDER_PREFIX_RE, '').replace('[1m]', '').trim().replace(/[-@]\d{8}$/, '');
   if (m && !m.startsWith('claude-')) m = 'claude-' + m;
   return m;
 }

@@ -23,13 +23,6 @@ export interface QualityReport {
     recommendations: string[];
     distortionBounds?: DistortionBounds;
 }
-/**
- * Context window for a Claude model id, per Claude Code's model-config docs
- * (checked 2026-10-10): Fable, Sonnet 5+, Opus 4.7+ and Haiku 5.5 are 1M with
- * no suffix; Sonnet 4.6 / Opus 4.6 are 1M only as the `[1m]` variant (200K
- * without); every older Claude is 200K. Returns null when the id carries no
- * Claude family so callers fall through to their other rules.
- */
 export declare function claudeContextWindow(model: string): number | null;
 /**
  * Resolve a model's context window. Tries exact match, then a Claude-family rule,

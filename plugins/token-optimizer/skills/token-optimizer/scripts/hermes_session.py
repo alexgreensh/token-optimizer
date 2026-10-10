@@ -192,16 +192,29 @@ OMITTED_QUALITY_SIGNALS = (
 # Model helpers
 # ---------------------------------------------------------------------------
 
+# Bedrock inference-profile ids are dot-qualified
+# ("us.anthropic.claude-haiku-4-5", "global.anthropic.claude-sonnet-4-5"): a
+# leading chain of known provider/region tokens. Mirror of measure.py's
+# _DOTTED_PROVIDER_PREFIX_RE; dots are only cut on KNOWN tokens so versioned
+# ids like "gpt-4.1" or "claude-3.5-sonnet" are never split.
+_DOTTED_PROVIDER_PREFIX_RE = re.compile(
+    r"^(?:(?:anthropic|openai|google|gemini|vertex|bedrock|openrouter|gateway"
+    r"|litellm|azure|aws|amazon|us|us-gov|eu|ap|apac|au|ca|cn|global|jp|sa|me"
+    r"|af|il)\.)+")
+
+
 def _context_window_for_model(model: str) -> int:
     """Return the context window (tokens) for a Hermes model string."""
     if not model or model == _UNKNOWN_MODEL:
         return _DEFAULT_CONTEXT_WINDOW
     low = model.lower().strip()
     # Strip a provider prefix (e.g. "anthropic/claude-fable-5",
-    # "openrouter/anthropic/claude-sonnet-5") so vendor-qualified ids resolve
-    # like their bare form instead of falling through to the default.
+    # "openrouter/anthropic/claude-sonnet-5", "us.anthropic.claude-haiku-4-5")
+    # so vendor-qualified ids resolve like their bare form instead of falling
+    # through to the default.
     if "/" in low:
         low = low.rsplit("/", 1)[-1]
+    low = _DOTTED_PROVIDER_PREFIX_RE.sub("", low)
     claude = _claude_context_window(low)
     if claude is not None:
         return claude

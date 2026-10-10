@@ -4,6 +4,22 @@ Comprehensive checklist of ALL optimization techniques.
 
 ---
 
+## Contents
+
+- [QUICK WINS (< 30 minutes each)](#quick-wins--30-minutes-each)
+- [MODEL ROUTING STRATEGY (Highest-ROI Behavioral Change)](#model-routing-strategy-highest-roi-behavioral-change)
+- [MEDIUM EFFORT (1-3 hours, save 2,000-5,000 tokens)](#medium-effort-1-3-hours-save-2000-5000-tokens)
+- [DEEP OPTIMIZATION (power users)](#deep-optimization-power-users)
+- [BEHAVIORAL CHANGES (Free, highest cumulative impact)](#behavioral-changes-free-highest-cumulative-impact)
+- [ADVANCED (Power Users)](#advanced-power-users)
+- [MONITORING & MEASUREMENT](#monitoring--measurement)
+- [TOKEN FLOW REFERENCE](#token-flow-reference)
+- [WORKED EXAMPLE: Power User Optimization](#worked-example-power-user-optimization)
+- [ENVIRONMENT VARIABLES & SETTINGS (Tune your setup)](#environment-variables--settings-tune-your-setup)
+- [ANTI-PATTERNS](#anti-patterns)
+
+---
+
 ## QUICK WINS (< 30 minutes each)
 
 ### 1. Check /cost and /context (0 minutes)
@@ -21,9 +37,9 @@ Comprehensive checklist of ALL optimization techniques.
 ### 2. Check Model Routing (5 minutes)
 **Target**: Confirm you have model routing instructions in CLAUDE.md
 
-**Quick check**: Does your CLAUDE.md tell Claude which model to use for subagents? If not, add the snippet from the Model Routing section below. One line, 50-75% savings on every multi-agent workflow.
+**Quick check**: Does your CLAUDE.md tell Claude which model to use for subagents? If not, add the snippet from the Model Routing section below. One line, the largest per-token cut you can get on every multi-agent workflow.
 
-**Expected savings**: 50-75% on automation costs (see full breakdown below)
+**Expected savings**: The biggest single cut on automation costs (see full breakdown below)
 
 ---
 
@@ -102,7 +118,7 @@ Add `permissions.deny` rules to `.claude/settings.json` (project-level) or `~/.c
 - [ ] Create backup: `mkdir -p ~/.claude/_backups/skills-archived-$(date +%Y%m%d)`
 - [ ] Move unused skills: `mv ~/.claude/skills/[skill-name] ~/.claude/_backups/skills-archived-*/`
 
-**CRITICAL**: Subfolder `_archived/` INSIDE skills/ still loads as namespace. Must move OUTSIDE skills/ entirely.
+A subfolder such as `_archived/` inside skills/ still loads as a namespace, so move archived skills outside skills/ entirely.
 
 **Expected savings**: ~100 tokens per skill archived
 
@@ -163,15 +179,7 @@ Model routing is the single highest-ROI optimization for multi-agent workflows. 
 
 ### Cost Math
 
-| Model | Input $/1M | Output $/1M | Relative Cost (vs Haiku) |
-|-------|-----------|-------------|--------------------------|
-| Haiku | $1.00 | $5.00 | 1x |
-| Sonnet | $3.00 | $15.00 | 3x |
-| Opus | $5.00 | $25.00 | 5x |
-
-*Pricing from anthropic.com/pricing. Check for current rates.*
-
-Haiku is **3x cheaper** than Sonnet and **5x cheaper** than Opus per token. For tasks that don't require judgment or complex reasoning, every Opus call is 5x overspend.
+Check anthropic.com/pricing for current rates; this file keeps no price table because it would go stale. The shape that holds: Sonnet and Opus bill more per token than Haiku, and Haiku 5.5 charges 5x more on the part of a prompt beyond 100K tokens ($0.10/MTok up to 100K, $0.50/MTok above, per the platform pricing page). For work that needs no judgment or deep reasoning, a larger model is overspend.
 
 ### Task-to-Model Mapping
 
@@ -194,27 +202,18 @@ Default subagents to haiku. Upgrade only when task requires judgment:
 
 ### Worked Example: 5-Agent Workflow
 
-A typical audit workflow dispatches 5 agents to scan files, count items, analyze content, and synthesize findings.
+A typical audit workflow dispatches 5 agents to scan files, count items, analyze content, and synthesize findings, each using roughly 30K input and 5K output tokens.
 
-**Without routing (all Opus)**:
-Each agent uses ~30K input + ~5K output tokens.
-- 5 agents x 30K input x $5/1M = $0.75 input
-- 5 agents x 5K output x $25/1M = $0.63 output
-- **Total: ~$1.38**
+- **Without routing (all on the largest model)**: all five agents bill at that model's input and output rates.
+- **With routing (3 data-gathering agents on Haiku, 1 on Sonnet, 1 on Opus)**: the same tokens, but the three data-gathering agents bill at the cheapest rate.
 
-**With routing (3 Haiku + 1 Sonnet + 1 Opus)**:
-- 3 Haiku agents: 90K input x $1/1M + 15K output x $5/1M = $0.17
-- 1 Sonnet agent: 30K input x $3/1M + 5K output x $15/1M = $0.17
-- 1 Opus agent: 30K input x $5/1M + 5K output x $25/1M = $0.28
-- **Total: ~$0.62**
+The routed mix costs a fraction of the all-largest-model run. Work out exact dollars from the current pricing page and the measured token counts (`measure.py trends` shows them), not from memory.
 
-**Savings: ~55% ($0.76 saved per workflow run)**
-
-For subscription users (Max plan): model routing affects rate limits, not dollars. Haiku calls consume fewer quota units and are 3-5x faster. Routing means your session stays under rate limits longer and agents return results faster.
+For subscription users (Max plan): model routing affects rate limits, not dollars. Lighter models consume fewer quota units, so routing keeps your session under rate limits longer and agents return results faster.
 
 ### What Routing Does NOT Save
 
-- **Context window space**: Subagents inherit the full system prompt regardless of model. A Haiku agent gets the same ~30K token system prompt as an Opus agent.
+- **Context window space**: Subagents inherit the full system prompt regardless of model. A Haiku agent gets the same system prompt overhead as an Opus agent.
 - **System prompt overhead**: CLAUDE.md, skills, MCP tools all load for every subagent at full size.
 
 Routing saves **dollars** (API users), **rate limit quota** (subscription users), and **wall-clock time** (everyone). It does not reduce context window consumption. That's what the config optimizations (CLAUDE.md slimming, skill archival, etc.) address.
@@ -224,7 +223,7 @@ Routing saves **dollars** (API users), **rate limit quota** (subscription users)
 Signs of inefficient routing:
 - No model routing instructions in CLAUDE.md or MEMORY.md
 - `measure.py trends` shows >70% of tokens going to Opus/Sonnet
-- Subagent types include data-gathering patterns (Explore, general-purpose for file reads) running on Opus
+- Subagent types include data-gathering patterns (Explore, general-purpose for file reads) running on Opus, since Explore inherits the main model
 - The Settings & Advanced auditor checks this automatically (see agent-prompts.md)
 
 ---
@@ -235,9 +234,9 @@ Signs of inefficient routing:
 **Target**: Remove broken/unused MCP servers and their deferred tool listings
 
 **First, check Tool Search status**:
-- If ToolSearch is available in your session, Tool Search is active (default since Jan 2026)
-- Tool Search means definitions are deferred (~15 tokens per tool name in menu, not 300-850 for full definitions)
-- If Tool Search is NOT active, upgrading Claude Code is the single biggest optimization you can make
+- If ToolSearch is available in your session, Tool Search is active. Unset, Claude Code defers all MCP tools by default; it loads them upfront on some cloud-provider models and when `ANTHROPIC_BASE_URL` points to a non-first-party host
+- Tool Search means definitions are deferred (~15 tokens per tool name in the menu, not 300-850 for full definitions)
+- If Tool Search is NOT active, enabling it is the single biggest MCP optimization you can make
 
 **How to audit**:
 1. Check Claude Code config: `~/.claude/settings.json` (primary, mcpServers key)
@@ -286,7 +285,7 @@ Before reading files, always try `qmd search [query]` or `qmd query [question]` 
 ### 10. Migrate CLAUDE.md Content to Skills
 **Target**: Move domain-specific content to on-demand loading
 
-**Pattern**: Skills load ~100 tokens at startup (frontmatter only). Full content loads on-demand. This is 98% cheaper than CLAUDE.md for same content.
+**Pattern**: Skills load ~100 tokens at startup (frontmatter only). Full content loads on-demand. Only the short frontmatter sits in every message; the body loads when the skill is used, whereas CLAUDE.md content loads every time.
 
 **How**:
 1. Create skill: `mkdir ~/.claude/skills/[name]`
@@ -306,11 +305,11 @@ Before reading files, always try `qmd search [query]` or `qmd query [question]` 
 **Problem**: Multi-agent workflows load all agent outputs into main context. At 5-10K tokens per agent x 5 agents = 25-50K tokens in orchestrator.
 
 **Solution**:
-1. Orchestrator creates session folder: `/tmp/[task-name]-$(date +%Y%m%d-%H%M%S)/`
+1. Orchestrator creates a project-local session folder: `./.agent-sessions/[task-name]-$(date +%Y%m%d-%H%M%S)/` (add `.agent-sessions/` to `.gitignore`)
 2. Agents write findings to files in session folder
 3. Orchestrator receives ONLY: "Agent X completed, output at {path}"
 4. Synthesis agent reads files directly
-5. Orchestrator NEVER reads full agent outputs
+5. Orchestrator does not read full agent outputs, which is what keeps its context small
 
 **When to use**: Any task with 3+ subagents or agents producing >5K tokens output each.
 
@@ -352,11 +351,11 @@ These save more than config changes over a full day of usage.
 **Target**: Keep context lean, extend productive session length
 
 **Rules**:
-- [ ] Run `/compact` at 50-70% context (auto-compact fires at the model's compact window: ~967K on 1M models, the model limit on 200K models — past the quality degradation zone)
+- [ ] Compact earlier than the default when sessions run long: on 1M models auto-compact fires at about 967K tokens, and on 200K models near the context limit. Set a lower window with `/autocompact <n>` (100K-1M, saved per model; `/autocompact auto` restores the tuned window) or the `autoCompactWindow` setting. `measure.py compact-advice` estimates from your own history whether an earlier window pays off
 - [ ] Run `/compact` at natural breakpoints (after commit, after feature)
 - [ ] Run `/clear` between unrelated topics (cheaper than compact, no summary overhead)
 - [ ] Check `/context` periodically to know your fill level
-- [ ] If `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` is set, confirm it's intentional: it is the % of the compact window already used when compaction fires, so low values compact early (documented; doctor reports it, never removes it)
+- [ ] If `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` is set, confirm it is intentional: it is the percent of the compact window used when compaction fires, so a low value compacts early (doctor reports it and never removes it)
 
 **Measured**: Community measurements show /compact can reduce conversation history from 77K to 4K tokens (18x reduction), freeing context from ~50% to 90%.
 
@@ -413,12 +412,12 @@ Claude: "You're welcome!"
 ### 18. Prompt Caching Awareness
 **Target**: Understand what caching does and doesn't fix
 
-**Confirmed behavior**: Prompt caching IS active by default in Claude Code. Anthropic internal data shows 96-97% cache hit rate in active sessions. The team treats cache rate like uptime and declares incidents when it drops.
+**Confirmed behavior**: Prompt caching is active by default in Claude Code. The status line input carries a `prompt_cache` object (TTL, hit ratio, expiry) so you can watch it.
 
 **Pricing**:
-- Cache reads: 90% cheaper than normal input ($0.30/M vs $3.00/M for Sonnet)
-- Cache writes: 25% surcharge on first request (5-min TTL) or 100% surcharge (1-hour TTL for Max plan)
-- TTL: 5 minutes for Pro/API, 1 hour for Max plan. Timer resets with each active message.
+- Cache reads: 0.1x base input, 90% cheaper than normal input
+- Cache writes: 1.25x base input for the 5-minute cache, 2x for the 1-hour cache
+- TTL: the main conversation gets 1 hour on subscription plans and 5 minutes on usage credits, an API key or a cloud provider; subagents get 5 minutes even on a subscription. The timer resets with each cache hit. `promptCacheTtl`, `subagentPromptCacheTtl` and per-agent `experimental.cacheTtl` (frontmatter, v2.1.248+) change this; see the cache controls table in `token-coach/references/quick-reference.md`
 
 **What gets cached**: System prompt (including CLAUDE.md), tool definitions, conversation history prefix up to last cache breakpoint.
 
@@ -432,7 +431,7 @@ Claude: "You're welcome!"
 **What caching does NOT fix**:
 - Context window SIZE (cached tokens still occupy your window)
 - Rate limit quotas (cache reads count toward subscription limits)
-- Quality degradation past 50-70% fill (lost-in-the-middle)
+- Quality degradation as the window fills (lost-in-the-middle)
 - Multi-agent amplification (each subagent inherits full overhead)
 
 **Optimization**: Structure CLAUDE.md so stable sections come FIRST, volatile sections LAST. This maximizes cache prefix length.
@@ -463,7 +462,7 @@ See `examples/hooks-starter.json` for a ready-to-use template.
 
 ---
 
-### 21. Smart Compaction (v2.0)
+### 21. Smart Compaction
 **Target**: Preserve decisions, context, and state across compaction events
 
 **What it does**: Captures structured session state before compaction fires, then restores the critical pieces after compaction completes. Decisions, error-fix sequences, agent state, and modified files survive the lossy compaction process.
@@ -479,13 +478,13 @@ See `examples/hooks-starter.json` for a ready-to-use template.
 - **SessionStart** (after compact): Injects the checkpoint back as context, filling gaps left by compaction
 - **Stop/SessionEnd**: Saves a checkpoint when the session ends, enabling continuity in the next session
 
-**Checkpoints stored in**: `~/.claude/token-optimizer/checkpoints/` (auto-cleaned, last 50 or 7 days)
+**Checkpoints stored in**: the `token-optimizer/checkpoints/` folder under the runtime's data directory, auto-cleaned (default: 5 newest per session, 7 days, 400 overall; tune with `TOKEN_OPTIMIZER_CHECKPOINT_PER_SESSION`, `TOKEN_OPTIMIZER_CHECKPOINT_RETENTION_DAYS`, `TOKEN_OPTIMIZER_CHECKPOINT_RETENTION_MAX`)
 
 **Expected impact**: Preserves 3-10 key decisions per compaction. Prevents "what were we doing?" restart loops after compaction. Enables session continuity across /clear and session death.
 
 ---
 
-### 22. Context Quality Monitoring (v2.0)
+### 22. Context Quality Monitoring
 **Target**: Measure content quality, not just quantity
 
 **What it does**: Analyzes your session JSONL and scores how useful your context content is. A session at 60% with clean, relevant content performs differently from 60% stuffed with stale reads and duplicate injections.
@@ -540,7 +539,7 @@ Also track with `/cost` at end of each session and `measure.py trends` for histo
 
 ## TOKEN FLOW REFERENCE
 
-**Every message loads this stack** (with Tool Search active, default since Jan 2026):
+**Every message loads this stack** (with Tool Search active, the default):
 ```
 ├─ Core system prompt:          ~3,000 tokens  (fixed)
 ├─ Built-in tools (18+):      ~12,000 tokens  (fixed)
@@ -558,13 +557,12 @@ Also track with `/cost` at end of each session and `measure.py trends` for histo
 **Irreducible floor**: ~15K tokens even with zero config (no CLAUDE.md, no skills, no MCP). This is core system + built-in tools alone.
 **Baseline (well-optimized)**: ~21K tokens first message
 **Power user (unoptimized)**: ~43K tokens first message
-**Note**: Pre-Tool-Search (2025), unoptimized setups reached 40-80K+
 
 ---
 
 ## WORKED EXAMPLE: Power User Optimization
 
-**Before** (unaudited power user, 3+ months of use, Tool Search active):
+**Before** (unaudited power user, 3+ months of use, Tool Search active; the percentages show both common window sizes because the same tokens matter far more on a 200K window):
 - Core system + built-in tools: ~15,000 tokens (fixed)
 - MCP tools: ~9,000 tokens (deferred tools + server instructions)
 - Skills (~60): ~6,000 tokens
@@ -572,9 +570,7 @@ Also track with `/cost` at end of each session and `measure.py trends` for histo
 - CLAUDE.md: ~3,500 tokens (grown organically, never trimmed)
 - MEMORY.md: ~3,500 tokens (duplicates CLAUDE.md content)
 - System reminders: ~3,000 tokens (no permissions.deny rules)
-- **Total consumed: ~43,000 tokens/msg (22% of 200K)**
-- **+ Autocompact buffer: ~33,000 tokens (16.5%, reserved)**
-- **= Total unavailable: ~76,000 tokens (38% of 200K)**
+- **Total consumed: ~43,000 tokens/msg (4% of a 1M window, 22% of a 200K window)**
 
 **Config changes** (what the optimizer implements):
 1. CLAUDE.md: 3,500 -> 2,500 tokens (progressive disclosure, under 300-line target)
@@ -584,12 +580,11 @@ Also track with `/cost` at end of each session and `measure.py trends` for histo
 5. MCP: pruned unused servers (~3,000 tokens saved)
 6. permissions.deny rules added (~2,000 tokens saved from file exclusion)
 - **Config savings: ~12,300 tokens/msg (29% reduction in consumed overhead)**
-- **After consumed: ~30,700 tokens/msg (15% of 200K)**
-- **After unavailable (with buffer): ~63,700 tokens (32% of 200K)**
+- **After consumed: ~30,700 tokens/msg (3% of a 1M window, 15% of a 200K window)**
 
 **Behavioral changes** (what the optimizer teaches):
-- Agent model selection (haiku for data): 50-75% on automation
-- /compact at 50-70%: up to 18x reduction in conversation history
+- Agent model selection (lighter tier for data gathering): a large share of automation cost
+- /compact at natural breakpoints: replaces a long history with a short summary
 - Extended thinking awareness: variable, potentially largest single factor
 - Batching requests: 2-3x on multi-step tasks
 - /clear between topics: prevents stale context accumulation
@@ -603,24 +598,24 @@ The config changes shrink your per-message overhead. The behavioral changes comp
 
 These are settings that affect token usage and context behavior. The optimizer audits current values and explains tradeoffs.
 
-### 25. MAX_THINKING_TOKENS (default: 10,000)
+### 25. MAX_THINKING_TOKENS (default: unset)
 **Target**: Understand thinking token budget
 
-**What it is**: Controls the maximum tokens Claude spends on extended thinking (chain-of-thought reasoning). Extended thinking makes Claude smarter on complex problems but uses expensive output tokens.
+**What it is**: A fixed token budget for extended thinking, capped one token below the request's max output tokens and never below 1,024. When unset, models with adaptive reasoning (Sonnet 5 and later, Haiku 5.5, Opus 4.7 and later, Fable) choose their own thinking depth; other models use the cap. Thinking uses output-priced tokens.
 
 **Actions**:
 - [ ] Check current value: `CLAUDE_CODE_MAX_THINKING_TOKENS` in settings.json env block
 - [ ] Observe thinking patterns in `/cost` output (thinking tokens are listed separately)
-- [ ] Consider if thinking budget is being spent on simple tasks (file renames, quick edits don't need 10K thinking tokens)
+- [ ] Consider if thinking budget is being spent on simple tasks (file renames and quick edits do not need a large thinking budget)
 
-**What the optimizer does**: Reports current value. Surfaces patterns where thinking budget was clearly wasted (e.g., 10K thinking tokens on a file rename). Does NOT suggest reducing it for complex reasoning tasks.
+**What the optimizer does**: Reports current value. Surfaces patterns where thinking budget was clearly wasted (e.g., thousands of thinking tokens on a file rename). Does NOT suggest reducing it for complex reasoning tasks.
 
 ---
 
-### 26. CLAUDE_CODE_MAX_OUTPUT_TOKENS (default: 16,384, max: 128,000)
+### 26. CLAUDE_CODE_MAX_OUTPUT_TOKENS (default varies by model)
 **Target**: Understand output token budget
 
-**What it is**: Maximum tokens Claude generates per response. If you hit truncation ("output was cut off"), this may need increasing. Higher values allow longer responses but increase cost.
+**What it is**: Maximum tokens Claude generates per response. Defaults and caps vary by model, and Claude Code lowers a value above the model's cap to the cap. Raising it reduces the effective context window available before auto-compaction triggers.
 
 **Actions**:
 - [ ] Check current value in settings.json env block
@@ -644,7 +639,7 @@ These are settings that affect token usage and context behavior. The optimizer a
 
 ---
 
-### 28. BASH_MAX_OUTPUT_LENGTH (default: system)
+### 28. BASH_MAX_OUTPUT_LENGTH (default: 30,000 characters, max 150,000)
 **Target**: Control bash output token consumption
 
 **What it is**: Limits how much stdout/stderr from Bash tool calls gets captured into context. Verbose test runners or build logs can dump thousands of tokens.
@@ -657,17 +652,17 @@ These are settings that affect token usage and context behavior. The optimizer a
 
 ---
 
-### 29. ENABLE_TOOL_SEARCH (default: auto, active above threshold)
-**Target**: Verify Tool Search is active (85% MCP savings)
+### 29. ENABLE_TOOL_SEARCH (default: unset, MCP tools deferred)
+**Target**: Verify Tool Search is active (the largest MCP saving)
 
 **What it is**: Tool Search defers MCP tool definitions until actually needed. Instead of loading 300-850 tokens per tool upfront, only ~15 tokens per tool name is loaded. This is the single biggest MCP optimization.
 
 **Actions**:
 - [ ] Verify Tool Search is active in your session (look for ToolSearch in available tools)
-- [ ] If not active, check Claude Code version and tool count threshold
-- [ ] `ENABLE_TOOL_SEARCH=auto:N` sets the threshold to N tools (default auto)
+- [ ] If not active, check the Claude Code version, the provider, and whether `ANTHROPIC_BASE_URL` points to a non-first-party host
+- [ ] `true` always defers, `false` loads everything upfront, `auto` loads upfront only when tool definitions fit within 10% of context, and `auto:N` sets a custom percentage such as `auto:5`
 
-**What the optimizer does**: Reports if Tool Search is active. If not, explains the 85% savings from enabling it. This is flagged as HIGH PRIORITY if missing.
+**What the optimizer does**: Reports if Tool Search is active. If not, explains what enabling it saves. This is flagged as high priority if missing.
 
 ---
 
@@ -689,7 +684,7 @@ These are settings that affect token usage and context behavior. The optimizer a
 ### 31. CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING (default: not set)
 **Target**: Understand what adaptive thinking does
 
-**What it is**: When set, disables Claude's ability to automatically adjust thinking depth based on task complexity. Normally Claude uses more thinking for hard problems and less for simple ones.
+**What it is**: Set to `1`, it turns off adaptive reasoning on Opus 4.6 and Sonnet 4.6 and falls back to the fixed budget in `MAX_THINKING_TOKENS`. It has no effect on Sonnet 5 and later, Haiku 5.5, Opus 4.7 and later, or Fable, which always use adaptive reasoning.
 
 **Actions**:
 - [ ] Check if set in settings.json env block
@@ -700,7 +695,7 @@ These are settings that affect token usage and context behavior. The optimizer a
 ---
 
 ### 32. CLAUDE_AUTOCOMPACT_PCT_OVERRIDE
-**Documented env var, reported but never removed by Token Optimizer.** It is the percentage of the compact window already used when auto-compaction fires — a lower value compacts *earlier*, and values ≥100 or invalid values cannot raise the threshold past the resolved window. Doctor explains the setting and warns when a low value would compact very early.
+**Documented, and never removed by Token Optimizer.** It is the percent of the compact window already used when auto-compaction fires: a lower value compacts earlier, and it cannot raise the threshold. Doctor explains the current value and flags one low enough to compact very early; the user decides.
 
 ---
 
@@ -709,11 +704,11 @@ These are settings that affect token usage and context behavior. The optimizer a
 - Don't add content to CLAUDE.md without asking "Can this be a skill or reference file?"
 - Don't duplicate rules between CLAUDE.md and MEMORY.md
 - Don't archive skills to subfolder inside skills/ (still loads)
-- Don't use Opus agents for file reading (haiku is 60x cheaper, see Model Routing section)
-- Don't wait for auto-compact (do it manually at 70%)
+- Don't use the largest model for plain file reading (see the Model Routing section)
+- Don't wait for auto-compact when a session is clearly past a natural breakpoint (compact manually, or set an earlier window with `/autocompact`)
 - Don't paste full error logs (paste relevant lines only)
 - Don't run tests through Claude (run locally, paste failures only)
 - Don't dump everything in global CLAUDE.md (project-specific goes in project CLAUDE.md)
 - Be aware that extended thinking uses output-priced tokens (Claude's adaptive thinking manages depth automatically)
-- Don't assume MCP overhead is huge (Tool Search defers definitions since Jan 2026)
+- Don't assume MCP overhead is huge (Tool Search defers definitions by default)
 - Don't quote dollar savings to subscription users (talk context budget, not money)

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -661,7 +662,43 @@ def test_cli_standalone_human_output_and_days(sandbox):
     proc = _cli(sandbox, ["deterministic-candidates", "--days", "7", "--no-cache"])
     assert proc.returncode == 0, proc.stderr
     assert "measured on your transcripts" in proc.stdout and "repeated_sequence" in proc.stdout
-    assert "reading session" in proc.stderr  # progress line
+    assert proc.stderr == ""  # no TTY, no progress line
+
+
+@pytest.mark.skipif(not hasattr(os, "openpty"), reason="needs a pty")
+def test_cli_progress_line_goes_to_a_tty_stderr_once(sandbox):
+    _seed_projects(sandbox)
+    master, slave = os.openpty()
+    try:
+        env = dict(os.environ)
+        home = sandbox / "home"
+        for key in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SESSION_ID", "CODEX_HOME", "HERMES_HOME",
+                    "CLAUDE_PLUGIN_ROOT", "CLAUDE_PLUGIN_DATA", "TOKEN_OPTIMIZER_RUNTIME"):
+            env.pop(key, None)
+        env.update({"HOME": str(home), "USERPROFILE": str(home), "CLAUDE_CONFIG_DIR": str(home / ".claude"),
+                    "TOKEN_OPTIMIZER_SNAPSHOT_DIR": str(sandbox / "snap"), "PYTHONIOENCODING": "utf-8"})
+        proc = subprocess.Popen([sys.executable, str(SCRIPTS / "measure.py"), "deterministic-candidates", "--no-cache"],
+                                stdout=subprocess.PIPE, stderr=slave, text=True, env=env, cwd=str(sandbox))
+        os.close(slave)
+        slave = None
+        chunks = []
+        while True:
+            try:
+                data = os.read(master, 65536)
+            except OSError:        # EIO once the child closed its end
+                break
+            if not data:
+                break
+            chunks.append(data)
+        out, _ = proc.communicate(timeout=240)
+        err = b"".join(chunks).decode("utf-8", "replace")
+    finally:
+        if slave is not None:
+            os.close(slave)
+        os.close(master)
+    assert proc.returncode == 0
+    assert err.count("reading session") == 1 and "reading session 1/3" in err   # throttled: one line for 3 files
+    assert "reading session" not in out
 
 
 def test_cli_foreign_runtime_is_explicit(sandbox):
@@ -701,3 +738,185 @@ def test_measure_wrapper_never_raises(monkeypatch):
     monkeypatch.setattr(measure, "detect_runtime", lambda: "claude")
     res = measure._deterministic_candidates_data(use_cache=False)
     assert res["status"] == "error" and res["candidates"] == []
+
+
+# ---------------------------------------------------------------------------
+# Inline scripts: the launcher alone is not the command
+# ---------------------------------------------------------------------------
+
+def _heredoc(body, launcher="python3 -", tag="EOF"):
+    return f"{launcher} <<'{tag}'\n{body}\n{tag}"
+
+
+INLINE_FORMS = {
+    "heredoc": lambda body: _heredoc(body),
+    "heredoc_cd": lambda body: "cd /Users/alice/proj && " + _heredoc(body),
+    "heredoc_unquoted_tag": lambda body: _heredoc(body, launcher="python3", tag="PY").replace("'PY'", "PY"),
+    "python_c": lambda body: f'python3 -c "{body}"',
+    "bash_c": lambda body: f"bash -c '{body}'",
+    "bash_lc": lambda body: f'bash -lc "{body}"',
+    "sh_c": lambda body: f'sh -c "{body}"',
+    "node_e": lambda body: f'node -e "{body}"',
+    "ruby_e": lambda body: f"ruby -e '{body}'",
+    "perl_e": lambda body: f"perl -e '{body}'",
+    "here_string": lambda body: f'python3 - <<< "{body}"',
+}
+
+
+def _distinct_body(form, i):
+    # structurally different scripts: different identifiers, so literal blanking cannot merge them
+    return f"import json, sys; value_{'x' * i}_{i} = json.load(open(sys.argv[1])); print(value_{'x' * i}_{i}.keys())"
+
+
+@pytest.mark.parametrize("form", sorted(INLINE_FORMS))
+def test_ten_different_inline_scripts_are_not_a_polling_loop(sandbox, form):
+    steps = [_bash(INLINE_FORMS[form](_distinct_body(form, i))) for i in range(10)]
+    res = run_dc("claude", [write_claude(sandbox / "s.jsonl", [steps], "s")])
+    assert "polling_loop" not in kinds(res), res["candidates"]
+
+
+@pytest.mark.parametrize("form", sorted(INLINE_FORMS))
+def test_the_same_inline_script_five_times_is_one_polling_loop(sandbox, form):
+    body = "import json, sys; print(json.load(open(sys.argv[1])).keys())"
+    steps = [_bash(INLINE_FORMS[form](body)) for _ in range(5)]
+    res = run_dc("claude", [write_claude(sandbox / "s.jsonl", [steps], "s")])
+    poll = [c for c in res["candidates"] if c["kind"] == "polling_loop"]
+    assert len(poll) == 1 and poll[0]["times_seen"] == 5
+    assert "import json, sys" in poll[0]["example"]
+
+
+def test_inline_script_example_is_launcher_plus_first_60_chars_of_body(sandbox):
+    body = "import json, sys\n" + "total = sum(range(10))  # padding padding padding padding padding\n" * 4
+    steps = [_bash(_heredoc(body)) for _ in range(4)]
+    res = run_dc("claude", [write_claude(sandbox / "s.jsonl", [steps], "s")])
+    ex = [c for c in res["candidates"] if c["kind"] == "polling_loop"][0]["example"]
+    assert ex.startswith("Bash: python3 -")
+    assert "import json, sys total = sum(range(10))" in ex
+    assert "padding padding padding padding padding total = sum" not in ex   # cut near 60 chars
+    assert len(ex) < 130 and "\n" not in ex
+
+
+def test_inline_scripts_that_differ_only_in_literals_still_match(sandbox):
+    steps = [_bash(_heredoc(f"print('row {i}', {i * 7})")) for i in range(4)]
+    res = run_dc("claude", [write_claude(sandbox / "s.jsonl", [steps], "s")])
+    assert kinds(res).count("polling_loop") == 1
+
+
+def test_a_shift_operator_in_an_inline_script_does_not_truncate_the_body(sandbox):
+    steps = [_bash('python3 -c "value = 1 << 3; ' + ("q" * i) + f'_name_{i} = value"') for i in range(6)]
+    res = run_dc("claude", [write_claude(sandbox / "s.jsonl", [steps], "s")])
+    assert "polling_loop" not in kinds(res)
+
+
+def test_non_launcher_heredocs_keep_the_old_behaviour(sandbox):
+    # `cat <<EOF > file` is not a script launcher; it is not what this fix is about
+    a = dc.normalise_command("cat <<'EOF' > notes.txt\nhello\nEOF")
+    assert a == "cat"
+
+
+def test_repeated_sequence_does_not_match_unrelated_inline_scripts(sandbox):
+    def seq(i):
+        return [_bash("git status --short"), _bash(_heredoc(_distinct_body("heredoc", i))), _bash("git diff --stat")]
+    paths = [write_claude(sandbox / f"s{i}.jsonl", [seq(i)], f"s{i}") for i in range(3)]
+    assert "repeated_sequence" not in kinds(run_dc("claude", paths))
+
+
+def test_repeated_sequence_matches_the_same_inline_script(sandbox):
+    def seq(i):
+        return [_bash("git status --short"), _bash(_heredoc("import os; print(os.getcwd())")), _bash("git diff --stat")]
+    paths = [write_claude(sandbox / f"s{i}.jsonl", [seq(i)], f"s{i}") for i in range(3)]
+    res = run_dc("claude", paths)
+    seq = [c for c in res["candidates"] if c["kind"] == "repeated_sequence"]
+    assert len(seq) == 1 and "import os; print(os.getcwd())" in seq[0]["example"]
+
+
+def test_check_only_turn_key_carries_the_script_body():
+    km = dc._KeyMaker(dc.default_redactor())
+    one = km.build("Bash", {"command": "pytest -q && " + _heredoc("print('a')\nimport alpha")})
+    two = km.build("Bash", {"command": "pytest -q && " + _heredoc("print('a')\nimport beta")})
+    assert one[0] != two[0]
+    same = km.build("Bash", {"command": "pytest -q && " + _heredoc("print('a')\nimport alpha")})
+    assert one[0] == same[0]
+
+
+def test_inline_script_body_secrets_never_reach_output_or_cache(sandbox):
+    body = f"import boto3; key = '{AWS}'; auth = '{BEARER}'; print(key)"
+    steps = [_bash(_heredoc(body)) for _ in range(4)]
+    cache_dir = sandbox / "cache"
+    res = run_dc("claude", [write_claude(sandbox / "s.jsonl", [steps], "s")], use_cache=True, cache_dir=cache_dir)
+    assert "polling_loop" in kinds(res)
+    blob = json.dumps(res) + (cache_dir / dc.CACHE_NAME).read_text()
+    for secret in (AWS, "abcdef0123456789ZYXWVUTSRQ", BEARER):
+        assert secret not in blob
+
+
+def test_unterminated_and_empty_inline_scripts_do_not_crash():
+    for cmd in ("python3 - <<'EOF'", "python3 - <<'EOF'\nprint(1)", "python3 -c", "bash -c ''", "python3 - <<<", "node -e"):
+        key, shape, _chk = dc._KeyMaker(dc.default_redactor()).command(cmd)
+        assert key.startswith("B:") and shape.startswith("Bash:")
+
+
+# ---------------------------------------------------------------------------
+# Wording: the tokens are what the turns used, not what a script would save
+# ---------------------------------------------------------------------------
+
+def _seq_result(sandbox):
+    paths = [write_claude(sandbox / f"s{i}.jsonl", [SEQ(i)], f"s{i}") for i in range(3)]
+    return run_dc("claude", paths)
+
+
+def test_summary_line_says_what_the_turns_used(sandbox):
+    res = _seq_result(sandbox)
+    line = res["summary"]
+    assert "the turns that ran them used" in line and "API-equivalent" in line
+    assert not re.search(r"could be plain code,? [\d,]+ tokens", line)
+    assert "measured on your transcripts" in line
+
+
+def test_no_user_facing_string_claims_the_tokens_are_savings():
+    src = (SCRIPTS / "deterministic_candidates.py").read_text(encoding="utf-8")
+    assert "workflow pattern(s) could be plain code" not in src
+    assert "tokens saved" not in src.lower() and "tokens it saves" not in src.lower()
+
+
+def test_json_field_docs_say_used_not_saved():
+    src = (SCRIPTS / "deterministic_candidates.py").read_text(encoding="utf-8")
+    assert "the turns that ran them used" in src
+    assert dc.USED_NOT_SAVED_NOTE == (
+        "Moving a step to code removes those turns; the saving is at most this much.")
+
+
+def test_result_carries_the_used_not_saved_note(sandbox):
+    res = _seq_result(sandbox)
+    assert res["tokens_note"] == dc.USED_NOT_SAVED_NOTE
+    assert res["basis"] == "measured on your transcripts"
+    assert all(c["basis"] == "measured on your transcripts" for c in res["candidates"])
+
+
+# ---------------------------------------------------------------------------
+# Progress line: throttled, stderr only, silent without a TTY
+# ---------------------------------------------------------------------------
+
+def test_progress_is_throttled_to_one_line_per_two_seconds(sandbox):
+    paths = [write_claude(sandbox / f"s{i}.jsonl", [SEQ(i)], f"s{i}") for i in range(30)]
+    seen = []
+    run_dc("claude", paths, progress=seen.append)
+    assert len(seen) == 1, seen               # a 30-file run takes well under 2 s: only the first line
+
+
+def test_throttle_prints_first_then_waits_two_seconds():
+    clock = {"t": 100.0}
+    seen = []
+    th = dc.Throttle(seen.append, interval_s=2.0, clock=lambda: clock["t"])
+    th("a")
+    clock["t"] += 1.9
+    th("b")
+    clock["t"] += 0.2
+    th("c")
+    clock["t"] += 5
+    th("d")
+    assert seen == ["a", "c", "d"]
+
+
+def test_throttle_without_a_callback_is_a_noop():
+    assert dc.Throttle(None)("x") is None

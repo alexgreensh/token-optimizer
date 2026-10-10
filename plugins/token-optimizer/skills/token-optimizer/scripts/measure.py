@@ -9113,7 +9113,15 @@ def _cmd_deterministic_candidates(args):
     cap = max(1, _opt("--max-sessions", int, _DETCAND_CLI_MAX_SESSIONS))
 
     def _progress(msg):
-        if not as_json:
+        # Quiet unless a person is watching: never in --json, never when stderr is piped or captured.
+        # deterministic_candidates.run() throttles this to one line per 2 seconds.
+        if as_json:
+            return
+        try:
+            is_tty = sys.stderr.isatty()
+        except (AttributeError, ValueError, OSError):
+            is_tty = False
+        if is_tty:
             print(f"  {msg}", file=sys.stderr)
 
     data = _deterministic_candidates_data(days=days, budget_s=budget, max_sessions=cap,
@@ -9127,9 +9135,12 @@ def _cmd_deterministic_candidates(args):
         tok = c["tokens"]
         print(f"\n  {i}. [{c['kind']}] seen {c['times_seen']}x in {c['sessions_seen']} session(s)")
         print(f"     {_strip_ansi(str(c['example']))}")
-        print(f"     {tok['total_tokens']:,} tokens ({tok['input_tokens']:,} in incl. {tok['cache_read_tokens']:,} cache read, "
-              f"{tok['output_tokens']:,} out), ~${c['cost_usd']:.2f} API-equivalent, {deterministic_candidates.BASIS}")
+        print(f"     the turns that ran them used {tok['total_tokens']:,} tokens ({tok['input_tokens']:,} in incl. "
+              f"{tok['cache_read_tokens']:,} cache read, {tok['output_tokens']:,} out), "
+              f"~${c['cost_usd']:.2f} API-equivalent, {deterministic_candidates.BASIS}")
         print(f"     -> {c['suggestion']}")
+    if data.get("candidates"):
+        print(f"\n  {deterministic_candidates.USED_NOT_SAVED_NOTE}")
     print()
 
 

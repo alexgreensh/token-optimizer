@@ -18,6 +18,16 @@ Transcript readers exist for Claude Code (also used by Cowork) and Codex, the tw
 runtimes whose transcripts carry ordered tool calls with their inputs. Every other
 runtime gets an explicit "not measurable on <runtime>" entry (see RUNTIME_SUPPORT).
 
+Reading the numbers: ``tokens`` and ``cost_usd`` are what the turns that ran
+those calls used (whole-turn input including cache reads, plus output), priced at
+API-equivalent rates. They are not what a script would save: moving a step to
+code removes those turns, so the saving is at most this much. Every figure is
+"measured on your transcripts".
+
+An inline script (``python3 - <<'EOF'``, ``python3 -c``, ``bash -c``, ``node -e``,
+``ruby -e``, ``perl -e``, here-strings) is a different command when its body
+differs: the call key carries a fingerprint of the redacted, literal-blanked body.
+
 Pricing is injected (``price_fn``) so this module stays free of measure.py and the
 numbers come from the same rate cards as every other dollar figure in the tool.
 """
@@ -33,8 +43,11 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-ALGO_VERSION = 1
+ALGO_VERSION = 2
 BASIS = "measured on your transcripts"
+USED_NOT_SAVED_NOTE = "Moving a step to code removes those turns; the saving is at most this much."
+PROGRESS_MIN_INTERVAL_S = 2.0
+INLINE_SNIPPET_CHARS = 60
 
 MIN_SEQ_LEN = 3
 MAX_SEQ_LEN = 8
@@ -47,6 +60,7 @@ SHORT_REPLY_CHARS = 200
 EXAMPLE_CAP = 200
 PROMPT_KEY_CHARS = 300
 MAX_CALLS_PER_SESSION = 5000
+INLINE_READ_CHARS = 8000
 PARTIAL_CACHE_TTL_S = 600
 MAX_PARSE_FILE_BYTES = 96 * 1024 * 1024
 MAX_JSONL_LINE_CHARS = 8 * 1024 * 1024
@@ -121,6 +135,24 @@ def _path_to_placeholder(match: "re.Match[str]") -> str:
     return f"<dir>/{base}" if base else "<dir>"
 
 
+def _blank_literals(text: str, max_chars: int) -> str:
+    """Whitespace, secrets, quoted strings, paths, ids and numbers reduced to placeholders."""
+    text = text[:max_chars * 4]
+    text = _WS_RE.sub(" ", text).strip()
+    text = _ENV_SECRET_RE.sub(lambda mm: f"{mm.group(1)}=<secret>", text)
+    text = _QUOTED_RE.sub(lambda mm: "<str:long>" if len(mm.group(0)) > 80 else "<str>", text)
+    text = _WIN_PATH_RE.sub(_path_to_placeholder, text)
+    text = _POSIX_PATH_RE.sub(_path_to_placeholder, text)
+    text = _UUID_RE.sub("<uuid>", text)
+    text = _DATETIME_RE.sub("<date>", text)
+    text = _TIME_RE.sub("<time>", text)
+    text = _HASH_RE.sub("<hash>", text)
+    text = _TOKEN_RE.sub("<token>", text)
+    text = _NUMBER_RE.sub("<n>", text)
+    text = _CD_PREFIX_RE.sub("", text)
+    return text[:max_chars]
+
+
 def normalise_command(text: Any, *, max_chars: int = 600) -> str:
     """Reduce a command (or prompt) to its reusable shape.
 
@@ -136,19 +168,125 @@ def normalise_command(text: Any, *, max_chars: int = 600) -> str:
     m = _HEREDOC_RE.search(text)
     if m and m.start() > 0:
         text = text[:m.start()]
-    text = _WS_RE.sub(" ", text).strip()
-    text = _ENV_SECRET_RE.sub(lambda mm: f"{mm.group(1)}=<secret>", text)
-    text = _QUOTED_RE.sub(lambda mm: "<str:long>" if len(mm.group(0)) > 80 else "<str>", text)
-    text = _WIN_PATH_RE.sub(_path_to_placeholder, text)
-    text = _POSIX_PATH_RE.sub(_path_to_placeholder, text)
-    text = _UUID_RE.sub("<uuid>", text)
-    text = _DATETIME_RE.sub("<date>", text)
-    text = _TIME_RE.sub("<time>", text)
-    text = _HASH_RE.sub("<hash>", text)
-    text = _TOKEN_RE.sub("<token>", text)
-    text = _NUMBER_RE.sub("<n>", text)
-    text = _CD_PREFIX_RE.sub("", text)
-    return text[:max_chars]
+    return _blank_literals(text, max_chars)
+
+
+# ---------------------------------------------------------------------------
+# Inline scripts (heredoc, -c / -e, here-string): the launcher is not the command
+# ---------------------------------------------------------------------------
+
+_INTERPRETERS = frozenset({
+    "python", "py", "pypy", "node", "nodejs", "ruby", "perl", "php", "bash", "sh", "zsh", "dash", "ksh",
+    "deno", "bun", "rscript", "pwsh", "powershell",
+})
+_LAUNCH_WRAPPERS = frozenset({"sudo", "env", "command", "exec", "time", "nohup", "uv", "poetry", "pipenv", "pdm",
+                              "hatch", "rye", "run"})
+_ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_SEGMENT_SPLIT_RE = re.compile(r"&&|\|\||;|\|")
+_HEREDOC_FULL_RE = re.compile(r"<<<|<<(-?)\s*(['\"]?)(\w+)\2")
+_WORD_RE = re.compile(r"\s*(\"(?:[^\"\\]|\\.)*\"|'[^']*'|\S+)")
+_INTERP_TOKEN_RE = re.compile(r"(?:^|(?<=[\s;&|(]))((?:\S*[\\/])?[A-Za-z][A-Za-z0-9._]*)(?=\s)")
+_INLINE_QUOTED_RE = re.compile(r'"(?:[^"\\]|\\.)*"|\'[^\']*\'')
+
+
+def _interp_family(word: str) -> str:
+    base = re.split(r"[\\/]", word)[-1].lower()
+    if base.endswith(".exe"):
+        base = base[:-4]
+    base = re.sub(r"[\d.]+$", "", base) if re.match(r"^(?:python|pypy)[\d.]*$", base) else base
+    return base if base in _INTERPRETERS else ""
+
+
+def _inline_flag(family: str, flag: str) -> bool:
+    low = flag.lower()
+    if family in ("node", "nodejs"):
+        return low in ("--eval", "--print") or bool(re.fullmatch(r"-[ep]+", flag))
+    if family in ("ruby", "perl"):
+        return bool(re.fullmatch(r"-[A-Za-z]*[eE][A-Za-z]*", flag))
+    if family == "php":
+        return flag == "-r"
+    if family == "rscript":
+        return flag == "-e"
+    if family in ("pwsh", "powershell"):
+        return low in ("-c", "-command")
+    if family in ("deno", "bun"):
+        return False
+    return bool(re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", flag))      # python / shells: -c, -lc, -ec, -Bc
+
+
+def _launcher_of_segment(segment: str) -> str:
+    for tok in segment.split():
+        if _ENV_ASSIGN_RE.match(tok) or tok.lower() in _LAUNCH_WRAPPERS or tok.startswith("-"):
+            continue
+        return _interp_family(tok)
+    return ""
+
+
+def _unquote(body: str) -> str:
+    if len(body) >= 2 and body[0] == body[-1] and body[0] in "\"'":
+        return body[1:-1]
+    return body
+
+
+def split_inline_script(text: str) -> "tuple[str, str] | None":
+    """Return (text with the script body removed, script body) for an interpreter given a script inline.
+
+    Recognises ``python3 - <<'EOF'`` style heredocs, ``-c`` / ``-e`` style flags
+    (python, bash/sh/zsh, node, ruby, perl, php, Rscript, PowerShell) and
+    ``<<<`` here-strings. Anything else, including ``cat <<EOF > file``, is not a script.
+    """
+    for m in _INTERP_TOKEN_RE.finditer(text):
+        family = _interp_family(m.group(1))
+        if not family:
+            continue
+        pos = m.end()
+        while True:
+            w = _WORD_RE.match(text, pos)
+            if not w or not w.group(1).startswith("-") or w.group(1) in ("-", "--"):
+                break
+            flag = w.group(1)
+            pos = w.end()
+            if _inline_flag(family, flag):
+                b = _WORD_RE.match(text, pos)
+                if b:
+                    body = _unquote(b.group(1))
+                    if body.strip():
+                        return text[:b.start(1)] + '""' + text[b.end(1):], body
+                break
+    h = _HEREDOC_FULL_RE.search(text)
+    if not h:
+        return None
+    segment = _SEGMENT_SPLIT_RE.split(text[:h.start()])[-1]
+    if not _launcher_of_segment(segment):
+        return None
+    if h.group(0) == "<<<":
+        b = _WORD_RE.match(text, h.end())
+        if not b:
+            return None
+        body = _unquote(b.group(1))
+        return (text[:b.start(1)] + '""' + text[b.end(1):], body) if body.strip() else None
+    nl = text.find("\n", h.end())
+    if nl < 0:
+        return None
+    tag = h.group(3)
+    lines = []
+    for line in text[nl + 1:].split("\n"):
+        if line.strip() == tag:
+            break
+        lines.append(line)
+    body = "\n".join(lines)
+    return (text[:h.end()], body) if body.strip() else None
+
+
+def inline_script_fingerprint(body: str) -> str:
+    """Stable id of a script body after literal blanking (ids, numbers, strings, paths)."""
+    shaped = _blank_literals(body, 4000)
+    return hashlib.sha1(shaped.encode("utf-8", "replace")).hexdigest()[:10]
+
+
+def inline_script_snippet(body: str) -> str:
+    flat = _WS_RE.sub(" ", body).strip()
+    return flat if len(flat) <= INLINE_SNIPPET_CHARS else flat[:INLINE_SNIPPET_CHARS].rstrip() + "..."
 
 
 # ---------------------------------------------------------------------------
@@ -307,6 +445,26 @@ class Redactor:
             return text
 
 
+class Throttle:
+    """Wrap a progress callback so it fires at most once per ``interval_s`` (first call always passes)."""
+
+    def __init__(self, fn: "Callable[[str], None] | None", interval_s: float = PROGRESS_MIN_INTERVAL_S,
+                 clock: Callable[[], float] = time.monotonic):
+        self.fn = fn
+        self.interval_s = interval_s
+        self.clock = clock
+        self._last: float | None = None
+
+    def __call__(self, msg: str) -> None:
+        if self.fn is None:
+            return
+        now = self.clock()
+        if self._last is not None and now - self._last < self.interval_s:
+            return
+        self._last = now
+        self.fn(msg)
+
+
 def default_redactor() -> Redactor:
     try:
         from credential_patterns import redact_credentials
@@ -348,9 +506,17 @@ class _KeyMaker:
     def command(self, raw: str) -> tuple[str, str, bool]:
         hit = self._cmd_memo.get(raw)
         if hit is None:
-            clean = self.redact(raw[:2400])
-            norm = normalise_command(clean)
-            hit = ("B:" + norm, "Bash: " + norm, is_check_command(clean))
+            clean = self.redact(raw[:INLINE_READ_CHARS])
+            inline = split_inline_script(clean)
+            if inline is not None:
+                head, body = inline
+                norm = normalise_command(head)
+                key = f"B:{norm}#{inline_script_fingerprint(body)}"
+                shape = f"Bash: {norm} [script: {inline_script_snippet(body)}]"
+            else:
+                norm = normalise_command(clean)
+                key, shape = "B:" + norm, "Bash: " + norm
+            hit = (key, shape, is_check_command(clean))
             if len(self._cmd_memo) < 20000:
                 self._cmd_memo[raw] = hit
         return hit
@@ -1067,8 +1233,9 @@ def summary_line(result: dict[str, Any]) -> str:
     tot = result.get("totals") or {}
     top = cands[0]
     return (
-        f"Deterministic candidates: {len(cands)} workflow pattern(s) could be plain code, "
-        f"{tot.get('total_tokens', 0):,} tokens (~${tot.get('cost_usd', 0):.2f} API-equivalent) "
+        f"Deterministic candidates: {len(cands)} workflow pattern(s) that could be plain code; "
+        f"the turns that ran them used {tot.get('total_tokens', 0):,} tokens "
+        f"(~${tot.get('cost_usd', 0):.2f} API-equivalent) "
         f"({window}; {BASIS}). Top: {top['kind']} x{top['times_seen']}: {top['example'][:80]}{suffix}"
     )
 
@@ -1156,7 +1323,7 @@ def run(
     """
     started = time.monotonic()
     base: dict[str, Any] = {
-        "runtime": runtime, "days": days, "basis": BASIS, "partial": False,
+        "runtime": runtime, "days": days, "basis": BASIS, "tokens_note": USED_NOT_SAVED_NOTE, "partial": False,
         "candidates": [], "runtime_support": runtime_support_table(),
     }
     try:
@@ -1176,6 +1343,7 @@ def run(
                 return hit
         redact = redact or default_redactor()
         keys = _KeyMaker(redact)
+        progress = Throttle(progress) if progress else None
         extract = EXTRACTORS[runtime]
         parse_deadline = started + budget_s * 0.7
         total_deadline = started + budget_s
@@ -1187,7 +1355,7 @@ def run(
             if time.monotonic() > parse_deadline:
                 partial = True
                 break
-            if progress and i % 10 == 0:
+            if progress:
                 progress(f"deterministic-candidates: reading session {i + 1}/{len(considered)}")
             try:
                 tr = extract(path, keys, seen_ids, parse_deadline)

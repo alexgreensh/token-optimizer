@@ -4195,8 +4195,9 @@ def doctor(as_json=False):
         _sc_payoff = _scb.get("payoff") or {}
         _sc_detail = (
             f"state: {_sc_state}; last {_sc_payoff.get('window_days', 30)}d "
-            f"estimated net ${_sc_payoff.get('net_usd_est', 0.0):.2f} "
-            "(estimate)")
+            f"estimated net ${_sc_payoff.get('net_usd_est', 0.0):.2f}"
+            + (" API-equivalent" if _scb.get("billing_mode") == "subscription" else "")
+            + " (estimate)")
         print(f"  {'':5s} Subagent cache: {_sc_detail}")
         if _sc_state == "set":
             print(f"  {'':5s} Undo: python3 "
@@ -18512,11 +18513,13 @@ def keepwarm_cache_health_block(days=30, now=None):
 #   * Opt-out env TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=0|false|off|no: never
 #     set; and if TO set it earlier, undo.
 #   * Unknown-state settings (unreadable, missing, malformed): never write.
-#   * The payoff is judged from the user's OWN transcripts (sidechain 5m
-#     cache writes that followed a 5-60 min gap on the same agent prefix,
-#     i.e. reads at 1h, vs all subagent 5m writes, which cost 2x instead of
-#     1.25x at 1h). 14+ days of post-enable data with a NEGATIVE net
-#     estimate -> the next SessionStart reverts (only when TO set it),
+#   * The payoff is judged from the user's OWN transcripts, in both regimes
+#     (see subagent_cache_payoff): rewrites a 1h TTL avoids (within one agent,
+#     and across spawns sharing a prefix) and, once the setting is on, the
+#     reads it really realized, against the 2x-vs-1.25x write premium.
+#     14+ days of post-enable data and at least
+#     _SUBAGENT_CACHE_TRIPWIRE_MIN_REQUESTS subagent requests with a NEGATIVE
+#     net estimate -> the next SessionStart reverts (only when TO set it),
 #     records "auto-reverted", and says so in one line. Modeled on the
 #     keep-warm tripwire; like it, auto-revert is sticky for the automatic
 #     path and cleared only by an explicit `subagent-cache enable`. The
@@ -18538,6 +18541,10 @@ _SUBAGENT_CACHE_TRIPWIRE_MIN_DAYS = 14
 # transcripts, so a verdict stands for a day; running it on every
 # session start past day 14 would blow the hook time budget.
 _SUBAGENT_CACHE_TRIPWIRE_REJUDGE_SECONDS = 86400
+# ...and never on a thin sample: the window must hold at least this many
+# subagent requests that touched the cache (read or wrote). A user with almost
+# no subagents has no evidence either way and is never auto-reverted.
+_SUBAGENT_CACHE_TRIPWIRE_MIN_REQUESTS = 200
 
 
 def _subagent_cache_marker_path():
@@ -18861,28 +18868,60 @@ def subagent_cache_disable(now=None):
     return _subagent_cache_undo(data, now, "removed")
 
 
+def _subagent_cache_payoff_zero(days):
+    return {
+        "window_days": int(days), "estimate": True,
+        "subagent_requests": 0,
+        # Counterfactual part: requests that wrote at 5m (what 1h would change).
+        "subagent_5m_cache_writes": 0, "write_tokens_5m": 0,
+        "would_have_been_reads": 0, "missed_read_tokens": 0,
+        "within_agent_tokens": 0, "across_spawn_tokens": 0,
+        # Realized part: requests that already wrote at 1h (setting is on).
+        "subagent_1h_cache_writes": 0, "write_tokens_1h": 0,
+        "realized_reads": 0, "realized_read_tokens": 0,
+        "savings_usd_est": 0.0, "extra_write_cost_usd_est": 0.0,
+        "net_usd_est": 0.0,
+        "spawns": 0, "groups": 0, "groups_with_shared_prefix": 0,
+        "agent_type_recorded_spawns": 0,
+        "grouping": "project+model (agent type not recorded in these transcripts)",
+    }
+
+
 def subagent_cache_payoff(days=30, now=None, since_ts=None):
     """Deterministic payoff estimate from the user's OWN sidechain transcripts.
 
-    For the last `days` days, count subagent (isSidechain) 5m cache writes
-    that followed a gap of 5-60 minutes since the previous request of the
-    same agent transcript -- those would have been reads at a 1h TTL -- versus
-    ALL subagent 5m cache writes, which cost 2x instead of 1.25x per token at
-    1h. Priced with the active tier's rate card via _get_model_cost (unpriced
-    models fall back to the runtime default, like every other pool).
+    One function for a history that mixes both regimes. A request is read by
+    what it wrote:
 
+    * 5m regime (cc_5m > 0): what a 1h TTL WOULD change. The 1h write premium
+      applies to every such token (extra cost); avoided rewrites are credited
+      as reads (savings) in two disjoint parts, never both for one request:
+        - within_agent_tokens: a non-first request of a transcript whose gap
+          to the previous request of that transcript is 5-60 min (its cc_5m
+          is a rewrite 1h would have kept alive);
+        - across_spawn_tokens: the FIRST request of a spawn that follows the
+          latest activity of its group (project + agent type + model; the
+          agent type comes from the transcript's .meta.json when Claude Code
+          wrote one, else the group is project + model) by 5-60 min, credited
+          min(its cc_5m, shared_prefix_est). shared_prefix_est = smallest
+          (cache_read + cache_creation) of the first request over the group's
+          spawns; a group needs 2+ spawns, else 0.
+    * 1h regime (cc_1h > 0, or a read-only request inheriting the group's
+      latest write regime): what the setting REALLY did. The premium actually
+      paid is (1h write - 5m write) on the cc_1h tokens; the benefit realized
+      is cache READS on a request that follows a 5-60 min gap (within the
+      transcript, or the first request of a spawn after its group), because
+      at 5m those would have been writes: (5m write - read) on those reads.
+
+    Priced with the active tier's rate card via _get_model_cost (unpriced
+    models fall back to the runtime default, like every other pool).
     `since_ts` restricts the token accounting to requests at/after that epoch
-    second (the tripwire's post-enable window). Everything here is an
+    second (the tripwire's post-enable window); earlier requests still serve
+    as context (previous activity, shared prefix). Everything here is an
     ESTIMATE: the gap proxy reads request timestamps, not actual cache keys.
     Never raises; a scan error is an honest zero.
     """
-    zero = {
-        "window_days": int(days), "estimate": True,
-        "subagent_5m_cache_writes": 0, "write_tokens_5m": 0,
-        "would_have_been_reads": 0, "missed_read_tokens": 0,
-        "savings_usd_est": 0.0, "extra_write_cost_usd_est": 0.0,
-        "net_usd_est": 0.0,
-    }
+    zero = _subagent_cache_payoff_zero(days)
     if not _subagent_cache_claude_only():
         return zero
     if now is None:
@@ -18904,18 +18943,12 @@ def subagent_cache_payoff(days=30, now=None, since_ts=None):
                     except OSError:
                         continue
                     if mtime >= cutoff_ts:
-                        candidates.append((mtime, jf))
+                        candidates.append((mtime, jf, project_dir.name))
             except OSError:
                 continue
         candidates.sort(key=lambda t: t[0], reverse=True)
-        candidates = [jf for _, jf in candidates[:_SUBAGENT_SCAN_MAX_FILES]]
+        candidates = candidates[:_SUBAGENT_SCAN_MAX_FILES]
 
-        total_writes = 0
-        write_tokens = 0
-        would_reads = 0
-        missed_tokens = 0
-        savings_usd = 0.0
-        extra_usd = 0.0
         tier = _load_pricing_tier()
 
         def _price(model, tokens):
@@ -18927,7 +18960,11 @@ def subagent_cache_payoff(days=30, now=None, since_ts=None):
                                        cache_create_1h=int(tokens), cache_create_5m=0)
             return write_5m, read, write_1h
 
-        for jf in candidates:
+        # 1. Collect spawns (one sidechain transcript = one spawn) into groups.
+        groups = {}
+        spawn_count = 0
+        recorded_count = 0
+        for _mt, jf, project in candidates:
             # Sidechain transcripts only (same rule as _subagent_pool_savings:
             # nested subagents/ paths are sidechains by construction).
             if jf.parent.name != "subagents" and not _scan_jsonl_is_sidechain(jf):
@@ -18935,9 +18972,8 @@ def subagent_cache_payoff(days=30, now=None, since_ts=None):
             parsed = _parse_session_jsonl(jf)
             if not parsed or not parsed.get("is_sidechain"):
                 continue
-            reqs = parsed.get("request_usage") or {}
-            stamped = []
-            for u in reqs.values():
+            reqs = []
+            for u in (parsed.get("request_usage") or {}).values():
                 ts_s = u.get("ts")
                 if not ts_s or not isinstance(ts_s, str):
                     continue
@@ -18945,39 +18981,127 @@ def subagent_cache_payoff(days=30, now=None, since_ts=None):
                     ts = datetime.fromisoformat(ts_s.replace("Z", "+00:00")).timestamp()
                 except (ValueError, TypeError, OverflowError, OSError):
                     continue
-                if ts < cutoff_ts:
-                    continue
-                if since_ts is not None and ts < since_ts:
-                    continue
-                stamped.append((ts, u))
-            if not stamped:
-                continue
-            stamped.sort(key=lambda t: t[0])
-            prev_ts = None
-            for ts, u in stamped:
                 cc5 = int(u.get("cc_5m") or 0)
-                if cc5 <= 0:
-                    prev_ts = ts
-                    continue
-                total_writes += 1
-                write_tokens += cc5
-                w5, rd, w1 = _price(u.get("model"), cc5)
-                extra_usd += w1 - w5
+                cc1 = int(u.get("cc_1h") or 0)
+                cr = int(u.get("cr") or 0)
+                reqs.append({
+                    "ts": ts, "cc5": cc5, "cc1": cc1, "cr": cr,
+                    "cc": max(int(u.get("cc") or 0), cc5 + cc1),
+                    "model": u.get("model"),
+                })
+            if not reqs:
+                continue
+            reqs.sort(key=lambda r: r["ts"])
+            agent = _extract_agent_type(jf)
+            recorded = agent != "unknown"
+            spawn_count += 1
+            recorded_count += 1 if recorded else 0
+            model = next((r["model"] for r in reqs if r["model"]), None) or "unknown"
+            gkey = (project, agent if recorded else "", model)
+            groups.setdefault(gkey, []).append(reqs)
+
+        # 2. Walk each group chronologically.
+        total_requests = 0
+        writes_5m = tokens_5m = 0
+        would_reads = 0
+        within_tokens = across_tokens = 0
+        writes_1h = tokens_1h = 0
+        realized_reads = realized_tokens = 0
+        savings_usd = 0.0
+        extra_usd = 0.0
+        shared_groups = 0
+
+        def _counted(ts):
+            return ts >= cutoff_ts and (since_ts is None or ts >= since_ts)
+
+        for spawns in groups.values():
+            firsts = [sp[0]["cr"] + sp[0]["cc"] for sp in spawns]
+            shared = min(firsts) if len(spawns) >= 2 else 0
+            if shared > 0:
+                shared_groups += 1
+            events = []
+            for si, sp in enumerate(spawns):
+                for ri, r in enumerate(sp):
+                    events.append((r["ts"], si, ri))
+            events.sort()
+            latest_activity = None     # latest request ts seen so far in the group
+            last_write_regime = None   # "1h" / "5m": regime of the latest cache write
+            for ts, si, ri in events:
+                r = spawns[si][ri]
+                is_first = ri == 0
+                prev_ts = latest_activity if is_first else spawns[si][ri - 1]["ts"]
                 gap = (ts - prev_ts) if prev_ts is not None else None
-                if gap is not None and _SUBAGENT_CACHE_GAP_LOW <= gap <= _SUBAGENT_CACHE_GAP_HIGH:
-                    would_reads += 1
-                    missed_tokens += cc5
-                    savings_usd += w5 - rd
-                prev_ts = ts
+                in_gap = (gap is not None
+                          and _SUBAGENT_CACHE_GAP_LOW <= gap <= _SUBAGENT_CACHE_GAP_HIGH)
+                cc5, cc1, cr = r["cc5"], r["cc1"], r["cr"]
+                if r["cc5"] > 0 or r["cc1"] > 0:
+                    regime_1h = cc1 > 0
+                else:
+                    regime_1h = last_write_regime == "1h"
+                if _counted(ts):
+                    if cc5 > 0 or cc1 > 0 or cr > 0:
+                        total_requests += 1
+                    if cc5 > 0:
+                        writes_5m += 1
+                        tokens_5m += cc5
+                        w5, rd, w1 = _price(r["model"], cc5)
+                        extra_usd += w1 - w5
+                        if in_gap:
+                            credited = min(cc5, shared) if is_first else cc5
+                            if credited > 0:
+                                would_reads += 1
+                                cw5, crd, _cw1 = _price(r["model"], credited)
+                                savings_usd += cw5 - crd
+                                if is_first:
+                                    across_tokens += credited
+                                else:
+                                    within_tokens += credited
+                    if cc1 > 0:
+                        writes_1h += 1
+                        tokens_1h += cc1
+                        w5, rd, w1 = _price(r["model"], cc1)
+                        extra_usd += w1 - w5
+                    if regime_1h and cr > 0 and in_gap:
+                        realized_reads += 1
+                        realized_tokens += cr
+                        w5, rd, _w1 = _price(r["model"], cr)
+                        savings_usd += w5 - rd
+                if cc5 > 0 or cc1 > 0:
+                    last_write_regime = "1h" if cc1 > 0 else "5m"
+                latest_activity = ts if latest_activity is None else max(latest_activity, ts)
+
+        if spawn_count == 0:
+            agent_note = zero["grouping"]
+        elif recorded_count == spawn_count:
+            agent_note = "project+agent type+model"
+        elif recorded_count == 0:
+            agent_note = "project+model (agent type not recorded in these transcripts)"
+        else:
+            agent_note = (
+                "project+agent type+model (agent type not recorded for "
+                f"{spawn_count - recorded_count} of {spawn_count} spawns; "
+                "those are grouped by project+model)")
         return {
             "window_days": int(days), "estimate": True,
-            "subagent_5m_cache_writes": total_writes,
-            "write_tokens_5m": write_tokens,
+            "subagent_requests": total_requests,
+            "subagent_5m_cache_writes": writes_5m,
+            "write_tokens_5m": tokens_5m,
             "would_have_been_reads": would_reads,
-            "missed_read_tokens": missed_tokens,
+            "missed_read_tokens": within_tokens + across_tokens,
+            "within_agent_tokens": within_tokens,
+            "across_spawn_tokens": across_tokens,
+            "subagent_1h_cache_writes": writes_1h,
+            "write_tokens_1h": tokens_1h,
+            "realized_reads": realized_reads,
+            "realized_read_tokens": realized_tokens,
             "savings_usd_est": round(savings_usd, 6),
             "extra_write_cost_usd_est": round(extra_usd, 6),
             "net_usd_est": round(savings_usd - extra_usd, 6),
+            "spawns": spawn_count,
+            "groups": len(groups),
+            "groups_with_shared_prefix": shared_groups,
+            "agent_type_recorded_spawns": recorded_count,
+            "grouping": agent_note,
         }
     except Exception:
         return zero
@@ -18988,14 +19112,17 @@ def evaluate_subagent_cache_tripwire(now=None, payoff=None):
 
     Modeled on the keep-warm tripwire: the only write it ever makes is the
     undo of a value TO itself set (marker state "set"); a user-set value is
-    never touched; a window with no subagent 5m writes is never judged (no
-    data, no verdict). The revert is sticky for the automatic path ("auto-
-    reverted" marker state); an explicit `subagent-cache enable` clears it.
+    never touched; a window with fewer than _SUBAGENT_CACHE_TRIPWIRE_MIN_REQUESTS
+    subagent requests is never judged ("not enough data"). The net it judges
+    mixes both regimes (see subagent_cache_payoff): with the setting on, the
+    premium actually paid on 1h writes against the reads actually realized.
+    The revert is sticky for the automatic path ("auto-reverted" marker
+    state); an explicit `subagent-cache enable` clears it.
 
-    Returns {"reverted": bool, "notice": str|None, "net_usd_est": ...}.
-    Never raises.
+    Returns {"reverted": bool, "notice": str|None, "net_usd_est": ...,
+    "reason": str|None}. Never raises.
     """
-    out = {"reverted": False, "notice": None, "net_usd_est": None}
+    out = {"reverted": False, "notice": None, "net_usd_est": None, "reason": None}
     if not _subagent_cache_claude_only():
         return out
     if now is None:
@@ -19028,10 +19155,13 @@ def evaluate_subagent_cache_tripwire(now=None, payoff=None):
         marker["judged_ts"] = float(now)
         _subagent_cache_write_marker(marker)
 
-    # A window with no subagent cache writes proves nothing either way.
-    if not payoff or not payoff.get("subagent_5m_cache_writes"):
+    # A thin window proves nothing either way.
+    sample = (payoff or {}).get("subagent_requests") or 0
+    if sample < _SUBAGENT_CACHE_TRIPWIRE_MIN_REQUESTS:
         _record_judgment()
-        return out
+        return dict(out, reason=(
+            f"not enough data: {sample} subagent requests since enabling, "
+            f"need {_SUBAGENT_CACHE_TRIPWIRE_MIN_REQUESTS}"))
     net = payoff.get("net_usd_est")
     if not isinstance(net, (int, float)) or net >= 0:
         # Judged and kept: report the net that earned the stay (or None when
@@ -19053,8 +19183,8 @@ def evaluate_subagent_cache_tripwire(now=None, payoff=None):
         "notice": (
             "Token Optimizer removed the subagent 1-hour cache setting: the "
             f"estimated net over the last {int(elapsed_days)} days was "
-            f"-${abs(net):.2f} (extra 2x write premium outweighed the avoided "
-            "5-minute rewrites). Set again: "
+            f"-${abs(net):.2f} (the 1-hour write premium outweighed the "
+            "5-minute rewrites it avoided). Set again: "
             f"{enable_cmd}"
         ),
     }
@@ -19113,9 +19243,14 @@ def subagent_cache_status(days=30, now=None):
     else:
         state, who, reason = "off", None, None
     payoff = subagent_cache_payoff(days=days, now=now)
+    try:
+        billing = keepwarm_billing_mode()
+    except Exception:
+        billing = "subscription"
     return {
         "state": state,
         "set_by": who,
+        "billing_mode": billing,
         "reason": reason,
         "set_ts": (marker or {}).get("set_ts") if who == "token-optimizer" else None,
         "payoff": payoff,
@@ -19236,17 +19371,42 @@ def _subagent_cache_cli(argv):
           + (f" (set by {r['set_by']})" if r.get("set_by") else ""))
     if r.get("reason"):
         print(f"  why: {r['reason']}")
-    print(
-        f"  last {p.get('window_days', 30)}d subagent 5m cache writes: "
-        f"{p.get('subagent_5m_cache_writes', 0)} "
-        f"({p.get('write_tokens_5m', 0):,} tokens); "
-        f"{p.get('would_have_been_reads', 0)} of those followed a 5-60 min gap "
-        f"and would have been reads at 1h.")
-    print(
-        f"  estimated net: ${p.get('net_usd_est', 0.0):.2f} "
-        f"(reads saved ${p.get('savings_usd_est', 0.0):.2f} - extra 1h write "
-        f"premium ${p.get('extra_write_cost_usd_est', 0.0):.2f}). "
-        f"ESTIMATE from your own transcripts.")
+    print(_subagent_cache_payoff_lines(p, r.get("billing_mode")))
+
+
+def _subagent_cache_payoff_lines(p, billing_mode):
+    """Two short status lines: both parts of the estimate, then the assumptions.
+
+    Subscription plans pay no dollars per token, so tokens lead and the dollar
+    figure is labelled API-equivalent.
+    """
+    within = int(p.get("within_agent_tokens") or 0)
+    across = int(p.get("across_spawn_tokens") or 0)
+    realized = int(p.get("realized_read_tokens") or 0)
+    premium_tok = int(p.get("write_tokens_5m") or 0) + int(p.get("write_tokens_1h") or 0)
+    net = float(p.get("net_usd_est") or 0.0)
+    saved = float(p.get("savings_usd_est") or 0.0)
+    extra = float(p.get("extra_write_cost_usd_est") or 0.0)
+    days = p.get("window_days", 30)
+    tokens = (f"{within + across + realized:,} tokens a 1h cache reads instead of rewriting "
+              f"(within one agent {within:,}, across spawns {across:,}, "
+              f"already realized {realized:,}) against the 1h write premium on "
+              f"{premium_tok:,} written tokens")
+    sign = "-" if net < 0 else ""
+    money = f"net {sign}${abs(net):.2f} (saved ${saved:.2f} - premium ${extra:.2f})"
+    if billing_mode == "subscription":
+        first = (f"  last {days}d: {tokens}; {money} API-equivalent, "
+                 "your plan is not billed per token. ESTIMATE from your own transcripts.")
+    else:
+        first = (f"  last {days}d: {money}; {tokens}. "
+                 "ESTIMATE from your own transcripts.")
+    second = (
+        "  assumes: a 5-60 min gap means the 5m cache missed and a 1h one hits; "
+        "shared prefix = smallest first request of a group, grouped by "
+        f"{p.get('grouping') or 'project+model (agent type not recorded)'}; "
+        f"{int(p.get('subagent_requests') or 0):,} subagent requests "
+        f"(auto-revert needs {_SUBAGENT_CACHE_TRIPWIRE_MIN_REQUESTS}).")
+    return first + "\n" + second
 
 
 def _dominant_turn_model(turns):

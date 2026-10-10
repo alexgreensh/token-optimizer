@@ -25,7 +25,12 @@ A marker in Token Optimizer's own data directory (timestamp plus previous state)
 
 ## The payoff check
 
-`subagent-cache status` judges the feature on your own transcripts, not a hypothetical. For the last 30 days it counts subagent cache writes that followed a 5 to 60 minute gap on the same agent prefix: writes that would have been cheap cache reads at a 1h TTL, against all subagent cache writes, each of which pays the 2x 1-hour write rate instead of 1.25x. The net comes out in tokens and API-equivalent dollars, always labelled an estimate.
+`subagent-cache status` judges the feature on your own transcripts, not a hypothetical. For the last 30 days it adds up two kinds of avoided rewrite and charges the 1-hour write premium against them:
+
+- **Within one agent.** A request in a subagent transcript that follows the previous one by 5 to 60 minutes rewrote at 5m what a 1h cache would have read.
+- **Across spawns.** The bigger win. The same agent type started again 5 to 60 minutes later rewrites its shared prefix (system prompt plus tool definitions) at 5m, and would read it at 1h. Spawns are grouped by project, agent type (when the transcript's `.meta.json` records one) and model; without a recorded agent type the group is project and model, and `status` says so. The shared prefix is the smallest first request across the group's spawns, so a group needs two or more spawns before it earns anything.
+
+Once the setting is on, writes are 1h writes, so the same two numbers are read from what actually happened: the premium really paid on the 1h writes, and the cache reads that followed a 5 to 60 minute gap (reads that would have been 5m writes). One history can mix both regimes. The two parts are reported separately, a request is never counted twice, and subscription plans see tokens first with the dollar figure labelled API-equivalent. It is always an estimate.
 
 ```bash
 cd ~/.claude/skills/token-optimizer/scripts
@@ -37,10 +42,10 @@ python3 measure.py subagent-cache disable         # undo (only what Token Optimi
 
 ### The tripwire
 
-If 14 or more days of post-enable data show a **negative** net estimate (the 2x write premium outweighing the avoided 5-minute rewrites), the next session start removes the key (only when Token Optimizer set it), records `auto-reverted`, and says so in one line. The verdict is re-judged at most once a day so the steady-state session start stays cheap. An explicit `subagent-cache enable` clears the auto-revert state.
+If 14 or more days of post-enable data show a **negative** net estimate (the 1h write premium outweighing the rewrites it avoided), **and** the window holds at least 200 subagent requests, the next session start removes the key (only when Token Optimizer set it), records `auto-reverted`, and says so in one line. The verdict is re-judged at most once a day so the steady-state session start stays cheap. An explicit `subagent-cache enable` clears the auto-revert state.
 
 <Aside type="note" title="Estimate, not metered savings">
-The payoff figure is deterministic math over your transcripts (request timestamps and cache-creation fields), not metered billing data. It is deliberately conservative: would-be reads are credited only in the 5 to 60 minute gap band, and every write is charged the full 1h premium.
+The payoff figure is deterministic math over your transcripts (request timestamps and cache-creation fields), not metered billing data. Reads are credited only in the 5 to 60 minute gap band, and every write is charged the full 1h premium. With fewer than 200 subagent requests in the window the check says "not enough data" and never reverts.
 </Aside>
 
 ## Default state
@@ -68,6 +73,7 @@ TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=0
 | Feature state | enabled (Claude Code 2.1.243+) | One-time set at session start |
 | Value written | `subagentPromptCacheTtl: "1h"` | User `settings.json` only |
 | Tripwire window | 14 days of post-enable data | Negative net estimate reverts |
+| Tripwire minimum sample | 200 subagent requests | Below it: "not enough data", no revert |
 | Tripwire re-judge | once per 24 hours | Verdict stands between checks |
 | Payoff lookback | 30 days | `status` reports tokens and dollars, estimated |
 | Opt-out | `TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=0` | Also `false`, `off`, `no` |

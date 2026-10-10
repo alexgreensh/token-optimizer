@@ -44,16 +44,40 @@ def _cache_file_for(tmp_path: Path, path_value: str, platform: str) -> str:
     return result.stdout.strip()
 
 
-def test_path_checksum_changes_cache_key(monkeypatch, tmp_path):
-    first_path = f"{tmp_path}/venv-a/bin:/usr/bin:/bin"
-    second_path = f"{tmp_path}/venv-b/bin:/usr/bin:/bin"
+def _make_python3(dir_path: Path) -> Path:
+    dir_path.mkdir(parents=True, exist_ok=True)
+    stub = dir_path / "python3"
+    stub.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    stub.chmod(0o755)
+    return stub
 
-    first = _cache_file_for(tmp_path, first_path, "Linux")
-    second = _cache_file_for(tmp_path, second_path, "Linux")
+
+def test_candidate_set_changes_cache_key(monkeypatch, tmp_path):
+    """The PATH half of the key covers what discovery can return: PATHs whose
+    python candidate sets differ must map to different records."""
+    va = _make_python3(tmp_path / "venv-a" / "bin")
+    vb = _make_python3(tmp_path / "venv-b" / "bin")
+
+    first = _cache_file_for(tmp_path, f"{va.parent}:/usr/bin:/bin", "Linux")
+    second = _cache_file_for(tmp_path, f"{vb.parent}:/usr/bin:/bin", "Linux")
 
     assert first
     assert second
     assert first != second
+
+
+def test_identical_candidate_set_shares_cache_key(monkeypatch, tmp_path):
+    """PATH noise that cannot change discovery's answer (python-free dirs,
+    even nonexistent ones) must share ONE record -- the whole-PATH checksum
+    minted a new file per PATH value and ballooned to 174 records."""
+    vc = _make_python3(tmp_path / "venv" / "bin")
+
+    first = _cache_file_for(tmp_path, f"{tmp_path}/gone-a:{vc.parent}:/usr/bin:/bin", "Linux")
+    second = _cache_file_for(tmp_path, f"{tmp_path}/gone-b:{vc.parent}:/usr/bin:/bin", "Linux")
+
+    assert first
+    assert second
+    assert first == second
 
 
 def test_msys_cache_engages_inside_per_user_home(tmp_path):
@@ -88,8 +112,8 @@ def test_cache_key_carries_probe_epoch(tmp_path):
     record naming the dead WindowsApps stub -- and the fixed probe runs only on a
     cache MISS, so on every cache HIT the dead stub is re-exec'd forever."""
     cache_file = _cache_file_for(tmp_path, "/usr/bin:/bin", "Linux")
-    assert "/interpreter-e3-" in cache_file, (
-        f"cache key must carry the probe-logic epoch (interpreter-e3-...); got {cache_file}"
+    assert "/interpreter-e4-" in cache_file, (
+        f"cache key must carry the probe-logic epoch (interpreter-e4-...); got {cache_file}"
     )
 
 
@@ -168,7 +192,10 @@ _setup_interpreter_cache
     assert result.returncode == 0, result.stderr
 
 
-def test_windows_checksum_keys_change_with_path_and_plugin_root(tmp_path):
+def test_windows_checksum_keys_change_with_candidates_and_plugin_root(tmp_path):
+    """The key must change when the candidate set or the plugin root changes.
+    (A bare PATH-string shuffle that keeps the same candidates shares a key
+    on purpose -- covered by test_identical_candidate_set_shares_cache_key.)"""
     source = LAUNCHER.read_text(encoding="utf-8")
     definitions = source[: source.index("\n_setup_interpreter_cache\n")]
     script = definitions + r'''
@@ -179,10 +206,16 @@ printf '%s\n' "$_PY_CACHE_FILE"
     roots = [tmp_path / "plugin a" / "hooks", tmp_path / "plugin b" / "hooks"]
     for root in roots:
         root.mkdir(parents=True)
+    cand_a = _make_python3(tmp_path / "cand a")
+    cand_b = _make_python3(tmp_path / "cand b")
     keys = []
-    for root, path in [(roots[0], "/usr/bin:/bin"), (roots[0], "/bin:/usr/bin"), (roots[1], "/usr/bin:/bin")]:
+    for root, path in [
+        (roots[0], str(cand_a.parent)),
+        (roots[0], str(cand_b.parent)),
+        (roots[1], str(cand_a.parent)),
+    ]:
         env = os.environ.copy()
-        env.update(HOME=str(tmp_path), PATH=path)
+        env.update(HOME=str(tmp_path), PATH=f"{path}:/usr/bin:/bin")
         env.pop("XDG_CACHE_HOME", None)
         env.pop("TOKEN_OPTIMIZER_PY_CACHE", None)
         result = subprocess.run(["/bin/bash", "-c", script, str(root / "python-launcher.sh")], env=env, capture_output=True, text=True)

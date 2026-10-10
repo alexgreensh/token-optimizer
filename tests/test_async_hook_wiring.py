@@ -128,14 +128,15 @@ EXPECTED_ASYNC = {
     # in-process. See tests/test_posttooluse_runner.py.
     (
         "PostToolUse",
-        "Bash|Read|Glob|Grep|Agent|Edit|Write|MultiEdit|NotebookEdit|mcp__.*",
+        "Bash|PowerShell|Read|Glob|Grep|Agent|Edit|Write|MultiEdit|NotebookEdit|mcp__.*",
         "posttooluse_runner.py",
     ): False,
-    # A failed Bash call is delivered on PostToolUseFailure, not PostToolUse.
+    # A failed Bash call is delivered on PostToolUseFailure, not PostToolUse --
+    # and the Windows PowerShell tool is the same event's other shell consumer.
     # Sync (not async): the nudge rides additionalContext, which an async
     # hook would discard, and the thrash guard's streak write must land
     # before the next run of the same command.
-    ("PostToolUseFailure", "Bash", "posttooluse_runner.py"): False,
+    ("PostToolUseFailure", "Bash|PowerShell", "posttooluse_runner.py"): False,
     ("PostCompact", None, "quality-cache --force"): False,
     ("CwdChanged", None, "read_cache.py --clear"): False,
 }

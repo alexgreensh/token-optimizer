@@ -27,6 +27,24 @@ shopt -s extglob
 # like `brew --prefix`, which would be circular trust).
 _SAFE_PREFIXES="/usr/bin /usr/local/bin /opt/homebrew/bin /opt/homebrew/opt /home/linuxbrew/.linuxbrew/bin"
 
+# _canonicalize_dir <dir> -> canonical absolute path via $_CANON_DIR
+#
+# `cd -P` resolves every symlink level portably (no realpath/readlink -f, which
+# are absent or inconsistent on older macOS and MSYS). The old $(cd ...; pwd -P)
+# form forked a bash subshell per call -- a whole process each on MSYS -- so
+# this runs the builtin `cd` in a plain if-block (no subshell), preserving
+# OLDPWD around the jump.
+_canonicalize_dir() {
+    local _oldpwd=${OLDPWD:-}
+    if CDPATH='' cd -P -- "$1" 2>/dev/null; then
+        _CANON_DIR=$PWD
+        OLDPWD=$_oldpwd
+        return 0
+    fi
+    OLDPWD=$_oldpwd
+    return 1
+}
+
 # Canonicalize a file path (resolve symlinks). exec follows symlinks, so a
 # user-owned symlink pointing at a hostile target must be judged by the TARGET.
 # realpath/`readlink -f` are absent on older macOS; fall back to a `pwd -P` walk
@@ -40,9 +58,11 @@ _to_realpath() {
     if readlink -f "$p" >/dev/null 2>&1; then
         readlink -f "$p" 2>/dev/null && return 0
     fi
-    d=$(dirname "$p") || return 1
-    b=$(basename "$p") || return 1
-    ( cd "$d" 2>/dev/null && printf '%s/%s\n' "$(pwd -P)" "$b" ) || return 1
+    d=${p%/*}
+    if [ "$d" = "$p" ]; then d=.; elif [ -z "$d" ]; then d=/; fi
+    b=${p##*/}
+    _canonicalize_dir "$d" || return 1
+    printf '%s/%s\n' "$_CANON_DIR" "$b"
 }
 
 # Print a path's permission bits as octal, ZERO-PADDED to at least 3 digits.
@@ -160,6 +180,13 @@ _is_safe_prefix() {
 # exactly as it did before caching was added.
 _PY_CACHE_FILE=""
 
+# Hard ceiling on records in the interpreter-cache dir. The key already
+# dedupes PATH noise (see _setup_interpreter_cache), but candidate churn can
+# still accumulate records slowly (venvs created/deleted over months); cap
+# with oldest-first eviction so the dir can never regrow toward the 174
+# files the whole-PATH checksum produced.
+_PY_CACHE_MAX_FILES=32
+
 _is_msys_platform() {
     # Bash supplies OSTYPE on Git Bash/MSYS and Cygwin. Avoid spawning uname
     # on the Windows hot path; retain the probe for other shell environments.
@@ -203,13 +230,16 @@ _cache_checksum() {
 }
 
 _cache_dir_is_per_user() {
-    local cache_dir="$1" cache_real root root_real
-    cache_real=$(CDPATH='' cd -- "$cache_dir" 2>/dev/null && pwd -P) || return 1
+    local cache_dir="$1" cache_real root
+    # In-place builtin canonicalize (no subshell) -- this runs on every cache
+    # HIT on MSYS, where each $(cd ...) fork is a process.
+    _canonicalize_dir "$cache_dir" || return 1
+    cache_real=$_CANON_DIR
     for root in "${XDG_CACHE_HOME:-}" "${HOME:-}"; do
         [ -n "$root" ] && [ -d "$root" ] || continue
-        root_real=$(CDPATH='' cd -- "$root" 2>/dev/null && pwd -P) || continue
+        _canonicalize_dir "$root" || continue
         case "$cache_real" in
-            "$root_real"/*) return 0 ;;
+            "$_CANON_DIR"/*) return 0 ;;
         esac
     done
     return 1
@@ -233,27 +263,100 @@ _cache_dir_ready() {
     fi
 }
 
+# _python_candidate_paths -> sets _CAND_PATHS to the ordered list of PATH
+# entries that contain a python3 / python / py interpreter file.
+#
+# The cache key must change iff find_interpreter() can return a different
+# answer. find_interpreter walks PATH in order and probes
+# $dir/{python3,python,py}{,.exe} (+ .bat/.cmd on Windows), so its answer
+# depends only on PATH entries that HOLD one of those names. Keying on the
+# whole PATH string minted a new record for any PATH churn (one machine
+# accumulated 174 files); keying on the candidate set dedupes every PATH that
+# yields the same discovery answer while still separating PATHs whose answers
+# can differ. No candidates still gets a stable key -- the direct-probe
+# fallback result is equally cacheable. Bash builtins only ([ -e ] on the
+# py* glob + [ -x -s ]): this runs on every cache HIT, so no utilities and
+# no subshells may be used here.
+_python_candidate_paths() {
+    local dir f base IFS=: win_exts=""
+    _CAND_PATHS=""
+    if _is_msys_platform; then win_exts=1; fi
+    for dir in ${PATH:-}; do
+        [ -n "$dir" ] || dir="."
+        for f in "$dir"/py*; do
+            # Non-matching globs return the literal pattern; [ -e ] rejects it.
+            [ -e "$f" ] || continue
+            base=${f##*/}
+            case "$base" in
+                python3|python|py|python3.exe|python.exe|py.exe) ;;
+                python3.bat|python3.cmd|python.bat|python.cmd|py.bat|py.cmd)
+                    [ -n "$win_exts" ] || continue ;;
+                *) continue ;;
+            esac
+            [ -x "$f" ] && [ -s "$f" ] || continue
+            # Key on the dir once even when it holds several names: discovery's
+            # answer is the dir ORDER, and which name wins inside a dir is
+            # decided by the same executable checks repeated here.
+            _CAND_PATHS="${_CAND_PATHS}${dir}"$'\n'
+            break
+        done
+    done
+}
+
+# _prune_interpreter_cache -- oldest-first eviction keeping the record dir
+# <= _PY_CACHE_MAX_FILES. Called only on the WRITE (miss) path: misses already
+# pay for discovery, while the `ls`/`rm` below would be unaffordable process
+# launches on the hit path this whole change set exists to cheapen.
+_prune_interpreter_cache() {
+    [ -n "$_PY_CACHE_FILE" ] || return 0
+    local cache_dir=${_PY_CACHE_FILE%/*}
+    local f i count=0
+    local -a files=()
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        [ "$f" = "$_PY_CACHE_FILE" ] && continue
+        files+=("$f")
+        count=$((count + 1))
+    done <<EOF
+$(ls -1tr "$cache_dir"/interpreter-e*-*.cache 2>/dev/null)
+EOF
+    i=0
+    while [ "$count" -ge "$_PY_CACHE_MAX_FILES" ] && [ "$i" -lt "${#files[@]}" ]; do
+        rm -f -- "${files[$i]}" 2>/dev/null
+        i=$((i + 1))
+        count=$((count - 1))
+    done
+}
+
 _setup_interpreter_cache() {
     local launcher_dir plugin_dir plugin_hash path_hash cache_dir hash_output
 
     launcher_dir=${0%/*}
     [ "$launcher_dir" != "$0" ] || launcher_dir=.
-    if ! plugin_dir=$(CDPATH='' cd -- "$launcher_dir" 2>/dev/null && pwd -P); then
+    # In-place builtin canonicalize -- the $(cd ...) form forked a bash
+    # subshell on every cache HIT on MSYS.
+    if ! _canonicalize_dir "$launcher_dir"; then
         return 0
     fi
+    plugin_dir=$_CANON_DIR
+
+    # The PATH half of the key covers only what can change discovery's answer
+    # (the PATH entries that actually hold a python/py candidate), not the
+    # whole PATH string.
+    _python_candidate_paths
 
     if _is_msys_platform; then
         # Windows process startup is expensive. Keep both checksums in Bash.
         _cache_checksum "$plugin_dir"
         plugin_hash=$_CACHE_CHECKSUM
-        _cache_checksum "${PATH:-}"
+        _cache_checksum "$_CAND_PATHS"
         path_hash=$_CACHE_CHECKSUM
     else
         # Native POSIX utility startup is cheap; cksum avoids a shell byte
         # loop on unusually long PATHs. Failure simply disables the cache.
         hash_output=$(printf '%s' "$plugin_dir" | cksum 2>/dev/null) || return 0
         plugin_hash=${hash_output%% *}
-        hash_output=$(printf '%s' "${PATH:-}" | cksum 2>/dev/null) || return 0
+        hash_output=$(printf '%s' "$_CAND_PATHS" | cksum 2>/dev/null) || return 0
         path_hash=${hash_output%% *}
         case "$plugin_hash" in ''|*[!0-9]*) return 0 ;; esac
         case "$path_hash" in ''|*[!0-9]*) return 0 ;; esac
@@ -287,8 +390,10 @@ _setup_interpreter_cache() {
     # on a cache HIT (only on a miss). Bumping this epoch renames the cache file, so
     # every stale record is ignored once on upgrade: discovery re-runs, the new
     # probe rejects the dead stub, and a healthy interpreter is cached under the new
-    # key. Bump `e3` on any future change to interpreter-liveness probing.
-    _PY_CACHE_FILE="${cache_dir%/}/interpreter-e3-${plugin_hash}-${path_hash}.cache"
+    # key. Bump `e4` on any future change to interpreter-liveness probing.
+    # (e4: the PATH half of the key changed from the whole PATH string to the
+    # candidate-dir set -- see _python_candidate_paths.)
+    _PY_CACHE_FILE="${cache_dir%/}/interpreter-e4-${plugin_hash}-${path_hash}.cache"
 }
 
 # On Windows (Git Bash/MSYS), python.exe is a console-subsystem binary: each
@@ -422,6 +527,7 @@ _write_interpreter_cache() {
     local interp="$1" marker="$2" cache_tmp
 
     [ -n "$_PY_CACHE_FILE" ] || return 0
+    _prune_interpreter_cache
     cache_tmp="${_PY_CACHE_FILE}.tmp.$$"
     if [ "$marker" = "-3" ]; then
         (umask 077; set -C; printf 'INTERP\t%s\t-3\n' "$interp" > "$cache_tmp" &&

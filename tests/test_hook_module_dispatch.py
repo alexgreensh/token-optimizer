@@ -42,7 +42,7 @@ print("decoy")
 
 requires_inherited_child_stdout = pytest.mark.skipif(
     sys.platform == "win32",
-    reason="run.py child stdout inheritance under CREATE_NO_WINDOW is not Windows-safe",
+    reason="run.py child stdout inheritance under DETACHED_PROCESS is not Windows-safe to emulate here",
 )
 
 

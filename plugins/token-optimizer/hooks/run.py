@@ -573,15 +573,20 @@ def main() -> int:
         # timeout/external kill can reap the whole group (grandchildren included)
         # via os.killpg. Do NOT add stdout=/stderr=/stdin= here: several hooks
         # inject via stdout and MUST inherit run.py's stdio.
-        # On Windows, start_new_session is a no-op; use CREATE_NO_WINDOW to hide
-        # the console flash. Do NOT add CREATE_NEW_PROCESS_GROUP (inert for
-        # reaping here since run.py never sends GenerateConsoleCtrlEvent, and
-        # it disables the child's Ctrl+C self-terminate). Do NOT use
-        # DETACHED_PROCESS -- the child MUST inherit run.py's stdio for hook
-        # injection via stdout.
+        # On Windows, start_new_session is a no-op; use DETACHED_PROCESS so the
+        # child allocates NO console at all. CREATE_NO_WINDOW only hides the
+        # console -- it still spawns conhost.exe, which on Windows 11 25H2
+        # leaks a kernel token reference per hook run (issue #215). Do NOT add
+        # CREATE_NEW_PROCESS_GROUP (inert for reaping here since run.py never
+        # sends GenerateConsoleCtrlEvent, and it disables the child's Ctrl+C
+        # self-terminate). A detached child has no console, so its stdio MUST
+        # arrive via the three explicit handles _windows_stdio_kwargs() adds
+        # (CPython passes them via STARTF_USESTDHANDLES) -- without them the
+        # child's std handles bind to NULL and every byte a hook writes to
+        # stdout would be silently discarded.
         _popen_kwargs = dict(env=child_env)
         if os.name == "nt":
-            _flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            _flags = getattr(subprocess, "DETACHED_PROCESS", 0)
             if _flags:
                 _popen_kwargs["creationflags"] = _flags
             _popen_kwargs.update(_windows_stdio_kwargs())

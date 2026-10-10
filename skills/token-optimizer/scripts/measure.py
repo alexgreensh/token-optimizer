@@ -37675,11 +37675,16 @@ def archive_result(quiet=False):
 
 
 def _sanitize_tool_use_id(tool_use_id):
+    """Archive key for a tool_use_id: the same key the PostToolUse hook uses.
+
+    Ids outside [a-zA-Z0-9_-] (or longer than 128) map to a digest, so two
+    different ids never share a key the way "a b", "a.b" and "a_b" used to.
+    """
     raw = str(tool_use_id or "")
-    clean = re.sub(r"[^a-zA-Z0-9_-]", "_", raw).strip("_")
-    if clean and clean != "unknown":
-        return clean[:80]
-    return hashlib.sha256(raw.encode("utf-8", errors="ignore")).hexdigest()[:16]
+    if not raw or raw == "unknown":
+        return hashlib.sha256(raw.encode("utf-8", errors="ignore")).hexdigest()[:16]
+    from archive_result import _safe_archive_key
+    return _safe_archive_key(raw)
 
 
 def _summarize_tool_output_for_recovery(text):
@@ -37688,6 +37693,16 @@ def _summarize_tool_output_for_recovery(text):
     if re.search(r"\b(error|failed|traceback|exception|permission denied|not found)\b", raw[:20_000], re.IGNORECASE):
         return "Large tool output archived; contains error/failure signals."
     return "Large tool output archived."
+
+
+def _archived_response_hash(entry_path):
+    """sha256 of the stored response of an archive entry, or None if unreadable."""
+    try:
+        data = json.loads(Path(entry_path).read_text(encoding="utf-8"))
+        return hashlib.sha256(
+            str(data.get("response") or "").encode("utf-8", errors="replace")).hexdigest()
+    except Exception:
+        return None
 
 
 def _codex_backfill_tool_archive(filepath=None, session_id=None, max_outputs=20):
@@ -37741,8 +37756,6 @@ def _codex_backfill_tool_archive(filepath=None, session_id=None, max_outputs=20)
             tool_use_id = _sanitize_tool_use_id(item.get("tool_use_id"))
             _ensure_private_dir(archive_dir)
             entry_path = archive_dir / f"{tool_use_id}.json"
-            if entry_path.exists():
-                continue
 
             over_cap = len(output_text) > 5_242_880
 
@@ -37768,6 +37781,15 @@ def _codex_backfill_tool_archive(filepath=None, session_id=None, max_outputs=20)
             except Exception:
                 continue
             output_hash = hashlib.sha256(output_text.encode("utf-8", errors="replace")).hexdigest()
+            if entry_path.exists():
+                # Same id, same payload: already archived. Same id, different
+                # payload: keep both, under a content-qualified key.
+                if _archived_response_hash(entry_path) == output_hash:
+                    continue
+                tool_use_id = f"{tool_use_id[:100]}-{output_hash[:12]}"
+                entry_path = archive_dir / f"{tool_use_id}.json"
+                if entry_path.exists() and _archived_response_hash(entry_path) == output_hash:
+                    continue
             summary = _summarize_tool_output_for_recovery(output_text)
             entry_data = {
                 "tool_name": tool_name,

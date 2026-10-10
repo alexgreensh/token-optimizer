@@ -14,7 +14,11 @@ _RECOVERY_TOOLS = frozenset({'headroom_retrieve', 'caveman_retrieve'})
 # covers both; PowerShell is the Windows-native one).
 _SHELL_TOOLS = frozenset({'Bash', 'PowerShell'})
 _QUOTE_OR_EXPANSION = re.compile(r"""['"$`\\]""")
-_PYTHON = re.compile(r'python(?:3(?:\.\d+)?)?(?:\.exe)?\Z', re.IGNORECASE)
+# Every interpreter name a printed hint may use (python3 on macOS/Linux, python on
+# Windows, py for the Windows launcher) is accepted on every OS: a transcript can
+# be read on a different machine from the one that printed it.
+_INTERPRETERS = ('python3', 'python', 'py')
+_PYTHON = re.compile(r'(?:python(?:3(?:\.\d+)?)?|py)(?:\.exe)?\Z', re.IGNORECASE)
 
 
 def is_recovery_tool(tool_name: str) -> bool:
@@ -60,10 +64,11 @@ def _is_printed_hint(command: str) -> bool:
     # printer's own escaped form above can match it.
     if not _QUOTE_OR_EXPANSION.search(fwd):
         shown_forms.update((f"'{raw}'", f"'{fwd}'", f'"{fwd}"'))
-    for shown in shown_forms:
-        prefix = f'python3 {shown} expand '
-        if text.startswith(prefix) and _HINT_TAIL.match(text[len(prefix):]):
-            return True
+    for interp in _INTERPRETERS:
+        for shown in shown_forms:
+            prefix = f'{interp} {shown} expand '
+            if text.startswith(prefix) and _HINT_TAIL.match(text[len(prefix):]):
+                return True
     return False
 
 

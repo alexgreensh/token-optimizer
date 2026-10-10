@@ -547,11 +547,18 @@ def _with_measure_cli(text: str) -> str:
     if not script.is_file():
         return text
     try:
-        from refetch_fingerprint import shell_path
-        quoted = shell_path(str(script))
+        from refetch_fingerprint import hint_python, shell_path, _windows_hints
+        quoted, python = shell_path(str(script)), hint_python()
+        windows = _windows_hints()
     except ImportError:
-        quoted = shlex.quote(str(script))
-    return text.replace("python3 measure.py", "python3 " + quoted)
+        quoted, python, windows = shlex.quote(str(script)), "python3", False
+    # `VAR=x cmd` is Bash only: on Windows the runtime is a leading --runtime flag.
+    text = re.sub(
+        r"TOKEN_OPTIMIZER_RUNTIME=(\w+) python3 measure\.py",
+        (lambda m: f"{python} {quoted} --runtime {m.group(1)}") if windows
+        else (lambda m: f"TOKEN_OPTIMIZER_RUNTIME={m.group(1)} {python} {quoted}"),
+        text)
+    return text.replace("python3 measure.py", f"{python} {quoted}")
 
 
 @dataclass

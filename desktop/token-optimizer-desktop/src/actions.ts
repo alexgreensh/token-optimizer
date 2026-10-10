@@ -124,7 +124,7 @@ const BROWSER_FAILED = 'Could not auto-open browser'
 
 /** The dashboard run failed: it threw or timed out (`null`), exited non-zero, or could not open the browser. */
 export function dashboardFailed(result: { exitCode: number; stdout: string } | null): boolean {
-  return result === null || result.exitCode !== 0 || result.stdout.includes(BROWSER_FAILED)
+  return result === null || result.exitCode !== 0 || (result.stdout ?? '').includes(BROWSER_FAILED)
 }
 
 /** What the dashboard link's own status line says: while it opens, and after it failed; null otherwise. */

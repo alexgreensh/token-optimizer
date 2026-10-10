@@ -2243,7 +2243,7 @@ function parsePlan(planMd) {
   return items;
 }
 
-function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+function esc(s) { s = s == null ? '' : String(s); return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 // Hints are authored as `python3 measure.py <cmd>`; show the resolved, quoted
 // script path (health.cli, from measure.py) so they paste from any directory.
 function tcli(text) {
@@ -5174,7 +5174,7 @@ var DB = (function() {
       '<div style="font-size:12px;color:var(--c-text-dim);padding:4px var(--s-3) 0;">How token-efficient your ' + esc(runtimeLabel) + ' setup appears. Factors include instruction-file size, skill/plugin inventory, MCP config, hooks, model routing, and recent usage. This is a setup health grade, not a model-quality grade.</div>' +
       '<div style="text-align:center;padding:var(--s-4) 0;">' +
       '<div style="font-size:72px;font-weight:700;font-family:var(--font-mono);color:' + scoreColor + ';text-shadow:0 0 20px ' + scoreColor + ';">' + healthGrade + '</div>' +
-      '<div style="font-size:28px;font-weight:500;font-family:var(--font-mono);color:' + scoreColor + ';">' + score + '/100</div>' +
+      '<div style="font-size:28px;font-weight:500;font-family:var(--font-mono);color:' + scoreColor + ';">' + esc(score) + '/100</div>' +
       '</div></div>';
 
     // Snapshot summary
@@ -5184,7 +5184,7 @@ var DB = (function() {
       '<div class="card"><div class="card-header"><span>Startup Overhead</span></div>' +
       '<div style="font-size:11px;color:var(--c-text-dim);padding:0 0 4px 0;">Tokens loaded before you type. Includes ' + esc(instructionLabel) + ', skills/plugin metadata, MCP tools, and system prompt.</div>' +
       '<div class="mini-stat">' + fn(snap.total_overhead || 0) + '</div>' +
-      '<div class="label">' + (snap.overhead_pct || 0) + '% of ' + ((snap.context_window || data.snapshot.context_window || 1000000) >= 1000000 ? ((snap.context_window || data.snapshot.context_window || 1000000) / 1000000) + 'M' : ((snap.context_window || data.snapshot.context_window || 1000000) / 1000) + 'K') + '</div></div>' +
+      '<div class="label">' + esc(snap.overhead_pct || 0) + '% of ' + ((snap.context_window || data.snapshot.context_window || 1000000) >= 1000000 ? ((snap.context_window || data.snapshot.context_window || 1000000) / 1000000) + 'M' : ((snap.context_window || data.snapshot.context_window || 1000000) / 1000) + 'K') + '</div></div>' +
       '<div class="card"><div class="card-header"><span>Usable Context</span></div>' +
       '<div style="font-size:11px;color:var(--c-text-dim);padding:0 0 4px 0;">Context window minus startup overhead and ~33K autocompact buffer. This is how much room you actually have for conversation.</div>' +
       '<div class="mini-stat" style="color:var(--c-accent-cyan);">~' + fn(snap.usable_tokens || 0) + '</div>' +
@@ -5257,7 +5257,7 @@ var DB = (function() {
     // Subagent cost breakdown
     var sc = c.subagent_costs;
     if (sc && sc.total_usd > 0) {
-      html += '<div class="card wide"><div class="card-header"><span>Subagent Spend</span><span class="label">' + sc.pct_of_spend + '% of total</span></div>';
+      html += '<div class="card wide"><div class="card-header"><span>Subagent Spend</span><span class="label">' + esc(sc.pct_of_spend) + '% of total</span></div>';
       html += '<div style="text-align:center;padding:var(--s-3) 0;">' +
         '<div style="font-size:36px;font-weight:700;font-family:var(--font-mono);color:' + (sc.pct_of_spend > 30 ? 'var(--c-warning, #ff9f43)' : 'var(--c-accent-cyan)') + ';">$' + sc.total_usd.toFixed(2) + '</div>' +
         '<div style="font-size:13px;color:var(--c-text-dim);">spent on subagents (last 7 days)</div>' +
@@ -5267,7 +5267,7 @@ var DB = (function() {
         topSubs.slice(0, 5).forEach(function(s) {
           var nameShort = s.name.length > 20 ? s.name.slice(0, 20) + '...' : s.name;
           html += '<div style="display:flex;justify-content:space-between;padding:8px var(--s-3);border-bottom:1px solid var(--c-border);font-size:14px;">' +
-            '<div><span style="color:var(--c-text-main);">' + esc(nameShort) + '</span> <span style="color:var(--c-text-dim);">(' + s.model + ')</span></div>' +
+            '<div><span style="color:var(--c-text-main);">' + esc(nameShort) + '</span> <span style="color:var(--c-text-dim);">(' + esc(s.model) + ')</span></div>' +
             '<div style="font-family:var(--font-mono);color:var(--c-accent-cyan);">$' + s.cost_usd.toFixed(2) + '</div></div>';
         });
       }

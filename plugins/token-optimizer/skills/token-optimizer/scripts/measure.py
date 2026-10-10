@@ -3311,6 +3311,9 @@ def _claude_model_window(model_str):
                 or re.search(r"claude[-_]?[0-3]\b", m)
                 or "instant" in m):
             return 200_000
+        # GPT-5.6 (Sol/Terra/Luna) publishes 1.05M, same as the other runtimes' tables.
+        if re.match(r"gpt-5\.6(?:$|-)", m):
+            return 1_050_000
         # Unrecognized (e.g. gateway alias): keep the historical 1M default.
         return 1_000_000
     family, major_raw, minor_raw = match.groups()
@@ -10460,7 +10463,16 @@ def generate_coach_data(focus=None, components=None, trends=None, include_determ
 
     # Build result
     overhead_pct = (totals["estimated_total"] / context_window * 100) if context_window else 0
-    usable = context_window - totals["estimated_total"] - 33000  # subtract approx autocompact buffer
+    # Room ends where auto-compact fires: the window minus the ~33K buffer by
+    # default, or the user's own compact window when they set a smaller one.
+    compact_ceiling = context_window - 33000
+    try:
+        _cw = _resolve_compact_window(None)
+        if _cw.get("user_override") and 0 < _cw["tokens"] < compact_ceiling:
+            compact_ceiling = _cw["tokens"]
+    except Exception:
+        pass
+    usable = compact_ceiling - totals["estimated_total"]
 
     result = {
         "snapshot": {
@@ -34886,8 +34898,8 @@ def _parse_jsonl_for_quality(filepath):
                     # Drop the pre-compaction footprint: the next assistant turn's
                     # usage reports the new (smaller) context. If the session ends
                     # right after a compaction with no further turn, leaving the old
-                    # value would over-report fill — None falls through to the
-                    # char-length estimate, which is more honest.
+                    # value would over-report fill. None falls through to the
+                    # char-length estimate of whatever follows the boundary.
                     context_tokens = None
                     idx += 1
                     continue

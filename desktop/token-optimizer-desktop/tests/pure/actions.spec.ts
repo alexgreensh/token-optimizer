@@ -263,6 +263,8 @@ test('the dashboard run failed when it threw, timed out, exited non-zero, or the
   assert.equal(dashboardFailed({ exitCode: 0, stdout: '  Opened: http://localhost:24842/token-optimizer\n' }), false)
   assert.equal(dashboardFailed({ exitCode: 0, stdout: '' }), false)
   assert.equal(dashboardFailed(null), true)
+  // A runner answer with no stdout must not throw: the band would sit on "Opening" with no note.
+  assert.equal(dashboardFailed({ exitCode: 0 } as unknown as { exitCode: number; stdout: string }), false)
   assert.equal(dashboardFailed({ exitCode: 1, stdout: '' }), true)
   assert.equal(dashboardFailed({ exitCode: 2, stdout: 'usage: measure.py' }), true)
   // measure.py prints this and still exits 0 when xdg-open / open / startfile fails.

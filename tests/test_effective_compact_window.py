@@ -424,3 +424,9 @@ def test_env_window_source_explains_host_reading_of_suffix_value(measure):
     clean = measure._resolve_compact_window(
         "claude-opus-5-5", env={"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "500000"}, settings={})
     assert clean["source"] == "env CLAUDE_CODE_AUTO_COMPACT_WINDOW=500000"
+
+
+@pytest.mark.parametrize("model", ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"])
+def test_gpt_56_window_matches_the_other_runtime_tables(measure, model):
+    assert measure._claude_model_window(model) == 1_050_000
+    assert measure._claude_model_window("gpt-5.60") == 1_000_000

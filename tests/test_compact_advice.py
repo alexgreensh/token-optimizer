@@ -574,3 +574,24 @@ def test_generate_coach_data_includes_compact_advice_and_survives_failure(m, mon
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
     data = m.generate_coach_data(include_deterministic=True)
     assert isinstance(data, dict) and "compact_advice" not in data
+
+
+def test_usable_context_ends_at_the_users_compact_window(m, monkeypatch):
+    """"Usable Context" is the room before auto-compact fires. With a smaller
+    compact window set, it ends there, not at the model window."""
+    monkeypatch.setattr(m, "measure_components", lambda: {
+        "skills": {"count": 0, "tokens": 0, "names": []},
+        "hooks": {"configured": False, "names": []}})
+    monkeypatch.setattr(m, "_auto_snapshot", lambda *a, **kw: None)
+    monkeypatch.setattr(m, "_collect_trends_data", lambda **kw: None)
+    monkeypatch.setattr(m, "parse_session_turns", lambda *a, **kw: [])
+    monkeypatch.setattr(m, "detect_runtime", lambda: "claude")
+    monkeypatch.setattr(m, "detect_context_window", lambda: (1_000_000, "test"))
+    monkeypatch.delenv("CLAUDE_CODE_AUTO_COMPACT_WINDOW", raising=False)
+    snap = m.generate_coach_data()["snapshot"]
+    overhead = snap["total_overhead"]
+    assert snap["usable_tokens"] == 1_000_000 - 33_000 - overhead
+    monkeypatch.setenv("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "500000")
+    snap = m.generate_coach_data()["snapshot"]
+    assert snap["usable_tokens"] == 500_000 - overhead
+    assert snap["context_window"] == 1_000_000

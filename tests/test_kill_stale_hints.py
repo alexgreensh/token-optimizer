@@ -108,3 +108,14 @@ def test_hints_with_markup_escape_the_resolved_path():
     for line in src.splitlines():
         if "tcli('" in line and "esc(" not in line:
             assert not re.search(r"<span|<div|<code|&middot;", line), line.strip()[:120]
+
+
+def test_coach_view_escapes_every_data_field_and_esc_takes_any_value():
+    """Token Coach builds innerHTML from data: no field goes in raw, and esc()
+    must not throw on a number or a missing value (one throw blanks the view)."""
+    src = DASHBOARD.read_text(encoding="utf-8")
+    assert "function esc(s) { s = s == null ? '' : String(s); return s.replace(" in src
+    assert "(' + esc(s.model) + ')" in src
+    for raw in ("' + s.model + '", "' + sc.pct_of_spend + '% of total",
+                "' + score + '/100", "' + (snap.overhead_pct || 0) + '%"):
+        assert raw not in src, raw

@@ -283,17 +283,31 @@ def _check_consent(plugin_root: Path | None = None) -> bool:
 
 
 def _windows_stdio_kwargs():
-    """Return usable inherited standard handles for a no-window child."""
+    """Return the standard handles for a detached (no console) child.
+
+    A stream with a real OS handle is passed through. When at least one is
+    usable, every unusable one gets ``subprocess.DEVNULL``: CPython otherwise
+    falls back to ``GetStdHandle`` for a stream left out, and a stale non-NULL
+    value there makes ``DuplicateHandle`` fail (WinError 6), so ``Popen`` raises
+    and the hook never runs. With none usable nothing is passed (CPython then
+    sets no STARTF_USESTDHANDLES and the child has no std handles at all).
+    """
     kwargs = {}
+    missing = []
     for name in ("stdin", "stdout", "stderr"):
         stream = getattr(sys, name, None)
         if stream is None:
+            missing.append(name)
             continue
         try:
             stream.fileno()
         except (AttributeError, OSError, ValueError):
+            missing.append(name)
             continue
         kwargs[name] = stream
+    if kwargs:
+        for name in missing:
+            kwargs[name] = subprocess.DEVNULL
     return kwargs
 
 
@@ -610,11 +624,21 @@ def main() -> int:
                 proc.wait(timeout=5)
             except (subprocess.SubprocessError, OSError):
                 pass
-    except (subprocess.SubprocessError, OSError):
+    except (subprocess.SubprocessError, OSError) as exc:
         if proc is not None:
             try:
                 proc.kill()
             except (subprocess.SubprocessError, OSError):
+                pass
+        else:
+            # Popen itself failed: the hook did not run. Leave one line in the
+            # diagnostics log (never stderr, which the host feeds to the model).
+            try:
+                _consent_log_diagnostics(
+                    f"[Token Optimizer] run.py: Popen failed for {script_rel!r}: "
+                    f"{type(exc).__name__}: {' '.join(str(exc).split())[:200]}\n"
+                )
+            except Exception:
                 pass
     return 0
 

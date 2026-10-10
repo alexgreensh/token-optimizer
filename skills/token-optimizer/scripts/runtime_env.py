@@ -126,9 +126,12 @@ def _warn_bad_override(value: str) -> None:
             " Pi is not a Python runtime: its extension is configured with "
             "TOKEN_OPTIMIZER_PI_HOME."
         )
+    # The value comes from the environment: cap what is echoed, and repr keeps
+    # control characters from turning the line into several.
+    shown = value if len(value) <= 40 else value[:40]
     try:
         sys.stderr.write(
-            f"[Token Optimizer] ignoring {_RUNTIME_OVERRIDE}={value!r}: accepted values are "
+            f"[Token Optimizer] ignoring {_RUNTIME_OVERRIDE}={shown!r}: accepted values are "
             f"{', '.join(sorted(_VALID_RUNTIMES))}; falling back to auto-detection.{hint}\n"
         )
     except Exception:

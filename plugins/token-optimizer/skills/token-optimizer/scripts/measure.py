@@ -4370,6 +4370,15 @@ def quick_scan(as_json=False):
         print("\n  COACHING INSIGHT")
         print(f"    {coaching}")
 
+    # Advise-only subagent cache verdict: only an actionable recommendation
+    # earns a line here (a pending/thin verdict stays quiet -- see doctor).
+    try:
+        _scr = (subagent_cache_block().get("recommendation") or {})
+        if _scr.get("action") in ("enable", "disable"):
+            print(f"\n  SUBAGENT CACHE: {_scr['line']}")
+    except Exception:
+        pass
+
     print("\n  Full audit + fixes: /token-optimizer")
     print("  Health check: python3 $MEASURE_PY doctor")
     print()
@@ -4640,8 +4649,13 @@ def doctor(as_json=False):
             + " (estimate)")
         _sc_auto = _scb.get("auto_decision") or {}
         if _sc_auto.get("reason"):
-            _sc_detail += f"; auto: {_sc_auto['reason']}"
+            _sc_detail += f"; verdict: {_sc_auto['reason']}"
         print(f"  {'':5s} Subagent cache: {_sc_detail}")
+        _sc_rec = _scb.get("recommendation") or {}
+        if _sc_rec.get("line"):
+            print(f"  {'':5s}   advice: {_sc_rec['line']}")
+        if _scb.get("hint"):
+            print(f"  {'':5s}   note: {_scb['hint']}")
         if _sc_state == "set":
             print(f"  {'':5s} Undo: python3 "
                   f"{shlex.quote(str(Path(__file__).resolve()))} "
@@ -19083,14 +19097,33 @@ def keepwarm_cache_health_block(days=30, now=None):
 
 
 # ===========================================================================
-# Subagent prompt-cache TTL automation (`subagentPromptCacheTtl`).
+# Subagent prompt-cache TTL advice (`subagentPromptCacheTtl`).
 #
 # Claude Code gives subagents a 5-minute prompt cache even on a subscription,
 # so a subagent returned to after more than 5 minutes rewrites its whole
 # prefix. Claude Code >= 2.1.243 supports raising that per install via the
 # `subagentPromptCacheTtl: "1h"` setting (docs say 2.1.242; the changelog
-# floor is 2.1.243 -- use the higher). Token Optimizer can set that ONE key
-# in the user settings.json, once, and undo it on demand.
+# floor is 2.1.243 -- use the higher). Token Optimizer measures whether it
+# pays on the user's own transcripts and RECOMMENDS it; it never sets the
+# key for you.
+#
+# ADVISE-ONLY (ttl4, 2026-10-10): the automatic path never writes
+# `subagentPromptCacheTtl`. Claude Code keeps subagents at 5 minutes because
+# 1h costs more on average for agent-shaped work; our verdict is an estimate,
+# and editing a user's settings on an estimate is not ok. What remains:
+#   * SessionStart still keeps the cached payoff verdict fresh (the detached
+#     background scan) and records what it says (marker `auto_decision`),
+#     for every regime: unset ("would have saved about $X"), already "1h"
+#     ("is costing / is paying"), and thin data (neutral).
+#   * The verdict is surfaced as a per-user recommendation -- numbers plus
+#     the exact command -- in `subagent-cache status`, doctor, quick, coach
+#     (text and JSON), and the audit checklist.
+#   * TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=1 is the ONLY automatic write (an
+#     explicit opt-in, and the only path that keeps the 14-day auto-revert
+#     tripwire). =0 stays never (and undoes a value TO set earlier).
+#   * `subagent-cache enable` / `disable` are the explicit commands; enable
+#     is unconditional, disable is final (marker "removed" is sticky for
+#     every automatic path, including the opt-in).
 #
 # Hard rules (each pinned by tests/test_subagent_cache_ttl.py):
 #   * A value the user set is never overridden -- any pre-existing key (even
@@ -19111,30 +19144,30 @@ def keepwarm_cache_health_block(days=30, now=None):
 #     automatic path never sets it again.
 #   * Opt-out env TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=0|false|off|no: never
 #     set; and if TO set it earlier, undo.
-#   * Unknown-state settings (unreadable, missing, malformed): never write.
-#   * The AUTOMATIC enable is evidence-gated: it writes only when the user's
-#     own last 30 days say it pays (>= _SUBAGENT_CACHE_TRIPWIRE_MIN_REQUESTS
-#     subagent requests AND saving >= _SUBAGENT_CACHE_AUTO_ENABLE_MARGIN x the
-#     1h write premium); otherwise it records why (marker `auto_decision`,
-#     timestamped) and leaves settings alone. TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=1
-#     forces it on ("always on"); `subagent-cache enable` is unconditional.
+#   * Unknown-state settings (unreadable, malformed, non-object, or -- for
+#     automatic writes -- missing): never write. Explicit `enable` creates a
+#     genuinely missing settings.json and says so.
+#   * The verdict judgement is evidence-gated: a recommendation to turn it
+#     on requires the user's own last 30 days to say it pays (>=
+#     _SUBAGENT_CACHE_TRIPWIRE_MIN_REQUESTS subagent requests AND saving >=
+#     _SUBAGENT_CACHE_AUTO_ENABLE_MARGIN x the 1h write premium).
 #   * The scan never runs inside a hook. SessionStart reads one small cached
 #     verdict (subagent_cache_verdict.json); a missing/day-old one starts the
 #     scan as a detached child (subagent_cache_scan.lock keeps it to one at a
 #     time; time budget + file cap, partial = no verdict) and the verdict is
-#     applied at a later session start. The tripwire judges the same cache.
+#     judged at a later session start.
 #   * The payoff is judged from the user's OWN transcripts, in both regimes
 #     (see subagent_cache_payoff): rewrites a 1h TTL avoids (within one agent,
 #     and across spawns sharing a prefix) and, once the setting is on, the
 #     reads it really realized, against the 2x-vs-1.25x write premium.
-#     14+ days of post-enable data and at least
+#     Under the force-env opt-in, 14+ days of post-enable data and at least
 #     _SUBAGENT_CACHE_TRIPWIRE_MIN_REQUESTS subagent requests with a NEGATIVE
 #     net estimate -> the next SessionStart reverts (only when TO set it),
-#     records "auto-reverted", and says so in one line. Modeled on the
-#     keep-warm tripwire; like it, auto-revert is sticky for the automatic
-#     path and cleared only by an explicit `subagent-cache enable`. The
-#     verdict is re-judged at most once a day -- the payoff scan walks real
-#     transcripts and must not run on every session start.
+#     records "auto-reverted", and says so in one line. Without the opt-in
+#     the same window only feeds the "is costing ... turn off" advice --
+#     a key is never removed silently. The verdict is re-judged at most once
+#     a day -- the payoff scan walks real transcripts and must not run on
+#     every session start.
 # ===========================================================================
 
 _SUBAGENT_CACHE_KEY = "subagentPromptCacheTtl"
@@ -19155,11 +19188,11 @@ _SUBAGENT_CACHE_TRIPWIRE_REJUDGE_SECONDS = 86400
 # subagent requests that touched the cache (read or wrote). A user with almost
 # no subagents has no evidence either way and is never auto-reverted.
 _SUBAGENT_CACHE_TRIPWIRE_MIN_REQUESTS = 200
-# The AUTOMATIC enable is evidence-gated on the user's own last 30 days: at
-# least _SUBAGENT_CACHE_TRIPWIRE_MIN_REQUESTS subagent requests AND an
-# estimated saving of at least this multiple of the estimated 1h write premium.
-# A heavy subagent user measured -$25 net at 1.0x, so break-even is not enough:
-# the 15% margin keeps "roughly a wash" from flipping a setting nobody asked for.
+# The "turn it on" recommendation is evidence-gated on the user's own last 30
+# days: at least _SUBAGENT_CACHE_TRIPWIRE_MIN_REQUESTS subagent requests AND
+# an estimated saving of at least this multiple of the estimated 1h write
+# premium. A heavy subagent user measured -$25 net at 1.0x, so break-even is
+# not enough: the 15% margin keeps "roughly a wash" from being recommended.
 _SUBAGENT_CACHE_AUTO_ENABLE_MARGIN = 1.15
 # The payoff scan walks real transcripts (about 9 s on a heavy history), so it
 # never runs in a hook. A detached child writes this small verdict file; session
@@ -19308,7 +19341,7 @@ def _subagent_cache_external_key_holder():
         try:
             if not src.exists():
                 continue
-            data = json.loads(src.read_text(encoding="utf-8"))
+            data = json.loads(src.read_text(encoding="utf-8-sig"))
         except (json.JSONDecodeError, PermissionError, OSError, ValueError):
             return {"path": str(src), "unreadable": True}
         if isinstance(data, dict) and _SUBAGENT_CACHE_KEY in data:
@@ -19332,11 +19365,13 @@ def _subagent_cache_platform_gap(reason="not Claude Code"):
             "notice": None}
 
 
-def _subagent_cache_undo(data, now, why):
+def _subagent_cache_undo(data, now, why, user_initiated=False):
     """Shared undo: remove the key (only) and record why in the marker.
 
     Caller guarantees the marker says TO set it. `data` is the current
-    settings dict. Never raises; a refused write leaves everything as-is.
+    settings dict. `user_initiated` marks an explicit user command so the
+    settings lease must not lose to a herd writer's tombstone (F-T1-4).
+    Never raises; a refused write leaves everything as-is.
     """
     if _SUBAGENT_CACHE_KEY not in data:
         return {"state": why, "changed": False, "reason": "key already absent",
@@ -19347,7 +19382,8 @@ def _subagent_cache_undo(data, now, why):
                 "notice": None}
     payload = dict(data)
     payload.pop(_SUBAGENT_CACHE_KEY, None)
-    if not _write_settings_atomic(payload, allow_removing_keys={_SUBAGENT_CACHE_KEY}):
+    if not _write_settings_atomic(payload, allow_removing_keys={_SUBAGENT_CACHE_KEY},
+                                  user_initiated=user_initiated):
         return {"state": "write-refused", "changed": False,
                 "reason": "settings.json locked or guard refused the write",
                 "notice": None}
@@ -19553,11 +19589,14 @@ def _subagent_cache_spawn_scan(now=None, since_ts=None):
 
 
 def _subagent_cache_judge_payoff(payoff):
-    """Pure judgement of a 30-day payoff: {"decision", "reason", ("tokens")}.
+    """Pure judgement of a payoff window: {"decision", "reason", ("tokens")}.
 
-    enable          >= MIN_REQUESTS subagent requests AND saved >= MARGIN x premium
+    recommend       >= MIN_REQUESTS subagent requests AND saved >= MARGIN x premium
     not-enough-data fewer requests than that
     would-not-pay   enough requests, but the saving does not clear the margin
+
+    "recommend" used to be "enable" (the automatic write is gone, ttl4);
+    it now only feeds the advice line and the recorded verdict.
     """
     payoff = payoff or {}
     n = int(payoff.get("subagent_requests") or 0)
@@ -19572,7 +19611,7 @@ def _subagent_cache_judge_payoff(payoff):
     if saved > 0 and saved >= _SUBAGENT_CACHE_AUTO_ENABLE_MARGIN * premium:
         tokens = (int(payoff.get("missed_read_tokens") or 0)
                   + int(payoff.get("realized_read_tokens") or 0))
-        return {"decision": "enable", "tokens": tokens, "days": days,
+        return {"decision": "recommend", "tokens": tokens, "days": days,
                 "reason": f"pays: saved ${saved:.2f} vs premium ${premium:.2f}"}
     return {"decision": "would-not-pay",
             "reason": f"would not pay: saved ${saved:.2f} vs premium ${premium:.2f}"}
@@ -19597,11 +19636,13 @@ def _subagent_cache_record_decision(marker, decision, now):
 
 
 def _subagent_cache_auto_gate(marker, now):
-    """The evidence gate of the AUTOMATIC enable. Reads the cached verdict only.
+    """Judge the cached verdict for the unset-key (last 30 days) window.
 
-    Returns the decision dict ("enable" lets the caller write). With no usable
-    verdict (missing, stale, other window) it starts the detached scan and
-    answers "pending": the verdict is applied at a later session start."""
+    ADVISE-ONLY (ttl4): reads the cached verdict only and ALWAYS records the
+    judgement in the marker -- a verdict says what the user's own numbers
+    support, it is never applied to settings here. With no usable verdict
+    (missing, stale, other window) it starts the detached scan and answers
+    "pending": the verdict is judged at a later session start."""
     state, rec = _subagent_cache_verdict_for(now, None)
     if state == "fresh":
         if rec.get("complete") and isinstance(rec.get("payoff"), dict):
@@ -19615,9 +19656,8 @@ def _subagent_cache_auto_gate(marker, now):
         _subagent_cache_spawn_scan(now=now)
         decision = {"decision": "pending", "verdict_ts": None,
                     "reason": ("payoff scan runs in the background; it is "
-                               "applied at a later session start")}
-    if decision["decision"] != "enable":
-        _subagent_cache_record_decision(marker, decision, now)
+                               "judged at a later session start")}
+    _subagent_cache_record_decision(marker, decision, now)
     return decision
 
 
@@ -19625,11 +19665,15 @@ def subagent_cache_enable(now=None, automatic=True):
     """Set `subagentPromptCacheTtl: "1h"` in the USER settings.json -- once,
     and only under every safety rule in the module docstring.
 
-    `automatic=True` is the SessionStart path: it also honours the sticky
-    marker states (user-declined / auto-reverted / opted-out) so the host can
-    never fight the user or the tripwire. `automatic=False` is the explicit
-    CLI verb, where a deliberate human request may clear a decline or a
-    tripwire auto-revert (the env opt-out still always wins).
+    `automatic=True` is the SessionStart path. ADVISE-ONLY (ttl4): with the
+    force env unset it NEVER writes -- it judges + records the cached verdict
+    and returns the decision as the state -- while still honouring the sticky
+    marker states (user-declined / auto-reverted / opted-out / removed) so
+    the host can never fight the user, the tripwire, or an explicit
+    `disable`. TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=1 is the only opt-in that
+    lets this path write. `automatic=False` is the explicit CLI verb, where a
+    deliberate human request may clear any marker state and create a missing
+    settings.json (the env opt-out still always wins).
 
     Returns {"state", "changed", "reason", "notice"}. The notice is the
     one-line SessionStart message for the ONE transition where the key was
@@ -19655,22 +19699,26 @@ def subagent_cache_enable(now=None, automatic=True):
     marker = _subagent_cache_read_marker()
     mstate = (marker or {}).get("state")
 
-    if automatic and mstate in ("user-declined", "auto-reverted", "opted-out"):
+    if automatic and mstate in ("user-declined", "auto-reverted", "opted-out",
+                                "removed"):
         return {"state": mstate, "changed": False,
                 "reason": "sticky marker state; the automatic path never "
-                          "re-sets after a decline or auto-revert",
+                          "re-sets after a decline, an auto-revert, or a "
+                          "manual disable",
                 "notice": None}
 
     if mstate == "set":
         # Fast path: marker first (one file read), settings only to verify.
-        data, ok = _read_settings_for_write()
+        # An explicit enable reads with allow_missing so a vanished file is
+        # recorded as a decline instead of refusing as "unknown".
+        data, ok = _read_settings_for_write(allow_missing=not automatic)
         if not ok:
             return {"state": "unknown-settings", "changed": False,
                     "reason": "settings.json unreadable or missing", "notice": None}
         val = data.get(_SUBAGENT_CACHE_KEY)
         if val == "1h":
             return {"state": "set", "changed": False, "reason": None,
-                    "notice": None}
+                    "notice": None, "current": "1h"}
         # We set it once and the user removed/changed it afterwards: remember,
         # never touch it again.
         marker["state"] = "user-declined"
@@ -19699,11 +19747,14 @@ def subagent_cache_enable(now=None, automatic=True):
         return {"state": "external-setting", "changed": False,
                 "reason": f"{holder['path']} already sets the key", "notice": None}
 
-    # Unknown-state user settings: never write.
-    data, ok = _read_settings_for_write()
+    # Unknown-state user settings: never write. An explicit `enable` is the
+    # one exception to "missing = unknown": a user who ran the command on a
+    # machine with no settings.json wants the file created (F-T1-6).
+    data, ok = _read_settings_for_write(allow_missing=not automatic)
     if not ok:
         return {"state": "unknown-settings", "changed": False,
                 "reason": "settings.json unreadable or missing", "notice": None}
+    settings_missing = not SETTINGS_PATH.exists()
 
     # Any value the user already set -- including "5m" -- is theirs.
     if _SUBAGENT_CACHE_KEY in data:
@@ -19713,12 +19764,17 @@ def subagent_cache_enable(now=None, automatic=True):
             "set_by": "user",
         })
         return {"state": "user-set", "changed": False,
-                "reason": "the user already set the key", "notice": None}
+                "reason": "the user already set the key", "notice": None,
+                "current": data.get(_SUBAGENT_CACHE_KEY)}
 
-    # Evidence gate (automatic path only): the user's own last 30 days must say
-    # it pays. Reads a cached verdict; never scans here (SessionStart budget).
-    # TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=1 forces "always on"; the explicit
-    # `subagent-cache enable` is unconditional.
+    # What may write, in order of strength: an explicit `subagent-cache
+    # enable` is unconditional; the opt-in TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=1
+    # is the only automatic write (and the only path that also keeps the
+    # 14-day tripwire). Everything else is ADVISE-ONLY (ttl4): judge + record
+    # the cached verdict and return the decision -- Claude Code keeps
+    # subagents at 5 minutes because 1h costs more on average for
+    # agent-shaped work, and editing a user's settings on an estimate is not
+    # ok.
     if not automatic:
         decision = {"decision": "manual",
                     "reason": "enabled by the subagent-cache enable command"}
@@ -19727,9 +19783,8 @@ def subagent_cache_enable(now=None, automatic=True):
                     "reason": f"{_SUBAGENT_CACHE_OPTOUT_ENV}=1 (always on)"}
     else:
         decision = _subagent_cache_auto_gate(marker, now)
-        if decision["decision"] != "enable":
-            return {"state": decision["decision"], "changed": False,
-                    "reason": decision["reason"], "notice": None}
+        return {"state": decision["decision"], "changed": False,
+                "reason": decision["reason"], "notice": None}
 
     # Version floor (a `claude --version` subprocess: probed only once every
     # cheaper check has said a write is really about to happen).
@@ -19741,10 +19796,12 @@ def subagent_cache_enable(now=None, automatic=True):
                            f"{'.'.join(map(str, _SUBAGENT_CACHE_CC_FLOOR))}"),
                 "notice": None}
 
-    # The one write this feature ever makes.
+    # The only write this feature ever makes: an explicit command, or the
+    # force-env opt-in. user_initiated lets the explicit command take the
+    # settings lease past a herd writer's tombstone (F-T1-4).
     payload = dict(data)
     payload[_SUBAGENT_CACHE_KEY] = "1h"
-    if not _write_settings_atomic(payload):
+    if not _write_settings_atomic(payload, user_initiated=not automatic):
         return {"state": "write-refused", "changed": False,
                 "reason": "settings.json locked or guard refused the write",
                 "notice": None}
@@ -19756,23 +19813,22 @@ def subagent_cache_enable(now=None, automatic=True):
         "auto_decision": dict(decision, ts=float(now)),
     })
     undo_cmd = f"python3 {shlex.quote(str(Path(__file__).resolve()))} subagent-cache disable"
-    if decision["decision"] == "enable":
-        what = ("Token Optimizer set the subagent cache to 1 hour: your last "
-                f"{decision.get('days', 30)} days would have saved about "
-                f"{int(decision.get('tokens') or 0):,} tokens.")
-    else:
-        what = "Token Optimizer set the subagent cache to 1 hour (was 5 minutes)."
+    what = "Token Optimizer set the subagent cache to 1 hour (was 5 minutes)."
+    if settings_missing:
+        what += " Created settings.json -- it did not exist."
     return {
         "state": "set",
         "changed": True,
         "reason": None,
         "notice": f"{what} Undo: {undo_cmd}",
+        "created_settings": settings_missing,
     }
 
 
 def subagent_cache_disable(now=None):
     """Remove the key -- ONLY when the marker says TO set it and the value is
-    still "1h". The sanctioned undo; also called by cleanup()/uninstall."""
+    still "1h". The sanctioned undo; also called by cleanup()/uninstall.
+    Final: the "removed" marker is sticky for every automatic path."""
     if now is None:
         now = time.time()
     if not _subagent_cache_claude_only():
@@ -19786,7 +19842,7 @@ def subagent_cache_disable(now=None):
     if not ok:
         return {"state": "unknown-settings", "changed": False,
                 "reason": "settings.json unreadable or missing", "notice": None}
-    return _subagent_cache_undo(data, now, "removed")
+    return _subagent_cache_undo(data, now, "removed", user_initiated=True)
 
 
 def _subagent_cache_payoff_zero(days):
@@ -20056,6 +20112,11 @@ def subagent_cache_payoff(days=30, now=None, since_ts=None,
 def evaluate_subagent_cache_tripwire(now=None, payoff=None):
     """14+ days of post-enable data with a NEGATIVE net estimate -> revert.
 
+    Only runs under the TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=1 opt-in (ttl4):
+    the advise-only default never calls it, so a TO-set key is never removed
+    silently -- a negative window only feeds the "is costing ... turn off"
+    advice.
+
     Modeled on the keep-warm tripwire: the only write it ever makes is the
     undo of a value TO itself set (marker state "set"); a user-set value is
     never touched; a window with fewer than _SUBAGENT_CACHE_TRIPWIRE_MIN_REQUESTS
@@ -20152,44 +20213,131 @@ def evaluate_subagent_cache_tripwire(now=None, payoff=None):
 
 
 def _subagent_cache_session_start_lines(now=None):
-    """SessionStart ensure body: the automatic enable + the payoff tripwire.
+    """SessionStart ensure body. ADVISE-ONLY by default (ttl4).
 
-    Returns AT MOST ONE user-facing line (via the systemMessage channel):
-    the one-time "set" notice on the transition, or the one-time
-    auto-revert notice. Every steady-state session is a no-op that returns
-    [] after a marker read plus one settings verification read (needed to
-    catch a user who removed or changed the key we set). Never raises.
+    With TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H unset this NEVER writes settings
+    and never emits a notice: subagent_cache_enable() still owns the env
+    opt-out undo, the sticky marker states, and user-declined detection, and
+    for an unset key its gate judges + records the cached verdict (spawning
+    the detached scan when there is no fresh one). For a key that is already
+    "1h" -- ours or the user's -- the same bookkeeping keeps the right
+    verdict window fresh so status/doctor can say "is costing / is paying".
+
+    TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=1 is the explicit opt-in to the old
+    automatic write plus the 14-day auto-revert tripwire, and the only path
+    that may return a user-facing line. Never raises.
     """
     try:
         result = subagent_cache_enable(now=now, automatic=True)
-        if result.get("notice"):
-            return [result["notice"]]
-        # No enable work this session: the only remaining job is the tripwire
-        # (it no-ops unless the marker says TO set the key AND 14+ days have
-        # elapsed -- one marker read on the steady-state path).
-        trip = evaluate_subagent_cache_tripwire(now=now)
-        if trip.get("reverted") and trip.get("notice"):
-            return [trip["notice"]]
+        if _subagent_cache_force_on():
+            if result.get("notice"):
+                return [result["notice"]]
+            # The tripwire only rides the opted-in automation: advise-only
+            # never removes a key it did set, and never touches the user's.
+            trip = evaluate_subagent_cache_tripwire(now=now)
+            if trip.get("reverted") and trip.get("notice"):
+                return [trip["notice"]]
+            return []
+        if result.get("state") == "set" or (
+                result.get("state") == "user-set"
+                and result.get("current") == "1h"):
+            # A "1h" key already in place gets judged on its own window:
+            # post-enable when the marker says TO set it, else the plain
+            # last-30-days verdict. Fresh -> judge + record; missing/stale
+            # -> spawn the detached scan and judge at a later session start.
+            marker = _subagent_cache_read_marker()
+            since = None
+            if (marker or {}).get("state") == "set":
+                try:
+                    since = float(marker["set_ts"])
+                except (TypeError, ValueError):
+                    since = None
+            vstate, rec = _subagent_cache_verdict_for(now, since)
+            if vstate != "fresh":
+                _subagent_cache_spawn_scan(now=now, since_ts=since)
+            elif rec.get("complete") and isinstance(rec.get("payoff"), dict):
+                decision = _subagent_cache_judge_payoff(rec["payoff"])
+                decision["verdict_ts"] = rec.get("ts")
+                _subagent_cache_record_decision(marker, decision, now)
     except Exception:
         pass
     return []
 
 
+def _subagent_cache_recommendation(state, current, payoff, billing,
+                                   post_enable_days=None):
+    """The advise-only line every surface carries (ttl4).
+
+    Returns {"action": "enable"|"disable"|"keep"|"none", "line": str} or
+    None when there is genuinely nothing to say (platform gap, env override,
+    external holder, opted out, or a user-set value that is not "1h").
+    `payoff` None means no verdict yet -> one neutral line for doctor and
+    status (quick prints nothing for a "none" action). Numbers are always
+    the user's own, every actionable line names the exact command, and
+    subscription billing keeps the "API-equivalent estimate" label.
+    """
+    try:
+        if state in ("platform-gap", "opted-out", "env-override",
+                     "external-setting", "unknown-settings"):
+            return None
+        if current not in (None, "1h"):
+            return None  # a user-set "5m" (or anything else) is their choice
+        cmd = (f"python3 {shlex.quote(str(Path(__file__).resolve()))} "
+               f"subagent-cache")
+        est = "API-equivalent estimate" if billing == "subscription" else "estimate"
+        days = int((payoff or {}).get("window_days") or 30)
+        if post_enable_days is not None:
+            window = f"the {post_enable_days} days since it was set"
+        else:
+            window = f"the last {days} days"
+        if payoff is None:
+            return {"action": "none",
+                    "line": ("no payoff verdict yet; the background scan "
+                             "writes it at the next session start")}
+        decision = _subagent_cache_judge_payoff(payoff)
+        net = float(payoff.get("net_usd_est") or 0.0)
+        if current == "1h":
+            if decision["decision"] == "not-enough-data":
+                return {"action": "none", "line": decision["reason"]}
+            if net < 0:
+                return {"action": "disable",
+                        "line": (f"is costing about ${abs(net):.2f} net ({est}) "
+                                 f"over {window}; turn off: `{cmd} disable`")}
+            if decision["decision"] == "recommend":
+                return {"action": "keep",
+                        "line": (f"is paying: +${net:.2f} net ({est}) over "
+                                 f"{window}; nothing to do")}
+            return {"action": "none",
+                    "line": (f"about break-even over {window}: saved "
+                             f"${float(payoff.get('savings_usd_est') or 0.0):.2f} "
+                             f"vs premium ${float(payoff.get('extra_write_cost_usd_est') or 0.0):.2f} "
+                             f"({est}); nothing to do")}
+        if decision["decision"] == "recommend":
+            return {"action": "enable",
+                    "line": (f"would have saved about ${net:.2f} net ({est}) "
+                             f"over {window}; turn on: `{cmd} enable`")}
+        return {"action": "none", "line": decision["reason"]}
+    except Exception:
+        return None
+
+
 def _subagent_cache_status_decision(state, marker, payoff, force_on, source):
-    """`auto_decision` for status / doctor / quick / coach: what the automatic
-    path decided (or would decide) and why."""
+    """`auto_decision` for status / doctor / quick / coach: what the verdict
+    says (or what the opted-in automation decided) and why."""
     stored = (marker or {}).get("auto_decision")
     if state == "opted-out":
         return {"decision": "opted-out",
                 "reason": f"{_SUBAGENT_CACHE_OPTOUT_ENV} is set to off"}
-    if state in ("set", "user-set", "user-declined", "auto-reverted"):
+    if state in ("set", "user-set", "user-declined", "auto-reverted",
+                 "removed"):
         if state == "set" and isinstance(stored, dict):
             return dict(stored)
         return {"decision": state,
                 "reason": {"set": "set by Token Optimizer",
                            "user-set": "you set the key yourself; left alone",
                            "user-declined": "you removed or changed the key after we set it",
-                           "auto-reverted": "removed again after a negative 14-day check"}[state]}
+                           "auto-reverted": "removed again after a negative 14-day check",
+                           "removed": "you removed it with subagent-cache disable; final"}[state]}
     if force_on:
         return {"decision": "forced-on",
                 "reason": f"{_SUBAGENT_CACHE_OPTOUT_ENV}=1 (always on)"}
@@ -20203,13 +20351,14 @@ def _subagent_cache_status_decision(state, marker, payoff, force_on, source):
 
 
 def subagent_cache_status(days=30, now=None, use_cache=False):
-    """State + who set it + the payoff estimate + the automatic decision.
+    """State + who set it + the payoff estimate + the verdict + the advice.
 
     Read-only, never writes. `use_cache=False` (the explicit `status` command)
     scans the transcripts now; `use_cache=True` (doctor, quick, coach) only
     reads the verdict the background scan left, and never scans or spawns."""
     if not _subagent_cache_claude_only():
         return {"state": "platform-gap", "set_by": None, "payoff": None,
+                "recommendation": None, "hint": None,
                 "reason": "not Claude Code (Cowork and other runtimes are a "
                           "documented no-op)"}
     if now is None:
@@ -20229,13 +20378,29 @@ def subagent_cache_status(days=30, now=None, use_cache=False):
     elif mstate == "set":
         state, who = "user-declined", None
         reason = "the user removed or changed the key after we set it"
-    elif mstate in ("user-declined", "auto-reverted", "opted-out"):
+    elif (mstate in ("user-declined", "auto-reverted", "opted-out", "removed")
+          and current is None):
+        # Sticky "off" states only describe a key that is actually absent; a
+        # key that came back is the user's own and reads as user-set.
         state, who = mstate, None
         reason = mstate.replace("-", " ")
     elif mstate == "user-set" or current is not None:
         state, who, reason = "user-set", "user", None
     else:
         state, who, reason = "off", None, None
+    # F-T1-7: a "1h" key with no readable marker may be an orphaned TO write
+    # (or the user's own) -- say so instead of silently reporting "user-set".
+    hint = None
+    if current == "1h" and marker is None:
+        hint = (
+            ("the Token Optimizer marker is corrupt or unreadable, so "
+             "`subagent-cache disable` cannot prove this tool set the key; "
+             "remove the key from settings.json by hand if Token Optimizer "
+             "set it")
+            if _subagent_cache_marker_path().exists()
+            else ("no Token Optimizer marker records who set this key; if an "
+                  "older version set it, remove the key from settings.json "
+                  "by hand"))
     extra = {}
     if use_cache:
         want_since = (float(marker["set_ts"]) if state == "set"
@@ -20254,6 +20419,12 @@ def subagent_cache_status(days=30, now=None, use_cache=False):
         billing = keepwarm_billing_mode()
     except Exception:
         billing = "subscription"
+    post_days = None
+    if state == "set" and source == "cached" and (marker or {}).get("set_ts"):
+        try:
+            post_days = max(1, int((float(now) - float(marker["set_ts"])) / 86400))
+        except (TypeError, ValueError):
+            post_days = None
     out = {
         "state": state,
         "set_by": who,
@@ -20264,6 +20435,11 @@ def subagent_cache_status(days=30, now=None, use_cache=False):
         "payoff_source": source,
         "auto_decision": _subagent_cache_status_decision(
             state, marker, judge_with, _subagent_cache_force_on(), source),
+        "recommendation": _subagent_cache_recommendation(
+            state, current,
+            payoff if source in ("live", "cached") else None,
+            billing, post_enable_days=post_days),
+        "hint": hint,
         "estimate": True,
     }
     out.update(extra)
@@ -20271,14 +20447,17 @@ def subagent_cache_status(days=30, now=None, use_cache=False):
 
 
 def subagent_cache_block(days=30, now=None):
-    """The doctor/quick/coach surface: state, who set it, net estimate, and
-    the automatic decision. Reads the cached verdict only; never scans."""
+    """The doctor/quick/coach surface: state, who set it, net estimate, the
+    verdict, and the advice line. Reads the cached verdict only; never scans."""
     try:
         st = subagent_cache_status(days=days, now=now, use_cache=True)
     except Exception as exc:
         return {"state": "unknown", "set_by": None, "payoff": None,
+                "recommendation": None, "hint": None,
                 "reason": f"status unavailable: {type(exc).__name__}"}
     st.setdefault("estimate", True)
+    st.setdefault("recommendation", None)
+    st.setdefault("hint", None)
     return st
 
 
@@ -20345,6 +20524,14 @@ def _coach_cli(args):
         if det.get("candidates"):
             print("    Details: python3 measure.py deterministic-candidates")
         print()
+    # Advise-only subagent cache verdict: actionable recommendations only.
+    try:
+        _scr = (subagent_cache_block().get("recommendation") or {})
+        if _scr.get("action") in ("enable", "disable"):
+            print(f"  Subagent cache: {_scr['line']}")
+            print()
+    except Exception:
+        pass
     if data["questions"]:
         print("  Coaching questions:")
         for q in data["questions"]:
@@ -20422,7 +20609,12 @@ def _subagent_cache_cli(argv):
         print(f"  why: {r['reason']}")
     ad = r.get("auto_decision") or {}
     if ad:
-        print(f"  auto: {ad.get('decision')}: {ad.get('reason')}")
+        print(f"  verdict: {ad.get('decision')}: {ad.get('reason')}")
+    rec = r.get("recommendation") or {}
+    if rec.get("line"):
+        print(f"  advice: {rec['line']}")
+    if r.get("hint"):
+        print(f"  note: {r['hint']}")
     print(_subagent_cache_payoff_lines(p, r.get("billing_mode")))
 
 
@@ -20457,7 +20649,7 @@ def _subagent_cache_payoff_lines(p, billing_mode):
         "shared prefix = smallest first request of a group, grouped by "
         f"{p.get('grouping') or 'project+model (agent type not recorded)'}; "
         f"{int(p.get('subagent_requests') or 0):,} subagent requests "
-        f"(auto-revert needs {_SUBAGENT_CACHE_TRIPWIRE_MIN_REQUESTS}).")
+        f"(the recommendation needs {_SUBAGENT_CACHE_TRIPWIRE_MIN_REQUESTS}).")
     return first + "\n" + second
 
 
@@ -27171,7 +27363,7 @@ def _is_hook_installed(settings=None):
     if settings is None:
         if SETTINGS_PATH.exists():
             try:
-                with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+                with open(SETTINGS_PATH, "r", encoding="utf-8-sig") as f:
                     settings = json.load(f)
             except (json.JSONDecodeError, PermissionError, OSError):
                 settings = {}
@@ -27242,7 +27434,7 @@ def _is_hook_current(settings=None):
         if not SETTINGS_PATH.exists():
             return False
         try:
-            with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+            with open(SETTINGS_PATH, "r", encoding="utf-8-sig") as f:
                 settings = json.load(f)
         except (json.JSONDecodeError, PermissionError, OSError):
             return False
@@ -27277,17 +27469,24 @@ _SETTINGS_LOCK_PATH = SETTINGS_PATH.parent / ".settings.lock"
 
 
 @contextmanager
-def _settings_lock():
+def _settings_lock(user_initiated=False):
     """Bounded portable lease for settings.json writes.
 
     Prevents concurrent writes from silently overwriting each other.
     Contenders skip the mutation after 75ms rather than blocking a hook.
+
+    `user_initiated=True` is an explicit user command (F-T1-4): it must not
+    lose to the cohort throttle -- it opts out of the herd reservation,
+    reclaims a RELEASED lease tombstone at once, and retries briefly (2s, or
+    the hook deadline when there is one) while a lease is still held.
     """
     lease_path = SETTINGS_PATH.parent / ".settings.lease"
     with lease_lock(
         lease_path,
         deadline=current_deadline(),
-        acquire_timeout=0.075,
+        acquire_timeout=2.0 if user_initiated else 0.075,
+        cohort_throttle=not user_initiated,
+        reclaim_released=user_initiated,
     ) as acquired:
         yield acquired
 
@@ -27325,7 +27524,7 @@ def _settings_write_guard(settings_data, allow_removing_keys=None, dest=None):
         return False, f"outgoing settings is {type(settings_data).__name__}, not a dict"
     target = dest if dest is not None else SETTINGS_PATH
     try:
-        with open(target, "r", encoding="utf-8") as f:
+        with open(target, "r", encoding="utf-8-sig") as f:
             current = json.load(f)
     except FileNotFoundError:
         return True, "no settings.json on disk; nothing to preserve"
@@ -27333,6 +27532,15 @@ def _settings_write_guard(settings_data, allow_removing_keys=None, dest=None):
         return False, "settings.json on disk is malformed; cannot prove this write is non-destructive"
     except (PermissionError, OSError) as e:
         return False, f"settings.json on disk is unreadable ({e.__class__.__name__}); cannot prove this write is non-destructive"
+    # F-T1-5: a file with no write bits was frozen by the user on purpose
+    # (chmod 444, or the read-only attribute on Windows). The atomic-write
+    # trick (temp file + os.replace) would happily REPLACE it, so the
+    # permission check has to happen here, before any write is attempted.
+    if os.stat(target).st_mode & (
+            stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH) == 0:
+        return False, ("settings.json has no write bits set -- it was made "
+                       "read-only on purpose; refusing to replace a file "
+                       "the user froze")
     if not isinstance(current, dict):
         return False, "settings.json on disk is not a JSON object; refusing to overwrite"
     allowed = set(allow_removing_keys or ())
@@ -27442,13 +27650,19 @@ def _write_settings_atomic_locked(settings_data, allow_removing_keys=None, _repo
     return True
 
 
-def _write_settings_atomic(settings_data, allow_removing_keys=None):
+def _write_settings_atomic(settings_data, allow_removing_keys=None,
+                           user_initiated=False):
     """Write settings.json atomically using tempfile + os.replace().
 
     Acquires the advisory ``_settings_lock()`` lease to prevent concurrent
     writes from clobbering each other (e.g., during SessionStart when
     multiple hooks may modify settings.json), then delegates the actual
     tempfile + os.replace to ``_write_settings_atomic_locked``.
+
+    ``user_initiated=True`` marks an explicit user command (F-T1-4): the
+    lease bypasses the cohort throttle and retries briefly so a deliberate
+    mutation cannot lose to a herd writer's tombstone. Automated/hook paths
+    keep the non-blocking lease.
 
     Uses try/finally (not try/except Exception) so cleanup also runs when
     _HookTimeout (a BaseException) fires mid-write. Setting tmp_path to
@@ -27471,7 +27685,7 @@ def _write_settings_atomic(settings_data, allow_removing_keys=None):
     """
     snapshot = getattr(_SETTINGS_WRITE_READ_STATE, "snapshot", None)
     _SETTINGS_WRITE_READ_STATE.snapshot = None
-    with _settings_lock() as acquired:
+    with _settings_lock(user_initiated=user_initiated) as acquired:
         if not acquired:
             # Lease denial was completely silent (write-return audit 2026-08-29).
             # Log a durable breadcrumb and set last_refusal so callers can
@@ -27998,7 +28212,7 @@ def setup_hook(dry_run=False, uninstall=False):
     settings = {}
     if SETTINGS_PATH.exists():
         try:
-            with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+            with open(SETTINGS_PATH, "r", encoding="utf-8-sig") as f:
                 settings = json.load(f)
         except (json.JSONDecodeError, PermissionError, OSError) as e:
             print(f"[Error] Could not read {SETTINGS_PATH}: {e}")
@@ -41376,7 +41590,11 @@ def _read_settings_json_checked():
     """
     if SETTINGS_PATH.exists():
         try:
-            with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+            # utf-8-sig tolerates a BOM (F-T1-8; whether the host tolerates
+            # one is not verified, but a BOM-prefixed file must at least be
+            # readable here so "unknown" never means "lost"). Non-JSONC
+            # comments stay malformed.
+            with open(SETTINGS_PATH, "r", encoding="utf-8-sig") as f:
                 return json.load(f), SETTINGS_PATH, True
         except (json.JSONDecodeError, PermissionError, OSError):
             return {}, SETTINGS_PATH, False
@@ -41406,6 +41624,11 @@ def _read_settings_for_write(allow_missing=False):
     """
     data, _path, ok = _read_settings_json_checked()
     if not ok:
+        return {}, False
+    if not isinstance(data, dict):
+        # F-T1-3: valid JSON that is not an object ([1,2,3], "x", 42) must be
+        # the same clean refusal as malformed JSON -- downstream callers
+        # mutate the value as a dict and would otherwise traceback.
         return {}, False
     if not SETTINGS_PATH.exists() and not allow_missing:
         return {}, False
@@ -52511,16 +52734,18 @@ def run_ensure_health():
     # never return. Read-only here: nothing to do at startup. See
     # _autocompact_pct_override_explanation (doctor) for the explain-only path.
 
-    # Subagent prompt-cache TTL (1h): one-time automatic enable + the 14-day
-    # payoff tripwire. Marker-gated BEFORE any settings read, so the
-    # steady-state session start pays one stat/read and moves on (the
-    # "must stay inside the hook time budget" rule); the only write is the
-    # single first-time settings key, via the shared atomic writer. Claude
-    # Code only -- and never inside Cowork (which must not read ~/.claude).
-    # At most ONE user-facing line, through the systemMessage channel (user-
-    # visible, model-silent), and only on the ONE transition (first set /
-    # tripwire revert) -- never repeated. Fail-open: a problem here must
-    # never break SessionStart.
+    # Subagent prompt-cache TTL (1h): ADVISE-ONLY by default (ttl4). The
+    # session start never writes the key itself -- it keeps the cached payoff
+    # verdict fresh (a detached background scan) and records what the verdict
+    # says, so `subagent-cache status`, doctor, quick and coach can carry the
+    # per-user recommendation. Only TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=1 opts
+    # in to the automatic write + 14-day tripwire, and only that path can
+    # return a user-facing line (one-time set / auto-revert notice).
+    # Marker-gated BEFORE any settings read, so the steady-state session
+    # start pays one stat/read and moves on (the "must stay inside the hook
+    # time budget" rule). Claude Code only -- and never inside Cowork (which
+    # must not read ~/.claude). Fail-open: a problem here must never break
+    # SessionStart.
     if _is_claude and not is_cowork():
         try:
             for _sc_line in _subagent_cache_session_start_lines():

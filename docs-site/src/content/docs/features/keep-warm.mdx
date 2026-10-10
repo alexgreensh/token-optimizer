@@ -169,7 +169,7 @@ Claude Code on macOS and Windows for the pinging loop and scheduler. Reporting c
 ## Related
 
 - [Cache TTL watchdog](/features/cache-watchdog/): `cache-report` measures the expiry waste Keep-Warm targets, before you decide to ping.
-- [Subagent prompt cache](/features/subagent-cache/): the 1-hour TTL for subagent prefixes, set once and self-reverting if it does not pay.
+- [Subagent prompt cache](/features/subagent-cache/): the 1-hour TTL for subagent prefixes, recommended (never set) with your own numbers; under the explicit opt-in it still self-reverts if it does not pay.
 - [Cache economics](/concepts/cache-economics/): why a cold resume costs 1.25-2x the prefix.
 - [Your data and privacy](/reference/data-and-privacy/): consent state and how to reset it.
 - [Configuration](/reference/configuration/): Keep-Warm variables and consent keys.

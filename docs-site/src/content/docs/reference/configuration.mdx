@@ -135,7 +135,7 @@ The two Keep-Warm names found in the Python core are internal execution markers 
 
 | Variable | Default | Effect |
 |---|---|---|
-| `TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H` | evidence-gated | Unset: the automatic `subagentPromptCacheTtl: "1h"` set happens only when your own last 30 days show it pays. `1`, `true`, `on`, or `yes`: always on, no evidence check. `0`, `false`, `off`, or `no`: never, and if the setting was already applied, it is removed (Claude Code only) |
+| `TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H` | advise-only | Unset: the `subagentPromptCacheTtl: "1h"` verdict is a recommendation only -- Token Optimizer never writes the key, it advises with your own numbers and the exact command. `1`, `true`, `on`, or `yes`: opt in to the automatic write (with the 14-day tripwire). `0`, `false`, `off`, or `no`: never, and if the setting was already applied by Token Optimizer, it is removed (Claude Code only) |
 
 Two Claude Code environment variables also gate the feature without any opt-out flag: `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL` and `FORCE_PROMPT_CACHING_5M` both outrank the settings key, so Token Optimizer does nothing while either is set. See [Subagent prompt cache](/features/subagent-cache/).
 

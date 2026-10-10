@@ -54,7 +54,10 @@ export type Status = {
 export type World = {
   sessionId: string
   /** Environment variables beside HOME. */
+  beforeContextRead?: () => Promise<void>
+  rejectContextReadOnce?: boolean
   env?: Record<string, string>
+  context?: { window: number; tokens?: number; percent: number }
   files: Record<string, [mtimeMs: number, contents: string]>
   status: Status
   /** How the next compact-capture / resume-lean runs answer. */
@@ -203,7 +206,7 @@ export function stub(on: On, patch: Partial<Omit<World, 'clock' | 'runs' | 'toas
   on('session.usage', () => ({
     value: {
       ...(w.startedAt === null ? {} : { startedAt: w.startedAt }),
-      context: { window: 1_000_000, tokens: 620_000, percent: 62 },
+      context: w.context ?? { window: 1_000_000, tokens: 620_000, percent: 62 },
       rateLimits: [
         ...(w.dropFiveHour ? [] : [{ kind: 'five_hour', percentUsed: 40, resetsAt: '2026-10-03T12:00:00Z' }]),
         { kind: 'seven_day', percentUsed: 20 },
@@ -212,6 +215,10 @@ export function stub(on: On, patch: Partial<Omit<World, 'clock' | 'runs' | 'toas
     } as never,
   }))
   on('state.get', async (_, e, next) => {
+    if (e.key === 'session') {
+      if (w.rejectContextReadOnce) { w.rejectContextReadOnce = false; throw new Error('state unavailable') }
+      if (w.beforeContextRead) await w.beforeContextRead()
+    }
     const held = await next(e)
     const seeded = e.plugin === 'token-optimizer' ? w.seed[e.key] : undefined
     return held.value?.version === 0 && held.value.value === undefined && seeded !== undefined ? { value: { value: seeded, version: 0 } } : held

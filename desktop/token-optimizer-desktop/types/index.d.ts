@@ -40,6 +40,8 @@ export type TokenOptimizerDesktopSession = {
   contextPercent: number | null
   contextTokens: number | null
   contextWindow: number | null
+  /** A smaller env ceiling invalidates full-window quality-cache fill. */
+  contextWindowReduced?: boolean
   fiveHour: TokenOptimizerDesktopLimit | null
   week: TokenOptimizerDesktopLimit | null
   /** Current git branch; null outside a repository or on a detached HEAD. */

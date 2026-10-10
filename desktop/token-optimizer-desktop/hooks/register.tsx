@@ -149,6 +149,7 @@ function dataIo($: EngineInterface): DataIo {
     envHome: () => $.env.get('HOME'),
     envUserProfile: () => $.env.get('USERPROFILE'),
     envConfigDir: () => $.env.get('CLAUDE_CONFIG_DIR'),
+    envAutoCompactWindow: () => $.env.get('CLAUDE_CODE_AUTO_COMPACT_WINDOW'),
     usage: () => $.session.usage(),
     list: path => $.fs.list(path),
     stat: path => $.fs.stat(path),
@@ -166,7 +167,7 @@ function dataIo($: EngineInterface): DataIo {
 
 /** Gather and store the session's figures, then let the cache clock learn from them. */
 async function refresh($: EngineInterface, options: GatherOptions = {}): Promise<void> {
-  const gen = sessionGen
+  let gen = sessionGen
   const current = await attempt(() => read($, sessionAtom), null)
   const liveSid = cleanId(options.sessionId ?? (await attempt(() => $.session.id(), '')))
   const path = options.transcript ?? transcriptFor(liveSid)
@@ -176,6 +177,7 @@ async function refresh($: EngineInterface, options: GatherOptions = {}): Promise
   if (!options.reset && current !== null && fresh.sessionId !== '' && current.sessionId !== fresh.sessionId) {
     // Another session (a new one, or a resume): nothing of the last one carries over.
     sessionGen += 1
+    gen = sessionGen
     toolsPending = 0
     await feedClock($, { type: 'clear' })
     await setUi($, () => initialUi())
@@ -183,11 +185,13 @@ async function refresh($: EngineInterface, options: GatherOptions = {}): Promise
     await feedPose($, { type: 'session-start' })
   }
   const latest = await attempt(() => read($, sessionAtom), null)
+  if (gen !== sessionGen) return
   const merged = mergeStored(latest, fresh, options.reset, options.savings === true)
   // Nothing shown changed (gatheredAt always does): no write, so no redraw.
-  if (latest !== null && sameShown(latest, merged)) return void (await syncClock($, fresh))
-  await update($, sessionAtom, cur => mergeStored(cur, fresh, options.reset, options.savings === true))
-  await syncClock($, fresh)
+  if (latest !== null && sameShown(latest, merged)) return void (await syncClock($, fresh, gen))
+  await update($, sessionAtom, cur => gen === sessionGen ? mergeStored(cur, fresh, options.reset, options.savings === true) : cur)
+  if (gen !== sessionGen) return
+  await syncClock($, fresh, gen)
 }
 
 function sameShown(a: TokenOptimizerDesktopSession, b: TokenOptimizerDesktopSession): boolean {
@@ -225,10 +229,12 @@ async function flushTools($: EngineInterface): Promise<void> {
 }
 
 /** The status command's anchor and measured lifetime feed the clock when they are newer than what it holds. */
-async function syncClock($: EngineInterface, s: TokenOptimizerDesktopSession): Promise<void> {
+async function syncClock($: EngineInterface, s: TokenOptimizerDesktopSession, gen?: number): Promise<void> {
+  if (gen !== undefined && gen !== sessionGen) return
   await attempt(
     () =>
       update($, clockAtom, cur => {
+        if (gen !== undefined && gen !== sessionGen) return cur
         let c: ClockState = cur ?? initialClock()
         if (s.cacheLifetime && c.lifetime !== s.cacheLifetime) c = reduceClock(c, { type: 'lifetime-measured', lifetime: s.cacheLifetime })
         if (s.lastRequestEpoch !== null) {
@@ -1418,7 +1424,7 @@ export const register: Register = on => {
       now,
       working,
       quality: s?.quality ?? null,
-      contextPercent: s?.contextPercent ?? s?.quality?.fillPct ?? null,
+      contextPercent: s?.contextPercent ?? (s?.contextWindowReduced ? null : s?.quality?.fillPct ?? null),
       contextTokens: s?.contextTokens ?? null,
       contextWindow: s?.contextWindow ?? null,
       fiveHour: s?.fiveHour ?? null,

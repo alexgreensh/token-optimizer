@@ -56130,12 +56130,12 @@ if __name__ == "__main__":
               f"{run['result']['scanned_sessions']} sessions):")
         for label in ("probe-only", "predictor-sustain", "oracle-sustain"):
             m = modes[label]
-            print(f"  {label:<18} net ${m['net_usd']:>9.2f}  "
+            print(f"  {label:<18} net {_recs_usd(m['net_usd']):>10}  "
                   f"(saving ${m['saving_usd']:.2f} - ping ${m['ping_cost_usd']:.2f}; "
                   f"{m['pings']} pings, {m['avoided_writes']} writes avoided)")
-        print(f"  reconcile: probe_net=${rec['probe_net']:.2f} "
+        print(f"  reconcile: probe_net={_recs_usd(rec['probe_net'])} "
               f"(in-band={rec['probe_in_band']}), "
-              f"oracle_net=${rec['oracle_net']:.2f} "
+              f"oracle_net={_recs_usd(rec['oracle_net'])} "
               f"(in-band={rec['oracle_in_band']})")
         verdict = "PROMOTED (sustain ON)" if dec["sustain_allowed"] else "probe-only (sustain OFF)"
         print(f"  fence: {verdict} -- {dec['reason']}"
@@ -56173,7 +56173,7 @@ if __name__ == "__main__":
                   f"({w.get('ok_count', 0)} ok, {w.get('error_count', 0)} error, "
                   f"{w.get('timeout_count', 0)} timeout), "
                   f"spend ${w['spend_usd']:.2f}, realized ${w['realized_usd']:.2f}, "
-                  f"NET ${w['net_usd']:.2f} "
+                  f"NET {_recs_usd(w['net_usd'])} "
                   f"({w['realized_count']} realized / {w['loss_count']} loss)")
             orphans = w.get("orphan_firing_count", 0)
             if orphans:
@@ -56292,13 +56292,13 @@ if __name__ == "__main__":
               f"({fc['avoided_writes']} cold re-writes avoided)")
         print(f"  API-equivalent: ${fc['saving_usd']:.2f} saved  -  "
               f"${fc['ping_cost_usd']:.2f} keep-warm cost  =  "
-              f"{'+' if fc['net_usd'] >= 0 else ''}${fc['net_usd']:.2f}/month net")
+              f"{_recs_usd(fc['net_usd'], plus=True)}/month net")
         if fc["positive"]:
             print(f"  Verdict: WORTH IT -- nets you ~${fc['net_usd']:.0f}/mo in "
                   f"avoided token cost.")
         else:
             print(f"  Verdict: not worth it on your history "
-                  f"(net ${fc['net_usd']:.2f}/mo).")
+                  f"(net {_recs_usd(fc['net_usd'])}/mo).")
         print("  Note: on a subscription you pay keep-warm's cost in rate-limit "
               "quota, not cash; the $ is the API-equivalent size of the win.")
         sys.exit(0)

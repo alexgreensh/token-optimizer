@@ -5126,14 +5126,19 @@ var DB = (function() {
           (!ur.present || urItems.length === 0
             ? '<div style="color:var(--c-text-dim);font-size:14px;">Measuring in the background, check back after your next session</div>'
             : '');
-        urItems.forEach(function(it) {
+        var urCap = function(s) { s = String(s || ''); return s.charAt(0).toUpperCase() + s.slice(1); };
+        urItems.forEach(function(it, urIdx) {
+          // The card header already draws a line above the first row.
+          var urRow = urIdx === 0
+            ? '<div>'
+            : '<div style="border-top:1px solid var(--c-border);margin-top:var(--s-3);padding-top:var(--s-3);">';
           var label = it.id === 'compact_window' ? 'Compact window'
             : it.id === 'subagent_cache' ? 'Subagent cache'
             : String(it.id || 'Recommendation');
           if (it.state === 'recommend') {
-            html += '<div style="border-top:1px solid var(--c-border);margin-top:var(--s-3);padding-top:var(--s-3);">' +
+            html += urRow +
               '<div class="label">' + esc(label) + '</div>' +
-              '<div style="font-size:15px;color:var(--c-text-main);margin-top:4px;">' + esc(it.headline || '') + '</div>' +
+              '<div style="font-size:15px;color:var(--c-text-main);margin-top:4px;">' + esc(urCap(it.headline)) + '</div>' +
               (it.tradeoff ? '<div style="font-size:14px;color:var(--c-text-main);margin-top:4px;">' + esc(it.tradeoff) + '</div>' : '');
             if (it.command) {
               html += '<pre class="hook-command-pre">' + esc(it.command) + '</pre>' +
@@ -5142,7 +5147,7 @@ var DB = (function() {
             html += '</div>';
           } else {
             // keep / not_enough_data: one quiet line, no command.
-            html += '<div style="border-top:1px solid var(--c-border);margin-top:var(--s-3);padding-top:var(--s-3);">' +
+            html += urRow +
               '<div style="color:var(--c-text-dim);font-size:14px;">' +
               esc(label) + ': ' + esc(it.headline || '') + '</div></div>';
           }

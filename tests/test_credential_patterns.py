@@ -84,7 +84,7 @@ def test_existing_patterns_still_redact():
     samples = {
         "AWS access key": "AKIA" + "A" * 16,
         "GitHub OAuth token": "gho_" + "b" * 36,
-        "Bearer token": "Authorization: Bearer abc.def_ghi-123",
+        "Bearer token": "Authorization: Bearer abc.def_ghi-123456",  # 16+ chars, the TS floor
         "Database URI": "postgres://user:s3cret@db.example.com/app",
     }
     for label, raw in samples.items():

@@ -179,16 +179,22 @@ def test_realistic_output_is_not_slower_than_a_generous_bound(monkeypatch):
     # baseline would scale with the very slowdown being guarded against, and
     # an absolute floor (the old 1.0s) hides a ~2x-uniform or ~15x blowup on
     # any fast machine.
+    # CPU time (time.process_time), best of three for BOTH sides: wall-clock
+    # numbers swing 5x on a loaded machine (load average 150 failed this test
+    # while it was healthy), CPU time of a single-threaded call does not wait
+    # for the scheduler.
     probe_re = re.compile(r"\berror\b|\bwarning\b|\bfailed\b")
-    probe = float("inf")
-    for _ in range(3):
-        p0 = time.perf_counter()
-        probe_re.findall(text)
-        probe = min(probe, time.perf_counter() - p0)
 
-    t0 = time.perf_counter()
-    cp.redact_credentials(text)
-    elapsed = time.perf_counter() - t0
+    def _cpu_best(fn):
+        best = float("inf")
+        for _ in range(3):
+            c0 = time.process_time()
+            fn()
+            best = min(best, time.process_time() - c0)
+        return best
+
+    probe = max(_cpu_best(lambda: probe_re.findall(text)), 1e-4)
+    elapsed = _cpu_best(lambda: cp.redact_credentials(text))
     # The sub-count assert above is the primary discriminator (it fails the
     # instant the gate drops); this bound only catches a pathological UNIFORM
     # slowdown the count can't see. Healthy is ~4-6x the probe idle, ~40x

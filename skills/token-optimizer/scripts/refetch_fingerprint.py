@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 
 # SINGLE SOURCE OF TRUTH for the manifest field name the writer stores and the
@@ -172,4 +173,28 @@ def measure_py_path() -> str:
 def expand_command(key: str) -> str:
     """The exact Bash command that retrieves an archived result — one source of
     truth for both the archive footer and the guard's deny reason."""
-    return f"python3 {measure_py_path()} expand {key}"
+    return f"python3 {shell_path(measure_py_path())} expand {key}"
+
+
+_SHELL_SAFE_PATH = re.compile(r"[A-Za-z0-9_./:@%+=,-]+\Z")
+
+
+def shell_path(path: str) -> str:
+    """A path the model can paste into Bash, Git Bash or PowerShell unchanged.
+
+    On Windows backslashes become forward slashes: Python opens C:/x, and an
+    unquoted backslash is an escape in Bash. Anything beyond plain path
+    characters, a space above all, is single-quoted, which Bash and PowerShell
+    both read literally. A path that needs no quoting is returned as is.
+    """
+    text = str(path)
+    if os.name == "nt":
+        text = text.replace("\\", "/")
+    if _SHELL_SAFE_PATH.match(text):
+        return text
+    if "'" not in text:
+        return f"'{text}'"
+    # A single quote in the path: double quotes, with Bash's four specials escaped.
+    for ch in ("\\", '"', "$", "`"):
+        text = text.replace(ch, "\\" + ch)
+    return f'"{text}"'

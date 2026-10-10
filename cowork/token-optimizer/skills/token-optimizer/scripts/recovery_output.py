@@ -25,6 +25,31 @@ def is_recovery_tool(tool_name: str) -> bool:
     return tool_name in _RECOVERY_TOOLS
 
 
+# An id never starts with a dash, so --list and --search keep the normal pipeline.
+_HINT_TAIL = re.compile(r'[a-zA-Z0-9_][a-zA-Z0-9_-]*(?: --session [a-zA-Z0-9_][a-zA-Z0-9_-]*)?\Z')
+
+
+def _is_printed_hint(command: str) -> bool:
+    """The command exactly as Token Optimizer prints it, on any OS.
+
+    shlex reads POSIX shell: a Windows path loses its backslashes and a path
+    with a space splits, so the printed hint is matched as text first. The
+    older unquoted form is kept because archived pointers in a live transcript
+    still carry it. The tail pattern admits no shell operator.
+    """
+    try:
+        from refetch_fingerprint import measure_py_path, shell_path
+        raw = measure_py_path()
+    except Exception:
+        return False
+    text = command.strip()
+    for shown in {shell_path(raw), raw, raw.replace('\\', '/')}:
+        prefix = f'python3 {shown} expand '
+        if text.startswith(prefix) and _HINT_TAIL.match(text[len(prefix):]):
+            return True
+    return False
+
+
 def is_expand_command(command: str) -> bool:
     """Only a simple invocation of this installation's measure.py expand.
 
@@ -34,6 +59,8 @@ def is_expand_command(command: str) -> bool:
     """
     if not isinstance(command, str) or len(command) > 16_384:
         return False
+    if _is_printed_hint(command):
+        return True
     try:
         tokens = shlex.split(command)
         if len(tokens) not in (4, 6) or tokens[2] != 'expand':

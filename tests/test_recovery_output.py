@@ -160,3 +160,52 @@ def test_consolidated_runner_keeps_recovery_original(tmp_path):
         assert 'updatedMCPToolOutput' not in payload.get('hookSpecificOutput', {})
         assert 'updatedToolOutput' not in payload.get('hookSpecificOutput', {})
     assert not list(tmp_path.rglob('manifest.jsonl'))
+
+
+def test_the_hint_token_optimizer_prints_is_recognized():
+    # The model runs the pointer's command verbatim; that exact string must be exempt.
+    from recovery_output import is_expand_command
+    from refetch_fingerprint import expand_command
+    assert is_expand_command(expand_command('original'))
+    assert is_expand_command(expand_command('original') + ' --session session')
+    assert not is_expand_command(expand_command('original') + '; echo another')
+    assert not is_expand_command(expand_command('original') + ' | cat')
+
+
+@pytest.mark.parametrize('path,shown', [
+    ('/opt/to/scripts/measure.py', '/opt/to/scripts/measure.py'),
+    ('/Users/First Last/Library/Application Support/to/measure.py',
+     "'/Users/First Last/Library/Application Support/to/measure.py'"),
+    ("/home/o'brien/to/measure.py", '"/home/o\'brien/to/measure.py"'),
+])
+def test_hint_path_is_pasteable(path, shown):
+    from refetch_fingerprint import shell_path
+    assert shell_path(path) == shown
+
+
+def test_hint_with_a_space_in_the_install_path_round_trips(tmp_path, monkeypatch):
+    import shlex
+    import recovery_output
+    import refetch_fingerprint
+    spaced = tmp_path / 'First Last' / 'scripts' / 'measure.py'
+    monkeypatch.setattr(refetch_fingerprint, 'measure_py_path', lambda: str(spaced))
+    hint = refetch_fingerprint.expand_command('original')
+    # One shell word for the path, and the recognizer accepts it.
+    assert shlex.split(hint) == ['python3', str(spaced), 'expand', 'original']
+    assert recovery_output.is_expand_command(hint)
+    # The form older releases printed is still in live transcripts.
+    assert recovery_output.is_expand_command(f'python3 {spaced} expand original')
+    assert not recovery_output.is_expand_command(f'python3 {spaced} expand original && echo x')
+
+
+def test_windows_shaped_hint_is_recognized(monkeypatch):
+    import recovery_output
+    import refetch_fingerprint
+    win = 'C:\\Users\\First Last\\.claude\\plugins\\cache\\to\\scripts\\measure.py'
+    monkeypatch.setattr(refetch_fingerprint, 'measure_py_path', lambda: win)
+    monkeypatch.setattr(refetch_fingerprint.os, 'name', 'nt')
+    hint = refetch_fingerprint.expand_command('original')
+    assert hint == "python3 'C:/Users/First Last/.claude/plugins/cache/to/scripts/measure.py' expand original"
+    assert recovery_output.is_expand_command(hint)
+    assert recovery_output.is_expand_command(f'python3 {win} expand original')
+    assert not recovery_output.is_expand_command(hint + ' | cat')

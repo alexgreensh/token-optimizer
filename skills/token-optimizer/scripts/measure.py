@@ -26871,6 +26871,20 @@ def _collect_posix_claude_sessions(process_name="claude"):
     return sessions
 
 
+def _local_start_label(started):
+    """Format a process start time in local time, as the POSIX collector does.
+
+    A timezone-aware value (the Windows collectors report UTC or an offset) is
+    converted to the local zone first; a naive value is already local.
+    """
+    if started.tzinfo is not None:
+        try:
+            started = started.astimezone()
+        except (ValueError, OverflowError, OSError):
+            pass
+    return started.strftime("%a %b %d %H:%M:%S %Y")
+
+
 def _parse_wmi_datetime(wmi_ts):
     """Parse a WMI CIM_DATETIME to elapsed seconds since process start.
 
@@ -26915,7 +26929,7 @@ def _parse_wmi_datetime(wmi_ts):
         return None
 
     return {
-        "started": started.strftime("%a %b %d %H:%M:%S %Y"),
+        "started": _local_start_label(started),
         "elapsed_seconds": max(0, int(elapsed)),
     }
 
@@ -26959,7 +26973,7 @@ def _parse_iso_process_datetime(iso_ts):
     else:
         elapsed = (datetime.now(timezone.utc) - started).total_seconds()
     return {
-        "started": started.strftime("%a %b %d %H:%M:%S %Y"),
+        "started": _local_start_label(started),
         "elapsed_seconds": max(0, int(elapsed)),
     }
 

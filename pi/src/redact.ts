@@ -7,7 +7,9 @@ const PATTERNS: [RegExp, string][] = [
   [/\b(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{20,}\b/g, '[REDACTED]'],
   [/\bsk-[A-Za-z0-9_-]{20,}\b/g, '[REDACTED]'],
   [/\bAKIA[0-9A-Z]{16}\b/g, '[REDACTED]'],
-  [/\bBearer\s+[A-Za-z0-9._~+/=-]{16,}\b/gi, '[REDACTED]'],
+  // Bearer keeps its 16-character floor. The lookahead asks for a digit, a token punctuation mark
+  // or an interior capital, so a long plain word after "bearer" is not a credential.
+  [/\b[Bb][Ee][Aa][Rr][Ee][Rr]\s+(?=[A-Za-z0-9._~+/=-]*(?:[0-9._~+/=-]|[A-Za-z][A-Z]))[A-Za-z0-9._~+/=-]{16,}\b/g, '[REDACTED]'],
   // The lookbehind keeps this linear: without it every eyJ inside a long base64url run
   // restarts a scan to the end of the run (about 8 s at 100 KB).
   [/(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, '[REDACTED]'],

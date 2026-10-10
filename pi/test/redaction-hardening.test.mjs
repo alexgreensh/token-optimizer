@@ -378,6 +378,83 @@ const VECTORS = [
       "Key takeaways: the secret ingredient is time. Press the key to continue."
     ],
     "same": true
+  },
+  {
+    "name": "F8 Bearer with a digit-bearing token",
+    "input": [
+      "Authorization: Bearer Qw7Lm3Pa9Zx2Kc4Vb8Nt end"
+    ],
+    "absent": [
+      "Qw7Lm3Pa9Zx2Kc4Vb8Nt"
+    ],
+    "present": [
+      "Authorization: ",
+      " end"
+    ]
+  },
+  {
+    "name": "F8 Bearer with punctuation in the token",
+    "input": [
+      "Authorization: Bearer abcdefgh.ijklmnop.qrstuvwx end"
+    ],
+    "absent": [
+      "abcdefgh.ijklmnop.qrstuvwx"
+    ],
+    "present": [
+      " end"
+    ]
+  },
+  {
+    "name": "F8 Bearer with an all-caps token",
+    "input": [
+      "Authorization: BEARER ABCDEFGHIJKLMNOPQRSTUV end"
+    ],
+    "absent": [
+      "ABCDEFGHIJKLMNOPQRSTUV"
+    ],
+    "present": [
+      " end"
+    ]
+  },
+  {
+    "name": "F8 Bearer with a mixed-case letter-only token",
+    "input": [
+      "Authorization: Bearer qWeRtYuIoPaSdFgHjKlZ end"
+    ],
+    "absent": [
+      "qWeRtYuIoPaSdFgHjKlZ"
+    ],
+    "present": [
+      " end"
+    ]
+  },
+  {
+    "name": "F8 Bearer floor stays 16: short token is left",
+    "input": [
+      "curl -H \"Authorization: Bearer abc.def\" https://example.com"
+    ],
+    "same": true
+  },
+  {
+    "name": "F8 English: the bearer of bad news",
+    "input": [
+      "the bearer of bad news reached the board"
+    ],
+    "same": true
+  },
+  {
+    "name": "F8 English: long lowercase word after bearer",
+    "input": [
+      "the bearer internationalization notwithstanding was late"
+    ],
+    "same": true
+  },
+  {
+    "name": "F8 English: capitalised long word after Bearer",
+    "input": [
+      "Bearer Responsibilities are listed below"
+    ],
+    "same": true
   }
 ];
 

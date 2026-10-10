@@ -5112,16 +5112,16 @@ var DB = (function() {
           '</div>' +
           (!ur.present || urItems.length === 0
             ? '<div style="color:var(--c-text-dim);font-size:14px;">Measuring in the background, check back after your next session</div>'
-            : '') +
-          '</div>';
+            : '');
         urItems.forEach(function(it) {
           var label = it.id === 'compact_window' ? 'Compact window'
             : it.id === 'subagent_cache' ? 'Subagent cache'
             : String(it.id || 'Recommendation');
           if (it.state === 'recommend') {
-            html += '<div class="card wide"><div class="card-header"><span>' + esc(label) + '</span></div>' +
-              '<div style="font-size:15px;color:var(--c-text-main);">' + esc(it.headline || '') + '</div>' +
-              (it.tradeoff ? '<div style="font-size:13px;color:var(--c-text-dim);margin-top:4px;">' + esc(it.tradeoff) + '</div>' : '');
+            html += '<div style="border-top:1px solid var(--c-border);margin-top:var(--s-3);padding-top:var(--s-3);">' +
+              '<div class="label">' + esc(label) + '</div>' +
+              '<div style="font-size:15px;color:var(--c-text-main);margin-top:4px;">' + esc(it.headline || '') + '</div>' +
+              (it.tradeoff ? '<div style="font-size:14px;color:var(--c-text-main);margin-top:4px;">' + esc(it.tradeoff) + '</div>' : '');
             if (it.command) {
               html += '<pre class="hook-command-pre">' + esc(it.command) + '</pre>' +
                 '<button class="hook-action-btn" data-usage-rec-cmd="' + esc(it.command) + '">Copy command</button>';
@@ -5129,10 +5129,12 @@ var DB = (function() {
             html += '</div>';
           } else {
             // keep / not_enough_data: one quiet line, no command.
-            html += '<div class="card wide"><div style="color:var(--c-text-dim);font-size:14px;">' +
+            html += '<div style="border-top:1px solid var(--c-border);margin-top:var(--s-3);padding-top:var(--s-3);">' +
+              '<div style="color:var(--c-text-dim);font-size:14px;">' +
               esc(label) + ': ' + esc(it.headline || '') + '</div></div>';
           }
         });
+        html += '</div>';
         if (urWins.length > 0) {
           html += '<div class="card wide"><div class="card-header"><span>Wins</span></div>';
           urWins.forEach(function(w) {

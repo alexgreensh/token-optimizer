@@ -1507,6 +1507,11 @@ input:checked + .slider:before {
   background: var(--c-warning-2-fill, rgba(251,191,36,0.1));
 }
 
+.flag-badge.desktop,
+.flag-badge.unverified {
+  background: rgba(125,140,163,0.2);
+  color: var(--c-text-dim);
+}
 .flag-badge.zombie {
   color: var(--c-waste, #f87171);
   border: 1px solid var(--c-waste, #f87171);
@@ -2583,11 +2588,18 @@ var DB = (function() {
       killStaleBtn.addEventListener('click', function() {
         var stalePids = [];
         (data.health && data.health.running_sessions || []).forEach(function(s) {
-          if ((s.flags || []).some(function(f) { return f === 'STALE' || f === 'ZOMBIE'; })) {
+          var fl = s.flags || [];
+          var prot = fl.some(function(f) { return f === 'DESKTOP' || f === 'UNVERIFIED'; });
+          if (!prot && fl.some(function(f) { return f === 'STALE' || f === 'ZOMBIE'; })) {
             stalePids.push(s.pid);
           }
         });
-        var cmd = stalePids.map(function(p) { return 'kill ' + p; }).join(' && ');
+        if (!stalePids.length) { return; }
+        // Identity-tagged (Windows) inventories are re-verified per process at
+        // kill time by the CLI; a pasted `kill <pid>` from this snapshot would
+        // bypass that, so copy the CLI command instead.
+        var tagged = (data.health && data.health.running_sessions || []).some(function(s) { return !!s.identity; });
+        var cmd = tagged ? 'python3 measure.py kill-stale --hours 24 --dry-run' : stalePids.map(function(p) { return 'kill ' + parseInt(p, 10); }).join(' && ');
         if (navigator.clipboard && navigator.clipboard.writeText) {
           navigator.clipboard.writeText(cmd).then(function() {
             killStaleBtn.textContent = 'Copied!';
@@ -4857,7 +4869,9 @@ var DB = (function() {
     var sessions = h.running_sessions || [];
     html += '<div class="card wide"><div class="card-header"><span>Running Sessions</span><span class="label">' + sessions.length + ' active</span></div>';
 
-    var staleCount = sessions.filter(function(s) { return (s.flags || []).some(function(f) { return f === 'STALE' || f === 'ZOMBIE'; }); }).length;
+    // Sessions hosted by the desktop app (DESKTOP) or with unreadable identity
+    // (UNVERIFIED) are never offered for termination.
+    var staleCount = sessions.filter(function(s) { var fl = s.flags || []; return !fl.some(function(f) { return f === 'DESKTOP' || f === 'UNVERIFIED'; }) && fl.some(function(f) { return f === 'STALE' || f === 'ZOMBIE'; }); }).length;
 
     if (sessions.length === 0) {
       html += '<div class="empty-state">No running ' + esc(data.runtime_label || 'Claude Code') + ' sessions found.</div>';
@@ -4873,7 +4887,7 @@ var DB = (function() {
           'Some may be your active terminals (marked TERMINAL), others may be forgotten or headless. ' +
           'Check the status column before killing. Only kill sessions you are not actively using.<br><br>' +
           '<span style="font-family:var(--font-mono);font-size:12px;color:var(--c-text-main)">Option 1:</span> Click "Copy Kill Command" and paste in any terminal.<br>' +
-          '<span style="font-family:var(--font-mono);font-size:12px;color:var(--c-text-main)">Option 2:</span> Run <code style="font-family:var(--font-mono);color:var(--c-accent-cyan)">python3 measure.py kill-stale</code> to auto-terminate all sessions running &gt;12 hours.<br>' +
+          '<span style="font-family:var(--font-mono);font-size:12px;color:var(--c-text-main)">Option 2:</span> Run <code style="font-family:var(--font-mono);color:var(--c-accent-cyan)">python3 measure.py kill-stale</code> to auto-terminate terminal sessions running &gt;12 hours (desktop-hosted and unverified sessions are never terminated).<br>' +
           '<span style="font-family:var(--font-mono);font-size:12px;color:var(--c-text-main)">Option 3:</span> Run <code style="font-family:var(--font-mono);color:var(--c-accent-cyan)">python3 measure.py kill-stale --dry-run</code> to preview without killing.' +
           '</div></div>';
       }
@@ -4890,7 +4904,8 @@ var DB = (function() {
         });
         if (flags.length === 0) flagHtml = '<span style="color:var(--c-accent-cyan);">OK</span>';
         var isStale = flags.some(function(f) { return f === 'STALE' || f === 'ZOMBIE'; });
-        var killBtn = isStale ? '<button class="copy-fix-btn kill-pid-btn" data-pid="' + s.pid + '" style="font-size:11px;padding:2px 8px;background:var(--c-waste-strong, #ef4444);border-color:var(--c-waste-strong, #ef4444)">kill</button>' : '';
+        var isProtected = flags.some(function(f) { return f === 'DESKTOP' || f === 'UNVERIFIED'; });
+        var killBtn = (isStale && !isProtected && !s.identity) ? '<button class="copy-fix-btn kill-pid-btn" data-pid="' + s.pid + '" style="font-size:11px;padding:2px 8px;background:var(--c-waste-strong, #ef4444);border-color:var(--c-waste-strong, #ef4444)">kill</button>' : '';
         html += '<tr>' +
           '<td>' + s.pid + '</td>' +
           '<td>' + esc((s.started || '').slice(0, 20)) + '</td>' +
@@ -4907,6 +4922,8 @@ var DB = (function() {
         '<span class="flag-badge" style="font-size:10px;background:rgba(125,140,163,0.2);color:var(--c-text-dim)">HEADLESS</span> = no terminal (automation/background) &nbsp; ' +
         '<span class="flag-badge stale" style="font-size:10px">STALE</span> = running 24h+ &nbsp; ' +
         '<span class="flag-badge zombie" style="font-size:10px">ZOMBIE</span> = running 48h+' +
+        (isCodex ? '' : ' &nbsp; <span class="flag-badge desktop" style="font-size:10px">DESKTOP</span> = hosted by the Claude desktop app (never auto-terminated)' +
+          ' &nbsp; <span class="flag-badge unverified" style="font-size:10px">UNVERIFIED</span> = process identity could not be read (never auto-terminated)') +
         (isCodex ? '' : ' &nbsp; <span class="flag-badge outdated" style="font-size:10px">OUTDATED</span> = older version than installed') +
         '</div>';
     }

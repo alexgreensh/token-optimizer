@@ -1250,7 +1250,7 @@ def _save_pricing_tier(tier):
 
 
 def _get_model_cost(model, input_tokens, output_tokens, cache_read=0, cache_create=0, tier=None,
-                    cache_create_1h=None, cache_create_5m=None):
+                    cache_create_1h=None, cache_create_5m=None, per_request=False):
     """Calculate USD cost for a given model and token counts using the active pricing tier.
 
     Returns cost in USD. OpenAI/Codex and Gemini models use provider-specific
@@ -1261,6 +1261,11 @@ def _get_model_cost(model, input_tokens, output_tokens, cache_read=0, cache_crea
       - cache_create_5m: 5-minute TTL writes (1.25x input rate, e.g. $6.25/MTok for Opus)
     When the split is unavailable (both None), the total cache_create uses the 5m rate
     (conservative; 5m is the more common tier for most Claude Code workloads).
+
+    per_request=True says the token counts are ONE API request. Only then does a
+    model with a prompt-length card (Haiku 5.5 over 100K) pay it: the tier is
+    decided per request, so a session total, a per-day sum or a 1M-token rate
+    probe must be priced on the base card or it reads ~5x too high.
     """
     if tier is None:
         tier = _load_pricing_tier()
@@ -1297,8 +1302,9 @@ def _get_model_cost(model, input_tokens, output_tokens, cache_read=0, cache_crea
 
     # Prompt-length surcharge: Anthropic counts ALL of a request's input
     # (input + cache reads + cache writes = full_input) against the
-    # long-context threshold. Haiku 5.5 >100K pays 5x on every rate.
-    if (normalized in lc_models
+    # long-context threshold. Haiku 5.5 >100K pays 5x on every rate. Applies
+    # to a single request only (per_request); aggregates use the base card.
+    if (per_request and normalized in lc_models
             and full_input > ANTHROPIC_LONG_CONTEXT_INPUT_THRESHOLD):
         rates = lc_models[normalized]
 
@@ -3318,6 +3324,73 @@ def _claude_model_window(model_str):
             return 1_000_000 if one_m_suffix else 200_000
         return 200_000
     return 1_000_000
+
+
+def _configured_model_string():
+    """The model string the user configured (env first, then settings), the
+    same lookup order detect_context_window() uses. Lowercased, may be ''."""
+    for var in ("CLAUDE_MODEL", "ANTHROPIC_MODEL"):
+        v = (os.environ.get(var) or "").strip().lower()
+        if v:
+            return v
+    for cfg_name in ("config.json", "settings.json"):
+        try:
+            with open(CLAUDE_DIR / cfg_name, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            m = cfg.get("model") or cfg.get("primaryModel") or ""
+            if isinstance(m, str) and m.strip():
+                return m.strip().lower()
+        except (OSError, ValueError, AttributeError):
+            continue
+    return ""
+
+
+def _plain_46_family(model_str):
+    """'opus' / 'sonnet' when model_str is a 4.6 id WITHOUT the [1m] suffix."""
+    m = (model_str or "").lower().strip()
+    if not m or "[1m]" in m or "1000k" in m:
+        return None
+    m = re.sub(r"[-@]\d{8}$", "", m).strip()
+    match = _CLAUDE_MODEL_ID_RE.match(m)
+    if not match:
+        return None
+    family, major, minor = match.groups()
+    if family in ("opus", "sonnet") and major == "4" and minor == "6":
+        return family
+    return None
+
+
+def _promote_plain_46_window(model_str, window, context_tokens):
+    """Opus/Sonnet 4.6 reach 1M only as the [1m] variant, but Claude Code
+    writes the PLAIN id into the transcript, so a 1M session looks 200K.
+
+    Two pieces of evidence say the window is bigger, in this order:
+      1. the configured (env/settings) model carries [1m] for the same family;
+      2. observed tokens exceed the window (arithmetic, needs no cooperation).
+    Returns (window, source_or_None, inferred_from_tokens). Explicit user
+    overrides (TOKEN_OPTIMIZER_CONTEXT_SIZE, --context-size, DISABLE_1M) are
+    never promoted: _context_window_for_model_str() returns them unchanged for
+    the [1m] spelling too, which is how that case is detected.
+    """
+    family = _plain_46_family(model_str)
+    if not family or window >= 1_000_000:
+        return window, None, False
+    promoted = _context_window_for_model_str(f"{model_str.strip()}[1m]")
+    if promoted <= window:
+        return window, None, False
+    configured = _configured_model_string()
+    if "[1m]" in configured:
+        c = _CLAUDE_MODEL_ID_RE.match(
+            re.sub(r"[-@]\d{8}$", "", configured.replace("[1m]", "").strip()))
+        if c and c.group(1) == family and (c.group(2) is None
+                                          or (c.group(2), c.group(3)) == ("4", "6")):
+            return promoted, f"settings/env model [1m]: {configured}", False
+    try:
+        if context_tokens is not None and float(context_tokens) > window:
+            return promoted, "observed tokens above the 200K window (plain 4.6 id, 1M variant)", True
+    except (TypeError, ValueError):
+        pass
+    return window, None, False
 
 
 def _context_window_for_model_str(model_str):
@@ -10849,7 +10922,8 @@ def _extract_costly_prompts(jsonl_path, tier=None, top_n=5):
                         cr = _safe_int(usage.get("cache_read_input_tokens", 0))
                         cc = _safe_int(usage.get("cache_creation_input_tokens", 0))
                         model = _record_model(msg)
-                        cost = _get_model_cost(model, inp, out, cr, cc, tier=tier)
+                        cost = _get_model_cost(model, inp, out, cr, cc, tier=tier,
+                                               per_request=True)
                         pending_prompt["tokens_in"] = inp + cr + cc
                         pending_prompt["tokens_out"] = out
                         pending_prompt["fresh_input"] = inp
@@ -11593,9 +11667,11 @@ def parse_session_turns(filepath):
                 # Price cache-create by TTL tier when the per-turn split is available.
                 if cc_1h or cc_5m:
                     cost = _get_model_cost(model, inp_tok, out_tok, cr, cc, tier=tier,
-                                           cache_create_1h=cc_1h, cache_create_5m=cc_5m)
+                                           cache_create_1h=cc_1h, cache_create_5m=cc_5m,
+                                           per_request=True)
                 else:
-                    cost = _get_model_cost(model, inp_tok, out_tok, cr, cc, tier=tier)
+                    cost = _get_model_cost(model, inp_tok, out_tok, cr, cc, tier=tier,
+                                           per_request=True)
 
                 turns.append({
                     "turn_index": turn_index,
@@ -33941,6 +34017,15 @@ def compute_quality_score(quality_data, session_id=None):
         "session data" if quality_data.get("model_context_window") else ctx_window_source
     )
     model_name = quality_data.get("model") or quality_data.get("current_model")
+    # Transcripts carry the plain 4.6 id even for the 1M variant: promote when
+    # settings say [1m] or the observed tokens already prove it.
+    window_inferred_from_tokens = False
+    if quality_data.get("model_context_window"):
+        _promoted, _why, window_inferred_from_tokens = _promote_plain_46_window(
+            model_name, model_context_window, quality_data.get("context_tokens"))
+        if _why:
+            model_context_window = _promoted
+            model_context_window_source = _why
 
     # Effective compact window for this session's model (env > modelSettings
     # > autoCompactWindow > default). Fill denominates against it ONLY when a
@@ -34089,7 +34174,7 @@ def compute_quality_score(quality_data, session_id=None):
     fill_quality, curve_name = _estimate_quality_with_curve(
         model_fill,
         model=model_name,
-        context_window=quality_data.get("model_context_window") or ctx_window,
+        context_window=model_context_window,
     )
     # Scale to 0-100 score (76 at worst = 0, 98 at best = 100)
     fill_score = max(0, min(100, (fill_quality - 76) / (98 - 76) * 100))
@@ -34293,9 +34378,10 @@ def compute_quality_score(quality_data, session_id=None):
             "quality_estimate": fill_quality,
             "quality_curve": curve_name,
             "model": model_name or "unknown",
-            "model_context_window": quality_data.get("model_context_window") or ctx_window,
+            "model_context_window": model_context_window,
             "model_context_window_source": model_context_window_source,
             "window_contradicted": window_contradicted,
+            "window_inferred_from_tokens": window_inferred_from_tokens,
             "host_disagreement": host_disagreement,
             "fill_source": fill_source,
             "band": band_name,

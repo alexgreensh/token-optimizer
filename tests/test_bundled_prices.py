@@ -125,15 +125,44 @@ def test_anthropic_long_context_surcharge_applies_over_threshold(tmp_path, resto
     assert measure._apply_bundled_prices(path) is True
     thr = measure.ANTHROPIC_LONG_CONTEXT_INPUT_THRESHOLD
     # Under the threshold: base card.
-    cost = measure._get_model_cost("claude-haiku-9-9", 50_000, 1_000, 0, 0, tier="anthropic")
+    cost = measure._get_model_cost("claude-haiku-9-9", 50_000, 1_000, 0, 0, tier="anthropic",
+                                   per_request=True)
     assert cost == pytest.approx(50_000 * 1.0 / 1e6 + 1_000 * 10.0 / 1e6)
     # Cache reads/writes count toward the prompt length too.
-    cost = measure._get_model_cost("claude-haiku-9-9", 50_000, 1_000, thr, 0, tier="anthropic")
+    cost = measure._get_model_cost("claude-haiku-9-9", 50_000, 1_000, thr, 0, tier="anthropic",
+                                   per_request=True)
     assert cost == pytest.approx(50_000 * 5.0 / 1e6 + 1_000 * 50.0 / 1e6 + thr * 0.5 / 1e6)
     # A model with no LC card never surcharges.
-    base = measure._get_model_cost("claude-opus-4-6", thr + 1, 1_000, 0, 0, tier="anthropic")
+    base = measure._get_model_cost("claude-opus-4-6", thr + 1, 1_000, 0, 0, tier="anthropic",
+                                   per_request=True)
     opus = measure.PRICING_TIERS["anthropic"]["claude_models"]["opus_4_6"]
     assert base == pytest.approx((thr + 1) * opus["input"] / 1e6 + 1_000 * opus["output"] / 1e6)
+
+
+def test_long_context_surcharge_never_applies_to_aggregate_calls(tmp_path, restore_tables):
+    """The over-100K tier is decided per API request. A session total, a daily
+    sum or a rate probe is not one request: it must be priced on the base card
+    (default per_request=False), or a 600K-token session reads ~5x too high."""
+    path = _write(tmp_path, _doc(
+        anthropic={"haiku_9_9": {"input": 1.0, "output": 10.0, "cache_read": 0.1,
+                                 "cache_write": 1.25, "cache_write_1h": 2.0}},
+        anthropic_long_context={"haiku_9_9": {"input": 5.0, "output": 50.0, "cache_read": 0.5,
+                                              "cache_write": 6.25, "cache_write_1h": 10.0}},
+    ))
+    assert measure._apply_bundled_prices(path) is True
+    thr = measure.ANTHROPIC_LONG_CONTEXT_INPUT_THRESHOLD
+    agg = measure._get_model_cost("claude-haiku-9-9", 50_000, 1_000, thr * 6, 0, tier="anthropic")
+    assert agg == pytest.approx(50_000 * 1.0 / 1e6 + 1_000 * 10.0 / 1e6 + thr * 6 * 0.1 / 1e6)
+    # The rate probes ask for 1M tokens of one class; that is a rate, not a request.
+    assert measure._get_model_cost("claude-haiku-9-9", 1_000_000, 0, tier="anthropic") == pytest.approx(1.0)
+    assert measure._get_model_cost("claude-haiku-9-9", 0, 1_000_000, tier="anthropic") == pytest.approx(10.0)
+
+
+def test_shipped_haiku_5_5_rate_probes_use_the_base_card():
+    """_model_rate_per_mtok routes advice: Haiku 5.5 must read $0.10, not 5x."""
+    base = measure.PRICING_TIERS["anthropic"]["claude_models"]["haiku_5_5"]
+    assert measure._get_model_cost("claude-haiku-5-5", 1_000_000, 0, tier="anthropic") == pytest.approx(base["input"])
+    assert measure._get_model_cost("claude-haiku-5-5", 0, 1_000_000, tier="anthropic") == pytest.approx(base["output"])
 
 
 def test_shipped_haiku_5_5_long_context_card_is_5x_the_base_card():
@@ -332,3 +361,28 @@ def test_fleet_prices_claude_3_era_ids_as_their_own_model():
     assert fleet._pricing_key("claude-3-5-sonnet-20241022") == "sonnet-legacy"
     assert fleet._pricing_key("claude-3-opus-20240229") == "opus-3"
     assert fleet._pricing_key("claude-3-5-haiku-20241022") == "haiku-3-5"
+
+
+def test_transcript_turns_apply_the_haiku_5_5_tier_per_request(tmp_path):
+    """The one place a request's own prompt length is known: each API call in
+    the transcript pays the tier for ITS prompt, not for the session total."""
+    import json
+    base = measure.PRICING_TIERS["anthropic"]["claude_models"]["haiku_5_5"]
+    lc = measure.PRICING_TIERS["anthropic"]["claude_models_lc"]["haiku_5_5"]
+
+    def rec(i, cache_read):
+        return {"type": "assistant", "timestamp": f"2026-10-10T10:0{i}:00Z",
+                "message": {"model": "claude-haiku-5-5", "content": [{"type": "text", "text": "ok"}],
+                            "usage": {"input_tokens": 1000, "output_tokens": 500,
+                                      "cache_read_input_tokens": cache_read,
+                                      "cache_creation_input_tokens": 0}}}
+    p = tmp_path / "s.jsonl"
+    # 3 small requests (21K prompt) and 1 big request (121K prompt).
+    p.write_text("\n".join(json.dumps(rec(i, c)) for i, c in
+                          enumerate([20_000, 20_000, 20_000, 120_000])), encoding="utf-8")
+    turns = measure.parse_session_turns(str(p))
+    costs = [t["cost_usd"] for t in turns]
+    small = (1000 * base["input"] + 500 * base["output"] + 20_000 * base["cache_read"]) / 1e6
+    big = (1000 * lc["input"] + 500 * lc["output"] + 120_000 * lc["cache_read"]) / 1e6
+    assert costs[:3] == [pytest.approx(round(small, 6))] * 3
+    assert costs[3] == pytest.approx(round(big, 6))

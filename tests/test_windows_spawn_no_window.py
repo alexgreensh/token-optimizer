@@ -1219,12 +1219,15 @@ def test_utf8_io_reexec_nt_keeps_detached_process_when_stdout_not_tty(monkeypatc
 def test_utf8_io_reexec_nt_safe_when_stdout_lacks_fileno(monkeypatch):
     """The detach hardening: if sys.stdout has no fileno (pytest capture,
     embedded hosts), Popen must still be called (no exception escapes) and
-    stdout simply omitted from kwargs. A UTF-8 convenience re-exec must never
+    stdout given DEVNULL in kwargs. A UTF-8 convenience re-exec must never
     crash the CLI."""
     u, cap, _ = _utf8_io_nt_reexec_env(monkeypatch, streams={"stdout": _NoFilenoStream()})
     u.reexec_in_utf8_mode()  # must not raise
     assert "argv" in cap, "Popen must still be called when a stream lacks fileno"
-    assert "stdout" not in cap, "a fileno-less stream must be omitted, not passed"
+    assert cap.get("stdout") == subprocess.DEVNULL, (
+        "a fileno-less stream must get DEVNULL (not be omitted: CPython would "
+        "fall back to GetStdHandle and a stale handle makes Popen raise)"
+    )
     assert cap.get("creationflags") == _DETACHED_PROCESS
 
 
@@ -1234,7 +1237,7 @@ def test_utf8_io_reexec_nt_safe_when_stdout_none(monkeypatch):
     u, cap, _ = _utf8_io_nt_reexec_env(monkeypatch, streams={"stdout": None})
     u.reexec_in_utf8_mode()  # must not raise
     assert "argv" in cap, "Popen must still be called when sys.stdout is None"
-    assert "stdout" not in cap
+    assert cap.get("stdout") == subprocess.DEVNULL
 
 
 def test_utf8_io_reexec_nt_flushes_stdout_stderr_before_popen(monkeypatch):

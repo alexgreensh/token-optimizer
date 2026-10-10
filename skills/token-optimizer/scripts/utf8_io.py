@@ -127,8 +127,18 @@ def reexec_in_utf8_mode() -> None:
                 except (OSError, ValueError, AttributeError):
                     pass
             _popen_kwargs = {}
+            # DETACHED_PROCESS only when no console is in play. If stdout is a
+            # tty the CLI was typed into a console: a detached child would sit
+            # off that console (no Ctrl+C, console handles used from outside
+            # their console), and no conhost can flash, so the flag buys
+            # nothing. Without it the child shares the console. Streams that
+            # are not a tty (every host-spawned hook) keep the flag.
+            try:
+                _on_console = bool(sys.stdout is not None and sys.stdout.isatty())
+            except (AttributeError, OSError, ValueError):
+                _on_console = False
             _flags = getattr(_sp, "DETACHED_PROCESS", 0)
-            if _flags:
+            if _flags and not _on_console:
                 _popen_kwargs["creationflags"] = _flags
             # Pass the three std handles explicitly so CPython sets
             # STARTF_USESTDHANDLES with the parent's real handles and marks
@@ -140,10 +150,21 @@ def reexec_in_utf8_mode() -> None:
             # OS handle (pytest capture, sys.std* None under pythonw per the
             # launcher swap), so a UTF-8 convenience re-exec never hard-crashes
             # the CLI.
-            for _name, _kw in (("stdin", "stdin"), ("stdout", "stdout"), ("stderr", "stderr")):
+            # When at least one stream is usable, each unusable one gets DEVNULL
+            # rather than being left out: CPython falls back to GetStdHandle for
+            # an omitted stream, and a stale non-NULL value there makes
+            # DuplicateHandle fail (WinError 6) so Popen raises and the re-exec
+            # is silently skipped. With none usable nothing is passed.
+            _missing = []
+            for _name in ("stdin", "stdout", "stderr"):
                 _s = _inheritable_stream(getattr(sys, _name, None))
                 if _s is not None:
-                    _popen_kwargs[_kw] = _s
+                    _popen_kwargs[_name] = _s
+                else:
+                    _missing.append(_name)
+            if any(_n in _popen_kwargs for _n in ("stdin", "stdout", "stderr")):
+                for _name in _missing:
+                    _popen_kwargs[_name] = _sp.DEVNULL
             child = _sp.Popen([sys.executable, "-X", "utf8", *sys.argv],
                               **_popen_kwargs)
             # Wait for the child to finish so output ordering is preserved and

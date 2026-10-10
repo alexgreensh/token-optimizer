@@ -2603,13 +2603,17 @@ var DB = (function() {
         // Identity-tagged inventories (every platform) are re-verified per process at
         // kill time by the CLI; a pasted `kill <pid>` from this snapshot would
         // bypass that, so copy the CLI command instead.
+        // That CLI command is a PREVIEW (--dry-run), so the button is labelled as one;
+        // only the plain `kill <pid>` branch is a kill command.
         var tagged = (data.health && data.health.running_sessions || []).some(function(s) { return !!s.identity; });
-        var cmd = tagged ? 'python3 measure.py kill-stale --hours 24 --dry-run' : stalePids.map(function(p) { return 'kill ' + parseInt(p, 10); }).join(' && ');
+        var cli = (data.health && data.health.cli) || 'python3 measure.py';
+        var cmd = tagged ? cli + ' kill-stale --hours 24 --dry-run' : stalePids.map(function(p) { return 'kill ' + parseInt(p, 10); }).join(' && ');
+        var idleLabel = killStaleBtn.getAttribute('data-label') || killStaleBtn.textContent;
         if (navigator.clipboard && navigator.clipboard.writeText) {
           navigator.clipboard.writeText(cmd).then(function() {
             killStaleBtn.textContent = 'Copied!';
             killStaleBtn.style.background = 'var(--c-savings-strong, #22c55e)';
-            setTimeout(function() { killStaleBtn.textContent = 'Copy Kill Command'; killStaleBtn.style.background = 'var(--c-waste-strong, #ef4444)'; }, 2000);
+            setTimeout(function() { killStaleBtn.textContent = idleLabel; killStaleBtn.style.background = 'var(--c-waste-strong, #ef4444)'; }, 2000);
           });
         }
       });
@@ -4885,17 +4889,20 @@ var DB = (function() {
     } else {
       // Kill stale button + explanation
       if (staleCount > 0) {
+        var taggedInventory = sessions.some(function(s) { return !!s.identity; });
+        var cliCmd = esc(h.cli || 'python3 measure.py');
+        var killLabel = taggedInventory ? 'Copy Preview Command' : 'Copy Kill Command';
         html += '<div style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.2);border-radius:8px;padding:var(--s-3);margin-bottom:var(--s-3)">' +
           '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">' +
           '<div style="font-weight:500;color:var(--c-waste-strong, #ef4444)">' + staleCount + ' stale session' + (staleCount !== 1 ? 's' : '') + ' detected</div>' +
-          '<button class="copy-fix-btn" id="kill-stale-btn" style="background:var(--c-waste-strong, #ef4444);border-color:var(--c-waste-strong, #ef4444)">Copy Kill Command</button></div>' +
+          '<button class="copy-fix-btn" id="kill-stale-btn" data-label="' + killLabel + '" style="background:var(--c-waste-strong, #ef4444);border-color:var(--c-waste-strong, #ef4444)">' + killLabel + '</button></div>' +
           '<div style="font-size:13px;color:var(--c-text-dim);line-height:1.5">' +
           'These ' + esc(data.runtime_label || 'Claude Code') + ' sessions have been running 24+ hours. ' +
           'Some may be your active terminals (marked TERMINAL), others may be forgotten or headless. ' +
           'Check the status column before killing. Only kill sessions you are not actively using.<br><br>' +
-          '<span style="font-family:var(--font-mono);font-size:12px;color:var(--c-text-main)">Option 1:</span> Click "Copy Kill Command" and paste in any terminal.<br>' +
-          '<span style="font-family:var(--font-mono);font-size:12px;color:var(--c-text-main)">Option 2:</span> Run <code style="font-family:var(--font-mono);color:var(--c-accent-cyan)">python3 measure.py kill-stale</code> to auto-terminate terminal sessions running &gt;12 hours (desktop-hosted and unverified sessions are never terminated).<br>' +
-          '<span style="font-family:var(--font-mono);font-size:12px;color:var(--c-text-main)">Option 3:</span> Run <code style="font-family:var(--font-mono);color:var(--c-accent-cyan)">python3 measure.py kill-stale --dry-run</code> to preview without killing.' +
+          '<span style="font-family:var(--font-mono);font-size:12px;color:var(--c-text-main)">Option 1:</span> ' + (taggedInventory ? 'Click "Copy Preview Command" and paste it in any terminal. It only lists what would be ended; run Option 2 to end it.' : 'Click "Copy Kill Command" and paste in any terminal.') + '<br>' +
+          '<span style="font-family:var(--font-mono);font-size:12px;color:var(--c-text-main)">Option 2:</span> Run <code style="font-family:var(--font-mono);color:var(--c-accent-cyan)">' + cliCmd + ' kill-stale</code> to auto-terminate terminal sessions running &gt;12 hours (desktop-hosted and unverified sessions are never terminated).<br>' +
+          '<span style="font-family:var(--font-mono);font-size:12px;color:var(--c-text-main)">Option 3:</span> Run <code style="font-family:var(--font-mono);color:var(--c-accent-cyan)">' + cliCmd + ' kill-stale --dry-run</code> to preview without killing.' +
           '</div></div>';
       }
 
@@ -4903,7 +4910,7 @@ var DB = (function() {
         html += '<div style="background:rgba(251,146,60,0.08);border:1px solid rgba(251,146,60,0.25);border-radius:8px;padding:var(--s-3);margin-bottom:var(--s-3);font-size:13px;color:var(--c-text-dim);line-height:1.5">' +
           '<div style="font-weight:500;color:var(--c-warning-soft, #fb923c);margin-bottom:4px">' + orphanSessions.length + ' orphaned session' + (orphanSessions.length !== 1 ? 's' : '') + ': terminal gone</div>' +
           'Their terminal closed and the process was left running. They are never ended automatically. To preview ending them, run ' +
-          '<code style="font-family:var(--font-mono);color:var(--c-accent-cyan)">python3 measure.py kill-stale --include-orphans --dry-run</code>.' +
+          '<code style="font-family:var(--font-mono);color:var(--c-accent-cyan)">' + esc(h.cli || 'python3 measure.py') + ' kill-stale --include-orphans --dry-run</code>.' +
           '</div>';
       }
 

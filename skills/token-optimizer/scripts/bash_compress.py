@@ -68,6 +68,7 @@ except ImportError:
         re.compile(r"sk_live_[a-zA-Z0-9]{24,}"),
         re.compile(r"rk_live_[a-zA-Z0-9]{24,}"),
         re.compile(r"hf_[a-zA-Z0-9]{34}"),
+        re.compile(r"gl(?:pat|dt|rt|cbt|ptt|ft|imt|agent|soat)-[a-zA-Z0-9_.\-]{20,}"),
         re.compile(r"Bearer\s+[a-zA-Z0-9\-._~+/]+=*", re.I),
         re.compile(r"AIza[0-9A-Za-z_\-]{35}"),
         re.compile(r"ya29\.[0-9A-Za-z_\-]{20,}"),

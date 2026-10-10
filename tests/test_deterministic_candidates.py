@@ -920,3 +920,142 @@ def test_throttle_prints_first_then_waits_two_seconds():
 
 def test_throttle_without_a_callback_is_a_noop():
     assert dc.Throttle(None)("x") is None
+
+
+# ---------------------------------------------------------------------------
+# Secrets that are not env assignments or known token shapes (review F4)
+# ---------------------------------------------------------------------------
+
+def _j(*parts):
+    """Join at runtime so no literal here matches a real-secret shape (push protection)."""
+    return "".join(parts)
+
+
+GLPAT = _j("glpat-", "AbCdEfGhIjKlMnOpQrSt")
+# (command, fragments that must NOT survive). Every command also gets two innocuous
+# follow-ups so it becomes a repeated sequence the detector reports.
+LEAKY_COMMANDS = [
+    ("curl -u admin:Tr0ub4dor3xyz https://svc.local/api", ["Tr0ub4dor3xyz", "admin:"]),
+    ("curl --user admin:Tr0ub4dor3xyz https://svc.local/api", ["Tr0ub4dor3xyz", "admin:"]),
+    ("curl --user=admin:Tr0ub4dor3xyz https://svc.local/api", ["Tr0ub4dor3xyz", "admin:"]),
+    ("curl -uadmin:Tr0ub4dor3xyz https://svc.local/api", ["Tr0ub4dor3xyz", "admin:"]),
+    ("curl --proxy-user pxy:Tr0ub4dor3xyz https://svc.local/api", ["Tr0ub4dor3xyz"]),
+    ("curl -u 'admin:Tr0ub4dor3 xyz' https://svc.local/api", ["Tr0ub4dor3"]),
+    (f"echo {GLPAT} | docker login -u me --password-stdin registry.example.com", [GLPAT, "AbCdEfGhIjKlMnOpQrSt"]),
+    ("echo hunter2hunter2 | docker login -u me --password-stdin registry.example.com", ["hunter2hunter2"]),
+    ("echo -n hunter2hunter2 | base64 | docker login --password-stdin r.io", ["hunter2hunter2"]),
+    ("printf '%s' Zebra-Quartz-77 | podman login --password-stdin r.io", ["Zebra-Quartz"]),
+    ("net use Z: \\\\srv\\share /user:corp\\bob P@ssw0rdWin!", ["P@ssw0rdWin!"]),
+    ("net use \\\\srv\\share P@ssw0rdWin! /user:corp\\bob", ["P@ssw0rdWin!"]),
+    ("cmdkey /add:srv /user:bob /pass:P@ssw0rdWin!", ["P@ssw0rdWin!"]),
+    ("git clone https://bob:Sup3rS3cretPW@git.example.com/x.git", ["Sup3rS3cretPW"]),
+    ("lftp ftp://bob:Sup3rS3cretPW@files.example.com/in", ["Sup3rS3cretPW"]),
+    ("rsync -a bob:Sup3rS3cretPW@files.example.com:/in ./out", ["Sup3rS3cretPW"]),
+    ("deploy --password hunter2hunter2 --env prod", ["hunter2hunter2"]),
+    ("deploy --token=Zebra-Quartz-77 --env prod", ["Zebra-Quartz"]),
+    ("git config user.email jane.doe@private-company.com && git log --author=jane.doe@private-company.com",
+     ["jane.doe@private-company.com", "private-company.com"]),
+    ("mail -s hi jane.doe@private-company.com < msg.txt", ["jane.doe@private-company.com"]),
+]
+
+
+@pytest.mark.parametrize("cmd,needles", LEAKY_COMMANDS)
+def test_normalise_drops_credentials_and_emails_in_command_shapes(cmd, needles):
+    out = dc.normalise_command(cmd)
+    for needle in needles:
+        assert needle not in out, (needle, out)
+
+
+@pytest.mark.parametrize("cmd,needles", LEAKY_COMMANDS)
+def test_such_commands_never_reach_the_result_or_the_cache(sandbox, cmd, needles):
+    def steps():
+        return [_bash(cmd), _bash("ls -la"), _bash("git status")]
+    paths = [write_claude(sandbox / f"s{i}.jsonl", [steps()], f"leak{i}") for i in range(4)]
+    cache_dir = sandbox / "cache"
+    res = run_dc("claude", paths, use_cache=True, cache_dir=cache_dir)
+    assert res["candidates"], "the sequence should still be found"
+    blob = json.dumps(res) + (cache_dir / dc.CACHE_NAME).read_text()
+    for needle in needles:
+        assert needle not in blob, (needle, [c["example"] for c in res["candidates"]])
+
+
+@pytest.mark.parametrize("cmd,kept", [
+    ("git push -u origin main", ["-u origin", "main"]),
+    ("docker run -u 1000:1000 alpine id", ["-u", "alpine"]),
+    ("git clone git@github.com:org/repo.git", ["git@github.com"]),
+    ("curl -s -o out.json https://api.example.com/v1/items", ["curl", "-o", "https://api.example.com/v1/items"]),
+    ("echo done | tee build.log", ["tee build.log"]),
+    ("psql -U app -h db -c 'select 1'", ["-U app"]),
+    ("ssh deploy@build-box.internal uptime", ["uptime"]),
+])
+def test_normalise_keeps_the_shape_of_ordinary_commands(cmd, kept):
+    out = dc.normalise_command(cmd)
+    for fragment in kept:
+        assert fragment in out, (fragment, out)
+
+
+def test_glpat_in_a_snippet_of_an_inline_script_is_redacted(sandbox):
+    body = f"h={{'PRIVATE-TOKEN': '{GLPAT}'}}; import requests"
+    steps = [_bash(_heredoc(body)) for _ in range(4)]
+    cache_dir = sandbox / "cache"
+    res = run_dc("claude", [write_claude(sandbox / "s.jsonl", [steps], "s")], use_cache=True, cache_dir=cache_dir)
+    blob = json.dumps(res) + (cache_dir / dc.CACHE_NAME).read_text()
+    assert "AbCdEfGhIjKlMnOpQrSt" not in blob
+
+
+def test_inline_script_snippet_drops_basic_auth_and_emails(sandbox):
+    body = "os.system('curl -u admin:Tr0ub4dor3xyz x'); m='jane.doe@private-company.com'"
+    steps = [_bash(_heredoc(body)) for _ in range(4)]
+    cache_dir = sandbox / "cache"
+    res = run_dc("claude", [write_claude(sandbox / "s.jsonl", [steps], "s")], use_cache=True, cache_dir=cache_dir)
+    blob = json.dumps(res) + (cache_dir / dc.CACHE_NAME).read_text()
+    assert "Tr0ub4dor3xyz" not in blob and "jane.doe@private-company.com" not in blob
+
+
+def test_secret_env_value_that_is_already_a_redaction_marker_leaves_no_debris():
+    out = dc.normalise_command("export GITHUB_TOKEN=[CREDENTIAL REDACTED: GitHub PAT classic] && gh api user")
+    assert out == "export GITHUB_TOKEN=<secret> && gh api user"
+
+
+# The example is the text a human and the model read. It is redacted a second time
+# when the candidate is finished; this pins that layer on its own, with key-making
+# redaction switched off (a mutant removing the second pass survived the suite).
+STRIPE = _j("sk_live_", "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
+
+def test_example_layer_redacts_even_when_key_making_did_not(sandbox):
+    steps = lambda: [_bash(f"stripe-cli {STRIPE}"), _bash("ls -la"), _bash("git status")]  # noqa: E731
+    paths = [write_claude(sandbox / f"s{i}.jsonl", [steps()], f"ex{i}") for i in range(4)]
+    passthrough = dc.Redactor(lambda text: text)
+    keys = dc._KeyMaker(passthrough)
+    traces = [dc.extract_claude(p, keys, set(), None) for p in paths]
+    traces = [t for t in traces if t is not None]
+    assert any(STRIPE in c.example for c in dc.detect_sequences(traces, None)[0]), \
+        "fixture must put the secret into the pre-redaction example"
+    cands, _totals, _partial = dc.analyse(traces, price, dc.default_redactor())
+    assert cands
+    assert all(STRIPE not in c["example"] and "ABCDEFGHIJKLMNOPQRSTUVWXYZ" not in c["example"] for c in cands)
+    assert any("[CREDENTIAL REDACTED" in c["example"] for c in cands)
+
+
+def test_example_layer_withholds_when_the_redactor_fails_only_there(sandbox):
+    steps = lambda: [_bash(f"stripe-cli {STRIPE}"), _bash("ls -la"), _bash("git status")]  # noqa: E731
+    paths = [write_claude(sandbox / f"s{i}.jsonl", [steps()], f"ex{i}") for i in range(4)]
+    keys = dc._KeyMaker(dc.Redactor(lambda text: text))
+    traces = [t for t in (dc.extract_claude(p, keys, set(), None) for p in paths) if t is not None]
+    cands, _t, _p = dc.analyse(traces, price, dc.Redactor(None))
+    assert cands and all(c["example"] == dc.WITHHELD for c in cands)
+
+
+def test_stale_cache_entries_from_before_the_scrubbers_are_not_served(sandbox, monkeypatch):
+    """A cache written by an older algorithm may hold an unscrubbed example."""
+    paths = [write_claude(sandbox / f"s{i}.jsonl", [SEQ(i)], f"s{i}") for i in range(3)]
+    files = [(p, p.stat().st_mtime) for p in paths]
+    monkeypatch.setattr(dc, "ALGO_VERSION", 2)  # last version that stored unscrubbed examples
+    old_key = dc.cache_key("claude", 30, 60, "", files)
+    monkeypatch.undo()
+    cache_dir = sandbox / "cache"
+    dc.cache_store(cache_dir, old_key, {"status": "ok", "candidates": [{"example": "curl -u admin:Tr0ub4dor3xyz x"}]})
+    # same inputs, current algorithm: the stored entry must not be a hit
+    res = dc.run("claude", files, price, cache_dir=cache_dir, max_sessions=60, use_cache=True, budget_s=30.0)
+    assert "Tr0ub4dor3xyz" not in json.dumps(res)

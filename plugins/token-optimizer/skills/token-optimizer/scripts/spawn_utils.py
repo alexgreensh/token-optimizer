@@ -22,8 +22,12 @@ without ``CREATE_BREAKAWAY_FROM_JOB`` if ``CreateProcess`` fails with
 ``last_spawn_used_fallback`` flag records whether the retry path was taken,
 so a test (or caller) can assert the non-fallback path succeeded.
 
-For spawns that must INHERIT the parent's stdio (hooks/run.py), do NOT use this
-helper -- those need CREATE_NO_WINDOW, not DETACHED_PROCESS.
+hooks/run.py does NOT use this helper: it must keep the child in its own job and
+Ctrl+C domain (so no CREATE_NEW_PROCESS_GROUP, no CREATE_BREAKAWAY_FROM_JOB) and
+must pass run.py's stdio through to the child. It does use DETACHED_PROCESS alone
+(no console at all, issue #215) and hands the child its three std handles
+explicitly (``_windows_stdio_kwargs`` there), because a detached child has no
+console to inherit them from.
 """
 from __future__ import annotations
 

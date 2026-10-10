@@ -19845,14 +19845,17 @@ def subagent_cache_enable(now=None, automatic=True):
             return {"state": "set", "changed": False, "reason": None,
                     "notice": None, "current": "1h"}
         # We set it once and the user removed/changed it afterwards: remember,
-        # never touch it again.
-        marker["state"] = "user-declined"
-        marker["declined_ts"] = float(now)
-        marker["declined_previous"] = val if val is not None else "(absent)"
-        _subagent_cache_write_marker(marker)
-        return {"state": "user-declined", "changed": False,
-                "reason": "the user removed or changed the key after we set it",
-                "notice": None}
+        # never touch it again. Only the automatic path records the decline;
+        # an explicit `enable` is a deliberate request and falls through to
+        # the normal set path below.
+        if automatic:
+            marker["state"] = "user-declined"
+            marker["declined_ts"] = float(now)
+            marker["declined_previous"] = val if val is not None else "(absent)"
+            _subagent_cache_write_marker(marker)
+            return {"state": "user-declined", "changed": False,
+                    "reason": "the user removed or changed the key after we set it",
+                    "notice": None}
 
     # Env outranks the setting (documented precedence).
     if os.environ.get("CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL", "").strip():

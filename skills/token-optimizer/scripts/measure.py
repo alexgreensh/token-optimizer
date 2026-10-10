@@ -37540,6 +37540,29 @@ def _confine_transcript_path(transcript_path):
     return resolved
 
 
+def _redaction_skip_notice(session_id):
+    """One line, once per session, when a checkpoint was skipped because the
+    custom redaction pattern file is broken (fail closed: nothing is written).
+
+    Returns None when redaction is healthy, when the skip has another cause, or
+    when this session was already told (same run-once marker the other
+    once-per-session notices use). Never raises: a hook must not fail on it.
+    """
+    try:
+        from credential_patterns import custom_patterns_status
+        status = custom_patterns_status()
+        if status.get("active"):
+            return None
+        if _ran_once_this_session("redact-skip", session_id):
+            return None
+        return ("[Token Optimizer] Checkpoint skipped: custom redaction is INACTIVE "
+                f"({status.get('failure') or 'pattern file failed to load'}; file: "
+                f"{status.get('source') or 'unknown'}). Nothing is written to disk until "
+                "the pattern file is fixed or removed; `measure.py doctor` shows details.")
+    except Exception:
+        return None
+
+
 def compact_capture(transcript_path=None, session_id=None, trigger="auto", cwd=None, fill_pct=None, quality_score=None, backfill_tools=False):
     """Capture structured session state before compaction or session end.
 
@@ -54481,6 +54504,11 @@ if __name__ == "__main__":
             if result and "--quiet" not in args:
                 # Only print for non-hook invocations (hooks should be quiet)
                 print(f"[Token Optimizer] Checkpoint saved: {result}")
+            elif not result:
+                _notice = _redaction_skip_notice(sid)
+                if _notice:
+                    # Sole hook output: one JSON object is a valid envelope on every host.
+                    print(json.dumps({"systemMessage": _notice}))
         except _HookTimeout:
             pass
         except Exception:

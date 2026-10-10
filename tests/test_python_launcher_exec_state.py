@@ -287,6 +287,12 @@ def test_override_interpreter_keeps_cwd(tmp_path):
 # and the launcher must never leave a directory it cannot return to (finding 9).
 # ---------------------------------------------------------------------------
 
+# These drive the launcher through ``bash -c`` wrappers, remove the current
+# directory from under a process, and chmod 000 it: POSIX semantics. On Windows
+# runners ``bash`` also resolves to the WSL stub (see final-r3 finding 1).
+posix_only = pytest.mark.skipif(
+    os.name == "nt", reason="POSIX cwd/chmod semantics; bash is the WSL stub on Windows runners")
+
 WHERE_PROBE = """\
 import json, os
 try:
@@ -313,6 +319,7 @@ def _launch_via(tmp_path: Path, prelude: str, cwd: Path, probe_src: str = WHERE_
                           timeout=60)
 
 
+@posix_only
 @pytest.mark.parametrize("warm", [False, True], ids=["cache-miss", "cache-hit"])
 def test_exported_cd_function_does_not_write_into_hook_stdout(tmp_path, warm):
     """``export -f cd`` wrappers ("cd then ls") print; the launcher must use the builtin."""
@@ -341,6 +348,7 @@ def test_launcher_has_no_bare_cd():
     assert bare == [], bare
 
 
+@posix_only
 @pytest.mark.parametrize("warm", [False, True], ids=["cache-miss", "cache-hit"])
 def test_vanished_start_dir_is_not_replaced_by_the_plugin_dir(tmp_path, warm):
     """A removed worktree: the interpreter must not wake up inside ``hooks/``."""

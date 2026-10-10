@@ -429,6 +429,41 @@ const VECTORS = [
     ]
   },
   {
+    "name": "F8 Bearer with a 32-letter plain run (no English word is that long)",
+    "input": [
+      "Authorization: Bearer ",
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      " end"
+    ],
+    "absent": [
+      "aaaaaaaaaaaaaaaa"
+    ],
+    "present": [
+      " end"
+    ]
+  },
+  {
+    "name": "F8 Bearer with a 24-letter lowercase run",
+    "input": [
+      "Authorization: Bearer abcdefghijklmnopqrstuvwx end"
+    ],
+    "absent": [
+      "abcdefghijklmnopqrstuvwx"
+    ],
+    "present": [
+      " end"
+    ]
+  },
+  {
+    "name": "F8 English: 23-letter lowercase word stays",
+    "input": [
+      "the bearer ",
+      "aaaaaaaaaaaaaaaaaaaaaaa",
+      " said so"
+    ],
+    "same": true
+  },
+  {
     "name": "F8 Bearer floor stays 16: short token is left",
     "input": [
       "curl -H \"Authorization: Bearer abc.def\" https://example.com"

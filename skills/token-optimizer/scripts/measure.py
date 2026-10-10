@@ -19522,7 +19522,7 @@ def _subagent_cache_undo(data, now, why, user_initiated=False):
     if not _write_settings_atomic(payload, allow_removing_keys={_SUBAGENT_CACHE_KEY},
                                   user_initiated=user_initiated):
         return {"state": "write-refused", "changed": False,
-                "reason": "settings.json locked or guard refused the write",
+                "reason": _settings_write_refusal_reason(),
                 "notice": None}
     _subagent_cache_write_marker({
         "state": why,
@@ -19940,7 +19940,7 @@ def subagent_cache_enable(now=None, automatic=True):
     payload[_SUBAGENT_CACHE_KEY] = "1h"
     if not _write_settings_atomic(payload, user_initiated=not automatic):
         return {"state": "write-refused", "changed": False,
-                "reason": "settings.json locked or guard refused the write",
+                "reason": _settings_write_refusal_reason(),
                 "notice": None}
     _subagent_cache_write_marker({
         "state": "set",
@@ -28485,6 +28485,12 @@ def _settings_file_identity(path=None):
     return (st.st_mtime_ns, st.st_size, st.st_ino)
 
 
+def _settings_write_refusal_reason():
+    """Why the last ``_write_settings_atomic`` on this thread returned False."""
+    return (getattr(_SETTINGS_WRITE_READ_STATE, "last_refusal", None)
+            or "settings.json locked or guard refused the write")
+
+
 def _note_settings_os_error(exc):
     """Record an OSError from the temp write / replace as the refusal reason."""
     hint = ("; another program may have it open"
@@ -28677,6 +28683,8 @@ def _write_settings_atomic(settings_data, allow_removing_keys=None,
     """
     snapshot = getattr(_SETTINGS_WRITE_READ_STATE, "snapshot", None)
     _SETTINGS_WRITE_READ_STATE.snapshot = None
+    # A reason left by an earlier write must not explain this one.
+    _SETTINGS_WRITE_READ_STATE.last_refusal = None
     with _settings_lock(user_initiated=user_initiated) as acquired:
         if not acquired:
             # Lease denial was completely silent (write-return audit 2026-08-29).

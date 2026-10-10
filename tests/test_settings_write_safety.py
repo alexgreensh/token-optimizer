@@ -377,3 +377,46 @@ def test_temp_write_failure_is_a_refusal_with_a_reason(measure, monkeypatch):
     assert mod._write_settings_atomic({**BASE, "effortLevel": "low"}) is False
     assert "No space left" in mod._SETTINGS_WRITE_READ_STATE.last_refusal
 
+
+def test_cli_enable_prints_write_refused_with_the_reason(measure, monkeypatch, tmp_path, capsys):
+    mod, settings = measure
+    _enable_ready(mod, monkeypatch, tmp_path)
+    _fail_replace_for_settings(mod, monkeypatch, PermissionError(13, "sharing violation"))
+
+    mod._subagent_cache_cli(["subagent-cache", "enable"])  # must not raise
+    out = capsys.readouterr().out
+    line = [l for l in out.splitlines() if "write-refused" in l]
+    assert line, out
+    assert "PermissionError" in line[0], line[0]
+    assert "Traceback" not in out
+
+
+def test_cli_reports_the_real_refusal_not_a_fixed_string(measure, monkeypatch, tmp_path, capsys):
+    """A guard refusal (read-only file) names itself, in enable and in disable."""
+    mod, settings = measure
+    _enable_ready(mod, monkeypatch, tmp_path)
+    settings.chmod(0o444)
+    try:
+        mod._subagent_cache_cli(["subagent-cache", "enable"])
+    finally:
+        settings.chmod(0o644)
+    out = capsys.readouterr().out
+    line = [l for l in out.splitlines() if "write-refused" in l]
+    assert line, out
+    assert "read-only" in line[0] or "no write bits" in line[0], line[0]
+    assert "locked or guard refused" not in out
+
+
+def test_lease_denied_reason_is_reported(measure, monkeypatch, tmp_path):
+    mod, settings = measure
+    _enable_ready(mod, monkeypatch, tmp_path)
+    from contextlib import contextmanager
+
+    @contextmanager
+    def denied(user_initiated=False):
+        yield False
+
+    monkeypatch.setattr(mod, "_settings_lock", denied)
+    result = mod.subagent_cache_enable(automatic=False)
+    assert result["state"] == "write-refused"
+    assert "lease denied" in result["reason"], result

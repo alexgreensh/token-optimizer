@@ -3458,12 +3458,40 @@ _COMPACT_WINDOW_MAX = 1_000_000
 _COMPACT_WINDOW_1M_DEFAULT = 967_000
 
 
-def _parse_compact_window_value(value):
-    """Parse a compact-window token count -> int, or None when unparseable.
+# Host parse of CLAUDE_CODE_AUTO_COMPACT_WINDOW (Claude Code 2.1.296 Dd/FOo/GFe):
+# scientific notation and thousand separators first, then a decimal prefix.
+# NaN or <= 0 is INVALID and IGNORED (the next source applies); a valid value is
+# capped at 1M and floored at 100K by _clamp_compact_window. Shared vectors:
+# tests/fixtures/compact_window_env_vectors.json (Python, statusline.js, parse.ts).
+_HOST_SCI_RE = re.compile(r"^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)[eE][+-]?[0-9]+$")
+_HOST_GROUPED_RE = re.compile("^[+-]?[0-9]{1,3}([_,\u00a0\u202f ])[0-9]{3}(?:\\1[0-9]{3})*$")
+_HOST_SEPARATOR_RE = re.compile("[_,\u00a0\u202f ]")
+_HOST_INT_PREFIX_RE = re.compile(r"^[+-]?[0-9]+")
+_HOST_FLOAT_PREFIX_RE = re.compile(r"^[+-]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?")
 
-    Decimal-prefix integer semantics (matches the desktop band's parser):
-    "500000" and 500000 -> 500000; "auto", "", None and garbage -> None so the
-    caller falls through to the next precedence level.
+
+def _host_parse_int(raw):
+    """Claude Code's Dd(): int, or None where the host yields NaN."""
+    text = str(raw).strip()
+    if len(text) <= 32:
+        if _HOST_SCI_RE.match(text):
+            try:
+                number = float(text)
+            except ValueError:
+                return None
+            return int(number) if math.isfinite(number) and number == int(number) else None
+        if _HOST_GROUPED_RE.match(text):
+            return int(_HOST_SEPARATOR_RE.sub("", text))
+    m = _HOST_INT_PREFIX_RE.match(text)
+    return int(m.group(0)) if m else None
+
+
+def _parse_compact_window_value(value):
+    """Parse a compact-window token count -> int, or None when it is ignored.
+
+    Numbers pass through when positive. Strings parse the way the host does
+    (see _host_parse_int); "auto", "", None, garbage, zero and negatives -> None
+    so the caller falls through to the next precedence level.
     """
     if value is None or isinstance(value, bool):
         return None
@@ -3471,10 +3499,8 @@ def _parse_compact_window_value(value):
         if not math.isfinite(value) or value <= 0:
             return None
         return int(value)
-    m = re.match(r"\s*(\d+)", str(value))
-    if not m:
-        return None
-    return int(m.group(1))
+    parsed = _host_parse_int(value)
+    return parsed if parsed is not None and parsed > 0 else None
 
 
 def _clamp_compact_window(tokens):
@@ -3587,6 +3613,14 @@ def _resolve_compact_window(model, env=None, settings=None):
             tokens = _clamp_compact_window(parsed_ms)
             source = f"modelSettings[{ms_key}].autoCompactWindow={ms_val}"
             user_override = True
+        elif ms_val == "auto":
+            # `/autocompact auto` is stored per model and means "the window
+            # tuned for this model": it replaces the top-level value for this
+            # model, it does not fall through to it (host: byModel[key] ?? top
+            # level, then "auto" -> tuned default).
+            tokens = default_tokens
+            source = (f"modelSettings[{ms_key}].autoCompactWindow='auto' "
+                      f"(tuned default, top-level autoCompactWindow not used); {default_source}")
         else:
             if ms_val is not None:
                 prefix = (f"modelSettings[{ms_key}].autoCompactWindow={ms_val!r} "
@@ -3615,13 +3649,15 @@ def _resolve_compact_window(model, env=None, settings=None):
     pct = None
     raw_pct = env.get("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE")
     if raw_pct is not None:
+        # The host reads it with parseFloat: a float prefix, "50.5" and "50%" count.
+        m_pct = _HOST_FLOAT_PREFIX_RE.match(str(raw_pct).strip())
         try:
-            pct = int(str(raw_pct).strip())
-        except (TypeError, ValueError):
+            pct = float(m_pct.group(0)) if m_pct else None
+        except ValueError:
             pct = None
-    if pct is not None and 1 <= pct < 100:
-        tokens = tokens * pct // 100
-        source += f" x CLAUDE_AUTOCOMPACT_PCT_OVERRIDE={pct}%"
+    if pct is not None and math.isfinite(pct) and 1 <= pct < 100:
+        tokens = int(tokens * pct / 100)
+        source += f" x CLAUDE_AUTOCOMPACT_PCT_OVERRIDE={pct:g}%"
         user_override = True
 
     return {

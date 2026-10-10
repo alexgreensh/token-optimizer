@@ -166,3 +166,60 @@ def test_prompt_cache_object_is_bridged_to_a_sidecar(tmp_path):
 def test_no_prompt_cache_object_writes_no_sidecar(tmp_path):
     _, cache = _run(tmp_path, _payload())
     assert not (cache / f"prompt-cache-{SID}.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# F5/F6: the JS twin follows the host's env parsing and `/autocompact auto`
+# ---------------------------------------------------------------------------
+
+_ENV_VECTORS = json.loads(
+    (REPO / "tests" / "fixtures" / "compact_window_env_vectors.json").read_text(encoding="utf-8")
+)["vectors"]
+
+
+@pytest.mark.parametrize("vec", _ENV_VECTORS, ids=lambda v: repr(v["raw"])[:40])
+def test_env_window_parses_like_the_host(tmp_path, vec):
+    """Same shared vectors as the Python resolver and the desktop parser."""
+    tokens = 90_000
+    out, _ = _run(tmp_path, _payload(tokens=tokens),
+                  env_extra={"CLAUDE_CODE_AUTO_COMPACT_WINDOW": vec["raw"]})
+    denom = vec["window"] if vec["window"] is not None else 1_000_000
+    assert _pct_shown(out) == min(100, int(tokens / denom * 100 + 0.5)), vec
+
+
+def test_model_settings_auto_beats_top_level(tmp_path):
+    settings = {"autoCompactWindow": 300_000,
+                "modelSettings": {"claude-opus-5-5": {"autoCompactWindow": "auto"}}}
+    out, _ = _run(tmp_path, _payload(tokens=200_000), settings=settings)
+    assert _pct_shown(out) == 20  # tuned default: the host's own number, not 200K/300K = 67%
+
+
+def test_model_settings_auto_is_per_model(tmp_path):
+    settings = {"autoCompactWindow": 400_000,
+                "modelSettings": {"claude-sonnet-5-5": {"autoCompactWindow": "auto"}}}
+    out, _ = _run(tmp_path, _payload(tokens=200_000), settings=settings)
+    assert _pct_shown(out) == 50  # opus is not the model set to auto
+
+
+def test_pct_override_accepts_a_float(tmp_path):
+    out, _ = _run(tmp_path, _payload(tokens=250_000),
+                  env_extra={"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "50.5"})
+    # 50.5% of 967K = 488,335 -> 250K / 488,335 = 51%
+    assert _pct_shown(out) == 51
+
+
+@pytest.mark.parametrize("env,settings", [
+    ({"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "5e5"}, {}),
+    ({"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "500,000"}, {}),
+    ({"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "0"}, {"autoCompactWindow": 300_000}),
+    ({"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "37.5"}, {}),
+    ({}, {"autoCompactWindow": 300_000,
+          "modelSettings": {"claude-opus-5-5": {"autoCompactWindow": "auto"}}}),
+])
+def test_js_matches_python_resolver_host_cases(tmp_path, env, settings):
+    import measure
+    py = measure._resolve_compact_window("claude-opus-5-5", env=env, settings=settings)
+    tokens = 90_000
+    out, _ = _run(tmp_path, _payload(tokens=tokens), settings=settings, env_extra=env)
+    denom = py["tokens"] if (py["user_override"] and py["tokens"] < 1_000_000) else 1_000_000
+    assert _pct_shown(out) == min(100, int(tokens / denom * 100 + 0.5))

@@ -294,3 +294,81 @@ def test_no_fixed_percent_compaction_advice_left_in_measure():
     assert "Use /compact at 50-70%" not in text
     assert "Compact around 50-70%" not in text
     assert "undocumented and has inverted" not in text
+
+
+# ---------------------------------------------------------------------------
+# F5/F6: host-faithful env parsing and modelSettings "auto"
+# ---------------------------------------------------------------------------
+
+import json as _json  # noqa: E402
+
+_ENV_VECTORS = _json.loads(
+    (REPO / "tests" / "fixtures" / "compact_window_env_vectors.json").read_text(encoding="utf-8")
+)["vectors"]
+
+
+@pytest.mark.parametrize("vec", _ENV_VECTORS, ids=lambda v: repr(v["raw"])[:40])
+def test_env_window_parses_like_the_host(measure, vec):
+    tokens, source = measure.effective_compact_window(
+        "claude-opus-5-5", env={"CLAUDE_CODE_AUTO_COMPACT_WINDOW": vec["raw"]}, settings={})
+    if vec["window"] is None:
+        # Invalid env is IGNORED (default applies), never clamped to the floor.
+        assert tokens == 967_000, (tokens, source)
+        assert "env CLAUDE_CODE_AUTO_COMPACT_WINDOW" not in source
+    else:
+        assert tokens == vec["window"], (tokens, source)
+        assert "env CLAUDE_CODE_AUTO_COMPACT_WINDOW" in source
+
+
+def test_invalid_env_falls_through_to_settings_not_the_floor(measure):
+    tokens, source = measure.effective_compact_window(
+        "claude-opus-5-5", env={"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "garbage"},
+        settings={"autoCompactWindow": 300_000})
+    assert tokens == 300_000 and "autoCompactWindow=300000" in source
+
+
+@pytest.mark.parametrize("raw,pct_tokens", [("50", 483_500), ("50.5", 488_335), ("12.5", 120_875),
+                                              ("50%", 483_500)])
+def test_pct_override_accepts_a_float_like_the_host(measure, raw, pct_tokens):
+    tokens, source = measure.effective_compact_window(
+        "claude-opus-5-5", env={"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": raw}, settings={})
+    assert tokens == pct_tokens, (tokens, source)
+    assert "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=" in source
+
+
+@pytest.mark.parametrize("raw", ["100", "150", "0", "0.5", "-5", "abc", ""])
+def test_pct_override_out_of_range_is_ignored(measure, raw):
+    tokens, _ = measure.effective_compact_window(
+        "claude-opus-5-5", env={"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": raw}, settings={})
+    assert tokens == 967_000
+
+
+def test_model_settings_auto_beats_top_level_and_gives_the_tuned_default(measure):
+    """/autocompact auto on a model replaces the top-level value for that model."""
+    settings = {"autoCompactWindow": 300_000,
+                "modelSettings": {"claude-opus-5-5": {"autoCompactWindow": "auto"}}}
+    res = measure._resolve_compact_window("claude-opus-5-5", env={}, settings=settings)
+    assert res["tokens"] == 967_000
+    assert res["user_override"] is False
+    assert "auto" in res["source"] and "300000" not in res["source"]
+
+
+def test_model_settings_auto_does_not_leak_to_other_models(measure):
+    settings = {"autoCompactWindow": 300_000,
+                "modelSettings": {"claude-opus-5-5": {"autoCompactWindow": "auto"}}}
+    res = measure._resolve_compact_window("claude-sonnet-5-5", env={}, settings=settings)
+    assert res["tokens"] == 300_000 and res["user_override"] is True
+
+
+def test_env_still_beats_model_settings_auto(measure):
+    settings = {"modelSettings": {"claude-opus-5-5": {"autoCompactWindow": "auto"}}}
+    res = measure._resolve_compact_window(
+        "claude-opus-5-5", env={"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "400000"}, settings=settings)
+    assert res["tokens"] == 400_000
+
+
+def test_model_settings_garbage_still_falls_through_to_top_level(measure):
+    settings = {"autoCompactWindow": 300_000,
+                "modelSettings": {"claude-opus-5-5": {"autoCompactWindow": "banana"}}}
+    res = measure._resolve_compact_window("claude-opus-5-5", env={}, settings=settings)
+    assert res["tokens"] == 300_000

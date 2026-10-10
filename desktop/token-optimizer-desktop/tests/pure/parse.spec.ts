@@ -2,6 +2,7 @@
 // shapes. Pure: every input is passed in.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 
 import {
   parseQualityCache,
@@ -327,15 +328,36 @@ test('usage: ceiling leaves start time and rate limits untouched', () => {
   assert.equal(reduced.startedAtMs, original.startedAtMs)
 })
 
-test('usage: env normalization follows decimal prefixes and host 100K-1M bounds', () => {
+test('usage: env normalization follows the host: decimal prefix, 100K-1M bounds, invalid ignored', () => {
   const usage = { context: { window: 2_000_000, tokens: 50_000, percent: 2.5 } }
   for (const [raw, expected] of [['50000', 100_000], ['500k', 100_000], ['480k', 100_000],
-    ['0', 100_000], ['-1', 100_000], ['+480000', 480_000], ['480000.5', 480_000],
+    ['+480000', 480_000], ['480000.5', 480_000],
     ['480000junk', 480_000], ['1e5', 100_000], ['2000000', 1_000_000],
     ['9007199254740993', 1_000_000], ['9'.repeat(400), 1_000_000]] as const) {
     const result = parseUsage(usage, raw)
     assert.equal(result.contextWindow, expected, raw)
     assert.equal(result.contextPercent, 50_000 / expected * 100, raw)
+  }
+})
+
+test('usage: an invalid env value (zero, negative, garbage) is ignored, not clamped to the floor', () => {
+  const usage = { context: { window: 2_000_000, tokens: 50_000, percent: 2.5 } }
+  for (const raw of ['0', '-1', 'abc', '1e-1']) {
+    const result = parseUsage(usage, raw)
+    assert.equal(result.contextWindow, 2_000_000, raw)
+    assert.equal(result.contextPercent, 2.5, raw)
+  }
+})
+
+test('usage: env window parses like the host (shared vectors with Python and statusline.js)', () => {
+  const { vectors } = JSON.parse(readFileSync(
+    new URL('../../../../tests/fixtures/compact_window_env_vectors.json', import.meta.url), 'utf8')) as
+    { vectors: Array<{ raw: string; window: number | null }> }
+  assert.ok(vectors.length > 20)
+  const usage = { context: { window: 2_000_000, tokens: 50_000, percent: 2.5 } }
+  for (const v of vectors) {
+    const result = parseUsage(usage, v.raw)
+    assert.equal(result.contextWindow, v.window ?? 2_000_000, JSON.stringify(v.raw))
   }
 })
 

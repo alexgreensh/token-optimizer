@@ -248,11 +248,30 @@ function limit(limits: unknown, kind: string): Limit | null {
   return found && percentUsed !== null ? { percentUsed, resetsAt: text(found.resetsAt) } : null
 }
 
-/** Match Claude Code's decimal-prefix parse and 100K-1M env bounds. */
+const HOST_SCI = /^[+-]?(\d+(\.\d*)?|\.\d+)[eE][+-]?\d+$/
+const HOST_GROUPED = /^[+-]?\d{1,3}([_,\u00A0\u202F ])\d{3}(?:\1\d{3})*$/
+
+/** Claude Code's env integer parse (Dd/FOo): scientific notation and thousand separators, then a decimal prefix. */
+function hostParseInt(raw: string): number {
+  const text = raw.trim()
+  if (text.length <= 32) {
+    if (HOST_SCI.test(text)) {
+      const n = Number(text)
+      return Number.isInteger(n) ? n : Number.NaN
+    }
+    if (HOST_GROUPED.test(text)) return Number.parseInt(text.replace(/[_,\u00A0\u202F ]/g, ''), 10)
+  }
+  return Number.parseInt(text, 10)
+}
+
+/**
+ * Match Claude Code's CLAUDE_CODE_AUTO_COMPACT_WINDOW handling: an invalid value (NaN or <= 0) is IGNORED
+ * (null), a valid one is capped at 1M and floored at 100K. Shared vectors: tests/fixtures/compact_window_env_vectors.json.
+ */
 function compactWindow(value: unknown): number | null {
   if (typeof value !== 'string' || value.trim() === '') return null
-  const window = Number.parseInt(value, 10)
-  return Number.isNaN(window) ? null : Math.max(100_000, Math.min(1_000_000, window))
+  const window = hostParseInt(value)
+  return Number.isNaN(window) || window <= 0 ? null : Math.max(100_000, Math.min(1_000_000, window))
 }
 
 /** Token Optimizer's own resolved window (settings or /autocompact): a number, within the same bounds. */

@@ -226,16 +226,17 @@ def _archive_dir_for_session(session_id: str) -> Path:
     return SNAPSHOT_DIR / "tool-archive" / sid
 
 
-def _redact_credentials(text: str) -> str:
+def _redact_credentials(text: str, *, command: bool = False) -> str:
     """Replace credential-matching substrings before archiving.
 
     Prefers credential_patterns.redact_credentials (labeled placeholders like
     [CREDENTIAL REDACTED: AWS access key]). Falls back to _TOKEN_PATTERNS
     from bash_compress with generic [REDACTED] if the shared module is
-    unavailable.
+    unavailable. command=True marks shell command text, which also gets the
+    command-syntax rules (curl -u user:pass, --token VALUE, user:pass@host...).
     """
     if _redact_creds_shared is not None:
-        return _redact_creds_shared(text)
+        return _redact_creds_shared(text, command=command)
     for pattern in _TOKEN_PATTERNS:
         text = pattern.sub("[REDACTED]", text)
     return text
@@ -1593,11 +1594,12 @@ def archive_result(quiet: bool = False) -> None:
     store = None
     try:
         tool_type = "mcp" if "__" in tool_name else tool_name.lower()
-        command_or_path = hook_input.get("tool_input", {}).get("command") or hook_input.get("tool_input", {}).get("file_path") or tool_name
+        tool_command = hook_input.get("tool_input", {}).get("command")
+        command_or_path = tool_command or hook_input.get("tool_input", {}).get("file_path") or tool_name
         # Redact before persisting: a command/path can embed a token or secret, and
         # SessionStore is durable. Hash the REDACTED response so the identity hash
         # matches the redacted preview/archive rather than pre-redaction plaintext.
-        safe_command_or_path = _redact_credentials(str(command_or_path))
+        safe_command_or_path = _redact_credentials(str(command_or_path), command=bool(tool_command))
         output_hash = hashlib.sha256(safe_response[:10000].encode("utf-8", errors="replace")).hexdigest()[:16]
         # U5: source lineage tags. When the tool input carried a file_path,
         # record it (redacted) plus the detected language and the archive

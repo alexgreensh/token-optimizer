@@ -37764,7 +37764,7 @@ def _codex_backfill_tool_archive(filepath=None, session_id=None, max_outputs=20)
             tool_name = str(item.get("tool_name") or "Tool")
             tool_type = str(item.get("tool_type") or "codex")
             try:
-                command_or_path = _bf_redact(str(item.get("command_or_path") or ""))
+                command_or_path = _bf_redact(str(item.get("command_or_path") or ""), command=True)
             except Exception:
                 continue
             output_hash = hashlib.sha256(output_text.encode("utf-8", errors="replace")).hexdigest()

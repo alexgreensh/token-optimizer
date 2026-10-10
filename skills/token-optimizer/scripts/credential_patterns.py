@@ -20,18 +20,29 @@ from typing import Dict, List, Optional, Tuple
 # (label, compiled_regex) pairs. Label is used in redaction placeholders.
 CREDENTIAL_PATTERNS: List[Tuple[str, "re.Pattern[str]"]] = [
     ("AWS access key",          re.compile(r"AKIA[0-9A-Z]{16}")),
-    ("OpenAI/Anthropic key",    re.compile(r"sk-[a-zA-Z0-9]{20,}")),
-    ("Anthropic key",           re.compile(r"sk-ant-[a-zA-Z0-9\-]{20,}")),
+    # Anthropic first so a sk-ant- key keeps its own label; the generic sk- class
+    # carries "_" and "-" (sk-proj-..., sk-ant-api03-...) exactly like the TS engines.
+    ("Anthropic key",           re.compile(r"sk-ant-[a-zA-Z0-9_\-]{20,}")),
+    ("OpenAI/Anthropic key",    re.compile(r"sk-[a-zA-Z0-9_\-]{20,}")),
     ("GitHub PAT classic",      re.compile(r"ghp_[a-zA-Z0-9]{36}")),
     ("GitHub OAuth token",      re.compile(r"gho_[a-zA-Z0-9]{36}")),
+    ("GitHub user-to-server token", re.compile(r"ghu_[a-zA-Z0-9]{36}")),
     ("GitHub server token",     re.compile(r"ghs_[a-zA-Z0-9]{36}")),
     ("GitHub refresh token",    re.compile(r"ghr_[a-zA-Z0-9]{36}")),
-    ("GitHub fine-grained PAT", re.compile(r"github_pat_[a-zA-Z0-9_]{80,}")),
+    ("GitHub fine-grained PAT", re.compile(r"github_pat_[a-zA-Z0-9_]{20,}")),
     ("npm token",               re.compile(r"npm_[a-zA-Z0-9]{36}")),
+    # Current Slack shapes: long dash-separated bodies (xoxb-1-2-<24 secret>),
+    # app-level tokens, and incoming-webhook URLs (the URL path IS the secret).
+    # Listed before the short legacy rows so the whole token is claimed, not just
+    # its numeric head. The legacy rows below still catch bodies under 20 characters.
+    ("Slack token",             re.compile(r"xox[bpa]-[0-9A-Za-z\-]{20,}")),
+    ("Slack app-level token",   re.compile(r"xapp-\d-[A-Z0-9]+-\d+-[0-9a-f]+")),
+    ("Slack webhook URL",       re.compile(r"https://hooks\.slack\.com/services/\S+")),
     ("Slack bot token",         re.compile(r"xoxb-[0-9]+-[a-zA-Z0-9]+")),
     ("Slack user token",        re.compile(r"xoxp-[0-9]+-[a-zA-Z0-9]+")),
     ("Slack app token",         re.compile(r"xoxa-[0-9]+-[a-zA-Z0-9]+")),
     ("Stripe live key",         re.compile(r"sk_live_[a-zA-Z0-9]{24,}")),
+    ("Stripe test key",         re.compile(r"sk_test_[a-zA-Z0-9]{24,}")),
     ("Stripe restricted key",   re.compile(r"rk_live_[a-zA-Z0-9]{24,}")),
     ("HuggingFace token",       re.compile(r"hf_[a-zA-Z0-9]{34}")),
     # GitLab: personal/project/group access (glpat), deploy (gldt), runner (glrt),
@@ -45,10 +56,19 @@ CREDENTIAL_PATTERNS: List[Tuple[str, "re.Pattern[str]"]] = [
     # support variable-width lookbehinds. Instead, redact_credentials protects
     # placeholders with a sentinel before running patterns. The lookahead here
     # is a defense-in-depth for direct pattern.search() callers.
-    ("Bearer token",            re.compile(r"Bearer\s+[a-zA-Z0-9\-._~+/]+=*", re.I)),
+    # 16-character floor, as in the TS engines: "the bearer of bad news" is prose, and a
+    # real bearer credential is longer than any English word that follows the word.
+    ("Bearer token",            re.compile(r"Bearer\s+[a-zA-Z0-9\-._~+/]{16,}=*", re.I)),
     ("Google API key",          re.compile(r"AIza[0-9A-Za-z_\-]{35}")),
     ("Google OAuth token",      re.compile(r"ya29\.[0-9A-Za-z_\-]{20,}")),
-    ("JWT",                     re.compile(r"eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}")),
+    # Linear on adversarial input. The old form rescanned a long base64url run from every
+    # "eyJ" inside it (4 s at 100 KB). The first segment may not contain another "eyJ"
+    # (a JWT header never does), so each start stops at the next candidate. The pattern
+    # still opens with the literal, so clean text keeps the engine's fast prefix scan,
+    # and a JWT glued to other characters (MEDX-123456-eyJ..., xeyJ...) still matches.
+    ("JWT",                     re.compile(
+        r"eyJ(?:(?!eyJ)[A-Za-z0-9_\-]){10,}"
+        r"\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}")),
     # Whole block: the key body is the secret, the BEGIN line is not. A block
     # with no END (cut by a length limit, or still being typed) runs to the end
     # of the text so a truncated body is never left behind.
@@ -87,7 +107,10 @@ CREDENTIAL_PATTERNS: List[Tuple[str, "re.Pattern[str]"]] = [
     # These appear as shell command prefixes (FOO=bar cmd ...) or in config output.
     ("Database env password",   re.compile(
         r"(?P<keep>\b(?:PGPASSWORD|MYSQL_PWD|REDIS_PASSWORD|MONGO_PASSWORD|DB_PASSWORD"
-        r"|DATABASE_PASSWORD|PGPASSWD)=[\"\']?)(?!\[CREDENTIAL REDACTED:)[^\s\"'\n]+",
+        r"|DATABASE_PASSWORD|PGPASSWD)=(?P<oq>[\"\'])?)(?!\[CREDENTIAL REDACTED:)"
+        # An opened quote runs to its twin (a value with spaces is one secret);
+        # an unquoted value stops at whitespace or a quote.
+        r"(?(oq)(?:(?!(?P=oq))[^\n])+|[^\s\"'\n]+)",
         re.I,
     )),
     # M-12: AWS secret access key (40-char base64). Distinct from the access key
@@ -152,8 +175,8 @@ PATTERNS_ONLY: List["re.Pattern[str]"] = [pat for _, pat in CREDENTIAL_PATTERNS]
 # coarse pre-filter — but only if other prefixes didn't already match.
 # ---------------------------------------------------------------------------
 _CREDENTIAL_PREFIXES: Tuple[str, ...] = (
-    "AKIA", "sk-", "ghp_", "gho_", "ghs_", "ghr_", "github_pat_",
-    "npm_", "xoxb-", "xoxp-", "xoxa-", "sk_live_", "rk_live_", "hf_",
+    "AKIA", "sk-", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_",
+    "npm_", "xoxb-", "xoxp-", "xoxa-", "xapp-", "sk_live_", "sk_test_", "rk_live_", "hf_",
     "glpat-", "gldt-", "glrt-", "glcbt-", "glptt-", "glft-", "glimt-", "glagent-", "glsoat-",  # GitLab
     "Bearer", "bearer", "AIza", "ya29.", "eyJ",
     "-----BEGIN",  # PEM private key
@@ -1065,7 +1088,11 @@ def scan_for_credentials(text: str) -> List[Tuple[str, str, int]]:
 
 # M-16: regex to find already-redacted placeholders so they can be protected
 # from re-matching during a second redaction pass.
-_PLACEHOLDER_RE = re.compile(r"\[CREDENTIAL REDACTED: [^\]]+\]")
+# The interior is a label (60 characters at most, see _CUSTOM_MAX_LABEL_CHARS), so the
+# bound is generous. Unbounded, an unclosed "[CREDENTIAL REDACTED: " rescanned to the end
+# of the text from every start (quadratic). An over-long interior is not a placeholder:
+# it is scanned like any other text, so it cannot smuggle a secret.
+_PLACEHOLDER_RE = re.compile(r"\[CREDENTIAL REDACTED: [^\]]{1,256}\]")
 _PLACEHOLDER_SENTINEL = "\x00\x01REDACTED\x00\x01"
 
 # Per-pattern literal anchors (checked on a lowercased copy of the ORIGINAL
@@ -1093,6 +1120,209 @@ _PATTERN_ANCHORS = {
     "CLI password flag (long)": ("--password", "--passwd", "--passcode", "--auth-token"),
     "CLI password flag (short)": ("sshpass", "mariadb", "redis-cli"),
 }
+
+
+# ---------------------------------------------------------------------------
+# Generic secret assignment: NAME=value, NAME: value, "name": "value".
+#
+# The closed env-name list above only knows seven names. Anything else
+# (API_KEY=..., SECRET_KEY=..., a YAML "password: ...", a JSON "api_key": "...",
+# a quoted value with spaces) used to reach disk as typed. One rule covers the
+# class, and it is the SAME rule the three TypeScript engines run (openclaw,
+# pi, opencode redact.ts; keep the four in step): a name that contains KEY,
+# TOKEN, SECRET, PASSWORD, PASSWD, PWD or CREDENTIAL (optionally plural, and the
+# next character is not a letter, so "tokenizer" and "keyboard" are not names),
+# then "=" or ":", then a value. The NAME and the surrounding quotes stay, the
+# VALUE goes whole, quoted values with spaces included.
+#
+# Skipped values: an existing placeholder, a plain number up to 6 digits
+# (max_tokens=4096, tokens: 1200), true/false/yes/no/on/off/null/none/nil/
+# undefined, a type name (string, number, int...), a call or index (len(x),
+# os.environ['X'], Optional[str]), a $VAR / ${VAR} / $(cmd) reference, an empty
+# string, and the operators ==, => and :=.
+#
+# Lead decision (briefs/redact-key-rule.md): before a COLON the keyword KEY only
+# counts inside a compound (api_key, x-api-key, SECRET_KEY, apiKey), so React
+# "key: item.id", JSON "key": "user_id", "primary key: id", "monkey: banana" and
+# "hotkey: ctrl+k" stay readable. With "=" bare KEY=value is still hidden.
+#
+# Two refinements the TS engines do not have, both kept because Python tests already
+# pin them: "key" inside another word (monkey=, turkey=, donkey=) is not a name unless
+# a known qualifier leads it (apikey, secretkey) or the K is capitalised (apiKey), and
+# a name that ends in a quantity or locator (token_type, token_count, KEY_FILE,
+# SECRET_NAME) holds no secret.
+#
+# The optional opening quote is taken atomically (lookahead plus backreference):
+# when a skip rule rejects the value after the quote, the engine must not retry
+# with the quote counted as part of the value (that would redact max_tokens="4096"
+# and re-wrap a placeholder). The TS engines backtrack there; see the r2a report.
+#
+# Cost follows the keyword hits, not the words: str.find per keyword (C speed)
+# locates candidates and the regex is tried only there.
+# ---------------------------------------------------------------------------
+_ASSIGN_RE = re.compile(
+    r"(?P<head>(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|CREDENTIAL)(?:e?s)?(?![A-Za-z])"
+    r"(?=(?P<tail>[A-Za-z0-9_.-]{0,80}))(?P=tail)[\"']?[ \t]*[=:][ \t]*(?=(?P<oq>[\"']?))(?P=oq))"
+    r"(?![=>:])(?!(?<=\")\"|(?<=')')(?!\"\"|'')"
+    r"(?!\x00)(?!\[(?:CREDENTIAL )?REDACTED)"
+    r"(?!-?\d{1,6}(?:[.,]\d+)?[kKmM%]?[\"']?(?![\w$]))"
+    r"(?!(?:true|false|yes|no|on|off|null|none|nil|undefined)[\"']?(?![\w$]))"
+    r"(?!(?:string|number|boolean|bool|str|int|float|any|unknown|object|void)(?![\w$]))"
+    r"(?![A-Za-z_][\w.]*[(\[])(?!\$[{(])(?!\$[A-Z_][A-Z0-9_]*(?![\w$]))"
+    r"(?:(?<=\")[^\"\n]+(?=\")|(?<=')[^'\n]+(?=')|\S+)",
+    re.I,
+)
+_ASSIGN_KEYWORDS = ("key", "token", "secret", "password", "passwd", "pwd", "credential")
+_ASSIGN_KEYWORD_RE = re.compile("|".join(_ASSIGN_KEYWORDS), re.I)
+_ASSIGN_PLACEHOLDER = "[CREDENTIAL REDACTED: Secret assignment]"
+_ASSIGN_QUALIFIERS = (
+    "api", "access", "auth", "secret", "private", "public", "client", "session",
+    "refresh", "bearer", "app", "db", "user", "admin", "root", "master", "signing",
+    "encryption", "license", "ssh", "gpg", "jwt", "oauth", "service", "webhook",
+)
+_ASSIGN_LOCATOR_SUFFIX_RE = re.compile(
+    r"[_.\-]*(?:path|file|dir|url|uri|name|id|count|limit|max|min|size|length|len|"
+    r"ttl|expiry|expires|type|field|header|endpoint|regex|budget|label)s?", re.I)
+
+
+def _assign_key_before_colon_ok(text: str, start: int, head: str) -> bool:
+    """KEY before ':' needs a compound: "_" or "-" in front, or a capital K after a lowercase letter."""
+    sep_at = min((i for i in (head.find("="), head.find(":")) if i != -1), default=-1)
+    if sep_at == -1 or head[sep_at] != ":":
+        return True
+    prev = text[start - 1] if start > 0 else ""
+    return prev in ("_", "-") or (text[start] == "K" and prev.islower())
+
+
+def _next_keyword(text: str, low: Optional[str], pos: int, nxt: Dict[str, int]) -> Optional[Tuple[int, int]]:
+    """Span of the next keyword at or after pos. With a lowercase twin of the text,
+    str.find per keyword (each cached until passed); otherwise the regex."""
+    if low is None:
+        m = _ASSIGN_KEYWORD_RE.search(text, pos)
+        return (m.start(), m.end()) if m else None
+    best = -1
+    best_kw = ""
+    for kw in _ASSIGN_KEYWORDS:
+        at = nxt[kw]
+        if at != -1 and at < pos:
+            at = nxt[kw] = low.find(kw, pos)
+        if at != -1 and (best == -1 or at < best):
+            best, best_kw = at, kw
+    return None if best == -1 else (best, best + len(best_kw))
+
+
+def _redact_assignments(text: str) -> str:
+    low = text.lower()
+    if len(low) != len(text):  # a few Unicode letters change length when lowered
+        low = None
+    nxt = {kw: (low.find(kw) if low is not None else -1) for kw in _ASSIGN_KEYWORDS}
+    if low is not None and all(v == -1 for v in nxt.values()):
+        return text
+    out: List[str] = []
+    copied = 0
+    pos = 0
+    n = len(text)
+    while pos < n:
+        span = _next_keyword(text, low, pos, nxt)
+        if span is None:
+            break
+        start = span[0]
+        pos = start + 1
+        m = _ASSIGN_RE.match(text, start)
+        if m is None:
+            continue
+        head = m.group("head")
+        if _ASSIGN_LOCATOR_SUFFIX_RE.fullmatch(m.group("tail")):
+            continue
+        if text[start:start + 3].lower() == "key":
+            if not _assign_key_before_colon_ok(text, start, head):
+                continue
+            if start > 0 and text[start - 1].isalpha() and text[start] != "K" \
+                    and not text[:start].lower().endswith(_ASSIGN_QUALIFIERS):
+                continue
+        out.append(text[copied:m.end("head")])
+        out.append(_ASSIGN_PLACEHOLDER)
+        copied = pos = m.end()
+    if not out:
+        return text
+    out.append(text[copied:])
+    return "".join(out)
+
+
+# ---------------------------------------------------------------------------
+# Command-syntax secrets: credentials that sit in a shell command's own grammar
+# rather than in a token shape (curl -u user:pass, --token VALUE, user:pass@host
+# with no scheme, echo SECRET | docker login, Windows net use / cmdkey).
+#
+# These rules are only safe on COMMAND text. In free output they would rewrite
+# prose ("mailto:me@x.com", "echo hi | wc"), so redact_credentials runs them
+# only when the caller says command=True. The same rules serve
+# deterministic_candidates (via scrub_command_syntax), so there is one copy.
+# ---------------------------------------------------------------------------
+_ARG = r"(?:\"[^\"]*\"|'[^']*'|[^\s\"']+)"
+# curl -u user:pass, --user user:pass, --proxy-user ... (value must contain a colon,
+# and not be a bare uid:gid like docker's `-u 1000:1000`)
+_USER_FLAG_RE = re.compile(r"(?<![\w-])(-u|-U|--user|--proxy-user)(\s+|=)?(" + _ARG + ")")
+_SECRET_FLAG_RE = re.compile(
+    r"(?<![\w-])(--(?:password|passwd|pass|pwd|passphrase|secret|client-secret|token|auth-token|"
+    r"access-token|api-key|apikey|api_key))(\s+|=)(?!-)(" + _ARG + ")",
+    re.I,
+)
+# scheme://user:pass@host (any scheme: ftp, ssh, amqp, https...). Greedy to the last
+# `@` before the path, so a password containing `@` is covered whole.
+_URL_USERINFO_RE = re.compile(r"(://)[^\s/\"':@]+:[^\s/\"']*@")
+# user:pass@host with no scheme (rsync, scp, git remotes). Docker digest refs
+# (image:tag@sha256:...) and Windows paths are not credentials.
+_BARE_USERINFO_RE = re.compile(r"(?<![\w/@.:+\\-])[\w.+-]+:[^\s/\\@\"':]+@(?!sha\d+:)(?=[A-Za-z0-9])")
+# echo/printf <anything> | cmd : the piped argument is, in practice, the secret that
+# the next command reads from stdin. Flags (-n, -e) survive; quoted args may hold `|`.
+_PIPED_ECHO_RE = re.compile(
+    r"(?<![\w/.-])(echo|printf)(\s+(?:-[A-Za-z]+\s+)*)"
+    r"((?:\"[^\"]*\"|'[^']*'|[^|;&\n\"'])+?)(\s*)\|(?!\|)"
+)
+# Windows: `net use [dev:] \\srv\share [password] [/user:name]` and `... /user:name password`,
+# `cmdkey /pass:...`. `*` (prompt for the password) is not a secret.
+_NET_USE_PW_BEFORE_RE = re.compile(r"(\bnet\s+use\s+(?:[A-Za-z]:\s+|\*\s+)?\\\\\S+\s+)(?![/*-])(\S+)(?=\s|$)", re.I)
+_NET_USE_PW_AFTER_RE = re.compile(r"(\bnet\s+use\b[^|;&\n]*?/user:\S+\s+)(?![/*-])(\S+)", re.I)
+_WIN_USER_RE = re.compile(r"(/user:)\S+", re.I)
+_WIN_PASS_RE = re.compile(r"(/(?:pass|password|passwd|pwd):)\S+", re.I)
+
+
+class CommandMarks:
+    """What each command-syntax rule writes in place of the secret."""
+    __slots__ = ("creds", "arg", "secret", "user")
+
+    def __init__(self, creds: str, arg: str, secret: str, user: str):
+        self.creds, self.arg, self.secret, self.user = creds, arg, secret, user
+
+
+# Redaction output: the standard labeled placeholder.
+_REDACT_MARKS = CommandMarks(
+    creds="[CREDENTIAL REDACTED: user:password]",
+    arg="[CREDENTIAL REDACTED: piped value]",
+    secret="[CREDENTIAL REDACTED: command secret]",
+    user="[CREDENTIAL REDACTED: Windows user]",
+)
+
+
+def scrub_command_syntax(text: str, marks: "CommandMarks" = _REDACT_MARKS) -> str:
+    """Blank credentials that live in a command's syntax (see block comment above)."""
+    def _user_flag_sub(m: "re.Match[str]") -> str:
+        value = m.group(3).strip("\"'")
+        if ":" not in value or re.fullmatch(r"\d+:\d+", value):
+            return m.group(0)
+        return f"{m.group(1)}{m.group(2) or ''}{marks.creds}"
+
+    text = _URL_USERINFO_RE.sub(lambda m: f"{m.group(1)}{marks.creds}@", text)
+    text = _PIPED_ECHO_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}{marks.arg}{m.group(4)}|", text)
+    text = _USER_FLAG_RE.sub(_user_flag_sub, text)
+    text = _SECRET_FLAG_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}{marks.secret}", text)
+    text = _NET_USE_PW_BEFORE_RE.sub(lambda m: f"{m.group(1)}{marks.secret}", text)
+    text = _NET_USE_PW_AFTER_RE.sub(lambda m: f"{m.group(1)}{marks.secret}", text)
+    text = _WIN_PASS_RE.sub(lambda m: f"{m.group(1)}{marks.secret}", text)
+    text = _WIN_USER_RE.sub(lambda m: f"{m.group(1)}{marks.user}", text)
+    text = _BARE_USERINFO_RE.sub(lambda m: f"{marks.creds}@", text)
+    return text
 
 
 def _sub_with_placeholder(pat: "re.Pattern[str]", label: str, text: str) -> str:
@@ -1125,7 +1355,7 @@ def _sub_with_placeholder(pat: "re.Pattern[str]", label: str, text: str) -> str:
     return pat.sub(_repl, text)
 
 
-def redact_credentials(text: str) -> str:
+def redact_credentials(text: str, *, command: bool = False) -> str:
     """Replace credential matches with [CREDENTIAL REDACTED: <type>] placeholders.
 
     A pattern may define a named `keep` group for a non-secret prefix that should
@@ -1150,6 +1380,11 @@ def redact_credentials(text: str) -> str:
     from re-matching by replacing them with a sentinel before redaction and
     restoring them after. This fixes the Bearer pattern re-matching "Bearer
     token" inside its own placeholder, which nested placeholders on re-runs.
+
+    command=True marks the text as a shell command (not output or prose) and also
+    runs the command-syntax rules: curl -u user:pass, --token VALUE, scheme-less
+    user:pass@host, echo SECRET | cmd, Windows net use. Every writer that persists
+    command text passes it.
 
     Raises RedactionConfigError when a configured custom pattern file failed
     to load — callers persisting the result must treat that as "do not write".
@@ -1204,6 +1439,13 @@ def redact_credentials(text: str) -> str:
         if anchors and not any(a in lowered for a in anchors):
             continue
         text = _sub_with_placeholder(pat, label, text)
+
+    # Command-syntax shapes (command text only), then generic NAME=value /
+    # NAME: value secrets. Both run after the specific shapes so a labelled
+    # placeholder from a rule above is never overwritten.
+    if command:
+        text = scrub_command_syntax(text)
+    text = _redact_assignments(text)
 
     # M-16: restore protected placeholders.
     for ph in placeholders:

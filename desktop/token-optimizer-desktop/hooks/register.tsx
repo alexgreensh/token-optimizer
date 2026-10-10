@@ -44,6 +44,7 @@ import type { Snapshot } from '../src/contracts.ts'
 import { ICONS, ICON_ALT, iconSvg, type IconName } from '../src/icons.ts'
 import { COMPACT_HEAVY, QUALITY_FLOOR, moodOf, sentence, type ActionId, type Run } from '../src/ladder.ts'
 import { cards, marks, row, type Card, type Mark, type MarkTone } from '../src/marks.ts'
+import { envSize, slimSide, storedSize, type BandSize } from '../src/size.ts'
 import { DEBOUNCE_MS, initialPose, reducePose, type PoseEvent, type PoseState } from '../src/pose.ts'
 import {
   QUALITY_REFRESH_MS,
@@ -128,6 +129,15 @@ let resyncFor = ''
 /** Compactions that landed in this process, so Clean up can tell one happened during its /compact. */
 let compactionsLanded = 0
 
+/** The store key for the user's band size: the user's choice, so it survives sessions and restarts. */
+const SIZE_KEY = 'status-bar-size'
+/** The env default (TOKEN_OPTIMIZER_STATUS_BAR_SIZE), read once in readSwitches. */
+let sizeEnvDefault: BandSize = 'full'
+/** The stored size, once read or pressed: null while only the env default applies. */
+let sizeClicked: BandSize | null = null
+/** Whether $.store was consulted for the size successfully (a failed read retries next render). */
+let sizeRead = false
+
 const attempt = async <T,>(work: () => Promise<T>, fallback: T): Promise<T> => {
   try {
     return await work()
@@ -149,6 +159,7 @@ function dataIo($: EngineInterface): DataIo {
     envHome: () => $.env.get('HOME'),
     envUserProfile: () => $.env.get('USERPROFILE'),
     envConfigDir: () => $.env.get('CLAUDE_CONFIG_DIR'),
+    envAutoCompactWindow: () => $.env.get('CLAUDE_CODE_AUTO_COMPACT_WINDOW'),
     usage: () => $.session.usage(),
     list: path => $.fs.list(path),
     stat: path => $.fs.stat(path),
@@ -166,7 +177,7 @@ function dataIo($: EngineInterface): DataIo {
 
 /** Gather and store the session's figures, then let the cache clock learn from them. */
 async function refresh($: EngineInterface, options: GatherOptions = {}): Promise<void> {
-  const gen = sessionGen
+  let gen = sessionGen
   const current = await attempt(() => read($, sessionAtom), null)
   const liveSid = cleanId(options.sessionId ?? (await attempt(() => $.session.id(), '')))
   const path = options.transcript ?? transcriptFor(liveSid)
@@ -176,6 +187,7 @@ async function refresh($: EngineInterface, options: GatherOptions = {}): Promise
   if (!options.reset && current !== null && fresh.sessionId !== '' && current.sessionId !== fresh.sessionId) {
     // Another session (a new one, or a resume): nothing of the last one carries over.
     sessionGen += 1
+    gen = sessionGen
     toolsPending = 0
     await feedClock($, { type: 'clear' })
     await setUi($, () => initialUi())
@@ -183,11 +195,13 @@ async function refresh($: EngineInterface, options: GatherOptions = {}): Promise
     await feedPose($, { type: 'session-start' })
   }
   const latest = await attempt(() => read($, sessionAtom), null)
+  if (gen !== sessionGen) return
   const merged = mergeStored(latest, fresh, options.reset, options.savings === true)
   // Nothing shown changed (gatheredAt always does): no write, so no redraw.
-  if (latest !== null && sameShown(latest, merged)) return void (await syncClock($, fresh))
-  await update($, sessionAtom, cur => mergeStored(cur, fresh, options.reset, options.savings === true))
-  await syncClock($, fresh)
+  if (latest !== null && sameShown(latest, merged)) return void (await syncClock($, fresh, gen))
+  await update($, sessionAtom, cur => gen === sessionGen ? mergeStored(cur, fresh, options.reset, options.savings === true) : cur)
+  if (gen !== sessionGen) return
+  await syncClock($, fresh, gen)
 }
 
 function sameShown(a: TokenOptimizerDesktopSession, b: TokenOptimizerDesktopSession): boolean {
@@ -225,10 +239,12 @@ async function flushTools($: EngineInterface): Promise<void> {
 }
 
 /** The status command's anchor and measured lifetime feed the clock when they are newer than what it holds. */
-async function syncClock($: EngineInterface, s: TokenOptimizerDesktopSession): Promise<void> {
+async function syncClock($: EngineInterface, s: TokenOptimizerDesktopSession, gen?: number): Promise<void> {
+  if (gen !== undefined && gen !== sessionGen) return
   await attempt(
     () =>
       update($, clockAtom, cur => {
+        if (gen !== undefined && gen !== sessionGen) return cur
         let c: ClockState = cur ?? initialClock()
         if (s.cacheLifetime && c.lifetime !== s.cacheLifetime) c = reduceClock(c, { type: 'lifetime-measured', lifetime: s.cacheLifetime })
         if (s.lastRequestEpoch !== null) {
@@ -353,8 +369,10 @@ async function start($: EngineInterface): Promise<void> {
   // A warm-up marked running with no fork in flight here was cut off by a reload.
   const clock = await attempt(() => read($, clockAtom), null)
   if (clock?.warming && !warmInFlight) await feedClock($, { type: 'warm-failed' })
+  const sizing = attempt(() => readSize($), undefined)
   const held = await heldHandoff($)
   if (held) await handoffThatFits($, held)
+  await sizing
   await feedPose($, { type: 'session-start' })
   // The quick reads now, so the band fills at once; the status command (seconds, at worst)
   // runs off the start event, so the session never waits on it.
@@ -841,6 +859,41 @@ async function runClear($: EngineInterface, since: number, handoff: Handoff, sid
   await setUi($, u => (u.busy === 'fresh-clear' && u.busySince === since ? withBusy(u, null, now) : u))
 }
 
+/**
+ * The user's band size: a stored click first, else the env default. The store
+ * is read off the render path (a store read can be slow) and kept in module
+ * state; a press made meanwhile always wins (it set sizeClicked itself).
+ */
+function bandSize(): BandSize {
+  return sizeClicked ?? sizeEnvDefault
+}
+
+/** One store read for the size, fired off the render path; a found size redraws once when it differs. */
+async function readSize($: EngineInterface): Promise<void> {
+  if (sizeRead || sizeClicked !== null) return
+  try {
+    const stored = await $.store.get(SIZE_KEY)
+    sizeRead = true
+    const found = storedSize(stored)
+    if (sizeClicked === null) {
+      sizeClicked = found
+      // A stored size that differs from what was drawn earns one redraw.
+      if (found !== null && found !== sizeEnvDefault) await attempt(() => update($, frameAtom, n => (n ?? 0) + 1), undefined)
+    }
+  } catch {
+    // Store unreadable for now: the env default serves; a later readSize call retries.
+  }
+}
+
+/** The size button: flips the band and remembers the choice. A refused write just does not persist. */
+async function toggleSize($: EngineInterface): Promise<void> {
+  await disarm($)
+  const next: BandSize = bandSize() === 'slim' ? 'full' : 'slim'
+  sizeClicked = next
+  await attempt(() => $.store.set(SIZE_KEY, next), undefined)
+  await attempt(() => update($, frameAtom, n => (n ?? 0) + 1), undefined)
+}
+
 async function toggleDetails($: EngineInterface): Promise<void> {
   await disarm($)
   await flushTools($)
@@ -968,7 +1021,29 @@ function clawdLayers($: EngineInterface, layer: ClawdLayer, now: number): ClawdL
 /** Below this, "saved this session" is noise and stays off the row. */
 const SESSION_SAVED_MIN = 1000
 
-type Handlers = { act: (id: ActionId) => void; details: () => void }
+type Handlers = { act: (id: ActionId) => void; details: () => void; size: () => void }
+
+/** The five marks with their hover cards: one line, never wrapped, in both sizes. */
+function markRow(D: Desktop, markList: Mark[], cardList: Card[], t: Tones, on: Handlers) {
+  const { Box, Text, Svg } = D
+  return (
+    <Box flexDirection="row" flexWrap="nowrap" columnGap={3}>
+      {markList.map((mark, i) => (
+        <Box key={`mark-${mark.id}`} position="relative" flexDirection="row" alignItems="center" columnGap={1}>
+          <Svg source={markSvg(mark, t)} alt={mark.alt} width={20} height={20} />
+          <Text bold>{mark.value}</Text>
+          {/* Always labelled: without the word, nobody knows which number is which. */}
+          <Text>{mark.label}</Text>
+          {(() => {
+            // Matched by id, not position: a missing limit never shifts a card under the wrong mark.
+            const card = cardList.find(c => c.id === mark.id)
+            return card ? cardBox(D, card, i, t, on) : ''
+          })()}
+        </Box>
+      ))}
+    </Box>
+  )
+}
 
 function cardBox(D: Desktop, card: Card, index: number, t: Tones, on: Handlers) {
   const { Box, Text, Button } = D
@@ -1002,11 +1077,11 @@ function cardBox(D: Desktop, card: Card, index: number, t: Tones, on: Handlers) 
   )
 }
 
-function drawBand(D: Desktop, m: Model, on: Handlers) {
-  const { Box, Text, Button, Svg } = D
+/** The unfolded row, shared by both sizes: the facts, any card action the moment calls for, the savings. */
+function detailRow(D: Desktop, m: Model, on: Handlers) {
+  const { Box, Text, Button } = D
   const { snap, tones: t } = m
   const say = sentence(snap)
-  const markList = marks(snap)
   const cardList = cards(snap)
   const detail = row(snap)
   // A card action joins the row only when the moment calls for it (quality sagging, the cache
@@ -1044,6 +1119,36 @@ function drawBand(D: Desktop, m: Model, on: Handlers) {
       </Box>
     )
 
+  return (
+    <Box key="row" flexDirection="row" flexWrap="wrap" alignItems="center" justifyContent="space-between" columnGap={2} rowGap={1}>
+      <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} rowGap={1}>
+        {detail.facts.map(f => (
+          <Box flexDirection="row" alignItems="center" columnGap={1}>
+            {icon(D, f.icon, t.ink)}
+            <Text>{runsOf(D, f.runs, t)}</Text>
+          </Box>
+        ))}
+        {rowActions.length > 0 ? (
+          <Box flexDirection="row" alignItems="center" columnGap={1}>
+            {rowActions.map(a => (
+              <Button key={`row-${a.id}`} label={a.label} onPress={() => on.act(a.id)} />
+            ))}
+          </Box>
+        ) : (
+          ''
+        )}
+      </Box>
+      {savingsBlock}
+    </Box>
+  )
+}
+
+function drawBand(D: Desktop, m: Model, on: Handlers) {
+  const { Box, Text, Button, Svg } = D
+  const { snap, tones: t } = m
+  const say = sentence(snap)
+  const markList = marks(snap)
+  const cardList = cards(snap)
   // The artifact's layout: Clawd and his arrow beside the sentence and the marks; the
   // unfolded row under all of it, from Clawd's left edge, savings on the right.
   return (
@@ -1070,13 +1175,15 @@ function drawBand(D: Desktop, m: Model, on: Handlers) {
               </Box>
             ))}
           </Box>
-          <Box>
+          <Box flexDirection="row" columnGap={1}>
             {/* A native button, not a bare glyph: its frame says "press me". */}
             <Button
               key="details"
               label={m.sheetOpen ? '▴' : '▾'}
               onPress={() => on.details()}
             />
+            {/* One line instead of the band: vertical space is at a premium. */}
+            <Button key="size" label="–" onPress={() => on.size()} />
           </Box>
         </Box>
         <Box flexDirection="column" flexGrow={1} flexShrink={1} rowGap={1}>
@@ -1089,47 +1196,59 @@ function drawBand(D: Desktop, m: Model, on: Handlers) {
             {say.action ? <Button key="action" variant="primary" label={say.action.label} onPress={() => on.act(say.action!.id)} /> : ''}
           </Box>
           {/* One line, never wrapped: a wrapped mark's card would open over the marks above it. */}
-          <Box flexDirection="row" flexWrap="nowrap" columnGap={3}>
-            {markList.map((mark, i) => (
-              <Box key={`mark-${mark.id}`} position="relative" flexDirection="row" alignItems="center" columnGap={1}>
-                <Svg source={markSvg(mark, t)} alt={mark.alt} width={20} height={20} />
-                <Text bold>{mark.value}</Text>
-                {/* Always labelled: without the word, nobody knows which number is which. */}
-                <Text>{mark.label}</Text>
-                {(() => {
-                  // Matched by id, not position: a missing limit never shifts a card under the wrong mark.
-                  const card = cardList.find(c => c.id === mark.id)
-                  return card ? cardBox(D, card, i, t, on) : ''
-                })()}
-              </Box>
-            ))}
-          </Box>
+          {markRow(D, markList, cardList, t, on)}
         </Box>
       </Box>
-      {m.sheetOpen ? (
-        <Box key="row" flexDirection="row" flexWrap="wrap" alignItems="center" justifyContent="space-between" columnGap={2} rowGap={1}>
-          <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} rowGap={1}>
-            {detail.facts.map(f => (
-              <Box flexDirection="row" alignItems="center" columnGap={1}>
-                {icon(D, f.icon, t.ink)}
-                <Text>{runsOf(D, f.runs, t)}</Text>
-              </Box>
-            ))}
-            {rowActions.length > 0 ? (
-              <Box flexDirection="row" alignItems="center" columnGap={1}>
-                {rowActions.map(a => (
-                  <Button key={`row-${a.id}`} label={a.label} onPress={() => on.act(a.id)} />
-                ))}
-              </Box>
-            ) : (
-              ''
-            )}
+      {m.sheetOpen ? detailRow(D, m, on) : ''}
+    </Box>
+  )
+}
+
+/** The slim band: one line, plus the unfolded row when open. Tiny Clawd, the arrow and + buttons, the five marks, and what the sentence earns on the right. */
+function drawSlim(D: Desktop, m: Model, on: Handlers) {
+  const { Box, Text, Button, Svg } = D
+  const { snap, tones: t } = m
+  const side = slimSide(sentence(snap))
+  return (
+    // Keyed like the full band: the same one hover zone, so pointing still wakes Clawd's look.
+    <Box key="band" flexDirection="column" paddingX={1} rowGap={1}>
+    <Box flexDirection="row" flexWrap="nowrap" alignItems="center" columnGap={2}>
+      {/* The same layered pictures as the full band (same poses, fades, gaze layers), just small. */}
+      <Box position="relative" flexShrink={0}>
+        {m.clawd.map((c, i) => (
+          <Box key={c.key} {...(i === 0 ? {} : { position: 'absolute' as const, top: 0, left: 0 })}>
+            <Svg source={c.source} alt={c.alt} width={24} height={19} />
           </Box>
-          {savingsBlock}
+        ))}
+        {m.gazes.map(g => (
+          <Box position="absolute" top={0} left={0} display="none" hover={{ display: 'flex' }}>
+            <Svg source={g.source} alt={g.alt} width={24} height={19} />
+          </Box>
+        ))}
+      </Box>
+      <Box flexDirection="row" columnGap={1} flexShrink={0}>
+        {/* The same arrow as the full band: the unfolded row is where the detail lives. */}
+        <Button key="details" label={m.sheetOpen ? '▴' : '▾'} onPress={() => on.details()} />
+        <Button key="size" label="+" onPress={() => on.size()} />
+      </Box>
+      <Box flexGrow={1} flexShrink={1}>
+        {markRow(D, marks(snap), cards(snap), t, on)}
+      </Box>
+      {side.kind === 'action' ? (
+        <Box flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>
+          {icon(D, side.icon, toneColor(side.tone, t))}
+          <Button key="action" variant="primary" label={side.action.label} onPress={() => on.act(side.action!.id)} />
+        </Box>
+      ) : side.kind === 'warn' ? (
+        <Box flexDirection="row" alignItems="center" columnGap={1} flexShrink={0}>
+          {icon(D, side.icon, toneColor(side.tone, t))}
+          <Text>{runsOf(D, side.runs, t)}</Text>
         </Box>
       ) : (
         ''
       )}
+    </Box>
+    {m.sheetOpen ? detailRow(D, m, on) : ''}
     </Box>
   )
 }
@@ -1166,6 +1285,7 @@ async function readSwitches($: EngineInterface): Promise<void> {
   switchesRead = true
   if (switchedOff(await attempt(() => $.env.get('TOKEN_OPTIMIZER_STATUS_BAR'), undefined))) enabled = false
   if (switchedOff(await attempt(() => $.env.get('TOKEN_OPTIMIZER_STATUS_BAR_ANIMATE'), undefined))) animate = false
+  sizeEnvDefault = envSize(await attempt(() => $.env.get('TOKEN_OPTIMIZER_STATUS_BAR_SIZE'), undefined))
 }
 
 /**
@@ -1187,6 +1307,9 @@ async function applySwitches($: EngineInterface): Promise<void> {
 export const register: Register = on => {
   enabled = true
   animate = true
+  // The store is re-read (the durable choice survives); the env default stays as read.
+  sizeClicked = null
+  sizeRead = false
 
   on('session.start', async ($, e, next) => {
     const result = await next(e)
@@ -1391,6 +1514,8 @@ export const register: Register = on => {
       active = true
       $.clock.after(0, () => void attempt(() => start($), undefined))
     }
+    // The stored size is read off the render path; until it lands the env default draws.
+    if (!sizeRead && sizeClicked === null) $.clock.after(0, () => void attempt(() => readSize($), undefined))
 
     // Every read fails soft: a hiccup in one value draws the band without it, never no band.
     await attempt(() => read($, frameAtom), 0)
@@ -1418,7 +1543,7 @@ export const register: Register = on => {
       now,
       working,
       quality: s?.quality ?? null,
-      contextPercent: s?.contextPercent ?? s?.quality?.fillPct ?? null,
+      contextPercent: s?.contextPercent ?? (s?.contextWindowReduced ? null : s?.quality?.fillPct ?? null),
       contextTokens: s?.contextTokens ?? null,
       contextWindow: s?.contextWindow ?? null,
       fiveHour: s?.fiveHour ?? null,
@@ -1451,28 +1576,27 @@ export const register: Register = on => {
       now,
     )
 
-    return drawBand(
-      $.ui.resolve(e),
-      {
-        snap,
-        tones: tonesFor(palette),
-        sheetOpen: s?.sheetOpen ?? false,
-        savingsReason: s?.savingsReason ?? null,
-        canWarm: canKeepWarm({ ...shownClock, working }, now),
-        clawd,
-        gazes:
-          // Watching or napping: pointing at the band wakes him to look at it.
-          (poseNow === 'idle' || poseNow === 'sleep') && animate
-            ? (['right'] as const).map(gaze => {
-                const source = clawdSvg('idle', mood, { animate, palette, gaze, fadeIn: false })
-                return { key: `gaze-${gaze}-${mood}`, source, alt: 'Clawd: watching your pointer', gaze }
-              })
-            : [],
-      },
-      {
-        act: id => void act($, id),
-        details: () => void toggleDetails($),
-      },
-    )
+    const model: Model = {
+      snap,
+      tones: tonesFor(palette),
+      sheetOpen: s?.sheetOpen ?? false,
+      savingsReason: s?.savingsReason ?? null,
+      canWarm: canKeepWarm({ ...shownClock, working }, now),
+      clawd,
+      gazes:
+        // Watching or napping: pointing at the band wakes him to look at it.
+        (poseNow === 'idle' || poseNow === 'sleep') && animate
+          ? (['right'] as const).map(gaze => {
+              const source = clawdSvg('idle', mood, { animate, palette, gaze, fadeIn: false })
+              return { key: `gaze-${gaze}-${mood}`, source, alt: 'Clawd: watching your pointer', gaze }
+            })
+          : [],
+    }
+    const handlers: Handlers = {
+      act: id => void act($, id),
+      details: () => void toggleDetails($),
+      size: () => void toggleSize($),
+    }
+    return bandSize() === 'slim' ? drawSlim($.ui.resolve(e), model, handlers) : drawBand($.ui.resolve(e), model, handlers)
   })
 }

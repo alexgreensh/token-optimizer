@@ -21,6 +21,10 @@ The cache countdown is an estimate: 1 hour on Claude plans, 5 minutes on the API
 
 `TOKEN_OPTIMIZER_STATUS_BAR=0` hides the bar and `TOKEN_OPTIMIZER_STATUS_BAR_ANIMATE=0` keeps Clawd still, set in the `env` block of `~/.claude/settings.json`.
 
+The `–` button beside the arrow shrinks the band to one line and `+` brings it back; the arrow still unfolds the details row under it, and the choice is remembered across sessions and restarts. `TOKEN_OPTIMIZER_STATUS_BAR_SIZE=slim` sets the starting size before a choice is stored, and the terminal status line uses the same variable to print one line.
+
+The context mark honors `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, using Claude Code's 100K-1M bounds and the model's smaller window. This does not read `/autocompact`, `--autocompact`, or `autoCompactWindow` settings.
+
 ## Full docs
 
 See the [Token Optimizer README](../../README.md#desktop-status-bar) and the docs site page "Claude desktop app".

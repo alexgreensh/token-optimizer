@@ -74,6 +74,8 @@ export type DataIo = {
   envHome: () => Promise<string | undefined>
   /** `$.env.get('CLAUDE_CONFIG_DIR')`: a relocated Claude folder, as Token Optimizer honours it */
   envConfigDir?: () => Promise<string | undefined>
+  /** `$.env.get('CLAUDE_CODE_AUTO_COMPACT_WINDOW')`: the raw auto-compaction window override */
+  envAutoCompactWindow?: () => Promise<string | undefined>
   /** `$.env.get('USERPROFILE')`, the Windows home */
   envUserProfile: () => Promise<string | undefined>
   /** `$.session.usage()` */
@@ -341,7 +343,8 @@ export async function gather(
   const base = options.reset || shouldReset(previous, sid) ? null : previous
   const cwd = await attempt(() => io.cwd(), '')
   const home = await readHome(io)
-  const reported = parseUsage(await attempt(() => io.usage(), null))
+  const autoCompactWindow = io.envAutoCompactWindow ? await attempt(() => io.envAutoCompactWindow!(), undefined) : undefined
+  const reported = parseUsage(await attempt(() => io.usage(), null), autoCompactWindow)
   // A limit does not vanish mid-session: a refresh that comes back without one (right
   // after a compact, say) keeps the last known value; once that window has renewed, 0%.
   const keep = (fresh: Limit | null, last: Limit | null | undefined): Limit | null => {

@@ -324,7 +324,6 @@ test('a timed-out status command is not retried with another launcher', async ()
   assert.equal(w.runs.filter(r => r.argv.includes('status-bar')).length, 1)
 })
 
-
 test('a registry entry outside the Claude folder is never run', async () => {
   const w = world()
   w.files[`${HOME}/.claude/plugins/installed_plugins.json`] = [
@@ -356,7 +355,6 @@ test('a kept limit is dropped once its own renewal has passed, never pinned', as
   assert.equal((await gather({ ...io, usage: async () => ({ rateLimits: [] }) }, garbled, {})).fiveHour, null)
 })
 
-
 test('on Windows a registry install under the Claude folder is found, whatever the separators', async () => {
   const win = 'C:\\Users\\me'
   const root = `${win}\\.claude\\plugins\\cache\\alexgreensh-token-optimizer\\token-optimizer\\5.13.29`
@@ -385,4 +383,35 @@ test('loaded on its own from a checkout, the scripts two folders up are used', a
   w.files[`${repo}/skills/token-optimizer/scripts/measure.py`] = [1, '#']
   const found = await findTokenOptimizerRoot({ ...fakeIo(w), pluginRoot: () => `${repo}/desktop/token-optimizer-desktop` }, HOME)
   assert.equal(found?.scriptsDir, `${repo}/skills/token-optimizer/scripts`)
+})
+
+test('gather reads the auto-compaction ceiling and re-reads changes each refresh', async () => {
+  const io = fakeIo(world())
+  io.usage = async () => ({ context: { tokens: 191_100, window: 1_000_000, percent: 19.11 } })
+  let ceiling: string | undefined = '480000'
+  let reads = 0
+  io.envAutoCompactWindow = async () => { reads++; return ceiling }
+  const first = await gather(io, null)
+  assert.equal(first.contextWindow, 480_000)
+  assert.equal(first.contextPercent, 39.8125)
+  ceiling = '240000'
+  const changed = await gather(io, first)
+  assert.equal(changed.contextWindow, 240_000)
+  assert.equal(changed.contextPercent, 79.625)
+  ceiling = undefined
+  const removed = await gather(io, changed)
+  assert.equal(removed.contextWindow, 1_000_000)
+  assert.equal(removed.contextPercent, 19.11)
+  assert.equal(reads, 3)
+})
+
+test('gather survives a missing or rejected auto-compaction environment read', async () => {
+  const io = fakeIo(world())
+  const baseline = await gather(io, null)
+  io.envAutoCompactWindow = async () => { throw new Error('environment unavailable') }
+  const result = await gather(io, null)
+  assert.equal(result.contextWindow, baseline.contextWindow)
+  assert.equal(result.contextPercent, baseline.contextPercent)
+  assert.deepEqual(result.fiveHour, baseline.fiveHour)
+  assert.equal(result.sessionId, baseline.sessionId)
 })

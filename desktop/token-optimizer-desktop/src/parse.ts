@@ -31,6 +31,7 @@ export type UsageView = {
   contextPercent: number | null
   contextTokens: number | null
   contextWindow: number | null
+  contextWindowReduced?: boolean
   fiveHour: Limit | null
   /** When the live session began (ms), from the engine itself. */
   startedAtMs?: number | null
@@ -229,18 +230,36 @@ function limit(limits: unknown, kind: string): Limit | null {
   return found && percentUsed !== null ? { percentUsed, resetsAt: text(found.resetsAt) } : null
 }
 
-/** `$.session.usage()`'s `{ context, rateLimits }`; anything missing reads as null. */
-export function parseUsage(usage: unknown): UsageView {
+/** Match Claude Code's decimal-prefix parse and 100K-1M env bounds. */
+function compactWindow(value: unknown): number | null {
+  if (typeof value !== 'string' || value.trim() === '') return null
+  const window = Number.parseInt(value, 10)
+  return Number.isNaN(window) ? null : Math.max(100_000, Math.min(1_000_000, window))
+}
+
+/**
+ * `$.session.usage()`'s `{ context, rateLimits }`; anything missing reads as null.
+ * A smaller auto-compaction ceiling changes both the window and its fill.
+ */
+export function parseUsage(usage: unknown, autoCompactWindow?: unknown): UsageView {
   const all = toRecord(usage)
   const context = toRecord(all?.context)
   const tokens = num(context?.tokens)
-  const window = num(context?.window)
-  const percent = num(context?.percent) ?? (tokens !== null && window ? (tokens / window) * 100 : null)
+  const reportedWindow = num(context?.window)
+  const window = reportedWindow !== null && reportedWindow > 0 ? reportedWindow : null
+  const ceiling = compactWindow(autoCompactWindow)
+  const reduced = window !== null && ceiling !== null && ceiling < window
+  const effectiveWindow = reduced ? ceiling : window
+  const calculated = reduced && ceiling !== null && tokens !== null && tokens >= 0 ? (tokens / ceiling) * 100 : null
+  const percent = reduced
+    ? num(calculated)
+    : num(context?.percent) ?? (tokens !== null && reportedWindow ? (tokens / reportedWindow) * 100 : null)
 
   return {
     contextPercent: percent,
     contextTokens: tokens,
-    contextWindow: window !== null && window > 0 ? window : null,
+    contextWindow: effectiveWindow,
+    ...(reduced ? { contextWindowReduced: true } : {}),
     fiveHour: limit(all?.rateLimits, 'five_hour'),
     week: limit(all?.rateLimits, 'seven_day'),
     startedAtMs: (() => {

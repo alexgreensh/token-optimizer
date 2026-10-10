@@ -174,6 +174,21 @@ def test_modelSettings_matches_1m_and_date_suffixed_ids(measure):
         assert window == 400_000, f"modelSettings must match {model!r}"
 
 
+def test_modelSettings_real_shape_keyed_by_full_model_id(measure):
+    """Shape seen in a real settings.json: keyed by full model id, a per-model
+    object that also carries unrelated fields (effortLevel). The window field
+    name inside it (autoCompactWindow) is NOT verified against a real file."""
+    settings = {"modelSettings": {
+        "claude-opus-5-5": {"effortLevel": "medium", "autoCompactWindow": 450000},
+        "claude-sonnet-5-5": {"effortLevel": "high"},
+    }}
+    win, prov = measure.effective_compact_window("claude-opus-5-5", env={}, settings=settings)
+    assert win == 450_000 and "modelSettings" in prov
+    # A sibling entry without a window field must not be mistaken for an override.
+    win2, _ = measure.effective_compact_window("claude-sonnet-5-5", env={}, settings=settings)
+    assert win2 == 967_000
+
+
 def test_window_clamped_to_100k_1m(measure):
     low, _ = measure.effective_compact_window(
         "claude-sonnet-5", env={"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "5000"}, settings={})

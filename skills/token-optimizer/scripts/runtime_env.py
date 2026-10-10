@@ -69,9 +69,26 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import sys
 import time
 from pathlib import Path
+
+def measure_cli(*args: str) -> str:
+    """Pasteable command that runs the sibling ``measure.py`` from any directory.
+
+    The resolved, shell-quoted script path. A bare ``python3 measure.py`` only
+    works from inside the scripts directory, which is where nobody is.
+    """
+    parts = ["python3", shlex.quote(str(Path(__file__).resolve().parent / "measure.py"))]
+    parts.extend(args)
+    return " ".join(parts)
+
+
+def with_measure_cli(text: str) -> str:
+    """Swap the bare ``python3 measure.py`` prefix in a hint for ``measure_cli()``."""
+    return text.replace("python3 measure.py", measure_cli())
+
 
 _RUNTIME_OVERRIDE = "TOKEN_OPTIMIZER_RUNTIME"
 _RUNTIME_CLAUDE = "claude"

@@ -87,22 +87,76 @@ def shell_path(path) -> str:
     return _shell_path(str(path))
 
 
+def hint_python() -> str:
+    """Interpreter name for printed commands: ``python`` on Windows, ``python3`` elsewhere."""
+    try:
+        from refetch_fingerprint import hint_python as _hint_python
+    except ImportError:
+        return "python3"
+    return _hint_python()
+
+
+def _windows_hints() -> bool:
+    try:
+        from refetch_fingerprint import _windows_hints as _wh
+    except ImportError:
+        return False
+    return _wh()
+
+
 def measure_cli(*args: str) -> str:
     """Pasteable command that runs the sibling ``measure.py`` from any directory.
 
     The resolved, shell-quoted script path. A bare ``python3 measure.py`` only
     works from inside the scripts directory, which is where nobody is. On Windows
-    the path uses forward slashes and double quotes (see ``shell_path``): a
-    backslash path in single quotes works in Git Bash only.
+    the interpreter is ``python`` and the path uses forward slashes and double
+    quotes (see ``shell_path``): a backslash path in single quotes works in Git
+    Bash only, and ``python3`` exists there only as a Store alias.
     """
-    parts = ["python3", shell_path(Path(__file__).resolve().parent / "measure.py")]
+    parts = [hint_python(), shell_path(Path(__file__).resolve().parent / "measure.py")]
     parts.extend(args)
     return " ".join(parts)
 
 
+def runtime_cli(runtime: str, *args: str) -> str:
+    """``measure_cli`` pinned to a runtime.
+
+    macOS/Linux: the ``TOKEN_OPTIMIZER_RUNTIME=NAME python3 ...`` prefix. That is
+    Bash syntax; cmd.exe and PowerShell reject it, so on Windows the same choice
+    is a leading ``--runtime NAME`` flag of measure.py (``consume_runtime_flag``).
+    """
+    script = shell_path(Path(__file__).resolve().parent / "measure.py")
+    if _windows_hints():
+        parts = [hint_python(), script, "--runtime", runtime]
+    else:
+        parts = [f"TOKEN_OPTIMIZER_RUNTIME={runtime}", hint_python(), script]
+    parts.extend(args)
+    return " ".join(parts)
+
+
+_ENV_PREFIXED_BARE_HINT = re.compile(r"TOKEN_OPTIMIZER_RUNTIME=(\w+) python3 measure\.py")
+
+
 def with_measure_cli(text: str) -> str:
-    """Swap the bare ``python3 measure.py`` prefix in a hint for ``measure_cli()``."""
+    """Swap the bare ``python3 measure.py`` prefix in a hint for ``measure_cli()``.
+
+    ``TOKEN_OPTIMIZER_RUNTIME=X python3 measure.py`` goes through ``runtime_cli``.
+    """
+    text = _ENV_PREFIXED_BARE_HINT.sub(lambda m: runtime_cli(m.group(1)), text)
     return text.replace("python3 measure.py", measure_cli())
+
+
+def consume_runtime_flag(argv: list, environ) -> list:
+    """Apply a LEADING ``--runtime NAME`` to ``environ`` and return argv without it.
+
+    The cross-shell spelling of ``TOKEN_OPTIMIZER_RUNTIME=NAME``. Only the first
+    argument after the script counts, so it can never swallow a subcommand's own
+    ``--runtime``. Runtime names are validated by ``detect_runtime`` as usual.
+    """
+    if len(argv) >= 3 and argv[1] == "--runtime" and argv[2] and not argv[2].startswith("-"):
+        environ["TOKEN_OPTIMIZER_RUNTIME"] = argv[2]
+        return [argv[0], *argv[3:]]
+    return list(argv)
 
 
 _RUNTIME_OVERRIDE = "TOKEN_OPTIMIZER_RUNTIME"

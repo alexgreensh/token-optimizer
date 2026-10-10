@@ -97,7 +97,12 @@ def test_hint_uses_the_resolved_quoted_path_even_with_spaces(tmp_path, monkeypat
     monkeypatch.setattr(runtime_env, "__file__", str(spaced))
     out = runtime_env.with_measure_cli("fix: python3 measure.py setup-hook now")
     expected_script = str((spaced.parent / "measure.py").resolve())
-    assert out == f"fix: python3 {shlex.quote(expected_script)} setup-hook now"
+    from refetch_fingerprint import hint_python, shell_path
+    assert out == f"fix: {hint_python()} {shell_path(expected_script)} setup-hook now"
+    if sys.platform != "win32":  # POSIX output is exactly what it always was
+        assert out == f"fix: python3 {shlex.quote(expected_script)} setup-hook now"
+    else:  # one argument for cmd.exe, PowerShell and Git Bash: double quotes, no backslashes
+        assert out.startswith('fix: python "') and "\\" not in out
     assert BARE not in out
 
 

@@ -384,14 +384,40 @@ def test_subagent_item_recommends_enable(m, monkeypatch):
 def test_subagent_item_recommends_disable(m, monkeypatch):
     mod, settings, _h = m
     _write_settings(settings, dict(USER_SETTINGS, **{KEY: "1h"}))
+    set_ts = time.time() - 20 * 86400
+    mod._subagent_cache_write_marker(
+        {"state": "set", "set_ts": set_ts, "set_by": "token-optimizer"})
     _stub_compact(m, monkeypatch, _compact_report())
-    _verdict(m, requests=500, saved=0.50, premium=1.0)   # net -0.50
+    _verdict(m, requests=500, saved=0.50, premium=1.0,
+             since_ts=set_ts)   # net -0.50
     rec = mod.usage_recommendations_refresh()
     it = _rec_items(m, rec)["subagent_cache"]
     assert it["state"] == "recommend"
     assert it["command"].endswith("subagent-cache disable")
     assert it["numbers"]["recommended"] == "off"
     assert it["numbers"]["setting"] == "1h"
+
+
+def test_subagent_item_user_set_key_is_manual_advice_without_a_command(m, monkeypatch):
+    """A key the user set by hand cannot be undone by `subagent-cache
+    disable` (no marker says we set it), so the item must not hand out that
+    command; the advice is to remove the key by hand."""
+    mod, settings, _h = m
+    _write_settings(settings, dict(USER_SETTINGS, **{KEY: "1h"}))
+    _stub_compact(m, monkeypatch, _compact_report())
+    _verdict(m, requests=500, saved=0.50, premium=1.0)   # net -0.50
+    rec = mod.usage_recommendations_refresh()
+    it = _rec_items(m, rec)["subagent_cache"]
+    assert it["state"] == "recommend"
+    assert it["command"] == ""
+    assert it["direction"] == "off"
+    assert it["numbers"]["recommended"] == "off"
+    assert "subagent-cache disable" not in json.dumps(it)
+    assert "by hand" in (it["tradeoff"] + it["headline"])
+    st = mod.subagent_cache_status(use_cache=True)
+    assert st["recommendation"]["action"] == "disable"
+    assert "subagent-cache disable" not in st["recommendation"]["line"]
+    assert "by hand" in st["recommendation"]["line"]
 
 
 def test_subagent_item_keep_when_paying(m, monkeypatch):
@@ -429,6 +455,38 @@ def test_subagent_item_not_enough_data_without_verdict(m, monkeypatch):
     rec = mod.usage_recommendations_refresh()
     it = _rec_items(m, rec)["subagent_cache"]
     assert it["state"] == "not_enough_data"
+
+
+def test_inline_scan_that_finishes_cleanly_makes_the_record_complete(m, monkeypatch):
+    """No verdict on disk, so the refresh runs the bounded scan inline. When
+    that scan completes, nothing was cut short: complete is true."""
+    mod, _s, _h = m
+    _stub_compact(m, monkeypatch, _compact_report())
+    assert mod._subagent_cache_verdict_for(time.time(), None)[0] != "fresh"
+    rec = mod.usage_recommendations_refresh()
+    assert mod._subagent_cache_verdict_path().exists()
+    assert rec["complete"] is True
+    assert _read_record(m)["complete"] is True
+
+
+def test_inline_scan_that_is_cut_short_keeps_the_record_incomplete(m, monkeypatch):
+    mod, _s, _h = m
+    _stub_compact(m, monkeypatch, _compact_report())
+    monkeypatch.setattr(
+        mod, "subagent_cache_scan_run",
+        lambda *a, **k: {"complete": False, "payoff": None, "ts": time.time()})
+    assert mod.usage_recommendations_refresh()["complete"] is False
+
+
+def test_scan_held_elsewhere_keeps_the_record_incomplete(m, monkeypatch):
+    """A stale (but complete) verdict plus a scan another process holds is
+    still not a fresh measurement."""
+    mod, _s, _h = m
+    _stub_compact(m, monkeypatch, _compact_report())
+    _verdict(m, age=3 * 86400)
+    monkeypatch.setattr(mod, "subagent_cache_scan_run", lambda *a, **k: None)
+    assert mod._subagent_cache_verdict_for(time.time(), None)[0] != "fresh"
+    assert mod.usage_recommendations_refresh()["complete"] is False
 
 
 def test_items_not_applicable_on_foreign_runtime(m, monkeypatch):
@@ -496,6 +554,59 @@ def test_refresh_replays_the_whole_window_not_the_coach_slice(m, monkeypatch):
     assert seen.get("max_sessions") is None
     assert seen.get("deadline_seconds") == mod._RECS_COMPACT_BUDGET_SECONDS
     assert mod._RECS_COMPACT_BUDGET_SECONDS >= 60
+
+
+def _kill_during_replay(mod, monkeypatch):
+    """Make the refresh die (SystemExit escapes `except Exception`, like a
+    SIGKILL leaves no cleanup) the moment the compact replay starts."""
+    def _die(now=None):
+        raise SystemExit("killed mid-replay")
+    monkeypatch.setattr(mod, "_recs_compact_item", _die)
+
+
+def test_killed_refresh_leaves_a_provisional_incomplete_record(m, monkeypatch):
+    """The module header promises a crashed run leaves complete:false. A
+    record is written at the start of the refresh, so a kill mid-replay still
+    leaves one."""
+    mod, _s, _h = m
+    _kill_during_replay(mod, monkeypatch)
+    now = time.time()
+    with pytest.raises(SystemExit):
+        mod.usage_recommendations_refresh(now=now)
+    on_disk = _read_record(m)
+    assert on_disk["schema"] == 1
+    assert on_disk["complete"] is False
+    assert on_disk["items"] == [] and on_disk["wins"] == []
+    assert on_disk["measured_ts"] == now
+    assert mod._recs_read_record() is not None
+
+
+def test_killed_refresh_keeps_the_previous_good_record(m, monkeypatch):
+    """A kill must not replace yesterday's measured items with an empty
+    placeholder; the old record stays and ages out into a retry."""
+    mod, _s, _h = m
+    old_ts = time.time() - 2 * 86400
+    before = _write_record(m, [
+        {"id": "subagent_cache", "state": "keep", "headline": "x",
+         "numbers": {}, "command": "", "direction": "",
+         "enough_data": True, "reason": "r"}], measured_ts=old_ts)
+    _kill_during_replay(mod, monkeypatch)
+    with pytest.raises(SystemExit):
+        mod.usage_recommendations_refresh()
+    assert _read_record(m) == before
+
+
+def test_provisional_record_retries_after_the_lock_window(m, monkeypatch):
+    """A provisional record must not park the retry for a whole day: once the
+    lock a killed child held can be reclaimed, the next start respawns."""
+    mod, _s, _h = m
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    _kill_during_replay(mod, monkeypatch)
+    t0 = time.time()
+    with pytest.raises(SystemExit):
+        mod.usage_recommendations_refresh(now=t0)
+    assert mod._recs_ensure_fresh(now=t0 + 10) is False
+    assert mod._recs_ensure_fresh(now=t0 + mod._RECS_LOCK_STALE + 10) is True
 
 
 def test_lock_blocks_a_second_refresh(m, monkeypatch):
@@ -786,6 +897,41 @@ def test_subagent_disable_win(m, monkeypatch):
     wins = [w for w in rec["wins"] if w["id"] == "subagent_cache"]
     assert len(wins) == 1
     assert wins[0]["improved"] is True
+
+
+@pytest.mark.parametrize("rec,before,after,improved", [
+    ("1h", 5.0, -2.0, False),      # the projected gain did not hold
+    ("1h", 5.0, 1.0, False),
+    ("1h", 1.5, 1.8, True),
+    ("off", -0.5, -0.4, True),     # still would not pay
+    ("off", -0.5, 0.25, False),    # moved positive
+    ("off", -0.5, -0.004, False),  # rounds to zero
+])
+def test_win_lines_put_the_sign_before_the_dollar(m, rec, before, after,
+                                                 improved):
+    mod, _s, _h = m
+    line = mod._recs_win_line("subagent_cache", rec, before, after,
+                              improved, time.time() - 10 * 86400)
+    assert line
+    assert "$-" not in line and "$+" not in line, line
+    if after <= -0.005:
+        assert f"-${abs(after):.2f}" in line, line
+
+
+def test_win_line_negative_net_reads_minus_dollar(m):
+    mod, _s, _h = m
+    line = mod._recs_win_line("subagent_cache", "1h", 5.0, -2.0, False,
+                              time.time() - 10 * 86400)
+    assert "-$2.00" in line and "+$5.00" in line
+
+
+def test_doctor_cache_row_negative_net_reads_minus_dollar(m, capsys):
+    mod, _s, _h = m
+    _verdict(m, requests=500, saved=0.40, premium=1.0)   # net -0.60
+    mod.doctor()
+    out = capsys.readouterr().out
+    assert "estimated net -$0.60" in out
+    assert "$-" not in out
 
 
 # ===========================================================================

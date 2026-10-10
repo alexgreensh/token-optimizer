@@ -4755,7 +4755,7 @@ def doctor(as_json=False):
         _sc_payoff = _scb.get("payoff") or {}
         _sc_detail = (
             f"state: {_sc_state}; last {_sc_payoff.get('window_days', 30)}d "
-            f"estimated net ${_sc_payoff.get('net_usd_est', 0.0):.2f}"
+            f"estimated net {_recs_usd(_sc_payoff.get('net_usd_est') or 0.0)}"
             + (" API-equivalent" if _scb.get("billing_mode") == "subscription" else "")
             + " (estimate)")
         _sc_auto = _scb.get("auto_decision") or {}
@@ -19889,14 +19889,17 @@ def subagent_cache_enable(now=None, automatic=True):
             return {"state": "set", "changed": False, "reason": None,
                     "notice": None, "current": "1h"}
         # We set it once and the user removed/changed it afterwards: remember,
-        # never touch it again.
-        marker["state"] = "user-declined"
-        marker["declined_ts"] = float(now)
-        marker["declined_previous"] = val if val is not None else "(absent)"
-        _subagent_cache_write_marker(marker)
-        return {"state": "user-declined", "changed": False,
-                "reason": "the user removed or changed the key after we set it",
-                "notice": None}
+        # never touch it again. Only the automatic path records the decline;
+        # an explicit `enable` is a deliberate request and falls through to
+        # the normal set path below.
+        if automatic:
+            marker["state"] = "user-declined"
+            marker["declined_ts"] = float(now)
+            marker["declined_previous"] = val if val is not None else "(absent)"
+            _subagent_cache_write_marker(marker)
+            return {"state": "user-declined", "changed": False,
+                    "reason": "the user removed or changed the key after we set it",
+                    "notice": None}
 
     # Env outranks the setting (documented precedence).
     if os.environ.get("CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL", "").strip():
@@ -20469,6 +20472,14 @@ def _subagent_cache_recommendation(state, current, payoff, billing,
             if decision["decision"] == "not-enough-data":
                 return {"action": "none", "line": decision["reason"]}
             if net < 0:
+                if state != "set":
+                    # No marker says Token Optimizer set this key, so
+                    # `subagent-cache disable` would answer nothing-to-undo.
+                    return {"action": "disable", "manual": True,
+                            "line": (f"is costing about ${abs(net):.2f} net "
+                                     f"({est}) over {window}; remove "
+                                     f"{_SUBAGENT_CACHE_KEY} from "
+                                     f"settings.json by hand")}
                 return {"action": "disable",
                         "line": (f"is costing about ${abs(net):.2f} net ({est}) "
                                  f"over {window}; turn off: `{cmd} disable`")}
@@ -20865,9 +20876,13 @@ def _recs_subagent_item(now=None):
     partial = False
     vstate, vrec = _subagent_cache_verdict_for(now, since)
     if vstate != "fresh":
+        # Complete only when the inline scan itself finished cleanly; a scan
+        # another process holds (None) or one cut short leaves it partial.
         partial = True
         try:
-            vrec = subagent_cache_scan_run(now=now, since_ts=since) or vrec
+            scanned = subagent_cache_scan_run(now=now, since_ts=since)
+            partial = not (scanned and scanned.get("complete"))
+            vrec = scanned or vrec
         except Exception:
             pass
     elif not vrec.get("complete"):
@@ -20910,6 +20925,17 @@ def _recs_subagent_item(now=None):
                     direction="on",
                     command=f"python3 {mp} subagent-cache enable",
                     headline=line.split("; turn on:")[0].rstrip(),
+                    reason=decision["reason"])
+    if action == "disable" and rec.get("manual"):
+        # The user set the key by hand: no command can undo it, so the item
+        # carries the manual step in `tradeoff` and an empty `command`.
+        numbers["recommended"] = "off"
+        return dict(item, state="recommend", enough_data=True,
+                    direction="off", command="",
+                    headline=line.split("; remove ")[0].rstrip(),
+                    tradeoff=(f"Token Optimizer did not set this key, so it "
+                              f"cannot remove it: delete {_SUBAGENT_CACHE_KEY} "
+                              f"from settings.json by hand."),
                     reason=decision["reason"])
     if action == "disable":
         numbers["recommended"] = "off"
@@ -21011,6 +21037,17 @@ def _recs_measure_improved(iid, recommended, before, after):
     return False
 
 
+def _recs_usd(value, plus=False):
+    """Dollars with the sign before the symbol: -$2.00, never $-2.00.
+    `plus` adds an explicit + to a positive amount; a value that rounds to
+    zero carries no sign."""
+    v = round(float(value), 2)
+    if v == 0:
+        v = 0.0
+    sign = "-" if v < 0 else ("+" if plus and v > 0 else "")
+    return f"{sign}${abs(v):.2f}"
+
+
 def _recs_win_line(iid, recommended, before, after, improved, since_ts):
     try:
         date = datetime.fromtimestamp(since_ts).date().isoformat()
@@ -21033,17 +21070,19 @@ def _recs_win_line(iid, recommended, before, after, improved, since_ts):
         if recommended == "1h":
             if improved:
                 return (f"Subagent cache: since you set it to 1 hour on "
-                        f"{date}, the measured net is +${after:.2f} over the "
-                        f"last 30 days (projected +${before:.2f}; {tail}).")
+                        f"{date}, the measured net is {_recs_usd(after, True)} "
+                        f"over the last 30 days (projected "
+                        f"{_recs_usd(before, True)}; {tail}).")
             return (f"Subagent cache: since you set it to 1 hour on {date}, "
-                    f"the measured net is ${after:.2f} over the last 30 days "
-                    f"-- the projected +${before:.2f} did not hold ({tail}).")
+                    f"the measured net is {_recs_usd(after, True)} over the "
+                    f"last 30 days -- the projected {_recs_usd(before, True)} "
+                    f"did not hold ({tail}).")
         if improved:
             return (f"Subagent cache: since you turned it off on {date}, the "
-                    f"1-hour cache still would not pay (net ${after:.2f}; "
+                    f"1-hour cache still would not pay (net {_recs_usd(after)}; "
                     f"{tail}).")
         return (f"Subagent cache: since you turned it off on {date}, the "
-                f"estimate moved to ${after:+.2f} -- the 1-hour cache may be "
+                f"estimate moved to {_recs_usd(after, True)} -- the 1-hour cache may be "
                 f"worth another look ({tail}).")
     return ""
 
@@ -21131,6 +21170,24 @@ def _recs_refresh_locked(now):
     return rec
 
 
+def _recs_write_provisional(now):
+    """A killed refresh must still leave a record (the module header says a
+    crashed run writes complete:false). Written when the lock is taken, and
+    only when no valid record exists: a previous good record stays put (it is
+    already past its refresh age, so the next start retries). Never raises."""
+    try:
+        if _recs_read_record() is not None:
+            return
+        _subagent_cache_write_json_atomic(
+            _recs_record_path(),
+            {"schema": 1, "measured_ts": float(now),
+             "window_days": _RECS_WINDOW_DAYS, "complete": False,
+             "provisional": True, "items": [], "wins": []},
+            ".usage_recs.")
+    except Exception:
+        pass
+
+
 def usage_recommendations_refresh(now=None, token=None):
     """The one refresher. Run by the detached child (which presents its lock
     token) or by hand (which takes the lock itself). Returns the record, or
@@ -21148,6 +21205,7 @@ def usage_recommendations_refresh(now=None, token=None):
         if token is None:
             return None
     try:
+        _recs_write_provisional(now)
         return _recs_refresh_locked(now)
     finally:
         _recs_lock_release(token)
@@ -21204,10 +21262,15 @@ def _recs_ensure_fresh(now=None):
             return False
         rec = _recs_read_record()
         if rec is not None:
+            # A provisional record means the refresh that wrote it never
+            # finished; retry once the lock it held would be reclaimable
+            # instead of parking the retry for a day.
+            limit = (_RECS_LOCK_STALE if rec.get("provisional")
+                     else _RECS_REFRESH_SECONDS)
             try:
                 if (float(now if now is not None else time.time())
                         - float(rec.get("measured_ts") or 0)
-                        < _RECS_REFRESH_SECONDS):
+                        < limit):
                     return False
             except (TypeError, ValueError):
                 pass
@@ -51887,8 +51950,10 @@ def _advice_session_data(path):
                             pending[blk["id"]] = owner
                         seen.update(targets)
     except (OSError, PermissionError):
+        # `unreadable` lets compact_advice flag the replay as partial instead
+        # of silently counting one session fewer.
         return {"turns": [], "cache_reads": [], "boundaries": set(), "model": None,
-                "post_compact_ctx": [], "rereads": []}
+                "post_compact_ctx": [], "rereads": [], "unreadable": True}
     post_ctx, rereads = [], []
     for b in bounds:
         if b[0] < len(turns):
@@ -52063,7 +52128,10 @@ def compact_advice(days=30, max_sessions=None, deadline_seconds=None):
         try:
             d = _advice_session_data(jf)
         except Exception:
+            out["truncated"] = True
             continue
+        if d.get("unreadable"):
+            out["truncated"] = True
         all_rereads.extend(d["rereads"])
         all_post_ctx.extend(d["post_compact_ctx"])
         if len(d["turns"]) < 2:

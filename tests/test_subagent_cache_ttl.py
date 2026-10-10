@@ -402,6 +402,33 @@ def test_explicit_cli_enable_after_decline_is_honoured(m):
     assert _read(settings)[KEY] == "1h"
 
 
+def test_explicit_cli_enable_after_removal_sets_on_the_first_try(m):
+    """The user removed the key we set; an explicit `enable` is a deliberate
+    request, so it sets the key at once instead of reporting user-declined
+    and needing a second run. Only the automatic path respects the decline."""
+    mod, settings, _home = m
+    mod.subagent_cache_enable()
+    data = _read(settings)
+    del data[KEY]
+    _write_settings(settings, data)
+    r = mod.subagent_cache_enable(automatic=False)
+    assert r["state"] == "set", r
+    assert r["changed"] is True
+    assert _read(settings)[KEY] == "1h"
+    assert _marker(m)["state"] == "set"
+
+
+def test_automatic_enable_after_removal_still_records_the_decline(m):
+    mod, settings, _home = m
+    mod.subagent_cache_enable()
+    data = _read(settings)
+    del data[KEY]
+    _write_settings(settings, data)
+    r = mod.subagent_cache_enable()
+    assert r["state"] == "user-declined", r
+    assert KEY not in _read(settings)
+
+
 def test_auto_revert_blocks_automatic_reenable(m):
     mod, settings, _home = m
     mod.subagent_cache_enable()

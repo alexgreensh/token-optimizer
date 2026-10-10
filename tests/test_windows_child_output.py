@@ -56,13 +56,18 @@ def test_stdio_kwargs_pass_usable_streams_on_windows(measure, monkeypatch):
     assert kwargs == {"stdin": fake_in, "stdout": fake_out, "stderr": fake_err}
 
 
-def test_stdio_kwargs_skip_missing_or_unusable_streams(measure, monkeypatch):
+def test_stdio_kwargs_give_missing_or_unusable_streams_devnull(measure, monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(sys, "stdin", None)  # pythonw: no stdin at all
     monkeypatch.setattr(sys, "stdout", io.StringIO())  # fileno() raises UnsupportedOperation
     good = _FileLikeStream()
     monkeypatch.setattr(sys, "stderr", good)
-    assert measure._windows_stdio_kwargs() == {"stderr": good}
+    import subprocess
+    assert measure._windows_stdio_kwargs() == {
+        "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": good}
+    # Nothing usable at all: nothing is passed.
+    monkeypatch.setattr(sys, "stderr", None)
+    assert measure._windows_stdio_kwargs() == {}
 
 
 def test_stdio_kwargs_are_empty_off_windows(measure, monkeypatch):

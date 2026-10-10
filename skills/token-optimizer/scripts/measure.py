@@ -142,15 +142,23 @@ def _windows_stdio_kwargs():
     if sys.platform != "win32":
         return {}
     kwargs = {}
+    missing = []
     for name in ("stdin", "stdout", "stderr"):
         stream = getattr(sys, name, None)
         if stream is None:
+            missing.append(name)
             continue
         try:
             stream.fileno()
         except (AttributeError, OSError, ValueError):
+            missing.append(name)
             continue
         kwargs[name] = stream
+    # Same rule as hooks/run.py: a stream left out falls back to a possibly
+    # stale handle and the spawn fails, so an unusable one gets DEVNULL.
+    if kwargs:
+        for name in missing:
+            kwargs[name] = subprocess.DEVNULL
     return kwargs
 
 

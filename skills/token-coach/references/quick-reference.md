@@ -1,19 +1,54 @@
 # Quick Reference: Hard Numbers for Token Coach
 
-Reference file for Token Coach. The numbers the coach cites. Updated from research data (March 2026).
+Reference file for Token Coach. The numbers the coach cites.
+
+---
+
+## Contents
+
+- [Baseline Overhead (Fresh Session)](#baseline-overhead-fresh-session)
+- [Cache and Compaction Controls](#cache-and-compaction-controls)
+- [User Config Overhead (Typical Power User)](#user-config-overhead-typical-power-user)
+- [Context Quality Degradation](#context-quality-degradation)
+- [MCP Tool Costs (Real Examples)](#mcp-tool-costs-real-examples)
+- [Token Costs Per Component](#token-costs-per-component)
+- [Environment Variables](#environment-variables)
+- [Subagent Costs](#subagent-costs)
+- [Cache-Expiry Waste — per provider](#cache-expiry-waste--per-provider)
 
 ---
 
 ## Baseline Overhead (Fresh Session)
 
-| Component | Tokens | % of 200K |
-|-----------|--------|-----------|
-| System prompt | ~3,000 | 1.5% |
-| Built-in tools (18+) | ~12,000-15,000 | 6-7.5% |
-| Autocompact buffer | ~33,000-45,000 | 16.5-22.5% |
-| **Total fixed floor** | **~48,000-63,000** | **24-31.5%** |
+Percentages below assume a 1M-token window, the default on current Claude models (Haiku 5.5, Sonnet 5+, Opus 4.7+). On a 200K window the same token counts are 5x the percentage.
 
-Usable context before any user config: ~137,000-152,000 tokens.
+| Component | Tokens | % of a 1M window |
+|-----------|--------|------------------|
+| System prompt | ~3,000 | 0.3% |
+| Built-in tools (18+) | ~12,000-15,000 | 1.2-1.5% |
+| **Total fixed floor** | **~15,000-18,000** | **1.5-1.8%** |
+
+With auto-compact enabled (the default), Claude Code reserves headroom inside the model's compact window; the reserved size is not documented and varies by build, so treat it as overhead you cannot spend. On 1M models compaction fires at about 967K tokens by default; on 200K models it fires near the context limit.
+
+## Cache and Compaction Controls
+
+What the user can set, from the official Claude Code docs. Cache writes: a 5-minute cache costs 1.25x base input to write, a 1-hour cache 2x; cache reads cost 0.1x.
+
+| Control | What it does | Default |
+|----------|-------------|---------|
+| `promptCacheTtl` (setting) | Main-conversation cache TTL: "5m" or "1h" | unset (1h on subscription billing, 5m on usage credits/API) |
+| `CLAUDE_CODE_PROMPT_CACHE_TTL` (env) | Same as `promptCacheTtl`; env outranks the setting | unset |
+| `subagentPromptCacheTtl` (setting) | Subagent cache TTL: "5m" or "1h" (v2.1.243+) | unset (subagents get 5m even on a subscription) |
+| `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL` (env) | Same as `subagentPromptCacheTtl`; env outranks the setting | unset |
+| `experimental.cacheTtl` (agent frontmatter, v2.1.248+) | Per-subagent cache TTL, inside the `experimental:` map | unset |
+| `ENABLE_PROMPT_CACHING_1H=1` (env) | Blanket 1-hour cache | unset |
+| `FORCE_PROMPT_CACHING_5M` (env) | Force 5-minute caching; outranks everything above | unset |
+| `/autocompact <n>` | Compact window, 100K-1M, saved per model | tuned for the model (~967K on 1M models) |
+| `/autocompact auto` | Restore the tuned window | - |
+| `autoCompactWindow` (setting) | Compact window, 100000-1000000, capped at the model's limit | unset (tuned per model) |
+| `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (env) | Same range as `autoCompactWindow`; env outranks the setting | unset |
+
+A plugin's own settings.json cannot set the cache TTLs (only `agent` and `subagentStatusLine` take effect from plugin settings).
 
 ## User Config Overhead (Typical Power User)
 
@@ -30,13 +65,17 @@ Usable context before any user config: ~137,000-152,000 tokens.
 
 ## Context Quality Degradation
 
-| Fill Level | Quality | Recommendation |
-|------------|---------|----------------|
-| 0-30% | Peak performance | Work freely |
-| 30-50% | Good quality | Monitor context |
-| 50-70% | Minor degradation | Run /compact soon |
-| 70-85% | Noticeable quality loss | Run /compact NOW |
-| 85%+ | Hallucinations, corner-cutting | /clear or new session |
+Token Optimizer's quality score uses a published long-context retrieval curve for Claude models, as a share of the model's window. It is an estimate, not a measurement:
+
+| Window filled | Estimated retrieval quality |
+|---------------|-----------------------------|
+| 0-10% | 98 to 96 (minimal loss) |
+| 10-25% | 96 to 93 |
+| 25-50% | 93 to 88 |
+| 50-70% | 88 to 80 |
+| 70-100% | 80 to 76 |
+
+On a 1M window those bands span far more tokens than on 200K, so the same absolute token count costs less quality on a 1M window. For when to compact, run `measure.py compact-advice`, which answers from the user's own sessions instead of a fixed percentage.
 
 ## MCP Tool Costs (Real Examples)
 
@@ -48,7 +87,7 @@ Usable context before any user config: ~137,000-152,000 tokens.
 | Docker | 135 | ~125,000 | ~2,025 |
 | Chrome automation | ~30 | ~31,700 | ~450 |
 
-Tool Search (default since Jan 2026) reduced total MCP overhead by 85-96%.
+Tool Search (on by default) reduced total MCP overhead by 85-96%.
 
 ## Token Costs Per Component
 
@@ -72,8 +111,8 @@ Tool Search (default since Jan 2026) reduced total MCP overhead by 85-96%.
 | `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` | Disable auto memory creation/loading | Enabled |
 | `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` | Disable background tasks | Enabled |
 | `ENABLE_CLAUDEAI_MCP_SERVERS=false` | Opt out of claude.ai cloud-synced MCP servers | Enabled |
-| `CLAUDE_CODE_MAX_OUTPUT_TOKENS` | Max output tokens (higher = larger autocompact buffer) | 16,384 |
-| `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` | Auto-removed if found (inverted semantics cause premature compaction) | not set (~98%) |
+| `CLAUDE_CODE_MAX_OUTPUT_TOKENS` | Max output tokens per response | 16,384 |
+| `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` | Percent of the compact window used when auto-compaction fires (1-100); lower compacts earlier, and it cannot raise the threshold. Token Optimizer reports it and never changes it | unset |
 | `includeGitInstructions: false` (setting) | Same as DISABLE_GIT env var, in settings.json | true |
 | `effortLevel` (setting) | "high" maximizes quality + cost; "medium" saves 15-25% output tokens | auto |
 
@@ -87,25 +126,25 @@ Tool Search (default since Jan 2026) reduced total MCP overhead by 85-96%.
 | Skill assigned to subagent | FULL SKILL.md at startup (not progressive) |
 | Agent Teams vs single agent | ~7x token usage (Anthropic docs) |
 
-## Cache-Expiry Waste — per provider (verified June 2026)
+## Cache-Expiry Waste — per provider
 
 Cache economics are model-AGNOSTIC: each provider has its own cache profile, so the detector resolves a session's model to a profile, not to Anthropic semantics. Two waste shapes: explicit-TTL re-WRITE (Anthropic) and automatic-discount COLLAPSE (OpenAI/Codex, Gemini, DeepSeek).
 
 | Provider / model family | Cache kind | Cached read | Effective TTL | User TTL knob |
 |---|---|---|---|---|
 | Anthropic API/SDK | explicit_ttl | 0.1x input | 5 min default | yes (`ttl:"1h"`, 2x write once) |
-| Claude Code | explicit_ttl | 0.1x input | 1 hour (platform default) | no (behavioral only) |
+| Claude Code | explicit_ttl | 0.1x input | 1h on subscription billing, 5m on usage credits/API | yes (see the Cache and Compaction Controls table above) |
 | OpenAI / Codex | automatic_discount | 0.1x input | ~5-10 min (max ~1h) | policy only (`prompt_cache_retention="24h"`) |
 | Gemini 2.5+ | explicit_storage | ~0.1x input | implicit auto | yes (`cached_content` ttl, default 1h, +storage/hr) |
 | DeepSeek | automatic_discount | 0.1x input (1/10) | hours-to-days | no |
 | unknown / other | none | n/a | n/a | n/a (no cache economics) |
 
-Claude Code REQUESTS a 1-hour prompt cache (the platform default; the historical "silent downgrade to 5 minutes" was a bug fixed in v2.1.129). Empirically the cache survives sub-hour pauses, so the Claude Code detector counts only pauses LONGER than an hour. Raw Anthropic API/SDK/harness sessions (e.g. Hermes → Anthropic) keep the 5-minute default and the 1h-`cache_control` counterfactual.
+Claude Code's main conversation requests a 1-hour cache on subscription billing; on usage credits or an API key the default is 5 minutes until a setting above raises it. Empirically the prefix survives sub-hour pauses, so the Claude Code detector counts only pauses LONGER than an hour. Subagents default to a 5-minute cache even on a subscription; `subagentPromptCacheTtl` (or the per-agent `experimental.cacheTtl`) can raise that to 1 hour. Raw Anthropic API/SDK/harness sessions (e.g. Hermes → Anthropic) keep the 5-minute default and the 1h-`cache_control` counterfactual.
 
-Detection: explicit_ttl = gap > effective TTL (Claude Code 1h; API/SDK 5min) AND next-turn cache_creation >= 50% of prior cached prefix. automatic_discount/explicit_storage = prior cached ratio >= 0.40, gap > TTL, next ratio < 0.10 with comparable prompt → lost cached tokens re-billed at full input vs cached rate. none = honest skip (counted, never waste).
+Detection: explicit_ttl = gap > effective TTL (Claude Code main conversation: 1 hour; API/SDK: 5min) AND next-turn cache_creation >= 50% of prior cached prefix. automatic_discount/explicit_storage = prior cached ratio >= 0.40, gap > TTL, next ratio < 0.10 with comparable prompt → lost cached tokens re-billed at full input vs cached rate. none = honest skip (counted, never waste).
 
 Verified remedies (per profile, exactly what the provider offers):
-- Claude Code: already holds a 1-hour cache; no setting extends it. Behavioral remedy — resume within the hour or batch related work; pauses longer than an hour re-write the prefix. Token Optimizer can also keep it warm automatically (opt-in, API billing only): `keepwarm-enable` (records consent + installs the macOS scheduler; verify with `keepwarm-scheduler status` / `keepwarm-tick --dry-run`). It pings the cache before expiry at ~0.1x of the prefix (vs the 1.25-2x re-write), max 2 pings per pause unless promoted, with a tripwire that auto-disables if pings stop paying for themselves. Off by default; subscription auth stays off (pings would burn quota without saving dollars). To activate on a subscription/off-billing or platform-gap machine: set `ANTHROPIC_API_KEY` and run `keepwarm-enable` (on Linux/Windows, wire `keepwarm-tick` to your own cron/timer until the scheduler ships).
+- Claude Code: resume inside the cache window or batch related work, so a long pause never strands the prefix. Token Optimizer can also keep it warm automatically (opt-in, API billing only): `keepwarm-enable` (records consent + installs the macOS scheduler; verify with `keepwarm-scheduler status` / `keepwarm-tick --dry-run`). It pings the cache before expiry at ~0.1x of the prefix (vs the 1.25-2x re-write), max 2 pings per pause unless promoted, with a tripwire that auto-disables if pings stop paying for themselves. Off by default; subscription auth stays off (pings would burn quota without saving dollars). To activate on a subscription/off-billing or platform-gap machine: set `ANTHROPIC_API_KEY` and run `keepwarm-enable` (on Linux/Windows, wire `keepwarm-tick` to your own cron/timer until the scheduler ships).
 - Anthropic API/SDK/agent harness: `cache_control {"type":"ephemeral","ttl":"1h"}` on stable prefixes.
 - OpenAI/Codex: keep prefix exact-match (>=1024 tok), resume within window; `prompt_cache_retention="24h"` for long-lived prefixes.
 - Gemini: explicit `cached_content` with user `ttl` (per-hour storage billed).
@@ -114,14 +153,3 @@ Verified remedies (per profile, exactly what the provider offers):
 Coverage gaps (not measurable, rendered explicitly): Hermes (per-session aggregates only, cache_read unreliable), OpenClaw/OpenCode (TS engines, no Python per-turn read path), Copilot (credits-billed, no per-turn cache detail).
 
 Surface: `measure.py cache-report [--days N] [--json]` — per-provider breakdown + coverage gaps. OPPORTUNITY-tier (observed waste, potential recovery); never counts toward realized savings.
-
-## Community Pain Points (Feb-March 2026)
-
-1. No per-request token visibility (Claude Code community reports)
-2. Compaction triggers too often / unexpectedly (buffer varies 33K-45K by version)
-3. Context fills faster than expected (hidden MCP overhead)
-4. MCP overhead invisible until session degrades (/context hides deferred overhead)
-5. Auto-memory contributing to bloat (v2.1.53-59 regression confirmed by Anthropic)
-6. Plugin cache stale versions accumulating (18+ GitHub issues)
-7. Per-turn token regression in v2.1.x (Claude Code community report)
-8. Agent Teams burn 7x tokens with unclear ROI

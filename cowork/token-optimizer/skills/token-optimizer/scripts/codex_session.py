@@ -216,7 +216,18 @@ def _extract_topic(text: str) -> str | None:
         text = first_line.lstrip("# ").strip()
     if not text:
         return None
-    return text[:117] + "..." if len(text) > 120 else text
+    # User-derived text that is persisted (session_log/quality cache) and
+    # rendered into checkpoints — redact credentials, or drop the topic if
+    # the shared redactor is unavailable/refuses. Redact BEFORE truncating:
+    # a secret straddling the cut is a prefix no pattern recognises.
+    try:
+        from credential_patterns import redact_credentials as _topic_redact
+        text = _topic_redact(text)
+    except Exception:
+        return None
+    if len(text) > 120:
+        text = text[:117] + "..."
+    return text
 
 
 def _safe_session_id(value: str | None) -> str:
@@ -845,8 +856,17 @@ def iter_tool_outputs(
 
 
 def extract_session_state(filepath: str | Path, tail_lines: int = 500, max_files: int = 10) -> dict[str, Any] | None:
-    """Extract checkpoint-ready continuity state from a Codex JSONL session."""
+    """Extract checkpoint-ready continuity state from a Codex JSONL session.
+
+    Every transcript string is redacted where it enters the state, before the
+    width cuts (200/300/500...): a secret straddling a cut would otherwise
+    survive as a prefix no pattern recognises. No redactor means no state.
+    """
     question_re = re.compile(r"\?|TODO|FIXME|HACK|XXX", re.IGNORECASE)
+    try:
+        from credential_patterns import redact_credentials as _ingest_redact
+    except Exception:
+        return None
     active_files: list[tuple[str, str, str]] = []
     recent_reads: list[str] = []
     decisions: list[str] = []
@@ -877,7 +897,7 @@ def extract_session_state(filepath: str | Path, tail_lines: int = 500, max_files
                 role = "user"
             elif payload_type == "agent_message":
                 role = "assistant"
-            text = _extract_text(payload).strip()
+            text = _ingest_redact(_extract_text(payload)).strip()
             if not text:
                 continue
             if role == "user":
@@ -914,23 +934,23 @@ def extract_session_state(filepath: str | Path, tail_lines: int = 500, max_files
                         active_plan = clean_path
             elif name == "spawn_agent":
                 agent_type = str(args.get("agent_type") or "default")
-                desc = str(args.get("message") or args.get("prompt") or "")[:100]
+                desc = _ingest_redact(str(args.get("message") or args.get("prompt") or ""))[:100]
                 agent_state.append((agent_type, desc))
             elif name == "update_plan":
                 plan = args.get("plan")
                 if isinstance(plan, list):
                     todos = [
-                        (str(item.get("step") or item.get("content") or "")[:120], str(item.get("status") or ""))
+                        (_ingest_redact(str(item.get("step") or item.get("content") or ""))[:120], str(item.get("status") or ""))
                         for item in plan
                         if isinstance(item, dict) and (item.get("step") or item.get("content"))
                     ]
 
         elif payload_type in {"function_call_output", "custom_tool_call_output"}:
-            text = str(payload.get("output") or "")
+            text = _ingest_redact(str(payload.get("output") or ""))
             if _looks_like_error_text(text):
                 recent_errors.append(text[:300].strip())
         elif payload_type in {"exec_command_end", "patch_apply_end"}:
-            text = _event_output_text(payload)
+            text = _ingest_redact(_event_output_text(payload))
             exit_code = payload.get("exit_code")
             status = str(payload.get("status") or "").lower()
             if exit_code not in (None, 0) or "error" in status or _looks_like_error_text(text):

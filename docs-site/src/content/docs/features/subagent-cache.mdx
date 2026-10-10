@@ -1,0 +1,139 @@
+---
+title: Subagent prompt cache
+description: "Claude Code gives subagents a 5-minute prompt cache even on a subscription. Token Optimizer measures whether subagentPromptCacheTtl 1h pays on your own history and recommends it; it never sets the key for you."
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Subagents always get the short prompt cache. On a subscription your main conversation caches for an hour, but every subagent prefix expires after five minutes, so a subagent you return to, or the same agent type spawned again, rewrites its whole prefix after a short break. Claude Code 2.1.243+ exposes `subagentPromptCacheTtl`, a settings key that raises the subagent TTL to one hour, the same window the rest of the plan gets.
+
+## What it does
+
+Token Optimizer **recommends** `subagentPromptCacheTtl: "1h"` when your own history shows it pays, and never sets it for you. Claude Code keeps subagents at 5 minutes because 1 hour costs more on average for agent-shaped work, and the verdict Token Optimizer produces is an estimate, so editing a user's settings on an estimate is not ok. The recommendation is a per-user line -- the measured numbers plus the exact command -- shown by `subagent-cache status`, `doctor`, `quick`, and `coach`:
+
+```text
+Subagent cache: would have saved about $1.42 net (estimate) over the last
+30 days; turn on: `python3 measure.py subagent-cache enable`
+```
+
+A 1-hour cache is not free. Writing a prefix at 1 hour costs 2x the base input price instead of 1.25x, so it only wins when subagents are returned to, or respawned, within the hour. A heavy subagent user measured roughly break-even; a user whose subagents run once would lose money. That is why the recommendation is gated on evidence, not on a rule of thumb.
+
+The same verdict also feeds the daily usage-recommendations record (`measure.py recommendations`), which is what `quick`, `doctor`, `status`, `coach`, and the dashboard's "From your own usage" section read. When you act on the recommendation and a later measurement shows the numbers moved, the record says so as a "since you changed it" win -- observational, never causal. Token Optimizer still never writes the key.
+
+## When it recommends
+
+At session start Token Optimizer reads one small cached verdict about your last 30 days and records what it says, with a timestamp, in its marker (`auto_decision`). It recommends turning the key on only when both hold:
+
+- **Enough data.** At least 200 subagent requests in the window. Below that the verdict is "not enough data" and the line stays neutral.
+- **It pays.** The estimated saving is at least 1.15 times the estimated 1-hour write premium. The 15% margin keeps a coin-flip from becoming a recommendation.
+
+Otherwise the verdict reads "not enough data" or "would not pay: saved $X vs premium $Y", and `subagent-cache status`, `doctor`, `quick` and `coach --json` all show it (`auto_decision`, plus the `recommendation` block). A "1h" key already in place gets judged on the post-enable window instead: "is paying ... nothing to do", or "is costing about $X net ... turn off: `subagent-cache disable`". When there is no verdict yet -- or not enough data -- quick says nothing and doctor/status show one neutral line.
+
+The scan that produces the verdict walks your transcripts, which can take several seconds, so it never runs inside session start. When there is no verdict, or it is more than a day old, session start launches the scan as a detached background process (no console window on Windows, one scan at a time, bounded by a time budget and a file cap) and carries on. A scan that hits either bound is partial and produces no verdict. The verdict is judged at a later session start.
+
+Two opt-ins, and the two commands:
+
+- `TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=1` (also `true`, `on`, `yes`): always on. The only path where the session-start hook writes the key for you -- and the only one that keeps the 14-day auto-revert tripwire. Every safety rule below still applies.
+- `TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=0` (also `false`, `off`, `no`): never. Blocks every write, and if Token Optimizer set the key earlier, removes it.
+- `subagent-cache enable`: the manual command. It prints your estimate first, then enables unconditionally.
+- `subagent-cache disable`: removes the key when the marker says Token Optimizer set it, and is final -- the automatic path never re-sets after a manual disable.
+
+The safety rules, in order:
+
+- **Your value wins.** If the key already exists with any value (including `"5m"`) it is treated as yours and never touched.
+- **Environment wins.** `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL` or `FORCE_PROMPT_CACHING_5M` set means do nothing; the env outranks the setting anyway.
+- **Other settings files win.** A managed, project, or local `settings.json` that already sets the key outranks the user file, so Token Optimizer does nothing and reports which file answered.
+- **Version floor.** Requires Claude Code 2.1.243 or newer; anything older or undetectable is skipped.
+- **Declines are remembered.** If you remove or change the key after Token Optimizer set it, a marker records the decline and the automatic path never sets it again.
+- **Unknown means no.** Unreadable or malformed settings are never written. An explicit `enable` is the one exception to "missing = unknown": on a machine with no settings.json it creates the file and says so.
+- **Frozen means no.** A settings.json with no write bits (chmod 444) was frozen on purpose; every write path refuses to replace it.
+- **Never.** `TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=0` blocks the set entirely, and if the setting was already applied by Token Optimizer, it is removed.
+
+A marker in Token Optimizer's own data directory (timestamp plus previous state) is how `disable` knows what it may undo: the key is removed only when the marker says Token Optimizer set it and the value is still `"1h"`. Your uninstall path calls the same undo.
+
+## The payoff check
+
+`subagent-cache status` judges the feature on your own transcripts, not a hypothetical. For the last 30 days it adds up two kinds of avoided rewrite and charges the 1-hour write premium against them:
+
+- **Within one agent.** A request in a subagent transcript that follows the previous one by 5 to 60 minutes rewrote at 5m what a 1h cache would have read.
+- **Across spawns.** The bigger win. The same agent type started again 5 to 60 minutes later rewrites its shared prefix (system prompt plus tool definitions) at 5m, and would read it at 1h. Spawns are grouped by project, agent type (when the transcript's `.meta.json` records one) and model; without a recorded agent type the group is project and model, and `status` says so. The shared prefix is the smallest first request across the group's spawns, so a group needs two or more spawns before it earns anything.
+
+Once the setting is on, writes are 1h writes, so the same two numbers are read from what actually happened: the premium really paid on the 1h writes, and the cache reads that followed a 5 to 60 minute gap (reads that would have been 5m writes). One history can mix both regimes. The two parts are reported separately, a request is never counted twice, and subscription plans see tokens first with the dollar figure labelled API-equivalent. It is always an estimate.
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+python3 measure.py subagent-cache status          # state, the verdict and why, the advice, net estimate
+python3 measure.py subagent-cache status --json   # machine-readable
+python3 measure.py subagent-cache enable          # set it now: prints your estimate, then enables
+python3 measure.py subagent-cache disable         # undo (only what Token Optimizer set; final)
+```
+
+### The tripwire (opted-in automation only)
+
+With `TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=1` -- the only path that writes automatically -- a tripwire keeps the write honest: if 14 or more days of post-enable data show a **negative** net estimate (the 1h write premium outweighing the rewrites it avoided), **and** the window holds at least 200 subagent requests, the next session start removes the key (only when Token Optimizer set it), records `auto-reverted`, and says so in one line. It judges the same kind of cached verdict, for the post-enable window, produced by the same background scan, at most once a day. An explicit `subagent-cache enable` clears the auto-revert state.
+
+Without the opt-in nothing is ever removed automatically: a key an earlier version set stays put, and a negative window shows up as the "is costing ... turn off" advice instead. A key the user set is never removed at all.
+
+<Aside type="note" title="Estimate, not metered savings">
+The payoff figure is deterministic math over your transcripts (request timestamps and cache-creation fields), not metered billing data. Reads are credited only in the 5 to 60 minute gap band, and every write is charged the full 1h premium. With fewer than 200 subagent requests in the window the check says "not enough data" and makes no recommendation either way.
+</Aside>
+
+## Default state
+
+Advise-only on Claude Code 2.1.243+: the session-start hook never writes the key. Cowork and every other runtime are a clean no-op. The feature never reads or writes `~/.claude` outside Claude Code.
+
+## How to turn it on, or off
+
+```bash
+python3 measure.py subagent-cache enable    # take the recommendation
+python3 measure.py subagent-cache disable   # undo (only what Token Optimizer set; final)
+```
+
+or in your environment / `settings.json` `env` block:
+
+```bash
+TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=0   # never: opt out permanently
+TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=1   # always on: the only automatic write, with the tripwire
+```
+
+`disable` removes the key only when the marker says Token Optimizer set it. If you set the key yourself, it is left alone.
+
+## Defaults and thresholds
+
+| Setting | Default | Notes |
+|---|---|---|
+| Feature state | advise-only (Claude Code 2.1.243+) | Recommends; never writes the key itself |
+| Recommendation minimum sample | 200 subagent requests in 30 days | Below it: "not enough data", neutral line |
+| Recommendation margin | saving at least 1.15x the 1h premium | Otherwise: "would not pay: saved $X vs premium $Y" |
+| Verdict cache | 24 hours | Older or missing: detached background scan, judged at a later session |
+| Scan bounds | 120 s, 20,000 files | Hitting either is a partial scan: no verdict |
+| Value recommended | `subagentPromptCacheTtl: "1h"` | User `settings.json`, via `subagent-cache enable` |
+| Tripwire | only under `TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=1` | Negative 14-day post-enable net reverts a TO-set key |
+| Tripwire minimum sample | 200 subagent requests | Below it: "not enough data", no revert |
+| Tripwire re-judge | once per 24 hours | Verdict stands between checks |
+| Payoff lookback | 30 days | `status` reports tokens and dollars, estimated |
+| Never | `TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=0` | Also `false`, `off`, `no` |
+| Always on | `TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=1` | Also `true`, `on`, `yes`; the only automatic write |
+
+## Risk rating
+
+Low. The feature writes nothing by default: it recommends, with your own numbers and the exact command, and only an explicit `subagent-cache enable` or the `TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=1` opt-in changes a settings key. Every override path (user value, env, managed/project/local files) takes precedence over any write. The undo is exact: it only removes what Token Optimizer set, and under the opt-in the tripwire reverts if the economics go negative. Failures fail closed: unknown-state or frozen settings are never written. If another program saves `settings.json` while Token Optimizer is writing it, the write is merged again onto that save (up to twice), which narrows the window for a lost edit to a few milliseconds. It cannot close it, because a program that ignores Token Optimizer's lock is not stopped.
+
+## Related environment variables
+
+- `TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H`: `0`, `false`, `off`, `no` for never; `1`, `true`, `on`, `yes` for the automatic write; unset for advise-only
+- `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL`: Claude Code's own override; outranks the setting
+- `FORCE_PROMPT_CACHING_5M`: forces the 5-minute cache everywhere; blocks the set
+
+See the [configuration reference](/reference/configuration/).
+
+## Platform availability
+
+Claude Code 2.1.243+ only, on macOS, Linux, and Windows (the managed-settings path is platform-aware). Codex, Cowork, OpenCode, Cursor, Hermes, Copilot, and Antigravity are clean no-ops. See the [capability matrix](/reference/capability-matrix/).
+
+## Related
+
+- [Cache TTL watchdog](/features/cache-watchdog/): `cache-report` measures expiry waste on the main-conversation cache.
+- [Keep-Warm](/features/keep-warm/): the API-billing ping that keeps a paused prefix alive.
+- [Cache economics](/concepts/cache-economics/): why a lapsed prefix costs 1.25 to 2x to rewrite.
+- [Configuration](/reference/configuration/): `TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H` and friends.

@@ -67,7 +67,7 @@ def test_lease_denial_is_logged_to_durable_file(measure, monkeypatch):
         def __exit__(self, *a):
             return False
 
-    monkeypatch.setattr(mod, "_settings_lock", lambda: _Denied())
+    monkeypatch.setattr(mod, "_settings_lock", lambda **kw: _Denied())
 
     result = mod._write_settings_atomic(dict(USER_SETTINGS, a=1))
     assert result is False, "lease denial must return False"
@@ -98,7 +98,7 @@ def test_lease_denial_sets_last_refusal(measure, monkeypatch):
         def __exit__(self, *a):
             return False
 
-    monkeypatch.setattr(mod, "_settings_lock", lambda: _Denied())
+    monkeypatch.setattr(mod, "_settings_lock", lambda **kw: _Denied())
 
     # Clear any prior refusal
     if hasattr(mod._SETTINGS_WRITE_READ_STATE, "last_refusal"):

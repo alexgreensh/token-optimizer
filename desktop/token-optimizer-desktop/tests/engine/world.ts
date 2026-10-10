@@ -54,12 +54,19 @@ export type Status = {
 export type World = {
   sessionId: string
   /** Environment variables beside HOME. */
+  beforeContextRead?: () => Promise<void>
+  rejectContextReadOnce?: boolean
   env?: Record<string, string>
+  context?: { window: number; tokens?: number; percent: number }
   files: Record<string, [mtimeMs: number, contents: string]>
   status: Status
   /** How the next compact-capture / resume-lean runs answer. */
   capture: 'ok' | 'fail' | 'stub'
   lean: string
+  /** How `measure.py dashboard` answers: opened, exits 1, exits 0 but could not open the browser, the runner throws, or never answers. */
+  dashboard: 'ok' | 'fail' | 'browser-fail' | 'throws' | 'hang'
+  /** Mocked-clock delay before the dashboard command answers (ms). */
+  dashboardDelayMs: number
   /** How Clean up's /compact answers: a compaction, a refusal, or never. */
   compact: 'ok' | 'skip' | 'hang' | 'refused' | 'said-compacted'
   /** How `$.model.fork()` answers. */
@@ -89,18 +96,22 @@ export type World = {
   duringCompact?: () => Promise<void>
   /** The engine leaves the 5-hour limit out of its usage (as it can right after a compact). */
   dropFiveHour?: boolean
+  /** The 5-hour limit's percentUsed (default 40). */
+  fiveHourUsed?: number
   /** When the live session began (`$.session.usage().startedAt`, mocked-clock ms); a clear sets it to its own moment; null when the engine cannot say. */
   startedAt: number | null
   /** How many of the next `$.store.get` / `$.store.delete` calls throw. */
   storeGetFails: number
   storeDeleteFails: number
+  /** How many of the next `$.store.set` calls throw. */
+  storeSetFails: number
   /** Mocked-clock delay before each `$.store.set` lands (ms). */
   storeSetDelayMs: number
   /** How many of the next writes of the band's UI state hang (10 minutes on the mocked clock). */
   uiWriteHangs: number
   /** What a plugin-run `/clear` does beneath the band before its call resolves (the engine ends the old session inside it). */
   clearBeneath: (() => Promise<void>) | null
-  runs: { argv: string[]; stdin?: string }[]
+  runs: { argv: string[]; stdin?: string; timeoutMs?: number }[]
   toasts: string[]
   compacts: number
   forks: number
@@ -142,6 +153,8 @@ export function stub(on: On, patch: Partial<Omit<World, 'clock' | 'runs' | 'toas
     status: { savings: SAVED, savings_state: 'fresh', savings_reason: null, requestAgoS: 30, cache_lifetime: '1h' },
     capture: 'ok',
     lean: 'LEAN HANDOFF TEXT',
+    dashboard: 'ok',
+    dashboardDelayMs: 0,
     compact: 'ok',
     fork: { read: 600_000 },
     theme: 'light',
@@ -160,6 +173,7 @@ export function stub(on: On, patch: Partial<Omit<World, 'clock' | 'runs' | 'toas
     uiWriteHangs: 0,
     storeGetFails: 0,
     storeDeleteFails: 0,
+    storeSetFails: 0,
     storeSetDelayMs: 0,
     clearBeneath: null,
     runs: [],
@@ -182,6 +196,10 @@ export function stub(on: On, patch: Partial<Omit<World, 'clock' | 'runs' | 'toas
     return { value: w.store[e.key] }
   })
   on('store.set', async (_, e) => {
+    if (w.storeSetFails > 0) {
+      w.storeSetFails -= 1
+      throw new Error('store write failed')
+    }
     if (w.storeSetDelayMs) await w.clock.sleep(w.storeSetDelayMs)
     w.store[e.key] = e.value
     return { value: undefined }
@@ -203,15 +221,19 @@ export function stub(on: On, patch: Partial<Omit<World, 'clock' | 'runs' | 'toas
   on('session.usage', () => ({
     value: {
       ...(w.startedAt === null ? {} : { startedAt: w.startedAt }),
-      context: { window: 1_000_000, tokens: 620_000, percent: 62 },
+      context: w.context ?? { window: 1_000_000, tokens: 620_000, percent: 62 },
       rateLimits: [
-        ...(w.dropFiveHour ? [] : [{ kind: 'five_hour', percentUsed: 40, resetsAt: '2026-10-03T12:00:00Z' }]),
+        ...(w.dropFiveHour ? [] : [{ kind: 'five_hour', percentUsed: w.fiveHourUsed ?? 40, resetsAt: '2026-10-03T12:00:00Z' }]),
         { kind: 'seven_day', percentUsed: 20 },
       ],
       // An engine that reports no start time is a case the band must survive; the types now require it.
     } as never,
   }))
   on('state.get', async (_, e, next) => {
+    if (e.key === 'session') {
+      if (w.rejectContextReadOnce) { w.rejectContextReadOnce = false; throw new Error('state unavailable') }
+      if (w.beforeContextRead) await w.beforeContextRead()
+    }
     const held = await next(e)
     const seeded = e.plugin === 'token-optimizer' ? w.seed[e.key] : undefined
     return held.value?.version === 0 && held.value.value === undefined && seeded !== undefined ? { value: { value: seeded, version: 0 } } : held
@@ -260,7 +282,7 @@ export function stub(on: On, patch: Partial<Omit<World, 'clock' | 'runs' | 'toas
   })
   on('process.run', async (_, e) => {
     const argv = [...e.argv]
-    w.runs.push({ argv, stdin: e.init?.stdin })
+    w.runs.push({ argv, stdin: e.init?.stdin, timeoutMs: e.init?.timeoutMs })
     if (argv[0] === 'git') return ok('feat/band\n')
     if (argv.includes('status-bar')) {
       const s = w.status
@@ -283,6 +305,14 @@ export function stub(on: On, patch: Partial<Omit<World, 'clock' | 'runs' | 'toas
       if (w.capture === 'fail') return ok('', 1)
       w.files[CHECKPOINT] = [2, w.capture === 'stub' ? 'Generated: x | Note: No transcript data available\n' : '# Checkpoint\nreal work']
       return ok(`[Token Optimizer] Checkpoint saved: ${CHECKPOINT}\n`)
+    }
+    if (argv.includes('dashboard')) {
+      if (w.dashboardDelayMs) await w.clock.sleep(w.dashboardDelayMs)
+      if (w.dashboard === 'hang') await w.clock.sleep(10 * 60_000)
+      if (w.dashboard === 'throws') throw new Error('spawn failed')
+      if (w.dashboard === 'fail') return ok('', 1)
+      if (w.dashboard === 'browser-fail') return ok('\n  Could not auto-open browser. Open manually:\n  file:///x/dashboard.html\n')
+      return ok('  Opened: http://localhost:24842/token-optimizer\n')
     }
     if (argv.includes('resume-lean')) return ok(w.lean ? `${w.lean}\n` : '', w.lean ? 0 : 1)
     return ok('', 1)

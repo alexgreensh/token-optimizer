@@ -4,6 +4,17 @@ Reference file for Fleet Auditor. Loaded on demand for adapter development.
 
 ---
 
+## Contents
+
+- [Claude Code](#claude-code)
+- [OpenClaw](#openclaw)
+- [NanoClaw](#nanoclaw)
+- [Hermes](#hermes)
+- [OpenCode](#opencode)
+- [IronClaw](#ironclaw)
+
+---
+
 ## Claude Code
 
 **Data Location**: `~/.claude/projects/`
@@ -116,7 +127,7 @@ CREATE TABLE messages (
 ## OpenCode
 
 **Data Location**: `~/.local/share/opencode/` or `$OPENCODE_DATA_DIR`
-**Format**: JSON per-message + SQLite (v1.2+)
+**Format**: JSON per-message, or SQLite on OpenCode builds that use `storage.db`
 
 ### Token Fields
 ```json
@@ -133,7 +144,7 @@ CREATE TABLE messages (
 ### File Structure
 - `sessions/{session-id}/` - Per-session directories
 - `sessions/{session-id}/messages.json` - Array of messages
-- `storage.db` - SQLite database (v1.2+, replaces JSON)
+- `storage.db` - SQLite database, present on builds that replace the JSON files
 
 ---
 
@@ -152,5 +163,5 @@ CREATE TABLE messages (
 
 ### Access Pattern
 - Requires database connection string from config
-- Phase 1: detect only, no scan
-- Phase 2+: support exported data files or direct DB connection
+- Detect only today, no scan
+- Scanning would need exported data files or a direct DB connection

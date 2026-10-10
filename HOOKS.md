@@ -18,7 +18,7 @@ Host platform tool call
 - `run.py` always exits 0 (never blocks a tool call, even on errors)
 - 120-second timeout per hook invocation (child process killed on timeout to prevent SQLite lock starvation)
 - Subprocess isolation: each hook script runs as a subprocess, not imported
-- `run.py` is ~100 lines of stdlib-only Python (no imports from the skills tree)
+- `run.py` is stdlib-only Python (~600 lines, no imports from the skills tree)
 
 ## Hook Inventory
 
@@ -27,19 +27,17 @@ Host platform tool call
 | **PreToolUse[Read]** | `read_cache.py --quiet` | Detect redundant file reads, serve structure maps | Session store SQLite, target file | Session store (file entry, cached content) |
 | **PreToolUse[Bash]** | `bash_hook.py --quiet` | Bash output compression pre-check | None | None |
 | **PreToolUse[Agent\|Task]** | `measure.py checkpoint-trigger --milestone pre-fanout` | Checkpoint before sub-agent fan-out | Session transcript | Checkpoint markdown file |
+| **PreToolUse[mcp__.*]** | `refetch_guard.py --quiet` | Deny an exact duplicate MCP call after a large result was archived, and hand back the `expand` command | Session archive manifest (session store) | None |
 | **PreCompact** (x3) | `measure.py dynamic-compact-instructions` | Generate context-aware compaction instructions | Session transcript, trends.db | Compact instructions (stdout) |
 | | `measure.py compact-capture --trigger auto` | Capture checkpoint before compaction | Session transcript | Checkpoint markdown + events JSONL |
 | | `read_cache.py --clear` | Clear read cache (context is about to compact) | None | Session store (cleared) |
-| **SessionStart** (x1) | `sessionstart_runner.py` | Consolidated dispatcher: ensure-health, forced quality-cache warm, and (on a `compact` start) compact-restore + read-cache clear, then the new-session checkpoint pointer | Session transcript, checkpoint files, settings.json, config.json, session store | settings.json (cleanupPeriodDays), config.json (consent backfill), quality-cache-*.json, session store (file_reads cleared), stdout injection |
-| **Stop** (x2) | `measure.py compact-capture --trigger stop` | Checkpoint on session stop | Session transcript | Checkpoint markdown + events JSONL |
-| | `measure.py session-end-flush --trigger stop --defer` | Deferred session metrics flush | Session transcript, trends.db | trends.db (session metrics) |
-| **SessionEnd** | `measure.py session-end-flush` (async, 60s) | Full session flush: metrics + dashboard + checkpoint | Session transcript, trends.db | trends.db, dashboard.html, checkpoint |
+| **SessionStart** (x1) | `sessionstart_runner.py` | Consolidated dispatcher: ensure-health, forced quality-cache warm, and (on a `compact` start) compact-restore + read-cache clear, then the new-session checkpoint pointer | Session transcript, checkpoint files, settings.json, config.json, session store | settings.json (cleanupPeriodDays; subagentPromptCacheTtl only under the `TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=1` opt-in, when the cached verdict says it pays), config.json (consent backfill), quality-cache-*.json, session store (file_reads cleared), stdout injection |
 | **StopFailure** | `measure.py compact-capture --trigger stop-failure` | Checkpoint on failure | Session transcript | Checkpoint markdown |
-| **UserPromptSubmit** (x1) | `userpromptsubmit_runner.py` | Consolidated dispatcher: prompt-continuity, verbosity steer, quality-cache warn, and (harness-gated) ensure-health, forced cache warm, compact-restore | quality-cache-*.json, checkpoint files, config.json, settings.json | None (stdout injection) |
-| **PostToolUse[Bash\|Read\|...]** | `archive_result.py --quiet` | Archive tool result for retrieval | Tool output (stdin) | tool-archive JSON (credential-redacted) |
-| | `context_intel.py --quiet` | Context intelligence scoring | Tool output (stdin) | Session store (activity log) |
-| **PostToolUse[Edit\|Write\|...]** | `read_cache.py --invalidate --quiet` | Invalidate read cache on file writes | None | Session store (entry invalidated) |
-| **PostToolUse** (throttled) | `measure.py quality-cache --quiet --throttle-only` | Throttled quality cache update | Session transcript | quality-cache-*.json |
+| **UserPromptSubmit** (x1) | `userpromptsubmit_runner.py` | Consolidated dispatcher: prompt-continuity, verbosity steer, quality-cache warn, and (gated to remote/container/Cowork or Codex sessions) ensure-health, forced cache warm, compact-restore | quality-cache-*.json, checkpoint files, config.json, settings.json | None (stdout injection) |
+| **PostToolUse** (x1, consolidated) | `posttooluse_runner.py` | Consolidated dispatcher, one process per tool call: bash output compression (Bash), result archiving (Bash, Read, Glob, Grep, Agent, mcp__.*), context-intel scoring (Bash, Read, Grep, Glob, mcp__.*), read-cache invalidation (Edit, Write, MultiEdit, NotebookEdit), throttled quality-cache update | Tool output (stdin), session transcript | Session store (activity log, invalidated entries), tool-archive JSON (credential-redacted), quality-cache-*.json |
+| **PostToolUseFailure[Bash]** | `posttooluse_runner.py` | Same consolidated dispatcher, failure-event branch (failed Bash output archived, not compressed) | Tool output (stdin) | As PostToolUse |
+| **Stop** | `stop_runner.py` | Consolidated dispatcher: compact-capture (checkpoint on stop), session-end-flush (deferred metrics), keepwarm-arm | Session transcript | Checkpoint markdown + events JSONL, trends.db (session metrics) |
+| **SessionEnd** | `stop_runner.py` (async, 60s) | Same consolidated runner, branching on the event name: full session flush (session-end-flush --trigger end --defer) | Session transcript, trends.db | trends.db, dashboard.html, checkpoint |
 | **PostCompact** | `measure.py quality-cache --force` | Re-warm quality cache after compaction | Session transcript | quality-cache-*.json |
 | **CwdChanged** | `read_cache.py --clear` | Clear read cache on directory change | None | Session store (cleared) |
 
@@ -80,6 +78,7 @@ The consent check runs in `run.py` before any script is dispatched:
 `ensure-health` (SessionStart) writes to the host platform's `settings.json`:
 
 - `cleanupPeriodDays: 99999` (preserves transcripts for trend analysis)
+- `subagentPromptCacheTtl: "1h"` (Claude Code 2.1.243+ only; advise-only by default -- the verdict is a recommendation in `subagent-cache status`/doctor/quick/coach, never a write; only `TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=1` opts in to the automatic write + its 14-day payoff tripwire, `=0` never; skipped when the user, an env var, or a managed/project/local settings file already answers; the session-start hook only reads a cached verdict, and a detached background scan produces it; `measure.py subagent-cache enable` applies the recommendation, `disable` undoes what Token Optimizer set, finally)
 - Daemon-related config (dashboard server plist registration on macOS)
 
 These are the only modifications to host platform configuration. All other writes go to Token Optimizer's own data directories.
@@ -87,7 +86,7 @@ These are the only modifications to host platform configuration. All other write
 ## Attack Surface Analysis
 
 **Can hooks exfiltrate data?**
-No. Zero network calls in the entire codebase. No HTTP clients, sockets, or DNS lookups imported. The only "network" code is the localhost-bound dashboard server.
+No. Zero network calls in the shipped hook tree. No HTTP clients, sockets, or DNS lookups imported. The only "network" code in the main plugin is the localhost-bound dashboard server. The separate Cowork diagnostics (`cowork/to-hook-probe`, which optionally POSTs a redacted env dump to a collector URL you configure, and `cowork/collector/`) do touch the network, but they ship only in the Cowork payload, not in this hook tree.
 
 **Can hooks execute arbitrary code?**
 No. No `eval()`, `exec()`, `importlib.import_module(variable)`, or dynamic code loading from external sources. All subprocess calls use static command lists.
@@ -131,7 +130,7 @@ The plugin's `hooks/hooks.json` also names one hooks module under `modules`: `de
 
 - **Install**: comes with the main plugin; nothing extra to install.
 - **Reads**: Token Optimizer's local data (its quality cache, the installed-plugins list, and `measure.py status-bar`), the session itself, and the current git branch. No network access of its own.
-- **Writes**: no files of its own. `status-bar` keeps a small per-session cache under Token Optimizer's data folder, refreshed in the background, and the plugin keeps its own state in Claude Code (its stored values and a pending Start fresh hand-off). Its three buttons act only on a click: Clean up compacts using Token Optimizer's guidance, Start fresh saves a checkpoint and clears after a second click, and Keep warm sends a manual one-click cache refresh that uses a small amount of usage.
+- **Writes**: no files of its own. `status-bar` keeps a small per-session cache under Token Optimizer's data folder, refreshed in the background, and the plugin keeps its own state in Claude Code (its stored values and a pending Start fresh hand-off). Its three buttons and the **Full dashboard** link (in the unfolded line) act only on a click: Clean up compacts using Token Optimizer's guidance, Start fresh saves a checkpoint and clears after a second click, and Keep warm sends a manual one-click cache refresh that uses a small amount of usage. Full dashboard runs `measure.py dashboard --user` (the same dashboard the `token-dashboard` skill opens) and opens it in your default browser; `--user` marks the run as a person's click, so the 20-second hook budget does not cut off a heavy rebuild.
 - **Switch**: Anthropic can turn mods off remotely. When off, the bar does not appear and nothing else changes.
 - **Settings**: `TOKEN_OPTIMIZER_STATUS_BAR=0` hides the bar and `TOKEN_OPTIMIZER_STATUS_BAR_ANIMATE=0` keeps Clawd still, set in the `env` block of `~/.claude/settings.json` like the other Token Optimizer switches.
 

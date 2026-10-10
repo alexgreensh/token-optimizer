@@ -172,6 +172,53 @@ def test_declared_removal_does_not_license_other_removals(measure, capsys):
     assert _read(settings) == FULL_SETTINGS
 
 
+def test_guard_refuses_a_write_that_drops_a_nested_env_key(measure, capsys):
+    """a payload that keeps `env` can still drop a var inside it.
+
+    The guard diffed top-level keys only, so ``{"env": {"MY_OWN_VAR": "k"}}``
+    landed with ``env.MY_KEY`` (a real user var, e.g.
+    CLAUDE_AUTOCOMPACT_PCT_OVERRIDE) silently gone. Nested env drops are the
+    same data-loss class and must refuse the same way.
+    """
+    mod, settings = measure
+    payload = dict(FULL_SETTINGS)
+    payload["env"] = {"MY_OWN_VAR": "k"}
+    assert mod._write_settings_atomic(payload) is False
+    err = capsys.readouterr().err
+    assert "REFUSED settings.json write" in err
+    assert "env.MY_KEY" in err
+    assert _read(settings) == FULL_SETTINGS, "the on-disk file was modified by a refused write"
+
+
+def test_guard_allows_nested_env_addition_and_value_change(measure):
+    """Adding a var or changing a var's value inside env stays allowed."""
+    mod, settings = measure
+    payload = dict(FULL_SETTINGS)
+    payload["env"] = dict(FULL_SETTINGS["env"], NEW_VAR="1", MY_KEY="changed")
+    assert mod._write_settings_atomic(payload) is True
+    on_disk = _read(settings)
+    assert on_disk["env"]["NEW_VAR"] == "1"
+    assert on_disk["env"]["MY_KEY"] == "changed"
+
+
+def test_guard_allows_a_declared_nested_env_removal(measure):
+    """A deliberate nested env removal works when declared as ``env.VAR``."""
+    mod, settings = measure
+    payload = dict(FULL_SETTINGS)
+    payload["env"] = {}
+    assert mod._write_settings_atomic(payload, allow_removing_keys={"env.MY_KEY"}) is True
+    assert _read(settings)["env"] == {}
+
+
+def test_guard_allows_nested_env_removal_when_env_itself_is_declared(measure):
+    """Declaring the top-level ``env`` licenses its whole subtree."""
+    mod, settings = measure
+    payload = dict(FULL_SETTINGS)
+    payload["env"] = {}
+    assert mod._write_settings_atomic(payload, allow_removing_keys={"env"}) is True
+    assert _read(settings)["env"] == {}
+
+
 def test_guard_refuses_when_on_disk_file_is_malformed(measure, capsys):
     mod, settings = measure
     settings.write_text('{"model": "opus", ', encoding="utf-8")  # truncated
@@ -508,3 +555,99 @@ def test_no_write_site_uses_the_lossy_reader(measure):
         if nearest == "lossy":
             offenders.append(f"line {i}: {line.strip()}")
     assert not offenders, "lossy read feeding a settings write:\n" + "\n".join(offenders)
+
+
+# ---------------------------------------------------------------------------
+# a concurrent editor's VALUE edit / removal must survive our write
+# ---------------------------------------------------------------------------
+
+def test_concurrent_value_edit_survives_a_stale_write(measure):
+    mod, settings = measure
+    stale, ok = mod._read_settings_for_write()
+    assert ok
+    stale["cleanupPeriodDays"] = 12345  # our change
+
+    human = dict(FULL_SETTINGS)
+    human["model"] = "claude-human-picked"  # human edits a value we did not touch
+    settings.write_text(json.dumps(human, indent=2) + "\n", encoding="utf-8")
+
+    assert mod._write_settings_atomic(stale) is True
+    on_disk = _read(settings)
+    assert on_disk["model"] == "claude-human-picked", "human value edit was clobbered"
+    assert on_disk["cleanupPeriodDays"] == 12345, "our own change was lost"
+
+
+def test_concurrent_key_removal_survives_a_stale_write(measure):
+    mod, settings = measure
+    stale, ok = mod._read_settings_for_write()
+    assert ok
+    stale["cleanupPeriodDays"] = 12345
+
+    human = dict(FULL_SETTINGS)
+    del human["voice"]
+    settings.write_text(json.dumps(human, indent=2) + "\n", encoding="utf-8")
+
+    assert mod._write_settings_atomic(stale) is True
+    on_disk = _read(settings)
+    assert "voice" not in on_disk, "a key the human removed was resurrected"
+    assert on_disk["cleanupPeriodDays"] == 12345
+
+
+def test_concurrent_env_var_edit_survives_when_we_change_another_env_var(measure):
+    mod, settings = measure
+    stale, ok = mod._read_settings_for_write()
+    assert ok
+    stale["env"]["TO_VAR"] = "ours"
+
+    human = json.loads(json.dumps(FULL_SETTINGS))
+    human["env"]["MY_KEY"] = "human-edited"
+    human["env"]["HUMAN_ADDED"] = "1"
+    settings.write_text(json.dumps(human, indent=2) + "\n", encoding="utf-8")
+
+    assert mod._write_settings_atomic(stale) is True
+    env = _read(settings)["env"]
+    assert env == {"MY_KEY": "human-edited", "HUMAN_ADDED": "1", "TO_VAR": "ours"}
+
+
+def test_deliberate_removal_still_applies_on_top_of_a_concurrent_edit(measure):
+    mod, settings = measure
+    stale, ok = mod._read_settings_for_write()
+    assert ok
+    del stale["voice"]
+
+    human = dict(FULL_SETTINGS)
+    human["model"] = "claude-human-picked"
+    settings.write_text(json.dumps(human, indent=2) + "\n", encoding="utf-8")
+
+    assert mod._write_settings_atomic(stale, allow_removing_keys={"voice"}) is True
+    on_disk = _read(settings)
+    assert "voice" not in on_disk
+    assert on_disk["model"] == "claude-human-picked"
+
+
+# ---------------------------------------------------------------------------
+# a non-regular file at settings.json must not block the read
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs POSIX FIFOs")
+def test_fifo_at_settings_path_is_refused_without_blocking(measure):
+    mod, settings = measure
+    settings.unlink()
+    os.mkfifo(settings)
+    result = {}
+
+    def run():
+        result["checked"] = mod._read_settings_json_checked()
+        result["for_write"] = mod._read_settings_for_write()
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(3)
+    if t.is_alive():  # unblock the reader so the daemon thread can exit
+        fd = os.open(settings, os.O_WRONLY | os.O_NONBLOCK)
+        os.write(fd, b"{}")
+        os.close(fd)
+        t.join(2)
+        pytest.fail("reading a FIFO at settings.json blocked")
+    assert result["checked"][2] is False
+    assert result["for_write"][1] is False

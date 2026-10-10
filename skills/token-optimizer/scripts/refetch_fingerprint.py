@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 
 # SINGLE SOURCE OF TRUTH for the manifest field name the writer stores and the
@@ -172,4 +173,64 @@ def measure_py_path() -> str:
 def expand_command(key: str) -> str:
     """The exact Bash command that retrieves an archived result — one source of
     truth for both the archive footer and the guard's deny reason."""
-    return f"python3 {measure_py_path()} expand {key}"
+    return f"{hint_python()} {shell_path(measure_py_path())} expand {key}"
+
+
+def _windows_hints() -> bool:
+    """True when printed commands must run in cmd.exe, PowerShell and Git Bash.
+
+    The one predicate every hint helper reads, so the Windows forms can be
+    exercised on any OS by patching it.
+    """
+    return os.name == "nt"
+
+
+def hint_python() -> str:
+    """The interpreter name a printed command should use on this OS.
+
+    ``python.exe`` ships with python.org AND Microsoft Store installs; ``python3``
+    exists on Windows only as a Store alias. macOS and Linux keep ``python3``
+    (``python`` is Python 2 or absent on many of them).
+    """
+    return "python" if _windows_hints() else "python3"
+
+
+_SHELL_SAFE_PATH = re.compile(r"[A-Za-z0-9_./:@%+=,-]+\Z")
+# Inside double quotes these still expand: `$`/backtick in Bash and PowerShell,
+# `%` in cmd.exe. A Windows path holding one cannot be double-quoted safely.
+_WINDOWS_DOUBLE_QUOTE_UNSAFE = re.compile(r"[$`%]")
+
+
+def shell_path(path: str) -> str:
+    """A path the model or a user can paste unchanged into Bash, Git Bash,
+    PowerShell or cmd.exe.
+
+    On Windows backslashes become forward slashes (Python opens C:/x, and an
+    unquoted backslash is an escape in Bash) and a path that needs quoting is
+    DOUBLE-quoted: cmd.exe does not treat a single quote as a quote at all, so
+    `'C:/Users/First Last/x.py'` splits at the space and reaches Python with the
+    quote characters in it, while double quotes are read as one argument by
+    cmd.exe, PowerShell and Bash alike. A Windows path with `$`, a backtick or
+    `%` (expanded even inside double quotes) falls back to single quotes, which
+    Bash and PowerShell read literally.
+
+    On macOS and Linux anything beyond plain path characters, a space above all,
+    is single-quoted. A path that needs no quoting is returned as is.
+    """
+    text = str(path)
+    if _windows_hints():
+        text = text.replace("\\", "/")
+        if _SHELL_SAFE_PATH.match(text) and "%" not in text:
+            return text
+        if not _WINDOWS_DOUBLE_QUOTE_UNSAFE.search(text):
+            return f'"{text}"'
+        if "'" not in text:
+            return f"'{text}'"
+    if _SHELL_SAFE_PATH.match(text):
+        return text
+    if "'" not in text:
+        return f"'{text}'"
+    # A single quote in the path: double quotes, with Bash's four specials escaped.
+    for ch in ("\\", '"', "$", "`"):
+        text = text.replace(ch, "\\" + ch)
+    return f'"{text}"'

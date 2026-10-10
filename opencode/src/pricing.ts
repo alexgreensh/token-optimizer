@@ -29,7 +29,7 @@ export interface ModelPricing {
 
 /** Default pricing (USD per token). Mirrors openclaw/src/pricing.ts. */
 export const DEFAULT_PRICING: Record<string, ModelPricing> = {
-  // Anthropic Claude (1M context for Fable/Opus/Sonnet as of March 13, 2026)
+  // Anthropic Claude (context windows: see claudeContextWindow() in util/context-window.ts)
   fable:           { input: 10.0 / 1e6,  output: 50.0 / 1e6,  cacheRead: 1.0 / 1e6,   cacheWrite: 12.5 / 1e6, cacheWrite1h: 20.0 / 1e6 },
   opus:            { input: 5.0 / 1e6,   output: 25.0 / 1e6,  cacheRead: 0.5 / 1e6,   cacheWrite: 6.25 / 1e6, cacheWrite1h: 10.0 / 1e6 },
   // Generation cards priced off-family (platform.claude.com pricing, verified 2026-09-24):

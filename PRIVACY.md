@@ -121,7 +121,7 @@ You can add your own secret shapes (internal API keys, service tokens, record id
 - `TOKEN_OPTIMIZER_REDACT_PATTERNS_FILE` must be an absolute path after `~` and environment-variable expansion (surrounding quotes are stripped first). A relative value would resolve against whatever directory the hook launched in, so it is treated as a configuration error — see fail-closed behavior below.
 - Custom patterns are additive and run BEFORE the built-ins, so an org pattern can claim a composite secret (e.g. `MEDX-123456-<jwt>`) whole instead of leaving a readable prefix beside a built-in placeholder. Neither custom nor built-in patterns touch `[CREDENTIAL REDACTED: ...]` placeholders already in the text, so re-running redaction is idempotent. Custom patterns apply everywhere the built-in redaction applies; when scanning rather than rewriting, they are matched per line. They do not change which lines Bash compression keeps verbatim.
 - The file is read once per process. Invalid entries (bad regex, empty regex, a regex that matches empty text, wrong types, unsafe or over-broad shapes) are skipped with a warning on stderr; the rest still load. A missing file at the default location is ignored. Limits: 200 entries, 1,000 characters per regex, 1 MB per file.
-- **Fail closed:** if the configured file — or a file present at the default location — cannot be trusted (unreadable, invalid JSON, wrong shape, or a relative env path), custom redaction is considered broken rather than absent. Every write that redacts (archives, caches, checkpoints) is then skipped so content your own patterns were meant to cover never reaches disk unredacted, and a one-time warning is shown through the hook's normal output channel. Fix or remove the file to resume writes.
+- **Fail closed:** if the configured file — or a file present at the default location — cannot be trusted (unreadable, invalid JSON, wrong shape, or a relative env path), custom redaction is considered broken rather than absent. Every write that redacts (archives, caches, checkpoints) is then skipped so content your own patterns were meant to cover never reaches disk unredacted, and a one-time warning is shown through the hook's normal output channel. Fix or remove the file to resume writes. Checkpoints are written by the PreCompact, Stop and SessionEnd hooks, so with a broken file they stop too; the first skipped checkpoint of each session says so in one `systemMessage` line naming the file, and later hooks in that session stay quiet. `measure.py doctor` shows the same status ("CUSTOM REDACTION INACTIVE").
 - Unsafe patterns are rejected before they can run: the loader statically rejects nested unbounded quantifiers and ambiguous repeated alternations (the classic "regex hangs forever" shapes), then runs each remaining pattern once against a battery of adversarial strings in a separate process with a hard time limit — a pattern that cannot finish in time is rejected. Verdicts are cached per file content, so this costs nothing on steady-state hook runs.
 - `measure.py security-report` shows whether custom redaction is active, how many patterns loaded, from which file, and any rejections; the same status is persisted under the runtime's `token-optimizer/` directory.
 - This is pattern-based redaction of known shapes. It is not a general PII or PHI scrubber, and it cannot catch values that have no recognizable shape.
@@ -143,6 +143,19 @@ Token Optimizer sets `cleanupPeriodDays=99999` in the host platform's `settings.
 - Transcripts are the host platform's data (JSONL files), not Token Optimizer's
 - Users can override this setting in their `settings.json`
 - The `purge` command does NOT delete transcripts (they belong to the host platform)
+
+## Subagent Prompt-Cache Setting
+
+On Claude Code 2.1.243+, Token Optimizer measures whether `subagentPromptCacheTtl: "1h"` would pay on your own transcripts and recommends it -- it never sets the key for you. `subagent-cache enable` applies the recommendation (setting it once in the user `settings.json` so subagents keep their prompt cache for an hour instead of five minutes). This is the host platform's billing setting, not Token Optimizer data.
+
+- Never overrides a value you set yourself, an env override, or a managed/project/local settings file
+- Undone by `python3 measure.py subagent-cache disable` (final) or by `TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=0`
+- `TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=1` is the only automatic write -- an explicit opt-in that also keeps a 14-day tripwire which reverts the change if it costs more than it saves
+- The payoff check reads your own session transcripts locally, in a background process, and keeps one small verdict file and a marker in Token Optimizer's data directory; nothing leaves the machine
+
+## Usage Recommendations
+
+On Claude Code, a daily background measurement reads your own session transcripts and writes two local files in Token Optimizer's data directory: `usage_recommendations.json` (the current record -- one item each for the compact window and the subagent cache lifetime) and `usage_recommendations_history.jsonl` (one compact line per measurement, capped at 180 lines, used to show measured "wins" after you change a setting yourself). They feed the `recommendations` command and the dashboard's "From your own usage" section. Nothing leaves the machine, and Token Optimizer never writes `autoCompactWindow` or `subagentPromptCacheTtl` for you.
 
 ## Data Deletion
 

@@ -33,7 +33,7 @@ from pathlib import Path
 _SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_SCRIPT_DIR))
 
-from runtime_env import copilot_home  # noqa: E402
+from runtime_env import copilot_home, measure_cli as _measure_cli, with_measure_cli as _hint  # noqa: E402
 
 _MATRIX_STALE_DAYS = 60
 DAEMON_PORT = 24845
@@ -118,7 +118,7 @@ def _home_checks() -> list:
                 "warn",
                 "hooks dir",
                 f"{hooks_dir} missing (created on install).",
-                "Run `python3 measure.py copilot-install`.",
+                _hint("Run `python3 measure.py copilot-install`."),
             )
         )
     else:
@@ -135,7 +135,7 @@ def _hook_config_checks() -> list:
                 "warn",
                 "TO hook config",
                 "Not installed.",
-                "Run `python3 measure.py copilot-install`.",
+                _hint("Run `python3 measure.py copilot-install`."),
             )
         )
         return checks
@@ -149,7 +149,7 @@ def _hook_config_checks() -> list:
                 "fail",
                 "TO hook config",
                 f"{hook_path} unreadable/invalid: {exc}",
-                "Re-run `python3 measure.py copilot-install` to rewrite it.",
+                _hint("Re-run `python3 measure.py copilot-install` to rewrite it."),
             )
         )
 
@@ -167,7 +167,7 @@ def _hook_config_checks() -> list:
                     "fail",
                     "hook payload",
                     f"Installed bridge is missing modules: {', '.join(missing)}.",
-                    "Re-run `python3 measure.py copilot-install` to refresh the payload.",
+                    _hint("Re-run `python3 measure.py copilot-install` to refresh the payload."),
                 )
             )
         else:
@@ -184,7 +184,7 @@ def _capability_checks() -> list:
                 "warn",
                 "capabilities",
                 "capabilities.json missing (seeded on install / first sessionStart).",
-                "Run `python3 measure.py copilot-install`.",
+                _hint("Run `python3 measure.py copilot-install`."),
             )
         )
         return checks
@@ -242,7 +242,7 @@ def _capability_checks() -> list:
                             "warn",
                             "capabilities freshness",
                             f"Seeded for {data.get('cli_version')}, installed CLI is {current}.",
-                            "Re-run `python3 measure.py copilot-install` to reseed the matrix.",
+                            _hint("Re-run `python3 measure.py copilot-install` to reseed the matrix."),
                         )
                     )
     except Exception:

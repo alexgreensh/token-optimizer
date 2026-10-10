@@ -273,12 +273,12 @@ These ten rows are the ones where Token Optimizer is the only 🟢 in the row: w
 | No command rewriting required | 🟢 Hook-wired, fires automatically | 🟢 Transparent proxy | 🟢 Hook-based rewrite | 🟢 `boost init` wires supported agents; terminal use can be prefixed | 🟡 Automatic on hook-capable platforms | N/A Native command |
 | Full original recoverable | 🟢 Raw archived before compression, `expand` retrieves it; failures never compressed | 🟢 Reversible retrieval | 🟡 Full output saved on command failure | 🟢 Vendor documents command-output recovery | — | N/A Does not compress |
 | Register a custom command filter | 🟢 Custom TOML filters (`command-filters.toml`, additive + exclude, safety-gated) | — | 🟢 Custom TOML filters | 🟢 TOML filters | — | N/A |
-| User-tunable configuration | 🟢 92 code-referenced `TOKEN_OPTIMIZER_*` names, explicitly split into user-facing and internal controls; additive allowlist; `.contextignore` | 🟢 Documented configuration | 🟢 `config.toml` and environment controls | 🟢 Filter TOML | 🟢 Documented configuration | N/A |
+| User-tunable configuration | 🟢 137 code-referenced `TOKEN_OPTIMIZER_*` names, explicitly split into user-facing and internal controls; additive allowlist; `.contextignore` | 🟢 Documented configuration | 🟢 `config.toml` and environment controls | 🟢 Filter TOML | 🟢 Documented configuration | N/A |
 | Cache-safe | 🟢 Never modifies existing context prefix | 🟡 Proxy mode rewrites in-flight | 🟢 Pre-shell only | 🟢 Pre-shell only | 🟡 MCP overhead | 🟢 |
 | Zero baseline context overhead | 🟢 External process, no context injection | 🔴 Injects instructions | 🟢 Shell-level only | 🟢 Shell-level only | 🔴 MCP server overhead | 🟢 Native |
 | Zero runtime dependencies | 🟢 Pure stdlib (Python/TypeScript) | 🟡 Python + Rust + optional model | 🟢 Single Rust binary | 🟢 Single binary | 🟡 SQLite adapter required | 🟢 N/A |
 | Zero telemetry | 🟢 Nothing leaves the machine | 🟡 `HEADROOM_TELEMETRY` opt-in, off by default | 🟡 Opt-in | 🔴 Collects commands invoked, command arguments, exit codes, duration, CI attributes, IP | 🟡 Varies | 🟢 |
-| Multi-platform | 🟢 Claude Code, VS Code, Cowork, Codex, OpenClaw, OpenCode, Hermes, Copilot, Cursor, Antigravity | 🟢 Claude Code, Cursor, Codex, Aider, Copilot | 🟢 15 integrations | 🟡 Cursor, Claude Code, Copilot, Codex CLI | 🟢 17 integrations | 🔴 Claude Code only |
+| Multi-platform | 🟢 Claude Code, VS Code, Codex, OpenClaw, OpenCode, Hermes, Copilot, Cursor, Antigravity; Cowork experimental (unverified on a live build) | 🟢 Claude Code, Cursor, Codex, Aider, Copilot | 🟢 15 integrations | 🟡 Cursor, Claude Code, Copilot, Codex CLI | 🟢 17 integrations | 🔴 Claude Code only |
 | Per-task model and effort advice | 🟢 `route` sizes the task before you spend | — | — | — | — | — |
 | Keep-Warm (cache TTL refresh) | 🟢 Opt-in ping before cache expiry, tripwire auto-off | 🔴 | 🔴 | — | 🔴 | 🔴 |
 | End-to-end task-outcome benchmark | 🟡 Controlled A/B on 7 real tasks (output tokens) + measured real-session with/without savings; pass-rate study not yet run | — | — | 🟢 Vendor reports Terminal-Bench 2.0 with the same pass rate and ~12% lower cost | — | N/A |
@@ -440,7 +440,7 @@ Disable: `TOKEN_OPTIMIZER_LOOP_DETECTION=0`
 
 ### UserPromptSubmit Hook
 
-Every prompt fires the `UserPromptSubmit` hook, which runs the per-turn work: prompt-continuity hint, verbosity steer, quality-cache warn tick, and (in harness/container/Cowork contexts) the once-per-session ensure-health, forced cache warm, and compact-restore pointer. These six subcommands share one `measure.py` import inside a single dispatcher (`hooks/userpromptsubmit_runner.py`), so one prompt spawns three processes, not eighteen. The dispatcher uses one shared deadline (18s, 2s margin under the 20s hooks.json timeout) with fair-share budgeting across subcommands, and buffers all stdout through a single emitter for controlled, host-consumable output.
+Every prompt fires the `UserPromptSubmit` hook, which runs the per-turn work: prompt-continuity hint, verbosity steer, quality-cache warn tick, and (in remote/container/Cowork and Codex sessions) the once-per-session ensure-health, forced cache warm, and compact-restore pointer. These six subcommands share one `measure.py` import inside a single dispatcher (`hooks/userpromptsubmit_runner.py`), so one prompt spawns three processes, not eighteen. The dispatcher uses one shared deadline (18s, 2s margin under the 20s hooks.json timeout) with fair-share budgeting across subcommands, and buffers all stdout through a single emitter for controlled, host-consumable output.
 
 Disable the entire `UserPromptSubmit` path: `TOKEN_OPTIMIZER_HOOKS_USERPROMPTSUBMIT=0`. Checked before `measure.py` is imported, so the opt-out costs zero per prompt. The other hook events (PreToolUse, PostToolUse, SessionStart, Stop, etc.) are unaffected.
 
@@ -479,6 +479,8 @@ Every compression event, every saving, every quality measurement is a row you ca
 ## Progressive Disclosure
 
 Large tool results (>4KB) are archived to disk and replaced with a short preview plus a retrieval pointer. The full output survives compaction. When the model needs it, it pulls the original via `expand`, with no command re-run and no lost output.
+
+Recovery is not compressed a second time. The optimizer's own `measure.py expand <id>` command (including `--session <id>`) and known original-recovery tools pass through without a new archive, dedup replacement or re-fetch denial. Ordinary memory search and document retrieval keep their existing behavior.
 
 This isn't just storage. The system tracks how many results were archived vs re-expanded, so you can see the net tokens that stayed collapsed. Re-expansions are netted out of the savings total, so you only count what actually stayed compressed.
 
@@ -618,11 +620,12 @@ It needs Claude Code 2.1.287 or newer and Anthropic's mods feature. Anthropic ca
 
 - **One sentence, one button**: the most urgent thing about your session, with at most one button to act on it.
 - **Five marks**: quality grade, context fill, cache countdown, 5-hour limit and weekly limit, each with its label. Hover any mark for a card with the detail.
-- **The arrow beside Clawd** unfolds one more line: branch, session time, tool calls, compactions (when there are any), when the last checkpoint was saved (any kind, or a relevant one from an earlier session), and how many tokens Token Optimizer saved you in the last 30 days, the same total the dashboard shows.
+- **The arrow beside Clawd** unfolds one more line: branch, session time, tool calls, compactions (when there are any), when the last checkpoint was saved (any kind, or a relevant one from an earlier session), and how many tokens Token Optimizer saved you in the last 30 days, the same total the dashboard shows. The last thing on that line is a **Full dashboard** link that regenerates the dashboard and opens it in your browser.
 - **Clawd acts out the session**: thinking, reading, typing, subagents, waiting for your permission, writing, compacting, done, stopped, API error, cold cache, napping.
 - **Clean up**: compacts with Token Optimizer's guidance.
 - **Start fresh**: asks for a second click, then saves a checkpoint, clears, and hands the checkpoint to your first message.
 - **Keep warm**: a manual, one-click cache refresh. It is offered only while the cache is still warm, never runs on its own, and uses a small amount of your usage. Afterwards it tells you how many tokens it re-read from the cache.
+- **Two sizes**: the `–` button beside the arrow shrinks the band to one line (tiny Clawd, the marks, and whatever needs attention) and `+` brings it back. The arrow still unfolds the details row under it. The choice is remembered across sessions and restarts; `TOKEN_OPTIMIZER_STATUS_BAR_SIZE=slim` sets the starting size and makes the terminal status line print one line too.
 
 Point at the bar and Clawd looks over. The cache countdown is an estimate, because Claude does not publish the exact expiry: 1 hour on Claude plans, 5 minutes on the API, measured from the session itself when possible.
 
@@ -683,6 +686,28 @@ python3 measure.py keepwarm-disable           # opt out any time
 ```
 
 Prefer a button? The [desktop status bar](#desktop-status-bar) has a manual **Keep warm** refresh. It is a separate one-click action, never automatic, and does not use the API-billed daemon above.
+
+### Subagent prompt cache
+
+Claude Code only. Subagents get a 5-minute prompt cache even on a subscription, so a subagent returned to after five minutes rewrites its whole prefix. On Claude Code 2.1.243+, Token Optimizer measures whether `subagentPromptCacheTtl: "1h"` would pay on your own transcripts -- at least 200 subagent requests in the last 30 days and an estimated saving of at least 1.15x the 1-hour write premium -- and **recommends** it; it never sets the key for you. The recommendation carries your numbers and the exact command, in `status`, `doctor`, `quick`, `coach`, and the audit. Anyone whose subagents run once, or too rarely, gets a neutral verdict instead. The scan reads your transcripts in a background process, never inside session start. `enable` never overrides a value you set, never fights a `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL` or `FORCE_PROMPT_CACHING_5M` override, and `disable` is final. Under the `=1` opt-in (the only automatic write), a 14-day tripwire (needs at least 200 subagent requests, else "not enough data") reverts a Token Optimizer set if your own transcripts show the 1h write premium costing more than the rewrites it avoids, counting reuse across spawns as well as within one agent.
+
+```bash
+python3 measure.py subagent-cache status    # state, the verdict and why, the advice, estimated net
+python3 measure.py subagent-cache enable    # take the recommendation, whatever the estimate says
+python3 measure.py subagent-cache disable   # undo (only what Token Optimizer set; final)
+TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=1           # opt in to the automatic write + tripwire
+TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=0           # never: opt out permanently
+```
+
+### Usage recommendations
+
+Claude Code only. Once a day, Token Optimizer re-measures the two settings your own history can answer -- the auto-compact window and the subagent cache lifetime -- against your last 30 days and writes one `usage_recommendations.json` record in its own data directory. The measurement runs as a detached background process (spawned at session start or when the dashboard collects its data), never inside a hook, and a partial run retries the next day. The record shows in `quick`, `doctor`, `status`, `coach`, the audit, and the dashboard's Coach view under "From your own usage". When you act on a recommendation and the measured numbers move, the record says so as a "since you changed it" win -- observational, never causal. Token Optimizer never writes either setting: every command it prints is one you run yourself.
+
+```bash
+python3 measure.py recommendations            # the daily record: state, numbers, the exact command
+python3 measure.py recommendations --json     # machine-readable
+python3 measure.py recommendations refresh    # re-measure now (bounded; locks against a second run)
+```
 
 ### Fleet Auditor
 

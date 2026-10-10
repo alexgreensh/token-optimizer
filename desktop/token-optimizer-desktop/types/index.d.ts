@@ -40,6 +40,8 @@ export type TokenOptimizerDesktopSession = {
   contextPercent: number | null
   contextTokens: number | null
   contextWindow: number | null
+  /** A smaller env ceiling invalidates full-window quality-cache fill. */
+  contextWindowReduced?: boolean
   fiveHour: TokenOptimizerDesktopLimit | null
   week: TokenOptimizerDesktopLimit | null
   /** Current git branch; null outside a repository or on a detached HEAD. */
@@ -53,6 +55,8 @@ export type TokenOptimizerDesktopSession = {
   lastRequestEpoch: number | null
   /** Last measured cache lifetime; null while unmeasured. */
   cacheLifetime: '1h' | '5m' | null
+  /** The user's compact window from settings or /autocompact, as the status command resolved it. */
+  compactWindow?: number | null
   /** When Token Optimizer last saved a checkpoint, epoch seconds. */
   checkpointEpoch: number | null
   /** The earlier session's checkpoint flagged as resumable for this one (epoch seconds). */
@@ -118,7 +122,7 @@ export type TokenOptimizerDesktopPose = {
 
 /** What a button is doing, the last outcome, and the Start fresh arm (src/actions.ts UiState). */
 export type TokenOptimizerDesktopUi = {
-  busy: 'clean' | 'fresh-capture' | 'fresh-clear' | null
+  busy: 'clean' | 'fresh-capture' | 'fresh-clear' | 'dashboard' | null
   busySince: number | null
   note: string | null
   noteUntil: number

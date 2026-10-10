@@ -1,75 +1,57 @@
 ---
 name: token-optimizer
-description: Audit a Claude Code or Codex setup for context-window waste, then fix it and measure the savings. Use when context feels tight.
+description: Audits a Claude Code or Codex setup for context-window waste, fixes it with the user's approval, and measures the saving. Use when context feels tight, sessions degrade, or costs climb.
 effort: high
 ---
 
 # Token Optimizer
 
-> **Never recommend cutting our own tools.** In every recommendation you produce, NEVER suggest removing, archiving, trimming, disabling, or consolidating Token Optimizer's own skills — `token-optimizer`, `token-coach`, `token-dashboard`, `fleet-auditor`. They are the measurement layer; recommending the user delete them to "save ~200 tokens" is self-cannibalizing. Exclude them from every unused-skill / archive / consolidation suggestion, regardless of invocation history.
+Measures where a setup spends its context window, proposes fixes, applies the ones the user approves, and re-measures. The deliverable is a before-and-after the user can verify, with every change backed up. Typical recovery is 5-15% of the window from config cleanup, more when compaction and caching settings are wrong for the way the user works.
 
-Audits a Claude Code or Codex setup, identifies context window waste, implements fixes, and measures savings.
+Token Optimizer's own skills (`token-optimizer`, `token-coach`, `token-dashboard`, `fleet-auditor`, `resume-checkpoint`) are the measurement layer, so leave them out of every unused-skill, archive or consolidation suggestion, however rarely they run.
 
-**Target**: 5-15% context recovery through config cleanup, up to 25%+ with autocompact management.
+## Step 0: pick the right workflow for this runtime
 
----
+The audit below reads and edits `~/.claude`, which is the wrong target anywhere but Claude Code, so settle the runtime before touching any path. Run exactly this, in this order.
 
-## Step 0: Resolve measure.py, then gate on runtime (run this first)
+**a. Environment check** (touches no file; an explicit `TOKEN_OPTIMIZER_RUNTIME` wins, and Claude plugin variables are checked before stray `OPENCODE_*` exports, the same order `detect_runtime()` uses):
 
-> **Runtime pre-gate (environment only — touches no `~/.claude` path).** Before resolving any script
-> path, check the environment directly. This keeps non-Claude runtimes from ever resolving a
-> `~/.claude` path:
-> ```bash
-> # OpenCode / Copilot set these; detect them WITHOUT touching ~/.claude.
-> # Explicit TOKEN_OPTIMIZER_RUNTIME is authoritative and checked first (matches detect_runtime()).
-> # An explicit override to a Claude/Codex runtime is authoritative (matches detect_runtime); proceed.
-> # Claude plugin env vars (CLAUDE_PLUGIN_ROOT/CLAUDE_PLUGIN_DATA) are checked BEFORE
-> # OPENCODE_* env signals so a genuine Claude session with a stray OPENCODE_* export
-> # is NOT stopped here — it falls through to measure.py, which resolves correctly
-> # (detect_runtime step 3 beats step 4). This mirrors the Python priority order.
-> if [ "${TOKEN_OPTIMIZER_RUNTIME:-}" = "claude" ] || [ "${TOKEN_OPTIMIZER_RUNTIME:-}" = "codex" ]; then
->   :  # fall through to the measure.py resolver + authoritative gate below
-> elif [ "${TOKEN_OPTIMIZER_RUNTIME:-}" = "opencode" ]; then
->   echo "Token Optimizer — OpenCode runtime detected."
-> elif [ "${TOKEN_OPTIMIZER_RUNTIME:-}" = "copilot" ]; then
->   echo "Token Optimizer — GitHub Copilot runtime detected."
-> elif [ "${TOKEN_OPTIMIZER_RUNTIME:-}" = "cursor" ]; then
->   echo "Token Optimizer — Cursor runtime detected."
-> elif [ "${TOKEN_OPTIMIZER_RUNTIME:-}" = "antigravity" ]; then
->   echo "Token Optimizer — Google Antigravity runtime detected."
-> elif [ -n "${CLAUDE_PLUGIN_ROOT:-}${CLAUDE_PLUGIN_DATA:-}" ]; then
->   :  # genuine Claude Code session; fall through to measure.py (step 3 beats step 4)
-> elif [ -n "${OPENCODE_BIN:-}${OPENCODE_CONFIG_DIR:-}${OPENCODE_DATA_DIR:-}${OPENCODE_CONFIG:-}${OPENCODE_CLIENT:-}" ]; then
->   echo "Token Optimizer — OpenCode runtime detected."
-> elif [ -n "${COPILOT_HOME:-}${TOKEN_OPTIMIZER_COPILOT_HOME:-}" ]; then
->   echo "Token Optimizer — GitHub Copilot runtime detected."
-> elif [ -n "${TOKEN_OPTIMIZER_CURSOR_HOME:-}" ]; then
->   echo "Token Optimizer — Cursor runtime detected."
-> elif [ -n "${CURSOR_PROJECT_DIR:-}" ] && [ -n "${CURSOR_VERSION:-}" ]; then
->   echo "Token Optimizer — Cursor runtime detected."
-> elif [ -n "${TOKEN_OPTIMIZER_ANTIGRAVITY_HOME:-}" ]; then
->   echo "Token Optimizer — Google Antigravity runtime detected."
-> fi
-> ```
-> - Prints **"… OpenCode runtime detected."** → **STOP. Do not resolve `measure.py`, do not run any
->   phase below.** Read `references/opencode-workflow.md` (bundled with this skill) and follow it.
->   On OpenCode, Token Optimizer runs as a native plugin; the Claude audit must not run.
-> - Prints **"… GitHub Copilot runtime detected."** → **STOP** and follow the Copilot guidance for the
->   same reason.
-> - Prints **"… Cursor runtime detected."** → **STOP. Do not resolve `measure.py`, do not run any
->   phase below.** Read `references/cursor-workflow.md` (bundled with this skill) and follow it.
->   On Cursor, Token Optimizer runs through the Cursor hook bridge; the Claude audit must not run.
-> - Prints **"… Google Antigravity runtime detected."** → **STOP** and follow `docs/antigravity.md`
->   for the same reason: on Antigravity, Token Optimizer runs as a native plugin, not a Claude audit.
-> - Prints nothing → continue to resolve `$MEASURE_PY` below. This env-only pre-gate does NOT
->   check the process tree, so OpenCode launched without exporting `OPENCODE_*` env vars (e.g. a
->   bare `opencode` binary or `node /path/to/opencode`) prints nothing here. The
->   `measure.py report` runtime gate that follows is the **authoritative** second check — it runs
->   `detect_runtime()` which includes the ancestor-process scan and will catch those cases.
+```bash
+if [ "${TOKEN_OPTIMIZER_RUNTIME:-}" = "claude" ] || [ "${TOKEN_OPTIMIZER_RUNTIME:-}" = "codex" ]; then
+  :
+elif [ "${TOKEN_OPTIMIZER_RUNTIME:-}" = "opencode" ]; then
+  echo "Token Optimizer — OpenCode runtime detected."
+elif [ "${TOKEN_OPTIMIZER_RUNTIME:-}" = "copilot" ]; then
+  echo "Token Optimizer — GitHub Copilot runtime detected."
+elif [ "${TOKEN_OPTIMIZER_RUNTIME:-}" = "cursor" ]; then
+  echo "Token Optimizer — Cursor runtime detected."
+elif [ "${TOKEN_OPTIMIZER_RUNTIME:-}" = "antigravity" ]; then
+  echo "Token Optimizer — Google Antigravity runtime detected."
+elif [ -n "${CLAUDE_PLUGIN_ROOT:-}${CLAUDE_PLUGIN_DATA:-}" ]; then
+  :
+elif [ -n "${OPENCODE_BIN:-}${OPENCODE_CONFIG_DIR:-}${OPENCODE_DATA_DIR:-}${OPENCODE_CONFIG:-}${OPENCODE_CLIENT:-}" ]; then
+  echo "Token Optimizer — OpenCode runtime detected."
+elif [ -n "${COPILOT_HOME:-}${TOKEN_OPTIMIZER_COPILOT_HOME:-}" ]; then
+  echo "Token Optimizer — GitHub Copilot runtime detected."
+elif [ -n "${TOKEN_OPTIMIZER_CURSOR_HOME:-}" ]; then
+  echo "Token Optimizer — Cursor runtime detected."
+elif [ -n "${CURSOR_PROJECT_DIR:-}" ] && [ -n "${CURSOR_VERSION:-}" ]; then
+  echo "Token Optimizer — Cursor runtime detected."
+elif [ -n "${TOKEN_OPTIMIZER_ANTIGRAVITY_HOME:-}" ]; then
+  echo "Token Optimizer — Google Antigravity runtime detected."
+fi
+```
 
-Resolve the script path **once, before any phase or runtime decision**. Every
-command below — including the runtime gate — depends on `$MEASURE_PY`, so it
-must be set first:
+| It prints | Do this |
+|-----------|---------|
+| "OpenCode runtime detected." | Stop. Follow `references/opencode-workflow.md` (Token Optimizer runs as a native plugin there). |
+| "Cursor runtime detected." | Stop. Follow `references/cursor-workflow.md` (it runs through the Cursor hook bridge). |
+| "GitHub Copilot runtime detected." | Stop. Follow the Copilot guidance in `docs/copilot.md`. |
+| "Google Antigravity runtime detected." | Stop. Follow `docs/antigravity.md`. |
+| nothing | Continue to b. |
+
+**b. Resolve `$MEASURE_PY` once.** Every later command uses it:
+
 ```bash
 # Resolve measure.py to the NEWEST installed copy across channels so a stale
 # plugin-cache copy never shadows a fresh install. find -L follows the
@@ -90,169 +72,79 @@ EOF
 if [ -z "$MEASURE_PY" ]; then echo "[Error] measure.py not found. Is Token Optimizer installed?"; exit 1; fi
 ```
 
-With `$MEASURE_PY` resolved, run the runtime gate as the **first executed
-command**. Its output is a hard stop, not a hint:
+**c. The authoritative gate.** The environment check cannot see an OpenCode started without its variables; this one scans the process tree:
+
 ```bash
 python3 "$MEASURE_PY" report 2>&1 | head -1
 ```
 
-- Prints **"Token Optimizer — OpenCode runtime detected."** → **STOP. Run none
-  of the phases below.** Read `references/opencode-workflow.md` and follow it.
-  The Claude Code phases scan and mutate `~/.claude`, which is the wrong target
-  when the user is in OpenCode.
-- Prints any other **"… runtime detected."** notice (for example GitHub
-  Copilot) → STOP and follow that runtime's guidance, for the same reason.
-- Otherwise continue: if `TOKEN_OPTIMIZER_RUNTIME=codex` or a Codex environment
-  is detected, read `references/codex-workflow.md` and follow its chat-first
-  workflow instead of the phases below. Genuine Claude Code proceeds to Phase 0.
+Any "... runtime detected." line means stop and follow that runtime's file from the table above. On Codex (`TOKEN_OPTIMIZER_RUNTIME=codex` or a Codex environment) follow `references/codex-workflow.md`. Claude Code continues below.
 
----
+## The audit (Claude Code)
 
-## Phase 0: Initialize (Claude Code)
+Work through these in order and tick each off; a skipped phase stays in the list as `skip: <reason>`.
 
-`MEASURE_PY` was already resolved in Step 0 — do **not** re-resolve it.
-
-Read `references/phase0-setup.md` for the full setup sequence: context window detection, pre-check, backup, coordination folder, hook checks, daemon setup, and smart compaction.
-
----
-
-## Phase 0.5: Keep-Warm Consent (first run only, Claude Code)
-
-Keep-Warm is opt-in and pays off only for API-key-billed Claude Code sessions. Ask once:
-
-```bash
-python3 "$MEASURE_PY" keepwarm-consent-status   # JSON: {billing_mode, consent, should_ask}
+```
+- [ ] 0. Setup            references/phase0-setup.md
+- [ ] 1. Parallel audit   references/agent-prompts.md
+- [ ] 2. Synthesis        references/agent-prompts.md (Synthesis Agent)
+- [ ] 3. Present, then wait for the user's decision   references/presentation-workflow.md
+- [ ] 4. Implement the approved changes               references/implementation-playbook.md
+- [ ] 5. Verify and report before/after               references/agent-prompts.md (Verification Agent)
 ```
 
-If `should_ask` is `false`, skip this phase silently (subscription users are never asked; declined/enabled users keep their choice). If `should_ask` is `true`, first compute the user's own projection, then present the pitch:
+**0. Setup.** Context window detection, pre-check, backup, the coordination folder (`COORD_PATH`), hook checks, daemon, smart compaction. Then, only when `python3 "$MEASURE_PY" keepwarm-consent-status` returns `should_ask: true`, follow `references/keepwarm-consent.md` exactly; it spends the user's money, so its wording and command order are fixed.
+
+**1. Parallel audit.** Dispatch six agents in one message, each with `COORD_PATH` and its prompt from `references/agent-prompts.md`. They gather and count, so they run on the cheapest capable model; the synthesis is where judgement is spent.
+
+| Agent | Writes | Looks at |
+|-------|--------|----------|
+| CLAUDE.md | `audit/claudemd.md` | Size, duplication, tiering, cache structure |
+| MEMORY.md | `audit/memorymd.md` | Size, overlap with CLAUDE.md |
+| Skills | `audit/skills.md` | Count, frontmatter overhead, duplicates |
+| MCP | `audit/mcp.md` | Deferred tools, broken or unused servers |
+| Commands | `audit/commands.md` | Count, menu overhead |
+| Settings and advanced | `audit/advanced.md` | Hooks, rules, settings, @imports, cache lifetime, compaction window |
+
+A missing output file is a gap to note, not a reason to stop.
+**2. Synthesis.** One agent on the strongest available model reads every audit file and writes `{COORD_PATH}/analysis/optimization-plan.md`. If it fails, present the raw audit files.
+
+**3. Present.** Generate the dashboard and show the findings as the presentation workflow describes, then wait:
 
 ```bash
-python3 "$MEASURE_PY" keepwarm-backfill --json --no-fence   # read modes."probe-only".net_usd
+python3 "$MEASURE_PY" dashboard --coord-path "$COORD_PATH"
 ```
 
-Read `net_usd` under `modes."probe-only"`. If it is a positive number, include it as the projection. If backfill errors, returns nothing, or `net_usd <= 0`, drop the dollar sentence entirely (do not invent a number) and use the no-data wording below.
+**4. Implement.** Only what the user approved, one change at a time, following the playbook (actions 4A-4P: CLAUDE.md, MEMORY.md, skills, file exclusion, MCP, hooks, cache, rules, settings, descriptions, compact instructions, model routing, smart compaction, quality check, version-aware optimizations, smart routing). Templates are in `examples/`. Also offer, with the measured numbers:
 
-> **Keep your prompt cache warm automatically?** When a Claude Code session pauses past its 1h cache window and resumes, the whole prefix is re-written at up to 2x input. Keep-Warm pings the cache just before expiry (~0.1x of the prefix, max 2 pings per pause) so a resume stays warm. A history-replay projection from your own last 30 days nets ~$<net_usd>/30d at the conservative probe-only setting. A tripwire auto-disables it if pings ever stop paying for themselves, and you can turn it off any time. Enable it?
+- `python3 "$MEASURE_PY" recommendations`: the daily-measured usage recommendations (compact window, subagent cache lifetime), each with the user's own numbers and the exact command when the state is `recommend`. Relay those lines verbatim; Token Optimizer recommends, it never sets either key.
+- `python3 "$MEASURE_PY" subagent-cache status` / `compact-advice`: the single-measurement detail behind each item. Both are estimates from the user's own history; the user decides.
+- Repeated work a script could do instead of a model: hand over to `token-coach`, goal e.
 
-No-data wording (when backfill yields no positive projection): drop the projection sentence and say "Your savings depend on your own pause-and-resume pattern; the dashboard will show your number once pings have fired."
+**5. Verify.** The verification agent re-measures and computes the saving. Show before and after, then the habits that keep it.
 
-Then record the answer (do this exactly once). **Record the yes/no FIRST**, so an interrupted run never strands an "asked" marker with no recorded answer:
+If a verification number is worse than the baseline, find which change caused it, restore that file from the backup, and return to step 4.
 
-```bash
-# yes:
-python3 "$MEASURE_PY" keepwarm-enable
-# no:
-python3 "$MEASURE_PY" keepwarm-disable
-```
+## Rules for changing a user's setup
 
-`keepwarm-enable` and `keepwarm-disable` are terminal states, so they already satisfy `should_ask`. Only if the user defers or ignores the question (records neither) run the shown-marker so they are not re-asked next run:
+These protect work the user cannot easily get back:
 
-```bash
-python3 "$MEASURE_PY" keepwarm-consent-asked          # mark shown (sticky); use ONLY when no enable/disable was recorded
-```
+- Back up before every change, and show the diff before applying it.
+- Archive, never delete, and archive outside the skills directory so the archive does not load.
+- Check what depends on a skill, MCP server or deny rule before archiving it, and name the side effect first.
+- Prefer a project-level deny rule to a global one.
+- Leave the user's own settings values alone unless they approve the specific change.
+- Quote measured numbers (tokens and percent of the window). Frame savings as context budget; give dollars only where `measure.py` computed them.
 
-`keepwarm-enable` records consent and installs the scheduler (macOS); on other OSes the scheduler is pending, so it is watchdog-only. It refuses on subscription with an honest message. To confirm it is armed:
+## References
 
-```bash
-python3 "$MEASURE_PY" keepwarm-scheduler status      # JSON: installed/loaded state (macOS)
-python3 "$MEASURE_PY" keepwarm-tick --dry-run        # JSON: what the next tick would decide
-```
+| Need | Read |
+|------|------|
+| Codex, Cursor, OpenCode workflows | `references/codex-workflow.md`, `references/cursor-workflow.md`, `references/opencode-workflow.md` |
+| Setup details, Keep-Warm consent | `references/phase0-setup.md`, `references/keepwarm-consent.md` |
+| Agent prompts, how tokens flow | `references/agent-prompts.md`, `references/token-flow-architecture.md` |
+| Presenting findings | `references/presentation-workflow.md` |
+| Implementation steps, checklist | `references/implementation-playbook.md`, `references/optimization-checklist.md`, `examples/` |
+| CLI commands, session continuity, errors | `references/cli-reference.md`, `references/session-continuity.md`, `references/error-recovery.md` |
 
----
-
-## Phase 1: Quick Audit (Parallel Agents)
-
-Read `references/agent-prompts.md` for all prompt templates.
-
-Dispatch 6 agents in parallel:
-
-| Agent | Output File | Model | Task |
-|-------|-------------|-------|------|
-| CLAUDE.md Auditor | `audit/claudemd.md` | sonnet | Size, duplication, tiered content, cache structure |
-| MEMORY.md Auditor | `audit/memorymd.md` | sonnet | Size, overlap with CLAUDE.md |
-| Skills Auditor | `audit/skills.md` | sonnet | Count, frontmatter overhead, duplicates |
-| MCP Auditor | `audit/mcp.md` | sonnet | Deferred tools, broken/unused servers |
-| Commands Auditor | `audit/commands.md` | haiku | Count, menu overhead |
-| Settings & Advanced | `audit/advanced.md` | sonnet | Hooks, rules, settings, @imports, caching |
-
-Pass `COORD_PATH` to each. Wait for all to complete. If any output file is missing, note the gap and proceed.
-
----
-
-## Phase 2: Analysis
-
-Read the **Synthesis Agent** prompt from `references/agent-prompts.md`. Dispatch with `model="opus"` (fallback: sonnet). It reads all audit files and writes `{COORD_PATH}/analysis/optimization-plan.md`. If missing, present raw audit files instead.
-
----
-
-## Phase 3: Present Findings
-
-Read `references/presentation-workflow.md` for the findings template, dashboard generation, and URL presentation logic. Generate the dashboard:
-```bash
-python3 $MEASURE_PY dashboard --coord-path $COORD_PATH
-```
-Wait for user decision before proceeding.
-
----
-
-## Phase 4: Implementation
-
-Read `references/implementation-playbook.md` for detailed steps. Available actions: 4A-4P covering CLAUDE.md, MEMORY.md, Skills, File Exclusion, MCP, Hooks, Cache, Rules, Settings, Descriptions, Compact Instructions, Model Routing, Smart Compaction, Quality Check, Version-Aware Optimizations, and Smart Routing. Templates in `examples/`. Always backup before changes. Present diffs for approval.
-
----
-
-## Phase 5: Verification
-
-Read the **Verification Agent** prompt from `references/agent-prompts.md`. Dispatch with `model="haiku"`. Re-measures everything and calculates savings. Present before/after comparison and behavioral next steps.
-
----
-
-## Session Continuity: Cold-Resume-Lean
-
-Reopen a forgotten/cold session cheaply, no `--resume`, no command. On a fresh
-session, when the user naturally asks to continue prior work ("continue the X
-work, check what we discussed last session"), the continuity hook reconstructs a
-**lean** context for the right **same-project** prior session and injects it.
-
-- **Selection** ("both"): if the user names a topic → keyword-match winner; if
-  vague ("where we left off") → most-recent same-project session.
-- **Token-free**: reconstruction reads checkpoints + `session_log` only (no LLM,
-  no subprocess). The only cost is the fresh session's normal first turn.
-- **Same-project = files touched** (path-prefix vs cwd), never a cross-project leak.
-- **Savings** are credited as a realized `resume_lean` event (avoided cold-resume
-  cache-rewrite minus the lean block), idempotent per target session, shown in the
-  Savings view. Realized tier, same as `checkpoint_restore`.
-- **Manual fallback**: `python3 $MEASURE_PY resume-lean` lists cold sessions;
-  `resume-lean <#|session_id> --print` emits the block for `claude "$(...)"`.
-- Ported across Claude Code, Codex, OpenClaw, opencode (checkpoint richness varies
-  by platform; the lean block adapts to available fields).
-
----
-
-## Reference Files
-
-| Context | Read |
-|---------|------|
-| Codex runtime | `references/codex-workflow.md` |
-| Cursor runtime | `references/cursor-workflow.md` |
-| Phase 0 setup details | `references/phase0-setup.md` |
-| Phase 1-2 agent prompts | `references/agent-prompts.md`, `references/token-flow-architecture.md` |
-| Phase 3 presentation | `references/presentation-workflow.md` |
-| Phase 4 implementation | `references/implementation-playbook.md`, `examples/` |
-| CLI commands | `references/cli-reference.md` |
-| Phase 3 checklist | `references/optimization-checklist.md` |
-| Error handling | `references/error-recovery.md` |
-
----
-
-## Core Rules
-
-- Quantify everything (X tokens, Y%)
-- Create backups before any changes
-- Ask user before implementing
-- Never delete files, always archive outside the skills directory
-- Check dependencies before archiving (skills, MCP, deny rules can break other tools)
-- Warn about side effects before each change
-- Prefer project-level deny rules over global
-- Show before/after diffs
-- Frame savings as context budget (% of window), not dollar amounts
+Written for and checked on Claude Opus 5.5 and Sonnet 5.5, and GPT-5.6 on Codex.

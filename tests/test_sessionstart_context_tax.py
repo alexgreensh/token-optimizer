@@ -500,7 +500,6 @@ def _stub_ensure_health_to_heal(m, monkeypatch, added):
     # Early ensure-health I/O that could print to stdout.
     monkeypatch.setattr(m, "_read_settings_json",
                         lambda: ({"cleanupPeriodDays": 99999}, None))
-    monkeypatch.setattr(m, "_auto_remove_bad_env_vars", lambda: None)
     monkeypatch.setattr(m, "_auto_capture_pristine_baseline", lambda: False)
     # Dashboard staleness block: skip by pretending no dashboard file exists.
     monkeypatch.setattr(m, "DASHBOARD_PATH", Path(m.TOKEN_OPTIMIZER_SNAPSHOT_DIR

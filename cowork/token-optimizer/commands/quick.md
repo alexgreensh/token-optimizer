@@ -1,5 +1,5 @@
 ---
-description: Quick 10-second context health check with quality score and top issues
+description: Runs a 10-second context health check with a quality score and the top issues. Use for a fast pulse on the current session.
 ---
 
 # Quick Context Check

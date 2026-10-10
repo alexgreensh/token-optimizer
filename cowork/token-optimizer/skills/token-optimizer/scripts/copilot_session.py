@@ -80,6 +80,17 @@ def context_window_for_model(model: str) -> int:
     return _COPILOT_DEFAULT_CONTEXT_WINDOW
 
 
+def _safe_topic(value: Any) -> Optional[str]:
+    """Topic is user text persisted to session_log — redact or drop."""
+    if not value:
+        return None
+    try:
+        from credential_patterns import redact_credentials
+        return redact_credentials(str(value))
+    except Exception:
+        return None
+
+
 def _safe_int(value: Any, default: int = 0) -> int:
     try:
         return int(float(value)) if value is not None else default
@@ -448,7 +459,7 @@ def normalize_vscode_session(raw: dict) -> Optional[dict]:
     )
     session.update(
         {
-            "topic": raw.get("title"),
+            "topic": _safe_topic(raw.get("title")),
             "first_ts": _parse_ts(raw.get("first_ts_epoch")),
             "total_input_tokens": total_input,
             "total_output_tokens": output_tokens,

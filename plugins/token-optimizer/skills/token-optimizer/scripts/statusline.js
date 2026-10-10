@@ -124,6 +124,110 @@ function _claudeHome() {
 }
 const CLAUDE_HOME = _claudeHome();
 
+// Host parse (Claude Code 2.1.296 Dd/FOo): scientific notation and thousand
+// separators first, then a decimal prefix. NaN or <= 0 is invalid and IGNORED
+// (the next source applies). Mirrors measure.py _host_parse_int; shared vectors
+// live in tests/fixtures/compact_window_env_vectors.json.
+const _HOST_SCI = /^[+-]?(\d+(\.\d*)?|\.\d+)[eE][+-]?\d+$/;
+const _HOST_GROUPED = /^[+-]?\d{1,3}([_,\u00A0\u202F ])\d{3}(?:\1\d{3})*$/;
+function _hostParseInt(raw) {
+  const text = String(raw).trim();
+  if (text.length <= 32) {
+    if (_HOST_SCI.test(text)) {
+      const n = Number(text);
+      return Number.isInteger(n) ? n : NaN;
+    }
+    if (_HOST_GROUPED.test(text)) return parseInt(text.replace(/[_,\u00A0\u202F ]/g, ''), 10);
+  }
+  return parseInt(text, 10);
+}
+function _parseCompactWindow(v) {
+  if (v === null || v === undefined || typeof v === 'boolean') return null;
+  if (typeof v === 'number') return Number.isFinite(v) && v > 0 ? Math.floor(v) : null;
+  const n = _hostParseInt(v);
+  return Number.isNaN(n) || n <= 0 ? null : n;
+}
+// ---- Effective compact window (JS twin of measure.py effective_compact_window) ----
+// Where THIS session auto-compacts, so the fill bar divides by the window the
+// user will actually hit. Precedence (code.claude.com/docs/en/model-config):
+// env CLAUDE_CODE_AUTO_COMPACT_WINDOW > per-model modelSettings (/autocompact)
+// > top-level autoCompactWindow. Explicit values clamp to 100000..1000000 and
+// cap at the model window; CLAUDE_AUTOCOMPACT_PCT_OVERRIDE (1-99, may be a float) then scales it
+// down (it can never raise it). Returns the window in tokens ONLY when a real
+// user override shrank it below the model window (the tuned ~967K default is
+// not an override of the host's own number); otherwise null.
+// Bedrock inference-profile ids are dot/colon-qualified
+// ("us.anthropic.claude-haiku-4-5", "bedrock:claude-sonnet-4-5"): a leading
+// chain of KNOWN provider/region tokens. Version dots ("gpt-4.1",
+// "claude-3.5-sonnet") are never cut. Mirror of measure.py's
+// _canonical_compact_model_id.
+const _PROVIDER_PREFIX_RE = /^(?:(?:anthropic|openai|google|gemini|vertex|bedrock|openrouter|gateway|litellm|azure|aws|amazon|us|us-gov|eu|ap|apac|au|ca|cn|global|jp|sa|me|af|il)[.:])+/;
+function _canonModelId(model) {
+  let m = String(model || '').trim().toLowerCase();
+  if (!m) return '';
+  m = m.split('/').pop().replace(_PROVIDER_PREFIX_RE, '').replace('[1m]', '').trim().replace(/[-@]\d{8}$/, '');
+  if (m && !m.startsWith('claude-')) m = 'claude-' + m;
+  return m;
+}
+function _reducedCompactWindow(modelId, modelWindow, settings) {
+  try {
+    if (!(modelWindow > 0)) return null;
+    const envBlock = (settings && typeof settings.env === 'object' && settings.env) || {};
+    const envVal = (name) => (process.env[name] !== undefined ? process.env[name] : envBlock[name]);
+    const clamp = (n) => Math.max(100000, Math.min(1000000, n));
+    let tokens = null;
+    let autoForModel = false;
+    const fromEnv = _parseCompactWindow(envVal('CLAUDE_CODE_AUTO_COMPACT_WINDOW'));
+    if (fromEnv !== null) {
+      tokens = clamp(fromEnv);
+    } else {
+      const ms = settings && settings.modelSettings;
+      if (ms && typeof ms === 'object') {
+        const raw = String(modelId || '').trim().toLowerCase();
+        const canon = _canonModelId(modelId);
+        const fam = /^(?:claude[-_])?(fable|mythos|opus|sonnet|haiku)/.exec(canon);
+        const family = fam ? fam[1] : '';
+        // Two passes: an exact/canonical id outranks a family alias regardless
+        // of key order; the first matching key decides (a non-window value is
+        // ignored like the host, not skipped to the next key).
+        let matched = false;
+        for (const kind of ['exact', 'family']) {
+          for (const key of Object.keys(ms)) {
+            const entry = ms[key];
+            if (!entry || typeof entry !== 'object' || !('autoCompactWindow' in entry)) continue;
+            const k = String(key).trim().toLowerCase();
+            const hit = kind === 'exact'
+              ? (k === raw || _canonModelId(k) === canon)
+              : (family !== '' && k === family);
+            if (!hit) continue;
+            matched = true;
+            // `/autocompact auto` is per model and means the tuned default: it
+            // replaces the top-level value for this model (no fall-through).
+            if (entry.autoCompactWindow === 'auto') { autoForModel = true; break; }
+            const w = _parseCompactWindow(entry.autoCompactWindow);
+            if (w !== null) tokens = clamp(w);
+            break;
+          }
+          if (matched) break;
+        }
+      }
+      if (tokens === null && settings && !autoForModel) {
+        const top = _parseCompactWindow(settings.autoCompactWindow);
+        if (top !== null) tokens = clamp(top);
+      }
+    }
+    if (tokens !== null && tokens > modelWindow) tokens = modelWindow;
+    // The host reads the percentage with parseFloat ("50.5" and "50%" count).
+    const pct = parseFloat(String(envVal('CLAUDE_AUTOCOMPACT_PCT_OVERRIDE') ?? '').trim());
+    if (Number.isFinite(pct) && pct >= 1 && pct < 100) {
+      tokens = Math.floor((tokens === null ? Math.min(modelWindow, 967000) : tokens) * pct / 100);
+    }
+    return tokens !== null && tokens < modelWindow ? tokens : null;
+  } catch (e) {
+    return null;
+  }
+}
+
 let input = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', chunk => input += chunk);
@@ -188,9 +292,32 @@ process.stdin.on('end', () => {
     // Context window bar with degradation-aware colors
     // Fill bands: <50% green, 50-70% yellow, 70-80% orange, 80%+ red (blinking)
     let ctx = '';
-    const used = usedPct != null
+    const hostUsed = usedPct != null
       ? Math.round(usedPct)
       : (remaining != null ? Math.max(0, Math.min(100, 100 - Math.round(remaining))) : null);
+
+    // Fill on the window the session will actually compact at. When the user
+    // shrank it (env / /autocompact / autoCompactWindow / PCT override), divide
+    // the live token count by that window instead of the model window.
+    const cw = data.context_window || {};
+    const modelWindow = typeof cw.context_window_size === 'number' ? cw.context_window_size : null;
+    const cu = cw.current_usage || null;
+    const liveTokens = cu
+      ? (Number(cu.input_tokens) || 0) + (Number(cu.cache_creation_input_tokens) || 0)
+        + (Number(cu.cache_read_input_tokens) || 0)
+      : (hostUsed != null && modelWindow ? Math.round(hostUsed / 100 * modelWindow) : null);
+    let used = hostUsed;
+    try {
+      let settingsForWindow = null;
+      const sp = path.join(CLAUDE_HOME, 'settings.json');
+      if (fs.existsSync(sp)) settingsForWindow = JSON.parse(fs.readFileSync(sp, 'utf8'));
+      const reduced = modelWindow
+        ? _reducedCompactWindow(data.model && data.model.id, modelWindow, settingsForWindow)
+        : null;
+      if (reduced && liveTokens !== null && liveTokens >= 0) {
+        used = Math.max(0, Math.min(100, Math.round(liveTokens / reduced * 100)));
+      }
+    } catch (e) {}
 
     // Sanitize session_id for safe use in filesystem paths
     const safeSessionId = sessionId ? sessionId.replace(/[^a-zA-Z0-9_-]/g, '') : null;
@@ -212,8 +339,13 @@ process.stdin.on('end', () => {
 
       // Write live fill data for quality score to use (bridges statusline -> quality cache)
       try {
+        // used_percentage stays the HOST's model-window fill (measure.py scales
+        // it onto the effective compact window); context_tokens + window carry
+        // the numerator so it can recompute exactly.
         const liveFillData = JSON.stringify({
-          used_percentage: clamped,
+          used_percentage: hostUsed != null ? Math.max(0, Math.min(100, hostUsed)) : clamped,
+          context_tokens: liveTokens !== null && liveTokens > 0 ? liveTokens : undefined,
+          context_window: modelWindow || undefined,
           timestamp: Date.now(),
           session_id: sessionId || null
         });
@@ -253,6 +385,20 @@ process.stdin.on('end', () => {
         const rlTmp = path.join(cacheDir, `.rate-limits.${process.pid}.tmp`);
         fs.writeFileSync(rlTmp, payload);
         fs.renameSync(rlTmp, path.join(cacheDir, 'rate-limits.json'));
+      } catch (e) {}
+    }
+
+    // ---- Bridge the native prompt_cache object to a per-session sidecar ----
+    // Claude Code v2.1.251+ includes prompt_cache (ttl, expires_at, warm, ...)
+    // in the status-line input for MAIN conversations. measure.py status-bar
+    // reads prompt-cache-<sid>.json and prefers it over the transcript guess
+    // for the cache countdown and cache-cold warning. Older Claude Code sends
+    // no such field and we simply write nothing.
+    if (data.prompt_cache && typeof data.prompt_cache === 'object' && safeSessionId) {
+      try {
+        const pcTmp = path.join(cacheDir, `.prompt-cache.${process.pid}.tmp`);
+        fs.writeFileSync(pcTmp, JSON.stringify({ ...data.prompt_cache, timestamp: Date.now() }));
+        fs.renameSync(pcTmp, path.join(cacheDir, `prompt-cache-${safeSessionId}.json`));
       } catch (e) {}
     }
 
@@ -382,6 +528,13 @@ process.stdin.on('end', () => {
       row2Parts.push(`${DIM}Eff:--${RESET}`);
     }
 
+    // Biggest drag: the actual signal pulling the score down — context fill,
+    // compactions, or the dominant waste cause — computed upstream by weighted
+    // deficit, not guessed from waste keys here.
+    if (q && q.top_drag && q.top_drag.label) {
+      row2Parts.push(`${DIM}Drag:${q.top_drag.label}${RESET}`);
+    }
+
     // Fill warning
     if (q) {
       const fw = q.fill_warning;
@@ -490,7 +643,12 @@ process.stdin.on('end', () => {
     };
     const _cols = parseInt(process.env.COLUMNS, 10);
     const _width = Number.isFinite(_cols) && _cols > 4 ? _cols : null;
-    if (_width) {
+    // TOKEN_OPTIMIZER_STATUS_BAR_SIZE=slim: one line with the most important
+    // fields (row 1), never wrapped, whatever COLUMNS says.
+    const _slim = (process.env.TOKEN_OPTIMIZER_STATUS_BAR_SIZE || '').trim().toLowerCase() === 'slim';
+    if (_slim) {
+      process.stdout.write(row1Segs.join(SEP));
+    } else if (_width) {
       const rows = [...packRows(row1Segs, _width), ...packRows(row2Parts, _width)];
       process.stdout.write(rows.join('\n'));
     } else {

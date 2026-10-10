@@ -7,9 +7,19 @@ import assert from 'node:assert/strict'
 
 import {
   BUSY_TIMEOUT_MS,
+  busyTimeoutMs,
   CAPTURE_TIMEOUT_MS,
+  DASHBOARD_ARGS,
+  DASHBOARD_FAILED,
+  DASHBOARD_OPENING,
+  DASHBOARD_TIMEOUT_MS,
   FRESH_ARM_MS,
   HANDOFF_TTL_MS,
+  NOTE_MS,
+  canOpenDashboard,
+  dashboardFailed,
+  dashboardStatus,
+  withBusy,
   attachesHandoff,
   handoffFate,
   isStubCheckpoint,
@@ -41,6 +51,21 @@ test('a busy state lapses after 120 seconds so "Cleaning up." never sticks', () 
   assert.equal(busyNow(ui, T + BUSY_TIMEOUT_MS - 1), 'clean')
   assert.equal(busyNow(ui, T + BUSY_TIMEOUT_MS), null)
   assert.equal(busyNow(initialUi(), T), null)
+})
+
+test('only the dashboard\'s busy state outlives 120 seconds; every other button keeps exactly 120', () => {
+  assert.equal(BUSY_TIMEOUT_MS, 120_000)
+  for (const busy of ['clean', 'fresh-capture', 'fresh-clear'] as const) {
+    assert.equal(busyTimeoutMs(busy), BUSY_TIMEOUT_MS)
+    const ui = { ...initialUi(), busy, busySince: T }
+    assert.equal(busyNow(ui, T + 121_000), null)
+  }
+  assert.equal(busyTimeoutMs(null), BUSY_TIMEOUT_MS)
+  assert.equal(busyTimeoutMs('dashboard'), DASHBOARD_TIMEOUT_MS + 30_000)
+  const opening = { ...initialUi(), busy: 'dashboard' as const, busySince: T }
+  assert.equal(busyNow(opening, T + 121_000), 'dashboard')
+  assert.equal(busyNow(opening, T + DASHBOARD_TIMEOUT_MS + 30_000 - 1), 'dashboard')
+  assert.equal(busyNow(opening, T + DASHBOARD_TIMEOUT_MS + 30_000), null)
 })
 
 test('a note shows for a few seconds, then the sentence returns to its rule', () => {
@@ -194,4 +219,64 @@ test('a hand-off still being stamped is held; one a crash left half-saved is dro
   assert.equal(handoffFate(h, { ...at, now: 1_000_600 }), 'skip')
   const late = handoffFate(h, { ...at, now: 1_000_000 + 61_000 })
   assert.equal(typeof late === 'object' && 'drop' in late, true)
+})
+
+// ---- Full dashboard link ----
+
+test('the dashboard link runs the dashboard command and nothing else, with its own bounded timeout', () => {
+  // No --quiet: quiet regenerates without opening the browser.
+  // --user: a person clicked, so measure.py must not apply the 20 s hook budget (the runner's stdin is
+  // not a tty and it cannot pass env, so without the flag a heavy rebuild is cut off and nothing opens).
+  assert.deepEqual([...DASHBOARD_ARGS], ['dashboard', '--user'])
+  assert.ok(DASHBOARD_TIMEOUT_MS > 0)
+  // Under the dashboard's own busy timeout, so the runner answers before the busy state gives up on its own.
+  assert.ok(DASHBOARD_TIMEOUT_MS < busyTimeoutMs('dashboard'))
+  assert.equal(DASHBOARD_TIMEOUT_MS, 300_000)
+})
+
+test('the dashboard timeout covers a heavy rebuild with margin', () => {
+  // Measured: `measure.py dashboard --user` on a real, heavy history, cold (nothing cached): 80 s.
+  // (A synthetic 800-session / 1.1 GB history took 38 s, which undersized the first limit.)
+  // The timeout keeps at least 3x the real one for a slower disk.
+  const MEASURED_COLD_HEAVY_MS = 80_000
+  assert.ok(DASHBOARD_TIMEOUT_MS >= 3 * MEASURED_COLD_HEAVY_MS)
+})
+
+test('the dashboard link says what it is doing in the band\'s own note words', () => {
+  assert.equal(DASHBOARD_OPENING, 'Opening the dashboard.')
+  assert.equal(DASHBOARD_FAILED, 'Could not open the dashboard.')
+})
+
+test('a second click on the dashboard link is ignored while anything is busy', () => {
+  assert.equal(canOpenDashboard(initialUi(), T), true)
+  const opening = withBusy(initialUi(), 'dashboard', T)
+  assert.equal(canOpenDashboard(opening, T + 1), false)
+  assert.equal(canOpenDashboard(withBusy(initialUi(), 'clean', T), T + 1), false)
+  // A stale busy state has timed out and no longer blocks: the dashboard's own at its longer limit,
+  // any other button's at 120 s.
+  assert.equal(canOpenDashboard(opening, T + BUSY_TIMEOUT_MS), false)
+  assert.equal(canOpenDashboard(opening, T + busyTimeoutMs('dashboard')), true)
+  assert.equal(canOpenDashboard(withBusy(initialUi(), 'clean', T), T + BUSY_TIMEOUT_MS), true)
+})
+
+test('the dashboard run failed when it threw, timed out, exited non-zero, or the opener could not open the browser', () => {
+  assert.equal(dashboardFailed({ exitCode: 0, stdout: '  Opened: http://localhost:24842/token-optimizer\n' }), false)
+  assert.equal(dashboardFailed({ exitCode: 0, stdout: '' }), false)
+  assert.equal(dashboardFailed(null), true)
+  // A runner answer with no stdout must not throw: the band would sit on "Opening" with no note.
+  assert.equal(dashboardFailed({ exitCode: 0 } as unknown as { exitCode: number; stdout: string }), false)
+  assert.equal(dashboardFailed({ exitCode: 1, stdout: '' }), true)
+  assert.equal(dashboardFailed({ exitCode: 2, stdout: 'usage: measure.py' }), true)
+  // measure.py prints this and still exits 0 when xdg-open / open / startfile fails.
+  assert.equal(dashboardFailed({ exitCode: 0, stdout: '\n  Could not auto-open browser. Open manually:\n  file:///x/dashboard.html\n' }), true)
+})
+
+test('the dashboard status shows while it opens and for the note\'s lifetime after it fails, never otherwise', () => {
+  assert.equal(dashboardStatus('dashboard', null), DASHBOARD_OPENING)
+  assert.equal(dashboardStatus(null, DASHBOARD_FAILED), DASHBOARD_FAILED)
+  assert.equal(dashboardStatus(null, null), null)
+  assert.equal(dashboardStatus('clean', null), null)
+  assert.equal(dashboardStatus(null, 'Cleaned up.'), null)
+  assert.equal(noteNow(withNote(initialUi(), DASHBOARD_FAILED, T), T + NOTE_MS - 1), DASHBOARD_FAILED)
+  assert.equal(noteNow(withNote(initialUi(), DASHBOARD_FAILED, T), T + NOTE_MS), null)
 })

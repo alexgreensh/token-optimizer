@@ -735,6 +735,20 @@ test('Clean up while the last compaction still runs past the busy timeout starts
   expect(w.toasts).toEqual(['Still finishing the last clean-up.'])
 })
 
+test('Clean up still expires at 121 s: "Clean up timed out." and the button is free again', async ($, on) => {
+  const w = stub(on, { compact: 'hang' })
+  await $.session.start(START)
+  await w.clock.settle() // the status read runs just after the start
+  const ui = await mountBand($)
+  await ui.press({ key: 'card-quality-clean' })
+  await w.clock.settle()
+  expect(w.compacts).toBe(1)
+  w.toasts = []
+  await w.clock.advance(121_000)
+  await w.clock.settle()
+  expect(w.toasts).toEqual(['Clean up timed out.'])
+})
+
 test('Start fresh while its last clear is still queued past the busy timeout queues no second clear', async ($, on) => {
   const w = stub(on)
   await $.session.start(START)

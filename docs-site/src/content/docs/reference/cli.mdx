@@ -183,7 +183,7 @@ The interactive `/token-coach` skill reads `coach --json` to drive a coaching co
 | `health` | Check the health of the current running session (fill, quality, active hooks) | n/a |
 | `health-selfcheck` | Self-test the health collection system | n/a |
 | `ensure-health` | SessionStart self-healer: repair drifted config, reinstall missing status line. Runs automatically via hook. | n/a |
-| `kill-stale` | Kill sessions older than a threshold (default 12h) still marked running | `--hours N`, `--dry-run` |
+| `kill-stale` | Kill terminal sessions older than a threshold (default 12h). Orphans (terminal gone, macOS/Linux) are only ended with `--include-orphans` | `--hours N`, `--dry-run`, `--include-orphans` |
 | `plugin-cleanup` | Remove stale or orphaned plugin cache entries | `--dry-run` |
 | `collect` | Parse session JSONL files and ingest them into the history database | `--days N`, `--quiet`, `--rebuild` |
 | `session-end-flush` | SessionEnd entry point: collect, regenerate dashboard, and capture checkpoint in one process | `--defer` |
@@ -213,6 +213,8 @@ Keep-Warm is opt-in and API-billing only. It refuses to run on subscription bill
 | Command | Description | Key flags |
 |---|---|---|
 | `cache-report` | Analyze prompt-cache expiry waste: tokens re-written after a cache window expired, per provider | `--days N`, `--fresh`, `--verbose`, `--json` |
+| `subagent-cache` | Manage the 1-hour subagent prompt-cache TTL: `status` reports state, the verdict and why, the advice line, and the net payoff estimate from your transcripts; `enable` (always unconditional, prints the estimate first) and `disable` set and undo `subagentPromptCacheTtl` -- nothing else writes it | `status`, `enable`, `disable`, `--json` |
+| `recommendations` | The daily usage-recommendations record (compact window, subagent cache lifetime): `status` (default) prints the items, the measured numbers, and any post-change wins; `refresh` re-measures now in a bounded, self-locking run. Advice only -- never writes either setting | `status`, `refresh`, `--json` |
 
 `cache-report` is an opportunity-tier signal. `--verbose` prints a per-session detail table so any headline figure traces to the sessions behind it. `--days` is clamped to the range 1 to 365.
 

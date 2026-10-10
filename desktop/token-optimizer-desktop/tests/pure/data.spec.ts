@@ -324,7 +324,6 @@ test('a timed-out status command is not retried with another launcher', async ()
   assert.equal(w.runs.filter(r => r.argv.includes('status-bar')).length, 1)
 })
 
-
 test('a registry entry outside the Claude folder is never run', async () => {
   const w = world()
   w.files[`${HOME}/.claude/plugins/installed_plugins.json`] = [
@@ -356,7 +355,6 @@ test('a kept limit is dropped once its own renewal has passed, never pinned', as
   assert.equal((await gather({ ...io, usage: async () => ({ rateLimits: [] }) }, garbled, {})).fiveHour, null)
 })
 
-
 test('on Windows a registry install under the Claude folder is found, whatever the separators', async () => {
   const win = 'C:\\Users\\me'
   const root = `${win}\\.claude\\plugins\\cache\\alexgreensh-token-optimizer\\token-optimizer\\5.13.29`
@@ -385,4 +383,82 @@ test('loaded on its own from a checkout, the scripts two folders up are used', a
   w.files[`${repo}/skills/token-optimizer/scripts/measure.py`] = [1, '#']
   const found = await findTokenOptimizerRoot({ ...fakeIo(w), pluginRoot: () => `${repo}/desktop/token-optimizer-desktop` }, HOME)
   assert.equal(found?.scriptsDir, `${repo}/skills/token-optimizer/scripts`)
+})
+
+test('gather reads the auto-compaction ceiling and re-reads changes each refresh', async () => {
+  const io = fakeIo(world())
+  io.usage = async () => ({ context: { tokens: 191_100, window: 1_000_000, percent: 19.11 } })
+  let ceiling: string | undefined = '480000'
+  let reads = 0
+  io.envAutoCompactWindow = async () => { reads++; return ceiling }
+  const first = await gather(io, null)
+  assert.equal(first.contextWindow, 480_000)
+  assert.equal(first.contextPercent, 39.8125)
+  ceiling = '240000'
+  const changed = await gather(io, first)
+  assert.equal(changed.contextWindow, 240_000)
+  assert.equal(changed.contextPercent, 79.625)
+  ceiling = undefined
+  const removed = await gather(io, changed)
+  assert.equal(removed.contextWindow, 1_000_000)
+  assert.equal(removed.contextPercent, 19.11)
+  assert.equal(reads, 3)
+})
+
+test('gather survives a missing or rejected auto-compaction environment read', async () => {
+  const io = fakeIo(world())
+  const baseline = await gather(io, null)
+  io.envAutoCompactWindow = async () => { throw new Error('environment unavailable') }
+  const result = await gather(io, null)
+  assert.equal(result.contextWindow, baseline.contextWindow)
+  assert.equal(result.contextPercent, baseline.contextPercent)
+  assert.deepEqual(result.fiveHour, baseline.fiveHour)
+  assert.equal(result.sessionId, baseline.sessionId)
+})
+
+test('a compact window from settings or /autocompact, resolved by the status command, sets the context mark', async () => {
+  const w = withTokenOptimizer(world())
+  const io = fakeIo(w)
+  io.usage = async () => ({ context: { tokens: 200_000, window: 1_000_000, percent: 20 } })
+  const run = io.run
+  let window: number | null = 400_000
+  io.run = async (argv, init) => {
+    const out = await run(argv, init)
+    return argv.includes('status-bar') ? { ...out, stdout: JSON.stringify({ ...JSON.parse(out.stdout), compactWindow: { tokens: window, source: 'setting: autoCompactWindow' } }) } : out
+  }
+
+  const first = await gather(io, null, { savings: true })
+  assert.equal(first.compactWindow, 400_000)
+  assert.equal(first.contextWindow, 400_000)
+  assert.equal(first.contextPercent, 50)
+  assert.equal(first.contextWindowReduced, true)
+
+  // A refresh that does not run the status command keeps the resolved window.
+  const kept = await gather(io, first)
+  assert.equal(kept.contextWindow, 400_000)
+  assert.equal(kept.contextPercent, 50)
+
+  // The env override and the setting both apply: the smaller one wins.
+  io.envAutoCompactWindow = async () => '250000'
+  const both = await gather(io, kept, { savings: true })
+  assert.equal(both.contextWindow, 250_000)
+  assert.equal(both.contextPercent, 80)
+
+  // The user removes both: the host's own figures come back, and the reduced flag clears.
+  io.envAutoCompactWindow = async () => undefined
+  window = null
+  const cleared = await gather(io, both, { savings: true })
+  assert.equal(cleared.compactWindow, null)
+  assert.equal(cleared.contextWindow, 1_000_000)
+  assert.equal(cleared.contextPercent, 20)
+  assert.equal(cleared.contextWindowReduced, false)
+})
+
+test('an older Token Optimizer that reports no compact window changes nothing', async () => {
+  const io = fakeIo(withTokenOptimizer(world()))
+  io.usage = async () => ({ context: { tokens: 200_000, window: 1_000_000, percent: 20 } })
+  const got = await gather(io, null, { savings: true })
+  assert.equal(got.compactWindow, null)
+  assert.equal(got.contextWindow, 1_000_000)
+  assert.equal(got.contextPercent, 20)
 })

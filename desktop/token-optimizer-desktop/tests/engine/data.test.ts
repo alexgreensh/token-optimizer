@@ -26,6 +26,8 @@ type Stored = {
   cacheLifetime: string | null
   lastRequestEpoch: number | null
   contextPercent: number | null
+  contextWindow: number | null
+  contextTokens: number | null
   fiveHour: unknown
   week: unknown
   branch: string | null
@@ -47,6 +49,8 @@ const STATUS = JSON.stringify({
 
 type World = {
   sessionId: string
+  autoCompactWindow?: string
+  context?: { window: number; tokens: number; percent: number }
   files: Record<string, [mtimeMs: number, contents: string]>
   dataDirs: string[]
   git: 'branch' | 'no-repo'
@@ -90,11 +94,11 @@ function stub(on: On, w: World) {
   const clock = mock.clock(on, { now: NOW_MS })
   on('session.id', () => ({ value: w.sessionId }))
   on('session.cwd', () => ({ value: '/work/project' }))
-  on('env.get', (_, e) => ({ value: e.name === 'HOME' ? HOME : undefined }))
+  on('env.get', (_, e) => ({ value: e.name === 'HOME' ? HOME : e.name === 'CLAUDE_CODE_AUTO_COMPACT_WINDOW' ? w.autoCompactWindow : undefined }))
   on('session.usage', () => ({
     value: {
       startedAt: 0,
-      context: { window: 1_000_000, tokens: 620_000, percent: 62 },
+      context: w.context ?? { window: 1_000_000, tokens: 620_000, percent: 62 },
       rateLimits: [
         { kind: 'five_hour', percentUsed: 80, resetsAt: '2026-10-03T12:00:00Z' },
         { kind: 'seven_day', percentUsed: 20 },
@@ -257,4 +261,14 @@ test('two clears in a row: the first clear\'s late read never writes over the se
   await $.classic.SessionStart({ source: 'clear', session_id: 'sess-3' } as never)
   await clock.settle()
   expect(stored(w)?.sessionId).toBe('sess-3')
+})
+
+test('the engine environment ceiling reaches the stored context window and percent', async ($, on) => {
+  const w = world({ autoCompactWindow: '480000', context: { window: 1_000_000, tokens: 191_100, percent: 18 } })
+  const clock = stub(on, w)
+  await $.session.start({ cwd: '/work/project', surface: 'desktop', isInteractive: true })
+  await clock.settle()
+  expect(stored(w)?.contextWindow).toBe(480_000)
+  expect(stored(w)?.contextPercent).toBe(39.8125)
+  expect(stored(w)?.contextTokens).toBe(191_100)
 })

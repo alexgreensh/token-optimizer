@@ -137,9 +137,10 @@ def _import_state():
 #
 # _TALLY:   session_id -> {"input": int, "output": int, "cache_read": int,
 #                          "cache_write": int, "reasoning": int}
-# _NUDGED:  session_id -> True once the first above-threshold nudge fires.
-#           Cleared on session_finalize so a new fill crossing could fire again
-#           in a very long session (currently once-per-session for simplicity).
+# _NUDGED:  session_id -> True once the above-threshold nudge has fired.
+#           Once set, the gate never re-arms within the session: a later drop
+#           below the threshold and a second crossing stay silent. Cleared on
+#           session_finalize/end so the NEXT session starts clean.
 # ---------------------------------------------------------------------------
 
 _LOCK = threading.Lock()
@@ -359,10 +360,12 @@ def on_pre_llm_call(**kwargs: Any) -> dict[str, str] | None:
     Returns None to stay silent.
 
     Gating rules:
-    - Only fires when fill > _NUDGE_THRESHOLD (70%).
-    - Once-per-crossing: after the first nudge fires for a session, subsequent
-      calls within the same session do NOT re-inject (avoids spam).
-      The gate is cleared on on_session_finalize so a subsequent session is clean.
+    - Fires when fill >= _NUDGE_THRESHOLD (0.70; the threshold is inclusive).
+    - Once per session, never re-arms: after the first nudge fires for a
+      session, subsequent calls within the same session do NOT re-inject,
+      even if fill drops back below the threshold and rises again (avoids
+      spam). The gate clears on on_session_finalize/on_session_end so the
+      next session starts clean.
     """
     try:
         session_id: str = kwargs.get("session_id") or ""

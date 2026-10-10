@@ -20,6 +20,7 @@ import json
 import math
 import os
 import re
+import shlex
 import sqlite3
 import subprocess
 import sys
@@ -239,6 +240,9 @@ def _apply_gpt56_sol_promo_pricing(as_of=None):
 _apply_gpt56_sol_promo_pricing()
 
 _pricing_override: dict | None = None
+# Models the user priced themselves in pricing.json: their flat card wins over
+# the bundled over-100K tier (calculate_cost per_request).
+_pricing_override_keys: set[str] = set()
 
 
 def _load_pricing() -> dict[str, dict[str, float]]:
@@ -249,6 +253,7 @@ def _load_pricing() -> dict[str, dict[str, float]]:
 
     pricing = dict(DEFAULT_PRICING)
     pricing.update(_bundled_prices())
+    _pricing_override_keys.clear()
     override_path = FLEET_DB_DIR / "pricing.json"
     if override_path.exists():
         try:
@@ -270,6 +275,7 @@ def _load_pricing() -> dict[str, dict[str, float]]:
                     elif merged.get("cache_write"):
                         merged["cache_write_1h"] = merged["cache_write"] * 1.6
                 pricing[model] = merged
+                _pricing_override_keys.add(model)
         except (json.JSONDecodeError, PermissionError, OSError, TypeError, AttributeError):
             pass
     _pricing_override = pricing
@@ -323,6 +329,46 @@ def _bundled_prices() -> dict[str, dict[str, float]]:
             if section == "anthropic":
                 rates.setdefault("cache_write_1h", rates["input"] * 2)
             out[key.replace("_", "-") if section == "anthropic" else key] = rates
+    return out
+
+
+# Claude Haiku 5.5 is priced by prompt length: a single request whose full prompt
+# (input + cache reads + cache writes) is over 100K tokens pays 5x on every rate.
+# Same threshold and cards as measure.py (prices.json "anthropic_long_context").
+ANTHROPIC_LONG_CONTEXT_INPUT_THRESHOLD = 100_000
+
+
+def _bundled_long_context_prices() -> dict[str, dict[str, float]]:
+    """Per-token over-100K Anthropic cards from prices.json, keyed like _bundled_prices."""
+    try:
+        if _BUNDLED_PRICES_PATH.stat().st_size > 2 * 1024 * 1024:
+            return {}
+        doc = json.loads(_BUNDLED_PRICES_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(doc, dict) or doc.get("schema") != 1:
+        return {}
+    cards = doc.get("anthropic_long_context")
+    if not isinstance(cards, dict):
+        return {}
+    out: dict[str, dict[str, float]] = {}
+    for key, card in cards.items():
+        if not isinstance(key, str) or not _PRICE_KEY_RE.match(key) or not isinstance(card, dict):
+            continue
+        rates = {}
+        for field in ("input", "output", "cache_read", "cache_write", "cache_write_1h"):
+            v = card.get(field)
+            if v is None:
+                continue
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or not 0 <= v <= 1000:
+                rates = {}
+                break
+            rates[field] = float(v) / 1e6
+        if "input" in rates and "output" in rates:
+            rates.setdefault("cache_read", rates["input"] * 0.1)
+            rates.setdefault("cache_write", rates["input"] * 1.25)
+            rates.setdefault("cache_write_1h", rates["input"] * 2)
+            out[key.replace("_", "-")] = rates
     return out
 
 
@@ -392,8 +438,15 @@ def _pricing_key(model_id: str) -> str:
 
 
 def calculate_cost(tokens: "TokenBreakdown", model: str,
-                   cache_write_1h: int = 0, cache_write_5m: int = 0) -> float:
+                   cache_write_1h: int = 0, cache_write_5m: int = 0,
+                   per_request: bool = False) -> float:
     """Calculate USD cost for a token breakdown at given model rates.
+
+    ``per_request=True`` says ``tokens`` is ONE API request: a model with an
+    over-100K card (Claude Haiku 5.5) then pays it when that request's full
+    prompt (input + cache reads + cache writes) exceeds the threshold. Totals
+    over many requests must leave it False, or every long session would be
+    repriced as if it were a single huge prompt.
 
     For Claude models, pass cache_write_1h / cache_write_5m to apply the correct
     per-TTL-tier rate (1h = 2x input; 5m = 1.25x input). When the split is
@@ -403,6 +456,10 @@ def calculate_cost(tokens: "TokenBreakdown", model: str,
     rates = pricing.get(model)
     if not rates:
         return 0.0
+    if (per_request and model not in _pricing_override_keys
+            and tokens.input + tokens.cache_read + tokens.cache_write
+            > ANTHROPIC_LONG_CONTEXT_INPUT_THRESHOLD):
+        rates = _bundled_long_context_prices().get(model, rates)
     cost = 0.0
     cost += tokens.input * rates.get("input", 0)
     cost += tokens.output * rates.get("output", 0)
@@ -478,6 +535,31 @@ def unpriced_summary(runs) -> dict[str, int]:
 # ---------------------------------------------------------------------------
 # Data Model
 # ---------------------------------------------------------------------------
+
+
+def _with_measure_cli(text: str) -> str:
+    """Swap a bare ``python3 measure.py`` in a fix snippet for the resolved script.
+
+    The sibling token-optimizer skill holds measure.py; when it is not there
+    (a standalone fleet-auditor install) the bare form is left as written.
+    """
+    script = Path(__file__).resolve().parents[2] / "token-optimizer" / "scripts" / "measure.py"
+    if not script.is_file():
+        return text
+    try:
+        from refetch_fingerprint import hint_python, shell_path, _windows_hints
+        quoted, python = shell_path(str(script)), hint_python()
+        windows = _windows_hints()
+    except ImportError:
+        quoted, python, windows = shlex.quote(str(script)), "python3", False
+    # `VAR=x cmd` is Bash only: on Windows the runtime is a leading --runtime flag.
+    text = re.sub(
+        r"TOKEN_OPTIMIZER_RUNTIME=(\w+) python3 measure\.py",
+        (lambda m: f"{python} {quoted} --runtime {m.group(1)}") if windows
+        else (lambda m: f"TOKEN_OPTIMIZER_RUNTIME={m.group(1)} {python} {quoted}"),
+        text)
+    return text.replace("python3 measure.py", f"{python} {quoted}")
+
 
 @dataclass
 class TokenBreakdown:
@@ -832,6 +914,7 @@ class ClaudeCodeAdapter(BaseAdapter):
                 _pricing_key(model_id),
                 cache_write_1h=cc_1h,
                 cache_write_5m=cc_5m,
+                per_request=True,
             )
 
         def flush_current_usage() -> None:
@@ -1534,11 +1617,11 @@ class SkillBloat(BaseDetector):
 
         if system == "codex":
             monthly_cost = 0.0
-            fix_snippet = "# Disable truly stale user skills with:\n# TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-skill disable --path <skill-dir>"
+            fix_snippet = _with_measure_cli("# Disable truly stale user skills with:\n# TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-skill disable --path <skill-dir>")
         else:
             cost_per_token = 3.0 / 1e6  # sonnet input rate as baseline
             monthly_cost = monthly_waste * cost_per_token
-            fix_snippet = "# Move unused skills out of ~/.claude/skills/\n# Check which skills you actually use:\n# python3 measure.py trends --days 30"
+            fix_snippet = _with_measure_cli("# Move unused skills out of ~/.claude/skills/\n# Check which skills you actually use:\n# python3 measure.py trends --days 30")
 
         return [WasteFinding(
             system=system,
@@ -1876,10 +1959,11 @@ class SessionHistoryBloat(BaseDetector):
         days = max(1, len({r.timestamp.strftime("%Y-%m-%d") for r in long_sessions}))
         if system == "codex":
             recommendation = "Use /compact at phase boundaries and install Codex compact prompt guidance plus balanced hooks."
-            fix_snippet = "TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-install --project ."
+            fix_snippet = _with_measure_cli("TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-install --project .")
         else:
-            recommendation = "Use /compact at 50-70% context fill. Set up Smart Compaction for automatic protection."
-            fix_snippet = "# Install Smart Compaction:\npython3 measure.py setup-smart-compact"
+            recommendation = ("Compact earlier than the auto-compact line (about 967K tokens on 1M models unless you set /autocompact): run /compact when the conversation is long or changes topic. "
+                              "Set up Smart Compaction for automatic protection.")
+            fix_snippet = _with_measure_cli("# Install Smart Compaction:\npython3 measure.py setup-smart-compact")
 
         return [WasteFinding(
             system=system,

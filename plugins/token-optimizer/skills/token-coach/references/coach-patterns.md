@@ -4,6 +4,13 @@ Reference file for Token Coach. Loaded for options a/b/d (config optimization).
 
 ---
 
+## Contents
+
+- [Architecture Patterns (The "What To Do" Layer)](#architecture-patterns-the-what-to-do-layer)
+- [Anti-Patterns (Common Mistakes with Fixes)](#anti-patterns-common-mistakes-with-fixes)
+
+---
+
 ## Architecture Patterns (The "What To Do" Layer)
 
 ### Pattern 1: Skill Design for Minimal Overhead
@@ -74,7 +81,7 @@ Reference file for Token Coach. Loaded for options a/b/d (config optimization).
 **Problem**: 70%+ of token usage on Opus when Sonnet/Haiku would suffice.
 **Symptoms**: High costs, hitting rate limits, budget burns fast.
 **Fix**: Add model routing to CLAUDE.md: "Default subagents to haiku for data gathering, sonnet for analysis. Opus only for complex reasoning."
-**Savings**: 50-75% cost reduction on multi-agent workflows. Same context tokens, much less spend.
+**Savings**: Large cost cuts on multi-agent workflows. Same context tokens, much less spend.
 
 ### The CLAUDE.md Novel
 **Problem**: 200+ lines in global CLAUDE.md. 2,000+ tokens loading every message.
@@ -103,7 +110,7 @@ Reference file for Token Coach. Loaded for options a/b/d (config optimization).
 ### The Singleton Session
 **Problem**: One long session for everything. Never uses /clear or /compact.
 **Symptoms**: Quality degrades over time. Compaction happens unexpectedly. Hallucinations increase.
-**Fix**: Session hygiene. /compact at 50-70%. /clear between unrelated topics. Fresh session for fresh work.
+**Fix**: Session hygiene. /compact at phase boundaries, not mid-task. /clear between unrelated topics. Fresh session for fresh work. On a 1M model, set `/autocompact` below the ~967K default if you want compaction to land inside the quality zone.
 **Savings**: Not token savings per se, but dramatically better output quality.
 
 ### The Unscoped Rules

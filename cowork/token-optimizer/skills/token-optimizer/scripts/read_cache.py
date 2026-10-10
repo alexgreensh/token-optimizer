@@ -63,6 +63,19 @@ def _redact_for_storage(text: str) -> Optional[str]:
     except Exception:
         return None
 
+def _marker_key(kind: str, file_path: str) -> Optional[str]:
+    """``<kind>:<redacted path>`` meta key for a first-read ledger marker.
+
+    The key is persisted in the session store, and a path can embed a token (a
+    URL-ish checkout dir, a credential in a cache folder name). Writer and
+    lookup both build the key here, so they always agree; a path with no
+    credential shape keeps its plain key. None means "do not persist": the
+    redactor is missing or refused, and the marker is simply not armed.
+    """
+    safe = _redact_for_storage(file_path)
+    return None if safe is None else f"{kind}:{safe}"
+
+
 from structure_map import (
     StructureMapResult,
     detect_structure_language,
@@ -874,8 +887,11 @@ def _first_read_compress(
         # orphan marker can only over-count edits → looks less safe to promote),
         # never the unsafe way. Keyed by the resolved file_path (handle_invalidate
         # normalizes the path identically).
+        _shadow_key = _marker_key("shadow_fr", file_path)
+        if _shadow_key is None:
+            return False
         store.set_meta(
-            f"shadow_fr:{file_path}",
+            _shadow_key,
             json.dumps({
                 "ts": time.time(),
                 "lang": language,
@@ -907,6 +923,17 @@ def _first_read_compress(
         # recorded the opportunity).
         try:
             import hashlib as _hl
+            # The skeleton is derived from file content and can carry a
+            # hardcoded credential; the path can carry tokens too. Same rule
+            # as the read-cache rows above: redacted or not persisted.
+            _safe_skel = _redact_for_storage(result.replacement_text or "")
+            # Redact the whole path, then cut: a token straddling the 500th
+            # character is a prefix no pattern recognises.
+            _safe_path = _redact_for_storage(file_path)
+            if _safe_path is not None:
+                _safe_path = _safe_path[:500]
+            if _safe_skel is None or _safe_path is None:
+                return False
             _fr_tool_use_id = "fr_shadow_" + _hl.sha256(
                 f"{session_id}|{file_path}".encode("utf-8", errors="replace")
             ).hexdigest()[:16]
@@ -917,15 +944,15 @@ def _first_read_compress(
                 tool_use_id=_fr_tool_use_id,
                 tool_name="Read",
                 tool_type="read",
-                command_or_path=file_path[:500],
+                command_or_path=_safe_path,
                 output_hash=_fr_output_hash,
                 output_chars=len(result.replacement_text or ""),
                 output_tokens_est=skel_tokens,
-                compressed_preview=(result.replacement_text or "")[:1500],
-                source_file_path=file_path[:500],
+                compressed_preview=_safe_skel[:1500],
+                source_file_path=_safe_path,
                 language=language,
                 archived_from="first_read_skeleton",
-                output_text=(result.replacement_text or "")[:50000],
+                output_text=_safe_skel[:50000],
             )
         except Exception:
             pass
@@ -1004,8 +1031,11 @@ def _arm_periphery_markers(
         return
     for p in related:
         try:
+            _active_key = _marker_key("active_fr", p)
+            if _active_key is None:
+                continue
             store.set_meta(
-                f"active_fr:{p}",
+                _active_key,
                 json.dumps({
                     "ts": time.time(),
                     "lang": language,
@@ -1076,16 +1106,17 @@ def _resolve_first_read_shadow_on_edit(
     # the active marker (promoted cohorts, measured tier). The active follow-ups
     # feed the WS2 runtime tripwire's per-cohort live edit-rate; a demotion fires
     # when that rate exceeds the gate.
-    _resolve_first_read_marker(
-        store, f"shadow_fr:{file_path}", FEATURE_FIRST_READ_EDIT_FOLLOWUP,
-        "opportunity", session_id, language,
-        "shadow first-read followed by edit",
-    )
-    _resolve_first_read_marker(
-        store, f"active_fr:{file_path}", FEATURE_FIRST_READ_EDIT_FOLLOWUP,
-        "measured", session_id, language,
-        "active first-read skeleton followed by edit",
-    )
+    for _kind, _tier, _detail in (
+        ("shadow_fr", "opportunity", "shadow first-read followed by edit"),
+        ("active_fr", "measured", "active first-read skeleton followed by edit"),
+    ):
+        _key = _marker_key(_kind, file_path)
+        if _key is None:
+            continue
+        _resolve_first_read_marker(
+            store, _key, FEATURE_FIRST_READ_EDIT_FOLLOWUP,
+            _tier, session_id, language, _detail,
+        )
 
 
 def _resolve_first_read_marker(

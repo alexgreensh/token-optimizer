@@ -83,11 +83,18 @@ python3 measure.py git-context --json
 
 ## Cleaning up
 
-`kill-stale` ends sessions older than a threshold that are still marked running. The default threshold is 12 hours. It is dry-run capable so you can see what would be killed first.
+`kill-stale` ends terminal sessions (processes positively identified as a CLI attached to a terminal) that have been running longer than a threshold. Sessions hosted by the desktop app, an IDE or the SDK, and sessions whose identity could not be verified, are never ended. The default threshold is 12 hours. It is dry-run capable so you can see what would be killed first.
 
 ```bash
 python3 measure.py kill-stale --dry-run
 python3 measure.py kill-stale --hours 6
+```
+
+On macOS and Linux an interactive session whose terminal died (no controlling terminal, parent is `launchd`/`init`/`systemd --user`, readable argv, not an Electron app) is listed as `ORPHAN` ("terminal gone; started 3d 4h ago"). `kill-stale` never ends orphans by default; it prints how many it left alone and the exact command. Add `--include-orphans` (with the same `--hours` and `--dry-run`) to end them; each one is re-verified right before it is signalled. Automations started by launchd or systemd normally carry `-p`/`--print` and are never treated as orphans. Windows has no `ORPHAN` class.
+
+```bash
+python3 measure.py kill-stale --include-orphans --dry-run
+python3 measure.py kill-stale --include-orphans --hours 24
 ```
 
 `plugin-cleanup` removes stale or orphaned plugin cache entries from the plugin cache directory.

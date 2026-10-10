@@ -10,6 +10,7 @@ import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import { appendFileNoFollow, writeFileNoFollow } from "./fs-utils";
+import { redact } from "./redact";
 import {
   checkpointManifestPath,
   checkpointSessionDir,
@@ -251,10 +252,13 @@ function buildCheckpointBody(
       const ts = msg.timestamp ? ` (${msg.timestamp})` : "";
       lines.push(`## ${role}${ts}`);
       lines.push("");
+      // Redact BEFORE cutting: a secret straddling the 2000-char cut is a
+      // prefix no pattern recognises.
+      const redactedContent = redact(msg.content);
       const content =
-        msg.content.length > 2000
-          ? msg.content.slice(0, 2000) + "\n\n[...truncated]"
-          : msg.content;
+        redactedContent.length > 2000
+          ? redactedContent.slice(0, 2000) + "\n\n[...truncated]"
+          : redactedContent;
       lines.push(content);
       lines.push("");
     }
@@ -371,7 +375,10 @@ function writeCheckpointArtifact(
   const filepath = safeCheckpointPath(sessionId, filename);
 
   try {
-    writeFileNoFollow(filepath, body, 0o600);
+    // Credential pass on the WHOLE body at the write boundary — message text
+    // is the only untrusted input and a secret inside any of it must never
+    // land on disk (the file is restored into a later session's context).
+    writeFileNoFollow(filepath, redact(body), 0o600);
   } catch {
     return null;
   }
@@ -505,8 +512,10 @@ function extractIntelligent(
     const content = msg.content;
     if (!content) continue;
 
-    // Truncate very long messages for pattern matching
-    const sample = content.slice(0, 3000);
+    // Truncate very long messages for pattern matching. Redact first: the
+    // extracted lines are persisted, and a secret straddling the 3000-char
+    // cut is a prefix no pattern recognises.
+    const sample = redact(content).slice(0, 3000);
 
     if (msg.role === "assistant") {
       if (matchesAny(sample, DECISION_PATTERNS)) {
@@ -648,10 +657,12 @@ export function captureCheckpointV2(
     const ts = msg.timestamp ? ` (${msg.timestamp})` : "";
     lines.push(`### ${role}${ts}`);
     lines.push("");
+    // Redact BEFORE cutting (see buildCheckpointBody).
+    const redactedContent = redact(msg.content);
     const content =
-      msg.content.length > 1500
-        ? msg.content.slice(0, 1500) + "\n\n[...truncated]"
-        : msg.content;
+      redactedContent.length > 1500
+        ? redactedContent.slice(0, 1500) + "\n\n[...truncated]"
+        : redactedContent;
     lines.push(content);
     lines.push("");
   }
@@ -670,7 +681,8 @@ export function captureCheckpointV2(
   const filepath = safeCheckpointPath(session.sessionId, filename);
 
   try {
-    writeFileNoFollow(filepath, lines.join("\n"), 0o600);
+    // Same write-boundary credential pass as the v1 artifact path.
+    writeFileNoFollow(filepath, redact(lines.join("\n")), 0o600);
   } catch {
     return null;
   }

@@ -684,6 +684,25 @@ def test_windowsapps_helper_in_both_launchers():
         assert "_path_contains_windowsapps" in source, (
             f"{label} launcher must define _path_contains_windowsapps"
         )
-        assert "tr '[:upper:]' '[:lower:]'" in source, (
-            f"{label} launcher must use tr for case-insensitive matching"
+        assert "[wW][iI][nN][dD][oO][wW][sS][aA][pP][pP][sS]" in source, (
+            f"{label} launcher must match casing without spawning tr"
         )
+
+@pytest.mark.parametrize("name,twin", [("python", "pythonw.exe"), ("python3", "pythonw.exe"), ("py", "pyw.exe")])
+def test_suffixless_windows_interpreter_swaps(tmp_path, name, twin):
+    py = _fake_interp(tmp_path, name, "CONSOLE")
+    pw = _fake_interp(tmp_path, twin, "GUI")
+    out, rc, _err = _run(_selection_driver(str(py), msys=True, safe=True), "", {})
+    assert rc == 0
+    assert out.strip() == str(pw)
+
+
+@pytest.mark.parametrize("cached", [False, True])
+def test_suffixless_exec_preserves_stdin_stdout_and_exit(tmp_path, cached):
+    py = _fake_interp(tmp_path, "python3", "CONSOLE")
+    _fake_interp(tmp_path, "pythonw.exe", "GUI")
+    driver = _cached_driver(py, tmp_path / "interp.cache") if cached else _discovered_driver(py)
+    out, rc, err = _run(driver, 'hello\n{"data":"שלום"}\n', {"FAKE_PY_EXIT": "7"})
+    assert rc == 7
+    assert 'GUI echo=hello\n{"data":"שלום"}' in out
+    assert not err

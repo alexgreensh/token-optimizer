@@ -210,9 +210,10 @@ def test_subagent_last_row_returns_main_thread_time(sb):
                    {"input_tokens": 5, "cache_creation": {"ephemeral_1h_input_tokens": 50}},
                    sidechain=True),
     ])
-    ts, lifetime = sb._status_bar_transcript_state(p)
+    ts, lifetime, model = sb._status_bar_transcript_state(p)
     assert ts == datetime.fromisoformat("2026-10-03T10:00:00+00:00").timestamp()
     assert lifetime == "5m"
+    assert model == "claude-opus-4-5"
 
 
 def test_one_hour_write_then_reads_returns_1h(sb):
@@ -222,9 +223,10 @@ def test_one_hour_write_then_reads_returns_1h(sb):
         _assistant("2026-10-03T10:01:00Z", {"cache_read_input_tokens": 40000}),
         _assistant("2026-10-03T10:02:00Z", {"cache_read_input_tokens": 40100}),
     ])
-    ts, lifetime = sb._status_bar_transcript_state(p)
+    ts, lifetime, model = sb._status_bar_transcript_state(p)
     assert lifetime == "1h"
     assert ts == datetime.fromisoformat("2026-10-03T10:02:00+00:00").timestamp()
+    assert model == "claude-opus-4-5"
 
 
 def test_command_reads_transcript_by_session_id(sb):
@@ -643,7 +645,7 @@ def test_post_compact_refresh_end_to_end_counts_once(sb, tmp_path):
     # Another refresh before the boundary lands: still 1.
     assert run(False) == 1
     # The boundary lands (fresh): a parse sees it and agrees; a second PostCompact does not add.
-    now_iso = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     with open(tr, "a", encoding="utf-8") as fh:
         fh.write(json.dumps({"type": "system", "subtype": "compact_boundary", "timestamp": now_iso}) + "\n")
     assert run(False) == 1
@@ -757,3 +759,79 @@ def test_compaction_memo_off_a_line_boundary_recounts(sb, tmp_path):
     # A memo that stopped partway into the second row.
     memo.write_text(json.dumps({"path": str(f), "size": len(mark) + 5, "count": 1}), encoding="utf-8")
     assert sb._status_bar_compactions(f, "sess-mid") == 3
+
+
+# --------------------------------------------------------------------------
+# --session takes a pasted/truncated id
+# --------------------------------------------------------------------------
+
+def test_truncated_session_id_resolves_a_unique_prefix(sb):
+    """`status-bar --session aaaaaaaa`: the truncated ids our own listings
+    print must resolve to the real session, not degrade to an empty report."""
+    _write_transcript(sb, [
+        _assistant("2026-10-03T10:00:00Z",
+                   {"cache_creation": {"ephemeral_1h_input_tokens": 10}}),
+    ])
+    out = sb.status_bar_payload("aaaaaaaa")
+    assert out["session_id"] == SID_A
+    assert out["cache_lifetime"] == "1h"
+    assert out["last_request_epoch"] is not None
+
+
+def test_short_session_id_under_6_chars_resolves_a_unique_prefix(sb):
+    """`--session aaaa` sanitizes to "unknown" today; a unique prefix match
+    should still find the one session it can only mean."""
+    _write_transcript(sb, [
+        _assistant("2026-10-03T10:00:00Z",
+                   {"cache_creation": {"ephemeral_1h_input_tokens": 10}}),
+    ])
+    out = sb.status_bar_payload("aaaa")
+    assert out["session_id"] == SID_A
+    assert out["cache_lifetime"] == "1h"
+
+
+def test_ambiguous_session_id_prefix_says_so(sb):
+    """Two sessions share the prefix: refuse to guess and say why."""
+    for sid in ("aaaa1111-0000-4000-8000-000000000001",
+                "aaaa2222-0000-4000-8000-000000000002"):
+        _write_transcript(sb, [
+            _assistant("2026-10-03T10:00:00Z",
+                       {"cache_creation": {"ephemeral_1h_input_tokens": 10}}),
+        ], sid=sid)
+    out = sb.status_bar_payload("aaaa")
+    assert out["savings"] is None
+    assert out["savings_reason"]
+    assert "ambiguous" in out["savings_reason"]
+    assert "2" in out["savings_reason"]
+
+
+def test_session_id_prefix_matching_nothing_says_so(sb):
+    """Zero matches: name the prefix that matched nothing, not 'unknown'."""
+    out = sb.status_bar_payload("zz")
+    assert out["session_id"] == "unknown"
+    assert out["savings_reason"]
+    assert "zz" in out["savings_reason"]
+
+
+def test_full_session_id_unaffected_by_prefix_resolution(sb):
+    """A real full id with no transcript keeps the existing behaviour."""
+    out = sb.status_bar_payload(SID_A)
+    assert out["session_id"] == SID_A
+    assert out["savings_reason"] != "no session id"
+
+
+@pytest.mark.parametrize("seps", [(",", ":"), (", ", ": "), (",", ": "), (" , ", " : ")])
+def test_compactions_counted_whatever_the_json_spacing(sb, tmp_path, seps):
+    """the cheap prefilter must not depend on how a writer spaced the
+    JSON; the parsed row decides. A message that merely quotes the marker
+    does not count."""
+    now = 1_800_000_000
+    iso = datetime.fromtimestamp(now - 30, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    rows = [{"type": "user", "message": {"content": 'the word "subtype": "compact_boundary" in text'}},
+            {"type": "system", "subtype": "compact_boundary", "timestamp": iso},
+            {"type": "assistant"},
+            {"type": "system", "subtype": "compact_boundary", "timestamp": iso}]
+    f = tmp_path / "spaced.jsonl"
+    f.write_text("\n".join(json.dumps(r, separators=seps) for r in rows) + "\n", encoding="utf-8")
+    assert sb._status_bar_compactions(f) == 2
+    assert sb._recent_compact_boundary(f, now=now) is True

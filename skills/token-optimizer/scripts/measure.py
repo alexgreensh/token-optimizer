@@ -35,6 +35,8 @@ Usage:
     python3 measure.py jsonl-trim --apply           # Trim with backup + sidecar
     python3 measure.py jsonl-dedup                 # Find duplicate system reminders (dry-run)
     python3 measure.py jsonl-dedup --apply          # Remove duplicates with backup
+    python3 measure.py deterministic-candidates          # Workflow parts that could be plain code, not model calls
+    python3 measure.py deterministic-candidates --days 14 --json  # Custom window, machine-readable
     python3 measure.py validate-impact                 # Compare before/after optimization metrics
     python3 measure.py validate-impact --strategy halves # Split sessions chronologically in half
     python3 measure.py validate-impact --days 14 --json  # Custom window, machine-readable
@@ -86,6 +88,7 @@ import textwrap
 import time
 import types
 import platform
+import posixpath
 import shutil
 from collections import deque
 from contextlib import contextmanager, nullcontext
@@ -113,7 +116,18 @@ from plugin_env import (
     snapshot_dir_candidates,
 )
 from utf8_io import enforce_utf8_io, reexec_in_utf8_mode
-from runtime_env import _safe_home, claude_home, detect_runtime, is_cowork, runtime_home, runtime_name_for_humans
+from runtime_env import (
+    _safe_home, claude_home, consume_runtime_flag, detect_runtime, hint_python, is_cowork,
+    runtime_home, runtime_name_for_humans, shell_path, _windows_hints,
+)
+
+# Spelled without the usual main-guard line on purpose: that exact line must
+# appear once in this file, at the entry point (tests patch in front of it).
+if __name__ in ("__main__",):
+    # `--runtime NAME` is the cmd.exe/PowerShell spelling of TOKEN_OPTIMIZER_RUNTIME=NAME
+    # (printed on Windows, where the env-prefix form does not parse). It must land in
+    # the environment before anything below reads the runtime.
+    sys.argv[:] = consume_runtime_flag(sys.argv, os.environ)
 from spawn_utils import spawn_detached
 
 # Every console-attached child we spawn on Windows flashes a cmd
@@ -124,6 +138,49 @@ from spawn_utils import spawn_detached
 # CreateProcess ignores CREATE_NO_WINDOW when DETACHED_PROCESS is set, so the OR
 # is harmless and keeps a single grep-able invariant across every spawn site.
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def _windows_stdio_kwargs():
+    """Usable std streams to hand a console-less child on Windows, else {}.
+
+    With creationflags=CREATE_NO_WINDOW and no std streams, a Windows child gets
+    a hidden console (python.exe) or NULL handles (pythonw.exe), so everything
+    it prints is lost. Passing the parent's streams makes CPython hand the child
+    the parent's own handles. Same guard as hooks/run.py (kept as a copy: this
+    script must not import from hooks/). Off Windows the child inherits the
+    streams anyway, so nothing is added.
+    """
+    if sys.platform != "win32":
+        return {}
+    kwargs = {}
+    missing = []
+    for name in ("stdin", "stdout", "stderr"):
+        stream = getattr(sys, name, None)
+        if stream is None:
+            missing.append(name)
+            continue
+        try:
+            stream.fileno()
+        except (AttributeError, OSError, ValueError):
+            missing.append(name)
+            continue
+        kwargs[name] = stream
+    # Same rule as hooks/run.py: a stream left out falls back to a possibly
+    # stale handle and the spawn fails, so an unusable one gets DEVNULL.
+    if kwargs:
+        for name in missing:
+            kwargs[name] = subprocess.DEVNULL
+    return kwargs
+
+
+def _run_script_child(script, extra_args=(), **run_kwargs):
+    """Run a sibling script under this interpreter with its output visible."""
+    return subprocess.run(
+        [sys.executable, str(script), *extra_args],
+        creationflags=_NO_WINDOW,
+        **_windows_stdio_kwargs(),
+        **run_kwargs,
+    )
 
 
 def _detached_python_exe():
@@ -148,6 +205,7 @@ def _detached_python_exe():
 import antigravity_session
 import codex_io
 import codex_session
+import deterministic_candidates
 import codex_state
 import copilot_session
 import cursor_session
@@ -179,7 +237,7 @@ _CLAUDE_TARGET_CMDS = frozenset(
         "ensure-health", "setup-hook", "setup-all-hooks",
         "cleanup-duplicate-hooks", "setup-daemon", "setup-quality-bar",
         "setup-smart-compact", "inject-routing", "inject-coach",
-        "setup-coach-injection", "check-staleness",
+        "setup-coach-injection", "check-staleness", "subagent-cache",
         # The dashboard daemon serves Claude-targeted data and derives its
         # port/label identity from the runtime ternaries, which default to
         # Claude for unknown runtimes — wrong identity under a foreign host.
@@ -198,6 +256,9 @@ _CLAUDE_TARGET_CMDS = frozenset(
         "collect", "conversation", "quality", "health", "kill-stale",
         "drift", "coach", "trends", "savings", "snapshot", "compare",
         "git-context", "dashboard-diagnose", "validate-impact",
+        # Usage recommendations: the refresh replays Claude transcripts and
+        # reads ~/.claude/settings.json; surfaces read its record file only.
+        "recommendations",
     }
 )
 # Back-compat alias (pre-Copilot name).
@@ -691,83 +752,108 @@ CLAUDE_MD_INJECTION_OVERHEAD = 75
 # Per-MTok pricing for Claude models across providers.
 # Non-Claude models are unaffected by tier selection.
 
+# Fallback Claude rate cards: a card-for-card mirror of the "anthropic"
+# section of the bundled pricing/prices.json, kept in literals so pricing
+# stays correct when the file is absent or disabled. A regression
+# test pins literal == bundled, so a card the refresh pipeline adds must be
+# mirrored here at the same time. First-party rates apply on anthropic /
+# vertex-global / bedrock; vertex-regional is +10% via _claude_cards.
+_FALLBACK_CLAUDE_MODELS = {
+    # cache_write = 5-minute TTL (1.25x input); cache_write_1h = 1-hour TTL (2x input).
+    # Verified 2026-09-24 from platform.claude.com/docs/en/about-claude/pricing.
+    "fable":  {"input": 10.0, "output": 50.0, "cache_read": 1.0,  "cache_write": 12.5,  "cache_write_1h": 20.0},
+    "fable_5": {"input": 10.0, "output": 50.0, "cache_read": 1.0, "cache_write": 12.5, "cache_write_1h": 20.0},
+    # Fable 5.1 / Mythos 5.1: cache reads are 0.025x input ($0.25), not 0.1x.
+    "fable_5_1": {"input": 10.0, "output": 50.0, "cache_read": 0.25, "cache_write": 12.5, "cache_write_1h": 20.0},
+    "mythos_5": {"input": 10.0, "output": 50.0, "cache_read": 1.0, "cache_write": 12.5, "cache_write_1h": 20.0},
+    "mythos_5_1": {"input": 10.0, "output": 50.0, "cache_read": 0.25, "cache_write": 12.5, "cache_write_1h": 20.0},
+    # Opus 5.5 is $4/$20 with 0.05x cache reads; Opus 4.5+ is $5/$25; Opus <=4.1 is $15/$75.
+    "opus_5_5": {"input": 4.0, "output": 20.0, "cache_read": 0.2, "cache_write": 5.0, "cache_write_1h": 8.0},
+    "opus":   {"input": 5.0,  "output": 25.0, "cache_read": 0.5,  "cache_write": 6.25,  "cache_write_1h": 10.0},
+    "opus_3":  {"input": 15.0, "output": 75.0, "cache_read": 1.5, "cache_write": 18.75, "cache_write_1h": 30.0},
+    "opus_4":  {"input": 15.0, "output": 75.0, "cache_read": 1.5, "cache_write": 18.75, "cache_write_1h": 30.0},
+    "opus_4_1": {"input": 15.0, "output": 75.0, "cache_read": 1.5, "cache_write": 18.75, "cache_write_1h": 30.0},
+    "opus_4_5": {"input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25, "cache_write_1h": 10.0},
+    "opus_4_6": {"input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25, "cache_write_1h": 10.0},
+    "opus_4_7": {"input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25, "cache_write_1h": 10.0},
+    "opus_4_8": {"input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25, "cache_write_1h": 10.0},
+    "opus_5":  {"input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25, "cache_write_1h": 10.0},
+    # Sonnet 5's launch rate became the standard price (2026-08-29, see the
+    # _SONNET_INTRO_PRICING_UNTIL block below); Sonnet <=4.6 stays $3/$15.
+    "sonnet": {"input": 2.0, "output": 10.0, "cache_read": 0.2, "cache_write": 2.5, "cache_write_1h": 4.0},
+    "sonnet_4": {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75, "cache_write_1h": 6.0},
+    "sonnet_4_5": {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75, "cache_write_1h": 6.0},
+    "sonnet_4_6": {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75, "cache_write_1h": 6.0},
+    "sonnet_5": {"input": 2.0, "output": 10.0, "cache_read": 0.2, "cache_write": 2.5, "cache_write_1h": 4.0},
+    # Sonnet 5.5's cache reads are 0.05x input ($0.10), not the usual 0.1x.
+    "sonnet_5_5": {"input": 2.0, "output": 10.0, "cache_read": 0.1, "cache_write": 2.5, "cache_write_1h": 4.0},
+    # Sonnet 4.6 / 4.5 / 4.0 keep the $3/$15 card. Sonnet 5 (2026-06-30) is $2/$10,
+    # so one shared "sonnet" bucket silently misprices the older generation by 50%.
+    "sonnet_legacy": {"input": 3.0,  "output": 15.0, "cache_read": 0.3,  "cache_write": 3.75,  "cache_write_1h": 6.0},
+    "haiku":  {"input": 1.0,  "output": 5.0,  "cache_read": 0.1,  "cache_write": 1.25,  "cache_write_1h": 2.0},
+    "haiku_3": {"input": 0.25, "output": 1.25, "cache_read": 0.03, "cache_write": 0.3, "cache_write_1h": 0.5},
+    "haiku_3_5": {"input": 0.8, "output": 4.0, "cache_read": 0.08, "cache_write": 1.0, "cache_write_1h": 1.6},
+    "haiku_4_5": {"input": 1.0, "output": 5.0, "cache_read": 0.1, "cache_write": 1.25, "cache_write_1h": 2.0},
+    # Haiku 5.5 is $0.10/$0.50 for prompts up to 100K tokens; longer prompts pay
+    # the 5x long-context card below.
+    "haiku_5_5": {"input": 0.1, "output": 0.5, "cache_read": 0.01, "cache_write": 0.125, "cache_write_1h": 0.2},
+}
+
+# Long-context surcharge cards, applied when a request's full prompt
+# (input + cache reads + cache writes) exceeds
+# ANTHROPIC_LONG_CONTEXT_INPUT_THRESHOLD. Claude Haiku 5.5 is priced by
+# prompt length: >100K pays 5x on every rate. Verified 2026-10-10 from
+# platform.claude.com/docs/en/about-claude/pricing ("Long context
+# pricing") and LiteLLM's claude-haiku-5-5 *_above_100k_tokens fields.
+# Mirrors the bundled "anthropic_long_context" section.
+_FALLBACK_CLAUDE_MODELS_LC = {
+    "haiku_5_5": {"input": 0.5, "output": 2.5, "cache_read": 0.05, "cache_write": 0.625, "cache_write_1h": 1.0},
+}
+
+
+def _claude_cards(table, mult=1.0):
+    """Tier-adjusted copy of a fallback card table (vertex-regional is +10%)."""
+    return {key: {f: round(v * mult, 6) for f, v in card.items()} for key, card in table.items()}
+
+
 PRICING_TIERS = {
     "anthropic": {
         "label": "Anthropic API",
-        "claude_models": {
-            # cache_write = 5-minute TTL (1.25x input); cache_write_1h = 1-hour TTL (2x input).
-            # Verified 2026-09-24 from platform.claude.com/docs/en/about-claude/pricing.
-            "fable":  {"input": 10.0, "output": 50.0, "cache_read": 1.0,  "cache_write": 12.5,  "cache_write_1h": 20.0},
-            # Fable 5.1 / Mythos 5.1: cache reads are 0.025x input ($0.25), not 0.1x.
-            "fable_5_1": {"input": 10.0, "output": 50.0, "cache_read": 0.25, "cache_write": 12.5, "cache_write_1h": 20.0},
-            # Opus 5.5 is $4/$20 with 0.05x cache reads; every other Opus is $5/$25.
-            "opus_5_5": {"input": 4.0, "output": 20.0, "cache_read": 0.2, "cache_write": 5.0, "cache_write_1h": 8.0},
-            "opus":   {"input": 5.0,  "output": 25.0, "cache_read": 0.5,  "cache_write": 6.25,  "cache_write_1h": 10.0},
-            "sonnet": {"input": 3.0,  "output": 15.0, "cache_read": 0.3,  "cache_write": 3.75,  "cache_write_1h": 6.0},
-            # Sonnet 4.6 / 4.5 / 4.0 keep the $3/$15 card. Sonnet 5 (2026-06-30) is $2/$10,
-            # so one shared "sonnet" bucket silently misprices the older generation by 50%.
-            "sonnet_legacy": {"input": 3.0,  "output": 15.0, "cache_read": 0.3,  "cache_write": 3.75,  "cache_write_1h": 6.0},
-            "haiku":  {"input": 1.0,  "output": 5.0,  "cache_read": 0.1,  "cache_write": 1.25,  "cache_write_1h": 2.0},
-        },
+        "claude_models": _claude_cards(_FALLBACK_CLAUDE_MODELS),
+        "claude_models_lc": _claude_cards(_FALLBACK_CLAUDE_MODELS_LC),
     },
     "vertex-global": {
         "label": "Vertex AI Global",
-        "claude_models": {
-            "fable":  {"input": 10.0, "output": 50.0, "cache_read": 1.0,  "cache_write": 12.5,  "cache_write_1h": 20.0},
-            # Fable 5.1 / Mythos 5.1: cache reads are 0.025x input ($0.25), not 0.1x.
-            "fable_5_1": {"input": 10.0, "output": 50.0, "cache_read": 0.25, "cache_write": 12.5, "cache_write_1h": 20.0},
-            # Opus 5.5 is $4/$20 with 0.05x cache reads; every other Opus is $5/$25.
-            "opus_5_5": {"input": 4.0, "output": 20.0, "cache_read": 0.2, "cache_write": 5.0, "cache_write_1h": 8.0},
-            "opus":   {"input": 5.0,  "output": 25.0, "cache_read": 0.5,  "cache_write": 6.25,  "cache_write_1h": 10.0},
-            "sonnet": {"input": 3.0,  "output": 15.0, "cache_read": 0.3,  "cache_write": 3.75,  "cache_write_1h": 6.0},
-            # Sonnet 4.6 / 4.5 / 4.0 keep the $3/$15 card. Sonnet 5 (2026-06-30) is $2/$10,
-            # so one shared "sonnet" bucket silently misprices the older generation by 50%.
-            "sonnet_legacy": {"input": 3.0,  "output": 15.0, "cache_read": 0.3,  "cache_write": 3.75,  "cache_write_1h": 6.0},
-            "haiku":  {"input": 1.0,  "output": 5.0,  "cache_read": 0.1,  "cache_write": 1.25,  "cache_write_1h": 2.0},
-        },
+        "claude_models": _claude_cards(_FALLBACK_CLAUDE_MODELS),
+        "claude_models_lc": _claude_cards(_FALLBACK_CLAUDE_MODELS_LC),
     },
     "vertex-regional": {
         "label": "Vertex AI Regional",
-        "claude_models": {
-            # Vertex regional applies a +10% surcharge on all Claude rates.
-            "fable":  {"input": 11.0, "output": 55.0, "cache_read": 1.1,  "cache_write": 13.75, "cache_write_1h": 22.0},
-            # Fable 5.1 / Mythos 5.1: cache reads are 0.025x input ($0.25), not 0.1x.
-            "fable_5_1": {"input": 11.0, "output": 55.0, "cache_read": 0.275, "cache_write": 13.75, "cache_write_1h": 22.0},
-            # Opus 5.5 is $4/$20 with 0.05x cache reads; every other Opus is $5/$25.
-            "opus_5_5": {"input": 4.4, "output": 22.0, "cache_read": 0.22, "cache_write": 5.5, "cache_write_1h": 8.8},
-            "opus":   {"input": 5.5,  "output": 27.5, "cache_read": 0.55, "cache_write": 6.875, "cache_write_1h": 11.0},
-            "sonnet": {"input": 3.3,  "output": 16.5, "cache_read": 0.33, "cache_write": 4.125, "cache_write_1h": 6.6},
-            "sonnet_legacy": {"input": 3.3,  "output": 16.5, "cache_read": 0.33, "cache_write": 4.125, "cache_write_1h": 6.6},
-            "haiku":  {"input": 1.1,  "output": 5.5,  "cache_read": 0.11, "cache_write": 1.375, "cache_write_1h": 2.2},
-        },
+        # Vertex regional applies a +10% surcharge on all Claude rates.
+        "claude_models": _claude_cards(_FALLBACK_CLAUDE_MODELS, 1.1),
+        "claude_models_lc": _claude_cards(_FALLBACK_CLAUDE_MODELS_LC, 1.1),
     },
     "bedrock": {
         "label": "AWS Bedrock",
-        "claude_models": {
-            "fable":  {"input": 10.0, "output": 50.0, "cache_read": 1.0,  "cache_write": 12.5,  "cache_write_1h": 20.0},
-            # Fable 5.1 / Mythos 5.1: cache reads are 0.025x input ($0.25), not 0.1x.
-            "fable_5_1": {"input": 10.0, "output": 50.0, "cache_read": 0.25, "cache_write": 12.5, "cache_write_1h": 20.0},
-            # Opus 5.5 is $4/$20 with 0.05x cache reads; every other Opus is $5/$25.
-            "opus_5_5": {"input": 4.0, "output": 20.0, "cache_read": 0.2, "cache_write": 5.0, "cache_write_1h": 8.0},
-            "opus":   {"input": 5.0,  "output": 25.0, "cache_read": 0.5,  "cache_write": 6.25,  "cache_write_1h": 10.0},
-            "sonnet": {"input": 3.0,  "output": 15.0, "cache_read": 0.3,  "cache_write": 3.75,  "cache_write_1h": 6.0},
-            # Sonnet 4.6 / 4.5 / 4.0 keep the $3/$15 card. Sonnet 5 (2026-06-30) is $2/$10,
-            # so one shared "sonnet" bucket silently misprices the older generation by 50%.
-            "sonnet_legacy": {"input": 3.0,  "output": 15.0, "cache_read": 0.3,  "cache_write": 3.75,  "cache_write_1h": 6.0},
-            "haiku":  {"input": 1.0,  "output": 5.0,  "cache_read": 0.1,  "cache_write": 1.25,  "cache_write_1h": 2.0},
-        },
+        "claude_models": _claude_cards(_FALLBACK_CLAUDE_MODELS),
+        "claude_models_lc": _claude_cards(_FALLBACK_CLAUDE_MODELS_LC),
     },
 }
+
+# Anthropic long-context surcharge threshold: a request whose full prompt
+# (input + cache reads + cache writes) exceeds this bills at the
+# "claude_models_lc" card when the model has one. Haiku 5.5's threshold is
+# 100K; other 1M Claude models have no long-context surcharge.
+ANTHROPIC_LONG_CONTEXT_INPUT_THRESHOLD = 100_000
 
 # --- Sonnet 5 introductory pricing (date-gated) ------------------------------------------
 # Sonnet 5 launched with INTRODUCTORY pricing ($2/$10 per MTok; cache_read 0.2, cache_write
 # 2.5 [5m] / 4.0 [1h]) in effect through 2026-08-31; the STANDARD rate ($3/$15) resumes
-# 2026-09-01. The PRICING_TIERS literal above holds the canonical STANDARD card; while the
-# introductory window is open we swap the introductory card into the FIRST-PARTY Anthropic tier
-# so dollar savings stay accurate today AND flip back automatically on 2026-09-01 with no manual
-# edit. Vertex/Bedrock introductory status is unverified, so those tiers are left at the standard
-# rate (conservative -- no new drift). The single "sonnet" bucket cannot distinguish Sonnet 5
-# from Sonnet 4.6, so 4.6 is repriced too (accepted 2026-07-10). Verified 2026-07-10 from
+# 2026-09-01. Since 2026-08-29 that launch rate IS the standard price (see
+# _apply_sonnet_intro_pricing below), so the _FALLBACK_CLAUDE_MODELS literal above already
+# carries $2/$10 on every tier -- matching what the bundled file forces onto Vertex/Bedrock
+# anyway -- and the swap below is a belt-and-braces no-op kept for its pinned-date tests.
+# Verified 2026-07-10 and re-verified 2026-10-10 from
 # platform.claude.com/docs/en/about-claude/pricing.
 _SONNET_STANDARD_RATES = {"input": 3.0, "output": 15.0, "cache_read": 0.3,
                           "cache_write": 3.75, "cache_write_1h": 6.0}
@@ -990,11 +1076,19 @@ def _apply_bundled_prices(path=None):
         card.setdefault("cache_read", round(card["input"] * 0.1, 6))
         card.setdefault("cache_write", round(card["input"] * 1.25, 6))
         card.setdefault("cache_write_1h", round(card["input"] * 2, 6))
+    claude_lc = _clean_price_cards(doc.get("anthropic_long_context"))
+    for card in claude_lc.values():
+        card.setdefault("cache_read", round(card["input"] * 0.1, 6))
+        card.setdefault("cache_write", round(card["input"] * 1.25, 6))
+        card.setdefault("cache_write_1h", round(card["input"] * 2, 6))
     # First-party rates apply on Vertex global and Bedrock; Vertex regional is +10%.
     for tier_name, tier in PRICING_TIERS.items():
         mult = 1.1 if tier_name == "vertex-regional" else 1.0
         for key, card in claude.items():
             tier["claude_models"][key] = {f: round(v * mult, 6) for f, v in card.items()}
+        lc_table = tier.setdefault("claude_models_lc", {})
+        for key, card in claude_lc.items():
+            lc_table[key] = {f: round(v * mult, 6) for f, v in card.items()}
     for table, section in ((OPENAI_MODEL_PRICING, "openai"),
                            (OPENAI_LONG_CONTEXT_PRICING, "openai_long_context"),
                            (GEMINI_MODEL_PRICING, "gemini"),
@@ -1158,10 +1252,26 @@ _KNOWN_PROVIDER_PREFIXES = {
     "openrouter", "gateway", "litellm", "azure", "aws",
 }
 
+# Bedrock inference-profile ids are DOT-qualified
+# ("us.anthropic.claude-haiku-4-5", "global.anthropic.claude-sonnet-4-5"):
+# a leading chain of known provider/region tokens separated by dots. Dots stay
+# out of the slash/colon loop so ids like "claude-3.5-sonnet" or "gpt-4.1"
+# are never cut on a version dot.
+_DOTTED_PROVIDER_TOKENS = _KNOWN_PROVIDER_PREFIXES | {
+    "amazon", "us", "us-gov", "eu", "ap", "apac", "au", "ca", "cn",
+    "global", "jp", "sa", "me", "af", "il",
+}
+_DOTTED_PROVIDER_PREFIX_RE = re.compile(
+    r"^(?:(?:" + "|".join(sorted(_DOTTED_PROVIDER_TOKENS)) + r")\.)+")
+
 
 def _strip_provider_prefixes(model):
     value = str(model).strip().lower()
     while True:
+        dotted = _DOTTED_PROVIDER_PREFIX_RE.match(value)
+        if dotted:
+            value = value[dotted.end():]
+            continue
         slash = value.find("/")
         colon = value.find(":")
         if slash == -1 and colon == -1:
@@ -1214,7 +1324,7 @@ def _save_pricing_tier(tier):
 
 
 def _get_model_cost(model, input_tokens, output_tokens, cache_read=0, cache_create=0, tier=None,
-                    cache_create_1h=None, cache_create_5m=None):
+                    cache_create_1h=None, cache_create_5m=None, per_request=False):
     """Calculate USD cost for a given model and token counts using the active pricing tier.
 
     Returns cost in USD. OpenAI/Codex and Gemini models use provider-specific
@@ -1225,6 +1335,11 @@ def _get_model_cost(model, input_tokens, output_tokens, cache_read=0, cache_crea
       - cache_create_5m: 5-minute TTL writes (1.25x input rate, e.g. $6.25/MTok for Opus)
     When the split is unavailable (both None), the total cache_create uses the 5m rate
     (conservative; 5m is the more common tier for most Claude Code workloads).
+
+    per_request=True says the token counts are ONE API request. Only then does a
+    model with a prompt-length card (Haiku 5.5 over 100K) pay it: the tier is
+    decided per request, so a session total, a per-day sum or a 1M-token rate
+    probe must be priced on the base card or it reads ~5x too high.
     """
     if tier is None:
         tier = _load_pricing_tier()
@@ -1251,11 +1366,21 @@ def _get_model_cost(model, input_tokens, output_tokens, cache_read=0, cache_crea
     normalized = _claude_price_key(model, tier_data["claude_models"]) if model else None
     if normalized and normalized in tier_data["claude_models"]:
         rates = tier_data["claude_models"][normalized]
+        lc_models = tier_data.get("claude_models_lc") or {}
     else:
         # Non-Claude model: use Anthropic tier rates for Claude, skip for others
         rates = PRICING_TIERS["anthropic"]["claude_models"].get(normalized or "", None)
+        lc_models = PRICING_TIERS["anthropic"].get("claude_models_lc") or {}
         if rates is None:
             return 0.0
+
+    # Prompt-length surcharge: Anthropic counts ALL of a request's input
+    # (input + cache reads + cache writes = full_input) against the
+    # long-context threshold. Haiku 5.5 >100K pays 5x on every rate. Applies
+    # to a single request only (per_request); aggregates use the base card.
+    if (per_request and normalized in lc_models
+            and full_input > ANTHROPIC_LONG_CONTEXT_INPUT_THRESHOLD):
+        rates = lc_models[normalized]
 
     # Price cache-write tokens by TTL tier when the split is available.
     # 1h tier = 2x input (cache_write_1h); 5m tier = 1.25x input (cache_write).
@@ -1848,6 +1973,12 @@ def _mcp_read_json(path, skipped=None):
             return None
     except OSError:
         return None
+    # open() on a FIFO blocks until a writer shows up, and this runs on the
+    # SessionStart path. A directory, socket or device is not a config either.
+    if not _is_regular_file(path):
+        if skipped is not None:
+            skipped.append({"path": str(path), "reason": "NotRegularFile"})
+        return None
     try:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -2246,7 +2377,7 @@ def _scan_plugin_skills_and_commands():
     # Load enabledPlugins from settings.json to filter out disabled plugins
     enabled_plugins = None
     settings_path = CLAUDE_DIR / "settings.json"
-    if settings_path.exists():
+    if _is_regular_file(settings_path):
         try:
             with open(settings_path, "r", encoding="utf-8") as f:
                 settings = json.load(f)
@@ -2643,7 +2774,7 @@ def measure_components():
     # Read settings.json once (used for hooks, env vars, MCP, file exclusion)
     settings_path = CLAUDE_DIR / "settings.json"
     _cached_settings = None
-    if settings_path.exists():
+    if _is_regular_file(settings_path):
         try:
             with open(settings_path, "r", encoding="utf-8") as f:
                 _cached_settings = json.load(f)
@@ -2654,7 +2785,7 @@ def measure_components():
     global_deny_rules = _extract_deny_read_rules(_cached_settings)
     project_settings_path = cwd / ".claude" / "settings.json"
     _project_settings = None
-    if project_settings_path.exists():
+    if _is_regular_file(project_settings_path):
         try:
             with open(project_settings_path, "r", encoding="utf-8") as f:
                 _project_settings = json.load(f)
@@ -3195,26 +3326,156 @@ def calculate_totals(components):
 
 
 def _is_1m_model(model_str):
-    """Check if a model string indicates a 1M-context-eligible model.
+    """Check if a model string indicates a 1M-context model.
 
-    Since March 2026, all Claude models on Max/Team/Enterprise plans have 1M.
-    Rather than hardcoding model names (which change constantly), we assume
-    1M for any non-haiku Claude model string. Haiku stays at 200K.
-    Users can always override with TOKEN_OPTIMIZER_CONTEXT_SIZE or --context-size.
+    Verified 2026-10-10 from code.claude.com/docs/en/model-config#extended-context:
+      - Fable 5.1/5, Sonnet 5 and later, Haiku 5.5, Opus 4.7 and later run
+        with the 1M window by default (no [1m] suffix).
+      - Sonnet 4.6 and Opus 4.6 reach 1M ONLY through their [1m] variant.
+      - Older models (Haiku <= 4.5, Sonnet <= 4.5, Opus <= 4.5) are 200K.
+    A bare family alias (`sonnet`, `opus`, `fable`) resolves to a 1M-native
+    model on the Anthropic API; bare `haiku` is left at 200K because the
+    alias resolves to Haiku 5.5 on the Anthropic API but Haiku 4.5 on other
+    providers (conservative, overridable with TOKEN_OPTIMIZER_CONTEXT_SIZE).
     """
-    m = model_str.lower().strip()
+    return _claude_model_window(model_str) >= 1_000_000
+
+
+_CLAUDE_MODEL_ID_RE = re.compile(
+    r"^(?:claude[-_])?(fable|mythos|opus|sonnet|haiku)"
+    r"(?:[-_](\d+))?(?:[-_](\d+))?"
+)
+
+
+def _claude_model_window(model_str):
+    """Context window for a Claude model string, per the verified doc table.
+
+    1M-native models (Fable, Sonnet 5+, Haiku 5.5, Opus 4.7+) get 1M with no
+    suffix; Sonnet 4.6 / Opus 4.6 get 1M only with the ``[1m]`` variant;
+    everything else is 200K. Unrecognized strings fall back to the 1M default
+    that detect_context_window() documents (most users are on 1M-native
+    models); override with TOKEN_OPTIMIZER_CONTEXT_SIZE.
+    """
+    m = _strip_provider_prefixes(str(model_str or "").split("/")[-1])
     if not m:
-        return False
-    # Direct 1M indicators
-    if "1m" in m or "1000k" in m:
-        return True
-    # Haiku models explicitly stay at 200K
-    if "haiku" in m:
-        return False
-    # Any other Claude model string (opus, sonnet, or future models) -> assume 1M eligible
-    # This covers: 'opus', 'sonnet', 'claude-opus-4-6', 'claude-opus-4-7', 'claude-sonnet-4-6', etc.
-    # Users on non-Max plans who actually have 200K can set TOKEN_OPTIMIZER_CONTEXT_SIZE=200000
-    return True
+        return 200_000
+    one_m_suffix = "[1m]" in m or "1000k" in m
+    m = m.replace("[1m]", "").strip()
+    # Strip date suffixes (-20250929 / @20250929): same model, same window.
+    m = re.sub(r"[-@]\d{8}$", "", m).strip()
+    match = _CLAUDE_MODEL_ID_RE.match(m)
+    if not match:
+        # Claude 3-era and older ids ("claude-3-5-sonnet-20241022",
+        # "claude-3-haiku", "claude-2", "instant") are all 200K windows.
+        if (_CLAUDE_LEGACY_ID_RE.search(m)
+                or re.search(r"claude[-_]?[0-3]\b", m)
+                or "instant" in m):
+            return 200_000
+        # GPT-5.6 (Sol/Terra/Luna) publishes 1.05M, same as the other runtimes' tables.
+        if re.match(r"gpt-5\.6(?:$|-)", m):
+            return 1_050_000
+        # Unrecognized (e.g. gateway alias): keep the historical 1M default.
+        return 1_000_000
+    family, major_raw, minor_raw = match.groups()
+    if family in ("fable", "mythos"):
+        return 1_000_000  # every Fable/Mythos release is 1M-native
+    try:
+        major = int(major_raw) if major_raw else None
+        minor = int(minor_raw) if minor_raw else 0
+    except ValueError:
+        return 1_000_000
+    if family == "haiku":
+        if major is None:
+            return 200_000  # bare alias: provider-dependent version, conservative
+        return 1_000_000 if (major, minor) >= (5, 5) else 200_000
+    if family == "sonnet":
+        if major is None:
+            return 1_000_000  # alias resolves to Sonnet 5.5 on the Anthropic API
+        if major >= 5:
+            return 1_000_000
+        if major == 4 and minor == 6:
+            return 1_000_000 if one_m_suffix else 200_000
+        return 200_000
+    if family == "opus":
+        if major is None:
+            return 1_000_000  # alias resolves to Opus 5.5 on the Anthropic API
+        if major >= 5:
+            return 1_000_000
+        if major == 4 and minor >= 7:
+            return 1_000_000
+        if major == 4 and minor == 6:
+            return 1_000_000 if one_m_suffix else 200_000
+        return 200_000
+    return 1_000_000
+
+
+def _configured_model_string():
+    """The model string the user configured (env first, then settings), the
+    same lookup order detect_context_window() uses. Lowercased, may be ''."""
+    for var in ("CLAUDE_MODEL", "ANTHROPIC_MODEL"):
+        v = (os.environ.get(var) or "").strip().lower()
+        if v:
+            return v
+    for cfg_name in ("config.json", "settings.json"):
+        try:
+            if not _is_regular_file(CLAUDE_DIR / cfg_name):
+                continue
+            with open(CLAUDE_DIR / cfg_name, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            m = cfg.get("model") or cfg.get("primaryModel") or ""
+            if isinstance(m, str) and m.strip():
+                return m.strip().lower()
+        except (OSError, ValueError, AttributeError):
+            continue
+    return ""
+
+
+def _plain_46_family(model_str):
+    """'opus' / 'sonnet' when model_str is a 4.6 id WITHOUT the [1m] suffix."""
+    m = _strip_provider_prefixes(str(model_str or "").split("/")[-1])
+    if not m or "[1m]" in m or "1000k" in m:
+        return None
+    m = re.sub(r"[-@]\d{8}$", "", m).strip()
+    match = _CLAUDE_MODEL_ID_RE.match(m)
+    if not match:
+        return None
+    family, major, minor = match.groups()
+    if family in ("opus", "sonnet") and major == "4" and minor == "6":
+        return family
+    return None
+
+
+def _promote_plain_46_window(model_str, window, context_tokens):
+    """Opus/Sonnet 4.6 reach 1M only as the [1m] variant, but Claude Code
+    writes the PLAIN id into the transcript, so a 1M session looks 200K.
+
+    Two pieces of evidence say the window is bigger, in this order:
+      1. the configured (env/settings) model carries [1m] for the same family;
+      2. observed tokens exceed the window (arithmetic, needs no cooperation).
+    Returns (window, source_or_None, inferred_from_tokens). Explicit user
+    overrides (TOKEN_OPTIMIZER_CONTEXT_SIZE, --context-size, DISABLE_1M) are
+    never promoted: _context_window_for_model_str() returns them unchanged for
+    the [1m] spelling too, which is how that case is detected.
+    """
+    family = _plain_46_family(model_str)
+    if not family or window >= 1_000_000:
+        return window, None, False
+    promoted = _context_window_for_model_str(f"{model_str.strip()}[1m]")
+    if promoted <= window:
+        return window, None, False
+    configured = _configured_model_string()
+    if "[1m]" in configured:
+        c = _CLAUDE_MODEL_ID_RE.match(
+            re.sub(r"[-@]\d{8}$", "", configured.replace("[1m]", "").strip()))
+        if c and c.group(1) == family and (c.group(2) is None
+                                          or (c.group(2), c.group(3)) == ("4", "6")):
+            return promoted, f"settings/env model [1m]: {configured}", False
+    try:
+        if context_tokens is not None and float(context_tokens) > window:
+            return promoted, "observed tokens above the 200K window (plain 4.6 id, 1M variant)", True
+    except (TypeError, ValueError):
+        pass
+    return window, None, False
 
 
 def _context_window_for_model_str(model_str):
@@ -3225,7 +3486,8 @@ def _context_window_for_model_str(model_str):
       1. CLAUDE_CODE_DISABLE_1M_CONTEXT=1 -> 200k (kills the 1M tier globally).
       2. TOKEN_OPTIMIZER_CONTEXT_SIZE=<int> -> that exact size.
       3. _cli_context_size (parsed from the CLI --context-size flag).
-      4. The model string itself: 1M for a 1M variant, 200k otherwise.
+      4. The model string itself: _claude_model_window() (1M-native models,
+         [1m] variants, 200K otherwise).
 
     Note: the env overrides in steps 1-3 are GLOBAL -- they are not keyed
     to the model string. A user who exports TOKEN_OPTIMIZER_CONTEXT_SIZE=200000
@@ -3251,9 +3513,271 @@ def _context_window_for_model_str(model_str):
     m = (model_str or "").lower().strip()
     if not m:
         return None
-    if "haiku" in m:
-        return 200_000
-    return 1_000_000 if _is_1m_model(m) else 200_000
+    return _claude_model_window(m)
+
+
+# ---------------------------------------------------------------------------
+# Effective compact-window resolver (the single source for "where this session
+# will auto-compact"). Verified 2026-10-10 from
+# code.claude.com/docs/en/model-config#context-window-and-auto-compaction and
+# the settings reference:
+#   precedence: env CLAUDE_CODE_AUTO_COMPACT_WINDOW > per-model
+#   modelSettings[<canonical id>].autoCompactWindow (written by /autocompact)
+#   > top-level autoCompactWindow > default (~967K on 1M-native models, the
+#   model limit on 200K models). Explicit values clamp to 100000..1000000 and
+#   cap at the model's own window. CLAUDE_AUTOCOMPACT_PCT_OVERRIDE is then the
+#   percentage of the window already used when compaction runs -- lower values
+#   compact EARLIER and it can never raise the threshold.
+#
+# modelSettings shape: verified 2026-10-10 from a real settings.json and from the
+# Claude Code 2.1.296 binary's schema --
+#   "modelSettings": {"claude-opus-5-5": {"autoCompactWindow": 500000 | "auto"}, ...}
+#   keyed by FULL model id, one object per model; /autocompact writes it.
+#   "auto" means the window tuned for the model and replaces the top-level
+#   autoCompactWindow for that model (it does not fall through to it).
+# ---------------------------------------------------------------------------
+_COMPACT_WINDOW_MIN = 100_000
+_COMPACT_WINDOW_MAX = 1_000_000
+# Native 1M models compact at ~967K by default (docs: "approximately 967K").
+_COMPACT_WINDOW_1M_DEFAULT = 967_000
+
+
+# Host parse of CLAUDE_CODE_AUTO_COMPACT_WINDOW (Claude Code 2.1.296 Dd/FOo/GFe):
+# scientific notation and thousand separators first, then a decimal prefix.
+# NaN or <= 0 is INVALID and IGNORED (the next source applies); a valid value is
+# capped at 1M and floored at 100K by _clamp_compact_window. Shared vectors:
+# tests/fixtures/compact_window_env_vectors.json (Python, statusline.js, parse.ts).
+_HOST_SCI_RE = re.compile(r"^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)[eE][+-]?[0-9]+$")
+_HOST_GROUPED_RE = re.compile("^[+-]?[0-9]{1,3}([_,\u00a0\u202f ])[0-9]{3}(?:\\1[0-9]{3})*$")
+_HOST_SEPARATOR_RE = re.compile("[_,\u00a0\u202f ]")
+_HOST_INT_PREFIX_RE = re.compile(r"^[+-]?[0-9]+")
+_HOST_FLOAT_PREFIX_RE = re.compile(r"^[+-]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?")
+
+
+def _host_parse_int(raw):
+    """Claude Code's Dd(): int, or None where the host yields NaN."""
+    text = str(raw).strip()
+    if len(text) <= 32:
+        if _HOST_SCI_RE.match(text):
+            try:
+                number = float(text)
+            except ValueError:
+                return None
+            return int(number) if math.isfinite(number) and number == int(number) else None
+        if _HOST_GROUPED_RE.match(text):
+            return int(_HOST_SEPARATOR_RE.sub("", text))
+    m = _HOST_INT_PREFIX_RE.match(text)
+    return int(m.group(0)) if m else None
+
+
+def _parse_compact_window_value(value):
+    """Parse a compact-window token count -> int, or None when it is ignored.
+
+    Numbers pass through when positive. Strings parse the way the host does
+    (see _host_parse_int); "auto", "", None, garbage, zero and negatives -> None
+    so the caller falls through to the next precedence level.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        if not math.isfinite(value) or value <= 0:
+            return None
+        return int(value)
+    parsed = _host_parse_int(value)
+    return parsed if parsed is not None and parsed > 0 else None
+
+
+def _clamp_compact_window(tokens):
+    """Explicit windows accept 100000..1000000 per the settings reference."""
+    return max(_COMPACT_WINDOW_MIN, min(_COMPACT_WINDOW_MAX, int(tokens)))
+
+
+def _canonical_compact_model_id(model):
+    """Canonical id Claude Code matches modelSettings keys against.
+
+    The host canonicalizes aliases, [1m] variants, date-suffixed ids and
+    recognized provider ids, so "claude-opus-5-5[1m]" and
+    "claude-opus-5-5-20261001" both read the "claude-opus-5-5" entry.
+    """
+    m = str(model or "").strip().lower()
+    if not m:
+        return ""
+    # provider-prefixed ids ("anthropic/x", "us.anthropic.x", "bedrock:x")
+    m = _strip_provider_prefixes(m.split("/")[-1])
+    m = m.replace("[1m]", "").strip()
+    m = re.sub(r"[-@]\d{8}$", "", m)        # -20250929 / @20250929 date suffix
+    if m and not m.startswith("claude-"):
+        m = "claude-" + m                   # bare "opus-5-5" -> canonical form
+    return m
+
+
+def _model_settings_window(model, model_settings):
+    """(value, key) of the modelSettings entry's autoCompactWindow for `model`,
+    or (None, None). Matches by exact id, canonicalized id, or family alias."""
+    if not isinstance(model_settings, dict) or not model:
+        return None, None
+    raw = str(model).strip().lower()
+    canon = _canonical_compact_model_id(model)
+    family_match = _CLAUDE_MODEL_ID_RE.match(canon)
+    family = family_match.group(1) if family_match else ""
+    # Two passes: an exact/canonical id outranks a family alias regardless of
+    # key order; the first matching key decides.
+    for match_family in (False, True):
+        for key, entry in model_settings.items():
+            if not isinstance(entry, dict) or "autoCompactWindow" not in entry:
+                continue
+            key_l = str(key).strip().lower()
+            if match_family:
+                hit = bool(family) and key_l == family
+            else:
+                hit = key_l == raw or _canonical_compact_model_id(key_l) == canon
+            if hit:
+                return entry.get("autoCompactWindow"), key
+    return None, None
+
+
+def _compact_window_env():
+    """Live env values for the compact-window resolver: process env first, then
+    the settings.json env block (the host injects settings env into the
+    session, and hooks don't always inherit it)."""
+    out = {}
+    try:
+        for var in ("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"):
+            val = _resolve_feature_env(var)
+            if val is not None:
+                out[var] = val
+    except Exception:
+        pass
+    return out
+
+
+def _resolve_compact_window(model, env=None, settings=None):
+    """Full resolution of the effective compact window for a session model.
+
+    Returns {"tokens", "source", "user_override", "model_window",
+    "default_tokens"}. ``user_override`` is False when only the tuned default
+    produced the answer -- callers that mirror the host's own percentage must
+    only recompute fill when a real override shrank the window (PR #210).
+    """
+    if env is None:
+        env = _compact_window_env()
+    if settings is None:
+        try:
+            settings, _settings_path = _read_settings_json()
+        except Exception:
+            settings = {}
+    if not isinstance(env, dict):
+        env = {}
+    if not isinstance(settings, dict):
+        settings = {}
+
+    model_window = _context_window_for_model_str(model)
+    if not model_window:
+        try:
+            model_window = detect_context_window()[0]
+        except Exception:
+            model_window = 1_000_000
+
+    default_tokens = (_COMPACT_WINDOW_1M_DEFAULT if model_window >= 1_000_000
+                      else model_window)
+    default_source = (
+        "default (~967K for 1M-native models)" if model_window >= 1_000_000
+        else f"default (model window {model_window})"
+    )
+
+    tokens = None
+    source = None
+    user_override = False
+
+    # 1. env var wins over every settings source.
+    raw_env = env.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW")
+    parsed = _parse_compact_window_value(raw_env)
+    if parsed is not None:
+        tokens = _clamp_compact_window(parsed)
+        source = f"env CLAUDE_CODE_AUTO_COMPACT_WINDOW={raw_env}"
+        if str(raw_env).strip() != str(tokens):
+            # The host's own reading ("500k" is 500, floored) is not the number
+            # the user typed: say so instead of presenting it as their override.
+            if tokens == parsed:
+                source += f" (read as {parsed})"
+            else:
+                bound = "floored to" if tokens > parsed else "capped at"
+                source += f" (read as {parsed}, {bound} {tokens})"
+        user_override = True
+    else:
+        prefix = ""
+        # 2. /autocompact's per-model entry beats the top-level setting.
+        ms_val, ms_key = _model_settings_window(model, settings.get("modelSettings"))
+        parsed_ms = _parse_compact_window_value(ms_val)
+        if parsed_ms is not None:
+            tokens = _clamp_compact_window(parsed_ms)
+            source = f"modelSettings[{ms_key}].autoCompactWindow={ms_val}"
+            user_override = True
+        elif ms_val == "auto":
+            # `/autocompact auto` is stored per model and means "the window
+            # tuned for this model": it replaces the top-level value for this
+            # model, it does not fall through to it (host: byModel[key] ?? top
+            # level, then "auto" -> tuned default).
+            tokens = default_tokens
+            source = (f"modelSettings[{ms_key}].autoCompactWindow='auto' "
+                      f"(tuned default, top-level autoCompactWindow not used); {default_source}")
+        else:
+            if ms_val is not None:
+                prefix = (f"modelSettings[{ms_key}].autoCompactWindow={ms_val!r} "
+                          "(not a window, ignored); ")
+            # 3. Top-level autoCompactWindow.
+            top_val = settings.get("autoCompactWindow")
+            parsed_top = _parse_compact_window_value(top_val)
+            if parsed_top is not None:
+                tokens = _clamp_compact_window(parsed_top)
+                source = f"{prefix}autoCompactWindow={top_val}"
+                user_override = True
+            else:
+                # 4. Default.
+                tokens = default_tokens
+                source = f"{prefix}{default_source}"
+
+    # A window can never exceed the model's own context window.
+    if tokens > model_window:
+        tokens = model_window
+        source += f"; capped at model window {model_window}"
+
+    # CLAUDE_AUTOCOMPACT_PCT_OVERRIDE applies to whatever the window resolved
+    # to: it is the USED percentage at which compaction runs, so a lower value
+    # compacts earlier. Values outside 1..100 cannot raise the threshold and
+    # are ignored.
+    pct = None
+    raw_pct = env.get("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE")
+    if raw_pct is not None:
+        # The host reads it with parseFloat: a float prefix, "50.5" and "50%" count.
+        m_pct = _HOST_FLOAT_PREFIX_RE.match(str(raw_pct).strip())
+        try:
+            pct = float(m_pct.group(0)) if m_pct else None
+        except ValueError:
+            pct = None
+    if pct is not None and math.isfinite(pct) and 1 <= pct < 100:
+        tokens = int(tokens * pct / 100)
+        source += f" x CLAUDE_AUTOCOMPACT_PCT_OVERRIDE={pct:g}%"
+        user_override = True
+
+    return {
+        "tokens": int(tokens),
+        "source": source,
+        "user_override": user_override,
+        "model_window": model_window,
+        "default_tokens": default_tokens,
+    }
+
+
+def effective_compact_window(model, env=None, settings=None):
+    """(tokens, provenance): where this session's model will auto-compact.
+
+    ``env``/``settings`` default to the live process env + settings.json when
+    omitted; callers pass dicts in tests. See _resolve_compact_window for the
+    precedence and clamp rules.
+    """
+    resolved = _resolve_compact_window(model, env=env, settings=settings)
+    return resolved["tokens"], resolved["source"]
 
 
 _codex_config_cache: tuple[float, dict] | None = None
@@ -3345,7 +3869,8 @@ def detect_context_window():
          then conservative Codex effective default
       5. Claude: CLAUDE_MODEL / ANTHROPIC_MODEL env var -> check model family
       6. Claude config.json or settings.json model field -> check model family
-      7. Claude fallback: 1M (Opus 4.6+/4.7 and Sonnet 4.6 are 1M GA since March 2026)
+      7. Claude fallback: 1M (Sonnet 5+, Opus 4.7+, Fable and Haiku 5.5 are 1M with no
+         suffix; Opus/Sonnet 4.6 are 1M only as the [1m] variant)
     """
     global _context_window_cache
     # Resolve context flags from process env AND settings.json:
@@ -3411,10 +3936,8 @@ def detect_context_window():
     if detect_runtime() == "hermes":
         model = os.environ.get("HERMES_MODEL", "").lower()
         if model:
-            if "haiku" in model:
-                return remember((200_000, f"hermes env: {model} (Haiku = 200K)"))
-            if _is_1m_model(model):
-                return remember((1_000_000, f"hermes env: {model} (1M)"))
+            w = _claude_model_window(model)
+            return remember((w, f"hermes env: {model} ({'1M' if w >= 1_000_000 else '200K'})"))
         return remember((200_000, "hermes default (200K. Override: TOKEN_OPTIMIZER_CONTEXT_SIZE)"))
     # Foreign runtimes (cursor, antigravity, grok, opencode, copilot) must not
     # inherit Claude's model env vars, ~/.claude config, or the 1M Claude
@@ -3428,38 +3951,33 @@ def detect_context_window():
     if not model:
         model = os.environ.get("ANTHROPIC_MODEL", "").lower()
     if model:
-        # Haiku stays at 200K
-        if "haiku" in model:
-            reason = f"model: {model} (Haiku = 200K)"
-            if "claude-3-haiku" in model or "3-haiku" in model:
-                reason += " [WARNING: Claude 3 Haiku retired April 2026. Migrate to claude-haiku-4-5-20251001]"
-                print(f"[Token Optimizer] WARNING: {model} was retired April 2026. Migrate to claude-haiku-4-5-20251001.", file=sys.stderr)
-            return remember((200_000, reason))
-        if _is_1m_model(model):
-            return remember((1_000_000, f"model: {model} (1M)"))
+        reason = f"model: {model}"
+        if "claude-3-haiku" in model or "3-haiku" in model:
+            reason += " [WARNING: Claude 3 Haiku retired April 2026. Migrate to claude-haiku-5-5]"
+            print(f"[Token Optimizer] WARNING: {model} was retired April 2026. Migrate to claude-haiku-5-5.", file=sys.stderr)
+        w = _claude_model_window(model)
+        return remember((w, f"{reason} ({'1M' if w >= 1_000_000 else '200K'})"))
     # Check config files for model preference
     for cfg_name in ("config.json", "settings.json"):
         cfg_path = CLAUDE_DIR / cfg_name
-        if cfg_path.exists():
+        if _is_regular_file(cfg_path):
             try:
                 with open(cfg_path, "r", encoding="utf-8") as f:
                     cfg = json.load(f)
                 m = (cfg.get("model") or cfg.get("primaryModel") or "").lower()
                 if m:
-                    if "haiku" in m:
-                        reason = f"{cfg_name.split('.')[0]}: {m} (Haiku = 200K)"
-                        if "claude-3-haiku" in m or "3-haiku" in m:
-                            reason += " [WARNING: Claude 3 Haiku retired April 2026. Migrate to claude-haiku-4-5-20251001]"
-                            print(f"[Token Optimizer] WARNING: {m} was retired April 2026. Migrate to claude-haiku-4-5-20251001.", file=sys.stderr)
-                        return remember((200_000, reason))
-                    if _is_1m_model(m):
-                        return remember((1_000_000, f"{cfg_name.split('.')[0]}: {m} (1M)"))
+                    reason = f"{cfg_name.split('.')[0]}: {m}"
+                    if "claude-3-haiku" in m or "3-haiku" in m:
+                        reason += " [WARNING: Claude 3 Haiku retired April 2026. Migrate to claude-haiku-5-5]"
+                        print(f"[Token Optimizer] WARNING: {m} was retired April 2026. Migrate to claude-haiku-5-5.", file=sys.stderr)
+                    w = _claude_model_window(m)
+                    return remember((w, f"{reason} ({'1M' if w >= 1_000_000 else '200K'})"))
             except (json.JSONDecodeError, PermissionError, OSError):
                 pass
-    # Since March 2026: Opus 4.6+/4.7 and Sonnet 4.6 have 1M context GA.
-    # Most Claude Code users are on these models. Default to 1M.
-    # Users on Haiku or older models can override with TOKEN_OPTIMIZER_CONTEXT_SIZE=200000.
-    return remember((1_000_000, "default (1M, Opus/Sonnet 4.6+ GA. Override: TOKEN_OPTIMIZER_CONTEXT_SIZE)"))
+    # Most Claude Code models are 1M-native now (Sonnet 5+, Opus 4.7+, Fable,
+    # Haiku 5.5). Default to 1M; users on 200K models can override with
+    # TOKEN_OPTIMIZER_CONTEXT_SIZE=200000.
+    return remember((1_000_000, "default (1M, Sonnet 5+/Opus 4.7+/Haiku 5.5 native. Override: TOKEN_OPTIMIZER_CONTEXT_SIZE)"))
 
 
 # CLI override for context size (set by --context-size flag parsing)
@@ -3615,9 +4133,17 @@ def score_to_band(score):
     return "Poor"
 
 
-def _estimate_messages_until_compact(ctx_window, overhead, avg_msg_tokens=5000):
-    """Estimate how many messages fit before auto-compact fires (~80% fill)."""
-    compact_threshold = int(ctx_window * 0.80)
+def _estimate_messages_until_compact(ctx_window, overhead, avg_msg_tokens=5000, model=None):
+    """Estimate how many messages fit before auto-compact fires.
+
+    Uses the resolved effective compact window (env > /autocompact >
+    autoCompactWindow > ~967K-on-1M / model-limit default), not a fixed
+    fraction of the model window.
+    """
+    try:
+        compact_threshold = _resolve_compact_window(model)["tokens"]
+    except Exception:
+        compact_threshold = ctx_window
     usable = max(0, compact_threshold - overhead)
     return max(0, usable // avg_msg_tokens)
 
@@ -3899,7 +4425,14 @@ def quick_scan(as_json=False):
             ],
             "quick_win": quick_win,
             "coaching": coaching,
+            "subagent_cache": subagent_cache_block(),
         }
+        try:
+            _rb = _recs_block()
+            if _rb is not None:
+                result["usage_recommendations"] = _rb
+        except Exception:
+            pass
         print(json.dumps(result, indent=2))
         return result
 
@@ -3916,8 +4449,13 @@ def quick_scan(as_json=False):
     print(f"    Quality estimate:      {grade} ({quality_est}/100) ({_qcurve} MRCR curve at this fill level; heuristic, not measured)")
     next_danger = int(ctx_window * 0.50)
     print(f"    Next danger zone:      {next_danger:,} (50%, \"lost in the middle\" begins)")
-    compact_at = int(ctx_window * 0.80)
-    print(f"    Auto-compact fires at: ~{compact_at:,} (60-70% of context LOST per compaction)")
+    try:
+        _cw_res = _resolve_compact_window(None)
+        compact_at = _cw_res["tokens"]
+        compact_at_note = f" ({_cw_res['source']})" if _cw_res.get("user_override") else ""
+    except Exception:
+        compact_at, compact_at_note = ctx_window, ""
+    print(f"    Auto-compact fires at: ~{compact_at:,}{compact_at_note} (60-70% of context LOST per compaction)")
 
     if top_offenders:
         print("\n  TOP OFFENDERS")
@@ -3938,6 +4476,32 @@ def quick_scan(as_json=False):
     if coaching:
         print("\n  COACHING INSIGHT")
         print(f"    {coaching}")
+
+    # Usage recommendations: the daily-measured record is the advice channel.
+    # One line per `recommend` item, nothing otherwise; the record is read,
+    # never scanned for (a detached refresh writes it).
+    try:
+        _rblk = _recs_block() or {}
+        _ritems = _rblk.get("items") or []
+        _rcovered = {i.get("id") for i in _ritems}
+        for _it in _ritems:
+            if _it.get("state") == "recommend":
+                _ln = _recs_item_line(_it)
+                if _ln:
+                    print(f"\n  {_ln}")
+    except Exception:
+        _rcovered = set()
+
+    # Advise-only subagent cache verdict: only an actionable recommendation
+    # earns a line here (a pending/thin verdict stays quiet -- see doctor).
+    # Falls silent once the daily record covers the item so no line repeats.
+    try:
+        if "subagent_cache" not in _rcovered:
+            _scr = (subagent_cache_block().get("recommendation") or {})
+            if _scr.get("action") in ("enable", "disable"):
+                print(f"\n  SUBAGENT CACHE: {_scr['line']}")
+    except Exception:
+        pass
 
     print("\n  Full audit + fixes: /token-optimizer")
     print("  Health check: python3 $MEASURE_PY doctor")
@@ -3996,7 +4560,16 @@ def doctor(as_json=False):
         checks.append(("OK", "SessionEnd hook", "active (plugin hooks.json)"))
         score += 1
     else:
-        checks.append(("!!", "SessionEnd hook", "missing (fix: python3 measure.py setup-hook)"))
+        checks.append(("!!", "SessionEnd hook", _hint("missing (fix: python3 measure.py setup-hook)")))
+
+    # Advisory only: do not change proxy/tool-search settings or infer a bill.
+    from tool_search_diagnostic import diagnose_tool_search
+    _search_check = diagnose_tool_search(os.environ, settings, runtime=detect_runtime())
+    if _search_check is not None:
+        checks.append(_search_check)
+        total += 1
+        if _search_check[0] == "OK":
+            score += 1
 
     # 5. Smart Compaction
     total += 1
@@ -4009,7 +4582,7 @@ def doctor(as_json=False):
         missing = [e for e, v in sc_status.items() if not v]
         checks.append(("!!", "Smart Compaction", f"{sc_count}/4 hooks (missing: {', '.join(missing)})"))
     else:
-        checks.append(("!!", "Smart Compaction", "not installed (fix: python3 measure.py setup-smart-compact)"))
+        checks.append(("!!", "Smart Compaction", _hint("not installed (fix: python3 measure.py setup-smart-compact)")))
 
     # 6. Quality bar
     total += 1
@@ -4023,7 +4596,7 @@ def doctor(as_json=False):
             missing.append("status line")
         if not qb["hook"]:
             missing.append("cache hook")
-        checks.append(("!!", "Quality bar", f"missing: {', '.join(missing)} (fix: python3 measure.py setup-quality-bar)"))
+        checks.append(("!!", "Quality bar", _hint(f"missing: {', '.join(missing)} (fix: python3 measure.py setup-quality-bar)")))
 
     # 7. Trends DB
     total += 1
@@ -4046,7 +4619,7 @@ def doctor(as_json=False):
         except Exception:
             checks.append(("!!", "Trends DB", "exists but unreadable"))
     else:
-        checks.append(("!!", "Trends DB", "not found (fix: python3 measure.py collect)"))
+        checks.append(("!!", "Trends DB", _hint("not found (fix: python3 measure.py collect)")))
 
     # 8. Dashboard freshness
     total += 1
@@ -4060,18 +4633,19 @@ def doctor(as_json=False):
         checks.append(("OK", "Dashboard", f"fresh ({age_str})"))
         score += 1
     else:
-        checks.append(("!!", "Dashboard", "not generated (fix: python3 measure.py dashboard)"))
+        checks.append(("!!", "Dashboard", _hint("not generated (fix: python3 measure.py dashboard)")))
 
-    # 9. Auto-remove harmful env vars (CLAUDE_AUTOCOMPACT_PCT_OVERRIDE etc.)
+    # 9. Explain the compaction-percentage override (READ-ONLY).
+    # CLAUDE_AUTOCOMPACT_PCT_OVERRIDE is documented; doctor explains what it
+    # does and flags very-low values. It must NEVER be edited or removed here
+    # (the old auto-delete destroyed a documented user setting).
     total += 1
-    removed = _auto_remove_bad_env_vars(settings)
-    if removed:
-        for var, val in removed:
-            checks.append(("OK", "Env cleanup", f"REMOVED {var}={val} (inverted semantics, caused premature compaction)"))
-        score += 1
-    else:
-        checks.append(("OK", "Env vars", "no harmful overrides"))
-        score += 1
+    try:
+        _env_checks = _autocompact_pct_override_explanation()
+    except Exception:
+        _env_checks = [("OK", "Env override", "status unknown (read failed)")]
+    checks.extend(_env_checks)
+    score += 1
 
     # 10. Broken symlinks
     total += 1
@@ -4124,7 +4698,7 @@ def doctor(as_json=False):
             checks.append(("!!", "Dashboard daemon",
                            f"self-heal disabled by a permanent install failure "
                            f"({_mk or 'reason unknown'}) "
-                           "(fix: python3 measure.py setup-daemon)"))
+                           f"(fix: {_measure_cli()} setup-daemon)"))
         elif _daemon_resurrection_blocked() is not None:
             checks.append(("OK", "Dashboard daemon", "disabled by user (opt-out honored)"))
             score += 1
@@ -4135,7 +4709,7 @@ def doctor(as_json=False):
         elif _daemon_service_installed(_normalized_platform()):
             checks.append(("!!", "Dashboard daemon",
                            "installed but not serving "
-                           "(fix: python3 measure.py setup-daemon)"))
+                           f"(fix: {_measure_cli()} setup-daemon)"))
         else:
             checks.append(("OK", "Dashboard daemon",
                            "not installed (self-installs at SessionStart)"))
@@ -4174,7 +4748,14 @@ def doctor(as_json=False):
             "score": score,
             "total": total,
             "checks": [{"status": s, "name": n, "detail": d} for s, n, d in checks],
+            "subagent_cache": subagent_cache_block(),
         }
+        try:
+            _rb = _recs_block()
+            if _rb is not None:
+                result["usage_recommendations"] = _rb
+        except Exception:
+            pass
         print(json.dumps(result, indent=2))
         return result
 
@@ -4185,6 +4766,44 @@ def doctor(as_json=False):
         icon = "[OK]" if status == "OK" else "[!!]"
         detail_str = f"  {detail}" if detail else ""
         print(f"  {icon:5s} {name}: {detail_str}")
+
+    # Subagent cache row: state + the one-line payoff estimate.
+    try:
+        _scb = subagent_cache_block()
+        _sc_state = _scb.get("state") or "unknown"
+        _sc_payoff = _scb.get("payoff") or {}
+        _sc_detail = (
+            f"state: {_sc_state}; last {_sc_payoff.get('window_days', 30)}d "
+            f"estimated net {_recs_usd(_sc_payoff.get('net_usd_est') or 0.0)}"
+            + (" API-equivalent" if _scb.get("billing_mode") == "subscription" else "")
+            + " (estimate)")
+        _sc_auto = _scb.get("auto_decision") or {}
+        if _sc_auto.get("reason"):
+            _sc_detail += f"; verdict: {_sc_auto['reason']}"
+        print(f"  {'':5s} Subagent cache: {_sc_detail}")
+        _sc_rec = _scb.get("recommendation") or {}
+        if _sc_rec.get("line") \
+                and _sc_rec["line"] != _sc_auto.get("reason") \
+                and not _recs_covers("subagent_cache"):
+            # Never a line that repeats the verdict, and silent once the
+            # daily record carries this item itself.
+            print(f"  {'':5s}   advice: {_sc_rec['line']}")
+        if _scb.get("hint"):
+            print(f"  {'':5s}   note: {_scb['hint']}")
+        if _sc_state == "set":
+            print(f"  {'':5s} Undo: {_subagent_cache_cmd('disable')}")
+    except Exception:
+        pass  # doctor must never fail on this optional row
+
+    # Usage recommendations: one line per applicable item, any state. The
+    # daily-measured record is read, never scanned for.
+    try:
+        for _it in ((_recs_block() or {}).get("items") or []):
+            _ln = _recs_item_line(_it)
+            if _ln:
+                print(f"  {'':5s} {_ln}")
+    except Exception:
+        pass  # doctor must never fail on this optional row
 
     print(f"\n  Score: {score}/{total}")
     # Show fix command for first failing check
@@ -4207,7 +4826,8 @@ def git_context(as_json=False):
     def _run_git(*cmd):
         try:
             r = _sp.run(["git"] + list(cmd), capture_output=True, text=True,
-                        encoding="utf-8", errors="replace", timeout=10)
+                        encoding="utf-8", errors="replace", timeout=10,
+                        creationflags=_NO_WINDOW)
             return r.stdout.strip() if r.returncode == 0 else ""
         except (FileNotFoundError, _sp.TimeoutExpired):
             return ""
@@ -4382,7 +5002,7 @@ def drift_check(as_json=False):
         if as_json:
             print(json.dumps({"error": "No snapshots found. Run 'quick' first to create a baseline."}))
         else:
-            print("\n  No snapshots found. Run 'python3 measure.py quick' first to create a baseline.")
+            print(_hint("\n  No snapshots found. Run 'python3 measure.py quick' first to create a baseline."))
         return
 
     snaps = sorted(snap_dir.glob("snap_*.json"), key=lambda f: f.stat().st_mtime)
@@ -4390,7 +5010,7 @@ def drift_check(as_json=False):
         if as_json:
             print(json.dumps({"error": "No snapshots found. Run 'quick' first to create a baseline."}))
         else:
-            print("\n  No snapshots found. Run 'python3 measure.py quick' first to create a baseline.")
+            print(_hint("\n  No snapshots found. Run 'python3 measure.py quick' first to create a baseline."))
         return
 
     # Load most recent snapshot (baseline)
@@ -4792,11 +5412,11 @@ def compare_snapshots():
     after_path = SNAPSHOT_DIR / "snapshot_after.json"
 
     if not before_path.exists():
-        print("\n[Error] No 'before' snapshot found. Run: python3 measure.py snapshot before")
+        print(_hint("\n[Error] No 'before' snapshot found. Run: python3 measure.py snapshot before"))
         return
 
     if not after_path.exists():
-        print("\n[Error] No 'after' snapshot found. Run: python3 measure.py snapshot after")
+        print(_hint("\n[Error] No 'after' snapshot found. Run: python3 measure.py snapshot after"))
         return
 
     try:
@@ -4804,7 +5424,7 @@ def compare_snapshots():
             before = json.load(f)
     except (json.JSONDecodeError, OSError) as e:
         print(f"\n[Error] Cannot read 'before' snapshot: {e}")
-        print("  Re-run: python3 measure.py snapshot before")
+        print(_hint("  Re-run: python3 measure.py snapshot before"))
         return
 
     try:
@@ -4812,7 +5432,7 @@ def compare_snapshots():
             after = json.load(f)
     except (json.JSONDecodeError, OSError) as e:
         print(f"\n[Error] Cannot read 'after' snapshot: {e}")
-        print("  Re-run: python3 measure.py snapshot after")
+        print(_hint("  Re-run: python3 measure.py snapshot after"))
         return
 
     # Warn if 'before' snapshot is stale (>24h old)
@@ -5564,7 +6184,7 @@ def generate_dashboard(coord_path):
     coord = Path(coord_path)
     if not coord.exists():
         print(f"Error: coord-path does not exist: {coord_path}")
-        print("Usage: python3 measure.py dashboard --coord-path /tmp/token-optimizer-XXXXXXXXXX")
+        print(_hint("Usage: python3 measure.py dashboard --coord-path /tmp/token-optimizer-XXXXXXXXXX"))
         sys.exit(1)
 
     # Locate the template
@@ -5794,6 +6414,59 @@ def generate_dashboard(coord_path):
     return str(out_path)
 
 
+def _shell_script_path():
+    """This script's resolved path, quoted to paste into Bash, PowerShell and cmd.exe."""
+    return shell_path(Path(__file__).resolve())
+
+
+def _measure_cli(*args):
+    """The command that runs this script, for hints a user will paste into a shell.
+
+    Always the resolved script path (quoted): a bare `python3 measure.py` only works
+    from inside the scripts directory, which is where nobody is. On Windows the
+    interpreter is `python`, and the path uses forward slashes and double quotes, the
+    one form cmd.exe, PowerShell and Git Bash all read as a single argument
+    (`runtime_env.shell_path`).
+    """
+    parts = [hint_python(), _shell_script_path()]
+    parts.extend(args)
+    return " ".join(parts)
+
+
+def _runtime_cli(runtime, *args):
+    """`_measure_cli` pinned to a runtime for hints.
+
+    macOS/Linux: the Bash `TOKEN_OPTIMIZER_RUNTIME=NAME python3 <script>` prefix,
+    unchanged. cmd.exe and PowerShell cannot parse that, so on Windows it is
+    `python <script> --runtime NAME` (a leading global flag, see `consume_runtime_flag`).
+    """
+    if _windows_hints():
+        parts = [hint_python(), _shell_script_path(), "--runtime", runtime]
+    else:
+        parts = [f"TOKEN_OPTIMIZER_RUNTIME={runtime}", hint_python(), _shell_script_path()]
+    parts.extend(args)
+    return " ".join(parts)
+
+
+_ENV_PREFIXED_BARE_HINT = re.compile(r"TOKEN_OPTIMIZER_RUNTIME=(\w+) python3 measure\.py")
+
+
+def _hint(text):
+    """Make a printed hint pasteable from any directory.
+
+    Hints are written as `python3 measure.py <subcommand>`; this swaps that
+    bare prefix for the resolved, quoted script path (`_measure_cli()`). A
+    `TOKEN_OPTIMIZER_RUNTIME=X` prefix (Bash only) becomes `--runtime X` on Windows.
+    """
+    text = _ENV_PREFIXED_BARE_HINT.sub(lambda m: _runtime_cli(m.group(1)), text)
+    return text.replace("python3 measure.py", _measure_cli())
+
+
+def _subagent_cache_cmd(action=None):
+    """The `subagent-cache [action]` command users are told to run (advice, enable, undo)."""
+    return _measure_cli("subagent-cache", *([action] if action else []))
+
+
 def _display_path(absolute_path):
     """Replace the user's home directory with ~ for display purposes.
 
@@ -5830,15 +6503,15 @@ def _collect_hook_status_for_dashboard():
     smart_compact_status = _is_smart_compact_installed(settings)
 
     # For executable commands: absolute path with shlex.quote (handles spaces/quotes)
-    mp_cmd = shlex.quote(str(Path(__file__).resolve()))
+    mp_cmd = _shell_script_path()
 
     return {
         "session_end": {
             "installed": session_end_installed,
             "label": "Session Tracking",
             "description": "Collects usage data after each session. Powers Trends and Health tabs.",
-            "install_cmd": f"python3 {mp_cmd} setup-hook",
-            "uninstall_cmd": f"python3 {mp_cmd} setup-hook --uninstall",
+            "install_cmd": f"{hint_python()} {mp_cmd} setup-hook",
+            "uninstall_cmd": f"{hint_python()} {mp_cmd} setup-hook --uninstall",
         },
         "smart_compact": {
             "installed": all(smart_compact_status.values()),
@@ -5846,8 +6519,8 @@ def _collect_hook_status_for_dashboard():
             "detail": smart_compact_status,
             "label": "Smart Compaction",
             "description": "Captures session state before compaction, restores it after. Protects your working memory.",
-            "install_cmd": f"python3 {mp_cmd} setup-smart-compact",
-            "uninstall_cmd": f"python3 {mp_cmd} setup-smart-compact --uninstall",
+            "install_cmd": f"{hint_python()} {mp_cmd} setup-smart-compact",
+            "uninstall_cmd": f"{hint_python()} {mp_cmd} setup-smart-compact --uninstall",
         },
     }
 
@@ -5856,7 +6529,7 @@ def _collect_codex_hook_status_for_dashboard():
     """Collect Codex project hook status for dashboard toggle panel."""
     import codex_doctor
 
-    mp_cmd = shlex.quote(str(Path(__file__).resolve()))
+    mp_cmd = _shell_script_path()
     project = Path.cwd().resolve(strict=False)
     checks = codex_doctor.run_checks(project=project)
     by_name = {check["name"]: check for check in checks}
@@ -5865,7 +6538,7 @@ def _collect_codex_hook_status_for_dashboard():
         return by_name.get(name, {}).get("status") == "OK"
 
     project_arg = shlex.quote(str(project))
-    base = f"TOKEN_OPTIMIZER_RUNTIME=codex python3 {mp_cmd} codex-install --project {project_arg}"
+    base = f"{_runtime_cli('codex')} codex-install --project {project_arg}"
     try:
         hooks_text = (project / ".codex" / "hooks.json").read_text(encoding="utf-8")
     except OSError:
@@ -5883,7 +6556,7 @@ def _collect_codex_hook_status_for_dashboard():
             "partial": by_name.get("Compact prompt", {}).get("status") == "WARN",
             "label": "Codex Compact Prompt",
             "description": "Adds Token Optimizer compact guidance to Codex config so manual compaction preserves decisions, files, and continuation state.",
-            "install_cmd": f"TOKEN_OPTIMIZER_RUNTIME=codex python3 {mp_cmd} codex-compact-prompt --install",
+            "install_cmd": f"{_runtime_cli('codex')} codex-compact-prompt --install",
             "uninstall_cmd": "Edit ~/.codex/config.toml and remove compact_prompt / experimental_compact_prompt_file",
         },
         "codex_bash_compression": {
@@ -5934,15 +6607,15 @@ def _collect_copilot_hook_status_for_dashboard():
     """
     import copilot_doctor  # noqa: PLC0415
 
-    mp_cmd = shlex.quote(str(Path(__file__).resolve()))
+    mp_cmd = _shell_script_path()
     checks = copilot_doctor.run_checks()
     by_name = {check["name"]: check for check in checks}
 
     def _ok(name):
         return by_name.get(name, {}).get("status") == "ok"
 
-    install_cmd = f"TOKEN_OPTIMIZER_RUNTIME=copilot python3 {mp_cmd} copilot-install"
-    doctor_cmd = f"TOKEN_OPTIMIZER_RUNTIME=copilot python3 {mp_cmd} copilot-doctor"
+    install_cmd = f"{_runtime_cli('copilot')} copilot-install"
+    doctor_cmd = f"{_runtime_cli('copilot')} copilot-doctor"
 
     return {
         "copilot_hooks": {
@@ -5951,7 +6624,7 @@ def _collect_copilot_hook_status_for_dashboard():
             "label": "Copilot CLI Hooks",
             "description": "Wires Token Optimizer into ~/.copilot/hooks/: sessionStart continuity restore, preToolUse bash compression (capability-gated), postToolUse crash-recovery tally + nudges, stop-time rollup.",
             "install_cmd": install_cmd,
-            "uninstall_cmd": f"TOKEN_OPTIMIZER_RUNTIME=copilot python3 {mp_cmd} copilot-uninstall",
+            "uninstall_cmd": f"{_runtime_cli('copilot')} copilot-uninstall",
         },
         "copilot_capabilities": {
             "installed": _ok("capabilities"),
@@ -5992,15 +6665,15 @@ def _collect_cursor_hook_status_for_dashboard():
     """
     import cursor_doctor  # noqa: PLC0415
 
-    mp_cmd = shlex.quote(str(Path(__file__).resolve()))
+    mp_cmd = _shell_script_path()
     checks = cursor_doctor.run_checks()
     by_name = {check["name"]: check for check in checks}
 
     def _ok(name):
         return by_name.get(name, {}).get("status") == "ok"
 
-    install_cmd = f"TOKEN_OPTIMIZER_RUNTIME=cursor python3 {mp_cmd} cursor-install"
-    doctor_cmd = f"TOKEN_OPTIMIZER_RUNTIME=cursor python3 {mp_cmd} cursor-doctor"
+    install_cmd = f"{_runtime_cli('cursor')} cursor-install"
+    doctor_cmd = f"{_runtime_cli('cursor')} cursor-doctor"
 
     return {
         "cursor_hooks": {
@@ -6009,7 +6682,7 @@ def _collect_cursor_hook_status_for_dashboard():
             "label": "Cursor Hooks",
             "description": "Merges Token Optimizer into ~/.cursor/hooks.json: sessionStart continuity restore, preToolUse Shell bash compression, postToolUse tally + nudges, preCompact capture, stop-time rollup and session-end dashboard refresh.",
             "install_cmd": install_cmd,
-            "uninstall_cmd": f"TOKEN_OPTIMIZER_RUNTIME=cursor python3 {mp_cmd} cursor-uninstall",
+            "uninstall_cmd": f"{_runtime_cli('cursor')} cursor-uninstall",
         },
         "cursor_payload": {
             "installed": _ok("hook payload"),
@@ -6045,15 +6718,15 @@ def _collect_grok_hook_status_for_dashboard():
     """
     import grok_doctor  # noqa: PLC0415
 
-    mp_cmd = shlex.quote(str(Path(__file__).resolve()))
+    mp_cmd = _shell_script_path()
     checks = grok_doctor.run_checks()
     by_name = {check["name"]: check for check in checks}
 
     def _ok(name):
         return by_name.get(name, {}).get("status") == "ok"
 
-    install_cmd = f"TOKEN_OPTIMIZER_RUNTIME=grok python3 {mp_cmd} grok-install"
-    doctor_cmd = f"TOKEN_OPTIMIZER_RUNTIME=grok python3 {mp_cmd} grok-doctor"
+    install_cmd = f"{_runtime_cli('grok')} grok-install"
+    doctor_cmd = f"{_runtime_cli('grok')} grok-doctor"
 
     return {
         "grok_hooks": {
@@ -6062,7 +6735,7 @@ def _collect_grok_hook_status_for_dashboard():
             "label": "Grok Build Hooks",
             "description": "Wires Token Optimizer into $GROK_HOME/hooks/token-optimizer.json: sessionStart continuity restore, userPromptSubmit quality tracking, preToolUse bash compression (capability-gated), postToolUse crash-recovery tally + nudges, stop-time rollup.",
             "install_cmd": install_cmd,
-            "uninstall_cmd": f"TOKEN_OPTIMIZER_RUNTIME=grok python3 {mp_cmd} grok-uninstall",
+            "uninstall_cmd": f"{_runtime_cli('grok')} grok-uninstall",
         },
         "grok_session_store": {
             "installed": _ok("session store"),
@@ -6079,7 +6752,7 @@ def _collect_grok_hook_status_for_dashboard():
             "installed": _ok("dashboard daemon"),
             "label": "Dashboard Port 24848",
             "description": "Confirms that port 24848 is available or already serving the Grok Build Token Optimizer dashboard.",
-            "install_cmd": f"TOKEN_OPTIMIZER_RUNTIME=grok python3 {mp_cmd} open-dashboard",
+            "install_cmd": f"{_runtime_cli('grok')} open-dashboard",
             "uninstall_cmd": "",
         },
     }
@@ -6094,15 +6767,15 @@ def _collect_hermes_hook_status_for_dashboard():
     """
     import hermes_doctor  # noqa: PLC0415
 
-    mp_cmd = shlex.quote(str(Path(__file__).resolve()))
+    mp_cmd = _shell_script_path()
     checks = hermes_doctor.run_checks()
     by_name = {check["name"]: check for check in checks}
 
     def _ok(name):
         return by_name.get(name, {}).get("status") == "OK"
 
-    install_cmd = f"TOKEN_OPTIMIZER_RUNTIME=hermes python3 {mp_cmd} hermes-install"
-    doctor_cmd = f"TOKEN_OPTIMIZER_RUNTIME=hermes python3 {mp_cmd} hermes-doctor"
+    install_cmd = f"{_runtime_cli('hermes')} hermes-install"
+    doctor_cmd = f"{_runtime_cli('hermes')} hermes-doctor"
 
     return {
         "hermes_plugin": {
@@ -6132,7 +6805,7 @@ def _collect_hermes_hook_status_for_dashboard():
             "installed": _ok(f"Dashboard port {hermes_doctor.DASHBOARD_PORT}"),
             "label": "Dashboard Port 24844",
             "description": "Confirms that port 24844 is available or already serving the Hermes Token Optimizer dashboard.",
-            "install_cmd": f"TOKEN_OPTIMIZER_RUNTIME=hermes python3 {mp_cmd} open-dashboard",
+            "install_cmd": f"{_runtime_cli('hermes')} open-dashboard",
             "uninstall_cmd": "",
         },
     }
@@ -6148,15 +6821,15 @@ def _collect_antigravity_hook_status_for_dashboard():
     """
     import antigravity_doctor  # noqa: PLC0415
 
-    mp_cmd = shlex.quote(str(Path(__file__).resolve()))
+    mp_cmd = _shell_script_path()
     checks = antigravity_doctor.run_checks()
     by_name = {check["name"]: check for check in checks}
 
     def _ok(name):
         return by_name.get(name, {}).get("status") == "ok"
 
-    install_cmd = f"TOKEN_OPTIMIZER_RUNTIME=antigravity python3 {mp_cmd} antigravity-install"
-    doctor_cmd = f"TOKEN_OPTIMIZER_RUNTIME=antigravity python3 {mp_cmd} antigravity-doctor"
+    install_cmd = f"{_runtime_cli('antigravity')} antigravity-install"
+    doctor_cmd = f"{_runtime_cli('antigravity')} antigravity-doctor"
 
     return {
         "antigravity_plugin": {
@@ -6164,7 +6837,7 @@ def _collect_antigravity_hook_status_for_dashboard():
             "label": "Antigravity Plugin",
             "description": "Installs the Token Optimizer plugin into ~/.gemini/config/plugins/token-optimizer/. Provides continuity restore, context nudges, bash compression, and stop rollup.",
             "install_cmd": install_cmd,
-            "uninstall_cmd": f"TOKEN_OPTIMIZER_RUNTIME=antigravity python3 {mp_cmd} antigravity-uninstall",
+            "uninstall_cmd": f"{_runtime_cli('antigravity')} antigravity-uninstall",
         },
         "antigravity_hooks": {
             "installed": _ok("plugin hooks"),
@@ -6172,7 +6845,7 @@ def _collect_antigravity_hook_status_for_dashboard():
             "label": "Antigravity Hook Declarations",
             "description": "Verifies hooks.json declares PreInvocation, PreToolUse (run_command matcher), and Stop.",
             "install_cmd": install_cmd,
-            "uninstall_cmd": f"TOKEN_OPTIMIZER_RUNTIME=antigravity python3 {mp_cmd} antigravity-uninstall",
+            "uninstall_cmd": f"{_runtime_cli('antigravity')} antigravity-uninstall",
         },
         "antigravity_consent": {
             "installed": _ok("consent record"),
@@ -6189,7 +6862,7 @@ def _collect_antigravity_hook_status_for_dashboard():
             "installed": _ok("dashboard daemon"),
             "label": "Dashboard Port 24847",
             "description": "Confirms that port 24847 is available or already serving the Antigravity Token Optimizer dashboard.",
-            "install_cmd": f"TOKEN_OPTIMIZER_RUNTIME=antigravity python3 {mp_cmd} open-dashboard",
+            "install_cmd": f"{_runtime_cli('antigravity')} open-dashboard",
             "uninstall_cmd": "",
         },
     }
@@ -6277,7 +6950,7 @@ def _collect_codex_skill_inventory(cfg: dict, *, project: Path) -> dict[str, lis
     active = []
     disabled = []
     seen: set[str] = set()
-    mp_cmd = shlex.quote(str(Path(__file__).resolve()))
+    mp_cmd = _shell_script_path()
     for path, source in candidates:
         resolved = str(path.expanduser().resolve(strict=False))
         if resolved in seen:
@@ -6291,8 +6964,8 @@ def _collect_codex_skill_inventory(cfg: dict, *, project: Path) -> dict[str, lis
             "tokens": meta.get("tokens", 0),
             "source": source,
             "path": _display_path(resolved),
-            "disable_cmd": f"TOKEN_OPTIMIZER_RUNTIME=codex python3 {mp_cmd} codex-skill disable --path {shlex.quote(resolved)}",
-            "enable_cmd": f"TOKEN_OPTIMIZER_RUNTIME=codex python3 {mp_cmd} codex-skill enable --path {shlex.quote(resolved)}",
+            "disable_cmd": f"{_runtime_cli('codex')} codex-skill disable --path {shlex.quote(resolved)}",
+            "enable_cmd": f"{_runtime_cli('codex')} codex-skill enable --path {shlex.quote(resolved)}",
         }
         _pkey = _plugin_key_for(resolved)
         if resolved in disabled_paths or (_pkey is not None and _pkey in disabled_plugin_keys):
@@ -6309,7 +6982,7 @@ def _collect_codex_mcp_inventory(cfg: dict) -> list[dict]:
     if not isinstance(servers, dict):
         return []
     items = []
-    mp_cmd = shlex.quote(str(Path(__file__).resolve()))
+    mp_cmd = _shell_script_path()
     for name, server in servers.items():
         if not isinstance(server, dict):
             server = {}
@@ -6322,8 +6995,8 @@ def _collect_codex_mcp_inventory(cfg: dict) -> list[dict]:
             "transport": transport,
             "tokens": TOKENS_PER_DEFERRED_TOOL,
             "enabled": enabled,
-            "disable_cmd": f"TOKEN_OPTIMIZER_RUNTIME=codex python3 {mp_cmd} codex-mcp disable {shlex.quote(str(name))}",
-            "enable_cmd": f"TOKEN_OPTIMIZER_RUNTIME=codex python3 {mp_cmd} codex-mcp enable {shlex.quote(str(name))}",
+            "disable_cmd": f"{_runtime_cli('codex')} codex-mcp disable {shlex.quote(str(name))}",
+            "enable_cmd": f"{_runtime_cli('codex')} codex-mcp enable {shlex.quote(str(name))}",
         })
     return sorted(items, key=lambda item: item["name"])
 
@@ -6531,11 +7204,11 @@ def _collect_management_data(components=None, trends=None):
     if components is None:
         components = measure_components()
 
-    mp_cmd = shlex.quote(str(Path(__file__).resolve()))
+    mp_cmd = _shell_script_path()
     if detect_runtime() == "codex":
         project = Path.cwd().resolve(strict=False)
         project_arg = shlex.quote(str(project))
-        base = f"TOKEN_OPTIMIZER_RUNTIME=codex python3 {mp_cmd} codex-install --project {project_arg}"
+        base = f"{_runtime_cli('codex')} codex-install --project {project_arg}"
         cfg = _read_codex_config()
         codex_skills = _collect_codex_skill_inventory(cfg, project=project)
         codex_mcp = _collect_codex_mcp_inventory(cfg)
@@ -6554,9 +7227,9 @@ def _collect_management_data(components=None, trends=None):
                 "install_with_bash_compression_cmd": base + " --enable-bash-compression",
                 "install_with_hot_path_hooks_cmd": base + " --enable-hot-path-hooks --enable-prompt-hooks",
                 "install_with_status_line_cmd": base + " --enable-status-line",
-                "refresh_cmd": f"TOKEN_OPTIMIZER_RUNTIME=codex python3 {mp_cmd} session-end-flush --trigger manual --no-defer",
-                "doctor_cmd": f"TOKEN_OPTIMIZER_RUNTIME=codex python3 {mp_cmd} codex-doctor --project {project_arg}",
-                "dashboard_cmd": f"TOKEN_OPTIMIZER_RUNTIME=codex python3 {mp_cmd} dashboard",
+                "refresh_cmd": f"{_runtime_cli('codex')} session-end-flush --trigger manual --no-defer",
+                "doctor_cmd": f"{_runtime_cli('codex')} codex-doctor --project {project_arg}",
+                "dashboard_cmd": f"{_runtime_cli('codex')} dashboard",
             },
             "skills": {"active": codex_skills["active"], "archived": [], "disabled": codex_skills["disabled"]},
             "mcp_servers": {"active": codex_mcp_active, "disabled": codex_mcp_disabled, "cloud": []},
@@ -6601,7 +7274,7 @@ def _collect_management_data(components=None, trends=None):
             "skill_name": sd.get("skill_name", name),
             "tokens": sd.get("frontmatter_tokens", 100),
             "description": sd.get("description", ""),
-            "archive_cmd": f"python3 {mp_cmd} skill archive {shlex.quote(name)}",
+            "archive_cmd": f"{hint_python()} {mp_cmd} skill archive {shlex.quote(name)}",
         })
 
     # Archived skills (scan backup dirs)
@@ -6647,7 +7320,7 @@ def _collect_management_data(components=None, trends=None):
                     "archive_dir": archive_dir.name,
                     "description": desc,
                     "symlink": is_symlink_record,
-                    "restore_cmd": f"python3 {mp_cmd} skill restore {shlex.quote(item.name)}",
+                    "restore_cmd": f"{hint_python()} {mp_cmd} skill restore {shlex.quote(item.name)}",
                 })
 
     # MCP servers (local settings.json)
@@ -6664,7 +7337,7 @@ def _collect_management_data(components=None, trends=None):
             "source": "local",
             "tool_count": tool_count,
             "command": cfg.get("command", ""),
-            "disable_cmd": f"python3 {mp_cmd} mcp disable {shlex.quote(name)}",
+            "disable_cmd": f"{hint_python()} {mp_cmd} mcp disable {shlex.quote(name)}",
         })
 
     disabled_mcps = []
@@ -6672,7 +7345,7 @@ def _collect_management_data(components=None, trends=None):
         disabled_mcps.append({
             "name": name,
             "source": "local",
-            "enable_cmd": f"python3 {mp_cmd} mcp enable {shlex.quote(name)}",
+            "enable_cmd": f"{hint_python()} {mp_cmd} mcp enable {shlex.quote(name)}",
         })
 
     # Cloud-synced MCP servers (Claude Desktop config)
@@ -6786,7 +7459,7 @@ def plugin_cleanup(dry_run=False, quiet=False):
 
             # Load enabledPlugins to only check active plugins
             enabled = None
-            if SETTINGS_PATH.exists():
+            if _is_regular_file(SETTINGS_PATH):
                 try:
                     settings = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
                     enabled = settings.get("enabledPlugins")
@@ -7424,7 +8097,7 @@ def generate_standalone_dashboard(days=30, quiet=False, force=False):
     if not quiet:
         print(f"  Dashboard: {DASHBOARD_PATH}")
         print(f"  Local:  {DASHBOARD_PATH.as_uri()}")
-        print(f"  Remote: python3 {_display_path(Path(__file__).resolve())} dashboard --serve")
+        print(f"  Remote: {hint_python()} {_display_path(Path(__file__).resolve())} dashboard --serve")
 
     return str(DASHBOARD_PATH)
 
@@ -8312,7 +8985,10 @@ def _generate_codex_auto_recommendations(components, trends=None, days=30):
         quick.append(
             "**Install the default Codex hooks for real data**: "
             "The aggressive default (max savings) enables SessionStart/UserPromptSubmit, Stop, plus silent PostToolUse archiving and context-intel, so Token Optimizer tracks prompt quality, loop signals, output bloat, dashboard refresh, and continuity. All hooks run silently (no visible Codex Desktop rows). "
-            "Run `TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py codex-install --project .`."
+            "Run `" + (f"{hint_python()} skills/token-optimizer/scripts/measure.py --runtime codex"
+                       if _windows_hints()
+                       else "TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py")
+            + " codex-install --project .`."
         )
     if "UserPromptSubmit" not in hook_names:
         medium.append(
@@ -8334,7 +9010,7 @@ def _generate_codex_auto_recommendations(components, trends=None, days=30):
 
     habits.append(
         "**Use Codex status line/context remaining as the first compaction signal**: "
-        "Codex logs real `model_context_window` and token counts. Compact around 50-70% for long tasks, earlier when switching topics. "
+        "Codex logs real `model_context_window` and token counts. For long tasks compact well before the window fills (quality sags long before the limit), earlier when switching topics. "
         "Do not assume a 1M API window; trust the logged Codex window for the active session."
     )
     habits.append(
@@ -8705,7 +9381,7 @@ def generate_auto_recommendations(components, trends=None, days=30):
             f"**Review {skill_count} skills ({skill_tokens:,} tokens, no usage data)**: "
             f"You have {skill_count} skills but no session data to determine which are unused. "
             f"Each skill costs ~{avg_per_skill} tokens at startup whether you use it or not.\n"
-            f"  Install the SessionEnd hook (`python3 measure.py setup-hook`) to enable usage-based "
+            f"  Install the SessionEnd hook (`{_measure_cli()} setup-hook`) to enable usage-based "
             f"recommendations. Meanwhile, manually review: do you use all {skill_count} regularly?"
             + _skill_slim_clause(avg_per_skill, _runtime) +
             f"  Archiving {est_archive} (harder step, truly-dead skills) would free ~{est_savings:,} tokens/session. "
@@ -8840,7 +9516,7 @@ def generate_auto_recommendations(components, trends=None, days=30):
         quick.append(
             "**Install SessionEnd hook for usage tracking**: "
             "No SessionEnd hook detected. One-time setup, takes 10 seconds. "
-            "Run `python3 measure.py setup-hook`. "
+            f"Run `{_measure_cli()} setup-hook`. "
             "This enables the Trends tab (which skills you actually use, model mix, daily patterns) "
             "and the Health tab (stale sessions, version checks). Without it, you only get data "
             "from manual `measure.py collect` runs. The hook runs automatically after every session "
@@ -8882,7 +9558,7 @@ def generate_auto_recommendations(components, trends=None, days=30):
             f"has multiple install paths: {', '.join(dupe_names[:5])}.\n"
             f"  Claude Code loads skills from EVERY registered install path, so duplicates "
             f"genuinely consume extra context tokens (a Claude Code bug).\n"
-            f"  Fix: `python3 measure.py plugin-cleanup` (or `--dry-run` to preview). "
+            f"  Fix: `{_measure_cli()} plugin-cleanup` (or `--dry-run` to preview). "
             f"Run `--dry-run` first to preview changes. "
             f"~{wasted:,} tokens recoverable."
         )
@@ -8895,7 +9571,7 @@ def generate_auto_recommendations(components, trends=None, days=30):
                 f"Plugin '{node_mod[0]['plugin']}' has an install path inside node_modules. "
                 f"This is likely unintentional and may load skills from dependency internals.\n"
                 f"  Path: {node_mod[0]['path']}\n"
-                f"  Fix: `python3 measure.py plugin-cleanup` removes stale/suspicious paths."
+                f"  Fix: `{_measure_cli()} plugin-cleanup` removes stale/suspicious paths."
             )
         if worktree and not plugin_dupes:
             quick.append(
@@ -8906,7 +9582,7 @@ def generate_auto_recommendations(components, trends=None, days=30):
                 f"  Fix: 1) Remove old manual worktrees: `git worktree list` then `git worktree remove <name>` "
                 f"for unused ones. 2) Use `claude -w` instead of `git worktree add` going forward, "
                 f"the built-in flag avoids the duplication bug. "
-                f"3) `python3 measure.py plugin-cleanup` removes stale cache dirs."
+                f"3) `{_measure_cli()} plugin-cleanup` removes stale cache dirs."
             )
 
     # --- Rule 10: Rules directory overhead ---
@@ -9007,11 +9683,20 @@ def generate_auto_recommendations(components, trends=None, days=30):
         )
 
     # --- Rule 13: Compact habits (always include) ---
+    try:
+        _cw = _resolve_compact_window(None)
+        _compact_where = (f"Auto-compact fires at ~{_cw['tokens']:,} tokens "
+                          f"({_cw['source']}). ")
+    except Exception:
+        _compact_where = ""
     habits.append(
-        "**Use /compact at 50-70% context fill**: "
-        "Output quality degrades as context fills, especially past 70%. "
-        "Don't wait for auto-compact. Run /compact proactively when you notice "
-        "the conversation getting long or when switching topics within a session."
+        "**Compact on your own schedule, not at the auto-compact line**: "
+        "Output quality degrades as context fills, well before auto-compact runs. "
+        f"{_compact_where}"
+        "Run /compact proactively when the conversation gets long or the topic changes, "
+        "and use `/autocompact <tokens>` to pull the line in for a model. "
+        "`measure.py compact-advice` replays your own session history to estimate "
+        "whether compacting earlier would save tokens."
     )
     habits.append(
         "**Use /clear between unrelated topics**: "
@@ -9049,13 +9734,108 @@ def generate_auto_recommendations(components, trends=None, days=30):
     return plan_md, total_count
 
 
-def generate_coach_data(focus=None, components=None, trends=None):
+_DETCAND_COACH_BUDGET_S = 8.0
+_DETCAND_COACH_MAX_SESSIONS = 60
+_DETCAND_CLI_BUDGET_S = 60.0
+_DETCAND_CLI_MAX_SESSIONS = 300
+
+
+def _deterministic_candidates_data(days=30, budget_s=_DETCAND_COACH_BUDGET_S,
+                                   max_sessions=_DETCAND_COACH_MAX_SESSIONS,
+                                   use_cache=True, progress=None):
+    """Deterministic-candidate analysis over local transcripts (see deterministic_candidates.py).
+
+    Local, read-only, no model calls. Never raises: the coach must not fail
+    because of this block, so any error comes back as ``status: "error"``.
+    """
+    runtime = "unknown"
+    try:
+        runtime = detect_runtime()
+        if runtime not in ("claude", "codex"):
+            return deterministic_candidates.run(runtime, [], lambda *a: 0.0, days=days)
+        tier = _load_pricing_tier()
+
+        def price(model, fresh, out, cache_read, cache_create, cc_1h, cc_5m):
+            if not model or model == "unknown":
+                return None
+            if runtime == "codex":
+                return _get_model_cost(model, fresh, out, cache_read, cache_create, tier=tier)
+            if cc_1h or cc_5m:
+                return _get_model_cost(model, fresh, out, cache_read, cache_create, tier=tier,
+                                       cache_create_1h=cc_1h, cache_create_5m=cc_5m)
+            return _get_model_cost(model, fresh, out, cache_read, cache_create, tier=tier)
+
+        files = [(Path(jf), mt) for jf, mt, _proj in _find_all_jsonl_files(days=days)
+                 if _sidechain_path_reason(jf) is None]
+        return deterministic_candidates.run(
+            runtime, files, price, days=days, budget_s=budget_s, max_sessions=max_sessions,
+            cache_dir=SNAPSHOT_DIR, tier=tier, use_cache=use_cache, progress=progress)
+    except Exception as exc:  # never break coach --json
+        return {"status": "error", "runtime": runtime, "partial": True, "candidates": [],
+                "basis": deterministic_candidates.BASIS,
+                "error": f"{type(exc).__name__}: {str(exc)[:120]}"}
+
+
+def _cmd_deterministic_candidates(args):
+    """measure.py deterministic-candidates [--days N] [--json] [--budget SECONDS] [--max-sessions N] [--no-cache]"""
+    as_json = "--json" in args
+
+    def _opt(flag, cast, default):
+        if flag in args:
+            i = args.index(flag)
+            if i + 1 < len(args):
+                try:
+                    return cast(args[i + 1])
+                except ValueError:
+                    pass
+        return default
+
+    days = max(1, _opt("--days", int, 30))
+    budget = max(1.0, _opt("--budget", float, _DETCAND_CLI_BUDGET_S))
+    cap = max(1, _opt("--max-sessions", int, _DETCAND_CLI_MAX_SESSIONS))
+
+    def _progress(msg):
+        # Quiet unless a person is watching: never in --json, never when stderr is piped or captured.
+        # deterministic_candidates.run() throttles this to one line per 2 seconds.
+        if as_json:
+            return
+        try:
+            is_tty = sys.stderr.isatty()
+        except (AttributeError, ValueError, OSError):
+            is_tty = False
+        if is_tty:
+            print(f"  {msg}", file=sys.stderr)
+
+    data = _deterministic_candidates_data(days=days, budget_s=budget, max_sessions=cap,
+                                          use_cache="--no-cache" not in args, progress=_progress)
+    if as_json:
+        print(json.dumps(data, indent=2))
+        return
+    print()
+    print(f"  {_strip_ansi(str(data.get('summary') or deterministic_candidates.summary_line(data)))}")
+    for i, c in enumerate(data.get("candidates") or [], 1):
+        tok = c["tokens"]
+        print(f"\n  {i}. [{c['kind']}] seen {c['times_seen']}x in {c['sessions_seen']} session(s)")
+        print(f"     {_strip_ansi(str(c['example']))}")
+        print(f"     the turns that ran them used {tok['total_tokens']:,} tokens ({tok['input_tokens']:,} in incl. "
+              f"{tok['cache_read_tokens']:,} cache read, {tok['output_tokens']:,} out), "
+              f"~${c['cost_usd']:.2f} API-equivalent, {deterministic_candidates.BASIS}")
+        print(f"     -> {c['suggestion']}")
+    if data.get("candidates"):
+        print(f"\n  {deterministic_candidates.USED_NOT_SAVED_NOTE}")
+    print()
+
+
+def generate_coach_data(focus=None, components=None, trends=None, include_deterministic=False):
     """Generate structured coaching data for Token Coach mode.
 
     Args:
         focus: Optional focus area ('skills', 'agentic', 'memory')
         components: Pre-computed measure_components() result (avoids duplicate call)
         trends: Pre-computed trends data (avoids duplicate call)
+        include_deterministic: Add the ``deterministic_candidates`` block (a
+            bounded transcript scan). Only the ``coach`` CLI asks for it; the
+            dashboard and rollup callers skip the scan.
 
     Returns a dict with:
     - snapshot: current component measurements
@@ -9340,7 +10120,7 @@ def generate_coach_data(focus=None, components=None, trends=None):
             "name": "No Codex Stop Hook" if is_codex else "No SessionEnd Hook",
             "severity": "low",
             "detail": "Automatic dashboard refresh and continuity checkpoints are not active",
-            "fix": "Run: TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-install --project ." if is_codex else "Run: python3 measure.py setup-hook",
+            "fix": _hint("Run: TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-install --project .") if is_codex else _hint("Run: python3 measure.py setup-hook"),
             "savings": "Enables trends data for better coaching",
         })
         score -= 3
@@ -9780,7 +10560,16 @@ def generate_coach_data(focus=None, components=None, trends=None):
 
     # Build result
     overhead_pct = (totals["estimated_total"] / context_window * 100) if context_window else 0
-    usable = context_window - totals["estimated_total"] - 33000  # subtract approx autocompact buffer
+    # Room ends where auto-compact fires: the window minus the ~33K buffer by
+    # default, or the user's own compact window when they set a smaller one.
+    compact_ceiling = context_window - 33000
+    try:
+        _cw = _resolve_compact_window(None)
+        if _cw.get("user_override") and 0 < _cw["tokens"] < compact_ceiling:
+            compact_ceiling = _cw["tokens"]
+    except Exception:
+        pass
+    usable = compact_ceiling - totals["estimated_total"]
 
     result = {
         "snapshot": {
@@ -9906,6 +10695,33 @@ def generate_coach_data(focus=None, components=None, trends=None):
 
     if all_costly_prompts:
         result["costly_prompts"] = all_costly_prompts[:5]
+
+    if include_deterministic:
+        result["deterministic_candidates"] = _deterministic_candidates_data(
+            days=30, budget_s=_DETCAND_COACH_BUDGET_S, max_sessions=_DETCAND_COACH_MAX_SESSIONS)
+    # Compact-window replay of the user's own history: capped, cached, fail-open
+    # (Claude transcripts only). Never lets this block fail the coach. Like the
+    # deterministic scan it replays transcripts, so only the coach CLI asks for
+    # it: the dashboard and rollup callers must not pay for a history replay.
+    if include_deterministic and not is_codex:
+        try:
+            advice = _coach_compact_advice_block()
+            if advice:
+                result["compact_advice"] = advice
+        except Exception:
+            pass
+
+    # Usage recommendations: the coach data channel also feeds the
+    # dashboard's "From your own usage" section. This is the dashboard data
+    # collection spawn point too: a missing/stale record starts the detached
+    # refresh, the record itself is only ever READ here.
+    try:
+        _recs_ensure_fresh()
+        _rb = _recs_block()
+        if _rb is not None:
+            result["usage_recommendations"] = _rb
+    except Exception:
+        pass
 
     return result
 
@@ -10376,7 +11192,8 @@ def _extract_costly_prompts(jsonl_path, tier=None, top_n=5):
                         cr = _safe_int(usage.get("cache_read_input_tokens", 0))
                         cc = _safe_int(usage.get("cache_creation_input_tokens", 0))
                         model = _record_model(msg)
-                        cost = _get_model_cost(model, inp, out, cr, cc, tier=tier)
+                        cost = _get_model_cost(model, inp, out, cr, cc, tier=tier,
+                                               per_request=True)
                         pending_prompt["tokens_in"] = inp + cr + cc
                         pending_prompt["tokens_out"] = out
                         pending_prompt["fresh_input"] = inp
@@ -10451,7 +11268,16 @@ def _extract_topic(text):
         if line:
             text = line
             break
-    # Truncate
+    # The topic is user text persisted to session_log/quality-cache and
+    # rendered into checkpoints — credentials must not ride along. If the
+    # shared redactor is unavailable or refuses, drop the topic rather than
+    # persist it raw. Redact BEFORE truncating: a secret that straddles the
+    # cut is a prefix no pattern recognises.
+    try:
+        from credential_patterns import redact_credentials as _topic_redact
+        text = _topic_redact(text)
+    except Exception:
+        return None
     if len(text) > 120:
         text = text[:117] + "..."
     return text or None
@@ -11111,9 +11937,11 @@ def parse_session_turns(filepath):
                 # Price cache-create by TTL tier when the per-turn split is available.
                 if cc_1h or cc_5m:
                     cost = _get_model_cost(model, inp_tok, out_tok, cr, cc, tier=tier,
-                                           cache_create_1h=cc_1h, cache_create_5m=cc_5m)
+                                           cache_create_1h=cc_1h, cache_create_5m=cc_5m,
+                                           per_request=True)
                 else:
-                    cost = _get_model_cost(model, inp_tok, out_tok, cr, cc, tier=tier)
+                    cost = _get_model_cost(model, inp_tok, out_tok, cr, cc, tier=tier,
+                                           per_request=True)
 
                 turns.append({
                     "turn_index": turn_index,
@@ -11315,6 +12143,10 @@ def _claude_price_key(model_id, claude_models):
             return "fable"
     elif "mythos" in str(model_id).lower() and "fable" in claude_models:
         return "fable"
+    # A bare `haiku` keeps the family card (Haiku 4.5 rates), matching the
+    # 200K window _claude_model_window gives it: the alias is provider-
+    # dependent, and "haiku" is also the family-bucket label that routing and
+    # model-mix callers pass in, so it must not float to the 5.5 card.
     return _normalize_model_name(model_id)
 
 
@@ -12615,6 +13447,29 @@ def _log_compression_event(feature, original_text="", compressed_text="",
         ratio = 0.0
         if original_tokens > 0:
             ratio = round(1.0 - compressed_tokens / original_tokens, 4)
+
+        # DB boundary: command_pattern/detail can embed a file name or label
+        # that carries a credential shape. Redact here so NO caller (present
+        # or future) can persist them raw; on a redactor refusal the text
+        # columns go NULL while token counts still land. feature/session_id
+        # are caller text too — a no-op on real inputs (constant feature
+        # names, host-generated ids, so joins still hold), but a tainted
+        # value can no longer reach disk verbatim.
+        try:
+            from credential_patterns import redact_credentials as _ce_redact
+            if feature:
+                feature = _ce_redact(feature)
+            if session_id:
+                session_id = _ce_redact(session_id)
+            if command_pattern:
+                command_pattern = _ce_redact(command_pattern)
+            if detail:
+                detail = _ce_redact(detail)
+        except Exception:
+            feature = "unknown"
+            session_id = None
+            command_pattern = None
+            detail = None
 
         # Derive stable join key and resolve event-time model.
         session_uuid, _ = _extract_session_uuid(session_id)
@@ -14388,7 +15243,8 @@ def _keepwarm_json_says_api(path):
     """
     try:
         path = Path(path)
-        if not path.exists():
+        # A FIFO would block read_text() forever; only a regular file is a config.
+        if not _is_regular_file(path):
             return None
         cfg = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, ValueError):
@@ -18463,6 +19319,2366 @@ def keepwarm_cache_health_block(days=30, now=None):
     return block
 
 
+# ===========================================================================
+# Subagent prompt-cache TTL advice (`subagentPromptCacheTtl`).
+#
+# Claude Code gives subagents a 5-minute prompt cache even on a subscription,
+# so a subagent returned to after more than 5 minutes rewrites its whole
+# prefix. Claude Code >= 2.1.243 supports raising that per install via the
+# `subagentPromptCacheTtl: "1h"` setting (docs say 2.1.242; the changelog
+# floor is 2.1.243 -- use the higher). Token Optimizer measures whether it
+# pays on the user's own transcripts and RECOMMENDS it; it never sets the
+# key for you.
+#
+# ADVISE-ONLY: the automatic path never writes
+# `subagentPromptCacheTtl`. Claude Code keeps subagents at 5 minutes because
+# 1h costs more on average for agent-shaped work; our verdict is an estimate,
+# and editing a user's settings on an estimate is not ok. What remains:
+#   * SessionStart still keeps the cached payoff verdict fresh (the detached
+#     background scan) and records what it says (marker `auto_decision`),
+#     for every regime: unset ("would have saved about $X"), already "1h"
+#     ("is costing / is paying"), and thin data (neutral).
+#   * The verdict is surfaced as a per-user recommendation -- numbers plus
+#     the exact command -- in `subagent-cache status`, doctor, quick, coach
+#     (text and JSON), and the audit checklist.
+#   * TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=1 is the ONLY automatic write (an
+#     explicit opt-in, and the only path that keeps the 14-day auto-revert
+#     tripwire). =0 stays never (and undoes a value TO set earlier).
+#   * `subagent-cache enable` / `disable` are the explicit commands; enable
+#     is unconditional, disable is final (marker "removed" is sticky for
+#     every automatic path, including the opt-in).
+#
+# Hard rules (each pinned by tests/test_subagent_cache_ttl.py):
+#   * A value the user set is never overridden -- any pre-existing key (even
+#     "5m") reads as "user-set" and is left alone.
+#   * Env outranks: CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL or
+#     FORCE_PROMPT_CACHING_5M set -> do nothing (documented precedence:
+#     FORCE_PROMPT_CACHING_5M > bucket env > bucket setting).
+#   * A managed/project/local settings file that already sets the key wins;
+#     a plugin setting cannot (a plugin's own settings.json is ignored by
+#     Claude Code for this key), so the USER settings.json is the only right
+#     place -- and only when nothing else already answers.
+#   * Claude Code >= 2.1.243, else skip with a reason (fail-closed on an
+#     unknown version: never set on what we cannot verify).
+#   * A marker in TO's own data dir remembers that TO set it (timestamp +
+#     previous state). disable removes the key ONLY when the marker says TO
+#     set it AND the value is still "1h". If the user removes or changes the
+#     key after we set it, the marker flips to "user-declined" and the
+#     automatic path never sets it again.
+#   * Opt-out env TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=0|false|off|no: never
+#     set; and if TO set it earlier, undo.
+#   * Unknown-state settings (unreadable, malformed, non-object, or -- for
+#     automatic writes -- missing): never write. Explicit `enable` creates a
+#     genuinely missing settings.json and says so.
+#   * The verdict judgement is evidence-gated: a recommendation to turn it
+#     on requires the user's own last 30 days to say it pays (>=
+#     _SUBAGENT_CACHE_TRIPWIRE_MIN_REQUESTS subagent requests AND saving >=
+#     _SUBAGENT_CACHE_AUTO_ENABLE_MARGIN x the 1h write premium).
+#   * The scan never runs inside a hook. SessionStart reads one small cached
+#     verdict (subagent_cache_verdict.json); a missing/day-old one starts the
+#     scan as a detached child (subagent_cache_scan.lock keeps it to one at a
+#     time; time budget + file cap, partial = no verdict) and the verdict is
+#     judged at a later session start.
+#   * The payoff is judged from the user's OWN transcripts, in both regimes
+#     (see subagent_cache_payoff): rewrites a 1h TTL avoids (within one agent,
+#     and across spawns sharing a prefix) and, once the setting is on, the
+#     reads it really realized, against the 2x-vs-1.25x write premium.
+#     Under the force-env opt-in, 14+ days of post-enable data and at least
+#     _SUBAGENT_CACHE_TRIPWIRE_MIN_REQUESTS subagent requests with a NEGATIVE
+#     net estimate -> the next SessionStart reverts (only when TO set it),
+#     records "auto-reverted", and says so in one line. Without the opt-in
+#     the same window only feeds the "is costing ... turn off" advice --
+#     a key is never removed silently. The verdict is re-judged at most once
+#     a day -- the payoff scan walks real transcripts and must not run on
+#     every session start.
+# ===========================================================================
+
+_SUBAGENT_CACHE_KEY = "subagentPromptCacheTtl"
+_SUBAGENT_CACHE_MARKER_NAME = "subagent_cache_state.json"
+# Docs say v2.1.242; the changelog says 2.1.243. Use the higher floor.
+_SUBAGENT_CACHE_CC_FLOOR = (2, 1, 243)
+_SUBAGENT_CACHE_OPTOUT_ENV = "TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H"
+# A 5m cache write that follows this gap would have been a read at 1h.
+_SUBAGENT_CACHE_GAP_LOW = 300     # 5 minutes: below this the old write is alive
+_SUBAGENT_CACHE_GAP_HIGH = 3600   # 1 hour: above this the 1h cache is gone too
+# Tripwire: judge only once this much post-enable data exists.
+_SUBAGENT_CACHE_TRIPWIRE_MIN_DAYS = 14
+# ...and re-judge at most this often. The payoff scan walks real
+# transcripts, so a verdict stands for a day; running it on every
+# session start past day 14 would blow the hook time budget.
+_SUBAGENT_CACHE_TRIPWIRE_REJUDGE_SECONDS = 86400
+# ...and never on a thin sample: the window must hold at least this many
+# subagent requests that touched the cache (read or wrote). A user with almost
+# no subagents has no evidence either way and is never auto-reverted.
+_SUBAGENT_CACHE_TRIPWIRE_MIN_REQUESTS = 200
+# The "turn it on" recommendation is evidence-gated on the user's own last 30
+# days: at least _SUBAGENT_CACHE_TRIPWIRE_MIN_REQUESTS subagent requests AND
+# an estimated saving of at least this multiple of the estimated 1h write
+# premium. A heavy subagent user measured -$25 net at 1.0x, so break-even is
+# not enough: the 15% margin keeps "roughly a wash" from being recommended.
+_SUBAGENT_CACHE_AUTO_ENABLE_MARGIN = 1.15
+# The payoff scan walks real transcripts (about 9 s on a heavy history), so it
+# never runs in a hook. A detached child writes this small verdict file; session
+# start only reads it. A verdict older than a day is re-scanned, not applied.
+_SUBAGENT_CACHE_VERDICT_NAME = "subagent_cache_verdict.json"
+_SUBAGENT_CACHE_VERDICT_MAX_AGE = 86400
+_SUBAGENT_CACHE_SCAN_LOCK_NAME = "subagent_cache_scan.lock"
+# A lock older than the scan's own time budget plus slack is abandoned.
+_SUBAGENT_CACHE_SCAN_LOCK_STALE = 300
+_SUBAGENT_CACHE_SCAN_TOKEN_ENV = "TO_SUBAGENT_CACHE_SCAN_TOKEN"
+# Scan bounds (the child is detached, so these protect the machine, not a hook).
+# Running out of either makes the scan PARTIAL, and a partial scan is no verdict.
+_SUBAGENT_CACHE_SCAN_BUDGET_SECONDS = 120
+_SUBAGENT_CACHE_SCAN_MAX_FILES = 20000
+
+
+def _subagent_cache_marker_path():
+    """Marker lives in TO's own data dir (plugin-data aware, never settings)."""
+    return SNAPSHOT_DIR / _SUBAGENT_CACHE_MARKER_NAME
+
+
+def _subagent_cache_read_marker():
+    """Read the state marker, or None when absent/corrupt (None = unknown-old)."""
+    p = _subagent_cache_marker_path()
+    try:
+        if not p.exists():
+            return None
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _subagent_cache_write_marker(record):
+    """Atomically write the state marker (0600). Never raises."""
+    p = _subagent_cache_marker_path()
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=".subagent_cache.", suffix=".tmp", dir=str(p.parent))
+        try:
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(record, fh)
+            os.replace(tmp_name, str(p))
+        except Exception:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
+    except Exception:
+        pass
+
+
+def _subagent_cache_optout(value=None):
+    """True when the opt-out env carries a falsy token (0/false/off/no)."""
+    if value is None:
+        value = os.environ.get(_SUBAGENT_CACHE_OPTOUT_ENV)
+    if value is None:
+        return False
+    return str(value).strip().lower() in ("0", "false", "off", "no")
+
+
+def _subagent_cache_force_on(value=None):
+    """True when the env carries a truthy token (1/true/on/yes): the automatic
+    path then enables WITHOUT the evidence gate ("always on")."""
+    if value is None:
+        value = os.environ.get(_SUBAGENT_CACHE_OPTOUT_ENV)
+    if value is None:
+        return False
+    return str(value).strip().lower() in ("1", "true", "on", "yes")
+
+
+def _subagent_cache_claude_code_version():
+    """Detect the Claude Code version as a (major, minor, patch) tuple.
+
+    Same probe the health collection uses: `claude --version` via
+    _resolve_runtime_bin (shutil.which first, then the common install
+    locations), parsed with _parse_semver. Returns None when nothing
+    parseable answers -- callers treat that as "version unknown" and skip
+    (fail-closed: never set a setting on an unverifiable host).
+    Memoized per process; the SessionStart path hits the memo on every later
+    call, and the marker check skips the probe entirely after first success.
+    """
+    global _SUBAGENT_CACHE_CC_VERSION
+    if _SUBAGENT_CACHE_CC_VERSION is not _SUBAGENT_CACHE_UNKNOWN:
+        return _SUBAGENT_CACHE_CC_VERSION
+    try:
+        result = subprocess.run(
+            [_resolve_runtime_bin("claude"), "--version"],
+            capture_output=True, text=True, timeout=3, creationflags=_NO_WINDOW,
+        )
+        raw = result.stdout.strip() if result.returncode == 0 else ""
+    except (subprocess.SubprocessError, FileNotFoundError, OSError):
+        raw = ""
+    m = re.search(r"\d+\.\d+\.\d+", raw or "")
+    _SUBAGENT_CACHE_CC_VERSION = (
+        _parse_semver(m.group(0)) if m else _SUBAGENT_CACHE_UNKNOWN)
+    return _SUBAGENT_CACHE_CC_VERSION
+
+
+_SUBAGENT_CACHE_UNKNOWN = object()   # probe not yet run sentinel
+_SUBAGENT_CACHE_CC_VERSION = _SUBAGENT_CACHE_UNKNOWN
+
+
+def _subagent_cache_managed_settings_path():
+    """Claude Code's managed-settings.json location for this platform."""
+    system = platform.system()
+    if system == "Windows":
+        base = os.environ.get("ProgramData") or "C:\\ProgramData"
+        return Path(base) / "ClaudeCode" / "managed-settings.json"
+    if system == "Darwin":
+        return Path("/Library/Application Support/ClaudeCode/managed-settings.json")
+    return Path("/etc/claude-code/managed-settings.json")
+
+
+def _subagent_cache_external_settings_sources():
+    """Every settings file that outranks the user settings.json for this key.
+
+    Managed (platform path), project (`.claude/settings.json` in the cwd) and
+    local (`.claude/settings.local.json`). Claude Code merges all of them and
+    the user file ranks LAST, so if any of these already answers the key,
+    writing the user file would be a silent no-op -- do nothing instead.
+    Returns Paths that may not exist (callers check).
+    """
+    cwd = Path.cwd()
+    return [
+        _subagent_cache_managed_settings_path(),
+        cwd / ".claude" / "settings.json",
+        cwd / ".claude" / "settings.local.json",
+    ]
+
+
+def _subagent_cache_external_key_holder():
+    """First external settings source that (maybe) sets the key.
+
+    Returns {"path": str} when a READABLE file sets it, or
+    {"path": str, "unreadable": True} when one exists but cannot be read
+    (fail-closed: an unreadable higher-priority file means "unknown", and
+    unknown never writes). None when every higher-priority file is absent
+    or readable without the key.
+    """
+    for src in _subagent_cache_external_settings_sources():
+        try:
+            if not src.exists():
+                continue
+            if not _is_regular_file(src):
+                # a FIFO would block read_text(); unknown means "do not write"
+                return {"path": str(src), "unreadable": True}
+            data = json.loads(src.read_text(encoding="utf-8-sig"))
+        except (json.JSONDecodeError, PermissionError, OSError, ValueError):
+            return {"path": str(src), "unreadable": True}
+        if isinstance(data, dict) and _SUBAGENT_CACHE_KEY in data:
+            return {"path": str(src)}
+    return None
+
+
+def _subagent_cache_claude_only():
+    """The feature is Claude Code only. Cowork is a hard exclusion: it is
+    detect_runtime()=="claude" but must never read or write ~/.claude."""
+    try:
+        if detect_runtime() != "claude" or is_cowork():
+            return False
+    except Exception:
+        return False
+    return True
+
+
+def _subagent_cache_platform_gap(reason="not Claude Code"):
+    return {"state": "platform-gap", "changed": False, "reason": reason,
+            "notice": None}
+
+
+def _subagent_cache_undo(data, now, why, user_initiated=False):
+    """Shared undo: remove the key (only) and record why in the marker.
+
+    Caller guarantees the marker says TO set it. `data` is the current
+    settings dict. `user_initiated` marks an explicit user command so the
+    settings lease must not lose to a herd writer's tombstone.
+    Never raises; a refused write leaves everything as-is.
+    """
+    if _SUBAGENT_CACHE_KEY not in data:
+        return {"state": why, "changed": False, "reason": "key already absent",
+                "notice": None}
+    if data.get(_SUBAGENT_CACHE_KEY) != "1h":
+        return {"state": "user-changed", "changed": False,
+                "reason": "value is no longer \"1h\"; leaving it alone",
+                "notice": None}
+    payload = dict(data)
+    payload.pop(_SUBAGENT_CACHE_KEY, None)
+    if not _write_settings_atomic(payload, allow_removing_keys={_SUBAGENT_CACHE_KEY},
+                                  user_initiated=user_initiated):
+        return {"state": "write-refused", "changed": False,
+                "reason": _settings_write_refusal_reason(),
+                "notice": None}
+    _subagent_cache_write_marker({
+        "state": why,
+        "ts": float(now),
+        "set_by": "token-optimizer",
+    })
+    return {"state": why, "changed": True, "reason": None, "notice": None}
+
+
+# ---- cached verdict, background scan, evidence gate ----------------------
+
+def _subagent_cache_verdict_path():
+    return SNAPSHOT_DIR / _SUBAGENT_CACHE_VERDICT_NAME
+
+
+def _subagent_cache_scan_lock_path():
+    return SNAPSHOT_DIR / _SUBAGENT_CACHE_SCAN_LOCK_NAME
+
+
+def _subagent_cache_write_json_atomic(path, record, prefix):
+    """Atomic 0600 JSON write next to `path`. Never raises."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(prefix=prefix, suffix=".tmp",
+                                        dir=str(path.parent))
+        try:
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(record, fh)
+            os.replace(tmp_name, str(path))
+        except Exception:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
+    except Exception:
+        pass
+
+
+def _subagent_cache_read_verdict():
+    """The cached scan verdict, or None when absent/corrupt."""
+    try:
+        data = json.loads(_subagent_cache_verdict_path().read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _subagent_cache_verdict_for(now, since_ts=None):
+    """("fresh"|"stale"|"missing", record) for the window `since_ts`.
+
+    `since_ts` None is the plain last-30-days verdict the automatic enable
+    judges; a float is the tripwire's post-enable window. A verdict computed
+    for another window counts as missing."""
+    rec = _subagent_cache_read_verdict()
+    if rec is None:
+        return "missing", None
+    have = rec.get("since_ts")
+    try:
+        same_window = ((have is None and since_ts is None)
+                       or (have is not None and since_ts is not None
+                           and abs(float(have) - float(since_ts)) < 1e-6))
+        age = float(now) - float(rec.get("ts"))
+    except (TypeError, ValueError):
+        return "missing", None
+    if not same_window:
+        return "missing", None
+    if age > _SUBAGENT_CACHE_VERDICT_MAX_AGE or age < -3600:
+        return "stale", rec
+    return "fresh", rec
+
+
+def _reclaim_stale_lock_file(lock, stale_seconds, now):
+    """Free an abandoned O_EXCL lock without ever deleting a live successor.
+
+    Returns True when the pathname is free (stale lock removed, or already
+    gone) so the caller retries the create, False when the lock is live or
+    cannot be moved. A bare ``unlink`` after an age check can delete the lock a
+    faster process just re-created, and then two processes both think they hold
+    it. So the stale file is renamed to a unique name first (atomic: it takes
+    whatever sits at the path at that instant), identity-checked against what
+    the age check saw, and only then unlinked. If the rename grabbed a live
+    successor instead, it is linked back (no-replace) and left alone.
+    """
+    try:
+        seen = lock.stat()
+    except OSError:
+        return True
+    if float(now) - seen.st_mtime < stale_seconds:
+        return False
+    victim = lock.with_name(f"{lock.name}.stale-{os.urandom(6).hex()}")
+    try:
+        os.rename(str(lock), str(victim))
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    try:
+        moved = os.stat(str(victim))
+        ours = (os.path.samestat(seen, moved)
+                and moved.st_mtime_ns == seen.st_mtime_ns)
+    except OSError:
+        ours = False
+    if not ours:
+        try:
+            os.link(str(victim), str(lock))
+        except OSError:
+            pass
+    try:
+        os.unlink(str(victim))
+    except OSError:
+        pass
+    return bool(ours)
+
+
+def _subagent_cache_scan_acquire_lock(now=None):
+    """Take the scan lock (O_EXCL); its owner token, or None when it is held.
+
+    A lock older than _SUBAGENT_CACHE_SCAN_LOCK_STALE is abandoned (a crashed
+    child) and is reclaimed."""
+    if now is None:
+        now = time.time()
+    lock = _subagent_cache_scan_lock_path()
+    token = os.urandom(16).hex()
+    try:
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        for _attempt in (1, 2):
+            try:
+                fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            except FileExistsError:
+                if not _reclaim_stale_lock_file(
+                        lock, _SUBAGENT_CACHE_SCAN_LOCK_STALE, now):
+                    return None
+                continue
+            try:
+                os.write(fd, token.encode("ascii"))
+            finally:
+                os.close(fd)
+            return token
+    except OSError:
+        pass
+    return None
+
+
+def _subagent_cache_scan_release_lock(token):
+    """Delete the lock only while it still holds `token`. Never raises."""
+    if not token:
+        return
+    lock = _subagent_cache_scan_lock_path()
+    try:
+        if lock.read_text(encoding="ascii").strip() == token:
+            lock.unlink()
+    except OSError:
+        pass
+
+
+def subagent_cache_scan_run(now=None, since_ts=None, time_budget=None,
+                            max_files=None, token=None):
+    """The background worker: scan once, write the verdict file, free the lock.
+
+    Run by the detached child (`measure.py subagent-cache scan`), which gets
+    the lock token from its spawner; run by hand it takes the lock itself and
+    returns None when another scan holds it. A partial scan (time budget or
+    file cap) or a crash writes an INCOMPLETE record: dated, so the next scan
+    is a day away, but with no payoff, so nothing is ever decided from it.
+    Returns the record written, or None when it did not run.
+    """
+    if not _subagent_cache_claude_only():
+        return None
+    if now is None:
+        now = time.time()
+    if token is None:
+        token = _subagent_cache_scan_acquire_lock(now)
+        if token is None:
+            return None
+    budget = _SUBAGENT_CACHE_SCAN_BUDGET_SECONDS if time_budget is None else time_budget
+    cap = _SUBAGENT_CACHE_SCAN_MAX_FILES if max_files is None else max_files
+    rec = {"version": 1, "ts": float(now), "complete": False,
+           "since_ts": None if since_ts is None else float(since_ts),
+           "window_days": 30, "payoff": None, "reason": None}
+    try:
+        payoff = subagent_cache_payoff(days=30, now=now, since_ts=since_ts,
+                                       time_budget=budget, max_files=cap)
+        if payoff.get("partial"):
+            rec["reason"] = payoff.get("partial_reason") or "partial scan"
+        else:
+            rec["complete"] = True
+            rec["payoff"] = payoff
+    except Exception as exc:
+        rec["reason"] = f"scan error: {type(exc).__name__}"
+    finally:
+        _subagent_cache_write_json_atomic(
+            _subagent_cache_verdict_path(), rec, ".subagent_verdict.")
+        _subagent_cache_scan_release_lock(token)
+    return rec
+
+
+def _subagent_cache_spawn_scan(now=None, since_ts=None):
+    """Start the scan as a detached background process. True when started.
+
+    The lock is taken HERE (so two session starts can never both spawn) and
+    handed to the child by environment token. spawn_detached owns the Windows
+    flags (no console window); the interpreter is the GUI twin on Windows.
+    Never raises; a failed spawn frees the lock.
+    """
+    token = _subagent_cache_scan_acquire_lock(now)
+    if token is None:
+        return False
+    try:
+        argv = [_detached_python_exe(), str(MEASURE_PY_PATH), "subagent-cache", "scan"]
+        if since_ts is not None:
+            argv += ["--since", repr(float(since_ts))]
+        env = os.environ.copy()
+        env["TOKEN_OPTIMIZER_RUNTIME"] = detect_runtime()
+        env.pop("TOKEN_OPTIMIZER_HOOK", None)
+        env[_SUBAGENT_CACHE_SCAN_TOKEN_ENV] = token
+        proc = spawn_detached(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=env,
+            close_fds=True,
+        )
+    except Exception:
+        proc = None
+    if proc is None:
+        _subagent_cache_scan_release_lock(token)
+        try:
+            _log_spawn_failure("subagent-cache payoff scan spawn failed")
+        except Exception:
+            pass
+        return False
+    return True
+
+
+def _subagent_cache_judge_payoff(payoff):
+    """Pure judgement of a payoff window: {"decision", "reason", ("tokens")}.
+
+    recommend       >= MIN_REQUESTS subagent requests AND saved >= MARGIN x premium
+    not-enough-data fewer requests than that
+    would-not-pay   enough requests, but the saving does not clear the margin
+
+    "recommend" used to be "enable" (the automatic write is gone);
+    it now only feeds the advice line and the recorded verdict.
+    """
+    payoff = payoff or {}
+    n = int(payoff.get("subagent_requests") or 0)
+    days = int(payoff.get("window_days") or 30)
+    need = _SUBAGENT_CACHE_TRIPWIRE_MIN_REQUESTS
+    if n < need:
+        return {"decision": "not-enough-data",
+                "reason": (f"not enough data: {n} subagent requests in the last "
+                           f"{days} days, need {need}")}
+    saved = float(payoff.get("savings_usd_est") or 0.0)
+    premium = float(payoff.get("extra_write_cost_usd_est") or 0.0)
+    if saved > 0 and saved >= _SUBAGENT_CACHE_AUTO_ENABLE_MARGIN * premium:
+        tokens = (int(payoff.get("missed_read_tokens") or 0)
+                  + int(payoff.get("realized_read_tokens") or 0))
+        return {"decision": "recommend", "tokens": tokens, "days": days,
+                "reason": f"pays: saved ${saved:.2f} vs premium ${premium:.2f}"}
+    return {"decision": "would-not-pay",
+            "reason": f"would not pay: saved ${saved:.2f} vs premium ${premium:.2f}"}
+
+
+def _subagent_cache_record_decision(marker, decision, now):
+    """Remember why the automatic path did (not) write, with a timestamp.
+
+    Re-judged at most once a day: an identical decision on the same verdict
+    stands and is not rewritten."""
+    prior = (marker or {}).get("auto_decision") or {}
+    try:
+        if (prior.get("decision") == decision.get("decision")
+                and prior.get("verdict_ts") == decision.get("verdict_ts")
+                and float(now) - float(prior.get("ts")) < 86400):
+            return
+    except (TypeError, ValueError):
+        pass
+    record = dict(marker or {})
+    record["auto_decision"] = dict(decision, ts=float(now))
+    _subagent_cache_write_marker(record)
+
+
+def _subagent_cache_auto_gate(marker, now):
+    """Judge the cached verdict for the unset-key (last 30 days) window.
+
+    ADVISE-ONLY: reads the cached verdict only and ALWAYS records the
+    judgement in the marker -- a verdict says what the user's own numbers
+    support, it is never applied to settings here. With no usable verdict
+    (missing, stale, other window) it starts the detached scan and answers
+    "pending": the verdict is judged at a later session start."""
+    state, rec = _subagent_cache_verdict_for(now, None)
+    if state == "fresh":
+        if rec.get("complete") and isinstance(rec.get("payoff"), dict):
+            decision = _subagent_cache_judge_payoff(rec["payoff"])
+        else:
+            decision = {"decision": "not-enough-data",
+                        "reason": ("not enough data: the last payoff scan did "
+                                   f"not finish ({rec.get('reason') or 'partial'})")}
+        decision["verdict_ts"] = rec.get("ts")
+    else:
+        _subagent_cache_spawn_scan(now=now)
+        decision = {"decision": "pending", "verdict_ts": None,
+                    "reason": ("payoff scan runs in the background; it is "
+                               "judged at a later session start")}
+    _subagent_cache_record_decision(marker, decision, now)
+    return decision
+
+
+def subagent_cache_enable(now=None, automatic=True):
+    """Set `subagentPromptCacheTtl: "1h"` in the USER settings.json -- once,
+    and only under every safety rule in the module docstring.
+
+    `automatic=True` is the SessionStart path. ADVISE-ONLY: with the
+    force env unset it NEVER writes -- it judges + records the cached verdict
+    and returns the decision as the state -- while still honouring the sticky
+    marker states (user-declined / auto-reverted / opted-out / removed) so
+    the host can never fight the user, the tripwire, or an explicit
+    `disable`. TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=1 is the only opt-in that
+    lets this path write. `automatic=False` is the explicit CLI verb, where a
+    deliberate human request may clear any marker state and create a missing
+    settings.json (the env opt-out still always wins).
+
+    Returns {"state", "changed", "reason", "notice"}. The notice is the
+    one-line SessionStart message for the ONE transition where the key was
+    actually set; every other path emits none.
+    """
+    if now is None:
+        now = time.time()
+    if not _subagent_cache_claude_only():
+        return _subagent_cache_platform_gap()
+
+    # Opt-out env: never set; and if TO set it earlier, undo.
+    if _subagent_cache_optout():
+        marker = _subagent_cache_read_marker()
+        data, ok = _read_settings_for_write()
+        if ok and marker and marker.get("state") == "set":
+            r = _subagent_cache_undo(data, now, "opted-out")
+            r["state"] = "opted-out"
+            return r
+        return {"state": "opted-out", "changed": False,
+                "reason": f"{_SUBAGENT_CACHE_OPTOUT_ENV} is set",
+                "notice": None}
+
+    marker = _subagent_cache_read_marker()
+    mstate = (marker or {}).get("state")
+
+    if automatic and mstate in ("user-declined", "auto-reverted", "opted-out",
+                                "removed"):
+        return {"state": mstate, "changed": False,
+                "reason": "sticky marker state; the automatic path never "
+                          "re-sets after a decline, an auto-revert, or a "
+                          "manual disable",
+                "notice": None}
+
+    if mstate == "set":
+        # Fast path: marker first (one file read), settings only to verify.
+        # An explicit enable reads with allow_missing so a vanished file is
+        # recorded as a decline instead of refusing as "unknown".
+        data, ok = _read_settings_for_write(allow_missing=not automatic)
+        if not ok:
+            return {"state": "unknown-settings", "changed": False,
+                    "reason": "settings.json unreadable or missing", "notice": None}
+        val = data.get(_SUBAGENT_CACHE_KEY)
+        if val == "1h":
+            return {"state": "set", "changed": False, "reason": None,
+                    "notice": None, "current": "1h"}
+        # We set it once and the user removed/changed it afterwards: remember,
+        # never touch it again. Only the automatic path records the decline;
+        # an explicit `enable` is a deliberate request and falls through to
+        # the normal set path below.
+        if automatic:
+            marker["state"] = "user-declined"
+            marker["declined_ts"] = float(now)
+            marker["declined_previous"] = val if val is not None else "(absent)"
+            _subagent_cache_write_marker(marker)
+            return {"state": "user-declined", "changed": False,
+                    "reason": "the user removed or changed the key after we set it",
+                    "notice": None}
+
+    # Env outranks the setting (documented precedence).
+    if os.environ.get("CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL", "").strip():
+        return {"state": "env-override", "changed": False,
+                "reason": "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL is set", "notice": None}
+    if os.environ.get("FORCE_PROMPT_CACHING_5M", "").strip():
+        return {"state": "env-override", "changed": False,
+                "reason": "FORCE_PROMPT_CACHING_5M is set", "notice": None}
+
+    # A higher-priority settings file already answers the key.
+    holder = _subagent_cache_external_key_holder()
+    if holder is not None:
+        if holder.get("unreadable"):
+            return {"state": "unknown-settings", "changed": False,
+                    "reason": (f"external settings file unreadable: {holder['path']}"),
+                    "notice": None}
+        return {"state": "external-setting", "changed": False,
+                "reason": f"{holder['path']} already sets the key", "notice": None}
+
+    # Unknown-state user settings: never write. An explicit `enable` is the
+    # one exception to "missing = unknown": a user who ran the command on a
+    # machine with no settings.json wants the file created.
+    data, ok = _read_settings_for_write(allow_missing=not automatic)
+    if not ok:
+        return {"state": "unknown-settings", "changed": False,
+                "reason": "settings.json unreadable or missing", "notice": None}
+    settings_missing = not SETTINGS_PATH.exists()
+
+    # Any value the user already set -- including "5m" -- is theirs.
+    if _SUBAGENT_CACHE_KEY in data:
+        _subagent_cache_write_marker({
+            "state": "user-set",
+            "ts": float(now),
+            "set_by": "user",
+        })
+        return {"state": "user-set", "changed": False,
+                "reason": "the user already set the key", "notice": None,
+                "current": data.get(_SUBAGENT_CACHE_KEY)}
+
+    # What may write, in order of strength: an explicit `subagent-cache
+    # enable` is unconditional; the opt-in TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=1
+    # is the only automatic write (and the only path that also keeps the
+    # 14-day tripwire). Everything else is ADVISE-ONLY: judge + record
+    # the cached verdict and return the decision -- Claude Code keeps
+    # subagents at 5 minutes because 1h costs more on average for
+    # agent-shaped work, and editing a user's settings on an estimate is not
+    # ok.
+    if not automatic:
+        decision = {"decision": "manual",
+                    "reason": "enabled by the subagent-cache enable command"}
+    elif _subagent_cache_force_on():
+        decision = {"decision": "forced-on",
+                    "reason": f"{_SUBAGENT_CACHE_OPTOUT_ENV}=1 (always on)"}
+    else:
+        decision = _subagent_cache_auto_gate(marker, now)
+        return {"state": decision["decision"], "changed": False,
+                "reason": decision["reason"], "notice": None}
+
+    # Version floor (a `claude --version` subprocess: probed only once every
+    # cheaper check has said a write is really about to happen).
+    version = _subagent_cache_claude_code_version()
+    if version is None or version < _SUBAGENT_CACHE_CC_FLOOR:
+        return {"state": "version-unsupported", "changed": False,
+                "reason": ("Claude Code version unknown" if version is None else
+                           f"Claude Code {'.'.join(map(str, version))} < "
+                           f"{'.'.join(map(str, _SUBAGENT_CACHE_CC_FLOOR))}"),
+                "notice": None}
+
+    # The only write this feature ever makes: an explicit command, or the
+    # force-env opt-in. user_initiated lets the explicit command take the
+    # settings lease past a herd writer's tombstone.
+    payload = dict(data)
+    payload[_SUBAGENT_CACHE_KEY] = "1h"
+    if not _write_settings_atomic(payload, user_initiated=not automatic):
+        return {"state": "write-refused", "changed": False,
+                "reason": _settings_write_refusal_reason(),
+                "notice": None}
+    _subagent_cache_write_marker({
+        "state": "set",
+        "set_ts": float(now),
+        "previous": {"present": False},
+        "set_by": "token-optimizer",
+        "auto_decision": dict(decision, ts=float(now)),
+    })
+    undo_cmd = _subagent_cache_cmd("disable")
+    what = "Token Optimizer set the subagent cache to 1 hour (was 5 minutes)."
+    if settings_missing:
+        what += " Created settings.json -- it did not exist."
+    return {
+        "state": "set",
+        "changed": True,
+        "reason": None,
+        "notice": f"{what} Undo: {undo_cmd}",
+        "created_settings": settings_missing,
+    }
+
+
+def subagent_cache_disable(now=None):
+    """Remove the key -- ONLY when the marker says TO set it and the value is
+    still "1h". The sanctioned undo; also called by cleanup()/uninstall.
+    Final: the "removed" marker is sticky for every automatic path."""
+    if now is None:
+        now = time.time()
+    if not _subagent_cache_claude_only():
+        return _subagent_cache_platform_gap()
+    marker = _subagent_cache_read_marker()
+    if not marker or marker.get("state") != "set":
+        return {"state": "nothing-to-undo", "changed": False,
+                "reason": "no marker says Token Optimizer set this key",
+                "notice": None}
+    data, ok = _read_settings_for_write()
+    if not ok:
+        return {"state": "unknown-settings", "changed": False,
+                "reason": "settings.json unreadable or missing", "notice": None}
+    return _subagent_cache_undo(data, now, "removed", user_initiated=True)
+
+
+def _subagent_cache_payoff_zero(days):
+    return {
+        "window_days": int(days), "estimate": True,
+        "subagent_requests": 0,
+        # Counterfactual part: requests that wrote at 5m (what 1h would change).
+        "subagent_5m_cache_writes": 0, "write_tokens_5m": 0,
+        "would_have_been_reads": 0, "missed_read_tokens": 0,
+        "within_agent_tokens": 0, "across_spawn_tokens": 0,
+        # Realized part: requests that already wrote at 1h (setting is on).
+        "subagent_1h_cache_writes": 0, "write_tokens_1h": 0,
+        "realized_reads": 0, "realized_read_tokens": 0,
+        "savings_usd_est": 0.0, "extra_write_cost_usd_est": 0.0,
+        "net_usd_est": 0.0,
+        "spawns": 0, "groups": 0, "groups_with_shared_prefix": 0,
+        "agent_type_recorded_spawns": 0,
+        "grouping": "project+model (agent type not recorded in these transcripts)",
+        "partial": False,
+    }
+
+
+def subagent_cache_payoff(days=30, now=None, since_ts=None,
+                          time_budget=None, max_files=None):
+    """Deterministic payoff estimate from the user's OWN sidechain transcripts.
+
+    One function for a history that mixes both regimes. A request is read by
+    what it wrote:
+
+    * 5m regime (cc_5m > 0): what a 1h TTL WOULD change. The 1h write premium
+      applies to every such token (extra cost); avoided rewrites are credited
+      as reads (savings) in two disjoint parts, never both for one request:
+        - within_agent_tokens: a non-first request of a transcript whose gap
+          to the previous request of that transcript is 5-60 min (its cc_5m
+          is a rewrite 1h would have kept alive);
+        - across_spawn_tokens: the FIRST request of a spawn that follows the
+          latest activity of its group (project + agent type + model; the
+          agent type comes from the transcript's .meta.json when Claude Code
+          wrote one, else the group is project + model) by 5-60 min, credited
+          min(its cc_5m, shared_prefix_est). shared_prefix_est = smallest
+          (cache_read + cache_creation) of the first request over the group's
+          spawns; a group needs 2+ spawns, else 0.
+    * 1h regime (cc_1h > 0, or a read-only request inheriting the group's
+      latest write regime): what the setting REALLY did. The premium actually
+      paid is (1h write - 5m write) on the cc_1h tokens; the benefit realized
+      is cache READS on a request that follows a 5-60 min gap (within the
+      transcript, or the first request of a spawn after its group), because
+      at 5m those would have been writes: (5m write - read) on those reads.
+
+    Priced with the active tier's rate card via _get_model_cost (unpriced
+    models fall back to the runtime default, like every other pool).
+    `since_ts` restricts the token accounting to requests at/after that epoch
+    second (the tripwire's post-enable window); earlier requests still serve
+    as context (previous activity, shared prefix). Everything here is an
+    ESTIMATE: the gap proxy reads request timestamps, not actual cache keys.
+
+    `time_budget` (seconds) and `max_files` bound the scan for the background
+    worker: running out of either returns a zero payoff with `partial: True`
+    and the reason in `partial_reason` -- a partial scan is NOT a verdict.
+    Without them the scan is the explicit-command path (silent cap at
+    _SUBAGENT_SCAN_MAX_FILES, no clock).
+    Never raises; a scan error is an honest zero.
+    """
+    zero = _subagent_cache_payoff_zero(days)
+    if not _subagent_cache_claude_only():
+        return zero
+    if now is None:
+        now = time.time()
+    deadline = (None if time_budget is None
+                else time.monotonic() + float(time_budget))
+
+    def _partial(why):
+        return dict(zero, partial=True, partial_reason=why)
+
+    def _out_of_time():
+        return deadline is not None and time.monotonic() >= deadline
+
+    try:
+        projects_base = CLAUDE_DIR / "projects"
+        if not projects_base.exists():
+            return zero
+        cutoff_ts = now - days * 86400
+
+        candidates = []
+        for project_dir in projects_base.iterdir():
+            if not project_dir.is_dir():
+                continue
+            if _out_of_time():
+                return _partial("time budget exceeded")
+            try:
+                for jf in project_dir.rglob("*.jsonl"):
+                    try:
+                        mtime = jf.stat().st_mtime
+                    except OSError:
+                        continue
+                    if mtime >= cutoff_ts:
+                        candidates.append((mtime, jf, project_dir.name))
+            except OSError:
+                continue
+        if max_files is not None and len(candidates) > max_files:
+            return _partial(f"file cap exceeded ({len(candidates)} > {max_files})")
+        candidates.sort(key=lambda t: t[0], reverse=True)
+        candidates = candidates[:_SUBAGENT_SCAN_MAX_FILES if max_files is None
+                                else max_files]
+
+        tier = _load_pricing_tier()
+
+        def _price(model, tokens):
+            mdl = model if _is_priced_model(model, tier) else _default_model_for_runtime()
+            write_5m = _get_model_cost(mdl, 0, 0, 0, int(tokens), tier=tier,
+                                       cache_create_1h=0, cache_create_5m=int(tokens))
+            read = _get_model_cost(mdl, 0, 0, int(tokens), 0, tier=tier)
+            write_1h = _get_model_cost(mdl, 0, 0, 0, int(tokens), tier=tier,
+                                       cache_create_1h=int(tokens), cache_create_5m=0)
+            return write_5m, read, write_1h
+
+        # 1. Collect spawns (one sidechain transcript = one spawn) into groups.
+        groups = {}
+        spawn_count = 0
+        recorded_count = 0
+        for _mt, jf, project in candidates:
+            if _out_of_time():
+                return _partial("time budget exceeded")
+            # Sidechain transcripts only (same rule as _subagent_pool_savings:
+            # nested subagents/ paths are sidechains by construction).
+            if jf.parent.name != "subagents" and not _scan_jsonl_is_sidechain(jf):
+                continue
+            parsed = _parse_session_jsonl(jf)
+            if not parsed or not parsed.get("is_sidechain"):
+                continue
+            reqs = []
+            for u in (parsed.get("request_usage") or {}).values():
+                ts_s = u.get("ts")
+                if not ts_s or not isinstance(ts_s, str):
+                    continue
+                try:
+                    ts = datetime.fromisoformat(ts_s.replace("Z", "+00:00")).timestamp()
+                except (ValueError, TypeError, OverflowError, OSError):
+                    continue
+                cc5 = int(u.get("cc_5m") or 0)
+                cc1 = int(u.get("cc_1h") or 0)
+                cr = int(u.get("cr") or 0)
+                reqs.append({
+                    "ts": ts, "cc5": cc5, "cc1": cc1, "cr": cr,
+                    "cc": max(int(u.get("cc") or 0), cc5 + cc1),
+                    "model": u.get("model"),
+                })
+            if not reqs:
+                continue
+            reqs.sort(key=lambda r: r["ts"])
+            agent = _extract_agent_type(jf)
+            recorded = agent != "unknown"
+            spawn_count += 1
+            recorded_count += 1 if recorded else 0
+            model = next((r["model"] for r in reqs if r["model"]), None) or "unknown"
+            gkey = (project, agent if recorded else "", model)
+            groups.setdefault(gkey, []).append(reqs)
+
+        # 2. Walk each group chronologically.
+        total_requests = 0
+        writes_5m = tokens_5m = 0
+        would_reads = 0
+        within_tokens = across_tokens = 0
+        writes_1h = tokens_1h = 0
+        realized_reads = realized_tokens = 0
+        savings_usd = 0.0
+        extra_usd = 0.0
+        shared_groups = 0
+
+        def _counted(ts):
+            return ts >= cutoff_ts and (since_ts is None or ts >= since_ts)
+
+        for spawns in groups.values():
+            firsts = [sp[0]["cr"] + sp[0]["cc"] for sp in spawns]
+            shared = min(firsts) if len(spawns) >= 2 else 0
+            if shared > 0:
+                shared_groups += 1
+            events = []
+            for si, sp in enumerate(spawns):
+                for ri, r in enumerate(sp):
+                    events.append((r["ts"], si, ri))
+            events.sort()
+            latest_activity = None     # latest request ts seen so far in the group
+            last_write_regime = None   # "1h" / "5m": regime of the latest cache write
+            for ts, si, ri in events:
+                r = spawns[si][ri]
+                is_first = ri == 0
+                prev_ts = latest_activity if is_first else spawns[si][ri - 1]["ts"]
+                gap = (ts - prev_ts) if prev_ts is not None else None
+                in_gap = (gap is not None
+                          and _SUBAGENT_CACHE_GAP_LOW <= gap <= _SUBAGENT_CACHE_GAP_HIGH)
+                cc5, cc1, cr = r["cc5"], r["cc1"], r["cr"]
+                if r["cc5"] > 0 or r["cc1"] > 0:
+                    regime_1h = cc1 > 0
+                else:
+                    regime_1h = last_write_regime == "1h"
+                if _counted(ts):
+                    if cc5 > 0 or cc1 > 0 or cr > 0:
+                        total_requests += 1
+                    if cc5 > 0:
+                        writes_5m += 1
+                        tokens_5m += cc5
+                        w5, rd, w1 = _price(r["model"], cc5)
+                        extra_usd += w1 - w5
+                        if in_gap:
+                            credited = min(cc5, shared) if is_first else cc5
+                            if credited > 0:
+                                would_reads += 1
+                                cw5, crd, _cw1 = _price(r["model"], credited)
+                                savings_usd += cw5 - crd
+                                if is_first:
+                                    across_tokens += credited
+                                else:
+                                    within_tokens += credited
+                    if cc1 > 0:
+                        writes_1h += 1
+                        tokens_1h += cc1
+                        w5, rd, w1 = _price(r["model"], cc1)
+                        extra_usd += w1 - w5
+                    if regime_1h and cr > 0 and in_gap:
+                        realized_reads += 1
+                        realized_tokens += cr
+                        w5, rd, _w1 = _price(r["model"], cr)
+                        savings_usd += w5 - rd
+                if cc5 > 0 or cc1 > 0:
+                    last_write_regime = "1h" if cc1 > 0 else "5m"
+                latest_activity = ts if latest_activity is None else max(latest_activity, ts)
+
+        if spawn_count == 0:
+            agent_note = zero["grouping"]
+        elif recorded_count == spawn_count:
+            agent_note = "project+agent type+model"
+        elif recorded_count == 0:
+            agent_note = "project+model (agent type not recorded in these transcripts)"
+        else:
+            agent_note = (
+                "project+agent type+model (agent type not recorded for "
+                f"{spawn_count - recorded_count} of {spawn_count} spawns; "
+                "those are grouped by project+model)")
+        return {
+            "window_days": int(days), "estimate": True,
+            "subagent_requests": total_requests,
+            "subagent_5m_cache_writes": writes_5m,
+            "write_tokens_5m": tokens_5m,
+            "would_have_been_reads": would_reads,
+            "missed_read_tokens": within_tokens + across_tokens,
+            "within_agent_tokens": within_tokens,
+            "across_spawn_tokens": across_tokens,
+            "subagent_1h_cache_writes": writes_1h,
+            "write_tokens_1h": tokens_1h,
+            "realized_reads": realized_reads,
+            "realized_read_tokens": realized_tokens,
+            "savings_usd_est": round(savings_usd, 6),
+            "extra_write_cost_usd_est": round(extra_usd, 6),
+            "net_usd_est": round(savings_usd - extra_usd, 6),
+            "spawns": spawn_count,
+            "groups": len(groups),
+            "groups_with_shared_prefix": shared_groups,
+            "agent_type_recorded_spawns": recorded_count,
+            "grouping": agent_note,
+            "partial": False,
+        }
+    except Exception:
+        return zero
+
+
+def evaluate_subagent_cache_tripwire(now=None, payoff=None):
+    """14+ days of post-enable data with a NEGATIVE net estimate -> revert.
+
+    Only runs under the TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=1 opt-in:
+    the advise-only default never calls it, so a TO-set key is never removed
+    silently -- a negative window only feeds the "is costing ... turn off"
+    advice.
+
+    Modeled on the keep-warm tripwire: the only write it ever makes is the
+    undo of a value TO itself set (marker state "set"); a user-set value is
+    never touched; a window with fewer than _SUBAGENT_CACHE_TRIPWIRE_MIN_REQUESTS
+    subagent requests is never judged ("not enough data"). It judges the CACHED
+    verdict of the background scan (post-enable window), never a scan of its
+    own: SessionStart only reads. The net it judges
+    mixes both regimes (see subagent_cache_payoff): with the setting on, the
+    premium actually paid on 1h writes against the reads actually realized.
+    The revert is sticky for the automatic path ("auto-reverted" marker
+    state); an explicit `subagent-cache enable` clears it.
+
+    Returns {"reverted": bool, "notice": str|None, "net_usd_est": ...,
+    "reason": str|None}. Never raises.
+    """
+    out = {"reverted": False, "notice": None, "net_usd_est": None, "reason": None}
+    if not _subagent_cache_claude_only():
+        return out
+    if now is None:
+        now = time.time()
+    marker = _subagent_cache_read_marker()
+    if not marker or marker.get("state") != "set":
+        return out
+    set_ts = marker.get("set_ts")
+    try:
+        elapsed_days = (float(now) - float(set_ts)) / 86400.0
+    except (TypeError, ValueError):
+        return out
+    if elapsed_days < _SUBAGENT_CACHE_TRIPWIRE_MIN_DAYS:
+        return out
+    # Re-judge at most once per _SUBAGENT_CACHE_TRIPWIRE_REJUDGE_SECONDS:
+    # the payoff scan below walks real transcripts, and the steady-state
+    # session start must stay a marker read, not a 30-day scan.
+    judged_ts = marker.get("judged_ts")
+    try:
+        if (judged_ts is not None
+                and float(now) - float(judged_ts)
+                < _SUBAGENT_CACHE_TRIPWIRE_REJUDGE_SECONDS):
+            return out
+    except (TypeError, ValueError):
+        pass
+    def _record_judgment():
+        marker["judged_ts"] = float(now)
+        _subagent_cache_write_marker(marker)
+
+    if payoff is None:
+        # The scan walks real transcripts: never here. Read the cached verdict
+        # for the post-enable window; with none, start the detached scan and
+        # judge at a later session start (nothing is stamped as judged yet).
+        vstate, rec = _subagent_cache_verdict_for(now, float(set_ts))
+        if vstate != "fresh":
+            _subagent_cache_spawn_scan(now=now, since_ts=float(set_ts))
+            return dict(out, reason=("payoff scan runs in the background; "
+                                     "judged at a later session start"))
+        if not rec.get("complete") or not isinstance(rec.get("payoff"), dict):
+            _record_judgment()
+            return dict(out, reason=(
+                "not enough data: the last payoff scan did not finish "
+                f"({rec.get('reason') or 'partial'})"))
+        payoff = rec["payoff"]
+
+    # A thin window proves nothing either way.
+    sample = (payoff or {}).get("subagent_requests") or 0
+    if sample < _SUBAGENT_CACHE_TRIPWIRE_MIN_REQUESTS:
+        _record_judgment()
+        return dict(out, reason=(
+            f"not enough data: {sample} subagent requests since enabling, "
+            f"need {_SUBAGENT_CACHE_TRIPWIRE_MIN_REQUESTS}"))
+    net = payoff.get("net_usd_est")
+    if not isinstance(net, (int, float)) or net >= 0:
+        # Judged and kept: report the net that earned the stay (or None when
+        # the payoff was unparseable).
+        _record_judgment()
+        return dict(out, net_usd_est=net if isinstance(net, (int, float)) else None)
+    # Net negative over a full window: undo OUR value only.
+    data, ok = _read_settings_for_write()
+    if not ok:
+        return out
+    result = _subagent_cache_undo(data, now, "auto-reverted")
+    if not result.get("changed"):
+        return dict(out, net_usd_est=net)
+    enable_cmd = _subagent_cache_cmd("enable")
+    return {
+        "reverted": True,
+        "net_usd_est": net,
+        "notice": (
+            "Token Optimizer removed the subagent 1-hour cache setting: the "
+            f"estimated net over the last {int(elapsed_days)} days was "
+            f"-${abs(net):.2f} (the 1-hour write premium outweighed the "
+            "5-minute rewrites it avoided). Set again: "
+            f"{enable_cmd}"
+        ),
+    }
+
+
+def _subagent_cache_session_start_lines(now=None):
+    """SessionStart ensure body. ADVISE-ONLY by default.
+
+    With TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H unset this NEVER writes settings
+    and never emits a notice: subagent_cache_enable() still owns the env
+    opt-out undo, the sticky marker states, and user-declined detection, and
+    for an unset key its gate judges + records the cached verdict (spawning
+    the detached scan when there is no fresh one). For a key that is already
+    "1h" -- ours or the user's -- the same bookkeeping keeps the right
+    verdict window fresh so status/doctor can say "is costing / is paying".
+
+    TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=1 is the explicit opt-in to the old
+    automatic write plus the 14-day auto-revert tripwire, and the only path
+    that may return a user-facing line. Never raises.
+    """
+    try:
+        result = subagent_cache_enable(now=now, automatic=True)
+        if _subagent_cache_force_on():
+            if result.get("notice"):
+                return [result["notice"]]
+            # The tripwire only rides the opted-in automation: advise-only
+            # never removes a key it did set, and never touches the user's.
+            trip = evaluate_subagent_cache_tripwire(now=now)
+            if trip.get("reverted") and trip.get("notice"):
+                return [trip["notice"]]
+            return []
+        if result.get("state") == "set" or (
+                result.get("state") == "user-set"
+                and result.get("current") == "1h"):
+            # A "1h" key already in place gets judged on its own window:
+            # post-enable when the marker says TO set it, else the plain
+            # last-30-days verdict. Fresh -> judge + record; missing/stale
+            # -> spawn the detached scan and judge at a later session start.
+            marker = _subagent_cache_read_marker()
+            since = None
+            if (marker or {}).get("state") == "set":
+                try:
+                    since = float(marker["set_ts"])
+                except (TypeError, ValueError):
+                    since = None
+            vstate, rec = _subagent_cache_verdict_for(now, since)
+            if vstate != "fresh":
+                _subagent_cache_spawn_scan(now=now, since_ts=since)
+            elif rec.get("complete") and isinstance(rec.get("payoff"), dict):
+                decision = _subagent_cache_judge_payoff(rec["payoff"])
+                decision["verdict_ts"] = rec.get("ts")
+                _subagent_cache_record_decision(marker, decision, now)
+    except Exception:
+        pass
+    return []
+
+
+def _subagent_cache_recommendation(state, current, payoff, billing,
+                                   post_enable_days=None):
+    """The advise-only line every surface carries.
+
+    Returns {"action": "enable"|"disable"|"keep"|"none", "line": str} or
+    None when there is genuinely nothing to say (platform gap, env override,
+    external holder, opted out, or a user-set value that is not "1h").
+    `payoff` None means no verdict yet -> one neutral line for doctor and
+    status (quick prints nothing for a "none" action). Numbers are always
+    the user's own, every actionable line names the exact command, and
+    subscription billing keeps the "API-equivalent estimate" label.
+    """
+    try:
+        if state in ("platform-gap", "opted-out", "env-override",
+                     "external-setting", "unknown-settings"):
+            return None
+        if current not in (None, "1h"):
+            return None  # a user-set "5m" (or anything else) is their choice
+        cmd = _subagent_cache_cmd()
+        est = "API-equivalent estimate" if billing == "subscription" else "estimate"
+        days = int((payoff or {}).get("window_days") or 30)
+        if post_enable_days is not None:
+            window = f"the {post_enable_days} days since it was set"
+        else:
+            window = f"the last {days} days"
+        if payoff is None:
+            return {"action": "none",
+                    "line": ("no payoff verdict yet; the background scan "
+                             "writes it at the next session start")}
+        decision = _subagent_cache_judge_payoff(payoff)
+        net = float(payoff.get("net_usd_est") or 0.0)
+        if current == "1h":
+            if decision["decision"] == "not-enough-data":
+                return {"action": "none", "line": decision["reason"]}
+            if net < 0:
+                if state != "set":
+                    # No marker says Token Optimizer set this key, so
+                    # `subagent-cache disable` would answer nothing-to-undo.
+                    return {"action": "disable", "manual": True,
+                            "line": (f"is costing about ${abs(net):.2f} net "
+                                     f"({est}) over {window}; remove "
+                                     f"{_SUBAGENT_CACHE_KEY} from "
+                                     f"settings.json by hand")}
+                return {"action": "disable",
+                        "line": (f"is costing about ${abs(net):.2f} net ({est}) "
+                                 f"over {window}; turn off: `{cmd} disable`")}
+            if decision["decision"] == "recommend":
+                return {"action": "keep",
+                        "line": (f"is paying: +${net:.2f} net ({est}) over "
+                                 f"{window}; nothing to do")}
+            return {"action": "none",
+                    "line": (f"about break-even over {window}: saved "
+                             f"${float(payoff.get('savings_usd_est') or 0.0):.2f} "
+                             f"vs premium ${float(payoff.get('extra_write_cost_usd_est') or 0.0):.2f} "
+                             f"({est}); nothing to do")}
+        if decision["decision"] == "recommend":
+            return {"action": "enable",
+                    "line": (f"would have saved about ${net:.2f} net ({est}) "
+                             f"over {window}; turn on: `{cmd} enable`")}
+        return {"action": "none", "line": decision["reason"]}
+    except Exception:
+        return None
+
+
+def _subagent_cache_status_decision(state, marker, payoff, force_on, source):
+    """`auto_decision` for status / doctor / quick / coach: what the verdict
+    says (or what the opted-in automation decided) and why."""
+    stored = (marker or {}).get("auto_decision")
+    if state == "opted-out":
+        return {"decision": "opted-out",
+                "reason": f"{_SUBAGENT_CACHE_OPTOUT_ENV} is set to off"}
+    if state in ("set", "user-set", "user-declined", "auto-reverted",
+                 "removed"):
+        if state == "set" and isinstance(stored, dict):
+            return dict(stored)
+        return {"decision": state,
+                "reason": {"set": "set by Token Optimizer",
+                           "user-set": "you set the key yourself; left alone",
+                           "user-declined": "you removed or changed the key after we set it",
+                           "auto-reverted": "removed again after a negative 14-day check",
+                           "removed": "you removed it with subagent-cache disable; final"}[state]}
+    if force_on:
+        return {"decision": "forced-on",
+                "reason": f"{_SUBAGENT_CACHE_OPTOUT_ENV}=1 (always on)"}
+    if payoff is not None:
+        return dict(_subagent_cache_judge_payoff(payoff), source=source)
+    if isinstance(stored, dict):
+        return dict(stored)
+    return {"decision": "pending",
+            "reason": ("no payoff scan yet; one runs in the background at the "
+                       "next session start")}
+
+
+def subagent_cache_status(days=30, now=None, use_cache=False):
+    """State + who set it + the payoff estimate + the verdict + the advice.
+
+    Read-only, never writes. `use_cache=False` (the explicit `status` command)
+    scans the transcripts now; `use_cache=True` (doctor, quick, coach) only
+    reads the verdict the background scan left, and never scans or spawns."""
+    if not _subagent_cache_claude_only():
+        return {"state": "platform-gap", "set_by": None, "payoff": None,
+                "recommendation": None, "hint": None,
+                "reason": "not Claude Code (Cowork and other runtimes are a "
+                          "documented no-op)"}
+    if now is None:
+        now = time.time()
+    marker = _subagent_cache_read_marker()
+    try:
+        data, _path, _ok = _read_settings_json_checked()
+        current = data.get(_SUBAGENT_CACHE_KEY)
+    except Exception:
+        current = None
+    mstate = (marker or {}).get("state")
+    if _subagent_cache_optout():
+        state, who = "opted-out", None
+        reason = f"{_SUBAGENT_CACHE_OPTOUT_ENV} is set"
+    elif mstate == "set" and current == "1h":
+        state, who, reason = "set", "token-optimizer", None
+    elif mstate == "set":
+        state, who = "user-declined", None
+        reason = "the user removed or changed the key after we set it"
+    elif (mstate in ("user-declined", "auto-reverted", "opted-out", "removed")
+          and current is None):
+        # Sticky "off" states only describe a key that is actually absent; a
+        # key that came back is the user's own and reads as user-set.
+        state, who = mstate, None
+        reason = mstate.replace("-", " ")
+    elif mstate == "user-set" or current is not None:
+        state, who, reason = "user-set", "user", None
+    else:
+        state, who, reason = "off", None, None
+    # a "1h" key with no readable marker may be an orphaned TO write
+    # (or the user's own) -- say so instead of silently reporting "user-set".
+    hint = None
+    if current == "1h" and marker is None:
+        hint = (
+            ("the Token Optimizer marker is corrupt or unreadable, so "
+             "`subagent-cache disable` cannot prove this tool set the key; "
+             "remove the key from settings.json by hand if Token Optimizer "
+             "set it")
+            if _subagent_cache_marker_path().exists()
+            else ("no Token Optimizer marker records who set this key; if an "
+                  "older version set it, remove the key from settings.json "
+                  "by hand"))
+    extra = {}
+    if use_cache:
+        want_since = (float(marker["set_ts"]) if state == "set"
+                      and (marker or {}).get("set_ts") is not None else None)
+        vstate, rec = _subagent_cache_verdict_for(now, want_since)
+        if rec is not None and rec.get("complete") and isinstance(rec.get("payoff"), dict):
+            payoff, source = rec["payoff"], "cached"
+            extra["payoff_age_seconds"] = max(0, int(float(now) - float(rec["ts"])))
+        else:
+            payoff, source = _subagent_cache_payoff_zero(days), "none"
+        judge_with = payoff if source == "cached" else None
+    else:
+        payoff, source = subagent_cache_payoff(days=days, now=now), "live"
+        judge_with = payoff
+    try:
+        billing = keepwarm_billing_mode()
+    except Exception:
+        billing = "subscription"
+    post_days = None
+    if state == "set" and source == "cached" and (marker or {}).get("set_ts"):
+        try:
+            post_days = max(1, int((float(now) - float(marker["set_ts"])) / 86400))
+        except (TypeError, ValueError):
+            post_days = None
+    out = {
+        "state": state,
+        "set_by": who,
+        "billing_mode": billing,
+        "reason": reason,
+        "set_ts": (marker or {}).get("set_ts") if who == "token-optimizer" else None,
+        "payoff": payoff,
+        "payoff_source": source,
+        "auto_decision": _subagent_cache_status_decision(
+            state, marker, judge_with, _subagent_cache_force_on(), source),
+        "recommendation": _subagent_cache_recommendation(
+            state, current,
+            payoff if source in ("live", "cached") else None,
+            billing, post_enable_days=post_days),
+        "hint": hint,
+        "estimate": True,
+    }
+    out.update(extra)
+    return out
+
+
+def subagent_cache_block(days=30, now=None):
+    """The doctor/quick/coach surface: state, who set it, net estimate, the
+    verdict, and the advice line. Reads the cached verdict only; never scans."""
+    try:
+        st = subagent_cache_status(days=days, now=now, use_cache=True)
+    except Exception as exc:
+        return {"state": "unknown", "set_by": None, "payoff": None,
+                "recommendation": None, "hint": None,
+                "reason": f"status unavailable: {type(exc).__name__}"}
+    st.setdefault("estimate", True)
+    st.setdefault("recommendation", None)
+    st.setdefault("hint", None)
+    return st
+
+
+# ===========================================================================
+# Usage recommendations: ONE daily-measured record that every surface
+# reads.
+#
+# `usage_recommendations.json` (schema 1) carries one item per usage-based
+# recommendation -- ``compact_window`` and ``subagent_cache`` -- each in one of
+# four states: recommend | keep | not_enough_data | not_applicable. `command`
+# is only ever populated for `recommend`. Both measurements reuse the existing
+# bounded scans: the compact_advice replay (coach cap + wall-clock budget) and
+# the cached subagent-cache payoff verdict (refreshing it through the existing
+# detached-scan machinery when it is missing or stale). Token Optimizer NEVER
+# writes either setting; the record only advises.
+#
+# `measure.py recommendations refresh` is the one refresher. It never runs
+# inside a hook: session start and the dashboard data collection only check
+# the record's age and spawn a detached child (same O_EXCL lock + env-token
+# pattern as the subagent scan; spawn_detached owns the Windows no-console
+# flags and _detached_python_exe prefers pythonw.exe). A missing or day-old
+# record spawns; a partial or crashed run writes complete:false and is
+# retried once the record ages out again.
+#
+# `usage_recommendations_history.jsonl` gets one compact line per refresh:
+# measured_ts plus, per item, the state, the setting value observed, and the
+# headline measure (cache-read tokens per session; subagent net estimate).
+# Capped at 180 lines, rewritten atomically when over.
+#
+# Wins are conservative: an entry is only emitted when an earlier history line
+# said `recommend`, the observed setting later matched the recommended value,
+# at least 7 days passed, the minimum data bar holds now, and the measured
+# outcome moved the expected way. The wording is "since you changed it" --
+# measured, never causal.
+# ===========================================================================
+
+_RECS_RECORD_NAME = "usage_recommendations.json"
+_RECS_HISTORY_NAME = "usage_recommendations_history.jsonl"
+_RECS_LOCK_NAME = "usage_recommendations_refresh.lock"
+# A lock older than the scans' own budgets plus slack is abandoned.
+_RECS_LOCK_STALE = 300
+_RECS_TOKEN_ENV = "TO_USAGE_RECS_REFRESH_TOKEN"
+_RECS_REFRESH_SECONDS = 86400          # measured daily
+_RECS_WINDOW_DAYS = 30
+_RECS_HISTORY_CAP = 180
+_RECS_WIN_MIN_DAYS = 7
+# Compact-window gates: at most ~5 extra compactions a day and at least 10%
+# of cache-read tokens avoided, priced-net positive, before we recommend.
+_RECS_MAX_EXTRA_COMPACTIONS_PER_DAY = 5
+# The refresh runs detached, so it replays the whole window. The coach's
+# 150-session / 4-second slice is for inline callers: on a slice the extra
+# compactions are undercounted and the smallest window wins by mistake.
+_RECS_COMPACT_BUDGET_SECONDS = 120.0
+_RECS_MIN_CACHE_READ_SHARE_PCT = 10.0
+_RECS_LABELS = {"compact_window": "Compact window",
+                "subagent_cache": "Subagent cache"}
+
+
+def _recs_record_path():
+    return SNAPSHOT_DIR / _RECS_RECORD_NAME
+
+
+def _recs_history_path():
+    return SNAPSHOT_DIR / _RECS_HISTORY_NAME
+
+
+def _recs_lock_path():
+    return SNAPSHOT_DIR / _RECS_LOCK_NAME
+
+
+def _recs_read_record():
+    """The measured record, or None when absent/corrupt/wrong schema."""
+    try:
+        data = json.loads(_recs_record_path().read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("schema") != 1 \
+            or not isinstance(data.get("items"), list):
+        return None
+    return data
+
+
+def _recs_lock_acquire(now=None):
+    """Take the refresh lock (O_EXCL); its owner token, or None when held.
+
+    Same pattern as the subagent-cache scan lock: a lock older than
+    _RECS_LOCK_STALE is a crashed child and is reclaimed."""
+    if now is None:
+        now = time.time()
+    lock = _recs_lock_path()
+    token = os.urandom(16).hex()
+    try:
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        for _attempt in (1, 2):
+            try:
+                fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                             0o600)
+            except FileExistsError:
+                if not _reclaim_stale_lock_file(lock, _RECS_LOCK_STALE, now):
+                    return None
+                continue
+            try:
+                os.write(fd, token.encode("ascii"))
+            finally:
+                os.close(fd)
+            return token
+    except OSError:
+        pass
+    return None
+
+
+def _recs_lock_release(token):
+    """Delete the lock only while it still holds `token`. Never raises."""
+    if not token:
+        return
+    lock = _recs_lock_path()
+    try:
+        if lock.read_text(encoding="ascii").strip() == token:
+            lock.unlink()
+    except OSError:
+        pass
+
+
+def _recs_compact_item(now=None):
+    """The compact_window item, built on the bounded compact_advice replay."""
+    base = {"id": "compact_window", "direction": "smaller", "command": "",
+            "tradeoff": "Compaction can drop early instructions."}
+    if not _subagent_cache_claude_only():
+        return dict(base, state="not_applicable", enough_data=False,
+                    headline="", numbers={},
+                    reason="the compact window is a Claude Code setting")
+    try:
+        rep = compact_advice(days=_RECS_WINDOW_DAYS, max_sessions=None,
+                             deadline_seconds=_RECS_COMPACT_BUDGET_SECONDS)
+    except Exception as exc:
+        return dict(base, state="not_enough_data", enough_data=False,
+                    headline="compaction history could not be measured yet",
+                    numbers={}, partial=True,
+                    reason=f"compact_advice failed: {type(exc).__name__}")
+    days = max(1, int(rep.get("days") or _RECS_WINDOW_DAYS))
+    sessions = int(rep.get("sessions_replayed") or 0)
+    total_cr = int(rep.get("total_cache_read_tokens") or 0)
+    current = (rep.get("default_window") or {}).get("tokens")
+    # The win measure: cache-read tokens per replayed session.
+    measure = round(total_cr / sessions, 1) if sessions else None
+    numbers = {"setting": current, "recommended": current,
+               "measure": measure, "sessions": sessions,
+               "cache_read_tokens": total_cr, "window_days": days}
+    item = dict(base, numbers=numbers, partial=bool(rep.get("truncated")))
+    if rep.get("too_thin") or not rep.get("windows"):
+        return dict(item, state="not_enough_data", enough_data=False,
+                    headline="not enough session history to judge yet",
+                    reason=(f"{sessions} sessions replayed, need at least "
+                            f"{_ADVICE_MIN_SESSIONS} and one compaction"))
+    if rep.get("truncated"):
+        # Never judge on part of the window: a cut-short replay is retried.
+        return dict(item, state="not_enough_data", enough_data=False,
+                    headline="the last measurement did not finish",
+                    reason="the replay ran out of time before the whole "
+                           "window was read; it is retried tomorrow")
+    eligible = []
+    for e in rep["windows"]:
+        if e.get("reference"):
+            continue  # the user's own window: 0 extra, 0 net by construction
+        net = float(e.get("net_usd_unrounded") or 0.0)
+        if net <= 0:
+            continue
+        per_day = float(e.get("extra_compactions") or 0) / days
+        if per_day > _RECS_MAX_EXTRA_COMPACTIONS_PER_DAY:
+            continue
+        if float(e.get("avoided_share_pct") or 0.0) \
+                < _RECS_MIN_CACHE_READ_SHARE_PCT:
+            continue
+        eligible.append((e, per_day))
+    if not eligible:
+        return dict(item, state="keep", enough_data=True,
+                    headline="your current setting fits your usage",
+                    reason=("no candidate cleared the bar: positive priced "
+                            "net, <=5 extra compactions a day, >=10% of "
+                            "cache reads avoided"))
+    # Best priced net; ties break to fewer extra compactions a day, then the
+    # larger window (least truncation risk).
+    eligible.sort(key=lambda t: (-t[0]["net_usd_unrounded"], t[1],
+                                 -t[0]["window"]))
+    best, per_day = eligible[0]
+    numbers["recommended"] = best["window"]
+    numbers["avoided_share_pct"] = best["avoided_share_pct"]
+    numbers["net_usd"] = best["net_usd"]
+    numbers["extra_compactions_per_day"] = round(per_day, 2)
+    cur_k = f"{int(current) // 1000}K" if current else "your current window"
+    return dict(item, state="recommend", enough_data=True,
+                command=f"/autocompact {best['window']}",
+                headline=(f"compacting at {best['window'] // 1000}K instead "
+                          f"of {cur_k} would have avoided about "
+                          f"{float(best['avoided_share_pct']):.0f}% of "
+                          f"cache-read tokens "
+                          f"({_advice_usd(float(best['net_usd']))} net, "
+                          f"~{per_day:.1f} extra compactions a day; "
+                          f"estimate, last {days} days)"),
+                reason="best priced net among candidates inside the caps")
+
+
+def _recs_subagent_item(now=None):
+    """The subagent_cache item, built on the cached payoff verdict."""
+    base = {"id": "subagent_cache", "direction": "", "command": "",
+            "tradeoff": ""}
+    if not _subagent_cache_claude_only():
+        return dict(base, state="not_applicable", enough_data=False,
+                    headline="", numbers={},
+                    reason="subagentPromptCacheTtl is a Claude Code setting")
+    if now is None:
+        now = time.time()
+    marker = _subagent_cache_read_marker()
+    try:
+        data, _path, _ok = _read_settings_json_checked()
+        current = data.get(_SUBAGENT_CACHE_KEY)
+    except Exception:
+        current = None
+    mstate = (marker or {}).get("state")
+    since = None
+    if mstate == "set" and current == "1h":
+        try:
+            since = float(marker["set_ts"])
+        except (TypeError, ValueError):
+            since = None
+    # The refresh is the one place that may run the bounded payoff scan; a
+    # fresh verdict for the right window is reused instead.
+    partial = False
+    vstate, vrec = _subagent_cache_verdict_for(now, since)
+    if vstate != "fresh":
+        # Complete only when the inline scan itself finished cleanly; a scan
+        # another process holds (None) or one cut short leaves it partial.
+        partial = True
+        try:
+            scanned = subagent_cache_scan_run(now=now, since_ts=since)
+            partial = not (scanned and scanned.get("complete"))
+            vrec = scanned or vrec
+        except Exception:
+            pass
+    elif not vrec.get("complete"):
+        partial = True
+    try:
+        st = subagent_cache_status(now=now, use_cache=True)
+    except Exception as exc:
+        return dict(base, state="not_enough_data", enough_data=False,
+                    headline="the cache payoff could not be read",
+                    numbers={}, partial=True,
+                    reason=f"status unavailable: {type(exc).__name__}")
+    if st.get("state") == "platform-gap":
+        return dict(base, state="not_applicable", enough_data=False,
+                    headline="", numbers={},
+                    reason=st.get("reason") or "not Claude Code")
+    payoff = (st.get("payoff")
+              if st.get("payoff_source") in ("live", "cached") else None)
+    numbers = {"setting": current, "recommended": None, "measure": None}
+    if isinstance(payoff, dict):
+        numbers.update(measure=payoff.get("net_usd_est"),
+                       subagent_requests=payoff.get("subagent_requests"),
+                       savings_usd_est=payoff.get("savings_usd_est"),
+                       premium_usd_est=payoff.get("extra_write_cost_usd_est"))
+    rec = st.get("recommendation") or {}
+    action, line = rec.get("action"), rec.get("line") or ""
+    mp = shlex.quote(str(MEASURE_PY_PATH))
+    item = dict(base, numbers=numbers, partial=partial)
+    if payoff is None:
+        return dict(item, state="not_enough_data", enough_data=False,
+                    headline="not enough data yet",
+                    reason=(line or "the payoff scan has not finished yet"))
+    decision = _subagent_cache_judge_payoff(payoff)
+    if decision["decision"] == "not-enough-data":
+        return dict(item, state="not_enough_data", enough_data=False,
+                    headline="not enough subagent history to judge yet",
+                    reason=decision["reason"])
+    if action == "enable":
+        numbers["recommended"] = "1h"
+        return dict(item, state="recommend", enough_data=True,
+                    direction="on",
+                    command=f"python3 {mp} subagent-cache enable",
+                    headline=line.split("; turn on:")[0].rstrip(),
+                    reason=decision["reason"])
+    if action == "disable" and rec.get("manual"):
+        # The user set the key by hand: no command can undo it, so the item
+        # carries the manual step in `tradeoff` and an empty `command`.
+        numbers["recommended"] = "off"
+        return dict(item, state="recommend", enough_data=True,
+                    direction="off", command="",
+                    headline=line.split("; remove ")[0].rstrip(),
+                    tradeoff=(f"Token Optimizer did not set this key, so it "
+                              f"cannot remove it: delete {_SUBAGENT_CACHE_KEY} "
+                              f"from settings.json by hand."),
+                    reason=decision["reason"])
+    if action == "disable":
+        numbers["recommended"] = "off"
+        return dict(item, state="recommend", enough_data=True,
+                    direction="off",
+                    command=f"python3 {mp} subagent-cache disable",
+                    headline=line.split("; turn off:")[0].rstrip(),
+                    reason=decision["reason"])
+    numbers["recommended"] = "1h" if current == "1h" else "off"
+    if st.get("recommendation") is None:
+        # opted-out / env-override / external holder / a key the user set by
+        # hand: there is nothing to advise over someone else's setting.
+        state_name = st.get("state") or ""
+        if state_name in ("opted-out", "env-override", "external-setting"):
+            return dict(item, state="not_applicable", enough_data=True,
+                        headline="", reason=(st.get("reason") or state_name))
+        return dict(item, state="keep", enough_data=True,
+                    headline="you set the key yourself; left alone",
+                    reason=(st.get("reason") or "user-set"))
+    headline = (line.split("; nothing to do")[0].rstrip()
+                or "your current setting fits your usage")
+    if headline.startswith("would not pay: "):
+        # Reads as a sentence after the "Subagent cache:" label.
+        headline = ("a 1 hour cache would not pay on your usage ("
+                    + headline[len("would not pay: "):] + ")")
+    return dict(item, state="keep", enough_data=True, headline=headline,
+                reason=decision["reason"])
+
+
+def _recs_history_append(entry):
+    """One compact JSON line per refresh; capped, atomically rewritten."""
+    p = _recs_history_path()
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps(entry, separators=(",", ":"))
+        try:
+            existing = [l for l in p.read_text(encoding="utf-8").splitlines()
+                        if l.strip()]
+        except OSError:
+            existing = []
+        existing.append(line)
+        if len(existing) > _RECS_HISTORY_CAP:
+            retained = existing[-_RECS_HISTORY_CAP:]
+            fd, tmp_name = tempfile.mkstemp(prefix=".usage_recs_hist.",
+                                            suffix=".tmp", dir=str(p.parent))
+            try:
+                if hasattr(os, "fchmod"):
+                    os.fchmod(fd, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write("\n".join(retained) + "\n")
+                os.replace(tmp_name, str(p))
+            except Exception:
+                try:
+                    os.unlink(tmp_name)
+                except OSError:
+                    pass
+        else:
+            with open(p, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+    except Exception:
+        pass
+
+
+def _recs_read_history():
+    p = _recs_history_path()
+    try:
+        return [json.loads(l) for l in
+                p.read_text(encoding="utf-8").splitlines() if l.strip()]
+    except (json.JSONDecodeError, OSError, ValueError):
+        return []
+
+
+def _recs_setting_matches(iid, setting, recommended):
+    """Whether an observed setting value counts as having adopted the
+    recommendation. For the subagent cache, "off" means the key is absent or
+    any non-"1h" value."""
+    if recommended is None:
+        return False
+    if iid == "subagent_cache":
+        if recommended == "1h":
+            return setting == "1h"
+        if recommended == "off":
+            return setting != "1h"
+        return False
+    return setting == recommended
+
+
+def _recs_measure_improved(iid, recommended, before, after):
+    """Whether the after-measure moved the way the recommendation wanted."""
+    if iid == "compact_window":
+        return after < before
+    if iid == "subagent_cache":
+        # enable -> a positive measured net; disable -> the counterfactual
+        # "what 1h would net now" staying non-positive confirms the choice.
+        if recommended == "1h":
+            return after > 0
+        if recommended == "off":
+            return after <= 0
+    return False
+
+
+def _recs_usd(value, plus=False):
+    """Dollars with the sign before the symbol: -$2.00, never $-2.00.
+    `plus` adds an explicit + to a positive amount; a value that rounds to
+    zero carries no sign."""
+    v = round(float(value), 2)
+    if v == 0:
+        v = 0.0
+    sign = "-" if v < 0 else ("+" if plus and v > 0 else "")
+    return f"{sign}${abs(v):.2f}"
+
+
+def _recs_win_line(iid, recommended, before, after, improved, since_ts):
+    try:
+        date = datetime.fromtimestamp(since_ts).date().isoformat()
+    except (OSError, OverflowError, ValueError):
+        date = "the change"
+    tail = "estimate from your own sessions"
+    if iid == "compact_window":
+        try:
+            rk = f"{int(recommended) // 1000}K"
+        except (TypeError, ValueError):
+            rk = str(recommended)
+        moved = (f"cache-read tokens per session went from {before:,.0f} "
+                 f"to {after:,.0f}")
+        if improved:
+            return (f"Compact window: since you set it to {rk} on {date}, "
+                    f"{moved} ({tail}).")
+        return (f"Compact window: since you set it to {rk} on {date}, "
+                f"{moved} -- no saving to claim ({tail}).")
+    if iid == "subagent_cache":
+        if recommended == "1h":
+            if improved:
+                return (f"Subagent cache: since you set it to 1 hour on "
+                        f"{date}, the measured net is {_recs_usd(after, True)} "
+                        f"over the last 30 days (projected "
+                        f"{_recs_usd(before, True)}; {tail}).")
+            return (f"Subagent cache: since you set it to 1 hour on {date}, "
+                    f"the measured net is {_recs_usd(after, True)} over the "
+                    f"last 30 days -- the projected {_recs_usd(before, True)} "
+                    f"did not hold ({tail}).")
+        if improved:
+            return (f"Subagent cache: since you turned it off on {date}, the "
+                    f"1-hour cache still would not pay (net {_recs_usd(after)}; "
+                    f"{tail}).")
+        return (f"Subagent cache: since you turned it off on {date}, the "
+                f"estimate moved to {_recs_usd(after, True)} -- the 1-hour cache may be "
+                f"worth another look ({tail}).")
+    return ""
+
+
+def _recs_wins(items, now):
+    """Measured-after-change rows. Every gate must hold before one appears."""
+    lines = _recs_read_history()
+    wins = []
+    for it in items:
+        iid = it.get("id")
+        nums = it.get("numbers") or {}
+        pending = None        # earliest outstanding recommend line
+        adopted_ts = None
+        for ln in lines:
+            ent = (ln.get("items") or {}).get(iid)
+            if not isinstance(ent, dict):
+                continue
+            try:
+                ts = float(ln.get("ts"))
+            except (TypeError, ValueError):
+                continue
+            if pending is None:
+                if (ent.get("state") == "recommend"
+                        and ent.get("recommended") is not None
+                        and not _recs_setting_matches(
+                            iid, ent.get("setting"), ent.get("recommended"))):
+                    pending = ent
+                continue
+            if adopted_ts is None and _recs_setting_matches(
+                    iid, ent.get("setting"), pending.get("recommended")):
+                adopted_ts = ts
+        if pending is None or adopted_ts is None:
+            continue
+        if now - adopted_ts < _RECS_WIN_MIN_DAYS * 86400:
+            continue
+        # The setting must still be the recommended value (a revert voids it).
+        if not _recs_setting_matches(iid, nums.get("setting"),
+                                     pending.get("recommended")):
+            continue
+        if not it.get("enough_data"):
+            continue
+        before, after = pending.get("measure"), nums.get("measure")
+        try:
+            before, after = float(before), float(after)
+        except (TypeError, ValueError):
+            continue
+        improved = _recs_measure_improved(iid, pending.get("recommended"),
+                                          before, after)
+        wins.append({"id": iid, "since_ts": adopted_ts, "before": before,
+                     "after": after, "improved": improved,
+                     "line": _recs_win_line(iid, pending.get("recommended"),
+                                            before, after, improved,
+                                            adopted_ts)})
+    return wins
+
+
+def _recs_refresh_locked(now):
+    """Build both items, append history, compute wins, write the record."""
+    items, partial = [], False
+    for builder in (_recs_compact_item, _recs_subagent_item):
+        try:
+            it = builder(now=now)
+        except Exception as exc:
+            it = {"id": "unknown", "state": "not_enough_data",
+                  "headline": "", "numbers": {}, "command": "",
+                  "direction": "", "enough_data": False,
+                  "reason": f"builder failed: {type(exc).__name__}"}
+        partial = partial or bool(it.pop("partial", False))
+        items.append(it)
+    hist_items = {}
+    for it in items:
+        nums = it.get("numbers") or {}
+        hist_items[it.get("id")] = {
+            "state": it.get("state"),
+            "setting": nums.get("setting"),
+            "recommended": nums.get("recommended"),
+            "measure": nums.get("measure"),
+        }
+    _recs_history_append({"ts": float(now), "items": hist_items})
+    rec = {"schema": 1, "measured_ts": float(now),
+           "window_days": _RECS_WINDOW_DAYS, "complete": not partial,
+           "items": items, "wins": _recs_wins(items, now)}
+    _subagent_cache_write_json_atomic(
+        _recs_record_path(), rec, ".usage_recs.")
+    return rec
+
+
+def _recs_write_provisional(now):
+    """A killed refresh must still leave a record (the module header says a
+    crashed run writes complete:false). Written when the lock is taken, and
+    only when no valid record exists: a previous good record stays put (it is
+    already past its refresh age, so the next start retries). Never raises."""
+    try:
+        if _recs_read_record() is not None:
+            return
+        _subagent_cache_write_json_atomic(
+            _recs_record_path(),
+            {"schema": 1, "measured_ts": float(now),
+             "window_days": _RECS_WINDOW_DAYS, "complete": False,
+             "provisional": True, "items": [], "wins": []},
+            ".usage_recs.")
+    except Exception:
+        pass
+
+
+def usage_recommendations_refresh(now=None, token=None):
+    """The one refresher. Run by the detached child (which presents its lock
+    token) or by hand (which takes the lock itself). Returns the record, or
+    None when another refresh holds the lock. Never raises."""
+    if now is None:
+        now = time.time()
+    if token is not None:
+        try:
+            if _recs_lock_path().read_text(encoding="utf-8").strip() != token:
+                return None
+        except OSError:
+            return None
+    else:
+        token = _recs_lock_acquire(now)
+        if token is None:
+            return None
+    try:
+        _recs_write_provisional(now)
+        return _recs_refresh_locked(now)
+    finally:
+        _recs_lock_release(token)
+
+
+def _recs_spawn_refresh(now=None):
+    """Start the refresh as a detached background process. True when started.
+
+    The lock is taken HERE (so two spawners can never both fire) and handed
+    to the child by environment token. spawn_detached owns the Windows flags
+    (no console window); the interpreter is the GUI twin on Windows. Never
+    raises; a failed spawn frees the lock."""
+    token = _recs_lock_acquire(now)
+    if token is None:
+        return False
+    try:
+        env = os.environ.copy()
+        env["TOKEN_OPTIMIZER_RUNTIME"] = detect_runtime()
+        env.pop("TOKEN_OPTIMIZER_HOOK", None)
+        env[_RECS_TOKEN_ENV] = token
+        proc = spawn_detached(
+            [_detached_python_exe(), str(MEASURE_PY_PATH),
+             "recommendations", "refresh"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=env,
+            close_fds=True,
+        )
+    except Exception:
+        proc = None
+    if proc is None:
+        _recs_lock_release(token)
+        try:
+            _log_spawn_failure("usage recommendations refresh spawn failed")
+        except Exception:
+            pass
+        return False
+    return True
+
+
+def _recs_ensure_fresh(now=None):
+    """Spawn the detached refresh when the record is missing or >24h old.
+
+    Called from session start and the dashboard data collection; reads one
+    small file, never scans. Never raises."""
+    try:
+        if not _subagent_cache_claude_only():
+            return False
+        # Under pytest the detached child would run against the real
+        # ~/.claude; tests exercise the spawn by stubbing spawn_detached and
+        # clearing this variable.
+        if os.environ.get("PYTEST_CURRENT_TEST"):
+            return False
+        rec = _recs_read_record()
+        if rec is not None:
+            # A provisional record means the refresh that wrote it never
+            # finished; retry once the lock it held would be reclaimable
+            # instead of parking the retry for a day.
+            limit = (_RECS_LOCK_STALE if rec.get("provisional")
+                     else _RECS_REFRESH_SECONDS)
+            try:
+                if (float(now if now is not None else time.time())
+                        - float(rec.get("measured_ts") or 0)
+                        < limit):
+                    return False
+            except (TypeError, ValueError):
+                pass
+        return _recs_spawn_refresh(now=now)
+    except Exception:
+        return False
+
+
+def _recs_block(now=None):
+    """What surfaces read: the record only, never a scan.
+
+    None on a foreign runtime with no record (nothing to show); otherwise the
+    record's items + wins, or present:false while the first measurement is
+    still running."""
+    rec = _recs_read_record()
+    if rec is not None:
+        return {"present": True, "schema": 1,
+                "measured_ts": rec.get("measured_ts"),
+                "window_days": rec.get("window_days") or _RECS_WINDOW_DAYS,
+                "complete": bool(rec.get("complete")),
+                "items": rec.get("items") or [],
+                "wins": rec.get("wins") or []}
+    if not _subagent_cache_claude_only():
+        return None
+    return {"present": False, "schema": 1, "measured_ts": None,
+            "window_days": _RECS_WINDOW_DAYS, "complete": False,
+            "items": [], "wins": []}
+
+
+def _recs_item_line(it):
+    """One display line per applicable item, or None for not_applicable."""
+    if it.get("state") == "not_applicable":
+        return None
+    label = _RECS_LABELS.get(it.get("id"), str(it.get("id") or "?"))
+    head = (it.get("headline") or it.get("state") or "no data").rstrip(".")
+    if it.get("state") == "recommend" and it.get("command"):
+        return f"{label}: {head}. Run: `{it['command']}`"
+    return f"{label}: {head}."
+
+
+def _recs_covers(item_id):
+    """True when the record already speaks for this item (any state): the
+    legacy verdict-derived advice line then stays out so no line repeats."""
+    try:
+        blk = _recs_block()
+        for it in (blk or {}).get("items") or []:
+            if it.get("id") == item_id:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _recs_cli(argv):
+    """`measure.py recommendations [status|refresh] [--json]` handler."""
+    as_json = "--json" in argv
+    sub = argv[1] if len(argv) > 1 and not argv[1].startswith("--") else "status"
+    if sub not in ("status", "refresh"):
+        print("usage: measure.py recommendations [status|refresh] [--json]")
+        sys.exit(2)
+    if sub == "refresh":
+        rec = usage_recommendations_refresh(
+            token=os.environ.get(_RECS_TOKEN_ENV) or None)
+        if as_json:
+            print(json.dumps(rec or {}, indent=2))
+            return
+        if rec is None:
+            print("[Token Optimizer] usage recommendations: skipped (another "
+                  "refresh is running)")
+        elif rec.get("complete"):
+            print("[Token Optimizer] usage recommendations: measured")
+        else:
+            print("[Token Optimizer] usage recommendations: incomplete; "
+                  "it retries tomorrow")
+        return
+    blk = _recs_block()
+    if as_json:
+        print(json.dumps(blk or {}, indent=2))
+        return
+    print("\n[Token Optimizer] usage recommendations (measured daily; "
+          "estimates only)")
+    printed = False
+    for it in (blk or {}).get("items") or []:
+        ln = _recs_item_line(it)
+        if ln:
+            print(f"  {ln}")
+            printed = True
+    for w in (blk or {}).get("wins") or []:
+        if w.get("line"):
+            print(f"  {w['line']}")
+            printed = True
+    if not printed:
+        print("  no usage recommendations yet -- the daily measurement runs "
+              "in the background")
+    print()
+
+
+def _coach_cli(args):
+    """`measure.py coach [--json] [--focus F]` handler (extracted verbatim
+    from the __main__ dispatch so tests can drive the JSON surface)."""
+    focus = None
+    output_json = "--json" in args
+    for i, a in enumerate(args):
+        if a == "--focus" and i + 1 < len(args):
+            focus = args[i + 1]
+    data = generate_coach_data(focus=focus, include_deterministic=True)
+    if output_json:
+        # Subagent-cache surface: state, who set it, net payoff estimate.
+        # Fail-open; never breaks the coach JSON.
+        try:
+            data["subagent_cache"] = subagent_cache_block()
+        except Exception:
+            pass
+        print(json.dumps(data, indent=2))
+        return
+    is_codex = detect_runtime() == "codex"
+    instruction_label = "AGENTS.md" if is_codex else "CLAUDE.md"
+    score = data["health_score"]
+    snap = data["snapshot"]
+    print(f"\n  Token Health Score: {score}/100")
+    print(f"  Startup overhead: {snap['total_overhead']:,} tokens ({snap['overhead_pct']}% of {snap['context_window'] // 1000}K)")
+    print(f"  Usable context: ~{snap['usable_tokens']:,} tokens (after overhead + autocompact buffer)")
+    print(f"  Skills: {snap['skill_count']} ({snap['skill_tokens']:,} tokens)")
+    if snap.get("skills_basis"):
+        print(f"          ({snap['skills_basis']})")
+    print(f"  {instruction_label}: {snap['claude_md_tokens']:,} tokens")
+    print(f"  MCP: {snap['mcp_server_count']} servers ({snap['mcp_tokens']:,} tokens)")
+    print()
+    if data["patterns_bad"]:
+        print("  Issues detected:")
+        for p in data["patterns_bad"]:
+            sev = {"high": "!!!", "medium": "!!", "low": "!"}.get(p["severity"], "!")
+            print(f"    [{sev}] {p['name']}: {p['detail']}")
+        print()
+    if data["patterns_good"]:
+        print("  Good practices:")
+        for p in data["patterns_good"]:
+            print(f"    [OK] {p['name']}: {p['detail']}")
+        print()
+    if data.get("subagent_costs"):
+        sc = data["subagent_costs"]
+        print(f"  Subagent spend: ${sc['total_usd']:.2f} ({sc['pct_of_spend']}% of recent sessions)")
+        for s in sc["top_subagents"][:3]:
+            print(f"    {_strip_ansi(str(s['name']))}: ${s['cost_usd']} ({s['tokens']:,} tokens, {_strip_ansi(str(s['model']))})")
+        print()
+    if data.get("costly_prompts"):
+        print("  Most expensive prompts (last 7 days):")
+        for i, p in enumerate(data["costly_prompts"][:5], 1):
+            # Session-log text is attacker-influenceable — strip ANSI
+            # escapes before printing so a crafted prompt cannot inject
+            # terminal control sequences, then truncate the clean text.
+            preview = _strip_ansi(str(p["text"]))[:70].replace("\n", " ")
+            print(f"    {i}. ${p['cost_usd']} ({p['tokens_in']:,} in) \"{preview}...\"")
+        print()
+    det = data.get("deterministic_candidates")
+    if det:
+        print(f"  {_strip_ansi(str(det.get('summary') or deterministic_candidates.summary_line(det)))}")
+        if det.get("candidates"):
+            print(_hint("    Details: python3 measure.py deterministic-candidates"))
+        print()
+    # Usage recommendations: the daily-measured record carries the content;
+    # one line per recommend item, never a scan here.
+    try:
+        _rblk = _recs_block() or {}
+        _ritems = _rblk.get("items") or []
+        _rcovered = {i.get("id") for i in _ritems}
+        _printed = False
+        for _it in _ritems:
+            if _it.get("state") == "recommend":
+                _ln = _recs_item_line(_it)
+                if _ln:
+                    print(f"  {_ln}")
+                    _printed = True
+        if _printed:
+            print()
+    except Exception:
+        _rcovered = set()
+    # Advise-only subagent cache verdict: actionable recommendations only.
+    # Falls silent once the daily record covers the item so no line repeats.
+    try:
+        if "subagent_cache" not in _rcovered:
+            _scr = (subagent_cache_block().get("recommendation") or {})
+            if _scr.get("action") in ("enable", "disable"):
+                print(f"  Subagent cache: {_scr['line']}")
+                print()
+    except Exception:
+        pass
+    if data["questions"]:
+        print("  Coaching questions:")
+        for q in data["questions"]:
+            print(f"    ? {q}")
+        print()
+
+
+def _subagent_cache_cli(argv):
+    """`measure.py subagent-cache status|enable|disable|scan [--json]` handler."""
+    as_json = "--json" in argv
+    sub = argv[1] if len(argv) > 1 else "status"
+    if sub not in ("status", "enable", "disable", "scan"):
+        print("usage: measure.py subagent-cache status|enable|disable [--json]")
+        sys.exit(2)
+    if sub == "scan":
+        # Internal: the detached child the session start spawns. Quiet by
+        # design (stdio is DEVNULL there); a hand run prints one line.
+        since = None
+        if "--since" in argv:
+            try:
+                since = float(argv[argv.index("--since") + 1])
+            except (IndexError, ValueError):
+                since = None
+        rec = subagent_cache_scan_run(
+            since_ts=since,
+            token=os.environ.get(_SUBAGENT_CACHE_SCAN_TOKEN_ENV) or None)
+        if rec is None:
+            print("[Token Optimizer] subagent cache scan: skipped (another scan "
+                  "is running, or not Claude Code)")
+        elif rec["complete"]:
+            print("[Token Optimizer] subagent cache scan: verdict saved")
+        else:
+            print("[Token Optimizer] subagent cache scan: incomplete "
+                  f"({rec['reason']}); no verdict")
+        return
+    if sub == "enable":
+        # Unconditional (a deliberate request), but never blind: show the
+        # user's own estimate first.
+        p = subagent_cache_payoff(days=30)
+        try:
+            billing = keepwarm_billing_mode()
+        except Exception:
+            billing = "subscription"
+        r = subagent_cache_enable(automatic=False)
+        if as_json:
+            print(json.dumps(dict(r, payoff=p), indent=2))
+            return
+        print(_subagent_cache_payoff_lines(p, billing))
+        if r.get("notice"):
+            print(f"[Token Optimizer] {r['notice']}")
+        else:
+            why = f": {r['reason']}" if r.get("reason") else ""
+            print(f"[Token Optimizer] subagent cache: {r['state']}"
+                  + (" (settings.json changed)" if r.get("changed") else "") + why)
+        return
+    if sub == "disable":
+        r = subagent_cache_disable()
+        if as_json:
+            print(json.dumps(r, indent=2))
+        else:
+            why = f": {r['reason']}" if r.get("reason") else ""
+            state = r.get("state") or "unknown"
+            print(f"[Token Optimizer] subagent cache: {state}"
+                  + (" (key removed)" if r.get("changed") else "") + why)
+        return
+    # status
+    r = subagent_cache_status()
+    if as_json:
+        print(json.dumps(r, indent=2))
+        return
+    p = r.get("payoff") or {}
+    print(f"[Token Optimizer] subagent cache: {r['state']}"
+          + (f" (set by {r['set_by']})" if r.get("set_by") else ""))
+    if r.get("reason"):
+        print(f"  why: {r['reason']}")
+    ad = r.get("auto_decision") or {}
+    if ad:
+        # The reason is already self-describing ("would not pay: ...",
+        # "pays: ..."); prefixing the decision label doubled the sentence.
+        print(f"  verdict: {ad.get('reason') or ad.get('decision')}")
+    rec = r.get("recommendation") or {}
+    if rec.get("line") and rec["line"] != ad.get("reason") \
+            and not _recs_covers("subagent_cache"):
+        # One advice line, and never the verdict reason repeated verbatim.
+        # When the daily usage-recommendations record already carries this
+        # item its own line below is the one that prints.
+        print(f"  advice: {rec['line']}")
+    if r.get("hint"):
+        print(f"  note: {r['hint']}")
+    print(_subagent_cache_payoff_lines(p, r.get("billing_mode")))
+    # The daily usage-recommendations record: one line per applicable item.
+    try:
+        _rb = _recs_block() or {}
+        if _rb.get("items"):
+            print("  usage recommendations (daily record):")
+            for _it in _rb["items"]:
+                _ln = _recs_item_line(_it)
+                if _ln:
+                    print(f"    {_ln}")
+    except Exception:
+        pass
+
+
+def _subagent_cache_payoff_lines(p, billing_mode):
+    """Two short status lines: both parts of the estimate, then the assumptions.
+
+    Subscription plans pay no dollars per token, so tokens lead and the dollar
+    figure is labelled API-equivalent.
+    """
+    within = int(p.get("within_agent_tokens") or 0)
+    across = int(p.get("across_spawn_tokens") or 0)
+    realized = int(p.get("realized_read_tokens") or 0)
+    premium_tok = int(p.get("write_tokens_5m") or 0) + int(p.get("write_tokens_1h") or 0)
+    net = float(p.get("net_usd_est") or 0.0)
+    saved = float(p.get("savings_usd_est") or 0.0)
+    extra = float(p.get("extra_write_cost_usd_est") or 0.0)
+    days = p.get("window_days", 30)
+    tokens = (f"{within + across + realized:,} tokens a 1h cache reads instead of rewriting "
+              f"(within one agent {within:,}, across spawns {across:,}, "
+              f"already realized {realized:,}) against the 1h write premium on "
+              f"{premium_tok:,} written tokens")
+    sign = "-" if net < 0 else ""
+    money = f"net {sign}${abs(net):.2f} (saved ${saved:.2f} - premium ${extra:.2f})"
+    if billing_mode == "subscription":
+        first = (f"  last {days}d: {tokens}; {money} API-equivalent, "
+                 "your plan is not billed per token. ESTIMATE from your own transcripts.")
+    else:
+        first = (f"  last {days}d: {money}; {tokens}. "
+                 "ESTIMATE from your own transcripts.")
+    second = (
+        "  assumes: a 5-60 min gap means the 5m cache missed and a 1h one hits; "
+        "shared prefix = smallest first request of a group, grouped by "
+        f"{p.get('grouping') or 'project+model (agent type not recorded)'}; "
+        f"{int(p.get('subagent_requests') or 0):,} subagent requests "
+        f"(the recommendation needs {_SUBAGENT_CACHE_TRIPWIRE_MIN_REQUESTS}).")
+    return first + "\n" + second
+
+
 def _dominant_turn_model(turns):
     """Most frequent non-empty model id across a session's turns."""
     counts = {}
@@ -20102,7 +23318,7 @@ def _migrate_model_daily(conn, quiet=False):
         if not quiet:
             print("[Token Optimizer] Migrated model_daily for corrected model attribution.")
             print("  New sessions will have correct model mix. For full historical accuracy:")
-            print("  python3 measure.py collect --rebuild")
+            print(_hint("  python3 measure.py collect --rebuild"))
     except sqlite3.Error as e:
         print(f"  [Token Optimizer] model_daily migration failed: {e}", file=sys.stderr)
 
@@ -23344,6 +26560,384 @@ def _command_matches_process(command, process_name):
     return exe_base == process_name
 
 
+# POSIX process identity (macOS and Linux). Same contract as the Windows block
+# further down (issue #211): `kill_stale_sessions` acts on this inventory, and
+# process age or a `claude` argv[0] alone does not show that a conversation is
+# abandoned. A claude process can be hosted by the desktop app (driven over
+# stream-json, wrapped by Claude.app's `disclaimer` helper), an IDE, the SDK or
+# a headless `-p` run, or be a subcommand (`mcp`, `doctor` ...). So identity is
+# established from the real argv and the parent chain, and fails closed:
+# only a positively identified terminal CLI process is ever terminated.
+_POSIX_TERMINAL_PARENTS = frozenset({
+    # shells
+    "sh", "bash", "zsh", "fish", "dash", "ksh", "ksh93", "mksh", "pdksh", "tcsh", "csh",
+    "ash", "rbash", "xonsh", "nu", "nushell", "elvish", "pwsh", "osh", "oil",
+    # multiplexers and persistent-session hosts (a tmux-hosted interactive
+    # session IS a terminal session)
+    "tmux", "screen", "byobu", "zellij", "dtach", "abduco", "mosh-server",
+    # remote logins
+    "sshd", "sshd-session", "sshd-auth",
+    # terminal emulators that may be a direct parent
+    "terminal", "iterm2", "ghostty", "alacritty", "kitty", "wezterm", "wezterm-gui",
+    "hyper", "warp", "tabby", "rio", "foot", "xterm", "urxvt", "rxvt", "st", "konsole",
+    "gnome-terminal-", "gnome-terminal-server", "terminator", "tilix", "xfce4-terminal",
+    "lxterminal", "mate-terminal", "kgx", "ptyxis",
+})
+_POSIX_NO_TTY = ("??", "-", "?")
+_POSIX_ANCESTRY_MAX_HOPS = 16
+# pid ppid [uid] tty lstart etime command. uid is optional only so a row without
+# it still parses for display; such a session has no provable owner (uid None)
+# and kill-stale never terminates it. A tty is never all digits, so the optional
+# numeric field cannot swallow it.
+_POSIX_PS_ROW_RE = re.compile(
+    r"^\s*(\d+)\s+(\d+)\s+(?:(\d+)\s+)?(\S+)\s+"
+    r"(\S+\s+\S+\s+\d+\s+\d{1,2}:\d{2}:\d{2}\s+\d{4})\s+"  # lstart (C locale)
+    r"(\S+)\s+(.*?)\s*$"
+)
+_POSIX_NAME_ROW_RE = re.compile(r"^\s*(\d+)\s+(\d+)\s+(.+?)\s*$")
+
+
+def _posix_comm_name(comm):
+    """Lower-case executable name from a ps COMM field ("-zsh" -> "zsh",
+    "tmux: server" -> "tmux", "/bin/bash" -> "bash"). Never raises."""
+    text = (comm or "").strip()
+    if not text:
+        return ""
+    text = text.split(": ", 1)[0].rsplit("/", 1)[-1]
+    return text.lstrip("-").strip().lower()
+
+
+def _posix_comm_is_claude(comm):
+    """True when a COMM field names a claude CLI executable (basename `claude`,
+    `.exe` stripped, or the versioned ccd-cli launcher). Matches desktop-hosted
+    sessions installed under a path with spaces (`.../Application Support/...`),
+    which the whitespace-split `ps` command column cannot show."""
+    text = (comm or "").strip()
+    if not text:
+        return False
+    base = text.rsplit("/", 1)[-1]
+    if base.endswith(".exe"):
+        base = base[:-4]
+    return base == "claude" or bool(_CCD_CLI_LAUNCHER_RE.search(text))
+
+
+def _posix_is_claude_host(comm, args):
+    """True when a process is the Claude desktop app (main, helper, disclaimer
+    wrapper, Electron build) or another claude process: a claude below it is hosted."""
+    if _posix_comm_name(comm).startswith("claude"):
+        return True
+    low = f"{comm or ''}\n{args or ''}".lower()
+    if "claude.app/" in low or "/.claude/remote/ccd-cli/" in low or "@anthropic-ai/claude-code" in low:
+        return True
+    if "app.asar" in low and "claude" in low:
+        return True
+    return _command_matches_process(args or "", "claude")
+
+
+def _posix_option_args(argv):
+    """Arguments that can be options: everything after argv[0] up to a bare --."""
+    args = list(argv[1:])
+    return args[:args.index("--")] if "--" in args else args
+
+
+def _posix_is_headless(options):
+    """True for SDK/headless/IDE switches and for subcommand processes."""
+    for raw in options:
+        a = raw.lower()
+        if len(a) > 1 and a[0] == "-" and a[1] != "-" and "p" in a.split("=")[0]:
+            return True  # -p, -pc ...
+        if any(a == f or a.startswith(f + "=") for f in _WIN_HEADLESS_FLAGS):
+            return True
+        if a in _WIN_HEADLESS_SUBCOMMANDS:
+            return True
+    return False
+
+
+def _posix_read_argv(pid):
+    """Exact argv of a process, or None when the OS will not say.
+
+    Linux reads NUL-separated /proc/<pid>/cmdline; macOS asks the kernel
+    (sysctl KERN_PROCARGS2). Unlike the `ps` command column, both keep an
+    argument that contains spaces as ONE token, so prompt text can neither
+    masquerade as a switch nor hide one. Callers fall back to the `ps` column.
+    """
+    try:
+        pid = int(pid)
+        if sys.platform.startswith("linux"):
+            with open(f"/proc/{pid}/cmdline", "rb") as fh:
+                data = fh.read()
+            if not data:
+                return None
+            parts = data.split(b"\0")
+            while parts and parts[-1] == b"":
+                parts.pop()  # trailing NUL, and the padding left by a rewritten title
+            return [p.decode("utf-8", "replace") for p in parts] or None
+        if sys.platform == "darwin":
+            import ctypes
+            import ctypes.util
+
+            libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+            mib = (ctypes.c_int * 3)(1, 49, pid)  # CTL_KERN, KERN_PROCARGS2, pid
+            size = ctypes.c_size_t(0)
+            if libc.sysctl(mib, 3, None, ctypes.byref(size), None, 0) != 0 or size.value < 8:
+                return None
+            buf = ctypes.create_string_buffer(size.value)
+            if libc.sysctl(mib, 3, buf, ctypes.byref(size), None, 0) != 0:
+                return None
+            data = buf.raw[:size.value]
+            argc = int.from_bytes(data[:4], sys.byteorder)
+            rest = data[4:]
+            i = rest.index(b"\0")  # exec_path
+            while i < len(rest) and rest[i] == 0:
+                i += 1
+            parts = rest[i:].split(b"\0")[:argc]
+            if argc < 1 or len(parts) < argc:
+                return None
+            return [p.decode("utf-8", "replace") for p in parts]
+    except Exception:
+        return None
+    return None
+
+
+def _posix_exe_path(pid, comm=None):
+    """Real executable path of a process, or None.
+
+    /proc/<pid>/exe on Linux (a replaced binary reads "<path> (deleted)", whose
+    directory is still the right one to probe), proc_pidpath on macOS. A native
+    install deletes the previous version's binary after an update, so a
+    long-running session can legitimately have no resolvable path; callers treat
+    None as "no directory evidence", not as a reason to fail.
+    """
+    try:
+        pid = int(pid)
+        if sys.platform.startswith("linux"):
+            target = os.readlink(f"/proc/{pid}/exe")
+            return target[:-len(" (deleted)")] if target.endswith(" (deleted)") else target
+        if sys.platform == "darwin":
+            import ctypes
+            import ctypes.util
+
+            lib = ctypes.CDLL(ctypes.util.find_library("proc") or "/usr/lib/libproc.dylib", use_errno=True)
+            buf = ctypes.create_string_buffer(4096)
+            if lib.proc_pidpath(pid, buf, 4096) > 0:
+                return buf.value.decode("utf-8", "replace")
+    except Exception:
+        pass
+    return comm if comm and comm.startswith("/") else None
+
+
+def _posix_dir_is_electron_app(exe_path):
+    """True/False when the executable's directory is/is not an Electron app
+    directory; None when that cannot be determined (fail closed upstream)."""
+    if not exe_path:
+        return None
+    base = os.path.dirname(exe_path)
+    # os.path.exists swallows every OSError and reports False, which would turn
+    # an unreadable directory into "not Electron". Probe with os.stat so that
+    # anything other than "definitely absent" is indeterminate.
+    try:
+        os.stat(base or ".")
+    except (OSError, ValueError):
+        return None
+    probes = [os.path.join(base, *marker) for marker in _WIN_ELECTRON_MARKERS]
+    if os.path.basename(base) == "MacOS" and os.path.basename(os.path.dirname(base)) == "Contents":
+        contents = os.path.dirname(base)  # <App>.app/Contents
+        probes.append(os.path.join(contents, "Resources", "app.asar"))
+        probes.append(os.path.join(contents, "Frameworks", "Electron Framework.framework"))
+    found = False
+    for probe in probes:
+        try:
+            os.stat(probe)
+            found = True
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        except (OSError, ValueError):
+            return None
+    return found
+
+
+def _posix_is_init_parent(ppid, names, args_by_pid):
+    """True when ppid is the init process an orphan is reparented to: pid 1
+    (launchd, systemd, init) or a per-user `systemd --user` subreaper."""
+    if ppid == 1:
+        return True
+    entry = names.get(ppid)
+    if not entry or _posix_comm_name(entry[1]) != "systemd":
+        return False
+    return "--user" in (args_by_pid.get(ppid) or "").split()
+
+
+def _posix_ancestry_state(pid, names, args_by_pid, electron_parent_pids=frozenset()):
+    """Walk parents of pid. Returns "hosted", "complete" or "incomplete".
+
+    "complete" means the chain provably reached init/launchd (or a pid-namespace
+    root) without meeting the desktop app or another claude process. Missing
+    rows, cycles and over-long chains are "incomplete": absence of evidence is
+    never a negative host check.
+    """
+    seen = {pid}
+    cur = pid
+    for _ in range(_POSIX_ANCESTRY_MAX_HOPS):
+        entry = names.get(cur)
+        if not entry:
+            return "incomplete"
+        ppid = entry[0]
+        if ppid <= 0:
+            return "complete"
+        if ppid in seen:
+            return "incomplete"
+        parent = names.get(ppid)
+        if not parent:
+            return "incomplete"
+        if ppid in electron_parent_pids or _posix_is_claude_host(parent[1], args_by_pid.get(ppid)):
+            return "hosted"
+        if ppid == 1:
+            return "complete"
+        seen.add(ppid)
+        cur = ppid
+    return "incomplete"
+
+
+def _classify_posix_claude_process(detail, names, args_by_pid, electron_parent_pids=frozenset()):
+    """Classify one claude process on macOS/Linux by identity.
+
+    Same classes as `_classify_windows_claude_process`:
+    - "helper":           Electron child (--type=...). Never a session.
+    - "desktop_app":      The Electron main process of the desktop app (it has
+                          --type= children, or an Electron directory layout).
+                          Not a session; never terminable.
+    - "embedded_session": A Claude Code process hosted by another program
+                          (desktop app, IDE, SDK, a parent claude) or running
+                          headless (--print, stream-json, mcp ...). A real
+                          session owned by its host: never terminated by age.
+    - "terminal_cli":     Positively identified interactive terminal process:
+                          readable argv, no host/headless markers, a complete
+                          parent chain, a controlling TTY and a parent that is a
+                          shell, multiplexer, sshd or terminal. The only identity
+                          kill_stale_sessions may terminate.
+    - "orphan_cli":       An interactive session whose terminal died. ALL of:
+                          exact argv was read (KERN_PROCARGS2 or /proc cmdline,
+                          never the ps-split fallback), no --type=/headless
+                          flag/subcommand, no controlling TTY, the parent is the
+                          init process (pid 1 or `systemd --user`), and the
+                          executable is positively not an Electron app. Listed
+                          as ORPHAN; only `kill-stale --include-orphans` ends it.
+                          Anything short of that stays "unknown". Windows has no
+                          such class (parent-pid semantics differ).
+    - "unknown":          Anything else, including every case where identity
+                          evidence could not be read (unreadable ps, undecodable
+                          text, an orphan short of the conditions above). Listed,
+                          never terminated.
+
+    detail: pid, ppid, tty, argv (list), argv_exact (bool), exe (path or None).
+    names: {pid: (ppid, comm)} or None; args_by_pid: {pid: ps args string}.
+    """
+    if not detail:
+        return "unknown"
+    argv = detail.get("argv")
+    if not argv:
+        return "unknown"
+    exe = detail.get("exe") or ""
+    if "�" in exe or any("�" in a for a in argv):
+        return "unknown"  # undecodable text is never affirmative evidence
+    # One token holding spaces is either a rewritten process title or a spaced
+    # install path: the two cannot be told apart, so it is not exact argv.
+    argv_exact = bool(detail.get("argv_exact")) and (len(argv) > 1 or len(argv[0].split()) == 1)
+    if len(argv) == 1:
+        # A process that rewrote its title carries its whole command line in
+        # argv[0]; split it so a switch inside cannot hide.
+        argv = argv[0].split() or argv
+    options = _posix_option_args(argv)  # tokens after a bare -- are prompt text
+    if any(a.lower().startswith("--type=") for a in options):
+        return "helper"
+    pid = detail.get("pid")
+    if pid in electron_parent_pids:
+        return "desktop_app"
+    electron_dir = None
+    if exe:
+        electron_dir = _posix_dir_is_electron_app(exe)
+        if electron_dir is None:
+            # Positive headless evidence (-p, --print, mcp ...) is never
+            # killable either way, so it names the session even when the
+            # executable's directory cannot be inspected.
+            return "embedded_session" if _posix_is_headless(options) else "unknown"
+        if electron_dir:
+            return "desktop_app"
+    if not names:
+        return "unknown"
+    ancestry = _posix_ancestry_state(pid, names, args_by_pid, electron_parent_pids)
+    if ancestry == "hosted":
+        return "embedded_session"
+    if ancestry != "complete":
+        return "unknown"
+    if _posix_is_headless(options):
+        return "embedded_session"
+    entry = names.get(pid)
+    if not entry or detail.get("ppid") != entry[0]:
+        return "unknown"  # the two snapshots disagree about the parent
+    if (detail.get("tty") or "?") in _POSIX_NO_TTY:
+        # No controlling terminal. Under a shell that is just a process that
+        # lost its tty (unknown). Under init it is the zombie `health` exists
+        # for, but only on exact argv and a binary positively not Electron
+        # (an unresolvable executable gives no such evidence).
+        if argv_exact and electron_dir is False and _posix_is_init_parent(entry[0], names, args_by_pid):
+            return "orphan_cli"
+        return "unknown"
+    parent = names.get(entry[0])
+    if parent and _posix_comm_name(parent[1]) in _POSIX_TERMINAL_PARENTS:
+        return "terminal_cli"
+    return "unknown"
+
+
+def _posix_process_names():
+    """Return {pid: (ppid, comm)} for every process, or None when unreadable.
+
+    COMM is the last column because it may contain spaces ("Claude Helper
+    (Renderer)"); on macOS it is the full executable path. None means the
+    parent chain cannot be established: callers treat every process as
+    unverified, never as a confirmed terminal session.
+    """
+    try:
+        result = subprocess.run(
+            ["ps", "-ww", "-eo", "pid,ppid,comm"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+            env={**os.environ, "LC_ALL": "C", "LC_TIME": "C"}, creationflags=_NO_WINDOW,
+        )
+    except (subprocess.SubprocessError, OSError, ValueError):
+        return None
+    if result.returncode != 0:
+        return None
+    names = {}
+    for line in result.stdout.splitlines():
+        m = _POSIX_NAME_ROW_RE.match(line)
+        if m:
+            names[int(m.group(1))] = (int(m.group(2)), m.group(3))
+    return names or None
+
+
+def _posix_ancestor_pids(pid):
+    """Pids of every ancestor of `pid`, or None when the chain cannot be established.
+
+    kill-stale runs inside the conversation it was asked from; that claude is an
+    ancestor of the command, not its direct parent, so it must be excluded too.
+    None (not an empty set) when `ps` is unreadable or its table lacks `pid`:
+    "unknown" is a distinct answer from "no ancestors", and kill-stale must not
+    act without proof that a candidate is not the conversation it runs inside of.
+    """
+    names = _posix_process_names()
+    if not names or pid not in names:
+        return None
+    out = set()
+    cur = pid
+    for _ in range(64):
+        entry = names.get(cur)
+        if not entry or entry[0] <= 0 or entry[0] in out:
+            break
+        out.add(entry[0])
+        cur = entry[0]
+    return out
+
+
 def _collect_posix_claude_sessions(process_name="claude"):
     """Collect running Claude/Codex CLI sessions via `ps` on macOS/Linux.
 
@@ -23351,52 +26945,109 @@ def _collect_posix_claude_sessions(process_name="claude"):
     subprocess or OS error -- the caller treats None as "health check
     unavailable" to preserve the historical POSIX contract. A non-zero
     `ps` exit with no sessions found returns `[]`.
+
+    For `claude`, every session carries ``identity`` ("terminal_cli",
+    "orphan_cli", "embedded_session" or "unknown") and ``identity_source: "ps"``; Electron
+    helpers and the desktop app's own process are dropped. See
+    `_classify_posix_claude_process`. Codex inventories are untagged: the Codex
+    path never terminates by age (see `_collect_health_data`/`kill_stale_sessions`).
     """
-    sessions = []
     try:
         result = subprocess.run(
-            ["ps", "-eo", "pid,tty,lstart,etime,command"],
-            capture_output=True, text=True, timeout=10,
+            ["ps", "-ww", "-eo", "pid,ppid,uid,tty,lstart,etime,command"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
             # Force C locale so lstart is always English 5-field format. Under
             # non-English locales (e.g. he_IL.UTF-8) ps emits localized dates
             # with a different field count, breaking the positional parse below
             # and dropping every session.
             env={**os.environ, "LC_ALL": "C", "LC_TIME": "C"}, creationflags=_NO_WINDOW,
         )
-    except (subprocess.SubprocessError, OSError):
+    except (subprocess.SubprocessError, OSError, ValueError):
         return None
     if result.returncode != 0:
-        return sessions
-    for line in result.stdout.strip().split("\n")[1:]:
-        line = line.strip()
-        if not line:
+        return []
+    rows = []
+    for line in result.stdout.splitlines():
+        m = _POSIX_PS_ROW_RE.match(line)
+        if not m:
+            continue  # header and anything that is not a process row
+        rows.append({
+            "pid": int(m.group(1)), "ppid": int(m.group(2)),
+            "uid": int(m.group(3)) if m.group(3) is not None else None, "tty": m.group(4),
+            "lstart": " ".join(m.group(5).split()), "etime": m.group(6), "args": m.group(7),
+        })
+    claude = process_name == "claude"
+    names = _posix_process_names() if claude else None
+    args_by_pid = {r["pid"]: r["args"] for r in rows}
+
+    # Parents of claude-named Electron children (--type=...) are the desktop
+    # app's main process, whatever their own name or directory layout.
+    electron_parent_pids = set()
+    if claude and names:
+        for r in rows:
+            if r["ppid"] > 0 and any(t.lower().startswith("--type=") for t in _posix_option_args(r["args"].split())):
+                comm = (names.get(r["pid"]) or (0, ""))[1]
+                if _posix_is_claude_host(comm, r["args"]):
+                    electron_parent_pids.add(r["ppid"])
+
+    sessions = []
+    for r in rows:
+        comm = (names.get(r["pid"]) or (0, ""))[1] if names else ""
+        command = r["args"]
+        if not (_command_matches_process(command, process_name)
+                or (claude and _posix_comm_is_claude(comm))):
             continue
-        parts = line.split()
-        if len(parts) < 9:
-            continue
-        # Fields: PID TTY LSTART(5 fields) ETIME COMMAND...
-        tty = parts[1]
-        command = " ".join(parts[8:])
-        if not _command_matches_process(command, process_name):
-            continue
-        try:
-            pid = int(parts[0])
-        except ValueError:
-            continue
-        lstart = " ".join(parts[2:7])
-        elapsed = parts[7]
-        elapsed_seconds = _parse_elapsed_time(elapsed)
-        has_terminal = tty not in ("??", "-", "?")
-        sessions.append({
+        pid = r["pid"]
+        tty = r["tty"]
+        elapsed_seconds = _parse_elapsed_time(r["etime"])
+        has_terminal = tty not in _POSIX_NO_TTY
+        identity = None
+        if claude:
+            argv = _posix_read_argv(pid)
+            argv_exact = bool(argv)
+            if not argv:
+                # ps joins argv with spaces: still safe (a switch can never be
+                # hidden by splitting), merely coarser. On macOS COMM is argv[0]
+                # exactly, which keeps a spaced install path in one token.
+                if comm.startswith("/") and command.startswith(comm):
+                    argv = [comm] + command[len(comm):].split()
+                else:
+                    argv = command.split()
+            exe = _posix_exe_path(pid, comm)
+            detail = {"pid": pid, "ppid": r["ppid"], "tty": tty, "argv": argv,
+                      "argv_exact": argv_exact, "exe": exe}
+            identity = _classify_posix_claude_process(detail, names, args_by_pid, electron_parent_pids)
+            if identity in ("helper", "desktop_app"):
+                continue
+        session = {
             "pid": pid,
-            "started": lstart,
+            "started": r["lstart"],
             "elapsed_seconds": elapsed_seconds,
             "elapsed_human": _format_elapsed(elapsed_seconds),
             "command": command,
             "has_terminal": has_terminal,
             "tty": tty if has_terminal else None,
-        })
+            "uid": r["uid"],
+        }
+        if identity is not None:
+            session["identity"] = identity
+            session["identity_source"] = "ps"
+        sessions.append(session)
     return sessions
+
+
+def _local_start_label(started):
+    """Format a process start time in local time, as the POSIX collector does.
+
+    A timezone-aware value (the Windows collectors report UTC or an offset) is
+    converted to the local zone first; a naive value is already local.
+    """
+    if started.tzinfo is not None:
+        try:
+            started = started.astimezone()
+        except (ValueError, OverflowError, OSError):
+            pass
+    return started.strftime("%a %b %d %H:%M:%S %Y")
 
 
 def _parse_wmi_datetime(wmi_ts):
@@ -23443,18 +27094,41 @@ def _parse_wmi_datetime(wmi_ts):
         return None
 
     return {
-        "started": started.strftime("%a %b %d %H:%M:%S %Y"),
+        "started": _local_start_label(started),
         "elapsed_seconds": max(0, int(elapsed)),
     }
+
+
+# A culture whose time separator is "." renders 15:04:05 as 15.04.05 when a
+# .NET custom format reaches ToString() without InvariantCulture. The collectors
+# now pin the invariant culture; this keeps the parser side tolerant too, so an
+# older cached or third-party value degrades to a correct time, not to a session
+# silently marked UNVERIFIED.
+_PS_DOTTED_TIME_RE = re.compile(r"(?<=[T ])(\d{2})\.(\d{2})\.(\d{2})(?=$|[Zz+\-.,])")
+
+
+# .NET ToString('o') writes seven fractional digits. Before Python 3.11,
+# fromisoformat accepts exactly three or six, so pad/trim the fraction to six.
+_PS_FRACTION_RE = re.compile(r"(?<=\d{2}:\d{2}:\d{2})\.(\d+)")
+
+
+def _normalize_ps_iso(iso_ts):
+    """Return a string datetime.fromisoformat accepts (3.9+), or "" when empty."""
+    s = (iso_ts or "").strip()
+    if not s:
+        return ""
+    s = _PS_DOTTED_TIME_RE.sub(r"\1:\2:\3", s)
+    s = _PS_FRACTION_RE.sub(lambda m: "." + m.group(1)[:6].ljust(6, "0"), s)
+    if s.endswith(("Z", "z")):
+        s = s[:-1] + "+00:00"
+    return s
 
 
 def _parse_iso_process_datetime(iso_ts):
     """Parse an ISO 8601 timestamp from PowerShell to elapsed seconds."""
     if not iso_ts:
         return None
-    s = iso_ts.strip()
-    if s.endswith("Z"):
-        s = s[:-1] + "+00:00"
+    s = _normalize_ps_iso(iso_ts)
     try:
         started = datetime.fromisoformat(s)
     except (ValueError, TypeError):
@@ -23464,7 +27138,7 @@ def _parse_iso_process_datetime(iso_ts):
     else:
         elapsed = (datetime.now(timezone.utc) - started).total_seconds()
     return {
-        "started": started.strftime("%a %b %d %H:%M:%S %Y"),
+        "started": _local_start_label(started),
         "elapsed_seconds": max(0, int(elapsed)),
     }
 
@@ -23516,7 +27190,422 @@ def _windows_process_creation(pid):
     return {}
 
 
-def _collect_windows_claude_sessions(process_name="claude"):
+# Windows process identity (issue #211). The Claude desktop app is Electron:
+# its main process, GPU/renderer/utility/crashpad children and the SSH broker
+# are all image-named claude*.exe, and the Code tab hosts its real sessions as
+# claude.exe children driven over stream-json. Image name alone cannot tell a
+# terminal CLI session from any of those, and kill_stale_sessions acts on this
+# inventory, so identity must be established from the command line and fail
+# closed: only a positively identified terminal CLI process is ever terminated.
+_WIN_HEADLESS_ARGS = ("--output-format", "--input-format", "--sdk-url")
+_WIN_ELECTRON_MARKERS = (
+    ("resources", "app.asar"),
+    ("icudtl.dat",),
+    ("chrome_100_percent.pak",),
+    ("resources.pak",),
+)
+
+
+def _windows_start_times_agree(process_start, cim_creation, tolerance_seconds=2):
+    """True only when Get-Process StartTime and CIM CreationDate match.
+
+    Both come from separate queries joined by PID; a PID reused between them
+    would otherwise borrow the old process's start time. Missing or
+    unparseable values on either side are not agreement.
+    """
+    try:
+        a = datetime.fromisoformat(_normalize_ps_iso(process_start))
+        b = datetime.fromisoformat(_normalize_ps_iso(cim_creation))
+        return abs((a - b).total_seconds()) <= tolerance_seconds
+    except (ValueError, TypeError, AttributeError):
+        return False
+
+
+def _windows_cim_process_details():
+    """Return {pid: {"ppid", "path", "cmdline", "creation"}} for claude* processes, or None.
+
+    Get-Process does not expose the command line on Windows PowerShell 5, so
+    this asks Win32_Process. None means identity could not be established
+    (PowerShell locked down, CIM unavailable): callers must treat every
+    process as unverified, never as a confirmed terminal session.
+    """
+    import csv as _csv
+    import io as _io
+
+    ps_cmd = (
+        "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
+        "Get-CimInstance Win32_Process -Filter 'Name LIKE ''claude%''' "
+        "-ErrorAction SilentlyContinue | "
+        "Select-Object ProcessId, ParentProcessId, ExecutablePath, CommandLine, "
+        "@{N='CreationDate';E={try { $_.CreationDate.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ', [System.Globalization.CultureInfo]::InvariantCulture) } catch { '' }}} | "
+        "ConvertTo-Csv -NoTypeInformation"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
+            capture_output=True, text=True, encoding="utf-8", timeout=10, errors="replace", creationflags=_NO_WINDOW,
+        )
+    except (subprocess.SubprocessError, OSError, FileNotFoundError):
+        return None
+    if result.returncode != 0:
+        return None
+    rows = _read_strict_csv(result.stdout, ("ProcessId", "ParentProcessId", "ExecutablePath", "CommandLine", "CreationDate"))
+    if rows is None:
+        return None
+    details = {}
+    for row in rows:
+        try:
+            pid = int((row.get("ProcessId") or "").strip())
+        except ValueError:
+            continue
+        try:
+            ppid = int((row.get("ParentProcessId") or "").strip())
+        except ValueError:
+            ppid = None
+        details[pid] = {
+            "ppid": ppid,
+            "path": (row.get("ExecutablePath") or "").strip(),
+            "cmdline": (row.get("CommandLine") or "").strip(),
+            "creation": (row.get("CreationDate") or "").strip(),
+        }
+    return details
+
+
+def _windows_process_names():
+    """Return {pid: (ppid, image_name_lower)} for all processes, or None.
+
+    Used for ancestry: a claude.exe is only treated as a terminal session when
+    its parent is a known shell/terminal host. None = unavailable.
+    """
+    import csv as _csv
+    import io as _io
+
+    ps_cmd = (
+        "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
+        "Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | "
+        "Select-Object ProcessId, ParentProcessId, Name | "
+        "ConvertTo-Csv -NoTypeInformation"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
+            capture_output=True, text=True, encoding="utf-8", timeout=10, errors="replace", creationflags=_NO_WINDOW,
+        )
+    except (subprocess.SubprocessError, OSError, FileNotFoundError):
+        return None
+    if result.returncode != 0:
+        return None
+    rows = _read_strict_csv(result.stdout, ("ProcessId", "ParentProcessId", "Name"))
+    if rows is None:
+        return None
+    names = {}
+    for row in rows:
+        try:
+            pid = int((row.get("ProcessId") or "").strip())
+            ppid = int((row.get("ParentProcessId") or "").strip())
+        except ValueError:
+            continue
+        names[pid] = (ppid, (row.get("Name") or "").strip().lower())
+    return names or None
+
+
+# Image names whose parent has always exited by the time anyone looks (logon and
+# service-host roots): a chain ending here is complete, not broken.
+_WINDOWS_ANCESTRY_ROOTS = frozenset({
+    "explorer.exe", "winlogon.exe", "wininit.exe", "services.exe", "smss.exe",
+    "svchost.exe", "userinit.exe", "system",
+})
+
+
+def _windows_ancestor_pids(pid, names=None):
+    """Pids of every ancestor of `pid` from the Windows process table, or None.
+
+    Same walk as `_posix_ancestor_pids`, but None (not an empty set) when the table
+    is unreadable, does not contain `pid`, or the chain runs into a parent pid the
+    table lacks below a system root: kill-stale must not act without proof that a
+    candidate is not the conversation it runs inside of (claude.exe -> shell ->
+    python), so "unknown" is a distinct answer from "no ancestors".
+    """
+    if names is None:
+        names = _windows_process_names()
+    if not names or pid not in names:
+        return None
+    out = set()
+    cur = pid
+    for _ in range(64):
+        entry = names.get(cur)
+        if not entry:
+            # `cur` is a parent pid the table does not list: its process exited
+            # and Windows never reparents, so the link above it is gone. That is
+            # a normal end only for a system root (explorer.exe's parent,
+            # userinit.exe, is always gone). Anywhere else an ancestor such as
+            # the claude.exe this runs inside of may sit above the gap.
+            top = names.get(last)
+            return out if top and top[1] in _WINDOWS_ANCESTRY_ROOTS else None
+        if entry[0] <= 0 or entry[0] in out:
+            break
+        out.add(entry[0])
+        last = cur
+        cur = entry[0]
+    return out
+
+
+def _windows_dir_is_electron_app(exe_path):
+    """True/False when the executable's directory is/is not an Electron app
+    directory; None when that cannot be determined (fail closed upstream)."""
+    if not exe_path:
+        return False
+    import ntpath as _ntpath
+
+    base = _ntpath.dirname(exe_path)
+    # os.path.exists swallows every OSError and reports False, which would turn
+    # an unreadable directory into "not Electron". Probe with os.stat so that
+    # anything other than "definitely absent" is indeterminate.
+    try:
+        os.stat(base or ".")
+    except (OSError, ValueError):
+        return None
+    found = False
+    for marker in _WIN_ELECTRON_MARKERS:
+        try:
+            os.stat(os.path.join(base, *marker))
+            found = True
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        except (OSError, ValueError):
+            return None
+    return found
+
+
+_WIN_TERMINAL_PARENTS = frozenset({
+    "cmd.exe", "powershell.exe", "pwsh.exe", "bash.exe", "sh.exe", "zsh.exe",
+    "wt.exe", "windowsterminal.exe", "conhost.exe", "openconsole.exe",
+    "mintty.exe", "wezterm-gui.exe", "alacritty.exe",
+})
+_WIN_HEADLESS_FLAGS = ("--output-format", "--input-format", "--sdk-url", "--print", "--ide")
+_WIN_HEADLESS_SUBCOMMANDS = frozenset({
+    "mcp", "doctor", "update", "install", "config", "migrate-installer",
+    "remote-control", "plugin", "agents", "setup-token", "login", "logout",
+})
+# Processes that anchor a process tree on Windows. Reaching one proves the
+# ancestry walk ended at a real root instead of at missing information.
+_WIN_STABLE_ROOTS = frozenset({
+    "explorer.exe", "winlogon.exe", "wininit.exe", "sihost.exe", "system",
+    "csrss.exe", "smss.exe",
+})
+# Service / scheduler hosts: a claude started from one is a background job, not
+# an interactive terminal, even when the chain reaches a real root.
+_WIN_SERVICE_HOSTS = frozenset({
+    "svchost.exe", "services.exe", "taskeng.exe", "taskhostw.exe", "taskhost.exe",
+})
+_WIN_ANCESTRY_MAX_HOPS = 16
+
+
+def _windows_ancestry_state(pid, names, electron_parent_pids):
+    """Walk parents of pid. Returns "hosted", "complete" or "incomplete".
+
+    "complete" means the chain provably reached a root without meeting a
+    desktop app or another claude process. Missing rows, cycles and over-long
+    chains are "incomplete": absence of evidence is never a negative host check.
+    """
+    seen = {pid}
+    cur = pid
+    for _ in range(_WIN_ANCESTRY_MAX_HOPS):
+        entry = names.get(cur)
+        if not entry:
+            return "incomplete"
+        ppid = entry[0]
+        if ppid == 0:
+            return "complete"
+        if ppid in seen:
+            return "incomplete"
+        if ppid in electron_parent_pids:
+            return "hosted"
+        parent = names.get(ppid)
+        if not parent:
+            return "incomplete"
+        if parent[1].startswith("claude"):
+            return "hosted"
+        if parent[1] in _WIN_SERVICE_HOSTS:
+            return "incomplete"
+        if parent[1] in _WIN_STABLE_ROOTS:
+            return "complete"
+        seen.add(ppid)
+        cur = ppid
+    return "incomplete"
+
+
+def _windows_cmdline_tokens(cmdline):
+    """Split a Windows command line the way the MSVC runtime does.
+
+    Quotes toggle grouping and are removed (so --"print" is --print),
+    backslashes before a quote follow the 2n / 2n+1 rule, and a doubled quote
+    inside a quoted run is a literal quote. Quoted prompt text therefore stays
+    one token and can never masquerade as a switch.
+    """
+    text = cmdline or ""
+    n = len(text)
+    pos = 0
+    tokens = []
+    # Program name: quotes toggle grouping and are removed; no escape processing.
+    while pos < n and text[pos] in " \t":
+        pos += 1
+    if pos < n:
+        buf = []
+        in_quote = False
+        while pos < n and (in_quote or text[pos] not in " \t"):
+            if text[pos] == '"':
+                in_quote = not in_quote
+            else:
+                buf.append(text[pos])
+            pos += 1
+        tokens.append("".join(buf))
+    while True:
+        while pos < n and text[pos] in " \t":
+            pos += 1
+        if pos >= n:
+            break
+        buf = []
+        in_quote = False
+        started = False
+        while pos < n:
+            ch = text[pos]
+            if ch == "\\":
+                k = pos
+                while k < n and text[k] == "\\":
+                    k += 1
+                slashes = k - pos
+                if k < n and text[k] == '"':
+                    buf.append("\\" * (slashes // 2))
+                    if slashes % 2:
+                        buf.append('"')
+                        pos = k + 1
+                    else:
+                        pos = k  # quote handled by the next iteration
+                else:
+                    buf.append("\\" * slashes)
+                    pos = k
+                started = True
+                continue
+            if ch == '"':
+                if in_quote and pos + 1 < n and text[pos + 1] == '"':
+                    buf.append('"')
+                    pos += 2
+                else:
+                    in_quote = not in_quote
+                    pos += 1
+                started = True
+                continue
+            if ch in " \t" and not in_quote:
+                break
+            buf.append(ch)
+            started = True
+            pos += 1
+        if started:
+            tokens.append("".join(buf))
+    return tokens
+
+
+def _windows_option_args(cmdline):
+    """Arguments that can be options: tokens after the program, up to a bare --."""
+    args = _windows_cmdline_tokens(cmdline)[1:]
+    return args[:args.index("--")] if "--" in args else args
+
+
+def _read_strict_csv(text, required):
+    """Parse PowerShell CSV output, or None when it is malformed or partial.
+
+    Unterminated quotes, short/long rows and a missing header all mean the
+    output may have been truncated, which must never be read as evidence.
+    """
+    import csv as _csv
+    import io as _io
+
+    try:
+        rows = list(_csv.reader(_io.StringIO((text or "").lstrip("\ufeff")), strict=True))
+    except (_csv.Error, ValueError):
+        return None
+    if not rows:
+        return []
+    header = rows[0]
+    if not all(col in header for col in required):
+        return None
+    out = []
+    for row in rows[1:]:
+        if not row:
+            continue
+        if len(row) != len(header):
+            return None
+        out.append(dict(zip(header, row)))
+    return out
+
+
+def _classify_windows_claude_process(image_name, detail, electron_parent_pids, names=None):
+    """Classify one claude* Windows process by identity.
+
+    Returns one of:
+    - "helper":           Electron child (--type=...), SSH broker or any other
+                          claude-adjacent image. Never a session.
+    - "desktop_app":      The Electron main process of the desktop app. Not a
+                          session; never terminable.
+    - "embedded_session": A Claude Code process hosted by another program
+                          (desktop app, IDE, SDK, a parent claude) or running
+                          headless (--print, stream-json, mcp). A real session
+                          owned by its host: never terminated by age.
+    - "terminal_cli":     Positively identified interactive terminal process:
+                          readable command line, no host/headless markers and
+                          a parent that is a known shell or terminal host. The
+                          only identity kill_stale_sessions may terminate.
+    - "unknown":          Anything else, including every case where identity
+                          evidence could not be read. Listed, never terminated.
+
+    There is deliberately no "orphan_cli" here (macOS/Linux only): a Windows
+    child keeps the pid of a parent that has exited and is not reparented to a
+    stable init process, so "the parent is gone" is not evidence of an orphan.
+    """
+    image = (image_name or "").strip().lower()
+    if image not in ("claude", "claude.exe"):
+        return "helper"
+    if not detail:
+        return "unknown"
+    cmdline = detail.get("cmdline") or ""
+    if not cmdline:
+        return "unknown"
+    if "\ufffd" in cmdline or "\ufffd" in (detail.get("path") or ""):
+        return "unknown"  # undecodable text is never affirmative evidence
+    args = _windows_option_args(cmdline)  # tokens after a bare -- are prompt text
+    if any(a.lower().startswith("--type=") for a in args):
+        return "helper"
+    if detail.get("pid") in electron_parent_pids:
+        return "desktop_app"
+    electron_dir = _windows_dir_is_electron_app(detail.get("path"))
+    if electron_dir is None:
+        return "unknown"
+    if electron_dir:
+        return "desktop_app"
+    if not detail.get("path") or not names:
+        return "unknown"
+    # Ancestry: hosted by the desktop app or by another claude process.
+    ancestry = _windows_ancestry_state(detail.get("pid"), names, electron_parent_pids)
+    if ancestry == "hosted":
+        return "embedded_session"
+    if ancestry != "complete":
+        return "unknown"
+    lowered = [a.lower() for a in args]
+    if any((len(a) > 1 and a[0] == "-" and a[1] != "-" and "p" in a.split("=")[0]) or any(a == f or a.startswith(f + "=") for f in _WIN_HEADLESS_FLAGS) for a in lowered):
+        return "embedded_session"
+    if any(a in _WIN_HEADLESS_SUBCOMMANDS for a in lowered):
+        return "embedded_session"
+    parent_entry = names.get(detail.get("pid"))
+    if parent_entry and detail.get("ppid") != parent_entry[0]:
+        return "unknown"  # the two snapshots disagree about the parent
+    parent_name = names.get(parent_entry[0], (None, ""))[1] if parent_entry else ""
+    if parent_name in _WIN_TERMINAL_PARENTS:
+        return "terminal_cli"
+    return "unknown"
+
+
+def _collect_windows_claude_sessions(process_name="claude", creation_fallback=True):
     """Collect runtime processes on Windows via PowerShell Get-Process.
 
     Safety invariants:
@@ -23528,6 +27617,12 @@ def _collect_windows_claude_sessions(process_name="claude"):
       requires the same strictness. The PowerShell-side wildcard pre-filter
       is a performance optimization only; the strict matcher below is the
       security layer.
+    - Process identity comes from the command line (Win32_Process), not the
+      image name: Electron children (--type=), the desktop app main process
+      and claude-ssh-broker are dropped, desktop/SDK-hosted sessions are
+      tagged "embedded_session", and anything without positive evidence of an
+      interactive terminal parent is tagged "unknown". Only "terminal_cli" is
+      ever terminable.
     - Uses SessionId (numeric) to detect service-hosted processes.
       Services run in session 0; unlike the literal 'Services' string,
       SessionId never localizes.
@@ -23558,7 +27653,7 @@ def _collect_windows_claude_sessions(process_name="claude"):
         # keeps a zero-match run from erroring.
         f"Get-Process -Name '{process_name}*' -ErrorAction SilentlyContinue | "
         "Select-Object Id, ProcessName, SessionId, "
-        "@{N='StartTime';E={try { $_.StartTime.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') } catch { '' }}} | "
+        "@{N='StartTime';E={try { $_.StartTime.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ', [System.Globalization.CultureInfo]::InvariantCulture) } catch { '' }}} | "
         "ConvertTo-Csv -NoTypeInformation"
     )
     try:
@@ -23577,6 +27672,15 @@ def _collect_windows_claude_sessions(process_name="claude"):
         reader = list(_csv.DictReader(_io.StringIO(result.stdout)))
     except (_csv.Error, ValueError):
         return sessions
+
+    cim_details = _windows_cim_process_details() if process_name == "claude" else None
+    proc_names = _windows_process_names() if cim_details else None
+    electron_parent_pids = set()
+    if cim_details:
+        for detail in cim_details.values():
+            if (any(a.lower().startswith("--type=") for a in _windows_option_args(detail.get("cmdline")))
+                    and detail.get("ppid")):
+                electron_parent_pids.add(detail["ppid"])
 
     for row in reader:
         image_name = (row.get("ProcessName") or "").strip()
@@ -23598,11 +27702,20 @@ def _collect_windows_claude_sessions(process_name="claude"):
             continue
         if pid <= 0:
             continue
+        identity = None
+        if process_name == "claude":
+            detail = dict(cim_details.get(pid) or {}) if cim_details else {}
+            detail["pid"] = pid
+            identity = _classify_windows_claude_process(image_name, detail, electron_parent_pids, proc_names)
+            if identity == "terminal_cli" and not _windows_start_times_agree(start_time, detail.get("creation")):
+                identity = "unknown"  # the two queries saw different processes under this PID
+            if identity in ("helper", "desktop_app"):
+                continue
         creation = _parse_iso_process_datetime(start_time) if start_time else None
         if creation is None:
             # StartTime unreadable (protected process) or unparseable: fall
             # back to the per-PID wmic/CIM lookup.
-            creation = _windows_process_creation(pid)
+            creation = _windows_process_creation(pid) if creation_fallback else {}
         elapsed_seconds = int(creation.get("elapsed_seconds") or 0)
         # SessionId 0 is the Services session (language-independent); any
         # other value indicates a user session. A missing/unparseable
@@ -23612,7 +27725,7 @@ def _collect_windows_claude_sessions(process_name="claude"):
         except ValueError:
             session_id = -1
         has_terminal = session_id != 0
-        sessions.append({
+        session = {
             "pid": pid,
             "started": creation.get("started", "unknown"),
             "elapsed_seconds": elapsed_seconds,
@@ -23620,7 +27733,10 @@ def _collect_windows_claude_sessions(process_name="claude"):
             "command": image_name if image_lower.endswith(".exe") else image_name + ".exe",
             "has_terminal": has_terminal,
             "tty": f"session-{session_id}" if has_terminal and session_id > 0 else None,
-        })
+        }
+        if identity is not None:
+            session["identity"] = identity
+        sessions.append(session)
     return sessions
 
 
@@ -23761,7 +27877,14 @@ def _collect_health_data():
             # down) can't threshold STALE/ZOMBIE. Surface explicitly so the user
             # isn't fooled into thinking all sessions are fresh.
             flags.append("UNKNOWN_AGE")
-        if s.get("has_terminal"):
+        identity = s.get("identity")
+        if identity == "embedded_session":
+            flags.append("DESKTOP")
+        elif identity == "unknown":
+            flags.append("UNVERIFIED")
+        elif identity == "orphan_cli":
+            flags.append("ORPHAN")
+        elif s.get("has_terminal"):
             flags.append("TERMINAL")
         else:
             flags.append("HEADLESS")
@@ -23804,8 +27927,13 @@ def _collect_health_data():
 
     # Build recommendations
     recommendations = []
-    outdated_count = sum(1 for s in running_sessions if "OUTDATED" in s.get("flags", []))
-    stale_count = sum(1 for s in running_sessions if any(f in s.get("flags", []) for f in ("STALE", "ZOMBIE")))
+    # Sessions hosted by another app (DESKTOP) or with unreadable identity
+    # (UNVERIFIED) are not terminals the user can close and reopen.
+    # ORPHAN sessions have no terminal to close and reopen; they get their own
+    # recommendation below.
+    _own = [s for s in running_sessions if not any(f in s.get("flags", []) for f in ("DESKTOP", "UNVERIFIED", "ORPHAN"))]
+    outdated_count = sum(1 for s in _own if "OUTDATED" in s.get("flags", []))
+    stale_count = sum(1 for s in _own if any(f in s.get("flags", []) for f in ("STALE", "ZOMBIE")))
 
     if outdated_count > 0 and installed_version:
         recommendations.append(
@@ -23817,6 +27945,13 @@ def _collect_health_data():
         recommendations.append(
             f"{stale_count} session{'s' if stale_count != 1 else ''} running "
             f"24+ hours. Check if still needed, long sessions accumulate context bloat."
+        )
+    orphan_count = sum(1 for s in running_sessions if "ORPHAN" in s.get("flags", []))
+    if orphan_count > 0:
+        recommendations.append(
+            f"{orphan_count} session{'s' if orphan_count != 1 else ''} with the terminal gone "
+            f"(ORPHAN). Never ended automatically. Review, then run "
+            f"`{_measure_cli('kill-stale', '--include-orphans', '--dry-run')}` to preview ending them."
         )
     unknown_age_count = sum(1 for s in running_sessions if "UNKNOWN_AGE" in s.get("flags", []))
     if unknown_age_count > 0 and system == "Windows":
@@ -23844,6 +27979,8 @@ def _collect_health_data():
         "running_sessions": running_sessions,
         "automated": automated,
         "recommendations": recommendations,
+        "cli": _measure_cli(),
+        "cli_windows": _windows_hints(),
     }
 
 
@@ -23947,17 +28084,17 @@ def health_selfcheck():
     else:
         try:
             res = subprocess.run(
-                ["ps", "-eo", "pid,tty,lstart,etime,command"],
-                capture_output=True, text=True, timeout=10,
+                ["ps", "-ww", "-eo", "pid,ppid,uid,tty,lstart,etime,command"],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
                 # Match the production collectors: force C locale so this
                 # diagnostic mirrors what _collect_posix_claude_sessions sees.
                 env={**os.environ, "LC_ALL": "C", "LC_TIME": "C"}, creationflags=_NO_WINDOW,
             )
             ok = res.returncode == 0 and len(res.stdout.strip().split("\n")) > 1
-            check("ps -eo pid,tty,lstart,etime,command", ok,
+            check("ps -ww -eo pid,ppid,uid,tty,lstart,etime,command", ok,
                   f"exit={res.returncode}, lines={len(res.stdout.strip().split(chr(10)))}")
         except (subprocess.SubprocessError, OSError) as e:
-            check("ps -eo pid,tty,lstart,etime,command", False, f"exception: {e!r}")
+            check("ps -ww -eo pid,ppid,uid,tty,lstart,etime,command", False, f"exception: {e!r}")
 
         try:
             sessions = _collect_posix_claude_sessions()
@@ -24020,6 +28157,8 @@ def session_health():
             flag_str = f"  {'  '.join(flags)}" if flags else ""
             print(f"  PID {s['pid']:<7d} Started: {s['started']}  ({s['elapsed_human']} ago)")
             print(f"             Version: {version_str}{flag_str}")
+            if "ORPHAN" in flags:
+                print(f"             terminal gone; started {s['elapsed_human']} ago")
 
         if recommendations:
             print("\nRECOMMENDATIONS")
@@ -24034,11 +28173,99 @@ def session_health():
     print()
 
 
-def kill_stale_sessions(threshold_hours=12, dry_run=False):
+def _windows_revalidate_terminal_cli(session, fresh_inventory=None):
+    """Re-check a Windows session right before termination.
+
+    The inventory is a snapshot; a PID can be reused or reclassified between
+    that snapshot and the kill. Re-collect (without per-PID fallback probes for
+    unrelated processes) and require the same PID with the same start time to
+    still classify as terminal_cli. A race between that snapshot and
+    TerminateProcess remains: PID-based termination has no process handle to
+    bind to, so a PID reused inside that interval could be terminated.
+    """
+    if session.get("started") in (None, "", "unknown"):
+        return False
+    if fresh_inventory is None:
+        try:
+            fresh_inventory = {x["pid"]: x for x in _collect_windows_claude_sessions(creation_fallback=False)}
+        except Exception:
+            return False
+    now = fresh_inventory.get(session["pid"])
+    return bool(
+        now
+        and now.get("identity") == "terminal_cli"
+        and now.get("started") == session.get("started")
+    )
+
+
+def _posix_revalidate_terminal_cli(session, fresh_inventory=None, identity="terminal_cli"):
+    """Re-check a POSIX session right before termination.
+
+    The inventory is a snapshot; a PID can be reused or reclassified between
+    that snapshot and the kill. Re-collect and require the same PID with the
+    same start time and command line to still classify as `identity`
+    (terminal_cli, or orphan_cli for `kill-stale --include-orphans`). A race
+    between that re-check and os.kill remains: a PID-based signal has no handle
+    to bind to, so a PID reused inside that interval could be signalled.
+    """
+    if session.get("started") in (None, "", "unknown"):
+        return False
+    if fresh_inventory is None:
+        try:
+            fresh = _collect_posix_claude_sessions("claude")
+        except Exception:
+            return False
+        if fresh is None:
+            return False
+        fresh_inventory = {x["pid"]: x for x in fresh}
+    now = fresh_inventory.get(session["pid"])
+    return bool(
+        now
+        and now.get("identity") == identity
+        and now.get("started") == session.get("started")
+        and now.get("command") == session.get("command")
+        and now.get("uid") == session.get("uid")
+    )
+
+
+def _revalidate_terminal_cli(session, identity="terminal_cli"):
+    """Re-verify one identity-tagged session with the collector that tagged it.
+
+    `identity` is the class the session must still have (orphan_cli exists on
+    POSIX only; Windows sessions are always terminal_cli)."""
+    if session.get("identity_source") == "ps":
+        return _posix_revalidate_terminal_cli(session, identity=identity)
+    return identity == "terminal_cli" and _windows_revalidate_terminal_cli(session)
+
+
+def _parse_kill_stale_args(args):
+    """(hours, dry_run, include_orphans) from the `kill-stale` argv tail."""
+    hours = 12
+    for i, a in enumerate(args):
+        if a == "--hours" and i + 1 < len(args):
+            try:
+                hours = int(args[i + 1])
+            except ValueError:
+                pass
+    return hours, "--dry-run" in args, "--include-orphans" in args
+
+
+def _kill_stale_owns(session):
+    """True when kill-stale may consider `session`: POSIX sessions must be owned by
+    the effective uid of this process (uid unknown means not provably ours)."""
+    if session.get("identity_source") != "ps" or not hasattr(os, "geteuid"):
+        return True
+    return session.get("uid") == os.geteuid()
+
+
+def kill_stale_sessions(threshold_hours=12, dry_run=False, include_orphans=False):
     """Kill Claude Code sessions that have been running longer than threshold_hours.
 
-    Targets headless/zombie sessions that are no longer doing useful work.
-    Skips the current process's own PID to avoid self-termination.
+    Targets abandoned terminal sessions only: a session is terminable when its
+    collector positively identified it as a terminal CLI process. Orphans
+    (orphan_cli: terminal gone, reparented to init, macOS/Linux) are listed but
+    only terminated with include_orphans. Skips the current process's own PID
+    and ancestors to avoid self-termination.
     """
     import signal
 
@@ -24050,17 +28277,65 @@ def kill_stale_sessions(threshold_hours=12, dry_run=False):
         print("\n  Session health check is not supported on this platform.")
         return
 
-    running = health["running_sessions"]
+    # Only ever act on this user's own processes. `ps -e` lists everyone's; as root on
+    # a shared box that would otherwise reach another user's conversation. A POSIX
+    # session whose owner is unknown is treated as not ours. The Windows collectors
+    # carry no owner (see the closing message below).
+    running = [s for s in health["running_sessions"] if _kill_stale_owns(s)]
     threshold_seconds = threshold_hours * 3600
     my_pid = os.getpid()
     my_ppid = os.getppid()
+    # Never terminate the session this command is running inside of: it is an
+    # ancestor of this process (claude -> shell -> python), not its direct parent.
+    ancestry_unknown = False
+    if os.name == "nt":
+        my_ancestors = _windows_ancestor_pids(my_pid)
+        if my_ancestors is None:
+            ancestry_unknown = True
+            my_ancestors = set()
+    else:
+        my_ancestors = _posix_ancestor_pids(my_pid)
+        if my_ancestors is None:
+            ancestry_unknown = True
+            my_ancestors = set()
 
+    # Fail closed: process age is not evidence that a conversation is
+    # abandoned. Sessions whose identity is known to belong to a host app
+    # (desktop/SDK/IDE/headless) or could not be established are never
+    # terminated, and neither is a session no collector tagged: the default
+    # below is "unknown", not "terminal_cli".
+    killable = ("terminal_cli", "orphan_cli") if include_orphans else ("terminal_cli",)
+    protected = [s for s in running
+                 if s.get("identity", "unknown") not in ("terminal_cli", "orphan_cli")
+                 and s["elapsed_seconds"] > threshold_seconds]
     stale = [s for s in running
              if s["elapsed_seconds"] > threshold_seconds
              and s["pid"] != my_pid
-             and s["pid"] != my_ppid]
+             and s["pid"] != my_ppid
+             and s["pid"] not in my_ancestors
+             and s.get("identity", "unknown") in killable]
+    held_orphans = [] if include_orphans else [
+        s for s in running
+        if s.get("identity") == "orphan_cli"
+        and s["elapsed_seconds"] > threshold_seconds
+        and s["pid"] not in (my_pid, my_ppid)
+        and s["pid"] not in my_ancestors]
+
+    if protected:
+        print(f"\n  Skipping {len(protected)} long-running session{'s' if len(protected) != 1 else ''} "
+              "hosted by the Claude desktop app, an IDE or the SDK, or whose identity could not be verified.")
+        print("  Process age alone is not evidence that these are abandoned; they are never auto-terminated.")
+
+    if held_orphans:
+        n = len(held_orphans)
+        print(f"\n  {n} orphaned session{'s' if n != 1 else ''} (terminal gone, running >{threshold_hours}h) "
+              f"{'were' if n != 1 else 'was'} left alone. Orphans are only ended on request:")
+        print(f"    {_measure_cli('kill-stale', '--include-orphans', '--hours', str(threshold_hours))}   (add --dry-run to preview)")
 
     if not stale:
+        if protected or held_orphans:
+            print(f"\n  No terminable stale sessions found (threshold: {threshold_hours}h).")
+            return
         print(f"\n  No stale sessions found (threshold: {threshold_hours}h).")
         print(f"  {len(running)} active session{'s' if len(running) != 1 else ''}, all within threshold.")
         return
@@ -24075,8 +28350,19 @@ def kill_stale_sessions(threshold_hours=12, dry_run=False):
         print("  Run without --dry-run to terminate them.\n")
         return
 
+    if ancestry_unknown:
+        print("\n  Could not read this process's ancestry, so a candidate cannot be ruled out as the")
+        print("  conversation this command is running inside of. Nothing was terminated.\n")
+        return
+
     killed = 0
     for s in stale:
+        # Re-collect per candidate, immediately before its termination: the
+        # window between verification and the signal is as small as a
+        # PID-based kill allows (no process handle is retained).
+        if not _revalidate_terminal_cli(s, identity=s.get("identity", "unknown")):
+            print(f"    PID {s['pid']} skipped: identity changed or could not be re-verified.")
+            continue
         try:
             os.kill(s["pid"], signal.SIGTERM)
             killed += 1
@@ -24084,11 +28370,23 @@ def kill_stale_sessions(threshold_hours=12, dry_run=False):
             print(f"    PID {s['pid']} already gone.")
         except PermissionError:
             print(f"    PID {s['pid']} permission denied (owned by another user).")
+        except OSError as e:
+            # Windows raises a plain OSError (WinError 87), not ProcessLookupError,
+            # for a pid that exited between the re-check and the signal. One
+            # candidate failing must not skip the rest.
+            print(f"    PID {s['pid']} could not be signalled (it may have just exited): {e}")
 
     print(f"\n  Terminated {killed} stale session{'s' if killed != 1 else ''}.")
     if killed > 0:
         print(f"  These were Claude Code processes running >{threshold_hours}h.")
-        print("  Your active terminal sessions are unaffected.\n")
+        if os.name == "nt":
+            # No owner column in the Windows process inventory (a GetOwner call per
+            # process is a new slow CIM round trip), so do not claim an account filter.
+            print("  Only sessions older than the threshold were targeted. The Windows process list")
+            print("  does not record the owning account, so from an elevated shell this can include")
+            print("  other accounts' sessions.\n")
+        else:
+            print("  Your active terminal sessions are unaffected.\n")
 
 
 # ========== Hook Management ==========
@@ -24170,9 +28468,9 @@ def _is_hook_installed(settings=None):
     """
     # Check user settings.json
     if settings is None:
-        if SETTINGS_PATH.exists():
+        if _is_regular_file(SETTINGS_PATH):
             try:
-                with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+                with open(SETTINGS_PATH, "r", encoding="utf-8-sig") as f:
                     settings = json.load(f)
             except (json.JSONDecodeError, PermissionError, OSError):
                 settings = {}
@@ -24240,10 +28538,10 @@ def _is_hook_current(settings=None):
     that returns False.
     """
     if settings is None:
-        if not SETTINGS_PATH.exists():
+        if not _is_regular_file(SETTINGS_PATH):
             return False
         try:
-            with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+            with open(SETTINGS_PATH, "r", encoding="utf-8-sig") as f:
                 settings = json.load(f)
         except (json.JSONDecodeError, PermissionError, OSError):
             return False
@@ -24278,17 +28576,24 @@ _SETTINGS_LOCK_PATH = SETTINGS_PATH.parent / ".settings.lock"
 
 
 @contextmanager
-def _settings_lock():
+def _settings_lock(user_initiated=False):
     """Bounded portable lease for settings.json writes.
 
     Prevents concurrent writes from silently overwriting each other.
     Contenders skip the mutation after 75ms rather than blocking a hook.
+
+    `user_initiated=True` is an explicit user command: it must not
+    lose to the cohort throttle -- it opts out of the herd reservation,
+    reclaims a RELEASED lease tombstone at once, and retries briefly (2s, or
+    the hook deadline when there is one) while a lease is still held.
     """
     lease_path = SETTINGS_PATH.parent / ".settings.lease"
     with lease_lock(
         lease_path,
         deadline=current_deadline(),
-        acquire_timeout=0.075,
+        acquire_timeout=2.0 if user_initiated else 0.075,
+        cohort_throttle=not user_initiated,
+        reclaim_released=user_initiated,
     ) as acquired:
         yield acquired
 
@@ -24315,6 +28620,10 @@ def _settings_write_guard(settings_data, allow_removing_keys=None, dest=None):
         the state that produced the original bug.
       * Any top-level key present on disk but absent from the outgoing dict
         must be declared in ``allow_removing_keys``, else REFUSE.
+      * Same one level down inside ``env``: a var present in the on-disk
+        ``env`` map but absent from the outgoing ``env`` map must be
+        declared as ``env.VAR`` (or the whole subtree licensed by
+        declaring ``env``), else REFUSE.
 
     Deliberate removals stay possible: pass ``allow_removing_keys={"statusLine"}``
     (uninstall paths) or a wider set. The opt-in is per-key and explicit, so a
@@ -24325,8 +28634,11 @@ def _settings_write_guard(settings_data, allow_removing_keys=None, dest=None):
     if not isinstance(settings_data, dict):
         return False, f"outgoing settings is {type(settings_data).__name__}, not a dict"
     target = dest if dest is not None else SETTINGS_PATH
+    if os.path.lexists(target) and not _is_regular_file(target):
+        # never open() a FIFO/socket/device (it can block forever).
+        return False, "settings.json on disk is not a regular file; cannot prove this write is non-destructive"
     try:
-        with open(target, "r", encoding="utf-8") as f:
+        with open(target, "r", encoding="utf-8-sig") as f:
             current = json.load(f)
     except FileNotFoundError:
         return True, "no settings.json on disk; nothing to preserve"
@@ -24334,12 +28646,38 @@ def _settings_write_guard(settings_data, allow_removing_keys=None, dest=None):
         return False, "settings.json on disk is malformed; cannot prove this write is non-destructive"
     except (PermissionError, OSError) as e:
         return False, f"settings.json on disk is unreadable ({e.__class__.__name__}); cannot prove this write is non-destructive"
+    # a file with no write bits was frozen by the user on purpose
+    # (chmod 444, or the read-only attribute on Windows). The atomic-write
+    # trick (temp file + os.replace) would happily REPLACE it, so the
+    # permission check has to happen here, before any write is attempted.
+    if os.stat(target).st_mode & (
+            stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH) == 0:
+        return False, ("settings.json has no write bits set -- it was made "
+                       "read-only on purpose; refusing to replace a file "
+                       "the user froze")
     if not isinstance(current, dict):
         return False, "settings.json on disk is not a JSON object; refusing to overwrite"
     allowed = set(allow_removing_keys or ())
     dropped = sorted(set(current) - set(settings_data) - allowed)
     if dropped:
         return False, "would DROP top-level key(s): " + ", ".join(dropped)
+    # the same data-loss class one level down. `env` is a flat
+    # string->string map a caller can carry forward while silently dropping
+    # a var inside it (e.g. CLAUDE_AUTOCOMPACT_PCT_OVERRIDE). Diff its keys
+    # too. A deliberate nested removal stays possible by declaring the
+    # dotted name in allow_removing_keys ({"env.MY_VAR"}); declaring the
+    # top-level "env" licenses the whole subtree.
+    if "env" not in allowed:
+        cur_env = current.get("env")
+        out_env = settings_data.get("env")
+        if isinstance(cur_env, dict) and isinstance(out_env, dict):
+            nested = sorted(
+                "env." + key
+                for key in set(cur_env) - set(out_env)
+                if "env." + key not in allowed
+            )
+            if nested:
+                return False, "would DROP env var(s): " + ", ".join(nested)
     return True, "ok"
 
 
@@ -24379,7 +28717,63 @@ def _log_settings_lease_denied():
         pass
 
 
-def _write_settings_atomic_locked(settings_data, allow_removing_keys=None, _report_refusal=True):
+# Why a write was held back because settings.json changed under it.
+_SETTINGS_CHANGED_REFUSAL = (
+    "settings.json changed while Token Optimizer was writing it (another "
+    "program saved it twice in a row); nothing was written, your latest edit is kept"
+)
+_SETTINGS_WRITE_TRIES = 2
+
+
+def _settings_file_identity(path=None):
+    """(st_mtime_ns, st_size, st_ino) of the settings file, ``("absent",)`` when unreadable.
+
+    A cheap fingerprint taken at the merge read and compared right before
+    ``os.replace``. It narrows the window in which an unlocked external editor
+    can be overwritten to the gap between that last stat and the replace, a
+    few milliseconds. It does not close the window: nothing stops an editor
+    that ignores our lease.
+    """
+    try:
+        st = os.stat(path if path is not None else SETTINGS_PATH)
+    except (OSError, ValueError):
+        return ("absent",)
+    return (st.st_mtime_ns, st.st_size, st.st_ino)
+
+
+def _settings_write_refusal_reason():
+    """Why the last ``_write_settings_atomic`` on this thread returned False."""
+    return (getattr(_SETTINGS_WRITE_READ_STATE, "last_refusal", None)
+            or "settings.json locked or guard refused the write")
+
+
+def _existing_line_ending(path):
+    """"\r\n" when the file at ``path`` is mostly CRLF, else "\n".
+
+    A new file, an unreadable one, or one with no line break gets "\n". A mixed
+    file follows whichever ending it has more of.
+    """
+    try:
+        with open(path, "rb") as f:
+            raw = f.read(1_048_576)
+    except OSError:
+        return "\n"
+    crlf = raw.count(b"\r\n")
+    return "\r\n" if crlf > raw.count(b"\n") - crlf else "\n"
+
+
+def _note_settings_os_error(exc):
+    """Record an OSError from the temp write / replace as the refusal reason."""
+    hint = ("; another program may have it open"
+            if isinstance(exc, PermissionError) else "")
+    _SETTINGS_WRITE_READ_STATE.last_refusal = (
+        f"could not write settings.json ({exc.__class__.__name__}: {exc}){hint}"
+    )
+    _SETTINGS_WRITE_READ_STATE.os_error = True
+
+
+def _write_settings_atomic_locked(settings_data, allow_removing_keys=None, _report_refusal=True,
+                                  expect_identity=None):
     """Atomic settings.json write assuming the settings lease is ALREADY held.
 
     This is the lock-free body of ``_write_settings_atomic``, extracted so
@@ -24393,7 +28787,14 @@ def _write_settings_atomic_locked(settings_data, allow_removing_keys=None, _repo
     no serialization of its own. Same tempfile + os.replace + mode/symlink
     semantics as ``_write_settings_atomic`` (see the checked-read fix). Returns True iff the
     write landed.
+
+    ``expect_identity`` is the ``_settings_file_identity`` taken when the
+    payload was merged. When given and the file no longer matches right before
+    ``os.replace``, nothing is replaced and ``identity_changed`` is set on the
+    thread state so the caller can re-merge.
     """
+    _SETTINGS_WRITE_READ_STATE.identity_changed = False
+    _SETTINGS_WRITE_READ_STATE.os_error = False
     # Write THROUGH a symlink and preserve the mode.
     # os.replace onto the link path detaches it, turning a dotfiles-managed
     # symlink into a regular file (the user's repo silently stops tracking
@@ -24418,22 +28819,50 @@ def _write_settings_atomic_locked(settings_data, allow_removing_keys=None, _repo
         dest_mode = stat.S_IMODE(os.stat(dest).st_mode)
     except OSError:
         dest_mode = None
-    tmp_fd, tmp_path = tempfile.mkstemp(
-        dir=str(dest.parent),
-        prefix=".settings-",
-        suffix=".json",
-    )
     try:
-        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-            json.dump(settings_data, f, indent=2, ensure_ascii=False)
-            f.write("\n")
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            dir=str(dest.parent),
+            prefix=".settings-",
+            suffix=".json",
+        )
+    except OSError as exc:
+        _note_settings_os_error(exc)
+        return False
+    try:
+        # newline="" switches off text-mode translation (Windows would turn
+        # every "\n" into "\r\n"); the ending is the file's own, set below.
+        eol = _existing_line_ending(dest)
+        with os.fdopen(tmp_fd, "w", encoding="utf-8", newline="") as f:
+            f.write(json.dumps(settings_data, indent=2, ensure_ascii=False)
+                    .replace("\n", eol) + eol)
+        if dest_mode is None:
+            # Created from nothing: mkstemp gave 0600, but a fresh settings.json
+            # should follow the umask like any file the user's tools create.
+            # (os.umask can only be read by setting it; restored at once.)
+            if os.name != "nt":
+                try:
+                    _umask = os.umask(0)
+                    os.umask(_umask)
+                    dest_mode = 0o666 & ~_umask
+                except OSError:
+                    dest_mode = None
         if dest_mode is not None:
             try:
                 os.chmod(tmp_path, dest_mode)
             except OSError:
                 pass
+        if expect_identity is not None and _settings_file_identity(dest) != expect_identity:
+            _SETTINGS_WRITE_READ_STATE.identity_changed = True
+            return False
         os.replace(tmp_path, str(dest))
         tmp_path = None  # successfully replaced; do not unlink the destination
+    except OSError as exc:
+        # Windows refuses the replace while another program holds the file open
+        # (a sharing violation); a full disk fails the temp write. Both are a
+        # refused write with a real reason, never a traceback. The finally
+        # below removes the temp file.
+        _note_settings_os_error(exc)
+        return False
     finally:
         if tmp_path is not None:
             try:
@@ -24443,7 +28872,63 @@ def _write_settings_atomic_locked(settings_data, allow_removing_keys=None, _repo
     return True
 
 
-def _write_settings_atomic(settings_data, allow_removing_keys=None):
+def _merge_concurrent_settings(snapshot, mine, allow_removing_keys=None):
+    """Three-way merge of our payload onto what is on disk right now.
+
+    ``snapshot`` is the ``(path, base)`` pair recorded by
+    ``_read_settings_for_write``; ``mine`` is the caller's payload derived from
+    that read. Only the keys the caller actually CHANGED relative to ``base``
+    are applied on top of the fresh file, so a value edit or key removal made
+    by another editor between our read and our write is kept, as long as it
+    landed before ``_write_settings_atomic`` fingerprinted the file (an edit
+    after that is caught by the identity check before the replace and merged on
+    a second try). ``env`` is merged per variable for the same reason. Returns the merged dict, or None
+    when there is nothing to merge (no recorded read, the file is unchanged, or
+    the payload drops keys it was not licensed to drop, which the write guard
+    then refuses as before). Caller must hold the settings lease.
+    """
+    if not snapshot or not isinstance(mine, dict):
+        return None
+    snapshot_path, base = snapshot
+    try:
+        current_path = str(SETTINGS_PATH.resolve(strict=False))
+    except (OSError, ValueError):
+        current_path = str(SETTINGS_PATH)
+    if snapshot_path != current_path or not isinstance(base, dict):
+        return None
+    allowed = set(allow_removing_keys or ())
+    if set(base) - set(mine) - allowed:
+        return None
+    fresh, _path, fresh_ok = _read_settings_json_checked()
+    if not fresh_ok or not isinstance(fresh, dict) or not SETTINGS_PATH.exists():
+        return None
+    if fresh == base:
+        return None
+    merged = dict(fresh)
+    for key, value in mine.items():
+        if key in base and base[key] == value:
+            continue
+        base_env, fresh_env = base.get("env"), fresh.get("env")
+        if key == "env" and isinstance(value, dict) and isinstance(base_env, dict) \
+                and isinstance(fresh_env, dict):
+            env = dict(fresh_env)
+            for var, val in value.items():
+                if var not in base_env or base_env[var] != val:
+                    env[var] = val
+            for var in base_env:
+                if var not in value and ("env" in allowed or "env." + var in allowed):
+                    env.pop(var, None)
+            merged["env"] = env
+        else:
+            merged[key] = value
+    for key in allowed:
+        if key not in mine:
+            merged.pop(key, None)
+    return merged
+
+
+def _write_settings_atomic(settings_data, allow_removing_keys=None,
+                           user_initiated=False):
     """Write settings.json atomically using tempfile + os.replace().
 
     Acquires the advisory ``_settings_lock()`` lease to prevent concurrent
@@ -24451,11 +28936,22 @@ def _write_settings_atomic(settings_data, allow_removing_keys=None):
     multiple hooks may modify settings.json), then delegates the actual
     tempfile + os.replace to ``_write_settings_atomic_locked``.
 
+    ``user_initiated=True`` marks an explicit user command: the
+    lease bypasses the cohort throttle and retries briefly so a deliberate
+    mutation cannot lose to a herd writer's tombstone. Automated/hook paths
+    keep the non-blocking lease.
+
     Uses try/finally (not try/except Exception) so cleanup also runs when
     _HookTimeout (a BaseException) fires mid-write. Setting tmp_path to
     None after a successful os.replace prevents the finally clause from
     unlinking the already-renamed destination. Any exception encountered
     during the write propagates naturally after cleanup.
+
+    A concurrent edit by a program that ignores our lease is handled on a best
+    effort basis: the merge keeps what it saved before our read, and a
+    size/mtime/inode check right before ``os.replace`` re-merges once if it
+    saved in between. That narrows the window to milliseconds; it cannot
+    close it, because an unlocked writer is not stopped.
 
     Returns True iff the write actually landed, False when the advisory lease
     was denied and nothing was written. Callers that report
@@ -24472,15 +28968,41 @@ def _write_settings_atomic(settings_data, allow_removing_keys=None):
     """
     snapshot = getattr(_SETTINGS_WRITE_READ_STATE, "snapshot", None)
     _SETTINGS_WRITE_READ_STATE.snapshot = None
-    with _settings_lock() as acquired:
+    # A reason left by an earlier write must not explain this one.
+    _SETTINGS_WRITE_READ_STATE.last_refusal = None
+    with _settings_lock(user_initiated=user_initiated) as acquired:
         if not acquired:
             # Lease denial was completely silent (write-return audit 2026-08-29).
             # Log a durable breadcrumb and set last_refusal so callers can
             # distinguish "lease denied" from "guard refused".
             _log_settings_lease_denied()
             return False
-        if _write_settings_atomic_locked(settings_data, allow_removing_keys, _report_refusal=False):
-            return True
+        # Fingerprint the file before the merge reads it, then re-check right
+        # before os.replace. If another program saved in between, re-merge onto
+        # what it saved (two tries), so its edit is not written over. This
+        # narrows the window to the stat-to-replace gap (milliseconds); an
+        # editor that ignores our lease can still win inside that gap.
+        for _attempt in range(_SETTINGS_WRITE_TRIES):
+            identity = _settings_file_identity() if snapshot else None
+            payload = _merge_concurrent_settings(snapshot, settings_data, allow_removing_keys)
+            if payload is None:
+                payload = settings_data
+            if _write_settings_atomic_locked(payload, allow_removing_keys,
+                                             _report_refusal=False,
+                                             expect_identity=identity):
+                return True
+            if not getattr(_SETTINGS_WRITE_READ_STATE, "identity_changed", False):
+                break
+        else:
+            _SETTINGS_WRITE_READ_STATE.last_refusal = _SETTINGS_CHANGED_REFUSAL
+            _report_settings_write_refusal(_SETTINGS_CHANGED_REFUSAL)
+            return False
+
+        if getattr(_SETTINGS_WRITE_READ_STATE, "os_error", False):
+            # The OS refused the temp write or the replace; a re-merge cannot
+            # help and the guard did not refuse, so say nothing more. The
+            # reason is in last_refusal for the caller to report.
+            return False
 
         refusal = getattr(_SETTINGS_WRITE_READ_STATE, "last_refusal", None)
 
@@ -24508,6 +29030,7 @@ def _write_settings_atomic(settings_data, allow_removing_keys=None):
         if removed - allowed:
             return refuse()
 
+        identity = _settings_file_identity()
         fresh, fresh_ok = _read_settings_for_write()
         if not fresh_ok or not isinstance(fresh, dict):
             return refuse()
@@ -24521,43 +29044,76 @@ def _write_settings_atomic(settings_data, allow_removing_keys=None):
         for key in allowed:
             if key not in settings_data:
                 merged.pop(key, None)
-        return _write_settings_atomic_locked(merged, allow_removing_keys)
+        if _write_settings_atomic_locked(merged, allow_removing_keys, expect_identity=identity):
+            return True
+        if getattr(_SETTINGS_WRITE_READ_STATE, "identity_changed", False):
+            _SETTINGS_WRITE_READ_STATE.last_refusal = _SETTINGS_CHANGED_REFUSAL
+            _report_settings_write_refusal(_SETTINGS_CHANGED_REFUSAL)
+        return False
 
 
-# Env vars that should be auto-removed from settings.json.
-# CLAUDE_AUTOCOMPACT_PCT_OVERRIDE is undocumented and has inverted semantics
-# (value = remaining%, not used%). Setting it to 70 triggers compaction at
-# 30% used, silently destroying sessions.
-BAD_ENV_VARS = ["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"]
+# CLAUDE_AUTOCOMPACT_PCT_OVERRIDE is a DOCUMENTED setting (verified
+# 2026-10-10 from code.claude.com/docs/en/model-config#context-window-and-auto-compaction):
+# "Set the percentage (1-100) of the compact window already used at which
+# auto-compaction runs. The variable can't raise the threshold, so values
+# above the default percentage are ignored." Lower = compacts earlier. It
+# applies to subagents too. An earlier release misread it as undocumented
+# with inverted semantics and AUTO-DELETED it from the user's settings.json;
+# that deletion is gone. Token Optimizer only ever EXPLAINS the value
+# (see _autocompact_pct_override_explanation), never writes it.
+_AUTOCOMPACT_PCT_LOW_NOTE = 25  # below this % of the window, flag "very early"
 
 
-def _auto_remove_bad_env_vars(settings=None):
-    """Auto-remove harmful env vars from settings.json. Returns list of (var, val) removed.
+def _autocompact_pct_override_value(settings=None):
+    """Read-only lookup of CLAUDE_AUTOCOMPACT_PCT_OVERRIDE.
 
-    When settings is passed, operates on a copy of the env block to avoid mutating the caller's dict.
+    Returns ``(value, source)``: the raw string value and where it came from
+    (``"process env"``, ``"settings env"``, or ``(None, None)`` when unset).
+    Never writes, never mutates the passed dict.
     """
+    env_val = os.environ.get("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE")
+    if env_val is not None:
+        return env_val, "process env"
     if settings is None:
-        # Writes back. Never act on an unknown-state {}.
         settings, _ok = _read_settings_for_write()
-        if not _ok:
-            return []
-    env_block = dict(settings.get("env", {}))
-    removed = []
-    for var in BAD_ENV_VARS:
-        if var in env_block:
-            removed.append((var, env_block.pop(var)))
-    if removed:
-        settings = dict(settings, env=env_block)
-        try:
-            if not _write_settings_atomic(settings):
-                print("  [Token Optimizer] Warning: settings.json was not changed (locked or refused).")
-                return []
-        except (PermissionError, OSError) as e:
-            print(f"  [Token Optimizer] Warning: could not write settings.json: {e}")
-            return []
-        for var, val in removed:
-            print(f"  [Auto-fix] Removed {var}={val} from settings.json (inverted semantics, caused premature compaction)")
-    return removed
+    if isinstance(settings, dict):
+        env_block = settings.get("env")
+        if isinstance(env_block, dict) and "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE" in env_block:
+            return env_block.get("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"), "settings env"
+    return None, None
+
+
+def _autocompact_pct_override_explanation(settings=None):
+    """Explain-only: what CLAUDE_AUTOCOMPACT_PCT_OVERRIDE does, per the docs.
+
+    Returns a list of check tuples ``(status, name, detail)`` for doctor.
+    Read-only: this must never touch settings.json.
+    """
+    value, source = _autocompact_pct_override_value(settings)
+    if value is None:
+        return [("OK", "Env vars",
+                 "no CLAUDE_AUTOCOMPACT_PCT_OVERRIDE override (not set; "
+                 "documented: sets the used %% of the compact window at which "
+                 "auto-compaction runs, lower = earlier)")]
+    detail = (
+        f"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE={value} ({source}) is DOCUMENTED: "
+        "auto-compaction runs when this percentage of the compact window is "
+        "already USED, so a lower value compacts EARLIER; it cannot raise "
+        "the threshold. Kept as-is; Token Optimizer never edits it."
+    )
+    try:
+        pct = int(str(value).strip())
+    except (TypeError, ValueError):
+        return [("!!", "Env override", detail + " (value is not an integer 1-100)")]
+    if not 1 <= pct <= 100:
+        return [("!!", "Env override", detail + " (outside the documented 1-100 range)")]
+    if pct <= _AUTOCOMPACT_PCT_LOW_NOTE:
+        detail += (
+            f" NOTE: {pct}% is very low -- sessions will compact at {pct}% "
+            "of the compact window, very early. Raise it (or remove the "
+            "override) if compactions feel too frequent."
+        )
+    return [("OK", "Env override", detail)]
 
 
 def _is_token_optimizer_session_end_hook(hook: dict) -> bool:
@@ -24970,8 +29526,12 @@ def setup_hook(dry_run=False, uninstall=False):
     # Load existing settings
     settings = {}
     if SETTINGS_PATH.exists():
+        if not _is_regular_file(SETTINGS_PATH):
+            # Never open() a FIFO: it blocks forever.
+            print(f"[Error] Could not read {SETTINGS_PATH}: it is not a regular file.")
+            sys.exit(1)
         try:
-            with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+            with open(SETTINGS_PATH, "r", encoding="utf-8-sig") as f:
                 settings = json.load(f)
         except (json.JSONDecodeError, PermissionError, OSError) as e:
             print(f"[Error] Could not read {SETTINGS_PATH}: {e}")
@@ -27610,7 +32170,7 @@ def _install_launchd_daemon(dry_run=False, soft_fail=False, effective_host=None)
             _print_daemon_network_note(effective_host)
             print(f"  It updates automatically after every {runtime_name_for_humans()} session.")
             print("  Starts on login, so the URL always works.\n")
-            print("  To remove: python3 measure.py setup-daemon --uninstall")
+            print(_hint("  To remove: python3 measure.py setup-daemon --uninstall"))
         else:
             print("[Token Optimizer] Server bootstrapped but port not yet reachable.")
             print(f"  Give it 30s, then open: http://localhost:{DAEMON_PORT}/token-optimizer")
@@ -27804,7 +32364,7 @@ def _clear_daemon_install_failed_marker():
             "[Token Optimizer] Warning: could not remove "
             f"{DAEMON_INSTALL_FAILED_BREADCRUMB} -- daemon self-heal stays "
             "DISABLED until this file is removed (delete it manually, then "
-            "re-run: python3 measure.py setup-daemon).",
+            f"re-run: {_measure_cli()} setup-daemon).",
             file=sys.stderr,
         )
     except Exception:
@@ -28752,7 +33312,7 @@ def _install_systemd_user_daemon(dry_run=False, soft_fail=False, effective_host=
             "    - this is a headless SSH session without lingering enabled",
             "    - the user dbus is not running in this shell",
             "  Try: loginctl enable-linger $USER    (may need sudo on some distros)",
-            "  Then re-run: python3 measure.py setup-daemon",
+            _hint("  Then re-run: python3 measure.py setup-daemon"),
             f"  Meanwhile, the dashboard file still works: {DASHBOARD_PATH.as_uri()}",
         )
 
@@ -28848,7 +33408,7 @@ def _install_systemd_user_daemon(dry_run=False, soft_fail=False, effective_host=
             print(f"  It updates automatically after every {runtime_name_for_humans()} session.")
             print("  Starts at login via default.target.\n")
             print("  Survive logout: loginctl enable-linger $USER (may need sudo)")
-            print("  To remove: python3 measure.py setup-daemon --uninstall")
+            print(_hint("  To remove: python3 measure.py setup-daemon --uninstall"))
         else:
             print("[Token Optimizer] Unit enabled but port not yet reachable.")
             print(f"  Give it 30s, then open: http://localhost:{DAEMON_PORT}/token-optimizer")
@@ -29350,6 +33910,29 @@ def cleanup(dry_run=False, this_install_only=False):
                         )
     else:
         print("    No Token Optimizer entries found in settings.json.")
+    print()
+
+    # 2b. Subagent prompt-cache TTL: the uninstall path calls the SAME undo
+    # as `subagent-cache disable` -- remove the key only when the marker says
+    # Token Optimizer set it and the value is still "1h". Dry-run previews.
+    print("  [2b/3] Subagent cache (subagentPromptCacheTtl)")
+    try:
+        if dry_run:
+            _sc_marker = _subagent_cache_read_marker()
+            if _sc_marker and _sc_marker.get("state") == "set":
+                print("    Would remove: subagentPromptCacheTtl (set by Token Optimizer)")
+            else:
+                print("    Nothing to remove (no marker says Token Optimizer set it)")
+        else:
+            _sc_undo = subagent_cache_disable()
+            if _sc_undo.get("changed"):
+                print("    Removed: subagentPromptCacheTtl (was set by Token Optimizer)")
+            elif _sc_undo.get("state") == "platform-gap":
+                print("    Skipped: not Claude Code")
+            else:
+                print(f"    Nothing to remove ({_sc_undo.get('state')})")
+    except Exception as _sc_exc:
+        print(f"    WARNING: subagent cache undo failed: {_sc_exc}")
     print()
 
     # 3. Manifests
@@ -30715,8 +35298,8 @@ def _parse_jsonl_for_quality(filepath):
                     # Drop the pre-compaction footprint: the next assistant turn's
                     # usage reports the new (smaller) context. If the session ends
                     # right after a compaction with no further turn, leaving the old
-                    # value would over-report fill — None falls through to the
-                    # char-length estimate, which is more honest.
+                    # value would over-report fill. None falls through to the
+                    # char-length estimate of whatever follows the boundary.
                     context_tokens = None
                     idx += 1
                     continue
@@ -31066,14 +35649,64 @@ def compute_quality_score(quality_data, session_id=None):
     model_context_window_source = (
         "session data" if quality_data.get("model_context_window") else ctx_window_source
     )
+    model_name = quality_data.get("model") or quality_data.get("current_model")
+    # Transcripts carry the plain 4.6 id even for the 1M variant: promote when
+    # settings say [1m] or the observed tokens already prove it.
+    window_inferred_from_tokens = False
+    if quality_data.get("model_context_window"):
+        _promoted, _why, window_inferred_from_tokens = _promote_plain_46_window(
+            model_name, model_context_window, quality_data.get("context_tokens"))
+        if _why:
+            model_context_window = _promoted
+            model_context_window_source = _why
+
+    # Effective compact window for this session's model (env > modelSettings
+    # > autoCompactWindow > default). Fill denominates against it ONLY when a
+    # real user override shrank the window below the model window (PR #210
+    # semantics: the tuned default is not an override of the host's number).
+    compact_window_resolved = _resolve_compact_window(model_name)
+    compact_window = compact_window_resolved["tokens"]
+    compact_window_source = compact_window_resolved["source"]
+    compact_window_reduced = (
+        compact_window_resolved["user_override"]
+        and 0 < compact_window < model_context_window
+    )
+    fill_denominator = compact_window if compact_window_reduced else model_context_window
+
+    def _effective_fill(model_share, tokens=None):
+        """Share of the EFFECTIVE window for a given share of the model window.
+
+        Without a user override the two are the same number. With one, the
+        override is an absolute token count, so real tokens are divided by it
+        directly (no dependence on our inferred model window); only when the
+        token count is unknown is the model share rescaled.
+        """
+        if not compact_window_reduced or not fill_denominator:
+            return model_share
+        if tokens is not None and tokens > 0:
+            return min(1.0, max(0.0, float(tokens) / fill_denominator))
+        return min(1.0, max(0.0, model_share * model_context_window / fill_denominator))
+
+    # fill_pct: share of the EFFECTIVE window (what the user sees, what nudges
+    # gate on). model_fill: share of the MODEL window -- retrieval quality is a
+    # function of real fill, so the MRCR curve and degradation bands keep the
+    # model denominator.
     fill_pct = None
+    model_fill = None
     # Set when observed tokens exceed the window: that is not a full context, it
     # is a wrong window, and it must not be reported as a percentage.
     window_contradicted = False
-    # Set when the host supplied the fill, so we can compare our own arithmetic
-    # against it afterwards.
+    # Same-session host fill reading (any age). The host measures the real
+    # window; our token arithmetic is only as good as an inferred denominator.
+    # Below, a recent same-session reading that disagrees with our computed fill
+    # by >10 points wins the sanity check — the phantom-fill failure mode that
+    # produced "bar shows 16%, score is 59".
     host_fill_pct = None
+    host_fill_age_s = None
+    host_live_tokens = None
     host_disagreement = None
+    # Which source produced fill_pct, for cache diagnosability.
+    fill_source = None
     try:
         live_fill_path = QUALITY_CACHE_DIR / "live-fill.json"
         if live_fill_path.exists():
@@ -31081,19 +35714,29 @@ def compute_quality_score(quality_data, session_id=None):
             age = time.time() - live.get("timestamp", 0) / 1000  # JS timestamp is ms
             live_sid = sanitize_session_id(str(live.get("session_id") or ""))
             want_sid = sanitize_session_id(str(session_id or ""))
-            if age < 10 and want_sid and live_sid == want_sid:
+            if want_sid and live_sid == want_sid:
                 _used = float(live["used_percentage"])
                 # json.loads accepts the non-standard literals NaN/Infinity. NaN
                 # compares False against everything, so max()/min() would pass it
                 # through as a silent 0.0 and suppress every nudge with no error.
                 if not math.isfinite(_used):
                     raise ValueError("non-finite used_percentage")
-                fill_pct = min(1.0, max(0.0, _used / 100.0))
+                # The host's own percentage is the one number here that does not
+                # depend on our inferred window, so it is kept as reported.
+                host_fill_pct = min(1.0, max(0.0, _used / 100.0))
+                host_fill_age_s = age
+                live_tokens = live.get("context_tokens")
+                if not (isinstance(live_tokens, (int, float)) and live_tokens > 0):
+                    live_tokens = None
+                host_live_tokens = live_tokens
                 # The host knows the real window; we only infer it. When the
                 # host rescues us from a bad denominator the user sees a correct
                 # number and the misconfiguration stays invisible, so record the
                 # disagreement rather than quietly accepting the save.
-                host_fill_pct = fill_pct
+                if age < 10:
+                    model_fill = host_fill_pct
+                    fill_pct = _effective_fill(model_fill, live_tokens)
+                    fill_source = "host-live"
     except (json.JSONDecodeError, OSError, KeyError, TypeError, ValueError):
         # used_percentage arrives from a JSON file on disk. A non-numeric value
         # raises TypeError on the division, which was NOT caught here and
@@ -31110,7 +35753,9 @@ def compute_quality_score(quality_data, session_id=None):
                 # contradiction first; the clamp still runs so downstream
                 # curve math keeps its 0-1 contract.
                 window_contradicted = raw_ratio > 1.0
-                fill_pct = min(1.0, max(0.0, raw_ratio))
+                model_fill = min(1.0, max(0.0, raw_ratio))
+                fill_pct = _effective_fill(model_fill, float(context_tokens))
+                fill_source = "transcript-tokens"
         except (TypeError, ValueError):
             fill_pct = None
     if fill_pct is None:
@@ -31119,10 +35764,26 @@ def compute_quality_score(quality_data, session_id=None):
         total_chars += sum(rsize for _, _, rsize, _ in quality_data["tool_results"])
         total_chars += sum(ssize for _, _, ssize in quality_data["system_reminders"])
         estimated_tokens = total_chars / CHARS_PER_TOKEN
-        fill_pct = min(1.0, estimated_tokens / ctx_window) if ctx_window > 0 else 0
+        if ctx_window > 0:
+            model_fill = min(1.0, estimated_tokens / ctx_window)
+        else:
+            model_fill = 0
+        fill_pct = min(1.0, estimated_tokens / fill_denominator) if fill_denominator > 0 else 0
+        fill_source = "char-estimate"
+    if model_fill is None:
+        model_fill = fill_pct
+    # the session id survives /compact, so a reading from just before one
+    # still names this session. When the host's token count is off ours by more
+    # than 2x it describes a different moment (a numerator change), not a wrong
+    # denominator, so the override below skips it.
     # Cross-check: if the host told us the fill and our own arithmetic would have
     # produced a materially different one, our window is wrong even though the
-    # displayed number is right. Recorded, never used to overrule the host.
+    # displayed number is right. Always recorded — and when the host reading is
+    # recent enough to still describe this session, the host wins: a >10-point
+    # gap is a denominator error (multiples), not measurement noise, and
+    # serving the phantom fill is how a fresh 1M session reported
+    # "16% fill, score 59". Our arithmetic never overrules the host; only the
+    # host overrules it.
     if host_fill_pct is not None:
         try:
             _tokens = quality_data.get("context_tokens")
@@ -31137,14 +35798,26 @@ def compute_quality_score(quality_data, session_id=None):
                         "window": model_context_window,
                         "window_source": model_context_window_source,
                     }
+                    # Sanity window: a reading older than ~5min describes a
+                    # different moment (same convention as the statusline's
+                    # 5-min staleness guard); fresher than that, the host's real
+                    # window beats our inferred one.
+                    _other_moment = bool(  # host tokens >2x off ours (see above)
+                        host_live_tokens and float(_tokens) > 0
+                        and max(host_live_tokens, float(_tokens))
+                        > 2.0 * min(host_live_tokens, float(_tokens)))
+                    if fill_source != "host-live" and not _other_moment and (
+                            host_fill_age_s is not None and host_fill_age_s < 300):
+                        model_fill = host_fill_pct
+                        fill_pct = _effective_fill(model_fill, float(_tokens))
+                        fill_source = "host-stale-override"
         except (TypeError, ValueError):
             pass
 
-    model_name = quality_data.get("model") or quality_data.get("current_model")
     fill_quality, curve_name = _estimate_quality_with_curve(
-        fill_pct,
+        model_fill,
         model=model_name,
-        context_window=quality_data.get("model_context_window") or ctx_window,
+        context_window=model_context_window,
     )
     # Scale to 0-100 score (76 at worst = 0, 98 at best = 100)
     fill_score = max(0, min(100, (fill_quality - 76) / (98 - 76) * 100))
@@ -31264,6 +35937,69 @@ def compute_quality_score(quality_data, session_id=None):
         signals[k] * _RESOURCE_HEALTH_WEIGHTS[k]
         for k in _RESOURCE_HEALTH_WEIGHTS
     )
+
+    # Which signal actually pulls ResourceHealth down? The displayed score IS
+    # resource_health, so attribute its deficit by weighted contribution —
+    # weight * (100 - signal) — not by which waste key happens to exist. This
+    # is what the "biggest drag" wording everywhere must reflect: a 70% fill
+    # drags harder than one stale read even when no waste was recorded.
+    _drag_deficit = {
+        k: _RESOURCE_HEALTH_WEIGHTS[k] * max(0.0, 100.0 - signals[k])
+        for k in _RESOURCE_HEALTH_WEIGHTS
+    }
+    top_drag = None
+    # Fill is intrinsic to any conversation: a deficit under ~10 pts (about 22%
+    # fill) is the cost of having talked at all, not a drag worth naming on an
+    # otherwise healthy session. Compactions and waste keep the 3-point floor.
+    _fill_floor = 10.0
+    _nameable = {
+        k: pts for k, pts in _drag_deficit.items()
+        if pts >= (_fill_floor if k == "context_fill_degradation" else 3.0)
+    }
+    if _nameable:
+        _worst_key = max(_nameable, key=_nameable.get)
+        _worst_pts = _nameable[_worst_key]
+        if _worst_key == "context_fill_degradation" and window_contradicted:
+            # Tokens exceed the window: the window is wrong, the context is not
+            # necessarily full. Say that instead of "100% context fill".
+            top_drag = {
+                "key": "context_window_mismatch",
+                "label": "context window mismatch (tokens exceed the detected window)",
+                "points": round(_worst_pts, 1),
+            }
+        elif _worst_key == "context_fill_degradation":
+            top_drag = {
+                "key": "context_fill",
+                "label": f"{round(fill_pct * 100)}% context fill",
+                "points": round(_worst_pts, 1),
+            }
+        elif _worst_key == "compaction_depth":
+            _loss = {0: 0, 1: 65, 2: 88}.get(compactions, 95)
+            top_drag = {
+                "key": "compactions",
+                "label": (
+                    f"{compactions} compaction{'s' if compactions != 1 else ''}"
+                    f" (~{_loss}% context loss)"),
+                "points": round(_worst_pts, 1),
+            }
+        else:  # absolute_waste_tokens — name the dominant waste cause
+            # Only causes that actually feed total_waste (and therefore this
+            # signal's deficit) qualify: reread-loop waste is diagnostic-only
+            # and must never be named as the drag it did not cause.
+            _waste_parts = {
+                "bloated_results": (bloated_data["estimated_waste_tokens"],
+                                    "bloated tool results"),
+                "stale_reads": (stale_data["estimated_waste_tokens"],
+                                "stale file reads"),
+                "duplicates": (dup_data["estimated_waste_tokens"],
+                               "repeated system reminders"),
+            }
+            _waste_cause = max(_waste_parts, key=lambda k: _waste_parts[k][0])
+            top_drag = {
+                "key": f"waste:{_waste_cause}",
+                "label": _waste_parts[_waste_cause][1],
+                "points": round(_worst_pts, 1),
+            }
     session_efficiency = sum(
         signals[k] * _SESSION_EFFICIENCY_WEIGHTS[k]
         for k in _SESSION_EFFICIENCY_WEIGHTS
@@ -31278,21 +36014,37 @@ def compute_quality_score(quality_data, session_id=None):
     elif compactions >= 3:
         compaction_loss_pct = 95  # near-total
 
-    band_name, _ = _degradation_band(fill_pct)
+    # Bands describe retrieval-quality zones, so they follow the model-window
+    # fill (model_fill), not the compact-window fill that nudges gate on.
+    band_name, _ = _degradation_band(model_fill)
+
+    _cfd_detail = f"{round(fill_pct * 100)}% fill, {band_name.lower()} ({curve_name})"
+    if compact_window_reduced:
+        _cfd_detail = (
+            f"{round(fill_pct * 100)}% of compact window "
+            f"({round(model_fill * 100)}% of model window), "
+            f"{band_name.lower()} ({curve_name})"
+        )
 
     breakdown = {
         "context_fill_degradation": {
             "score": signals["context_fill_degradation"],
             "fill_pct": round(fill_pct * 100, 1),
+            "model_fill_pct": round(model_fill * 100, 1),
+            "compact_window": compact_window,
+            "compact_window_source": compact_window_source,
+            "compact_window_reduced": compact_window_reduced,
             "quality_estimate": fill_quality,
             "quality_curve": curve_name,
             "model": model_name or "unknown",
-            "model_context_window": quality_data.get("model_context_window") or ctx_window,
+            "model_context_window": model_context_window,
             "model_context_window_source": model_context_window_source,
             "window_contradicted": window_contradicted,
+            "window_inferred_from_tokens": window_inferred_from_tokens,
             "host_disagreement": host_disagreement,
+            "fill_source": fill_source,
             "band": band_name,
-            "detail": f"{round(fill_pct * 100)}% fill, {band_name.lower()} ({curve_name})",
+            "detail": _cfd_detail,
         },
         "stale_reads": {
             "score": signals["stale_reads"],
@@ -31403,12 +36155,19 @@ def compute_quality_score(quality_data, session_id=None):
         "resource_health_grade": rh_grade,
         "session_efficiency": se_rounded,
         "session_efficiency_grade": se_grade,
+        "top_drag": top_drag,
         "signals": signals,
         "breakdown": breakdown,
         "fill_warning": fill_warning,
         "tool_call_warning": tool_call_warning,
         "regime_change": regime_change,
         "tool_calls": tc,
+        # The window fill_pct was measured against: the user's effective
+        # compact window when an override shrank it, else the model window.
+        # Callers that convert fill% back to tokens MUST use this window.
+        "fill_denominator": fill_denominator,
+        "compact_window": compact_window,
+        "compact_window_source": compact_window_source,
     }
 
 
@@ -31486,6 +36245,38 @@ def _find_session_jsonl_by_id(session_id):
     return None
 
 
+def _session_id_prefix_matches(prefix):
+    """``<id>.jsonl`` transcripts whose session id starts with ``prefix``.
+
+    ``status-bar --session`` takes a pasted, possibly truncated id
+    (our own listings print ``s[:8]``). A short id sanitizes to "unknown"
+    and a longer prefix finds no exact file; both used to degrade silently.
+    This collects every candidate so the caller can resolve a UNIQUE prefix
+    and say why when the match is zero or ambiguous. ``prefix`` must already
+    be reduced to the session-id charset (no glob metacharacters can sneak
+    in). Never raises; returns [] for runtimes without a projects tree.
+    """
+    if not prefix:
+        return []
+    if (_use_codex_session_adapter() or _use_hermes_session_adapter()
+            or _use_antigravity_session_adapter()):
+        return []
+    projects_base = CLAUDE_DIR / "projects"
+    if not projects_base.is_dir():
+        return []
+    out = []
+    try:
+        for project_dir in projects_base.iterdir():
+            if not project_dir.is_dir():
+                continue
+            for p in project_dir.glob(prefix + "*.jsonl"):
+                if p.is_file():
+                    out.append(p)
+    except OSError:
+        return []
+    return out
+
+
 def quality_analyzer(session_id=None, as_json=False):
     """Analyze context quality of a session. Main entry point.
 
@@ -31551,6 +36342,9 @@ def quality_analyzer(session_id=None, as_json=False):
     print(f"  Content quality:     {grade} ({score}/100) ({band})")
     if fill_band:
         print(f"  Degradation band:    {fill_band} ({cfd.get('fill_pct', 0):.0f}% fill, ~{cfd.get('quality_estimate', 0)}/100 MRCR)")
+    top_drag = result.get("top_drag")
+    if top_drag:
+        print(f"  Biggest drag:        {top_drag['label']} (-{top_drag['points']} pts)")
     print(f"  Messages analyzed:   {result['total_messages']}")
     print(f"  Decisions captured:  {result['decisions_found']}")
     print()
@@ -33189,7 +37983,7 @@ def attention_optimize(filepath=None, dry_run=True, apply=False):
         print(f"  Before: {before_score}/100 attention score")
         print(f"  After:  {after_score}/100 attention score (estimated)")
         print()
-        print(f"  To apply: python3 measure.py attention-optimize {display_name} --apply")
+        print(_hint(f"  To apply: python3 measure.py attention-optimize {display_name} --apply"))
         print()
         return {"before_score": before_score, "after_score": after_score, "moves": moves}
 
@@ -33281,11 +38075,16 @@ def archive_result(quiet=False):
 
 
 def _sanitize_tool_use_id(tool_use_id):
+    """Archive key for a tool_use_id: the same key the PostToolUse hook uses.
+
+    Ids outside [a-zA-Z0-9_-] (or longer than 128) map to a digest, so two
+    different ids never share a key the way "a b", "a.b" and "a_b" used to.
+    """
     raw = str(tool_use_id or "")
-    clean = re.sub(r"[^a-zA-Z0-9_-]", "_", raw).strip("_")
-    if clean and clean != "unknown":
-        return clean[:80]
-    return hashlib.sha256(raw.encode("utf-8", errors="ignore")).hexdigest()[:16]
+    if not raw or raw == "unknown":
+        return hashlib.sha256(raw.encode("utf-8", errors="ignore")).hexdigest()[:16]
+    from archive_result import _safe_archive_key
+    return _safe_archive_key(raw)
 
 
 def _summarize_tool_output_for_recovery(text):
@@ -33294,6 +38093,16 @@ def _summarize_tool_output_for_recovery(text):
     if re.search(r"\b(error|failed|traceback|exception|permission denied|not found)\b", raw[:20_000], re.IGNORECASE):
         return "Large tool output archived; contains error/failure signals."
     return "Large tool output archived."
+
+
+def _archived_response_hash(entry_path):
+    """sha256 of the stored response of an archive entry, or None if unreadable."""
+    try:
+        data = json.loads(Path(entry_path).read_text(encoding="utf-8"))
+        return hashlib.sha256(
+            str(data.get("response") or "").encode("utf-8", errors="replace")).hexdigest()
+    except Exception:
+        return None
 
 
 def _codex_backfill_tool_archive(filepath=None, session_id=None, max_outputs=20):
@@ -33315,6 +38124,12 @@ def _codex_backfill_tool_archive(filepath=None, session_id=None, max_outputs=20)
     sid = sanitize_session_id(session_id or path.stem)
     archive_dir = _archive_dir_for_session(sid)
     if not archive_dir:
+        return 0
+    # No persistence without the shared redactor — tool output is the single
+    # most likely place a credential lands in a transcript.
+    try:
+        from credential_patterns import redact_credentials as _bf_redact
+    except Exception:
         return 0
     archived = 0
     try:
@@ -33341,18 +38156,40 @@ def _codex_backfill_tool_archive(filepath=None, session_id=None, max_outputs=20)
             tool_use_id = _sanitize_tool_use_id(item.get("tool_use_id"))
             _ensure_private_dir(archive_dir)
             entry_path = archive_dir / f"{tool_use_id}.json"
-            if entry_path.exists():
-                continue
 
-            if len(output_text) > 5_242_880:
+            over_cap = len(output_text) > 5_242_880
+
+            try:
+                # Redact BEFORE hashing/summarizing/persisting so the archive
+                # entry, manifest, and SessionStore row all carry the same
+                # safe bytes. A redactor refusal (broken custom pattern
+                # config) skips this output rather than storing it raw.
+                # Redact a window past the cap and cut AFTER: a secret
+                # straddling the cap is otherwise a prefix no pattern sees.
+                output_text = _bf_redact(output_text[:5_242_880 + 4096] if over_cap else output_text)
+            except Exception:
+                continue
+            if over_cap:
                 output_text = output_text[:5_242_880] + "\n[... truncated by Token Optimizer archive cap]"
 
             char_count = len(output_text)
             token_est = int(char_count / CHARS_PER_TOKEN)
             tool_name = str(item.get("tool_name") or "Tool")
             tool_type = str(item.get("tool_type") or "codex")
-            command_or_path = str(item.get("command_or_path") or "")
+            try:
+                command_or_path = _bf_redact(str(item.get("command_or_path") or ""), command=True)
+            except Exception:
+                continue
             output_hash = hashlib.sha256(output_text.encode("utf-8", errors="replace")).hexdigest()
+            if entry_path.exists():
+                # Same id, same payload: already archived. Same id, different
+                # payload: keep both, under a content-qualified key.
+                if _archived_response_hash(entry_path) == output_hash:
+                    continue
+                tool_use_id = f"{tool_use_id[:100]}-{output_hash[:12]}"
+                entry_path = archive_dir / f"{tool_use_id}.json"
+                if entry_path.exists() and _archived_response_hash(entry_path) == output_hash:
+                    continue
             summary = _summarize_tool_output_for_recovery(output_text)
             entry_data = {
                 "tool_name": tool_name,
@@ -33510,8 +38347,14 @@ def expand_archived(tool_use_id=None, session_id=None, list_all=False):
         print("[Error] No tool_use_id provided. Use: expand TOOL_USE_ID or expand --list", file=sys.stderr)
         sys.exit(1)
 
+    # A verbatim copy of an old-format archive pointer ends with ']' (the
+    # closing bracket used to sit on the command line). Ids can never contain
+    # ']', so stripping one is free and the copy still retrieves the entry.
+    if tool_use_id.endswith("]"):
+        tool_use_id = tool_use_id[:-1]
+
     # Sanitize tool_use_id (same pattern as session_id)
-    if not re.match(r'^[a-zA-Z0-9_-]+$', tool_use_id):
+    if not re.match(r'^[a-zA-Z0-9_-]+\Z', tool_use_id):
         print("[Error] Invalid tool_use_id format.", file=sys.stderr)
         sys.exit(1)
 
@@ -33547,7 +38390,9 @@ def expand_archived(tool_use_id=None, session_id=None, list_all=False):
                     # re-popped tokens as a debit (netted in _get_savings_summary),
                     # deduped per item so a second expand never double-debits.
                     _log_reexpand_debit(sd.name, tool_use_id, response)
-                    print(response)
+                    # No added newline: expand returns the stored text as stored.
+                    sys.stdout.write(response)
+                    sys.stdout.flush()
                     return
                 else:
                     print(f"[Error] Archived entry found but response is empty: {entry_path}", file=sys.stderr)
@@ -33796,7 +38641,7 @@ def _purge_all_data(confirm=False, force=False):
 
     if running_pid is not None and not force:
         print(f"WARNING: Dashboard daemon is running (PID {running_pid}). Stop it first with:")
-        print("  python3 measure.py kill-stale")
+        print(f"  {_measure_cli('kill-stale')}")
         print("Or re-run with --force to stop it automatically.")
         return
 
@@ -33895,7 +38740,7 @@ def _purge_all_data(confirm=False, force=False):
             f"Purge complete. {deleted} director{'y' if deleted == 1 else 'ies'} removed"
             f" ({_fmt_size(total_bytes)})."
         )
-        print("Tip: Run 'python3 measure.py cleanup-duplicate-hooks' if you are uninstalling.")
+        print(_hint("Tip: Run 'python3 measure.py cleanup-duplicate-hooks' if you are uninstalling."))
     else:
         print(
             f"Purge finished with {errors} error(s)."
@@ -33987,7 +38832,7 @@ def _security_report(as_json=False):
     cleanup_period = None
     try:
         settings_path = RUNTIME_DIR / "settings.json"
-        if settings_path.exists():
+        if _is_regular_file(settings_path):
             settings = json.loads(settings_path.read_text())
             cleanup_period = settings.get("cleanupPeriodDays")
     except Exception:
@@ -34136,6 +38981,16 @@ def _extract_session_state(filepath, tail_lines=500):
 
     question_re = re.compile(r'\?|TODO|FIXME|HACK|XXX', re.IGNORECASE)
 
+    # Redact each transcript string where it ENTERS the state, before any of
+    # the width cuts below (200/300/500...). A cut first leaves a secret that
+    # straddles it as a prefix no pattern recognises (a token shorter than its
+    # shape, a database URI cut before its "@", a PEM block cut before END).
+    # No redactor means no state: the caller writes nothing rather than raw text.
+    try:
+        from credential_patterns import redact_credentials as _ingest_redact
+    except Exception:
+        return None
+
     active_files = []  # (path, action, line_range)
     recent_reads = []  # paths of recently-Read files (pointer-only)
     decisions = []     # text snippets
@@ -34182,7 +39037,7 @@ def _extract_session_state(filepath, tail_lines=500):
 
         # User messages
         if rec_type == "user":
-            text = _extract_user_text(record)
+            text = _ingest_redact(_extract_user_text(record))
             if text.strip():
                 last_user_msg = text.strip()
             # Check for questions
@@ -34205,7 +39060,7 @@ def _extract_session_state(filepath, tail_lines=500):
                         continue
 
                     if block.get("type") == "text":
-                        txt = block.get("text", "")
+                        txt = _ingest_redact(block.get("text", ""))
                         assistant_text += txt + " "
 
                         # Decisions
@@ -34254,7 +39109,7 @@ def _extract_session_state(filepath, tail_lines=500):
                         # Track agent dispatches
                         if tool_name in ("Task", "Agent"):
                             agent_type = inp.get("subagent_type", inp.get("description", "unknown"))
-                            desc = inp.get("description", "")[:100]
+                            desc = _ingest_redact(inp.get("description", ""))[:100]
                             agent_state.append((agent_type, desc))
 
                         # Track TodoWrite state (keep the latest snapshot only)
@@ -34262,7 +39117,7 @@ def _extract_session_state(filepath, tail_lines=500):
                             todo_list = inp.get("todos", [])
                             if isinstance(todo_list, list):
                                 todos = [
-                                    (t.get("content", "")[:120], t.get("status", ""))
+                                    (_ingest_redact(t.get("content", ""))[:120], t.get("status", ""))
                                     for t in todo_list
                                     if isinstance(t, dict)
                                 ]
@@ -34370,6 +39225,29 @@ def _confine_transcript_path(transcript_path):
     return resolved
 
 
+def _redaction_skip_notice(session_id):
+    """One line, once per session, when a checkpoint was skipped because the
+    custom redaction pattern file is broken (fail closed: nothing is written).
+
+    Returns None when redaction is healthy, when the skip has another cause, or
+    when this session was already told (same run-once marker the other
+    once-per-session notices use). Never raises: a hook must not fail on it.
+    """
+    try:
+        from credential_patterns import custom_patterns_status
+        status = custom_patterns_status()
+        if status.get("active"):
+            return None
+        if _ran_once_this_session("redact-skip", session_id):
+            return None
+        return ("[Token Optimizer] Checkpoint skipped: custom redaction is INACTIVE "
+                f"({status.get('failure') or 'pattern file failed to load'}; file: "
+                f"{status.get('source') or 'unknown'}). Nothing is written to disk until "
+                "the pattern file is fixed or removed; `measure.py doctor` shows details.")
+    except Exception:
+        return None
+
+
 def compact_capture(transcript_path=None, session_id=None, trigger="auto", cwd=None, fill_pct=None, quality_score=None, backfill_tools=False):
     """Capture structured session state before compaction or session end.
 
@@ -34431,38 +39309,44 @@ def compact_capture(transcript_path=None, session_id=None, trigger="auto", cwd=N
             return None
         return str(checkpoint_path)
 
-    # Parse session state
-    state = _extract_session_state(filepath)
+    # Parse session state. The extractor redacts as it reads; a configured-but-
+    # broken custom pattern file makes it raise, and then nothing is written.
+    try:
+        from credential_patterns import RedactionConfigError as _ExtractCfgErr
+    except Exception:
+        return None
+    try:
+        state = _extract_session_state(filepath)
+    except _ExtractCfgErr:
+        return None
     if not state:
         return None
 
-    # Redact credentials from checkpoint text fields (SEC-004)
+    # Redact credentials from the whole checkpoint state (SEC-004). One
+    # recursive pass over every string — including dict keys, tuples, and any
+    # nested containers — BEFORE the .md render and the JSON sidecar build,
+    # so a field not individually listed (open_questions, todos, agent
+    # descriptions, paths, anything added later) can never bypass it.
     try:
-        from credential_patterns import redact_credentials as _cp_redact
+        from credential_patterns import redact_credentials_deep as _cp_redact_deep
         from credential_patterns import RedactionConfigError as _RedactCfgErr
     except Exception:
         # Without the shared redactor a checkpoint would persist transcript
         # text unredacted. Fail closed: no checkpoint rather than a raw one.
         return None
     try:
-        step = state.get("current_step", {})
-        if step.get("last_user"):
-            step["last_user"] = _cp_redact(step["last_user"])
-        if step.get("last_assistant"):
-            step["last_assistant"] = _cp_redact(step["last_assistant"])
-        state["decisions"] = [_cp_redact(d) if isinstance(d, str) else d for d in state.get("decisions", [])]
-        state["error_context"] = [
-            tuple(_cp_redact(x) if isinstance(x, str) else x for x in ec) if isinstance(ec, tuple)
-            else _cp_redact(ec) if isinstance(ec, str) else ec
-            for ec in state.get("error_context", [])
-        ]
+        state = _cp_redact_deep(state)
     except _RedactCfgErr:
-        # A configured-but-broken custom pattern file makes redact_credentials
+        # A configured-but-broken custom pattern file makes the redactor
         # refuse: writing the checkpoint anyway would persist transcript text
         # that org-specific rules were meant to cover. Skip the write.
         return None
     except Exception:
-        pass
+        # The deep pass is all-or-nothing (the rebuilt structure only binds
+        # on success), so a mid-pass failure leaves state fully UNREDACTED.
+        # Persisting it would write every raw field, not just one — skip the
+        # write rather than fail open.
+        return None
 
     # Generate checkpoint markdown
     sid = sanitize_session_id(session_id) if session_id else sanitize_session_id(filepath.stem)
@@ -34496,6 +39380,14 @@ def compact_capture(transcript_path=None, session_id=None, trigger="auto", cwd=N
                 fill_pct = cfd.get("fill_pct")
     except Exception:
         quality_summary = None
+    if quality_summary:
+        # The sidecar serializes this blob wholesale and the .md renders its
+        # `topic` (derived from the first user message). Same contract as the
+        # state pass above: redacted or absent, never raw.
+        try:
+            quality_summary = _cp_redact_deep(quality_summary)
+        except Exception:
+            quality_summary = None
     if backfill_tools:
         try:
             _codex_backfill_tool_archive(filepath=filepath, session_id=sid)
@@ -37492,7 +42384,7 @@ def generate_compact_instructions(as_json=False, install=False, dry_run=False):
     print(f"  {instructions_text}")
     print()
     print("  To activate automatically:")
-    print("    python3 measure.py compact-instructions --install")
+    print(_hint("    python3 measure.py compact-instructions --install"))
     print()
     print("  Or manually add to .claude/settings.json:")
     print('    {"compactInstructions": "<paste above>"}')
@@ -38092,6 +42984,14 @@ def _read_settings_json():
     return data, path
 
 
+def _is_regular_file(path) -> bool:
+    """True when ``path`` (symlinks followed) is a regular file. Never opens it."""
+    try:
+        return stat.S_ISREG(os.stat(path).st_mode)
+    except (OSError, ValueError):
+        return False
+
+
 def _read_settings_json_checked():
     """Read settings.json, return (data, path, ok).
 
@@ -38104,10 +43004,21 @@ def _read_settings_json_checked():
     round-tripping an unknown-state ``{}`` destroys every key the user has.
     """
     if SETTINGS_PATH.exists():
+        # open() on a FIFO blocks until a writer appears, which would
+        # stall a SessionStart hook to its deadline. Anything that is not a
+        # regular file (FIFO, socket, device, directory) is "unknown", not data.
+        if not _is_regular_file(SETTINGS_PATH):
+            return {}, SETTINGS_PATH, False
         try:
-            with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+            # utf-8-sig tolerates a BOM (whether the host tolerates
+            # one is not verified, but a BOM-prefixed file must at least be
+            # readable here so "unknown" never means "lost"). Non-JSONC
+            # comments stay malformed.
+            with open(SETTINGS_PATH, "r", encoding="utf-8-sig") as f:
                 return json.load(f), SETTINGS_PATH, True
-        except (json.JSONDecodeError, PermissionError, OSError):
+        except (json.JSONDecodeError, UnicodeDecodeError, PermissionError, OSError):
+            # UnicodeDecodeError is a ValueError, not an OSError: a cp1252
+            # file saved by an ANSI editor is "unknown", not a traceback.
             return {}, SETTINGS_PATH, False
     return {}, SETTINGS_PATH, True
 
@@ -38135,6 +43046,11 @@ def _read_settings_for_write(allow_missing=False):
     """
     data, _path, ok = _read_settings_json_checked()
     if not ok:
+        return {}, False
+    if not isinstance(data, dict):
+        # valid JSON that is not an object ([1,2,3], "x", 42) must be
+        # the same clean refusal as malformed JSON -- downstream callers
+        # mutate the value as a dict and would otherwise traceback.
         return {}, False
     if not SETTINGS_PATH.exists() and not allow_missing:
         return {}, False
@@ -38246,7 +43162,7 @@ def setup_smart_compact(dry_run=False, uninstall=False, status_only=False):
         else:
             missing = [e for e, v in current_status.items() if not v]
             print(f"\n  Missing: {', '.join(missing)}")
-            print("  Run: python3 measure.py setup-smart-compact")
+            print(_hint("  Run: python3 measure.py setup-smart-compact"))
         print()
         return
 
@@ -38393,7 +43309,7 @@ def setup_smart_compact(dry_run=False, uninstall=False, status_only=False):
     print("    Stop hook:            Saves checkpoint when session ends normally")
     print("    SessionEnd hook:      Saves checkpoint on /clear or termination")
     print(f"\n  Checkpoints stored in: {CHECKPOINT_DIR}")
-    print("  To remove: python3 measure.py setup-smart-compact --uninstall")
+    print(_hint("  To remove: python3 measure.py setup-smart-compact --uninstall"))
 
 
 # same unified base as CHECKPOINT_DIR/SNAPSHOT_DIR. RUNTIME_DIR on desktop
@@ -38628,6 +43544,8 @@ def _running_under_hook():
         for tests and explicit hook launches).
       * ``TOKEN_OPTIMIZER_HOOK`` env var set (``1``/``true``/``yes``/``on``),
         so a launcher can mark the hook context without changing argv.
+      * (``--user`` on argv declares a user-initiated run and beats the stdin
+        heuristic below, but not an explicit ``--hook`` / TOKEN_OPTIMIZER_HOOK.)
       * stdin is NOT a tty. Hook runners (Claude Code, Codex) pipe a JSON
         payload on stdin; an interactive terminal run has a tty on stdin.
         This is what catches the raw fossil command shape, which invokes
@@ -38660,6 +43578,12 @@ def _running_under_hook():
         "on",
     ):
         return True
+    # ``--user`` is the argv twin of TOKEN_OPTIMIZER_INTERACTIVE for launchers
+    # that cannot pass env (the desktop band's "Full dashboard" link): a person
+    # clicked, so the non-tty heuristic below must not read it as a hook. An
+    # explicit hook marker above still wins.
+    if "--user" in sys.argv:
+        return False
     try:
         return not sys.stdin.isatty()
     except (ValueError, OSError, AttributeError):
@@ -39483,7 +44407,7 @@ def _maybe_fresh_session_nudge(result, cache_path, quality_data, quiet=False):
         result["_fresh_nudge_fired"] = True
         return None
     saved, _window = _fresh_session_savings_estimate(
-        fill_pct, window=result.get("model_context_window"))
+        fill_pct, window=result.get("fill_denominator") or result.get("model_context_window"))
     result["_fresh_nudge_fired"] = True
     _log_compression_event(
         feature="fresh_session_nudge",
@@ -41369,7 +46293,7 @@ def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=F
             if not current["hook"]:
                 missing.append("cache hook")
             print(f"\n  Missing: {', '.join(missing)}")
-            print("  Run: python3 measure.py setup-quality-bar")
+            print(_hint("  Run: python3 measure.py setup-quality-bar"))
         print()
         return
 
@@ -41421,7 +46345,7 @@ def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=F
         _set_quality_bar_disabled(True)
         print(f"[Token Optimizer] Quality bar removed. {removed} component(s) removed.")
         print("  Opt-out is sticky: SessionStart will not auto-restore.")
-        print("  To re-enable later, run: python3 measure.py setup-quality-bar")
+        print(_hint("  To re-enable later, run: python3 measure.py setup-quality-bar"))
         return
 
     # Install
@@ -41532,7 +46456,7 @@ def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=F
         print("    Status line:  model | effort | project ████ 43% | ContextQ:74")
         print("    Quality updates every ~2 minutes during active sessions")
         print("    Colors: green (85%+), dim (70-84%), yellow (50-69%), red (<50%)")
-        print("\n  To remove: python3 measure.py setup-quality-bar --uninstall")
+        print(_hint("\n  To remove: python3 measure.py setup-quality-bar --uninstall"))
 
     if warnings:
         print()
@@ -46229,7 +51153,21 @@ Fields:
   last_request_epoch     epoch seconds of the last MAIN-thread assistant
                          request in the transcript (subagent rows ignored)
   cache_lifetime         "1h" | "5m" | null: the last measured cache-write
-                         lifetime on the main thread (null = unmeasured)
+                         lifetime on the main thread (null = unmeasured).
+                         Prefers the native prompt_cache object that
+                         statusline.js bridges on Claude Code v2.1.251+; falls
+                         back to transcript usage rows on older hosts
+  cache_expires_at       epoch seconds the prompt cache expires, from the
+                         bridged native prompt_cache object, else null
+  cache_warm             native prompt_cache.warm when bridged, else null
+  cache_source           "prompt_cache" | "transcript" | null: which source
+                         cache_lifetime came from
+  compactWindow          {"tokens": int|null, "source": str}: the resolver's
+                         compact window for this session's model
+                         (CLAUDE_CODE_AUTO_COMPACT_WINDOW > /autocompact
+                         modelSettings > autoCompactWindow > model default).
+                         null tokens = no override known, use what the host
+                         reports
   last_checkpoint_epoch  this session's newest checkpoint (quality cache or
                          checkpoint file) across Token Optimizer's storage dirs
   compactions            compact_boundary rows in the transcript, or null
@@ -46616,7 +51554,9 @@ def _status_bar_put_back(aside, lock):
         pass
 
 
-_COMPACT_MARK = b'"subtype":"compact_boundary"'
+# Prefilter only: the parsed row decides. Matching the bare word keeps rows from
+# writers that space their JSON ("subtype": "compact_boundary") in the count.
+_COMPACT_MARK = b"compact_boundary"
 
 
 def _status_bar_compactions(path, session_id=None):
@@ -46688,19 +51628,22 @@ def _status_bar_compactions(path, session_id=None):
 
 
 def _status_bar_transcript_state(path):
-    """(last_request_epoch, cache_lifetime) from a transcript, read from the end.
+    """(last_request_epoch, cache_lifetime, model) from a transcript, read from the end.
 
     last_request_epoch: timestamp of the newest MAIN-thread assistant row that
     carries usage (isSidechain / agentId rows and <synthetic> rows skipped).
     cache_lifetime: the newest non-unknown _keepwarm_ttl_kind on main-thread rows,
-    so read-only turns after a 1h write still report "1h". Scans at most 16 MB
-    backwards. Returns (None, None) when the file is missing or unreadable.
+    so read-only turns after a 1h write still report "1h". model: the newest
+    main-thread assistant row's message.model (raw id, for the compact-window
+    resolver). Scans at most 16 MB backwards. Returns (None, None, None) when
+    the file is missing or unreadable.
     """
     last_ts = None
     lifetime = None
+    model = None
 
     def _take(raw):
-        nonlocal last_ts, lifetime
+        nonlocal last_ts, lifetime, model
         raw = raw.strip()
         if not raw or b'"assistant"' not in raw:
             return
@@ -46715,6 +51658,10 @@ def _status_bar_transcript_state(path):
         msg = rec.get("message")
         if not isinstance(msg, dict) or msg.get("model") == "<synthetic>":
             return
+        if model is None:
+            m = msg.get("model")
+            if isinstance(m, str) and m:
+                model = m
         usage = msg.get("usage")
         if not isinstance(usage, dict) or not usage:
             return
@@ -46743,13 +51690,13 @@ def _status_bar_transcript_state(path):
                 carry = parts[0]
                 for raw in reversed(parts[1:]):
                     _take(raw)
-                    if last_ts is not None and lifetime is not None:
-                        return last_ts, lifetime
+                    if last_ts is not None and lifetime is not None and model is not None:
+                        return last_ts, lifetime, model
             if pos == 0 and carry:
                 _take(carry)
     except (OSError, TypeError, ValueError):
-        return None, None
-    return last_ts, lifetime
+        return None, None, None
+    return last_ts, lifetime, model
 
 
 def _status_bar_quality_cache_dirs():
@@ -46866,9 +51813,67 @@ def _status_bar_earlier_checkpoint(session_id):
     return {"epoch": epoch, "about": about}
 
 
+_PROMPT_CACHE_SIDECAR_MAX_AGE_S = 600
+
+
+def _status_bar_prompt_cache(session_id):
+    """The session's native prompt_cache object, bridged by statusline.js, or None.
+
+    Claude Code v2.1.251+ hands the status line a `prompt_cache` object
+    (ttl, expires_at, warm, hit_ratio, ...; main conversations only).
+    statusline.js mirrors it to prompt-cache-<sid>.json so this payload can
+    source the cache countdown/cold state from it instead of guessing from
+    the transcript. Stale or malformed files fall back to the transcript.
+    """
+    best = _status_bar_freshest(f"prompt-cache-{session_id}.json")
+    if best is None:
+        return None
+    try:
+        data = json.loads(best.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    try:
+        if time.time() - float(data.get("timestamp", 0)) / 1000 > _PROMPT_CACHE_SIDECAR_MAX_AGE_S:
+            return None
+    except (TypeError, ValueError):
+        return None
+    ttl = data.get("ttl")
+    if ttl not in ("5m", "1h"):
+        ttl = None
+    try:
+        expires_at = int(data["expires_at"]) if data.get("expires_at") is not None else None
+    except (TypeError, ValueError):
+        expires_at = None
+    warm = data.get("warm") if isinstance(data.get("warm"), bool) else None
+    return {"ttl": ttl, "expires_at": expires_at, "warm": warm}
+
+
 def status_bar_payload(session_id, transcript=None, sync=False):
     """Build the status-bar JSON object (see STATUS_BAR_HELP). Never raises."""
     sid = sanitize_session_id(session_id)
+    session_note = None
+    # --session may carry a pasted truncated id. A <6-char id
+    # sanitizes to "unknown"; a longer prefix finds no exact transcript.
+    # Resolve a UNIQUE prefix to the real session; when it matches zero or
+    # many, say so in savings_reason instead of degrading silently.
+    prefix = re.sub(r"[^a-zA-Z0-9_-]", "", str(session_id or ""))
+    try:
+        path = Path(transcript) if transcript else (
+            _find_session_jsonl_by_id(sid) if sid != "unknown" else None)
+    except Exception:
+        path = None
+    if path is None and prefix:
+        matches = _session_id_prefix_matches(prefix)
+        if len(matches) == 1:
+            path = matches[0]
+            sid = matches[0].stem
+        elif len(matches) > 1:
+            session_note = ("session id prefix '%s' is ambiguous "
+                            "(%d sessions match)" % (prefix, len(matches)))
+        elif sid == "unknown":
+            session_note = "no session id matches '%s'" % prefix
     out = {
         "schema": _STATUS_BAR_SCHEMA,
         "session_id": sid,
@@ -46879,19 +51884,46 @@ def status_bar_payload(session_id, transcript=None, sync=False):
         "refresh_started": False,
         "last_request_epoch": None,
         "cache_lifetime": None,
+        "cache_expires_at": None,
+        "cache_warm": None,
+        "cache_source": None,
+        "compactWindow": {"tokens": None, "source": "unresolved"},
         "last_checkpoint_epoch": None,
         "earlier_checkpoint": None,
         "compactions": None,
     }
-    if sid == "unknown":
-        out["savings_reason"] = "no session id"
+    if sid == "unknown" or session_note:
+        out["savings_reason"] = session_note or "no session id"
         return out
 
     try:
-        path = Path(transcript) if transcript else _find_session_jsonl_by_id(sid)
+        session_model = None
         if path is not None:
-            out["last_request_epoch"], out["cache_lifetime"] = _status_bar_transcript_state(path)
+            out["last_request_epoch"], out["cache_lifetime"], session_model = (
+                _status_bar_transcript_state(path))
             out["compactions"] = _status_bar_compactions(path, sid)
+        # The native prompt_cache object (v2.1.251+) is authoritative for the
+        # cache countdown/cold state when statusline.js bridged it recently;
+        # the transcript-derived lifetime stays as the fallback.
+        pc = _status_bar_prompt_cache(sid)
+        if pc is not None:
+            if pc["ttl"]:
+                out["cache_lifetime"] = pc["ttl"]
+            out["cache_expires_at"] = pc["expires_at"]
+            out["cache_warm"] = pc["warm"]
+            out["cache_source"] = "prompt_cache"
+        elif out["cache_lifetime"] is not None:
+            out["cache_source"] = "transcript"
+        # The resolver's compact window for THIS session's model, so the band
+        # can honor /autocompact and autoCompactWindow, not just the env var.
+        # tokens is null when no override is known: the band then uses the
+        # host's own reported number.
+        model = session_model or os.environ.get("CLAUDE_MODEL") or os.environ.get("ANTHROPIC_MODEL")
+        resolved = _resolve_compact_window(model)
+        out["compactWindow"] = {
+            "tokens": resolved["tokens"] if resolved["user_override"] else None,
+            "source": resolved["source"],
+        }
     except Exception:
         pass
     try:
@@ -47007,6 +52039,666 @@ def _status_bar_finite(v):
     if isinstance(v, (list, tuple)):
         return [_status_bar_finite(x) for x in v]
     return v
+
+
+# ---------------------------------------------------------------------------
+# compact-advice: replay the user's own session history against candidate
+# compact windows. Read-only, deterministic, no model calls. Every figure is
+# an ESTIMATE derived from recorded prompt sizes; the output states its
+# assumptions and never presents a window as a recommendation.
+#
+# Replay rule: a recorded compact_boundary ALWAYS happens; a candidate window
+# can only ADD compactions before it. Extra compactions are never negative,
+# and a candidate at or above where the session really compacted (or, for an
+# open segment, above its real peak) is a no-op for that session. The row for
+# the user's own resolved window is the reference: 0 extra, 0 net by
+# construction.
+# ---------------------------------------------------------------------------
+
+_ADVICE_CANDIDATE_WINDOWS = (300_000, 400_000, 500_000, 650_000, 800_000)
+# What one compaction costs. The summary length cannot be read back from a
+# transcript, so it stays an assumption. The other two are MEASURED from the
+# user's own recorded compactions and these constants are only the fallback
+# used when fewer than _ADVICE_MIN_MEASURED real compactions exist.
+_ADVICE_SUMMARY_OUTPUT_TOKENS = 4_000   # summary the model writes (output-priced), assumed
+_ADVICE_POST_COMPACT_CONTEXT = 30_000   # fallback: context on the first request after a compact
+_ADVICE_REREAD_DEFAULT = 20_000         # fallback: tokens re-read after a compact
+_ADVICE_MIN_MEASURED = 5                # recorded compactions needed to trust a median
+_ADVICE_REREAD_TURNS = 10               # assistant turns inspected after a boundary
+_ADVICE_MIN_SESSIONS = 3                # below this, say "history too thin"
+_ADVICE_ASSUMED_TAG = "assumed, too few real compactions to measure"
+_ADVICE_REREAD_TOOLS = frozenset({"Read", "Grep", "Glob", "Bash"})
+# coach --json: same discipline as the other coach blocks (cap, cache, never fails).
+_ADVICE_COACH_MAX_SESSIONS = 150
+_ADVICE_COACH_BUDGET_SECONDS = 4.0
+_ADVICE_COACH_CACHE_TTL_SECONDS = 6 * 3600
+_ADVICE_PATH_TOKEN_RE = re.compile(r"""[^\s"'<>|;&()=,]+""")
+_ADVICE_WIN_DRIVE_RE = re.compile(r"^[A-Za-z]:/")
+
+
+def _advice_norm_path(p):
+    """Same file, same key: forward slashes, collapsed ./ and ../, no trailing
+    slash; case-folded only for Windows drive paths."""
+    if not isinstance(p, str) or not p.strip():
+        return None
+    s = p.strip().replace("\\", "/")
+    s = posixpath.normpath(s)
+    if s in (".", "/"):
+        return None
+    if _ADVICE_WIN_DRIVE_RE.match(s):
+        s = s.lower()
+    return s
+
+
+def _advice_tool_targets(name, inp):
+    """Normalised paths a Read/Grep/Glob/Bash tool_use targets (may be empty)."""
+    if name not in _ADVICE_REREAD_TOOLS or not isinstance(inp, dict):
+        return []
+    out = []
+    if name == "Read":
+        cands = [inp.get("file_path"), inp.get("path")]
+    elif name in ("Grep", "Glob"):
+        cands = [inp.get("path")]
+    else:  # Bash: path-like tokens in the command line
+        cmd = inp.get("command")
+        cands = []
+        if isinstance(cmd, str):
+            for tok in _ADVICE_PATH_TOKEN_RE.findall(cmd[:4000]):
+                if "/" in tok or "\\" in tok:
+                    cands.append(tok)
+    for c in cands:
+        n = _advice_norm_path(c)
+        if n:
+            out.append(n)
+    return out
+
+
+def _advice_result_text(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for b in content:
+            if isinstance(b, dict) and isinstance(b.get("text"), str):
+                parts.append(b["text"])
+            elif isinstance(b, str):
+                parts.append(b)
+        return "\n".join(parts)
+    return ""
+
+
+def _advice_session_data(path):
+    """Replay + measurement data for a main-conversation transcript.
+
+    Returns a dict:
+      turns          per-request context size (input + cache_read + cache_creation)
+                     of each main-thread assistant usage row, in order; streamed
+                     chunks sharing a requestId collapse to the largest row.
+      cache_reads    cache_read_input_tokens per turn (same indexing).
+      boundaries     indexes in `turns` that directly follow a compact_boundary.
+      model          newest model id on a main-thread row, or None.
+      post_compact_ctx  context size of the first request after each recorded
+                     boundary that has a following turn.
+      rereads        per such boundary: tokens of Read/Grep/Glob/Bash tool
+                     results, in the next _ADVICE_REREAD_TURNS assistant turns,
+                     that target a path (same normalised path) already targeted
+                     by one of those tools before the boundary.
+    Sidechain/subagent rows are ignored throughout.
+    """
+    turns, cache_reads, boundaries, model = [], [], set(), None
+    seen = set()            # normalised paths touched so far (cumulative)
+    bounds = []             # [start_turn_idx, frozenset(prior paths), reread_tokens]
+    pending = {}            # tool_use id -> bounds entry (None when not a re-read)
+    prev_req = None
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if ('"assistant"' not in line and "compact_boundary" not in line
+                        and '"tool_result"' not in line):
+                    continue
+                try:
+                    rec = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if not isinstance(rec, dict):
+                    continue
+                rtype = rec.get("type")
+                if rtype == "system" and rec.get("subtype") == "compact_boundary":
+                    idx = len(turns)
+                    if idx not in boundaries:
+                        boundaries.add(idx)
+                        bounds.append([idx, frozenset(seen), 0])
+                    continue
+                if rec.get("isSidechain") is True or rec.get("agentId"):
+                    continue
+                msg = rec.get("message")
+                if not isinstance(msg, dict):
+                    continue
+                if rtype == "user":
+                    content = msg.get("content")
+                    if isinstance(content, list):
+                        for blk in content:
+                            if (isinstance(blk, dict) and blk.get("type") == "tool_result"):
+                                ent = pending.pop(blk.get("tool_use_id"), None)
+                                if ent is not None:
+                                    ent[2] += _estimate_tokens(
+                                        _advice_result_text(blk.get("content")))
+                    continue
+                if rtype != "assistant" or msg.get("model") == "<synthetic>":
+                    continue
+                u = msg.get("usage")
+                if not isinstance(u, dict):
+                    continue
+                cr = _safe_int(u.get("cache_read_input_tokens"))
+                ctx = (_safe_int(u.get("input_tokens")) + cr
+                       + _safe_int(u.get("cache_creation_input_tokens")))
+                if ctx <= 0:
+                    continue
+                m = msg.get("model")
+                if isinstance(m, str) and m:
+                    model = m
+                req = rec.get("requestId") or msg.get("id")
+                if req is not None and req == prev_req and turns:
+                    # streamed chunk of the same request: keep the largest usage
+                    turns[-1] = max(turns[-1], ctx)
+                    cache_reads[-1] = max(cache_reads[-1], cr)
+                else:
+                    prev_req = req
+                    turns.append(ctx)
+                    cache_reads.append(cr)
+                tidx = len(turns) - 1
+                content = msg.get("content")
+                if isinstance(content, list):
+                    # Window owner: the latest boundary at or before this turn.
+                    owner = None
+                    for b in bounds:
+                        if b[0] <= tidx < b[0] + _ADVICE_REREAD_TURNS:
+                            owner = b
+                    for blk in content:
+                        if not (isinstance(blk, dict) and blk.get("type") == "tool_use"):
+                            continue
+                        targets = _advice_tool_targets(blk.get("name"), blk.get("input"))
+                        if not targets:
+                            continue
+                        if owner is not None and blk.get("id") and any(
+                                t in owner[1] for t in targets):
+                            pending[blk["id"]] = owner
+                        seen.update(targets)
+    except (OSError, PermissionError):
+        # `unreadable` lets compact_advice flag the replay as partial instead
+        # of silently counting one session fewer.
+        return {"turns": [], "cache_reads": [], "boundaries": set(), "model": None,
+                "post_compact_ctx": [], "rereads": [], "unreadable": True}
+    post_ctx, rereads = [], []
+    for b in bounds:
+        if b[0] < len(turns):
+            post_ctx.append(turns[b[0]])
+            rereads.append(b[2])
+    return {"turns": turns, "cache_reads": cache_reads, "boundaries": boundaries,
+            "model": model, "post_compact_ctx": post_ctx, "rereads": rereads}
+
+
+def _advice_session_turns(path):
+    """(turns, boundaries, model) -- the replay subset of _advice_session_data."""
+    d = _advice_session_data(path)
+    return d["turns"], d["boundaries"], d["model"]
+
+
+def _advice_median(values):
+    v = sorted(values)
+    n = len(v)
+    if n == 0:
+        return 0
+    mid = n // 2
+    return int(v[mid]) if n % 2 else int(round((v[mid - 1] + v[mid]) / 2))
+
+
+def _advice_measured_assumptions(rereads, post_ctx):
+    """Median re-read tokens and post-compact context from the user's own
+    recorded compactions, each with its n; a stated default below
+    _ADVICE_MIN_MEASURED real compactions."""
+    def _pick(values, default):
+        n = len(values)
+        if n >= _ADVICE_MIN_MEASURED:
+            return {"value": _advice_median(values), "n": n,
+                    "source": "measured"}
+        return {"value": default, "n": n, "source": _ADVICE_ASSUMED_TAG}
+    return {
+        "reread_tokens_per_compaction": _pick(rereads, _ADVICE_REREAD_DEFAULT),
+        "post_compact_context_tokens": _pick(post_ctx, _ADVICE_POST_COMPACT_CONTEXT),
+    }
+
+
+def _advice_replay(turns, boundaries, window, post_compact=_ADVICE_POST_COMPACT_CONTEXT):
+    """Replay a session against a candidate compact window.
+
+    Recorded compactions always happen (a compact_boundary, or any drop in
+    context, ends a segment and resyncs the replay to the recorded value). The
+    candidate can only ADD compactions inside a segment: a segment whose real
+    peak never exceeded `window` is untouched, so a candidate at or above the
+    session's real behaviour is a no-op. Returns (extra_compactions,
+    avoided_tokens), never negative; avoided = prompt tokens the earlier
+    compaction would have shaved off later requests in the segment.
+    """
+    if not turns:
+        return 0, 0
+    segments, cur = [], [0]
+    for i in range(1, len(turns)):
+        if i in boundaries or turns[i] < turns[i - 1]:
+            segments.append(cur)
+            cur = []
+        cur.append(i)
+    segments.append(cur)
+    extra = 0
+    avoided = 0
+    for seg in segments:
+        if window >= max(turns[i] for i in seg):
+            continue
+        v = turns[seg[0]]
+        prev = v
+        for i in seg[1:]:
+            ctx = turns[i]
+            v += ctx - prev
+            if v >= window:
+                extra += 1
+                v = post_compact + (ctx - prev)
+            avoided += max(0, ctx - v)
+            prev = ctx
+    return extra, avoided
+
+
+def _advice_quality_by_fill_band():
+    """Average recorded quality score per model-fill band across the quality caches."""
+    sums = {"<50%": [0, 0], "50-70%": [0, 0], "70-80%": [0, 0], "80%+": [0, 0]}
+    seen = set()
+    for d in _status_bar_quality_cache_dirs():
+        try:
+            files = list(d.glob("quality-cache-*.json"))
+        except OSError:
+            continue
+        for f in files:
+            key = str(f)
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                q = json.loads(f.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(q, dict):
+                continue
+            score = q.get("score")
+            cfd = (q.get("breakdown") or {}).get("context_fill_degradation") or {}
+            fill = cfd.get("model_fill_pct")
+            if fill is None:
+                fill = cfd.get("fill_pct")
+            if not isinstance(score, (int, float)) or isinstance(score, bool):
+                continue
+            if not isinstance(fill, (int, float)) or isinstance(fill, bool):
+                continue
+            band = ("<50%" if fill < 50 else "50-70%" if fill < 70
+                    else "70-80%" if fill < 80 else "80%+")
+            sums[band][0] += score
+            sums[band][1] += 1
+    return {
+        band: {"sessions": n, "avg_score": round(total / n, 1) if n else None}
+        for band, (total, n) in sums.items()
+    }
+
+
+def _advice_billing_mode():
+    """'api' | 'subscription' | 'unknown'. Only labels how dollars are read."""
+    try:
+        return keepwarm_billing_mode()
+    except Exception:
+        return "unknown"
+
+
+def _advice_round_pct(n, d):
+    return round(n / d * 100, 1) if d else 0.0
+
+
+def compact_advice(days=30, max_sessions=None, deadline_seconds=None):
+    """Build the compact-advice report dict. Purely read-only; never raises.
+
+    max_sessions / deadline_seconds cap the work (newest sessions first) for
+    the coach path; `truncated` says when a cap cut the scan short.
+    """
+    out = {
+        "schema": 2,
+        "days": days,
+        "estimate": True,
+        "billing": _advice_billing_mode(),
+        "sessions_scanned": 0,
+        "sessions_replayed": 0,
+        "recorded_compactions": 0,
+        "total_cache_read_tokens": 0,
+        "truncated": False,
+        "too_thin": True,
+        "default_window": None,
+        "smallest_positive_window": None,
+        "assumptions": {},
+        "measurements": {},
+        "windows": [],
+        "quality_by_fill_band": {},
+    }
+    try:
+        files = _find_all_jsonl_files(days=days)
+    except Exception:
+        files = []
+    out["sessions_scanned"] = len(files)
+    if max_sessions is not None and len(files) > max_sessions:
+        files = files[:max(0, int(max_sessions))]
+        out["truncated"] = True
+    deadline = (None if deadline_seconds is None
+                else time.monotonic() + float(deadline_seconds))
+
+    sessions = []
+    model_counts = {}
+    all_rereads, all_post_ctx = [], []
+    for jf, _mtime, _proj in files:
+        if deadline is not None and time.monotonic() > deadline:
+            out["truncated"] = True
+            break
+        try:
+            d = _advice_session_data(jf)
+        except Exception:
+            out["truncated"] = True
+            continue
+        if d.get("unreadable"):
+            out["truncated"] = True
+        all_rereads.extend(d["rereads"])
+        all_post_ctx.extend(d["post_compact_ctx"])
+        if len(d["turns"]) < 2:
+            continue
+        sessions.append(d)
+        if d["model"]:
+            model_counts[d["model"]] = model_counts.get(d["model"], 0) + 1
+    out["sessions_replayed"] = len(sessions)
+    out["recorded_compactions"] = len(all_post_ctx)
+    total_cache_read = sum(sum(d["cache_reads"]) for d in sessions)
+    out["total_cache_read_tokens"] = total_cache_read
+
+    meas = _advice_measured_assumptions(all_rereads, all_post_ctx)
+    reread_tok = meas["reread_tokens_per_compaction"]["value"]
+    post_ctx = meas["post_compact_context_tokens"]["value"]
+    out["measurements"] = meas
+    out["assumptions"] = {
+        "post_compact_context_tokens": post_ctx,
+        "reread_tokens_per_compaction": reread_tok,
+        "summary_output_tokens": _ADVICE_SUMMARY_OUTPUT_TOKENS,
+        "summary_output_tokens_source": "assumed; the summary length is not recoverable from a transcript",
+        "avoided_tokens_priced_as": "cache_read of the session's model card",
+        "compaction_cost_priced_as": (
+            "summary_output_tokens x output + post_compact_context_tokens x "
+            "cache_write + reread_tokens_per_compaction x (input + cache_write), "
+            "all on the session's model card (the reread charge is deliberately "
+            "conservative)"),
+        "note": (
+            "A recorded compaction always happens in the replay; a candidate "
+            "window can only add compactions before it. Your own resolved "
+            "window is the reference row: 0 extra, 0 net by construction. "
+            "Dollars are API-equivalent list-price estimates."),
+    }
+
+    tier_data = PRICING_TIERS.get(_load_pricing_tier(), PRICING_TIERS["anthropic"])
+    modal_model = max(model_counts, key=model_counts.get) if model_counts else None
+    try:
+        default_res = _resolve_compact_window(modal_model)
+        default_tokens = default_res["tokens"]
+        out["default_window"] = {
+            "tokens": default_tokens,
+            "source": default_res["source"],
+            "model": modal_model,
+        }
+    except Exception:
+        default_tokens = _COMPACT_WINDOW_1M_DEFAULT
+
+    candidates = list(_ADVICE_CANDIDATE_WINDOWS)
+    if all(default_tokens != w for w in candidates):
+        candidates.append(default_tokens)
+    candidates.sort()
+
+    for w in candidates:
+        # The row for the user's own window, and anything above it, is the
+        # reference behaviour: nothing is added, so nothing is computed.
+        reference = w >= default_tokens
+        extra_total = 0
+        avoided_tokens = 0
+        avoided_usd = 0.0
+        cost_usd = 0.0
+        affected = 0
+        if not reference:
+            for d in sessions:
+                extra, avoided = _advice_replay(
+                    d["turns"], d["boundaries"], w, post_compact=post_ctx)
+                if extra <= 0 and avoided <= 0:
+                    continue
+                extra_total += extra
+                avoided_tokens += avoided
+                if extra > 0:
+                    affected += 1
+                rates = _claude_rates_for_model(d["model"], tier_data) or {}
+                in_rate = float(rates.get("input", 0.0) or 0.0)
+                read_rate = float(rates.get("cache_read", in_rate) or 0.0)
+                write_rate = float(rates.get("cache_write", in_rate) or 0.0)
+                out_rate = float(rates.get("output", 0.0) or 0.0)
+                avoided_usd += avoided * read_rate / 1e6
+                cost_usd += extra * (
+                    _ADVICE_SUMMARY_OUTPUT_TOKENS * out_rate
+                    + post_ctx * write_rate
+                    + reread_tok * (in_rate + write_rate)) / 1e6
+        cost_tokens = extra_total * (_ADVICE_SUMMARY_OUTPUT_TOKENS + post_ctx + reread_tok)
+        is_default = w == default_tokens
+        label = f"{w // 1000}K" + (" default" if is_default else "")
+        out["windows"].append({
+            "window": w,
+            "label": label,
+            "is_default": is_default,
+            "reference": reference,
+            "extra_compactions": extra_total,
+            "affected_sessions": affected,
+            "affected_share": (round(affected / len(sessions), 3) if sessions else 0),
+            "cache_read_tokens_avoided": avoided_tokens,
+            "avoided_share_pct": _advice_round_pct(avoided_tokens, total_cache_read),
+            "compaction_cost_tokens": cost_tokens,
+            "net_tokens": avoided_tokens - cost_tokens,
+            "net_usd": round(avoided_usd - cost_usd, 2),
+            "net_usd_unrounded": avoided_usd - cost_usd,
+            "estimate": True,
+        })
+
+    # Smallest window whose net stays positive (after the measured costs) at
+    # every larger candidate below the user's own window. "Net" here is the
+    # priced one: a cache-read token is far cheaper than the output and
+    # cache-write tokens a compaction spends, so a positive token net can still
+    # be a loss.
+    below = sorted((e for e in out["windows"] if not e["reference"]),
+                   key=lambda e: e["window"])
+    smallest = None
+    for i, e in enumerate(below):
+        if all(x["net_usd_unrounded"] > 0 for x in below[i:]):
+            smallest = e["window"]
+            break
+    out["smallest_positive_window"] = smallest
+
+    out["too_thin"] = (
+        len(sessions) < _ADVICE_MIN_SESSIONS
+        or (out["recorded_compactions"] == 0
+            and all(e["extra_compactions"] == 0 for e in out["windows"]))
+    )
+    try:
+        out["quality_by_fill_band"] = _advice_quality_by_fill_band()
+    except Exception:
+        out["quality_by_fill_band"] = {}
+    return out
+
+
+def _advice_cache_path():
+    return SNAPSHOT_DIR / "compact_advice_cache.json"
+
+
+def _advice_coach_view(rep):
+    """The small `compact_advice` block coach --json carries."""
+    dw = rep.get("default_window") or {}
+    return {
+        "estimate": True,
+        "days": rep.get("days"),
+        "billing": rep.get("billing"),
+        "dollars": "API-equivalent list-price estimates, not a bill",
+        "resolved_window": {
+            "tokens": dw.get("tokens"),
+            "source": dw.get("source"),
+            "model": dw.get("model"),
+        },
+        "sessions_replayed": rep.get("sessions_replayed"),
+        "recorded_compactions": rep.get("recorded_compactions"),
+        "truncated": bool(rep.get("truncated")),
+        "too_thin": bool(rep.get("too_thin")),
+        "rows": [] if rep.get("too_thin") else [
+            {k: e.get(k) for k in (
+                "label", "window", "is_default", "extra_compactions",
+                "cache_read_tokens_avoided", "avoided_share_pct",
+                "compaction_cost_tokens", "net_tokens", "net_usd")}
+            for e in rep.get("windows", [])
+        ],
+        "smallest_positive_window": rep.get("smallest_positive_window"),
+        "assumptions": {k: dict(v) for k, v in (rep.get("measurements") or {}).items()},
+    }
+
+
+def _coach_compact_advice_block(days=30):
+    """Capped, cached, fail-open compact-advice block for `coach --json`.
+
+    Newest `_ADVICE_COACH_MAX_SESSIONS` sessions within a wall-clock budget;
+    the result is cached for six hours. Any failure returns None so coach never
+    fails because of it.
+    """
+    try:
+        cache_path = _advice_cache_path()
+        try:
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            if (isinstance(cached, dict) and cached.get("days") == days
+                    and cached.get("_schema") == 2
+                    and time.time() - float(cached.get("_cached_ts", 0))
+                    < _ADVICE_COACH_CACHE_TTL_SECONDS):
+                return {k: v for k, v in cached.items() if not k.startswith("_")}
+        except (OSError, ValueError, TypeError):
+            pass
+        rep = compact_advice(days=days, max_sessions=_ADVICE_COACH_MAX_SESSIONS,
+                             deadline_seconds=_ADVICE_COACH_BUDGET_SECONDS)
+        block = _advice_coach_view(rep)
+        try:
+            record = dict(block)
+            record["_cached_ts"] = time.time()
+            record["_schema"] = 2
+            SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+            fd, tmp_name = tempfile.mkstemp(
+                prefix=".compact_advice.", suffix=".tmp", dir=str(SNAPSHOT_DIR))
+            try:
+                if hasattr(os, "fchmod"):
+                    os.fchmod(fd, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    json.dump(record, fh)
+                os.replace(tmp_name, str(cache_path))
+            except Exception:
+                try:
+                    os.unlink(tmp_name)
+                except OSError:
+                    pass
+        except Exception:
+            pass
+        return block
+    except Exception:
+        return None
+
+
+def _advice_usd(v):
+    return f"{'-' if v < 0 else ''}${abs(v):,.2f}"
+
+
+def _compact_advice_cli(args):
+    """`measure.py compact-advice [--json] [--days N]` — replay history against
+    candidate compact windows. Read-only; prints estimates, never settings."""
+    output_json = "--json" in args
+    days = 30
+    i = 0
+    while i < len(args):
+        if args[i] == "--days" and i + 1 < len(args):
+            try:
+                days = max(1, int(args[i + 1]))
+            except ValueError:
+                pass
+            i += 2
+        else:
+            i += 1
+    report = compact_advice(days=days)
+    if output_json:
+        print(json.dumps(report, indent=2))
+        return
+    print("\nTOKEN OPTIMIZER: COMPACT-WINDOW ADVICE (estimates only)")
+    print("=" * 58)
+    print(f"  Sessions scanned: {report['sessions_scanned']} "
+          f"({report['sessions_replayed']} replayed, last {report['days']} days, "
+          f"{report['recorded_compactions']} recorded compactions)")
+    dw = report.get("default_window") or {}
+    if dw.get("tokens"):
+        print(f"  Your resolved window: {dw['tokens']:,} ({dw.get('source', '')})")
+    if report["too_thin"]:
+        print("\n  History is too thin to estimate: not enough sessions ever")
+        print("  reached a compaction context in this window. Re-run after more")
+        print("  real sessions (or widen --days).")
+    else:
+        print("\n  Replays of YOUR sessions against candidate compact windows.")
+        print("  Recorded compactions always happen; a smaller window can only add")
+        print("  compactions before them. Your own window is the reference row")
+        print("  (0 extra, 0 net by construction).")
+        print(f"  Total cache-read tokens in this window: "
+              f"{report['total_cache_read_tokens']:,}\n")
+        print(f"  {'window':<16} {'extra':>6} {'cache-read avoided':>19} {'share':>7} "
+              f"{'compact cost':>13} {'net tokens':>12} {'net $ API-equivalent':>21} "
+              f"{'sessions':>9}")
+        for e in report["windows"]:
+            print(f"  {e['label']:<16} {e['extra_compactions']:>6} "
+                  f"{e['cache_read_tokens_avoided']:>19,} "
+                  f"{e['avoided_share_pct']:>6.1f}% "
+                  f"{e['compaction_cost_tokens']:>13,} {e['net_tokens']:>12,} "
+                  f"{_advice_usd(e['net_usd']):>21} {e['affected_sessions']:>9}")
+        print("\n  Token counts are not equal in price: a cache read costs far less than the")
+        print("  output and cache-write tokens a compaction spends, so the dollar column")
+        print("  is the priced net.")
+        if report.get("billing") == "api":
+            print("  Dollars are API-equivalent: tokens priced at the list rate.")
+        else:
+            print("  Dollars are API-equivalent: tokens priced at the list rate. On a")
+            print("  subscription this is not a bill, it is a size-of-the-effect gauge.")
+        q = report.get("quality_by_fill_band") or {}
+        if any(v.get("sessions") for v in q.values()):
+            print("\n  Average quality score by model-fill band (recorded caches):")
+            for band, v in q.items():
+                if v["sessions"]:
+                    print(f"    {band:<7} avg {v['avg_score']:>5}  ({v['sessions']} sessions)")
+        print("  Compaction can drop early instructions; the quality score does not measure that.")
+        # Half of the score IS the fill curve, so this table is not independent proof.
+        print("  Half of the score is context fill itself, so read this as the scoring")
+        print("  curve at work, not as separate evidence that fuller sessions go worse.")
+    print("\n  Assumptions (measured from your own recorded compactions where possible):")
+    for name, mm in (report.get("measurements") or {}).items():
+        print(f"    {name}: {mm['value']:,} ({mm['source']}, n={mm['n']})")
+    print(f"    summary_output_tokens: {_ADVICE_SUMMARY_OUTPUT_TOKENS:,} "
+          f"({report['assumptions'].get('summary_output_tokens_source', 'assumed')})")
+    for ln in textwrap.wrap(
+            "compaction_cost_priced_as: "
+            + report["assumptions"].get("compaction_cost_priced_as", ""),
+            width=88, initial_indent="    ", subsequent_indent="      "):
+        print(ln)
+    if report.get("smallest_positive_window") and not report["too_thin"]:
+        w = report["smallest_positive_window"]
+        print(f"\n  Smallest window whose net stays positive after the measured costs: {w // 1000}K.")
+        print("  To try one: /autocompact <n>")
+    elif not report["too_thin"]:
+        print("\n  No candidate window had a net that stays positive after the measured costs.")
+    print()
 
 
 def _install_date():
@@ -47778,7 +53470,7 @@ _SETTINGS_MACHINE_WRITTEN_KEYS = frozenset({
     "compactInstructions",    # TO: generate_compact_instructions
     "mcpServers",             # TO: _manage_mcp
     "_disabledMcpServers",    # TO: _manage_mcp
-    "env",                    # TO: _auto_remove_bad_env_vars
+    "env",                    # Host: settings env injection; TO historically (removed writer)
     "enabledPlugins",         # Host: /plugin UI
 })
 
@@ -48442,9 +54134,11 @@ def run_ensure_health():
     files, and may spawn a detached verified installer subprocess on
     script-install systems. All side effects are idempotent.
 
-    Task ordering matters: fast, always-safe writes (cleanupPeriodDays,
-    bad env var removal) run first so they are guaranteed to complete
-    even if a later task exhausts the wall-clock budget.
+    Task ordering matters: fast, always-safe writes (cleanupPeriodDays)
+    run first so they are guaranteed to complete even if a later task
+    exhausts the wall-clock budget. (The old "bad env var removal" first
+    task is gone: CLAUDE_AUTOCOMPACT_PCT_OVERRIDE is documented and is
+    never touched here.)
     """
     # Foreign-runtime guardrail, defense-in-depth: every Claude
     # write below is gated on `not _is_codex`, so under OpenCode or Copilot
@@ -48492,11 +54186,36 @@ def run_ensure_health():
                     print("  [Token Optimizer] cleanupPeriodDays was not changed (settings.json locked or refused).", file=sys.stderr)
         except Exception as _e:
             print(f"  [Token Optimizer] cleanupPeriodDays write failed: {_e}", file=sys.stderr)
-    # Silent auto-fix of known harmful settings.
-    # Claude Code only: reads/writes ~/.claude/settings.json.
-    if _is_claude:
+    # CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: documented setting. ensure-health
+    # used to AUTO-DELETE it from settings.json; that path is gone and must
+    # never return. Read-only here: nothing to do at startup. See
+    # _autocompact_pct_override_explanation (doctor) for the explain-only path.
+
+    # Subagent prompt-cache TTL (1h): ADVISE-ONLY by default. The
+    # session start never writes the key itself -- it keeps the cached payoff
+    # verdict fresh (a detached background scan) and records what the verdict
+    # says, so `subagent-cache status`, doctor, quick and coach can carry the
+    # per-user recommendation. Only TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=1 opts
+    # in to the automatic write + 14-day tripwire, and only that path can
+    # return a user-facing line (one-time set / auto-revert notice).
+    # Marker-gated BEFORE any settings read, so the steady-state session
+    # start pays one stat/read and moves on (the "must stay inside the hook
+    # time budget" rule). Claude Code only -- and never inside Cowork (which
+    # must not read ~/.claude). Fail-open: a problem here must never break
+    # SessionStart.
+    if _is_claude and not is_cowork():
         try:
-            _auto_remove_bad_env_vars()
+            for _sc_line in _subagent_cache_session_start_lines():
+                print(json.dumps({"systemMessage": _sc_line}))
+        except Exception:
+            pass
+
+    # Usage recommendations: keep the daily-measured record fresh.
+    # Session start only stats the record and may spawn the detached refresh;
+    # the measurement itself never runs inside a hook. Fail-open.
+    if _is_claude and not is_cowork():
+        try:
+            _recs_ensure_fresh()
         except Exception:
             pass
 
@@ -48753,7 +54472,7 @@ def run_ensure_health():
             print(json.dumps({"systemMessage":
                 "  [Token Optimizer] Dashboard daemon self-heal disabled: "
                 f"install failed permanently ({_mk_reason or 'reason unknown'}). "
-                "Retry: python3 measure.py setup-daemon"}))
+                f"Retry: {_measure_cli()} setup-daemon"}))
     except Exception as _e:
         print(f"  [Token Optimizer] dashboard daemon self-heal failed: {_e}", file=sys.stderr)
 
@@ -49026,7 +54745,7 @@ def run_ensure_health():
         try:
             _eh_qb_disabled = _read_config_flag("quality_bar_disabled", False)
             _eh_is_plugin = _is_running_from_plugin_cache() or _is_plugin_installed()
-            if not _eh_qb_disabled and SETTINGS_PATH.exists():
+            if not _eh_qb_disabled and _is_regular_file(SETTINGS_PATH):
                 try:
                     settings = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
                 except (json.JSONDecodeError, ValueError):
@@ -49781,7 +55500,7 @@ if __name__ == "__main__":
                 print(f"  Hook config: {result['hook_file']}")
                 print(f"  Modules: {len(result['copied'])} copied"
                       + (f", {len(result['skipped'])} missing: {result['skipped']}" if result["skipped"] else ""))
-                print("  Run `python3 measure.py copilot-doctor` to verify readiness.")
+                print(_hint("  Run `python3 measure.py copilot-doctor` to verify readiness."))
                 sys.exit(0)
             except RuntimeError as exc:
                 print(f"[Token Optimizer] {exc}", file=sys.stderr)
@@ -49989,6 +55708,9 @@ if __name__ == "__main__":
     elif args[0] == "status-bar":
         # Desktop status band: one JSON read. See STATUS_BAR_HELP.
         _status_bar_cli(args[1:])
+    elif args[0] == "compact-advice":
+        # Replay session history against candidate compact windows. Read-only.
+        _compact_advice_cli(args[1:])
     elif args[0] == "runway-json":
         # Machine-readable runway snapshot so a non-Python dashboard (the OpenClaw
         # / OpenCode TypeScript surfaces) can render the "Your plan goes further"
@@ -50325,18 +56047,11 @@ if __name__ == "__main__":
         print(status)
         sys.exit(0 if status == "DAEMON_RUNNING" else 1)
     elif args[0] == "kill-stale":
-        dry = "--dry-run" in args
-        hours = 12
-        for i, a in enumerate(args):
-            if a == "--hours" and i + 1 < len(args):
-                try:
-                    hours = int(args[i + 1])
-                except ValueError:
-                    pass
+        hours, dry, include_orphans = _parse_kill_stale_args(args)
         if hours < 1:
             print("[Error] --hours must be >= 1")
             sys.exit(1)
-        kill_stale_sessions(threshold_hours=hours, dry_run=dry)
+        kill_stale_sessions(threshold_hours=hours, dry_run=dry, include_orphans=include_orphans)
     elif args[0] == "check-hook":
         check_hook()
     elif args[0] == "setup-hook":
@@ -50489,59 +56204,9 @@ if __name__ == "__main__":
                     print(f"[Token Optimizer] Removed stale {section} block from {candidate.name} "
                           f"(age: {s['age_hours']:.0f}h, TTL: 48h)", file=sys.stderr)
     elif args[0] == "coach":
-        focus = None
-        output_json = "--json" in args
-        for i, a in enumerate(args):
-            if a == "--focus" and i + 1 < len(args):
-                focus = args[i + 1]
-        data = generate_coach_data(focus=focus)
-        if output_json:
-            print(json.dumps(data, indent=2))
-        else:
-            is_codex = detect_runtime() == "codex"
-            instruction_label = "AGENTS.md" if is_codex else "CLAUDE.md"
-            score = data["health_score"]
-            snap = data["snapshot"]
-            print(f"\n  Token Health Score: {score}/100")
-            print(f"  Startup overhead: {snap['total_overhead']:,} tokens ({snap['overhead_pct']}% of {snap['context_window'] // 1000}K)")
-            print(f"  Usable context: ~{snap['usable_tokens']:,} tokens (after overhead + autocompact buffer)")
-            print(f"  Skills: {snap['skill_count']} ({snap['skill_tokens']:,} tokens)")
-            if snap.get("skills_basis"):
-                print(f"          ({snap['skills_basis']})")
-            print(f"  {instruction_label}: {snap['claude_md_tokens']:,} tokens")
-            print(f"  MCP: {snap['mcp_server_count']} servers ({snap['mcp_tokens']:,} tokens)")
-            print()
-            if data["patterns_bad"]:
-                print("  Issues detected:")
-                for p in data["patterns_bad"]:
-                    sev = {"high": "!!!", "medium": "!!", "low": "!"}.get(p["severity"], "!")
-                    print(f"    [{sev}] {p['name']}: {p['detail']}")
-                print()
-            if data["patterns_good"]:
-                print("  Good practices:")
-                for p in data["patterns_good"]:
-                    print(f"    [OK] {p['name']}: {p['detail']}")
-                print()
-            if data.get("subagent_costs"):
-                sc = data["subagent_costs"]
-                print(f"  Subagent spend: ${sc['total_usd']:.2f} ({sc['pct_of_spend']}% of recent sessions)")
-                for s in sc["top_subagents"][:3]:
-                    print(f"    {_strip_ansi(str(s['name']))}: ${s['cost_usd']} ({s['tokens']:,} tokens, {_strip_ansi(str(s['model']))})")
-                print()
-            if data.get("costly_prompts"):
-                print("  Most expensive prompts (last 7 days):")
-                for i, p in enumerate(data["costly_prompts"][:5], 1):
-                    # Session-log text is attacker-influenceable — strip ANSI
-                    # escapes before printing so a crafted prompt cannot inject
-                    # terminal control sequences, then truncate the clean text.
-                    preview = _strip_ansi(str(p["text"]))[:70].replace("\n", " ")
-                    print(f"    {i}. ${p['cost_usd']} ({p['tokens_in']:,} in) \"{preview}...\"")
-                print()
-            if data["questions"]:
-                print("  Coaching questions:")
-                for q in data["questions"]:
-                    print(f"    ? {q}")
-                print()
+        _coach_cli(args)
+    elif args[0] == "deterministic-candidates":
+        _cmd_deterministic_candidates(args[1:])
     elif args[0] == "validate-impact":
         output_json = "--json" in args
         strat = "auto"
@@ -50594,6 +56259,11 @@ if __name__ == "__main__":
             if result and "--quiet" not in args:
                 # Only print for non-hook invocations (hooks should be quiet)
                 print(f"[Token Optimizer] Checkpoint saved: {result}")
+            elif not result:
+                _notice = _redaction_skip_notice(sid)
+                if _notice:
+                    # Sole hook output: one JSON object is a valid envelope on every host.
+                    print(json.dumps({"systemMessage": _notice}))
         except _HookTimeout:
             pass
         except Exception:
@@ -50735,12 +56405,12 @@ if __name__ == "__main__":
               f"{run['result']['scanned_sessions']} sessions):")
         for label in ("probe-only", "predictor-sustain", "oracle-sustain"):
             m = modes[label]
-            print(f"  {label:<18} net ${m['net_usd']:>9.2f}  "
+            print(f"  {label:<18} net {_recs_usd(m['net_usd']):>10}  "
                   f"(saving ${m['saving_usd']:.2f} - ping ${m['ping_cost_usd']:.2f}; "
                   f"{m['pings']} pings, {m['avoided_writes']} writes avoided)")
-        print(f"  reconcile: probe_net=${rec['probe_net']:.2f} "
+        print(f"  reconcile: probe_net={_recs_usd(rec['probe_net'])} "
               f"(in-band={rec['probe_in_band']}), "
-              f"oracle_net=${rec['oracle_net']:.2f} "
+              f"oracle_net={_recs_usd(rec['oracle_net'])} "
               f"(in-band={rec['oracle_in_band']})")
         verdict = "PROMOTED (sustain ON)" if dec["sustain_allowed"] else "probe-only (sustain OFF)"
         print(f"  fence: {verdict} -- {dec['reason']}"
@@ -50778,7 +56448,7 @@ if __name__ == "__main__":
                   f"({w.get('ok_count', 0)} ok, {w.get('error_count', 0)} error, "
                   f"{w.get('timeout_count', 0)} timeout), "
                   f"spend ${w['spend_usd']:.2f}, realized ${w['realized_usd']:.2f}, "
-                  f"NET ${w['net_usd']:.2f} "
+                  f"NET {_recs_usd(w['net_usd'])} "
                   f"({w['realized_count']} realized / {w['loss_count']} loss)")
             orphans = w.get("orphan_firing_count", 0)
             if orphans:
@@ -50897,13 +56567,13 @@ if __name__ == "__main__":
               f"({fc['avoided_writes']} cold re-writes avoided)")
         print(f"  API-equivalent: ${fc['saving_usd']:.2f} saved  -  "
               f"${fc['ping_cost_usd']:.2f} keep-warm cost  =  "
-              f"{'+' if fc['net_usd'] >= 0 else ''}${fc['net_usd']:.2f}/month net")
+              f"{_recs_usd(fc['net_usd'], plus=True)}/month net")
         if fc["positive"]:
             print(f"  Verdict: WORTH IT -- nets you ~${fc['net_usd']:.0f}/mo in "
                   f"avoided token cost.")
         else:
             print(f"  Verdict: not worth it on your history "
-                  f"(net ${fc['net_usd']:.2f}/mo).")
+                  f"(net {_recs_usd(fc['net_usd'])}/mo).")
         print("  Note: on a subscription you pay keep-warm's cost in rate-limit "
               "quota, not cash; the $ is the API-equivalent size of the win.")
         sys.exit(0)
@@ -51217,7 +56887,7 @@ if __name__ == "__main__":
                 if CONFIG_PATH.exists():
                     _qb_cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
                     _qb_disabled = _qb_cfg.get("quality_bar_disabled", False)
-                if not _is_plugin and not _qb_disabled and SETTINGS_PATH.exists():
+                if not _is_plugin and not _qb_disabled and _is_regular_file(SETTINGS_PATH):
                     _sh_settings = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
                     _sh_hooks = _sh_settings.get("hooks", {}).get("UserPromptSubmit", [])
                     # Recognize the consolidated dispatcher too, so a script
@@ -51636,6 +57306,10 @@ if __name__ == "__main__":
     elif args[0] == "plugin-cleanup":
         dry = "--dry-run" in args
         plugin_cleanup(dry_run=dry)
+    elif args[0] == "subagent-cache":
+        _subagent_cache_cli(args)
+    elif args[0] == "recommendations":
+        _recs_cli(args)
     elif args[0] == "ensure-health":
         # Called by SessionStart hook. Wrapped in a wall-clock guard so a
         # pathologically slow filesystem or lock contention cannot block the
@@ -52043,10 +57717,9 @@ if __name__ == "__main__":
         from pathlib import Path as _P
         rc_script = _P(__file__).resolve().parent / "read_cache.py"
         if rc_script.exists():
-            import subprocess
-            subprocess.run(
-                [sys.executable, str(rc_script), "--clear", "--session", sid] + (["--quiet"] if quiet else []),
-                timeout=5, creationflags=_NO_WINDOW
+            _run_script_child(
+                rc_script, ["--clear", "--session", sid] + (["--quiet"] if quiet else []),
+                timeout=5,
             )
     elif args[0] == "read-cache-stats":
         # Show read cache stats
@@ -52057,19 +57730,14 @@ if __name__ == "__main__":
         from pathlib import Path as _P
         rc_script = _P(__file__).resolve().parent / "read_cache.py"
         if rc_script.exists():
-            import subprocess
-            subprocess.run(
-                [sys.executable, str(rc_script), "--stats", "--session", sid],
-                timeout=5, creationflags=_NO_WINDOW
-            )
+            _run_script_child(rc_script, ["--stats", "--session", sid], timeout=5)
     elif args[0] == "structure-proof":
         from pathlib import Path as _P
         proof_script = _P(__file__).resolve().parent / "structure_replay.py"
         if not proof_script.exists():
             print(f"[Token Optimizer] structure_replay.py not found at {proof_script}")
             sys.exit(1)
-        import subprocess
-        result = subprocess.run([sys.executable, str(proof_script)] + args[1:], creationflags=_NO_WINDOW)
+        result = _run_script_child(proof_script, args[1:])
         sys.exit(result.returncode)
     else:
         print("Usage:")

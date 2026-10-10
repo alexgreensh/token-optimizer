@@ -40,12 +40,6 @@ _DECOY_HOOK_SRC = '''\
 print("decoy")
 '''
 
-requires_inherited_child_stdout = pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="run.py child stdout inheritance under CREATE_NO_WINDOW is not Windows-safe",
-)
-
-
 def _make_plugin_root(tmp_path):
     """Build a minimal plugin root: hooks/{run.py,module_runner.py} + scripts/dummy_hook.py."""
     root = tmp_path / "plugin"
@@ -73,7 +67,6 @@ def _run_hook(root, *args, cwd=None, plugin_data=None):
     )
 
 
-@requires_inherited_child_stdout
 def test_dispatch_runs_target_and_forwards_args(tmp_path):
     root = _make_plugin_root(tmp_path)
     result = _run_hook(root, "--quiet", "foo")
@@ -96,7 +89,6 @@ def test_second_invocation_reuses_pycache_no_recompile(tmp_path):
     )
 
 
-@requires_inherited_child_stdout
 def test_cwd_decoy_module_cannot_shadow_real_one(tmp_path):
     root = _make_plugin_root(tmp_path)
 

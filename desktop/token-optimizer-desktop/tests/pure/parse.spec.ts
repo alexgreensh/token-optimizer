@@ -2,6 +2,7 @@
 // shapes. Pure: every input is passed in.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 
 import {
   parseQualityCache,
@@ -259,4 +260,115 @@ test('Token Optimizer root: no home gives only registry entries', () => {
 
 test('Token Optimizer root: a relocated Claude folder (CLAUDE_CONFIG_DIR) is where the skill install lives', () => {
   assert.deepEqual(resolveTokenOptimizerRoot(null, '/data/claude'), [{ scriptsDir: '/data/claude/skills/token-optimizer/scripts', runner: null }])
+})
+
+test('usage: auto-compaction ceiling replaces both the model window and host percent', () => {
+  const usage = { context: { tokens: 191_100, window: 1_000_000, percent: 18 } }
+  const u = parseUsage(usage, '480000')
+  assert.equal(u.contextWindow, 480_000)
+  assert.equal(u.contextPercent, 39.8125)
+  assert.equal(u.contextTokens, 191_100)
+  assert.deepEqual(usage.context, { tokens: 191_100, window: 1_000_000, percent: 18 })
+})
+
+test('usage: absent, malformed auto-compaction ceilings preserve host usage', () => {
+  const usage = { context: { tokens: 191_100, window: 1_000_000, percent: 18 } }
+  for (const ceiling of [undefined, null, '', ' ', 'Infinity', 'NaN', 'junk', '１２３', '\u200b480000', '\0', 480_000, true, {}, []]) {
+    assert.deepEqual(parseUsage(usage, ceiling), parseUsage(usage), `ceiling: ${String(ceiling)}`)
+  }
+})
+
+test('usage: equal or larger ceilings cannot enlarge the host window or change its percent', () => {
+  const usage = { context: { tokens: 50_000, window: 200_000, percent: 24 } }
+  for (const ceiling of ['200000', '480000']) {
+    assert.deepEqual(parseUsage(usage, ceiling), parseUsage(usage))
+  }
+})
+
+test('usage: decimal token counts allow surrounding whitespace and leading zeros', () => {
+  const usage = { context: { tokens: 50_000, window: 200_000 } }
+  for (const ceiling of [' 100000\n', '0100000']) {
+    assert.equal(parseUsage(usage, ceiling).contextWindow, 100_000)
+    assert.equal(parseUsage(usage, ceiling).contextPercent, 50)
+  }
+})
+
+test('usage: ceiling needs a valid host window and does not invent missing context', () => {
+  for (const window of [undefined, null, 0, -1, NaN, Infinity, '1000000']) {
+    const usage = { context: { tokens: 191_100, window, percent: 19 } }
+    assert.deepEqual(parseUsage(usage, '480000'), parseUsage(usage))
+    assert.equal(parseUsage(usage, '480000').contextWindow, null)
+  }
+  assert.deepEqual(parseUsage(null, '480000'), parseUsage(null))
+})
+
+test('usage: reduced window without valid tokens cannot reuse the host percent', () => {
+  for (const tokens of [undefined, null, '191100', NaN, Infinity, -1]) {
+    const u = parseUsage({ context: { tokens, window: 1_000_000, percent: 19 } }, '480000')
+    assert.equal(u.contextWindow, 480_000)
+    assert.equal(u.contextPercent, null)
+  }
+})
+
+test('usage: reduced-window fill supports zero and over-full usage without rounding', () => {
+  assert.equal(parseUsage({ context: { tokens: 0, window: 1_000_000, percent: 19 } }, '480000').contextPercent, 0)
+  assert.equal(parseUsage({ context: { tokens: 600_000, window: 1_000_000, percent: 60 } }, '480000').contextPercent, 125)
+})
+
+test('usage: ceiling leaves start time and rate limits untouched', () => {
+  const usage = {
+    startedAt: 1_791_000_000_000,
+    context: { tokens: 191_100, window: 1_000_000, percent: 19.11 },
+    rateLimits: [{ kind: 'five_hour', percentUsed: 80 }, { kind: 'seven_day', percentUsed: 12 }],
+  }
+  const original = parseUsage(usage)
+  const reduced = parseUsage(usage, '480000')
+  assert.deepEqual(reduced.fiveHour, original.fiveHour)
+  assert.deepEqual(reduced.week, original.week)
+  assert.equal(reduced.startedAtMs, original.startedAtMs)
+})
+
+test('usage: env normalization follows the host: decimal prefix, 100K-1M bounds, invalid ignored', () => {
+  const usage = { context: { window: 2_000_000, tokens: 50_000, percent: 2.5 } }
+  for (const [raw, expected] of [['50000', 100_000], ['500k', 100_000], ['480k', 100_000],
+    ['+480000', 480_000], ['480000.5', 480_000],
+    ['480000junk', 480_000], ['1e5', 100_000], ['2000000', 1_000_000],
+    ['9007199254740993', 1_000_000], ['9'.repeat(400), 1_000_000]] as const) {
+    const result = parseUsage(usage, raw)
+    assert.equal(result.contextWindow, expected, raw)
+    assert.equal(result.contextPercent, 50_000 / expected * 100, raw)
+  }
+})
+
+test('usage: an invalid env value (zero, negative, garbage) is ignored, not clamped to the floor', () => {
+  const usage = { context: { window: 2_000_000, tokens: 50_000, percent: 2.5 } }
+  for (const raw of ['0', '-1', 'abc', '1e-1']) {
+    const result = parseUsage(usage, raw)
+    assert.equal(result.contextWindow, 2_000_000, raw)
+    assert.equal(result.contextPercent, 2.5, raw)
+  }
+})
+
+test('usage: env window parses like the host (shared vectors with Python and statusline.js)', () => {
+  const { vectors } = JSON.parse(readFileSync(
+    new URL('../../../../tests/fixtures/compact_window_env_vectors.json', import.meta.url), 'utf8')) as
+    { vectors: Array<{ raw: string; window: number | null }> }
+  assert.ok(vectors.length > 20)
+  const usage = { context: { window: 2_000_000, tokens: 50_000, percent: 2.5 } }
+  for (const v of vectors) {
+    const result = parseUsage(usage, v.raw)
+    assert.equal(result.contextWindow, v.window ?? 2_000_000, JSON.stringify(v.raw))
+  }
+})
+
+test('usage: absent ceiling preserves negative-window baseline fallback literally', () => {
+  const result = parseUsage({ context: { tokens: 50_000, window: -200_000 } })
+  assert.equal(result.contextWindow, null)
+  assert.equal(result.contextPercent, -25)
+})
+
+test('usage: extreme finite tokens stay finite under the host-clamped minimum', () => {
+  const result = parseUsage({ context: { tokens: Number.MAX_VALUE, window: 1_000_000 } }, '1')
+  assert.equal(result.contextWindow, 100_000)
+  assert.ok(Number.isFinite(result.contextPercent))
 })

@@ -279,13 +279,15 @@ def _rebind_shared_stdin(module) -> None:
 #     subcommand fires on exactly the tools its own entry fired on. Exact.
 #
 #   * Host ANCHORS (fullmatch). Then the union gate admits exactly
-#     {Bash, Read, Glob, Grep, Agent, Edit, Write, MultiEdit, NotebookEdit}
-#     plus mcp__*, and re.search here can only over-match INSIDE that set.
+#     {Bash, PowerShell, Read, Glob, Grep, Agent, Edit, Write, MultiEdit,
+#     NotebookEdit} plus mcp__*, and re.search here can only over-match INSIDE
+#     that set.
 #     Enumerated, it does not:
-#       - _MATCHER_ARCHIVE searches for Bash|Read|Glob|Grep|Agent|mcp__.* --
-#         no admitted tool contains one of those as a substring without also
-#         matching it under fullmatch (MultiEdit/NotebookEdit/Edit/Write
-#         contain none of them).
+#       - _MATCHER_ARCHIVE searches for
+#         Bash|PowerShell|Read|Glob|Grep|Agent|mcp__.* -- no admitted tool
+#         contains one of those as a substring without also matching it under
+#         fullmatch (MultiEdit/NotebookEdit/Edit/Write contain none of them;
+#         "PowerShell" itself contains no "Bash").
 #       - _MATCHER_CONTEXT_INTEL likewise.
 #       - _MATCHER_BASH_COMPRESS ("Bash") and _MATCHER_READ_CACHE_INV are the
 #         two where an mcp tool could contain the substring (e.g.
@@ -303,11 +305,18 @@ def _rebind_shared_stdin(module) -> None:
 # --------------------------------------------------------------------------- #
 
 _MATCHER_BASH_COMPRESS = "Bash"
-_MATCHER_ARCHIVE = "Bash|Read|Glob|Grep|Agent|mcp__.*"
-_MATCHER_CONTEXT_INTEL = "Bash|Read|Grep|Glob|Edit|Write|MultiEdit|NotebookEdit|mcp__.*"
+# PowerShell is in the archive/intel matchers: both handlers only read the
+# tool's OUTPUT (archive the body, log the activity row), which is
+# tool-name-generic. bash_compress_hook stays Bash-only -- it rewrites Bash
+# command-line output, which is not valid for PowerShell -- and read_cache
+# --invalidate stays on the edit tools.
+_MATCHER_ARCHIVE = "Bash|PowerShell|Read|Glob|Grep|Agent|mcp__.*"
+_MATCHER_CONTEXT_INTEL = (
+    "Bash|PowerShell|Read|Grep|Glob|Edit|Write|MultiEdit|NotebookEdit|mcp__.*"
+)
 _MATCHER_READ_CACHE_INVALIDATE = "Edit|Write|MultiEdit|NotebookEdit"
 _MATCHER_QUALITY_CACHE = (
-    "Bash|Read|Glob|Grep|Agent|Edit|Write|MultiEdit|NotebookEdit|mcp__.*"
+    "Bash|PowerShell|Read|Glob|Grep|Agent|Edit|Write|MultiEdit|NotebookEdit|mcp__.*"
 )
 
 # Entry 6's matcher IS the union, and the union is what the consolidated
@@ -865,7 +874,8 @@ def _quality_cache_self_heal() -> None:
             if measure.CONFIG_PATH.exists():
                 _qb_cfg = json.loads(measure.CONFIG_PATH.read_text(encoding="utf-8"))
                 _qb_disabled = _qb_cfg.get("quality_bar_disabled", False)
-            if not _is_plugin and not _qb_disabled and measure.SETTINGS_PATH.exists():
+            if (not _is_plugin and not _qb_disabled
+                    and measure._is_regular_file(measure.SETTINGS_PATH)):
                 _sh_settings = json.loads(
                     measure.SETTINGS_PATH.read_text(encoding="utf-8")
                 )
@@ -982,15 +992,22 @@ def _subcommand_table():
 
 
 # --------------------------------------------------------------------------- #
-# PostToolUseFailure (matcher "Bash", its own hooks.json entry).
+# PostToolUseFailure (matcher "Bash|PowerShell", its own hooks.json entry).
 #
-# Claude Code delivers a failed Bash call on this event, not on PostToolUse:
-# the payload carries the exit status in ``error`` ("Exit code N\n<output>")
+# Claude Code delivers a failed Bash call on this event, not on PostToolUse --
+# and the Windows PowerShell tool is the same event's other shell consumer.
+# The payload carries the exit status in ``error`` ("Exit code N\n<output>")
 # and there is no tool_response to rewrite. The only consumer is the thrash
 # guard, which gets the authoritative exit code; a nudge, if any, goes out as
 # ``additionalContext`` (the one output field this event supports). Nothing is
 # emitted when there is nothing to say, and any failure here is swallowed: a
 # broken hook must never turn a tool failure into a worse one.
+#
+# Why PowerShell is safe here: the guard is byte-level (identical command +
+# byte-identical output streaks, same-command burn streaks) -- both signals
+# are tool-agnostic. Its Bash-only smarts (heredoc bodies) simply never match
+# PowerShell syntax; the ``command`` field name is shared by both tools; and
+# any error string not shaped "Exit code N\n..." fails the regex and no-ops.
 # --------------------------------------------------------------------------- #
 
 # "Exit code N" followed by the command's output (may be empty, may be
@@ -1000,7 +1017,7 @@ _FAILURE_ERROR_RE = re.compile(r"^Exit code (\d+)\n?(.*)$", re.DOTALL)
 
 def _handle_post_tool_use_failure(hook_input: dict) -> None:
     try:
-        if str(hook_input.get("tool_name") or "") != "Bash":
+        if str(hook_input.get("tool_name") or "") not in ("Bash", "PowerShell"):
             return
         m = _FAILURE_ERROR_RE.match(str(hook_input.get("error") or ""))
         if m is None:

@@ -15,6 +15,24 @@
 # Exits 127 with a diagnostic message if none found.
 
 set -eu
+# A failed `exec` (bad shebang, file gone between discovery and exec, ENOEXEC)
+# must return to the caller instead of terminating the shell non-zero, so
+# discovery can advance to the next candidate and the launcher keeps its
+# exit-0 guarantee (see HOOK-SAFETY at the bottom). `execfail` is half of that;
+# _try_exec below is the other half.
+shopt -s execfail
+
+# _try_exec <interpreter> [args...] -- exec, returning 1 if the exec fails.
+# bash 3.2 (macOS /bin/bash) exits the shell on a failed `exec` whenever errexit
+# is on, even with execfail and even when the call sits in an `||` list. So
+# errexit is dropped for the exec itself and restored on the only path that
+# returns (a failed exec). A successful exec never returns.
+_try_exec() {
+    set +e
+    exec "$@"
+    set -e
+    return 1
+}
 # Extglob enables +([0-9]) in the version-number case patterns below so
 # the glob is anchored to the path-component boundary. Without it, * in a
 # case pattern crosses / and Python[23]* matches Python3-evil/python.exe.
@@ -26,6 +44,48 @@ shopt -s extglob
 # All prefixes are hardcoded (not derived from PATH-controlled binaries
 # like `brew --prefix`, which would be circular trust).
 _SAFE_PREFIXES="/usr/bin /usr/local/bin /opt/homebrew/bin /opt/homebrew/opt /home/linuxbrew/.linuxbrew/bin"
+
+# _canonicalize_dir <dir> -> canonical absolute path via $_CANON_DIR
+#
+# `cd -P` resolves every symlink level portably (no realpath/readlink -f, which
+# are absent or inconsistent on older macOS and MSYS). The old $(cd ...; pwd -P)
+# form forked a bash subshell per call -- a whole process each on MSYS -- so
+# this runs the builtin `cd` in a plain if-block (no subshell). That makes the
+# jump visible to the whole launcher, and the launcher then `exec`s the hook
+# interpreter, so the caller's state is put back before returning: the working
+# directory (the hook must run in the project the host launched it from, not in
+# the plugin's hooks/ dir), $PWD (logical, as the host had it) and OLDPWD
+# (restored, or left unset if it was unset -- never exported as an empty string).
+#
+# `builtin cd` everywhere: a user who exports a `cd` shell function (the classic
+# "cd then ls" wrapper; bash imports it from the environment) would otherwise
+# have it run here, and whatever it prints would land in the hook's stdout ahead
+# of the hook's own output (it used to be captured by the old $(...) form).
+#
+# Never leave a directory we cannot return to: if the start dir was removed
+# (worktree cleanup), lost its +x bit, or its path no longer leads back to the
+# same directory, the jump would be one-way and the interpreter would wake up
+# inside the plugin's hooks/ dir with a PWD that points there. In that case skip
+# the canonicalisation (callers treat failure as "cache off for this run").
+# `-ef` is a builtin test (no fork) that follows symlinks, so a logical $PWD
+# through a symlink still passes.
+_canonicalize_dir() {
+    local _start=$PWD _had_old=${OLDPWD+x} _oldpwd=${OLDPWD:-} _rc=1
+    if [ -n "$_start" ] && [ -d "$_start" ] && [ -x "$_start" ] && [ "$_start" -ef . ]; then
+        :
+    else
+        return 1
+    fi
+    if CDPATH='' builtin cd -P -- "$1" 2>/dev/null; then
+        _CANON_DIR=$PWD
+        _rc=0
+        # Best effort: if the start dir vanished or lost +x there is nothing
+        # better to restore, and the launcher must still never abort (set -e).
+        CDPATH='' builtin cd -- "$_start" 2>/dev/null || :
+    fi
+    if [ -n "$_had_old" ]; then OLDPWD=$_oldpwd; else unset OLDPWD; fi
+    return "$_rc"
+}
 
 # Canonicalize a file path (resolve symlinks). exec follows symlinks, so a
 # user-owned symlink pointing at a hostile target must be judged by the TARGET.
@@ -40,9 +100,11 @@ _to_realpath() {
     if readlink -f "$p" >/dev/null 2>&1; then
         readlink -f "$p" 2>/dev/null && return 0
     fi
-    d=$(dirname "$p") || return 1
-    b=$(basename "$p") || return 1
-    ( cd "$d" 2>/dev/null && printf '%s/%s\n' "$(pwd -P)" "$b" ) || return 1
+    d=${p%/*}
+    if [ "$d" = "$p" ]; then d=.; elif [ -z "$d" ]; then d=/; fi
+    b=${p##*/}
+    _canonicalize_dir "$d" || return 1
+    printf '%s/%s\n' "$_CANON_DIR" "$b"
 }
 
 # Print a path's permission bits as octal, ZERO-PADDED to at least 3 digits.
@@ -149,10 +211,9 @@ _is_safe_prefix() {
     # another user's tree is still refused -- and it never runs the target.
     # Skipped on Windows: Git-Bash/MSYS stat ownership+mode is unreliable, and
     # its managers are covered by the drive-letter patterns above.
-    case "$(uname -s 2>/dev/null || echo unknown)" in
-        *MINGW*|*MSYS*|*CYGWIN*) : ;;
-        *) _to_owned_unwritable "$binpath" && return 0 ;;
-    esac
+    if ! _is_msys_platform; then
+        _to_owned_unwritable "$binpath" && return 0
+    fi
     return 1
 }
 
@@ -161,7 +222,19 @@ _is_safe_prefix() {
 # exactly as it did before caching was added.
 _PY_CACHE_FILE=""
 
+# Hard ceiling on records in the interpreter-cache dir. The key already
+# dedupes PATH noise (see _setup_interpreter_cache), but candidate churn can
+# still accumulate records slowly (venvs created/deleted over months); cap
+# with oldest-first eviction so the dir can never regrow toward the 174
+# files the whole-PATH checksum produced.
+_PY_CACHE_MAX_FILES=32
+
 _is_msys_platform() {
+    # Bash supplies OSTYPE on Git Bash/MSYS and Cygwin. Avoid spawning uname
+    # on the Windows hot path; retain the probe for other shell environments.
+    case "${OSTYPE:-}" in
+        msys*|cygwin*) return 0 ;;
+    esac
     local platform
     platform=$(uname -s 2>/dev/null) || return 1
     case "$platform" in
@@ -175,24 +248,40 @@ _is_msys_platform() {
 # explicit-variant patterns (*/WindowsApps/*|*/windowsapps/*) only covered
 # two casings and would miss others, letting a Store AppExecutionAlias stub
 # through unprobed or skipping a legit Store install in the safe-prefix list.
-# tr is POSIX and present in every supported hook env including Git Bash.
+# A shell pattern avoids spawning tr on every twin selection.
 _path_contains_windowsapps() {
-    local lower
-    lower=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
-    case "$lower" in
-        */windowsapps/*) return 0 ;;
+    case "$1" in
+        */[wW][iI][nN][dD][oO][wW][sS][aA][pP][pP][sS]/*) return 0 ;;
     esac
     return 1
 }
 
+# Non-cryptographic cache partition only. Every record is still validated
+# against the interpreter safety policy before exec. Bash arithmetic is masked
+# to 32 bits to keep filenames bounded on both 32- and 64-bit shells.
+# LC_ALL=C makes indexing byte-based, independent of the user's locale.
+_cache_checksum() {
+    local LC_ALL=C hash=0 char byte
+    # read advances linearly; indexing a long Bash string for each byte is
+    # quadratic. The here-string adds the same final newline to every key.
+    while IFS= read -r -n 1 -d '' char; do
+        printf -v byte '%d' "'$char"
+        hash=$(( (hash * 65599 + byte) & 4294967295 ))
+    done <<< "$1"
+    _CACHE_CHECKSUM=$hash
+}
+
 _cache_dir_is_per_user() {
-    local cache_dir="$1" cache_real root root_real
-    cache_real=$(CDPATH='' cd -- "$cache_dir" 2>/dev/null && pwd -P) || return 1
+    local cache_dir="$1" cache_real root
+    # In-place builtin canonicalize (no subshell) -- this runs on every cache
+    # HIT on MSYS, where each $(cd ...) fork is a process.
+    _canonicalize_dir "$cache_dir" || return 1
+    cache_real=$_CANON_DIR
     for root in "${XDG_CACHE_HOME:-}" "${HOME:-}"; do
         [ -n "$root" ] && [ -d "$root" ] || continue
-        root_real=$(CDPATH='' cd -- "$root" 2>/dev/null && pwd -P) || continue
+        _canonicalize_dir "$root" || continue
         case "$cache_real" in
-            "$root_real"/*) return 0 ;;
+            "$_CANON_DIR"/*) return 0 ;;
         esac
     done
     return 1
@@ -216,31 +305,108 @@ _cache_dir_ready() {
     fi
 }
 
+# _python_candidate_paths -> sets _CAND_PATHS to the ordered list of PATH
+# entries that contain a python3 / python / py interpreter file.
+#
+# The cache key must change iff find_interpreter() can return a different
+# answer. find_interpreter walks PATH in order and probes
+# $dir/{python3,python,py}{,.exe} (+ .bat/.cmd on Windows), so its answer
+# depends only on PATH entries that HOLD one of those names. Keying on the
+# whole PATH string minted a new record for any PATH churn (one machine
+# accumulated 174 files); keying on the candidate set dedupes every PATH that
+# yields the same discovery answer while still separating PATHs whose answers
+# can differ. No candidates still gets a stable key -- the direct-probe
+# fallback result is equally cacheable. Bash builtins only ([ -e ] on the
+# py* glob + [ -x -s ]): this runs on every cache HIT, so no utilities and
+# no subshells may be used here.
+_python_candidate_paths() {
+    local dir f base IFS=: win_exts=""
+    _CAND_PATHS=""
+    if _is_msys_platform; then win_exts=1; fi
+    for dir in ${PATH:-}; do
+        [ -n "$dir" ] || dir="."
+        for f in "$dir"/py*; do
+            # Non-matching globs return the literal pattern; [ -e ] rejects it.
+            [ -e "$f" ] || continue
+            base=${f##*/}
+            case "$base" in
+                python3|python|py|python3.exe|python.exe|py.exe) ;;
+                python3.bat|python3.cmd|python.bat|python.cmd|py.bat|py.cmd)
+                    [ -n "$win_exts" ] || continue ;;
+                *) continue ;;
+            esac
+            [ -x "$f" ] && [ -s "$f" ] || continue
+            # Key on the dir once even when it holds several names: discovery's
+            # answer is the dir ORDER, and which name wins inside a dir is
+            # decided by the same executable checks repeated here.
+            _CAND_PATHS="${_CAND_PATHS}${dir}"$'\n'
+            break
+        done
+    done
+}
+
+# _prune_interpreter_cache -- oldest-first eviction keeping the record dir
+# <= _PY_CACHE_MAX_FILES. Called only on the WRITE (miss) path: misses already
+# pay for discovery, while the `ls`/`rm` below would be unaffordable process
+# launches on the hit path this whole change set exists to cheapen.
+_prune_interpreter_cache() {
+    [ -n "$_PY_CACHE_FILE" ] || return 0
+    local cache_dir=${_PY_CACHE_FILE%/*}
+    local f i count=0
+    local -a files=()
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        [ "$f" = "$_PY_CACHE_FILE" ] && continue
+        files+=("$f")
+        count=$((count + 1))
+    done <<EOF
+$(ls -1tr "$cache_dir"/interpreter-e*-*.cache 2>/dev/null)
+EOF
+    i=0
+    while [ "$count" -ge "$_PY_CACHE_MAX_FILES" ] && [ "$i" -lt "${#files[@]}" ]; do
+        # `|| :` -- an unremovable record (held by antivirus, immutable) must
+        # never abort the launcher under `set -e`: that abort would land before
+        # the cache write, so no new record is ever stored and every later hook
+        # aborts the same way.
+        rm -f -- "${files[$i]}" 2>/dev/null || :
+        i=$((i + 1))
+        count=$((count - 1))
+    done
+}
+
 _setup_interpreter_cache() {
-    local launcher_dir plugin_dir hash_output plugin_hash path_hash_output path_hash cache_dir
+    local launcher_dir plugin_dir plugin_hash path_hash cache_dir hash_output
 
     launcher_dir=${0%/*}
     [ "$launcher_dir" != "$0" ] || launcher_dir=.
-    if ! plugin_dir=$(CDPATH='' cd -- "$launcher_dir" 2>/dev/null && pwd -P); then
+    # In-place builtin canonicalize -- the $(cd ...) form forked a bash
+    # subshell on every cache HIT on MSYS.
+    if ! _canonicalize_dir "$launcher_dir"; then
         return 0
     fi
+    plugin_dir=$_CANON_DIR
 
-    # cksum is POSIX and is present in the Unix environments supported by this
-    # launcher, including Git Bash. If unavailable, caching simply stays off.
-    if ! hash_output=$(printf '%s' "$plugin_dir" | cksum 2>/dev/null); then
-        return 0
+    # The PATH half of the key covers only what can change discovery's answer
+    # (the PATH entries that actually hold a python/py candidate), not the
+    # whole PATH string.
+    _python_candidate_paths
+
+    if _is_msys_platform; then
+        # Windows process startup is expensive. Keep both checksums in Bash.
+        _cache_checksum "$plugin_dir"
+        plugin_hash=$_CACHE_CHECKSUM
+        _cache_checksum "$_CAND_PATHS"
+        path_hash=$_CACHE_CHECKSUM
+    else
+        # Native POSIX utility startup is cheap; cksum avoids a shell byte
+        # loop on unusually long PATHs. Failure simply disables the cache.
+        hash_output=$(printf '%s' "$plugin_dir" | cksum 2>/dev/null) || return 0
+        plugin_hash=${hash_output%% *}
+        hash_output=$(printf '%s' "$_CAND_PATHS" | cksum 2>/dev/null) || return 0
+        path_hash=${hash_output%% *}
+        case "$plugin_hash" in ''|*[!0-9]*) return 0 ;; esac
+        case "$path_hash" in ''|*[!0-9]*) return 0 ;; esac
     fi
-    plugin_hash=${hash_output%% *}
-    case "$plugin_hash" in
-        ''|*[!0-9]*) return 0 ;;
-    esac
-    if ! path_hash_output=$(printf '%s' "${PATH:-}" | cksum 2>/dev/null); then
-        return 0
-    fi
-    path_hash=${path_hash_output%% *}
-    case "$path_hash" in
-        ''|*[!0-9]*) return 0 ;;
-    esac
 
     if [ "${TOKEN_OPTIMIZER_PY_CACHE+x}" = x ]; then
         cache_dir=$TOKEN_OPTIMIZER_PY_CACHE
@@ -270,8 +436,10 @@ _setup_interpreter_cache() {
     # on a cache HIT (only on a miss). Bumping this epoch renames the cache file, so
     # every stale record is ignored once on upgrade: discovery re-runs, the new
     # probe rejects the dead stub, and a healthy interpreter is cached under the new
-    # key. Bump `e2` on any future change to interpreter-liveness probing.
-    _PY_CACHE_FILE="${cache_dir%/}/interpreter-e2-${plugin_hash}-${path_hash}.cache"
+    # key. Bump `e4` on any future change to interpreter-liveness probing.
+    # (e4: the PATH half of the key changed from the whole PATH string to the
+    # candidate-dir set -- see _python_candidate_paths.)
+    _PY_CACHE_FILE="${cache_dir%/}/interpreter-e4-${plugin_hash}-${path_hash}.cache"
 }
 
 # On Windows (Git Bash/MSYS), python.exe is a console-subsystem binary: each
@@ -312,8 +480,8 @@ _maybe_swap_to_pythonw() {
     local interp="$1" dir twin pythonw
     _PYW_INTERP="$interp"
     case "$interp" in
-        */python.exe|*/python3.exe) twin="pythonw.exe" ;;
-        */py.exe) twin="pyw.exe" ;;
+        */python|*/python3|*/python.exe|*/python3.exe) twin="pythonw.exe" ;;
+        */py|*/py.exe) twin="pyw.exe" ;;
         *) return 0 ;;
     esac
     _is_msys_platform || return 0
@@ -395,16 +563,17 @@ _exec_cached_interpreter() {
     _is_safe_prefix "$interp" || return 1
 
     if [ "$marker" = "-3" ]; then
-        exec "$interp" -3 "$@"
+        _try_exec "$interp" -3 "$@"
         return 1
     fi
-    exec "$interp" "$@"
+    _try_exec "$interp" "$@"
 }
 
 _write_interpreter_cache() {
     local interp="$1" marker="$2" cache_tmp
 
     [ -n "$_PY_CACHE_FILE" ] || return 0
+    _prune_interpreter_cache
     cache_tmp="${_PY_CACHE_FILE}.tmp.$$"
     if [ "$marker" = "-3" ]; then
         (umask 077; set -C; printf 'INTERP\t%s\t-3\n' "$interp" > "$cache_tmp" &&
@@ -435,9 +604,10 @@ _exec_discovered_interpreter() {
     [ -x "$interp" ] && [ -s "$interp" ] || return 1
     _is_safe_prefix "$interp" || return 1
     if [ "$marker" = "-3" ]; then
-        exec "$interp" -3 "$@"
+        _try_exec "$interp" -3 "$@"
+        return 1
     fi
-    exec "$interp" "$@"
+    _try_exec "$interp" "$@"
 }
 
 # Explicit user override. pyenv / asdf / conda / venv interpreters, and Codex
@@ -458,7 +628,8 @@ if [ -n "${TOKEN_OPTIMIZER_PYTHON:-}" ]; then
     _ov="$TOKEN_OPTIMIZER_PYTHON"
     if [ -x "$_ov" ] && [ -s "$_ov" ] && \
        "$_ov" -c 'import sys; sys.exit(0 if sys.version_info[0] >= 3 else 1)' >/dev/null 2>&1; then
-        exec "$_ov" "$@"
+        # `|| :`: a failed exec falls through to normal discovery.
+        _try_exec "$_ov" "$@" || :
     fi
     # `|| :` so a failed write (stderr closed) cannot abort under `set -e` before
     # we fall through to normal discovery.
@@ -605,15 +776,15 @@ find_interpreter() {
 }
 
 if py3=$(find_interpreter "python3"); then
-    _exec_discovered_interpreter "$py3" "" "$@"
+    _exec_discovered_interpreter "$py3" "" "$@" || :
 fi
 
 if py=$(find_interpreter "python"); then
-    _exec_discovered_interpreter "$py" "" "$@"
+    _exec_discovered_interpreter "$py" "" "$@" || :
 fi
 
 if pyl=$(find_interpreter "py"); then
-    _exec_discovered_interpreter "$pyl" "-3" "$@"
+    _exec_discovered_interpreter "$pyl" "-3" "$@" || :
 fi
 
 # Direct probe: hook environments often have a stripped PATH that excludes
@@ -621,7 +792,7 @@ fi
 for _direct in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3 \
                /home/linuxbrew/.linuxbrew/bin/python3; do
     if [ -x "$_direct" ] && [ -s "$_direct" ] && _is_safe_prefix "$_direct"; then
-        _exec_discovered_interpreter "$_direct" "" "$@"
+        _exec_discovered_interpreter "$_direct" "" "$@" || :
     fi
 done
 

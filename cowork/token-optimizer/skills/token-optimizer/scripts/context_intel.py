@@ -16,7 +16,8 @@ Summary generation is heuristic (<30ms), not LLM-based. Extracts:
 
 Cooldown: max 3 summaries per 5 minutes to avoid write contention.
 
-Hook registration: PostToolUse on Bash|Read|Grep|Glob|mcp__.*
+Hook registration: PostToolUse on Bash|PowerShell|Read|Grep|Glob|mcp__.*
+(the consolidated runner also fires it on the edit tools).
 """
 
 from __future__ import annotations
@@ -196,6 +197,10 @@ _MAX_DECISIONS = 10
 _SENTENCE_SPLIT_RE = re.compile(r"[.!?\n]+")
 
 
+# How far past the 5000-char decision sample the redactor reads (see below).
+_DECISION_REDACT_WINDOW = 6000
+
+
 def _extract_decisions(text: str, store: SessionStore) -> None:
     """Extract decision statements from tool output and store incrementally.
 
@@ -209,6 +214,20 @@ def _extract_decisions(text: str, store: SessionStore) -> None:
         return
     sample = text[:5000]
     if not _DECISION_RE.search(sample):
+        return
+
+    # No persistence without the shared redactor: these sentences are raw
+    # tool output and may carry credentials (a decision quoting a token, a
+    # connection string, a PEM line). If the redactor is missing or refuses
+    # (broken custom pattern config), store nothing rather than persist text
+    # the org rules were meant to cover. Redact BEFORE the width cuts below:
+    # a secret straddling a cut is a prefix no pattern recognises. The window
+    # is read a little past the 5000-char sample so a secret that straddles
+    # the sample edge is whole when the redactor sees it.
+    try:
+        from credential_patterns import redact_credentials as _redact_decision
+        sample = _redact_decision(text[:_DECISION_REDACT_WINDOW])[:5000]
+    except Exception:
         return
 
     sentences = [
@@ -272,7 +291,10 @@ def handle_post_tool_use() -> None:
             try:
                 from activity_tracker import log_tool_use
                 command = ""
-                if tool_name == "Bash" and isinstance(tool_input, dict):
+                # PowerShell tool input carries the same `command` field as
+                # Bash (it is the Windows shell tool); the text is only logged,
+                # never interpreted as Bash syntax.
+                if tool_name in ("Bash", "PowerShell") and isinstance(tool_input, dict):
                     command = tool_input.get("command", "")
                 has_error = _has_error_signals(tool_response) if isinstance(tool_response, str) else False
                 log_tool_use(store, tool_name, command=command, has_error=has_error)

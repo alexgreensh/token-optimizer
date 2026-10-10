@@ -111,6 +111,12 @@ Uninstalling removes the capture and restore hooks. Existing checkpoints on disk
 If you installed Token Optimizer as a plugin, the smart-compaction hooks come from the plugin's `hooks/hooks.json`, not from `settings.json`. Uninstall through the plugin, or run `cleanup-duplicate-hooks` if you previously ran `setup-smart-compact` and now have both.
 </Aside>
 
+## The compact window itself
+
+Claude Code picks a compaction window tuned for your model (about 967K on 1M-native models; `autoCompactWindow` or `/autocompact <n>` override it). Once a day, Token Optimizer replays your own last 30 days of sessions and -- only when an earlier window would have avoided at least 10% of cache-read tokens at no more than about 5 extra compactions a day, with a positive priced net -- recommends the best window with the exact `/autocompact <n>` command. It never writes `autoCompactWindow` or touches the setting itself: the recommendation is advice, and earlier compaction can drop early instructions, so you decide.
+
+The verdict lives in the shared daily record that `recommendations`, `quick`, `doctor`, `status`, `coach`, and the dashboard's "From your own usage" section read; `compact-advice` shows the full per-window replay behind it. After you change the window and the measured cache-read per session moves, the record reports it as a "since you changed it" win -- an estimate from your own sessions, never a causal claim.
+
 ## Defaults and thresholds
 
 | Setting | Default | Notes |

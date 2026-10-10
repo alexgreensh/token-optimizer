@@ -38,7 +38,7 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_SCRIPT_DIR))
 
 from py_trust import py_path_is_trusted, py_trust_reason  # noqa: E402
-from runtime_env import grok_home  # noqa: E402
+from runtime_env import grok_home, measure_cli as _measure_cli, with_measure_cli as _hint  # noqa: E402
 
 # Observe hooks default to 5s; PostToolUse/Stop default to 600s in grok. TO's
 # handlers are fast, so pin short explicit timeouts (10-hooks.md "Key Fields").
@@ -381,7 +381,7 @@ def main(argv=None) -> int:
             print(f"  Hooks written to: {result['hook_file']}")
             print(f"  Modules: {len(result['copied'])} copied"
                   + (f", {len(result['skipped'])} missing: {result['skipped']}" if result["skipped"] else ""))
-            print("  Run `python3 measure.py grok-doctor` to verify readiness.")
+            print(_hint("  Run `python3 measure.py grok-doctor` to verify readiness."))
         else:
             result = uninstall(dry_run=args.dry_run, home=args.home)
             verb = "Would remove" if args.dry_run else "Removed"

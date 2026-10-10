@@ -17,6 +17,7 @@ import {
   parseStatusBar,
   parseUsage,
   resolveTokenOptimizerRoot,
+  smallerCompactWindow,
   type StatusBar,
   type TokenOptimizerRoot,
 } from '../src/parse.ts'
@@ -74,6 +75,8 @@ export type DataIo = {
   envHome: () => Promise<string | undefined>
   /** `$.env.get('CLAUDE_CONFIG_DIR')`: a relocated Claude folder, as Token Optimizer honours it */
   envConfigDir?: () => Promise<string | undefined>
+  /** `$.env.get('CLAUDE_CODE_AUTO_COMPACT_WINDOW')`: the raw auto-compaction window override */
+  envAutoCompactWindow?: () => Promise<string | undefined>
   /** `$.env.get('USERPROFILE')`, the Windows home */
   envUserProfile: () => Promise<string | undefined>
   /** `$.session.usage()` */
@@ -331,6 +334,11 @@ export type GatherOptions = {
  * the clock facts come from the status command when asked for; when it is not
  * asked, fails or times out, the last known values stay.
  */
+/** Only the context figures of a parsed usage, with the reduced flag always present so a stale one is cleared. */
+function contextOf(u: ReturnType<typeof parseUsage>) {
+  return { contextPercent: u.contextPercent, contextTokens: u.contextTokens, contextWindow: u.contextWindow, contextWindowReduced: u.contextWindowReduced === true }
+}
+
 export async function gather(
   io: DataIo,
   previous: TokenOptimizerDesktopSession | null,
@@ -341,7 +349,9 @@ export async function gather(
   const base = options.reset || shouldReset(previous, sid) ? null : previous
   const cwd = await attempt(() => io.cwd(), '')
   const home = await readHome(io)
-  const reported = parseUsage(await attempt(() => io.usage(), null))
+  const autoCompactWindow = io.envAutoCompactWindow ? await attempt(() => io.envAutoCompactWindow!(), undefined) : undefined
+  const rawUsage = await attempt(() => io.usage(), null)
+  const reported = parseUsage(rawUsage, autoCompactWindow, base?.compactWindow)
   // A limit does not vanish mid-session: a refresh that comes back without one (right
   // after a compact, say) keeps the last known value; once that window has renewed, 0%.
   const keep = (fresh: Limit | null, last: Limit | null | undefined): Limit | null => {
@@ -372,6 +382,7 @@ export async function gather(
     savingsReason: base?.savingsReason ?? null,
     lastRequestEpoch: base?.lastRequestEpoch ?? null,
     cacheLifetime: base?.cacheLifetime ?? null,
+    compactWindow: base?.compactWindow ?? null,
     checkpointEpoch: base?.checkpointEpoch ?? null,
     earlierCheckpoint: base?.earlierCheckpoint ?? null,
     compactions: base?.compactions ?? null,
@@ -392,6 +403,8 @@ export async function gather(
           savingsReason: status.savings ? null : status.savingsReason,
           lastRequestEpoch: status.lastRequestEpoch ?? kept.lastRequestEpoch,
           cacheLifetime: status.cacheLifetime ?? kept.cacheLifetime,
+          // An answer with no window means the user has none now: a kept one must not linger.
+          compactWindow: status.compactWindow,
           checkpointEpoch: status.checkpointEpoch,
           earlierCheckpoint: status.earlierCheckpoint,
           compactions: status.compactions ?? kept.compactions,
@@ -411,11 +424,17 @@ export async function gather(
   const checkpointEpoch = notFound ? null : answered ? facts.checkpointEpoch : newer(quality?.checkpointEpoch ?? null, facts.checkpointEpoch)
   const merged = counted && answered ? { ...counted, checkpointEpoch } : counted
 
+  // /autocompact and the autoCompactWindow setting reach the band through Token Optimizer's own
+  // resolver (the status command); when its answer differs from what the first parse assumed, the
+  // context figures are read again against it.
+  const windowNow = smallerCompactWindow(autoCompactWindow, facts.compactWindow)
+  const context = windowNow === smallerCompactWindow(autoCompactWindow, base?.compactWindow) ? usage : { ...usage, ...contextOf(parseUsage(rawUsage, autoCompactWindow, facts.compactWindow)) }
+
   return {
     sessionId: sid,
     gatheredAt: now,
     quality: merged,
-    ...usage,
+    ...context,
     branch,
     ...facts,
     // Without a status answer, the newer of the two: the quality cache knows quality saves

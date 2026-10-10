@@ -84,7 +84,7 @@ def test_existing_patterns_still_redact():
     samples = {
         "AWS access key": "AKIA" + "A" * 16,
         "GitHub OAuth token": "gho_" + "b" * 36,
-        "Bearer token": "Authorization: Bearer abc.def_ghi-123",
+        "Bearer token": "Authorization: Bearer abc.def_ghi-123456",  # 16+ chars, the TS floor
         "Database URI": "postgres://user:s3cret@db.example.com/app",
     }
     for label, raw in samples.items():
@@ -98,3 +98,32 @@ def test_pattern_registered_and_labelled():
     # scan surfaces the label too (used for coverage reporting).
     hits = scan_for_credentials(f"https://example.com/a?token={_FAKE_TOKEN}")
     assert any(label == "URL auth param" for label, _match, _ln in hits)
+
+
+# GitLab token families (the `gl*-` prefixes GitLab documents). Joined at runtime so
+# no literal in this file looks like a real secret to push protection.
+_GITLAB_BODY = "AbCdEfGhIjKlMnOpQrSt"
+
+
+@pytest.mark.parametrize("prefix", ["glpat", "gldt", "glrt", "glcbt", "glptt", "glft", "glimt", "glagent", "glsoat"])
+def test_gitlab_tokens_are_redacted(prefix):
+    secret = prefix + "-" + _GITLAB_BODY
+    out = redact_credentials(f"echo {secret} | docker login --password-stdin registry.example.com")
+    assert _GITLAB_BODY not in out, out
+    assert "[CREDENTIAL REDACTED: GitLab token]" in out
+
+
+def test_gitlab_routable_token_with_dots_is_redacted_whole():
+    secret = "glpat-" + _GITLAB_BODY + ".01.abcdef123"
+    out = redact_credentials(f"PRIVATE-TOKEN: {secret} end")
+    assert "abcdef123" not in out and _GITLAB_BODY not in out
+
+
+@pytest.mark.parametrize("benign", ["glpat-", "glpat-short", "the glpat- prefix", "gl-pat-" + _GITLAB_BODY, "glob-" + _GITLAB_BODY])
+def test_gitlab_pattern_does_not_over_match(benign):
+    assert redact_credentials(benign) == benign
+
+
+def test_gitlab_prefix_trips_the_global_prefilter():
+    from credential_patterns import _text_may_contain_credentials
+    assert _text_may_contain_credentials("x glpat-" + _GITLAB_BODY)

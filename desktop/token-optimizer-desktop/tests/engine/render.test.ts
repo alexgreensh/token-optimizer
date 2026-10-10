@@ -252,12 +252,11 @@ test('a refresh that comes back without the 5-hour limit keeps the mark', async 
   expect((await exactly(ui, '40%')).length).toBeGreaterThan(0)
 })
 
-
 test('a new session with no Token Optimizer quality file yet still shows its time and tool calls', async ($, on) => {
   const w = stub(on)
   const key = Object.keys(w.files).find(k => k.includes('quality-cache-sess-1'))!
   delete w.files[key]
-  on('tool.call', () => ({ value: { content: 'ok' } }) as never)
+  on('tool.call', () => ({ result: { content: 'ok' } }) as never)
   await $.session.start(START)
   await w.clock.settle() // the status read runs just after the start
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
@@ -283,7 +282,7 @@ test('tool calls are counted without a redraw per call; the count lands when the
   const w = stub(on)
   const key = Object.keys(w.files).find(k => k.includes('quality-cache-sess-1'))!
   delete w.files[key]
-  on('tool.call', () => ({ value: { content: 'ok' } }) as never)
+  on('tool.call', () => ({ result: { content: 'ok' } }) as never)
   await $.session.start(START)
   await w.clock.settle() // the status read runs just after the start
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
@@ -336,4 +335,52 @@ test('while savings are first measured the row says so, never "Saved -- tokens"'
   await w.clock.settle()
   expect(await ui.find({ type: 'Text', text: /^Saved / })).toBeUndefined()
   expect((await exactly(ui, 'Measuring savings…')).length).toBeGreaterThan(0)
+})
+
+test('a reduced window with unknown tokens never shows the old quality-cache fill', async ($, on) => {
+  const w = stub(on, {
+    env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '480000' },
+    context: { window: 1_000_000, percent: 18 },
+  })
+  const key = Object.keys(w.files).find(k => k.includes('quality-cache-sess-1'))!
+  const q = JSON.parse(w.files[key][1])
+  w.files[key] = [1, JSON.stringify({ ...q, fill_pct: 18 })]
+  await $.session.start(START)
+  await w.clock.settle()
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect((await exactly(ui, '18%')).length).toBe(0)
+  expect((await ui.findAll({ type: 'Svg' })).some(s => s.props.alt === 'Context fill not reported yet')).toBe(true)
+})
+
+test('a rejected session read still permits publication', async ($, on) => {
+  const w = stub(on, { env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '480000' }, rejectContextReadOnce: true,
+    context: { window: 1_000_000, tokens: 191_100, percent: 18 } })
+  await $.session.start(START)
+  await w.clock.settle()
+  const last = w.written.session!.at(-1) as { contextWindow: number; contextPercent: number }
+  expect(last.contextWindow).toBe(480_000)
+  expect(last.contextPercent).toBe(39.8125)
+})
+
+test('a delayed initial session read does not publish after another session starts', async ($, on) => {
+  const w = stub(on)
+  let release!: () => void
+  let entered!: () => void
+  const ready = new Promise<void>(resolve => { entered = resolve })
+  const gate = new Promise<void>(resolve => { release = resolve })
+  let first = true
+  w.beforeContextRead = async () => {
+    if (first) { first = false; entered(); await gate }
+  }
+  const oldStart = $.session.start(START)
+  await ready
+  w.sessionId = 'sess-2'
+  const newStart = $.session.start(START)
+  for (let i = 0; i < 8; i++) await w.clock.settle()
+  release()
+  await Promise.all([oldStart, newStart])
+  await w.clock.settle()
+  expect(w.written.session!.length).toBeGreaterThan(0)
+  expect((w.written.session!.at(-1) as { sessionId: string }).sessionId).toBe('sess-2')
+  expect(w.written.session!.every(s => (s as { sessionId: string }).sessionId === 'sess-2')).toBe(true)
 })

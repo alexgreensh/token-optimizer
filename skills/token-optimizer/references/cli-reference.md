@@ -40,6 +40,10 @@
 - `measure.py inject-routing [--dry-run]` -- Inject model routing block into CLAUDE.md
 - `measure.py setup-coach-injection [--uninstall]` -- Inject coaching block
 
+## Deterministic Candidates
+
+- `measure.py deterministic-candidates [--days N] [--json] [--budget SECONDS] [--max-sessions N] [--no-cache]` -- Parts of your workflow that could be plain code instead of model calls: repeated tool-call sequences (3+ calls in 3+ sessions), templated subagent launches (5+), polling loops (the same literal command, or a `sleep`-and-recheck pattern, 4+ times with no edit between), parameter sweeps (one normalised command shape run 4+ times over distinct parameters), and passing test/build/lint turns whose reply was short. Local, read-only, no model calls; every figure is "measured on your transcripts". `tokens` and `cost_usd` are what the turns that ran those calls used (whole-turn input including cache reads, plus output; API-equivalent dollars), not what a script would save: moving a step to code removes those turns, so the saving is at most this much. An inline script (`python3 - <<'EOF'`, `python3 -c`, `bash -c`, `node -e`, `ruby -e`, `perl -e`, here-strings) counts as the same command only when its body matches, examples are credential-redacted command shapes, top 10 by tokens. Default window 30 days; the progress line goes to stderr, at most every 2 s, and only when stderr is a terminal; results are cached in the Token Optimizer data dir keyed by the newest transcript. `measure.py coach --json` carries the same block as `deterministic_candidates` (8 s budget, `"partial": true` if it ran out). Claude Code and Codex are measurable; other runtimes return `not measurable on <runtime>`.
+
 ## JSONL Toolkit
 
 - `measure.py jsonl-inspect` -- Stats, record counts, largest records
@@ -54,6 +58,7 @@
 - `measure.py setup-quality-bar [--uninstall]` -- Terminal status line
 - `measure.py plugin-cleanup` -- Detect duplicate skills and archive overlaps
 - `measure.py check-hook` -- Check if SessionEnd hook is installed
+- `measure.py recommendations [status|refresh] [--json]` -- The daily-measured usage recommendations record (compact window, subagent cache lifetime): `status` (default) prints it, `refresh` re-measures now in a bounded run. Advice only; never writes either setting (Claude Code)
 
 ## Codex Commands
 

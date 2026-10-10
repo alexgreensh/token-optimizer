@@ -8,6 +8,7 @@ moved beyond 2x.
 """
 
 import copy
+import importlib.util
 import json
 import sys
 from pathlib import Path
@@ -99,6 +100,82 @@ def test_loader_drops_bad_cards_and_keeps_good_ones(tmp_path, restore_tables):
         assert bad not in measure.OPENAI_MODEL_PRICING
 
 
+def test_anthropic_long_context_card_loads_into_every_tier(tmp_path, restore_tables):
+    """The anthropic_long_context section lands per-tier, Vertex regional +10%."""
+    path = _write(tmp_path, _doc(anthropic_long_context={
+        "haiku_9_9": {"input": 0.5, "output": 2.5, "cache_read": 0.05,
+                      "cache_write": 0.625, "cache_write_1h": 1.0},
+    }))
+    assert measure._apply_bundled_prices(path) is True
+    for tier in ("anthropic", "vertex-global", "bedrock"):
+        card = measure.PRICING_TIERS[tier]["claude_models_lc"]["haiku_9_9"]
+        assert card["input"] == pytest.approx(0.5)
+    regional = measure.PRICING_TIERS["vertex-regional"]["claude_models_lc"]["haiku_9_9"]
+    assert regional["input"] == pytest.approx(0.55)
+
+
+def test_anthropic_long_context_surcharge_applies_over_threshold(tmp_path, restore_tables):
+    """A model with an LC card pays it only when the FULL prompt (input + cache
+    reads + cache writes) exceeds ANTHROPIC_LONG_CONTEXT_INPUT_THRESHOLD."""
+    path = _write(tmp_path, _doc(
+        anthropic={"haiku_9_9": {"input": 1.0, "output": 10.0, "cache_read": 0.1,
+                                 "cache_write": 1.25, "cache_write_1h": 2.0}},
+        anthropic_long_context={"haiku_9_9": {"input": 5.0, "output": 50.0, "cache_read": 0.5,
+                                              "cache_write": 6.25, "cache_write_1h": 10.0}},
+    ))
+    assert measure._apply_bundled_prices(path) is True
+    thr = measure.ANTHROPIC_LONG_CONTEXT_INPUT_THRESHOLD
+    # Under the threshold: base card.
+    cost = measure._get_model_cost("claude-haiku-9-9", 50_000, 1_000, 0, 0, tier="anthropic",
+                                   per_request=True)
+    assert cost == pytest.approx(50_000 * 1.0 / 1e6 + 1_000 * 10.0 / 1e6)
+    # Cache reads/writes count toward the prompt length too.
+    cost = measure._get_model_cost("claude-haiku-9-9", 50_000, 1_000, thr, 0, tier="anthropic",
+                                   per_request=True)
+    assert cost == pytest.approx(50_000 * 5.0 / 1e6 + 1_000 * 50.0 / 1e6 + thr * 0.5 / 1e6)
+    # A model with no LC card never surcharges.
+    base = measure._get_model_cost("claude-opus-4-6", thr + 1, 1_000, 0, 0, tier="anthropic",
+                                   per_request=True)
+    opus = measure.PRICING_TIERS["anthropic"]["claude_models"]["opus_4_6"]
+    assert base == pytest.approx((thr + 1) * opus["input"] / 1e6 + 1_000 * opus["output"] / 1e6)
+
+
+def test_long_context_surcharge_never_applies_to_aggregate_calls(tmp_path, restore_tables):
+    """The over-100K tier is decided per API request. A session total, a daily
+    sum or a rate probe is not one request: it must be priced on the base card
+    (default per_request=False), or a 600K-token session reads ~5x too high."""
+    path = _write(tmp_path, _doc(
+        anthropic={"haiku_9_9": {"input": 1.0, "output": 10.0, "cache_read": 0.1,
+                                 "cache_write": 1.25, "cache_write_1h": 2.0}},
+        anthropic_long_context={"haiku_9_9": {"input": 5.0, "output": 50.0, "cache_read": 0.5,
+                                              "cache_write": 6.25, "cache_write_1h": 10.0}},
+    ))
+    assert measure._apply_bundled_prices(path) is True
+    thr = measure.ANTHROPIC_LONG_CONTEXT_INPUT_THRESHOLD
+    agg = measure._get_model_cost("claude-haiku-9-9", 50_000, 1_000, thr * 6, 0, tier="anthropic")
+    assert agg == pytest.approx(50_000 * 1.0 / 1e6 + 1_000 * 10.0 / 1e6 + thr * 6 * 0.1 / 1e6)
+    # The rate probes ask for 1M tokens of one class; that is a rate, not a request.
+    assert measure._get_model_cost("claude-haiku-9-9", 1_000_000, 0, tier="anthropic") == pytest.approx(1.0)
+    assert measure._get_model_cost("claude-haiku-9-9", 0, 1_000_000, tier="anthropic") == pytest.approx(10.0)
+
+
+def test_shipped_haiku_5_5_rate_probes_use_the_base_card():
+    """_model_rate_per_mtok routes advice: Haiku 5.5 must read $0.10, not 5x."""
+    base = measure.PRICING_TIERS["anthropic"]["claude_models"]["haiku_5_5"]
+    assert measure._get_model_cost("claude-haiku-5-5", 1_000_000, 0, tier="anthropic") == pytest.approx(base["input"])
+    assert measure._get_model_cost("claude-haiku-5-5", 0, 1_000_000, tier="anthropic") == pytest.approx(base["output"])
+
+
+def test_shipped_haiku_5_5_long_context_card_is_5x_the_base_card():
+    """Haiku 5.5's over-100K card is exactly 5x its base card on every rate
+    (Anthropic prices it by prompt length). Relationship, not dollars."""
+    base = measure.PRICING_TIERS["anthropic"]["claude_models"].get("haiku_5_5")
+    lc = measure.PRICING_TIERS["anthropic"]["claude_models_lc"].get("haiku_5_5")
+    assert base is not None and lc is not None
+    for field in ("input", "output", "cache_read", "cache_write", "cache_write_1h"):
+        assert lc[field] == pytest.approx(base[field] * 5)
+
+
 def test_loader_never_removes_a_built_in_card(tmp_path, restore_tables):
     path = _write(tmp_path, _doc(openai={"gpt-new": {"input": 1.0, "output": 2.0}}))
     measure._apply_bundled_prices(path)
@@ -111,6 +188,65 @@ def test_loader_can_be_disabled(tmp_path, monkeypatch, restore_tables):
     path = _write(tmp_path, _doc(openai={"gpt-x": {"input": 1.0, "output": 2.0}}))
     assert measure._apply_bundled_prices(path) is False
     assert "gpt-x" not in measure.OPENAI_MODEL_PRICING
+
+
+def _fresh_measure_no_bundled(monkeypatch):
+    """A fresh measure.py with the bundled file disabled, so PRICING_TIERS
+    shows exactly what ships in the literals."""
+    monkeypatch.setenv("TOKEN_OPTIMIZER_BUNDLED_PRICES", "0")
+    spec = importlib.util.spec_from_file_location(
+        "measure_no_bundled_under_test", SCRIPTS / "measure.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _bundled_cards(mod, doc, section):
+    """What the loader would merge for a section: cleaned cards with derived
+    cache rates filled in."""
+    cards = mod._clean_price_cards(doc.get(section))
+    for card in cards.values():
+        card.setdefault("cache_read", round(card["input"] * 0.1, 6))
+        card.setdefault("cache_write", round(card["input"] * 1.25, 6))
+        card.setdefault("cache_write_1h", round(card["input"] * 2, 6))
+    return cards
+
+
+def test_fallback_literals_equal_the_bundled_table(monkeypatch):
+    """when prices.json is absent/disabled, the literals alone must
+    price every Claude card the bundled table carries -- first-party rates on
+    anthropic / vertex-global / bedrock, +10% on vertex-regional."""
+    mod = _fresh_measure_no_bundled(monkeypatch)
+    doc = json.loads(
+        (REPO / "skills" / "token-optimizer" / "pricing" / "prices.json").read_text(encoding="utf-8"))
+    for section, table in (("anthropic", "claude_models"),
+                           ("anthropic_long_context", "claude_models_lc")):
+        bundled = _bundled_cards(mod, doc, section)
+        assert bundled, f"{section} produced no cards"
+        for tier_name, tier in mod.PRICING_TIERS.items():
+            mult = 1.1 if tier_name == "vertex-regional" else 1.0
+            literal = tier[table]
+            assert set(literal) == set(bundled), (
+                f"{tier_name}.{table}: cards {sorted(set(literal) ^ set(bundled))} "
+                "differ from the bundled table")
+            for key, card in bundled.items():
+                want = {f: round(v * mult, 6) for f, v in card.items()}
+                assert literal[key] == want, f"{tier_name}.{table}[{key}]: {literal[key]} != {want}"
+
+
+def test_haiku_5_5_prices_correctly_without_the_bundled_file(monkeypatch):
+    """the reported failure mode -- claude-haiku-5-5 was
+    priced on the generic $1/$5 haiku card when prices.json did not load."""
+    mod = _fresh_measure_no_bundled(monkeypatch)
+    assert mod._get_model_cost("claude-haiku-5-5", 1_000_000, 0, tier="anthropic") == pytest.approx(0.1)
+    assert mod._get_model_cost("claude-haiku-5-5", 0, 1_000_000, tier="anthropic") == pytest.approx(0.5)
+    # Long-context card too: a >100K-prompt request pays the 5x surcharge.
+    thr = mod.ANTHROPIC_LONG_CONTEXT_INPUT_THRESHOLD
+    cost = mod._get_model_cost("claude-haiku-5-5", 1_000, 1_000, thr + 1, 0,
+                               tier="anthropic", per_request=True)
+    lc = mod.PRICING_TIERS["anthropic"]["claude_models_lc"]["haiku_5_5"]
+    want = 1_000 * lc["input"] / 1e6 + 1_000 * lc["output"] / 1e6 + (thr + 1) * lc["cache_read"] / 1e6
+    assert cost == pytest.approx(want)
 
 
 def test_claude_generation_resolution():
@@ -137,6 +273,16 @@ FEED = {
     "claude-opus-7": {"litellm_provider": "anthropic", "mode": "chat", "input_cost_per_token": 5e-6,
                       "output_cost_per_token": 25e-6, "cache_read_input_token_cost": 5e-7,
                       "cache_creation_input_token_cost": 6.25e-6, "cache_creation_input_token_cost_above_1hr": 1e-5},
+    "claude-haiku-9-9": {"litellm_provider": "anthropic", "mode": "chat",
+                         "input_cost_per_token": 1e-7, "output_cost_per_token": 5e-7,
+                         "cache_read_input_token_cost": 1e-8,
+                         "cache_creation_input_token_cost": 1.25e-7,
+                         "cache_creation_input_token_cost_above_1hr": 2e-7,
+                         "input_cost_per_token_above_100k_tokens": 5e-7,
+                         "output_cost_per_token_above_100k_tokens": 2.5e-6,
+                         "cache_read_input_token_cost_above_100k_tokens": 5e-8,
+                         "cache_creation_input_token_cost_above_100k_tokens": 6.25e-7,
+                         "cache_creation_input_token_cost_above_1hr_above_100k_tokens": 1e-6},
     "gpt-8": {"litellm_provider": "openai", "mode": "chat", "input_cost_per_token": 2e-6,
               "output_cost_per_token": 8e-6, "input_cost_per_token_above_272k_tokens": 4e-6,
               "output_cost_per_token_above_272k_tokens": 12e-6},
@@ -153,8 +299,11 @@ OFFICIAL_MD = """
 | Claude Sonnet 5 | $2 / MTok<sup>3</sup> | $2.50 / MTok | $4 / MTok | $0.20 / MTok | $10 / MTok |
 | Claude Sonnet 4.6 | $3 / MTok | $3.75 / MTok | $6 / MTok | $0.30 / MTok | $15 / MTok |
 | Claude Haiku 4.5 | $1 / MTok | $1.25 / MTok | $2 / MTok | $0.10 / MTok | $5 / MTok |
+| Claude Haiku 9.9 (for prompts up to 100,000 tokens) | $0.20 / MTok | $0.25 / MTok | $0.40 / MTok | $0.02 / MTok | $1 / MTok |
+| Claude Haiku 9.9 (for prompts over 100,000 tokens) | $1 / MTok | $1.25 / MTok | $2 / MTok | $0.10 / MTok | $5 / MTok |
 
 | Claude Opus 7 | $8 / MTok | $40 / MTok |
+| Claude Haiku 9.9 (for prompts over 100,000 tokens) | $0.50 / MTok | $2.50 / MTok |
 """
 
 
@@ -168,6 +317,28 @@ def test_refresh_builds_cards_and_official_page_wins():
     assert doc["openai_long_context"]["gpt-8"]["input"] == 4.0
     assert "gpt-8-2026-01-01" not in doc["openai"] and "gpt-8-audio" not in doc["openai"]
     assert "gemini-8-flash" in doc["gemini"]
+
+
+def test_refresh_builds_anthropic_long_context_cards():
+    """The official page's "(for prompts over 100,000 tokens)" row and the
+    LiteLLM *_above_100k_tokens fields both feed anthropic_long_context; the
+    official page wins. The batch-pricing row (2 price cells) is ignored."""
+    doc, notes = refresh_prices.build(FEED, OFFICIAL_MD)
+    card = doc["anthropic_long_context"]["haiku_9_9"]
+    assert card == {"input": 1.0, "output": 5.0, "cache_read": 0.10,
+                    "cache_write": 1.25, "cache_write_1h": 2.0}
+    assert any("long-context" in n for n in notes)
+    assert doc["thresholds"]["anthropic_long_context_input"] == 100_000
+    # The base card came from the "up to 100,000" row, not the LiteLLM feed.
+    assert doc["anthropic"]["haiku_9_9"]["input"] == 0.20
+
+
+def test_refresh_litellm_only_long_context_when_official_missing():
+    doc, _ = refresh_prices.build(FEED, None)
+    card = doc["anthropic_long_context"]["haiku_9_9"]
+    assert card["input"] == pytest.approx(0.5)
+    assert card["output"] == pytest.approx(2.5)
+    assert card["cache_write_1h"] == pytest.approx(1.0)
 
 
 def test_refresh_refuses_a_gutted_table():
@@ -250,3 +421,45 @@ def test_fleet_prices_claude_3_era_ids_as_their_own_model():
     assert fleet._pricing_key("claude-3-5-sonnet-20241022") == "sonnet-legacy"
     assert fleet._pricing_key("claude-3-opus-20240229") == "opus-3"
     assert fleet._pricing_key("claude-3-5-haiku-20241022") == "haiku-3-5"
+
+
+def test_transcript_turns_apply_the_haiku_5_5_tier_per_request(tmp_path):
+    """The one place a request's own prompt length is known: each API call in
+    the transcript pays the tier for ITS prompt, not for the session total."""
+    import json
+    base = measure.PRICING_TIERS["anthropic"]["claude_models"]["haiku_5_5"]
+    lc = measure.PRICING_TIERS["anthropic"]["claude_models_lc"]["haiku_5_5"]
+
+    def rec(i, cache_read):
+        return {"type": "assistant", "timestamp": f"2026-10-10T10:0{i}:00Z",
+                "message": {"model": "claude-haiku-5-5", "content": [{"type": "text", "text": "ok"}],
+                            "usage": {"input_tokens": 1000, "output_tokens": 500,
+                                      "cache_read_input_tokens": cache_read,
+                                      "cache_creation_input_tokens": 0}}}
+    p = tmp_path / "s.jsonl"
+    # 3 small requests (21K prompt) and 1 big request (121K prompt).
+    p.write_text("\n".join(json.dumps(rec(i, c)) for i, c in
+                          enumerate([20_000, 20_000, 20_000, 120_000])), encoding="utf-8")
+    turns = measure.parse_session_turns(str(p))
+    costs = [t["cost_usd"] for t in turns]
+    small = (1000 * base["input"] + 500 * base["output"] + 20_000 * base["cache_read"]) / 1e6
+    big = (1000 * lc["input"] + 500 * lc["output"] + 120_000 * lc["cache_read"]) / 1e6
+    assert costs[:3] == [pytest.approx(round(small, 6))] * 3
+    assert costs[3] == pytest.approx(round(big, 6))
+
+
+def test_bare_haiku_alias_prices_and_windows_agree():
+    """a bare `haiku` is read as the pre-5.5 generation by BOTH the
+    window table and the price table (conservative: a provider-dependent alias,
+    and the same string is the family-bucket label that routing / model-mix
+    code passes to _get_model_cost, so repricing it to Haiku 5.5 would silently
+    reprice every aggregate). Haiku 5.5 itself stays 1M / $0.10."""
+    cards = measure.PRICING_TIERS["anthropic"]["claude_models"]
+    for alias in ("haiku", "claude-haiku"):
+        assert measure._claude_price_key(alias, cards) == "haiku"
+        assert measure._claude_model_window(alias) == 200_000
+        assert measure._get_model_cost(alias, 1_000_000, 0, tier="anthropic") == pytest.approx(
+            cards["haiku"]["input"])
+    assert cards["haiku"]["input"] == cards["haiku_4_5"]["input"]
+    assert measure._claude_price_key("claude-haiku-5-5", cards) == "haiku_5_5"
+    assert measure._claude_model_window("claude-haiku-5-5") == 1_000_000

@@ -10,7 +10,7 @@ This file covers the Claude Code audit phases (0-5). For Codex error handling, s
 - **measure.py not found**: Fall back to manual estimation (line count x 15 for prose, x 8 for YAML).
 - **Coordination folder write failure**: Abort and report. Do not proceed without audit storage.
 - **Backup write failure**: Warn user and ask whether to proceed without backup.
-- **mktemp failure**: Print error and abort. Check /tmp permissions.
+- **mktemp failure**: Print error and abort. Check write permission on the project folder.
 - **Synthesis agent failure**: Present raw audit files to user. Do not proceed to Phase 4 blindly.
 - **Verification agent failure**: Fall back to `measure.py snapshot after` + `measure.py compare`.
 - **Snapshot file corrupt**: Re-run `measure.py snapshot [label]` to regenerate.

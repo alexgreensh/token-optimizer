@@ -1,6 +1,7 @@
 import { type SessionStore, sanitizeSessionId } from "../storage/session-store.js";
 import type { SessionMode } from "../activity/tracker.js";
 import type { TokenOptimizerConfig } from "../util/env.js";
+import { redact } from "../util/redact.js";
 
 export interface Checkpoint {
   sessionId: string;
@@ -33,7 +34,10 @@ function buildTopicSummary(recentUserMessages: string[]): string {
   // tags, prompt-injection keywords, or control characters.
   const sanitized = sample
     .map((m) =>
-      m
+      // Redact first: the strips below remove the "@" and "/" a URI credential
+      // is recognised by, and the cap would leave a straddling token as a
+      // prefix no pattern matches.
+      redact(m)
         .replace(/<[^>]*>/g, " ")           // strip XML/HTML tags
         .replace(/[^\w\s.,;:!?()'"-]/g, " ") // keep safe punctuation only
         .replace(/\s+/g, " ")
@@ -89,6 +93,14 @@ export function captureCheckpoint(
 
   const topicSummary = buildTopicSummary(recentUserMessages);
 
+  // Credential pass on every persisted string, applied at the write boundary
+  // rather than per field: a path, decision, or message-derived fragment can
+  // all carry a token, and the checkpoint row is later injected into a fresh
+  // session's context. Field sanitizers above strip formatting, not secrets.
+  const safeActiveFiles = activeFiles.map(redact);
+  const safeDecisions = decisions.map(redact);
+  const safeTopicSummary = redact(topicSummary);
+
   const lines: string[] = [
     `# Checkpoint: ${trigger}`,
     `Session: ${safeSessionId}`,
@@ -97,19 +109,19 @@ export function captureCheckpoint(
     `Fill: ${fillPct !== null ? Math.round(fillPct * 100) : "N/A"}%`,
   ];
 
-  if (topicSummary) {
+  if (safeTopicSummary) {
     lines.push("", "## Topic Summary");
-    lines.push(topicSummary);
+    lines.push(safeTopicSummary);
   }
 
   lines.push("", "## Active Files");
-  for (const f of activeFiles) {
+  for (const f of safeActiveFiles) {
     lines.push(`- ${sanitizePath(f)}`);
   }
 
-  if (decisions.length > 0) {
+  if (safeDecisions.length > 0) {
     lines.push("", "## Decisions");
-    for (const d of decisions) {
+    for (const d of safeDecisions) {
       lines.push(`- ${d.replace(/[\r\n]/g, " ").slice(0, 200)}`);
     }
   }
@@ -126,8 +138,8 @@ export function captureCheckpoint(
       mode,
       qualityScore,
       fillPct,
-      JSON.stringify(activeFiles),
-      JSON.stringify(decisions),
+      JSON.stringify(safeActiveFiles),
+      JSON.stringify(safeDecisions),
       content,
       Date.now() / 1000,
     ],
@@ -139,8 +151,8 @@ export function captureCheckpoint(
     mode,
     qualityScore,
     fillPct,
-    activeFiles,
-    decisions,
+    activeFiles: safeActiveFiles,
+    decisions: safeDecisions,
     content,
     createdAt: Date.now() / 1000,
   };

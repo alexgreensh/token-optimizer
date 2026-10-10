@@ -21,7 +21,28 @@ export const HANDOFF_TTL_MS = 10 * 60_000
 /** resume-lean is a token-free read of checkpoints and the session log. */
 export const RESUME_TIMEOUT_MS = 20_000
 
-export type Busy = 'clean' | 'fresh-capture' | 'fresh-clear' | null
+/**
+ * `measure.py dashboard` regenerates the page and opens it in the browser (whatever the OS
+ * opener is), so it can take a while on a long history. Bounded, and under the dashboard's
+ * busy timeout (see busyTimeoutMs) so the runner answers before the busy state gives up on its
+ * own. Measured cold on a real, heavy history: 80 s (a synthetic 800-session / 1.1 GB one took
+ * 38 s), so a slower disk needs room well past that.
+ */
+export const DASHBOARD_TIMEOUT_MS = 300_000
+/** How long past the runner's limit the dashboard's busy state waits before giving up on its own. */
+const DASHBOARD_BUSY_GRACE_MS = 30_000
+/**
+ * The arguments of that command. Never `--quiet`: quiet regenerates without opening anything.
+ * `--user` marks the run as a person's click: the runner cannot pass env and its stdin is not a tty,
+ * so without it measure.py reads the run as a hook and cuts a heavy rebuild off at its 20 s hook budget.
+ */
+export const DASHBOARD_ARGS = ['dashboard', '--user'] as const
+/** The band's note line while the dashboard opens. */
+export const DASHBOARD_OPENING = 'Opening the dashboard.'
+/** The note after it failed, shown for NOTE_MS. */
+export const DASHBOARD_FAILED = 'Could not open the dashboard.'
+
+export type Busy = 'clean' | 'fresh-capture' | 'fresh-clear' | 'dashboard' | null
 
 /** The band's own UI state: what a button is doing, the last outcome, the Start fresh arm. Plain JSON. */
 export type UiState = {
@@ -79,10 +100,37 @@ export function isArmed(ui: UiState, now: number): boolean {
   return ui.freshArmedAt !== null && now - ui.freshArmedAt < FRESH_ARM_MS
 }
 
+/**
+ * How long a busy state lasts before it ends by itself. The dashboard outlives the others: its
+ * runner is allowed DASHBOARD_TIMEOUT_MS, and the busy state must not give up before it answers.
+ */
+export function busyTimeoutMs(busy: Busy): number {
+  return busy === 'dashboard' ? DASHBOARD_TIMEOUT_MS + DASHBOARD_BUSY_GRACE_MS : BUSY_TIMEOUT_MS
+}
+
 /** The busy state as it stands at `now`: a stale one has timed out. */
 export function busyNow(ui: UiState, now: number): Busy {
   if (ui.busy === null || ui.busySince === null) return null
-  return now - ui.busySince < BUSY_TIMEOUT_MS ? ui.busy : null
+  return now - ui.busySince < busyTimeoutMs(ui.busy) ? ui.busy : null
+}
+
+/** The "Full dashboard" link is ignored while anything else is busy (a second click included). */
+export function canOpenDashboard(ui: UiState, now: number): boolean {
+  return busyNow(ui, now) === null
+}
+
+/** measure.py prints this and still exits 0 when the OS opener failed. */
+const BROWSER_FAILED = 'Could not auto-open browser'
+
+/** The dashboard run failed: it threw or timed out (`null`), exited non-zero, or could not open the browser. */
+export function dashboardFailed(result: { exitCode: number; stdout: string } | null): boolean {
+  return result === null || result.exitCode !== 0 || (result.stdout ?? '').includes(BROWSER_FAILED)
+}
+
+/** What the dashboard link's own status line says: while it opens, and after it failed; null otherwise. */
+export function dashboardStatus(busy: string | null, note: string | null): string | null {
+  if (busy === 'dashboard') return DASHBOARD_OPENING
+  return note === DASHBOARD_FAILED ? DASHBOARD_FAILED : null
 }
 
 export function withBusy(ui: UiState, busy: Busy, now: number): UiState {

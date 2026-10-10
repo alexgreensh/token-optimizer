@@ -576,7 +576,7 @@ if ! has_pending_deploys; then exit 0; fi
           <span class="waste-savings">$3.80/mo</span>
         </div>
         <div class="waste-desc">14 sessions hit 500K+ tokens without compaction (session history bloat)</div>
-        <div class="waste-rec">Use /compact at 50-70% context fill. Set up Smart Compaction for automatic protection.</div>
+        <div class="waste-rec">Compact earlier than the auto-compact line (about 967K tokens on 1M models unless you set /autocompact): run /compact when the conversation is long or changes topic. Set up Smart Compaction for automatic protection.</div>
         <div class="waste-fix"># Install Smart Compaction:
 python3 measure.py setup-smart-compact</div>
       </div>

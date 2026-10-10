@@ -94,15 +94,20 @@ def reexec_in_utf8_mode() -> None:
             # subprocess.Popen (which quotes correctly) and exit immediately
             # so the child takes over the role of this process.
             #
-            # CREATE_NO_WINDOW prevents a console flash when the parent is a
-            # console-less detached process (e.g. a hook spawned by the host).
-            # It is kept UNCONDITIONALLY -- do NOT drop it when stdout is a
-            # pipe. The flash-sensitive case (a host-spawned hook/statusline)
-            # is exactly the case where stdout is not a tty; dropping the flag
-            # there would reinstate the console flash while fixing
-            # nothing, because the stdio-binding problem below is solved by
-            # passing the handles explicitly, not by removing the flag. Do NOT
-            # add DETACHED_PROCESS -- the child must inherit the parent's stdio.
+            # DETACHED_PROCESS gives the child NO console at all when the
+            # parent is console-less (e.g. a hook spawned by the host).
+            # CREATE_NO_WINDOW would still allocate a hidden console -- a
+            # conhost.exe spawn that flashes nothing but leaks a kernel token
+            # reference on the affected Windows build (issue #215). The flag
+            # is kept UNCONDITIONALLY -- do NOT drop it when stdout is a
+            # pipe. The flash/leak-sensitive case (a host-spawned
+            # hook/statusline) is exactly the case where stdout is not a
+            # tty; dropping the flag there would let Windows allocate a
+            # console while fixing nothing, because the stdio-binding problem
+            # below is solved by passing the handles explicitly, not by
+            # removing the flag. The detached child inherits the parent's
+            # stdio through those explicit handles (STARTF_USESTDHANDLES),
+            # never through a console it does not have.
             #
             # Invariant: this function must be the FIRST statement of the entry
             # point (it already is at measure.py's __main__). If anything reads
@@ -122,23 +127,44 @@ def reexec_in_utf8_mode() -> None:
                 except (OSError, ValueError, AttributeError):
                     pass
             _popen_kwargs = {}
-            _flags = getattr(_sp, "CREATE_NO_WINDOW", 0)
-            if _flags:
+            # DETACHED_PROCESS only when no console is in play. If stdout is a
+            # tty the CLI was typed into a console: a detached child would sit
+            # off that console (no Ctrl+C, console handles used from outside
+            # their console), and no conhost can flash, so the flag buys
+            # nothing. Without it the child shares the console. Streams that
+            # are not a tty (every host-spawned hook) keep the flag.
+            try:
+                _on_console = bool(sys.stdout is not None and sys.stdout.isatty())
+            except (AttributeError, OSError, ValueError):
+                _on_console = False
+            _flags = getattr(_sp, "DETACHED_PROCESS", 0)
+            if _flags and not _on_console:
                 _popen_kwargs["creationflags"] = _flags
             # Pass the three std handles explicitly so CPython sets
             # STARTF_USESTDHANDLES with the parent's real handles and marks
-            # them inheritable. With all three left None, CREATE_NO_WINDOW
-            # gives the child a NEW hidden console whose buffers capture every
-            # byte the child writes (and feed empty input to its stdin) -- the
-            # "silent no-op" signature on a cp1252 host.
+            # them inheritable. This is the ONLY stdio channel a detached
+            # child has: with all three left None its std handles bind to
+            # NULL, and every byte it writes is silently discarded (the
+            # "silent no-op" signature on a cp1252 host).
             # _inheritable_stream degrades to None for streams without a real
             # OS handle (pytest capture, sys.std* None under pythonw per the
             # launcher swap), so a UTF-8 convenience re-exec never hard-crashes
             # the CLI.
-            for _name, _kw in (("stdin", "stdin"), ("stdout", "stdout"), ("stderr", "stderr")):
+            # When at least one stream is usable, each unusable one gets DEVNULL
+            # rather than being left out: CPython falls back to GetStdHandle for
+            # an omitted stream, and a stale non-NULL value there makes
+            # DuplicateHandle fail (WinError 6) so Popen raises and the re-exec
+            # is silently skipped. With none usable nothing is passed.
+            _missing = []
+            for _name in ("stdin", "stdout", "stderr"):
                 _s = _inheritable_stream(getattr(sys, _name, None))
                 if _s is not None:
-                    _popen_kwargs[_kw] = _s
+                    _popen_kwargs[_name] = _s
+                else:
+                    _missing.append(_name)
+            if any(_n in _popen_kwargs for _n in ("stdin", "stdout", "stderr")):
+                for _name in _missing:
+                    _popen_kwargs[_name] = _sp.DEVNULL
             child = _sp.Popen([sys.executable, "-X", "utf8", *sys.argv],
                               **_popen_kwargs)
             # Wait for the child to finish so output ordering is preserved and

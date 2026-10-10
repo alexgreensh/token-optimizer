@@ -21,6 +21,11 @@ default* / *required* and it account-syncs into every org user's Cowork
 sessions — **cloud and local**. Org-pushed plugin hooks fire; a hook that
 phones home additionally needs its domain on Cowork's **domain allowlist**.
 
+Since October 6, 2026, new Cowork tasks on Pro and Max plans run in the
+cloud. A cloud session leaves no local transcript on your machine, which
+is why per-session cloud token figures need org telemetry (see
+`MISSING.md`).
+
 ## What's here
 
 | Piece | What it does |

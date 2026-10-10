@@ -24,6 +24,7 @@ import shlex
 import subprocess
 import sys
 import time
+import unicodedata
 from pathlib import Path
 
 # Windows: spawning a console exe (git, where, tasklist, ...) from a console-less
@@ -67,6 +68,7 @@ except ImportError:
         re.compile(r"sk_live_[a-zA-Z0-9]{24,}"),
         re.compile(r"rk_live_[a-zA-Z0-9]{24,}"),
         re.compile(r"hf_[a-zA-Z0-9]{34}"),
+        re.compile(r"gl(?:pat|dt|rt|cbt|ptt|ft|imt|agent|soat)-[a-zA-Z0-9_.\-]{20,}"),
         re.compile(r"Bearer\s+[a-zA-Z0-9\-._~+/]+=*", re.I),
         re.compile(r"AIza[0-9A-Za-z_\-]{35}"),
         re.compile(r"ya29\.[0-9A-Za-z_\-]{20,}"),
@@ -1683,6 +1685,28 @@ def _baseline_visible_chars(raw_chars):
     return CC_PERSISTED_OUTPUT_STUB_CHARS
 
 
+def _unicode_safe_head(text, limit):
+    """Keep the cap without splitting marks, format controls or ZWJ runs.
+
+    Walk only the bounded visible prefix, never an unbounded combining tail.
+    Dropping the whole boundary cluster preserves its meaning in the archive
+    and prevents an over-cap preview from hiding the recovery pointer.
+    This is a conservative boundary guard, not a full Unicode segmenter.
+    """
+    cut = min(max(0, limit), len(text))
+    if cut == len(text):
+        return text
+    safe = 0
+    for boundary in range(1, cut + 1):
+        following = text[boundary]
+        code = ord(following)
+        attaches = (unicodedata.category(following) in ('Mn', 'Mc', 'Me', 'Cf')
+                    or 0x1F3FB <= code <= 0x1F3FF)
+        if not attaches and text[boundary - 1] != '\u200d':
+            safe = boundary
+    return text[:safe]
+
+
 def _enforce_baseline_invariant(text, raw_output, archive_key):
     """Never show the model MORE chars than the CC baseline would.
 
@@ -1717,10 +1741,10 @@ def _enforce_baseline_invariant(text, raw_output, archive_key):
                 # text is preview + "\n\n" + pointer; text > cap guarantees
                 # text[:cap - len(pointer)] cuts inside the preview, never
                 # into the pointer region, so no duplicated pointer bytes.
-                return text[:cap - len(pointer)] + pointer
+                return _unicode_safe_head(text, cap - len(pointer)) + pointer
         except Exception:
             pass  # fall through to plain head-cap
-    return text[:cap]
+    return _unicode_safe_head(text, cap)
 
 
 def compress(command_str, raw_output, returncode=0, stderr=""):

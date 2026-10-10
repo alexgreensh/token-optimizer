@@ -1,0 +1,155 @@
+{
+ "_comment": "CLAUDE_CODE_AUTO_COMPACT_WINDOW env parsing, taken from the Claude Code 2.1.296 host (Dd/FOo/GFe/aE): scientific notation and thousand separators first, then decimal prefix; NaN or <=0 is INVALID and ignored (falls through to settings/default); otherwise capped at 1,000,000 and floored at 100,000. 'window' is the resolved env window, null when the value is ignored. Used by Python (measure.py), statusline.js and desktop parse.ts.",
+ "vectors": [
+  {
+   "raw": "500000",
+   "window": 500000,
+   "note": "plain integer"
+  },
+  {
+   "raw": "  480000  ",
+   "window": 480000,
+   "note": "surrounding whitespace"
+  },
+  {
+   "raw": "+480000",
+   "window": 480000,
+   "note": "parseInt accepts a plus sign"
+  },
+  {
+   "raw": "480000.5",
+   "window": 480000,
+   "note": "decimal prefix"
+  },
+  {
+   "raw": "480000junk",
+   "window": 480000,
+   "note": "decimal prefix with trailing text"
+  },
+  {
+   "raw": "5e5",
+   "window": 500000,
+   "note": "scientific notation"
+  },
+  {
+   "raw": "5E5",
+   "window": 500000,
+   "note": "scientific notation, capital E"
+  },
+  {
+   "raw": "1.5e5",
+   "window": 150000,
+   "note": "fractional mantissa that is an integer"
+  },
+  {
+   "raw": "1e6",
+   "window": 1000000,
+   "note": "scientific notation at the cap"
+  },
+  {
+   "raw": "1e-1",
+   "window": null,
+   "note": "scientific notation that is not an integer: invalid, ignored"
+  },
+  {
+   "raw": "1e400",
+   "window": null,
+   "note": "scientific notation overflow: invalid, ignored"
+  },
+  {
+   "raw": "500,000",
+   "window": 500000,
+   "note": "comma thousand separators"
+  },
+  {
+   "raw": "500_000",
+   "window": 500000,
+   "note": "underscore thousand separators"
+  },
+  {
+   "raw": "500 000",
+   "window": 500000,
+   "note": "space thousand separators"
+  },
+  {
+   "raw": "500\u00a0000",
+   "window": 500000,
+   "note": "no-break space thousand separators"
+  },
+  {
+   "raw": "1,000,000",
+   "window": 1000000,
+   "note": "two groups"
+  },
+  {
+   "raw": "480 000 000",
+   "window": 1000000,
+   "note": "grouped value above the cap is capped"
+  },
+  {
+   "raw": "1,000",
+   "window": 100000,
+   "note": "grouped value below the floor is floored"
+  },
+  {
+   "raw": "1,00",
+   "window": 100000,
+   "note": "not a valid grouping: decimal prefix 1, floored"
+  },
+  {
+   "raw": "12,34,567",
+   "window": 100000,
+   "note": "not a valid grouping: decimal prefix 12, floored"
+  },
+  {
+   "raw": "1 000,000",
+   "window": 100000,
+   "note": "mixed separators are not a grouping: prefix 1, floored"
+  },
+  {
+   "raw": "50000",
+   "window": 100000,
+   "note": "below the floor is floored"
+  },
+  {
+   "raw": "500k",
+   "window": 100000,
+   "note": "no k suffix in the host: decimal prefix 500, floored"
+  },
+  {
+   "raw": "2000000",
+   "window": 1000000,
+   "note": "above the cap is capped"
+  },
+  {
+   "raw": "9999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999",
+   "window": 1000000,
+   "note": "absurd length: capped"
+  },
+  {
+   "raw": "0",
+   "window": null,
+   "note": "zero is invalid, ignored"
+  },
+  {
+   "raw": "-1",
+   "window": null,
+   "note": "negative is invalid, ignored"
+  },
+  {
+   "raw": "-500,000",
+   "window": null,
+   "note": "negative grouped is invalid, ignored"
+  },
+  {
+   "raw": "",
+   "window": null,
+   "note": "empty is ignored"
+  },
+  {
+   "raw": "abc",
+   "window": null,
+   "note": "garbage is ignored"
+  }
+ ]
+}

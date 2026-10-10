@@ -1507,6 +1507,16 @@ input:checked + .slider:before {
   background: var(--c-warning-2-fill, rgba(251,191,36,0.1));
 }
 
+.flag-badge.desktop,
+.flag-badge.unverified {
+  background: rgba(125,140,163,0.2);
+  color: var(--c-text-dim);
+}
+.flag-badge.orphan {
+  color: var(--c-warning-soft, #fb923c);
+  border: 1px solid var(--c-warning-soft, #fb923c);
+  background: transparent;
+}
 .flag-badge.zombie {
   color: var(--c-waste, #f87171);
   border: 1px solid var(--c-waste, #f87171);
@@ -2233,7 +2243,35 @@ function parsePlan(planMd) {
   return items;
 }
 
-function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+function esc(s) { s = s == null ? '' : String(s); return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+// Hints are authored as `python3 measure.py <cmd>`; show the resolved, quoted
+// script path (health.cli, from measure.py) so they paste from any directory.
+function tcli(text) {
+  var d = window.__TOKEN_DATA__;
+  var cli = d && d.health && d.health.cli;
+  if (!cli) return text;
+  text = String(text);
+  // `VAR=x cmd` is Bash only: a Windows cli (python "..." ) takes --runtime instead.
+  if (d.health.cli_windows) {
+    text = text.replace(/TOKEN_OPTIMIZER_RUNTIME=(\w+) python3 measure\.py/g, function (m, rt) {
+      return cli + ' --runtime ' + rt;
+    });
+  }
+  return text.split('python3 measure.py').join(cli);
+}
+// Same, for strings that carry markup and go to innerHTML: the path is escaped.
+function tcliHtml(html) {
+  var d = window.__TOKEN_DATA__;
+  var cli = d && d.health && d.health.cli;
+  if (!cli) return html;
+  html = String(html);
+  if (d.health.cli_windows) {
+    html = html.replace(/TOKEN_OPTIMIZER_RUNTIME=(\w+) python3 measure\.py/g, function (m, rt) {
+      return esc(String(cli)) + ' --runtime ' + rt;
+    });
+  }
+  return html.split('python3 measure.py').join(esc(String(cli)));
+}
 
 function redactPaths(s) {
   if (!s) return s;
@@ -2583,16 +2621,27 @@ var DB = (function() {
       killStaleBtn.addEventListener('click', function() {
         var stalePids = [];
         (data.health && data.health.running_sessions || []).forEach(function(s) {
-          if ((s.flags || []).some(function(f) { return f === 'STALE' || f === 'ZOMBIE'; })) {
+          var fl = s.flags || [];
+          var prot = fl.some(function(f) { return f === 'DESKTOP' || f === 'UNVERIFIED' || f === 'ORPHAN'; });
+          if (!prot && fl.some(function(f) { return f === 'STALE' || f === 'ZOMBIE'; })) {
             stalePids.push(s.pid);
           }
         });
-        var cmd = stalePids.map(function(p) { return 'kill ' + p; }).join(' && ');
+        if (!stalePids.length) { return; }
+        // Identity-tagged inventories (every platform) are re-verified per process at
+        // kill time by the CLI; a pasted `kill <pid>` from this snapshot would
+        // bypass that, so copy the CLI command instead.
+        // That CLI command is a PREVIEW (--dry-run), so the button is labelled as one;
+        // only the plain `kill <pid>` branch is a kill command.
+        var tagged = (data.health && data.health.running_sessions || []).some(function(s) { return !!s.identity; });
+        var cli = (data.health && data.health.cli) || 'python3 measure.py';
+        var cmd = tagged ? cli + ' kill-stale --hours 24 --dry-run' : stalePids.map(function(p) { return 'kill ' + parseInt(p, 10); }).join(' && ');
+        var idleLabel = killStaleBtn.getAttribute('data-label') || killStaleBtn.textContent;
         if (navigator.clipboard && navigator.clipboard.writeText) {
           navigator.clipboard.writeText(cmd).then(function() {
             killStaleBtn.textContent = 'Copied!';
             killStaleBtn.style.background = 'var(--c-savings-strong, #22c55e)';
-            setTimeout(function() { killStaleBtn.textContent = 'Copy Kill Command'; killStaleBtn.style.background = 'var(--c-waste-strong, #ef4444)'; }, 2000);
+            setTimeout(function() { killStaleBtn.textContent = idleLabel; killStaleBtn.style.background = 'var(--c-waste-strong, #ef4444)'; }, 2000);
           });
         }
       });
@@ -2832,7 +2881,7 @@ var DB = (function() {
       var ctxSource = data.snapshot.context_source ? ' Context window source: ' + data.snapshot.context_source + '.' : '';
       viewSourceEl.textContent = (isUrl
         ? 'Viewing live dashboard. Updates on every session end.'
-        : 'Viewing a local file. For the bookmarkable URL run: python3 measure.py setup-daemon') + ctxSource;
+        : tcli('Viewing a local file. For the bookmarkable URL run: python3 measure.py setup-daemon')) + ctxSource;
     }
 
     // Hero card
@@ -2928,12 +2977,12 @@ var DB = (function() {
         if (data.standalone) {
           tsDiv.innerHTML = 'Last updated: ' + esc(ts) + staleWarning +
             (data.runtime === 'codex'
-              ? ' &middot; Run <span class="update-cmd">TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py session-end-flush --trigger manual</span> for a fresh Codex audit.'
+              ? tcliHtml(' &middot; Run <span class="update-cmd">TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py session-end-flush --trigger manual</span> for a fresh Codex audit.')
               : ' &middot; Run <span class="update-cmd">/token-optimizer</span> for a full audit with recommendations.');
         } else {
           tsDiv.innerHTML = 'Last updated: ' + esc(ts) + staleWarning +
             (data.runtime === 'codex'
-              ? ' &middot; To refresh, run <span class="update-cmd">TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py session-end-flush --trigger manual</span>.'
+              ? tcliHtml(' &middot; To refresh, run <span class="update-cmd">TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py session-end-flush --trigger manual</span>.')
               : ' &middot; To refresh, run <span class="update-cmd">/token-optimizer</span> again.');
         }
         headerEl.appendChild(tsDiv);
@@ -3499,8 +3548,8 @@ var DB = (function() {
 
     if (!t) {
       var collectNote = isCodex
-        ? 'Codex sessions can be collected manually for now: <span class="update-cmd">TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py collect</span>'
-        : 'Sessions are collected automatically via the SessionEnd hook. Run a few sessions first, or manually: <span class="update-cmd">python3 measure.py collect</span>';
+        ? tcliHtml('Codex sessions can be collected manually for now: <span class="update-cmd">TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py collect</span>')
+        : tcliHtml('Sessions are collected automatically via the SessionEnd hook. Run a few sessions first, or manually: <span class="update-cmd">python3 measure.py collect</span>');
       html += '<div class="empty-state">No trends data yet. ' + collectNote + '</div>';
       el.innerHTML = html;
       return;
@@ -3815,7 +3864,7 @@ var DB = (function() {
         names.forEach(function(name) {
           cmd += ' && mv "$HOME/.claude/skills/"' + shellQuote(name) + ' "$ARCHIVE_DIR/"';
         });
-        cmd += ' && echo "Archived ' + names.length + ' skill(s). Regenerate dashboard: python3 measure.py dashboard"';
+        cmd += ' && echo "Archived ' + names.length + tcli(' skill(s). Regenerate dashboard: python3 measure.py dashboard"');
 
         if (navigator.clipboard && navigator.clipboard.writeText) {
           navigator.clipboard.writeText(cmd).then(function() {
@@ -4857,25 +4906,40 @@ var DB = (function() {
     var sessions = h.running_sessions || [];
     html += '<div class="card wide"><div class="card-header"><span>Running Sessions</span><span class="label">' + sessions.length + ' active</span></div>';
 
-    var staleCount = sessions.filter(function(s) { return (s.flags || []).some(function(f) { return f === 'STALE' || f === 'ZOMBIE'; }); }).length;
+    // Sessions hosted by the desktop app (DESKTOP) or with unreadable identity
+    // (UNVERIFIED) are never offered for termination. ORPHAN sessions (terminal
+    // gone, macOS/Linux) are only ended by the explicit --include-orphans opt-in.
+    var staleCount = sessions.filter(function(s) { var fl = s.flags || []; return !fl.some(function(f) { return f === 'DESKTOP' || f === 'UNVERIFIED' || f === 'ORPHAN'; }) && fl.some(function(f) { return f === 'STALE' || f === 'ZOMBIE'; }); }).length;
+    var orphanSessions = sessions.filter(function(s) { return (s.flags || []).indexOf('ORPHAN') !== -1; });
 
     if (sessions.length === 0) {
       html += '<div class="empty-state">No running ' + esc(data.runtime_label || 'Claude Code') + ' sessions found.</div>';
     } else {
       // Kill stale button + explanation
       if (staleCount > 0) {
+        var taggedInventory = sessions.some(function(s) { return !!s.identity; });
+        var cliCmd = esc(h.cli || 'python3 measure.py');
+        var killLabel = taggedInventory ? 'Copy Preview Command' : 'Copy Kill Command';
         html += '<div style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.2);border-radius:8px;padding:var(--s-3);margin-bottom:var(--s-3)">' +
           '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">' +
           '<div style="font-weight:500;color:var(--c-waste-strong, #ef4444)">' + staleCount + ' stale session' + (staleCount !== 1 ? 's' : '') + ' detected</div>' +
-          '<button class="copy-fix-btn" id="kill-stale-btn" style="background:var(--c-waste-strong, #ef4444);border-color:var(--c-waste-strong, #ef4444)">Copy Kill Command</button></div>' +
+          '<button class="copy-fix-btn" id="kill-stale-btn" data-label="' + killLabel + '" style="background:var(--c-waste-strong, #ef4444);border-color:var(--c-waste-strong, #ef4444)">' + killLabel + '</button></div>' +
           '<div style="font-size:13px;color:var(--c-text-dim);line-height:1.5">' +
           'These ' + esc(data.runtime_label || 'Claude Code') + ' sessions have been running 24+ hours. ' +
           'Some may be your active terminals (marked TERMINAL), others may be forgotten or headless. ' +
           'Check the status column before killing. Only kill sessions you are not actively using.<br><br>' +
-          '<span style="font-family:var(--font-mono);font-size:12px;color:var(--c-text-main)">Option 1:</span> Click "Copy Kill Command" and paste in any terminal.<br>' +
-          '<span style="font-family:var(--font-mono);font-size:12px;color:var(--c-text-main)">Option 2:</span> Run <code style="font-family:var(--font-mono);color:var(--c-accent-cyan)">python3 measure.py kill-stale</code> to auto-terminate all sessions running &gt;12 hours.<br>' +
-          '<span style="font-family:var(--font-mono);font-size:12px;color:var(--c-text-main)">Option 3:</span> Run <code style="font-family:var(--font-mono);color:var(--c-accent-cyan)">python3 measure.py kill-stale --dry-run</code> to preview without killing.' +
+          '<span style="font-family:var(--font-mono);font-size:12px;color:var(--c-text-main)">Option 1:</span> ' + (taggedInventory ? 'Click "Copy Preview Command" and paste it in any terminal. It only lists what would be ended; run Option 2 to end it.' : 'Click "Copy Kill Command" and paste in any terminal.') + '<br>' +
+          '<span style="font-family:var(--font-mono);font-size:12px;color:var(--c-text-main)">Option 2:</span> Run <code style="font-family:var(--font-mono);color:var(--c-accent-cyan)">' + cliCmd + ' kill-stale</code> to auto-terminate terminal sessions running &gt;12 hours (desktop-hosted and unverified sessions are never terminated).<br>' +
+          '<span style="font-family:var(--font-mono);font-size:12px;color:var(--c-text-main)">Option 3:</span> Run <code style="font-family:var(--font-mono);color:var(--c-accent-cyan)">' + cliCmd + ' kill-stale --dry-run</code> to preview without killing.' +
           '</div></div>';
+      }
+
+      if (orphanSessions.length > 0) {
+        html += '<div style="background:rgba(251,146,60,0.08);border:1px solid rgba(251,146,60,0.25);border-radius:8px;padding:var(--s-3);margin-bottom:var(--s-3);font-size:13px;color:var(--c-text-dim);line-height:1.5">' +
+          '<div style="font-weight:500;color:var(--c-warning-soft, #fb923c);margin-bottom:4px">' + orphanSessions.length + ' orphaned session' + (orphanSessions.length !== 1 ? 's' : '') + ': terminal gone</div>' +
+          'Their terminal closed and the process was left running. They are never ended automatically. To preview ending them, run ' +
+          '<code style="font-family:var(--font-mono);color:var(--c-accent-cyan)">' + esc(h.cli || 'python3 measure.py') + ' kill-stale --include-orphans --dry-run</code>.' +
+          '</div>';
       }
 
       html += '<table class="session-table"><thead><tr>' +
@@ -4890,13 +4954,14 @@ var DB = (function() {
         });
         if (flags.length === 0) flagHtml = '<span style="color:var(--c-accent-cyan);">OK</span>';
         var isStale = flags.some(function(f) { return f === 'STALE' || f === 'ZOMBIE'; });
-        var killBtn = isStale ? '<button class="copy-fix-btn kill-pid-btn" data-pid="' + s.pid + '" style="font-size:11px;padding:2px 8px;background:var(--c-waste-strong, #ef4444);border-color:var(--c-waste-strong, #ef4444)">kill</button>' : '';
+        var isProtected = flags.some(function(f) { return f === 'DESKTOP' || f === 'UNVERIFIED' || f === 'ORPHAN'; });
+        var killBtn = (isStale && !isProtected && !s.identity) ? '<button class="copy-fix-btn kill-pid-btn" data-pid="' + s.pid + '" style="font-size:11px;padding:2px 8px;background:var(--c-waste-strong, #ef4444);border-color:var(--c-waste-strong, #ef4444)">kill</button>' : '';
         html += '<tr>' +
           '<td>' + s.pid + '</td>' +
           '<td>' + esc((s.started || '').slice(0, 20)) + '</td>' +
           '<td>' + esc(s.elapsed_human || '?') + '</td>' +
           (isCodex ? '' : '<td>' + esc(s.version || 'unknown') + '</td>') +
-          '<td>' + flagHtml + '</td>' +
+          '<td>' + flagHtml + (flags.indexOf('ORPHAN') !== -1 ? '<div style="font-size:11px;color:var(--c-text-dim);margin-top:2px">terminal gone; started ' + esc(s.elapsed_human || '?') + ' ago</div>' : '') + '</td>' +
           '<td>' + killBtn + '</td>' +
           '</tr>';
       });
@@ -4907,6 +4972,9 @@ var DB = (function() {
         '<span class="flag-badge" style="font-size:10px;background:rgba(125,140,163,0.2);color:var(--c-text-dim)">HEADLESS</span> = no terminal (automation/background) &nbsp; ' +
         '<span class="flag-badge stale" style="font-size:10px">STALE</span> = running 24h+ &nbsp; ' +
         '<span class="flag-badge zombie" style="font-size:10px">ZOMBIE</span> = running 48h+' +
+        (isCodex ? '' : ' &nbsp; <span class="flag-badge desktop" style="font-size:10px">DESKTOP</span> = hosted by the Claude desktop app (never auto-terminated)' +
+          ' &nbsp; <span class="flag-badge unverified" style="font-size:10px">UNVERIFIED</span> = process identity could not be read (never auto-terminated)' +
+          ' &nbsp; <span class="flag-badge orphan" style="font-size:10px">ORPHAN</span> = terminal gone (only ended with <code>kill-stale --include-orphans</code>)') +
         (isCodex ? '' : ' &nbsp; <span class="flag-badge outdated" style="font-size:10px">OUTDATED</span> = older version than installed') +
         '</div>';
     }
@@ -4937,7 +5005,14 @@ var DB = (function() {
         '<div style="text-align:center;padding:var(--s-3) 0;">' +
         '<div style="font-size:56px;font-weight:700;font-family:var(--font-mono);color:' + qColor + ';text-shadow:0 0 15px ' + qColor + ';">' + qs + '</div>' +
         '<div class="label" style="font-size:16px;color:' + qColor + ';">' + qBand + '</div>' +
-        '</div>';
+        '</div>' +
+        // Biggest drag: the actual weighted deficit (fill / compactions /
+        // dominant waste), computed upstream — not inferred from waste keys.
+        (q.top_drag && q.top_drag.label
+          ? '<div style="text-align:center;padding:0 var(--s-3) var(--s-2);font-size:13px;color:var(--c-text-dim);">Biggest drag: <strong style="color:' + qColor + ';">' + esc(q.top_drag.label) + '</strong>' +
+            (typeof q.top_drag.points === 'number' ? ' <span style="font-family:var(--font-mono);font-size:12px;">(-' + esc(String(q.top_drag.points)) + ' pts)</span>' : '') +
+            '</div>'
+          : '');
 
       // Breakdown bars
       var bd = q.breakdown || {};
@@ -5042,9 +5117,67 @@ var DB = (function() {
       '</div>';
 
     if (!c) {
-      html += '<div class="empty-state">No coaching data available. Run: python3 measure.py coach</div>';
+      html += tcliHtml('<div class="empty-state">No coaching data available. Run: python3 measure.py coach</div>');
       el.innerHTML = html;
       return;
+    }
+
+    // "From your own usage": the daily-measured usage-recommendations record
+    // (usage_recommendations.json). One card per applicable item; every
+    // inserted string goes through esc(); not_applicable items render
+    // nowhere, and the Wins row hides when empty.
+    var ur = c.usage_recommendations;
+    if (ur) {
+      var urItems = (ur.items || []).filter(function(it) {
+        return it && it.state !== 'not_applicable';
+      });
+      var urWins = ur.wins || [];
+      if (urItems.length > 0 || !ur.present) {
+        html += '<div class="card wide"><div class="card-header"><span>From your own usage</span>' +
+          (ur.measured_ts
+            ? '<span class="label">measured ' + esc(timeAgo(new Date(ur.measured_ts * 1000))) + ', last ' + esc(String(ur.window_days || 30)) + ' days</span>'
+            : '') +
+          '</div>' +
+          (!ur.present || urItems.length === 0
+            ? '<div style="color:var(--c-text-dim);font-size:14px;">Measuring in the background, check back after your next session</div>'
+            : '');
+        var urCap = function(s) { s = String(s || ''); return s.charAt(0).toUpperCase() + s.slice(1); };
+        urItems.forEach(function(it, urIdx) {
+          // The card header already draws a line above the first row.
+          var urRow = urIdx === 0
+            ? '<div>'
+            : '<div style="border-top:1px solid var(--c-border);margin-top:var(--s-3);padding-top:var(--s-3);">';
+          var label = it.id === 'compact_window' ? 'Compact window'
+            : it.id === 'subagent_cache' ? 'Subagent cache'
+            : String(it.id || 'Recommendation');
+          if (it.state === 'recommend') {
+            html += urRow +
+              '<div class="label">' + esc(label) + '</div>' +
+              '<div style="font-size:15px;color:var(--c-text-main);margin-top:4px;">' + esc(urCap(it.headline)) + '</div>' +
+              (it.tradeoff ? '<div style="font-size:14px;color:var(--c-text-main);margin-top:4px;">' + esc(it.tradeoff) + '</div>' : '');
+            if (it.command) {
+              html += '<pre class="hook-command-pre">' + esc(it.command) + '</pre>' +
+                '<button class="hook-action-btn" data-usage-rec-cmd="' + esc(it.command) + '">Copy command</button>';
+            }
+            html += '</div>';
+          } else {
+            // keep / not_enough_data: one quiet line, no command.
+            html += urRow +
+              '<div style="color:var(--c-text-dim);font-size:14px;">' +
+              esc(label) + ': ' + esc(it.headline || '') + '</div></div>';
+          }
+        });
+        html += '</div>';
+        if (urWins.length > 0) {
+          html += '<div class="card wide"><div class="card-header"><span>Wins</span></div>';
+          urWins.forEach(function(w) {
+            html += '<div style="padding:4px 0;font-size:14px;color:' +
+              (w.improved ? 'var(--c-accent-cyan)' : 'var(--c-text-dim)') + ';">' +
+              (w.line ? esc(w.line) : '') + '</div>';
+          });
+          html += '</div>';
+        }
+      }
     }
 
     // Health Score hero
@@ -5056,7 +5189,7 @@ var DB = (function() {
       '<div style="font-size:12px;color:var(--c-text-dim);padding:4px var(--s-3) 0;">How token-efficient your ' + esc(runtimeLabel) + ' setup appears. Factors include instruction-file size, skill/plugin inventory, MCP config, hooks, model routing, and recent usage. This is a setup health grade, not a model-quality grade.</div>' +
       '<div style="text-align:center;padding:var(--s-4) 0;">' +
       '<div style="font-size:72px;font-weight:700;font-family:var(--font-mono);color:' + scoreColor + ';text-shadow:0 0 20px ' + scoreColor + ';">' + healthGrade + '</div>' +
-      '<div style="font-size:28px;font-weight:500;font-family:var(--font-mono);color:' + scoreColor + ';">' + score + '/100</div>' +
+      '<div style="font-size:28px;font-weight:500;font-family:var(--font-mono);color:' + scoreColor + ';">' + esc(score) + '/100</div>' +
       '</div></div>';
 
     // Snapshot summary
@@ -5066,7 +5199,7 @@ var DB = (function() {
       '<div class="card"><div class="card-header"><span>Startup Overhead</span></div>' +
       '<div style="font-size:11px;color:var(--c-text-dim);padding:0 0 4px 0;">Tokens loaded before you type. Includes ' + esc(instructionLabel) + ', skills/plugin metadata, MCP tools, and system prompt.</div>' +
       '<div class="mini-stat">' + fn(snap.total_overhead || 0) + '</div>' +
-      '<div class="label">' + (snap.overhead_pct || 0) + '% of ' + ((snap.context_window || data.snapshot.context_window || 1000000) >= 1000000 ? ((snap.context_window || data.snapshot.context_window || 1000000) / 1000000) + 'M' : ((snap.context_window || data.snapshot.context_window || 1000000) / 1000) + 'K') + '</div></div>' +
+      '<div class="label">' + esc(snap.overhead_pct || 0) + '% of ' + ((snap.context_window || data.snapshot.context_window || 1000000) >= 1000000 ? ((snap.context_window || data.snapshot.context_window || 1000000) / 1000000) + 'M' : ((snap.context_window || data.snapshot.context_window || 1000000) / 1000) + 'K') + '</div></div>' +
       '<div class="card"><div class="card-header"><span>Usable Context</span></div>' +
       '<div style="font-size:11px;color:var(--c-text-dim);padding:0 0 4px 0;">Context window minus startup overhead and ~33K autocompact buffer. This is how much room you actually have for conversation.</div>' +
       '<div class="mini-stat" style="color:var(--c-accent-cyan);">~' + fn(snap.usable_tokens || 0) + '</div>' +
@@ -5139,7 +5272,7 @@ var DB = (function() {
     // Subagent cost breakdown
     var sc = c.subagent_costs;
     if (sc && sc.total_usd > 0) {
-      html += '<div class="card wide"><div class="card-header"><span>Subagent Spend</span><span class="label">' + sc.pct_of_spend + '% of total</span></div>';
+      html += '<div class="card wide"><div class="card-header"><span>Subagent Spend</span><span class="label">' + esc(sc.pct_of_spend) + '% of total</span></div>';
       html += '<div style="text-align:center;padding:var(--s-3) 0;">' +
         '<div style="font-size:36px;font-weight:700;font-family:var(--font-mono);color:' + (sc.pct_of_spend > 30 ? 'var(--c-warning, #ff9f43)' : 'var(--c-accent-cyan)') + ';">$' + sc.total_usd.toFixed(2) + '</div>' +
         '<div style="font-size:13px;color:var(--c-text-dim);">spent on subagents (last 7 days)</div>' +
@@ -5149,7 +5282,7 @@ var DB = (function() {
         topSubs.slice(0, 5).forEach(function(s) {
           var nameShort = s.name.length > 20 ? s.name.slice(0, 20) + '...' : s.name;
           html += '<div style="display:flex;justify-content:space-between;padding:8px var(--s-3);border-bottom:1px solid var(--c-border);font-size:14px;">' +
-            '<div><span style="color:var(--c-text-main);">' + esc(nameShort) + '</span> <span style="color:var(--c-text-dim);">(' + s.model + ')</span></div>' +
+            '<div><span style="color:var(--c-text-main);">' + esc(nameShort) + '</span> <span style="color:var(--c-text-dim);">(' + esc(s.model) + ')</span></div>' +
             '<div style="font-family:var(--font-mono);color:var(--c-accent-cyan);">$' + s.cost_usd.toFixed(2) + '</div></div>';
         });
       }
@@ -5203,6 +5336,13 @@ var DB = (function() {
 
     el.innerHTML = html;
 
+    el.querySelectorAll('[data-usage-rec-cmd]').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var cmd = btn.getAttribute('data-usage-rec-cmd');
+        if (cmd) copyHookCmd(cmd);
+      });
+    });
+
     var coachPromptEl = document.getElementById('coach-prompt');
     if (coachPromptEl) {
       coachPromptEl.addEventListener('click', function() {
@@ -5238,8 +5378,8 @@ var DB = (function() {
     var isCodex = data.runtime === 'codex';
     var codexSetup = (data.manage && data.manage.codex) || {};
     var refreshCmd = isCodex
-      ? 'TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py dashboard'
-      : 'python3 measure.py dashboard';
+      ? tcli('TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py dashboard')
+      : tcli('python3 measure.py dashboard');
 
     var html = '<div class="section-header">' +
       '<div class="label">Configuration</div>' +
@@ -5499,7 +5639,7 @@ var DB = (function() {
           ? 'Codex setup uses real local logs plus project hooks. Balanced hooks are on by default; noisy per-tool hooks stay opt-in so Desktop users are not spammed.'
           : window.__TOKEN_API_LIVE
           ? '<span style="color:var(--c-accent-cyan);font-weight:600;">Live mode</span> — toggles apply instantly to settings. <strong>Restart ' + (isCodex ? 'Codex' : 'Claude') + '</strong> to activate changes.'
-          : 'Open in serve mode for live toggles: <code style="background:var(--c-bg);padding:2px 5px;border-radius:4px;">python3 measure.py dashboard --serve</code>') +
+          : tcliHtml('Open in serve mode for live toggles: <code style="background:var(--c-bg);padding:2px 5px;border-radius:4px;">python3 measure.py dashboard --serve</code>')) +
       '</p>' +
       '</div>';
 
@@ -5615,15 +5755,15 @@ var DB = (function() {
         '</div>' +
         '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:var(--s-2);">' +
           '<span style="color:var(--c-text-main);font-weight:600;">Install/update balanced hooks:</span>' +
-          '<code class="update-cmd" style="white-space:normal;">' + esc(cx.install_cmd || 'TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-install --project .') + '</code>' +
+          '<code class="update-cmd" style="white-space:normal;">' + esc(cx.install_cmd || tcli('TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-install --project .')) + '</code>' +
         '</div>' +
         '<details style="margin-top:var(--s-3);"><summary style="cursor:pointer;color:var(--c-accent-cyan);font-weight:600;">Show advanced commands</summary>' +
           '<div style="display:grid;gap:10px;margin-top:var(--s-2);">' +
-          '<div><strong style="color:var(--c-text-main);">Quiet Stop-only mode:</strong><br><code class="update-cmd">' + esc(cx.install_quiet_profile_cmd || 'TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-install --project . --profile quiet') + '</code><br><span style="font-size:12px;color:var(--c-text-dim);">Minimum visible rows, but weaker quality telemetry.</span></div>' +
-          '<div><strong style="color:var(--c-text-main);">Bash compression:</strong><br><code class="update-cmd">' + esc(cx.install_with_bash_compression_cmd || 'TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-install --project . --enable-bash-compression') + '</code><br><span style="font-size:12px;color:var(--c-text-dim);">Opt-in only because Codex Desktop shows each PreToolUse row.</span></div>' +
-          '<div><strong style="color:var(--c-text-main);">Full quality + tool telemetry:</strong><br><code class="update-cmd">' + esc(cx.install_with_hot_path_hooks_cmd || 'TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-install --project . --enable-hot-path-hooks --enable-prompt-hooks') + '</code><br><span style="font-size:12px;color:var(--c-text-dim);">Best for CLI/headless QA when exact tool-output bloat matters more than UI quietness.</span></div>' +
-          '<div><strong style="color:var(--c-text-main);">Refresh dashboard now:</strong><br><code class="update-cmd">' + esc(cx.refresh_cmd || 'TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py session-end-flush --trigger manual') + '</code></div>' +
-          '<div><strong style="color:var(--c-text-main);">Verify readiness:</strong><br><code class="update-cmd">' + esc(cx.doctor_cmd || 'TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-doctor --project .') + '</code></div>' +
+          '<div><strong style="color:var(--c-text-main);">Quiet Stop-only mode:</strong><br><code class="update-cmd">' + esc(cx.install_quiet_profile_cmd || tcli('TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-install --project . --profile quiet')) + '</code><br><span style="font-size:12px;color:var(--c-text-dim);">Minimum visible rows, but weaker quality telemetry.</span></div>' +
+          '<div><strong style="color:var(--c-text-main);">Bash compression:</strong><br><code class="update-cmd">' + esc(cx.install_with_bash_compression_cmd || tcli('TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-install --project . --enable-bash-compression')) + '</code><br><span style="font-size:12px;color:var(--c-text-dim);">Opt-in only because Codex Desktop shows each PreToolUse row.</span></div>' +
+          '<div><strong style="color:var(--c-text-main);">Full quality + tool telemetry:</strong><br><code class="update-cmd">' + esc(cx.install_with_hot_path_hooks_cmd || tcli('TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-install --project . --enable-hot-path-hooks --enable-prompt-hooks')) + '</code><br><span style="font-size:12px;color:var(--c-text-dim);">Best for CLI/headless QA when exact tool-output bloat matters more than UI quietness.</span></div>' +
+          '<div><strong style="color:var(--c-text-main);">Refresh dashboard now:</strong><br><code class="update-cmd">' + esc(cx.refresh_cmd || tcli('TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py session-end-flush --trigger manual')) + '</code></div>' +
+          '<div><strong style="color:var(--c-text-main);">Verify readiness:</strong><br><code class="update-cmd">' + esc(cx.doctor_cmd || tcli('TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-doctor --project .')) + '</code></div>' +
           '</div>' +
         '</details>' +
         '<p style="margin-bottom:0;margin-top:var(--s-3);">These commands are generated locally at dashboard-build time. Source checkouts include the checkout path; packaged installs will show the user&apos;s plugin path. No maintainer-specific paths are shipped.</p>' +
@@ -5823,12 +5963,12 @@ var DB = (function() {
           // browser. Show a dashboard toast with the CLI command and a
           // copy button instead of a blocking alert().
           e.target.checked = !newState;
-          var cliCmd = 'python3 measure.py v5 ' + (newState ? 'enable' : 'disable') + ' ' + fname;
+          var cliCmd = tcli('python3 measure.py v5 ') + (newState ? 'enable' : 'disable') + ' ' + fname;
           showCmdToast({
             title: 'Toggling v5 features needs a terminal',
             body: 'The read-only dashboard server can\u2019t write config. Run this in a terminal:',
             cmd: cliCmd,
-            hint: 'Or re-open the dashboard with full API: python3 measure.py dashboard --serve'
+            hint: tcli('Or re-open the dashboard with full API: python3 measure.py dashboard --serve')
           });
           return;
         }

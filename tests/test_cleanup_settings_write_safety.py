@@ -102,7 +102,7 @@ def test_write_atomic_returns_false_on_lease_miss(measure, monkeypatch):
         def __exit__(self, *a):
             return False
 
-    monkeypatch.setattr(mod, "_settings_lock", lambda: _Denied())
+    monkeypatch.setattr(mod, "_settings_lock", lambda **kw: _Denied())
     assert mod._write_settings_atomic({"a": 1}) is False
 
 

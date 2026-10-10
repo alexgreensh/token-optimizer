@@ -1,5 +1,5 @@
 ---
-description: Check running Claude Code or Codex sessions, find zombies, offer to clean up safely
+description: Checks running Claude Code or Codex sessions, finds zombies, and offers a safe cleanup. Use when sessions feel stuck or many are open.
 ---
 
 # Session Health Check
@@ -63,14 +63,16 @@ export TOKEN_OPTIMIZER_RUNTIME="$RUNTIME"
    - Codex / OpenCode / standalone: `TOKEN_OPTIMIZER_RUNTIME="$RUNTIME" bash "$TO_LAUNCHER" "$MEASURE_PY" health`
      (only if `$TO_LAUNCHER` is empty, fall back to `TOKEN_OPTIMIZER_RUNTIME="$RUNTIME" python3 "$MEASURE_PY" health` — the bare-python3 form flashes a console window on Windows)
 
-3. Present results clearly. For each session show: PID, elapsed time, version, and flags (STALE >24h, ZOMBIE >48h, OUTDATED, HEADLESS, TERMINAL).
+3. Present results clearly. For each session show: PID, elapsed time, version, and flags (STALE >24h, ZOMBIE >48h, OUTDATED, HEADLESS, TERMINAL, DESKTOP, UNVERIFIED, ORPHAN). For an ORPHAN session also show "terminal gone; started <age> ago".
 
-4. If ANY sessions are flagged STALE or ZOMBIE, ask the user:
+4. If ANY sessions are flagged STALE or ZOMBIE (and are not DESKTOP, UNVERIFIED or ORPHAN), ask the user:
    "I found N session(s) that look stale. Want me to show details so you can decide which to terminate?"
 
-5. **CRITICAL SAFETY RULES — follow these exactly:**
-   - NEVER auto-kill anything. Always ask first and get explicit confirmation.
+5. **Terminate only with the user's explicit confirmation**, because a session that looks stale may be doing real work:
+   - Never auto-kill anything. Ask first and wait for confirmation.
    - HEADLESS sessions might be intentional background processes (cron agents, heartbeat monitors, scheduled tasks). Always warn: "This session is headless, it might be a background agent running on purpose. Are you sure you want to terminate it?"
+   - DESKTOP sessions are hosted by another program (the Claude desktop app, an IDE, the SDK, a headless `-p` run or a subcommand such as `mcp`) and UNVERIFIED sessions are processes whose identity could not be read. `kill-stale` never terminates either, because process age alone does not show that a conversation is abandoned. On every platform, a process whose parent chain cannot be fully read, or that has lost its terminal or shell without meeting every ORPHAN condition below, is also UNVERIFIED and is never killed automatically. Only a session attached to a terminal under a shell, tmux/screen or sshd is offered for termination.
+   - ORPHAN (macOS and Linux only) is a fourth, explicit class: an interactive session whose terminal died. It needs exact argv, no headless flag or subcommand, no controlling TTY, init (pid 1 or `systemd --user`) as parent, and a binary that is not an Electron app; anything short of that stays UNVERIFIED. A launchd/systemd automation that carries `-p`/`--print` is DESKTOP, not ORPHAN. `kill-stale` never terminates orphans by default: it prints how many there are and the exact command. Only if the user asks to clean them up, preview with `kill-stale --include-orphans --dry-run` (same `--hours` threshold), show the list, get explicit confirmation, then run `kill-stale --include-orphans`. Each orphan is re-verified right before its kill (same pid, same start time, still orphan). Windows has no ORPHAN class. Do not suggest killing them by PID; point the user to the app itself or the operating system's process manager.
    - Let the user pick specific PIDs to terminate, or offer "terminate all ZOMBIE-flagged sessions" as a batch option.
    - Always run a dry-run first to preview what would be terminated, then ask for confirmation before running without `--dry-run`.
    - Claude Code plugin dry-run: `bash "$CLAUDE_PLUGIN_ROOT/hooks/python-launcher.sh" $MEASURE_PY kill-stale --dry-run`

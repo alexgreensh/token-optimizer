@@ -6,6 +6,7 @@
   "openai_gemini": "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
  },
  "thresholds": {
+  "anthropic_long_context_input": 100000,
   "openai_long_context_input": 272000,
   "gemini_long_context_input": 200000
  },
@@ -198,6 +199,15 @@
    "cache_write_1h": 6.0,
    "cache_read": 0.3,
    "output": 15.0
+  }
+ },
+ "anthropic_long_context": {
+  "haiku_5_5": {
+   "input": 0.5,
+   "cache_write": 0.625,
+   "cache_write_1h": 1.0,
+   "cache_read": 0.05,
+   "output": 2.5
   }
  },
  "openai": {
@@ -671,5 +681,5 @@
    "cache_read": 0.4
   }
  },
- "generated_at": "2026-10-08T13:43:16Z"
+ "generated_at": "2026-10-10T11:53:33Z"
 }

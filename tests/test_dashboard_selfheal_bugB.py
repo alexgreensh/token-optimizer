@@ -21,7 +21,10 @@ SCRIPTS = Path(__file__).resolve().parent.parent / "skills" / "token-optimizer" 
 
 
 @pytest.fixture()
-def m():
+def m(tmp_path, monkeypatch):
+    # The self-heal throttle claims a marker file in the data dir; without a
+    # private one the test passes once per throttle window, then fails.
+    monkeypatch.setenv("TOKEN_OPTIMIZER_SNAPSHOT_DIR", str(tmp_path / "data"))
     sys.path.insert(0, str(SCRIPTS))
     if "measure" in sys.modules:
         del sys.modules["measure"]

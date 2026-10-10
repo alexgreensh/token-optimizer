@@ -17,6 +17,8 @@ export type StatusBar = {
   savingsReason: string | null
   lastRequestEpoch: number | null
   cacheLifetime: CacheLifetime | null
+  /** The user's own compact window (settings, /autocompact, env) as Token Optimizer resolved it; null when there is none. */
+  compactWindow: number | null
   checkpointEpoch: number | null
   /** The earlier session's checkpoint Token Optimizer flagged as resumable for this one. */
   earlierCheckpoint: EarlierCheckpoint
@@ -31,6 +33,7 @@ export type UsageView = {
   contextPercent: number | null
   contextTokens: number | null
   contextWindow: number | null
+  contextWindowReduced?: boolean
   fiveHour: Limit | null
   /** When the live session began (ms), from the engine itself. */
   startedAtMs?: number | null
@@ -105,8 +108,20 @@ function gradeFor(score: number): string {
   return 'F'
 }
 
-function dragFrom(breakdown: unknown): string | null {
-  const signals = toRecord(breakdown)
+/**
+ * The signal pulling the score down. Newer caches carry `top_drag`, computed
+ * upstream by weighted deficit across fill/compactions/waste — that is the
+ * true drag. The waste-key scan stays as the fallback for caches written
+ * before `top_drag` existed.
+ */
+function dragFrom(cache: Json): string | null {
+  const upstream = text(toRecord(cache.top_drag)?.label)
+
+  if (upstream) {
+    return upstream
+  }
+
+  const signals = toRecord(cache.breakdown)
 
   if (!signals) {
     return null
@@ -149,7 +164,7 @@ export function parseQualityCache(json: unknown, nowEpoch: number): Quality | nu
   return {
     score,
     grade,
-    drag: dragFrom(cache.breakdown),
+    drag: dragFrom(cache),
     toolCalls: count(cache.tool_calls),
     compactions: count(cache.compactions) ?? 0,
     checkpointEpoch: epoch(cache.last_checkpoint_epoch, nowEpoch),
@@ -203,6 +218,10 @@ export function parseStatusBar(json: unknown): StatusBar | null {
     savingsReason: text(out.savings_reason),
     lastRequestEpoch: lastRequest !== null && lastRequest > 0 ? lastRequest : null,
     cacheLifetime: lifetime,
+    compactWindow: (() => {
+      const n = num(toRecord(out.compactWindow)?.tokens)
+      return n !== null && n > 0 ? Math.floor(n) : null
+    })(),
     checkpointEpoch: checkpoint !== null && checkpoint > 0 ? checkpoint : null,
     earlierCheckpoint: parseEarlier(out.earlier_checkpoint),
     compactions: (() => {
@@ -229,18 +248,67 @@ function limit(limits: unknown, kind: string): Limit | null {
   return found && percentUsed !== null ? { percentUsed, resetsAt: text(found.resetsAt) } : null
 }
 
-/** `$.session.usage()`'s `{ context, rateLimits }`; anything missing reads as null. */
-export function parseUsage(usage: unknown): UsageView {
+const HOST_SCI = /^[+-]?(\d+(\.\d*)?|\.\d+)[eE][+-]?\d+$/
+const HOST_GROUPED = /^[+-]?\d{1,3}([_,\u00A0\u202F ])\d{3}(?:\1\d{3})*$/
+
+/** Claude Code's env integer parse (Dd/FOo): scientific notation and thousand separators, then a decimal prefix. */
+function hostParseInt(raw: string): number {
+  const text = raw.trim()
+  if (text.length <= 32) {
+    if (HOST_SCI.test(text)) {
+      const n = Number(text)
+      return Number.isInteger(n) ? n : Number.NaN
+    }
+    if (HOST_GROUPED.test(text)) return Number.parseInt(text.replace(/[_,\u00A0\u202F ]/g, ''), 10)
+  }
+  return Number.parseInt(text, 10)
+}
+
+/**
+ * Match Claude Code's CLAUDE_CODE_AUTO_COMPACT_WINDOW handling: an invalid value (NaN or <= 0) is IGNORED
+ * (null), a valid one is capped at 1M and floored at 100K. Shared vectors: tests/fixtures/compact_window_env_vectors.json.
+ */
+function compactWindow(value: unknown): number | null {
+  if (typeof value !== 'string' || value.trim() === '') return null
+  const window = hostParseInt(value)
+  return Number.isNaN(window) || window <= 0 ? null : Math.max(100_000, Math.min(1_000_000, window))
+}
+
+/** Token Optimizer's own resolved window (settings or /autocompact): a number, within the same bounds. */
+function resolvedWindow(value: number | null | undefined): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.max(100_000, Math.min(1_000_000, Math.floor(value))) : null
+}
+
+/** The smaller of the raw env override and the resolved window; null when neither applies. */
+export function smallerCompactWindow(env: unknown, resolved?: number | null): number | null {
+  const all = [compactWindow(env), resolvedWindow(resolved)].filter((n): n is number => n !== null)
+  return all.length > 0 ? Math.min(...all) : null
+}
+
+/**
+ * `$.session.usage()`'s `{ context, rateLimits }`; anything missing reads as null.
+ * A smaller auto-compaction ceiling (the raw env value, or the window Token Optimizer resolved
+ * from settings) changes both the window and its fill.
+ */
+export function parseUsage(usage: unknown, autoCompactWindow?: unknown, resolved?: number | null): UsageView {
   const all = toRecord(usage)
   const context = toRecord(all?.context)
   const tokens = num(context?.tokens)
-  const window = num(context?.window)
-  const percent = num(context?.percent) ?? (tokens !== null && window ? (tokens / window) * 100 : null)
+  const reportedWindow = num(context?.window)
+  const window = reportedWindow !== null && reportedWindow > 0 ? reportedWindow : null
+  const ceiling = smallerCompactWindow(autoCompactWindow, resolved)
+  const reduced = window !== null && ceiling !== null && ceiling < window
+  const effectiveWindow = reduced ? ceiling : window
+  const calculated = reduced && ceiling !== null && tokens !== null && tokens >= 0 ? (tokens / ceiling) * 100 : null
+  const percent = reduced
+    ? num(calculated)
+    : num(context?.percent) ?? (tokens !== null && reportedWindow ? (tokens / reportedWindow) * 100 : null)
 
   return {
     contextPercent: percent,
     contextTokens: tokens,
-    contextWindow: window !== null && window > 0 ? window : null,
+    contextWindow: effectiveWindow,
+    ...(reduced ? { contextWindowReduced: true } : {}),
     fiveHour: limit(all?.rateLimits, 'five_hour'),
     week: limit(all?.rateLimits, 'seven_day'),
     startedAtMs: (() => {

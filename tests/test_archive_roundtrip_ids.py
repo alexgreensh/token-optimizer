@@ -172,3 +172,29 @@ def test_expand_rejects_trailing_newline_key(tmp_path):
     p = _expand_bytes(tmp_path, "abc\n")
     assert p.returncode != 0
     assert b"Invalid tool_use_id" in p.stderr
+
+
+# --------------------------------------------------------------------- F9c
+
+@pytest.mark.parametrize("n", [129, 300])
+def test_overlong_safe_id_is_archived_under_a_digest(tmp_path, n):
+    tid = "a" * n
+    p = _archive(tmp_path, tid, "payload\n" * 1000)
+    key, replacement = _key_from(p)
+    assert key != tid and len(key) <= 128
+    assert (tmp_path / "snap" / "tool-archive" / SID / f"{key}.json").is_file()
+    assert "Failed to archive" not in p.stderr
+    assert _expand_bytes(tmp_path, key).returncode == 0
+
+
+def test_id_at_the_limit_keeps_its_own_name(tmp_path):
+    import archive_result
+    assert archive_result._safe_archive_key("a" * 128) == "a" * 128
+    assert archive_result._safe_archive_key("a" * 129) != "a" * 129
+
+
+def test_distinct_overlong_ids_do_not_collide():
+    import archive_result
+    a = archive_result._safe_archive_key("x" * 200 + "1")
+    b = archive_result._safe_archive_key("x" * 200 + "2")
+    assert a != b

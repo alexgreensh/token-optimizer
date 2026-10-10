@@ -10,7 +10,10 @@ Four detectors, all measured from the transcripts:
 
   repeated_sequence  the same ordered run of 3+ tool calls in 3+ sessions
   templated_subagent subagent launches whose normalised first 300 chars match (5+)
-  polling_loop       one normalised command run 4+ times with no edit in between
+  polling_loop       one literal command run 4+ times with no edit in between
+                     (or a wait/check pattern: `sleep` + a status command)
+  parameter_sweep    one normalised command shape run 4+ times over distinct
+                     literal parameters (run-0, run-1, ...) with no edit
   check_only_turn    a turn whose only tool call was a passing test/build/lint run
                      and whose reply was short: the exit code already answered
 
@@ -432,9 +435,9 @@ def is_check_command(cmd: str) -> bool:
 # ---------------------------------------------------------------------------
 
 class Call:
-    __slots__ = ("key", "shape", "kind", "turn", "ut", "ok", "prompt_key", "cmd_ok_check")
+    __slots__ = ("key", "shape", "kind", "turn", "ut", "ok", "prompt_key", "cmd_ok_check", "lit")
 
-    def __init__(self, key, shape, kind, turn, ut, prompt_key=None, cmd_ok_check=False):
+    def __init__(self, key, shape, kind, turn, ut, prompt_key=None, cmd_ok_check=False, lit=None):
         self.key = key
         self.shape = shape
         self.kind = kind          # bash | read | grep | glob | edit | agent | other
@@ -443,6 +446,7 @@ class Call:
         self.ok = None            # None unknown, True success, False failure
         self.prompt_key = prompt_key
         self.cmd_ok_check = cmd_ok_check
+        self.lit = lit            # redacted literal command (no placeholder collapse)
 
 
 class Turn:
@@ -564,7 +568,7 @@ class _KeyMaker:
         self.redact = redact
         self._cmd_memo: dict[str, tuple[str, str, bool]] = {}
 
-    def command(self, raw: str) -> tuple[str, str, bool]:
+    def command(self, raw: str) -> tuple[str, str, bool, str]:
         hit = self._cmd_memo.get(raw)
         if hit is None:
             clean = self.redact(raw[:INLINE_READ_CHARS])
@@ -577,7 +581,11 @@ class _KeyMaker:
             else:
                 norm = normalise_command(clean)
                 key, shape = "B:" + norm, "Bash: " + norm
-            hit = (key, shape, is_check_command(clean))
+            # The literal form keeps every parameter: polling means re-running
+            # ONE literal command; a normalised shape that hides several
+            # literals is a parameter sweep (F-T2-11).
+            lit = _CD_PREFIX_RE.sub("", _WS_RE.sub(" ", clean).strip())
+            hit = (key, shape, is_check_command(clean), lit)
             if len(self._cmd_memo) < 20000:
                 self._cmd_memo[raw] = hit
         return hit
@@ -602,8 +610,8 @@ class _KeyMaker:
         body = ",".join(parts)[:160]
         return f"O:{name}({body})", f"{name}({body})"
 
-    def build(self, name: str, inp: dict) -> tuple[str, str, str, str | None, bool]:
-        """Return (key, shape, kind, prompt_key, is_check)."""
+    def build(self, name: str, inp: dict) -> tuple[str, str, str, str | None, bool, str | None]:
+        """Return (key, shape, kind, prompt_key, is_check, lit)."""
         if name in _BASH_TOOLS:
             cmd = inp.get("command") if "command" in inp else inp.get("cmd")
             if isinstance(cmd, list):
@@ -611,36 +619,36 @@ class _KeyMaker:
             if name == "write_stdin":
                 polling = not inp.get("chars")
                 label = "write_stdin <poll>" if polling else "write_stdin <input>"
-                return "B:" + label, "Bash: " + label, "bash", None, False
+                return "B:" + label, "Bash: " + label, "bash", None, False, label
             if not isinstance(cmd, str) or not cmd.strip():
-                return "B:?", "Bash: ?", "bash", None, False
-            key, shape, chk = self.command(cmd)
-            return key, shape, "bash", None, chk
+                return "B:?", "Bash: ?", "bash", None, False, "?"
+            key, shape, chk, lit = self.command(cmd)
+            return key, shape, "bash", None, chk, lit
         if name in _READ_TOOLS:
             ext = _ext_of(inp.get("file_path") or inp.get("path") or inp.get("notebook_path"))
-            return f"R:{ext}", f"Read *{ext}", "read", None, False
+            return f"R:{ext}", f"Read *{ext}", "read", None, False, None
         if name in _EDIT_TOOLS:
             if name == "apply_patch":
                 ext = _ext_of(inp.get("_patch_path"))
             else:
                 ext = _ext_of(inp.get("file_path") or inp.get("path") or inp.get("notebook_path"))
-            return f"E:{name}:{ext}", f"{name} *{ext}", "edit", None, False
+            return f"E:{name}:{ext}", f"{name} *{ext}", "edit", None, False, None
         if name == "Grep":
             pat = normalise_command(self.redact(str(inp.get("pattern") or "")[:200]), max_chars=80)
             scope = inp.get("glob") or inp.get("type") or ""
             scope = _ext_of(scope) if isinstance(scope, str) and scope else ""
-            return f"G:{pat}|{scope}", f'Grep "{pat}" {scope}'.strip(), "grep", None, False
+            return f"G:{pat}|{scope}", f'Grep "{pat}" {scope}'.strip(), "grep", None, False, None
         if name == "Glob":
             pat = normalise_command(self.redact(str(inp.get("pattern") or "")[:200]), max_chars=80)
-            return f"L:{pat}", f"Glob {pat}", "glob", None, False
+            return f"L:{pat}", f"Glob {pat}", "glob", None, False, None
         if name in _AGENT_TOOLS:
             prompt = inp.get("prompt") or inp.get("message") or inp.get("task") or inp.get("description") or ""
             if not isinstance(prompt, str):
                 prompt = ""
             pk = self.prompt(prompt)
-            return f"A:{pk}", f"Agent: {pk}", "agent", pk, False
+            return f"A:{pk}", f"Agent: {pk}", "agent", pk, False, None
         key, shape = self.generic(name, inp)
-        return key, shape, "other", None, False
+        return key, shape, "other", None, False, None
 
 
 # ---------------------------------------------------------------------------
@@ -776,8 +784,8 @@ def extract_claude(path: Path | str, keys: _KeyMaker, seen_ids: set,
                             continue
                         inp = block.get("input")
                         inp = inp if isinstance(inp, dict) else {}
-                        key, shape, kind, pkey, chk = keys.build(name, inp)
-                        call = Call(key, shape, kind, tidx, turn.ut, pkey, chk)
+                        key, shape, kind, pkey, chk, lit = keys.build(name, inp)
+                        call = Call(key, shape, kind, tidx, turn.ut, pkey, chk, lit)
                         trace.add_call(call)
                         if isinstance(cid, str):
                             call_by_id[cid] = call
@@ -933,8 +941,8 @@ def extract_codex(path: Path | str, keys: _KeyMaker, seen_ids: set,
                 pm = _CODEX_PATCH_FILE_RE.search(patch or "")
                 args = {"_patch_path": pm.group(1) if pm else ""}
             tidx = ensure_turn()
-            key, shape, kind, pkey, chk = keys.build(raw_name, args)
-            call = Call(key, shape, kind, tidx, trace.turns[tidx].ut, pkey, chk)
+            key, shape, kind, pkey, chk, lit = keys.build(raw_name, args)
+            call = Call(key, shape, kind, tidx, trace.turns[tidx].ut, pkey, chk, lit)
             trace.add_call(call)
             if isinstance(cid, str):
                 call_by_id[cid] = call
@@ -946,8 +954,8 @@ def extract_codex(path: Path | str, keys: _KeyMaker, seen_ids: set,
             prompt = payload.get("prompt")
             if isinstance(prompt, str) and prompt.strip():
                 tidx = ensure_turn()
-                key, shape, kind, pkey, chk = keys.build("spawn_agent", {"prompt": prompt})
-                call = Call(key, shape, kind, tidx, trace.turns[tidx].ut, pkey, chk)
+                key, shape, kind, pkey, chk, lit = keys.build("spawn_agent", {"prompt": prompt})
+                call = Call(key, shape, kind, tidx, trace.turns[tidx].ut, pkey, chk, lit)
                 call.ok = True
                 trace.add_call(call)
                 if isinstance(cid, str):
@@ -1016,6 +1024,7 @@ _SUGGESTIONS = {
     "repeated_sequence": "Wrap this exact sequence in one script (or a skill/hook that runs it) and let the model read only the result.",
     "templated_subagent": "Same prompt shape launched repeatedly: if the work is mechanical, make it a parameterised script or scheduled job; keep a subagent only for the judgment step.",
     "polling_loop": "Replace the model re-check loop with a script that waits (until <condition>; exit code) or a hook/scheduled job that notifies on completion.",
+    "parameter_sweep": "Same command shape run with different parameters: drive the values from one script loop (for x in ...; do cmd \"$x\"; done) or a matrix/table run, and let the model read only the results.",
     "check_only_turn": "Run it from a hook, pre-commit or make target and read the exit code; the model does not need a turn to learn that it passed.",
 }
 
@@ -1146,17 +1155,45 @@ def detect_subagents(traces: list[Trace]) -> list[_Cand]:
     return [c for c in groups.values() if c.times >= MIN_SUBAGENT_LAUNCHES]
 
 
+# A `sleep` segment is the model waiting for state to change: that is a
+# re-check loop even when the checked target's parameters differ each run.
+_SLEEP_SEGMENT_RE = re.compile(r"(?:^|&&|\|\||;|\|)\s*sleep(?=\s|$)")
+
+
 def detect_polling(traces: list[Trace]) -> list[_Cand]:
-    groups: dict[str, _Cand] = {}
+    groups: dict[tuple[str, str], _Cand] = {}
     for si, tr in enumerate(traces):
         runs: dict[str, list[Call]] = defaultdict(list)
 
         def flush():
             for key, calls in runs.items():
-                if len(calls) >= MIN_POLL_RUNS:
-                    cand = groups.get(key)
+                if len(calls) < MIN_POLL_RUNS:
+                    continue
+                by_lit: dict[str, list[Call]] = defaultdict(list)
+                for c in calls:
+                    by_lit[c.lit or c.shape].append(c)
+                # F-T2-11: a normalised shape collapses digits/strings/paths,
+                # so `run-0`..`run-5` lands in one group. A polling loop
+                # re-runs ONE literal command; several distinct literals is
+                # a parameter sweep and needs different advice.
+                loops = [lc for lc in by_lit.values() if len(lc) >= MIN_POLL_RUNS]
+                if not loops:
+                    waiting = [c for c in calls if _SLEEP_SEGMENT_RE.search(c.lit or "")]
+                    if len(waiting) >= MIN_POLL_RUNS:
+                        loops = [waiting]
+                if loops:
+                    loop_calls = [c for lc in loops for c in lc]
+                    cand = groups.get((key, "polling_loop"))
                     if cand is None:
-                        cand = groups[key] = _Cand("polling_loop", calls[0].shape)
+                        cand = groups[(key, "polling_loop")] = _Cand("polling_loop", loop_calls[0].shape)
+                    cand.times += len(loop_calls)
+                    cand.sessions.add(si)
+                    for c in loop_calls:
+                        cand.turns.add((si, c.turn))
+                elif len(by_lit) >= 2:
+                    cand = groups.get((key, "parameter_sweep"))
+                    if cand is None:
+                        cand = groups[(key, "parameter_sweep")] = _Cand("parameter_sweep", calls[0].shape)
                     cand.times += len(calls)
                     cand.sessions.add(si)
                     for c in calls:

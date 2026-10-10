@@ -21109,6 +21109,24 @@ def _recs_refresh_locked(now):
     return rec
 
 
+def _recs_write_provisional(now):
+    """A killed refresh must still leave a record (the module header says a
+    crashed run writes complete:false). Written when the lock is taken, and
+    only when no valid record exists: a previous good record stays put (it is
+    already past its refresh age, so the next start retries). Never raises."""
+    try:
+        if _recs_read_record() is not None:
+            return
+        _subagent_cache_write_json_atomic(
+            _recs_record_path(),
+            {"schema": 1, "measured_ts": float(now),
+             "window_days": _RECS_WINDOW_DAYS, "complete": False,
+             "provisional": True, "items": [], "wins": []},
+            ".usage_recs.")
+    except Exception:
+        pass
+
+
 def usage_recommendations_refresh(now=None, token=None):
     """The one refresher. Run by the detached child (which presents its lock
     token) or by hand (which takes the lock itself). Returns the record, or
@@ -21126,6 +21144,7 @@ def usage_recommendations_refresh(now=None, token=None):
         if token is None:
             return None
     try:
+        _recs_write_provisional(now)
         return _recs_refresh_locked(now)
     finally:
         _recs_lock_release(token)
@@ -21182,10 +21201,15 @@ def _recs_ensure_fresh(now=None):
             return False
         rec = _recs_read_record()
         if rec is not None:
+            # A provisional record means the refresh that wrote it never
+            # finished; retry once the lock it held would be reclaimable
+            # instead of parking the retry for a day.
+            limit = (_RECS_LOCK_STALE if rec.get("provisional")
+                     else _RECS_REFRESH_SECONDS)
             try:
                 if (float(now if now is not None else time.time())
                         - float(rec.get("measured_ts") or 0)
-                        < _RECS_REFRESH_SECONDS):
+                        < limit):
                     return False
             except (TypeError, ValueError):
                 pass

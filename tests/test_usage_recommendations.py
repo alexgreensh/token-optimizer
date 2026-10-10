@@ -524,6 +524,59 @@ def test_refresh_replays_the_whole_window_not_the_coach_slice(m, monkeypatch):
     assert mod._RECS_COMPACT_BUDGET_SECONDS >= 60
 
 
+def _kill_during_replay(mod, monkeypatch):
+    """Make the refresh die (SystemExit escapes `except Exception`, like a
+    SIGKILL leaves no cleanup) the moment the compact replay starts."""
+    def _die(now=None):
+        raise SystemExit("killed mid-replay")
+    monkeypatch.setattr(mod, "_recs_compact_item", _die)
+
+
+def test_killed_refresh_leaves_a_provisional_incomplete_record(m, monkeypatch):
+    """The module header promises a crashed run leaves complete:false. A
+    record is written at the start of the refresh, so a kill mid-replay still
+    leaves one."""
+    mod, _s, _h = m
+    _kill_during_replay(mod, monkeypatch)
+    now = time.time()
+    with pytest.raises(SystemExit):
+        mod.usage_recommendations_refresh(now=now)
+    on_disk = _read_record(m)
+    assert on_disk["schema"] == 1
+    assert on_disk["complete"] is False
+    assert on_disk["items"] == [] and on_disk["wins"] == []
+    assert on_disk["measured_ts"] == now
+    assert mod._recs_read_record() is not None
+
+
+def test_killed_refresh_keeps_the_previous_good_record(m, monkeypatch):
+    """A kill must not replace yesterday's measured items with an empty
+    placeholder; the old record stays and ages out into a retry."""
+    mod, _s, _h = m
+    old_ts = time.time() - 2 * 86400
+    before = _write_record(m, [
+        {"id": "subagent_cache", "state": "keep", "headline": "x",
+         "numbers": {}, "command": "", "direction": "",
+         "enough_data": True, "reason": "r"}], measured_ts=old_ts)
+    _kill_during_replay(mod, monkeypatch)
+    with pytest.raises(SystemExit):
+        mod.usage_recommendations_refresh()
+    assert _read_record(m) == before
+
+
+def test_provisional_record_retries_after_the_lock_window(m, monkeypatch):
+    """A provisional record must not park the retry for a whole day: once the
+    lock a killed child held can be reclaimed, the next start respawns."""
+    mod, _s, _h = m
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    _kill_during_replay(mod, monkeypatch)
+    t0 = time.time()
+    with pytest.raises(SystemExit):
+        mod.usage_recommendations_refresh(now=t0)
+    assert mod._recs_ensure_fresh(now=t0 + 10) is False
+    assert mod._recs_ensure_fresh(now=t0 + mod._RECS_LOCK_STALE + 10) is True
+
+
 def test_lock_blocks_a_second_refresh(m, monkeypatch):
     mod, _s, _h = m
     _stub_compact(m, monkeypatch, _compact_report())

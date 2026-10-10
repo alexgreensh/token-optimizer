@@ -3444,13 +3444,12 @@ def _context_window_for_model_str(model_str):
 #   percentage of the window already used when compaction runs -- lower values
 #   compact EARLIER and it can never raise the threshold.
 #
-# modelSettings shape: verified 2026-10-10 from a real settings.json --
-#   "modelSettings": {"claude-opus-5-5": {"effortLevel": "medium"}, ...}
-#   i.e. keyed by FULL model id, one object per model. NOT VERIFIED: the field
-#   name inside that object that holds the compact window. `autoCompactWindow`
-#   is kept as the working assumption (it mirrors the top-level setting); if
-#   Claude Code writes a different name, per-model overrides are silently
-#   ignored here and the top-level setting applies.
+# modelSettings shape: verified 2026-10-10 from a real settings.json and from the
+# Claude Code 2.1.296 binary's schema --
+#   "modelSettings": {"claude-opus-5-5": {"autoCompactWindow": 500000 | "auto"}, ...}
+#   keyed by FULL model id, one object per model; /autocompact writes it.
+#   "auto" means the window tuned for the model and replaces the top-level
+#   autoCompactWindow for that model (it does not fall through to it).
 # ---------------------------------------------------------------------------
 _COMPACT_WINDOW_MIN = 100_000
 _COMPACT_WINDOW_MAX = 1_000_000
@@ -3769,7 +3768,8 @@ def detect_context_window():
          then conservative Codex effective default
       5. Claude: CLAUDE_MODEL / ANTHROPIC_MODEL env var -> check model family
       6. Claude config.json or settings.json model field -> check model family
-      7. Claude fallback: 1M (Opus 4.6+/4.7 and Sonnet 4.6 are 1M GA since March 2026)
+      7. Claude fallback: 1M (Sonnet 5+, Opus 4.7+, Fable and Haiku 5.5 are 1M with no
+         suffix; Opus/Sonnet 4.6 are 1M only as the [1m] variant)
     """
     global _context_window_cache
     # Resolve context flags from process env AND settings.json:

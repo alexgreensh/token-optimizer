@@ -24,6 +24,14 @@ export interface QualityReport {
     distortionBounds?: DistortionBounds;
 }
 /**
+ * Context window for a Claude model id, per Claude Code's model-config docs
+ * (checked 2026-10-10): Fable, Sonnet 5+, Opus 4.7+ and Haiku 5.5 are 1M with
+ * no suffix; Sonnet 4.6 / Opus 4.6 are 1M only as the `[1m]` variant (200K
+ * without); every older Claude is 200K. Returns null when the id carries no
+ * Claude family so callers fall through to their other rules.
+ */
+export declare function claudeContextWindow(model: string): number | null;
+/**
  * Resolve a model's context window. Tries exact match, then a Claude-family rule,
  * then substring match, so a full model id (e.g. "claude-sonnet-4-6",
  * "anthropic/claude-opus-4-8") resolves to its real window instead of silently
@@ -32,6 +40,13 @@ export interface QualityReport {
  * window; callers must label fill as an estimate against an assumed window.
  */
 export declare function contextWindowForModel(model: string): number;
+/**
+ * Opus/Sonnet 4.6 are 1M only as the `[1m]` variant, but the runtime records
+ * the plain id. Observed tokens above the 200K window prove the 1M variant, so
+ * widen the window instead of reporting a fill above 100%. Any other model, or
+ * tokens that fit, keep the table window.
+ */
+export declare function promoteWindowForObservedTokens(model: string, window: number, tokens: number): number;
 export interface DistortionBounds {
     /** Estimated best quality score for this configuration (heuristic upper bound). */
     theoreticalMax: number;

@@ -76,7 +76,7 @@ function runInChild(script: string): string {
   const home = mkdtempSync(join(tmpdir(), `openclaw-cut-home-${process.pid}-`));
   try {
     const proc = Bun.spawnSync([process.execPath, "-e", script], {
-      cwd: import.meta.dir,
+      cwd: __dirname,
       env: { ...process.env, HOME: home, USERPROFILE: home, TOKEN_OPTIMIZER_FRAG_TOKEN: TOKEN },
     });
     expect(proc.exitCode).toBe(0);

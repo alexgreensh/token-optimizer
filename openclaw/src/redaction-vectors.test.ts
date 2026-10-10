@@ -10,7 +10,7 @@ import { redact } from "./redact";
 
 type Vector = { name: string; input: string[]; absent: string[]; present: string[] };
 const { vectors } = JSON.parse(
-  readFileSync(join(import.meta.dir, "../..", "tests", "fixtures", "redaction_vectors.json"), "utf8"),
+  readFileSync(join(__dirname, "../..", "tests", "fixtures", "redaction_vectors.json"), "utf8"),
 ) as { vectors: Vector[] };
 
 for (const v of vectors) {

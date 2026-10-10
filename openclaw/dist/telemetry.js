@@ -84,7 +84,9 @@ function logCompressionEvent(input) {
         const ratio = originalTokens > 0
             ? Math.round((1 - compressedTokens / originalTokens) * 10000) / 10000
             : 0;
-        const detailRaw = input.detail ?? null;
+        // Redact BEFORE cutting: a secret straddling the cut is a prefix no
+        // pattern recognises.
+        const detailRaw = input.detail ? (0, redact_1.redact)(input.detail) : null;
         const detail = detailRaw && detailRaw.length > MAX_DETAIL_LEN
             ? detailRaw.slice(0, MAX_DETAIL_LEN)
             : detailRaw;
@@ -102,7 +104,7 @@ function logCompressionEvent(input) {
             compression_ratio: ratio,
             quality_preserved: input.qualityPreserved === false ? 0 : 1,
             verified: input.verified ? 1 : 0,
-            detail: detail ? (0, redact_1.redact)(detail) : null,
+            detail: detail || null,
         };
         ensureDir();
         fs.appendFileSync(TELEMETRY_PATH, JSON.stringify(event) + "\n", {

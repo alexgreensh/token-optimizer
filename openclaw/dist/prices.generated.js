@@ -3,7 +3,7 @@
 // Do not edit by hand: the daily refresh-prices workflow rewrites this file.
 // USD per token. Claude generation cards use hyphens ("opus-5-5").
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.GENERATED_GEMINI_LONG_CONTEXT_PRICING = exports.GENERATED_OPENAI_LONG_CONTEXT_PRICING = exports.GENERATED_PRICING = void 0;
+exports.GENERATED_ANTHROPIC_LONG_CONTEXT_PRICING = exports.GENERATED_GEMINI_LONG_CONTEXT_PRICING = exports.GENERATED_OPENAI_LONG_CONTEXT_PRICING = exports.GENERATED_PRICING = void 0;
 exports.GENERATED_PRICING = {
     "fable": { input: 10.0 / 1e6, output: 50.0 / 1e6, cacheRead: 1.0 / 1e6, cacheWrite: 12.5 / 1e6, cacheWrite1h: 20.0 / 1e6 },
     "fable-5": { input: 10.0 / 1e6, output: 50.0 / 1e6, cacheRead: 1.0 / 1e6, cacheWrite: 12.5 / 1e6, cacheWrite1h: 20.0 / 1e6 },
@@ -127,5 +127,9 @@ exports.GENERATED_GEMINI_LONG_CONTEXT_PRICING = {
     "gemini-3.1-pro-preview": { input: 4.0 / 1e6, output: 18.0 / 1e6, cacheRead: 0.4 / 1e6, cacheWrite: 0 / 1e6 },
     "gemini-3.1-pro-preview-customtools": { input: 4.0 / 1e6, output: 18.0 / 1e6, cacheRead: 0.4 / 1e6, cacheWrite: 0 / 1e6 },
     "gemini-pro-latest": { input: 4.0 / 1e6, output: 18.0 / 1e6, cacheRead: 0.4 / 1e6, cacheWrite: 0 / 1e6 },
+};
+// Above 100,000 prompt tokens per request (input + cache reads + cache writes).
+exports.GENERATED_ANTHROPIC_LONG_CONTEXT_PRICING = {
+    "haiku-5-5": { input: 0.5 / 1e6, output: 2.5 / 1e6, cacheRead: 0.05 / 1e6, cacheWrite: 0.625 / 1e6, cacheWrite1h: 1.0 / 1e6 },
 };
 //# sourceMappingURL=prices.generated.js.map

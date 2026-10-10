@@ -36,9 +36,8 @@ export interface QualityReport {
 // Signal scorers (each returns 0-100)
 // ---------------------------------------------------------------------------
 
-/** Context window sizes by model family (tokens). Verified March 17, 2026. */
+/** Context window sizes by model family (tokens). Claude ids use claudeContextWindow() below. */
 const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
-  // Anthropic (Opus/Sonnet 1M GA since March 13, 2026)
   // (Claude ids resolve through claudeContextWindow() below, not this table.)
   // OpenAI GPT-5 family
   "gpt-5.6": 1_050_000,

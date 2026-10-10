@@ -35695,6 +35695,38 @@ def _find_session_jsonl_by_id(session_id):
     return None
 
 
+def _session_id_prefix_matches(prefix):
+    """``<id>.jsonl`` transcripts whose session id starts with ``prefix``.
+
+    F-T2-10: ``status-bar --session`` takes a pasted, possibly truncated id
+    (our own listings print ``s[:8]``). A short id sanitizes to "unknown"
+    and a longer prefix finds no exact file; both used to degrade silently.
+    This collects every candidate so the caller can resolve a UNIQUE prefix
+    and say why when the match is zero or ambiguous. ``prefix`` must already
+    be reduced to the session-id charset (no glob metacharacters can sneak
+    in). Never raises; returns [] for runtimes without a projects tree.
+    """
+    if not prefix:
+        return []
+    if (_use_codex_session_adapter() or _use_hermes_session_adapter()
+            or _use_antigravity_session_adapter()):
+        return []
+    projects_base = CLAUDE_DIR / "projects"
+    if not projects_base.is_dir():
+        return []
+    out = []
+    try:
+        for project_dir in projects_base.iterdir():
+            if not project_dir.is_dir():
+                continue
+            for p in project_dir.glob(prefix + "*.jsonl"):
+                if p.is_file():
+                    out.append(p)
+    except OSError:
+        return []
+    return out
+
+
 def quality_analyzer(session_id=None, as_json=False):
     """Analyze context quality of a session. Main entry point.
 
@@ -51222,6 +51254,27 @@ def _status_bar_prompt_cache(session_id):
 def status_bar_payload(session_id, transcript=None, sync=False):
     """Build the status-bar JSON object (see STATUS_BAR_HELP). Never raises."""
     sid = sanitize_session_id(session_id)
+    session_note = None
+    # F-T2-10: --session may carry a pasted truncated id. A <6-char id
+    # sanitizes to "unknown"; a longer prefix finds no exact transcript.
+    # Resolve a UNIQUE prefix to the real session; when it matches zero or
+    # many, say so in savings_reason instead of degrading silently.
+    prefix = re.sub(r"[^a-zA-Z0-9_-]", "", str(session_id or ""))
+    try:
+        path = Path(transcript) if transcript else (
+            _find_session_jsonl_by_id(sid) if sid != "unknown" else None)
+    except Exception:
+        path = None
+    if path is None and prefix:
+        matches = _session_id_prefix_matches(prefix)
+        if len(matches) == 1:
+            path = matches[0]
+            sid = matches[0].stem
+        elif len(matches) > 1:
+            session_note = ("session id prefix '%s' is ambiguous "
+                            "(%d sessions match)" % (prefix, len(matches)))
+        elif sid == "unknown":
+            session_note = "no session id matches '%s'" % prefix
     out = {
         "schema": _STATUS_BAR_SCHEMA,
         "session_id": sid,
@@ -51240,12 +51293,11 @@ def status_bar_payload(session_id, transcript=None, sync=False):
         "earlier_checkpoint": None,
         "compactions": None,
     }
-    if sid == "unknown":
-        out["savings_reason"] = "no session id"
+    if sid == "unknown" or session_note:
+        out["savings_reason"] = session_note or "no session id"
         return out
 
     try:
-        path = Path(transcript) if transcript else _find_session_jsonl_by_id(sid)
         session_model = None
         if path is not None:
             out["last_request_epoch"], out["cache_lifetime"], session_model = (

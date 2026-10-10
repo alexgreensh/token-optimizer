@@ -44,16 +44,13 @@ KEPT = [
     "tokens: 1200",
     "key: 5",
     "key: true",
-    "api_key=api_key",
     "headers = {'x': token}",
     "if token == expected:",
     "const tokenizer = new Tokenizer()",
     "KEY_FILE=/etc/app/key.pem",
-    "PWD=/Users/someone/project",
     "SECRET_NAME=prod-db",
     "password: $DB_PASS",
     "password: ${DB_PASS}",
-    "token: <your-token>",
     "apiKey: string;",
     "api_key: Optional[str] = None",
     "password = os.environ['X']",
@@ -98,3 +95,30 @@ def test_keyword_dense_input_is_linear():
         t0 = time.perf_counter()
         cp.redact_credentials(blob)
         assert time.perf_counter() - t0 < 2.0, blob[:12]
+
+
+# Rows where this engine and the TS engines behave differently on purpose (r2a report).
+# Python keeps these because earlier Python tests pin them; TS hides the value.
+PYTHON_ONLY_KEPT = [
+    "https://x.com/s?monkey=SOMEVALUE",   # "key" inside another word is not a name
+    "KEY_FILE=/etc/app/key.pem",           # names ending in a locator hold no secret
+    "SECRET_NAME=prod-db",
+    "token_type=bearer",
+    'max_tokens="4096"',                   # a quoted small number is still a number (TS backtracks and hides it)
+    'ok="true" password="false"',
+]
+
+
+@pytest.mark.parametrize("text", PYTHON_ONLY_KEPT)
+def test_python_only_exemptions(text):
+    assert cp.redact_credentials(text) == text
+
+
+# Same in both engines: no kwarg pass-through or path exemption any more.
+@pytest.mark.parametrize("text,secret", [
+    ("f(api_key=" + "api_key" + ")", "api_key)"),
+    ("PWD=" + "/Users/someone/project", "/Users/someone"),
+    ("token: " + "<your-token>", "<your-token>"),
+])
+def test_values_that_only_look_harmless_are_hidden(text, secret):
+    assert secret not in cp.redact_credentials(text)

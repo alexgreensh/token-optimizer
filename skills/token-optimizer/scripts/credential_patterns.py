@@ -1128,31 +1128,53 @@ _PATTERN_ANCHORS = {
 # The closed env-name list above only knows seven names. Anything else
 # (API_KEY=..., SECRET_KEY=..., a YAML "password: ...", a JSON "api_key": "...",
 # a quoted value with spaces) used to reach disk as typed. One rule covers the
-# class: a NAME that contains KEY, TOKEN, SECRET, PASSWORD, PASSWD, PWD or
-# CREDENTIAL, then "=" or ":", then a value. The NAME stays, only the VALUE goes.
+# class, and it is the SAME rule the three TypeScript engines run (openclaw,
+# pi, opencode redact.ts; keep the four in step): a name that contains KEY,
+# TOKEN, SECRET, PASSWORD, PASSWD, PWD or CREDENTIAL (optionally plural, and the
+# next character is not a letter, so "tokenizer" and "keyboard" are not names),
+# then "=" or ":", then a value. The NAME and the surrounding quotes stay, the
+# VALUE goes whole, quoted values with spaces included.
 #
-# Prose and ordinary code must survive, so the rule is deliberately narrow:
-#   * the keyword must stand as a word part (api_key, apiKey, API_KEY, secretkey),
-#     not sit inside another word (monkey, keyboard, tokenizer, keyword);
-#   * names that end in a quantity or locator (token_count, KEY_FILE, SECRET_NAME)
-#     are not secrets;
-#   * a plain number (KEY/TOKEN names only) or boolean value is not a secret
-#     (max_tokens=4096, tokens: 1200, key: true);
-#   * an unquoted value after a SPACED "=" is code (token_count = len(x)), not an
-#     env/config assignment; a quoted value is redacted either way;
-#   * references are not secrets: $VAR, ${VAR}, <placeholder>, f(x) calls,
-#     self.x / os.environ / process.env / args.x, and kwarg pass-through
-#     (api_key=api_key), type names (apiKey: string).
-# Scanned on one line at a time, so no match can cross a newline.
+# Skipped values: an existing placeholder, a plain number up to 6 digits
+# (max_tokens=4096, tokens: 1200), true/false/yes/no/on/off/null/none/nil/
+# undefined, a type name (string, number, int...), a call or index (len(x),
+# os.environ['X'], Optional[str]), a $VAR / ${VAR} / $(cmd) reference, an empty
+# string, and the operators ==, => and :=.
+#
+# Lead decision (briefs/redact-key-rule.md): before a COLON the keyword KEY only
+# counts inside a compound (api_key, x-api-key, SECRET_KEY, apiKey), so React
+# "key: item.id", JSON "key": "user_id", "primary key: id", "monkey: banana" and
+# "hotkey: ctrl+k" stay readable. With "=" bare KEY=value is still hidden.
+#
+# Two refinements the TS engines do not have, both kept because Python tests already
+# pin them: "key" inside another word (monkey=, turkey=, donkey=) is not a name unless
+# a known qualifier leads it (apikey, secretkey) or the K is capitalised (apiKey), and
+# a name that ends in a quantity or locator (token_type, token_count, KEY_FILE,
+# SECRET_NAME) holds no secret.
+#
+# The optional opening quote is taken atomically (lookahead plus backreference):
+# when a skip rule rejects the value after the quote, the engine must not retry
+# with the quote counted as part of the value (that would redact max_tokens="4096"
+# and re-wrap a placeholder). The TS engines backtrack there; see the r2a report.
+#
+# Cost follows the keyword hits, not the words: str.find per keyword (C speed)
+# locates candidates and the regex is tried only there.
 # ---------------------------------------------------------------------------
-_ASSIGN_KEYWORD_RE = re.compile(r"key|token|secret|password|passwd|pwd|credential", re.I)
-_ASSIGN_NAME_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-")
-_ASSIGN_NAME_TAIL_RE = re.compile(r"[A-Za-z0-9_.\-]*")
-# What follows a name: optional closing quote, "=" or ":" (not "=="), then the value.
-_ASSIGN_TAIL_RE = re.compile(
-    r"(?P<q>[\"']?)(?P<sep>[ \t]*[=:](?!=)[ \t]*)"
-    r"(?P<val>\"[^\"\n]*\"|'[^'\n]*'|[^\s\"']\S*)"
+_ASSIGN_RE = re.compile(
+    r"(?P<head>(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|CREDENTIAL)(?:e?s)?(?![A-Za-z])"
+    r"(?=(?P<tail>[A-Za-z0-9_.-]{0,80}))(?P=tail)[\"']?[ \t]*[=:][ \t]*(?=(?P<oq>[\"']?))(?P=oq))"
+    r"(?![=>:])(?!(?<=\")\"|(?<=')')(?!\"\"|'')"
+    r"(?!\x00)(?!\[(?:CREDENTIAL )?REDACTED)"
+    r"(?!-?\d{1,6}(?:[.,]\d+)?[kKmM%]?[\"']?(?![\w$]))"
+    r"(?!(?:true|false|yes|no|on|off|null|none|nil|undefined)[\"']?(?![\w$]))"
+    r"(?!(?:string|number|boolean|bool|str|int|float|any|unknown|object|void)(?![\w$]))"
+    r"(?![A-Za-z_][\w.]*[(\[])(?!\$[{(])(?!\$[A-Z_][A-Z0-9_]*(?![\w$]))"
+    r"(?:(?<=\")[^\"\n]+(?=\")|(?<=')[^'\n]+(?=')|\S+)",
+    re.I,
 )
+_ASSIGN_KEYWORDS = ("key", "token", "secret", "password", "passwd", "pwd", "credential")
+_ASSIGN_KEYWORD_RE = re.compile("|".join(_ASSIGN_KEYWORDS), re.I)
+_ASSIGN_PLACEHOLDER = "[CREDENTIAL REDACTED: Secret assignment]"
 _ASSIGN_QUALIFIERS = (
     "api", "access", "auth", "secret", "private", "public", "client", "session",
     "refresh", "bearer", "app", "db", "user", "admin", "root", "master", "signing",
@@ -1161,106 +1183,66 @@ _ASSIGN_QUALIFIERS = (
 _ASSIGN_LOCATOR_SUFFIX_RE = re.compile(
     r"[_.\-]*(?:path|file|dir|url|uri|name|id|count|limit|max|min|size|length|len|"
     r"ttl|expiry|expires|type|field|header|endpoint|regex|budget|label)s?", re.I)
-_ASSIGN_LITERAL_RE = re.compile(
-    r"(?:true|false|yes|no|on|off|null|none|nil|undefined|nan|"
-    r"str|string|int|integer|float|bool|boolean|number|any|object|bytes|list|dict|"
-    r"secretstr|path)", re.I)
-_ASSIGN_NUMBER_RE = re.compile(r"\d{1,9}(?:\.\d+)?")
-_ASSIGN_CALL_RE = re.compile(r"[A-Za-z_][\w.]*\(")
-_ASSIGN_GENERIC_TYPE_RE = re.compile(r"[A-Z][A-Za-z]*\[")
-_ASSIGN_REFERENCE_RE = re.compile(
-    r"(?:\$|<|\{|%|self\.|this\.|os\.environ|process\.env|args\.|opts\.|options\.|config\.|cfg\.|"
-    r"settings\.|env\.|\[CREDENTIAL|\x00|/|~|\./|\.\./|[A-Za-z]:[\\/])")
-_ASSIGN_CLOSERS_RE = re.compile(r"[,;)}\]]+$")
-_ASSIGN_PLACEHOLDER = "[CREDENTIAL REDACTED: Secret assignment]"
 
 
-def _assign_name_is_secret(name: str) -> Optional[str]:
-    """Return "strong" (password/secret class), "weak" (key/token class) or None."""
-    found: Optional[str] = None
-    for m in _ASSIGN_KEYWORD_RE.finditer(name):
-        kw = m.group(0)
-        before, after = name[:m.start()], name[m.end():]
-        low = kw.lower()
-        if after and after[0].isalpha():
-            plural = after[0] in "sS" and (len(after) == 1 or not after[1].isalpha())
-            camel = after[0].isupper() and not name.isupper()
-            if not (plural or camel):
-                continue
-        if _ASSIGN_LOCATOR_SUFFIX_RE.fullmatch(after):
-            continue
-        strong = low in ("password", "passwd", "secret", "credential")
-        if not strong and before and before[-1].isalpha():
-            ok_before = kw[0].isupper() or before.lower().endswith(_ASSIGN_QUALIFIERS)
-            if not ok_before:
-                continue
-        if strong:
-            return "strong"
-        found = "weak"
-    return found
+def _assign_key_before_colon_ok(text: str, start: int, head: str) -> bool:
+    """KEY before ':' needs a compound: "_" or "-" in front, or a capital K after a lowercase letter."""
+    sep_at = min((i for i in (head.find("="), head.find(":")) if i != -1), default=-1)
+    if sep_at == -1 or head[sep_at] != ":":
+        return True
+    prev = text[start - 1] if start > 0 else ""
+    return prev in ("_", "-") or (text[start] == "K" and prev.islower())
 
 
-def _assign_value(name: str, q: str, sep: str, val: str) -> Optional[str]:
-    """The text that replaces `val`, or None to leave the assignment alone."""
-    kind = _assign_name_is_secret(name)
-    if kind is None:
-        return None
-    quote = val[0] if val[0] in "\"'" and len(val) >= 2 and val[-1] == val[0] else ""
-    tail = ""
-    if quote:
-        body = val[1:-1]
-    else:
-        body = val
-        t = _ASSIGN_CLOSERS_RE.search(body)
-        if t:
-            tail, body = body[t.start():], body[:t.start()]
-    if not body.strip():
-        return None
-    # Spaced "=" with a bare value is code (token_count = len(x)), not an assignment.
-    if not quote and sep != "=" and sep.strip() == "=":
-        return None
-    if _ASSIGN_LITERAL_RE.fullmatch(body):
-        return None
-    if kind == "weak" and _ASSIGN_NUMBER_RE.fullmatch(body):
-        return None
-    if _ASSIGN_REFERENCE_RE.match(body) or _ASSIGN_CALL_RE.match(body) \
-            or _ASSIGN_GENERIC_TYPE_RE.match(body):
-        return None
-    if body.lower() == name.lower() or body.lower() == name.lower().rsplit(".", 1)[-1]:
-        return None
-    return f"{quote}{_ASSIGN_PLACEHOLDER}{quote}{tail}"
+def _next_keyword(text: str, low: Optional[str], pos: int, nxt: Dict[str, int]) -> Optional[Tuple[int, int]]:
+    """Span of the next keyword at or after pos. With a lowercase twin of the text,
+    str.find per keyword (each cached until passed); otherwise the regex."""
+    if low is None:
+        m = _ASSIGN_KEYWORD_RE.search(text, pos)
+        return (m.start(), m.end()) if m else None
+    best = -1
+    best_kw = ""
+    for kw in _ASSIGN_KEYWORDS:
+        at = nxt[kw]
+        if at != -1 and at < pos:
+            at = nxt[kw] = low.find(kw, pos)
+        if at != -1 and (best == -1 or at < best):
+            best, best_kw = at, kw
+    return None if best == -1 else (best, best + len(best_kw))
 
 
 def _redact_assignments(text: str) -> str:
-    """Walk the keyword hits, not every word: cost follows the hits, and a name is
-    visited once (the scan resumes after it), so keyword-dense input stays linear."""
+    low = text.lower()
+    if len(low) != len(text):  # a few Unicode letters change length when lowered
+        low = None
+    nxt = {kw: (low.find(kw) if low is not None else -1) for kw in _ASSIGN_KEYWORDS}
+    if low is not None and all(v == -1 for v in nxt.values()):
+        return text
     out: List[str] = []
     copied = 0
     pos = 0
     n = len(text)
     while pos < n:
-        hit = _ASSIGN_KEYWORD_RE.search(text, pos)
-        if hit is None:
+        span = _next_keyword(text, low, pos, nxt)
+        if span is None:
             break
-        name_end = _ASSIGN_NAME_TAIL_RE.match(text, hit.end()).end()
-        pos = name_end
-        start = hit.start()
-        while start > 0 and text[start - 1] in _ASSIGN_NAME_CHARS:
-            start -= 1
-        name = text[start:name_end]
-        if not (name[0].isalpha() or name[0] == "_"):
+        start = span[0]
+        pos = start + 1
+        m = _ASSIGN_RE.match(text, start)
+        if m is None:
             continue
-        tail = _ASSIGN_TAIL_RE.match(text, name_end)
-        if tail is None:
+        head = m.group("head")
+        if _ASSIGN_LOCATOR_SUFFIX_RE.fullmatch(m.group("tail")):
             continue
-        replacement = _assign_value(name, tail.group("q"), tail.group("sep"), tail.group("val"))
-        if replacement is None:
-            continue
-        v0, v1 = tail.span("val")
-        out.append(text[copied:v0])
-        out.append(replacement)
-        copied = v1
-        pos = v1
+        if text[start:start + 3].lower() == "key":
+            if not _assign_key_before_colon_ok(text, start, head):
+                continue
+            if start > 0 and text[start - 1].isalpha() and text[start] != "K" \
+                    and not text[:start].lower().endswith(_ASSIGN_QUALIFIERS):
+                continue
+        out.append(text[copied:m.end("head")])
+        out.append(_ASSIGN_PLACEHOLDER)
+        copied = pos = m.end()
     if not out:
         return text
     out.append(text[copied:])

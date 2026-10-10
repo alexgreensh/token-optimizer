@@ -333,9 +333,9 @@
     },
     {
       "name": "assign-keeps-kwarg-passthrough-and-types",
-      "input": ["f(api_key=api_key, token=self.token, password=os.environ.get(\"X\"))\napiKey: string;\nPASSWORD=$DB_PASS run"],
+      "input": ["f(password=os.environ.get(\"X\"), key=lookup(1))\napiKey: string;\nPASSWORD=$DB_PASS run"],
       "absent": [],
-      "present": ["f(api_key=api_key, token=self.token, password=os.environ.get(\"X\"))\napiKey: string;\nPASSWORD=$DB_PASS run"]
+      "present": ["f(password=os.environ.get(\"X\"), key=lookup(1))\napiKey: string;\nPASSWORD=$DB_PASS run"]
     },
     {
       "name": "bearer-english-prose-untouched",
@@ -354,6 +354,66 @@
       "input": ["curl -H \"Authorization: Bearer abc.def\" https://example.com"],
       "absent": [],
       "present": ["Bearer abc.def"]
+    },
+    {
+      "name": "key-colon-bare-word-stays-react",
+      "input": ["key: item.id"],
+      "absent": [],
+      "present": ["key: item.id"]
+    },
+    {
+      "name": "key-colon-json-bare-key-stays",
+      "input": ["{\"key\": \"user_id\"}"],
+      "absent": [],
+      "present": ["{\"key\": \"user_id\"}"]
+    },
+    {
+      "name": "key-colon-prose-and-lookalikes-stay",
+      "input": ["primary key: id\nmonkey: banana\nkeys: [a, b]\nhotkey: ctrl+k"],
+      "absent": [],
+      "present": ["primary key: id\nmonkey: banana\nkeys: [a, b]\nhotkey: ctrl+k"]
+    },
+    {
+      "name": "key-colon-snake-compound-hidden",
+      "input": ["api_key: ", "FAKEvalue123456", " end"],
+      "absent": ["FAKEvalue123456"],
+      "present": ["api_key: ", " end"]
+    },
+    {
+      "name": "key-colon-camel-compound-hidden",
+      "input": ["{\"apiKey\": \"", "FAKEvalue123456", "\"}"],
+      "absent": ["FAKEvalue123456"],
+      "present": ["{\"apiKey\": \"", "\"}"]
+    },
+    {
+      "name": "key-colon-hyphen-header-hidden",
+      "input": ["x-api-key: ", "FAKEvalue123456", " end"],
+      "absent": ["FAKEvalue123456"],
+      "present": ["x-api-key: ", " end"]
+    },
+    {
+      "name": "key-colon-upper-compound-hidden",
+      "input": ["SECRET_KEY: ", "FAKEvalue123456", " end"],
+      "absent": ["FAKEvalue123456"],
+      "present": ["SECRET_KEY: ", " end"]
+    },
+    {
+      "name": "key-colon-private-hyphen-hidden",
+      "input": ["private-key: ", "FAKEvalue123456", " end"],
+      "absent": ["FAKEvalue123456"],
+      "present": ["private-key: ", " end"]
+    },
+    {
+      "name": "key-equals-bare-upper-hidden",
+      "input": ["KEY=", "FAKEvalue123456", " run"],
+      "absent": ["FAKEvalue123456"],
+      "present": ["KEY=", " run"]
+    },
+    {
+      "name": "key-equals-bare-lower-hidden",
+      "input": ["key=", "FAKEvalue123456", " run"],
+      "absent": ["FAKEvalue123456"],
+      "present": ["key=", " run"]
     }
   ]
 }

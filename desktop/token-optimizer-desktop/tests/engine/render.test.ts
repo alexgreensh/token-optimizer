@@ -256,7 +256,7 @@ test('a new session with no Token Optimizer quality file yet still shows its tim
   const w = stub(on)
   const key = Object.keys(w.files).find(k => k.includes('quality-cache-sess-1'))!
   delete w.files[key]
-  on('tool.call', () => ({ value: { content: 'ok' } }) as never)
+  on('tool.call', () => ({ result: { content: 'ok' } }) as never)
   await $.session.start(START)
   await w.clock.settle() // the status read runs just after the start
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
@@ -282,7 +282,7 @@ test('tool calls are counted without a redraw per call; the count lands when the
   const w = stub(on)
   const key = Object.keys(w.files).find(k => k.includes('quality-cache-sess-1'))!
   delete w.files[key]
-  on('tool.call', () => ({ value: { content: 'ok' } }) as never)
+  on('tool.call', () => ({ result: { content: 'ok' } }) as never)
   await $.session.start(START)
   await w.clock.settle() // the status read runs just after the start
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })

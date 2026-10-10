@@ -578,6 +578,19 @@ def test_budget_exhaustion_returns_partial_results(sandbox):
     assert "partial" in res["summary"]
 
 
+def test_zero_budget_is_exhausted_even_when_the_clock_has_not_ticked(sandbox, monkeypatch):
+    """Windows' monotonic clock advances in ~15 ms steps, so `now > deadline` stayed false
+    for a zero budget and every file was scanned. Frozen clock, any OS."""
+    import types
+    frozen = types.SimpleNamespace(**{k: getattr(time, k) for k in dir(time) if not k.startswith("__")})
+    frozen.monotonic = lambda: 1000.0
+    monkeypatch.setattr(dc, "time", frozen)
+    paths = [write_claude(sandbox / f"s{i}.jsonl", [SEQ(i)], f"s{i}") for i in range(4)]
+    res = run_dc("claude", paths, budget_s=0.0)
+    assert res["partial"] is True
+    assert res["sessions_scanned"] == 0 and res["sessions_found"] == len(paths)
+
+
 def test_budget_hit_mid_file_is_partial_not_an_error(sandbox):
     path = write_claude(sandbox / "s.jsonl", [SEQ(1)], "s")
     with pytest.raises(dc.BudgetExceeded):

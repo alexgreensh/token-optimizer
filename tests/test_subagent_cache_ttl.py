@@ -247,11 +247,13 @@ def test_managed_path_is_platform_specific(m, monkeypatch):
     p = str(mod._subagent_cache_managed_settings_path())
     assert p.lower().endswith("managed-settings.json")
     assert "ClaudeCode" in p
+    # as_posix(): with platform.system faked on a Windows host the Path is a
+    # WindowsPath, and str() would render these POSIX locations with backslashes.
     monkeypatch.setattr(mod.platform, "system", lambda: "Darwin")
-    assert str(mod._subagent_cache_managed_settings_path()).startswith(
+    assert mod._subagent_cache_managed_settings_path().as_posix().startswith(
         "/Library/Application Support/ClaudeCode/")
     monkeypatch.setattr(mod.platform, "system", lambda: "Linux")
-    assert str(mod._subagent_cache_managed_settings_path()) == \
+    assert mod._subagent_cache_managed_settings_path().as_posix() == \
         "/etc/claude-code/managed-settings.json"
 
 

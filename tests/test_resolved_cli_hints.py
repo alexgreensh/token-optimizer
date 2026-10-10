@@ -109,6 +109,27 @@ def test_measure_hint_matches_measure_cli(monkeypatch, tmp_path):
 
     try:
         assert measure._hint("run python3 measure.py doctor") == "run " + measure._measure_cli("doctor")
-        assert re.search(r"python3 \S*measure\.py doctor$", measure._hint("python3 measure.py doctor"))
+        # The path may be quoted (a space in the install dir), never single-quoted
+        # with backslashes: that pastes into Git Bash only.
+        assert re.search(r"python3 \S*measure\.py['\"]? doctor$", measure._hint("python3 measure.py doctor"))
+    finally:
+        sys.modules.pop("measure", None)
+
+
+def test_every_hint_helper_prints_the_same_pasteable_path(monkeypatch, tmp_path):
+    """measure._measure_cli, runtime_env.measure_cli and the expand pointer share one
+    quoting rule (refetch_fingerprint.shell_path), so what the recogniser accepts is
+    what every printer prints."""
+    monkeypatch.setenv("TOKEN_OPTIMIZER_SNAPSHOT_DIR", str(tmp_path / "snap"))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    sys.modules.pop("measure", None)
+    import measure
+    import runtime_env
+    from refetch_fingerprint import shell_path
+
+    try:
+        script = str((SCRIPTS / "measure.py").resolve())
+        assert measure._measure_cli("doctor") == f"python3 {shell_path(script)} doctor"
+        assert runtime_env.measure_cli("doctor") == measure._measure_cli("doctor")
     finally:
         sys.modules.pop("measure", None)

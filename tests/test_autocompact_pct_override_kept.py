@@ -55,7 +55,7 @@ def measure(tmp_path, monkeypatch):
     home = tmp_path / "claude"
     home.mkdir(parents=True, exist_ok=True)
     settings = home / "settings.json"
-    settings.write_text(json.dumps(USER_SETTINGS, indent=2) + "\n", encoding="utf-8")
+    _write(settings, USER_SETTINGS)
     monkeypatch.setattr(mod, "SETTINGS_PATH", settings)
     monkeypatch.setattr(mod, "_SETTINGS_LOCK_PATH", home / ".settings.lock")
     monkeypatch.setattr(mod, "CLAUDE_DIR", home)
@@ -70,6 +70,16 @@ def measure(tmp_path, monkeypatch):
 
 def _bytes(settings_path: Path) -> bytes:
     return settings_path.read_bytes()
+
+
+def _text(obj) -> str:
+    return json.dumps(obj, indent=2) + "\n"
+
+
+def _write(settings_path: Path, obj) -> None:
+    """Exact bytes, LF endings: write_text() would translate \\n to \\r\\n on Windows and
+    the byte-for-byte comparisons below would then be against a different file."""
+    settings_path.write_bytes(_text(obj).encode("utf-8"))
 
 
 # ---------------------------------------------------------------------------
@@ -119,9 +129,7 @@ def test_doctor_explains_override_instead_of_removing_it(measure, capsys):
 def test_doctor_flags_a_very_low_override(measure, capsys):
     """A low percentage compacts very early; doctor must say so (read-only)."""
     mod, settings = measure
-    settings.write_text(json.dumps(
-        dict(USER_SETTINGS, env={"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "5"}), indent=2
-    ) + "\n", encoding="utf-8")
+    _write(settings, dict(USER_SETTINGS, env={"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "5"}))
     mod.doctor(as_json=False)
     out = capsys.readouterr().out
     assert "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE" in out
@@ -132,13 +140,11 @@ def test_doctor_flags_a_very_low_override(measure, capsys):
 
 def test_doctor_reports_clean_env_when_no_override(measure, capsys):
     mod, settings = measure
-    settings.write_text(json.dumps(
-        dict(USER_SETTINGS, env={"MY_OTHER_KEY": "keep-me"}), indent=2) + "\n",
-        encoding="utf-8")
+    clean = dict(USER_SETTINGS, env={"MY_OTHER_KEY": "keep-me"})
+    _write(settings, clean)
     mod.doctor(as_json=False)
     out = capsys.readouterr().out
-    assert _bytes(settings).decode() == json.dumps(
-        dict(USER_SETTINGS, env={"MY_OTHER_KEY": "keep-me"}), indent=2) + "\n"
+    assert _bytes(settings) == _text(clean).encode("utf-8")
     assert "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE" not in out or "not set" in out
 
 

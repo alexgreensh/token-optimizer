@@ -28485,6 +28485,16 @@ def _settings_file_identity(path=None):
     return (st.st_mtime_ns, st.st_size, st.st_ino)
 
 
+def _note_settings_os_error(exc):
+    """Record an OSError from the temp write / replace as the refusal reason."""
+    hint = ("; another program may have it open"
+            if isinstance(exc, PermissionError) else "")
+    _SETTINGS_WRITE_READ_STATE.last_refusal = (
+        f"could not write settings.json ({exc.__class__.__name__}: {exc}){hint}"
+    )
+    _SETTINGS_WRITE_READ_STATE.os_error = True
+
+
 def _write_settings_atomic_locked(settings_data, allow_removing_keys=None, _report_refusal=True,
                                   expect_identity=None):
     """Atomic settings.json write assuming the settings lease is ALREADY held.
@@ -28507,6 +28517,7 @@ def _write_settings_atomic_locked(settings_data, allow_removing_keys=None, _repo
     thread state so the caller can re-merge.
     """
     _SETTINGS_WRITE_READ_STATE.identity_changed = False
+    _SETTINGS_WRITE_READ_STATE.os_error = False
     # Write THROUGH a symlink and preserve the mode.
     # os.replace onto the link path detaches it, turning a dotfiles-managed
     # symlink into a regular file (the user's repo silently stops tracking
@@ -28531,11 +28542,15 @@ def _write_settings_atomic_locked(settings_data, allow_removing_keys=None, _repo
         dest_mode = stat.S_IMODE(os.stat(dest).st_mode)
     except OSError:
         dest_mode = None
-    tmp_fd, tmp_path = tempfile.mkstemp(
-        dir=str(dest.parent),
-        prefix=".settings-",
-        suffix=".json",
-    )
+    try:
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            dir=str(dest.parent),
+            prefix=".settings-",
+            suffix=".json",
+        )
+    except OSError as exc:
+        _note_settings_os_error(exc)
+        return False
     try:
         with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
             json.dump(settings_data, f, indent=2, ensure_ascii=False)
@@ -28550,6 +28565,13 @@ def _write_settings_atomic_locked(settings_data, allow_removing_keys=None, _repo
             return False
         os.replace(tmp_path, str(dest))
         tmp_path = None  # successfully replaced; do not unlink the destination
+    except OSError as exc:
+        # Windows refuses the replace while another program holds the file open
+        # (a sharing violation); a full disk fails the temp write. Both are a
+        # refused write with a real reason, never a traceback. The finally
+        # below removes the temp file.
+        _note_settings_os_error(exc)
+        return False
     finally:
         if tmp_path is not None:
             try:
@@ -28681,6 +28703,12 @@ def _write_settings_atomic(settings_data, allow_removing_keys=None,
         else:
             _SETTINGS_WRITE_READ_STATE.last_refusal = _SETTINGS_CHANGED_REFUSAL
             _report_settings_write_refusal(_SETTINGS_CHANGED_REFUSAL)
+            return False
+
+        if getattr(_SETTINGS_WRITE_READ_STATE, "os_error", False):
+            # The OS refused the temp write or the replace; a re-merge cannot
+            # help and the guard did not refuse, so say nothing more. The
+            # reason is in last_refusal for the caller to report.
             return False
 
         refusal = getattr(_SETTINGS_WRITE_READ_STATE, "last_refusal", None)

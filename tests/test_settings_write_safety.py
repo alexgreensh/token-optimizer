@@ -329,3 +329,51 @@ def test_non_utf8_settings_reads_as_unknown(measure, monkeypatch):
     result = mod.subagent_cache_enable(automatic=False)
     assert result["state"] == "unknown-settings"
     assert settings.read_bytes() == b'{"note": "caf\xe9"}', "the undecodable file was changed"
+
+
+# ---------------------------------------------------------------------------
+# F6: an OSError from the temp write or os.replace is a refusal with a reason
+# ---------------------------------------------------------------------------
+
+def _enable_ready(mod, monkeypatch, tmp_path):
+    """Make an explicit `subagent-cache enable` reach the write without history."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(mod, "_subagent_cache_claude_only", lambda: True)
+    monkeypatch.setattr(mod, "_subagent_cache_claude_code_version", lambda: (2, 1, 300))
+    monkeypatch.setattr(mod, "_subagent_cache_external_key_holder", lambda: None)
+    monkeypatch.setattr(mod, "subagent_cache_payoff", lambda days=30, **kw: mod._subagent_cache_payoff_zero(days))
+    monkeypatch.setattr(mod, "keepwarm_billing_mode", lambda: "subscription")
+
+
+def _fail_replace_for_settings(mod, monkeypatch, exc):
+    real = os.replace
+
+    def replace(src, dst, *a, **kw):
+        if Path(dst).name == "settings.json":
+            raise exc
+        return real(src, dst, *a, **kw)
+
+    monkeypatch.setattr(os, "replace", replace)
+
+
+def test_replace_failure_is_a_refusal_with_a_reason(measure, monkeypatch):
+    mod, settings = measure
+    before = settings.read_bytes()
+    _fail_replace_for_settings(mod, monkeypatch, PermissionError(13, "sharing violation"))
+    payload = _read(settings)
+    payload["effortLevel"] = "low"
+
+    assert mod._write_settings_atomic(payload) is False
+    reason = mod._SETTINGS_WRITE_READ_STATE.last_refusal
+    assert "PermissionError" in reason and "settings.json" in reason, reason
+    assert settings.read_bytes() == before
+    assert [p.name for p in settings.parent.iterdir() if p.name.startswith(".settings-")] == []
+
+
+def test_temp_write_failure_is_a_refusal_with_a_reason(measure, monkeypatch):
+    mod, settings = measure
+    monkeypatch.setattr(mod.tempfile, "mkstemp",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError(28, "No space left on device")))
+    assert mod._write_settings_atomic({**BASE, "effortLevel": "low"}) is False
+    assert "No space left" in mod._SETTINGS_WRITE_READ_STATE.last_refusal
+

@@ -372,3 +372,43 @@ def test_model_settings_garbage_still_falls_through_to_top_level(measure):
                 "modelSettings": {"claude-opus-5-5": {"autoCompactWindow": "banana"}}}
     res = measure._resolve_compact_window("claude-opus-5-5", env={}, settings=settings)
     assert res["tokens"] == 300_000
+
+
+# ---------------------------------------------------------------------------
+# F-T2-4: an exact/canonical modelSettings key beats a family alias no matter
+# which key iterates first.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("key_order", [0, 1])
+def test_exact_id_beats_family_alias_regardless_of_dict_order(measure, key_order):
+    entries = [{"haiku": {"autoCompactWindow": 250_000}},
+               {"claude-haiku-5-5": {"autoCompactWindow": 400_000}}]
+    settings = {"modelSettings": entries[key_order] | entries[1 - key_order]}
+    res = measure._resolve_compact_window("claude-haiku-5-5", env={}, settings=settings)
+    assert res["tokens"] == 400_000
+    assert res["user_override"] is True
+
+
+def test_canonical_id_key_also_beats_family_alias(measure):
+    """A dated/[1m] key canonicalizes to the exact id and outranks the alias."""
+    settings = {"modelSettings": {"haiku": {"autoCompactWindow": 250_000},
+                                  "claude-haiku-5-5-20251001": {"autoCompactWindow": 400_000}}}
+    res = measure._resolve_compact_window("claude-haiku-5-5", env={}, settings=settings)
+    assert res["tokens"] == 400_000
+
+
+def test_family_alias_still_applies_when_no_exact_key(measure):
+    settings = {"modelSettings": {"haiku": {"autoCompactWindow": 250_000}}}
+    res = measure._resolve_compact_window("claude-haiku-5-5", env={}, settings=settings)
+    assert res["tokens"] == 250_000
+
+
+def test_exact_auto_beats_family_number(measure):
+    """The exact key wins even when it says 'auto' and the alias holds a value."""
+    settings = {"autoCompactWindow": 300_000,
+                "modelSettings": {"haiku": {"autoCompactWindow": 250_000},
+                                  "claude-haiku-5-5": {"autoCompactWindow": "auto"}}}
+    res = measure._resolve_compact_window("claude-haiku-5-5", env={}, settings=settings)
+    # 'auto' on the exact key = tuned default, replaces the top-level value.
+    assert res["tokens"] == 967_000
+    assert res["user_override"] is False

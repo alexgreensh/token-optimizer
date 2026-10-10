@@ -3552,12 +3552,19 @@ def _model_settings_window(model, model_settings):
     canon = _canonical_compact_model_id(model)
     family_match = _CLAUDE_MODEL_ID_RE.match(canon)
     family = family_match.group(1) if family_match else ""
-    for key, entry in model_settings.items():
-        if not isinstance(entry, dict) or "autoCompactWindow" not in entry:
-            continue
-        key_l = str(key).strip().lower()
-        if key_l == raw or key_l == family or _canonical_compact_model_id(key_l) == canon:
-            return entry.get("autoCompactWindow"), key
+    # Two passes: an exact/canonical id outranks a family alias regardless of
+    # key order; the first matching key decides.
+    for match_family in (False, True):
+        for key, entry in model_settings.items():
+            if not isinstance(entry, dict) or "autoCompactWindow" not in entry:
+                continue
+            key_l = str(key).strip().lower()
+            if match_family:
+                hit = bool(family) and key_l == family
+            else:
+                hit = key_l == raw or _canonical_compact_model_id(key_l) == canon
+            if hit:
+                return entry.get("autoCompactWindow"), key
     return None, None
 
 

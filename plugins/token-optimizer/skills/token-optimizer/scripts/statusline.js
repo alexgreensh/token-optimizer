@@ -187,17 +187,28 @@ function _reducedCompactWindow(modelId, modelWindow, settings) {
         const canon = _canonModelId(modelId);
         const fam = /^(?:claude[-_])?(fable|mythos|opus|sonnet|haiku)/.exec(canon);
         const family = fam ? fam[1] : '';
-        for (const key of Object.keys(ms)) {
-          const entry = ms[key];
-          if (!entry || typeof entry !== 'object' || !('autoCompactWindow' in entry)) continue;
-          const k = String(key).trim().toLowerCase();
-          if (k === raw || k === family || _canonModelId(k) === canon) {
+        // Two passes: an exact/canonical id outranks a family alias regardless
+        // of key order; the first matching key decides (a non-window value is
+        // ignored like the host, not skipped to the next key).
+        let matched = false;
+        for (const kind of ['exact', 'family']) {
+          for (const key of Object.keys(ms)) {
+            const entry = ms[key];
+            if (!entry || typeof entry !== 'object' || !('autoCompactWindow' in entry)) continue;
+            const k = String(key).trim().toLowerCase();
+            const hit = kind === 'exact'
+              ? (k === raw || _canonModelId(k) === canon)
+              : (family !== '' && k === family);
+            if (!hit) continue;
+            matched = true;
             // `/autocompact auto` is per model and means the tuned default: it
             // replaces the top-level value for this model (no fall-through).
             if (entry.autoCompactWindow === 'auto') { autoForModel = true; break; }
             const w = _parseCompactWindow(entry.autoCompactWindow);
-            if (w !== null) { tokens = clamp(w); break; }
+            if (w !== null) tokens = clamp(w);
+            break;
           }
+          if (matched) break;
         }
       }
       if (tokens === null && settings && !autoForModel) {

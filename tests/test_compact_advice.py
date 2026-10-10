@@ -554,6 +554,30 @@ def test_coach_block_respects_time_budget_and_session_cap(m):
     assert rep["truncated"] is True
 
 
+def test_unreadable_transcript_marks_the_replay_partial(m, monkeypatch):
+    """A transcript that cannot be opened is a session the replay never saw,
+    so the report is partial and no recommendation may be made from it."""
+    import builtins
+    _seed_sessions(m, n=4)
+    real_open = builtins.open
+
+    def _open(file, *a, **k):
+        if "dddddddd-0000-0000-0000-000000000002" in str(file):
+            raise PermissionError(13, "Permission denied", str(file))
+        return real_open(file, *a, **k)
+
+    monkeypatch.setattr(builtins, "open", _open)
+    rep = m.compact_advice(days=30)
+    assert rep["sessions_scanned"] == 4
+    assert rep["sessions_replayed"] == 3
+    assert rep["truncated"] is True
+
+
+def test_readable_transcripts_are_not_marked_partial(m):
+    _seed_sessions(m, n=4)
+    assert m.compact_advice(days=30)["truncated"] is False
+
+
 def test_generate_coach_data_includes_compact_advice_and_survives_failure(m, monkeypatch):
     _seed_sessions(m)
     monkeypatch.setattr(m, "measure_components", lambda: {

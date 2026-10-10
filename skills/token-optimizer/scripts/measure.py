@@ -51818,8 +51818,10 @@ def _advice_session_data(path):
                             pending[blk["id"]] = owner
                         seen.update(targets)
     except (OSError, PermissionError):
+        # `unreadable` lets compact_advice flag the replay as partial instead
+        # of silently counting one session fewer.
         return {"turns": [], "cache_reads": [], "boundaries": set(), "model": None,
-                "post_compact_ctx": [], "rereads": []}
+                "post_compact_ctx": [], "rereads": [], "unreadable": True}
     post_ctx, rereads = [], []
     for b in bounds:
         if b[0] < len(turns):
@@ -51994,7 +51996,10 @@ def compact_advice(days=30, max_sessions=None, deadline_seconds=None):
         try:
             d = _advice_session_data(jf)
         except Exception:
+            out["truncated"] = True
             continue
+        if d.get("unreadable"):
+            out["truncated"] = True
         all_rereads.extend(d["rereads"])
         all_post_ctx.extend(d["post_compact_ctx"])
         if len(d["turns"]) < 2:

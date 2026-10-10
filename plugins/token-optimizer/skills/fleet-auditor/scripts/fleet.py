@@ -20,6 +20,7 @@ import json
 import math
 import os
 import re
+import shlex
 import sqlite3
 import subprocess
 import sys
@@ -534,6 +535,19 @@ def unpriced_summary(runs) -> dict[str, int]:
 # ---------------------------------------------------------------------------
 # Data Model
 # ---------------------------------------------------------------------------
+
+
+def _with_measure_cli(text: str) -> str:
+    """Swap a bare ``python3 measure.py`` in a fix snippet for the resolved script.
+
+    The sibling token-optimizer skill holds measure.py; when it is not there
+    (a standalone fleet-auditor install) the bare form is left as written.
+    """
+    script = Path(__file__).resolve().parents[2] / "token-optimizer" / "scripts" / "measure.py"
+    if not script.is_file():
+        return text
+    return text.replace("python3 measure.py", "python3 " + shlex.quote(str(script)))
+
 
 @dataclass
 class TokenBreakdown:
@@ -1591,11 +1605,11 @@ class SkillBloat(BaseDetector):
 
         if system == "codex":
             monthly_cost = 0.0
-            fix_snippet = "# Disable truly stale user skills with:\n# TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-skill disable --path <skill-dir>"
+            fix_snippet = _with_measure_cli("# Disable truly stale user skills with:\n# TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-skill disable --path <skill-dir>")
         else:
             cost_per_token = 3.0 / 1e6  # sonnet input rate as baseline
             monthly_cost = monthly_waste * cost_per_token
-            fix_snippet = "# Move unused skills out of ~/.claude/skills/\n# Check which skills you actually use:\n# python3 measure.py trends --days 30"
+            fix_snippet = _with_measure_cli("# Move unused skills out of ~/.claude/skills/\n# Check which skills you actually use:\n# python3 measure.py trends --days 30")
 
         return [WasteFinding(
             system=system,
@@ -1933,11 +1947,11 @@ class SessionHistoryBloat(BaseDetector):
         days = max(1, len({r.timestamp.strftime("%Y-%m-%d") for r in long_sessions}))
         if system == "codex":
             recommendation = "Use /compact at phase boundaries and install Codex compact prompt guidance plus balanced hooks."
-            fix_snippet = "TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-install --project ."
+            fix_snippet = _with_measure_cli("TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-install --project .")
         else:
             recommendation = ("Compact earlier than the auto-compact line (about 967K tokens on 1M models unless you set /autocompact): run /compact when the conversation is long or changes topic. "
                               "Set up Smart Compaction for automatic protection.")
-            fix_snippet = "# Install Smart Compaction:\npython3 measure.py setup-smart-compact"
+            fix_snippet = _with_measure_cli("# Install Smart Compaction:\npython3 measure.py setup-smart-compact")
 
         return [WasteFinding(
             system=system,

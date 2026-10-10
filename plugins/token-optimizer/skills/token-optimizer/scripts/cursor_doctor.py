@@ -35,7 +35,7 @@ from pathlib import Path
 _SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_SCRIPT_DIR))
 
-from runtime_env import cursor_home  # noqa: E402
+from runtime_env import cursor_home, measure_cli as _measure_cli, with_measure_cli as _hint  # noqa: E402
 from cursor_install import _py_path_is_trusted  # noqa: E402
 
 DAEMON_PORT = 24846
@@ -100,7 +100,7 @@ def _home_checks() -> list:
     else:
         checks.append(
             _check("warn", "hooks.json", f"{hook_path} missing (created on install).",
-                   "Run `python3 measure.py cursor-install`.")
+                   _hint("Run `python3 measure.py cursor-install`."))
         )
     return checks
 
@@ -128,14 +128,14 @@ def _hook_config_checks() -> list:
     hook_path = cursor_home() / "hooks.json"
     if not hook_path.exists():
         checks.append(_check("warn", "TO hook config", "Not installed.",
-                             "Run `python3 measure.py cursor-install`."))
+                             _hint("Run `python3 measure.py cursor-install`.")))
         return checks
     try:
         config = json.loads(hook_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         checks.append(
             _check("fail", "TO hook config", f"{hook_path} unreadable/invalid: {exc}",
-                   "Re-run `python3 measure.py cursor-install` to rewrite it.")
+                   _hint("Re-run `python3 measure.py cursor-install` to rewrite it."))
         )
         return checks
 
@@ -151,7 +151,7 @@ def _hook_config_checks() -> list:
     else:
         checks.append(
             _check("fail", "TO hook config", "No Token Optimizer cursor entries found.",
-                   "Run `python3 measure.py cursor-install`.")
+                   _hint("Run `python3 measure.py cursor-install`."))
         )
     missing = [e for e in _WIRED_EVENTS if not ours.get(e)]
     if missing and wired:
@@ -167,7 +167,7 @@ def _payload_checks() -> list:
     plugin_dir = cursor_home() / "token-optimizer" / "plugin"
     if not plugin_dir.is_dir():
         checks.append(_check("warn", "hook payload", f"{plugin_dir} missing.",
-                             "Run `python3 measure.py cursor-install`."))
+                             _hint("Run `python3 measure.py cursor-install`.")))
         return checks
     missing = [
         m for m in ("cursor_hook_bridge.py", "codex_io.py", "bash_compress.py")
@@ -177,7 +177,7 @@ def _payload_checks() -> list:
         checks.append(
             _check("fail", "hook payload",
                    f"Installed bridge is missing modules: {', '.join(missing)}.",
-                   "Re-run `python3 measure.py cursor-install` to refresh the payload.")
+                   _hint("Re-run `python3 measure.py cursor-install` to refresh the payload."))
         )
     else:
         checks.append(_check("ok", "hook payload", f"{plugin_dir} (complete)"))
@@ -197,7 +197,7 @@ def _locator_checks() -> list:
                 "warn",
                 "measure-path locator",
                 f"{locator} missing (rollups paused).",
-                "Run `python3 measure.py cursor-install` to rewrite it.",
+                _hint("Run `python3 measure.py cursor-install` to rewrite it."),
             )
         )
         return checks
@@ -213,7 +213,7 @@ def _locator_checks() -> list:
                 "fail",
                 "measure-path locator",
                 f"{locator} does not name an existing measure.py.",
-                "Run `python3 measure.py cursor-install` to rewrite it.",
+                _hint("Run `python3 measure.py cursor-install` to rewrite it."),
             )
         )
     return checks
@@ -227,7 +227,7 @@ def _persisted_python_check() -> list:
     if not commands:
         checks.append(
             _check("warn", "persisted python", "No wired hook command to inspect.",
-                   "Run `python3 measure.py cursor-install`.")
+                   _hint("Run `python3 measure.py cursor-install`."))
         )
         return checks
     for event, cmd in commands.items():
@@ -242,7 +242,7 @@ def _persisted_python_check() -> list:
             "fail",
             "persisted python",
             "The wired hook command does not use an absolute python path.",
-            "Run `python3 measure.py cursor-install` to re-persist a trusted interpreter.",
+            _hint("Run `python3 measure.py cursor-install` to re-persist a trusted interpreter."),
         )
     )
     return checks
@@ -275,7 +275,7 @@ def _observed_checks() -> list:
     if not entries:
         checks.append(
             _check("warn", "observed events", f"{path} empty or missing.",
-                   "Run `python3 measure.py cursor-doctor --probe` to prove hooks fire.")
+                   _hint("Run `python3 measure.py cursor-doctor --probe` to prove hooks fire."))
         )
         return checks
     counts: dict = {}

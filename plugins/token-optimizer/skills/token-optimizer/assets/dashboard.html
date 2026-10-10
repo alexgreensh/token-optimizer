@@ -2244,6 +2244,19 @@ function parsePlan(planMd) {
 }
 
 function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+// Hints are authored as `python3 measure.py <cmd>`; show the resolved, quoted
+// script path (health.cli, from measure.py) so they paste from any directory.
+function tcli(text) {
+  var d = window.__TOKEN_DATA__;
+  var cli = d && d.health && d.health.cli;
+  return cli ? String(text).split('python3 measure.py').join(cli) : text;
+}
+// Same, for strings that carry markup and go to innerHTML: the path is escaped.
+function tcliHtml(html) {
+  var d = window.__TOKEN_DATA__;
+  var cli = d && d.health && d.health.cli;
+  return cli ? String(html).split('python3 measure.py').join(esc(String(cli))) : html;
+}
 
 function redactPaths(s) {
   if (!s) return s;
@@ -2853,7 +2866,7 @@ var DB = (function() {
       var ctxSource = data.snapshot.context_source ? ' Context window source: ' + data.snapshot.context_source + '.' : '';
       viewSourceEl.textContent = (isUrl
         ? 'Viewing live dashboard. Updates on every session end.'
-        : 'Viewing a local file. For the bookmarkable URL run: python3 measure.py setup-daemon') + ctxSource;
+        : tcli('Viewing a local file. For the bookmarkable URL run: python3 measure.py setup-daemon')) + ctxSource;
     }
 
     // Hero card
@@ -2949,12 +2962,12 @@ var DB = (function() {
         if (data.standalone) {
           tsDiv.innerHTML = 'Last updated: ' + esc(ts) + staleWarning +
             (data.runtime === 'codex'
-              ? ' &middot; Run <span class="update-cmd">TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py session-end-flush --trigger manual</span> for a fresh Codex audit.'
+              ? tcliHtml(' &middot; Run <span class="update-cmd">TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py session-end-flush --trigger manual</span> for a fresh Codex audit.')
               : ' &middot; Run <span class="update-cmd">/token-optimizer</span> for a full audit with recommendations.');
         } else {
           tsDiv.innerHTML = 'Last updated: ' + esc(ts) + staleWarning +
             (data.runtime === 'codex'
-              ? ' &middot; To refresh, run <span class="update-cmd">TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py session-end-flush --trigger manual</span>.'
+              ? tcliHtml(' &middot; To refresh, run <span class="update-cmd">TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py session-end-flush --trigger manual</span>.')
               : ' &middot; To refresh, run <span class="update-cmd">/token-optimizer</span> again.');
         }
         headerEl.appendChild(tsDiv);
@@ -3520,8 +3533,8 @@ var DB = (function() {
 
     if (!t) {
       var collectNote = isCodex
-        ? 'Codex sessions can be collected manually for now: <span class="update-cmd">TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py collect</span>'
-        : 'Sessions are collected automatically via the SessionEnd hook. Run a few sessions first, or manually: <span class="update-cmd">python3 measure.py collect</span>';
+        ? tcliHtml('Codex sessions can be collected manually for now: <span class="update-cmd">TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py collect</span>')
+        : tcliHtml('Sessions are collected automatically via the SessionEnd hook. Run a few sessions first, or manually: <span class="update-cmd">python3 measure.py collect</span>');
       html += '<div class="empty-state">No trends data yet. ' + collectNote + '</div>';
       el.innerHTML = html;
       return;
@@ -3836,7 +3849,7 @@ var DB = (function() {
         names.forEach(function(name) {
           cmd += ' && mv "$HOME/.claude/skills/"' + shellQuote(name) + ' "$ARCHIVE_DIR/"';
         });
-        cmd += ' && echo "Archived ' + names.length + ' skill(s). Regenerate dashboard: python3 measure.py dashboard"';
+        cmd += ' && echo "Archived ' + names.length + tcli(' skill(s). Regenerate dashboard: python3 measure.py dashboard"');
 
         if (navigator.clipboard && navigator.clipboard.writeText) {
           navigator.clipboard.writeText(cmd).then(function() {
@@ -5089,7 +5102,7 @@ var DB = (function() {
       '</div>';
 
     if (!c) {
-      html += '<div class="empty-state">No coaching data available. Run: python3 measure.py coach</div>';
+      html += tcliHtml('<div class="empty-state">No coaching data available. Run: python3 measure.py coach</div>');
       el.innerHTML = html;
       return;
     }
@@ -5345,8 +5358,8 @@ var DB = (function() {
     var isCodex = data.runtime === 'codex';
     var codexSetup = (data.manage && data.manage.codex) || {};
     var refreshCmd = isCodex
-      ? 'TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py dashboard'
-      : 'python3 measure.py dashboard';
+      ? tcli('TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py dashboard')
+      : tcli('python3 measure.py dashboard');
 
     var html = '<div class="section-header">' +
       '<div class="label">Configuration</div>' +
@@ -5606,7 +5619,7 @@ var DB = (function() {
           ? 'Codex setup uses real local logs plus project hooks. Balanced hooks are on by default; noisy per-tool hooks stay opt-in so Desktop users are not spammed.'
           : window.__TOKEN_API_LIVE
           ? '<span style="color:var(--c-accent-cyan);font-weight:600;">Live mode</span> — toggles apply instantly to settings. <strong>Restart ' + (isCodex ? 'Codex' : 'Claude') + '</strong> to activate changes.'
-          : 'Open in serve mode for live toggles: <code style="background:var(--c-bg);padding:2px 5px;border-radius:4px;">python3 measure.py dashboard --serve</code>') +
+          : tcliHtml('Open in serve mode for live toggles: <code style="background:var(--c-bg);padding:2px 5px;border-radius:4px;">python3 measure.py dashboard --serve</code>')) +
       '</p>' +
       '</div>';
 
@@ -5722,15 +5735,15 @@ var DB = (function() {
         '</div>' +
         '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:var(--s-2);">' +
           '<span style="color:var(--c-text-main);font-weight:600;">Install/update balanced hooks:</span>' +
-          '<code class="update-cmd" style="white-space:normal;">' + esc(cx.install_cmd || 'TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-install --project .') + '</code>' +
+          '<code class="update-cmd" style="white-space:normal;">' + esc(cx.install_cmd || tcli('TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-install --project .')) + '</code>' +
         '</div>' +
         '<details style="margin-top:var(--s-3);"><summary style="cursor:pointer;color:var(--c-accent-cyan);font-weight:600;">Show advanced commands</summary>' +
           '<div style="display:grid;gap:10px;margin-top:var(--s-2);">' +
-          '<div><strong style="color:var(--c-text-main);">Quiet Stop-only mode:</strong><br><code class="update-cmd">' + esc(cx.install_quiet_profile_cmd || 'TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-install --project . --profile quiet') + '</code><br><span style="font-size:12px;color:var(--c-text-dim);">Minimum visible rows, but weaker quality telemetry.</span></div>' +
-          '<div><strong style="color:var(--c-text-main);">Bash compression:</strong><br><code class="update-cmd">' + esc(cx.install_with_bash_compression_cmd || 'TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-install --project . --enable-bash-compression') + '</code><br><span style="font-size:12px;color:var(--c-text-dim);">Opt-in only because Codex Desktop shows each PreToolUse row.</span></div>' +
-          '<div><strong style="color:var(--c-text-main);">Full quality + tool telemetry:</strong><br><code class="update-cmd">' + esc(cx.install_with_hot_path_hooks_cmd || 'TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-install --project . --enable-hot-path-hooks --enable-prompt-hooks') + '</code><br><span style="font-size:12px;color:var(--c-text-dim);">Best for CLI/headless QA when exact tool-output bloat matters more than UI quietness.</span></div>' +
-          '<div><strong style="color:var(--c-text-main);">Refresh dashboard now:</strong><br><code class="update-cmd">' + esc(cx.refresh_cmd || 'TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py session-end-flush --trigger manual') + '</code></div>' +
-          '<div><strong style="color:var(--c-text-main);">Verify readiness:</strong><br><code class="update-cmd">' + esc(cx.doctor_cmd || 'TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-doctor --project .') + '</code></div>' +
+          '<div><strong style="color:var(--c-text-main);">Quiet Stop-only mode:</strong><br><code class="update-cmd">' + esc(cx.install_quiet_profile_cmd || tcli('TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-install --project . --profile quiet')) + '</code><br><span style="font-size:12px;color:var(--c-text-dim);">Minimum visible rows, but weaker quality telemetry.</span></div>' +
+          '<div><strong style="color:var(--c-text-main);">Bash compression:</strong><br><code class="update-cmd">' + esc(cx.install_with_bash_compression_cmd || tcli('TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-install --project . --enable-bash-compression')) + '</code><br><span style="font-size:12px;color:var(--c-text-dim);">Opt-in only because Codex Desktop shows each PreToolUse row.</span></div>' +
+          '<div><strong style="color:var(--c-text-main);">Full quality + tool telemetry:</strong><br><code class="update-cmd">' + esc(cx.install_with_hot_path_hooks_cmd || tcli('TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-install --project . --enable-hot-path-hooks --enable-prompt-hooks')) + '</code><br><span style="font-size:12px;color:var(--c-text-dim);">Best for CLI/headless QA when exact tool-output bloat matters more than UI quietness.</span></div>' +
+          '<div><strong style="color:var(--c-text-main);">Refresh dashboard now:</strong><br><code class="update-cmd">' + esc(cx.refresh_cmd || tcli('TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py session-end-flush --trigger manual')) + '</code></div>' +
+          '<div><strong style="color:var(--c-text-main);">Verify readiness:</strong><br><code class="update-cmd">' + esc(cx.doctor_cmd || tcli('TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-doctor --project .')) + '</code></div>' +
           '</div>' +
         '</details>' +
         '<p style="margin-bottom:0;margin-top:var(--s-3);">These commands are generated locally at dashboard-build time. Source checkouts include the checkout path; packaged installs will show the user&apos;s plugin path. No maintainer-specific paths are shipped.</p>' +
@@ -5930,12 +5943,12 @@ var DB = (function() {
           // browser. Show a dashboard toast with the CLI command and a
           // copy button instead of a blocking alert().
           e.target.checked = !newState;
-          var cliCmd = 'python3 measure.py v5 ' + (newState ? 'enable' : 'disable') + ' ' + fname;
+          var cliCmd = tcli('python3 measure.py v5 ') + (newState ? 'enable' : 'disable') + ' ' + fname;
           showCmdToast({
             title: 'Toggling v5 features needs a terminal',
             body: 'The read-only dashboard server can\u2019t write config. Run this in a terminal:',
             cmd: cliCmd,
-            hint: 'Or re-open the dashboard with full API: python3 measure.py dashboard --serve'
+            hint: tcli('Or re-open the dashboard with full API: python3 measure.py dashboard --serve')
           });
           return;
         }

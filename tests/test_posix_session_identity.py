@@ -1446,3 +1446,21 @@ def test_windows_classifier_does_not_gain_the_orphan_class():
     end = source.index("def _collect_windows_claude_sessions")
     assert "orphan_cli" in source[start:end]  # only the explanatory comment
     assert 'return "orphan_cli"' not in source[start:end]
+
+
+def test_headless_flag_in_a_spaced_argv0_is_embedded_even_when_the_exe_dir_is_unresolvable(monkeypatch):
+    """F-T1-14: a rewritten title carrying `-p` inside argv[0] is positively headless.
+
+    The executable's directory cannot be inspected (None), which used to force
+    "unknown" before the flags were ever read. Headless is never killable, so
+    the positive evidence wins; without it the answer stays fail-closed.
+    """
+    measure = _load_measure()
+    monkeypatch.setattr(measure, "_posix_dir_is_electron_app", lambda p: None)
+    spaced = "/opt/Claude App/claude"
+    assert _classify(measure, spaced + " -p hi", argv=[spaced + " -p hi"], exe=spaced) == "embedded_session"
+    assert _classify(measure, spaced + " --print hi", argv=[spaced + " --print hi"], exe=spaced) == "embedded_session"
+    assert _classify(measure, spaced + " mcp", argv=[spaced + " mcp"], exe=spaced) == "embedded_session"
+    # No headless evidence + unresolvable exe stays fail-closed.
+    assert _classify(measure, spaced, argv=[spaced], exe=spaced) == "unknown"
+    assert _classify(measure, "claude", exe=spaced) == "unknown"

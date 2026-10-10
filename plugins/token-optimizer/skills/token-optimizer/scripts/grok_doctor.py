@@ -40,7 +40,7 @@ from pathlib import Path
 _SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_SCRIPT_DIR))
 
-from runtime_env import grok_home  # noqa: E402
+from runtime_env import grok_home, measure_cli as _measure_cli, with_measure_cli as _hint  # noqa: E402
 from py_trust import py_path_is_trusted  # noqa: E402
 
 DAEMON_PORT = 24848
@@ -100,7 +100,7 @@ def _home_checks() -> list:
     if not hooks_dir.exists():
         checks.append(
             _check("warn", "hooks dir", f"{hooks_dir} missing (created on install).",
-                   "Run `python3 measure.py grok-install`.")
+                   _hint("Run `python3 measure.py grok-install`."))
         )
     elif not hooks_dir.is_dir():
         checks.append(_check("fail", "hooks dir", f"{hooks_dir} exists but is not a directory."))
@@ -139,14 +139,14 @@ def _hook_config_checks() -> list:
     hook_path = grok_home() / "hooks" / "token-optimizer.json"
     if not hook_path.exists():
         checks.append(_check("warn", "TO hook config", "Not installed.",
-                             "Run `python3 measure.py grok-install`."))
+                             _hint("Run `python3 measure.py grok-install`.")))
         return checks
     try:
         config = json.loads(hook_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         checks.append(
             _check("fail", "TO hook config", f"{hook_path} unreadable/invalid: {exc}",
-                   "Re-run `python3 measure.py grok-install` to rewrite it.")
+                   _hint("Re-run `python3 measure.py grok-install` to rewrite it."))
         )
         return checks
 
@@ -161,7 +161,7 @@ def _hook_config_checks() -> list:
     else:
         checks.append(
             _check("fail", "TO hook config", "No Token Optimizer grok entries found.",
-                   "Run `python3 measure.py grok-install`.")
+                   _hint("Run `python3 measure.py grok-install`."))
         )
     missing = [e for e in _WIRED_EVENTS if not ours[e]]
     if missing and wired:
@@ -177,7 +177,7 @@ def _payload_checks() -> list:
     plugin_dir = grok_home() / "token-optimizer" / "plugin"
     if not plugin_dir.is_dir():
         checks.append(_check("warn", "hook payload", f"{plugin_dir} missing.",
-                             "Run `python3 measure.py grok-install`."))
+                             _hint("Run `python3 measure.py grok-install`.")))
         return checks
     missing = [
         m for m in ("grok_hook_bridge.py", "codex_io.py", "bash_compress.py")
@@ -187,7 +187,7 @@ def _payload_checks() -> list:
         checks.append(
             _check("fail", "hook payload",
                    f"Installed bridge is missing modules: {', '.join(missing)}.",
-                   "Re-run `python3 measure.py grok-install` to refresh the payload.")
+                   _hint("Re-run `python3 measure.py grok-install` to refresh the payload."))
         )
     else:
         checks.append(_check("ok", "hook payload", f"{plugin_dir} (complete)"))
@@ -201,7 +201,7 @@ def _locator_checks() -> list:
     if not locator.exists():
         checks.append(
             _check("warn", "measure-path locator", f"{locator} missing (rollups paused).",
-                   "Run `python3 measure.py grok-install` to rewrite it.")
+                   _hint("Run `python3 measure.py grok-install` to rewrite it."))
         )
         return checks
     try:
@@ -214,7 +214,7 @@ def _locator_checks() -> list:
         checks.append(
             _check("fail", "measure-path locator",
                    f"{locator} does not name an existing measure.py.",
-                   "Run `python3 measure.py grok-install` to rewrite it.")
+                   _hint("Run `python3 measure.py grok-install` to rewrite it."))
         )
     return checks
 
@@ -225,7 +225,7 @@ def _persisted_python_check() -> list:
     if not commands:
         checks.append(
             _check("warn", "persisted python", "No wired hook command to inspect.",
-                   "Run `python3 measure.py grok-install`.")
+                   _hint("Run `python3 measure.py grok-install`."))
         )
         return checks
     for _event, cmd in commands.items():
@@ -236,7 +236,7 @@ def _persisted_python_check() -> list:
     checks.append(
         _check("fail", "persisted python",
                "The wired hook command does not use a trusted absolute python path.",
-               "Run `python3 measure.py grok-install` to re-persist a trusted interpreter.")
+               _hint("Run `python3 measure.py grok-install` to re-persist a trusted interpreter."))
     )
     return checks
 
@@ -268,7 +268,7 @@ def _observed_checks() -> list:
     if not entries:
         checks.append(
             _check("warn", "observed events", f"{path} empty or missing.",
-                   "Run `python3 measure.py grok-doctor --probe` to prove hooks fire.")
+                   _hint("Run `python3 measure.py grok-doctor --probe` to prove hooks fire."))
         )
         return checks
     counts: dict = {}

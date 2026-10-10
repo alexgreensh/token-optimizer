@@ -759,3 +759,62 @@ def test_compaction_memo_off_a_line_boundary_recounts(sb, tmp_path):
     # A memo that stopped partway into the second row.
     memo.write_text(json.dumps({"path": str(f), "size": len(mark) + 5, "count": 1}), encoding="utf-8")
     assert sb._status_bar_compactions(f, "sess-mid") == 3
+
+
+# --------------------------------------------------------------------------
+# F-T2-10: --session takes a pasted/truncated id
+# --------------------------------------------------------------------------
+
+def test_truncated_session_id_resolves_a_unique_prefix(sb):
+    """`status-bar --session aaaaaaaa`: the truncated ids our own listings
+    print must resolve to the real session, not degrade to an empty report."""
+    _write_transcript(sb, [
+        _assistant("2026-10-03T10:00:00Z",
+                   {"cache_creation": {"ephemeral_1h_input_tokens": 10}}),
+    ])
+    out = sb.status_bar_payload("aaaaaaaa")
+    assert out["session_id"] == SID_A
+    assert out["cache_lifetime"] == "1h"
+    assert out["last_request_epoch"] is not None
+
+
+def test_short_session_id_under_6_chars_resolves_a_unique_prefix(sb):
+    """`--session aaaa` sanitizes to "unknown" today; a unique prefix match
+    should still find the one session it can only mean."""
+    _write_transcript(sb, [
+        _assistant("2026-10-03T10:00:00Z",
+                   {"cache_creation": {"ephemeral_1h_input_tokens": 10}}),
+    ])
+    out = sb.status_bar_payload("aaaa")
+    assert out["session_id"] == SID_A
+    assert out["cache_lifetime"] == "1h"
+
+
+def test_ambiguous_session_id_prefix_says_so(sb):
+    """Two sessions share the prefix: refuse to guess and say why."""
+    for sid in ("aaaa1111-0000-4000-8000-000000000001",
+                "aaaa2222-0000-4000-8000-000000000002"):
+        _write_transcript(sb, [
+            _assistant("2026-10-03T10:00:00Z",
+                       {"cache_creation": {"ephemeral_1h_input_tokens": 10}}),
+        ], sid=sid)
+    out = sb.status_bar_payload("aaaa")
+    assert out["savings"] is None
+    assert out["savings_reason"]
+    assert "ambiguous" in out["savings_reason"]
+    assert "2" in out["savings_reason"]
+
+
+def test_session_id_prefix_matching_nothing_says_so(sb):
+    """Zero matches: name the prefix that matched nothing, not 'unknown'."""
+    out = sb.status_bar_payload("zz")
+    assert out["session_id"] == "unknown"
+    assert out["savings_reason"]
+    assert "zz" in out["savings_reason"]
+
+
+def test_full_session_id_unaffected_by_prefix_resolution(sb):
+    """A real full id with no transcript keeps the existing behaviour."""
+    out = sb.status_bar_payload(SID_A)
+    assert out["session_id"] == SID_A
+    assert out["savings_reason"] != "no session id"

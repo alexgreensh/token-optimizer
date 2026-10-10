@@ -35,7 +35,7 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_SCRIPT_DIR))
 
 from py_trust import py_path_is_trusted, py_trust_reason  # noqa: E402
-from runtime_env import antigravity_home  # noqa: E402
+from runtime_env import antigravity_home, measure_cli as _measure_cli, with_measure_cli as _hint  # noqa: E402
 
 HOOK_NAME = "token-optimizer"
 PRE_TIMEOUT_SEC = 10
@@ -355,7 +355,7 @@ def main(argv=None) -> int:
             if not args.dry_run:
                 print(f"  Modules: {len(result['copied'])} copied")
                 print(f"  Consent: {result['consent']}")
-            print("  Run `python3 measure.py antigravity-doctor` to verify readiness.")
+            print(_hint("  Run `python3 measure.py antigravity-doctor` to verify readiness."))
         else:
             result = uninstall(dry_run=args.dry_run)
             verb = "Would remove" if args.dry_run else "Removed"

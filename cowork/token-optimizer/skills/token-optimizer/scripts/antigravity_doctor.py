@@ -33,7 +33,7 @@ from pathlib import Path
 _SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_SCRIPT_DIR))
 
-from runtime_env import antigravity_home  # noqa: E402
+from runtime_env import antigravity_home, measure_cli as _measure_cli, with_measure_cli as _hint  # noqa: E402
 
 DAEMON_PORT = 24847
 _VERSION_TIMEOUT_SECONDS = 5
@@ -173,7 +173,7 @@ def _plugin_checks() -> list:
                 "warn",
                 "plugin directory",
                 f"{pdir} missing.",
-                "Run `python3 measure.py antigravity-install`.",
+                _hint("Run `python3 measure.py antigravity-install`."),
             )
         )
         return checks
@@ -185,7 +185,7 @@ def _plugin_checks() -> list:
                 "fail",
                 "plugin hooks",
                 f"{hooks_path} missing.",
-                "Re-run `python3 measure.py antigravity-install` to rewrite it.",
+                _hint("Re-run `python3 measure.py antigravity-install` to rewrite it."),
             )
         )
     else:
@@ -207,7 +207,7 @@ def _plugin_checks() -> list:
                     "fail",
                     "plugin hooks",
                     f"{hooks_path} invalid: {exc}.",
-                    "Re-run `python3 measure.py antigravity-install` to rewrite it.",
+                    _hint("Re-run `python3 measure.py antigravity-install` to rewrite it."),
                 )
             )
 
@@ -218,7 +218,7 @@ def _plugin_checks() -> list:
                 "warn",
                 "plugin payload",
                 f"Missing module(s): {', '.join(missing)}.",
-                "Re-run `python3 measure.py antigravity-install` to refresh the payload.",
+                _hint("Re-run `python3 measure.py antigravity-install` to refresh the payload."),
             )
         )
     else:
@@ -439,7 +439,7 @@ def _bridge_selftest_check() -> dict:
             "warn",
             "bridge self-test",
             f"{bridge} missing.",
-            "Run `python3 measure.py antigravity-install`.",
+            _hint("Run `python3 measure.py antigravity-install`."),
         )
     try:
         env = {
@@ -470,14 +470,14 @@ def _bridge_selftest_check() -> dict:
             "fail",
             "bridge self-test",
             f"invocation failed: {exc}.",
-            "Re-run `python3 measure.py antigravity-install` to refresh the payload.",
+            _hint("Re-run `python3 measure.py antigravity-install` to refresh the payload."),
         )
     if proc.returncode != 0:
         return _check(
             "fail",
             "bridge self-test",
             f"exit {proc.returncode} (stderr: {proc.stderr.strip()[:200]}).",
-            "Re-run `python3 measure.py antigravity-install` to refresh the payload.",
+            _hint("Re-run `python3 measure.py antigravity-install` to refresh the payload."),
         )
     out = (proc.stdout or "").strip()
     if out:
@@ -489,7 +489,7 @@ def _bridge_selftest_check() -> dict:
                 "bridge self-test",
                 f"stdout is not valid JSON; the host would read the hook as "
                 f"malformed (stdout: {out[:200]!r}).",
-                "Re-run `python3 measure.py antigravity-install` to refresh the payload.",
+                _hint("Re-run `python3 measure.py antigravity-install` to refresh the payload."),
             )
     return _check("ok", "bridge self-test", "exit 0, valid JSON output")
 

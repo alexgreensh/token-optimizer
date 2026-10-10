@@ -330,6 +330,43 @@ def test_poll_runs_on_the_same_side_of_an_edit_still_count(sandbox):
     assert len(poll) == 1 and poll[0]["times_seen"] == 4
 
 
+def test_parameter_sweep_is_not_labeled_polling(sandbox):
+    """F-T2-11: run-0..run-5 collapse to one normalised shape, but each
+    literal command ran ONCE. That is a sweep, not a re-check loop: wrong
+    label and wrong remedy text ("script that waits") otherwise."""
+    steps = [_bash(f"run-{i}") for i in range(6)]
+    res = run_dc("claude", [write_claude(sandbox / "s.jsonl", [steps], "s")])
+    assert "polling_loop" not in kinds(res)
+    sweep = [c for c in res["candidates"] if c["kind"] == "parameter_sweep"]
+    assert len(sweep) == 1 and sweep[0]["times_seen"] == 6
+    assert sweep[0]["suggestion"] != ""
+
+
+def test_identical_literal_command_is_still_polling(sandbox):
+    steps = [_bash("make check")] * 5
+    res = run_dc("claude", [write_claude(sandbox / "s.jsonl", [steps], "s")])
+    poll = [c for c in res["candidates"] if c["kind"] == "polling_loop"]
+    assert len(poll) == 1 and poll[0]["times_seen"] == 5
+    assert "parameter_sweep" not in kinds(res)
+
+
+def test_dominant_literal_counts_as_polling_strays_do_not(sandbox):
+    """4x one literal + 1x a different literal under the same shape: the
+    loop is real for the repeated literal; the stray is not loop evidence."""
+    steps = [_bash("curl -s api/health-7")] * 4 + [_bash("curl -s api/health-9")]
+    res = run_dc("claude", [write_claude(sandbox / "s.jsonl", [steps], "s")])
+    poll = [c for c in res["candidates"] if c["kind"] == "polling_loop"]
+    assert len(poll) == 1 and poll[0]["times_seen"] == 4
+    assert "parameter_sweep" not in kinds(res)
+
+
+def test_sweep_below_min_runs_reports_nothing(sandbox):
+    steps = [_bash(f"run-{i}") for i in range(3)]
+    res = run_dc("claude", [write_claude(sandbox / "s.jsonl", [steps], "s")])
+    assert "parameter_sweep" not in kinds(res)
+    assert "polling_loop" not in kinds(res)
+
+
 # ---------------------------------------------------------------------------
 # check_only_turn
 # ---------------------------------------------------------------------------
@@ -797,9 +834,11 @@ def test_inline_script_example_is_launcher_plus_first_60_chars_of_body(sandbox):
 
 
 def test_inline_scripts_that_differ_only_in_literals_still_match(sandbox):
+    # Still grouped under one normalised key; the label is parameter_sweep
+    # because each literal body ran once (F-T2-11).
     steps = [_bash(_heredoc(f"print('row {i}', {i * 7})")) for i in range(4)]
     res = run_dc("claude", [write_claude(sandbox / "s.jsonl", [steps], "s")])
-    assert kinds(res).count("polling_loop") == 1
+    assert kinds(res).count("parameter_sweep") == 1
 
 
 def test_a_shift_operator_in_an_inline_script_does_not_truncate_the_body(sandbox):
@@ -852,7 +891,7 @@ def test_inline_script_body_secrets_never_reach_output_or_cache(sandbox):
 
 def test_unterminated_and_empty_inline_scripts_do_not_crash():
     for cmd in ("python3 - <<'EOF'", "python3 - <<'EOF'\nprint(1)", "python3 -c", "bash -c ''", "python3 - <<<", "node -e"):
-        key, shape, _chk = dc._KeyMaker(dc.default_redactor()).command(cmd)
+        key, shape, _chk, _lit = dc._KeyMaker(dc.default_redactor()).command(cmd)
         assert key.startswith("B:") and shape.startswith("Bash:")
 
 

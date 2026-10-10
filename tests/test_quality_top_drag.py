@@ -161,3 +161,24 @@ def test_reread_waste_is_never_named_as_the_drag(m, monkeypatch):
     drag = result["top_drag"]
     assert not (drag and "re-read" in drag["label"]), (
         f"reread waste wrongly named the drag: {drag!r}")
+
+
+def test_mild_fill_on_a_grade_s_session_names_no_drag(m):
+    """F-T2-14: 20% fill still scores S (>= 90); naming a 'drag' there is noise."""
+    mod, _ = m
+    result = mod.compute_quality_score(_qdata(context_tokens=200_000))
+    assert result["score"] >= 90
+    assert result["top_drag"] is None
+
+
+def test_contradicted_window_is_labelled_a_window_problem_not_full_fill(m, monkeypatch):
+    """F-T2-14: 250k tokens in a 200k window is a wrong window, never '100% context fill'."""
+    mod, _ = m
+    monkeypatch.setattr(mod, "detect_context_window", lambda: (200_000, "test"))
+    result = mod.compute_quality_score(_qdata(
+        context_tokens=250_000, model_context_window=200_000, model="claude-sonnet-4-5"))
+    drag = result["top_drag"]
+    assert drag is not None
+    assert "100%" not in drag["label"]
+    assert "window" in drag["label"].lower()
+    assert drag["key"] == "context_window_mismatch"

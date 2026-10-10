@@ -4712,7 +4712,7 @@ def doctor(as_json=False):
         _sc_payoff = _scb.get("payoff") or {}
         _sc_detail = (
             f"state: {_sc_state}; last {_sc_payoff.get('window_days', 30)}d "
-            f"estimated net ${_sc_payoff.get('net_usd_est', 0.0):.2f}"
+            f"estimated net {_recs_usd(_sc_payoff.get('net_usd_est') or 0.0)}"
             + (" API-equivalent" if _scb.get("billing_mode") == "subscription" else "")
             + " (estimate)")
         _sc_auto = _scb.get("auto_decision") or {}
@@ -20993,6 +20993,17 @@ def _recs_measure_improved(iid, recommended, before, after):
     return False
 
 
+def _recs_usd(value, plus=False):
+    """Dollars with the sign before the symbol: -$2.00, never $-2.00.
+    `plus` adds an explicit + to a positive amount; a value that rounds to
+    zero carries no sign."""
+    v = round(float(value), 2)
+    if v == 0:
+        v = 0.0
+    sign = "-" if v < 0 else ("+" if plus and v > 0 else "")
+    return f"{sign}${abs(v):.2f}"
+
+
 def _recs_win_line(iid, recommended, before, after, improved, since_ts):
     try:
         date = datetime.fromtimestamp(since_ts).date().isoformat()
@@ -21015,17 +21026,19 @@ def _recs_win_line(iid, recommended, before, after, improved, since_ts):
         if recommended == "1h":
             if improved:
                 return (f"Subagent cache: since you set it to 1 hour on "
-                        f"{date}, the measured net is +${after:.2f} over the "
-                        f"last 30 days (projected +${before:.2f}; {tail}).")
+                        f"{date}, the measured net is {_recs_usd(after, True)} "
+                        f"over the last 30 days (projected "
+                        f"{_recs_usd(before, True)}; {tail}).")
             return (f"Subagent cache: since you set it to 1 hour on {date}, "
-                    f"the measured net is ${after:.2f} over the last 30 days "
-                    f"-- the projected +${before:.2f} did not hold ({tail}).")
+                    f"the measured net is {_recs_usd(after, True)} over the "
+                    f"last 30 days -- the projected {_recs_usd(before, True)} "
+                    f"did not hold ({tail}).")
         if improved:
             return (f"Subagent cache: since you turned it off on {date}, the "
-                    f"1-hour cache still would not pay (net ${after:.2f}; "
+                    f"1-hour cache still would not pay (net {_recs_usd(after)}; "
                     f"{tail}).")
         return (f"Subagent cache: since you turned it off on {date}, the "
-                f"estimate moved to ${after:+.2f} -- the 1-hour cache may be "
+                f"estimate moved to {_recs_usd(after, True)} -- the 1-hour cache may be "
                 f"worth another look ({tail}).")
     return ""
 

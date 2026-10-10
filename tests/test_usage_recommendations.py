@@ -899,6 +899,41 @@ def test_subagent_disable_win(m, monkeypatch):
     assert wins[0]["improved"] is True
 
 
+@pytest.mark.parametrize("rec,before,after,improved", [
+    ("1h", 5.0, -2.0, False),      # the projected gain did not hold
+    ("1h", 5.0, 1.0, False),
+    ("1h", 1.5, 1.8, True),
+    ("off", -0.5, -0.4, True),     # still would not pay
+    ("off", -0.5, 0.25, False),    # moved positive
+    ("off", -0.5, -0.004, False),  # rounds to zero
+])
+def test_win_lines_put_the_sign_before_the_dollar(m, rec, before, after,
+                                                 improved):
+    mod, _s, _h = m
+    line = mod._recs_win_line("subagent_cache", rec, before, after,
+                              improved, time.time() - 10 * 86400)
+    assert line
+    assert "$-" not in line and "$+" not in line, line
+    if after <= -0.005:
+        assert f"-${abs(after):.2f}" in line, line
+
+
+def test_win_line_negative_net_reads_minus_dollar(m):
+    mod, _s, _h = m
+    line = mod._recs_win_line("subagent_cache", "1h", 5.0, -2.0, False,
+                              time.time() - 10 * 86400)
+    assert "-$2.00" in line and "+$5.00" in line
+
+
+def test_doctor_cache_row_negative_net_reads_minus_dollar(m, capsys):
+    mod, _s, _h = m
+    _verdict(m, requests=500, saved=0.40, premium=1.0)   # net -0.60
+    mod.doctor()
+    out = capsys.readouterr().out
+    assert "estimated net -$0.60" in out
+    assert "$-" not in out
+
+
 # ===========================================================================
 # Surfaces read the record only.
 # ===========================================================================

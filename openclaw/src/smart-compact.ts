@@ -10,6 +10,7 @@ import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import { appendFileNoFollow, writeFileNoFollow } from "./fs-utils";
+import { redact } from "./redact";
 import {
   checkpointManifestPath,
   checkpointSessionDir,
@@ -371,7 +372,10 @@ function writeCheckpointArtifact(
   const filepath = safeCheckpointPath(sessionId, filename);
 
   try {
-    writeFileNoFollow(filepath, body, 0o600);
+    // Credential pass on the WHOLE body at the write boundary — message text
+    // is the only untrusted input and a secret inside any of it must never
+    // land on disk (the file is restored into a later session's context).
+    writeFileNoFollow(filepath, redact(body), 0o600);
   } catch {
     return null;
   }
@@ -670,7 +674,8 @@ export function captureCheckpointV2(
   const filepath = safeCheckpointPath(session.sessionId, filename);
 
   try {
-    writeFileNoFollow(filepath, lines.join("\n"), 0o600);
+    // Same write-boundary credential pass as the v1 artifact path.
+    writeFileNoFollow(filepath, redact(lines.join("\n")), 0o600);
   } catch {
     return null;
   }

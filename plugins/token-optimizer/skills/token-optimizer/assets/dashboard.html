@@ -4954,7 +4954,14 @@ var DB = (function() {
         '<div style="text-align:center;padding:var(--s-3) 0;">' +
         '<div style="font-size:56px;font-weight:700;font-family:var(--font-mono);color:' + qColor + ';text-shadow:0 0 15px ' + qColor + ';">' + qs + '</div>' +
         '<div class="label" style="font-size:16px;color:' + qColor + ';">' + qBand + '</div>' +
-        '</div>';
+        '</div>' +
+        // Biggest drag: the actual weighted deficit (fill / compactions /
+        // dominant waste), computed upstream — not inferred from waste keys.
+        (q.top_drag && q.top_drag.label
+          ? '<div style="text-align:center;padding:0 var(--s-3) var(--s-2);font-size:13px;color:var(--c-text-dim);">Biggest drag: <strong style="color:' + qColor + ';">' + esc(q.top_drag.label) + '</strong>' +
+            (typeof q.top_drag.points === 'number' ? ' <span style="font-family:var(--font-mono);font-size:12px;">(-' + esc(String(q.top_drag.points)) + ' pts)</span>' : '') +
+            '</div>'
+          : '');
 
       // Breakdown bars
       var bd = q.breakdown || {};

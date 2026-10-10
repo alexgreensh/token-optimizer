@@ -59,6 +59,17 @@ def _default_context_window() -> int:
 from grok_state import _safe_int as _safe_int  # noqa: E402,F401 — shared helper
 
 
+def _safe_topic(value: Any) -> Optional[str]:
+    """Topic is user text persisted to session_log — redact or drop."""
+    if not value:
+        return None
+    try:
+        from credential_patterns import redact_credentials
+        return redact_credentials(str(value))
+    except Exception:
+        return None
+
+
 def _parse_ts(value: Any) -> Optional[str]:
     """Normalize a timestamp to an ISO-8601 UTC string.
 
@@ -272,7 +283,7 @@ def normalize_session(raw: dict) -> Optional[dict]:
     session = _base_canonical(session_id, token_source)
     session.update(
         {
-            "topic": raw.get("title"),
+            "topic": _safe_topic(raw.get("title")),
             "first_ts": _parse_ts(created),
             "last_ts": _parse_ts(updated),
             "duration_minutes": round(duration_minutes, 2),

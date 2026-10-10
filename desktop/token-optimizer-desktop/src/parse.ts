@@ -106,8 +106,20 @@ function gradeFor(score: number): string {
   return 'F'
 }
 
-function dragFrom(breakdown: unknown): string | null {
-  const signals = toRecord(breakdown)
+/**
+ * The signal pulling the score down. Newer caches carry `top_drag`, computed
+ * upstream by weighted deficit across fill/compactions/waste — that is the
+ * true drag. The waste-key scan stays as the fallback for caches written
+ * before `top_drag` existed.
+ */
+function dragFrom(cache: Json): string | null {
+  const upstream = text(toRecord(cache.top_drag)?.label)
+
+  if (upstream) {
+    return upstream
+  }
+
+  const signals = toRecord(cache.breakdown)
 
   if (!signals) {
     return null
@@ -150,7 +162,7 @@ export function parseQualityCache(json: unknown, nowEpoch: number): Quality | nu
   return {
     score,
     grade,
-    drag: dragFrom(cache.breakdown),
+    drag: dragFrom(cache),
     toolCalls: count(cache.tool_calls),
     compactions: count(cache.compactions) ?? 0,
     checkpointEpoch: epoch(cache.last_checkpoint_epoch, nowEpoch),

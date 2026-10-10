@@ -89,7 +89,15 @@ export type CheckpointTrigger =
 export const FILL_BANDS = [20, 35, 50, 65, 80];
 export const QUALITY_THRESHOLDS = [80, 70, 50, 40];
 const HOME = process.env.HOME ?? process.env.USERPROFILE ?? "";
-const CHECKPOINT_ROOT = path.join(HOME, ".openclaw", "token-optimizer", "checkpoints");
+const DEFAULT_CHECKPOINT_ROOT = path.join(HOME, ".openclaw", "token-optimizer", "checkpoints");
+/**
+ * Resolved per call, not once at load: tests and containerized runs override
+ * the location via TOKEN_OPTIMIZER_CHECKPOINT_ROOT without faking HOME, which
+ * would contaminate every other module that bound it at import time.
+ */
+function checkpointRoot(): string {
+  return process.env.TOKEN_OPTIMIZER_CHECKPOINT_ROOT || DEFAULT_CHECKPOINT_ROOT;
+}
 const CHECKPOINT_COOLDOWN_MS = Number.parseInt(
   process.env.TOKEN_OPTIMIZER_CHECKPOINT_COOLDOWN_MS ?? "90000",
   10
@@ -158,11 +166,11 @@ function isWithinDir(root: string, candidate: string): boolean {
 }
 
 function resolvedCheckpointRoot(): string | null {
-  if (!HOME || !fs.existsSync(CHECKPOINT_ROOT)) return null;
+  if (!HOME || !fs.existsSync(checkpointRoot())) return null;
   try {
-    const stat = fs.lstatSync(CHECKPOINT_ROOT);
+    const stat = fs.lstatSync(checkpointRoot());
     if (stat.isSymbolicLink()) return null;
-    return fs.realpathSync(CHECKPOINT_ROOT);
+    return fs.realpathSync(checkpointRoot());
   } catch {
     return null;
   }
@@ -197,14 +205,14 @@ function ensureSafeCheckpointRootForWrites(): string {
   if (!HOME) {
     throw new Error("Home directory is not set");
   }
-  if (!fs.existsSync(CHECKPOINT_ROOT)) {
-    fs.mkdirSync(CHECKPOINT_ROOT, { recursive: true, mode: 0o700 });
+  if (!fs.existsSync(checkpointRoot())) {
+    fs.mkdirSync(checkpointRoot(), { recursive: true, mode: 0o700 });
   }
-  const stat = fs.lstatSync(CHECKPOINT_ROOT);
+  const stat = fs.lstatSync(checkpointRoot());
   if (stat.isSymbolicLink() || !stat.isDirectory()) {
     throw new Error("Checkpoint root is unsafe");
   }
-  return fs.realpathSync(CHECKPOINT_ROOT);
+  return fs.realpathSync(checkpointRoot());
 }
 
 function ensureSafeCheckpointDirForWrites(sessionId: string): string {
@@ -272,7 +280,7 @@ function safeCheckpointRootFilePathForWrite(filename: string): string {
 }
 
 export function checkpointSessionDir(sessionId: string): string {
-  return path.join(CHECKPOINT_ROOT, sanitizeSessionId(sessionId));
+  return path.join(checkpointRoot(), sanitizeSessionId(sessionId));
 }
 
 export function checkpointManifestPath(sessionId: string): string {
@@ -591,7 +599,7 @@ export function getCheckpointTelemetrySummary(days: number = 7): CheckpointTelem
   const last = recent[0];
   return {
     enabled: CHECKPOINT_TELEMETRY_ENABLED,
-    eventLog: root ? path.join(root, EVENTS_FILENAME) : path.join(CHECKPOINT_ROOT, EVENTS_FILENAME),
+    eventLog: root ? path.join(root, EVENTS_FILENAME) : path.join(checkpointRoot(), EVENTS_FILENAME),
     days,
     totalEvents: events.length,
     recentEvents: recent.length,
@@ -683,7 +691,7 @@ export function getCheckpointHealth(): CheckpointHealth {
 
   if (!HOME) issues.push("Home directory is not set.");
   const root = resolvedCheckpointRoot();
-  if (!fs.existsSync(CHECKPOINT_ROOT)) {
+  if (!fs.existsSync(checkpointRoot())) {
     issues.push("Checkpoint root does not exist yet.");
   } else if (!root) {
     issues.push("Checkpoint root is invalid or symlinked.");
@@ -716,7 +724,7 @@ export function getCheckpointHealth(): CheckpointHealth {
   }
 
   return {
-    checkpointRoot: CHECKPOINT_ROOT,
+    checkpointRoot: checkpointRoot(),
     sessionCount,
     checkpointCount,
     policyCount,

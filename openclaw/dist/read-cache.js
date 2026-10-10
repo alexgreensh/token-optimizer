@@ -67,6 +67,7 @@ const v5_features_1 = require("./v5-features");
 const telemetry_1 = require("./telemetry");
 const delta_diff_1 = require("./delta-diff");
 const token_estimate_1 = require("./token-estimate");
+const redact_1 = require("./redact");
 // ---------------------------------------------------------------------------
 // Savings event log (U-B + U-G, JSONL append, mirrors Python savings_events)
 // ---------------------------------------------------------------------------
@@ -93,7 +94,9 @@ function logSavingsEvent(eventType, tokensSaved, sessionId, detail) {
             event_type: eventType,
             tokens_saved: Math.round(tokensSaved),
             session_id: sessionId || null,
-            detail: detailTrunc,
+            // Boundary redaction: detail can embed a file name carrying a
+            // credential shape — never persist it raw.
+            detail: detailTrunc ? (0, redact_1.redact)(detailTrunc) : null,
         });
         try {
             fs.mkdirSync(SAVINGS_DIR, { recursive: true, mode: 0o700 });
@@ -217,7 +220,7 @@ function recordHintServe(sessionId, filePaths) {
         const capped = filePaths.slice(0, HINT_SERVE_MAX_PATHS);
         let changed = false;
         for (const rawPath of capped) {
-            const fp = rawPath.trim();
+            const fp = (0, redact_1.redact)(rawPath.trim());
             if (!fp)
                 continue;
             // Only insert if no existing uncredited entry for this path.
@@ -249,14 +252,17 @@ function claimHintFollow(sessionId, filePath) {
         return false;
     try {
         const serves = loadHintServes(sessionId);
-        const entry = serves[filePath];
+        // Keys are stored redacted (recordHintServe), so normalize the lookup the
+        // same way — a credential-shaped path is never persisted OR queried raw.
+        const key = (0, redact_1.redact)(filePath);
+        const entry = serves[key];
         if (!entry || entry.credited)
             return false;
         const ageSecs = Date.now() / 1000 - entry.servedAt;
         if (ageSecs > HINT_FOLLOW_MAX_AGE_SECONDS)
             return false;
         // Mark credited and persist before returning true.
-        serves[filePath] = { ...entry, credited: true };
+        serves[key] = { ...entry, credited: true };
         saveHintServes(sessionId, serves);
         return true;
     }
@@ -499,7 +505,9 @@ function logDecision(decision, filePath, reason, sessionId) {
     if (!fs.existsSync(dir))
         fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     const logPath = path.join(dir, `${safeSession}.jsonl`);
-    const entry = JSON.stringify({ ts: Date.now() / 1000, decision, file: filePath, reason, session: sessionId });
+    // Boundary redaction: file paths/reasons are tool-derived text — a
+    // credential-shaped file name must never reach this log raw.
+    const entry = JSON.stringify({ ts: Date.now() / 1000, decision, file: (0, redact_1.redact)(filePath), reason: (0, redact_1.redact)(reason), session: sessionId });
     try {
         fs.appendFileSync(logPath, entry + "\n", { mode: 0o600 });
     }
@@ -561,6 +569,10 @@ function handleReadBefore(event) {
         return null;
     const filePath = path.resolve(rawPath);
     const { agentId, sessionId } = event;
+    // Cache keys are persisted to a JSON file — a credential-shaped file name
+    // would land on disk verbatim. All cache.files access uses this redacted
+    // key; filePath itself stays raw for real fs operations below.
+    const persistPath = (0, redact_1.redact)(filePath);
     // .contextignore check (hard block)
     if (isContextignored(filePath)) {
         logDecision("block", filePath, "contextignore", sessionId);
@@ -573,7 +585,7 @@ function handleReadBefore(event) {
     if (BINARY_EXTENSIONS.has(path.extname(filePath).toLowerCase()))
         return null;
     const cache = loadCache(agentId, sessionId);
-    const entry = cache.files[filePath];
+    const entry = cache.files[persistPath];
     const offset = event.toolInput.offset ?? 0;
     const limit = event.toolInput.limit ?? 0;
     // Delta Mode only runs against explicit full-file reads. A read that
@@ -594,7 +606,7 @@ function handleReadBefore(event) {
         catch {
             return null;
         }
-        cache.files[filePath] = { mtime, offset, limit, tokensEst, readCount: 1, lastAccess: Date.now() / 1000, digest: "" };
+        cache.files[persistPath] = { mtime, offset, limit, tokensEst, readCount: 1, lastAccess: Date.now() / 1000, digest: "" };
         saveCache(agentId, sessionId, cache);
         logDecision("allow", filePath, "first_read", sessionId);
         // U-G: check if this first read fulfils a prior hint serve.
@@ -629,7 +641,7 @@ function handleReadBefore(event) {
         currentMtime = fs.statSync(filePath).mtimeMs / 1000;
     }
     catch {
-        delete cache.files[filePath];
+        delete cache.files[persistPath];
         saveCache(agentId, sessionId, cache);
         logDecision("allow", filePath, "file_changed_or_deleted", sessionId);
         return null;
@@ -777,8 +789,9 @@ function handleWriteAfter(event) {
         return;
     const filePath = path.resolve(rawPath);
     const cache = loadCache(event.agentId, event.sessionId);
-    if (cache.files[filePath]) {
-        delete cache.files[filePath];
+    const persistPath = (0, redact_1.redact)(filePath);
+    if (cache.files[persistPath]) {
+        delete cache.files[persistPath];
         saveCache(event.agentId, event.sessionId, cache);
     }
     // Keep the v5 delta cache consistent with on-disk truth for this session.

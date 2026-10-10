@@ -382,6 +382,13 @@ process.stdin.on('end', () => {
       row2Parts.push(`${DIM}Eff:--${RESET}`);
     }
 
+    // Biggest drag: the actual signal pulling the score down — context fill,
+    // compactions, or the dominant waste cause — computed upstream by weighted
+    // deficit, not guessed from waste keys here.
+    if (q && q.top_drag && q.top_drag.label) {
+      row2Parts.push(`${DIM}Drag:${q.top_drag.label}${RESET}`);
+    }
+
     // Fill warning
     if (q) {
       const fw = q.fill_warning;

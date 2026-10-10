@@ -43,6 +43,7 @@ exports.captureSnapshot = captureSnapshot;
 exports.detectDrift = detectDrift;
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
+const redact_1 = require("./redact");
 // ---------------------------------------------------------------------------
 // Paths
 // ---------------------------------------------------------------------------
@@ -101,9 +102,12 @@ function captureSnapshot(openclawDir) {
         memoryMdSize: fileSize(path.join(openclawDir, "MEMORY.md")),
         agentsMdSize: fileSize(path.join(openclawDir, "AGENTS.md")),
         toolsMdSize: fileSize(path.join(openclawDir, "TOOLS.md")),
-        modelConfig: readModelConfig(openclawDir),
-        skills: skills.names,
-        agents: agents.names,
+        // Directory entry names and config text are user-derived strings persisted
+        // verbatim; a credential-shaped name must never land in a snapshot raw.
+        // Redaction is deterministic, so drift diffs still compare correctly.
+        modelConfig: (0, redact_1.redact)(readModelConfig(openclawDir)),
+        skills: skills.names.map(redact_1.redact),
+        agents: agents.names.map(redact_1.redact),
     };
     fs.mkdirSync(SNAPSHOT_DIR, { recursive: true, mode: 0o700 });
     const filename = `snapshot-${snapshot.capturedAt.slice(0, 10)}.json`;

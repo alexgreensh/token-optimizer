@@ -216,7 +216,17 @@ def _extract_topic(text: str) -> str | None:
         text = first_line.lstrip("# ").strip()
     if not text:
         return None
-    return text[:117] + "..." if len(text) > 120 else text
+    if len(text) > 120:
+        text = text[:117] + "..."
+    # User-derived text that is persisted (session_log/quality cache) and
+    # rendered into checkpoints — redact credentials, or drop the topic if
+    # the shared redactor is unavailable/refuses.
+    try:
+        from credential_patterns import redact_credentials as _topic_redact
+        text = _topic_redact(text)
+    except Exception:
+        return None
+    return text
 
 
 def _safe_session_id(value: str | None) -> str:

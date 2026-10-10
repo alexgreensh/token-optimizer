@@ -12,6 +12,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { estimateTokens as sharedEstimateTokens } from "./token-estimate";
+import { redact } from "./redact";
 
 export interface CompressionEvent {
   timestamp: string;
@@ -106,13 +107,17 @@ export function logCompressionEvent(input: LogCompressionEventInput): boolean {
       timestamp: new Date().toISOString(),
       session_id: input.sessionId ?? null,
       feature: input.feature,
-      command_pattern: input.commandPattern ?? null,
+      // Boundary redaction: command_pattern/detail embed tool labels and file
+      // names that can carry a credential shape. Redact here so no caller can
+      // persist them raw. Fail-closed is not applicable (pure function, no
+      // I/O dependency); the pattern set itself is in ./redact.
+      command_pattern: input.commandPattern ? redact(input.commandPattern) : null,
       original_tokens: originalTokens,
       compressed_tokens: compressedTokens,
       compression_ratio: ratio,
       quality_preserved: input.qualityPreserved === false ? 0 : 1,
       verified: input.verified ? 1 : 0,
-      detail,
+      detail: detail ? redact(detail) : null,
     };
 
     ensureDir();

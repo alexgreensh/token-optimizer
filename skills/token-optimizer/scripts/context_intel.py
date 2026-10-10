@@ -227,6 +227,17 @@ def _extract_decisions(text: str, store: SessionStore) -> None:
         return
 
     try:
+        # No persistence without the shared redactor: these sentences are raw
+        # tool output and may carry credentials (a decision quoting a token,
+        # a connection string, a PEM line). If the redactor is missing or
+        # refuses (broken custom pattern config), store nothing rather than
+        # persist text the org rules were meant to cover.
+        from credential_patterns import redact_credentials as _redact_decision
+        new_decisions = [_redact_decision(d) for d in new_decisions]
+    except Exception:
+        return
+
+    try:
         existing_raw = store.get_meta("session_decisions")
         existing = json.loads(existing_raw) if existing_raw else []
 

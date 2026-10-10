@@ -9,7 +9,7 @@ Security hardening:
   - stdin capped at 1MB
   - Archive entries capped at 5MB with truncation marker
   - Session ID sanitized against path traversal
-  - tool_use_id validated to alphanumeric + hyphens/underscores
+  - tool_use_id mapped to a safe archive key; unsafe ids hash, never traverse
 
 SOURCE OF TRUTH for _sanitize_session_id: session_store.py.
 SOURCE OF TRUTH for read_stdin_hook_input: hook_io.py.
@@ -28,6 +28,7 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -197,6 +198,24 @@ def _chmod_private_file(path: Path) -> None:
 
 def _sanitize_session_id(sid: str | None) -> str:
     return sanitize_sid(sid or "")
+
+
+_ARCHIVE_KEY_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
+def _safe_archive_key(tool_use_id: str) -> str:
+    """Filesystem-safe archive key for a tool_use_id.
+
+    Ids outside [a-zA-Z0-9_-] (+, space, /, ., ') map to a deterministic digest
+    instead of being skipped — the archive still lands, expand's own
+    [a-zA-Z0-9_-]+ key validation accepts the digest, and no raw id ever
+    reaches a path, so traversal is impossible by construction.
+    """
+    if _ARCHIVE_KEY_RE.match(tool_use_id):
+        return tool_use_id
+    digest = hashlib.sha256(
+        tool_use_id.encode("utf-8", errors="replace")).hexdigest()[:24]
+    return f"h{digest}"
 
 
 
@@ -1028,7 +1047,9 @@ def build_archive_pointer(preview: str, original_chars: int, key: str) -> str:
     return (
         f"{preview}\n\n"
         f"[Full result archived ({original_chars:,} chars) — saved to disk, not lost.\n"
-        f"{_expand_instruction(key)}]"
+        # The closing bracket sits on its own line so a line-copy of the
+        # command never picks it up (the stale "expand <id>]" copy failed).
+        f"{_expand_instruction(key)}\n]"
     )
 
 
@@ -1135,6 +1156,67 @@ _DETECT_HEAD_CHARS = 16_384    # classify line type from the head slice, not the
 _PATHS_SAMPLE_LINES = 10_000   # lines sampled for the path preview
 
 
+def _is_extend_char(ch: str) -> bool:
+    """True when ``ch`` continues the grapheme cluster of the char before it:
+    combining marks, variation selectors, emoji modifiers, tag chars."""
+    if not ch:
+        return False
+    if unicodedata.combining(ch) or unicodedata.category(ch) in ("Mn", "Mc", "Me"):
+        return True
+    cp = ord(ch)
+    return (
+        0xFE00 <= cp <= 0xFE0F            # variation selectors
+        or 0xE0100 <= cp <= 0xE01EF       # supplementary variation selectors
+        or 0x1F3FB <= cp <= 0x1F3FF       # emoji modifiers (skin tone)
+        or 0xE0020 <= cp <= 0xE007F       # tag chars (subdivision flags)
+    )
+
+
+def _is_regional_indicator(ch: str) -> bool:
+    return bool(ch) and 0x1F1E6 <= ord(ch) <= 0x1F1FF
+
+
+def _breaks_cluster(text: str, end: int) -> bool:
+    """True when cutting ``text`` at ``end`` lands inside a grapheme cluster.
+
+    Covers the common invisible-joiner cases without a dependency: a ZWJ next
+    to the cut (the sequence is one cluster — backing off removes the whole
+    partial emoji rather than rendering a different one), an extend char right
+    after the cut (combining mark, modifier, selector, tag), and an unpaired
+    regional indicator at the tail (half a flag).
+    """
+    prev = text[end - 1]
+    nxt = text[end] if end < len(text) else ""
+    if prev == "\u200d" or nxt == "\u200d":
+        return True
+    if _is_extend_char(nxt):
+        return True
+    if _is_regional_indicator(prev):
+        run = 0
+        i = end - 1
+        while i >= 0 and _is_regional_indicator(text[i]):
+            run += 1
+            i -= 1
+        if run % 2 == 1:
+            return True
+    return False
+
+
+def _preview_slice(text: str, limit: int = _ARCHIVE_PREVIEW_SIZE) -> str:
+    """``text[:limit]`` backed off to a grapheme-cluster boundary.
+
+    A raw codepoint slice can end mid-cluster — a ZWJ sequence cut in two
+    renders a DIFFERENT emoji than the archived one, a combining mark left at
+    the tail attaches to the footer, an odd regional indicator shows half a
+    flag. Walk the cut back while it would split a cluster; a text made of one
+    giant cluster degrades to an empty preview (the pointer still recovers).
+    """
+    end = min(limit, len(text))
+    while end > 0 and _breaks_cluster(text, end):
+        end -= 1
+    return text[:end]
+
+
 def _detect_output_type(text: str) -> str:
     stripped = text.strip()
     if stripped.startswith("{") or stripped.startswith("["):
@@ -1164,7 +1246,7 @@ def _compress_mcp_preview(text: str, output_type: str) -> str:
         return _compress_mcp_paths(text)
     if output_type == "table":
         return _compress_mcp_table(text)
-    return text[:_ARCHIVE_PREVIEW_SIZE]
+    return _preview_slice(text)
 
 
 # Value-preserving columnar compression thresholds.
@@ -1230,7 +1312,7 @@ def _compress_mcp_json(text: str) -> str:
     try:
         data = json.loads(text[:500_000])
     except (json.JSONDecodeError, RecursionError):
-        return text[:_ARCHIVE_PREVIEW_SIZE]
+        return _preview_slice(text)
 
     # U3: value-preserving columnar path for homogeneous arrays-of-dicts.
     # Keeps values usable inline so the model rarely needs a full re-expand;
@@ -1269,7 +1351,7 @@ def _compress_mcp_json(text: str) -> str:
             parts.append(f"  ... ({len(data) - 5} more items)")
 
     result = "\n".join(parts)
-    return result[:_ARCHIVE_PREVIEW_SIZE] if len(result) > _ARCHIVE_PREVIEW_SIZE else result
+    return _preview_slice(result) if len(result) > _ARCHIVE_PREVIEW_SIZE else result
 
 
 def _compress_mcp_paths(text: str) -> str:
@@ -1298,7 +1380,7 @@ def _compress_mcp_paths(text: str) -> str:
         parts.append(f"  ... ({len(dirs) - 10} more directories)")
 
     result = "\n".join(parts)
-    return result[:_ARCHIVE_PREVIEW_SIZE] if len(result) > _ARCHIVE_PREVIEW_SIZE else result
+    return _preview_slice(result) if len(result) > _ARCHIVE_PREVIEW_SIZE else result
 
 
 def _compress_mcp_table(text: str) -> str:
@@ -1308,7 +1390,7 @@ def _compress_mcp_table(text: str) -> str:
     result = header + data[:10]
     if len(data) > 10:
         result.append(f"... ({len(data) - 10} more rows, {len(data)} total)")
-    return "\n".join(result)[:_ARCHIVE_PREVIEW_SIZE]
+    return _preview_slice("\n".join(result))
 
 
 # ---------------------------------------------------------------------------
@@ -1358,11 +1440,16 @@ def archive_result(quiet: bool = False) -> None:
             print("[Tool Archive] Missing tool_use_id or session_id, skipping.", file=sys.stderr)
         return
 
-    # Sanitize tool_use_id
-    if not re.match(r'^[a-zA-Z0-9_-]+$', tool_use_id):
-        if not quiet:
-            print("[Tool Archive] Invalid tool_use_id, skipping", file=sys.stderr)
-        return
+    # Map tool_use_id to a filesystem-safe archive key. Unsafe characters (+,
+    # space, /, ., ') used to skip archiving entirely — the full result passed
+    # through uncompressed with no expand path and nothing on disk. A
+    # deterministic digest keeps the archive, satisfies expand's own key
+    # validation, and makes path traversal impossible by construction.
+    raw_tool_use_id = tool_use_id
+    tool_use_id = _safe_archive_key(tool_use_id)
+    if tool_use_id != raw_tool_use_id and not quiet:
+        print(f"[Tool Archive] tool_use_id {raw_tool_use_id!r} has unsafe "
+              f"characters; archived under key {tool_use_id}", file=sys.stderr)
 
     now = datetime.now(timezone.utc)
     truncated = original_char_count > _ARCHIVE_MAX_SIZE
@@ -1412,6 +1499,13 @@ def archive_result(quiet: bool = False) -> None:
         "timestamp": now.isoformat(),
         "archived_from": "PostToolUse",
     }
+    if raw_tool_use_id != tool_use_id:
+        # Traceability: the key is the safe digest; keep the host's id readable
+        # (redacted — it is caller text) for debugging joins.
+        try:
+            meta["tool_use_id_raw"] = _redact_credentials(raw_tool_use_id)
+        except Exception:
+            meta["tool_use_id_raw"] = "<untrusted>"
 
     # Redact credential patterns before writing to disk.
     # Performed on the (possibly truncated) response so no plaintext secrets
@@ -1527,7 +1621,7 @@ def archive_result(quiet: bool = False) -> None:
             output_hash=output_hash,
             output_chars=char_count,
             output_tokens_est=token_est,
-            compressed_preview=safe_response[:1500],
+            compressed_preview=_preview_slice(safe_response),
             source_file_path=lineage_source_file[:500] if lineage_source_file else None,
             language=lineage_language,
             archived_from="PostToolUse",
@@ -1564,12 +1658,12 @@ def archive_result(quiet: bool = False) -> None:
         if original_char_count > _ARCHIVE_MAX_SIZE:
             replacement = preview + (
                 f"\n\n[Full result archived ({original_char_count:,} chars{suffix}, truncated to 5MB) — "
-                f"saved to disk, not lost.\n{_expand_instruction(tool_use_id, tool_name)}]"
+                f"saved to disk, not lost.\n{_expand_instruction(tool_use_id, tool_name)}\n]"
             )
         else:
             replacement = preview + (
                 f"\n\n[Full result archived ({char_count:,} chars{suffix}) — saved to disk, not lost.\n"
-                f"{_expand_instruction(tool_use_id, tool_name)}]"
+                f"{_expand_instruction(tool_use_id, tool_name)}\n]"
             )
         original_tokens = int(original_char_count / CODE_CHARS_PER_TOKEN)
         replacement_tokens = int(len(replacement) / CODE_CHARS_PER_TOKEN)

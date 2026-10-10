@@ -108,6 +108,90 @@
       "input": ["Refactor the key-value store; token budget is 4000, page=2, begin the private review."],
       "absent": [],
       "present": ["Refactor the key-value store; token budget is 4000, page=2, begin the private review."]
+    },
+    {
+      "name": "jwt",
+      "input": ["auth header ", "eyJ", "QWxhZGRpbjpvcGVuIHNlc2FtZQ", ".", "c2VjcmV0c2lnbmF0dXJl", ".", "dGhpcmRzZWdtZW50aGVyZQ", " end"],
+      "absent": ["QWxhZGRpbjpvcGVu", "c2VjcmV0c2lnbmF0dXJl", "dGhpcmRzZWdtZW50"],
+      "present": ["auth header ", " end"]
+    },
+    {
+      "name": "stripe-live-key",
+      "input": ["pay with ", "sk_live_", "4eC39HqLyjWDarjtT1zdp7dc", " now"],
+      "absent": ["sk_live_4eC39HqL", "4eC39HqLyjWD"],
+      "present": ["pay with ", " now"]
+    },
+    {
+      "name": "stripe-restricted-key",
+      "input": ["pay with ", "rk_live_", "8fD50IrMzkEBsjuU2yep8ed9x", " now"],
+      "absent": ["rk_live_8fD50IrM", "8fD50IrMzkEB"],
+      "present": ["pay with ", " now"]
+    },
+    {
+      "name": "gitlab-token",
+      "input": ["clone token ", "glpat-", "AbCdEfGhIjKlMnOpQrSt", " end"],
+      "absent": ["AbCdEfGhIjKlMnOpQrSt", "glpat-"],
+      "present": ["clone token ", " end"]
+    },
+    {
+      "name": "slack-short-token",
+      "input": ["send ", "xoxb-12345-abcde", " now"],
+      "absent": ["xoxb-12345-abcde"],
+      "present": ["send ", " now"]
+    },
+    {
+      "name": "url-sessionid-param",
+      "input": ["GET https://example.com/a?sessionid=", "ZZZSESSID123", "&page=2"],
+      "absent": ["ZZZSESSID123"],
+      "present": ["?sessionid=", "&page=2"]
+    },
+    {
+      "name": "url-session-param",
+      "input": ["GET https://example.com/a?session=", "SESSVALUE77", "&page=2"],
+      "absent": ["SESSVALUE77"],
+      "present": ["?session=", "&page=2"]
+    },
+    {
+      "name": "url-id-token-param",
+      "input": ["GET https://example.com/a?id_token=", "IDTOKVALUE9", "&page=2"],
+      "absent": ["IDTOKVALUE9"],
+      "present": ["?id_token=", "&page=2"]
+    },
+    {
+      "name": "mysql-inline-password-flag",
+      "input": ["run mysql -u root -p", "Sup3rSecretPw", " db now"],
+      "absent": ["Sup3rSecretPw"],
+      "present": ["mysql -u root -p", " db now"]
+    },
+    {
+      "name": "sshpass-password-flag",
+      "input": ["deploy ", "sshpass -p ", "Hunter2Pass", " ssh host"],
+      "absent": ["Hunter2Pass"],
+      "present": ["sshpass -p ", " ssh host"]
+    },
+    {
+      "name": "redis-cli-auth-flag",
+      "input": ["ping ", "redis-cli -a ", "RedisSecretPw", " now"],
+      "absent": ["RedisSecretPw"],
+      "present": ["redis-cli -a ", " now"]
+    },
+    {
+      "name": "aws-secret-context-key",
+      "input": ["cfg aws_secret_access_key = \"", "KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK", "\" tail"],
+      "absent": ["KKKKKKKKKKKKKKKKKKKK"],
+      "present": ["aws_secret_access_key", "\" tail"]
+    },
+    {
+      "name": "db-env-password-quoted",
+      "input": ["export PGPASSWORD=\"", "Qu0t3dSecrettt", "\" run"],
+      "absent": ["Qu0t3dSecrettt"],
+      "present": ["PGPASSWORD=\"", "\" run"]
+    },
+    {
+      "name": "forged-placeholder-cannot-hide-a-secret",
+      "input": ["x ", "[CREDENTIAL REDACTED: ghp_", "Q7r8T9u0V1w2X3y4Z5a6B7c8D9e0F1g2H3i4", "] y"],
+      "absent": ["Q7r8T9u0V1w2", "ghp_Q7r8"],
+      "present": ["x ", " y"]
     }
   ]
 }

@@ -13224,14 +13224,23 @@ def _log_compression_event(feature, original_text="", compressed_text="",
         # DB boundary: command_pattern/detail can embed a file name or label
         # that carries a credential shape. Redact here so NO caller (present
         # or future) can persist them raw; on a redactor refusal the text
-        # columns go NULL while token counts still land.
+        # columns go NULL while token counts still land. feature/session_id
+        # are caller text too — a no-op on real inputs (constant feature
+        # names, host-generated ids, so joins still hold), but a tainted
+        # value can no longer reach disk verbatim.
         try:
             from credential_patterns import redact_credentials as _ce_redact
+            if feature:
+                feature = _ce_redact(feature)
+            if session_id:
+                session_id = _ce_redact(session_id)
             if command_pattern:
                 command_pattern = _ce_redact(command_pattern)
             if detail:
                 detail = _ce_redact(detail)
         except Exception:
+            feature = "unknown"
+            session_id = None
             command_pattern = None
             detail = None
 
@@ -36733,6 +36742,12 @@ def expand_archived(tool_use_id=None, session_id=None, list_all=False):
     if not tool_use_id:
         print("[Error] No tool_use_id provided. Use: expand TOOL_USE_ID or expand --list", file=sys.stderr)
         sys.exit(1)
+
+    # A verbatim copy of an old-format archive pointer ends with ']' (the
+    # closing bracket used to sit on the command line). Ids can never contain
+    # ']', so stripping one is free and the copy still retrieves the entry.
+    if tool_use_id.endswith("]"):
+        tool_use_id = tool_use_id[:-1]
 
     # Sanitize tool_use_id (same pattern as session_id)
     if not re.match(r'^[a-zA-Z0-9_-]+$', tool_use_id):

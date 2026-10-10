@@ -1043,6 +1043,15 @@ def scan_for_credentials(text: str) -> List[Tuple[str, str, int]]:
         for m in _PLACEHOLDER_RE.finditer(line):
             if m.start() > last:
                 segments.append(line[last:m.start()])
+            # A forged "[CREDENTIAL REDACTED: <real secret>]" can hide a
+            # credential in the label slot — scan the interior too. A hit whose
+            # label equals the whole interior is the placeholder's own label
+            # describing itself, never a phantom hit.
+            interior = m.group(0)[len("[CREDENTIAL REDACTED: "):-1]
+            for label, pat in ordered:
+                m2 = pat.search(interior)
+                if m2 and not (label == interior and m2.group() == interior):
+                    results.append((label, m2.group(), line_num))
             last = m.end()
         if last < len(line):
             segments.append(line[last:])
@@ -1160,10 +1169,30 @@ def redact_credentials(text: str) -> str:
         text = _redact_custom(text, state.patterns)
 
     # M-16: protect placeholders from re-matching — both the ones that were in
-    # the input and the ones the custom patterns just inserted.
+    # the input and the ones the custom patterns just inserted. The interior is
+    # a LABEL slot, not a payload slot: a forged "[CREDENTIAL REDACTED: <real
+    # secret>]" used to ride the sentinel protection verbatim into every
+    # persistence boundary. Scan each interior and replace a credential match
+    # with its label, so a legit placeholder survives unchanged (the only
+    # self-matching label is "Bearer token", which substitutes to itself) while
+    # a smuggled secret collapses to e.g. "GitHub PAT classic".
     placeholders = []
+    ordered = list(state.patterns) + CREDENTIAL_PATTERNS
+
+    def _clean_interior(ph):
+        interior = ph[len("[CREDENTIAL REDACTED: "):-1]
+        if _text_may_contain_credentials(interior):
+            for label, pat in ordered:
+                interior = pat.sub(
+                    lambda m, lbl=label: (
+                        m.group(0) if m.start() == m.end() else lbl
+                    ),
+                    interior,
+                )
+        return "[CREDENTIAL REDACTED: " + interior + "]"
+
     def _save_placeholder(m):
-        placeholders.append(m.group(0))
+        placeholders.append(_clean_interior(m.group(0)))
         return _PLACEHOLDER_SENTINEL
     if "[CREDENTIAL REDACTED:" in text:
         text = _PLACEHOLDER_RE.sub(_save_placeholder, text)

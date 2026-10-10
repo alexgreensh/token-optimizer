@@ -27227,13 +27227,22 @@ def _windows_process_names():
     return names or None
 
 
+# Image names whose parent has always exited by the time anyone looks (logon and
+# service-host roots): a chain ending here is complete, not broken.
+_WINDOWS_ANCESTRY_ROOTS = frozenset({
+    "explorer.exe", "winlogon.exe", "wininit.exe", "services.exe", "smss.exe",
+    "svchost.exe", "userinit.exe", "system",
+})
+
+
 def _windows_ancestor_pids(pid, names=None):
     """Pids of every ancestor of `pid` from the Windows process table, or None.
 
     Same walk as `_posix_ancestor_pids`, but None (not an empty set) when the table
-    is unreadable or does not contain `pid`: kill-stale must not act without proof
-    that a candidate is not the conversation it runs inside of (claude.exe -> shell
-    -> python), so "unknown" is a distinct answer from "no ancestors".
+    is unreadable, does not contain `pid`, or the chain runs into a parent pid the
+    table lacks below a system root: kill-stale must not act without proof that a
+    candidate is not the conversation it runs inside of (claude.exe -> shell ->
+    python), so "unknown" is a distinct answer from "no ancestors".
     """
     if names is None:
         names = _windows_process_names()
@@ -27243,9 +27252,18 @@ def _windows_ancestor_pids(pid, names=None):
     cur = pid
     for _ in range(64):
         entry = names.get(cur)
-        if not entry or entry[0] <= 0 or entry[0] in out:
+        if not entry:
+            # `cur` is a parent pid the table does not list: its process exited
+            # and Windows never reparents, so the link above it is gone. That is
+            # a normal end only for a system root (explorer.exe's parent,
+            # userinit.exe, is always gone). Anywhere else an ancestor such as
+            # the claude.exe this runs inside of may sit above the gap.
+            top = names.get(last)
+            return out if top and top[1] in _WINDOWS_ANCESTRY_ROOTS else None
+        if entry[0] <= 0 or entry[0] in out:
             break
         out.add(entry[0])
+        last = cur
         cur = entry[0]
     return out
 

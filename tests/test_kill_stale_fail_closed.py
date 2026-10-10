@@ -104,3 +104,40 @@ def test_kill_stale_still_terminates_when_posix_ancestry_is_readable(monkeypatch
     assert killed == [4001]  # 4000 is the conversation this command runs inside of
 
 
+# --- Finding 10c: Windows chain with a missing intermediate pid is unknown ---
+
+def test_windows_ancestor_pids_is_none_when_an_intermediate_parent_is_missing():
+    measure = _load_measure()
+    names = {9999: (9998, "python.exe"), 9998: (5000, "bash.exe"), 4000: (300, "claude.exe")}
+    assert measure._windows_ancestor_pids(9999, names=names) is None
+
+
+def test_windows_ancestor_pids_returns_the_full_chain_when_complete():
+    measure = _load_measure()
+    names = {9999: (9998, "python.exe"), 9998: (5000, "bash.exe"), 5000: (4000, "node.exe"),
+             4000: (300, "claude.exe"), 300: (0, "explorer.exe")}
+    assert measure._windows_ancestor_pids(9999, names=names) == {9998, 5000, 4000, 300}
+
+
+def test_windows_ancestor_pids_accepts_a_system_root_whose_parent_has_exited():
+    measure = _load_measure()
+    # explorer.exe's parent (userinit.exe) is always gone: that is a complete chain.
+    names = {9999: (9998, "python.exe"), 9998: (5000, "bash.exe"), 5000: (4000, "windowsterminal.exe"),
+             4000: (777, "explorer.exe")}
+    assert measure._windows_ancestor_pids(9999, names=names) == {9998, 5000, 4000, 777}
+
+
+def test_windows_ancestor_pids_is_none_when_a_non_root_has_a_vanished_parent():
+    measure = _load_measure()
+    names = {9999: (9998, "python.exe"), 9998: (777, "bash.exe")}
+    assert measure._windows_ancestor_pids(9999, names=names) is None
+
+
+def test_windows_ancestor_pids_stops_quietly_at_a_dead_root_parent():
+    measure = _load_measure()
+    # The root's parent pid (e.g. a finished launcher) is allowed to be absent:
+    # it is the end of the chain, not a gap in it.
+    names = {9999: (9998, "python.exe"), 9998: (0, "bash.exe")}
+    assert measure._windows_ancestor_pids(9999, names=names) == {9998}
+
+

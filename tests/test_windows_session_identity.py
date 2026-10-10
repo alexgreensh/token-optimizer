@@ -377,6 +377,10 @@ def test_cim_property_names_match_the_parser(monkeypatch):
 def _health_with(monkeypatch, measure, sessions):
     monkeypatch.setattr(measure, "detect_runtime", lambda: "claude")
     monkeypatch.setattr(measure, "_collect_health_data", lambda: {"running_sessions": sessions})
+    # Hermetic: these tests use made-up pids (1, 2, 9999...) but kill_stale walks the
+    # REAL process table for ancestors, whose chain always ends at pid 1. Tests that
+    # want an ancestor set their own after calling this helper.
+    monkeypatch.setattr(measure, "_posix_ancestor_pids", lambda pid: set())
 
 
 def _session(pid, identity="terminal_cli", elapsed=13 * 3600, started="Wed Jan 01 00:00:00 2020"):
@@ -766,3 +770,152 @@ def test_reused_pid_between_snapshot_and_cim_blocks_the_kill(monkeypatch):
 def test_start_time_agreement(a, b, ok):
     measure = _load_measure()
     assert measure._windows_start_times_agree(a, b) is ok
+
+
+# --- kill-stale never ends an ancestor of itself (Windows) ----------------------
+
+class _NtOs:
+    """os with name == 'nt' only for the module under test (never the real os)."""
+
+    def __init__(self, real, killed, pid, ppid):
+        self._real, self._killed, self._pid, self._ppid = real, killed, pid, ppid
+        self.name = "nt"
+
+    def getpid(self):
+        return self._pid
+
+    def getppid(self):
+        return self._ppid
+
+    def kill(self, pid, sig):
+        self._killed.append(pid)
+
+    def __getattr__(self, item):
+        return getattr(self._real, item)
+
+
+def _as_windows_host(monkeypatch, measure, table, *, pid=9999, ppid=9998):
+    """kill_stale on a pretend Windows host whose process table is `table`."""
+    killed = []
+    monkeypatch.setattr(measure, "os", _NtOs(measure.os, killed, pid, ppid))
+    monkeypatch.setattr(measure, "_windows_process_names", lambda: table)
+    monkeypatch.setattr(measure, "_posix_ancestor_pids",
+                        lambda p: pytest.fail("Windows must not consult the POSIX ps walk"))
+    _revalidates(monkeypatch, measure)
+    return killed
+
+
+# claude.exe (4000) -> bash.exe (9998) -> python.exe (9999): the command runs inside
+# the very conversation it was asked to judge, which is a GRANDPARENT, not the parent.
+CHAIN = {9999: (9998, "python.exe"), 9998: (4000, "bash.exe"), 4000: (1, "claude.exe"),
+         4001: (1, "claude.exe"), 1: (0, "explorer.exe")}
+
+
+def test_windows_kill_stale_never_kills_the_conversation_it_runs_inside_of(monkeypatch):
+    measure = _load_measure()
+    _health_with(monkeypatch, measure, [_session(4000), _session(4001)])
+    killed = _as_windows_host(monkeypatch, measure, CHAIN)
+    measure.kill_stale_sessions(threshold_hours=12)
+    assert killed == [4001]
+
+
+def test_windows_kill_stale_dry_run_does_not_offer_the_ancestor(monkeypatch, capsys):
+    measure = _load_measure()
+    _health_with(monkeypatch, measure, [_session(4000), _session(4001)])
+    killed = _as_windows_host(monkeypatch, measure, CHAIN)
+    measure.kill_stale_sessions(threshold_hours=12, dry_run=True)
+    out = capsys.readouterr().out
+    assert killed == [] and "PID 4001 " in out and "PID 4000 " not in out
+
+
+def test_windows_kill_stale_refuses_when_the_process_table_is_unreadable(monkeypatch, capsys):
+    """No table means no proof that a candidate is not an ancestor: fail closed."""
+    measure = _load_measure()
+    _health_with(monkeypatch, measure, [_session(4000), _session(4001)])
+    killed = _as_windows_host(monkeypatch, measure, None)
+    measure.kill_stale_sessions(threshold_hours=12)
+    assert killed == []
+    assert "ancestry" in capsys.readouterr().out.lower()
+
+
+def test_windows_kill_stale_refuses_when_its_own_pid_is_not_in_the_table(monkeypatch):
+    measure = _load_measure()
+    _health_with(monkeypatch, measure, [_session(4000), _session(4001)])
+    killed = _as_windows_host(monkeypatch, measure, {4000: (1, "claude.exe"), 4001: (1, "claude.exe")})
+    measure.kill_stale_sessions(threshold_hours=12)
+    assert killed == []
+
+
+def test_windows_ancestor_walk_follows_the_parent_chain_and_survives_cycles():
+    measure = _load_measure()
+    assert measure._windows_ancestor_pids(9999, CHAIN) == {9998, 4000, 1}
+    loop = {5: (6, "a.exe"), 6: (7, "b.exe"), 7: (5, "c.exe")}
+    assert measure._windows_ancestor_pids(5, loop) == {6, 7, 5}
+    assert measure._windows_ancestor_pids(9999, None) is None
+    assert measure._windows_ancestor_pids(1234, CHAIN) is None  # self not in table
+
+
+# --- culture-invariant dates ------------------------------------------------------
+
+def test_every_custom_powershell_date_format_names_the_invariant_culture():
+    """`:` in a .NET custom format is the CULTURE's time separator and `yyyy` follows
+    the culture's calendar (th-TH prints 2569). Python's fromisoformat then rejects or
+    misreads the value and every session ends up UNVERIFIED. Any custom pattern must be
+    formatted with InvariantCulture (or use the 'o' round-trip specifier)."""
+    import re
+
+    src = MEASURE_PATH.read_text(encoding="utf-8")
+    custom = re.findall(r"ToString\('(yyyy[^']*)'([^)]*)\)", src)
+    assert len(custom) >= 2, "expected the two Windows collectors' date columns"
+    for pattern, rest in custom:
+        assert "InvariantCulture" in rest, f"culture-sensitive PowerShell date format: {pattern!r}"
+
+
+def test_collectors_send_invariant_date_formatting_to_powershell(monkeypatch):
+    measure = _load_measure()
+    calls = _install_fake_powershell(monkeypatch, measure, [
+        dict(pid=500, ppid=SHELL_PID, name="claude", path=CLI, cmdline=f'"{CLI}"')])
+    measure._collect_windows_claude_sessions()
+    dated = [c for c, _ in calls if "ToString('yyyy" in c]
+    assert len(dated) == 2
+    assert all("CultureInfo]::InvariantCulture" in c for c in dated)
+
+
+DOTTED = "2020-01-01T00.00.00Z"
+
+
+def test_dotted_time_separator_is_parsed_like_the_colon_form():
+    measure = _load_measure()
+    a = measure._parse_iso_process_datetime(DOTTED)
+    b = measure._parse_iso_process_datetime(OLD)
+    assert a is not None and b is not None
+    assert abs(a["elapsed_seconds"] - b["elapsed_seconds"]) <= 2
+    assert measure._parse_iso_process_datetime("2026-10-10T15.04.05Z") is not None
+
+
+def test_dotted_time_separator_still_agrees_across_the_two_queries():
+    measure = _load_measure()
+    assert measure._windows_start_times_agree(DOTTED, OLD) is True
+    assert measure._windows_start_times_agree(DOTTED, DOTTED) is True
+    assert measure._windows_start_times_agree(DOTTED, "2020-01-01T00:00:09Z") is False
+    assert measure._windows_start_times_agree(DOTTED, "garbage") is False
+
+
+def test_collector_with_dotted_locale_output_is_not_unverified(monkeypatch):
+    measure = _load_measure()
+    procs = [dict(pid=500, ppid=SHELL_PID, name="claude", path=CLI, cmdline=f'"{CLI}"',
+                  creation=DOTTED)]
+    _install_fake_powershell(monkeypatch, measure, procs)
+    # Get-Process side also localised: patch the fixture's StartTime column.
+    real_run = measure.subprocess.run
+
+    def dotted_run(argv, **kw):
+        res = real_run(argv, **kw)
+        if "Select-Object Id, ProcessName" in argv[-1]:
+            res.stdout = res.stdout.replace(OLD, DOTTED)
+        return res
+
+    monkeypatch.setattr(measure.subprocess, "run", dotted_run)
+    [s] = measure._collect_windows_claude_sessions()
+    assert s["identity"] == "terminal_cli"
+    assert s["elapsed_seconds"] > 86400 * 365

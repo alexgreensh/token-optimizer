@@ -63,6 +63,8 @@ SECRETS = [
     _j("sk_live_", _LETTERS),
     _j("rk_live_", _LETTERS),
     _j("hf_", "a" * 34),
+    _j("glpat-", _ALNUM),
+    _j("glrt-", _ALNUM),
     _j("Authorization: Bearer ", "abcdefghijklmnopqrstuvwxyz"),
     _j("AIza", "SyA-", _ALNUM[:35]),
     _j("ya29.", _ALNUM),

@@ -209,3 +209,26 @@ def test_windows_shaped_hint_is_recognized(monkeypatch):
     assert recovery_output.is_expand_command(hint)
     assert recovery_output.is_expand_command(f'python3 {win} expand original')
     assert not recovery_output.is_expand_command(hint + ' | cat')
+
+
+@pytest.mark.parametrize('tool', ['Bash', 'PowerShell'])
+def test_expand_through_either_shell_tool_is_recovery_output(tool):
+    """PowerShell is a first-class shell tool in the archive matcher; its `expand`
+    output is the stored original coming back and must not be archived again."""
+    sys.path.insert(0, str(SCRIPTS))
+    from recovery_output import is_recovery_output
+    from refetch_fingerprint import expand_command
+    assert is_recovery_output(tool, {'command': expand_command('original')})
+    assert not is_recovery_output(tool, {'command': expand_command('original') + '; echo more'})
+    assert not is_recovery_output(tool, {'command': 'dir'})
+    assert not is_recovery_output('Read', {'command': expand_command('original')})
+
+
+@pytest.mark.parametrize('tool', ['Bash', 'PowerShell'])
+def test_expand_via_shell_tool_is_not_archived_again(tmp_path, tool):
+    import shlex
+    command = f'{shlex.quote(sys.executable)} {shlex.quote(str(SCRIPTS / "measure.py"))} expand original'
+    out = run_hook(tmp_path, 'archive_result.py', {'tool_name': tool, 'session_id': 's',
+        'tool_use_id': 't1', 'tool_input': {'command': command}, 'tool_response': {'stdout': BODY}})
+    assert not out.strip(), out
+    assert not list(tmp_path.rglob('manifest.jsonl'))

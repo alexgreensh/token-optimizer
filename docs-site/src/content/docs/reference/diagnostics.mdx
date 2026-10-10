@@ -83,7 +83,7 @@ python3 measure.py git-context --json
 
 ## Cleaning up
 
-`kill-stale` ends sessions older than a threshold that are still marked running. The default threshold is 12 hours. It is dry-run capable so you can see what would be killed first.
+`kill-stale` ends terminal sessions (processes positively identified as a CLI attached to a terminal) that have been running longer than a threshold. Sessions hosted by the desktop app, an IDE or the SDK, and sessions whose identity could not be verified, are never ended. The default threshold is 12 hours. It is dry-run capable so you can see what would be killed first.
 
 ```bash
 python3 measure.py kill-stale --dry-run

@@ -753,6 +753,11 @@ def _health_with(monkeypatch, measure, sessions):
     monkeypatch.setattr(measure, "_collect_health_data", lambda: {"running_sessions": sessions})
     monkeypatch.setattr(measure.os, "getpid", lambda: 9999)
     monkeypatch.setattr(measure.os, "getppid", lambda: 9998)
+    # Hermetic: fixture pids (1, 2, 9999...) are made up, but kill_stale walks the
+    # REAL process table for ancestors. On a host where pid 9999 exists, or where
+    # the chain reaches pid 1 (it always does), the fixture "session" 1 would be
+    # excluded as "my ancestor". Tests that want an ancestor set their own.
+    monkeypatch.setattr(measure, "_posix_ancestor_pids", lambda pid: set())
 
 
 def _fresh(monkeypatch, measure, sessions):
@@ -1291,7 +1296,7 @@ def test_kill_stale_default_lists_orphans_but_never_terminates_them(monkeypatch,
     out = capsys.readouterr().out
     assert killed == [(500, _signal.SIGTERM)]
     assert "1 orphaned session" in out
-    assert "python3 measure.py kill-stale --include-orphans --hours 12" in out
+    assert f"{measure._measure_cli()} kill-stale --include-orphans --hours 12" in out
 
 
 def test_kill_stale_default_with_only_orphans_kills_nothing_and_prints_command(monkeypatch, capsys):
@@ -1304,7 +1309,7 @@ def test_kill_stale_default_with_only_orphans_kills_nothing_and_prints_command(m
     measure.kill_stale_sessions(threshold_hours=6)
     out = capsys.readouterr().out
     assert "2 orphaned sessions" in out
-    assert "python3 measure.py kill-stale --include-orphans --hours 6" in out
+    assert f"{measure._measure_cli()} kill-stale --include-orphans --hours 6" in out
     assert "No terminable stale sessions" in out
 
 

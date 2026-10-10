@@ -32,17 +32,23 @@ _SAFE_PREFIXES="/usr/bin /usr/local/bin /opt/homebrew/bin /opt/homebrew/opt /hom
 # `cd -P` resolves every symlink level portably (no realpath/readlink -f, which
 # are absent or inconsistent on older macOS and MSYS). The old $(cd ...; pwd -P)
 # form forked a bash subshell per call -- a whole process each on MSYS -- so
-# this runs the builtin `cd` in a plain if-block (no subshell), preserving
-# OLDPWD around the jump.
+# this runs the builtin `cd` in a plain if-block (no subshell). That makes the
+# jump visible to the whole launcher, and the launcher then `exec`s the hook
+# interpreter, so the caller's state is put back before returning: the working
+# directory (the hook must run in the project the host launched it from, not in
+# the plugin's hooks/ dir), $PWD (logical, as the host had it) and OLDPWD
+# (restored, or left unset if it was unset -- never exported as an empty string).
 _canonicalize_dir() {
-    local _oldpwd=${OLDPWD:-}
+    local _start=$PWD _had_old=${OLDPWD+x} _oldpwd=${OLDPWD:-} _rc=1
     if CDPATH='' cd -P -- "$1" 2>/dev/null; then
         _CANON_DIR=$PWD
-        OLDPWD=$_oldpwd
-        return 0
+        _rc=0
+        # Best effort: if the start dir vanished or lost +x there is nothing
+        # better to restore, and the launcher must still never abort (set -e).
+        if [ -n "$_start" ]; then CDPATH='' cd -- "$_start" 2>/dev/null || :; fi
     fi
-    OLDPWD=$_oldpwd
-    return 1
+    if [ -n "$_had_old" ]; then OLDPWD=$_oldpwd; else unset OLDPWD; fi
+    return "$_rc"
 }
 
 # Canonicalize a file path (resolve symlinks). exec follows symlinks, so a

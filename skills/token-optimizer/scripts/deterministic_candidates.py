@@ -43,7 +43,10 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-ALGO_VERSION = 2
+# Part of the cache key. Bump when the SHAPE of stored examples changes, so a cache
+# written by an older algorithm (possibly holding an example the newer scrubbers would
+# have blanked) is never served again. 3: command-shape secret scrubbers (review F4).
+ALGO_VERSION = 3
 BASIS = "measured on your transcripts"
 USED_NOT_SAVED_NOTE = "Moving a step to code removes those turns; the saving is at most this much."
 PROGRESS_MIN_INTERVAL_S = 2.0
@@ -108,9 +111,66 @@ _HEREDOC_RE = re.compile(r"<<-?\s*['\"]?\w+")
 _QUOTED_RE = re.compile(r'"(?:[^"\\]|\\.)*"|\'[^\']*\'')
 _ENV_SECRET_RE = re.compile(
     r"\b([A-Za-z][A-Za-z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|CREDENTIAL)[A-Za-z0-9_]*)"
-    r"=(?:\"[^\"]*\"|'[^']*'|\S+)",
+    r"=(?:\[CREDENTIAL REDACTED[^\]]*\]|\"[^\"]*\"|'[^']*'|\S+)",
     re.I,
 )
+
+# Secrets that are not env assignments and not a known token shape: they sit in the
+# command's own syntax. The credential redactor cannot know them, so the shaping
+# step blanks them (each pattern notes what it deliberately leaves alone).
+_ARG = r"(?:\"[^\"]*\"|'[^']*'|[^\s\"']+)"
+# curl -u user:pass, --user user:pass, --proxy-user ... (value must contain a colon,
+# and not be a bare uid:gid like docker's `-u 1000:1000`)
+_USER_FLAG_RE = re.compile(r"(?<![\w-])(-u|-U|--user|--proxy-user)(\s+|=)?(" + _ARG + ")")
+_SECRET_FLAG_RE = re.compile(
+    r"(?<![\w-])(--(?:password|passwd|pass|pwd|passphrase|secret|client-secret|token|auth-token|"
+    r"access-token|api-key|apikey|api_key))(\s+|=)(?!-)(" + _ARG + ")",
+    re.I,
+)
+# scheme://user:pass@host (any scheme: ftp, ssh, amqp, https...). Greedy to the last
+# `@` before the path, so a password containing `@` is covered whole.
+_URL_USERINFO_RE = re.compile(r"(://)[^\s/\"':@]+:[^\s/\"']*@")
+# user:pass@host with no scheme (rsync, scp, git remotes). Docker digest refs
+# (image:tag@sha256:...) and Windows paths are not credentials.
+_BARE_USERINFO_RE = re.compile(r"(?<![\w/@.:+\\-])[\w.+-]+:[^\s/\\@\"':]+@(?!sha\d+:)(?=[A-Za-z0-9])")
+# echo/printf <anything> | cmd : the piped argument is, in practice, the secret that
+# the next command reads from stdin. Flags (-n, -e) survive; quoted args may hold `|`.
+_PIPED_ECHO_RE = re.compile(
+    r"(?<![\w/.-])(echo|printf)(\s+(?:-[A-Za-z]+\s+)*)"
+    r"((?:\"[^\"]*\"|'[^']*'|[^|;&\n\"'])+?)(\s*)\|(?!\|)"
+)
+# Windows: `net use [dev:] \\srv\share [password] [/user:name]` and `... /user:name password`,
+# `cmdkey /pass:...`. `*` (prompt for the password) is not a secret.
+_NET_USE_PW_BEFORE_RE = re.compile(r"(\bnet\s+use\s+(?:[A-Za-z]:\s+|\*\s+)?\\\\\S+\s+)(?![/*-])(\S+)(?=\s|$)", re.I)
+_NET_USE_PW_AFTER_RE = re.compile(r"(\bnet\s+use\b[^|;&\n]*?/user:\S+\s+)(?![/*-])(\S+)", re.I)
+_WIN_USER_RE = re.compile(r"(/user:)\S+", re.I)
+_WIN_PASS_RE = re.compile(r"(/(?:pass|password|passwd|pwd):)\S+", re.I)
+# Email addresses identify a person. `git@host` (the ssh remote user) is not one.
+_EMAIL_RE = re.compile(r"(?<![\w.+-])(?!git@)[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\b")
+
+
+def _user_flag_sub(m: "re.Match[str]") -> str:
+    value = m.group(3).strip("\"'")
+    if ":" not in value or re.fullmatch(r"\d+:\d+", value):
+        return m.group(0)
+    return f"{m.group(1)}{m.group(2) or ''}<creds>"
+
+
+def scrub_command_secrets(text: str) -> str:
+    """Blank credentials and personal identifiers that live in a command's syntax."""
+    text = _URL_USERINFO_RE.sub(r"\1<creds>@", text)
+    text = _PIPED_ECHO_RE.sub(r"\1\2<arg>\4|", text)
+    text = _USER_FLAG_RE.sub(_user_flag_sub, text)
+    text = _SECRET_FLAG_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}<secret>", text)
+    text = _NET_USE_PW_BEFORE_RE.sub(r"\1<secret>", text)
+    text = _NET_USE_PW_AFTER_RE.sub(r"\1<secret>", text)
+    text = _WIN_PASS_RE.sub(r"\1<secret>", text)
+    text = _WIN_USER_RE.sub(r"\1<user>", text)
+    text = _BARE_USERINFO_RE.sub("<creds>@", text)
+    text = _EMAIL_RE.sub("<email>", text)
+    return text
+
+
 _WIN_PATH_RE = re.compile(
     r"(?<![\w\\])(?:[A-Za-z]:[\\/]+|\\{2,}[^\s\\/\"'|;&<>()]+[\\/]+)(?:[^\s\\/\"'|;&<>()]+[\\/]+)*[^\s\\/\"'|;&<>()]*"
 )
@@ -140,6 +200,7 @@ def _blank_literals(text: str, max_chars: int) -> str:
     text = text[:max_chars * 4]
     text = _WS_RE.sub(" ", text).strip()
     text = _ENV_SECRET_RE.sub(lambda mm: f"{mm.group(1)}=<secret>", text)
+    text = scrub_command_secrets(text)
     text = _QUOTED_RE.sub(lambda mm: "<str:long>" if len(mm.group(0)) > 80 else "<str>", text)
     text = _WIN_PATH_RE.sub(_path_to_placeholder, text)
     text = _POSIX_PATH_RE.sub(_path_to_placeholder, text)
@@ -285,7 +346,7 @@ def inline_script_fingerprint(body: str) -> str:
 
 
 def inline_script_snippet(body: str) -> str:
-    flat = _WS_RE.sub(" ", body).strip()
+    flat = scrub_command_secrets(_WS_RE.sub(" ", body).strip())
     return flat if len(flat) <= INLINE_SNIPPET_CHARS else flat[:INLINE_SNIPPET_CHARS].rstrip() + "..."
 
 

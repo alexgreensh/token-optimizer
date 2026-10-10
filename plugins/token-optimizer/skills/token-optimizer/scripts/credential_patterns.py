@@ -34,6 +34,11 @@ CREDENTIAL_PATTERNS: List[Tuple[str, "re.Pattern[str]"]] = [
     ("Stripe live key",         re.compile(r"sk_live_[a-zA-Z0-9]{24,}")),
     ("Stripe restricted key",   re.compile(r"rk_live_[a-zA-Z0-9]{24,}")),
     ("HuggingFace token",       re.compile(r"hf_[a-zA-Z0-9]{34}")),
+    # GitLab: personal/project/group access (glpat), deploy (gldt), runner (glrt),
+    # CI build (glcbt), pipeline trigger (glptt), feed (glft), incoming mail (glimt),
+    # agent for Kubernetes (glagent), SCIM (glsoat). Newer "routable" tokens carry
+    # dots (glpat-<body>.01.<suffix>), so the body class includes ".".
+    ("GitLab token",            re.compile(r"gl(?:pat|dt|rt|cbt|ptt|ft|imt|agent|soat)-[a-zA-Z0-9_.\-]{20,}")),
     # M-16: negative lookahead so the Bearer pattern doesn't re-match text
     # inside its own redaction placeholder [CREDENTIAL REDACTED: Bearer token].
     # The lookahead checks the text BEFORE Bearer, but Python regex doesn't
@@ -136,7 +141,7 @@ PATTERNS_ONLY: List["re.Pattern[str]"] = [pat for _, pat in CREDENTIAL_PATTERNS]
 #
 # The prefix list is derived from the literal prefixes of each pattern:
 # "AKIA", "sk-", "ghp_", "gho_", "ghs_", "ghr_", "github_pat_", "npm_",
-# "xoxb-", "xoxp-", "xoxa-", "sk_live_", "rk_live_", "hf_", "Bearer",
+# "xoxb-", "xoxp-", "xoxa-", "sk_live_", "rk_live_", "hf_", "gl*-", "Bearer",
 # "AIza", "ya29.", "eyJ", "-----BEGIN", and the URL scheme prefixes for
 # database/basic-auth URIs. The URL auth param pattern has no single
 # literal prefix (it matches parameter names), so we check for "=" as a
@@ -145,6 +150,7 @@ PATTERNS_ONLY: List["re.Pattern[str]"] = [pat for _, pat in CREDENTIAL_PATTERNS]
 _CREDENTIAL_PREFIXES: Tuple[str, ...] = (
     "AKIA", "sk-", "ghp_", "gho_", "ghs_", "ghr_", "github_pat_",
     "npm_", "xoxb-", "xoxp-", "xoxa-", "sk_live_", "rk_live_", "hf_",
+    "glpat-", "gldt-", "glrt-", "glcbt-", "glptt-", "glft-", "glimt-", "glagent-", "glsoat-",  # GitLab
     "Bearer", "bearer", "AIza", "ya29.", "eyJ",
     "-----BEGIN",  # PEM private key
     "postgres://", "postgresql://", "mysql://", "mongodb://",

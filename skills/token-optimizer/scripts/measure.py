@@ -6148,6 +6148,17 @@ def generate_dashboard(coord_path):
     return str(out_path)
 
 
+def _measure_cli(*args):
+    """The command that runs this script, for hints a user will paste into a shell.
+
+    Always the resolved script path (quoted): a bare `python3 measure.py` only works
+    from inside the scripts directory, which is where nobody is.
+    """
+    parts = ["python3", shlex.quote(str(Path(__file__).resolve()))]
+    parts.extend(args)
+    return " ".join(parts)
+
+
 def _display_path(absolute_path):
     """Replace the user's home directory with ~ for display purposes.
 
@@ -25730,13 +25741,30 @@ def _parse_wmi_datetime(wmi_ts):
     }
 
 
+# A culture whose time separator is "." renders 15:04:05 as 15.04.05 when a
+# .NET custom format reaches ToString() without InvariantCulture. The collectors
+# now pin the invariant culture; this keeps the parser side tolerant too, so an
+# older cached or third-party value degrades to a correct time, not to a session
+# silently marked UNVERIFIED.
+_PS_DOTTED_TIME_RE = re.compile(r"(?<=[T ])(\d{2})\.(\d{2})\.(\d{2})(?=$|[Zz+\-.,])")
+
+
+def _normalize_ps_iso(iso_ts):
+    """Return a string datetime.fromisoformat accepts, or "" when empty."""
+    s = (iso_ts or "").strip()
+    if not s:
+        return ""
+    s = _PS_DOTTED_TIME_RE.sub(r"\1:\2:\3", s)
+    if s.endswith(("Z", "z")):
+        s = s[:-1] + "+00:00"
+    return s
+
+
 def _parse_iso_process_datetime(iso_ts):
     """Parse an ISO 8601 timestamp from PowerShell to elapsed seconds."""
     if not iso_ts:
         return None
-    s = iso_ts.strip()
-    if s.endswith("Z"):
-        s = s[:-1] + "+00:00"
+    s = _normalize_ps_iso(iso_ts)
     try:
         started = datetime.fromisoformat(s)
     except (ValueError, TypeError):
@@ -25822,8 +25850,8 @@ def _windows_start_times_agree(process_start, cim_creation, tolerance_seconds=2)
     unparseable values on either side are not agreement.
     """
     try:
-        a = datetime.fromisoformat(process_start.strip().replace("Z", "+00:00"))
-        b = datetime.fromisoformat(cim_creation.strip().replace("Z", "+00:00"))
+        a = datetime.fromisoformat(_normalize_ps_iso(process_start))
+        b = datetime.fromisoformat(_normalize_ps_iso(cim_creation))
         return abs((a - b).total_seconds()) <= tolerance_seconds
     except (ValueError, TypeError, AttributeError):
         return False
@@ -25845,7 +25873,7 @@ def _windows_cim_process_details():
         "Get-CimInstance Win32_Process -Filter 'Name LIKE ''claude%''' "
         "-ErrorAction SilentlyContinue | "
         "Select-Object ProcessId, ParentProcessId, ExecutablePath, CommandLine, "
-        "@{N='CreationDate';E={try { $_.CreationDate.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') } catch { '' }}} | "
+        "@{N='CreationDate';E={try { $_.CreationDate.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ', [System.Globalization.CultureInfo]::InvariantCulture) } catch { '' }}} | "
         "ConvertTo-Csv -NoTypeInformation"
     )
     try:
@@ -25915,6 +25943,29 @@ def _windows_process_names():
             continue
         names[pid] = (ppid, (row.get("Name") or "").strip().lower())
     return names or None
+
+
+def _windows_ancestor_pids(pid, names=None):
+    """Pids of every ancestor of `pid` from the Windows process table, or None.
+
+    Same walk as `_posix_ancestor_pids`, but None (not an empty set) when the table
+    is unreadable or does not contain `pid`: kill-stale must not act without proof
+    that a candidate is not the conversation it runs inside of (claude.exe -> shell
+    -> python), so "unknown" is a distinct answer from "no ancestors".
+    """
+    if names is None:
+        names = _windows_process_names()
+    if not names or pid not in names:
+        return None
+    out = set()
+    cur = pid
+    for _ in range(64):
+        entry = names.get(cur)
+        if not entry or entry[0] <= 0 or entry[0] in out:
+            break
+        out.add(entry[0])
+        cur = entry[0]
+    return out
 
 
 def _windows_dir_is_electron_app(exe_path):
@@ -26220,7 +26271,7 @@ def _collect_windows_claude_sessions(process_name="claude", creation_fallback=Tr
         # keeps a zero-match run from erroring.
         f"Get-Process -Name '{process_name}*' -ErrorAction SilentlyContinue | "
         "Select-Object Id, ProcessName, SessionId, "
-        "@{N='StartTime';E={try { $_.StartTime.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') } catch { '' }}} | "
+        "@{N='StartTime';E={try { $_.StartTime.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ', [System.Globalization.CultureInfo]::InvariantCulture) } catch { '' }}} | "
         "ConvertTo-Csv -NoTypeInformation"
     )
     try:
@@ -26518,7 +26569,7 @@ def _collect_health_data():
         recommendations.append(
             f"{orphan_count} session{'s' if orphan_count != 1 else ''} with the terminal gone "
             f"(ORPHAN). Never ended automatically. Review, then run "
-            f"`python3 measure.py kill-stale --include-orphans --dry-run` to preview ending them."
+            f"`{_measure_cli('kill-stale', '--include-orphans', '--dry-run')}` to preview ending them."
         )
     unknown_age_count = sum(1 for s in running_sessions if "UNKNOWN_AGE" in s.get("flags", []))
     if unknown_age_count > 0 and system == "Windows":
@@ -26546,6 +26597,7 @@ def _collect_health_data():
         "running_sessions": running_sessions,
         "automated": automated,
         "recommendations": recommendations,
+        "cli": _measure_cli(),
     }
 
 
@@ -26839,7 +26891,14 @@ def kill_stale_sessions(threshold_hours=12, dry_run=False, include_orphans=False
     my_ppid = os.getppid()
     # Never terminate the session this command is running inside of: it is an
     # ancestor of this process (claude -> shell -> python), not its direct parent.
-    my_ancestors = set() if os.name == "nt" else _posix_ancestor_pids(my_pid)
+    ancestry_unknown = False
+    if os.name == "nt":
+        my_ancestors = _windows_ancestor_pids(my_pid)
+        if my_ancestors is None:
+            ancestry_unknown = True
+            my_ancestors = set()
+    else:
+        my_ancestors = _posix_ancestor_pids(my_pid)
 
     # Fail closed: process age is not evidence that a conversation is
     # abandoned. Sessions whose identity is known to belong to a host app
@@ -26872,7 +26931,7 @@ def kill_stale_sessions(threshold_hours=12, dry_run=False, include_orphans=False
         n = len(held_orphans)
         print(f"\n  {n} orphaned session{'s' if n != 1 else ''} (terminal gone, running >{threshold_hours}h) "
               f"{'were' if n != 1 else 'was'} left alone. Orphans are only ended on request:")
-        print(f"    python3 measure.py kill-stale --include-orphans --hours {threshold_hours}   (add --dry-run to preview)")
+        print(f"    {_measure_cli('kill-stale', '--include-orphans', '--hours', str(threshold_hours))}   (add --dry-run to preview)")
 
     if not stale:
         if protected or held_orphans:
@@ -26890,6 +26949,11 @@ def kill_stale_sessions(threshold_hours=12, dry_run=False, include_orphans=False
     if dry_run:
         print(f"\n  Dry run. Would kill {len(stale)} process{'es' if len(stale) != 1 else ''}.")
         print("  Run without --dry-run to terminate them.\n")
+        return
+
+    if ancestry_unknown:
+        print("\n  Could not read this process's ancestry, so a candidate cannot be ruled out as the")
+        print("  conversation this command is running inside of. Nothing was terminated.\n")
         return
 
     killed = 0
@@ -36831,7 +36895,7 @@ def _purge_all_data(confirm=False, force=False):
 
     if running_pid is not None and not force:
         print(f"WARNING: Dashboard daemon is running (PID {running_pid}). Stop it first with:")
-        print("  python3 measure.py kill-stale")
+        print(f"  {_measure_cli('kill-stale')}")
         print("Or re-run with --force to stop it automatically.")
         return
 

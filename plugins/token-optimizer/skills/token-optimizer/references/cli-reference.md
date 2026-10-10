@@ -58,6 +58,7 @@
 - `measure.py setup-quality-bar [--uninstall]` -- Terminal status line
 - `measure.py plugin-cleanup` -- Detect duplicate skills and archive overlaps
 - `measure.py check-hook` -- Check if SessionEnd hook is installed
+- `measure.py recommendations [status|refresh] [--json]` -- The daily-measured usage recommendations record (compact window, subagent cache lifetime): `status` (default) prints it, `refresh` re-measures now in a bounded run. Advice only; never writes either setting (Claude Code)
 
 ## Codex Commands
 

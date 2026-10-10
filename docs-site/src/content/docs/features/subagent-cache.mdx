@@ -18,6 +18,8 @@ Subagent cache: would have saved about $1.42 net (estimate) over the last
 
 A 1-hour cache is not free. Writing a prefix at 1 hour costs 2x the base input price instead of 1.25x, so it only wins when subagents are returned to, or respawned, within the hour. A heavy subagent user measured roughly break-even; a user whose subagents run once would lose money. That is why the recommendation is gated on evidence, not on a rule of thumb.
 
+The same verdict also feeds the daily usage-recommendations record (`measure.py recommendations`), which is what `quick`, `doctor`, `status`, `coach`, and the dashboard's "From your own usage" section read. When you act on the recommendation and a later measurement shows the numbers moved, the record says so as a "since you changed it" win -- observational, never causal. Token Optimizer still never writes the key.
+
 ## When it recommends
 
 At session start Token Optimizer reads one small cached verdict about your last 30 days and records what it says, with a timestamp, in its marker (`auto_decision`). It recommends turning the key on only when both hold:

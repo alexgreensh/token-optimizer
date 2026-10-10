@@ -99,6 +99,8 @@ To keep enough history for trend analysis, Token Optimizer sets `cleanupPeriodDa
 
 On Claude Code 2.1.243+, Token Optimizer also measures whether `subagentPromptCacheTtl: "1h"` pays on your own history and recommends it -- it never sets the key for you. `subagent-cache enable` applies the recommendation, `subagent-cache disable` undoes a Token Optimizer set (final), `TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=0` opts out of every write, and `TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=1` opts in to the automatic write plus its 14-day negative-payoff tripwire. It never overrides a value you set, an environment override, or a managed/project/local settings file. The payoff check reads your session transcripts locally in a background process, keeps one small verdict file in Token Optimizer's data directory, and leaves nothing off the machine. See [Subagent prompt cache](/features/subagent-cache/).
 
+The daily usage-recommendations measurement works the same way: a detached background process (spawned at session start or when the dashboard collects its data) reads your transcripts and writes `usage_recommendations.json` plus a capped history file (`usage_recommendations_history.jsonl`, 180 lines) in Token Optimizer's data directory. They feed the `recommendations` command and the dashboard's "From your own usage" section, and never leave the machine. Token Optimizer never writes `autoCompactWindow` or `subagentPromptCacheTtl` for you.
+
 ## Deleting your data
 
 The `purge` command deletes all Token Optimizer data across all platforms. It is dry-run by default.

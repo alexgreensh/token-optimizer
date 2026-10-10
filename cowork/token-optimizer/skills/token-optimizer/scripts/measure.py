@@ -202,6 +202,9 @@ _CLAUDE_TARGET_CMDS = frozenset(
         "collect", "conversation", "quality", "health", "kill-stale",
         "drift", "coach", "trends", "savings", "snapshot", "compare",
         "git-context", "dashboard-diagnose", "validate-impact",
+        # Usage recommendations: the refresh replays Claude transcripts and
+        # reads ~/.claude/settings.json; surfaces read its record file only.
+        "recommendations",
     }
 )
 # Back-compat alias (pre-Copilot name).
@@ -4326,6 +4329,12 @@ def quick_scan(as_json=False):
             "coaching": coaching,
             "subagent_cache": subagent_cache_block(),
         }
+        try:
+            _rb = _recs_block()
+            if _rb is not None:
+                result["usage_recommendations"] = _rb
+        except Exception:
+            pass
         print(json.dumps(result, indent=2))
         return result
 
@@ -4370,12 +4379,29 @@ def quick_scan(as_json=False):
         print("\n  COACHING INSIGHT")
         print(f"    {coaching}")
 
+    # Usage recommendations: the daily-measured record is the advice channel.
+    # One line per `recommend` item, nothing otherwise; the record is read,
+    # never scanned for (a detached refresh writes it).
+    try:
+        _rblk = _recs_block() or {}
+        _ritems = _rblk.get("items") or []
+        _rcovered = {i.get("id") for i in _ritems}
+        for _it in _ritems:
+            if _it.get("state") == "recommend":
+                _ln = _recs_item_line(_it)
+                if _ln:
+                    print(f"\n  {_ln}")
+    except Exception:
+        _rcovered = set()
+
     # Advise-only subagent cache verdict: only an actionable recommendation
     # earns a line here (a pending/thin verdict stays quiet -- see doctor).
+    # Falls silent once the daily record covers the item so no line repeats.
     try:
-        _scr = (subagent_cache_block().get("recommendation") or {})
-        if _scr.get("action") in ("enable", "disable"):
-            print(f"\n  SUBAGENT CACHE: {_scr['line']}")
+        if "subagent_cache" not in _rcovered:
+            _scr = (subagent_cache_block().get("recommendation") or {})
+            if _scr.get("action") in ("enable", "disable"):
+                print(f"\n  SUBAGENT CACHE: {_scr['line']}")
     except Exception:
         pass
 
@@ -4626,6 +4652,12 @@ def doctor(as_json=False):
             "checks": [{"status": s, "name": n, "detail": d} for s, n, d in checks],
             "subagent_cache": subagent_cache_block(),
         }
+        try:
+            _rb = _recs_block()
+            if _rb is not None:
+                result["usage_recommendations"] = _rb
+        except Exception:
+            pass
         print(json.dumps(result, indent=2))
         return result
 
@@ -4652,7 +4684,11 @@ def doctor(as_json=False):
             _sc_detail += f"; verdict: {_sc_auto['reason']}"
         print(f"  {'':5s} Subagent cache: {_sc_detail}")
         _sc_rec = _scb.get("recommendation") or {}
-        if _sc_rec.get("line"):
+        if _sc_rec.get("line") \
+                and _sc_rec["line"] != _sc_auto.get("reason") \
+                and not _recs_covers("subagent_cache"):
+            # Never a line that repeats the verdict, and silent once the
+            # daily record carries this item itself.
             print(f"  {'':5s}   advice: {_sc_rec['line']}")
         if _scb.get("hint"):
             print(f"  {'':5s}   note: {_scb['hint']}")
@@ -4660,6 +4696,16 @@ def doctor(as_json=False):
             print(f"  {'':5s} Undo: python3 "
                   f"{shlex.quote(str(Path(__file__).resolve()))} "
                   "subagent-cache disable")
+    except Exception:
+        pass  # doctor must never fail on this optional row
+
+    # Usage recommendations: one line per applicable item, any state. The
+    # daily-measured record is read, never scanned for.
+    try:
+        for _it in ((_recs_block() or {}).get("items") or []):
+            _ln = _recs_item_line(_it)
+            if _ln:
+                print(f"  {'':5s} {_ln}")
     except Exception:
         pass  # doctor must never fail on this optional row
 
@@ -10513,6 +10559,18 @@ def generate_coach_data(focus=None, components=None, trends=None, include_determ
                 result["compact_advice"] = advice
         except Exception:
             pass
+
+    # Usage recommendations (recs): the coach data channel also feeds the
+    # dashboard's "From your own usage" section. This is the dashboard data
+    # collection spawn point too: a missing/stale record starts the detached
+    # refresh, the record itself is only ever READ here.
+    try:
+        _recs_ensure_fresh()
+        _rb = _recs_block()
+        if _rb is not None:
+            result["usage_recommendations"] = _rb
+    except Exception:
+        pass
 
     return result
 
@@ -20470,6 +20528,668 @@ def subagent_cache_block(days=30, now=None):
     return st
 
 
+# ===========================================================================
+# Usage recommendations (recs): ONE daily-measured record that every surface
+# reads.
+#
+# `usage_recommendations.json` (schema 1) carries one item per usage-based
+# recommendation -- ``compact_window`` and ``subagent_cache`` -- each in one of
+# four states: recommend | keep | not_enough_data | not_applicable. `command`
+# is only ever populated for `recommend`. Both measurements reuse the existing
+# bounded scans: the compact_advice replay (coach cap + wall-clock budget) and
+# the cached subagent-cache payoff verdict (refreshing it through the existing
+# detached-scan machinery when it is missing or stale). Token Optimizer NEVER
+# writes either setting; the record only advises.
+#
+# `measure.py recommendations refresh` is the one refresher. It never runs
+# inside a hook: session start and the dashboard data collection only check
+# the record's age and spawn a detached child (same O_EXCL lock + env-token
+# pattern as the subagent scan; spawn_detached owns the Windows no-console
+# flags and _detached_python_exe prefers pythonw.exe). A missing or day-old
+# record spawns; a partial or crashed run writes complete:false and is
+# retried once the record ages out again.
+#
+# `usage_recommendations_history.jsonl` gets one compact line per refresh:
+# measured_ts plus, per item, the state, the setting value observed, and the
+# headline measure (cache-read tokens per session; subagent net estimate).
+# Capped at 180 lines, rewritten atomically when over.
+#
+# Wins are conservative: an entry is only emitted when an earlier history line
+# said `recommend`, the observed setting later matched the recommended value,
+# at least 7 days passed, the minimum data bar holds now, and the measured
+# outcome moved the expected way. The wording is "since you changed it" --
+# measured, never causal.
+# ===========================================================================
+
+_RECS_RECORD_NAME = "usage_recommendations.json"
+_RECS_HISTORY_NAME = "usage_recommendations_history.jsonl"
+_RECS_LOCK_NAME = "usage_recommendations_refresh.lock"
+# A lock older than the scans' own budgets plus slack is abandoned.
+_RECS_LOCK_STALE = 300
+_RECS_TOKEN_ENV = "TO_USAGE_RECS_REFRESH_TOKEN"
+_RECS_REFRESH_SECONDS = 86400          # measured daily
+_RECS_WINDOW_DAYS = 30
+_RECS_HISTORY_CAP = 180
+_RECS_WIN_MIN_DAYS = 7
+# Compact-window gates: at most ~5 extra compactions a day and at least 10%
+# of cache-read tokens avoided, priced-net positive, before we recommend.
+_RECS_MAX_EXTRA_COMPACTIONS_PER_DAY = 5
+_RECS_MIN_CACHE_READ_SHARE_PCT = 10.0
+_RECS_LABELS = {"compact_window": "Compact window",
+                "subagent_cache": "Subagent cache"}
+
+
+def _recs_record_path():
+    return SNAPSHOT_DIR / _RECS_RECORD_NAME
+
+
+def _recs_history_path():
+    return SNAPSHOT_DIR / _RECS_HISTORY_NAME
+
+
+def _recs_lock_path():
+    return SNAPSHOT_DIR / _RECS_LOCK_NAME
+
+
+def _recs_read_record():
+    """The measured record, or None when absent/corrupt/wrong schema."""
+    try:
+        data = json.loads(_recs_record_path().read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("schema") != 1 \
+            or not isinstance(data.get("items"), list):
+        return None
+    return data
+
+
+def _recs_lock_acquire(now=None):
+    """Take the refresh lock (O_EXCL); its owner token, or None when held.
+
+    Same pattern as the subagent-cache scan lock: a lock older than
+    _RECS_LOCK_STALE is a crashed child and is reclaimed."""
+    if now is None:
+        now = time.time()
+    lock = _recs_lock_path()
+    token = os.urandom(16).hex()
+    try:
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        for _attempt in (1, 2):
+            try:
+                fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                             0o600)
+            except FileExistsError:
+                try:
+                    age = float(now) - lock.stat().st_mtime
+                except OSError:
+                    continue
+                if age < _RECS_LOCK_STALE:
+                    return None
+                try:
+                    lock.unlink()
+                except OSError:
+                    return None
+                continue
+            try:
+                os.write(fd, token.encode("ascii"))
+            finally:
+                os.close(fd)
+            return token
+    except OSError:
+        pass
+    return None
+
+
+def _recs_lock_release(token):
+    """Delete the lock only while it still holds `token`. Never raises."""
+    if not token:
+        return
+    lock = _recs_lock_path()
+    try:
+        if lock.read_text(encoding="ascii").strip() == token:
+            lock.unlink()
+    except OSError:
+        pass
+
+
+def _recs_compact_item(now=None):
+    """The compact_window item, built on the bounded compact_advice replay."""
+    base = {"id": "compact_window", "direction": "smaller", "command": "",
+            "tradeoff": "Compaction can drop early instructions."}
+    if not _subagent_cache_claude_only():
+        return dict(base, state="not_applicable", enough_data=False,
+                    headline="", numbers={},
+                    reason="the compact window is a Claude Code setting")
+    try:
+        rep = compact_advice(days=_RECS_WINDOW_DAYS,
+                             max_sessions=_ADVICE_COACH_MAX_SESSIONS,
+                             deadline_seconds=_ADVICE_COACH_BUDGET_SECONDS)
+    except Exception as exc:
+        return dict(base, state="not_enough_data", enough_data=False,
+                    headline="compaction history could not be measured yet",
+                    numbers={}, partial=True,
+                    reason=f"compact_advice failed: {type(exc).__name__}")
+    days = max(1, int(rep.get("days") or _RECS_WINDOW_DAYS))
+    sessions = int(rep.get("sessions_replayed") or 0)
+    total_cr = int(rep.get("total_cache_read_tokens") or 0)
+    current = (rep.get("default_window") or {}).get("tokens")
+    # The win measure: cache-read tokens per replayed session.
+    measure = round(total_cr / sessions, 1) if sessions else None
+    numbers = {"setting": current, "recommended": current,
+               "measure": measure, "sessions": sessions,
+               "cache_read_tokens": total_cr, "window_days": days}
+    item = dict(base, numbers=numbers, partial=bool(rep.get("truncated")))
+    if rep.get("too_thin") or not rep.get("windows"):
+        return dict(item, state="not_enough_data", enough_data=False,
+                    headline="not enough session history to judge yet",
+                    reason=(f"{sessions} sessions replayed, need at least "
+                            f"{_ADVICE_MIN_SESSIONS} and one compaction"))
+    eligible = []
+    for e in rep["windows"]:
+        if e.get("reference"):
+            continue  # the user's own window: 0 extra, 0 net by construction
+        net = float(e.get("net_usd_unrounded") or 0.0)
+        if net <= 0:
+            continue
+        per_day = float(e.get("extra_compactions") or 0) / days
+        if per_day > _RECS_MAX_EXTRA_COMPACTIONS_PER_DAY:
+            continue
+        if float(e.get("avoided_share_pct") or 0.0) \
+                < _RECS_MIN_CACHE_READ_SHARE_PCT:
+            continue
+        eligible.append((e, per_day))
+    if not eligible:
+        return dict(item, state="keep", enough_data=True,
+                    headline="your current setting fits your usage",
+                    reason=("no candidate cleared the bar: positive priced "
+                            "net, <=5 extra compactions a day, >=10% of "
+                            "cache reads avoided"))
+    # Best priced net; ties break to fewer extra compactions a day, then the
+    # larger window (least truncation risk).
+    eligible.sort(key=lambda t: (-t[0]["net_usd_unrounded"], t[1],
+                                 -t[0]["window"]))
+    best, per_day = eligible[0]
+    numbers["recommended"] = best["window"]
+    numbers["avoided_share_pct"] = best["avoided_share_pct"]
+    numbers["net_usd"] = best["net_usd"]
+    numbers["extra_compactions_per_day"] = round(per_day, 2)
+    cur_k = f"{int(current) // 1000}K" if current else "your current window"
+    return dict(item, state="recommend", enough_data=True,
+                command=f"/autocompact {best['window']}",
+                headline=(f"compacting at {best['window'] // 1000}K instead "
+                          f"of {cur_k} would have avoided about "
+                          f"{float(best['avoided_share_pct']):.0f}% of "
+                          f"cache-read tokens "
+                          f"({_advice_usd(float(best['net_usd']))} net, "
+                          f"~{per_day:.1f} extra compactions a day; "
+                          f"estimate, last {days} days)"),
+                reason="best priced net among candidates inside the caps")
+
+
+def _recs_subagent_item(now=None):
+    """The subagent_cache item, built on the cached payoff verdict."""
+    base = {"id": "subagent_cache", "direction": "", "command": "",
+            "tradeoff": ""}
+    if not _subagent_cache_claude_only():
+        return dict(base, state="not_applicable", enough_data=False,
+                    headline="", numbers={},
+                    reason="subagentPromptCacheTtl is a Claude Code setting")
+    if now is None:
+        now = time.time()
+    marker = _subagent_cache_read_marker()
+    try:
+        data, _path, _ok = _read_settings_json_checked()
+        current = data.get(_SUBAGENT_CACHE_KEY)
+    except Exception:
+        current = None
+    mstate = (marker or {}).get("state")
+    since = None
+    if mstate == "set" and current == "1h":
+        try:
+            since = float(marker["set_ts"])
+        except (TypeError, ValueError):
+            since = None
+    # The refresh is the one place that may run the bounded payoff scan; a
+    # fresh verdict for the right window is reused instead.
+    partial = False
+    vstate, vrec = _subagent_cache_verdict_for(now, since)
+    if vstate != "fresh":
+        partial = True
+        try:
+            vrec = subagent_cache_scan_run(now=now, since_ts=since) or vrec
+        except Exception:
+            pass
+    elif not vrec.get("complete"):
+        partial = True
+    try:
+        st = subagent_cache_status(now=now, use_cache=True)
+    except Exception as exc:
+        return dict(base, state="not_enough_data", enough_data=False,
+                    headline="the cache payoff could not be read",
+                    numbers={}, partial=True,
+                    reason=f"status unavailable: {type(exc).__name__}")
+    if st.get("state") == "platform-gap":
+        return dict(base, state="not_applicable", enough_data=False,
+                    headline="", numbers={},
+                    reason=st.get("reason") or "not Claude Code")
+    payoff = (st.get("payoff")
+              if st.get("payoff_source") in ("live", "cached") else None)
+    numbers = {"setting": current, "recommended": None, "measure": None}
+    if isinstance(payoff, dict):
+        numbers.update(measure=payoff.get("net_usd_est"),
+                       subagent_requests=payoff.get("subagent_requests"),
+                       savings_usd_est=payoff.get("savings_usd_est"),
+                       premium_usd_est=payoff.get("extra_write_cost_usd_est"))
+    rec = st.get("recommendation") or {}
+    action, line = rec.get("action"), rec.get("line") or ""
+    mp = shlex.quote(str(MEASURE_PY_PATH))
+    item = dict(base, numbers=numbers, partial=partial)
+    if payoff is None:
+        return dict(item, state="not_enough_data", enough_data=False,
+                    headline="not enough data yet",
+                    reason=(line or "the payoff scan has not finished yet"))
+    decision = _subagent_cache_judge_payoff(payoff)
+    if decision["decision"] == "not-enough-data":
+        return dict(item, state="not_enough_data", enough_data=False,
+                    headline="not enough subagent history to judge yet",
+                    reason=decision["reason"])
+    if action == "enable":
+        numbers["recommended"] = "1h"
+        return dict(item, state="recommend", enough_data=True,
+                    direction="on",
+                    command=f"python3 {mp} subagent-cache enable",
+                    headline=line.split("; turn on:")[0].rstrip(),
+                    reason=decision["reason"])
+    if action == "disable":
+        numbers["recommended"] = "off"
+        return dict(item, state="recommend", enough_data=True,
+                    direction="off",
+                    command=f"python3 {mp} subagent-cache disable",
+                    headline=line.split("; turn off:")[0].rstrip(),
+                    reason=decision["reason"])
+    numbers["recommended"] = "1h" if current == "1h" else "off"
+    if st.get("recommendation") is None:
+        # opted-out / env-override / external holder / a key the user set by
+        # hand: there is nothing to advise over someone else's setting.
+        state_name = st.get("state") or ""
+        if state_name in ("opted-out", "env-override", "external-setting"):
+            return dict(item, state="not_applicable", enough_data=True,
+                        headline="", reason=(st.get("reason") or state_name))
+        return dict(item, state="keep", enough_data=True,
+                    headline="you set the key yourself; left alone",
+                    reason=(st.get("reason") or "user-set"))
+    return dict(item, state="keep", enough_data=True,
+                headline=(line.split("; nothing to do")[0].rstrip()
+                          or "your current setting fits your usage"),
+                reason=decision["reason"])
+
+
+def _recs_history_append(entry):
+    """One compact JSON line per refresh; capped, atomically rewritten."""
+    p = _recs_history_path()
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps(entry, separators=(",", ":"))
+        try:
+            existing = [l for l in p.read_text(encoding="utf-8").splitlines()
+                        if l.strip()]
+        except OSError:
+            existing = []
+        existing.append(line)
+        if len(existing) > _RECS_HISTORY_CAP:
+            retained = existing[-_RECS_HISTORY_CAP:]
+            fd, tmp_name = tempfile.mkstemp(prefix=".usage_recs_hist.",
+                                            suffix=".tmp", dir=str(p.parent))
+            try:
+                if hasattr(os, "fchmod"):
+                    os.fchmod(fd, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write("\n".join(retained) + "\n")
+                os.replace(tmp_name, str(p))
+            except Exception:
+                try:
+                    os.unlink(tmp_name)
+                except OSError:
+                    pass
+        else:
+            with open(p, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+    except Exception:
+        pass
+
+
+def _recs_read_history():
+    p = _recs_history_path()
+    try:
+        return [json.loads(l) for l in
+                p.read_text(encoding="utf-8").splitlines() if l.strip()]
+    except (json.JSONDecodeError, OSError, ValueError):
+        return []
+
+
+def _recs_setting_matches(iid, setting, recommended):
+    """Whether an observed setting value counts as having adopted the
+    recommendation. For the subagent cache, "off" means the key is absent or
+    any non-"1h" value."""
+    if recommended is None:
+        return False
+    if iid == "subagent_cache":
+        if recommended == "1h":
+            return setting == "1h"
+        if recommended == "off":
+            return setting != "1h"
+        return False
+    return setting == recommended
+
+
+def _recs_measure_improved(iid, recommended, before, after):
+    """Whether the after-measure moved the way the recommendation wanted."""
+    if iid == "compact_window":
+        return after < before
+    if iid == "subagent_cache":
+        # enable -> a positive measured net; disable -> the counterfactual
+        # "what 1h would net now" staying non-positive confirms the choice.
+        if recommended == "1h":
+            return after > 0
+        if recommended == "off":
+            return after <= 0
+    return False
+
+
+def _recs_win_line(iid, recommended, before, after, improved, since_ts):
+    try:
+        date = datetime.fromtimestamp(since_ts).date().isoformat()
+    except (OSError, OverflowError, ValueError):
+        date = "the change"
+    tail = "estimate from your own sessions"
+    if iid == "compact_window":
+        try:
+            rk = f"{int(recommended) // 1000}K"
+        except (TypeError, ValueError):
+            rk = str(recommended)
+        moved = (f"cache-read tokens per session went from {before:,.0f} "
+                 f"to {after:,.0f}")
+        if improved:
+            return (f"Compact window: since you set it to {rk} on {date}, "
+                    f"{moved} ({tail}).")
+        return (f"Compact window: since you set it to {rk} on {date}, "
+                f"{moved} -- no saving to claim ({tail}).")
+    if iid == "subagent_cache":
+        if recommended == "1h":
+            if improved:
+                return (f"Subagent cache: since you set it to 1 hour on "
+                        f"{date}, the measured net is +${after:.2f} over the "
+                        f"last 30 days (projected +${before:.2f}; {tail}).")
+            return (f"Subagent cache: since you set it to 1 hour on {date}, "
+                    f"the measured net is ${after:.2f} over the last 30 days "
+                    f"-- the projected +${before:.2f} did not hold ({tail}).")
+        if improved:
+            return (f"Subagent cache: since you turned it off on {date}, the "
+                    f"1-hour cache still would not pay (net ${after:.2f}; "
+                    f"{tail}).")
+        return (f"Subagent cache: since you turned it off on {date}, the "
+                f"estimate moved to ${after:+.2f} -- the 1-hour cache may be "
+                f"worth another look ({tail}).")
+    return ""
+
+
+def _recs_wins(items, now):
+    """Measured-after-change rows. Every gate must hold before one appears."""
+    lines = _recs_read_history()
+    wins = []
+    for it in items:
+        iid = it.get("id")
+        nums = it.get("numbers") or {}
+        pending = None        # earliest outstanding recommend line
+        adopted_ts = None
+        for ln in lines:
+            ent = (ln.get("items") or {}).get(iid)
+            if not isinstance(ent, dict):
+                continue
+            try:
+                ts = float(ln.get("ts"))
+            except (TypeError, ValueError):
+                continue
+            if pending is None:
+                if (ent.get("state") == "recommend"
+                        and ent.get("recommended") is not None
+                        and not _recs_setting_matches(
+                            iid, ent.get("setting"), ent.get("recommended"))):
+                    pending = ent
+                continue
+            if adopted_ts is None and _recs_setting_matches(
+                    iid, ent.get("setting"), pending.get("recommended")):
+                adopted_ts = ts
+        if pending is None or adopted_ts is None:
+            continue
+        if now - adopted_ts < _RECS_WIN_MIN_DAYS * 86400:
+            continue
+        # The setting must still be the recommended value (a revert voids it).
+        if not _recs_setting_matches(iid, nums.get("setting"),
+                                     pending.get("recommended")):
+            continue
+        if not it.get("enough_data"):
+            continue
+        before, after = pending.get("measure"), nums.get("measure")
+        try:
+            before, after = float(before), float(after)
+        except (TypeError, ValueError):
+            continue
+        improved = _recs_measure_improved(iid, pending.get("recommended"),
+                                          before, after)
+        wins.append({"id": iid, "since_ts": adopted_ts, "before": before,
+                     "after": after, "improved": improved,
+                     "line": _recs_win_line(iid, pending.get("recommended"),
+                                            before, after, improved,
+                                            adopted_ts)})
+    return wins
+
+
+def _recs_refresh_locked(now):
+    """Build both items, append history, compute wins, write the record."""
+    items, partial = [], False
+    for builder in (_recs_compact_item, _recs_subagent_item):
+        try:
+            it = builder(now=now)
+        except Exception as exc:
+            it = {"id": "unknown", "state": "not_enough_data",
+                  "headline": "", "numbers": {}, "command": "",
+                  "direction": "", "enough_data": False,
+                  "reason": f"builder failed: {type(exc).__name__}"}
+        partial = partial or bool(it.pop("partial", False))
+        items.append(it)
+    hist_items = {}
+    for it in items:
+        nums = it.get("numbers") or {}
+        hist_items[it.get("id")] = {
+            "state": it.get("state"),
+            "setting": nums.get("setting"),
+            "recommended": nums.get("recommended"),
+            "measure": nums.get("measure"),
+        }
+    _recs_history_append({"ts": float(now), "items": hist_items})
+    rec = {"schema": 1, "measured_ts": float(now),
+           "window_days": _RECS_WINDOW_DAYS, "complete": not partial,
+           "items": items, "wins": _recs_wins(items, now)}
+    _subagent_cache_write_json_atomic(
+        _recs_record_path(), rec, ".usage_recs.")
+    return rec
+
+
+def usage_recommendations_refresh(now=None, token=None):
+    """The one refresher. Run by the detached child (which presents its lock
+    token) or by hand (which takes the lock itself). Returns the record, or
+    None when another refresh holds the lock. Never raises."""
+    if now is None:
+        now = time.time()
+    if token is not None:
+        try:
+            if _recs_lock_path().read_text(encoding="utf-8").strip() != token:
+                return None
+        except OSError:
+            return None
+    else:
+        token = _recs_lock_acquire(now)
+        if token is None:
+            return None
+    try:
+        return _recs_refresh_locked(now)
+    finally:
+        _recs_lock_release(token)
+
+
+def _recs_spawn_refresh(now=None):
+    """Start the refresh as a detached background process. True when started.
+
+    The lock is taken HERE (so two spawners can never both fire) and handed
+    to the child by environment token. spawn_detached owns the Windows flags
+    (no console window); the interpreter is the GUI twin on Windows. Never
+    raises; a failed spawn frees the lock."""
+    token = _recs_lock_acquire(now)
+    if token is None:
+        return False
+    try:
+        env = os.environ.copy()
+        env["TOKEN_OPTIMIZER_RUNTIME"] = detect_runtime()
+        env.pop("TOKEN_OPTIMIZER_HOOK", None)
+        env[_RECS_TOKEN_ENV] = token
+        proc = spawn_detached(
+            [_detached_python_exe(), str(MEASURE_PY_PATH),
+             "recommendations", "refresh"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=env,
+            close_fds=True,
+        )
+    except Exception:
+        proc = None
+    if proc is None:
+        _recs_lock_release(token)
+        try:
+            _log_spawn_failure("usage recommendations refresh spawn failed")
+        except Exception:
+            pass
+        return False
+    return True
+
+
+def _recs_ensure_fresh(now=None):
+    """Spawn the detached refresh when the record is missing or >24h old.
+
+    Called from session start and the dashboard data collection; reads one
+    small file, never scans. Never raises."""
+    try:
+        if not _subagent_cache_claude_only():
+            return False
+        # Under pytest the detached child would run against the real
+        # ~/.claude; tests exercise the spawn by stubbing spawn_detached and
+        # clearing this variable.
+        if os.environ.get("PYTEST_CURRENT_TEST"):
+            return False
+        rec = _recs_read_record()
+        if rec is not None:
+            try:
+                if (float(now if now is not None else time.time())
+                        - float(rec.get("measured_ts") or 0)
+                        < _RECS_REFRESH_SECONDS):
+                    return False
+            except (TypeError, ValueError):
+                pass
+        return _recs_spawn_refresh(now=now)
+    except Exception:
+        return False
+
+
+def _recs_block(now=None):
+    """What surfaces read: the record only, never a scan.
+
+    None on a foreign runtime with no record (nothing to show); otherwise the
+    record's items + wins, or present:false while the first measurement is
+    still running."""
+    rec = _recs_read_record()
+    if rec is not None:
+        return {"present": True, "schema": 1,
+                "measured_ts": rec.get("measured_ts"),
+                "window_days": rec.get("window_days") or _RECS_WINDOW_DAYS,
+                "complete": bool(rec.get("complete")),
+                "items": rec.get("items") or [],
+                "wins": rec.get("wins") or []}
+    if not _subagent_cache_claude_only():
+        return None
+    return {"present": False, "schema": 1, "measured_ts": None,
+            "window_days": _RECS_WINDOW_DAYS, "complete": False,
+            "items": [], "wins": []}
+
+
+def _recs_item_line(it):
+    """One display line per applicable item, or None for not_applicable."""
+    if it.get("state") == "not_applicable":
+        return None
+    label = _RECS_LABELS.get(it.get("id"), str(it.get("id") or "?"))
+    head = (it.get("headline") or it.get("state") or "no data").rstrip(".")
+    if it.get("state") == "recommend" and it.get("command"):
+        return f"{label}: {head}. Run: `{it['command']}`"
+    return f"{label}: {head}."
+
+
+def _recs_covers(item_id):
+    """True when the record already speaks for this item (any state): the
+    legacy verdict-derived advice line then stays out so no line repeats."""
+    try:
+        blk = _recs_block()
+        for it in (blk or {}).get("items") or []:
+            if it.get("id") == item_id:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _recs_cli(argv):
+    """`measure.py recommendations [status|refresh] [--json]` handler."""
+    as_json = "--json" in argv
+    sub = argv[1] if len(argv) > 1 and not argv[1].startswith("--") else "status"
+    if sub not in ("status", "refresh"):
+        print("usage: measure.py recommendations [status|refresh] [--json]")
+        sys.exit(2)
+    if sub == "refresh":
+        rec = usage_recommendations_refresh(
+            token=os.environ.get(_RECS_TOKEN_ENV) or None)
+        if as_json:
+            print(json.dumps(rec or {}, indent=2))
+            return
+        if rec is None:
+            print("[Token Optimizer] usage recommendations: skipped (another "
+                  "refresh is running)")
+        elif rec.get("complete"):
+            print("[Token Optimizer] usage recommendations: measured")
+        else:
+            print("[Token Optimizer] usage recommendations: incomplete; "
+                  "it retries tomorrow")
+        return
+    blk = _recs_block()
+    if as_json:
+        print(json.dumps(blk or {}, indent=2))
+        return
+    print("\n[Token Optimizer] usage recommendations (measured daily; "
+          "estimates only)")
+    printed = False
+    for it in (blk or {}).get("items") or []:
+        ln = _recs_item_line(it)
+        if ln:
+            print(f"  {ln}")
+            printed = True
+    for w in (blk or {}).get("wins") or []:
+        if w.get("line"):
+            print(f"  {w['line']}")
+            printed = True
+    if not printed:
+        print("  no usage recommendations yet -- the daily measurement runs "
+              "in the background")
+    print()
+
+
 def _coach_cli(args):
     """`measure.py coach [--json] [--focus F]` handler (extracted verbatim
     from the __main__ dispatch so tests can drive the JSON surface)."""
@@ -20533,12 +21253,31 @@ def _coach_cli(args):
         if det.get("candidates"):
             print("    Details: python3 measure.py deterministic-candidates")
         print()
-    # Advise-only subagent cache verdict: actionable recommendations only.
+    # Usage recommendations: the daily-measured record carries the content;
+    # one line per recommend item, never a scan here.
     try:
-        _scr = (subagent_cache_block().get("recommendation") or {})
-        if _scr.get("action") in ("enable", "disable"):
-            print(f"  Subagent cache: {_scr['line']}")
+        _rblk = _recs_block() or {}
+        _ritems = _rblk.get("items") or []
+        _rcovered = {i.get("id") for i in _ritems}
+        _printed = False
+        for _it in _ritems:
+            if _it.get("state") == "recommend":
+                _ln = _recs_item_line(_it)
+                if _ln:
+                    print(f"  {_ln}")
+                    _printed = True
+        if _printed:
             print()
+    except Exception:
+        _rcovered = set()
+    # Advise-only subagent cache verdict: actionable recommendations only.
+    # Falls silent once the daily record covers the item so no line repeats.
+    try:
+        if "subagent_cache" not in _rcovered:
+            _scr = (subagent_cache_block().get("recommendation") or {})
+            if _scr.get("action") in ("enable", "disable"):
+                print(f"  Subagent cache: {_scr['line']}")
+                print()
     except Exception:
         pass
     if data["questions"]:
@@ -20618,13 +21357,30 @@ def _subagent_cache_cli(argv):
         print(f"  why: {r['reason']}")
     ad = r.get("auto_decision") or {}
     if ad:
-        print(f"  verdict: {ad.get('decision')}: {ad.get('reason')}")
+        # The reason is already self-describing ("would not pay: ...",
+        # "pays: ..."); prefixing the decision label doubled the sentence.
+        print(f"  verdict: {ad.get('reason') or ad.get('decision')}")
     rec = r.get("recommendation") or {}
-    if rec.get("line"):
+    if rec.get("line") and rec["line"] != ad.get("reason") \
+            and not _recs_covers("subagent_cache"):
+        # One advice line, and never the verdict reason repeated verbatim.
+        # When the daily usage-recommendations record already carries this
+        # item its own line below is the one that prints.
         print(f"  advice: {rec['line']}")
     if r.get("hint"):
         print(f"  note: {r['hint']}")
     print(_subagent_cache_payoff_lines(p, r.get("billing_mode")))
+    # The daily usage-recommendations record: one line per applicable item.
+    try:
+        _rb = _recs_block() or {}
+        if _rb.get("items"):
+            print("  usage recommendations (daily record):")
+            for _it in _rb["items"]:
+                _ln = _recs_item_line(_it)
+                if _ln:
+                    print(f"    {_ln}")
+    except Exception:
+        pass
 
 
 def _subagent_cache_payoff_lines(p, billing_mode):
@@ -52768,6 +53524,15 @@ def run_ensure_health():
         except Exception:
             pass
 
+    # Usage recommendations (recs): keep the daily-measured record fresh.
+    # Session start only stats the record and may spawn the detached refresh;
+    # the measurement itself never runs inside a hook. Fail-open.
+    if _is_claude and not is_cowork():
+        try:
+            _recs_ensure_fresh()
+        except Exception:
+            pass
+
     # Capture the pristine structural baseline once on first run. Records the
     # pre-pruning prefix overhead that structural savings are measured against.
     # One-time (no-op once the snapshot exists); never blocks SessionStart.
@@ -55857,6 +56622,8 @@ if __name__ == "__main__":
         plugin_cleanup(dry_run=dry)
     elif args[0] == "subagent-cache":
         _subagent_cache_cli(args)
+    elif args[0] == "recommendations":
+        _recs_cli(args)
     elif args[0] == "ensure-health":
         # Called by SessionStart hook. Wrapped in a wall-clock guard so a
         # pathologically slow filesystem or lock contention cannot block the

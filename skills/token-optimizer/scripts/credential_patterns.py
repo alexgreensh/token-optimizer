@@ -59,7 +59,14 @@ CREDENTIAL_PATTERNS: List[Tuple[str, "re.Pattern[str]"]] = [
     ("Bearer token",            re.compile(r"Bearer\s+[a-zA-Z0-9\-._~+/]+=*", re.I)),
     ("Google API key",          re.compile(r"AIza[0-9A-Za-z_\-]{35}")),
     ("Google OAuth token",      re.compile(r"ya29\.[0-9A-Za-z_\-]{20,}")),
-    ("JWT",                     re.compile(r"eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}")),
+    # Linear on adversarial input. The old form rescanned a long base64url run from every
+    # "eyJ" inside it (4 s at 100 KB). The first segment may not contain another "eyJ"
+    # (a JWT header never does), so each start stops at the next candidate. The pattern
+    # still opens with the literal, so clean text keeps the engine's fast prefix scan,
+    # and a JWT glued to other characters (MEDX-123456-eyJ..., xeyJ...) still matches.
+    ("JWT",                     re.compile(
+        r"eyJ(?:(?!eyJ)[A-Za-z0-9_\-]){10,}"
+        r"\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}")),
     # Whole block: the key body is the secret, the BEGIN line is not. A block
     # with no END (cut by a length limit, or still being typed) runs to the end
     # of the text so a truncated body is never left behind.
@@ -1079,7 +1086,11 @@ def scan_for_credentials(text: str) -> List[Tuple[str, str, int]]:
 
 # M-16: regex to find already-redacted placeholders so they can be protected
 # from re-matching during a second redaction pass.
-_PLACEHOLDER_RE = re.compile(r"\[CREDENTIAL REDACTED: [^\]]+\]")
+# The interior is a label (60 characters at most, see _CUSTOM_MAX_LABEL_CHARS), so the
+# bound is generous. Unbounded, an unclosed "[CREDENTIAL REDACTED: " rescanned to the end
+# of the text from every start (quadratic). An over-long interior is not a placeholder:
+# it is scanned like any other text, so it cannot smuggle a secret.
+_PLACEHOLDER_RE = re.compile(r"\[CREDENTIAL REDACTED: [^\]]{1,256}\]")
 _PLACEHOLDER_SENTINEL = "\x00\x01REDACTED\x00\x01"
 
 # Per-pattern literal anchors (checked on a lowercased copy of the ORIGINAL
@@ -1133,9 +1144,10 @@ _PATTERN_ANCHORS = {
 # Scanned on one line at a time, so no match can cross a newline.
 # ---------------------------------------------------------------------------
 _ASSIGN_KEYWORD_RE = re.compile(r"key|token|secret|password|passwd|pwd|credential", re.I)
-_ASSIGN_RE = re.compile(
-    r"(?<![A-Za-z0-9_.\-])"
-    r"(?P<name>[A-Za-z_][A-Za-z0-9_.\-]*)"
+_ASSIGN_NAME_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-")
+_ASSIGN_NAME_TAIL_RE = re.compile(r"[A-Za-z0-9_.\-]*")
+# What follows a name: optional closing quote, "=" or ":" (not "=="), then the value.
+_ASSIGN_TAIL_RE = re.compile(
     r"(?P<q>[\"']?)(?P<sep>[ \t]*[=:](?!=)[ \t]*)"
     r"(?P<val>\"[^\"\n]*\"|'[^'\n]*'|[^\s\"']\S*)"
 )
@@ -1186,11 +1198,11 @@ def _assign_name_is_secret(name: str) -> Optional[str]:
     return found
 
 
-def _assign_repl(m: "re.Match[str]") -> str:
-    name, q, sep, val = m.group("name"), m.group("q"), m.group("sep"), m.group("val")
+def _assign_value(name: str, q: str, sep: str, val: str) -> Optional[str]:
+    """The text that replaces `val`, or None to leave the assignment alone."""
     kind = _assign_name_is_secret(name)
     if kind is None:
-        return m.group(0)
+        return None
     quote = val[0] if val[0] in "\"'" and len(val) >= 2 and val[-1] == val[0] else ""
     tail = ""
     if quote:
@@ -1201,29 +1213,56 @@ def _assign_repl(m: "re.Match[str]") -> str:
         if t:
             tail, body = body[t.start():], body[:t.start()]
     if not body.strip():
-        return m.group(0)
+        return None
     # Spaced "=" with a bare value is code (token_count = len(x)), not an assignment.
     if not quote and sep != "=" and sep.strip() == "=":
-        return m.group(0)
+        return None
     if _ASSIGN_LITERAL_RE.fullmatch(body):
-        return m.group(0)
+        return None
     if kind == "weak" and _ASSIGN_NUMBER_RE.fullmatch(body):
-        return m.group(0)
+        return None
     if _ASSIGN_REFERENCE_RE.match(body) or _ASSIGN_CALL_RE.match(body) \
             or _ASSIGN_GENERIC_TYPE_RE.match(body):
-        return m.group(0)
+        return None
     if body.lower() == name.lower() or body.lower() == name.lower().rsplit(".", 1)[-1]:
-        return m.group(0)
-    return f"{name}{q}{sep}{quote}{_ASSIGN_PLACEHOLDER}{quote}{tail}"
+        return None
+    return f"{quote}{_ASSIGN_PLACEHOLDER}{quote}{tail}"
 
 
 def _redact_assignments(text: str) -> str:
-    if not _ASSIGN_KEYWORD_RE.search(text):
+    """Walk the keyword hits, not every word: cost follows the hits, and a name is
+    visited once (the scan resumes after it), so keyword-dense input stays linear."""
+    out: List[str] = []
+    copied = 0
+    pos = 0
+    n = len(text)
+    while pos < n:
+        hit = _ASSIGN_KEYWORD_RE.search(text, pos)
+        if hit is None:
+            break
+        name_end = _ASSIGN_NAME_TAIL_RE.match(text, hit.end()).end()
+        pos = name_end
+        start = hit.start()
+        while start > 0 and text[start - 1] in _ASSIGN_NAME_CHARS:
+            start -= 1
+        name = text[start:name_end]
+        if not (name[0].isalpha() or name[0] == "_"):
+            continue
+        tail = _ASSIGN_TAIL_RE.match(text, name_end)
+        if tail is None:
+            continue
+        replacement = _assign_value(name, tail.group("q"), tail.group("sep"), tail.group("val"))
+        if replacement is None:
+            continue
+        v0, v1 = tail.span("val")
+        out.append(text[copied:v0])
+        out.append(replacement)
+        copied = v1
+        pos = v1
+    if not out:
         return text
-    return "\n".join(
-        _ASSIGN_RE.sub(_assign_repl, line) if _ASSIGN_KEYWORD_RE.search(line) else line
-        for line in text.split("\n")
-    )
+    out.append(text[copied:])
+    return "".join(out)
 
 
 # ---------------------------------------------------------------------------

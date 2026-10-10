@@ -200,18 +200,22 @@ def _sanitize_session_id(sid: str | None) -> str:
     return sanitize_sid(sid or "")
 
 
-_ARCHIVE_KEY_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+# \Z, not $: "$" also matches before a trailing newline ("abc\n").
+_ARCHIVE_KEY_RE = re.compile(r"^[a-zA-Z0-9_-]+\Z")
+# Longer ids go under a digest too: "<id>.json" must stay under the 255-byte
+# filename limit, or the archive fails and the output passes through unchanged.
+_ARCHIVE_KEY_MAX_LEN = 128
 
 
 def _safe_archive_key(tool_use_id: str) -> str:
     """Filesystem-safe archive key for a tool_use_id.
 
-    Ids outside [a-zA-Z0-9_-] (+, space, /, ., ') map to a deterministic digest
-    instead of being skipped — the archive still lands, expand's own
+    Ids outside [a-zA-Z0-9_-] (+, space, /, ., ') or longer than 128
+    characters map to a deterministic digest instead of being skipped — the archive still lands, expand's own
     [a-zA-Z0-9_-]+ key validation accepts the digest, and no raw id ever
     reaches a path, so traversal is impossible by construction.
     """
-    if _ARCHIVE_KEY_RE.match(tool_use_id):
+    if len(tool_use_id) <= _ARCHIVE_KEY_MAX_LEN and _ARCHIVE_KEY_RE.match(tool_use_id):
         return tool_use_id
     digest = hashlib.sha256(
         tool_use_id.encode("utf-8", errors="replace")).hexdigest()[:24]

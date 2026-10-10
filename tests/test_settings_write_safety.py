@@ -33,6 +33,11 @@ BASE = {
 @pytest.fixture()
 def measure(tmp_path, monkeypatch):
     """Load measure.py against a throwaway CLAUDE_DIR. Never touches ~/.claude."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     monkeypatch.setenv("TOKEN_OPTIMIZER_SNAPSHOT_DIR", str(tmp_path / "data"))
     monkeypatch.syspath_prepend(str(SCRIPTS))
     sys.modules.pop("measure", None)
@@ -307,3 +312,20 @@ def test_quality_cache_self_heal_in_the_gate_and_the_runner_skip_a_fifo(fifo_set
     monkeypatch.setattr(runner, "_measure", lambda: mod)
     out = _call_with_fifo(settings, runner._quality_cache_self_heal)
     assert "exc" not in out, out
+
+
+# ---------------------------------------------------------------------------
+# F4: undecodable bytes in settings.json are "unknown", not a traceback
+# ---------------------------------------------------------------------------
+
+def test_non_utf8_settings_reads_as_unknown(measure, monkeypatch):
+    mod, settings = measure
+    settings.write_bytes(b'{"note": "caf\xe9"}')  # cp1252, what an ANSI editor saves
+    data, path, ok = mod._read_settings_json_checked()
+    assert ok is False and data == {}
+    assert mod._read_settings_for_write() == ({}, False)
+
+    monkeypatch.setattr(mod, "_subagent_cache_claude_only", lambda: True)
+    result = mod.subagent_cache_enable(automatic=False)
+    assert result["state"] == "unknown-settings"
+    assert settings.read_bytes() == b'{"note": "caf\xe9"}', "the undecodable file was changed"

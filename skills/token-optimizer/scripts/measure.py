@@ -42671,7 +42671,9 @@ def _read_settings_json_checked():
             # comments stay malformed.
             with open(SETTINGS_PATH, "r", encoding="utf-8-sig") as f:
                 return json.load(f), SETTINGS_PATH, True
-        except (json.JSONDecodeError, PermissionError, OSError):
+        except (json.JSONDecodeError, UnicodeDecodeError, PermissionError, OSError):
+            # UnicodeDecodeError is a ValueError, not an OSError: a cp1252
+            # file saved by an ANSI editor is "unknown", not a traceback.
             return {}, SETTINGS_PATH, False
     return {}, SETTINGS_PATH, True
 

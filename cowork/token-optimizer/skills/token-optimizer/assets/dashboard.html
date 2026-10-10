@@ -2251,6 +2251,12 @@ function tcli(text) {
   var cli = d && d.health && d.health.cli;
   return cli ? String(text).split('python3 measure.py').join(cli) : text;
 }
+// Same, for strings that carry markup and go to innerHTML: the path is escaped.
+function tcliHtml(html) {
+  var d = window.__TOKEN_DATA__;
+  var cli = d && d.health && d.health.cli;
+  return cli ? String(html).split('python3 measure.py').join(esc(String(cli))) : html;
+}
 
 function redactPaths(s) {
   if (!s) return s;
@@ -2956,12 +2962,12 @@ var DB = (function() {
         if (data.standalone) {
           tsDiv.innerHTML = 'Last updated: ' + esc(ts) + staleWarning +
             (data.runtime === 'codex'
-              ? tcli(' &middot; Run <span class="update-cmd">TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py session-end-flush --trigger manual</span> for a fresh Codex audit.')
+              ? tcliHtml(' &middot; Run <span class="update-cmd">TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py session-end-flush --trigger manual</span> for a fresh Codex audit.')
               : ' &middot; Run <span class="update-cmd">/token-optimizer</span> for a full audit with recommendations.');
         } else {
           tsDiv.innerHTML = 'Last updated: ' + esc(ts) + staleWarning +
             (data.runtime === 'codex'
-              ? tcli(' &middot; To refresh, run <span class="update-cmd">TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py session-end-flush --trigger manual</span>.')
+              ? tcliHtml(' &middot; To refresh, run <span class="update-cmd">TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py session-end-flush --trigger manual</span>.')
               : ' &middot; To refresh, run <span class="update-cmd">/token-optimizer</span> again.');
         }
         headerEl.appendChild(tsDiv);
@@ -3527,8 +3533,8 @@ var DB = (function() {
 
     if (!t) {
       var collectNote = isCodex
-        ? tcli('Codex sessions can be collected manually for now: <span class="update-cmd">TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py collect</span>')
-        : tcli('Sessions are collected automatically via the SessionEnd hook. Run a few sessions first, or manually: <span class="update-cmd">python3 measure.py collect</span>');
+        ? tcliHtml('Codex sessions can be collected manually for now: <span class="update-cmd">TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py collect</span>')
+        : tcliHtml('Sessions are collected automatically via the SessionEnd hook. Run a few sessions first, or manually: <span class="update-cmd">python3 measure.py collect</span>');
       html += '<div class="empty-state">No trends data yet. ' + collectNote + '</div>';
       el.innerHTML = html;
       return;
@@ -5096,7 +5102,7 @@ var DB = (function() {
       '</div>';
 
     if (!c) {
-      html += tcli('<div class="empty-state">No coaching data available. Run: python3 measure.py coach</div>');
+      html += tcliHtml('<div class="empty-state">No coaching data available. Run: python3 measure.py coach</div>');
       el.innerHTML = html;
       return;
     }
@@ -5613,7 +5619,7 @@ var DB = (function() {
           ? 'Codex setup uses real local logs plus project hooks. Balanced hooks are on by default; noisy per-tool hooks stay opt-in so Desktop users are not spammed.'
           : window.__TOKEN_API_LIVE
           ? '<span style="color:var(--c-accent-cyan);font-weight:600;">Live mode</span> — toggles apply instantly to settings. <strong>Restart ' + (isCodex ? 'Codex' : 'Claude') + '</strong> to activate changes.'
-          : tcli('Open in serve mode for live toggles: <code style="background:var(--c-bg);padding:2px 5px;border-radius:4px;">python3 measure.py dashboard --serve</code>')) +
+          : tcliHtml('Open in serve mode for live toggles: <code style="background:var(--c-bg);padding:2px 5px;border-radius:4px;">python3 measure.py dashboard --serve</code>')) +
       '</p>' +
       '</div>';
 

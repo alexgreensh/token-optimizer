@@ -129,6 +129,41 @@ from spawn_utils import spawn_detached
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
+def _windows_stdio_kwargs():
+    """Usable std streams to hand a console-less child on Windows, else {}.
+
+    With creationflags=CREATE_NO_WINDOW and no std streams, a Windows child gets
+    a hidden console (python.exe) or NULL handles (pythonw.exe), so everything
+    it prints is lost. Passing the parent's streams makes CPython hand the child
+    the parent's own handles. Same guard as hooks/run.py (kept as a copy: this
+    script must not import from hooks/). Off Windows the child inherits the
+    streams anyway, so nothing is added.
+    """
+    if sys.platform != "win32":
+        return {}
+    kwargs = {}
+    for name in ("stdin", "stdout", "stderr"):
+        stream = getattr(sys, name, None)
+        if stream is None:
+            continue
+        try:
+            stream.fileno()
+        except (AttributeError, OSError, ValueError):
+            continue
+        kwargs[name] = stream
+    return kwargs
+
+
+def _run_script_child(script, extra_args=(), **run_kwargs):
+    """Run a sibling script under this interpreter with its output visible."""
+    return subprocess.run(
+        [sys.executable, str(script), *extra_args],
+        creationflags=_NO_WINDOW,
+        **_windows_stdio_kwargs(),
+        **run_kwargs,
+    )
+
+
 def _detached_python_exe():
     """Interpreter to use for FIRE-AND-FORGET python children.
 
@@ -57286,10 +57321,9 @@ if __name__ == "__main__":
         from pathlib import Path as _P
         rc_script = _P(__file__).resolve().parent / "read_cache.py"
         if rc_script.exists():
-            import subprocess
-            subprocess.run(
-                [sys.executable, str(rc_script), "--clear", "--session", sid] + (["--quiet"] if quiet else []),
-                timeout=5, creationflags=_NO_WINDOW
+            _run_script_child(
+                rc_script, ["--clear", "--session", sid] + (["--quiet"] if quiet else []),
+                timeout=5,
             )
     elif args[0] == "read-cache-stats":
         # Show read cache stats
@@ -57300,19 +57334,14 @@ if __name__ == "__main__":
         from pathlib import Path as _P
         rc_script = _P(__file__).resolve().parent / "read_cache.py"
         if rc_script.exists():
-            import subprocess
-            subprocess.run(
-                [sys.executable, str(rc_script), "--stats", "--session", sid],
-                timeout=5, creationflags=_NO_WINDOW
-            )
+            _run_script_child(rc_script, ["--stats", "--session", sid], timeout=5)
     elif args[0] == "structure-proof":
         from pathlib import Path as _P
         proof_script = _P(__file__).resolve().parent / "structure_replay.py"
         if not proof_script.exists():
             print(f"[Token Optimizer] structure_replay.py not found at {proof_script}")
             sys.exit(1)
-        import subprocess
-        result = subprocess.run([sys.executable, str(proof_script)] + args[1:], creationflags=_NO_WINDOW)
+        result = _run_script_child(proof_script, args[1:])
         sys.exit(result.returncode)
     else:
         print("Usage:")

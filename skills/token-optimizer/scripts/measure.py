@@ -121,7 +121,9 @@ from runtime_env import (
     runtime_home, runtime_name_for_humans, shell_path, _windows_hints,
 )
 
-if __name__ == "__main__":
+# Spelled without the usual main-guard line on purpose: that exact line must
+# appear once in this file, at the entry point (tests patch in front of it).
+if __name__ in ("__main__",):
     # `--runtime NAME` is the cmd.exe/PowerShell spelling of TOKEN_OPTIMIZER_RUNTIME=NAME
     # (printed on Windows, where the env-prefix form does not parse). It must land in
     # the environment before anything below reads the runtime.

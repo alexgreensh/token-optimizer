@@ -73,15 +73,17 @@ def _load_measure():
     return module
 
 
-def proc(pid, ppid, comm, args=None, tty="??", started=OLD, etime=ETIME_OLD, exe=None):
+def proc(pid, ppid, comm, args=None, tty="??", started=OLD, etime=ETIME_OLD, exe=None, uid=None):
+    # uid defaults to the test runner's own: kill-stale only acts on processes it owns.
     return dict(pid=pid, ppid=ppid, comm=comm, args=args if args is not None else comm,
-                tty=tty, started=started, etime=etime, exe=exe)
+                tty=tty, started=started, etime=etime, exe=exe,
+                uid=os.geteuid() if uid is None else uid)
 
 
 def _table(procs):
-    out = ["  PID  PPID TTY      STARTED                          ELAPSED COMMAND"]
+    out = ["  PID  PPID   UID TTY      STARTED                          ELAPSED COMMAND"]
     for p in procs:
-        out.append(f"{p['pid']:>6} {p['ppid']:>5} {p['tty']:<8} {p['started']} {p['etime']:>13} {p['args']}")
+        out.append(f"{p['pid']:>6} {p['ppid']:>5} {p['uid']:>5} {p['tty']:<8} {p['started']} {p['etime']:>13} {p['args']}")
     return "\n".join(out) + "\n"
 
 
@@ -771,7 +773,7 @@ def test_classifier_helper_first(monkeypatch):
 
 def _tagged(pid, identity="terminal_cli", elapsed=13 * 3600, started=OLD, command="claude"):
     s = {"pid": pid, "elapsed_seconds": elapsed, "elapsed_human": "13h", "flags": [],
-         "started": started, "command": command, "identity_source": "ps"}
+         "started": started, "command": command, "identity_source": "ps", "uid": os.geteuid()}
     if identity is not None:
         s["identity"] = identity
     return s

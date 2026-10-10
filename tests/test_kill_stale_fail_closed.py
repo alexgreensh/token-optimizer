@@ -164,3 +164,62 @@ def test_kill_loop_survives_oserror_and_continues(monkeypatch, capsys):
     assert "PID 4000 could not be signalled" in out
 
 
+# --- Finding 10d: only processes owned by the current user -------------------
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX owner column")
+def test_posix_collector_asks_ps_for_the_uid_and_records_it(monkeypatch):
+    measure = _load_measure()
+    seen = {}
+
+    def fake_run(argv, **kw):
+        if argv[0] == "ps" and any("lstart" in a for a in argv):
+            seen["cols"] = argv[argv.index("-eo") + 1]
+            row = f"  4000     1 {_euid()} ttys001 {OLD} 13:00:00 claude\n"
+            return subprocess.CompletedProcess(argv, 0, stdout="hdr\n" + row, stderr="")
+        return subprocess.CompletedProcess(argv, 1, stdout="", stderr="")
+
+    monkeypatch.setattr(measure.subprocess, "run", fake_run)
+    monkeypatch.setattr(measure, "_posix_read_argv", lambda pid: None)
+    monkeypatch.setattr(measure, "_posix_exe_path", lambda pid, comm=None: None)
+    sessions = measure._collect_posix_claude_sessions()
+    assert "uid" in seen["cols"].split(",")
+    assert [s["uid"] for s in sessions] == [_euid()]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX owner column")
+@pytest.mark.parametrize("uid", [_euid() + 1, None], ids=["other-user", "owner-unknown"])
+def test_kill_stale_never_targets_a_process_it_does_not_provably_own(monkeypatch, capsys, uid):
+    measure = _load_measure()
+    killed = _arrange(monkeypatch, measure, [_session(4000, uid=uid), _session(4001)])
+    monkeypatch.setattr(measure, "_posix_ancestor_pids", lambda pid: set())
+    measure.kill_stale_sessions(threshold_hours=12)
+    out = capsys.readouterr().out
+    assert killed == [4001]
+    assert "PID 4000" not in out
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX owner column")
+def test_kill_stale_dry_run_does_not_list_other_users_processes(monkeypatch, capsys):
+    measure = _load_measure()
+    _arrange(monkeypatch, measure, [_session(4000, uid=_euid() + 1)])
+    monkeypatch.setattr(measure, "_posix_ancestor_pids", lambda pid: set())
+    measure.kill_stale_sessions(threshold_hours=12, dry_run=True)
+    assert "PID 4000" not in capsys.readouterr().out
+
+
+def test_windows_closing_message_does_not_claim_an_owner_filter(monkeypatch, capsys):
+    """The Windows collector has no owner column (a per-process GetOwner call would be a
+    new slow CIM round trip per session), so the closing text must not promise one."""
+    measure = _load_measure()
+    sessions = [_session(4000, source="windows")]
+    _arrange(monkeypatch, measure, sessions)
+    monkeypatch.setattr(measure.os, "name", "nt")
+    monkeypatch.setattr(measure, "_windows_ancestor_pids", lambda pid, names=None: set())
+    monkeypatch.setattr(measure, "_revalidate_terminal_cli", lambda s, identity="terminal_cli": True)
+    measure.kill_stale_sessions(threshold_hours=12)
+    out = capsys.readouterr().out
+    assert "Terminated 1 stale session" in out
+    assert "unaffected" not in out
+    assert "owner" in out.lower() or "account" in out.lower()
+
+

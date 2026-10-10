@@ -26509,8 +26509,12 @@ _POSIX_TERMINAL_PARENTS = frozenset({
 })
 _POSIX_NO_TTY = ("??", "-", "?")
 _POSIX_ANCESTRY_MAX_HOPS = 16
+# pid ppid [uid] tty lstart etime command. uid is optional only so a row without
+# it still parses for display; such a session has no provable owner (uid None)
+# and kill-stale never terminates it. A tty is never all digits, so the optional
+# numeric field cannot swallow it.
 _POSIX_PS_ROW_RE = re.compile(
-    r"^\s*(\d+)\s+(\d+)\s+(\S+)\s+"
+    r"^\s*(\d+)\s+(\d+)\s+(?:(\d+)\s+)?(\S+)\s+"
     r"(\S+\s+\S+\s+\d+\s+\d{1,2}:\d{2}:\d{2}\s+\d{4})\s+"  # lstart (C locale)
     r"(\S+)\s+(.*?)\s*$"
 )
@@ -26874,7 +26878,7 @@ def _collect_posix_claude_sessions(process_name="claude"):
     """
     try:
         result = subprocess.run(
-            ["ps", "-ww", "-eo", "pid,ppid,tty,lstart,etime,command"],
+            ["ps", "-ww", "-eo", "pid,ppid,uid,tty,lstart,etime,command"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
             # Force C locale so lstart is always English 5-field format. Under
             # non-English locales (e.g. he_IL.UTF-8) ps emits localized dates
@@ -26892,8 +26896,9 @@ def _collect_posix_claude_sessions(process_name="claude"):
         if not m:
             continue  # header and anything that is not a process row
         rows.append({
-            "pid": int(m.group(1)), "ppid": int(m.group(2)), "tty": m.group(3),
-            "lstart": " ".join(m.group(4).split()), "etime": m.group(5), "args": m.group(6),
+            "pid": int(m.group(1)), "ppid": int(m.group(2)),
+            "uid": int(m.group(3)) if m.group(3) is not None else None, "tty": m.group(4),
+            "lstart": " ".join(m.group(5).split()), "etime": m.group(6), "args": m.group(7),
         })
     claude = process_name == "claude"
     names = _posix_process_names() if claude else None
@@ -26946,6 +26951,7 @@ def _collect_posix_claude_sessions(process_name="claude"):
             "command": command,
             "has_terminal": has_terminal,
             "tty": tty if has_terminal else None,
+            "uid": r["uid"],
         }
         if identity is not None:
             session["identity"] = identity
@@ -28001,17 +28007,17 @@ def health_selfcheck():
     else:
         try:
             res = subprocess.run(
-                ["ps", "-ww", "-eo", "pid,ppid,tty,lstart,etime,command"],
+                ["ps", "-ww", "-eo", "pid,ppid,uid,tty,lstart,etime,command"],
                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
                 # Match the production collectors: force C locale so this
                 # diagnostic mirrors what _collect_posix_claude_sessions sees.
                 env={**os.environ, "LC_ALL": "C", "LC_TIME": "C"}, creationflags=_NO_WINDOW,
             )
             ok = res.returncode == 0 and len(res.stdout.strip().split("\n")) > 1
-            check("ps -ww -eo pid,ppid,tty,lstart,etime,command", ok,
+            check("ps -ww -eo pid,ppid,uid,tty,lstart,etime,command", ok,
                   f"exit={res.returncode}, lines={len(res.stdout.strip().split(chr(10)))}")
         except (subprocess.SubprocessError, OSError) as e:
-            check("ps -ww -eo pid,ppid,tty,lstart,etime,command", False, f"exception: {e!r}")
+            check("ps -ww -eo pid,ppid,uid,tty,lstart,etime,command", False, f"exception: {e!r}")
 
         try:
             sessions = _collect_posix_claude_sessions()
@@ -28141,6 +28147,7 @@ def _posix_revalidate_terminal_cli(session, fresh_inventory=None, identity="term
         and now.get("identity") == identity
         and now.get("started") == session.get("started")
         and now.get("command") == session.get("command")
+        and now.get("uid") == session.get("uid")
     )
 
 
@@ -28166,6 +28173,14 @@ def _parse_kill_stale_args(args):
     return hours, "--dry-run" in args, "--include-orphans" in args
 
 
+def _kill_stale_owns(session):
+    """True when kill-stale may consider `session`: POSIX sessions must be owned by
+    the effective uid of this process (uid unknown means not provably ours)."""
+    if session.get("identity_source") != "ps" or not hasattr(os, "geteuid"):
+        return True
+    return session.get("uid") == os.geteuid()
+
+
 def kill_stale_sessions(threshold_hours=12, dry_run=False, include_orphans=False):
     """Kill Claude Code sessions that have been running longer than threshold_hours.
 
@@ -28185,7 +28200,11 @@ def kill_stale_sessions(threshold_hours=12, dry_run=False, include_orphans=False
         print("\n  Session health check is not supported on this platform.")
         return
 
-    running = health["running_sessions"]
+    # Only ever act on this user's own processes. `ps -e` lists everyone's; as root on
+    # a shared box that would otherwise reach another user's conversation. A POSIX
+    # session whose owner is unknown is treated as not ours. The Windows collectors
+    # carry no owner (see the closing message below).
+    running = [s for s in health["running_sessions"] if _kill_stale_owns(s)]
     threshold_seconds = threshold_hours * 3600
     my_pid = os.getpid()
     my_ppid = os.getppid()
@@ -28283,7 +28302,14 @@ def kill_stale_sessions(threshold_hours=12, dry_run=False, include_orphans=False
     print(f"\n  Terminated {killed} stale session{'s' if killed != 1 else ''}.")
     if killed > 0:
         print(f"  These were Claude Code processes running >{threshold_hours}h.")
-        print("  Your active terminal sessions are unaffected.\n")
+        if os.name == "nt":
+            # No owner column in the Windows process inventory (a GetOwner call per
+            # process is a new slow CIM round trip), so do not claim an account filter.
+            print("  Only sessions older than the threshold were targeted. The Windows process list")
+            print("  does not record the owning account, so from an elevated shell this can include")
+            print("  other accounts' sessions.\n")
+        else:
+            print("  Your active terminal sessions are unaffected.\n")
 
 
 # ========== Hook Management ==========

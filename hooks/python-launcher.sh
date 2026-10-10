@@ -15,6 +15,24 @@
 # Exits 127 with a diagnostic message if none found.
 
 set -eu
+# A failed `exec` (bad shebang, file gone between discovery and exec, ENOEXEC)
+# must return to the caller instead of terminating the shell non-zero, so
+# discovery can advance to the next candidate and the launcher keeps its
+# exit-0 guarantee (see HOOK-SAFETY at the bottom). `execfail` is half of that;
+# _try_exec below is the other half.
+shopt -s execfail
+
+# _try_exec <interpreter> [args...] -- exec, returning 1 if the exec fails.
+# bash 3.2 (macOS /bin/bash) exits the shell on a failed `exec` whenever errexit
+# is on, even with execfail and even when the call sits in an `||` list. So
+# errexit is dropped for the exec itself and restored on the only path that
+# returns (a failed exec). A successful exec never returns.
+_try_exec() {
+    set +e
+    exec "$@"
+    set -e
+    return 1
+}
 # Extglob enables +([0-9]) in the version-number case patterns below so
 # the glob is anchored to the path-component boundary. Without it, * in a
 # case pattern crosses / and Python[23]* matches Python3-evil/python.exe.
@@ -328,7 +346,11 @@ $(ls -1tr "$cache_dir"/interpreter-e*-*.cache 2>/dev/null)
 EOF
     i=0
     while [ "$count" -ge "$_PY_CACHE_MAX_FILES" ] && [ "$i" -lt "${#files[@]}" ]; do
-        rm -f -- "${files[$i]}" 2>/dev/null
+        # `|| :` -- an unremovable record (held by antivirus, immutable) must
+        # never abort the launcher under `set -e`: that abort would land before
+        # the cache write, so no new record is ever stored and every later hook
+        # aborts the same way.
+        rm -f -- "${files[$i]}" 2>/dev/null || :
         i=$((i + 1))
         count=$((count - 1))
     done
@@ -523,10 +545,10 @@ _exec_cached_interpreter() {
     _is_safe_prefix "$interp" || return 1
 
     if [ "$marker" = "-3" ]; then
-        exec "$interp" -3 "$@"
+        _try_exec "$interp" -3 "$@"
         return 1
     fi
-    exec "$interp" "$@"
+    _try_exec "$interp" "$@"
 }
 
 _write_interpreter_cache() {
@@ -564,9 +586,10 @@ _exec_discovered_interpreter() {
     [ -x "$interp" ] && [ -s "$interp" ] || return 1
     _is_safe_prefix "$interp" || return 1
     if [ "$marker" = "-3" ]; then
-        exec "$interp" -3 "$@"
+        _try_exec "$interp" -3 "$@"
+        return 1
     fi
-    exec "$interp" "$@"
+    _try_exec "$interp" "$@"
 }
 
 # Explicit user override. pyenv / asdf / conda / venv interpreters, and Codex
@@ -587,7 +610,8 @@ if [ -n "${TOKEN_OPTIMIZER_PYTHON:-}" ]; then
     _ov="$TOKEN_OPTIMIZER_PYTHON"
     if [ -x "$_ov" ] && [ -s "$_ov" ] && \
        "$_ov" -c 'import sys; sys.exit(0 if sys.version_info[0] >= 3 else 1)' >/dev/null 2>&1; then
-        exec "$_ov" "$@"
+        # `|| :`: a failed exec falls through to normal discovery.
+        _try_exec "$_ov" "$@" || :
     fi
     # `|| :` so a failed write (stderr closed) cannot abort under `set -e` before
     # we fall through to normal discovery.
@@ -734,15 +758,15 @@ find_interpreter() {
 }
 
 if py3=$(find_interpreter "python3"); then
-    _exec_discovered_interpreter "$py3" "" "$@"
+    _exec_discovered_interpreter "$py3" "" "$@" || :
 fi
 
 if py=$(find_interpreter "python"); then
-    _exec_discovered_interpreter "$py" "" "$@"
+    _exec_discovered_interpreter "$py" "" "$@" || :
 fi
 
 if pyl=$(find_interpreter "py"); then
-    _exec_discovered_interpreter "$pyl" "-3" "$@"
+    _exec_discovered_interpreter "$pyl" "-3" "$@" || :
 fi
 
 # Direct probe: hook environments often have a stripped PATH that excludes
@@ -750,7 +774,7 @@ fi
 for _direct in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3 \
                /home/linuxbrew/.linuxbrew/bin/python3; do
     if [ -x "$_direct" ] && [ -s "$_direct" ] && _is_safe_prefix "$_direct"; then
-        _exec_discovered_interpreter "$_direct" "" "$@"
+        _exec_discovered_interpreter "$_direct" "" "$@" || :
     fi
 done
 

@@ -555,3 +555,99 @@ def test_no_write_site_uses_the_lossy_reader(measure):
         if nearest == "lossy":
             offenders.append(f"line {i}: {line.strip()}")
     assert not offenders, "lossy read feeding a settings write:\n" + "\n".join(offenders)
+
+
+# ---------------------------------------------------------------------------
+# F-T1-10: a concurrent editor's VALUE edit / removal must survive our write
+# ---------------------------------------------------------------------------
+
+def test_concurrent_value_edit_survives_a_stale_write(measure):
+    mod, settings = measure
+    stale, ok = mod._read_settings_for_write()
+    assert ok
+    stale["cleanupPeriodDays"] = 12345  # our change
+
+    human = dict(FULL_SETTINGS)
+    human["model"] = "claude-human-picked"  # human edits a value we did not touch
+    settings.write_text(json.dumps(human, indent=2) + "\n", encoding="utf-8")
+
+    assert mod._write_settings_atomic(stale) is True
+    on_disk = _read(settings)
+    assert on_disk["model"] == "claude-human-picked", "human value edit was clobbered"
+    assert on_disk["cleanupPeriodDays"] == 12345, "our own change was lost"
+
+
+def test_concurrent_key_removal_survives_a_stale_write(measure):
+    mod, settings = measure
+    stale, ok = mod._read_settings_for_write()
+    assert ok
+    stale["cleanupPeriodDays"] = 12345
+
+    human = dict(FULL_SETTINGS)
+    del human["voice"]
+    settings.write_text(json.dumps(human, indent=2) + "\n", encoding="utf-8")
+
+    assert mod._write_settings_atomic(stale) is True
+    on_disk = _read(settings)
+    assert "voice" not in on_disk, "a key the human removed was resurrected"
+    assert on_disk["cleanupPeriodDays"] == 12345
+
+
+def test_concurrent_env_var_edit_survives_when_we_change_another_env_var(measure):
+    mod, settings = measure
+    stale, ok = mod._read_settings_for_write()
+    assert ok
+    stale["env"]["TO_VAR"] = "ours"
+
+    human = json.loads(json.dumps(FULL_SETTINGS))
+    human["env"]["MY_KEY"] = "human-edited"
+    human["env"]["HUMAN_ADDED"] = "1"
+    settings.write_text(json.dumps(human, indent=2) + "\n", encoding="utf-8")
+
+    assert mod._write_settings_atomic(stale) is True
+    env = _read(settings)["env"]
+    assert env == {"MY_KEY": "human-edited", "HUMAN_ADDED": "1", "TO_VAR": "ours"}
+
+
+def test_deliberate_removal_still_applies_on_top_of_a_concurrent_edit(measure):
+    mod, settings = measure
+    stale, ok = mod._read_settings_for_write()
+    assert ok
+    del stale["voice"]
+
+    human = dict(FULL_SETTINGS)
+    human["model"] = "claude-human-picked"
+    settings.write_text(json.dumps(human, indent=2) + "\n", encoding="utf-8")
+
+    assert mod._write_settings_atomic(stale, allow_removing_keys={"voice"}) is True
+    on_disk = _read(settings)
+    assert "voice" not in on_disk
+    assert on_disk["model"] == "claude-human-picked"
+
+
+# ---------------------------------------------------------------------------
+# F-T1-11: a non-regular file at settings.json must not block the read
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs POSIX FIFOs")
+def test_fifo_at_settings_path_is_refused_without_blocking(measure):
+    mod, settings = measure
+    settings.unlink()
+    os.mkfifo(settings)
+    result = {}
+
+    def run():
+        result["checked"] = mod._read_settings_json_checked()
+        result["for_write"] = mod._read_settings_for_write()
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(3)
+    if t.is_alive():  # unblock the reader so the daemon thread can exit
+        fd = os.open(settings, os.O_WRONLY | os.O_NONBLOCK)
+        os.write(fd, b"{}")
+        os.close(fd)
+        t.join(2)
+        pytest.fail("reading a FIFO at settings.json blocked")
+    assert result["checked"][2] is False
+    assert result["for_write"][1] is False

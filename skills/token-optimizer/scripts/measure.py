@@ -28301,6 +28301,9 @@ def _settings_write_guard(settings_data, allow_removing_keys=None, dest=None):
     if not isinstance(settings_data, dict):
         return False, f"outgoing settings is {type(settings_data).__name__}, not a dict"
     target = dest if dest is not None else SETTINGS_PATH
+    if os.path.lexists(target) and not _is_regular_file(target):
+        # F-T1-11: never open() a FIFO/socket/device (it can block forever).
+        return False, "settings.json on disk is not a regular file; cannot prove this write is non-destructive"
     try:
         with open(target, "r", encoding="utf-8-sig") as f:
             current = json.load(f)
@@ -28445,6 +28448,59 @@ def _write_settings_atomic_locked(settings_data, allow_removing_keys=None, _repo
     return True
 
 
+def _merge_concurrent_settings(snapshot, mine, allow_removing_keys=None):
+    """Three-way merge (F-T1-10) of our payload onto what is on disk right now.
+
+    ``snapshot`` is the ``(path, base)`` pair recorded by
+    ``_read_settings_for_write``; ``mine`` is the caller's payload derived from
+    that read. Only the keys the caller actually CHANGED relative to ``base``
+    are applied on top of the fresh file, so a value edit or key removal made
+    by another editor between our read and our write survives. ``env`` is
+    merged per variable for the same reason. Returns the merged dict, or None
+    when there is nothing to merge (no recorded read, the file is unchanged, or
+    the payload drops keys it was not licensed to drop, which the write guard
+    then refuses as before). Caller must hold the settings lease.
+    """
+    if not snapshot or not isinstance(mine, dict):
+        return None
+    snapshot_path, base = snapshot
+    try:
+        current_path = str(SETTINGS_PATH.resolve(strict=False))
+    except (OSError, ValueError):
+        current_path = str(SETTINGS_PATH)
+    if snapshot_path != current_path or not isinstance(base, dict):
+        return None
+    allowed = set(allow_removing_keys or ())
+    if set(base) - set(mine) - allowed:
+        return None
+    fresh, _path, fresh_ok = _read_settings_json_checked()
+    if not fresh_ok or not isinstance(fresh, dict) or not SETTINGS_PATH.exists():
+        return None
+    if fresh == base:
+        return None
+    merged = dict(fresh)
+    for key, value in mine.items():
+        if key in base and base[key] == value:
+            continue
+        base_env, fresh_env = base.get("env"), fresh.get("env")
+        if key == "env" and isinstance(value, dict) and isinstance(base_env, dict) \
+                and isinstance(fresh_env, dict):
+            env = dict(fresh_env)
+            for var, val in value.items():
+                if var not in base_env or base_env[var] != val:
+                    env[var] = val
+            for var in base_env:
+                if var not in value and ("env" in allowed or "env." + var in allowed):
+                    env.pop(var, None)
+            merged["env"] = env
+        else:
+            merged[key] = value
+    for key in allowed:
+        if key not in mine:
+            merged.pop(key, None)
+    return merged
+
+
 def _write_settings_atomic(settings_data, allow_removing_keys=None,
                            user_initiated=False):
     """Write settings.json atomically using tempfile + os.replace().
@@ -28487,7 +28543,10 @@ def _write_settings_atomic(settings_data, allow_removing_keys=None,
             # distinguish "lease denied" from "guard refused".
             _log_settings_lease_denied()
             return False
-        if _write_settings_atomic_locked(settings_data, allow_removing_keys, _report_refusal=False):
+        payload = _merge_concurrent_settings(snapshot, settings_data, allow_removing_keys)
+        if payload is None:
+            payload = settings_data
+        if _write_settings_atomic_locked(payload, allow_removing_keys, _report_refusal=False):
             return True
 
         refusal = getattr(_SETTINGS_WRITE_READ_STATE, "last_refusal", None)
@@ -42426,6 +42485,14 @@ def _read_settings_json():
     return data, path
 
 
+def _is_regular_file(path) -> bool:
+    """True when ``path`` (symlinks followed) is a regular file. Never opens it."""
+    try:
+        return stat.S_ISREG(os.stat(path).st_mode)
+    except (OSError, ValueError):
+        return False
+
+
 def _read_settings_json_checked():
     """Read settings.json, return (data, path, ok).
 
@@ -42438,6 +42505,11 @@ def _read_settings_json_checked():
     round-tripping an unknown-state ``{}`` destroys every key the user has.
     """
     if SETTINGS_PATH.exists():
+        # F-T1-11: open() on a FIFO blocks until a writer appears, which would
+        # stall a SessionStart hook to its deadline. Anything that is not a
+        # regular file (FIFO, socket, device, directory) is "unknown", not data.
+        if not _is_regular_file(SETTINGS_PATH):
+            return {}, SETTINGS_PATH, False
         try:
             # utf-8-sig tolerates a BOM (F-T1-8; whether the host tolerates
             # one is not verified, but a BOM-prefixed file must at least be

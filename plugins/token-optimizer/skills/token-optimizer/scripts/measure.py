@@ -23376,6 +23376,342 @@ def _command_matches_process(command, process_name):
     return exe_base == process_name
 
 
+# POSIX process identity (macOS and Linux). Same contract as the Windows block
+# further down (issue #211): `kill_stale_sessions` acts on this inventory, and
+# process age or a `claude` argv[0] alone does not show that a conversation is
+# abandoned. A claude process can be hosted by the desktop app (driven over
+# stream-json, wrapped by Claude.app's `disclaimer` helper), an IDE, the SDK or
+# a headless `-p` run, or be a subcommand (`mcp`, `doctor` ...). So identity is
+# established from the real argv and the parent chain, and fails closed:
+# only a positively identified terminal CLI process is ever terminated.
+_POSIX_TERMINAL_PARENTS = frozenset({
+    # shells
+    "sh", "bash", "zsh", "fish", "dash", "ksh", "ksh93", "mksh", "pdksh", "tcsh", "csh",
+    "ash", "rbash", "xonsh", "nu", "nushell", "elvish", "pwsh", "osh", "oil",
+    # multiplexers and persistent-session hosts (a tmux-hosted interactive
+    # session IS a terminal session)
+    "tmux", "screen", "byobu", "zellij", "dtach", "abduco", "mosh-server",
+    # remote logins
+    "sshd", "sshd-session", "sshd-auth",
+    # terminal emulators that may be a direct parent
+    "terminal", "iterm2", "ghostty", "alacritty", "kitty", "wezterm", "wezterm-gui",
+    "hyper", "warp", "tabby", "rio", "foot", "xterm", "urxvt", "rxvt", "st", "konsole",
+    "gnome-terminal-", "gnome-terminal-server", "terminator", "tilix", "xfce4-terminal",
+    "lxterminal", "mate-terminal", "kgx", "ptyxis",
+})
+_POSIX_NO_TTY = ("??", "-", "?")
+_POSIX_ANCESTRY_MAX_HOPS = 16
+_POSIX_PS_ROW_RE = re.compile(
+    r"^\s*(\d+)\s+(\d+)\s+(\S+)\s+"
+    r"(\S+\s+\S+\s+\d+\s+\d{1,2}:\d{2}:\d{2}\s+\d{4})\s+"  # lstart (C locale)
+    r"(\S+)\s+(.*?)\s*$"
+)
+_POSIX_NAME_ROW_RE = re.compile(r"^\s*(\d+)\s+(\d+)\s+(.+?)\s*$")
+
+
+def _posix_comm_name(comm):
+    """Lower-case executable name from a ps COMM field ("-zsh" -> "zsh",
+    "tmux: server" -> "tmux", "/bin/bash" -> "bash"). Never raises."""
+    text = (comm or "").strip()
+    if not text:
+        return ""
+    text = text.split(": ", 1)[0].rsplit("/", 1)[-1]
+    return text.lstrip("-").strip().lower()
+
+
+def _posix_comm_is_claude(comm):
+    """True when a COMM field names a claude CLI executable (basename `claude`,
+    `.exe` stripped, or the versioned ccd-cli launcher). Matches desktop-hosted
+    sessions installed under a path with spaces (`.../Application Support/...`),
+    which the whitespace-split `ps` command column cannot show."""
+    text = (comm or "").strip()
+    if not text:
+        return False
+    base = text.rsplit("/", 1)[-1]
+    if base.endswith(".exe"):
+        base = base[:-4]
+    return base == "claude" or bool(_CCD_CLI_LAUNCHER_RE.search(text))
+
+
+def _posix_is_claude_host(comm, args):
+    """True when a process is the Claude desktop app (main, helper, disclaimer
+    wrapper, Electron build) or another claude process: a claude below it is hosted."""
+    if _posix_comm_name(comm).startswith("claude"):
+        return True
+    low = f"{comm or ''}\n{args or ''}".lower()
+    if "claude.app/" in low or "/.claude/remote/ccd-cli/" in low or "@anthropic-ai/claude-code" in low:
+        return True
+    if "app.asar" in low and "claude" in low:
+        return True
+    return _command_matches_process(args or "", "claude")
+
+
+def _posix_option_args(argv):
+    """Arguments that can be options: everything after argv[0] up to a bare --."""
+    args = list(argv[1:])
+    return args[:args.index("--")] if "--" in args else args
+
+
+def _posix_is_headless(options):
+    """True for SDK/headless/IDE switches and for subcommand processes."""
+    for raw in options:
+        a = raw.lower()
+        if len(a) > 1 and a[0] == "-" and a[1] != "-" and "p" in a.split("=")[0]:
+            return True  # -p, -pc ...
+        if any(a == f or a.startswith(f + "=") for f in _WIN_HEADLESS_FLAGS):
+            return True
+        if a in _WIN_HEADLESS_SUBCOMMANDS:
+            return True
+    return False
+
+
+def _posix_read_argv(pid):
+    """Exact argv of a process, or None when the OS will not say.
+
+    Linux reads NUL-separated /proc/<pid>/cmdline; macOS asks the kernel
+    (sysctl KERN_PROCARGS2). Unlike the `ps` command column, both keep an
+    argument that contains spaces as ONE token, so prompt text can neither
+    masquerade as a switch nor hide one. Callers fall back to the `ps` column.
+    """
+    try:
+        pid = int(pid)
+        if sys.platform.startswith("linux"):
+            with open(f"/proc/{pid}/cmdline", "rb") as fh:
+                data = fh.read()
+            if not data:
+                return None
+            parts = data.split(b"\0")
+            while parts and parts[-1] == b"":
+                parts.pop()  # trailing NUL, and the padding left by a rewritten title
+            return [p.decode("utf-8", "replace") for p in parts] or None
+        if sys.platform == "darwin":
+            import ctypes
+            import ctypes.util
+
+            libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+            mib = (ctypes.c_int * 3)(1, 49, pid)  # CTL_KERN, KERN_PROCARGS2, pid
+            size = ctypes.c_size_t(0)
+            if libc.sysctl(mib, 3, None, ctypes.byref(size), None, 0) != 0 or size.value < 8:
+                return None
+            buf = ctypes.create_string_buffer(size.value)
+            if libc.sysctl(mib, 3, buf, ctypes.byref(size), None, 0) != 0:
+                return None
+            data = buf.raw[:size.value]
+            argc = int.from_bytes(data[:4], sys.byteorder)
+            rest = data[4:]
+            i = rest.index(b"\0")  # exec_path
+            while i < len(rest) and rest[i] == 0:
+                i += 1
+            parts = rest[i:].split(b"\0")[:argc]
+            if argc < 1 or len(parts) < argc:
+                return None
+            return [p.decode("utf-8", "replace") for p in parts]
+    except Exception:
+        return None
+    return None
+
+
+def _posix_exe_path(pid, comm=None):
+    """Real executable path of a process, or None.
+
+    /proc/<pid>/exe on Linux (a replaced binary reads "<path> (deleted)", whose
+    directory is still the right one to probe), proc_pidpath on macOS. A native
+    install deletes the previous version's binary after an update, so a
+    long-running session can legitimately have no resolvable path; callers treat
+    None as "no directory evidence", not as a reason to fail.
+    """
+    try:
+        pid = int(pid)
+        if sys.platform.startswith("linux"):
+            target = os.readlink(f"/proc/{pid}/exe")
+            return target[:-len(" (deleted)")] if target.endswith(" (deleted)") else target
+        if sys.platform == "darwin":
+            import ctypes
+            import ctypes.util
+
+            lib = ctypes.CDLL(ctypes.util.find_library("proc") or "/usr/lib/libproc.dylib", use_errno=True)
+            buf = ctypes.create_string_buffer(4096)
+            if lib.proc_pidpath(pid, buf, 4096) > 0:
+                return buf.value.decode("utf-8", "replace")
+    except Exception:
+        pass
+    return comm if comm and comm.startswith("/") else None
+
+
+def _posix_dir_is_electron_app(exe_path):
+    """True/False when the executable's directory is/is not an Electron app
+    directory; None when that cannot be determined (fail closed upstream)."""
+    if not exe_path:
+        return None
+    base = os.path.dirname(exe_path)
+    # os.path.exists swallows every OSError and reports False, which would turn
+    # an unreadable directory into "not Electron". Probe with os.stat so that
+    # anything other than "definitely absent" is indeterminate.
+    try:
+        os.stat(base or ".")
+    except (OSError, ValueError):
+        return None
+    probes = [os.path.join(base, *marker) for marker in _WIN_ELECTRON_MARKERS]
+    if os.path.basename(base) == "MacOS" and os.path.basename(os.path.dirname(base)) == "Contents":
+        contents = os.path.dirname(base)  # <App>.app/Contents
+        probes.append(os.path.join(contents, "Resources", "app.asar"))
+        probes.append(os.path.join(contents, "Frameworks", "Electron Framework.framework"))
+    found = False
+    for probe in probes:
+        try:
+            os.stat(probe)
+            found = True
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        except (OSError, ValueError):
+            return None
+    return found
+
+
+def _posix_ancestry_state(pid, names, args_by_pid, electron_parent_pids=frozenset()):
+    """Walk parents of pid. Returns "hosted", "complete" or "incomplete".
+
+    "complete" means the chain provably reached init/launchd (or a pid-namespace
+    root) without meeting the desktop app or another claude process. Missing
+    rows, cycles and over-long chains are "incomplete": absence of evidence is
+    never a negative host check.
+    """
+    seen = {pid}
+    cur = pid
+    for _ in range(_POSIX_ANCESTRY_MAX_HOPS):
+        entry = names.get(cur)
+        if not entry:
+            return "incomplete"
+        ppid = entry[0]
+        if ppid <= 0:
+            return "complete"
+        if ppid in seen:
+            return "incomplete"
+        parent = names.get(ppid)
+        if not parent:
+            return "incomplete"
+        if ppid in electron_parent_pids or _posix_is_claude_host(parent[1], args_by_pid.get(ppid)):
+            return "hosted"
+        if ppid == 1:
+            return "complete"
+        seen.add(ppid)
+        cur = ppid
+    return "incomplete"
+
+
+def _classify_posix_claude_process(detail, names, args_by_pid, electron_parent_pids=frozenset()):
+    """Classify one claude process on macOS/Linux by identity.
+
+    Same classes as `_classify_windows_claude_process`:
+    - "helper":           Electron child (--type=...). Never a session.
+    - "desktop_app":      The Electron main process of the desktop app (it has
+                          --type= children, or an Electron directory layout).
+                          Not a session; never terminable.
+    - "embedded_session": A Claude Code process hosted by another program
+                          (desktop app, IDE, SDK, a parent claude) or running
+                          headless (--print, stream-json, mcp ...). A real
+                          session owned by its host: never terminated by age.
+    - "terminal_cli":     Positively identified interactive terminal process:
+                          readable argv, no host/headless markers, a complete
+                          parent chain, a controlling TTY and a parent that is a
+                          shell, multiplexer, sshd or terminal. The only identity
+                          kill_stale_sessions may terminate.
+    - "unknown":          Anything else, including every case where identity
+                          evidence could not be read (orphans reparented to
+                          init, unreadable ps, undecodable text). Listed, never
+                          terminated.
+
+    detail: pid, ppid, tty, argv (list), exe (path or None).
+    names: {pid: (ppid, comm)} or None; args_by_pid: {pid: ps args string}.
+    """
+    if not detail:
+        return "unknown"
+    argv = detail.get("argv")
+    if not argv:
+        return "unknown"
+    exe = detail.get("exe") or ""
+    if "�" in exe or any("�" in a for a in argv):
+        return "unknown"  # undecodable text is never affirmative evidence
+    if len(argv) == 1:
+        # A process that rewrote its title carries its whole command line in
+        # argv[0]; split it so a switch inside cannot hide.
+        argv = argv[0].split() or argv
+    options = _posix_option_args(argv)  # tokens after a bare -- are prompt text
+    if any(a.lower().startswith("--type=") for a in options):
+        return "helper"
+    pid = detail.get("pid")
+    if pid in electron_parent_pids:
+        return "desktop_app"
+    if exe:
+        electron_dir = _posix_dir_is_electron_app(exe)
+        if electron_dir is None:
+            return "unknown"
+        if electron_dir:
+            return "desktop_app"
+    if not names:
+        return "unknown"
+    ancestry = _posix_ancestry_state(pid, names, args_by_pid, electron_parent_pids)
+    if ancestry == "hosted":
+        return "embedded_session"
+    if ancestry != "complete":
+        return "unknown"
+    if _posix_is_headless(options):
+        return "embedded_session"
+    entry = names.get(pid)
+    if not entry or detail.get("ppid") != entry[0]:
+        return "unknown"  # the two snapshots disagree about the parent
+    if (detail.get("tty") or "?") in _POSIX_NO_TTY:
+        return "unknown"
+    parent = names.get(entry[0])
+    if parent and _posix_comm_name(parent[1]) in _POSIX_TERMINAL_PARENTS:
+        return "terminal_cli"
+    return "unknown"
+
+
+def _posix_process_names():
+    """Return {pid: (ppid, comm)} for every process, or None when unreadable.
+
+    COMM is the last column because it may contain spaces ("Claude Helper
+    (Renderer)"); on macOS it is the full executable path. None means the
+    parent chain cannot be established: callers treat every process as
+    unverified, never as a confirmed terminal session.
+    """
+    try:
+        result = subprocess.run(
+            ["ps", "-ww", "-eo", "pid,ppid,comm"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+            env={**os.environ, "LC_ALL": "C", "LC_TIME": "C"}, creationflags=_NO_WINDOW,
+        )
+    except (subprocess.SubprocessError, OSError, ValueError):
+        return None
+    if result.returncode != 0:
+        return None
+    names = {}
+    for line in result.stdout.splitlines():
+        m = _POSIX_NAME_ROW_RE.match(line)
+        if m:
+            names[int(m.group(1))] = (int(m.group(2)), m.group(3))
+    return names or None
+
+
+def _posix_ancestor_pids(pid):
+    """Pids of every ancestor of `pid` (best effort, empty when ps is unreadable).
+
+    kill-stale runs inside the conversation it was asked from; that claude is an
+    ancestor of the command, not its direct parent, so it must be excluded too.
+    """
+    names = _posix_process_names()
+    out = set()
+    cur = pid
+    for _ in range(64):
+        entry = (names or {}).get(cur)
+        if not entry or entry[0] <= 0 or entry[0] in out:
+            break
+        out.add(entry[0])
+        cur = entry[0]
+    return out
+
+
 def _collect_posix_claude_sessions(process_name="claude"):
     """Collect running Claude/Codex CLI sessions via `ps` on macOS/Linux.
 
@@ -23383,51 +23719,90 @@ def _collect_posix_claude_sessions(process_name="claude"):
     subprocess or OS error -- the caller treats None as "health check
     unavailable" to preserve the historical POSIX contract. A non-zero
     `ps` exit with no sessions found returns `[]`.
+
+    For `claude`, every session carries ``identity`` ("terminal_cli",
+    "embedded_session" or "unknown") and ``identity_source: "ps"``; Electron
+    helpers and the desktop app's own process are dropped. See
+    `_classify_posix_claude_process`. Codex inventories are untagged: the Codex
+    path never terminates by age (see `_collect_health_data`/`kill_stale_sessions`).
     """
-    sessions = []
     try:
         result = subprocess.run(
-            ["ps", "-eo", "pid,tty,lstart,etime,command"],
-            capture_output=True, text=True, timeout=10,
+            ["ps", "-ww", "-eo", "pid,ppid,tty,lstart,etime,command"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
             # Force C locale so lstart is always English 5-field format. Under
             # non-English locales (e.g. he_IL.UTF-8) ps emits localized dates
             # with a different field count, breaking the positional parse below
             # and dropping every session.
             env={**os.environ, "LC_ALL": "C", "LC_TIME": "C"}, creationflags=_NO_WINDOW,
         )
-    except (subprocess.SubprocessError, OSError):
+    except (subprocess.SubprocessError, OSError, ValueError):
         return None
     if result.returncode != 0:
-        return sessions
-    for line in result.stdout.strip().split("\n")[1:]:
-        line = line.strip()
-        if not line:
+        return []
+    rows = []
+    for line in result.stdout.splitlines():
+        m = _POSIX_PS_ROW_RE.match(line)
+        if not m:
+            continue  # header and anything that is not a process row
+        rows.append({
+            "pid": int(m.group(1)), "ppid": int(m.group(2)), "tty": m.group(3),
+            "lstart": " ".join(m.group(4).split()), "etime": m.group(5), "args": m.group(6),
+        })
+    claude = process_name == "claude"
+    names = _posix_process_names() if claude else None
+    args_by_pid = {r["pid"]: r["args"] for r in rows}
+
+    # Parents of claude-named Electron children (--type=...) are the desktop
+    # app's main process, whatever their own name or directory layout.
+    electron_parent_pids = set()
+    if claude and names:
+        for r in rows:
+            if r["ppid"] > 0 and any(t.lower().startswith("--type=") for t in _posix_option_args(r["args"].split())):
+                comm = (names.get(r["pid"]) or (0, ""))[1]
+                if _posix_is_claude_host(comm, r["args"]):
+                    electron_parent_pids.add(r["ppid"])
+
+    sessions = []
+    for r in rows:
+        comm = (names.get(r["pid"]) or (0, ""))[1] if names else ""
+        command = r["args"]
+        if not (_command_matches_process(command, process_name)
+                or (claude and _posix_comm_is_claude(comm))):
             continue
-        parts = line.split()
-        if len(parts) < 9:
-            continue
-        # Fields: PID TTY LSTART(5 fields) ETIME COMMAND...
-        tty = parts[1]
-        command = " ".join(parts[8:])
-        if not _command_matches_process(command, process_name):
-            continue
-        try:
-            pid = int(parts[0])
-        except ValueError:
-            continue
-        lstart = " ".join(parts[2:7])
-        elapsed = parts[7]
-        elapsed_seconds = _parse_elapsed_time(elapsed)
-        has_terminal = tty not in ("??", "-", "?")
-        sessions.append({
+        pid = r["pid"]
+        tty = r["tty"]
+        elapsed_seconds = _parse_elapsed_time(r["etime"])
+        has_terminal = tty not in _POSIX_NO_TTY
+        identity = None
+        if claude:
+            argv = _posix_read_argv(pid)
+            if not argv:
+                # ps joins argv with spaces: still safe (a switch can never be
+                # hidden by splitting), merely coarser. On macOS COMM is argv[0]
+                # exactly, which keeps a spaced install path in one token.
+                if comm.startswith("/") and command.startswith(comm):
+                    argv = [comm] + command[len(comm):].split()
+                else:
+                    argv = command.split()
+            exe = _posix_exe_path(pid, comm)
+            detail = {"pid": pid, "ppid": r["ppid"], "tty": tty, "argv": argv, "exe": exe}
+            identity = _classify_posix_claude_process(detail, names, args_by_pid, electron_parent_pids)
+            if identity in ("helper", "desktop_app"):
+                continue
+        session = {
             "pid": pid,
-            "started": lstart,
+            "started": r["lstart"],
             "elapsed_seconds": elapsed_seconds,
             "elapsed_human": _format_elapsed(elapsed_seconds),
             "command": command,
             "has_terminal": has_terminal,
             "tty": tty if has_terminal else None,
-        })
+        }
+        if identity is not None:
+            session["identity"] = identity
+            session["identity_source"] = "ps"
+        sessions.append(session)
     return sessions
 
 
@@ -24384,17 +24759,17 @@ def health_selfcheck():
     else:
         try:
             res = subprocess.run(
-                ["ps", "-eo", "pid,tty,lstart,etime,command"],
-                capture_output=True, text=True, timeout=10,
+                ["ps", "-ww", "-eo", "pid,ppid,tty,lstart,etime,command"],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
                 # Match the production collectors: force C locale so this
                 # diagnostic mirrors what _collect_posix_claude_sessions sees.
                 env={**os.environ, "LC_ALL": "C", "LC_TIME": "C"}, creationflags=_NO_WINDOW,
             )
             ok = res.returncode == 0 and len(res.stdout.strip().split("\n")) > 1
-            check("ps -eo pid,tty,lstart,etime,command", ok,
+            check("ps -ww -eo pid,ppid,tty,lstart,etime,command", ok,
                   f"exit={res.returncode}, lines={len(res.stdout.strip().split(chr(10)))}")
         except (subprocess.SubprocessError, OSError) as e:
-            check("ps -eo pid,tty,lstart,etime,command", False, f"exception: {e!r}")
+            check("ps -ww -eo pid,ppid,tty,lstart,etime,command", False, f"exception: {e!r}")
 
         try:
             sessions = _collect_posix_claude_sessions()
@@ -24496,11 +24871,47 @@ def _windows_revalidate_terminal_cli(session, fresh_inventory=None):
     )
 
 
+def _posix_revalidate_terminal_cli(session, fresh_inventory=None):
+    """Re-check a POSIX session right before termination.
+
+    The inventory is a snapshot; a PID can be reused or reclassified between
+    that snapshot and the kill. Re-collect and require the same PID with the
+    same start time and command line to still classify as terminal_cli. A race
+    between that re-check and os.kill remains: a PID-based signal has no handle
+    to bind to, so a PID reused inside that interval could be signalled.
+    """
+    if session.get("started") in (None, "", "unknown"):
+        return False
+    if fresh_inventory is None:
+        try:
+            fresh = _collect_posix_claude_sessions("claude")
+        except Exception:
+            return False
+        if fresh is None:
+            return False
+        fresh_inventory = {x["pid"]: x for x in fresh}
+    now = fresh_inventory.get(session["pid"])
+    return bool(
+        now
+        and now.get("identity") == "terminal_cli"
+        and now.get("started") == session.get("started")
+        and now.get("command") == session.get("command")
+    )
+
+
+def _revalidate_terminal_cli(session):
+    """Re-verify one identity-tagged session with the collector that tagged it."""
+    if session.get("identity_source") == "ps":
+        return _posix_revalidate_terminal_cli(session)
+    return _windows_revalidate_terminal_cli(session)
+
+
 def kill_stale_sessions(threshold_hours=12, dry_run=False):
     """Kill Claude Code sessions that have been running longer than threshold_hours.
 
-    Targets headless/zombie sessions that are no longer doing useful work.
-    Skips the current process's own PID to avoid self-termination.
+    Targets abandoned terminal sessions only: a session is terminable when its
+    collector positively identified it as a terminal CLI process. Skips the
+    current process's own PID to avoid self-termination.
     """
     import signal
 
@@ -24516,26 +24927,28 @@ def kill_stale_sessions(threshold_hours=12, dry_run=False):
     threshold_seconds = threshold_hours * 3600
     my_pid = os.getpid()
     my_ppid = os.getppid()
+    # Never terminate the session this command is running inside of: it is an
+    # ancestor of this process (claude -> shell -> python), not its direct parent.
+    my_ancestors = set() if os.name == "nt" else _posix_ancestor_pids(my_pid)
 
     # Fail closed: process age is not evidence that a conversation is
     # abandoned. Sessions whose identity is known to belong to a host app
-    # (desktop/SDK) or could not be established are never terminated.
-    # Sessions without an identity tag (POSIX collector) keep prior behavior.
-    # NOTE: the "terminal_cli" default below is for collectors that do not
-    # tag identity (POSIX). Any collector that can mis-identify processes must
-    # set s["identity"] explicitly; the Windows collector always does.
+    # (desktop/SDK/IDE/headless) or could not be established are never
+    # terminated, and neither is a session no collector tagged: the default
+    # below is "unknown", not "terminal_cli".
     protected = [s for s in running
-                 if s.get("identity", "terminal_cli") != "terminal_cli"
+                 if s.get("identity", "unknown") != "terminal_cli"
                  and s["elapsed_seconds"] > threshold_seconds]
     stale = [s for s in running
              if s["elapsed_seconds"] > threshold_seconds
              and s["pid"] != my_pid
              and s["pid"] != my_ppid
-             and s.get("identity", "terminal_cli") == "terminal_cli"]
+             and s["pid"] not in my_ancestors
+             and s.get("identity", "unknown") == "terminal_cli"]
 
     if protected:
         print(f"\n  Skipping {len(protected)} long-running session{'s' if len(protected) != 1 else ''} "
-              "hosted by the Claude desktop app or whose identity could not be verified.")
+              "hosted by the Claude desktop app, an IDE or the SDK, or whose identity could not be verified.")
         print("  Process age alone is not evidence that these are abandoned; they are never auto-terminated.")
 
     if not stale:
@@ -24559,9 +24972,9 @@ def kill_stale_sessions(threshold_hours=12, dry_run=False):
     killed = 0
     for s in stale:
         # Re-collect per candidate, immediately before its termination: the
-        # window between verification and TerminateProcess is as small as a
+        # window between verification and the signal is as small as a
         # PID-based kill allows (no process handle is retained).
-        if "identity" in s and not _windows_revalidate_terminal_cli(s):
+        if not _revalidate_terminal_cli(s):
             print(f"    PID {s['pid']} skipped: identity changed or could not be re-verified.")
             continue
         try:

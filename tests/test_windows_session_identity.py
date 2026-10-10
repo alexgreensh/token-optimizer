@@ -429,17 +429,17 @@ def test_kill_stale_never_kills_when_nothing_is_identified(monkeypatch, capsys):
     assert "all within threshold" not in out
 
 
-def test_kill_stale_posix_sessions_without_identity_tag_unchanged(monkeypatch):
+def test_kill_stale_never_kills_sessions_without_an_identity_tag(monkeypatch):
+    # Every collector that feeds kill_stale_sessions tags identity (Windows via
+    # CIM, POSIX via ps argv + parent chain); an untagged session is not
+    # positively a terminal CLI, so it is protected.
     measure = _load_measure()
     _health_with(monkeypatch, measure, [_session(7, identity=None)])
-    killed = []
-    monkeypatch.setattr(measure.os, "kill", lambda pid, sig: killed.append(pid))
+    monkeypatch.setattr(measure.os, "kill", lambda *a: pytest.fail("terminated a session with no identity"))
     monkeypatch.setattr(measure, "_windows_revalidate_terminal_cli",
-                        lambda s: pytest.fail("POSIX sessions are not re-verified through CIM"))
+                        lambda s: pytest.fail("untagged sessions are never candidates"))
 
     measure.kill_stale_sessions(threshold_hours=12)
-
-    assert killed == [7]
 
 
 def test_kill_is_skipped_when_identity_changes_before_termination(monkeypatch, capsys):

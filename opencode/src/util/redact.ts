@@ -9,7 +9,10 @@ const PATTERNS: [RegExp, string][] = [
   [/\bAKIA[0-9A-Z]{16}\b/g, "[REDACTED]"],
   [/\bBearer\s+[A-Za-z0-9._~+/=-]{16,}\b/gi, "[REDACTED]"],
   [/eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, "[REDACTED]"],
-  [/[sr]k_live_[A-Za-z0-9]{24,}/g, "[REDACTED]"],
+  [/(?:[sr]k_live_|sk_test_)[A-Za-z0-9]{24,}/g, "[REDACTED]"],
+  // Slack app-level token (xapp-) and incoming-webhook URL: both are live credentials.
+  [/\bxapp-\d-[A-Z0-9]+-\d+-[A-Za-z0-9]+/g, "[REDACTED]"],
+  [/https:\/\/hooks\.slack\.com\/services\/[A-Za-z0-9\/_-]+/g, "[REDACTED]"],
   [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g, "[REDACTED]"],
   [/\b(?:npm_[A-Za-z0-9]{36}|xox[bpa]-[0-9A-Za-z-]{20,}|xox[bpa]-[0-9]+-[A-Za-z0-9]+|hf_[A-Za-z0-9]{34}|AIza[0-9A-Za-z_-]{35}|ya29\.[A-Za-z0-9_-]{20,})\b/g, "[REDACTED]"],
   [/\bgl(?:pat|dt|rt|cbt|ptt|ft|imt|agent|soat)-[A-Za-z0-9_.-]{20,}/g, "[REDACTED]"],

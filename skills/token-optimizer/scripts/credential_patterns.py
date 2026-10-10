@@ -1226,6 +1226,82 @@ def _redact_assignments(text: str) -> str:
     )
 
 
+# ---------------------------------------------------------------------------
+# Command-syntax secrets: credentials that sit in a shell command's own grammar
+# rather than in a token shape (curl -u user:pass, --token VALUE, user:pass@host
+# with no scheme, echo SECRET | docker login, Windows net use / cmdkey).
+#
+# These rules are only safe on COMMAND text. In free output they would rewrite
+# prose ("mailto:me@x.com", "echo hi | wc"), so redact_credentials runs them
+# only when the caller says command=True. The same rules serve
+# deterministic_candidates (via scrub_command_syntax), so there is one copy.
+# ---------------------------------------------------------------------------
+_ARG = r"(?:\"[^\"]*\"|'[^']*'|[^\s\"']+)"
+# curl -u user:pass, --user user:pass, --proxy-user ... (value must contain a colon,
+# and not be a bare uid:gid like docker's `-u 1000:1000`)
+_USER_FLAG_RE = re.compile(r"(?<![\w-])(-u|-U|--user|--proxy-user)(\s+|=)?(" + _ARG + ")")
+_SECRET_FLAG_RE = re.compile(
+    r"(?<![\w-])(--(?:password|passwd|pass|pwd|passphrase|secret|client-secret|token|auth-token|"
+    r"access-token|api-key|apikey|api_key))(\s+|=)(?!-)(" + _ARG + ")",
+    re.I,
+)
+# scheme://user:pass@host (any scheme: ftp, ssh, amqp, https...). Greedy to the last
+# `@` before the path, so a password containing `@` is covered whole.
+_URL_USERINFO_RE = re.compile(r"(://)[^\s/\"':@]+:[^\s/\"']*@")
+# user:pass@host with no scheme (rsync, scp, git remotes). Docker digest refs
+# (image:tag@sha256:...) and Windows paths are not credentials.
+_BARE_USERINFO_RE = re.compile(r"(?<![\w/@.:+\\-])[\w.+-]+:[^\s/\\@\"':]+@(?!sha\d+:)(?=[A-Za-z0-9])")
+# echo/printf <anything> | cmd : the piped argument is, in practice, the secret that
+# the next command reads from stdin. Flags (-n, -e) survive; quoted args may hold `|`.
+_PIPED_ECHO_RE = re.compile(
+    r"(?<![\w/.-])(echo|printf)(\s+(?:-[A-Za-z]+\s+)*)"
+    r"((?:\"[^\"]*\"|'[^']*'|[^|;&\n\"'])+?)(\s*)\|(?!\|)"
+)
+# Windows: `net use [dev:] \\srv\share [password] [/user:name]` and `... /user:name password`,
+# `cmdkey /pass:...`. `*` (prompt for the password) is not a secret.
+_NET_USE_PW_BEFORE_RE = re.compile(r"(\bnet\s+use\s+(?:[A-Za-z]:\s+|\*\s+)?\\\\\S+\s+)(?![/*-])(\S+)(?=\s|$)", re.I)
+_NET_USE_PW_AFTER_RE = re.compile(r"(\bnet\s+use\b[^|;&\n]*?/user:\S+\s+)(?![/*-])(\S+)", re.I)
+_WIN_USER_RE = re.compile(r"(/user:)\S+", re.I)
+_WIN_PASS_RE = re.compile(r"(/(?:pass|password|passwd|pwd):)\S+", re.I)
+
+
+class CommandMarks:
+    """What each command-syntax rule writes in place of the secret."""
+    __slots__ = ("creds", "arg", "secret", "user")
+
+    def __init__(self, creds: str, arg: str, secret: str, user: str):
+        self.creds, self.arg, self.secret, self.user = creds, arg, secret, user
+
+
+# Redaction output: the standard labeled placeholder.
+_REDACT_MARKS = CommandMarks(
+    creds="[CREDENTIAL REDACTED: user:password]",
+    arg="[CREDENTIAL REDACTED: piped value]",
+    secret="[CREDENTIAL REDACTED: command secret]",
+    user="[CREDENTIAL REDACTED: Windows user]",
+)
+
+
+def scrub_command_syntax(text: str, marks: "CommandMarks" = _REDACT_MARKS) -> str:
+    """Blank credentials that live in a command's syntax (see block comment above)."""
+    def _user_flag_sub(m: "re.Match[str]") -> str:
+        value = m.group(3).strip("\"'")
+        if ":" not in value or re.fullmatch(r"\d+:\d+", value):
+            return m.group(0)
+        return f"{m.group(1)}{m.group(2) or ''}{marks.creds}"
+
+    text = _URL_USERINFO_RE.sub(lambda m: f"{m.group(1)}{marks.creds}@", text)
+    text = _PIPED_ECHO_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}{marks.arg}{m.group(4)}|", text)
+    text = _USER_FLAG_RE.sub(_user_flag_sub, text)
+    text = _SECRET_FLAG_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}{marks.secret}", text)
+    text = _NET_USE_PW_BEFORE_RE.sub(lambda m: f"{m.group(1)}{marks.secret}", text)
+    text = _NET_USE_PW_AFTER_RE.sub(lambda m: f"{m.group(1)}{marks.secret}", text)
+    text = _WIN_PASS_RE.sub(lambda m: f"{m.group(1)}{marks.secret}", text)
+    text = _WIN_USER_RE.sub(lambda m: f"{m.group(1)}{marks.user}", text)
+    text = _BARE_USERINFO_RE.sub(lambda m: f"{marks.creds}@", text)
+    return text
+
+
 def _sub_with_placeholder(pat: "re.Pattern[str]", label: str, text: str) -> str:
     # A function replacement, not a template string: a custom label is user
     # text and must never be interpreted as a backreference ("\\1", "\\g<0>").
@@ -1256,7 +1332,7 @@ def _sub_with_placeholder(pat: "re.Pattern[str]", label: str, text: str) -> str:
     return pat.sub(_repl, text)
 
 
-def redact_credentials(text: str) -> str:
+def redact_credentials(text: str, *, command: bool = False) -> str:
     """Replace credential matches with [CREDENTIAL REDACTED: <type>] placeholders.
 
     A pattern may define a named `keep` group for a non-secret prefix that should
@@ -1281,6 +1357,11 @@ def redact_credentials(text: str) -> str:
     from re-matching by replacing them with a sentinel before redaction and
     restoring them after. This fixes the Bearer pattern re-matching "Bearer
     token" inside its own placeholder, which nested placeholders on re-runs.
+
+    command=True marks the text as a shell command (not output or prose) and also
+    runs the command-syntax rules: curl -u user:pass, --token VALUE, scheme-less
+    user:pass@host, echo SECRET | cmd, Windows net use. Every writer that persists
+    command text passes it.
 
     Raises RedactionConfigError when a configured custom pattern file failed
     to load — callers persisting the result must treat that as "do not write".
@@ -1336,8 +1417,11 @@ def redact_credentials(text: str) -> str:
             continue
         text = _sub_with_placeholder(pat, label, text)
 
-    # Generic NAME=value / NAME: value secrets, after the specific shapes so a
-    # labelled placeholder from a rule above is never overwritten.
+    # Command-syntax shapes (command text only), then generic NAME=value /
+    # NAME: value secrets. Both run after the specific shapes so a labelled
+    # placeholder from a rule above is never overwritten.
+    if command:
+        text = scrub_command_syntax(text)
     text = _redact_assignments(text)
 
     # M-16: restore protected placeholders.

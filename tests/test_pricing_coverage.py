@@ -68,5 +68,7 @@ def test_every_gemini_card_is_reachable(key):
 @pytest.mark.parametrize("model_id, key", list(_claude_ids()))
 def test_billed_rate_is_the_cards_own_rate(model_id, key):
     card = PRICES["anthropic"][key]
-    cost = measure._get_model_cost(model_id, 1_000_000, 1_000_000, 0, 0, tier="anthropic")
-    assert cost == pytest.approx(card["input"] + card["output"], rel=1e-6)
+    # 50K tokens in: under the 100K long-prompt threshold, so the base card bills
+    # (Haiku 5.5's over-100K card is covered in test_bundled_prices.py).
+    cost = measure._get_model_cost(model_id, 50_000, 50_000, 0, 0, tier="anthropic")
+    assert cost == pytest.approx((card["input"] + card["output"]) * 0.05, rel=1e-6)

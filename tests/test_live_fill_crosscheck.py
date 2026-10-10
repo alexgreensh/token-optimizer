@@ -28,19 +28,21 @@ SRC = (SCRIPTS / "measure.py").read_text(encoding="utf-8")
 
 def test_host_value_is_still_preferred():
     """The host wins. This layer observes, it does not overrule."""
+    # The host's used_percentage is the one figure that does not depend on our
+    # inferred window: it is kept verbatim.
     assert "host_fill_pct = min(1.0, max(0.0, _used / 100.0))" in SRC
-    # Nothing may reassign fill_pct from our own arithmetic inside the
-    # cross-check. The only assignment allowed there is host-sourced: the
-    # sanity override exists because our transcript-token arithmetic is only
-    # as good as an inferred denominator, while the host measures the real
-    # window.
-    block = SRC[SRC.index("if host_fill_pct is not None:"):][:1600]
+    # Inside the cross-check the host may overrule us, never the reverse: the
+    # model-window fill may only be set FROM the host figure, and the effective
+    # fill only derived from it (rescaled onto a user-shrunk compact window).
+    block = SRC[SRC.index("if host_fill_pct is not None:"):][:1700]
     for line in block.splitlines():
         stripped = line.strip()
+        if stripped.startswith("model_fill ="):
+            assert stripped == "model_fill = host_fill_pct", (
+                f"cross-check must only adopt the host figure: {stripped}")
         if stripped.startswith("fill_pct ="):
-            assert stripped == "fill_pct = host_fill_pct", (
-                f"cross-check must only adopt the host figure, never our own arithmetic: {stripped}"
-            )
+            assert stripped == "fill_pct = _effective_fill(model_fill, float(_tokens))", (
+                f"cross-check must derive the effective fill from the host figure: {stripped}")
 
 
 def test_disagreement_records_both_values_and_the_window_source():

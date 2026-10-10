@@ -99,6 +99,53 @@ def test_loader_drops_bad_cards_and_keeps_good_ones(tmp_path, restore_tables):
         assert bad not in measure.OPENAI_MODEL_PRICING
 
 
+def test_anthropic_long_context_card_loads_into_every_tier(tmp_path, restore_tables):
+    """The anthropic_long_context section lands per-tier, Vertex regional +10%."""
+    path = _write(tmp_path, _doc(anthropic_long_context={
+        "haiku_9_9": {"input": 0.5, "output": 2.5, "cache_read": 0.05,
+                      "cache_write": 0.625, "cache_write_1h": 1.0},
+    }))
+    assert measure._apply_bundled_prices(path) is True
+    for tier in ("anthropic", "vertex-global", "bedrock"):
+        card = measure.PRICING_TIERS[tier]["claude_models_lc"]["haiku_9_9"]
+        assert card["input"] == pytest.approx(0.5)
+    regional = measure.PRICING_TIERS["vertex-regional"]["claude_models_lc"]["haiku_9_9"]
+    assert regional["input"] == pytest.approx(0.55)
+
+
+def test_anthropic_long_context_surcharge_applies_over_threshold(tmp_path, restore_tables):
+    """A model with an LC card pays it only when the FULL prompt (input + cache
+    reads + cache writes) exceeds ANTHROPIC_LONG_CONTEXT_INPUT_THRESHOLD."""
+    path = _write(tmp_path, _doc(
+        anthropic={"haiku_9_9": {"input": 1.0, "output": 10.0, "cache_read": 0.1,
+                                 "cache_write": 1.25, "cache_write_1h": 2.0}},
+        anthropic_long_context={"haiku_9_9": {"input": 5.0, "output": 50.0, "cache_read": 0.5,
+                                              "cache_write": 6.25, "cache_write_1h": 10.0}},
+    ))
+    assert measure._apply_bundled_prices(path) is True
+    thr = measure.ANTHROPIC_LONG_CONTEXT_INPUT_THRESHOLD
+    # Under the threshold: base card.
+    cost = measure._get_model_cost("claude-haiku-9-9", 50_000, 1_000, 0, 0, tier="anthropic")
+    assert cost == pytest.approx(50_000 * 1.0 / 1e6 + 1_000 * 10.0 / 1e6)
+    # Cache reads/writes count toward the prompt length too.
+    cost = measure._get_model_cost("claude-haiku-9-9", 50_000, 1_000, thr, 0, tier="anthropic")
+    assert cost == pytest.approx(50_000 * 5.0 / 1e6 + 1_000 * 50.0 / 1e6 + thr * 0.5 / 1e6)
+    # A model with no LC card never surcharges.
+    base = measure._get_model_cost("claude-opus-4-6", thr + 1, 1_000, 0, 0, tier="anthropic")
+    opus = measure.PRICING_TIERS["anthropic"]["claude_models"]["opus_4_6"]
+    assert base == pytest.approx((thr + 1) * opus["input"] / 1e6 + 1_000 * opus["output"] / 1e6)
+
+
+def test_shipped_haiku_5_5_long_context_card_is_5x_the_base_card():
+    """Haiku 5.5's over-100K card is exactly 5x its base card on every rate
+    (Anthropic prices it by prompt length). Relationship, not dollars."""
+    base = measure.PRICING_TIERS["anthropic"]["claude_models"].get("haiku_5_5")
+    lc = measure.PRICING_TIERS["anthropic"]["claude_models_lc"].get("haiku_5_5")
+    assert base is not None and lc is not None
+    for field in ("input", "output", "cache_read", "cache_write", "cache_write_1h"):
+        assert lc[field] == pytest.approx(base[field] * 5)
+
+
 def test_loader_never_removes_a_built_in_card(tmp_path, restore_tables):
     path = _write(tmp_path, _doc(openai={"gpt-new": {"input": 1.0, "output": 2.0}}))
     measure._apply_bundled_prices(path)
@@ -137,6 +184,16 @@ FEED = {
     "claude-opus-7": {"litellm_provider": "anthropic", "mode": "chat", "input_cost_per_token": 5e-6,
                       "output_cost_per_token": 25e-6, "cache_read_input_token_cost": 5e-7,
                       "cache_creation_input_token_cost": 6.25e-6, "cache_creation_input_token_cost_above_1hr": 1e-5},
+    "claude-haiku-9-9": {"litellm_provider": "anthropic", "mode": "chat",
+                         "input_cost_per_token": 1e-7, "output_cost_per_token": 5e-7,
+                         "cache_read_input_token_cost": 1e-8,
+                         "cache_creation_input_token_cost": 1.25e-7,
+                         "cache_creation_input_token_cost_above_1hr": 2e-7,
+                         "input_cost_per_token_above_100k_tokens": 5e-7,
+                         "output_cost_per_token_above_100k_tokens": 2.5e-6,
+                         "cache_read_input_token_cost_above_100k_tokens": 5e-8,
+                         "cache_creation_input_token_cost_above_100k_tokens": 6.25e-7,
+                         "cache_creation_input_token_cost_above_1hr_above_100k_tokens": 1e-6},
     "gpt-8": {"litellm_provider": "openai", "mode": "chat", "input_cost_per_token": 2e-6,
               "output_cost_per_token": 8e-6, "input_cost_per_token_above_272k_tokens": 4e-6,
               "output_cost_per_token_above_272k_tokens": 12e-6},
@@ -153,8 +210,11 @@ OFFICIAL_MD = """
 | Claude Sonnet 5 | $2 / MTok<sup>3</sup> | $2.50 / MTok | $4 / MTok | $0.20 / MTok | $10 / MTok |
 | Claude Sonnet 4.6 | $3 / MTok | $3.75 / MTok | $6 / MTok | $0.30 / MTok | $15 / MTok |
 | Claude Haiku 4.5 | $1 / MTok | $1.25 / MTok | $2 / MTok | $0.10 / MTok | $5 / MTok |
+| Claude Haiku 9.9 (for prompts up to 100,000 tokens) | $0.20 / MTok | $0.25 / MTok | $0.40 / MTok | $0.02 / MTok | $1 / MTok |
+| Claude Haiku 9.9 (for prompts over 100,000 tokens) | $1 / MTok | $1.25 / MTok | $2 / MTok | $0.10 / MTok | $5 / MTok |
 
 | Claude Opus 7 | $8 / MTok | $40 / MTok |
+| Claude Haiku 9.9 (for prompts over 100,000 tokens) | $0.50 / MTok | $2.50 / MTok |
 """
 
 
@@ -168,6 +228,28 @@ def test_refresh_builds_cards_and_official_page_wins():
     assert doc["openai_long_context"]["gpt-8"]["input"] == 4.0
     assert "gpt-8-2026-01-01" not in doc["openai"] and "gpt-8-audio" not in doc["openai"]
     assert "gemini-8-flash" in doc["gemini"]
+
+
+def test_refresh_builds_anthropic_long_context_cards():
+    """The official page's "(for prompts over 100,000 tokens)" row and the
+    LiteLLM *_above_100k_tokens fields both feed anthropic_long_context; the
+    official page wins. The batch-pricing row (2 price cells) is ignored."""
+    doc, notes = refresh_prices.build(FEED, OFFICIAL_MD)
+    card = doc["anthropic_long_context"]["haiku_9_9"]
+    assert card == {"input": 1.0, "output": 5.0, "cache_read": 0.10,
+                    "cache_write": 1.25, "cache_write_1h": 2.0}
+    assert any("long-context" in n for n in notes)
+    assert doc["thresholds"]["anthropic_long_context_input"] == 100_000
+    # The base card came from the "up to 100,000" row, not the LiteLLM feed.
+    assert doc["anthropic"]["haiku_9_9"]["input"] == 0.20
+
+
+def test_refresh_litellm_only_long_context_when_official_missing():
+    doc, _ = refresh_prices.build(FEED, None)
+    card = doc["anthropic_long_context"]["haiku_9_9"]
+    assert card["input"] == pytest.approx(0.5)
+    assert card["output"] == pytest.approx(2.5)
+    assert card["cache_write_1h"] == pytest.approx(1.0)
 
 
 def test_refresh_refuses_a_gutted_table():

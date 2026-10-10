@@ -243,7 +243,7 @@ Audit settings.json env block and help user tune token-relevant variables.
    Settings Audit:
    | Variable                        | Current | Default | Recommendation |
    |---------------------------------|---------|---------|----------------|
-   | CLAUDE_AUTOCOMPACT_PCT_OVERRIDE | not set | unset   | Auto-removed if found (undocumented, semantics inverted) |
+   | CLAUDE_AUTOCOMPACT_PCT_OVERRIDE | user choice | unset   | Percent of the compact window used when compaction fires; lower compacts earlier. Reported, never changed |
    | MAX_THINKING_TOKENS             | not set | unset (adaptive models pick their own depth) | Default is fine |
    | ENABLE_TOOL_SEARCH              | unset   | unset (MCP tools deferred) | Good (active)  |
    ```

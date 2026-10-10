@@ -4,27 +4,6 @@ Detailed implementation steps for Phase 4 of the Token Optimizer. The orchestrat
 
 ---
 
-## Contents
-
-- [4A: CLAUDE.md Consolidation](#4a-claudemd-consolidation)
-- [4B: MEMORY.md Deduplication](#4b-memorymd-deduplication)
-- [4C: Skill Archival](#4c-skill-archival)
-- [4D: File Exclusion Rules](#4d-file-exclusion-rules)
-- [4E: MCP Server Guidance](#4e-mcp-server-guidance)
-- [4F: Hooks Configuration](#4f-hooks-configuration)
-- [4G: CLAUDE.md Cache Structure](#4g-claudemd-cache-structure)
-- [4H: Rules Cleanup](#4h-rules-cleanup)
-- [4I: Settings Tuning](#4i-settings-tuning)
-- [4J: Skill Description Tightening](#4j-skill-description-tightening)
-- [4K: Compact Instructions Setup](#4k-compact-instructions-setup)
-- [4L: Model Routing Setup](#4l-model-routing-setup)
-- [4O: Version-Aware Optimizations](#4o-version-aware-optimizations)
-- [Quality Checklist](#quality-checklist)
-- [Anti-Patterns](#anti-patterns)
-- [Error Handling](#error-handling)
-
----
-
 ## 4A: CLAUDE.md Consolidation
 
 ```bash
@@ -81,7 +60,7 @@ mkdir -p ~/.claude/_backups/skills-archived-$(date +%Y%m%d)
 mv ~/.claude/skills/[skill-name] ~/.claude/_backups/skills-archived-$(date +%Y%m%d)/
 ```
 
-A subfolder such as `_archived/` inside `skills/` still loads as a namespace, so move archived skills outside `skills/` entirely.
+**CRITICAL**: A subfolder `_archived/` INSIDE `skills/` still loads as a namespace. Must move OUTSIDE `skills/` entirely.
 
 List what will be archived, ask for confirmation before moving.
 
@@ -243,9 +222,9 @@ Audit settings.json env block and help user tune token-relevant variables.
    Settings Audit:
    | Variable                        | Current | Default | Recommendation |
    |---------------------------------|---------|---------|----------------|
-   | CLAUDE_AUTOCOMPACT_PCT_OVERRIDE | not set | unset   | Auto-removed if found (undocumented, semantics inverted) |
-   | MAX_THINKING_TOKENS             | not set | unset (adaptive models pick their own depth) | Default is fine |
-   | ENABLE_TOOL_SEARCH              | unset   | unset (MCP tools deferred) | Good (active)  |
+   | CLAUDE_AUTOCOMPACT_PCT_OVERRIDE | not set | model default (~967K on 1M models) | Documented; reported if set, never removed |
+   | MAX_THINKING_TOKENS             | not set | 10,000  | Default is fine |
+   | ENABLE_TOOL_SEARCH              | auto    | auto    | Good (active)  |
    ```
 4. Apply user-chosen changes to settings.json env block
 5. Verify changes don't conflict with settings.local.json overrides
@@ -265,7 +244,7 @@ Claude Code truncates combined `description` + `when_to_use` text at 1,536 chara
 4. Flag descriptions >200 characters as verbose (efficiency opportunity, not a bug)
 5. Generate tighter alternatives for verbose descriptions:
    ```
-   Truncated Descriptions (high priority):
+   Truncated Descriptions (CRITICAL):
    - my-mega-skill (1,842 chars): Combined description + when_to_use exceeds 1,536 limit
      Action: Split content between description (core purpose) and SKILL.md body (detailed usage)
 
@@ -334,14 +313,14 @@ Add or improve model routing instructions in CLAUDE.md.
    so they benefit from prompt caching). If no clear section exists, add after identity/rules.
 
 **Targets**:
-- Lower cost on multi-agent workflows for API users (the lighter tier bills less per token)
-- Rate limit conservation for subscription users (lighter models use fewer quota units)
-- Faster responses on data-gathering agents
+- 50-75% cost reduction on multi-agent workflows (API users)
+- Rate limit conservation: Haiku has higher throughput limits than Opus
+- Faster responses: Haiku is 3-5x faster than Opus for equivalent tasks
 - No context window impact (routing doesn't change system prompt size)
 
 ---
 
-## 4O: Version-Aware Optimizations
+## 4O: Version-Aware Optimizations (v2.1.83-86)
 
 Check the user's Claude Code version (`claude --version`) and apply version-specific guidance:
 
@@ -353,7 +332,7 @@ Check the user's Claude Code version (`claude --version`) and apply version-spec
 
 **v2.1.86+: @ file mentions no longer JSON-escaped**
 - Raw string content in file mentions saves tokens automatically
-- No action needed. Note in findings that file-heavy sessions save tokens for free
+- No action needed. Note in findings: ~5-15% savings on file-heavy sessions (free upgrade)
 
 **v2.1.84+: Idle-return /clear prompt conflicts with Smart Compaction**
 - Claude Code prompts to /clear after 75+ min idle

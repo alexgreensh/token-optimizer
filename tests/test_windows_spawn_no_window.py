@@ -556,7 +556,6 @@ def _stub_ensure_health(m, monkeypatch, tmp_path):
     monkeypatch.setattr(m, "RUNTIME_DIR", tmp_path)
     monkeypatch.setattr(m, "_read_settings_json", lambda: ({}, None))
     monkeypatch.setattr(m, "_write_settings_atomic", lambda d: None)
-    monkeypatch.setattr(m, "_auto_remove_bad_env_vars", lambda: None)
     monkeypatch.setattr(m, "_ensure_dashboard_daemon", lambda *a, **k: "noop-healthy")
     monkeypatch.setattr(m, "setup_quality_bar", lambda *a, **k: None)
     monkeypatch.setattr(m, "_read_config_flag", lambda k, d=None: False)

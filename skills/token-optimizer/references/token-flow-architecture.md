@@ -303,7 +303,7 @@ Token Optimizer's quality score follows a published long-context retrieval curve
 
 **Recommendation**: Compact manually at phase boundaries instead of waiting. Auto-compact on 1M models fires at about 967K tokens by default, well past where quality has dropped, so set a lower per-model window with `/autocompact <n>` (100K-1M, saved per model; `/autocompact auto` restores the tuned window) or the `autoCompactWindow` setting. `measure.py compact-advice` estimates from the user's own history whether an earlier window pays off.
 
-Token Optimizer auto-removes `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` if found (undocumented env var with inverted semantics that causes premature compaction).
+`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` sets the percent of the compact window used when auto-compaction fires (lower compacts earlier; it cannot raise the threshold). Token Optimizer reports it and never changes it.
 
 ---
 

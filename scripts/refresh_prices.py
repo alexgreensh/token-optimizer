@@ -50,6 +50,7 @@ MAX_RATE = 1000.0          # $/MTok; anything above is a parse error, not a pric
 GUARD_RATIO = 2.0          # a move beyond 2x either way needs a human
 OPENAI_LONG_CONTEXT_INPUT = 272_000
 GEMINI_LONG_CONTEXT_INPUT = 200_000
+ANTHROPIC_LONG_CONTEXT_INPUT = 100_000
 
 # Family fallback cards, used only for ids with no parseable generation (e.g. a
 # bare "opus" alias). Kept on the long-standing representative so an alias never
@@ -129,6 +130,8 @@ def claude_from_litellm(feed: dict) -> dict:
 
 
 _ANTHROPIC_ROW_RE = re.compile(r"^\|\s*Claude ([A-Za-z]+) (\d+)(?:\.(\d+))?\b[^|]*\|(.*)\|\s*$")
+_ANTHROPIC_LC_ROW_RE = re.compile(
+    r"^\|\s*Claude ([A-Za-z]+) (\d+)(?:\.(\d+))?[^|]*?\(for prompts over 100,000 tokens\)\s*\|(.*)\|\s*$")
 _DOLLAR_RE = re.compile(r"\$([0-9]+(?:\.[0-9]+)?)")
 
 
@@ -136,6 +139,8 @@ def claude_from_official(markdown: str) -> dict:
     """Parse the model table: input | 5m write | 1h write | cache read | output."""
     cards = {}
     for line in markdown.splitlines():
+        if "(for prompts over" in line:
+            continue  # long-context rows are parsed by claude_long_context_from_official
         m = _ANTHROPIC_ROW_RE.match(line.strip())
         if not m:
             continue
@@ -152,6 +157,56 @@ def claude_from_official(markdown: str) -> dict:
             continue  # first table wins
         cards[key] = {"input": prices[0], "cache_write": prices[1], "cache_write_1h": prices[2],
                       "cache_read": prices[3], "output": prices[4]}
+    return cards
+
+
+def claude_long_context_from_official(markdown: str) -> dict:
+    """Parse the "(for prompts over 100,000 tokens)" model-table rows.
+
+    Anthropic lists long-context pricing as sibling rows in the same table
+    (e.g. Claude Haiku 5.5 is 5x on every rate over 100K prompt tokens).
+    The batch-pricing table repeats the labels but has a different cell
+    shape, so the 5-price check already filters it out.
+    """
+    cards = {}
+    for line in markdown.splitlines():
+        m = _ANTHROPIC_LC_ROW_RE.match(line.strip())
+        if not m:
+            continue
+        family, major, minor, rest = m.groups()
+        cells = [c for c in rest.split("|")]
+        prices = []
+        for cell in cells:
+            found = _DOLLAR_RE.search(cell)
+            prices.append(float(found.group(1)) if found else None)
+        if len(prices) != 5 or any(p is None for p in prices):
+            continue
+        key = f"{family.lower()}_{major}_{minor}" if minor else f"{family.lower()}_{major}"
+        if key in cards:
+            continue
+        cards[key] = {"input": prices[0], "cache_write": prices[1], "cache_write_1h": prices[2],
+                      "cache_read": prices[3], "output": prices[4]}
+    return cards
+
+
+def claude_long_context_from_litellm(feed: dict) -> dict:
+    """Anthropic above-100K cards from the LiteLLM feed's *_above_100k_tokens fields."""
+    suffix = f"_above_{ANTHROPIC_LONG_CONTEXT_INPUT // 1000}k_tokens"
+    cards = {}
+    for model_id, entry in feed.items():
+        if not isinstance(entry, dict) or entry.get("litellm_provider") != "anthropic":
+            continue
+        key = _claude_card_key(model_id)
+        if not key:
+            continue
+        card = _card(entry, suffix)
+        if not card:
+            continue
+        one_hour = _per_mtok(entry.get(f"cache_creation_input_token_cost_above_1hr{suffix}"))
+        card["cache_write_1h"] = one_hour if one_hour is not None else round(card["input"] * 2, 6)
+        card.setdefault("cache_read", round(card["input"] * 0.1, 6))
+        card.setdefault("cache_write", round(card["input"] * 1.25, 6))
+        cards[key] = card
     return cards
 
 
@@ -203,6 +258,7 @@ def gemini_from_litellm(feed: dict):
 def build(feed: dict, official_md: str | None) -> tuple[dict, list[str]]:
     notes = []
     claude = claude_from_litellm(feed)
+    claude_lc = claude_long_context_from_litellm(feed)
     if official_md:
         official = claude_from_official(official_md)
         if len(official) < 5:
@@ -213,6 +269,12 @@ def build(feed: dict, official_md: str | None) -> tuple[dict, list[str]]:
                 if prior and any(abs(prior.get(f, 0) - card[f]) > 1e-9 for f in card):
                     notes.append(f"Claude {key}: official page overrides LiteLLM {prior} -> {card}")
                 claude[key] = card
+            official_lc = claude_long_context_from_official(official_md)
+            for key, card in official_lc.items():
+                prior = claude_lc.get(key)
+                if prior and any(abs(prior.get(f, 0) - card[f]) > 1e-9 for f in card):
+                    notes.append(f"Claude {key} long-context: official page overrides LiteLLM {prior} -> {card}")
+                claude_lc[key] = card
     else:
         notes.append("Anthropic pricing page unavailable; Claude rates from LiteLLM only.")
     for key, card in RETIRED_CLAUDE_CARDS.items():
@@ -227,9 +289,11 @@ def build(feed: dict, official_md: str | None) -> tuple[dict, list[str]]:
         "schema": SCHEMA,
         "units": "USD per million tokens",
         "sources": {"claude": ANTHROPIC_URL, "openai_gemini": LITELLM_URL},
-        "thresholds": {"openai_long_context_input": OPENAI_LONG_CONTEXT_INPUT,
+        "thresholds": {"anthropic_long_context_input": ANTHROPIC_LONG_CONTEXT_INPUT,
+                       "openai_long_context_input": OPENAI_LONG_CONTEXT_INPUT,
                        "gemini_long_context_input": GEMINI_LONG_CONTEXT_INPUT},
         "anthropic": dict(sorted(claude.items())),
+        "anthropic_long_context": dict(sorted(claude_lc.items())),
         "openai": dict(sorted(openai.items())),
         "openai_long_context": dict(sorted(openai_lc.items())),
         "gemini": dict(sorted(gemini.items())),
@@ -244,7 +308,7 @@ def drop_bad_cards(doc: dict) -> list[str]:
     one bad upstream entry cannot block every other price update. A dropped
     card that was already shipped trips the removal alarm in guard()."""
     dropped = []
-    for section in ("anthropic", "openai", "openai_long_context", "gemini", "gemini_long_context"):
+    for section in ("anthropic", "anthropic_long_context", "openai", "openai_long_context", "gemini", "gemini_long_context"):
         cards = doc.get(section) or {}
         for key in list(cards):
             bad = [f for f, v in cards[key].items()
@@ -260,7 +324,7 @@ def validate(doc: dict) -> list[str]:
     for section in ("anthropic", "openai", "gemini"):
         if len(doc.get(section) or {}) < 3:
             errors.append(f"section {section} has fewer than 3 models; refusing to ship a gutted table")
-    for section in ("anthropic", "openai", "openai_long_context", "gemini", "gemini_long_context"):
+    for section in ("anthropic", "anthropic_long_context", "openai", "openai_long_context", "gemini", "gemini_long_context"):
         for key, card in (doc.get(section) or {}).items():
             if not re.match(r"^[a-z0-9][a-z0-9._-]{0,63}$", key):
                 errors.append(f"{section}.{key}: unsafe key")
@@ -282,7 +346,7 @@ def guard(old: dict | None, new: dict) -> list[str]:
     if not old:
         return []
     alarms = []
-    for section in ("anthropic", "openai", "openai_long_context", "gemini", "gemini_long_context"):
+    for section in ("anthropic", "anthropic_long_context", "openai", "openai_long_context", "gemini", "gemini_long_context"):
         for key, old_card in (old.get(section) or {}).items():
             new_card = (new.get(section) or {}).get(key)
             if new_card is None:
@@ -305,7 +369,7 @@ def guard(old: dict | None, new: dict) -> list[str]:
 
 def diff_lines(old: dict | None, new: dict) -> list[str]:
     lines = []
-    for section in ("anthropic", "openai", "openai_long_context", "gemini", "gemini_long_context"):
+    for section in ("anthropic", "anthropic_long_context", "openai", "openai_long_context", "gemini", "gemini_long_context"):
         o, n = (old or {}).get(section) or {}, new.get(section) or {}
         for key in sorted(set(o) | set(n)):
             if o.get(key) != n.get(key):
@@ -314,7 +378,7 @@ def diff_lines(old: dict | None, new: dict) -> list[str]:
 
 
 def _ts_key(section: str, key: str) -> str:
-    return key.replace("_", "-") if section == "anthropic" else key
+    return key.replace("_", "-") if section in ("anthropic", "anthropic_long_context") else key
 
 
 def render_ts(doc: dict) -> str:
@@ -348,6 +412,11 @@ def render_ts(doc: dict) -> str:
         f"// Above {GEMINI_LONG_CONTEXT_INPUT:,} input tokens per request.\n"
         "export const GENERATED_GEMINI_LONG_CONTEXT_PRICING: Record<string, ModelPricing> = {\n"
         f"{table(('gemini_long_context',))}\n"
+        "};\n\n"
+        f"// Above {ANTHROPIC_LONG_CONTEXT_INPUT:,} prompt tokens per request "
+        "(input + cache reads + cache writes).\n"
+        "export const GENERATED_ANTHROPIC_LONG_CONTEXT_PRICING: Record<string, ModelPricing> = {\n"
+        f"{table(('anthropic_long_context',))}\n"
         "};\n"
     )
 

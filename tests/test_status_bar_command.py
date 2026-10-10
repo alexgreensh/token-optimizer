@@ -210,9 +210,10 @@ def test_subagent_last_row_returns_main_thread_time(sb):
                    {"input_tokens": 5, "cache_creation": {"ephemeral_1h_input_tokens": 50}},
                    sidechain=True),
     ])
-    ts, lifetime = sb._status_bar_transcript_state(p)
+    ts, lifetime, model = sb._status_bar_transcript_state(p)
     assert ts == datetime.fromisoformat("2026-10-03T10:00:00+00:00").timestamp()
     assert lifetime == "5m"
+    assert model == "claude-opus-4-5"
 
 
 def test_one_hour_write_then_reads_returns_1h(sb):
@@ -222,9 +223,10 @@ def test_one_hour_write_then_reads_returns_1h(sb):
         _assistant("2026-10-03T10:01:00Z", {"cache_read_input_tokens": 40000}),
         _assistant("2026-10-03T10:02:00Z", {"cache_read_input_tokens": 40100}),
     ])
-    ts, lifetime = sb._status_bar_transcript_state(p)
+    ts, lifetime, model = sb._status_bar_transcript_state(p)
     assert lifetime == "1h"
     assert ts == datetime.fromisoformat("2026-10-03T10:02:00+00:00").timestamp()
+    assert model == "claude-opus-4-5"
 
 
 def test_command_reads_transcript_by_session_id(sb):

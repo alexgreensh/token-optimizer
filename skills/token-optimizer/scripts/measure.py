@@ -20574,6 +20574,10 @@ _RECS_WIN_MIN_DAYS = 7
 # Compact-window gates: at most ~5 extra compactions a day and at least 10%
 # of cache-read tokens avoided, priced-net positive, before we recommend.
 _RECS_MAX_EXTRA_COMPACTIONS_PER_DAY = 5
+# The refresh runs detached, so it replays the whole window. The coach's
+# 150-session / 4-second slice is for inline callers: on a slice the extra
+# compactions are undercounted and the smallest window wins by mistake.
+_RECS_COMPACT_BUDGET_SECONDS = 120.0
 _RECS_MIN_CACHE_READ_SHARE_PCT = 10.0
 _RECS_LABELS = {"compact_window": "Compact window",
                 "subagent_cache": "Subagent cache"}
@@ -20661,9 +20665,8 @@ def _recs_compact_item(now=None):
                     headline="", numbers={},
                     reason="the compact window is a Claude Code setting")
     try:
-        rep = compact_advice(days=_RECS_WINDOW_DAYS,
-                             max_sessions=_ADVICE_COACH_MAX_SESSIONS,
-                             deadline_seconds=_ADVICE_COACH_BUDGET_SECONDS)
+        rep = compact_advice(days=_RECS_WINDOW_DAYS, max_sessions=None,
+                             deadline_seconds=_RECS_COMPACT_BUDGET_SECONDS)
     except Exception as exc:
         return dict(base, state="not_enough_data", enough_data=False,
                     headline="compaction history could not be measured yet",
@@ -20684,6 +20687,12 @@ def _recs_compact_item(now=None):
                     headline="not enough session history to judge yet",
                     reason=(f"{sessions} sessions replayed, need at least "
                             f"{_ADVICE_MIN_SESSIONS} and one compaction"))
+    if rep.get("truncated"):
+        # Never judge on part of the window: a cut-short replay is retried.
+        return dict(item, state="not_enough_data", enough_data=False,
+                    headline="the last measurement did not finish",
+                    reason="the replay ran out of time before the whole "
+                           "window was read; it is retried tomorrow")
     eligible = []
     for e in rep["windows"]:
         if e.get("reference"):

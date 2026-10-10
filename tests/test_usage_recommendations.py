@@ -469,6 +469,35 @@ def test_partial_compact_run_is_incomplete(m, monkeypatch):
     assert rec["complete"] is False
 
 
+def test_partial_compact_replay_never_recommends(m, monkeypatch):
+    """A replay cut short counts only some sessions' extra compactions, so its
+    per-day figure is too low and it would pick too small a window."""
+    mod, _s, _h = m
+    _stub_compact(m, monkeypatch, _compact_report(truncated=True))
+    item = mod._recs_compact_item()
+    assert item["state"] == "not_enough_data"
+    assert item["command"] == ""
+    assert item["enough_data"] is False
+    assert item["numbers"]["recommended"] == item["numbers"]["setting"]
+
+
+def test_refresh_replays_the_whole_window_not_the_coach_slice(m, monkeypatch):
+    """The refresh is detached, so it takes the full replay with its own
+    budget; the coach's 150-session / 4-second cap is for inline callers."""
+    mod, _s, _h = m
+    seen = {}
+
+    def _advice(*a, **k):
+        seen.update(k)
+        return _compact_report()
+
+    monkeypatch.setattr(mod, "compact_advice", _advice)
+    mod._recs_compact_item()
+    assert seen.get("max_sessions") is None
+    assert seen.get("deadline_seconds") == mod._RECS_COMPACT_BUDGET_SECONDS
+    assert mod._RECS_COMPACT_BUDGET_SECONDS >= 60
+
+
 def test_lock_blocks_a_second_refresh(m, monkeypatch):
     mod, _s, _h = m
     _stub_compact(m, monkeypatch, _compact_report())

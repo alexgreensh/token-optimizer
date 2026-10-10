@@ -414,6 +414,48 @@
       "input": ["key=", "FAKEvalue123456", " run"],
       "absent": ["FAKEvalue123456"],
       "present": ["key=", " run"]
+    },
+    {
+      "name": "bearer-prose-sixteen-letter-word-stays",
+      "input": ["Bearer responsibilities are listed below"],
+      "absent": [],
+      "present": ["Bearer responsibilities are listed below"]
+    },
+    {
+      "name": "bearer-prose-camel-free-long-word-stays",
+      "input": ["the Bearer authentication scheme is described in RFC 6750"],
+      "absent": [],
+      "present": ["the Bearer authentication scheme is described in RFC 6750"]
+    },
+    {
+      "name": "bearer-23-plain-letters-stay",
+      "input": ["Bearer aaaaaaaaaaaaaaaaaaaaaaa end"],
+      "absent": [],
+      "present": ["Bearer aaaaaaaaaaaaaaaaaaaaaaa end"]
+    },
+    {
+      "name": "bearer-24-plain-letters-hidden",
+      "input": ["Authorization: Bearer ", "aaaaaaaaaaaaaaaaaaaaaaaa", " end"],
+      "absent": ["aaaaaaaaaaaaaaaaaaaaaaaa"],
+      "present": ["Authorization: ", " end"]
+    },
+    {
+      "name": "bearer-16-with-interior-capital-hidden",
+      "input": ["Authorization: Bearer ", "abcdefghijKlmnopq", " end"],
+      "absent": ["abcdefghijKlmnopq"],
+      "present": ["Authorization: ", " end"]
+    },
+    {
+      "name": "bearer-16-with-punctuation-hidden",
+      "input": ["Authorization: Bearer ", "abcdefgh.ijklmnop", " end"],
+      "absent": ["abcdefgh.ijklmnop"],
+      "present": ["Authorization: ", " end"]
+    },
+    {
+      "name": "bearer-15-with-digit-stays",
+      "input": ["Authorization: Bearer abcdefghij12345 end"],
+      "absent": [],
+      "present": ["Bearer abcdefghij12345"]
     }
   ]
 }

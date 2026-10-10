@@ -336,6 +336,24 @@
       "input": ["f(api_key=api_key, token=self.token, password=os.environ.get(\"X\"))\napiKey: string;\nPASSWORD=$DB_PASS run"],
       "absent": [],
       "present": ["f(api_key=api_key, token=self.token, password=os.environ.get(\"X\"))\napiKey: string;\nPASSWORD=$DB_PASS run"]
+    },
+    {
+      "name": "bearer-english-prose-untouched",
+      "input": ["the bearer of bad news reached the board"],
+      "absent": [],
+      "present": ["the bearer of bad news reached the board"]
+    },
+    {
+      "name": "bearer-floor-sixteen-redacted",
+      "input": ["Authorization: Bearer ", "q1w2e3r4t5y6u7i8", " ok"],
+      "absent": ["q1w2e3r4t5y6u7i8"],
+      "present": ["Authorization: ", " ok"]
+    },
+    {
+      "name": "bearer-under-floor-untouched",
+      "input": ["curl -H \"Authorization: Bearer abc.def\" https://example.com"],
+      "absent": [],
+      "present": ["Bearer abc.def"]
     }
   ]
 }

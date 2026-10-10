@@ -4198,6 +4198,9 @@ def doctor(as_json=False):
             f"estimated net ${_sc_payoff.get('net_usd_est', 0.0):.2f}"
             + (" API-equivalent" if _scb.get("billing_mode") == "subscription" else "")
             + " (estimate)")
+        _sc_auto = _scb.get("auto_decision") or {}
+        if _sc_auto.get("reason"):
+            _sc_detail += f"; auto: {_sc_auto['reason']}"
         print(f"  {'':5s} Subagent cache: {_sc_detail}")
         if _sc_state == "set":
             print(f"  {'':5s} Undo: python3 "
@@ -18513,6 +18516,17 @@ def keepwarm_cache_health_block(days=30, now=None):
 #   * Opt-out env TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=0|false|off|no: never
 #     set; and if TO set it earlier, undo.
 #   * Unknown-state settings (unreadable, missing, malformed): never write.
+#   * The AUTOMATIC enable is evidence-gated: it writes only when the user's
+#     own last 30 days say it pays (>= _SUBAGENT_CACHE_TRIPWIRE_MIN_REQUESTS
+#     subagent requests AND saving >= _SUBAGENT_CACHE_AUTO_ENABLE_MARGIN x the
+#     1h write premium); otherwise it records why (marker `auto_decision`,
+#     timestamped) and leaves settings alone. TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=1
+#     forces it on ("always on"); `subagent-cache enable` is unconditional.
+#   * The scan never runs inside a hook. SessionStart reads one small cached
+#     verdict (subagent_cache_verdict.json); a missing/day-old one starts the
+#     scan as a detached child (subagent_cache_scan.lock keeps it to one at a
+#     time; time budget + file cap, partial = no verdict) and the verdict is
+#     applied at a later session start. The tripwire judges the same cache.
 #   * The payoff is judged from the user's OWN transcripts, in both regimes
 #     (see subagent_cache_payoff): rewrites a 1h TTL avoids (within one agent,
 #     and across spawns sharing a prefix) and, once the setting is on, the
@@ -18545,6 +18559,25 @@ _SUBAGENT_CACHE_TRIPWIRE_REJUDGE_SECONDS = 86400
 # subagent requests that touched the cache (read or wrote). A user with almost
 # no subagents has no evidence either way and is never auto-reverted.
 _SUBAGENT_CACHE_TRIPWIRE_MIN_REQUESTS = 200
+# The AUTOMATIC enable is evidence-gated on the user's own last 30 days: at
+# least _SUBAGENT_CACHE_TRIPWIRE_MIN_REQUESTS subagent requests AND an
+# estimated saving of at least this multiple of the estimated 1h write premium.
+# A heavy subagent user measured -$25 net at 1.0x, so break-even is not enough:
+# the 15% margin keeps "roughly a wash" from flipping a setting nobody asked for.
+_SUBAGENT_CACHE_AUTO_ENABLE_MARGIN = 1.15
+# The payoff scan walks real transcripts (about 9 s on a heavy history), so it
+# never runs in a hook. A detached child writes this small verdict file; session
+# start only reads it. A verdict older than a day is re-scanned, not applied.
+_SUBAGENT_CACHE_VERDICT_NAME = "subagent_cache_verdict.json"
+_SUBAGENT_CACHE_VERDICT_MAX_AGE = 86400
+_SUBAGENT_CACHE_SCAN_LOCK_NAME = "subagent_cache_scan.lock"
+# A lock older than the scan's own time budget plus slack is abandoned.
+_SUBAGENT_CACHE_SCAN_LOCK_STALE = 300
+_SUBAGENT_CACHE_SCAN_TOKEN_ENV = "TO_SUBAGENT_CACHE_SCAN_TOKEN"
+# Scan bounds (the child is detached, so these protect the machine, not a hook).
+# Running out of either makes the scan PARTIAL, and a partial scan is no verdict.
+_SUBAGENT_CACHE_SCAN_BUDGET_SECONDS = 120
+_SUBAGENT_CACHE_SCAN_MAX_FILES = 20000
 
 
 def _subagent_cache_marker_path():
@@ -18594,6 +18627,16 @@ def _subagent_cache_optout(value=None):
     if value is None:
         return False
     return str(value).strip().lower() in ("0", "false", "off", "no")
+
+
+def _subagent_cache_force_on(value=None):
+    """True when the env carries a truthy token (1/true/on/yes): the automatic
+    path then enables WITHOUT the evidence gate ("always on")."""
+    if value is None:
+        value = os.environ.get(_SUBAGENT_CACHE_OPTOUT_ENV)
+    if value is None:
+        return False
+    return str(value).strip().lower() in ("1", "true", "on", "yes")
 
 
 def _subagent_cache_claude_code_version():
@@ -18720,6 +18763,268 @@ def _subagent_cache_undo(data, now, why):
     return {"state": why, "changed": True, "reason": None, "notice": None}
 
 
+# ---- cached verdict, background scan, evidence gate ----------------------
+
+def _subagent_cache_verdict_path():
+    return SNAPSHOT_DIR / _SUBAGENT_CACHE_VERDICT_NAME
+
+
+def _subagent_cache_scan_lock_path():
+    return SNAPSHOT_DIR / _SUBAGENT_CACHE_SCAN_LOCK_NAME
+
+
+def _subagent_cache_write_json_atomic(path, record, prefix):
+    """Atomic 0600 JSON write next to `path`. Never raises."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(prefix=prefix, suffix=".tmp",
+                                        dir=str(path.parent))
+        try:
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(record, fh)
+            os.replace(tmp_name, str(path))
+        except Exception:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
+    except Exception:
+        pass
+
+
+def _subagent_cache_read_verdict():
+    """The cached scan verdict, or None when absent/corrupt."""
+    try:
+        data = json.loads(_subagent_cache_verdict_path().read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _subagent_cache_verdict_for(now, since_ts=None):
+    """("fresh"|"stale"|"missing", record) for the window `since_ts`.
+
+    `since_ts` None is the plain last-30-days verdict the automatic enable
+    judges; a float is the tripwire's post-enable window. A verdict computed
+    for another window counts as missing."""
+    rec = _subagent_cache_read_verdict()
+    if rec is None:
+        return "missing", None
+    have = rec.get("since_ts")
+    try:
+        same_window = ((have is None and since_ts is None)
+                       or (have is not None and since_ts is not None
+                           and abs(float(have) - float(since_ts)) < 1e-6))
+        age = float(now) - float(rec.get("ts"))
+    except (TypeError, ValueError):
+        return "missing", None
+    if not same_window:
+        return "missing", None
+    if age > _SUBAGENT_CACHE_VERDICT_MAX_AGE or age < -3600:
+        return "stale", rec
+    return "fresh", rec
+
+
+def _subagent_cache_scan_acquire_lock(now=None):
+    """Take the scan lock (O_EXCL); its owner token, or None when it is held.
+
+    A lock older than _SUBAGENT_CACHE_SCAN_LOCK_STALE is abandoned (a crashed
+    child) and is reclaimed."""
+    if now is None:
+        now = time.time()
+    lock = _subagent_cache_scan_lock_path()
+    token = os.urandom(16).hex()
+    try:
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        for _attempt in (1, 2):
+            try:
+                fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            except FileExistsError:
+                try:
+                    age = float(now) - lock.stat().st_mtime
+                except OSError:
+                    continue
+                if age < _SUBAGENT_CACHE_SCAN_LOCK_STALE:
+                    return None
+                try:
+                    lock.unlink()
+                except OSError:
+                    return None
+                continue
+            try:
+                os.write(fd, token.encode("ascii"))
+            finally:
+                os.close(fd)
+            return token
+    except OSError:
+        pass
+    return None
+
+
+def _subagent_cache_scan_release_lock(token):
+    """Delete the lock only while it still holds `token`. Never raises."""
+    if not token:
+        return
+    lock = _subagent_cache_scan_lock_path()
+    try:
+        if lock.read_text(encoding="ascii").strip() == token:
+            lock.unlink()
+    except OSError:
+        pass
+
+
+def subagent_cache_scan_run(now=None, since_ts=None, time_budget=None,
+                            max_files=None, token=None):
+    """The background worker: scan once, write the verdict file, free the lock.
+
+    Run by the detached child (`measure.py subagent-cache scan`), which gets
+    the lock token from its spawner; run by hand it takes the lock itself and
+    returns None when another scan holds it. A partial scan (time budget or
+    file cap) or a crash writes an INCOMPLETE record: dated, so the next scan
+    is a day away, but with no payoff, so nothing is ever decided from it.
+    Returns the record written, or None when it did not run.
+    """
+    if not _subagent_cache_claude_only():
+        return None
+    if now is None:
+        now = time.time()
+    if token is None:
+        token = _subagent_cache_scan_acquire_lock(now)
+        if token is None:
+            return None
+    budget = _SUBAGENT_CACHE_SCAN_BUDGET_SECONDS if time_budget is None else time_budget
+    cap = _SUBAGENT_CACHE_SCAN_MAX_FILES if max_files is None else max_files
+    rec = {"version": 1, "ts": float(now), "complete": False,
+           "since_ts": None if since_ts is None else float(since_ts),
+           "window_days": 30, "payoff": None, "reason": None}
+    try:
+        payoff = subagent_cache_payoff(days=30, now=now, since_ts=since_ts,
+                                       time_budget=budget, max_files=cap)
+        if payoff.get("partial"):
+            rec["reason"] = payoff.get("partial_reason") or "partial scan"
+        else:
+            rec["complete"] = True
+            rec["payoff"] = payoff
+    except Exception as exc:
+        rec["reason"] = f"scan error: {type(exc).__name__}"
+    finally:
+        _subagent_cache_write_json_atomic(
+            _subagent_cache_verdict_path(), rec, ".subagent_verdict.")
+        _subagent_cache_scan_release_lock(token)
+    return rec
+
+
+def _subagent_cache_spawn_scan(now=None, since_ts=None):
+    """Start the scan as a detached background process. True when started.
+
+    The lock is taken HERE (so two session starts can never both spawn) and
+    handed to the child by environment token. spawn_detached owns the Windows
+    flags (no console window); the interpreter is the GUI twin on Windows.
+    Never raises; a failed spawn frees the lock.
+    """
+    token = _subagent_cache_scan_acquire_lock(now)
+    if token is None:
+        return False
+    try:
+        argv = [_detached_python_exe(), str(MEASURE_PY_PATH), "subagent-cache", "scan"]
+        if since_ts is not None:
+            argv += ["--since", repr(float(since_ts))]
+        env = os.environ.copy()
+        env["TOKEN_OPTIMIZER_RUNTIME"] = detect_runtime()
+        env.pop("TOKEN_OPTIMIZER_HOOK", None)
+        env[_SUBAGENT_CACHE_SCAN_TOKEN_ENV] = token
+        proc = spawn_detached(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=env,
+            close_fds=True,
+        )
+    except Exception:
+        proc = None
+    if proc is None:
+        _subagent_cache_scan_release_lock(token)
+        try:
+            _log_spawn_failure("subagent-cache payoff scan spawn failed")
+        except Exception:
+            pass
+        return False
+    return True
+
+
+def _subagent_cache_judge_payoff(payoff):
+    """Pure judgement of a 30-day payoff: {"decision", "reason", ("tokens")}.
+
+    enable          >= MIN_REQUESTS subagent requests AND saved >= MARGIN x premium
+    not-enough-data fewer requests than that
+    would-not-pay   enough requests, but the saving does not clear the margin
+    """
+    payoff = payoff or {}
+    n = int(payoff.get("subagent_requests") or 0)
+    days = int(payoff.get("window_days") or 30)
+    need = _SUBAGENT_CACHE_TRIPWIRE_MIN_REQUESTS
+    if n < need:
+        return {"decision": "not-enough-data",
+                "reason": (f"not enough data: {n} subagent requests in the last "
+                           f"{days} days, need {need}")}
+    saved = float(payoff.get("savings_usd_est") or 0.0)
+    premium = float(payoff.get("extra_write_cost_usd_est") or 0.0)
+    if saved > 0 and saved >= _SUBAGENT_CACHE_AUTO_ENABLE_MARGIN * premium:
+        tokens = (int(payoff.get("missed_read_tokens") or 0)
+                  + int(payoff.get("realized_read_tokens") or 0))
+        return {"decision": "enable", "tokens": tokens, "days": days,
+                "reason": f"pays: saved ${saved:.2f} vs premium ${premium:.2f}"}
+    return {"decision": "would-not-pay",
+            "reason": f"would not pay: saved ${saved:.2f} vs premium ${premium:.2f}"}
+
+
+def _subagent_cache_record_decision(marker, decision, now):
+    """Remember why the automatic path did (not) write, with a timestamp.
+
+    Re-judged at most once a day: an identical decision on the same verdict
+    stands and is not rewritten."""
+    prior = (marker or {}).get("auto_decision") or {}
+    try:
+        if (prior.get("decision") == decision.get("decision")
+                and prior.get("verdict_ts") == decision.get("verdict_ts")
+                and float(now) - float(prior.get("ts")) < 86400):
+            return
+    except (TypeError, ValueError):
+        pass
+    record = dict(marker or {})
+    record["auto_decision"] = dict(decision, ts=float(now))
+    _subagent_cache_write_marker(record)
+
+
+def _subagent_cache_auto_gate(marker, now):
+    """The evidence gate of the AUTOMATIC enable. Reads the cached verdict only.
+
+    Returns the decision dict ("enable" lets the caller write). With no usable
+    verdict (missing, stale, other window) it starts the detached scan and
+    answers "pending": the verdict is applied at a later session start."""
+    state, rec = _subagent_cache_verdict_for(now, None)
+    if state == "fresh":
+        if rec.get("complete") and isinstance(rec.get("payoff"), dict):
+            decision = _subagent_cache_judge_payoff(rec["payoff"])
+        else:
+            decision = {"decision": "not-enough-data",
+                        "reason": ("not enough data: the last payoff scan did "
+                                   f"not finish ({rec.get('reason') or 'partial'})")}
+        decision["verdict_ts"] = rec.get("ts")
+    else:
+        _subagent_cache_spawn_scan(now=now)
+        decision = {"decision": "pending", "verdict_ts": None,
+                    "reason": ("payoff scan runs in the background; it is "
+                               "applied at a later session start")}
+    if decision["decision"] != "enable":
+        _subagent_cache_record_decision(marker, decision, now)
+    return decision
+
+
 def subagent_cache_enable(now=None, automatic=True):
     """Set `subagentPromptCacheTtl: "1h"` in the USER settings.json -- once,
     and only under every safety rule in the module docstring.
@@ -18814,6 +19119,22 @@ def subagent_cache_enable(now=None, automatic=True):
         return {"state": "user-set", "changed": False,
                 "reason": "the user already set the key", "notice": None}
 
+    # Evidence gate (automatic path only): the user's own last 30 days must say
+    # it pays. Reads a cached verdict; never scans here (SessionStart budget).
+    # TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=1 forces "always on"; the explicit
+    # `subagent-cache enable` is unconditional.
+    if not automatic:
+        decision = {"decision": "manual",
+                    "reason": "enabled by the subagent-cache enable command"}
+    elif _subagent_cache_force_on():
+        decision = {"decision": "forced-on",
+                    "reason": f"{_SUBAGENT_CACHE_OPTOUT_ENV}=1 (always on)"}
+    else:
+        decision = _subagent_cache_auto_gate(marker, now)
+        if decision["decision"] != "enable":
+            return {"state": decision["decision"], "changed": False,
+                    "reason": decision["reason"], "notice": None}
+
     # Version floor (a `claude --version` subprocess: probed only once every
     # cheaper check has said a write is really about to happen).
     version = _subagent_cache_claude_code_version()
@@ -18836,16 +19157,20 @@ def subagent_cache_enable(now=None, automatic=True):
         "set_ts": float(now),
         "previous": {"present": False},
         "set_by": "token-optimizer",
+        "auto_decision": dict(decision, ts=float(now)),
     })
     undo_cmd = f"python3 {shlex.quote(str(Path(__file__).resolve()))} subagent-cache disable"
+    if decision["decision"] == "enable":
+        what = ("Token Optimizer set the subagent cache to 1 hour: your last "
+                f"{decision.get('days', 30)} days would have saved about "
+                f"{int(decision.get('tokens') or 0):,} tokens.")
+    else:
+        what = "Token Optimizer set the subagent cache to 1 hour (was 5 minutes)."
     return {
         "state": "set",
         "changed": True,
         "reason": None,
-        "notice": (
-            "Token Optimizer set the subagent cache to 1 hour (was 5 minutes). "
-            f"Undo: {undo_cmd}"
-        ),
+        "notice": f"{what} Undo: {undo_cmd}",
     }
 
 
@@ -18884,10 +19209,12 @@ def _subagent_cache_payoff_zero(days):
         "spawns": 0, "groups": 0, "groups_with_shared_prefix": 0,
         "agent_type_recorded_spawns": 0,
         "grouping": "project+model (agent type not recorded in these transcripts)",
+        "partial": False,
     }
 
 
-def subagent_cache_payoff(days=30, now=None, since_ts=None):
+def subagent_cache_payoff(days=30, now=None, since_ts=None,
+                          time_budget=None, max_files=None):
     """Deterministic payoff estimate from the user's OWN sidechain transcripts.
 
     One function for a history that mixes both regimes. A request is read by
@@ -18919,6 +19246,12 @@ def subagent_cache_payoff(days=30, now=None, since_ts=None):
     second (the tripwire's post-enable window); earlier requests still serve
     as context (previous activity, shared prefix). Everything here is an
     ESTIMATE: the gap proxy reads request timestamps, not actual cache keys.
+
+    `time_budget` (seconds) and `max_files` bound the scan for the background
+    worker: running out of either returns a zero payoff with `partial: True`
+    and the reason in `partial_reason` -- a partial scan is NOT a verdict.
+    Without them the scan is the explicit-command path (silent cap at
+    _SUBAGENT_SCAN_MAX_FILES, no clock).
     Never raises; a scan error is an honest zero.
     """
     zero = _subagent_cache_payoff_zero(days)
@@ -18926,6 +19259,15 @@ def subagent_cache_payoff(days=30, now=None, since_ts=None):
         return zero
     if now is None:
         now = time.time()
+    deadline = (None if time_budget is None
+                else time.monotonic() + float(time_budget))
+
+    def _partial(why):
+        return dict(zero, partial=True, partial_reason=why)
+
+    def _out_of_time():
+        return deadline is not None and time.monotonic() >= deadline
+
     try:
         projects_base = CLAUDE_DIR / "projects"
         if not projects_base.exists():
@@ -18936,6 +19278,8 @@ def subagent_cache_payoff(days=30, now=None, since_ts=None):
         for project_dir in projects_base.iterdir():
             if not project_dir.is_dir():
                 continue
+            if _out_of_time():
+                return _partial("time budget exceeded")
             try:
                 for jf in project_dir.rglob("*.jsonl"):
                     try:
@@ -18946,8 +19290,11 @@ def subagent_cache_payoff(days=30, now=None, since_ts=None):
                         candidates.append((mtime, jf, project_dir.name))
             except OSError:
                 continue
+        if max_files is not None and len(candidates) > max_files:
+            return _partial(f"file cap exceeded ({len(candidates)} > {max_files})")
         candidates.sort(key=lambda t: t[0], reverse=True)
-        candidates = candidates[:_SUBAGENT_SCAN_MAX_FILES]
+        candidates = candidates[:_SUBAGENT_SCAN_MAX_FILES if max_files is None
+                                else max_files]
 
         tier = _load_pricing_tier()
 
@@ -18965,6 +19312,8 @@ def subagent_cache_payoff(days=30, now=None, since_ts=None):
         spawn_count = 0
         recorded_count = 0
         for _mt, jf, project in candidates:
+            if _out_of_time():
+                return _partial("time budget exceeded")
             # Sidechain transcripts only (same rule as _subagent_pool_savings:
             # nested subagents/ paths are sidechains by construction).
             if jf.parent.name != "subagents" and not _scan_jsonl_is_sidechain(jf):
@@ -19102,6 +19451,7 @@ def subagent_cache_payoff(days=30, now=None, since_ts=None):
             "groups_with_shared_prefix": shared_groups,
             "agent_type_recorded_spawns": recorded_count,
             "grouping": agent_note,
+            "partial": False,
         }
     except Exception:
         return zero
@@ -19113,7 +19463,9 @@ def evaluate_subagent_cache_tripwire(now=None, payoff=None):
     Modeled on the keep-warm tripwire: the only write it ever makes is the
     undo of a value TO itself set (marker state "set"); a user-set value is
     never touched; a window with fewer than _SUBAGENT_CACHE_TRIPWIRE_MIN_REQUESTS
-    subagent requests is never judged ("not enough data"). The net it judges
+    subagent requests is never judged ("not enough data"). It judges the CACHED
+    verdict of the background scan (post-enable window), never a scan of its
+    own: SessionStart only reads. The net it judges
     mixes both regimes (see subagent_cache_payoff): with the setting on, the
     premium actually paid on 1h writes against the reads actually realized.
     The revert is sticky for the automatic path ("auto-reverted" marker
@@ -19148,12 +19500,25 @@ def evaluate_subagent_cache_tripwire(now=None, payoff=None):
             return out
     except (TypeError, ValueError):
         pass
-    if payoff is None:
-        payoff = subagent_cache_payoff(days=30, now=now, since_ts=float(set_ts))
-
     def _record_judgment():
         marker["judged_ts"] = float(now)
         _subagent_cache_write_marker(marker)
+
+    if payoff is None:
+        # The scan walks real transcripts: never here. Read the cached verdict
+        # for the post-enable window; with none, start the detached scan and
+        # judge at a later session start (nothing is stamped as judged yet).
+        vstate, rec = _subagent_cache_verdict_for(now, float(set_ts))
+        if vstate != "fresh":
+            _subagent_cache_spawn_scan(now=now, since_ts=float(set_ts))
+            return dict(out, reason=("payoff scan runs in the background; "
+                                     "judged at a later session start"))
+        if not rec.get("complete") or not isinstance(rec.get("payoff"), dict):
+            _record_judgment()
+            return dict(out, reason=(
+                "not enough data: the last payoff scan did not finish "
+                f"({rec.get('reason') or 'partial'})"))
+        payoff = rec["payoff"]
 
     # A thin window proves nothing either way.
     sample = (payoff or {}).get("subagent_requests") or 0
@@ -19214,12 +19579,45 @@ def _subagent_cache_session_start_lines(now=None):
     return []
 
 
-def subagent_cache_status(days=30, now=None):
-    """State + who set it + the payoff estimate. Read-only, never writes."""
+def _subagent_cache_status_decision(state, marker, payoff, force_on, source):
+    """`auto_decision` for status / doctor / quick / coach: what the automatic
+    path decided (or would decide) and why."""
+    stored = (marker or {}).get("auto_decision")
+    if state == "opted-out":
+        return {"decision": "opted-out",
+                "reason": f"{_SUBAGENT_CACHE_OPTOUT_ENV} is set to off"}
+    if state in ("set", "user-set", "user-declined", "auto-reverted"):
+        if state == "set" and isinstance(stored, dict):
+            return dict(stored)
+        return {"decision": state,
+                "reason": {"set": "set by Token Optimizer",
+                           "user-set": "you set the key yourself; left alone",
+                           "user-declined": "you removed or changed the key after we set it",
+                           "auto-reverted": "removed again after a negative 14-day check"}[state]}
+    if force_on:
+        return {"decision": "forced-on",
+                "reason": f"{_SUBAGENT_CACHE_OPTOUT_ENV}=1 (always on)"}
+    if payoff is not None:
+        return dict(_subagent_cache_judge_payoff(payoff), source=source)
+    if isinstance(stored, dict):
+        return dict(stored)
+    return {"decision": "pending",
+            "reason": ("no payoff scan yet; one runs in the background at the "
+                       "next session start")}
+
+
+def subagent_cache_status(days=30, now=None, use_cache=False):
+    """State + who set it + the payoff estimate + the automatic decision.
+
+    Read-only, never writes. `use_cache=False` (the explicit `status` command)
+    scans the transcripts now; `use_cache=True` (doctor, quick, coach) only
+    reads the verdict the background scan left, and never scans or spawns."""
     if not _subagent_cache_claude_only():
         return {"state": "platform-gap", "set_by": None, "payoff": None,
                 "reason": "not Claude Code (Cowork and other runtimes are a "
                           "documented no-op)"}
+    if now is None:
+        now = time.time()
     marker = _subagent_cache_read_marker()
     try:
         data, _path, _ok = _read_settings_json_checked()
@@ -19242,26 +19640,45 @@ def subagent_cache_status(days=30, now=None):
         state, who, reason = "user-set", "user", None
     else:
         state, who, reason = "off", None, None
-    payoff = subagent_cache_payoff(days=days, now=now)
+    extra = {}
+    if use_cache:
+        want_since = (float(marker["set_ts"]) if state == "set"
+                      and (marker or {}).get("set_ts") is not None else None)
+        vstate, rec = _subagent_cache_verdict_for(now, want_since)
+        if rec is not None and rec.get("complete") and isinstance(rec.get("payoff"), dict):
+            payoff, source = rec["payoff"], "cached"
+            extra["payoff_age_seconds"] = max(0, int(float(now) - float(rec["ts"])))
+        else:
+            payoff, source = _subagent_cache_payoff_zero(days), "none"
+        judge_with = payoff if source == "cached" else None
+    else:
+        payoff, source = subagent_cache_payoff(days=days, now=now), "live"
+        judge_with = payoff
     try:
         billing = keepwarm_billing_mode()
     except Exception:
         billing = "subscription"
-    return {
+    out = {
         "state": state,
         "set_by": who,
         "billing_mode": billing,
         "reason": reason,
         "set_ts": (marker or {}).get("set_ts") if who == "token-optimizer" else None,
         "payoff": payoff,
+        "payoff_source": source,
+        "auto_decision": _subagent_cache_status_decision(
+            state, marker, judge_with, _subagent_cache_force_on(), source),
         "estimate": True,
     }
+    out.update(extra)
+    return out
 
 
 def subagent_cache_block(days=30, now=None):
-    """The doctor/quick/coach surface: state, who set it, net estimate."""
+    """The doctor/quick/coach surface: state, who set it, net estimate, and
+    the automatic decision. Reads the cached verdict only; never scans."""
     try:
-        st = subagent_cache_status(days=days, now=now)
+        st = subagent_cache_status(days=days, now=now, use_cache=True)
     except Exception as exc:
         return {"state": "unknown", "set_by": None, "payoff": None,
                 "reason": f"status unavailable: {type(exc).__name__}"}
@@ -19334,17 +19751,47 @@ def _coach_cli(args):
 
 
 def _subagent_cache_cli(argv):
-    """`measure.py subagent-cache status|enable|disable [--json]` handler."""
+    """`measure.py subagent-cache status|enable|disable|scan [--json]` handler."""
     as_json = "--json" in argv
     sub = argv[1] if len(argv) > 1 else "status"
-    if sub not in ("status", "enable", "disable"):
+    if sub not in ("status", "enable", "disable", "scan"):
         print("usage: measure.py subagent-cache status|enable|disable [--json]")
         sys.exit(2)
+    if sub == "scan":
+        # Internal: the detached child the session start spawns. Quiet by
+        # design (stdio is DEVNULL there); a hand run prints one line.
+        since = None
+        if "--since" in argv:
+            try:
+                since = float(argv[argv.index("--since") + 1])
+            except (IndexError, ValueError):
+                since = None
+        rec = subagent_cache_scan_run(
+            since_ts=since,
+            token=os.environ.get(_SUBAGENT_CACHE_SCAN_TOKEN_ENV) or None)
+        if rec is None:
+            print("[Token Optimizer] subagent cache scan: skipped (another scan "
+                  "is running, or not Claude Code)")
+        elif rec["complete"]:
+            print("[Token Optimizer] subagent cache scan: verdict saved")
+        else:
+            print("[Token Optimizer] subagent cache scan: incomplete "
+                  f"({rec['reason']}); no verdict")
+        return
     if sub == "enable":
+        # Unconditional (a deliberate request), but never blind: show the
+        # user's own estimate first.
+        p = subagent_cache_payoff(days=30)
+        try:
+            billing = keepwarm_billing_mode()
+        except Exception:
+            billing = "subscription"
         r = subagent_cache_enable(automatic=False)
         if as_json:
-            print(json.dumps(r, indent=2))
-        elif r.get("notice"):
+            print(json.dumps(dict(r, payoff=p), indent=2))
+            return
+        print(_subagent_cache_payoff_lines(p, billing))
+        if r.get("notice"):
             print(f"[Token Optimizer] {r['notice']}")
         else:
             why = f": {r['reason']}" if r.get("reason") else ""
@@ -19371,6 +19818,9 @@ def _subagent_cache_cli(argv):
           + (f" (set by {r['set_by']})" if r.get("set_by") else ""))
     if r.get("reason"):
         print(f"  why: {r['reason']}")
+    ad = r.get("auto_decision") or {}
+    if ad:
+        print(f"  auto: {ad.get('decision')}: {ad.get('reason')}")
     print(_subagent_cache_payoff_lines(p, r.get("billing_mode")))
 
 

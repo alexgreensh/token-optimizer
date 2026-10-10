@@ -56,6 +56,11 @@ USER_SETTINGS = {
 NOTICE_EXPECTED = (
     "Token Optimizer set the subagent cache to 1 hour (was 5 minutes)."
 )
+# The evidence-gated automatic path carries the user's own numbers.
+NOTICE_EVIDENCE = (
+    "Token Optimizer set the subagent cache to 1 hour: your last 30 days "
+    "would have saved about "
+)
 
 
 def _write_settings(path: Path, data=None):
@@ -91,6 +96,18 @@ def m(tmp_path, monkeypatch):
                         lambda: (2, 1, 250))
     # Billing mode would read the real ~/.claude.json: pin it (API by default).
     monkeypatch.setattr(mod, "keepwarm_billing_mode", lambda *a, **k: "api")
+    # The automatic path is evidence-gated. Most tests exercise the guards and
+    # the undo machinery around a write, so they run "always on" (the documented
+    # force switch); the evidence-gate tests call `_gated(m, monkeypatch)`.
+    monkeypatch.setenv("TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H", "1")
+    # A background scan is never really spawned by a test: record the argv.
+    mod._spawn_log = []
+
+    def _fake_spawn(argv, **kw):
+        mod._spawn_log.append((list(argv), kw))
+        return SimpleNamespace(pid=4242)
+
+    monkeypatch.setattr(mod, "spawn_detached", _fake_spawn)
     yield mod, settings, home
     sys.modules.pop("measure", None)
 
@@ -914,6 +931,20 @@ def test_payoff_counts_subagent_requests_for_the_sample_guard(m):
 # tripwire: minimum sample + post-enable (1h) data
 # ---------------------------------------------------------------------------
 
+
+def _set_ts(m):
+    return float(_marker(m)["set_ts"])
+
+
+def _judge(m, now=None):
+    """The tripwire reads a cached verdict; the background scan writes it.
+    Run that scan synchronously (as the detached child would), then judge."""
+    mod, _settings, _home = m
+    now = time.time() if now is None else now
+    mod.subagent_cache_scan_run(now=now, since_ts=_set_ts(m))
+    return mod.evaluate_subagent_cache_tripwire(now=now)
+
+
 def _loss_history(home):
     _write_sidechain(home, "loss.jsonl", [
         _sidechain_record("2026-10-09T10:00:00Z", "x1", 0, cc1h=8000),
@@ -926,7 +957,7 @@ def test_tripwire_reverts_on_post_enable_loss(m):
     _enable_15d_ago(m)
     _loss_history(home)
     _pad(home)
-    r = mod.evaluate_subagent_cache_tripwire(now=time.time())
+    r = _judge(m)
     assert r["reverted"] is True, r
     assert r["net_usd_est"] < 0
     assert KEY not in _read(settings)
@@ -942,7 +973,7 @@ def test_tripwire_keeps_post_enable_win(m):
         _sidechain_record("2026-10-09T11:10:00Z", "w3", 0, cr=5100),
     ])
     _pad(home)
-    r = mod.evaluate_subagent_cache_tripwire(now=time.time())
+    r = _judge(m)
     assert r["reverted"] is False, r
     assert r["net_usd_est"] > 0
     assert _read(settings)[KEY] == "1h"
@@ -952,7 +983,7 @@ def test_tripwire_minimum_sample_guard(m):
     mod, settings, home = m
     _enable_15d_ago(m)
     _loss_history(home)   # clearly negative, but only 2 subagent requests
-    r = mod.evaluate_subagent_cache_tripwire(now=time.time())
+    r = _judge(m)
     assert r["reverted"] is False
     assert r["notice"] is None
     assert "not enough data" in (r.get("reason") or "")
@@ -966,10 +997,10 @@ def test_tripwire_sample_guard_lets_go_once_enough_data_exists(m):
     _enable_15d_ago(m)
     _loss_history(home)
     t0 = time.time()
-    assert mod.evaluate_subagent_cache_tripwire(now=t0)["reverted"] is False
+    assert _judge(m, now=t0)["reverted"] is False
     _pad(home, n=mod._SUBAGENT_CACHE_TRIPWIRE_MIN_REQUESTS)
     # next day's re-judgment sees enough data
-    r = mod.evaluate_subagent_cache_tripwire(now=t0 + 90000)
+    r = _judge(m, now=t0 + 90000)
     assert r["reverted"] is True, r
 
 
@@ -978,7 +1009,7 @@ def test_user_with_almost_no_subagents_is_never_reverted(m):
     _enable_15d_ago(m)
     _write_sidechain(home, "one.jsonl", [
         _sidechain_record("2026-10-09T10:00:00Z", "z1", 0, cc1h=300000)])
-    r = mod.evaluate_subagent_cache_tripwire(now=time.time())
+    r = _judge(m)
     assert r["reverted"] is False
     assert _read(settings)[KEY] == "1h"
 
@@ -1031,7 +1062,7 @@ def test_tripwire_reverts_on_negative_net(m):
         _sidechain_record("2026-10-09T12:00:00Z", "n2", 5000),
     ])
     _pad(_home)
-    r = mod.evaluate_subagent_cache_tripwire(now=time.time())
+    r = _judge(m)
     assert r["reverted"] is True, r
     assert r["net_usd_est"] < 0
     assert KEY not in _read(settings)
@@ -1053,7 +1084,7 @@ def test_tripwire_keeps_setting_on_positive_net(m):
         _sidechain_record("2026-10-09T12:00:00Z", "p4", 1),
     ])
     _pad(_home)
-    r = mod.evaluate_subagent_cache_tripwire(now=time.time())
+    r = _judge(m)
     assert r["reverted"] is False, r
     assert r["net_usd_est"] > 0
     assert _read(settings)[KEY] == "1h"
@@ -1076,7 +1107,7 @@ def test_tripwire_needs_14_days(m):
 def test_tripwire_not_judged_without_post_enable_writes(m):
     mod, settings, _home = m
     _enable_15d_ago(m)
-    r = mod.evaluate_subagent_cache_tripwire(now=time.time())
+    r = _judge(m)
     assert r["reverted"] is False
     assert _read(settings)[KEY] == "1h"
 
@@ -1092,36 +1123,47 @@ def test_tripwire_judges_at_most_once_per_day(m, monkeypatch):
     ])
     _pad(_home)
     t0 = time.time()
-    calls = []
-    real_payoff = mod.subagent_cache_payoff
-    monkeypatch.setattr(mod, "subagent_cache_payoff",
-                        lambda **kw: calls.append(kw) or real_payoff(**kw))
-    r1 = mod.evaluate_subagent_cache_tripwire(now=t0)
+    r1 = _judge(m, now=t0)
     assert r1["reverted"] is False and r1["net_usd_est"] > 0
-    assert len(calls) == 1
-    # Same-day session starts: marker says judged, no rescan.
+    # The tripwire never scans transcripts itself, from here on.
+    real_payoff = mod.subagent_cache_payoff
+    inline_scan_banned = {"on": True}
+
+    def _guarded(**kw):
+        assert not inline_scan_banned["on"], (
+            "the tripwire must read the cached verdict, not scan")
+        return real_payoff(**kw)
+
+    monkeypatch.setattr(mod, "subagent_cache_payoff", _guarded)
+    # Same-day session starts: marker says judged, nothing re-read, no spawn.
     r2 = mod.evaluate_subagent_cache_tripwire(now=t0 + 3600)
     assert r2["reverted"] is False and r2["net_usd_est"] is None
-    assert len(calls) == 1
+    assert mod._spawn_log == []
     assert _marker(m)["state"] == "set"
-    # A day later the verdict is re-judged (fresh evidence may have landed).
+    # A day later the cached verdict is stale: the scan is spawned detached and
+    # the judgment waits for it (marker not stamped as judged).
     r3 = mod.evaluate_subagent_cache_tripwire(now=t0 + 90000)
-    assert r3["reverted"] is False and r3["net_usd_est"] > 0
-    assert len(calls) == 2
+    assert r3["reverted"] is False and r3["net_usd_est"] is None
+    assert len(mod._spawn_log) == 1
+    assert _marker(m)["judged_ts"] == pytest.approx(t0)
+    # The scan lands; the next session start applies it.
+    inline_scan_banned["on"] = False
+    r4 = _judge(m, now=t0 + 90100)
+    assert r4["reverted"] is False and r4["net_usd_est"] > 0
+    assert _marker(m)["judged_ts"] == pytest.approx(t0 + 90100)
 
 
 def test_tripwire_no_data_stamps_judgment(m, monkeypatch):
     mod, _settings, _home = m
     _enable_15d_ago(m)
     t0 = time.time()
-    calls = []
-    monkeypatch.setattr(mod, "subagent_cache_payoff",
-                        lambda **kw: calls.append(kw) or {
-                            "subagent_5m_cache_writes": 0, "net_usd_est": 0.0})
-    mod.evaluate_subagent_cache_tripwire(now=t0)
-    assert len(calls) == 1
-    mod.evaluate_subagent_cache_tripwire(now=t0 + 3600)
-    assert len(calls) == 1  # no-data window judged once, not every session
+    r1 = _judge(m, now=t0)
+    assert "not enough data" in (r1.get("reason") or "")
+    judged = _marker(m)["judged_ts"]
+    assert judged == pytest.approx(t0)
+    r2 = mod.evaluate_subagent_cache_tripwire(now=t0 + 3600)
+    assert r2["reverted"] is False and r2["reason"] is None
+    assert _marker(m)["judged_ts"] == judged  # judged once, not every session
 
 
 def test_tripwire_ignores_when_user_set_the_key(m):
@@ -1169,6 +1211,7 @@ def test_sessionstart_revert_notice_once(m):
         _sidechain_record("2026-10-09T12:00:00Z", "n2", 5000),
     ])
     _pad(_home)
+    mod.subagent_cache_scan_run(now=time.time(), since_ts=_set_ts(m))
     lines = mod._subagent_cache_session_start_lines()
     assert len(lines) == 1
     assert "removed" in lines[0] or "reverted" in lines[0]
@@ -1200,9 +1243,11 @@ def test_ensure_health_emits_notice_once(tmp_path, monkeypatch):
     for var in ("TOKEN_OPTIMIZER_RUNTIME", "CLAUDE_PLUGIN_DATA",
                 "CLAUDE_CODE_REMOTE", "CLAUDE_CODE_CONTAINER_ID",
                 "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL",
-                "FORCE_PROMPT_CACHING_5M",
-                "TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H"):
+                "FORCE_PROMPT_CACHING_5M"):
         env.pop(var, None)
+    # Always-on: this test is about the notice channel, not the evidence gate
+    # (test_ensure_health_applies_a_cached_positive_verdict covers that).
+    env["TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H"] = "1"
     env["HOME"] = str(home)
     env["CLAUDE_CONFIG_DIR"] = str(claude_dir)
     env["TOKEN_OPTIMIZER_SNAPSHOT_DIR"] = str(tmp_path / "data")
@@ -1341,3 +1386,500 @@ def test_subagent_cache_block_shape(m):
     b = mod.subagent_cache_block()
     for k in ("state", "set_by", "payoff"):
         assert k in b
+
+
+# ===========================================================================
+# Evidence-gated automatic path + cached verdict + detached background scan
+# (brief ttl3). The automatic enable happens ONLY when the user's own last
+# 30 days say it pays; the payoff scan never runs inside SessionStart.
+# ===========================================================================
+
+FORCE_ENV = "TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H"
+
+
+def _gated(m, monkeypatch):
+    """Drop the fixture's always-on switch so the evidence gate is live."""
+    monkeypatch.delenv(FORCE_ENV, raising=False)
+    mod, _s, _h = m
+    return mod
+
+
+def _verdict(m, *, requests=500, saved=2.0, premium=1.0, tokens=1_234_567,
+             complete=True, age=60.0, since_ts=None, now=None):
+    """Write a cached verdict the way the background scan would."""
+    mod, _s, _h = m
+    now = time.time() if now is None else now
+    payoff = mod._subagent_cache_payoff_zero(30)
+    payoff.update(
+        subagent_requests=requests, savings_usd_est=saved,
+        extra_write_cost_usd_est=premium, net_usd_est=saved - premium,
+        within_agent_tokens=tokens, missed_read_tokens=tokens)
+    rec = {"version": 1, "ts": now - age, "complete": complete,
+           "since_ts": since_ts, "window_days": 30,
+           "payoff": payoff if complete else None,
+           "reason": None if complete else "time budget exceeded"}
+    p = mod._subagent_cache_verdict_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(rec), encoding="utf-8")
+    return rec
+
+
+def _no_inline_scan(mod, monkeypatch):
+    def _boom(*a, **k):
+        raise AssertionError("session start must never run the payoff scan")
+    monkeypatch.setattr(mod, "subagent_cache_payoff", _boom)
+
+
+def test_gate_margin_constant_is_named():
+    sys.path.insert(0, str(SCRIPTS))
+    src = MEASURE.read_text(encoding="utf-8")
+    assert "_SUBAGENT_CACHE_AUTO_ENABLE_MARGIN = 1.15" in src
+
+
+def test_session_start_without_cache_spawns_one_scan_and_writes_nothing(m, monkeypatch):
+    mod = _gated(m, monkeypatch)
+    _s, settings, _h = m[0], m[1], m[2]
+    before = settings.read_text(encoding="utf-8")
+    _no_inline_scan(mod, monkeypatch)
+    assert mod._subagent_cache_session_start_lines() == []
+    assert settings.read_text(encoding="utf-8") == before
+    assert len(mod._spawn_log) == 1
+    argv, kw = mod._spawn_log[0]
+    assert "subagent-cache" in argv and "scan" in argv
+    assert Path(argv[1]).name == "measure.py"
+    assert kw["stdin"] == subprocess.DEVNULL
+    assert kw["stdout"] == subprocess.DEVNULL
+    assert kw["stderr"] == subprocess.DEVNULL
+    assert kw["env"]["TOKEN_OPTIMIZER_RUNTIME"] == "claude"
+    # A second session start while that scan is in flight: lock held, no second.
+    assert mod._subagent_cache_session_start_lines() == []
+    assert len(mod._spawn_log) == 1
+    assert settings.read_text(encoding="utf-8") == before
+
+
+def test_session_start_with_fresh_positive_verdict_enables(m, monkeypatch):
+    mod = _gated(m, monkeypatch)
+    settings = m[1]
+    _no_inline_scan(mod, monkeypatch)
+    _verdict(m, requests=500, saved=2.0, premium=1.0, tokens=1_234_567)
+    lines = mod._subagent_cache_session_start_lines()
+    assert len(lines) == 1
+    assert NOTICE_EVIDENCE + "1,234,567 tokens" in lines[0]
+    assert "Undo:" in lines[0] and "subagent-cache disable" in lines[0]
+    assert _read(settings)[KEY] == "1h"
+    assert mod._spawn_log == []
+    mk = _marker(m)
+    assert mk["state"] == "set"
+    assert mk["auto_decision"]["decision"] == "enable"
+    assert mk["auto_decision"]["ts"] > 0
+
+
+def test_session_start_with_fresh_negative_verdict_does_not_write(m, monkeypatch):
+    mod = _gated(m, monkeypatch)
+    settings = m[1]
+    before = settings.read_text(encoding="utf-8")
+    _no_inline_scan(mod, monkeypatch)
+    _verdict(m, requests=500, saved=0.40, premium=1.0)
+    assert mod._subagent_cache_session_start_lines() == []
+    assert settings.read_text(encoding="utf-8") == before
+    assert mod._spawn_log == []
+    ad = _marker(m)["auto_decision"]
+    assert ad["decision"] == "would-not-pay"
+    assert ad["reason"] == "would not pay: saved $0.40 vs premium $1.00"
+    assert ad["ts"] > 0
+
+
+def test_thin_verdict_is_not_enough_data(m, monkeypatch):
+    mod = _gated(m, monkeypatch)
+    settings = m[1]
+    before = settings.read_text(encoding="utf-8")
+    n = mod._SUBAGENT_CACHE_TRIPWIRE_MIN_REQUESTS
+    _verdict(m, requests=n - 1, saved=50.0, premium=1.0)
+    assert mod._subagent_cache_session_start_lines() == []
+    assert settings.read_text(encoding="utf-8") == before
+    ad = _marker(m)["auto_decision"]
+    assert ad["decision"] == "not-enough-data"
+    assert "not enough data" in ad["reason"]
+    assert str(n) in ad["reason"]
+
+
+def test_exactly_the_minimum_sample_counts(m, monkeypatch):
+    mod = _gated(m, monkeypatch)
+    settings = m[1]
+    _verdict(m, requests=mod._SUBAGENT_CACHE_TRIPWIRE_MIN_REQUESTS,
+             saved=2.0, premium=1.0)
+    assert len(mod._subagent_cache_session_start_lines()) == 1
+    assert _read(settings)[KEY] == "1h"
+
+
+def test_margin_is_one_point_one_five_inclusive(m, monkeypatch):
+    mod = _gated(m, monkeypatch)
+    settings = m[1]
+    _verdict(m, saved=1.14, premium=1.0)
+    assert mod._subagent_cache_session_start_lines() == []
+    assert KEY not in _read(settings)
+    assert _marker(m)["auto_decision"]["decision"] == "would-not-pay"
+    # A fresh verdict a day later lands exactly on the margin.
+    _verdict(m, saved=1.15, premium=1.0)
+    assert len(mod._subagent_cache_session_start_lines()) == 1
+    assert _read(settings)[KEY] == "1h"
+
+
+def test_zero_saving_never_enables_even_with_zero_premium(m, monkeypatch):
+    mod = _gated(m, monkeypatch)
+    settings = m[1]
+    _verdict(m, saved=0.0, premium=0.0)
+    assert mod._subagent_cache_session_start_lines() == []
+    assert KEY not in _read(settings)
+
+
+def test_stale_verdict_is_not_applied_and_respawns_scan(m, monkeypatch):
+    mod = _gated(m, monkeypatch)
+    settings = m[1]
+    _no_inline_scan(mod, monkeypatch)
+    _verdict(m, saved=9.0, premium=1.0, age=2 * 86400)
+    assert mod._subagent_cache_session_start_lines() == []
+    assert KEY not in _read(settings)
+    assert len(mod._spawn_log) == 1
+
+
+def test_incomplete_verdict_is_no_verdict(m, monkeypatch):
+    mod = _gated(m, monkeypatch)
+    settings = m[1]
+    _verdict(m, complete=False)
+    assert mod._subagent_cache_session_start_lines() == []
+    assert KEY not in _read(settings)
+    ad = _marker(m)["auto_decision"]
+    assert ad["decision"] == "not-enough-data"
+    assert mod._spawn_log == []   # fresh (but partial): retried tomorrow, not now
+
+
+def test_decision_is_rejudged_at_most_once_a_day(m, monkeypatch):
+    mod = _gated(m, monkeypatch)
+    _verdict(m, saved=0.1, premium=1.0)
+    t0 = time.time()
+    mod._subagent_cache_session_start_lines(now=t0)
+    first = _marker(m)["auto_decision"]
+    mod._subagent_cache_session_start_lines(now=t0 + 3600)
+    assert _marker(m)["auto_decision"] == first     # untouched, not rewritten
+    # A newer verdict (the daily scan finished) is judged again.
+    _verdict(m, saved=0.2, premium=1.0, now=t0 + 90000)
+    mod._subagent_cache_session_start_lines(now=t0 + 90100)
+    second = _marker(m)["auto_decision"]
+    assert second["ts"] == pytest.approx(t0 + 90100)
+    assert "$0.20" in second["reason"]
+
+
+def test_force_on_env_enables_without_evidence_and_without_scan(m, monkeypatch):
+    mod, settings, _h = m
+    monkeypatch.setenv(FORCE_ENV, "1")
+    _no_inline_scan(mod, monkeypatch)
+    lines = mod._subagent_cache_session_start_lines()
+    assert len(lines) == 1 and "subagent-cache disable" in lines[0]
+    assert _read(settings)[KEY] == "1h"
+    assert mod._spawn_log == []
+
+
+def test_force_off_env_still_means_never(m, monkeypatch):
+    mod, settings, _h = m
+    monkeypatch.setenv(FORCE_ENV, "0")
+    _verdict(m, saved=9.0, premium=1.0)
+    assert mod._subagent_cache_session_start_lines() == []
+    assert KEY not in _read(settings)
+    assert mod._spawn_log == []
+
+
+def test_guards_still_win_over_a_positive_verdict(m, monkeypatch):
+    """User-set value, env overrides, other settings files, version floor."""
+    mod = _gated(m, monkeypatch)
+    settings = m[1]
+    _verdict(m, saved=9.0, premium=1.0)
+    monkeypatch.setenv("CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL", "5m")
+    assert mod._subagent_cache_session_start_lines() == []
+    assert KEY not in _read(settings)
+    assert mod._spawn_log == [], "no scan for a user a guard already excludes"
+    monkeypatch.delenv("CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL")
+    monkeypatch.setattr(mod, "_subagent_cache_claude_code_version", lambda: (2, 1, 100))
+    assert mod._subagent_cache_session_start_lines() == []
+    assert KEY not in _read(settings)
+    data = dict(USER_SETTINGS)
+    data[KEY] = "5m"
+    _write_settings(settings, data)
+    monkeypatch.setattr(mod, "_subagent_cache_claude_code_version", lambda: (2, 1, 250))
+    assert mod._subagent_cache_session_start_lines() == []
+    assert _read(settings)[KEY] == "5m"
+
+
+def test_version_probe_waits_for_the_evidence(m, monkeypatch):
+    mod = _gated(m, monkeypatch)
+    calls = []
+    monkeypatch.setattr(mod, "_subagent_cache_claude_code_version",
+                        lambda: calls.append(1) or (2, 1, 250))
+    mod._subagent_cache_session_start_lines()          # no verdict yet
+    _verdict(m, saved=0.1, premium=1.0)                # verdict says no
+    mod._subagent_cache_session_start_lines()
+    assert calls == [], "claude --version must not run for an unproven user"
+
+
+def test_manual_enable_is_unconditional(m, monkeypatch):
+    mod = _gated(m, monkeypatch)
+    settings = m[1]
+    _verdict(m, saved=0.0, premium=5.0)
+    r = mod.subagent_cache_enable(automatic=False)
+    assert r["state"] == "set" and r["changed"] is True
+    assert _read(settings)[KEY] == "1h"
+
+
+def test_manual_enable_cli_prints_estimate_first(m, monkeypatch, capsys):
+    mod = _gated(m, monkeypatch)
+    _two_spawns(m[2])
+    mod._subagent_cache_cli(["subagent-cache", "enable"])
+    out = capsys.readouterr().out
+    assert "ESTIMATE from your own transcripts" in out
+    assert out.index("ESTIMATE") < out.index("[Token Optimizer] ")
+    assert _read(m[1])[KEY] == "1h"
+
+
+def test_manual_enable_cli_json_carries_the_estimate(m, monkeypatch, capsys):
+    mod = _gated(m, monkeypatch)
+    mod._subagent_cache_cli(["subagent-cache", "enable", "--json"])
+    data = json.loads(capsys.readouterr().out)
+    assert data["state"] == "set"
+    assert data["payoff"]["estimate"] is True
+
+
+# --- the scan worker ------------------------------------------------------
+
+def test_scan_run_writes_a_complete_verdict(m):
+    mod, _s, home = m
+    _two_spawns(home)
+    rec = mod.subagent_cache_scan_run(now=time.time())
+    assert rec["complete"] is True
+    on_disk = json.loads(mod._subagent_cache_verdict_path().read_text("utf-8"))
+    assert on_disk["complete"] is True and on_disk["since_ts"] is None
+    assert on_disk["payoff"]["subagent_requests"] >= 2
+    assert on_disk["ts"] > 0
+
+
+def test_scan_run_partial_on_time_budget_is_no_verdict(m):
+    mod, _s, home = m
+    _two_spawns(home)
+    rec = mod.subagent_cache_scan_run(now=time.time(), time_budget=-1.0)
+    assert rec["complete"] is False
+    assert rec["payoff"] is None
+    assert "time budget" in rec["reason"]
+
+
+def test_scan_run_partial_on_file_cap_is_no_verdict(m):
+    mod, _s, home = m
+    _two_spawns(home)
+    _pad(home, n=3)
+    rec = mod.subagent_cache_scan_run(now=time.time(), max_files=1)
+    assert rec["complete"] is False and rec["payoff"] is None
+    assert "file cap" in rec["reason"]
+
+
+def test_scan_run_crash_still_leaves_a_dated_incomplete_verdict(m, monkeypatch):
+    mod, _s, _h = m
+    monkeypatch.setattr(mod, "subagent_cache_payoff",
+                        lambda **kw: (_ for _ in ()).throw(RuntimeError("boom")))
+    rec = mod.subagent_cache_scan_run(now=time.time())
+    assert rec["complete"] is False
+    assert mod._subagent_cache_verdict_path().exists()
+    assert not mod._subagent_cache_scan_lock_path().exists(), "lock leaked"
+
+
+def test_scan_lock_prevents_two_scans_at_once(m):
+    mod, _s, home = m
+    _two_spawns(home)
+    token = mod._subagent_cache_scan_acquire_lock(time.time())
+    assert token
+    assert mod._subagent_cache_scan_acquire_lock(time.time()) is None
+    # A scan started by hand while the lock is held backs off and writes nothing.
+    assert mod.subagent_cache_scan_run(now=time.time()) is None
+    assert not mod._subagent_cache_verdict_path().exists()
+    # The spawner's child presents the token and runs, releasing the lock after.
+    rec = mod.subagent_cache_scan_run(now=time.time(), token=token)
+    assert rec["complete"] is True
+    assert not mod._subagent_cache_scan_lock_path().exists()
+
+
+def test_abandoned_scan_lock_is_reclaimed(m):
+    mod, _s, _h = m
+    now = time.time()
+    token = mod._subagent_cache_scan_acquire_lock(now - 3600)
+    assert token
+    p = mod._subagent_cache_scan_lock_path()
+    os.utime(p, (now - 3600, now - 3600))
+    assert mod._subagent_cache_scan_acquire_lock(now)
+
+
+def test_failed_spawn_releases_the_lock(m, monkeypatch):
+    mod, _s, _h = m
+    monkeypatch.setattr(mod, "spawn_detached", lambda argv, **kw: None)
+    assert mod._subagent_cache_spawn_scan(now=time.time()) is False
+    assert not mod._subagent_cache_scan_lock_path().exists()
+
+
+def test_spawn_passes_the_tripwire_window(m):
+    mod, _s, _h = m
+    assert mod._subagent_cache_spawn_scan(now=time.time(), since_ts=1234.5)
+    argv, kw = mod._spawn_log[0]
+    assert argv[-2:] == ["--since", "1234.5"] or "--since" in argv
+    assert kw["env"][mod._SUBAGENT_CACHE_SCAN_TOKEN_ENV]
+
+
+def test_scan_cli_runs_the_worker(m, capsys):
+    mod, _s, home = m
+    _two_spawns(home)
+    mod._subagent_cache_cli(["subagent-cache", "scan"])
+    assert mod._subagent_cache_verdict_path().exists()
+
+
+def test_scan_spawn_goes_through_spawn_detached_only():
+    """No console window on Windows: the spawn helper owns the flags."""
+    import ast
+    tree = ast.parse(MEASURE.read_text(encoding="utf-8"))
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef)
+              and n.name == "_subagent_cache_spawn_scan")
+    called = {ast.unparse(c.func) for c in ast.walk(fn) if isinstance(c, ast.Call)}
+    assert "spawn_detached" in called
+    assert not any(c.startswith("subprocess.") for c in called)
+
+
+# --- the tripwire reads the same cached verdict ---------------------------
+
+def _post_enable_verdict(m, **kw):
+    return _verdict(m, since_ts=_set_ts(m), **kw)
+
+
+def test_tripwire_uses_cached_verdict_not_inline_scan(m, monkeypatch):
+    mod, settings, _h = m
+    _enable_15d_ago(m)
+    _no_inline_scan(mod, monkeypatch)
+    _post_enable_verdict(m, requests=500, saved=0.1, premium=2.0)
+    r = mod.evaluate_subagent_cache_tripwire(now=time.time())
+    assert r["reverted"] is True
+    assert KEY not in _read(settings)
+
+
+def test_tripwire_without_cached_verdict_spawns_scan_and_waits(m, monkeypatch):
+    mod, settings, _h = m
+    _enable_15d_ago(m)
+    _no_inline_scan(mod, monkeypatch)
+    r = mod.evaluate_subagent_cache_tripwire(now=time.time())
+    assert r["reverted"] is False
+    assert _read(settings)[KEY] == "1h"
+    assert len(mod._spawn_log) == 1
+    assert "--since" in mod._spawn_log[0][0]
+    assert "judged_ts" not in _marker(m), "a pending scan is not a judgment"
+
+
+def test_tripwire_ignores_a_verdict_for_another_window(m, monkeypatch):
+    mod, settings, _h = m
+    _enable_15d_ago(m)
+    _no_inline_scan(mod, monkeypatch)
+    _verdict(m, requests=500, saved=0.0, premium=9.0, since_ts=None)
+    r = mod.evaluate_subagent_cache_tripwire(now=time.time())
+    assert r["reverted"] is False
+    assert _read(settings)[KEY] == "1h"
+    assert len(mod._spawn_log) == 1
+
+
+# --- surfaces show the decision -------------------------------------------
+
+def test_status_shows_auto_decision_and_reason(m, monkeypatch):
+    mod = _gated(m, monkeypatch)
+    _two_spawns(m[2])
+    st = mod.subagent_cache_status()
+    ad = st["auto_decision"]
+    assert ad["decision"] in ("would-not-pay", "not-enough-data", "enable")
+    assert ad["reason"]
+
+
+def test_status_auto_decision_reports_force_on(m, monkeypatch):
+    mod, _s, _h = m
+    st = mod.subagent_cache_status()
+    assert st["auto_decision"]["decision"] == "forced-on"
+
+
+def test_status_auto_decision_reports_force_off(m, monkeypatch):
+    mod, _s, _h = m
+    monkeypatch.setenv(FORCE_ENV, "0")
+    assert mod.subagent_cache_status()["auto_decision"]["decision"] == "opted-out"
+
+
+def test_status_text_prints_the_decision(m, monkeypatch, capsys):
+    mod = _gated(m, monkeypatch)
+    _two_spawns(m[2])
+    mod._subagent_cache_cli(["subagent-cache", "status"])
+    out = capsys.readouterr().out
+    assert "auto:" in out
+
+
+def test_block_reads_the_cache_and_never_scans(m, monkeypatch):
+    mod = _gated(m, monkeypatch)
+    _no_inline_scan(mod, monkeypatch)
+    _verdict(m, requests=500, saved=0.4, premium=1.0)
+    b = mod.subagent_cache_block()
+    assert b["auto_decision"]["decision"] == "would-not-pay"
+    assert b["payoff"]["subagent_requests"] == 500
+    assert mod._spawn_log == [], "doctor/quick/coach never spawn a scan"
+
+
+def test_block_without_cache_is_an_honest_pending(m, monkeypatch):
+    mod = _gated(m, monkeypatch)
+    _no_inline_scan(mod, monkeypatch)
+    b = mod.subagent_cache_block()
+    assert b["auto_decision"]["decision"] == "pending"
+    assert b["payoff"]["subagent_requests"] == 0
+
+
+# --- end to end through ensure-health -------------------------------------
+
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="POSIX-only: fake claude shim on PATH")
+def test_ensure_health_applies_a_cached_positive_verdict(tmp_path):
+    home = tmp_path / "home"
+    claude_dir = home / ".claude"
+    claude_dir.mkdir(parents=True)
+    _write_settings(claude_dir / "settings.json")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    (fake_bin / "claude").write_text(
+        "#!/bin/sh\necho '2.1.250 (Claude Code)'\n", encoding="utf-8")
+    (fake_bin / "claude").chmod(0o755)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    payoff = {"subagent_requests": 900, "savings_usd_est": 3.0,
+              "extra_write_cost_usd_est": 1.0, "net_usd_est": 2.0,
+              "within_agent_tokens": 777000, "across_spawn_tokens": 0,
+              "missed_read_tokens": 777000, "realized_read_tokens": 0}
+    (data_dir / "subagent_cache_verdict.json").write_text(json.dumps({
+        "version": 1, "ts": time.time() - 30, "complete": True,
+        "since_ts": None, "window_days": 30, "payoff": payoff}))
+
+    env = dict(os.environ)
+    for var in ("TOKEN_OPTIMIZER_RUNTIME", "CLAUDE_PLUGIN_DATA",
+                "CLAUDE_CODE_REMOTE", "CLAUDE_CODE_CONTAINER_ID",
+                "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL",
+                "FORCE_PROMPT_CACHING_5M", FORCE_ENV):
+        env.pop(var, None)
+    env["HOME"] = str(home)
+    env["CLAUDE_CONFIG_DIR"] = str(claude_dir)
+    env["TOKEN_OPTIMIZER_SNAPSHOT_DIR"] = str(data_dir)
+    env["PATH"] = f"{fake_bin}:{env.get('PATH', '')}"
+    res = subprocess.run(
+        [sys.executable, str(MEASURE), "ensure-health", "--once-mark"],
+        input=json.dumps({"cwd": str(tmp_path), "hook_event_name": "SessionStart",
+                          "session_id": "01subagentgate0000000000000",
+                          "source": "startup"}),
+        text=True, capture_output=True, env=env, timeout=120)
+    assert res.returncode == 0, res.stderr[-2000:]
+    assert json.loads((claude_dir / "settings.json").read_text())[KEY] == "1h"
+    msgs = [json.loads(line).get("systemMessage", "")
+            for line in res.stdout.splitlines() if line.strip().startswith("{")]
+    notices = [s for s in msgs if NOTICE_EVIDENCE in s]
+    assert len(notices) == 1, msgs
+    assert "777,000 tokens" in notices[0]

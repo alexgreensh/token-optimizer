@@ -686,12 +686,14 @@ Prefer a button? The [desktop status bar](#desktop-status-bar) has a manual **Ke
 
 ### Subagent prompt cache
 
-Claude Code only. Subagents get a 5-minute prompt cache even on a subscription, so a subagent returned to after five minutes rewrites its whole prefix. On Claude Code 2.1.243+, Token Optimizer sets `subagentPromptCacheTtl: "1h"` once in your user `settings.json` at session start and tells you in one line. It never overrides a value you set, never fights a `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL` or `FORCE_PROMPT_CACHING_5M` override, and never sets it again if you remove or change it. A 14-day tripwire (needs at least 200 subagent requests, else "not enough data") reverts automatically if your own transcripts show the 1h write premium costing more than the rewrites it avoids, counting reuse across spawns as well as within one agent.
+Claude Code only. Subagents get a 5-minute prompt cache even on a subscription, so a subagent returned to after five minutes rewrites its whole prefix. On Claude Code 2.1.243+, Token Optimizer turns on `subagentPromptCacheTtl: "1h"` when your own history shows it pays: at least 200 subagent requests in the last 30 days and an estimated saving of at least 1.15x the 1-hour write premium. It then sets the key once in your user `settings.json` and tells you in one line, with the tokens your last 30 days would have saved. Anyone whose subagents run once, or too rarely, is left on the 5-minute default, and `status` says why. The scan reads your transcripts in a background process, never inside session start, and applies the result at the next session. It never overrides a value you set, never fights a `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL` or `FORCE_PROMPT_CACHING_5M` override, and never sets it again if you remove or change it. A 14-day tripwire (needs at least 200 subagent requests, else "not enough data") reverts automatically if your own transcripts show the 1h write premium costing more than the rewrites it avoids, counting reuse across spawns as well as within one agent.
 
 ```bash
-python3 measure.py subagent-cache status    # state, who set it, estimated net from your transcripts
+python3 measure.py subagent-cache status    # state, the automatic decision and why, estimated net
+python3 measure.py subagent-cache enable    # turn it on now, whatever the estimate says
 python3 measure.py subagent-cache disable   # undo (only what Token Optimizer set)
-TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=0           # opt out permanently
+TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=1           # always on: skip the evidence check
+TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=0           # never: opt out permanently
 ```
 
 ### Fleet Auditor

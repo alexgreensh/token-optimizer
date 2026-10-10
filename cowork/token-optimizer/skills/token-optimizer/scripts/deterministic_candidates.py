@@ -583,7 +583,7 @@ class _KeyMaker:
                 key, shape = "B:" + norm, "Bash: " + norm
             # The literal form keeps every parameter: polling means re-running
             # ONE literal command; a normalised shape that hides several
-            # literals is a parameter sweep (F-T2-11).
+            # literals is a parameter sweep.
             lit = _CD_PREFIX_RE.sub("", _WS_RE.sub(" ", clean).strip())
             hit = (key, shape, is_check_command(clean), lit)
             if len(self._cmd_memo) < 20000:
@@ -1172,7 +1172,7 @@ def detect_polling(traces: list[Trace]) -> list[_Cand]:
                 by_lit: dict[str, list[Call]] = defaultdict(list)
                 for c in calls:
                     by_lit[c.lit or c.shape].append(c)
-                # F-T2-11: a normalised shape collapses digits/strings/paths,
+                # a normalised shape collapses digits/strings/paths,
                 # so `run-0`..`run-5` lands in one group. A polling loop
                 # re-runs ONE literal command; several distinct literals is
                 # a parameter sweep and needs different advice.

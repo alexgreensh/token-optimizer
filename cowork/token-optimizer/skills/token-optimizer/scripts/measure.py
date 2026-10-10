@@ -700,7 +700,7 @@ CLAUDE_MD_INJECTION_OVERHEAD = 75
 
 # Fallback Claude rate cards: a card-for-card mirror of the "anthropic"
 # section of the bundled pricing/prices.json, kept in literals so pricing
-# stays correct when the file is absent or disabled (F-T2-1). A regression
+# stays correct when the file is absent or disabled. A regression
 # test pins literal == bundled, so a card the refresh pipeline adds must be
 # mirrored here at the same time. First-party rates apply on anthropic /
 # vertex-global / bedrock; vertex-regional is +10% via _claude_cards.
@@ -10602,7 +10602,7 @@ def generate_coach_data(focus=None, components=None, trends=None, include_determ
         except Exception:
             pass
 
-    # Usage recommendations (recs): the coach data channel also feeds the
+    # Usage recommendations: the coach data channel also feeds the
     # dashboard's "From your own usage" section. This is the dashboard data
     # collection spawn point too: a missing/stale record starts the detached
     # refresh, the record itself is only ever READ here.
@@ -19220,7 +19220,7 @@ def keepwarm_cache_health_block(days=30, now=None):
 # pays on the user's own transcripts and RECOMMENDS it; it never sets the
 # key for you.
 #
-# ADVISE-ONLY (ttl4, 2026-10-10): the automatic path never writes
+# ADVISE-ONLY: the automatic path never writes
 # `subagentPromptCacheTtl`. Claude Code keeps subagents at 5 minutes because
 # 1h costs more on average for agent-shaped work; our verdict is an estimate,
 # and editing a user's settings on an estimate is not ok. What remains:
@@ -19483,7 +19483,7 @@ def _subagent_cache_undo(data, now, why, user_initiated=False):
 
     Caller guarantees the marker says TO set it. `data` is the current
     settings dict. `user_initiated` marks an explicit user command so the
-    settings lease must not lose to a herd writer's tombstone (F-T1-4).
+    settings lease must not lose to a herd writer's tombstone.
     Never raises; a refused write leaves everything as-is.
     """
     if _SUBAGENT_CACHE_KEY not in data:
@@ -19708,7 +19708,7 @@ def _subagent_cache_judge_payoff(payoff):
     not-enough-data fewer requests than that
     would-not-pay   enough requests, but the saving does not clear the margin
 
-    "recommend" used to be "enable" (the automatic write is gone, ttl4);
+    "recommend" used to be "enable" (the automatic write is gone);
     it now only feeds the advice line and the recorded verdict.
     """
     payoff = payoff or {}
@@ -19751,7 +19751,7 @@ def _subagent_cache_record_decision(marker, decision, now):
 def _subagent_cache_auto_gate(marker, now):
     """Judge the cached verdict for the unset-key (last 30 days) window.
 
-    ADVISE-ONLY (ttl4): reads the cached verdict only and ALWAYS records the
+    ADVISE-ONLY: reads the cached verdict only and ALWAYS records the
     judgement in the marker -- a verdict says what the user's own numbers
     support, it is never applied to settings here. With no usable verdict
     (missing, stale, other window) it starts the detached scan and answers
@@ -19778,7 +19778,7 @@ def subagent_cache_enable(now=None, automatic=True):
     """Set `subagentPromptCacheTtl: "1h"` in the USER settings.json -- once,
     and only under every safety rule in the module docstring.
 
-    `automatic=True` is the SessionStart path. ADVISE-ONLY (ttl4): with the
+    `automatic=True` is the SessionStart path. ADVISE-ONLY: with the
     force env unset it NEVER writes -- it judges + records the cached verdict
     and returns the decision as the state -- while still honouring the sticky
     marker states (user-declined / auto-reverted / opted-out / removed) so
@@ -19862,7 +19862,7 @@ def subagent_cache_enable(now=None, automatic=True):
 
     # Unknown-state user settings: never write. An explicit `enable` is the
     # one exception to "missing = unknown": a user who ran the command on a
-    # machine with no settings.json wants the file created (F-T1-6).
+    # machine with no settings.json wants the file created.
     data, ok = _read_settings_for_write(allow_missing=not automatic)
     if not ok:
         return {"state": "unknown-settings", "changed": False,
@@ -19883,7 +19883,7 @@ def subagent_cache_enable(now=None, automatic=True):
     # What may write, in order of strength: an explicit `subagent-cache
     # enable` is unconditional; the opt-in TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=1
     # is the only automatic write (and the only path that also keeps the
-    # 14-day tripwire). Everything else is ADVISE-ONLY (ttl4): judge + record
+    # 14-day tripwire). Everything else is ADVISE-ONLY: judge + record
     # the cached verdict and return the decision -- Claude Code keeps
     # subagents at 5 minutes because 1h costs more on average for
     # agent-shaped work, and editing a user's settings on an estimate is not
@@ -19911,7 +19911,7 @@ def subagent_cache_enable(now=None, automatic=True):
 
     # The only write this feature ever makes: an explicit command, or the
     # force-env opt-in. user_initiated lets the explicit command take the
-    # settings lease past a herd writer's tombstone (F-T1-4).
+    # settings lease past a herd writer's tombstone.
     payload = dict(data)
     payload[_SUBAGENT_CACHE_KEY] = "1h"
     if not _write_settings_atomic(payload, user_initiated=not automatic):
@@ -20225,7 +20225,7 @@ def subagent_cache_payoff(days=30, now=None, since_ts=None,
 def evaluate_subagent_cache_tripwire(now=None, payoff=None):
     """14+ days of post-enable data with a NEGATIVE net estimate -> revert.
 
-    Only runs under the TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=1 opt-in (ttl4):
+    Only runs under the TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=1 opt-in:
     the advise-only default never calls it, so a TO-set key is never removed
     silently -- a negative window only feeds the "is costing ... turn off"
     advice.
@@ -20326,7 +20326,7 @@ def evaluate_subagent_cache_tripwire(now=None, payoff=None):
 
 
 def _subagent_cache_session_start_lines(now=None):
-    """SessionStart ensure body. ADVISE-ONLY by default (ttl4).
+    """SessionStart ensure body. ADVISE-ONLY by default.
 
     With TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H unset this NEVER writes settings
     and never emits a notice: subagent_cache_enable() still owns the env
@@ -20379,7 +20379,7 @@ def _subagent_cache_session_start_lines(now=None):
 
 def _subagent_cache_recommendation(state, current, payoff, billing,
                                    post_enable_days=None):
-    """The advise-only line every surface carries (ttl4).
+    """The advise-only line every surface carries.
 
     Returns {"action": "enable"|"disable"|"keep"|"none", "line": str} or
     None when there is genuinely nothing to say (platform gap, env override,
@@ -20501,7 +20501,7 @@ def subagent_cache_status(days=30, now=None, use_cache=False):
         state, who, reason = "user-set", "user", None
     else:
         state, who, reason = "off", None, None
-    # F-T1-7: a "1h" key with no readable marker may be an orphaned TO write
+    # a "1h" key with no readable marker may be an orphaned TO write
     # (or the user's own) -- say so instead of silently reporting "user-set".
     hint = None
     if current == "1h" and marker is None:
@@ -20575,7 +20575,7 @@ def subagent_cache_block(days=30, now=None):
 
 
 # ===========================================================================
-# Usage recommendations (recs): ONE daily-measured record that every surface
+# Usage recommendations: ONE daily-measured record that every surface
 # reads.
 #
 # `usage_recommendations.json` (schema 1) carries one item per usage-based
@@ -26649,7 +26649,7 @@ def _classify_posix_claude_process(detail, names, args_by_pid, electron_parent_p
         if electron_dir is None:
             # Positive headless evidence (-p, --print, mcp ...) is never
             # killable either way, so it names the session even when the
-            # executable's directory cannot be inspected (F-T1-14).
+            # executable's directory cannot be inspected.
             return "embedded_session" if _posix_is_headless(options) else "unknown"
         if electron_dir:
             return "desktop_app"
@@ -28298,7 +28298,7 @@ def _settings_lock(user_initiated=False):
     Prevents concurrent writes from silently overwriting each other.
     Contenders skip the mutation after 75ms rather than blocking a hook.
 
-    `user_initiated=True` is an explicit user command (F-T1-4): it must not
+    `user_initiated=True` is an explicit user command: it must not
     lose to the cohort throttle -- it opts out of the herd reservation,
     reclaims a RELEASED lease tombstone at once, and retries briefly (2s, or
     the hook deadline when there is one) while a lease is still held.
@@ -28351,7 +28351,7 @@ def _settings_write_guard(settings_data, allow_removing_keys=None, dest=None):
         return False, f"outgoing settings is {type(settings_data).__name__}, not a dict"
     target = dest if dest is not None else SETTINGS_PATH
     if os.path.lexists(target) and not _is_regular_file(target):
-        # F-T1-11: never open() a FIFO/socket/device (it can block forever).
+        # never open() a FIFO/socket/device (it can block forever).
         return False, "settings.json on disk is not a regular file; cannot prove this write is non-destructive"
     try:
         with open(target, "r", encoding="utf-8-sig") as f:
@@ -28362,7 +28362,7 @@ def _settings_write_guard(settings_data, allow_removing_keys=None, dest=None):
         return False, "settings.json on disk is malformed; cannot prove this write is non-destructive"
     except (PermissionError, OSError) as e:
         return False, f"settings.json on disk is unreadable ({e.__class__.__name__}); cannot prove this write is non-destructive"
-    # F-T1-5: a file with no write bits was frozen by the user on purpose
+    # a file with no write bits was frozen by the user on purpose
     # (chmod 444, or the read-only attribute on Windows). The atomic-write
     # trick (temp file + os.replace) would happily REPLACE it, so the
     # permission check has to happen here, before any write is attempted.
@@ -28377,7 +28377,7 @@ def _settings_write_guard(settings_data, allow_removing_keys=None, dest=None):
     dropped = sorted(set(current) - set(settings_data) - allowed)
     if dropped:
         return False, "would DROP top-level key(s): " + ", ".join(dropped)
-    # F-T1-13: the same data-loss class one level down. `env` is a flat
+    # the same data-loss class one level down. `env` is a flat
     # string->string map a caller can carry forward while silently dropping
     # a var inside it (e.g. CLAUDE_AUTOCOMPACT_PCT_OVERRIDE). Diff its keys
     # too. A deliberate nested removal stays possible by declaring the
@@ -28498,7 +28498,7 @@ def _write_settings_atomic_locked(settings_data, allow_removing_keys=None, _repo
 
 
 def _merge_concurrent_settings(snapshot, mine, allow_removing_keys=None):
-    """Three-way merge (F-T1-10) of our payload onto what is on disk right now.
+    """Three-way merge of our payload onto what is on disk right now.
 
     ``snapshot`` is the ``(path, base)`` pair recorded by
     ``_read_settings_for_write``; ``mine`` is the caller's payload derived from
@@ -28559,7 +28559,7 @@ def _write_settings_atomic(settings_data, allow_removing_keys=None,
     multiple hooks may modify settings.json), then delegates the actual
     tempfile + os.replace to ``_write_settings_atomic_locked``.
 
-    ``user_initiated=True`` marks an explicit user command (F-T1-4): the
+    ``user_initiated=True`` marks an explicit user command: the
     lease bypasses the cohort throttle and retries briefly so a deliberate
     mutation cannot lose to a herd writer's tombstone. Automated/hook paths
     keep the non-blocking lease.
@@ -35356,7 +35356,7 @@ def compute_quality_score(quality_data, session_id=None):
         fill_source = "char-estimate"
     if model_fill is None:
         model_fill = fill_pct
-    # F-T1-9: the session id survives /compact, so a reading from just before one
+    # the session id survives /compact, so a reading from just before one
     # still names this session. When the host's token count is off ours by more
     # than 2x it describes a different moment (a numerator change), not a wrong
     # denominator, so the override below skips it.
@@ -35832,7 +35832,7 @@ def _find_session_jsonl_by_id(session_id):
 def _session_id_prefix_matches(prefix):
     """``<id>.jsonl`` transcripts whose session id starts with ``prefix``.
 
-    F-T2-10: ``status-bar --session`` takes a pasted, possibly truncated id
+    ``status-bar --session`` takes a pasted, possibly truncated id
     (our own listings print ``s[:8]``). A short id sanitizes to "unknown"
     and a longer prefix finds no exact file; both used to degrade silently.
     This collects every candidate so the caller can resolve a UNIQUE prefix
@@ -42564,13 +42564,13 @@ def _read_settings_json_checked():
     round-tripping an unknown-state ``{}`` destroys every key the user has.
     """
     if SETTINGS_PATH.exists():
-        # F-T1-11: open() on a FIFO blocks until a writer appears, which would
+        # open() on a FIFO blocks until a writer appears, which would
         # stall a SessionStart hook to its deadline. Anything that is not a
         # regular file (FIFO, socket, device, directory) is "unknown", not data.
         if not _is_regular_file(SETTINGS_PATH):
             return {}, SETTINGS_PATH, False
         try:
-            # utf-8-sig tolerates a BOM (F-T1-8; whether the host tolerates
+            # utf-8-sig tolerates a BOM (whether the host tolerates
             # one is not verified, but a BOM-prefixed file must at least be
             # readable here so "unknown" never means "lost"). Non-JSONC
             # comments stay malformed.
@@ -42606,7 +42606,7 @@ def _read_settings_for_write(allow_missing=False):
     if not ok:
         return {}, False
     if not isinstance(data, dict):
-        # F-T1-3: valid JSON that is not an object ([1,2,3], "x", 42) must be
+        # valid JSON that is not an object ([1,2,3], "x", 42) must be
         # the same clean refusal as malformed JSON -- downstream callers
         # mutate the value as a dict and would otherwise traceback.
         return {}, False
@@ -51404,7 +51404,7 @@ def status_bar_payload(session_id, transcript=None, sync=False):
     """Build the status-bar JSON object (see STATUS_BAR_HELP). Never raises."""
     sid = sanitize_session_id(session_id)
     session_note = None
-    # F-T2-10: --session may carry a pasted truncated id. A <6-char id
+    # --session may carry a pasted truncated id. A <6-char id
     # sanitizes to "unknown"; a longer prefix finds no exact transcript.
     # Resolve a UNIQUE prefix to the real session; when it matches zero or
     # many, say so in savings_reason instead of degrading silently.
@@ -53736,7 +53736,7 @@ def run_ensure_health():
     # never return. Read-only here: nothing to do at startup. See
     # _autocompact_pct_override_explanation (doctor) for the explain-only path.
 
-    # Subagent prompt-cache TTL (1h): ADVISE-ONLY by default (ttl4). The
+    # Subagent prompt-cache TTL (1h): ADVISE-ONLY by default. The
     # session start never writes the key itself -- it keeps the cached payoff
     # verdict fresh (a detached background scan) and records what the verdict
     # says, so `subagent-cache status`, doctor, quick and coach can carry the
@@ -53755,7 +53755,7 @@ def run_ensure_health():
         except Exception:
             pass
 
-    # Usage recommendations (recs): keep the daily-measured record fresh.
+    # Usage recommendations: keep the daily-measured record fresh.
     # Session start only stats the record and may spawn the detached refresh;
     # the measurement itself never runs inside a hook. Fail-open.
     if _is_claude and not is_cowork():

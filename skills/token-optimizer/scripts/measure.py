@@ -20832,9 +20832,13 @@ def _recs_subagent_item(now=None):
     partial = False
     vstate, vrec = _subagent_cache_verdict_for(now, since)
     if vstate != "fresh":
+        # Complete only when the inline scan itself finished cleanly; a scan
+        # another process holds (None) or one cut short leaves it partial.
         partial = True
         try:
-            vrec = subagent_cache_scan_run(now=now, since_ts=since) or vrec
+            scanned = subagent_cache_scan_run(now=now, since_ts=since)
+            partial = not (scanned and scanned.get("complete"))
+            vrec = scanned or vrec
         except Exception:
             pass
     elif not vrec.get("complete"):

@@ -457,6 +457,38 @@ def test_subagent_item_not_enough_data_without_verdict(m, monkeypatch):
     assert it["state"] == "not_enough_data"
 
 
+def test_inline_scan_that_finishes_cleanly_makes_the_record_complete(m, monkeypatch):
+    """No verdict on disk, so the refresh runs the bounded scan inline. When
+    that scan completes, nothing was cut short: complete is true."""
+    mod, _s, _h = m
+    _stub_compact(m, monkeypatch, _compact_report())
+    assert mod._subagent_cache_verdict_for(time.time(), None)[0] != "fresh"
+    rec = mod.usage_recommendations_refresh()
+    assert mod._subagent_cache_verdict_path().exists()
+    assert rec["complete"] is True
+    assert _read_record(m)["complete"] is True
+
+
+def test_inline_scan_that_is_cut_short_keeps_the_record_incomplete(m, monkeypatch):
+    mod, _s, _h = m
+    _stub_compact(m, monkeypatch, _compact_report())
+    monkeypatch.setattr(
+        mod, "subagent_cache_scan_run",
+        lambda *a, **k: {"complete": False, "payoff": None, "ts": time.time()})
+    assert mod.usage_recommendations_refresh()["complete"] is False
+
+
+def test_scan_held_elsewhere_keeps_the_record_incomplete(m, monkeypatch):
+    """A stale (but complete) verdict plus a scan another process holds is
+    still not a fresh measurement."""
+    mod, _s, _h = m
+    _stub_compact(m, monkeypatch, _compact_report())
+    _verdict(m, age=3 * 86400)
+    monkeypatch.setattr(mod, "subagent_cache_scan_run", lambda *a, **k: None)
+    assert mod._subagent_cache_verdict_for(time.time(), None)[0] != "fresh"
+    assert mod.usage_recommendations_refresh()["complete"] is False
+
+
 def test_items_not_applicable_on_foreign_runtime(m, monkeypatch):
     mod, _s, _h = m
     monkeypatch.setattr(mod, "detect_runtime", lambda: "codex")

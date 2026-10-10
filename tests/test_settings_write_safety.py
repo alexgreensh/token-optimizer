@@ -553,3 +553,82 @@ def test_lease_reclaim_does_not_unlink_a_successor(tmp_path, monkeypatch):
     assert path.read_text(encoding="utf-8") == "successor", "the successor's lease was deleted"
     assert [p.name for p in tmp_path.iterdir() if ".stale-" in p.name] == []
     first.release()
+
+
+# ---------------------------------------------------------------------------
+# Line endings: a write keeps the file's dominant ending; a new file uses LF
+# ---------------------------------------------------------------------------
+
+def _fixture_bytes(eol: bytes, lines=None) -> bytes:
+    body = [b"{", b'  "model": "opus",', b'  "effortLevel": "high"', b"}"]
+    if lines is not None:
+        body = lines
+    return eol.join(body) + eol
+
+
+def _write_low_effort(mod, settings):
+    data = _read(settings)
+    data["effortLevel"] = "low"
+    assert mod._write_settings_atomic(data) is True
+    return settings.read_bytes()
+
+
+def test_crlf_file_stays_crlf(measure):
+    mod, settings = measure
+    settings.write_bytes(_fixture_bytes(b"\r\n"))
+    raw = _write_low_effort(mod, settings)
+    assert raw.count(b"\n") == raw.count(b"\r\n") > 0, raw
+    assert raw.endswith(b"}\r\n")
+    assert json.loads(raw)["effortLevel"] == "low"
+
+
+def test_lf_file_stays_lf(measure):
+    mod, settings = measure
+    settings.write_bytes(_fixture_bytes(b"\n"))
+    raw = _write_low_effort(mod, settings)
+    assert b"\r" not in raw and raw.endswith(b"}\n"), raw
+
+
+def test_mixed_file_follows_the_dominant_ending(measure):
+    mod, settings = measure
+    settings.write_bytes(b'{\r\n  "model": "opus",\r\n  "voice": "alloy",\n  "effortLevel": "high"\r\n}\r\n')
+    raw = _write_low_effort(mod, settings)
+    assert raw.count(b"\n") == raw.count(b"\r\n"), raw
+    settings.write_bytes(b'{\n  "model": "opus",\n  "voice": "alloy",\r\n  "effortLevel": "high"\n}\n')
+    raw = _write_low_effort(mod, settings)
+    assert b"\r" not in raw, raw
+
+
+def test_new_file_uses_lf(measure):
+    mod, settings = measure
+    settings.unlink()
+    assert mod._write_settings_atomic({"effortLevel": "low"}) is True
+    raw = settings.read_bytes()
+    assert b"\r" not in raw and raw.endswith(b"\n")
+
+
+def test_single_line_file_has_no_ending_to_copy(measure):
+    mod, settings = measure
+    settings.write_bytes(b'{"model": "opus", "effortLevel": "high"}')
+    raw = _write_low_effort(mod, settings)
+    assert b"\r" not in raw
+
+
+def test_temp_file_is_opened_without_newline_translation(measure, monkeypatch):
+    """On Windows text mode turns every \\n into \\r\\n; newline='' turns that off.
+
+    POSIX never translates, so assert the open call itself (the only way to pin
+    the Windows behavior from a POSIX runner).
+    """
+    mod, settings = measure
+    seen = []
+    real = os.fdopen
+
+    def spy(fd, *args, **kwargs):
+        seen.append(kwargs.get("newline", "<default>"))
+        return real(fd, *args, **kwargs)
+
+    monkeypatch.setattr(os, "fdopen", spy)
+    settings.write_bytes(_fixture_bytes(b"\n"))
+    _write_low_effort(mod, settings)
+    assert seen == [""], seen

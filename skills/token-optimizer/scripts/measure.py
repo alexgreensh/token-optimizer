@@ -28519,6 +28519,21 @@ def _settings_write_refusal_reason():
             or "settings.json locked or guard refused the write")
 
 
+def _existing_line_ending(path):
+    """"\r\n" when the file at ``path`` is mostly CRLF, else "\n".
+
+    A new file, an unreadable one, or one with no line break gets "\n". A mixed
+    file follows whichever ending it has more of.
+    """
+    try:
+        with open(path, "rb") as f:
+            raw = f.read(1_048_576)
+    except OSError:
+        return "\n"
+    crlf = raw.count(b"\r\n")
+    return "\r\n" if crlf > raw.count(b"\n") - crlf else "\n"
+
+
 def _note_settings_os_error(exc):
     """Record an OSError from the temp write / replace as the refusal reason."""
     hint = ("; another program may have it open"
@@ -28586,9 +28601,12 @@ def _write_settings_atomic_locked(settings_data, allow_removing_keys=None, _repo
         _note_settings_os_error(exc)
         return False
     try:
-        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-            json.dump(settings_data, f, indent=2, ensure_ascii=False)
-            f.write("\n")
+        # newline="" switches off text-mode translation (Windows would turn
+        # every "\n" into "\r\n"); the ending is the file's own, set below.
+        eol = _existing_line_ending(dest)
+        with os.fdopen(tmp_fd, "w", encoding="utf-8", newline="") as f:
+            f.write(json.dumps(settings_data, indent=2, ensure_ascii=False)
+                    .replace("\n", eol) + eol)
         if dest_mode is None:
             # Created from nothing: mkstemp gave 0600, but a fresh settings.json
             # should follow the umask like any file the user's tools create.

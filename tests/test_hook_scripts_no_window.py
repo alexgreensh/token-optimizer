@@ -9,11 +9,13 @@ cmd window flashing on screen. ``CREATE_NO_WINDOW`` suppresses that allocation.
 The load-bearing test here is a cross-platform SOURCE SCAN (AST, so a match
 cannot be faked by a comment or a string): every ``subprocess.run`` /
 ``Popen`` / ``call`` / ``check_output`` / ``check_call`` in the surface must
-pass ``creationflags`` whose expression mentions the guarded
-``CREATE_NO_WINDOW`` constant -- either directly, via the module-level
-``_NO_WINDOW`` alias, or by spreading kwargs that came from
-``spawn_utils.detach_spawn_kwargs()``. ``os.system`` / ``os.popen`` /
-``os.startfile`` are banned outright: they cannot carry creation flags at all.
+pass ``creationflags`` whose expression mentions a guarded no-console flag --
+``CREATE_NO_WINDOW`` (hides the console) or ``DETACHED_PROCESS`` (allocates
+none at all, used where the child gets explicit std handles) -- either
+directly, via the module-level ``_NO_WINDOW`` alias, or by spreading kwargs
+that came from ``spawn_utils.detach_spawn_kwargs()``. ``os.system`` /
+``os.popen`` / ``os.startfile`` are banned outright: they cannot carry
+creation flags at all.
 
 The scan is guarded against passing vacuously (a broken matcher finding zero
 sites) by ``test_scan_finds_the_known_spawn_sites``, which asserts the known
@@ -122,11 +124,17 @@ def _name_assignments(tree, src, name):
     return out
 
 
+# Flags that satisfy the no-console contract: CREATE_NO_WINDOW hides the
+# console; DETACHED_PROCESS allocates none at all (stronger -- used where
+# the child also gets explicit std handles, e.g. utf8_io's re-exec).
+_NO_FLASH_FLAG_TOKENS = ("CREATE_NO_WINDOW", "DETACHED_PROCESS")
+
+
 def _spread_sets_no_window(tree, src, var):
-    """True when ``var["creationflags"]`` is assigned a CREATE_NO_WINDOW value.
+    """True when ``var["creationflags"]`` is assigned a no-console value.
 
     Follows one level of indirection (``d["creationflags"] = _flags`` where
-    ``_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)``), which is the shape
+    ``_flags = getattr(subprocess, "DETACHED_PROCESS", 0)``), which is the shape
     utf8_io.py uses so it can omit the key entirely on builds without the flag.
     """
     for node in ast.walk(tree):
@@ -140,10 +148,10 @@ def _spread_sets_no_window(tree, src, var):
             if "creationflags" not in key:
                 continue
             val = ast.get_source_segment(src, node.value) or ""
-            if "CREATE_NO_WINDOW" in val:
+            if any(tok in val for tok in _NO_FLASH_FLAG_TOKENS):
                 return True
             if isinstance(node.value, ast.Name):
-                if any("CREATE_NO_WINDOW" in a
+                if any(any(tok in a for tok in _NO_FLASH_FLAG_TOKENS)
                        for a in _name_assignments(tree, src, node.value.id)):
                     return True
     return False
@@ -162,7 +170,8 @@ def _iter_surface():
 # ---------------------------------------------------------------------------
 def test_every_spawn_site_carries_create_no_window():
     """Every subprocess spawn in the hook-script surface passes creationflags
-    containing the guarded CREATE_NO_WINDOW constant."""
+    containing a guarded no-console flag (CREATE_NO_WINDOW via _NO_WINDOW, or
+    DETACHED_PROCESS where the child gets explicit std handles)."""
     offenders = []
     for name, _path, src, tree in _iter_surface():
         aliases = _subprocess_aliases(tree)
@@ -183,13 +192,14 @@ def test_every_spawn_site_carries_create_no_window():
                 if not _spread_sets_no_window(tree, src, var):
                     offenders.append(
                         f"{name}:{call.lineno} {dotted}(**{var}) -- nothing sets "
-                        f"{var}['creationflags'] to a CREATE_NO_WINDOW value"
+                        f"{var}['creationflags'] to a no-console value"
                     )
                 continue
-            if "CREATE_NO_WINDOW" not in flags and "_NO_WINDOW" not in flags:
+            if "CREATE_NO_WINDOW" not in flags and "_NO_WINDOW" not in flags \
+                    and "DETACHED_PROCESS" not in flags:
                 offenders.append(
                     f"{name}:{call.lineno} {dotted}(...) creationflags={flags!r} "
-                    "does not include CREATE_NO_WINDOW"
+                    "does not include a no-console flag"
                 )
     assert not offenders, "unguarded spawn sites:\n  " + "\n  ".join(offenders)
 

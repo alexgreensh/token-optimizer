@@ -22,8 +22,8 @@ module-level ``_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)``. That
 convention is actively WRONG for hooks/run.py: the constant would bind at import
 time, and off-Windows the attribute does not exist, so it would freeze at ``0``.
 ``test_windows_spawn_no_window.py`` simulates Windows by monkeypatching
-``mod.subprocess.CREATE_NO_WINDOW`` AFTER import and then asserts the real
-``0x08000000`` reaches Popen -- a module-level constant would still hold the
+``mod.subprocess.DETACHED_PROCESS`` AFTER import and then asserts the real
+``0x8`` reaches Popen -- a module-level constant would still hold the
 stale ``0`` and silently delete that coverage on every non-Windows CI leg. So
 run.py must keep resolving the flag at CALL time, and this file fails if someone
 "tidies" it into a module constant.
@@ -339,25 +339,27 @@ def test_fleet_opener_posix_branches_also_guarded():
 # ---------------------------------------------------------------------------
 # 5. hooks/run.py -- ANTI-REFACTOR guard (see module docstring).
 # ---------------------------------------------------------------------------
-def test_run_py_resolves_create_no_window_at_call_time():
-    """run.py must NOT be converted to a module-level ``_NO_WINDOW``.
+def test_run_py_resolves_detached_process_at_call_time():
+    """run.py must NOT be converted to a module-level flag constant.
 
-    The constant would bind at import, freeze at 0 off Windows, and silently
-    void ``test_windows_spawn_no_window.py::test_run_py_spawn_nt_uses_create_no_window``
-    (which monkeypatches ``mod.subprocess.CREATE_NO_WINDOW`` after import).
+    A module-level constant would bind at import, freeze at 0 off Windows,
+    and silently void
+    ``test_windows_spawn_no_window.py::test_run_py_spawn_nt_uses_detached_process``
+    (which monkeypatches ``mod.subprocess.DETACHED_PROCESS`` after import).
     run.py must keep the getattr INSIDE a function body.
     """
     tree = _parse(HOOKS / "run.py")
-    module_level = [
-        n for n in tree.body
-        if isinstance(n, ast.Assign)
-        and any(isinstance(t, ast.Name) and t.id == "_NO_WINDOW" for t in n.targets)
-    ]
-    assert not module_level, (
-        "hooks/run.py must NOT define a module-level _NO_WINDOW: it binds at "
-        "import time and freezes at 0 off Windows, voiding the existing "
-        "monkeypatch-based nt coverage. Keep the call-time getattr."
-    )
+    for flag_const in ("_NO_WINDOW", "_DETACHED"):
+        module_level = [
+            n for n in tree.body
+            if isinstance(n, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == flag_const for t in n.targets)
+        ]
+        assert not module_level, (
+            f"hooks/run.py must NOT define a module-level {flag_const}: it binds "
+            "at import time and freezes at 0 off Windows, voiding the existing "
+            "monkeypatch-based nt coverage. Keep the call-time getattr."
+        )
     getattrs = [
         n for n in ast.walk(tree)
         if isinstance(n, ast.Call)
@@ -365,9 +367,9 @@ def test_run_py_resolves_create_no_window_at_call_time():
         and n.func.id == "getattr"
         and len(n.args) == 3
         and isinstance(n.args[1], ast.Constant)
-        and n.args[1].value == "CREATE_NO_WINDOW"
+        and n.args[1].value == "DETACHED_PROCESS"
     ]
-    assert getattrs, "hooks/run.py must resolve CREATE_NO_WINDOW via getattr"
+    assert getattrs, "hooks/run.py must resolve DETACHED_PROCESS via getattr"
     # And that getattr must live inside a function, not at module scope.
     in_function = any(
         any(g is inner for inner in ast.walk(fn))
@@ -375,25 +377,35 @@ def test_run_py_resolves_create_no_window_at_call_time():
         for g in getattrs
     )
     assert in_function, (
-        "the CREATE_NO_WINDOW getattr must sit inside a function body so it is "
+        "the DETACHED_PROCESS getattr must sit inside a function body so it is "
         "evaluated at call time"
     )
 
 
 def test_run_py_child_stays_stdio_inheriting():
-    """run.py's child MUST inherit stdio (hooks inject via stdout), so the
-    Windows branch may use CREATE_NO_WINDOW only -- never DETACHED_PROCESS
-    (which severs stdio) and never CREATE_NEW_PROCESS_GROUP (inert for reaping
-    here, and it disables the child's Ctrl+C self-terminate)."""
+    """run.py's child MUST inherit stdio (hooks inject via stdout). On nt it
+    spawns DETACHED_PROCESS -- no console is allocated at all -- and stdio is
+    carried by the explicit handles from ``_windows_stdio_kwargs()``
+    (STARTF_USESTDHANDLES). Never CREATE_NEW_PROCESS_GROUP (inert for reaping
+    here, and it disables the child's Ctrl+C self-terminate) and never
+    CREATE_NO_WINDOW (it still allocates a hidden console -- the conhost
+    spawn that leaks a kernel token, issue #215)."""
     src = (HOOKS / "run.py").read_text(encoding="utf-8")
     code = "\n".join(
         line for line in src.splitlines() if not line.lstrip().startswith("#")
     )
-    for banned in ("DETACHED_PROCESS", "CREATE_NEW_PROCESS_GROUP"):
+    for banned in ("CREATE_NEW_PROCESS_GROUP", "CREATE_NO_WINDOW"):
         assert banned not in code, (
-            f"hooks/run.py must not use {banned}: the child has to inherit "
-            "run.py's stdio for hook injection via stdout"
+            f"hooks/run.py must not use {banned}: see this test's docstring"
         )
+    assert "DETACHED_PROCESS" in code, (
+        "hooks/run.py must spawn the module_runner child DETACHED_PROCESS "
+        "(no console allocated -> no conhost spawn -> no kernel-token leak)"
+    )
+    assert "_windows_stdio_kwargs" in code, (
+        "DETACHED_PROCESS only preserves stdio because run.py passes the "
+        "three std handles explicitly; _windows_stdio_kwargs must stay"
+    )
 
 
 # ---------------------------------------------------------------------------

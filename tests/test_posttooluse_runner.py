@@ -50,7 +50,9 @@ SCRIPTS = REPO / "skills" / "token-optimizer" / "scripts"
 HOOKS_JSON = HOOKS / "hooks.json"
 RUNNER = HOOKS / "posttooluse_runner.py"
 
-UNION_MATCHER = "Bash|Read|Glob|Grep|Agent|Edit|Write|MultiEdit|NotebookEdit|mcp__.*"
+UNION_MATCHER = (
+    "Bash|PowerShell|Read|Glob|Grep|Agent|Edit|Write|MultiEdit|NotebookEdit|mcp__.*"
+)
 
 # The six commands the consolidation replaces. None of them may survive as a
 # separate PostToolUse entry.
@@ -172,6 +174,10 @@ def test_total_declared_posttooluse_budget_collapsed():
 # row because its matcher IS the union the host already matched.
 EXPECTED_BY_TOOL = {
     "Bash": ["bash_compress", "archive_result", "context_intel", "quality_cache"],
+    # PowerShell (the Windows shell tool): output-only handlers run -- the
+    # archiver, activity/intel logger, and the throttle tick -- while the
+    # Bash-grammar compressor and the edit-tool invalidator stay out.
+    "PowerShell": ["archive_result", "context_intel", "quality_cache"],
     "Read": ["archive_result", "context_intel", "quality_cache"],
     "Glob": ["archive_result", "context_intel", "quality_cache"],
     "Grep": ["archive_result", "context_intel", "quality_cache"],
@@ -1067,12 +1073,14 @@ def _fresh_store_modules():
         sys.modules.pop(name, None)
 
 
-def test_hooks_json_registers_posttoolusefailure_for_bash():
+def test_hooks_json_registers_posttoolusefailure_for_shell_tools():
     cfg = json.loads(HOOKS_JSON.read_text(encoding="utf-8"))
     entries = cfg["hooks"].get("PostToolUseFailure")
     assert entries, "PostToolUseFailure must be registered: a failed Bash call is delivered on this event, not PostToolUse"
     (entry,) = entries
-    assert entry["matcher"] == "Bash"
+    # Bash and the Windows PowerShell tool both deliver failures here; the
+    # thrash guard is byte-level and safe on either command language.
+    assert entry["matcher"] == "Bash|PowerShell"
     command = entry["hooks"][0]["command"]
     assert "hooks/posttooluse_runner.py" in command
 
@@ -1138,6 +1146,54 @@ def test_posttooluse_failure_feeds_the_thrash_guard(monkeypatch, tmp_path, capsy
     doc = json.loads(out)
     nudge = doc["hookSpecificOutput"]["additionalContext"]
     assert "failed 3 times" in nudge
+
+
+def test_powershell_failure_feeds_the_thrash_guard(monkeypatch, tmp_path, capsys):
+    """A failed PowerShell call must drive the same burn nudge as Bash: the
+    guard is byte-level (command + output streaks), the ``command`` field
+    name is shared, and the ``error`` envelope is host-generated."""
+    monkeypatch.setenv("TOKEN_OPTIMIZER_SNAPSHOT_DIR", str(tmp_path / "data"))
+    _fresh_store_modules()
+    runner = _load_runner(monkeypatch, tmp_path)
+    _no_real_deadline(monkeypatch, runner)
+    sid = "psfail-" + uuid.uuid4().hex[:8]
+
+    def payload(n):
+        return {
+            "hook_event_name": "PostToolUseFailure",
+            "session_id": sid,
+            "tool_name": "PowerShell",
+            "tool_use_id": "toolu_01PS",
+            "tool_input": {"command": "Get-ChildItem X:\\missing"},
+            "error": f"Exit code 1\nattempt {n}\n",
+        }
+
+    for n in range(3):
+        monkeypatch.setattr(runner, "_read_hook_input", lambda n=n: payload(n))
+        assert runner.main() == 0
+    out = capsys.readouterr().out
+    assert "updatedToolOutput" not in out
+    doc = json.loads(out)
+    nudge = doc["hookSpecificOutput"]["additionalContext"]
+    assert "failed 3 times" in nudge
+
+
+def test_posttooluse_failure_ignores_non_shell_tools(monkeypatch, tmp_path, capsys):
+    """A PostToolUseFailure for a non-shell tool name must no-op even if the
+    host ever delivers one: the guard interprets shell command text only."""
+    monkeypatch.setenv("TOKEN_OPTIMIZER_SNAPSHOT_DIR", str(tmp_path / "data"))
+    _fresh_store_modules()
+    runner = _load_runner(monkeypatch, tmp_path)
+    _no_real_deadline(monkeypatch, runner)
+    monkeypatch.setattr(runner, "_read_hook_input", lambda: {
+        "hook_event_name": "PostToolUseFailure",
+        "session_id": "failother-" + uuid.uuid4().hex[:8],
+        "tool_name": "Read",
+        "tool_input": {"file_path": "/etc/hosts"},
+        "error": "Exit code 1\nnot a shell failure\n",
+    })
+    assert runner.main() == 0
+    assert capsys.readouterr().out.strip() == ""
 
 
 def test_posttooluse_failure_stays_silent_without_a_nudge(monkeypatch, tmp_path, capsys):

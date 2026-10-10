@@ -18,12 +18,24 @@ The daemon-revive spawn (~line 21660 in measure.py) uses
 already swallows ``Exception`` and the child must survive the hook.
 
 ``hooks/run.py`` is also special: its child MUST inherit run.py's stdio for
-hook injection via stdout, so it uses ``CREATE_NO_WINDOW`` only (NOT
-``DETACHED_PROCESS``, NOT ``CREATE_NEW_PROCESS_GROUP``) on Windows. Because
-module_runner.py runs measure.py in-process, the child proc IS the lock
-holder, so Windows reaps with plain ``proc.kill()`` (TerminateProcess of
-proc.pid only) -- NOT ``taskkill /F /T`` which would walk the PPID tree and
-kill the detached session-end-flush worker. POSIX keeps ``os.killpg``.
+hook injection via stdout. It uses ``DETACHED_PROCESS`` (NOT
+``CREATE_NO_WINDOW``, NOT ``CREATE_NEW_PROCESS_GROUP``) on Windows plus the
+three std handles passed explicitly: a ``CREATE_NO_WINDOW`` child still
+allocates a hidden console, and on Windows 11 25H2 that console spawn leaks
+a kernel token reference on the spawning hook (issue #215). A detached
+child allocates NO console at all -- no conhost.exe, no flash, no leak --
+while stdin/stdout/stderr are still delivered through the explicit
+inherited handles (STARTF_USESTDHANDLES), so stdout injection is
+unchanged. Because module_runner.py runs measure.py in-process, the child
+proc IS the lock holder, so Windows reaps with plain ``proc.kill()``
+(TerminateProcess of proc.pid only) -- NOT ``taskkill /F /T`` which would
+walk the PPID tree and kill the detached session-end-flush worker. POSIX
+keeps ``os.killpg``.
+
+``utf8_io.reexec_in_utf8_mode()`` follows the same contract: DETACHED child
+plus the three std handles passed explicitly, for the same reason -- it is
+the same spawn site class (a Windows child that must inherit stdio) and
+``CREATE_NO_WINDOW`` costs a hidden console allocation there too.
 
 Run: python3 -m pytest tests/test_windows_spawn_no_window.py -v
 """
@@ -771,11 +783,15 @@ def _make_plugin_root(tmp_path):
     return root
 
 
-def test_run_py_spawn_nt_uses_create_no_window(monkeypatch, tmp_path):
-    """run.py SPECIAL: on nt use CREATE_NO_WINDOW ONLY (not
+def test_run_py_spawn_nt_uses_detached_process(monkeypatch, tmp_path):
+    """run.py SPECIAL: on nt use DETACHED_PROCESS ONLY (not
     CREATE_NEW_PROCESS_GROUP -- it is inert for reaping and disables the
-    child's Ctrl+C self-terminate). The child MUST inherit run.py's stdio
-    (no DEVNULL)."""
+    child's Ctrl+C self-terminate; not CREATE_NO_WINDOW -- it still
+    allocates a hidden console, whose conhost spawn leaks a kernel token
+    reference on the affected Windows build, issue #215). The child MUST
+    inherit run.py's stdio (no DEVNULL): a detached child has NO console,
+    so stdio is delivered exclusively through the explicit std handles,
+    which CPython passes via STARTF_USESTDHANDLES."""
     mod = _load_run_py()
     _set_nt(monkeypatch, mod)
     root = _make_plugin_root(tmp_path)
@@ -804,10 +820,18 @@ def test_run_py_spawn_nt_uses_create_no_window(monkeypatch, tmp_path):
     mod.sys.argv = ["run.py", "scripts/dummy_hook.py", "--quiet"]
     mod.main()
     assert "creationflags" in cap, "nt spawn must pass creationflags"
-    assert cap["creationflags"] == _CREATE_NO_WINDOW
+    assert cap["creationflags"] == _DETACHED_PROCESS, (
+        "module_runner child must be spawned DETACHED_PROCESS (no console "
+        "is allocated at all -- no conhost.exe, no flash, no token leak)"
+    )
+    assert not (cap["creationflags"] & _CREATE_NO_WINDOW), (
+        "CREATE_NO_WINDOW must not be OR-ed in here: it is the hidden-console "
+        "allocation this change removes"
+    )
     assert "start_new_session" not in cap
-    # Explicit handles retain a host pipe under CREATE_NO_WINDOW. Leaving these
-    # unset lets Windows attach the child to the hidden console instead.
+    # The explicit handles are what keep stdio injection working under
+    # DETACHED_PROCESS. Leaving any of them unset binds the child to NULL
+    # std handles and silently black-holes every byte a hook writes.
     assert cap["stdin"] is inherited["stdin"]
     assert cap["stdout"] is inherited["stdout"]
     assert cap["stderr"] is inherited["stderr"]
@@ -993,11 +1017,13 @@ def test_run_py_forward_and_exit_posix_uses_killpg(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# utf8_io.py: reexec_in_utf8_mode CREATE_NO_WINDOW on nt
+# utf8_io.py: reexec_in_utf8_mode DETACHED_PROCESS on nt
 # ---------------------------------------------------------------------------
-def test_utf8_io_reexec_nt_uses_create_no_window(monkeypatch):
-    """reexec_in_utf8_mode on nt must pass CREATE_NO_WINDOW to Popen so the
-    re-exec child does not flash a console when the parent is console-less."""
+def test_utf8_io_reexec_nt_uses_detached_process(monkeypatch):
+    """reexec_in_utf8_mode on nt must pass DETACHED_PROCESS to Popen so the
+    re-exec child allocates no console at all (a CREATE_NO_WINDOW child still
+    allocates a hidden one and leaks a kernel token, issue #215). Stdio is
+    preserved by the explicit handles passed below."""
     if "utf8_io" in sys.modules:
         del sys.modules["utf8_io"]
     import utf8_io
@@ -1039,8 +1065,8 @@ def test_utf8_io_reexec_nt_uses_create_no_window(monkeypatch):
 
     utf8_io.reexec_in_utf8_mode()
 
-    assert "creationflags" in cap, "nt re-exec must pass CREATE_NO_WINDOW"
-    assert cap["creationflags"] == _CREATE_NO_WINDOW
+    assert "creationflags" in cap, "nt re-exec must pass DETACHED_PROCESS"
+    assert cap["creationflags"] == _DETACHED_PROCESS
     assert "start_new_session" not in cap
     assert "code" in exited, "re-exec must call os._exit"
 
@@ -1075,12 +1101,14 @@ def test_utf8_io_reexec_posix_no_creationflags(monkeypatch):
 
 # ---------------------------------------------------------------------------
 # utf8_io.py: explicit std-handle passing + pre-spawn flush on nt.
-# CREATE_NO_WINDOW left all three of stdin/stdout/stderr None, so CPython did
-# not set STARTF_USESTDHANDLES and the child's stdio bound to a NEW hidden
-# console: every byte written was discarded and stdin read empty (the "silent
-# no-op" on a cp1252 host). The fix passes the parent's real handles
-# explicitly (via a fileno()-safe resolver) and flushes BEFORE the spawn so
-# parent-buffered text does not interleave behind the child's output.
+# An earlier CREATE_NO_WINDOW build left all three of stdin/stdout/stderr
+# None, so CPython did not set STARTF_USESTDHANDLES and the child's stdio
+# bound to a NEW hidden console: every byte written was discarded and stdin
+# read empty (the "silent no-op" on a cp1252 host). The fix passes the
+# parent's real handles explicitly (via a fileno()-safe resolver) and flushes
+# BEFORE the spawn so parent-buffered text does not interleave behind the
+# child's output. DETACHED_PROCESS (current) has no console at all, so the
+# explicit handles are the ONLY way the child sees stdio.
 # ---------------------------------------------------------------------------
 class _FilenoStream:
     """A stand-in for a real OS-backed std stream: has a working fileno()."""
@@ -1158,8 +1186,9 @@ def _utf8_io_nt_reexec_env(monkeypatch, streams=None):
 
 def test_utf8_io_reexec_nt_passes_std_handles(monkeypatch):
     """on nt the re-exec Popen must receive stdin/stdout/stderr bound to
-    the parent's real sys.* handles (so the child's stdio attaches to the
-    parent's pipe, not a hidden console), AND keep CREATE_NO_WINDOW."""
+    the parent's real sys.* handles (so the detached child's stdio attaches
+    to the parent's pipe -- a detached child has NO console to fall back
+    on), AND keep DETACHED_PROCESS."""
     stdin_s = _FilenoStream(0, "stdin")
     stdout_s = _FilenoStream(1, "stdout")
     stderr_s = _FilenoStream(2, "stderr")
@@ -1170,20 +1199,21 @@ def test_utf8_io_reexec_nt_passes_std_handles(monkeypatch):
     assert cap.get("stdin") is stdin_s, "stdin must be passed explicitly"
     assert cap.get("stdout") is stdout_s, "stdout must be passed explicitly"
     assert cap.get("stderr") is stderr_s, "stderr must be passed explicitly"
-    assert cap.get("creationflags") == _CREATE_NO_WINDOW
+    assert cap.get("creationflags") == _DETACHED_PROCESS
     assert "start_new_session" not in cap
 
 
-def test_utf8_io_reexec_nt_keeps_create_no_window_when_stdout_not_tty(monkeypatch):
-    """CREATE_NO_WINDOW must be retained even when stdout is a pipe (not
-    a tty). The flash-sensitive case is exactly the host-spawned hook whose
-    stdout is a pipe; dropping the flag there would reinstate the console
-    flash while fixing nothing (handles are now passed explicitly). A future
-    'drop it when not a tty' refactor must fail this test."""
+def test_utf8_io_reexec_nt_keeps_detached_process_when_stdout_not_tty(monkeypatch):
+    """DETACHED_PROCESS must be retained even when stdout is a pipe (not
+    a tty). The flash/leak-sensitive case is exactly the host-spawned hook
+    whose stdout is a pipe; dropping the flag there would let Windows
+    allocate the child a console while fixing nothing (handles are passed
+    explicitly). A future 'drop it when not a tty' refactor must fail this
+    test."""
     stdout_s = _FilenoStream(1, "stdout")  # a pipe has a fileno but is not a tty
     u, cap, _ = _utf8_io_nt_reexec_env(monkeypatch, streams={"stdout": stdout_s})
     u.reexec_in_utf8_mode()
-    assert cap.get("creationflags") == _CREATE_NO_WINDOW
+    assert cap.get("creationflags") == _DETACHED_PROCESS
     assert cap.get("stdout") is stdout_s
 
 
@@ -1196,7 +1226,7 @@ def test_utf8_io_reexec_nt_safe_when_stdout_lacks_fileno(monkeypatch):
     u.reexec_in_utf8_mode()  # must not raise
     assert "argv" in cap, "Popen must still be called when a stream lacks fileno"
     assert "stdout" not in cap, "a fileno-less stream must be omitted, not passed"
-    assert cap.get("creationflags") == _CREATE_NO_WINDOW
+    assert cap.get("creationflags") == _DETACHED_PROCESS
 
 
 def test_utf8_io_reexec_nt_safe_when_stdout_none(monkeypatch):

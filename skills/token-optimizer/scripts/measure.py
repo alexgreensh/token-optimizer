@@ -37954,7 +37954,7 @@ def expand_archived(tool_use_id=None, session_id=None, list_all=False):
         tool_use_id = tool_use_id[:-1]
 
     # Sanitize tool_use_id (same pattern as session_id)
-    if not re.match(r'^[a-zA-Z0-9_-]+$', tool_use_id):
+    if not re.match(r'^[a-zA-Z0-9_-]+\Z', tool_use_id):
         print("[Error] Invalid tool_use_id format.", file=sys.stderr)
         sys.exit(1)
 

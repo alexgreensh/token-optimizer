@@ -146,3 +146,29 @@ def test_expand_returns_stored_text_byte_for_byte(tmp_path):
     if os.linesep != "\n":  # Windows text mode turns \n into \r\n on the way out
         out = out.replace(os.linesep.encode(), b"\n")
     assert out == body.encode("utf-8")
+
+
+# --------------------------------------------------------------------- F9b
+
+def test_key_regex_rejects_trailing_newline():
+    import archive_result
+    assert archive_result._ARCHIVE_KEY_RE.match("abc\n") is None
+    assert archive_result._safe_archive_key("abc\n") != "abc\n"
+    assert re.fullmatch(r"[a-zA-Z0-9_-]+", archive_result._safe_archive_key("abc\n"))
+
+
+def test_archive_with_newline_id_prints_a_runnable_pointer(tmp_path):
+    p = _archive(tmp_path, "abc\n", "payload\n" * 1000)
+    key, replacement = _key_from(p)
+    assert key != "abc"
+    assert "\n" not in key
+    assert (tmp_path / "snap" / "tool-archive" / SID / f"{key}.json").is_file()
+    assert _expand_bytes(tmp_path, key).returncode == 0
+
+
+def test_expand_rejects_trailing_newline_key(tmp_path):
+    _archive(tmp_path, "abc", "payload\n" * 1000)
+    # "abc\n" is not a valid key; it must not resolve to the "abc" entry.
+    p = _expand_bytes(tmp_path, "abc\n")
+    assert p.returncode != 0
+    assert b"Invalid tool_use_id" in p.stderr

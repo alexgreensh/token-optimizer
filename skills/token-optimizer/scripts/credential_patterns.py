@@ -98,7 +98,10 @@ CREDENTIAL_PATTERNS: List[Tuple[str, "re.Pattern[str]"]] = [
     # These appear as shell command prefixes (FOO=bar cmd ...) or in config output.
     ("Database env password",   re.compile(
         r"(?P<keep>\b(?:PGPASSWORD|MYSQL_PWD|REDIS_PASSWORD|MONGO_PASSWORD|DB_PASSWORD"
-        r"|DATABASE_PASSWORD|PGPASSWD)=[\"\']?)(?!\[CREDENTIAL REDACTED:)[^\s\"'\n]+",
+        r"|DATABASE_PASSWORD|PGPASSWD)=(?P<oq>[\"\'])?)(?!\[CREDENTIAL REDACTED:)"
+        # An opened quote runs to its twin (a value with spaces is one secret);
+        # an unquoted value stops at whitespace or a quote.
+        r"(?(oq)(?:(?!(?P=oq))[^\n])+|[^\s\"'\n]+)",
         re.I,
     )),
     # M-12: AWS secret access key (40-char base64). Distinct from the access key
@@ -1106,6 +1109,123 @@ _PATTERN_ANCHORS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Generic secret assignment: NAME=value, NAME: value, "name": "value".
+#
+# The closed env-name list above only knows seven names. Anything else
+# (API_KEY=..., SECRET_KEY=..., a YAML "password: ...", a JSON "api_key": "...",
+# a quoted value with spaces) used to reach disk as typed. One rule covers the
+# class: a NAME that contains KEY, TOKEN, SECRET, PASSWORD, PASSWD, PWD or
+# CREDENTIAL, then "=" or ":", then a value. The NAME stays, only the VALUE goes.
+#
+# Prose and ordinary code must survive, so the rule is deliberately narrow:
+#   * the keyword must stand as a word part (api_key, apiKey, API_KEY, secretkey),
+#     not sit inside another word (monkey, keyboard, tokenizer, keyword);
+#   * names that end in a quantity or locator (token_count, KEY_FILE, SECRET_NAME)
+#     are not secrets;
+#   * a plain number (KEY/TOKEN names only) or boolean value is not a secret
+#     (max_tokens=4096, tokens: 1200, key: true);
+#   * an unquoted value after a SPACED "=" is code (token_count = len(x)), not an
+#     env/config assignment; a quoted value is redacted either way;
+#   * references are not secrets: $VAR, ${VAR}, <placeholder>, f(x) calls,
+#     self.x / os.environ / process.env / args.x, and kwarg pass-through
+#     (api_key=api_key), type names (apiKey: string).
+# Scanned on one line at a time, so no match can cross a newline.
+# ---------------------------------------------------------------------------
+_ASSIGN_KEYWORD_RE = re.compile(r"key|token|secret|password|passwd|pwd|credential", re.I)
+_ASSIGN_RE = re.compile(
+    r"(?<![A-Za-z0-9_.\-])"
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_.\-]*)"
+    r"(?P<q>[\"']?)(?P<sep>[ \t]*[=:](?!=)[ \t]*)"
+    r"(?P<val>\"[^\"\n]*\"|'[^'\n]*'|[^\s\"']\S*)"
+)
+_ASSIGN_QUALIFIERS = (
+    "api", "access", "auth", "secret", "private", "public", "client", "session",
+    "refresh", "bearer", "app", "db", "user", "admin", "root", "master", "signing",
+    "encryption", "license", "ssh", "gpg", "jwt", "oauth", "service", "webhook",
+)
+_ASSIGN_LOCATOR_SUFFIX_RE = re.compile(
+    r"[_.\-]*(?:path|file|dir|url|uri|name|id|count|limit|max|min|size|length|len|"
+    r"ttl|expiry|expires|type|field|header|endpoint|regex|budget|label)s?", re.I)
+_ASSIGN_LITERAL_RE = re.compile(
+    r"(?:true|false|yes|no|on|off|null|none|nil|undefined|nan|"
+    r"str|string|int|integer|float|bool|boolean|number|any|object|bytes|list|dict|"
+    r"secretstr|path)", re.I)
+_ASSIGN_NUMBER_RE = re.compile(r"\d{1,9}(?:\.\d+)?")
+_ASSIGN_CALL_RE = re.compile(r"[A-Za-z_][\w.]*\(")
+_ASSIGN_GENERIC_TYPE_RE = re.compile(r"[A-Z][A-Za-z]*\[")
+_ASSIGN_REFERENCE_RE = re.compile(
+    r"(?:\$|<|\{|%|self\.|this\.|os\.environ|process\.env|args\.|opts\.|options\.|config\.|cfg\.|"
+    r"settings\.|env\.|\[CREDENTIAL|\x00|/|~|\./|\.\./|[A-Za-z]:[\\/])")
+_ASSIGN_CLOSERS_RE = re.compile(r"[,;)}\]]+$")
+_ASSIGN_PLACEHOLDER = "[CREDENTIAL REDACTED: Secret assignment]"
+
+
+def _assign_name_is_secret(name: str) -> Optional[str]:
+    """Return "strong" (password/secret class), "weak" (key/token class) or None."""
+    found: Optional[str] = None
+    for m in _ASSIGN_KEYWORD_RE.finditer(name):
+        kw = m.group(0)
+        before, after = name[:m.start()], name[m.end():]
+        low = kw.lower()
+        if after and after[0].isalpha():
+            plural = after[0] in "sS" and (len(after) == 1 or not after[1].isalpha())
+            camel = after[0].isupper() and not name.isupper()
+            if not (plural or camel):
+                continue
+        if _ASSIGN_LOCATOR_SUFFIX_RE.fullmatch(after):
+            continue
+        strong = low in ("password", "passwd", "secret", "credential")
+        if not strong and before and before[-1].isalpha():
+            ok_before = kw[0].isupper() or before.lower().endswith(_ASSIGN_QUALIFIERS)
+            if not ok_before:
+                continue
+        if strong:
+            return "strong"
+        found = "weak"
+    return found
+
+
+def _assign_repl(m: "re.Match[str]") -> str:
+    name, q, sep, val = m.group("name"), m.group("q"), m.group("sep"), m.group("val")
+    kind = _assign_name_is_secret(name)
+    if kind is None:
+        return m.group(0)
+    quote = val[0] if val[0] in "\"'" and len(val) >= 2 and val[-1] == val[0] else ""
+    tail = ""
+    if quote:
+        body = val[1:-1]
+    else:
+        body = val
+        t = _ASSIGN_CLOSERS_RE.search(body)
+        if t:
+            tail, body = body[t.start():], body[:t.start()]
+    if not body.strip():
+        return m.group(0)
+    # Spaced "=" with a bare value is code (token_count = len(x)), not an assignment.
+    if not quote and sep != "=" and sep.strip() == "=":
+        return m.group(0)
+    if _ASSIGN_LITERAL_RE.fullmatch(body):
+        return m.group(0)
+    if kind == "weak" and _ASSIGN_NUMBER_RE.fullmatch(body):
+        return m.group(0)
+    if _ASSIGN_REFERENCE_RE.match(body) or _ASSIGN_CALL_RE.match(body) \
+            or _ASSIGN_GENERIC_TYPE_RE.match(body):
+        return m.group(0)
+    if body.lower() == name.lower() or body.lower() == name.lower().rsplit(".", 1)[-1]:
+        return m.group(0)
+    return f"{name}{q}{sep}{quote}{_ASSIGN_PLACEHOLDER}{quote}{tail}"
+
+
+def _redact_assignments(text: str) -> str:
+    if not _ASSIGN_KEYWORD_RE.search(text):
+        return text
+    return "\n".join(
+        _ASSIGN_RE.sub(_assign_repl, line) if _ASSIGN_KEYWORD_RE.search(line) else line
+        for line in text.split("\n")
+    )
+
+
 def _sub_with_placeholder(pat: "re.Pattern[str]", label: str, text: str) -> str:
     # A function replacement, not a template string: a custom label is user
     # text and must never be interpreted as a backreference ("\\1", "\\g<0>").
@@ -1215,6 +1335,10 @@ def redact_credentials(text: str) -> str:
         if anchors and not any(a in lowered for a in anchors):
             continue
         text = _sub_with_placeholder(pat, label, text)
+
+    # Generic NAME=value / NAME: value secrets, after the specific shapes so a
+    # labelled placeholder from a rule above is never overwritten.
+    text = _redact_assignments(text)
 
     # M-16: restore protected placeholders.
     for ph in placeholders:

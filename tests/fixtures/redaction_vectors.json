@@ -246,6 +246,96 @@
       "input": ["notify https://hooks.slack.com/services/T0FAKE0/B0FAKE0/", "FAKEhookTok9Qw7Lm3", " now"],
       "absent": ["FAKEhookTok9Qw7Lm3", "T0FAKE0", "B0FAKE0"],
       "present": ["notify ", " now"]
+    },
+    {
+      "name": "assign-password-env",
+      "input": ["PASSWORD=", "hunter2FAKE", " ./deploy.sh"],
+      "absent": ["hunter2FAKE"],
+      "present": ["PASSWORD=", "./deploy.sh"]
+    },
+    {
+      "name": "assign-api-key-env",
+      "input": ["API_KEY=", "FAKEenvApiKeyQw7Lm3", " make deploy"],
+      "absent": ["FAKEenvApiKeyQw7Lm3"],
+      "present": ["API_KEY=", " make deploy"]
+    },
+    {
+      "name": "assign-secret-key-env",
+      "input": ["SECRET_KEY=", "FAKEsecretKeyQw7Lm3", " python app.py"],
+      "absent": ["FAKEsecretKeyQw7Lm3"],
+      "present": ["SECRET_KEY=", " python app.py"]
+    },
+    {
+      "name": "assign-yaml-password-label",
+      "input": ["db:\n  password: ", "FAKEyamlPw9Zz", "\n  host: h"],
+      "absent": ["FAKEyamlPw9Zz"],
+      "present": ["db:\n  password: ", "\n  host: h"]
+    },
+    {
+      "name": "assign-quoted-multiword-value",
+      "input": ["export DB_PASSWORD='", "correct horse FAKE", "' && ./migrate"],
+      "absent": ["correct", "horse FAKE"],
+      "present": ["export DB_PASSWORD='", "' && ./migrate"]
+    },
+    {
+      "name": "assign-json-quoted-key",
+      "input": ["{\"api_key\": \"", "FAKEjsonKeyValue77", "\", \"retries\": 3}"],
+      "absent": ["FAKEjsonKeyValue77"],
+      "present": ["\"api_key\": \"", "\", \"retries\": 3}"]
+    },
+    {
+      "name": "assign-camelcase-token-quoted",
+      "input": ["const accessToken = \"", "FAKEcamelTokenVal55", "\";"],
+      "absent": ["FAKEcamelTokenVal55"],
+      "present": ["const accessToken = \"", "\";"]
+    },
+    {
+      "name": "assign-header-style-api-key",
+      "input": ["X-Api-Key: ", "FAKEheaderKeyVal42", " sent"],
+      "absent": ["FAKEheaderKeyVal42"],
+      "present": ["X-Api-Key: ", " sent"]
+    },
+    {
+      "name": "assign-keeps-prose-about-tokens",
+      "input": ["the token count is 500 and the key idea is to keep the password policy short"],
+      "absent": [],
+      "present": ["the token count is 500 and the key idea is to keep the password policy short"]
+    },
+    {
+      "name": "assign-keeps-token-count-code",
+      "input": ["token_count = len(x); total = token_count + 1"],
+      "absent": [],
+      "present": ["token_count = len(x); total = token_count + 1"]
+    },
+    {
+      "name": "assign-keeps-max-tokens-number",
+      "input": ["call(max_tokens=4096, temperature=0)"],
+      "absent": [],
+      "present": ["call(max_tokens=4096, temperature=0)"]
+    },
+    {
+      "name": "assign-keeps-tokens-yaml-number",
+      "input": ["usage:\n  tokens: 1200\n  input_tokens: 800"],
+      "absent": [],
+      "present": ["usage:\n  tokens: 1200\n  input_tokens: 800"]
+    },
+    {
+      "name": "assign-keeps-key-number-and-boolean",
+      "input": ["key: 5\nkey: true\napi_key_required: false\n\"output_tokens\": 77,"],
+      "absent": [],
+      "present": ["key: 5\nkey: true\napi_key_required: false\n\"output_tokens\": 77,"]
+    },
+    {
+      "name": "assign-keeps-keyword-lookalikes",
+      "input": ["monkey: banana\nkeyboard=us\nconst tokenizer = load()\nkeyword: run"],
+      "absent": [],
+      "present": ["monkey: banana\nkeyboard=us\nconst tokenizer = load()\nkeyword: run"]
+    },
+    {
+      "name": "assign-keeps-kwarg-passthrough-and-types",
+      "input": ["f(api_key=api_key, token=self.token, password=os.environ.get(\"X\"))\napiKey: string;\nPASSWORD=$DB_PASS run"],
+      "absent": [],
+      "present": ["f(api_key=api_key, token=self.token, password=os.environ.get(\"X\"))\napiKey: string;\nPASSWORD=$DB_PASS run"]
     }
   ]
 }

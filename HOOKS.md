@@ -31,7 +31,7 @@ Host platform tool call
 | **PreCompact** (x3) | `measure.py dynamic-compact-instructions` | Generate context-aware compaction instructions | Session transcript, trends.db | Compact instructions (stdout) |
 | | `measure.py compact-capture --trigger auto` | Capture checkpoint before compaction | Session transcript | Checkpoint markdown + events JSONL |
 | | `read_cache.py --clear` | Clear read cache (context is about to compact) | None | Session store (cleared) |
-| **SessionStart** (x1) | `sessionstart_runner.py` | Consolidated dispatcher: ensure-health, forced quality-cache warm, and (on a `compact` start) compact-restore + read-cache clear, then the new-session checkpoint pointer | Session transcript, checkpoint files, settings.json, config.json, session store | settings.json (cleanupPeriodDays), config.json (consent backfill), quality-cache-*.json, session store (file_reads cleared), stdout injection |
+| **SessionStart** (x1) | `sessionstart_runner.py` | Consolidated dispatcher: ensure-health, forced quality-cache warm, and (on a `compact` start) compact-restore + read-cache clear, then the new-session checkpoint pointer | Session transcript, checkpoint files, settings.json, config.json, session store | settings.json (cleanupPeriodDays, subagentPromptCacheTtl once, when the cached verdict says it pays), config.json (consent backfill), quality-cache-*.json, session store (file_reads cleared), stdout injection |
 | **StopFailure** | `measure.py compact-capture --trigger stop-failure` | Checkpoint on failure | Session transcript | Checkpoint markdown |
 | **UserPromptSubmit** (x1) | `userpromptsubmit_runner.py` | Consolidated dispatcher: prompt-continuity, verbosity steer, quality-cache warn, and (gated to remote/container/Cowork or Codex sessions) ensure-health, forced cache warm, compact-restore | quality-cache-*.json, checkpoint files, config.json, settings.json | None (stdout injection) |
 | **PostToolUse** (x1, consolidated) | `posttooluse_runner.py` | Consolidated dispatcher, one process per tool call: bash output compression (Bash), result archiving (Bash, Read, Glob, Grep, Agent, mcp__.*), context-intel scoring (Bash, Read, Grep, Glob, mcp__.*), read-cache invalidation (Edit, Write, MultiEdit, NotebookEdit), throttled quality-cache update | Tool output (stdin), session transcript | Session store (activity log, invalidated entries), tool-archive JSON (credential-redacted), quality-cache-*.json |
@@ -78,6 +78,7 @@ The consent check runs in `run.py` before any script is dispatched:
 `ensure-health` (SessionStart) writes to the host platform's `settings.json`:
 
 - `cleanupPeriodDays: 99999` (preserves transcripts for trend analysis)
+- `subagentPromptCacheTtl: "1h"` (Claude Code 2.1.243+ only, set once and only when the user's own last 30 days show it pays; skipped when the user, an env var, or a managed/project/local settings file already answers, and auto-reverted by a 14-day payoff tripwire; the session-start hook only reads a cached verdict, and a detached background scan produces it; `TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=1` forces it on, `=0` off; `measure.py subagent-cache disable` undoes it)
 - Daemon-related config (dashboard server plist registration on macOS)
 
 These are the only modifications to host platform configuration. All other writes go to Token Optimizer's own data directories.

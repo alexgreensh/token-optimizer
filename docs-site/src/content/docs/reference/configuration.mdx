@@ -131,6 +131,14 @@ Keep-Warm is opt-in and managed by the `keepwarm-*` commands; there are no plain
 
 The two Keep-Warm names found in the Python core are internal execution markers and are listed under [Internal and test-only names](#internal-and-test-only-names).
 
+## Subagent prompt cache
+
+| Variable | Default | Effect |
+|---|---|---|
+| `TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H` | evidence-gated | Unset: the automatic `subagentPromptCacheTtl: "1h"` set happens only when your own last 30 days show it pays. `1`, `true`, `on`, or `yes`: always on, no evidence check. `0`, `false`, `off`, or `no`: never, and if the setting was already applied, it is removed (Claude Code only) |
+
+Two Claude Code environment variables also gate the feature without any opt-out flag: `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL` and `FORCE_PROMPT_CACHING_5M` both outrank the settings key, so Token Optimizer does nothing while either is set. See [Subagent prompt cache](/features/subagent-cache/).
+
 ## Copilot cost rates
 
 | Variable | Default | Effect |

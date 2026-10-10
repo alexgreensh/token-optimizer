@@ -144,6 +144,15 @@ Token Optimizer sets `cleanupPeriodDays=99999` in the host platform's `settings.
 - Users can override this setting in their `settings.json`
 - The `purge` command does NOT delete transcripts (they belong to the host platform)
 
+## Subagent Prompt-Cache Setting
+
+On Claude Code 2.1.243+, Token Optimizer turns on `subagentPromptCacheTtl: "1h"` when your own history shows it pays, setting it once in the user `settings.json` so subagents keep their prompt cache for an hour instead of five minutes. This is the host platform's billing setting, not Token Optimizer data.
+
+- Never overrides a value you set yourself, an env override, or a managed/project/local settings file
+- Undone by `python3 measure.py subagent-cache disable`, by `TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=0`, or automatically if a 14-day tripwire shows the change costs more than it saves
+- `TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=1` forces it on without the evidence check; `=0` forces it off
+- The payoff check reads your own session transcripts locally, in a background process, and keeps one small verdict file and a marker in Token Optimizer's data directory; nothing leaves the machine
+
 ## Data Deletion
 
 To delete all Token Optimizer data across all platforms:

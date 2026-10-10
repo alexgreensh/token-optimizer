@@ -11,6 +11,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
  */
 const bun_test_1 = require("bun:test");
 const fs_1 = require("fs");
+const child_process_1 = require("child_process");
 const os_1 = require("os");
 const path_1 = require("path");
 const smart_compact_1 = require("./smart-compact");
@@ -59,11 +60,12 @@ function persisted(file) {
 function runInChild(script) {
     const home = (0, fs_1.mkdtempSync)((0, path_1.join)((0, os_1.tmpdir)(), `openclaw-cut-home-${process.pid}-`));
     try {
-        const proc = Bun.spawnSync([process.execPath, "-e", script], {
+        const proc = (0, child_process_1.spawnSync)(process.execPath, ["-e", script], {
             cwd: __dirname,
             env: { ...process.env, HOME: home, USERPROFILE: home, TOKEN_OPTIMIZER_FRAG_TOKEN: TOKEN },
+            windowsHide: true,
         });
-        (0, bun_test_1.expect)(proc.exitCode).toBe(0);
+        (0, bun_test_1.expect)(proc.status).toBe(0);
         const dir = (0, path_1.join)(home, ".openclaw", "token-optimizer");
         return (0, fs_1.readdirSync)(dir).map((f) => (0, fs_1.readFileSync)((0, path_1.join)(dir, f), "utf-8")).join("\n");
     }

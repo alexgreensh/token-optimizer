@@ -9,6 +9,7 @@
  */
 import { test, expect, afterAll } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "fs";
+import { spawnSync } from "child_process";
 import { tmpdir } from "os";
 import { join } from "path";
 import { captureCheckpoint, captureCheckpointV2 } from "./smart-compact";
@@ -75,11 +76,12 @@ test("v2 extraction: a decision line cut at the 3000-char sample is redacted", (
 function runInChild(script: string): string {
   const home = mkdtempSync(join(tmpdir(), `openclaw-cut-home-${process.pid}-`));
   try {
-    const proc = Bun.spawnSync([process.execPath, "-e", script], {
+    const proc = spawnSync(process.execPath, ["-e", script], {
       cwd: __dirname,
       env: { ...process.env, HOME: home, USERPROFILE: home, TOKEN_OPTIMIZER_FRAG_TOKEN: TOKEN },
+      windowsHide: true,
     });
-    expect(proc.exitCode).toBe(0);
+    expect(proc.status).toBe(0);
     const dir = join(home, ".openclaw", "token-optimizer");
     return readdirSync(dir).map((f) => readFileSync(join(dir, f), "utf-8")).join("\n");
   } finally {

@@ -129,6 +129,49 @@ from spawn_utils import spawn_detached
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
+def _windows_stdio_kwargs():
+    """Usable std streams to hand a console-less child on Windows, else {}.
+
+    With creationflags=CREATE_NO_WINDOW and no std streams, a Windows child gets
+    a hidden console (python.exe) or NULL handles (pythonw.exe), so everything
+    it prints is lost. Passing the parent's streams makes CPython hand the child
+    the parent's own handles. Same guard as hooks/run.py (kept as a copy: this
+    script must not import from hooks/). Off Windows the child inherits the
+    streams anyway, so nothing is added.
+    """
+    if sys.platform != "win32":
+        return {}
+    kwargs = {}
+    missing = []
+    for name in ("stdin", "stdout", "stderr"):
+        stream = getattr(sys, name, None)
+        if stream is None:
+            missing.append(name)
+            continue
+        try:
+            stream.fileno()
+        except (AttributeError, OSError, ValueError):
+            missing.append(name)
+            continue
+        kwargs[name] = stream
+    # Same rule as hooks/run.py: a stream left out falls back to a possibly
+    # stale handle and the spawn fails, so an unusable one gets DEVNULL.
+    if kwargs:
+        for name in missing:
+            kwargs[name] = subprocess.DEVNULL
+    return kwargs
+
+
+def _run_script_child(script, extra_args=(), **run_kwargs):
+    """Run a sibling script under this interpreter with its output visible."""
+    return subprocess.run(
+        [sys.executable, str(script), *extra_args],
+        creationflags=_NO_WINDOW,
+        **_windows_stdio_kwargs(),
+        **run_kwargs,
+    )
+
+
 def _detached_python_exe():
     """Interpreter to use for FIRE-AND-FORGET python children.
 
@@ -4712,7 +4755,7 @@ def doctor(as_json=False):
         _sc_payoff = _scb.get("payoff") or {}
         _sc_detail = (
             f"state: {_sc_state}; last {_sc_payoff.get('window_days', 30)}d "
-            f"estimated net ${_sc_payoff.get('net_usd_est', 0.0):.2f}"
+            f"estimated net {_recs_usd(_sc_payoff.get('net_usd_est') or 0.0)}"
             + (" API-equivalent" if _scb.get("billing_mode") == "subscription" else "")
             + " (estimate)")
         _sc_auto = _scb.get("auto_decision") or {}
@@ -4766,7 +4809,8 @@ def git_context(as_json=False):
     def _run_git(*cmd):
         try:
             r = _sp.run(["git"] + list(cmd), capture_output=True, text=True,
-                        encoding="utf-8", errors="replace", timeout=10)
+                        encoding="utf-8", errors="replace", timeout=10,
+                        creationflags=_NO_WINDOW)
             return r.stdout.strip() if r.returncode == 0 else ""
         except (FileNotFoundError, _sp.TimeoutExpired):
             return ""
@@ -19852,14 +19896,17 @@ def subagent_cache_enable(now=None, automatic=True):
             return {"state": "set", "changed": False, "reason": None,
                     "notice": None, "current": "1h"}
         # We set it once and the user removed/changed it afterwards: remember,
-        # never touch it again.
-        marker["state"] = "user-declined"
-        marker["declined_ts"] = float(now)
-        marker["declined_previous"] = val if val is not None else "(absent)"
-        _subagent_cache_write_marker(marker)
-        return {"state": "user-declined", "changed": False,
-                "reason": "the user removed or changed the key after we set it",
-                "notice": None}
+        # never touch it again. Only the automatic path records the decline;
+        # an explicit `enable` is a deliberate request and falls through to
+        # the normal set path below.
+        if automatic:
+            marker["state"] = "user-declined"
+            marker["declined_ts"] = float(now)
+            marker["declined_previous"] = val if val is not None else "(absent)"
+            _subagent_cache_write_marker(marker)
+            return {"state": "user-declined", "changed": False,
+                    "reason": "the user removed or changed the key after we set it",
+                    "notice": None}
 
     # Env outranks the setting (documented precedence).
     if os.environ.get("CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL", "").strip():
@@ -20432,6 +20479,14 @@ def _subagent_cache_recommendation(state, current, payoff, billing,
             if decision["decision"] == "not-enough-data":
                 return {"action": "none", "line": decision["reason"]}
             if net < 0:
+                if state != "set":
+                    # No marker says Token Optimizer set this key, so
+                    # `subagent-cache disable` would answer nothing-to-undo.
+                    return {"action": "disable", "manual": True,
+                            "line": (f"is costing about ${abs(net):.2f} net "
+                                     f"({est}) over {window}; remove "
+                                     f"{_SUBAGENT_CACHE_KEY} from "
+                                     f"settings.json by hand")}
                 return {"action": "disable",
                         "line": (f"is costing about ${abs(net):.2f} net ({est}) "
                                  f"over {window}; turn off: `{cmd} disable`")}
@@ -20828,9 +20883,13 @@ def _recs_subagent_item(now=None):
     partial = False
     vstate, vrec = _subagent_cache_verdict_for(now, since)
     if vstate != "fresh":
+        # Complete only when the inline scan itself finished cleanly; a scan
+        # another process holds (None) or one cut short leaves it partial.
         partial = True
         try:
-            vrec = subagent_cache_scan_run(now=now, since_ts=since) or vrec
+            scanned = subagent_cache_scan_run(now=now, since_ts=since)
+            partial = not (scanned and scanned.get("complete"))
+            vrec = scanned or vrec
         except Exception:
             pass
     elif not vrec.get("complete"):
@@ -20873,6 +20932,17 @@ def _recs_subagent_item(now=None):
                     direction="on",
                     command=f"python3 {mp} subagent-cache enable",
                     headline=line.split("; turn on:")[0].rstrip(),
+                    reason=decision["reason"])
+    if action == "disable" and rec.get("manual"):
+        # The user set the key by hand: no command can undo it, so the item
+        # carries the manual step in `tradeoff` and an empty `command`.
+        numbers["recommended"] = "off"
+        return dict(item, state="recommend", enough_data=True,
+                    direction="off", command="",
+                    headline=line.split("; remove ")[0].rstrip(),
+                    tradeoff=(f"Token Optimizer did not set this key, so it "
+                              f"cannot remove it: delete {_SUBAGENT_CACHE_KEY} "
+                              f"from settings.json by hand."),
                     reason=decision["reason"])
     if action == "disable":
         numbers["recommended"] = "off"
@@ -20974,6 +21044,17 @@ def _recs_measure_improved(iid, recommended, before, after):
     return False
 
 
+def _recs_usd(value, plus=False):
+    """Dollars with the sign before the symbol: -$2.00, never $-2.00.
+    `plus` adds an explicit + to a positive amount; a value that rounds to
+    zero carries no sign."""
+    v = round(float(value), 2)
+    if v == 0:
+        v = 0.0
+    sign = "-" if v < 0 else ("+" if plus and v > 0 else "")
+    return f"{sign}${abs(v):.2f}"
+
+
 def _recs_win_line(iid, recommended, before, after, improved, since_ts):
     try:
         date = datetime.fromtimestamp(since_ts).date().isoformat()
@@ -20996,17 +21077,19 @@ def _recs_win_line(iid, recommended, before, after, improved, since_ts):
         if recommended == "1h":
             if improved:
                 return (f"Subagent cache: since you set it to 1 hour on "
-                        f"{date}, the measured net is +${after:.2f} over the "
-                        f"last 30 days (projected +${before:.2f}; {tail}).")
+                        f"{date}, the measured net is {_recs_usd(after, True)} "
+                        f"over the last 30 days (projected "
+                        f"{_recs_usd(before, True)}; {tail}).")
             return (f"Subagent cache: since you set it to 1 hour on {date}, "
-                    f"the measured net is ${after:.2f} over the last 30 days "
-                    f"-- the projected +${before:.2f} did not hold ({tail}).")
+                    f"the measured net is {_recs_usd(after, True)} over the "
+                    f"last 30 days -- the projected {_recs_usd(before, True)} "
+                    f"did not hold ({tail}).")
         if improved:
             return (f"Subagent cache: since you turned it off on {date}, the "
-                    f"1-hour cache still would not pay (net ${after:.2f}; "
+                    f"1-hour cache still would not pay (net {_recs_usd(after)}; "
                     f"{tail}).")
         return (f"Subagent cache: since you turned it off on {date}, the "
-                f"estimate moved to ${after:+.2f} -- the 1-hour cache may be "
+                f"estimate moved to {_recs_usd(after, True)} -- the 1-hour cache may be "
                 f"worth another look ({tail}).")
     return ""
 
@@ -21094,6 +21177,24 @@ def _recs_refresh_locked(now):
     return rec
 
 
+def _recs_write_provisional(now):
+    """A killed refresh must still leave a record (the module header says a
+    crashed run writes complete:false). Written when the lock is taken, and
+    only when no valid record exists: a previous good record stays put (it is
+    already past its refresh age, so the next start retries). Never raises."""
+    try:
+        if _recs_read_record() is not None:
+            return
+        _subagent_cache_write_json_atomic(
+            _recs_record_path(),
+            {"schema": 1, "measured_ts": float(now),
+             "window_days": _RECS_WINDOW_DAYS, "complete": False,
+             "provisional": True, "items": [], "wins": []},
+            ".usage_recs.")
+    except Exception:
+        pass
+
+
 def usage_recommendations_refresh(now=None, token=None):
     """The one refresher. Run by the detached child (which presents its lock
     token) or by hand (which takes the lock itself). Returns the record, or
@@ -21111,6 +21212,7 @@ def usage_recommendations_refresh(now=None, token=None):
         if token is None:
             return None
     try:
+        _recs_write_provisional(now)
         return _recs_refresh_locked(now)
     finally:
         _recs_lock_release(token)
@@ -21167,10 +21269,15 @@ def _recs_ensure_fresh(now=None):
             return False
         rec = _recs_read_record()
         if rec is not None:
+            # A provisional record means the refresh that wrote it never
+            # finished; retry once the lock it held would be reclaimable
+            # instead of parking the retry for a day.
+            limit = (_RECS_LOCK_STALE if rec.get("provisional")
+                     else _RECS_REFRESH_SECONDS)
             try:
                 if (float(now if now is not None else time.time())
                         - float(rec.get("measured_ts") or 0)
-                        < _RECS_REFRESH_SECONDS):
+                        < limit):
                     return False
             except (TypeError, ValueError):
                 pass
@@ -26842,6 +26949,20 @@ def _collect_posix_claude_sessions(process_name="claude"):
     return sessions
 
 
+def _local_start_label(started):
+    """Format a process start time in local time, as the POSIX collector does.
+
+    A timezone-aware value (the Windows collectors report UTC or an offset) is
+    converted to the local zone first; a naive value is already local.
+    """
+    if started.tzinfo is not None:
+        try:
+            started = started.astimezone()
+        except (ValueError, OverflowError, OSError):
+            pass
+    return started.strftime("%a %b %d %H:%M:%S %Y")
+
+
 def _parse_wmi_datetime(wmi_ts):
     """Parse a WMI CIM_DATETIME to elapsed seconds since process start.
 
@@ -26886,7 +27007,7 @@ def _parse_wmi_datetime(wmi_ts):
         return None
 
     return {
-        "started": started.strftime("%a %b %d %H:%M:%S %Y"),
+        "started": _local_start_label(started),
         "elapsed_seconds": max(0, int(elapsed)),
     }
 
@@ -26899,12 +27020,18 @@ def _parse_wmi_datetime(wmi_ts):
 _PS_DOTTED_TIME_RE = re.compile(r"(?<=[T ])(\d{2})\.(\d{2})\.(\d{2})(?=$|[Zz+\-.,])")
 
 
+# .NET ToString('o') writes seven fractional digits. Before Python 3.11,
+# fromisoformat accepts exactly three or six, so pad/trim the fraction to six.
+_PS_FRACTION_RE = re.compile(r"(?<=\d{2}:\d{2}:\d{2})\.(\d+)")
+
+
 def _normalize_ps_iso(iso_ts):
-    """Return a string datetime.fromisoformat accepts, or "" when empty."""
+    """Return a string datetime.fromisoformat accepts (3.9+), or "" when empty."""
     s = (iso_ts or "").strip()
     if not s:
         return ""
     s = _PS_DOTTED_TIME_RE.sub(r"\1:\2:\3", s)
+    s = _PS_FRACTION_RE.sub(lambda m: "." + m.group(1)[:6].ljust(6, "0"), s)
     if s.endswith(("Z", "z")):
         s = s[:-1] + "+00:00"
     return s
@@ -26924,7 +27051,7 @@ def _parse_iso_process_datetime(iso_ts):
     else:
         elapsed = (datetime.now(timezone.utc) - started).total_seconds()
     return {
-        "started": started.strftime("%a %b %d %H:%M:%S %Y"),
+        "started": _local_start_label(started),
         "elapsed_seconds": max(0, int(elapsed)),
     }
 
@@ -37682,11 +37809,16 @@ def archive_result(quiet=False):
 
 
 def _sanitize_tool_use_id(tool_use_id):
+    """Archive key for a tool_use_id: the same key the PostToolUse hook uses.
+
+    Ids outside [a-zA-Z0-9_-] (or longer than 128) map to a digest, so two
+    different ids never share a key the way "a b", "a.b" and "a_b" used to.
+    """
     raw = str(tool_use_id or "")
-    clean = re.sub(r"[^a-zA-Z0-9_-]", "_", raw).strip("_")
-    if clean and clean != "unknown":
-        return clean[:80]
-    return hashlib.sha256(raw.encode("utf-8", errors="ignore")).hexdigest()[:16]
+    if not raw or raw == "unknown":
+        return hashlib.sha256(raw.encode("utf-8", errors="ignore")).hexdigest()[:16]
+    from archive_result import _safe_archive_key
+    return _safe_archive_key(raw)
 
 
 def _summarize_tool_output_for_recovery(text):
@@ -37695,6 +37827,16 @@ def _summarize_tool_output_for_recovery(text):
     if re.search(r"\b(error|failed|traceback|exception|permission denied|not found)\b", raw[:20_000], re.IGNORECASE):
         return "Large tool output archived; contains error/failure signals."
     return "Large tool output archived."
+
+
+def _archived_response_hash(entry_path):
+    """sha256 of the stored response of an archive entry, or None if unreadable."""
+    try:
+        data = json.loads(Path(entry_path).read_text(encoding="utf-8"))
+        return hashlib.sha256(
+            str(data.get("response") or "").encode("utf-8", errors="replace")).hexdigest()
+    except Exception:
+        return None
 
 
 def _codex_backfill_tool_archive(filepath=None, session_id=None, max_outputs=20):
@@ -37748,8 +37890,6 @@ def _codex_backfill_tool_archive(filepath=None, session_id=None, max_outputs=20)
             tool_use_id = _sanitize_tool_use_id(item.get("tool_use_id"))
             _ensure_private_dir(archive_dir)
             entry_path = archive_dir / f"{tool_use_id}.json"
-            if entry_path.exists():
-                continue
 
             over_cap = len(output_text) > 5_242_880
 
@@ -37775,6 +37915,15 @@ def _codex_backfill_tool_archive(filepath=None, session_id=None, max_outputs=20)
             except Exception:
                 continue
             output_hash = hashlib.sha256(output_text.encode("utf-8", errors="replace")).hexdigest()
+            if entry_path.exists():
+                # Same id, same payload: already archived. Same id, different
+                # payload: keep both, under a content-qualified key.
+                if _archived_response_hash(entry_path) == output_hash:
+                    continue
+                tool_use_id = f"{tool_use_id[:100]}-{output_hash[:12]}"
+                entry_path = archive_dir / f"{tool_use_id}.json"
+                if entry_path.exists() and _archived_response_hash(entry_path) == output_hash:
+                    continue
             summary = _summarize_tool_output_for_recovery(output_text)
             entry_data = {
                 "tool_name": tool_name,
@@ -37939,7 +38088,7 @@ def expand_archived(tool_use_id=None, session_id=None, list_all=False):
         tool_use_id = tool_use_id[:-1]
 
     # Sanitize tool_use_id (same pattern as session_id)
-    if not re.match(r'^[a-zA-Z0-9_-]+$', tool_use_id):
+    if not re.match(r'^[a-zA-Z0-9_-]+\Z', tool_use_id):
         print("[Error] Invalid tool_use_id format.", file=sys.stderr)
         sys.exit(1)
 
@@ -37975,7 +38124,9 @@ def expand_archived(tool_use_id=None, session_id=None, list_all=False):
                     # re-popped tokens as a debit (netted in _get_savings_summary),
                     # deduped per item so a second expand never double-debits.
                     _log_reexpand_debit(sd.name, tool_use_id, response)
-                    print(response)
+                    # No added newline: expand returns the stored text as stored.
+                    sys.stdout.write(response)
+                    sys.stdout.flush()
                     return
                 else:
                     print(f"[Error] Archived entry found but response is empty: {entry_path}", file=sys.stderr)
@@ -51806,8 +51957,10 @@ def _advice_session_data(path):
                             pending[blk["id"]] = owner
                         seen.update(targets)
     except (OSError, PermissionError):
+        # `unreadable` lets compact_advice flag the replay as partial instead
+        # of silently counting one session fewer.
         return {"turns": [], "cache_reads": [], "boundaries": set(), "model": None,
-                "post_compact_ctx": [], "rereads": []}
+                "post_compact_ctx": [], "rereads": [], "unreadable": True}
     post_ctx, rereads = [], []
     for b in bounds:
         if b[0] < len(turns):
@@ -51982,7 +52135,10 @@ def compact_advice(days=30, max_sessions=None, deadline_seconds=None):
         try:
             d = _advice_session_data(jf)
         except Exception:
+            out["truncated"] = True
             continue
+        if d.get("unreadable"):
+            out["truncated"] = True
         all_rereads.extend(d["rereads"])
         all_post_ctx.extend(d["post_compact_ctx"])
         if len(d["turns"]) < 2:
@@ -55981,12 +56137,12 @@ if __name__ == "__main__":
               f"{run['result']['scanned_sessions']} sessions):")
         for label in ("probe-only", "predictor-sustain", "oracle-sustain"):
             m = modes[label]
-            print(f"  {label:<18} net ${m['net_usd']:>9.2f}  "
+            print(f"  {label:<18} net {_recs_usd(m['net_usd']):>10}  "
                   f"(saving ${m['saving_usd']:.2f} - ping ${m['ping_cost_usd']:.2f}; "
                   f"{m['pings']} pings, {m['avoided_writes']} writes avoided)")
-        print(f"  reconcile: probe_net=${rec['probe_net']:.2f} "
+        print(f"  reconcile: probe_net={_recs_usd(rec['probe_net'])} "
               f"(in-band={rec['probe_in_band']}), "
-              f"oracle_net=${rec['oracle_net']:.2f} "
+              f"oracle_net={_recs_usd(rec['oracle_net'])} "
               f"(in-band={rec['oracle_in_band']})")
         verdict = "PROMOTED (sustain ON)" if dec["sustain_allowed"] else "probe-only (sustain OFF)"
         print(f"  fence: {verdict} -- {dec['reason']}"
@@ -56024,7 +56180,7 @@ if __name__ == "__main__":
                   f"({w.get('ok_count', 0)} ok, {w.get('error_count', 0)} error, "
                   f"{w.get('timeout_count', 0)} timeout), "
                   f"spend ${w['spend_usd']:.2f}, realized ${w['realized_usd']:.2f}, "
-                  f"NET ${w['net_usd']:.2f} "
+                  f"NET {_recs_usd(w['net_usd'])} "
                   f"({w['realized_count']} realized / {w['loss_count']} loss)")
             orphans = w.get("orphan_firing_count", 0)
             if orphans:
@@ -56143,13 +56299,13 @@ if __name__ == "__main__":
               f"({fc['avoided_writes']} cold re-writes avoided)")
         print(f"  API-equivalent: ${fc['saving_usd']:.2f} saved  -  "
               f"${fc['ping_cost_usd']:.2f} keep-warm cost  =  "
-              f"{'+' if fc['net_usd'] >= 0 else ''}${fc['net_usd']:.2f}/month net")
+              f"{_recs_usd(fc['net_usd'], plus=True)}/month net")
         if fc["positive"]:
             print(f"  Verdict: WORTH IT -- nets you ~${fc['net_usd']:.0f}/mo in "
                   f"avoided token cost.")
         else:
             print(f"  Verdict: not worth it on your history "
-                  f"(net ${fc['net_usd']:.2f}/mo).")
+                  f"(net {_recs_usd(fc['net_usd'])}/mo).")
         print("  Note: on a subscription you pay keep-warm's cost in rate-limit "
               "quota, not cash; the $ is the API-equivalent size of the win.")
         sys.exit(0)
@@ -57293,10 +57449,9 @@ if __name__ == "__main__":
         from pathlib import Path as _P
         rc_script = _P(__file__).resolve().parent / "read_cache.py"
         if rc_script.exists():
-            import subprocess
-            subprocess.run(
-                [sys.executable, str(rc_script), "--clear", "--session", sid] + (["--quiet"] if quiet else []),
-                timeout=5, creationflags=_NO_WINDOW
+            _run_script_child(
+                rc_script, ["--clear", "--session", sid] + (["--quiet"] if quiet else []),
+                timeout=5,
             )
     elif args[0] == "read-cache-stats":
         # Show read cache stats
@@ -57307,19 +57462,14 @@ if __name__ == "__main__":
         from pathlib import Path as _P
         rc_script = _P(__file__).resolve().parent / "read_cache.py"
         if rc_script.exists():
-            import subprocess
-            subprocess.run(
-                [sys.executable, str(rc_script), "--stats", "--session", sid],
-                timeout=5, creationflags=_NO_WINDOW
-            )
+            _run_script_child(rc_script, ["--stats", "--session", sid], timeout=5)
     elif args[0] == "structure-proof":
         from pathlib import Path as _P
         proof_script = _P(__file__).resolve().parent / "structure_replay.py"
         if not proof_script.exists():
             print(f"[Token Optimizer] structure_replay.py not found at {proof_script}")
             sys.exit(1)
-        import subprocess
-        result = subprocess.run([sys.executable, str(proof_script)] + args[1:], creationflags=_NO_WINDOW)
+        result = _run_script_child(proof_script, args[1:])
         sys.exit(result.returncode)
     else:
         print("Usage:")

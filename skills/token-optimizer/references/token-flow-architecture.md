@@ -4,6 +4,27 @@ Understanding how tokens flow through Claude Code is critical for optimization. 
 
 ---
 
+## Contents
+
+- [The Loading Sequence (Every Message)](#the-loading-sequence-every-message)
+- [Token Budget Breakdown (Typical Setup)](#token-budget-breakdown-typical-setup)
+- [What You Can Control (Optimization Targets)](#what-you-can-control-optimization-targets)
+- [Progressive Loading (How Skills/Commands Work)](#progressive-loading-how-skillscommands-work)
+- [The Hidden Tax: System Reminders](#the-hidden-tax-system-reminders)
+- [Subagent Context Inheritance](#subagent-context-inheritance)
+- [Context Window Lifecycle](#context-window-lifecycle)
+- [The 1,000 Token Rule](#the-1000-token-rule)
+- [Caching Behavior (Prompt Caching)](#caching-behavior-prompt-caching)
+- [Real Cost: Context Budget, Not Dollars](#real-cost-context-budget-not-dollars)
+- [Model Cost Comparison (Why Routing Matters)](#model-cost-comparison-why-routing-matters)
+- [Optimization Priority Matrix](#optimization-priority-matrix)
+- [Real-World Example: Unaudited Power User (Tool Search Active)](#real-world-example-unaudited-power-user-tool-search-active)
+- [Additional Config Features (Token Impact)](#additional-config-features-token-impact)
+- [Cache Economics and Compaction](#cache-economics-and-compaction)
+- [Further Reading](#further-reading)
+
+---
+
 ## The Loading Sequence (Every Message)
 
 When you send a message to Claude Code, this is what loads:
@@ -99,7 +120,7 @@ RESPONSE GENERATED
 
 ## Token Budget Breakdown (Typical Setup)
 
-**Note**: Percentages assume 1M context window (Opus/Sonnet 4.6+ on Max/Team/Enterprise plans). Haiku users have 200K context, where these same absolute numbers represent 5x higher percentages (multiply by 5).
+**Note**: Percentages assume a 1M-token context window, the default on current Claude models (Haiku 5.5, Sonnet 5+, Opus 4.7+; Sonnet 4.6 and Opus 4.6 reach 1M only through their `[1m]` variants). On a 200K window, these same absolute numbers represent 5x higher percentages (multiply by 5).
 
 ### Well-Optimized Setup (~23K baseline, Tool Search active)
 ```
@@ -126,13 +147,11 @@ MEMORY.md:            3,500 tokens
 System reminders:     3,000 tokens  (no permissions.deny rules)
 ---------------------------------
 CONSUMED:            ~43,000 tokens (4.3% of 1M)
-+ Autocompact buffer: 33,000 tokens (3.3%, reserved not consumed)
-= UNAVAILABLE:       ~76,000 tokens (7.6% of 1M)
+= UNAVAILABLE:       ~43,000 tokens (4.3% of 1M), plus auto-compact headroom
 ```
 
 **Difference**: ~19,500 tokens consumed per message = 1.8x overhead vs optimized
-**Total unavailable difference**: ~52,500 tokens (7.6% vs 3.1% for optimized with autocompact off)
-**Note**: Pre-Tool-Search (2025), MCP alone could add 40-80K tokens. Tool Search (default since Jan 2026) reduced this by ~85%. This "unaudited" baseline is a power user who has been adding to their config for 3+ months without auditing. The autocompact buffer (33K) is reserved on every fresh session when autocompact is enabled (the default).
+**Note**: Before Tool Search, MCP alone could add 40-80K tokens; Tool Search (on by default) reduced this by ~85%. This "unaudited" baseline is a power user who has been adding to their config for 3+ months without auditing. When auto-compact is enabled (the default), Claude Code reserves extra headroom inside the compact window, so the true unavailable figure is higher still; on 1M models compaction fires at about 967K tokens by default.
 
 ---
 
@@ -215,7 +234,7 @@ System reminders are auto-injected by Claude Code when certain conditions occur:
 
 ---
 
-## Subagent Context Inheritance (CRITICAL)
+## Subagent Context Inheritance
 
 When you dispatch a subagent via the Task tool, it inherits the FULL system prompt.
 
@@ -263,7 +282,8 @@ Message 3: 35,000 previous + new message + response = ~50,000 total
     |
 ...context grows...
     |
-AUTO-COMPACT triggers near context limits. Often too late for best quality
+AUTO-COMPACT fires at the model's compact window: about 967K tokens by
+    default on 1M models, near the context limit on 200K models
     |
 Context compressed (lossy)
     |
@@ -279,7 +299,7 @@ Continue until /clear or session end
 | 70-85% | Noticeable cutting corners |
 | 85%+ | Hallucinations, drift, forgetfulness |
 
-**Recommendation**: Manually /compact at 50-70% to stay in peak zone. Auto-compact triggers near ~98% of context (the default), which is past the quality degradation threshold. Token Optimizer auto-removes `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` if found (undocumented env var with inverted semantics that causes premature compaction).
+**Recommendation**: Manually /compact at phase boundaries to stay in the peak zone. Auto-compact on 1M models fires at about 967K tokens by default, far past the quality degradation threshold, so set a lower per-model window with `/autocompact <n>` (100K-1M, saved per model; `/autocompact auto` restores the tuned window) or the `autoCompactWindow` setting. Token Optimizer auto-removes `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` if found (undocumented env var with inverted semantics that causes premature compaction).
 
 ---
 
@@ -301,16 +321,14 @@ Continue until /clear or session end
 
 ## Caching Behavior (Prompt Caching)
 
-**Confirmed active in Claude Code** (as of Feb 2026):
-- Prompt caching is ON by default. Disable with `DISABLE_PROMPT_CACHING=1`.
-- Anthropic internal data: 96-97% cache hit rate in active sessions
-- The team treats cache rate like uptime and declares incidents when it drops
+**Prompt caching is on by default in Claude Code.** Disable it with `DISABLE_PROMPT_CACHING=1`.
 - Cache order: tools first, then system prompt, then messages (chronological)
+- Main-conversation default TTL: 1 hour on subscription billing, 5 minutes on usage credits or an API key. The `promptCacheTtl` setting, the `CLAUDE_CODE_PROMPT_CACHE_TTL` env var, `ENABLE_PROMPT_CACHING_1H`, and `FORCE_PROMPT_CACHING_5M` control it (see the controls table in token-coach's quick-reference.md). The timer resets with each active message.
+- Subagents default to 5 minutes; `subagentPromptCacheTtl`, `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL`, or per-agent `experimental.cacheTtl` can raise that to 1 hour.
 
 **Pricing**:
-- Cache reads: 90% cheaper than base input ($0.30/M vs $3.00/M for Sonnet)
-- Cache writes: 25% surcharge (5-min TTL) or 100% surcharge (1-hour TTL for Max plan)
-- TTL: 5 minutes for Pro/API, 1 hour for Max plan. Timer resets with each active message.
+- Cache reads: 0.1x base input (90% cheaper)
+- Cache writes: 1.25x base input for a 5-minute cache, 2x for a 1-hour cache
 - Minimum cacheable size: 1,024 tokens (Sonnet/Opus), 2,048 tokens (Haiku)
 
 **What gets cached**: System prompt (including CLAUDE.md), tool definitions, conversation history prefix up to last cache breakpoint.
@@ -364,25 +382,20 @@ Most Claude Code users are on Max subscriptions ($100-200/month), not per-token 
 
 ### For API Users (Per-Token Pricing)
 
+Price the token math below at your model's current input rate from the platform pricing page; the rates change often enough that this guide quotes tokens, not dollars.
+
 **Without caching** (worst case, e.g. cache misses from inactivity):
 ```
-Opus input: $5 per 1M tokens
-20K overhead x 100 msgs/day x 30 days = 60M tokens/mo = $300/mo overhead
-35K overhead x 100 msgs/day x 30 days = 105M tokens/mo = $525/mo overhead
-Savings from optimization: ~$225/mo
+20K overhead x 100 msgs/day x 30 days = 60M tokens/mo billed at full input
+35K overhead x 100 msgs/day x 30 days = 105M tokens/mo billed at full input
+Optimization removes ~45M tokens/mo of that full-price billing.
 ```
 
-**With caching** (typical, 96-97% cache hit rate):
+**With caching** (typical for active sessions):
 ```
 Cached reads cost 10% of base input price.
-
-Opus cached input: $0.50/1M (10% of $5)
-  20K overhead: ~$0.03/msg | 35K overhead: ~$0.05/msg
-  Savings from optimization: ~$68/mo
-
-Sonnet cached input: $0.30/1M (10% of $3)
-  20K overhead: ~$0.006/msg | 35K overhead: ~$0.011/msg
-  Savings from optimization: ~$14/mo
+  20K overhead: ~2M effective tokens/mo | 35K overhead: ~3.5M effective tokens/mo
+Savings from optimization scale with your model's input rate; cache reads keep them at one-tenth of full price.
 ```
 
 **The honest framing**: For subscription users (Max, Pro), dollar cost is irrelevant. The real impact is context window space, rate limit quota burn, and quality degradation from fuller context.
@@ -391,22 +404,14 @@ Sonnet cached input: $0.30/1M (10% of $3)
 
 ## Model Cost Comparison (Why Routing Matters)
 
-Routing subagents to the right model tier is the highest-ROI behavioral change. The cost differentials are massive:
+Routing subagents to the right model tier is the highest-ROI behavioral change. The verified floor: Haiku 5.5 input is $0.10/MTok up to 100K prompt tokens and $0.50/MTok above that (5x on long prompts, per the platform pricing page). Sonnet and Opus bill higher per token; check anthropic.com/pricing for current rates rather than relying on any table here.
 
-| Model | Input $/1M | Output $/1M | Relative Cost (vs Haiku) |
-|-------|-----------|-------------|--------------------------|
-| Haiku | $1.00 | $5.00 | 1x |
-| Sonnet | $3.00 | $15.00 | 3x input, 3x output |
-| Opus | $5.00 | $25.00 | 5x input, 5x output |
+**Worked shape**: 5-agent workflow (file scanning + analysis + synthesis):
+- **All Opus**: 5 agents x (30K input + 5K output) at Opus's input/output rates
+- **Routed** (3 Haiku + 1 Sonnet + 1 Opus): the same tokens, but the three data-gathering agents bill at Haiku's input rate, the cheapest tier
+- The routed mix costs a fraction of all-Opus; quote exact dollars from the current pricing page, not from memory
 
-*Pricing from anthropic.com/pricing. Check for current rates.*
-
-**Worked example**: 5-agent workflow (file scanning + analysis + synthesis):
-- **All Opus**: 5 agents x (30K input x $5/1M + 5K output x $25/1M) = ~$1.38
-- **Routed** (3 Haiku + 1 Sonnet + 1 Opus): ~$0.44
-- **Savings: ~68%**
-
-For subscription users (Max plan): model routing affects rate limits, not dollars. Haiku calls consume fewer quota units and return results 3-5x faster. Routing means your session stays under rate limits longer.
+For subscription users (Max plan): model routing affects rate limits, not dollars. Lighter models consume fewer quota units, so routing keeps your session under rate limits longer.
 
 **What routing does NOT save**: Context window space. Subagents inherit the full system prompt regardless of model. A Haiku agent gets the same ~30K token overhead as an Opus agent. Routing saves dollars and rate limits. Config optimizations (CLAUDE.md slimming, skill archival) save context window space.
 
@@ -442,8 +447,7 @@ MEMORY.md:            3,500 tokens (duplicates CLAUDE.md content)
 System reminders:     3,000 tokens (no permissions.deny rules)
 ---------------------------------
 CONSUMED:           ~43,000 tokens (4.3% of 1M)
-+ Autocompact buffer: 33,000 tokens (3.3%, reserved)
-= UNAVAILABLE:      ~76,000 tokens (7.6% of 1M)
+= UNAVAILABLE:      ~43,000 tokens (4.3% of 1M) plus auto-compact headroom
 ```
 
 **After config optimization**:
@@ -457,29 +461,18 @@ MEMORY.md:            2,000 tokens (~130 lines, under 200-line cap)
 System reminders:     1,000 tokens (permissions.deny)
 ---------------------------------
 CONSUMED:           ~30,700 tokens (3.1% of 1M)
-+ Autocompact buffer: 33,000 tokens (3.3%, reserved)
-= UNAVAILABLE:      ~63,700 tokens (6.4% of 1M)
+= UNAVAILABLE:      ~30,700 tokens (3.1% of 1M) plus auto-compact headroom
 
 CONFIG SAVINGS: ~12,300 tokens/msg (29% reduction in consumed overhead)
-CONTEXT RECOVERED: 7.6% -> 6.4% unavailable (1.2% of window freed)
 ```
 
 **At 100 messages/day, that's 1.2M tokens of overhead saved daily.**
 
-**With autocompact OFF** (advanced users who manage /compact manually):
-```
-CONSUMED:           ~30,700 tokens (3.1% of 1M)
-+ No buffer:               0 tokens
-= UNAVAILABLE:      ~30,700 tokens (3.1% of 1M)
-
-TOTAL RECOVERY vs unoptimized with buffer: 7.6% -> 3.1% = 4.5% of context freed
-```
-
 Prompt caching means the dollar savings are modest (cached tokens cost 10% of base). But the context window space savings are real: you hit compaction later, quality stays higher longer, and each subagent inherits ~12,000 fewer tokens of overhead.
 
 **Plus behavioral changes** (compound across every message):
-- Agent model selection (haiku for data): 50-75% savings on automation
-- /compact at 50-70%: up to 18x reduction in conversation history
+- Agent model selection (haiku for data): the largest per-token cut on automation
+- /compact at phase boundaries: the biggest reductions come from compacting right after a bulky research or exploration phase
 - Extended thinking awareness: variable, potentially largest factor
 - Batching requests: 2-3x on multi-step tasks
 
@@ -615,9 +608,9 @@ See `optimization-checklist.md` items 23-30 for what each does and how the optim
 
 ## Cache Economics and Compaction
 
-Prompt caching is the foundation of Claude Code's cost model. Cached reads cost 10% of full input price ($0.50/M vs $5/M on Opus). When compaction fires, the entire conversation is replaced with a summary, invalidating the cache prefix. Every token after compaction gets billed at full price until the new cache warms up.
+Prompt caching is the foundation of Claude Code's cost model. Cached reads cost 10% of full input price. When compaction fires, the entire conversation is replaced with a summary, invalidating the cache prefix. Every token after compaction gets billed at full price until the new cache warms up.
 
-**The compaction tax**: A single compaction in a 100K-token Opus session can cost $0.45 in cache rebuild alone (90K tokens at $5/M instead of $0.50/M). Multiple compactions compound this.
+**The compaction tax**: A single compaction in a 100K-token session re-bills ~90K tokens at full input price instead of the cached rate, and multiple compactions compound this.
 
 **Mitigation strategies** (see optimization-checklist.md item 8):
 1. **Delay compaction**: Keep context lean (the optimizer's core job). Fewer tokens = later compaction = fewer rebuilds.
@@ -630,9 +623,6 @@ Prompt caching is the foundation of Claude Code's cost model. Cached reads cost 
 ## Further Reading
 
 - **Official Docs**: https://docs.anthropic.com (prompt caching, context windows, context editing)
-- **Official Costs**: https://code.claude.com/docs/en/costs ($6/dev/day average, 7x agent multiplier, background overhead data)
-- **Tool Search**: Default since Jan 2026 (deferred tool loading, 85% MCP reduction)
-- **Piebald-AI/claude-code-system-prompts** (3.9K stars): Most comprehensive open-source tracking of Claude Code's actual prompt content. 110+ prompt strings tracked. Useful for verifying system prompt sizes and tool definition token counts.
-- **Community**: r/ClaudeAI, r/anthropic (optimization tips)
-- **Reddit validation**: r/ClaudeAI thread confirming "65K tokens with all features enabled, ~12K with every feature disabled" (corroborates our 15K-43K range)
-- **Taras Tsugrii analysis**: "Claude Code uses 3x more tokens than Codex" (competitive context for token efficiency)
+- **Official Costs**: https://code.claude.com/docs/en/costs (average spend, agent-team multiplier, background overhead data)
+- **Model config**: https://code.claude.com/docs/en/model-config (context windows and auto-compaction defaults)
+- **Tool Search**: on by default (deferred tool loading, ~85% MCP reduction)

@@ -4,6 +4,22 @@ Comprehensive checklist of ALL optimization techniques.
 
 ---
 
+## Contents
+
+- [Quick Wins (< 30 minutes each)](#quick-wins--30-minutes-each)
+- [Model Routing Strategy (Highest-ROI Behavioral Change)](#model-routing-strategy-highest-roi-behavioral-change)
+- [Medium Effort (1-3 hours, save 2,000-5,000 tokens)](#medium-effort-1-3-hours-save-2000-5000-tokens)
+- [Deep Optimization (power users)](#deep-optimization-power-users)
+- [Behavioral Changes (Free, highest cumulative impact)](#behavioral-changes-free-highest-cumulative-impact)
+- [Advanced (Power Users)](#advanced-power-users)
+- [Monitoring & Measurement](#monitoring--measurement)
+- [Token Flow Reference](#token-flow-reference)
+- [Worked Example: Power User Optimization](#worked-example-power-user-optimization)
+- [Environment Variables & Settings (Tune your setup)](#environment-variables--settings-tune-your-setup)
+- [Anti-Patterns](#anti-patterns)
+
+---
+
 ## QUICK WINS (< 30 minutes each)
 
 ### 1. Check /cost and /context (0 minutes)
@@ -21,9 +37,9 @@ Comprehensive checklist of ALL optimization techniques.
 ### 2. Check Model Routing (5 minutes)
 **Target**: Confirm you have model routing instructions in CLAUDE.md
 
-**Quick check**: Does your CLAUDE.md tell Claude which model to use for subagents? If not, add the snippet from the Model Routing section below. One line, 50-75% savings on every multi-agent workflow.
+**Quick check**: Does your CLAUDE.md tell Claude which model to use for subagents? If not, add the snippet from the Model Routing section below. One line, the largest per-token cut you can get on every multi-agent workflow.
 
-**Expected savings**: 50-75% on automation costs (see full breakdown below)
+**Expected savings**: The biggest single cut on automation costs (see full breakdown below)
 
 ---
 

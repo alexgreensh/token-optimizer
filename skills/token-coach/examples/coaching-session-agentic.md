@@ -18,13 +18,13 @@ Walk me through what you're building. How many agents? What does each one do?
 - Plus the orchestrator's own session = ~18,500 more
 - Total infrastructure cost: ~92,500 tokens before any actual work
 
-That's 46% of a single 200K context window (though agents each get their own window, this matters for cost/rate limits).
+That's 46% of a single context window (though agents each get their own window, this matters for cost/rate limits).
 
 Let's optimize each agent:
 
-**Web scraper**: Data-gathering only. This should be an Explore agent with Haiku. It reads web content, returns summaries. It does NOT need your 54 skills or Opus-level reasoning. With Haiku, you save ~60x on per-token cost for this agent.
+**Web scraper**: Data-gathering only. This should be an Explore agent on the cheapest model. It reads web content, returns summaries. It does NOT need your 54 skills or Opus-level reasoning. The cheapest tier cuts this agent's per-token cost the most.
 
-**Document reader**: Also data-gathering. Another Explore agent with Haiku. It reads local files and extracts relevant content. Read-only is fine here.
+**Document reader**: Also data-gathering. Another Explore agent on the cheapest model. It reads local files and extracts relevant content. Read-only is fine here.
 
 **Analyzer**: This one needs judgment. Sonnet is the right model. It takes structured input from the first two agents and produces analysis. Still no need for full skill access unless it uses a specific analysis skill.
 
@@ -34,10 +34,10 @@ Let's optimize each agent:
 
 **Coach**: Good catch. If the analyzer needs to read files reactively, it can't be read-only Explore. Make it a general-purpose agent with Sonnet, but don't assign skills it doesn't need. The key distinction: Explore agents are for pre-planned reads. General-purpose agents handle reactive, multi-step tasks.
 
-For the coordination pattern: create a temp folder. Each agent writes findings to it. The orchestrator tracks completion. The report writer reads from the findings folder directly, never from the orchestrator's context. This prevents your orchestrator from bloating with raw agent output.
+For the coordination pattern: create a project-local folder (gitignore it). Each agent writes findings to it. The orchestrator tracks completion. The report writer reads from the findings folder directly, never from the orchestrator's context. This prevents your orchestrator from bloating with raw agent output.
 
 ```
-/tmp/research-session/
+.token-coordination/
   COORDINATION.md
   findings/
     web-sources.md      # Web scraper writes here
@@ -55,7 +55,7 @@ Same logic for skills: 54 skills x 5 agents = frontmatter loading 5 times. Archi
 
 ## Action Plan
 
-1. **Assign correct agent types**: Web scraper and doc reader as Explore/Haiku (read-only). Analyzer as general-purpose/Sonnet. Report writer as general-purpose/Sonnet. (~60x cost reduction on data-gathering agents)
+1. **Assign correct agent types**: Web scraper and doc reader as Explore (read-only, cheapest model). Analyzer as general-purpose/Sonnet. Report writer as general-purpose/Sonnet. (Largest per-token cut on the data-gathering agents)
 2. **Implement coordination folder**: Agents write to files, orchestrator reads summaries only. Prevents context overflow.
 3. **Slim CLAUDE.md to 800 tokens**: Saves ~6,900 tokens across 5 agents (5 x 1,380 tokens saved).
 4. **Archive unused skills**: Saves ~17,500 tokens across 5 agents (5 x 3,500 tokens saved).

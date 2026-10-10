@@ -4,6 +4,18 @@ Reference file for Token Coach. Provides conversation structure for each coachin
 
 ---
 
+## Contents
+
+- [General Coaching Principles](#general-coaching-principles)
+- [Option A: Building Something New](#option-a-building-something-new)
+- [Option B: Existing Project Feels Sluggish](#option-b-existing-project-feels-sluggish)
+- [Option C: Designing a Multi-Agent System](#option-c-designing-a-multi-agent-system)
+- [Option D: Quick Health Check](#option-d-quick-health-check)
+- [Handling Follow-Up Questions](#handling-follow-up-questions)
+- [Quality-Driven Coaching](#quality-driven-coaching)
+
+---
+
 ## General Coaching Principles
 
 1. **Lead with their data, not your knowledge.** "You have 47 skills" lands harder than "Skills cost tokens."
@@ -21,7 +33,7 @@ Reference file for Token Coach. Provides conversation structure for each coachin
 "Nice, building from scratch is the best time to get this right. Let me look at your current setup to see what your new project will inherit."
 
 ### Flow
-1. **Show inherited overhead**: "Every project you create starts with [X tokens] of overhead from your global config. That's [Y%] of your 200K window spoken for before you write a single line of project code."
+1. **Show inherited overhead**: "Every project you create starts with [X tokens] of overhead from your global config. That's [Y%] of your context window spoken for before you write a single line of project code."
 2. **Identify the big items**: Call out the top 3 overhead contributors from their current setup.
 3. **Ask about the project**: "What are you building? (Skill, MCP server, multi-agent system, app with Claude integration?)"
 4. **Give architecture advice based on answer**:
@@ -42,7 +54,7 @@ Reference file for Token Coach. Provides conversation structure for each coachin
 "Let's figure out where the weight is. I've got your current measurements."
 
 ### Flow
-1. **Show the headline number**: "Your setup uses [X tokens] at startup. That's [Y%] of your 200K window before you type anything."
+1. **Show the headline number**: "Your setup uses [X tokens] at startup. That's [Y%] of your context window before you type anything."
 2. **Identify the top 3 waste sources**: Use the coaching data patterns. Name the anti-patterns.
 3. **Ask what they notice**: "When does it feel slow? Early in sessions? After a few messages? During multi-agent work?"
 4. **Based on their answer**:
@@ -64,7 +76,7 @@ Reference file for Token Coach. Provides conversation structure for each coachin
 ### Flow
 1. **Ask about the architecture**: "Walk me through what you're building. How many agents? What does each one do?"
 2. **Calculate the cost**: "With [N] agents, your config overhead alone is [N x overhead] tokens. That's before any of them read a single file."
-3. **Review agent types**: "Which of these need write access? Which are just gathering data? The data-gathering ones should be Explore agents (Haiku, read-only)."
+3. **Review agent types**: "Which of these need write access? Which are just gathering data? The data-gathering ones should be read-only Explore agents."
 4. **Check for the common anti-patterns**:
    - Clone Army: All general-purpose agents
    - Skill Dump: Too many skills assigned to agents
@@ -107,7 +119,7 @@ Keep it under 2 minutes of reading. "That's the quick view. For the deep dive, r
 "Different tools for different situations. /compact preserves conversation context but may lose nuance. /clear gives you a completely fresh window. Rule of thumb: /compact within a topic, /clear between topics."
 
 ### "My setup is already minimal. What else can I do?"
-"Focus on behavioral habits: batch related requests into one message, use /compact at 50-70% (don't wait for auto), use subagents for file-heavy research, and match your model to the task complexity."
+"Focus on behavioral habits: batch related requests into one message, use /compact at phase boundaries (don't wait for auto-compact; on a 1M model set /autocompact lower than the ~967K default if you want it earlier), use subagents for file-heavy research, and match your model to the task complexity."
 
 ### "My session feels degraded but context isn't full."
 "That's a quality problem, not a quantity problem. Run `python3 measure.py quality current` to see what's rotting. Common culprits: stale file reads (you read a file, then edited it, but never re-read), bloated tool results nobody referenced again, and duplicate system reminders piling up. Smart Compaction can checkpoint your important state before /compact clears the noise."
@@ -117,7 +129,7 @@ Keep it under 2 minutes of reading. "That's the quick view. For the deep dive, r
 
 ---
 
-## Quality-Driven Coaching (v2.0)
+## Quality-Driven Coaching
 
 When quality data is available from `measure.py quality`, use these coaching patterns:
 

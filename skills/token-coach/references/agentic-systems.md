@@ -4,9 +4,18 @@ Reference file for Token Coach. Loaded ONLY for option c (multi-agent architectu
 
 ---
 
+## Contents
+
+- [The Cost Model](#the-cost-model)
+- [Design Patterns](#design-patterns)
+- [Anti-Patterns in Multi-Agent Design](#anti-patterns-in-multi-agent-design)
+- [Quick Decision Framework](#quick-decision-framework)
+
+---
+
 ## The Cost Model
 
-Every subagent gets its own fresh 200K context window. This is both the power and the cost of multi-agent architectures.
+Every subagent gets its own fresh context window sized to its model (1M tokens on current Claude models). This is both the power and the cost of multi-agent architectures.
 
 ### What Each Agent Inherits
 - System prompt + built-in tools: ~15K tokens (FIXED, same as your main session)
@@ -23,7 +32,7 @@ Every subagent gets its own fresh 200K context window. This is both the power an
 ### The Math
 - 5 agents x 15K config overhead = 75K tokens just for setup
 - Slimming CLAUDE.md by 1,000 tokens saves 5,000 tokens across 5 agents
-- Measured native agent overhead (v1.0.60+): ~13K tokens per agent
+- Measured native agent overhead: ~13K tokens per agent
 
 ---
 
@@ -32,14 +41,14 @@ Every subagent gets its own fresh 200K context window. This is both the power an
 ### Pattern 1: Subagent as Context Isolation
 Anthropic's official recommendation: use subagents to preserve main session context.
 - Every file Claude reads stays in your context until compaction
-- Subagents run in their own 200K window and return only summaries
+- Subagents run in their own window and return only summaries
 - Prompt: "use a subagent to investigate X" keeps your main window clean
 - Think of subagents as disposable research assistants, not just parallel workers
 
 ### Pattern 2: The Coordination Folder
-Prevents orchestrator context overflow from agent outputs.
+Prevents orchestrator context overflow from agent outputs. Use a project-local folder (add it to `.gitignore` so agent output never lands in a commit or a shared temp directory):
 ```
-/tmp/my-project/
+.coordination/
   COORDINATION.md       # Status tracker
   findings/             # Agents write here
     agent-1-findings.md
@@ -49,7 +58,7 @@ Prevents orchestrator context overflow from agent outputs.
 - Agents write FULL findings to files
 - Orchestrator gets "Agent X completed, output at {path}" not the full output
 - Synthesis agent reads files directly
-- NEVER pull raw agent output into the orchestrator's context
+- Do not pull raw agent output into the orchestrator's context; the whole point of the folder is that the orchestrator reads one line per agent, not every finding
 
 ### Pattern 3: Parallel Dispatch for Independent Tasks
 - Independent tasks in one message with multiple Agent tool calls
@@ -59,11 +68,11 @@ Prevents orchestrator context overflow from agent outputs.
 
 ### Pattern 4: Model Routing for Agents
 Default routing table:
-| Task Type | Model | Why |
+| Task Type | Model tier | Why |
 |-----------|-------|-----|
-| File reading, counting, directory scans | Haiku | 60x cheaper, equally accurate for data gathering |
-| Code analysis, judgment calls, writing | Sonnet | Good balance of quality and cost |
-| Complex multi-step reasoning, architecture | Opus | Only when you need deep reasoning |
+| File reading, counting, directory scans | haiku | The cheapest tier is accurate enough for data gathering |
+| Code analysis, judgment calls, writing | sonnet | Good balance of quality and cost |
+| Complex multi-step reasoning, architecture | opus | Only when you need deep reasoning |
 
 Add to CLAUDE.md: "Default subagents to model='haiku' for data gathering, model='sonnet' for analysis. Reserve model='opus' for complex reasoning."
 
@@ -75,20 +84,19 @@ Add to CLAUDE.md: "Default subagents to model='haiku' for data gathering, model=
 - Reference files within assigned skills still load progressively
 
 ### Pattern 6: Built-in Agent Type Selection
-| Type | Model | Access | Use For |
-|------|-------|--------|---------|
-| Explore | Haiku | Read-only (Glob, Grep, Read) | Codebase navigation, file search |
-| Plan | Configurable | Read-only | Planning, architecture analysis |
-| General-purpose | Default model | Full tools | Tasks requiring write access |
-| Custom | You choose | You configure | Specialized workflows |
+| Type | Access | Use For |
+|------|--------|---------|
+| Explore | Read-only (Glob, Grep, Read) | Codebase navigation, file search |
+| Plan | Read-only | Planning, architecture analysis |
+| General-purpose | Full tools | Tasks requiring write access |
+| Custom | You configure | Specialized workflows |
 
 Use Explore when you just need to find things. Use Plan when you need reasoning without edits. Use General-purpose only when the agent needs to write files.
 
 ### Pattern 7: Agent Team Cost-Benefit Analysis
-From Anthropic docs: "Agent teams use approximately 7x the tokens of a single session in plan mode."
-- Single agent: ~85K tokens for a complex task
-- Agent team (3 agents): ~210K tokens for the same task, but 3x faster
-- Break-even: only use teams when the time savings justify 2-7x token cost
+Anthropic's docs report that agent teams use roughly 7x the tokens of a single session in plan mode.
+- Agent teams buy wall-clock speed with token cost
+- Break-even: only use teams when the time savings justify several times the token cost
 - For budget-conscious users: single agent with selective /dispatch for parallelizable subtasks
 
 ---

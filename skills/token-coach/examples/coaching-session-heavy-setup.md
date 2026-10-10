@@ -6,7 +6,7 @@ User chose option (b): Existing project feels sluggish / context fills too fast.
 
 ## Coach Output
 
-**Coach**: Found the weight. Your setup uses ~32,400 tokens at startup. That's 16.2% of your 200K window before you type anything. Combined with the ~45K autocompact buffer, you're starting each session with only ~122,600 usable tokens.
+**Coach**: Found the weight. Your setup uses ~32,400 tokens at startup. That's 16.2% of your context window before you type anything. With auto-compact headroom reserved on top, most of that window is already spoken for.
 
 The top 3 overhead sources:
 1. **54 skills**: ~5,400 tokens in the startup menu. You've got the 50-Skill Trap going on.
@@ -42,5 +42,5 @@ mv ~/.claude/skills/[skill-name] ~/.claude/_backups/skills-archived/
 1. **Archive 35 unused skills** (Quick Win): Move to ~/.claude/_backups/skills-archived/. Recovers ~3,500 tokens/session.
 2. **Extract coding standards from CLAUDE.md to a skill** (Medium): Create a coding-standards skill. Recovers ~1,900 tokens/message.
 3. **Review 8 MCP servers** (Medium): Disable servers you don't use in CLI. Ask yourself which you actually use in conversation before disabling.
-4. **Use /compact at 50-70%** (Habit): Don't wait for auto-compact. Run /compact proactively around message 8-10 given your current setup.
+4. **Use /compact at phase boundaries** (Habit): Don't wait for auto-compact. Run /compact proactively around message 8-10 given your current setup, and set `/autocompact` below the tuned default if you want compaction to fire earlier.
 5. **Run /token-optimizer for full audit**: Get the before/after measurement and automated fixes.

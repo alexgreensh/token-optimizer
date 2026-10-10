@@ -19,6 +19,7 @@ be listed as a stale terminal session and be terminated. These tests pin:
 """
 
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -111,9 +112,16 @@ def install_ps(monkeypatch, measure, procs, table_rc=0, names_rc=0, table_raises
     argv = argv or {}
     exe = exe or {}
     calls = []
+    base_procs = procs
 
     def fake_run(argv_, **kw):
         calls.append((list(argv_), kw))
+        # A real `ps` lists the process asking (read at call time: tests patch
+        # os.getpid). kill-stale reads its own ancestry from the table and fails
+        # closed, terminating nothing, when its own pid is absent.
+        procs = base_procs
+        if not any(p["pid"] == os.getpid() for p in procs):
+            procs = list(procs) + [proc(os.getpid(), os.getppid(), "python3")]
         if argv_[0] != "ps":
             return subprocess.CompletedProcess(argv_, 1, stdout="", stderr="")
         joined = " ".join(argv_)
@@ -903,12 +911,12 @@ def test_kill_stale_never_kills_the_session_it_runs_inside_of(monkeypatch):
     assert killed == [4001]
 
 
-def test_ancestor_walk_follows_the_parent_chain_and_is_empty_when_ps_is_unreadable(monkeypatch):
+def test_ancestor_walk_follows_the_parent_chain_and_is_unknown_when_ps_is_unreadable(monkeypatch):
     measure = _load_measure()
     install_ps(monkeypatch, measure, base_tree() + [terminal_claude()])
     assert measure._posix_ancestor_pids(500) == {320, 310, 300, 1}
     install_ps(monkeypatch, measure, base_tree(), names_rc=1)
-    assert measure._posix_ancestor_pids(500) == set()
+    assert measure._posix_ancestor_pids(500) is None
 
 
 def test_kill_stale_never_kills_own_pid_or_parent(monkeypatch):

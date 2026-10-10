@@ -26836,16 +26836,21 @@ def _posix_process_names():
 
 
 def _posix_ancestor_pids(pid):
-    """Pids of every ancestor of `pid` (best effort, empty when ps is unreadable).
+    """Pids of every ancestor of `pid`, or None when the chain cannot be established.
 
     kill-stale runs inside the conversation it was asked from; that claude is an
     ancestor of the command, not its direct parent, so it must be excluded too.
+    None (not an empty set) when `ps` is unreadable or its table lacks `pid`:
+    "unknown" is a distinct answer from "no ancestors", and kill-stale must not
+    act without proof that a candidate is not the conversation it runs inside of.
     """
     names = _posix_process_names()
+    if not names or pid not in names:
+        return None
     out = set()
     cur = pid
     for _ in range(64):
-        entry = (names or {}).get(cur)
+        entry = names.get(cur)
         if not entry or entry[0] <= 0 or entry[0] in out:
             break
         out.add(entry[0])
@@ -28176,6 +28181,9 @@ def kill_stale_sessions(threshold_hours=12, dry_run=False, include_orphans=False
             my_ancestors = set()
     else:
         my_ancestors = _posix_ancestor_pids(my_pid)
+        if my_ancestors is None:
+            ancestry_unknown = True
+            my_ancestors = set()
 
     # Fail closed: process age is not evidence that a conversation is
     # abandoned. Sessions whose identity is known to belong to a host app

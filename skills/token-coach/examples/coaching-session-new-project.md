@@ -6,7 +6,7 @@ User chose option (a): Building something new, want it token-efficient from the 
 
 ## Coach Output
 
-**Coach**: Your current setup starts every session with ~18,200 tokens of overhead. That's 9.1% of your 200K window, pretty reasonable. The big items: CLAUDE.md at 1,450 tokens, 23 skills at ~2,300 tokens, and 4 MCP servers at ~480 tokens.
+**Coach**: Your current setup starts every session with ~18,200 tokens of overhead. That's 9.1% of your context window, pretty reasonable. The big items: CLAUDE.md at 1,450 tokens, 23 skills at ~2,300 tokens, and 4 MCP servers at ~480 tokens.
 
 What are you building?
 
@@ -26,9 +26,9 @@ The skill adds ~100 tokens to your startup overhead (frontmatter in the menu). F
 
 **User**: Should I use subagents for the test running?
 
-**Coach**: Yes, for one reason: context isolation. When the skill reads code files for review, those stay in context. Running tests can produce verbose output. A subagent for test execution keeps that output in its own 200K window and reports back just pass/fail + relevant failures.
+**Coach**: Yes, for one reason: context isolation. When the skill reads code files for review, those stay in context. Running tests can produce verbose output. A subagent for test execution keeps that output in its own window and reports back just pass/fail + relevant failures.
 
-Use an Explore agent (Haiku, read-only) if you just need to read test results. Use a general-purpose agent if you need to actually run the tests via Bash. Either way, don't assign skills to the test agent unless it specifically needs them.
+Use an Explore agent (read-only) if you just need to read test results. Use a general-purpose agent if you need to actually run the tests via Bash. Either way, don't assign skills to the test agent unless it specifically needs them.
 
 ## Action Plan
 

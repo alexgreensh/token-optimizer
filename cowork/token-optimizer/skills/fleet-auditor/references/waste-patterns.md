@@ -4,6 +4,16 @@ Reference file for Fleet Auditor. Loaded on demand for detector development.
 
 ---
 
+## Contents
+
+- [Tier 1: Static Config Analysis](#tier-1-static-config-analysis)
+- [Tier 2: Session Log Analysis](#tier-2-session-log-analysis)
+- [Planned Detectors (not implemented)](#planned-detectors-not-implemented)
+- [Severity Levels](#severity-levels)
+- [Confidence Levels](#confidence-levels)
+
+---
+
 ## Tier 1: Static Config Analysis
 
 These detectors run against configuration files and don't need session data.
@@ -28,7 +38,7 @@ These detectors run against configuration files and don't need session data.
 **Confidence**: 0.8
 
 ### 4. Tool Definition Bloat
-**Signal**: MCP tool definitions consuming >15% of 200K context
+**Signal**: MCP tool definitions consuming more than 15% of a 200K reference window (the detector uses a fixed 200K, so on a 1M model the real share is smaller)
 **Threshold**: Estimated tool tokens > 30K
 **Cost model**: Rough (150 tokens/eager tool, 15/deferred, ~10 tools/server)
 **False positive check**: All servers could be actively used
@@ -53,7 +63,7 @@ These detectors run against configuration files and don't need session data.
 
 These detectors require parsed session data (AgentRun objects from fleet.db).
 
-### 7. Empty Heartbeat Runs (THE #1 WASTE PATTERN)
+### 7. Empty Heartbeat Runs (the largest waste pattern)
 **Signal**: Input > 5K tokens, output < 100 tokens, messages <= 4
 **Confirmation**: Input > 10K OR outcome == "empty"
 **Threshold**: 2+ confirmed empty runs in the window
@@ -84,7 +94,7 @@ These detectors require parsed session data (AgentRun objects from fleet.db).
 
 ---
 
-## Phase 2+ Detectors (Not Yet Implemented)
+## Planned Detectors (not implemented)
 
 ### 11. Retry Storms
 **Signal**: Same tool called 3+ times consecutively with similar inputs

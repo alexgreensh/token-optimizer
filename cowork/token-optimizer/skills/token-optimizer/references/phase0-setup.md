@@ -1,12 +1,22 @@
 # Phase 0: Setup Details
 
+## Contents
+
+- [Context Window Detection](#context-window-detection)
+- [Quick Pre-Check](#quick-pre-check)
+- [Backup](#backup)
+- [Coordination Folder](#coordination-folder)
+- [SessionEnd Hook Check](#sessionend-hook-check)
+- [Dashboard Daemon](#dashboard-daemon)
+- [Smart Compaction Check](#smart-compaction-check)
+
+---
+
 ## Context Window Detection
 
 Check if `TOKEN_OPTIMIZER_CONTEXT_SIZE` env var is already set. If not:
-- Check for `ANTHROPIC_API_KEY` env var (indicates API usage, possibly 1M context)
-- If API key found, ask the user: "You appear to be using the API. Do you have 1M token context (e.g. Opus)? If so I'll calibrate for 1M instead of 200K."
-- If they confirm 1M, `export TOKEN_OPTIMIZER_CONTEXT_SIZE=1000000` for this session
-- If no API key or they say no, default is 200K (no action needed)
+- Most current models have a 1M window by default (Haiku 5.5, Sonnet 5 and later, Opus 4.7 and later, Fable). Sonnet 4.6 and Opus 4.6 have 1M only through the `[1m]` variant and 200K without it.
+- Let `measure.py` detect the window from the session's model. Only if the user says it is wrong, ask which window they run and `export TOKEN_OPTIMIZER_CONTEXT_SIZE=<tokens>` (for example `1000000`) for this session.
 Keep this quick, one question max.
 
 ## Quick Pre-Check
@@ -15,8 +25,8 @@ Run `python3 $MEASURE_PY report`.
 If estimated controllable tokens < 1,000 and no CLAUDE.md exists, short-circuit:
 ```
 [Token Optimizer] Your setup is already minimal (~X tokens overhead).
-Focus on behavioral changes instead: /compact at 70%, /clear between topics,
-default agents to haiku, batch requests.
+Focus on behavioral changes instead: /compact at natural breakpoints, /clear between topics,
+route data-gathering agents to a lighter model, batch requests.
 ```
 
 ## Backup
@@ -43,7 +53,9 @@ fi
 ## Coordination Folder
 
 ```bash
-COORD_PATH=$(mktemp -d /tmp/token-optimizer-XXXXXXXXXX)
+# Project-local, so the audit files live with the work. Keep it out of git:
+# echo '.token-optimizer-audit-*/' >> .git/info/exclude
+COORD_PATH=$(mktemp -d "$PWD/.token-optimizer-audit-XXXXXXXXXX")
 [ -d "$COORD_PATH" ] || { echo "[Error] Failed to create coordination folder."; exit 1; }
 mkdir -p "$COORD_PATH"/{audit,analysis,plan,verification}
 ```

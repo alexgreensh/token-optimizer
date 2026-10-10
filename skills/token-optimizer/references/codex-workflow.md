@@ -8,6 +8,18 @@ If this skill is running in Codex, use this section instead of the Claude Code p
 - What should we fix, and what should we leave alone?
 - What behavior should I change during long Codex sessions?
 
+## Contents
+
+- [0. Resolve `measure.py` for Codex](#0-resolve-measurepy-for-codex)
+- [1. Start With Chat Status](#1-start-with-chat-status)
+- [2. Codex Setup Fixes](#2-codex-setup-fixes)
+- [3. Codex Optimization Actions](#3-codex-optimization-actions)
+- [4. Codex Runtime Optimizations That Work Now](#4-codex-runtime-optimizations-that-work-now)
+- [5. Codex Features That Are Not Full Parity Yet](#5-codex-features-that-are-not-full-parity-yet)
+- [6. Codex Chat Close](#6-codex-chat-close)
+
+---
+
 ## 0. Resolve `measure.py` for Codex
 
 ```bash

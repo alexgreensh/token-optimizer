@@ -1,6 +1,6 @@
 ---
 name: resume-checkpoint
-description: Pull a prior session's checkpoint on demand when the user is continuing prior work. Returns fenced, source-labeled, scrubbed recovery context. Do NOT call on a fresh, unrelated task.
+description: Pulls a prior session's checkpoint as fenced, scrubbed recovery context. Use when the user is continuing prior work; skip it on a fresh, unrelated task.
 effort: low
 ---
 
@@ -18,7 +18,7 @@ Call this skill when the user is **continuing prior work** and you need the prio
 
 ## When NOT to call (negative trigger)
 
-**Do NOT call on a fresh, unrelated task.** This tool costs ~300 tokens per call. A no-match returns one line, but calling it on every fresh session wastes the tokens the pointer gate was built to save. If the user's opening is clearly a new, self-contained task with no reference to prior work, do not call.
+Do not call this on a fresh, unrelated task. It costs ~300 tokens per call. A no-match returns one line, but calling it on every fresh session wastes the tokens the pointer gate was built to save. If the user's opening is clearly a new, self-contained task with no reference to prior work, do not call.
 
 ## What it returns
 
@@ -48,3 +48,5 @@ python3 "$PULL_PY" --prompt "<the user's opening/continuation prompt>" [--cwd "$
 ```
 
 The `--prompt` is what the scorer ranks against. Pass the user's actual continuation text, not a paraphrase.
+
+Written for and checked on Claude Opus 5.5 and Sonnet 5.5, and GPT-5.6 on Codex.

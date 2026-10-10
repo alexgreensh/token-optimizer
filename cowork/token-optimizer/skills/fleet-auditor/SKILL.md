@@ -1,15 +1,15 @@
 ---
 name: fleet-auditor
-description: "Cross-system agent token/cost audit (Claude Code, Codex, OpenClaw, Hermes, OpenCode): idle burns, model misrouting, config bloat, with dollar savings."
+description: "Audits token waste and cost across Claude Code, Codex, OpenClaw, Hermes and OpenCode, with dollar savings. Use when running several agent systems or suspecting idle heartbeats burn tokens."
 ---
 
 # Fleet Auditor: Cross-Platform Agent Token Waste Auditor
 
-> **Never recommend cutting our own tools.** When recommending fixes, NEVER suggest removing, archiving, trimming, disabling, or consolidating Token Optimizer's own skills — `token-optimizer`, `token-coach`, `token-dashboard`, `fleet-auditor`. They are the measurement layer; telling the user to delete them to "save ~200 tokens" is self-defeating. Exclude them from every unused-skill / archive / consolidation suggestion.
+Token Optimizer's own skills (`token-optimizer`, `token-coach`, `token-dashboard`, `fleet-auditor`) are the measurement layer, so leave them out of every removal, archive, trimming, disabling or consolidation suggestion; deleting them to save a few hundred tokens defeats the audit.
 
-Detects installed agent systems, collects token usage data, identifies waste patterns, and recommends fixes with dollar savings estimates. Everyone tracks. Nobody coaches. Until now.
+Detects installed agent systems, collects token usage data, identifies waste patterns, and recommends fixes with dollar savings estimates.
 
-**Use when**: Running multiple agent systems, spending $2-5/day on agents, suspecting idle heartbeats are burning tokens, or want a cross-system cost audit.
+Use when running multiple agent systems, spending $2-5/day on agents, suspecting idle heartbeats are burning tokens, or wanting a cross-system cost audit.
 
 ---
 
@@ -90,40 +90,13 @@ Parse the JSON output. Present findings ordered by severity and monthly savings.
 
 If no waste found: "Your fleet looks clean. No significant waste patterns detected."
 
-For Codex findings, be careful with dollars: if a model's pricing is not in the local pricing table, present token waste confidently and say dollar impact depends on current model pricing instead of inventing a cost.
-
-**OpenClaw Security + Cost Check** (March 2026):
-- If OpenClaw is detected and version < 2026.3.12: flag as HIGH severity. 31 CVEs including ClawJacked (full agent takeover). Compromised instances run rogue agents that burn tokens undetected. Recommend immediate upgrade.
-- Check for ClawHub skills matching ClawHavoc campaign patterns (1,184+ malicious skills). These skills exfiltrate data via extra API calls, inflating token spend.
-- Flag if gateway rate limiting is disabled (CVE-2026-25253). Without it, brute-force attacks can spawn unlimited agent sessions. Recommend: `openclaw config set security.rateLimit.enabled true`
+Dollar figures need a price for the model. For Codex and other non-Claude systems, and for the OpenClaw security checks, read `references/report-template.md` before presenting.
 
 ---
 
 ## Phase 3: Present Findings
 
-```
-[Fleet Auditor Results]
-
-SYSTEMS DETECTED
-- Claude Code: X runs ($Y.YY)
-- Codex: X runs ($Y.YY)
-- OpenClaw: X runs ($Y.YY)
-
-WASTE PATTERNS FOUND
-1. [SEVERITY] Description
-   Est. savings: $X.XX/month
-   Fix: recommendation
-
-2. [SEVERITY] Description
-   ...
-
-TOTAL POTENTIAL SAVINGS: $X.XX/month
-
-Ready to act? I can:
-1. Show detailed fix snippets for each finding
-2. Generate the fleet dashboard for visual analysis
-3. Run /token-optimizer for deeper Claude Code optimization
-```
+Use the layout in `references/report-template.md`: systems detected, waste patterns with severity, monthly savings and a fix for each, then the total and the next-step options.
 
 ---
 
@@ -150,28 +123,28 @@ For other systems, show the fix snippets from the audit and guide the user throu
 
 ## Reference Files
 
-| Phase | Read |
-|-------|------|
-| Adapter development | `references/fleet-systems.md` |
-| Detector development | `references/waste-patterns.md` |
+| Read | When |
+|------|------|
+| [references/report-template.md](references/report-template.md) | Presenting findings, Codex dollar caveats, OpenClaw checks |
+| [references/waste-patterns.md](references/waste-patterns.md) | Detector thresholds, severity and confidence levels |
+| [references/fleet-systems.md](references/fleet-systems.md) | Per-system data locations and token fields |
 
 ---
 
 ## Error Handling
 
-- **No systems detected**: Report cleanly, list supported systems
-- **Empty scan results**: System detected but no session data in window. Suggest increasing `--days`
-- **Permission errors**: Report which files couldn't be read, continue with available data
-- **Corrupted data**: Skip bad files, report count of skipped files
-- **fleet.py not found**: Check both skill and plugin install paths
-
----
+- **No systems detected**: report cleanly and list the supported systems
+- **Empty scan results**: system detected but no session data in the window; suggest a larger `--days`
+- **Permission errors**: name the files that could not be read and continue with the rest
+- **Corrupted data**: skip bad files and report how many were skipped
+- **fleet.py not found**: check both the skill and plugin install paths
 
 ## Core Rules
 
-- Quantify everything in dollars AND tokens
+- Quantify everything in dollars and tokens
 - Never read or expose message content (privacy-first)
-- Report confidence levels alongside findings
-- Suppress findings below 0.4 confidence threshold
-- Always show fix snippets with recommendations
+- Report confidence levels alongside findings and suppress anything below 0.4
+- Show a fix snippet with every recommendation
 - Frame savings as monthly recurring, not one-time
+
+Written for and checked on Claude Opus 5.5 and Sonnet 5.5, and GPT-5.6 on Codex.

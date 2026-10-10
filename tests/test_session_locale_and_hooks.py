@@ -290,12 +290,12 @@ import measure
 # issue #192 (relay `server` and the versioned `ccd-cli` Code session) plus an
 # unrelated process. Only the ccd-cli line is a real Claude Code CLI session.
 _PS = (
-    "  PID TTY      STARTED                        ELAPSED COMMAND\\n"
-    " 4242 ??       Mon Sep 15 09:00:00 2026         01:00 "
+    "  PID  PPID TTY      STARTED                        ELAPSED COMMAND\\n"
+    " 4242  4100 ??       Mon Sep 15 09:00:00 2026         01:00 "
     "/home/user/.claude/remote/ccd-cli/2.1.271 --output-format stream-json --verbose --model sonnet\\n"
-    " 4200 ??       Mon Sep 15 08:59:00 2026         02:00 "
+    " 4200  4100 ??       Mon Sep 15 08:59:00 2026         02:00 "
     "/home/user/.claude/remote/srv/abc123/server --serve --socket /home/user/.claude/remote/run/x/s\\n"
-    " 9999 pts/0    Mon Sep 15 09:30:00 2026         00:30 node /path/to/app.js\\n"
+    " 9999  4100 pts/0    Mon Sep 15 09:30:00 2026         00:30 node /path/to/app.js\\n"
 )
 
 class _R:

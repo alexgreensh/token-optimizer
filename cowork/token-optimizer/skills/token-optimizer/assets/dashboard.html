@@ -2595,7 +2595,7 @@ var DB = (function() {
           }
         });
         if (!stalePids.length) { return; }
-        // Identity-tagged (Windows) inventories are re-verified per process at
+        // Identity-tagged inventories (every platform) are re-verified per process at
         // kill time by the CLI; a pasted `kill <pid>` from this snapshot would
         // bypass that, so copy the CLI command instead.
         var tagged = (data.health && data.health.running_sessions || []).some(function(s) { return !!s.identity; });

@@ -1,0 +1,96 @@
+---
+title: Subagent prompt cache
+description: "Claude Code gives subagents a 5-minute prompt cache even on a subscription. Token Optimizer sets subagentPromptCacheTtl to 1h once, and reverts itself if your own transcripts say it does not pay."
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Subagents always get the short prompt cache. On a subscription your main conversation caches for an hour, but every subagent prefix expires after five minutes, so a subagent you return to, or the same agent type spawned again, rewrites its whole prefix after a short break. Claude Code 2.1.243+ exposes `subagentPromptCacheTtl`, a settings key that raises the subagent TTL to one hour, the same window the rest of the plan gets.
+
+## What it does
+
+On session start, Token Optimizer sets `"subagentPromptCacheTtl": "1h"` in your **user** `settings.json`, once, and only when it is clearly safe. The first time it writes, one line tells you it happened and how to undo it; every session after that is a silent no-op.
+
+The safety rules, in order:
+
+- **Your value wins.** If the key already exists with any value (including `"5m"`) it is treated as yours and never touched.
+- **Environment wins.** `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL` or `FORCE_PROMPT_CACHING_5M` set means do nothing; the env outranks the setting anyway.
+- **Other settings files win.** A managed, project, or local `settings.json` that already sets the key outranks the user file, so Token Optimizer does nothing and reports which file answered.
+- **Version floor.** Requires Claude Code 2.1.243 or newer; anything older or undetectable is skipped.
+- **Declines are remembered.** If you remove or change the key after Token Optimizer set it, a marker records the decline and the automatic path never sets it again.
+- **Unknown means no.** Unreadable, missing, or malformed settings are never written.
+- **Opt-out.** `TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=0` (also `false`, `off`, `no`) blocks the set entirely, and if the setting was already applied, it is removed.
+
+A marker in Token Optimizer's own data directory (timestamp plus previous state) is how `disable` knows what it may undo: the key is removed only when the marker says Token Optimizer set it and the value is still `"1h"`. Your uninstall path calls the same undo.
+
+## The payoff check
+
+`subagent-cache status` judges the feature on your own transcripts, not a hypothetical. For the last 30 days it counts subagent cache writes that followed a 5 to 60 minute gap on the same agent prefix: writes that would have been cheap cache reads at a 1h TTL — against all subagent cache writes, each of which pays the 2x 1-hour write rate instead of 1.25x. The net comes out in tokens and API-equivalent dollars, always labelled an estimate.
+
+```bash
+cd ~/.claude/skills/token-optimizer/scripts
+python3 measure.py subagent-cache status          # state, who set it, net estimate
+python3 measure.py subagent-cache status --json   # machine-readable
+python3 measure.py subagent-cache enable          # set it now (same safety rules)
+python3 measure.py subagent-cache disable         # undo (only what Token Optimizer set)
+```
+
+### The tripwire
+
+If 14 or more days of post-enable data show a **negative** net estimate (the 2x write premium outweighing the avoided 5-minute rewrites), the next session start removes the key (only when Token Optimizer set it), records `auto-reverted`, and says so in one line. The verdict is re-judged at most once a day so the steady-state session start stays cheap. An explicit `subagent-cache enable` clears the auto-revert state.
+
+<Aside type="note" title="Estimate, not metered savings">
+The payoff figure is deterministic math over your transcripts (request timestamps and cache-creation fields), not metered billing data. It is deliberately conservative: would-be reads are credited only in the 5 to 60 minute gap band, and every write is charged the full 1h premium.
+</Aside>
+
+## Default state
+
+On for Claude Code 2.1.243+, applied once at session start. Cowork and every other runtime are a clean no-op. The feature never reads or writes `~/.claude` outside Claude Code.
+
+## How to turn it off
+
+```bash
+python3 measure.py subagent-cache disable
+```
+
+or permanently, in your environment or `settings.json` `env` block:
+
+```bash
+TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=0
+```
+
+`disable` removes the key only when the marker says Token Optimizer set it. If you set the key yourself, it is left alone.
+
+## Defaults and thresholds
+
+| Setting | Default | Notes |
+|---|---|---|
+| Feature state | enabled (Claude Code 2.1.243+) | One-time set at session start |
+| Value written | `subagentPromptCacheTtl: "1h"` | User `settings.json` only |
+| Tripwire window | 14 days of post-enable data | Negative net estimate reverts |
+| Tripwire re-judge | once per 24 hours | Verdict stands between checks |
+| Payoff lookback | 30 days | `status` reports tokens and dollars, estimated |
+| Opt-out | `TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=0` | Also `false`, `off`, `no` |
+
+## Risk rating
+
+Low. One settings key, set once, with every override path (user value, env, managed/project/local files) taking precedence over the write. The undo is exact: it only removes what Token Optimizer set, and the tripwire reverts automatically if the economics go negative. Failures fail closed: unknown-state settings are never written.
+
+## Related environment variables
+
+- `TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H`: opt out (`0`, `false`, `off`, `no`)
+- `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL`: Claude Code's own override; outranks the setting
+- `FORCE_PROMPT_CACHING_5M`: forces the 5-minute cache everywhere; blocks the set
+
+See the [configuration reference](/reference/configuration/).
+
+## Platform availability
+
+Claude Code 2.1.243+ only, on macOS, Linux, and Windows (the managed-settings path is platform-aware). Codex, Cowork, OpenCode, Cursor, Hermes, Copilot, and Antigravity are clean no-ops. See the [capability matrix](/reference/capability-matrix/).
+
+## Related
+
+- [Cache TTL watchdog](/features/cache-watchdog/): `cache-report` measures expiry waste on the main-conversation cache.
+- [Keep-Warm](/features/keep-warm/): the API-billing ping that keeps a paused prefix alive.
+- [Cache economics](/concepts/cache-economics/): why a lapsed prefix costs 1.25 to 2x to rewrite.
+- [Configuration](/reference/configuration/): `TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H` and friends.

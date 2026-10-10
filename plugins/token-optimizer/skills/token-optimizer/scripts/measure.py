@@ -179,7 +179,7 @@ _CLAUDE_TARGET_CMDS = frozenset(
         "ensure-health", "setup-hook", "setup-all-hooks",
         "cleanup-duplicate-hooks", "setup-daemon", "setup-quality-bar",
         "setup-smart-compact", "inject-routing", "inject-coach",
-        "setup-coach-injection", "check-staleness",
+        "setup-coach-injection", "check-staleness", "subagent-cache",
         # The dashboard daemon serves Claude-targeted data and derives its
         # port/label identity from the runtime ternaries, which default to
         # Claude for unknown runtimes — wrong identity under a foreign host.
@@ -3899,6 +3899,7 @@ def quick_scan(as_json=False):
             ],
             "quick_win": quick_win,
             "coaching": coaching,
+            "subagent_cache": subagent_cache_block(),
         }
         print(json.dumps(result, indent=2))
         return result
@@ -4174,6 +4175,7 @@ def doctor(as_json=False):
             "score": score,
             "total": total,
             "checks": [{"status": s, "name": n, "detail": d} for s, n, d in checks],
+            "subagent_cache": subagent_cache_block(),
         }
         print(json.dumps(result, indent=2))
         return result
@@ -4185,6 +4187,23 @@ def doctor(as_json=False):
         icon = "[OK]" if status == "OK" else "[!!]"
         detail_str = f"  {detail}" if detail else ""
         print(f"  {icon:5s} {name}: {detail_str}")
+
+    # Subagent cache row: state + the one-line payoff estimate.
+    try:
+        _scb = subagent_cache_block()
+        _sc_state = _scb.get("state") or "unknown"
+        _sc_payoff = _scb.get("payoff") or {}
+        _sc_detail = (
+            f"state: {_sc_state}; last {_sc_payoff.get('window_days', 30)}d "
+            f"estimated net ${_sc_payoff.get('net_usd_est', 0.0):.2f} "
+            "(estimate)")
+        print(f"  {'':5s} Subagent cache: {_sc_detail}")
+        if _sc_state == "set":
+            print(f"  {'':5s} Undo: python3 "
+                  f"{shlex.quote(str(Path(__file__).resolve()))} "
+                  "subagent-cache disable")
+    except Exception:
+        pass  # doctor must never fail on this optional row
 
     print(f"\n  Score: {score}/{total}")
     # Show fix command for first failing check
@@ -18463,6 +18482,773 @@ def keepwarm_cache_health_block(days=30, now=None):
     return block
 
 
+# ===========================================================================
+# Subagent prompt-cache TTL automation (`subagentPromptCacheTtl`).
+#
+# Claude Code gives subagents a 5-minute prompt cache even on a subscription,
+# so a subagent returned to after more than 5 minutes rewrites its whole
+# prefix. Claude Code >= 2.1.243 supports raising that per install via the
+# `subagentPromptCacheTtl: "1h"` setting (docs say 2.1.242; the changelog
+# floor is 2.1.243 -- use the higher). Token Optimizer can set that ONE key
+# in the user settings.json, once, and undo it on demand.
+#
+# Hard rules (each pinned by tests/test_subagent_cache_ttl.py):
+#   * A value the user set is never overridden -- any pre-existing key (even
+#     "5m") reads as "user-set" and is left alone.
+#   * Env outranks: CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL or
+#     FORCE_PROMPT_CACHING_5M set -> do nothing (documented precedence:
+#     FORCE_PROMPT_CACHING_5M > bucket env > bucket setting).
+#   * A managed/project/local settings file that already sets the key wins;
+#     a plugin setting cannot (a plugin's own settings.json is ignored by
+#     Claude Code for this key), so the USER settings.json is the only right
+#     place -- and only when nothing else already answers.
+#   * Claude Code >= 2.1.243, else skip with a reason (fail-closed on an
+#     unknown version: never set on what we cannot verify).
+#   * A marker in TO's own data dir remembers that TO set it (timestamp +
+#     previous state). disable removes the key ONLY when the marker says TO
+#     set it AND the value is still "1h". If the user removes or changes the
+#     key after we set it, the marker flips to "user-declined" and the
+#     automatic path never sets it again.
+#   * Opt-out env TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=0|false|off|no: never
+#     set; and if TO set it earlier, undo.
+#   * Unknown-state settings (unreadable, missing, malformed): never write.
+#   * The payoff is judged from the user's OWN transcripts (sidechain 5m
+#     cache writes that followed a 5-60 min gap on the same agent prefix,
+#     i.e. reads at 1h, vs all subagent 5m writes, which cost 2x instead of
+#     1.25x at 1h). 14+ days of post-enable data with a NEGATIVE net
+#     estimate -> the next SessionStart reverts (only when TO set it),
+#     records "auto-reverted", and says so in one line. Modeled on the
+#     keep-warm tripwire; like it, auto-revert is sticky for the automatic
+#     path and cleared only by an explicit `subagent-cache enable`. The
+#     verdict is re-judged at most once a day -- the payoff scan walks real
+#     transcripts and must not run on every session start.
+# ===========================================================================
+
+_SUBAGENT_CACHE_KEY = "subagentPromptCacheTtl"
+_SUBAGENT_CACHE_MARKER_NAME = "subagent_cache_state.json"
+# Docs say v2.1.242; the changelog says 2.1.243. Use the higher floor.
+_SUBAGENT_CACHE_CC_FLOOR = (2, 1, 243)
+_SUBAGENT_CACHE_OPTOUT_ENV = "TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H"
+# A 5m cache write that follows this gap would have been a read at 1h.
+_SUBAGENT_CACHE_GAP_LOW = 300     # 5 minutes: below this the old write is alive
+_SUBAGENT_CACHE_GAP_HIGH = 3600   # 1 hour: above this the 1h cache is gone too
+# Tripwire: judge only once this much post-enable data exists.
+_SUBAGENT_CACHE_TRIPWIRE_MIN_DAYS = 14
+# ...and re-judge at most this often. The payoff scan walks real
+# transcripts, so a verdict stands for a day; running it on every
+# session start past day 14 would blow the hook time budget.
+_SUBAGENT_CACHE_TRIPWIRE_REJUDGE_SECONDS = 86400
+
+
+def _subagent_cache_marker_path():
+    """Marker lives in TO's own data dir (plugin-data aware, never settings)."""
+    return SNAPSHOT_DIR / _SUBAGENT_CACHE_MARKER_NAME
+
+
+def _subagent_cache_read_marker():
+    """Read the state marker, or None when absent/corrupt (None = unknown-old)."""
+    p = _subagent_cache_marker_path()
+    try:
+        if not p.exists():
+            return None
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _subagent_cache_write_marker(record):
+    """Atomically write the state marker (0600). Never raises."""
+    p = _subagent_cache_marker_path()
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=".subagent_cache.", suffix=".tmp", dir=str(p.parent))
+        try:
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(record, fh)
+            os.replace(tmp_name, str(p))
+        except Exception:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
+    except Exception:
+        pass
+
+
+def _subagent_cache_optout(value=None):
+    """True when the opt-out env carries a falsy token (0/false/off/no)."""
+    if value is None:
+        value = os.environ.get(_SUBAGENT_CACHE_OPTOUT_ENV)
+    if value is None:
+        return False
+    return str(value).strip().lower() in ("0", "false", "off", "no")
+
+
+def _subagent_cache_claude_code_version():
+    """Detect the Claude Code version as a (major, minor, patch) tuple.
+
+    Same probe the health collection uses: `claude --version` via
+    _resolve_runtime_bin (shutil.which first, then the common install
+    locations), parsed with _parse_semver. Returns None when nothing
+    parseable answers -- callers treat that as "version unknown" and skip
+    (fail-closed: never set a setting on an unverifiable host).
+    Memoized per process; the SessionStart path hits the memo on every later
+    call, and the marker check skips the probe entirely after first success.
+    """
+    global _SUBAGENT_CACHE_CC_VERSION
+    if _SUBAGENT_CACHE_CC_VERSION is not _SUBAGENT_CACHE_UNKNOWN:
+        return _SUBAGENT_CACHE_CC_VERSION
+    try:
+        result = subprocess.run(
+            [_resolve_runtime_bin("claude"), "--version"],
+            capture_output=True, text=True, timeout=3, creationflags=_NO_WINDOW,
+        )
+        raw = result.stdout.strip() if result.returncode == 0 else ""
+    except (subprocess.SubprocessError, FileNotFoundError, OSError):
+        raw = ""
+    m = re.search(r"\d+\.\d+\.\d+", raw or "")
+    _SUBAGENT_CACHE_CC_VERSION = (
+        _parse_semver(m.group(0)) if m else _SUBAGENT_CACHE_UNKNOWN)
+    return _SUBAGENT_CACHE_CC_VERSION
+
+
+_SUBAGENT_CACHE_UNKNOWN = object()   # probe not yet run sentinel
+_SUBAGENT_CACHE_CC_VERSION = _SUBAGENT_CACHE_UNKNOWN
+
+
+def _subagent_cache_managed_settings_path():
+    """Claude Code's managed-settings.json location for this platform."""
+    system = platform.system()
+    if system == "Windows":
+        base = os.environ.get("ProgramData") or "C:\\ProgramData"
+        return Path(base) / "ClaudeCode" / "managed-settings.json"
+    if system == "Darwin":
+        return Path("/Library/Application Support/ClaudeCode/managed-settings.json")
+    return Path("/etc/claude-code/managed-settings.json")
+
+
+def _subagent_cache_external_settings_sources():
+    """Every settings file that outranks the user settings.json for this key.
+
+    Managed (platform path), project (`.claude/settings.json` in the cwd) and
+    local (`.claude/settings.local.json`). Claude Code merges all of them and
+    the user file ranks LAST, so if any of these already answers the key,
+    writing the user file would be a silent no-op -- do nothing instead.
+    Returns Paths that may not exist (callers check).
+    """
+    cwd = Path.cwd()
+    return [
+        _subagent_cache_managed_settings_path(),
+        cwd / ".claude" / "settings.json",
+        cwd / ".claude" / "settings.local.json",
+    ]
+
+
+def _subagent_cache_external_key_holder():
+    """First external settings source that (maybe) sets the key.
+
+    Returns {"path": str} when a READABLE file sets it, or
+    {"path": str, "unreadable": True} when one exists but cannot be read
+    (fail-closed: an unreadable higher-priority file means "unknown", and
+    unknown never writes). None when every higher-priority file is absent
+    or readable without the key.
+    """
+    for src in _subagent_cache_external_settings_sources():
+        try:
+            if not src.exists():
+                continue
+            data = json.loads(src.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, PermissionError, OSError, ValueError):
+            return {"path": str(src), "unreadable": True}
+        if isinstance(data, dict) and _SUBAGENT_CACHE_KEY in data:
+            return {"path": str(src)}
+    return None
+
+
+def _subagent_cache_claude_only():
+    """The feature is Claude Code only. Cowork is a hard exclusion: it is
+    detect_runtime()=="claude" but must never read or write ~/.claude."""
+    try:
+        if detect_runtime() != "claude" or is_cowork():
+            return False
+    except Exception:
+        return False
+    return True
+
+
+def _subagent_cache_platform_gap(reason="not Claude Code"):
+    return {"state": "platform-gap", "changed": False, "reason": reason,
+            "notice": None}
+
+
+def _subagent_cache_undo(data, now, why):
+    """Shared undo: remove the key (only) and record why in the marker.
+
+    Caller guarantees the marker says TO set it. `data` is the current
+    settings dict. Never raises; a refused write leaves everything as-is.
+    """
+    if _SUBAGENT_CACHE_KEY not in data:
+        return {"state": why, "changed": False, "reason": "key already absent",
+                "notice": None}
+    if data.get(_SUBAGENT_CACHE_KEY) != "1h":
+        return {"state": "user-changed", "changed": False,
+                "reason": "value is no longer \"1h\"; leaving it alone",
+                "notice": None}
+    payload = dict(data)
+    payload.pop(_SUBAGENT_CACHE_KEY, None)
+    if not _write_settings_atomic(payload, allow_removing_keys={_SUBAGENT_CACHE_KEY}):
+        return {"state": "write-refused", "changed": False,
+                "reason": "settings.json locked or guard refused the write",
+                "notice": None}
+    _subagent_cache_write_marker({
+        "state": why,
+        "ts": float(now),
+        "set_by": "token-optimizer",
+    })
+    return {"state": why, "changed": True, "reason": None, "notice": None}
+
+
+def subagent_cache_enable(now=None, automatic=True):
+    """Set `subagentPromptCacheTtl: "1h"` in the USER settings.json -- once,
+    and only under every safety rule in the module docstring.
+
+    `automatic=True` is the SessionStart path: it also honours the sticky
+    marker states (user-declined / auto-reverted / opted-out) so the host can
+    never fight the user or the tripwire. `automatic=False` is the explicit
+    CLI verb, where a deliberate human request may clear a decline or a
+    tripwire auto-revert (the env opt-out still always wins).
+
+    Returns {"state", "changed", "reason", "notice"}. The notice is the
+    one-line SessionStart message for the ONE transition where the key was
+    actually set; every other path emits none.
+    """
+    if now is None:
+        now = time.time()
+    if not _subagent_cache_claude_only():
+        return _subagent_cache_platform_gap()
+
+    # Opt-out env: never set; and if TO set it earlier, undo.
+    if _subagent_cache_optout():
+        marker = _subagent_cache_read_marker()
+        data, ok = _read_settings_for_write()
+        if ok and marker and marker.get("state") == "set":
+            r = _subagent_cache_undo(data, now, "opted-out")
+            r["state"] = "opted-out"
+            return r
+        return {"state": "opted-out", "changed": False,
+                "reason": f"{_SUBAGENT_CACHE_OPTOUT_ENV} is set",
+                "notice": None}
+
+    marker = _subagent_cache_read_marker()
+    mstate = (marker or {}).get("state")
+
+    if automatic and mstate in ("user-declined", "auto-reverted", "opted-out"):
+        return {"state": mstate, "changed": False,
+                "reason": "sticky marker state; the automatic path never "
+                          "re-sets after a decline or auto-revert",
+                "notice": None}
+
+    if mstate == "set":
+        # Fast path: marker first (one file read), settings only to verify.
+        data, ok = _read_settings_for_write()
+        if not ok:
+            return {"state": "unknown-settings", "changed": False,
+                    "reason": "settings.json unreadable or missing", "notice": None}
+        val = data.get(_SUBAGENT_CACHE_KEY)
+        if val == "1h":
+            return {"state": "set", "changed": False, "reason": None,
+                    "notice": None}
+        # We set it once and the user removed/changed it afterwards: remember,
+        # never touch it again.
+        marker["state"] = "user-declined"
+        marker["declined_ts"] = float(now)
+        marker["declined_previous"] = val if val is not None else "(absent)"
+        _subagent_cache_write_marker(marker)
+        return {"state": "user-declined", "changed": False,
+                "reason": "the user removed or changed the key after we set it",
+                "notice": None}
+
+    # Env outranks the setting (documented precedence).
+    if os.environ.get("CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL", "").strip():
+        return {"state": "env-override", "changed": False,
+                "reason": "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL is set", "notice": None}
+    if os.environ.get("FORCE_PROMPT_CACHING_5M", "").strip():
+        return {"state": "env-override", "changed": False,
+                "reason": "FORCE_PROMPT_CACHING_5M is set", "notice": None}
+
+    # A higher-priority settings file already answers the key.
+    holder = _subagent_cache_external_key_holder()
+    if holder is not None:
+        if holder.get("unreadable"):
+            return {"state": "unknown-settings", "changed": False,
+                    "reason": (f"external settings file unreadable: {holder['path']}"),
+                    "notice": None}
+        return {"state": "external-setting", "changed": False,
+                "reason": f"{holder['path']} already sets the key", "notice": None}
+
+    # Unknown-state user settings: never write.
+    data, ok = _read_settings_for_write()
+    if not ok:
+        return {"state": "unknown-settings", "changed": False,
+                "reason": "settings.json unreadable or missing", "notice": None}
+
+    # Any value the user already set -- including "5m" -- is theirs.
+    if _SUBAGENT_CACHE_KEY in data:
+        _subagent_cache_write_marker({
+            "state": "user-set",
+            "ts": float(now),
+            "set_by": "user",
+        })
+        return {"state": "user-set", "changed": False,
+                "reason": "the user already set the key", "notice": None}
+
+    # Version floor (a `claude --version` subprocess: probed only once every
+    # cheaper check has said a write is really about to happen).
+    version = _subagent_cache_claude_code_version()
+    if version is None or version < _SUBAGENT_CACHE_CC_FLOOR:
+        return {"state": "version-unsupported", "changed": False,
+                "reason": ("Claude Code version unknown" if version is None else
+                           f"Claude Code {'.'.join(map(str, version))} < "
+                           f"{'.'.join(map(str, _SUBAGENT_CACHE_CC_FLOOR))}"),
+                "notice": None}
+
+    # The one write this feature ever makes.
+    payload = dict(data)
+    payload[_SUBAGENT_CACHE_KEY] = "1h"
+    if not _write_settings_atomic(payload):
+        return {"state": "write-refused", "changed": False,
+                "reason": "settings.json locked or guard refused the write",
+                "notice": None}
+    _subagent_cache_write_marker({
+        "state": "set",
+        "set_ts": float(now),
+        "previous": {"present": False},
+        "set_by": "token-optimizer",
+    })
+    undo_cmd = f"python3 {shlex.quote(str(Path(__file__).resolve()))} subagent-cache disable"
+    return {
+        "state": "set",
+        "changed": True,
+        "reason": None,
+        "notice": (
+            "Token Optimizer set the subagent cache to 1 hour (was 5 minutes). "
+            f"Undo: {undo_cmd}"
+        ),
+    }
+
+
+def subagent_cache_disable(now=None):
+    """Remove the key -- ONLY when the marker says TO set it and the value is
+    still "1h". The sanctioned undo; also called by cleanup()/uninstall."""
+    if now is None:
+        now = time.time()
+    if not _subagent_cache_claude_only():
+        return _subagent_cache_platform_gap()
+    marker = _subagent_cache_read_marker()
+    if not marker or marker.get("state") != "set":
+        return {"state": "nothing-to-undo", "changed": False,
+                "reason": "no marker says Token Optimizer set this key",
+                "notice": None}
+    data, ok = _read_settings_for_write()
+    if not ok:
+        return {"state": "unknown-settings", "changed": False,
+                "reason": "settings.json unreadable or missing", "notice": None}
+    return _subagent_cache_undo(data, now, "removed")
+
+
+def subagent_cache_payoff(days=30, now=None, since_ts=None):
+    """Deterministic payoff estimate from the user's OWN sidechain transcripts.
+
+    For the last `days` days, count subagent (isSidechain) 5m cache writes
+    that followed a gap of 5-60 minutes since the previous request of the
+    same agent transcript -- those would have been reads at a 1h TTL -- versus
+    ALL subagent 5m cache writes, which cost 2x instead of 1.25x per token at
+    1h. Priced with the active tier's rate card via _get_model_cost (unpriced
+    models fall back to the runtime default, like every other pool).
+
+    `since_ts` restricts the token accounting to requests at/after that epoch
+    second (the tripwire's post-enable window). Everything here is an
+    ESTIMATE: the gap proxy reads request timestamps, not actual cache keys.
+    Never raises; a scan error is an honest zero.
+    """
+    zero = {
+        "window_days": int(days), "estimate": True,
+        "subagent_5m_cache_writes": 0, "write_tokens_5m": 0,
+        "would_have_been_reads": 0, "missed_read_tokens": 0,
+        "savings_usd_est": 0.0, "extra_write_cost_usd_est": 0.0,
+        "net_usd_est": 0.0,
+    }
+    if not _subagent_cache_claude_only():
+        return zero
+    if now is None:
+        now = time.time()
+    try:
+        projects_base = CLAUDE_DIR / "projects"
+        if not projects_base.exists():
+            return zero
+        cutoff_ts = now - days * 86400
+
+        candidates = []
+        for project_dir in projects_base.iterdir():
+            if not project_dir.is_dir():
+                continue
+            try:
+                for jf in project_dir.rglob("*.jsonl"):
+                    try:
+                        mtime = jf.stat().st_mtime
+                    except OSError:
+                        continue
+                    if mtime >= cutoff_ts:
+                        candidates.append((mtime, jf))
+            except OSError:
+                continue
+        candidates.sort(key=lambda t: t[0], reverse=True)
+        candidates = [jf for _, jf in candidates[:_SUBAGENT_SCAN_MAX_FILES]]
+
+        total_writes = 0
+        write_tokens = 0
+        would_reads = 0
+        missed_tokens = 0
+        savings_usd = 0.0
+        extra_usd = 0.0
+        tier = _load_pricing_tier()
+
+        def _price(model, tokens):
+            mdl = model if _is_priced_model(model, tier) else _default_model_for_runtime()
+            write_5m = _get_model_cost(mdl, 0, 0, 0, int(tokens), tier=tier,
+                                       cache_create_1h=0, cache_create_5m=int(tokens))
+            read = _get_model_cost(mdl, 0, 0, int(tokens), 0, tier=tier)
+            write_1h = _get_model_cost(mdl, 0, 0, 0, int(tokens), tier=tier,
+                                       cache_create_1h=int(tokens), cache_create_5m=0)
+            return write_5m, read, write_1h
+
+        for jf in candidates:
+            # Sidechain transcripts only (same rule as _subagent_pool_savings:
+            # nested subagents/ paths are sidechains by construction).
+            if jf.parent.name != "subagents" and not _scan_jsonl_is_sidechain(jf):
+                continue
+            parsed = _parse_session_jsonl(jf)
+            if not parsed or not parsed.get("is_sidechain"):
+                continue
+            reqs = parsed.get("request_usage") or {}
+            stamped = []
+            for u in reqs.values():
+                ts_s = u.get("ts")
+                if not ts_s or not isinstance(ts_s, str):
+                    continue
+                try:
+                    ts = datetime.fromisoformat(ts_s.replace("Z", "+00:00")).timestamp()
+                except (ValueError, TypeError, OverflowError, OSError):
+                    continue
+                if ts < cutoff_ts:
+                    continue
+                if since_ts is not None and ts < since_ts:
+                    continue
+                stamped.append((ts, u))
+            if not stamped:
+                continue
+            stamped.sort(key=lambda t: t[0])
+            prev_ts = None
+            for ts, u in stamped:
+                cc5 = int(u.get("cc_5m") or 0)
+                if cc5 <= 0:
+                    prev_ts = ts
+                    continue
+                total_writes += 1
+                write_tokens += cc5
+                w5, rd, w1 = _price(u.get("model"), cc5)
+                extra_usd += w1 - w5
+                gap = (ts - prev_ts) if prev_ts is not None else None
+                if gap is not None and _SUBAGENT_CACHE_GAP_LOW <= gap <= _SUBAGENT_CACHE_GAP_HIGH:
+                    would_reads += 1
+                    missed_tokens += cc5
+                    savings_usd += w5 - rd
+                prev_ts = ts
+        return {
+            "window_days": int(days), "estimate": True,
+            "subagent_5m_cache_writes": total_writes,
+            "write_tokens_5m": write_tokens,
+            "would_have_been_reads": would_reads,
+            "missed_read_tokens": missed_tokens,
+            "savings_usd_est": round(savings_usd, 6),
+            "extra_write_cost_usd_est": round(extra_usd, 6),
+            "net_usd_est": round(savings_usd - extra_usd, 6),
+        }
+    except Exception:
+        return zero
+
+
+def evaluate_subagent_cache_tripwire(now=None, payoff=None):
+    """14+ days of post-enable data with a NEGATIVE net estimate -> revert.
+
+    Modeled on the keep-warm tripwire: the only write it ever makes is the
+    undo of a value TO itself set (marker state "set"); a user-set value is
+    never touched; a window with no subagent 5m writes is never judged (no
+    data, no verdict). The revert is sticky for the automatic path ("auto-
+    reverted" marker state); an explicit `subagent-cache enable` clears it.
+
+    Returns {"reverted": bool, "notice": str|None, "net_usd_est": ...}.
+    Never raises.
+    """
+    out = {"reverted": False, "notice": None, "net_usd_est": None}
+    if not _subagent_cache_claude_only():
+        return out
+    if now is None:
+        now = time.time()
+    marker = _subagent_cache_read_marker()
+    if not marker or marker.get("state") != "set":
+        return out
+    set_ts = marker.get("set_ts")
+    try:
+        elapsed_days = (float(now) - float(set_ts)) / 86400.0
+    except (TypeError, ValueError):
+        return out
+    if elapsed_days < _SUBAGENT_CACHE_TRIPWIRE_MIN_DAYS:
+        return out
+    # Re-judge at most once per _SUBAGENT_CACHE_TRIPWIRE_REJUDGE_SECONDS:
+    # the payoff scan below walks real transcripts, and the steady-state
+    # session start must stay a marker read, not a 30-day scan.
+    judged_ts = marker.get("judged_ts")
+    try:
+        if (judged_ts is not None
+                and float(now) - float(judged_ts)
+                < _SUBAGENT_CACHE_TRIPWIRE_REJUDGE_SECONDS):
+            return out
+    except (TypeError, ValueError):
+        pass
+    if payoff is None:
+        payoff = subagent_cache_payoff(days=30, now=now, since_ts=float(set_ts))
+
+    def _record_judgment():
+        marker["judged_ts"] = float(now)
+        _subagent_cache_write_marker(marker)
+
+    # A window with no subagent cache writes proves nothing either way.
+    if not payoff or not payoff.get("subagent_5m_cache_writes"):
+        _record_judgment()
+        return out
+    net = payoff.get("net_usd_est")
+    if not isinstance(net, (int, float)) or net >= 0:
+        # Judged and kept: report the net that earned the stay (or None when
+        # the payoff was unparseable).
+        _record_judgment()
+        return dict(out, net_usd_est=net if isinstance(net, (int, float)) else None)
+    # Net negative over a full window: undo OUR value only.
+    data, ok = _read_settings_for_write()
+    if not ok:
+        return out
+    result = _subagent_cache_undo(data, now, "auto-reverted")
+    if not result.get("changed"):
+        return dict(out, net_usd_est=net)
+    enable_cmd = (f"python3 {shlex.quote(str(Path(__file__).resolve()))} "
+                  f"subagent-cache enable")
+    return {
+        "reverted": True,
+        "net_usd_est": net,
+        "notice": (
+            "Token Optimizer removed the subagent 1-hour cache setting: the "
+            f"estimated net over the last {int(elapsed_days)} days was "
+            f"-${abs(net):.2f} (extra 2x write premium outweighed the avoided "
+            "5-minute rewrites). Set again: "
+            f"{enable_cmd}"
+        ),
+    }
+
+
+def _subagent_cache_session_start_lines(now=None):
+    """SessionStart ensure body: the automatic enable + the payoff tripwire.
+
+    Returns AT MOST ONE user-facing line (via the systemMessage channel):
+    the one-time "set" notice on the transition, or the one-time
+    auto-revert notice. Every steady-state session is a no-op that returns
+    [] after a marker read plus one settings verification read (needed to
+    catch a user who removed or changed the key we set). Never raises.
+    """
+    try:
+        result = subagent_cache_enable(now=now, automatic=True)
+        if result.get("notice"):
+            return [result["notice"]]
+        # No enable work this session: the only remaining job is the tripwire
+        # (it no-ops unless the marker says TO set the key AND 14+ days have
+        # elapsed -- one marker read on the steady-state path).
+        trip = evaluate_subagent_cache_tripwire(now=now)
+        if trip.get("reverted") and trip.get("notice"):
+            return [trip["notice"]]
+    except Exception:
+        pass
+    return []
+
+
+def subagent_cache_status(days=30, now=None):
+    """State + who set it + the payoff estimate. Read-only, never writes."""
+    if not _subagent_cache_claude_only():
+        return {"state": "platform-gap", "set_by": None, "payoff": None,
+                "reason": "not Claude Code (Cowork and other runtimes are a "
+                          "documented no-op)"}
+    marker = _subagent_cache_read_marker()
+    try:
+        data, _path, _ok = _read_settings_json_checked()
+        current = data.get(_SUBAGENT_CACHE_KEY)
+    except Exception:
+        current = None
+    mstate = (marker or {}).get("state")
+    if _subagent_cache_optout():
+        state, who = "opted-out", None
+        reason = f"{_SUBAGENT_CACHE_OPTOUT_ENV} is set"
+    elif mstate == "set" and current == "1h":
+        state, who, reason = "set", "token-optimizer", None
+    elif mstate == "set":
+        state, who = "user-declined", None
+        reason = "the user removed or changed the key after we set it"
+    elif mstate in ("user-declined", "auto-reverted", "opted-out"):
+        state, who = mstate, None
+        reason = mstate.replace("-", " ")
+    elif mstate == "user-set" or current is not None:
+        state, who, reason = "user-set", "user", None
+    else:
+        state, who, reason = "off", None, None
+    payoff = subagent_cache_payoff(days=days, now=now)
+    return {
+        "state": state,
+        "set_by": who,
+        "reason": reason,
+        "set_ts": (marker or {}).get("set_ts") if who == "token-optimizer" else None,
+        "payoff": payoff,
+        "estimate": True,
+    }
+
+
+def subagent_cache_block(days=30, now=None):
+    """The doctor/quick/coach surface: state, who set it, net estimate."""
+    try:
+        st = subagent_cache_status(days=days, now=now)
+    except Exception as exc:
+        return {"state": "unknown", "set_by": None, "payoff": None,
+                "reason": f"status unavailable: {type(exc).__name__}"}
+    st.setdefault("estimate", True)
+    return st
+
+
+def _coach_cli(args):
+    """`measure.py coach [--json] [--focus F]` handler (extracted verbatim
+    from the __main__ dispatch so tests can drive the JSON surface)."""
+    focus = None
+    output_json = "--json" in args
+    for i, a in enumerate(args):
+        if a == "--focus" and i + 1 < len(args):
+            focus = args[i + 1]
+    data = generate_coach_data(focus=focus)
+    if output_json:
+        # Subagent-cache surface: state, who set it, net payoff estimate.
+        # Fail-open; never breaks the coach JSON.
+        try:
+            data["subagent_cache"] = subagent_cache_block()
+        except Exception:
+            pass
+        print(json.dumps(data, indent=2))
+        return
+    is_codex = detect_runtime() == "codex"
+    instruction_label = "AGENTS.md" if is_codex else "CLAUDE.md"
+    score = data["health_score"]
+    snap = data["snapshot"]
+    print(f"\n  Token Health Score: {score}/100")
+    print(f"  Startup overhead: {snap['total_overhead']:,} tokens ({snap['overhead_pct']}% of {snap['context_window'] // 1000}K)")
+    print(f"  Usable context: ~{snap['usable_tokens']:,} tokens (after overhead + autocompact buffer)")
+    print(f"  Skills: {snap['skill_count']} ({snap['skill_tokens']:,} tokens)")
+    if snap.get("skills_basis"):
+        print(f"          ({snap['skills_basis']})")
+    print(f"  {instruction_label}: {snap['claude_md_tokens']:,} tokens")
+    print(f"  MCP: {snap['mcp_server_count']} servers ({snap['mcp_tokens']:,} tokens)")
+    print()
+    if data["patterns_bad"]:
+        print("  Issues detected:")
+        for p in data["patterns_bad"]:
+            sev = {"high": "!!!", "medium": "!!", "low": "!"}.get(p["severity"], "!")
+            print(f"    [{sev}] {p['name']}: {p['detail']}")
+        print()
+    if data["patterns_good"]:
+        print("  Good practices:")
+        for p in data["patterns_good"]:
+            print(f"    [OK] {p['name']}: {p['detail']}")
+        print()
+    if data.get("subagent_costs"):
+        sc = data["subagent_costs"]
+        print(f"  Subagent spend: ${sc['total_usd']:.2f} ({sc['pct_of_spend']}% of recent sessions)")
+        for s in sc["top_subagents"][:3]:
+            print(f"    {_strip_ansi(str(s['name']))}: ${s['cost_usd']} ({s['tokens']:,} tokens, {_strip_ansi(str(s['model']))})")
+        print()
+    if data.get("costly_prompts"):
+        print("  Most expensive prompts (last 7 days):")
+        for i, p in enumerate(data["costly_prompts"][:5], 1):
+            # Session-log text is attacker-influenceable — strip ANSI
+            # escapes before printing so a crafted prompt cannot inject
+            # terminal control sequences, then truncate the clean text.
+            preview = _strip_ansi(str(p["text"]))[:70].replace("\n", " ")
+            print(f"    {i}. ${p['cost_usd']} ({p['tokens_in']:,} in) \"{preview}...\"")
+        print()
+    if data["questions"]:
+        print("  Coaching questions:")
+        for q in data["questions"]:
+            print(f"    ? {q}")
+        print()
+
+
+def _subagent_cache_cli(argv):
+    """`measure.py subagent-cache status|enable|disable [--json]` handler."""
+    as_json = "--json" in argv
+    sub = argv[1] if len(argv) > 1 else "status"
+    if sub not in ("status", "enable", "disable"):
+        print("usage: measure.py subagent-cache status|enable|disable [--json]")
+        sys.exit(2)
+    if sub == "enable":
+        r = subagent_cache_enable(automatic=False)
+        if as_json:
+            print(json.dumps(r, indent=2))
+        elif r.get("notice"):
+            print(f"[Token Optimizer] {r['notice']}")
+        else:
+            why = f": {r['reason']}" if r.get("reason") else ""
+            print(f"[Token Optimizer] subagent cache: {r['state']}"
+                  + (" (settings.json changed)" if r.get("changed") else "") + why)
+        return
+    if sub == "disable":
+        r = subagent_cache_disable()
+        if as_json:
+            print(json.dumps(r, indent=2))
+        else:
+            why = f": {r['reason']}" if r.get("reason") else ""
+            state = r.get("state") or "unknown"
+            print(f"[Token Optimizer] subagent cache: {state}"
+                  + (" (key removed)" if r.get("changed") else "") + why)
+        return
+    # status
+    r = subagent_cache_status()
+    if as_json:
+        print(json.dumps(r, indent=2))
+        return
+    p = r.get("payoff") or {}
+    print(f"[Token Optimizer] subagent cache: {r['state']}"
+          + (f" (set by {r['set_by']})" if r.get("set_by") else ""))
+    if r.get("reason"):
+        print(f"  why: {r['reason']}")
+    print(
+        f"  last {p.get('window_days', 30)}d subagent 5m cache writes: "
+        f"{p.get('subagent_5m_cache_writes', 0)} "
+        f"({p.get('write_tokens_5m', 0):,} tokens); "
+        f"{p.get('would_have_been_reads', 0)} of those followed a 5-60 min gap "
+        f"and would have been reads at 1h.")
+    print(
+        f"  estimated net: ${p.get('net_usd_est', 0.0):.2f} "
+        f"(reads saved ${p.get('savings_usd_est', 0.0):.2f} - extra 1h write "
+        f"premium ${p.get('extra_write_cost_usd_est', 0.0):.2f}). "
+        f"ESTIMATE from your own transcripts.")
+
+
 def _dominant_turn_model(turns):
     """Most frequent non-empty model id across a session's turns."""
     counts = {}
@@ -29350,6 +30136,29 @@ def cleanup(dry_run=False, this_install_only=False):
                         )
     else:
         print("    No Token Optimizer entries found in settings.json.")
+    print()
+
+    # 2b. Subagent prompt-cache TTL: the uninstall path calls the SAME undo
+    # as `subagent-cache disable` -- remove the key only when the marker says
+    # Token Optimizer set it and the value is still "1h". Dry-run previews.
+    print("  [2b/3] Subagent cache (subagentPromptCacheTtl)")
+    try:
+        if dry_run:
+            _sc_marker = _subagent_cache_read_marker()
+            if _sc_marker and _sc_marker.get("state") == "set":
+                print("    Would remove: subagentPromptCacheTtl (set by Token Optimizer)")
+            else:
+                print("    Nothing to remove (no marker says Token Optimizer set it)")
+        else:
+            _sc_undo = subagent_cache_disable()
+            if _sc_undo.get("changed"):
+                print("    Removed: subagentPromptCacheTtl (was set by Token Optimizer)")
+            elif _sc_undo.get("state") == "platform-gap":
+                print("    Skipped: not Claude Code")
+            else:
+                print(f"    Nothing to remove ({_sc_undo.get('state')})")
+    except Exception as _sc_exc:
+        print(f"    WARNING: subagent cache undo failed: {_sc_exc}")
     print()
 
     # 3. Manifests
@@ -48500,6 +49309,23 @@ def run_ensure_health():
         except Exception:
             pass
 
+    # Subagent prompt-cache TTL (1h): one-time automatic enable + the 14-day
+    # payoff tripwire. Marker-gated BEFORE any settings read, so the
+    # steady-state session start pays one stat/read and moves on (the
+    # "must stay inside the hook time budget" rule); the only write is the
+    # single first-time settings key, via the shared atomic writer. Claude
+    # Code only -- and never inside Cowork (which must not read ~/.claude).
+    # At most ONE user-facing line, through the systemMessage channel (user-
+    # visible, model-silent), and only on the ONE transition (first set /
+    # tripwire revert) -- never repeated. Fail-open: a problem here must
+    # never break SessionStart.
+    if _is_claude and not is_cowork():
+        try:
+            for _sc_line in _subagent_cache_session_start_lines():
+                print(json.dumps({"systemMessage": _sc_line}))
+        except Exception:
+            pass
+
     # Capture the pristine structural baseline once on first run. Records the
     # pre-pruning prefix overhead that structural savings are measured against.
     # One-time (no-op once the snapshot exists); never blocks SessionStart.
@@ -50489,59 +51315,7 @@ if __name__ == "__main__":
                     print(f"[Token Optimizer] Removed stale {section} block from {candidate.name} "
                           f"(age: {s['age_hours']:.0f}h, TTL: 48h)", file=sys.stderr)
     elif args[0] == "coach":
-        focus = None
-        output_json = "--json" in args
-        for i, a in enumerate(args):
-            if a == "--focus" and i + 1 < len(args):
-                focus = args[i + 1]
-        data = generate_coach_data(focus=focus)
-        if output_json:
-            print(json.dumps(data, indent=2))
-        else:
-            is_codex = detect_runtime() == "codex"
-            instruction_label = "AGENTS.md" if is_codex else "CLAUDE.md"
-            score = data["health_score"]
-            snap = data["snapshot"]
-            print(f"\n  Token Health Score: {score}/100")
-            print(f"  Startup overhead: {snap['total_overhead']:,} tokens ({snap['overhead_pct']}% of {snap['context_window'] // 1000}K)")
-            print(f"  Usable context: ~{snap['usable_tokens']:,} tokens (after overhead + autocompact buffer)")
-            print(f"  Skills: {snap['skill_count']} ({snap['skill_tokens']:,} tokens)")
-            if snap.get("skills_basis"):
-                print(f"          ({snap['skills_basis']})")
-            print(f"  {instruction_label}: {snap['claude_md_tokens']:,} tokens")
-            print(f"  MCP: {snap['mcp_server_count']} servers ({snap['mcp_tokens']:,} tokens)")
-            print()
-            if data["patterns_bad"]:
-                print("  Issues detected:")
-                for p in data["patterns_bad"]:
-                    sev = {"high": "!!!", "medium": "!!", "low": "!"}.get(p["severity"], "!")
-                    print(f"    [{sev}] {p['name']}: {p['detail']}")
-                print()
-            if data["patterns_good"]:
-                print("  Good practices:")
-                for p in data["patterns_good"]:
-                    print(f"    [OK] {p['name']}: {p['detail']}")
-                print()
-            if data.get("subagent_costs"):
-                sc = data["subagent_costs"]
-                print(f"  Subagent spend: ${sc['total_usd']:.2f} ({sc['pct_of_spend']}% of recent sessions)")
-                for s in sc["top_subagents"][:3]:
-                    print(f"    {_strip_ansi(str(s['name']))}: ${s['cost_usd']} ({s['tokens']:,} tokens, {_strip_ansi(str(s['model']))})")
-                print()
-            if data.get("costly_prompts"):
-                print("  Most expensive prompts (last 7 days):")
-                for i, p in enumerate(data["costly_prompts"][:5], 1):
-                    # Session-log text is attacker-influenceable — strip ANSI
-                    # escapes before printing so a crafted prompt cannot inject
-                    # terminal control sequences, then truncate the clean text.
-                    preview = _strip_ansi(str(p["text"]))[:70].replace("\n", " ")
-                    print(f"    {i}. ${p['cost_usd']} ({p['tokens_in']:,} in) \"{preview}...\"")
-                print()
-            if data["questions"]:
-                print("  Coaching questions:")
-                for q in data["questions"]:
-                    print(f"    ? {q}")
-                print()
+        _coach_cli(args)
     elif args[0] == "validate-impact":
         output_json = "--json" in args
         strat = "auto"
@@ -51636,6 +52410,8 @@ if __name__ == "__main__":
     elif args[0] == "plugin-cleanup":
         dry = "--dry-run" in args
         plugin_cleanup(dry_run=dry)
+    elif args[0] == "subagent-cache":
+        _subagent_cache_cli(args)
     elif args[0] == "ensure-health":
         # Called by SessionStart hook. Wrapped in a wall-clock guard so a
         # pathologically slow filesystem or lock contention cannot block the

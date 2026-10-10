@@ -97,6 +97,8 @@ The bookmarkable dashboard URL has its own separate consent, managed with `daemo
 
 To keep enough history for trend analysis, Token Optimizer sets `cleanupPeriodDays=99999` in the host platform's `settings.json`. That is the host platform's cleanup setting for the host platform's own transcripts, not a Token Optimizer data store. You can override it in your `settings.json`, and `purge` does not delete transcripts because they belong to the host platform.
 
+On Claude Code 2.1.243+, Token Optimizer also sets `subagentPromptCacheTtl: "1h"` once in the user `settings.json`, giving subagents the same one-hour prompt cache a subscription already grants the main conversation. It never overrides a value you set, an environment override, or a managed/project/local settings file; `subagent-cache disable`, `TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=0`, or a 14-day negative-payoff tripwire removes it. The payoff check that drives the tripwire reads your session transcripts locally and leaves nothing off the machine. See [Subagent prompt cache](/features/subagent-cache/).
+
 ## Deleting your data
 
 The `purge` command deletes all Token Optimizer data across all platforms. It is dry-run by default.

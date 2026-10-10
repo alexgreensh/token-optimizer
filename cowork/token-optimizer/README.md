@@ -684,6 +684,16 @@ python3 measure.py keepwarm-disable           # opt out any time
 
 Prefer a button? The [desktop status bar](#desktop-status-bar) has a manual **Keep warm** refresh. It is a separate one-click action, never automatic, and does not use the API-billed daemon above.
 
+### Subagent prompt cache
+
+Claude Code only. Subagents get a 5-minute prompt cache even on a subscription, so a subagent returned to after five minutes rewrites its whole prefix. On Claude Code 2.1.243+, Token Optimizer sets `subagentPromptCacheTtl: "1h"` once in your user `settings.json` at session start and tells you in one line. It never overrides a value you set, never fights a `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL` or `FORCE_PROMPT_CACHING_5M` override, and never sets it again if you remove or change it. A 14-day tripwire reverts automatically if your own transcripts show the 1h write premium costing more than the avoided rewrites save.
+
+```bash
+python3 measure.py subagent-cache status    # state, who set it, estimated net from your transcripts
+python3 measure.py subagent-cache disable   # undo (only what Token Optimizer set)
+TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=0           # opt out permanently
+```
+
 ### Fleet Auditor
 
 Scans across Claude Code, Codex, and custom transcript setups to find idle burns, model misrouting, and config bloat with dollar savings per finding.

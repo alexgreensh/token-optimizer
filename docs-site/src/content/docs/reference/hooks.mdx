@@ -19,7 +19,7 @@ Twenty triggers fire across nine hook events.
 | `PreCompact` | `dynamic-compact-instructions` | Injects mode-aware PRESERVE/DROP guidance into the compact prompt |
 | `PreCompact` | `compact-capture` | Saves a session checkpoint before compaction |
 | `PreCompact` | `read_cache.py --clear` | Clears the per-session read cache |
-| `SessionStart` | `ensure-health` (async) | Self-heals config drift and installs the status line if the slot is empty |
+| `SessionStart` | `ensure-health` (async) | Self-heals config drift, installs the status line if the slot is empty, and applies the one-time `subagentPromptCacheTtl` enable |
 | `SessionStart` | `quality-cache --force` | Pre-populates the quality score for the status line |
 | `SessionStart: compact` | `compact-restore --compact` | Restores the full checkpoint after a compaction |
 | `SessionStart` | `compact-restore --new-session-only` | Injects a keyword-matched checkpoint on a fresh session |

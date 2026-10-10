@@ -213,6 +213,7 @@ Keep-Warm is opt-in and API-billing only. It refuses to run on subscription bill
 | Command | Description | Key flags |
 |---|---|---|
 | `cache-report` | Analyze prompt-cache expiry waste: tokens re-written after a cache window expired, per provider | `--days N`, `--fresh`, `--verbose`, `--json` |
+| `subagent-cache` | Manage the 1-hour subagent prompt-cache TTL: `status` reports state and the net payoff estimate from your transcripts; `enable`/`disable` set and undo `subagentPromptCacheTtl` | `status`, `enable`, `disable`, `--json` |
 
 `cache-report` is an opportunity-tier signal. `--verbose` prints a per-session detail table so any headline figure traces to the sessions behind it. `--days` is clamped to the range 1 to 365.
 

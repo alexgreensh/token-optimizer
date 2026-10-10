@@ -167,6 +167,7 @@ export default defineConfig({
             { label: "Session continuity", slug: "features/session-continuity" },
             { label: "Keep-Warm", slug: "features/keep-warm" },
             { label: "Cache TTL watchdog", slug: "features/cache-watchdog" },
+            { label: "Subagent prompt cache", slug: "features/subagent-cache" },
             { label: "Token Coach", slug: "features/token-coach" },
             { label: "Waste detectors", slug: "features/waste-detectors" },
             { label: "Fleet Auditor", slug: "features/fleet-auditor" },

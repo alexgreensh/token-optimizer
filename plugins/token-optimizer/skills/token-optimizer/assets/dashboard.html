@@ -1512,6 +1512,11 @@ input:checked + .slider:before {
   background: rgba(125,140,163,0.2);
   color: var(--c-text-dim);
 }
+.flag-badge.orphan {
+  color: var(--c-warning-soft, #fb923c);
+  border: 1px solid var(--c-warning-soft, #fb923c);
+  background: transparent;
+}
 .flag-badge.zombie {
   color: var(--c-waste, #f87171);
   border: 1px solid var(--c-waste, #f87171);
@@ -2589,7 +2594,7 @@ var DB = (function() {
         var stalePids = [];
         (data.health && data.health.running_sessions || []).forEach(function(s) {
           var fl = s.flags || [];
-          var prot = fl.some(function(f) { return f === 'DESKTOP' || f === 'UNVERIFIED'; });
+          var prot = fl.some(function(f) { return f === 'DESKTOP' || f === 'UNVERIFIED' || f === 'ORPHAN'; });
           if (!prot && fl.some(function(f) { return f === 'STALE' || f === 'ZOMBIE'; })) {
             stalePids.push(s.pid);
           }
@@ -4870,8 +4875,10 @@ var DB = (function() {
     html += '<div class="card wide"><div class="card-header"><span>Running Sessions</span><span class="label">' + sessions.length + ' active</span></div>';
 
     // Sessions hosted by the desktop app (DESKTOP) or with unreadable identity
-    // (UNVERIFIED) are never offered for termination.
-    var staleCount = sessions.filter(function(s) { var fl = s.flags || []; return !fl.some(function(f) { return f === 'DESKTOP' || f === 'UNVERIFIED'; }) && fl.some(function(f) { return f === 'STALE' || f === 'ZOMBIE'; }); }).length;
+    // (UNVERIFIED) are never offered for termination. ORPHAN sessions (terminal
+    // gone, macOS/Linux) are only ended by the explicit --include-orphans opt-in.
+    var staleCount = sessions.filter(function(s) { var fl = s.flags || []; return !fl.some(function(f) { return f === 'DESKTOP' || f === 'UNVERIFIED' || f === 'ORPHAN'; }) && fl.some(function(f) { return f === 'STALE' || f === 'ZOMBIE'; }); }).length;
+    var orphanSessions = sessions.filter(function(s) { return (s.flags || []).indexOf('ORPHAN') !== -1; });
 
     if (sessions.length === 0) {
       html += '<div class="empty-state">No running ' + esc(data.runtime_label || 'Claude Code') + ' sessions found.</div>';
@@ -4892,6 +4899,14 @@ var DB = (function() {
           '</div></div>';
       }
 
+      if (orphanSessions.length > 0) {
+        html += '<div style="background:rgba(251,146,60,0.08);border:1px solid rgba(251,146,60,0.25);border-radius:8px;padding:var(--s-3);margin-bottom:var(--s-3);font-size:13px;color:var(--c-text-dim);line-height:1.5">' +
+          '<div style="font-weight:500;color:var(--c-warning-soft, #fb923c);margin-bottom:4px">' + orphanSessions.length + ' orphaned session' + (orphanSessions.length !== 1 ? 's' : '') + ': terminal gone</div>' +
+          'Their terminal closed and the process was left running. They are never ended automatically. To preview ending them, run ' +
+          '<code style="font-family:var(--font-mono);color:var(--c-accent-cyan)">python3 measure.py kill-stale --include-orphans --dry-run</code>.' +
+          '</div>';
+      }
+
       html += '<table class="session-table"><thead><tr>' +
         '<th>PID</th><th>Started</th><th>Elapsed</th>' + (isCodex ? '' : '<th>Version</th>') + '<th>Status</th><th></th>' +
         '</tr></thead><tbody>';
@@ -4904,14 +4919,14 @@ var DB = (function() {
         });
         if (flags.length === 0) flagHtml = '<span style="color:var(--c-accent-cyan);">OK</span>';
         var isStale = flags.some(function(f) { return f === 'STALE' || f === 'ZOMBIE'; });
-        var isProtected = flags.some(function(f) { return f === 'DESKTOP' || f === 'UNVERIFIED'; });
+        var isProtected = flags.some(function(f) { return f === 'DESKTOP' || f === 'UNVERIFIED' || f === 'ORPHAN'; });
         var killBtn = (isStale && !isProtected && !s.identity) ? '<button class="copy-fix-btn kill-pid-btn" data-pid="' + s.pid + '" style="font-size:11px;padding:2px 8px;background:var(--c-waste-strong, #ef4444);border-color:var(--c-waste-strong, #ef4444)">kill</button>' : '';
         html += '<tr>' +
           '<td>' + s.pid + '</td>' +
           '<td>' + esc((s.started || '').slice(0, 20)) + '</td>' +
           '<td>' + esc(s.elapsed_human || '?') + '</td>' +
           (isCodex ? '' : '<td>' + esc(s.version || 'unknown') + '</td>') +
-          '<td>' + flagHtml + '</td>' +
+          '<td>' + flagHtml + (flags.indexOf('ORPHAN') !== -1 ? '<div style="font-size:11px;color:var(--c-text-dim);margin-top:2px">terminal gone; started ' + esc(s.elapsed_human || '?') + ' ago</div>' : '') + '</td>' +
           '<td>' + killBtn + '</td>' +
           '</tr>';
       });
@@ -4923,7 +4938,8 @@ var DB = (function() {
         '<span class="flag-badge stale" style="font-size:10px">STALE</span> = running 24h+ &nbsp; ' +
         '<span class="flag-badge zombie" style="font-size:10px">ZOMBIE</span> = running 48h+' +
         (isCodex ? '' : ' &nbsp; <span class="flag-badge desktop" style="font-size:10px">DESKTOP</span> = hosted by the Claude desktop app (never auto-terminated)' +
-          ' &nbsp; <span class="flag-badge unverified" style="font-size:10px">UNVERIFIED</span> = process identity could not be read (never auto-terminated)') +
+          ' &nbsp; <span class="flag-badge unverified" style="font-size:10px">UNVERIFIED</span> = process identity could not be read (never auto-terminated)' +
+          ' &nbsp; <span class="flag-badge orphan" style="font-size:10px">ORPHAN</span> = terminal gone (only ended with <code>kill-stale --include-orphans</code>)') +
         (isCodex ? '' : ' &nbsp; <span class="flag-badge outdated" style="font-size:10px">OUTDATED</span> = older version than installed') +
         '</div>';
     }

@@ -1047,3 +1047,397 @@ def test_dashboard_treats_tagged_posix_inventories_like_windows():
     assert "kill-stale" in bulk and "s.identity" in bulk
     assert "!s.identity" in src, "per-row `kill <pid>` must stay hidden for identity-tagged inventories"
     assert "Windows" not in bulk, "the tagged-inventory branch is no longer Windows-only"
+
+
+# --- orphan_cli: an interactive session whose terminal died ---------------------
+#
+# POSIX only (macOS/Linux). Windows parent-pid semantics differ, so the class is
+# deliberately not added there (see _classify_windows_claude_process).
+
+import signal as _signal
+
+ORPHAN_ARGV = {500: ["claude"]}
+ORPHAN_CMD_TREE = [proc(1, 0, "/sbin/launchd")]
+
+
+def orphan_claude(args="claude", pid=500, ppid=1, tty="??", comm=CLI, **kw):
+    return proc(pid, ppid, comm, args, tty=tty, **kw)
+
+
+def test_orphan_with_exact_argv_and_no_tty_under_init_is_orphan_cli(monkeypatch):
+    measure = _load_measure()
+    procs = ORPHAN_CMD_TREE + [orphan_claude()]
+    s = collect(monkeypatch, measure, procs, argv=ORPHAN_ARGV)
+    assert identities(s) == {500: "orphan_cli"}
+    assert s[0]["has_terminal"] is False and s[0]["tty"] is None
+
+
+def test_linux_orphan_reparented_to_systemd_user_is_orphan_cli(monkeypatch):
+    measure = _load_measure()
+    procs = [
+        proc(1, 0, "systemd", "/sbin/init"),
+        proc(1500, 1, "systemd", "/lib/systemd/systemd --user", tty="?"),
+        proc(902, 1500, "claude", "claude --resume abc", tty="?", exe="/home/u/.local/bin/claude"),
+    ]
+    got = collect(monkeypatch, measure, procs, argv={902: ["claude", "--resume", "abc"]})
+    assert identities(got) == {902: "orphan_cli"}
+
+
+def test_system_manager_that_is_not_pid1_or_user_systemd_is_not_init(monkeypatch):
+    measure = _load_measure()
+    procs = [
+        proc(1, 0, "systemd", "/sbin/init"),
+        proc(1500, 1, "systemd", "/lib/systemd/systemd --system", tty="?"),
+        proc(902, 1500, "claude", "claude", tty="?", exe="/home/u/.local/bin/claude"),
+    ]
+    assert identities(collect(monkeypatch, measure, procs, argv={902: ["claude"]})) == {902: "unknown"}
+
+
+def test_orphan_with_ps_fallback_argv_stays_unknown(monkeypatch):
+    # No KERN_PROCARGS2 / /proc cmdline: the ps column is only a coarse split,
+    # not exact argv, so it can protect but never authorise a kill.
+    measure = _load_measure()
+    procs = ORPHAN_CMD_TREE + [orphan_claude()]
+    assert identities(collect(monkeypatch, measure, procs)) == {500: "unknown"}
+
+
+@pytest.mark.parametrize("argv", [
+    ["claude", "-p", "summarize"],
+    ["claude", "--print", "hi"],
+    ["claude", "--output-format", "stream-json"],
+    ["claude", "--ide"],
+    ["claude", "mcp", "serve"],
+    ["claude", "doctor"],
+])
+def test_launchd_style_automation_with_headless_flag_stays_embedded_session(monkeypatch, argv):
+    measure = _load_measure()
+    procs = ORPHAN_CMD_TREE + [orphan_claude(" ".join(argv))]
+    assert identities(collect(monkeypatch, measure, procs, argv={500: argv})) == {500: "embedded_session"}
+
+
+def test_orphan_that_still_has_a_tty_is_unknown(monkeypatch):
+    measure = _load_measure()
+    procs = ORPHAN_CMD_TREE + [orphan_claude(tty="ttys003")]
+    assert identities(collect(monkeypatch, measure, procs, argv=ORPHAN_ARGV)) == {500: "unknown"}
+
+
+@pytest.mark.parametrize("tty", ["?", "-"])
+def test_other_no_tty_markers_count_as_terminal_gone(monkeypatch, tty):
+    measure = _load_measure()
+    procs = ORPHAN_CMD_TREE + [orphan_claude(tty=tty)]
+    assert identities(collect(monkeypatch, measure, procs, argv=ORPHAN_ARGV)) == {500: "orphan_cli"}
+
+
+def test_no_tty_session_under_a_non_init_parent_is_not_an_orphan(monkeypatch):
+    measure = _load_measure()
+    for parent in ("cron", "-zsh", "node"):
+        procs = ORPHAN_CMD_TREE + [proc(320, 1, parent, parent, tty="ttys003"),
+                                    orphan_claude(ppid=320)]
+        assert identities(collect(monkeypatch, measure, procs, argv=ORPHAN_ARGV)) == {500: "unknown"}
+
+
+def test_orphan_electron_main_or_helper_is_never_orphan_cli(monkeypatch):
+    measure = _load_measure()
+    # helper: dropped altogether
+    procs = ORPHAN_CMD_TREE + [orphan_claude("claude --type=zygote")]
+    assert collect(monkeypatch, measure, procs, argv={500: ["claude", "--type=zygote"]}) == []
+    # Electron directory layout: dropped as the desktop app
+    procs = ORPHAN_CMD_TREE + [orphan_claude()]
+    assert collect(monkeypatch, measure, procs, argv=ORPHAN_ARGV, electron=True) == []
+    # directory probe indeterminate: unknown
+    assert identities(collect(monkeypatch, measure, procs, argv=ORPHAN_ARGV,
+                              electron=lambda p: None)) == {500: "unknown"}
+
+
+def test_orphan_that_is_the_parent_of_electron_children_is_dropped(monkeypatch):
+    measure = _load_measure()
+    procs = ORPHAN_CMD_TREE + [
+        orphan_claude(),
+        proc(501, 500, "claude", "claude --type=renderer", tty="??", exe="/opt/claude/claude"),
+    ]
+    got = collect(monkeypatch, measure, procs, argv={500: ["claude"], 501: ["claude", "--type=renderer"]})
+    assert got == []
+
+
+def test_orphan_with_unresolvable_executable_stays_unknown(monkeypatch):
+    # "Not an Electron app" needs positive evidence for the one class that is
+    # killed without a shell parent.
+    measure = _load_measure()
+    procs = ORPHAN_CMD_TREE + [orphan_claude(comm="claude")]
+    assert identities(collect(monkeypatch, measure, procs, argv=ORPHAN_ARGV,
+                              exe={500: None})) == {500: "unknown"}
+
+
+def test_orphan_whose_single_argv_token_contains_spaces_stays_unknown(monkeypatch):
+    # A rewritten process title and a spaced install path look the same; exact
+    # argv cannot be claimed.
+    measure = _load_measure()
+    procs = ORPHAN_CMD_TREE + [orphan_claude()]
+    got = collect(monkeypatch, measure, procs, argv={500: ["claude --resume abc"]})
+    assert identities(got) == {500: "unknown"}
+
+
+def test_orphan_below_a_desktop_app_is_not_orphan_cli(monkeypatch):
+    measure = _load_measure()
+    procs = ORPHAN_CMD_TREE + [
+        proc(700, 1, MAC_APP, MAC_APP),
+        proc(702, 700, MAC_CODE_TAB, MAC_CODE_TAB, tty="??"),
+    ]
+    got = collect(monkeypatch, measure, procs, argv={702: [MAC_CODE_TAB]})
+    assert identities(got) == {702: "embedded_session"}
+
+
+def test_tmux_hosted_session_with_detached_client_stays_terminal_cli(monkeypatch):
+    # The tmux client detaching changes nothing: the pane keeps its pty and the
+    # shell stays the parent. Must never be re-labelled orphan.
+    measure = _load_measure()
+    procs = [
+        proc(1, 0, "/sbin/launchd"),
+        proc(1000, 1, "tmux: server", "tmux new -s work"),
+        proc(1001, 1000, "-zsh", "-zsh", tty="ttys004"),
+        proc(1002, 1001, CLI, "claude", tty="ttys004"),
+    ]
+    assert identities(collect(monkeypatch, measure, procs, argv={1002: ["claude"]})) == {1002: "terminal_cli"}
+
+
+def test_tmux_pane_session_that_lost_its_tty_but_not_its_shell_is_unknown(monkeypatch):
+    measure = _load_measure()
+    procs = [
+        proc(1, 0, "/sbin/launchd"),
+        proc(1000, 1, "tmux: server", "tmux new -s work"),
+        proc(1001, 1000, "-zsh", "-zsh", tty="ttys004"),
+        proc(1002, 1001, CLI, "claude", tty="??"),
+    ]
+    assert identities(collect(monkeypatch, measure, procs, argv={1002: ["claude"]})) == {1002: "unknown"}
+
+
+def test_tmux_server_child_directly_under_init_without_tty_is_the_only_orphan_shape(monkeypatch):
+    # tmux server died: pane process reparented to init and lost its pty. That
+    # meets every condition, so it IS orphan_cli.
+    measure = _load_measure()
+    procs = [proc(1, 0, "/sbin/launchd"), proc(1002, 1, CLI, "claude", tty="??")]
+    assert identities(collect(monkeypatch, measure, procs, argv={1002: ["claude"]})) == {1002: "orphan_cli"}
+
+
+# --- health: ORPHAN flag and wording ------------------------------------------
+
+def _health(monkeypatch, measure, procs, **kw):
+    install_ps(monkeypatch, measure, procs, **kw)
+    monkeypatch.setattr(measure, "detect_runtime", lambda: "claude")
+    monkeypatch.setattr(measure.platform, "system", lambda: "Linux")
+    return measure._collect_health_data()
+
+
+def test_health_flags_orphan_cli_as_orphan_not_terminal_or_unverified(monkeypatch):
+    measure = _load_measure()
+    procs = base_tree() + [orphan_claude(pid=513, etime="3-04:00:00"), terminal_claude(pid=500)]
+    health = _health(monkeypatch, measure, procs, argv={513: ["claude"]})
+    flags = {s["pid"]: s["flags"] for s in health["running_sessions"]}
+    assert "ORPHAN" in flags[513]
+    assert "TERMINAL" not in flags[513] and "HEADLESS" not in flags[513] and "UNVERIFIED" not in flags[513]
+    assert "ORPHAN" not in flags[500] and "TERMINAL" in flags[500]
+
+
+def test_health_recommendation_names_orphans_and_the_opt_in_command(monkeypatch):
+    measure = _load_measure()
+    procs = base_tree() + [orphan_claude(pid=513, etime="3-04:00:00"),
+                            orphan_claude(pid=514, etime="2-00:00:00")]
+    health = _health(monkeypatch, measure, procs, argv={513: ["claude"], 514: ["claude"]})
+    recs = health["recommendations"]
+    orphan_recs = [r for r in recs if "terminal gone" in r]
+    assert len(orphan_recs) == 1 and orphan_recs[0].startswith("2 sessions")
+    assert "kill-stale --include-orphans --dry-run" in orphan_recs[0]
+    # orphans are not "terminals to close and reopen" and are not double counted as stale
+    assert not any("24+ hours" in r for r in recs)
+
+
+def test_cli_health_output_says_terminal_gone_and_started_age(monkeypatch, capsys):
+    measure = _load_measure()
+    procs = base_tree() + [orphan_claude(pid=513, etime="3-04:00:00")]
+    install_ps(monkeypatch, measure, procs, argv={513: ["claude"]})
+    monkeypatch.setattr(measure, "detect_runtime", lambda: "claude")
+    monkeypatch.setattr(measure.platform, "system", lambda: "Linux")
+    measure.session_health()
+    out = capsys.readouterr().out
+    assert "ORPHAN" in out
+    assert "terminal gone; started 3d 4h ago" in out.replace("3d 4h0m", "3d 4h")
+
+
+def test_dashboard_wires_orphan_flag_and_wording():
+    html = (REPO / "skills" / "token-optimizer" / "assets" / "dashboard.html").read_text(encoding="utf-8")
+    assert "ORPHAN" in html and "flag-badge.orphan" in html
+    assert "terminal gone; started " in html
+    assert "kill-stale --include-orphans" in html
+
+
+# --- kill-stale: opt-in termination of orphans ----------------------------------
+
+def _orphan_world(monkeypatch, measure, extra=()):
+    procs = base_tree() + [terminal_claude(pid=500), orphan_claude(pid=513)] + list(extra)
+    install_ps(monkeypatch, measure, procs, argv={513: ["claude"], 500: ["claude"]})
+    monkeypatch.setattr(measure, "detect_runtime", lambda: "claude")
+    monkeypatch.setattr(measure.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(measure.os, "getpid", lambda: 9999)
+    monkeypatch.setattr(measure.os, "getppid", lambda: 9998)
+    killed = []
+    monkeypatch.setattr(measure.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    return procs, killed
+
+
+def test_kill_stale_default_lists_orphans_but_never_terminates_them(monkeypatch, capsys):
+    measure = _load_measure()
+    _, killed = _orphan_world(monkeypatch, measure)
+    measure.kill_stale_sessions(threshold_hours=12)
+    out = capsys.readouterr().out
+    assert killed == [(500, _signal.SIGTERM)]
+    assert "1 orphaned session" in out
+    assert "python3 measure.py kill-stale --include-orphans --hours 12" in out
+
+
+def test_kill_stale_default_with_only_orphans_kills_nothing_and_prints_command(monkeypatch, capsys):
+    measure = _load_measure()
+    procs = base_tree() + [orphan_claude(pid=513), orphan_claude(pid=514)]
+    install_ps(monkeypatch, measure, procs, argv={513: ["claude"], 514: ["claude"]})
+    monkeypatch.setattr(measure, "detect_runtime", lambda: "claude")
+    monkeypatch.setattr(measure.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(measure.os, "kill", lambda *a: pytest.fail("orphans must not be killed by default"))
+    measure.kill_stale_sessions(threshold_hours=6)
+    out = capsys.readouterr().out
+    assert "2 orphaned sessions" in out
+    assert "python3 measure.py kill-stale --include-orphans --hours 6" in out
+    assert "No terminable stale sessions" in out
+
+
+def test_kill_stale_include_orphans_terminates_them_after_reverification(monkeypatch, capsys):
+    measure = _load_measure()
+    _, killed = _orphan_world(monkeypatch, measure)
+    measure.kill_stale_sessions(threshold_hours=12, include_orphans=True)
+    assert sorted(killed) == [(500, _signal.SIGTERM), (513, _signal.SIGTERM)]
+    assert "Terminated 2 stale sessions" in capsys.readouterr().out
+
+
+def test_kill_stale_include_orphans_dry_run_terminates_nothing(monkeypatch, capsys):
+    measure = _load_measure()
+    _, killed = _orphan_world(monkeypatch, measure)
+    measure.kill_stale_sessions(threshold_hours=12, dry_run=True, include_orphans=True)
+    out = capsys.readouterr().out
+    assert killed == []
+    assert "PID 513" in out and "ORPHAN" in out
+    assert "Would kill 2 processes" in out
+
+
+def test_kill_stale_include_orphans_respects_the_hours_threshold(monkeypatch, capsys):
+    measure = _load_measure()
+    procs = base_tree() + [orphan_claude(pid=513, etime="01:00:00")]
+    install_ps(monkeypatch, measure, procs, argv={513: ["claude"]})
+    monkeypatch.setattr(measure, "detect_runtime", lambda: "claude")
+    monkeypatch.setattr(measure.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(measure.os, "kill", lambda *a: pytest.fail("a young orphan was killed"))
+    measure.kill_stale_sessions(threshold_hours=12, include_orphans=True)
+    assert "No stale sessions found" in capsys.readouterr().out
+
+
+def test_kill_stale_include_orphans_never_touches_unknown_or_embedded(monkeypatch):
+    measure = _load_measure()
+    extra = [
+        orphan_claude("claude --print x", pid=520),        # embedded (launchd automation)
+        orphan_claude(pid=521, tty="ttys009"),             # orphan that still has a tty: unknown
+        orphan_claude(pid=522),                            # no exact argv: unknown
+    ]
+    procs = base_tree() + extra + [orphan_claude(pid=513)]
+    install_ps(monkeypatch, measure, procs,
+               argv={513: ["claude"], 520: ["claude", "--print", "x"], 521: ["claude"]})
+    monkeypatch.setattr(measure, "detect_runtime", lambda: "claude")
+    monkeypatch.setattr(measure.platform, "system", lambda: "Darwin")
+    killed = []
+    monkeypatch.setattr(measure.os, "kill", lambda pid, sig: killed.append(pid))
+    measure.kill_stale_sessions(threshold_hours=12, include_orphans=True)
+    assert killed == [513]
+
+
+def test_kill_stale_orphan_that_gains_a_parent_before_the_kill_is_skipped(monkeypatch, capsys):
+    measure = _load_measure()
+    procs = base_tree() + [orphan_claude(pid=513)]
+    install_ps(monkeypatch, measure, procs, argv={513: ["claude"]})
+    monkeypatch.setattr(measure, "detect_runtime", lambda: "claude")
+    monkeypatch.setattr(measure.platform, "system", lambda: "Darwin")
+    real_collect = measure._collect_posix_claude_sessions
+    state = {"n": 0}
+
+    def collect_then_adopt(process_name="claude"):
+        state["n"] += 1
+        if state["n"] == 2:
+            # a user re-attached: a shell with a tty now owns the process
+            procs[-1].update(ppid=320, tty="ttys003")
+        return real_collect(process_name)
+
+    monkeypatch.setattr(measure, "_collect_posix_claude_sessions", collect_then_adopt)
+    monkeypatch.setattr(measure.os, "kill", lambda *a: pytest.fail("killed an orphan that gained a parent"))
+    measure.kill_stale_sessions(threshold_hours=12, include_orphans=True)
+    assert state["n"] == 2
+    assert "PID 513 skipped" in capsys.readouterr().out
+
+
+def test_kill_stale_orphan_pid_reuse_between_snapshot_and_kill_is_skipped(monkeypatch):
+    measure = _load_measure()
+    procs = base_tree() + [orphan_claude(pid=513)]
+    install_ps(monkeypatch, measure, procs, argv={513: ["claude"]})
+    monkeypatch.setattr(measure, "detect_runtime", lambda: "claude")
+    monkeypatch.setattr(measure.platform, "system", lambda: "Darwin")
+    real_collect = measure._collect_posix_claude_sessions
+    state = {"n": 0}
+
+    def collect_then_reuse(process_name="claude"):
+        state["n"] += 1
+        if state["n"] == 2:
+            procs[-1].update(started="Sat Oct 10 09:00:00 2026", etime="00:10")
+        return real_collect(process_name)
+
+    monkeypatch.setattr(measure, "_collect_posix_claude_sessions", collect_then_reuse)
+    monkeypatch.setattr(measure.os, "kill", lambda *a: pytest.fail("killed a reused pid"))
+    measure.kill_stale_sessions(threshold_hours=12, include_orphans=True)
+
+
+def test_kill_stale_revalidation_requires_the_identity_the_session_had(monkeypatch):
+    measure = _load_measure()
+    orphan = _tagged(513, "orphan_cli")
+    # a session listed as terminal_cli is not killable because it now reads orphan_cli, and vice versa
+    _fresh(monkeypatch, measure, [dict(orphan)])
+    assert measure._revalidate_terminal_cli(orphan, identity="orphan_cli") is True
+    assert measure._revalidate_terminal_cli(orphan) is False
+    _fresh(monkeypatch, measure, [_tagged(513, "terminal_cli")])
+    assert measure._revalidate_terminal_cli(orphan, identity="orphan_cli") is False
+
+
+def test_kill_stale_never_kills_its_own_ancestor_even_as_an_orphan(monkeypatch):
+    measure = _load_measure()
+    procs = base_tree() + [orphan_claude(pid=513), proc(9998, 513, "/bin/zsh", "zsh", tty="??"),
+                            proc(9999, 9998, "python3", "python3 measure.py kill-stale --include-orphans")]
+    install_ps(monkeypatch, measure, procs, argv={513: ["claude"]})
+    monkeypatch.setattr(measure, "detect_runtime", lambda: "claude")
+    monkeypatch.setattr(measure.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(measure.os, "getpid", lambda: 9999)
+    monkeypatch.setattr(measure.os, "getppid", lambda: 9998)
+    monkeypatch.setattr(measure.os, "kill", lambda *a: pytest.fail("killed the session it runs inside"))
+    measure.kill_stale_sessions(threshold_hours=12, include_orphans=True)
+
+
+def test_kill_stale_arg_parser_reads_include_orphans_hours_and_dry_run():
+    measure = _load_measure()
+    assert measure._parse_kill_stale_args([]) == (12, False, False)
+    assert measure._parse_kill_stale_args(["--include-orphans"]) == (12, False, True)
+    assert measure._parse_kill_stale_args(["--hours", "24", "--dry-run", "--include-orphans"]) == (24, True, True)
+
+
+def test_windows_classifier_does_not_gain_the_orphan_class():
+    # Windows parent-pid semantics differ (a dead parent's pid is not reparented
+    # to a stable init), so orphan_cli is POSIX only and Windows stays fail-closed.
+    measure = _load_measure()
+    names = {4: (0, "System"), 500: (4, "claude")}
+    detail = {"pid": 500, "ppid": 4, "cmdline": "claude.exe", "path": r"C:\x\claude.exe"}
+    assert measure._classify_windows_claude_process("claude.exe", detail, set(), names) == "unknown"
+    source = Path(MEASURE_PATH).read_text(encoding="utf-8")
+    start = source.index("def _classify_windows_claude_process")
+    end = source.index("def _collect_windows_claude_sessions")
+    assert "orphan_cli" in source[start:end]  # only the explanatory comment
+    assert 'return "orphan_cli"' not in source[start:end]

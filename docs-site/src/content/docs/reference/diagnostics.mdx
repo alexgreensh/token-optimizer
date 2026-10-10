@@ -90,6 +90,13 @@ python3 measure.py kill-stale --dry-run
 python3 measure.py kill-stale --hours 6
 ```
 
+On macOS and Linux an interactive session whose terminal died (no controlling terminal, parent is `launchd`/`init`/`systemd --user`, readable argv, not an Electron app) is listed as `ORPHAN` ("terminal gone; started 3d 4h ago"). `kill-stale` never ends orphans by default; it prints how many it left alone and the exact command. Add `--include-orphans` (with the same `--hours` and `--dry-run`) to end them; each one is re-verified right before it is signalled. Automations started by launchd or systemd normally carry `-p`/`--print` and are never treated as orphans. Windows has no `ORPHAN` class.
+
+```bash
+python3 measure.py kill-stale --include-orphans --dry-run
+python3 measure.py kill-stale --include-orphans --hours 24
+```
+
 `plugin-cleanup` removes stale or orphaned plugin cache entries from the plugin cache directory.
 
 ```bash

@@ -82,15 +82,17 @@ Accepted tiers: `anthropic` (default), `vertex-global`, `vertex-regional`, and `
 | `ZOMBIE` | Idle longer than 48 hours | Almost certainly abandoned |
 | `OUTDATED` | Session version differs from installed | Running against an older Token Optimizer |
 | `TERMINAL` | Has an attached terminal | Informational, not a problem |
+| `ORPHAN` | macOS/Linux: terminal gone, parent is the init process, exact argv readable | Listed as "terminal gone; started <age> ago". Never ended by default; see `--include-orphans` below |
 
 ```bash
 cd ~/.claude/skills/token-optimizer/scripts
 python3 measure.py health                  # flag stale, zombie, and outdated sessions
 python3 measure.py kill-stale --dry-run    # preview which sessions would be killed
 python3 measure.py kill-stale --hours 24   # kill sessions running longer than 24h
+python3 measure.py kill-stale --include-orphans --dry-run   # also preview orphans (terminal gone)
 ```
 
-`health` only reports. `kill-stale` is the action: it terminates sessions older than a threshold that are still marked running. The threshold defaults to 12 hours, and `--dry-run` shows the kill list without acting.
+`health` only reports. `kill-stale` is the action: it terminates sessions older than a threshold that are still marked running. The threshold defaults to 12 hours, and `--dry-run` shows the kill list without acting. Orphaned sessions are never ended by default: `kill-stale` prints how many it left alone and the exact command, and `--include-orphans` ends them (same `--hours` threshold, each re-verified right before the kill).
 
 <Aside type="caution" title="kill-stale ends processes">
 `kill-stale` terminates running processes. Always run it with `--dry-run` first to confirm the list, especially if you keep long-lived sessions open on purpose.

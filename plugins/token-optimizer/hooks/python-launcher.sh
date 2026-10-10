@@ -149,10 +149,9 @@ _is_safe_prefix() {
     # another user's tree is still refused -- and it never runs the target.
     # Skipped on Windows: Git-Bash/MSYS stat ownership+mode is unreliable, and
     # its managers are covered by the drive-letter patterns above.
-    case "$(uname -s 2>/dev/null || echo unknown)" in
-        *MINGW*|*MSYS*|*CYGWIN*) : ;;
-        *) _to_owned_unwritable "$binpath" && return 0 ;;
-    esac
+    if ! _is_msys_platform; then
+        _to_owned_unwritable "$binpath" && return 0
+    fi
     return 1
 }
 
@@ -162,6 +161,11 @@ _is_safe_prefix() {
 _PY_CACHE_FILE=""
 
 _is_msys_platform() {
+    # Bash supplies OSTYPE on Git Bash/MSYS and Cygwin. Avoid spawning uname
+    # on the Windows hot path; retain the probe for other shell environments.
+    case "${OSTYPE:-}" in
+        msys*|cygwin*) return 0 ;;
+    esac
     local platform
     platform=$(uname -s 2>/dev/null) || return 1
     case "$platform" in
@@ -175,14 +179,27 @@ _is_msys_platform() {
 # explicit-variant patterns (*/WindowsApps/*|*/windowsapps/*) only covered
 # two casings and would miss others, letting a Store AppExecutionAlias stub
 # through unprobed or skipping a legit Store install in the safe-prefix list.
-# tr is POSIX and present in every supported hook env including Git Bash.
+# A shell pattern avoids spawning tr on every twin selection.
 _path_contains_windowsapps() {
-    local lower
-    lower=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
-    case "$lower" in
-        */windowsapps/*) return 0 ;;
+    case "$1" in
+        */[wW][iI][nN][dD][oO][wW][sS][aA][pP][pP][sS]/*) return 0 ;;
     esac
     return 1
+}
+
+# Non-cryptographic cache partition only. Every record is still validated
+# against the interpreter safety policy before exec. Bash arithmetic is masked
+# to 32 bits to keep filenames bounded on both 32- and 64-bit shells.
+# LC_ALL=C makes indexing byte-based, independent of the user's locale.
+_cache_checksum() {
+    local LC_ALL=C hash=0 char byte
+    # read advances linearly; indexing a long Bash string for each byte is
+    # quadratic. The here-string adds the same final newline to every key.
+    while IFS= read -r -n 1 -d '' char; do
+        printf -v byte '%d' "'$char"
+        hash=$(( (hash * 65599 + byte) & 4294967295 ))
+    done <<< "$1"
+    _CACHE_CHECKSUM=$hash
 }
 
 _cache_dir_is_per_user() {
@@ -217,7 +234,7 @@ _cache_dir_ready() {
 }
 
 _setup_interpreter_cache() {
-    local launcher_dir plugin_dir hash_output plugin_hash path_hash_output path_hash cache_dir
+    local launcher_dir plugin_dir plugin_hash path_hash cache_dir hash_output
 
     launcher_dir=${0%/*}
     [ "$launcher_dir" != "$0" ] || launcher_dir=.
@@ -225,22 +242,22 @@ _setup_interpreter_cache() {
         return 0
     fi
 
-    # cksum is POSIX and is present in the Unix environments supported by this
-    # launcher, including Git Bash. If unavailable, caching simply stays off.
-    if ! hash_output=$(printf '%s' "$plugin_dir" | cksum 2>/dev/null); then
-        return 0
+    if _is_msys_platform; then
+        # Windows process startup is expensive. Keep both checksums in Bash.
+        _cache_checksum "$plugin_dir"
+        plugin_hash=$_CACHE_CHECKSUM
+        _cache_checksum "${PATH:-}"
+        path_hash=$_CACHE_CHECKSUM
+    else
+        # Native POSIX utility startup is cheap; cksum avoids a shell byte
+        # loop on unusually long PATHs. Failure simply disables the cache.
+        hash_output=$(printf '%s' "$plugin_dir" | cksum 2>/dev/null) || return 0
+        plugin_hash=${hash_output%% *}
+        hash_output=$(printf '%s' "${PATH:-}" | cksum 2>/dev/null) || return 0
+        path_hash=${hash_output%% *}
+        case "$plugin_hash" in ''|*[!0-9]*) return 0 ;; esac
+        case "$path_hash" in ''|*[!0-9]*) return 0 ;; esac
     fi
-    plugin_hash=${hash_output%% *}
-    case "$plugin_hash" in
-        ''|*[!0-9]*) return 0 ;;
-    esac
-    if ! path_hash_output=$(printf '%s' "${PATH:-}" | cksum 2>/dev/null); then
-        return 0
-    fi
-    path_hash=${path_hash_output%% *}
-    case "$path_hash" in
-        ''|*[!0-9]*) return 0 ;;
-    esac
 
     if [ "${TOKEN_OPTIMIZER_PY_CACHE+x}" = x ]; then
         cache_dir=$TOKEN_OPTIMIZER_PY_CACHE
@@ -270,8 +287,8 @@ _setup_interpreter_cache() {
     # on a cache HIT (only on a miss). Bumping this epoch renames the cache file, so
     # every stale record is ignored once on upgrade: discovery re-runs, the new
     # probe rejects the dead stub, and a healthy interpreter is cached under the new
-    # key. Bump `e2` on any future change to interpreter-liveness probing.
-    _PY_CACHE_FILE="${cache_dir%/}/interpreter-e2-${plugin_hash}-${path_hash}.cache"
+    # key. Bump `e3` on any future change to interpreter-liveness probing.
+    _PY_CACHE_FILE="${cache_dir%/}/interpreter-e3-${plugin_hash}-${path_hash}.cache"
 }
 
 # On Windows (Git Bash/MSYS), python.exe is a console-subsystem binary: each
@@ -312,8 +329,8 @@ _maybe_swap_to_pythonw() {
     local interp="$1" dir twin pythonw
     _PYW_INTERP="$interp"
     case "$interp" in
-        */python.exe|*/python3.exe) twin="pythonw.exe" ;;
-        */py.exe) twin="pyw.exe" ;;
+        */python|*/python3|*/python.exe|*/python3.exe) twin="pythonw.exe" ;;
+        */py|*/py.exe) twin="pyw.exe" ;;
         *) return 0 ;;
     esac
     _is_msys_platform || return 0

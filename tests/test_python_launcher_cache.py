@@ -88,6 +88,121 @@ def test_cache_key_carries_probe_epoch(tmp_path):
     record naming the dead WindowsApps stub -- and the fixed probe runs only on a
     cache MISS, so on every cache HIT the dead stub is re-exec'd forever."""
     cache_file = _cache_file_for(tmp_path, "/usr/bin:/bin", "Linux")
-    assert "/interpreter-e2-" in cache_file, (
-        f"cache key must carry the probe-logic epoch (interpreter-e2-...); got {cache_file}"
+    assert "/interpreter-e3-" in cache_file, (
+        f"cache key must carry the probe-logic epoch (interpreter-e3-...); got {cache_file}"
     )
+
+
+def test_windows_hot_path_avoids_utility_processes(tmp_path):
+    source = LAUNCHER.read_text(encoding="utf-8")
+    definitions = source[: source.index("\n_setup_interpreter_cache\n")]
+    script = definitions + r'''
+OSTYPE=msys
+uname() { echo unexpected-uname >&2; return 99; }
+cksum() { echo unexpected-cksum >&2; return 99; }
+tr() { echo unexpected-tr >&2; return 99; }
+_setup_interpreter_cache
+[ -n "$_PY_CACHE_FILE" ] || exit 1
+_is_msys_platform || exit 2
+_path_contains_windowsapps /c/Users/a/WiNdOwSaPpS/python3 || exit 3
+'''
+    env = os.environ.copy()
+    env["HOME"] = str(tmp_path)
+    env.pop("XDG_CACHE_HOME", None)
+    env.pop("TOKEN_OPTIMIZER_PY_CACHE", None)
+    result = subprocess.run(["/bin/bash", "-c", script], env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert not result.stderr
+
+
+@pytest.mark.parametrize("ostype", ["msys", "msys2", "cygwin"])
+def test_known_windows_ostype_never_runs_uname(tmp_path, ostype):
+    source = LAUNCHER.read_text(encoding="utf-8")
+    definitions = source[: source.index("\n_setup_interpreter_cache\n")]
+    script = definitions + '\nOSTYPE="$1"\nuname() { exit 99; }\n_is_msys_platform\n'
+    result = subprocess.run(["/bin/bash", "-c", script, "probe", ostype], capture_output=True)
+    assert result.returncode == 0
+
+
+@pytest.mark.parametrize("value", ["", "a\nb", "a\\b", "x'\"$`!", "שלום/é/路径", "a" * 32000])
+def test_builtin_checksum_is_deterministic_and_bounded(value):
+    source = LAUNCHER.read_text(encoding="utf-8")
+    definitions = source[: source.index("\n_setup_interpreter_cache\n")]
+    script = definitions + r'''
+_cache_checksum "$1"
+first=$_CACHE_CHECKSUM
+_cache_checksum "$1"
+[ "$first" = "$_CACHE_CHECKSUM" ] || exit 1
+printf '%s\n' "$first"
+'''
+    result = subprocess.run(["/bin/bash", "-c", script, "hash", value], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    assert 0 <= int(result.stdout.strip()) <= 0xFFFFFFFF
+
+
+def test_checksum_preserves_byte_boundaries_and_locale():
+    source = LAUNCHER.read_text(encoding="utf-8")
+    definitions = source[: source.index("\n_setup_interpreter_cache\n")]
+    script = definitions + r'''
+LC_ALL=C
+_cache_checksum "$1"; first=$_CACHE_CHECKSUM
+LC_ALL=C.UTF-8
+_cache_checksum "$1"; [ "$first" = "$_CACHE_CHECKSUM" ] || exit 1
+_cache_checksum ab; first=$_CACHE_CHECKSUM
+_cache_checksum $'a\nb'; [ "$first" != "$_CACHE_CHECKSUM" ] || exit 2
+'''
+    result = subprocess.run(["/bin/bash", "-c", script, "hash", "שלום/é/路径"], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_posix_checksum_failure_disables_only_cache(tmp_path):
+    source = LAUNCHER.read_text(encoding="utf-8")
+    definitions = source[: source.index("\n_setup_interpreter_cache\n")]
+    script = definitions + r'''
+_is_msys_platform() { return 1; }
+cksum() { return 99; }
+_setup_interpreter_cache
+[ -z "$_PY_CACHE_FILE" ]
+'''
+    result = subprocess.run(["/bin/bash", "-c", script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_windows_checksum_keys_change_with_path_and_plugin_root(tmp_path):
+    source = LAUNCHER.read_text(encoding="utf-8")
+    definitions = source[: source.index("\n_setup_interpreter_cache\n")]
+    script = definitions + r'''
+OSTYPE=msys
+_setup_interpreter_cache
+printf '%s\n' "$_PY_CACHE_FILE"
+'''
+    roots = [tmp_path / "plugin a" / "hooks", tmp_path / "plugin b" / "hooks"]
+    for root in roots:
+        root.mkdir(parents=True)
+    keys = []
+    for root, path in [(roots[0], "/usr/bin:/bin"), (roots[0], "/bin:/usr/bin"), (roots[1], "/usr/bin:/bin")]:
+        env = os.environ.copy()
+        env.update(HOME=str(tmp_path), PATH=path)
+        env.pop("XDG_CACHE_HOME", None)
+        env.pop("TOKEN_OPTIMIZER_PY_CACHE", None)
+        result = subprocess.run(["/bin/bash", "-c", script, str(root / "python-launcher.sh")], env=env, capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+        keys.append(result.stdout.strip())
+    assert all(keys)
+    assert len(set(keys)) == 3
+
+
+@pytest.mark.parametrize("output", ["", "1:2 5", "not-a-checksum", "42x 5"])
+def test_posix_malformed_checksum_disables_cache(output):
+    source = LAUNCHER.read_text(encoding="utf-8")
+    definitions = source[: source.index("\n_setup_interpreter_cache\n")]
+    script = definitions + r'''
+_is_msys_platform() { return 1; }
+# Pass test data through a function variable, never shell interpolation.
+CHECKSUM_OUTPUT=$1
+cksum() { printf '%s\n' "$CHECKSUM_OUTPUT"; }
+_setup_interpreter_cache
+[ -z "$_PY_CACHE_FILE" ]
+'''
+    result = subprocess.run(["/bin/bash", "-c", script, "checksum", output], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr

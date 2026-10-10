@@ -22,8 +22,10 @@ holder), not a grandchild. On Windows we reap with plain proc.kill()
 (TerminateProcess of proc.pid only), NOT taskkill /F /T which would walk
 the PPID tree and wrongly kill the detached session-end-flush worker
 (the one CREATE_BREAKAWAY_FROM_JOB exists to keep alive). The SIGINT/
-SIGTERM handler only fires for console Ctrl+C or in-process os.kill; an
-external TerminateProcess from the host bypasses Python handlers entirely.
+SIGTERM handler is best effort on Windows: the detached child has no console
+and never sees Ctrl+C, Popen.wait() there is a plain WaitForSingleObject that a
+Python handler cannot interrupt (the handler runs once the wait returns), and
+an external TerminateProcess from the host bypasses Python handlers entirely.
 """
 from __future__ import annotations
 
@@ -101,9 +103,9 @@ def _reap(proc, posix_sig):
 def _forward_and_exit(signum, frame):
     """Forward SIGTERM/SIGINT to the child, then exit.
 
-    On Windows this handler only fires for console Ctrl+C or an in-process
-    os.kill; an external TerminateProcess from the host bypasses Python
-    handlers entirely.
+    On Windows this is best effort: Popen.wait() is not interruptible by a
+    Python handler, so it runs once the wait returns, and an external
+    TerminateProcess from the host bypasses Python handlers entirely.
     """
     global _child_proc
     if _child_proc is not None:
@@ -577,27 +579,28 @@ def main() -> int:
     global _child_proc
     # Install SIGTERM/SIGINT handlers BEFORE spawning the child so an external
     # kill from Claude Code reaps the whole child process group instead of
-    # orphaning the grandchild. On Windows these handlers only fire for
-    # console Ctrl+C or in-process os.kill; an external TerminateProcess from
-    # the host bypasses Python handlers entirely.
+    # orphaning the grandchild. On Windows this is best effort: Popen.wait()
+    # cannot be interrupted by a Python handler (it runs once the wait
+    # returns) and an external TerminateProcess from the host bypasses Python
+    # handlers entirely.
     signal.signal(signal.SIGTERM, _forward_and_exit)
     signal.signal(signal.SIGINT, _forward_and_exit)
     try:
         # start_new_session=True puts the child in its own process group so a
         # timeout/external kill can reap the whole group (grandchildren included)
-        # via os.killpg. Do NOT add stdout=/stderr=/stdin= here: several hooks
-        # inject via stdout and MUST inherit run.py's stdio.
+        # via os.killpg. On POSIX do NOT add stdout=/stderr=/stdin= here:
+        # several hooks inject via stdout and MUST inherit run.py's stdio.
         # On Windows, start_new_session is a no-op; use DETACHED_PROCESS so the
         # child allocates NO console at all. CREATE_NO_WINDOW only hides the
         # console -- it still spawns conhost.exe, which on Windows 11 25H2
         # leaks a kernel token reference per hook run (issue #215). Do NOT add
         # CREATE_NEW_PROCESS_GROUP (inert for reaping here since run.py never
-        # sends GenerateConsoleCtrlEvent, and it disables the child's Ctrl+C
-        # self-terminate). A detached child has no console, so its stdio MUST
-        # arrive via the three explicit handles _windows_stdio_kwargs() adds
-        # (CPython passes them via STARTF_USESTDHANDLES) -- without them the
-        # child's std handles bind to NULL and every byte a hook writes to
-        # stdout would be silently discarded.
+        # sends GenerateConsoleCtrlEvent). A detached child has no console, so
+        # it never sees Ctrl+C either, and its stdio MUST arrive via the three
+        # explicit handles _windows_stdio_kwargs() adds (CPython passes them
+        # via STARTF_USESTDHANDLES) -- without them the child's std handles
+        # bind to NULL and every byte a hook writes to stdout would be
+        # silently discarded.
         _popen_kwargs = dict(env=child_env)
         if os.name == "nt":
             _flags = getattr(subprocess, "DETACHED_PROCESS", 0)

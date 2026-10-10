@@ -183,6 +183,19 @@ def test_utf8_io_reexec_keeps_detached_when_stdout_missing(monkeypatch):
     assert cap["creationflags"] == _DETACHED_PROCESS
 
 
+# --- finding 10h: stale comments ---------------------------------------------
+
+def test_run_py_has_no_phantom_ctrl_c_self_terminate_claim():
+    text = (HOOKS / "run.py").read_text(encoding="utf-8")
+    assert "self-terminate" not in text
+
+
+def test_dispatch_tests_not_skipped_on_windows():
+    text = (REPO / "tests" / "test_hook_module_dispatch.py").read_text(encoding="utf-8")
+    assert 'sys.platform == "win32"' not in text
+    assert "not Windows-safe" not in text
+
+
 # --- finding 10i: echoed override value is capped ------------------------------
 
 def test_unknown_runtime_value_is_capped_and_repr(monkeypatch, capsys):

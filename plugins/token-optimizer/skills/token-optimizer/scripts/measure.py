@@ -10454,6 +10454,15 @@ def _extract_topic(text):
     # Truncate
     if len(text) > 120:
         text = text[:117] + "..."
+    # The topic is user text persisted to session_log/quality-cache and
+    # rendered into checkpoints — credentials must not ride along. If the
+    # shared redactor is unavailable or refuses, drop the topic rather than
+    # persist it raw.
+    try:
+        from credential_patterns import redact_credentials as _topic_redact
+        text = _topic_redact(text)
+    except Exception:
+        return None
     return text or None
 
 
@@ -12615,6 +12624,20 @@ def _log_compression_event(feature, original_text="", compressed_text="",
         ratio = 0.0
         if original_tokens > 0:
             ratio = round(1.0 - compressed_tokens / original_tokens, 4)
+
+        # DB boundary: command_pattern/detail can embed a file name or label
+        # that carries a credential shape. Redact here so NO caller (present
+        # or future) can persist them raw; on a redactor refusal the text
+        # columns go NULL while token counts still land.
+        try:
+            from credential_patterns import redact_credentials as _ce_redact
+            if command_pattern:
+                command_pattern = _ce_redact(command_pattern)
+            if detail:
+                detail = _ce_redact(detail)
+        except Exception:
+            command_pattern = None
+            detail = None
 
         # Derive stable join key and resolve event-time model.
         session_uuid, _ = _extract_session_uuid(session_id)
@@ -31070,10 +31093,16 @@ def compute_quality_score(quality_data, session_id=None):
     # Set when observed tokens exceed the window: that is not a full context, it
     # is a wrong window, and it must not be reported as a percentage.
     window_contradicted = False
-    # Set when the host supplied the fill, so we can compare our own arithmetic
-    # against it afterwards.
+    # Same-session host fill reading (any age). The host measures the real
+    # window; our token arithmetic is only as good as an inferred denominator.
+    # Below, a recent same-session reading that disagrees with our computed fill
+    # by >10 points wins the sanity check — the phantom-fill failure mode that
+    # produced "bar shows 16%, score is 59".
     host_fill_pct = None
+    host_fill_age_s = None
     host_disagreement = None
+    # Which source produced fill_pct, for cache diagnosability.
+    fill_source = None
     try:
         live_fill_path = QUALITY_CACHE_DIR / "live-fill.json"
         if live_fill_path.exists():
@@ -31081,19 +31110,22 @@ def compute_quality_score(quality_data, session_id=None):
             age = time.time() - live.get("timestamp", 0) / 1000  # JS timestamp is ms
             live_sid = sanitize_session_id(str(live.get("session_id") or ""))
             want_sid = sanitize_session_id(str(session_id or ""))
-            if age < 10 and want_sid and live_sid == want_sid:
+            if want_sid and live_sid == want_sid:
                 _used = float(live["used_percentage"])
                 # json.loads accepts the non-standard literals NaN/Infinity. NaN
                 # compares False against everything, so max()/min() would pass it
                 # through as a silent 0.0 and suppress every nudge with no error.
                 if not math.isfinite(_used):
                     raise ValueError("non-finite used_percentage")
-                fill_pct = min(1.0, max(0.0, _used / 100.0))
+                host_fill_pct = min(1.0, max(0.0, _used / 100.0))
+                host_fill_age_s = age
                 # The host knows the real window; we only infer it. When the
                 # host rescues us from a bad denominator the user sees a correct
                 # number and the misconfiguration stays invisible, so record the
                 # disagreement rather than quietly accepting the save.
-                host_fill_pct = fill_pct
+                if age < 10:
+                    fill_pct = host_fill_pct
+                    fill_source = "host-live"
     except (json.JSONDecodeError, OSError, KeyError, TypeError, ValueError):
         # used_percentage arrives from a JSON file on disk. A non-numeric value
         # raises TypeError on the division, which was NOT caught here and
@@ -31111,6 +31143,7 @@ def compute_quality_score(quality_data, session_id=None):
                 # curve math keeps its 0-1 contract.
                 window_contradicted = raw_ratio > 1.0
                 fill_pct = min(1.0, max(0.0, raw_ratio))
+                fill_source = "transcript-tokens"
         except (TypeError, ValueError):
             fill_pct = None
     if fill_pct is None:
@@ -31120,9 +31153,15 @@ def compute_quality_score(quality_data, session_id=None):
         total_chars += sum(ssize for _, _, ssize in quality_data["system_reminders"])
         estimated_tokens = total_chars / CHARS_PER_TOKEN
         fill_pct = min(1.0, estimated_tokens / ctx_window) if ctx_window > 0 else 0
+        fill_source = "char-estimate"
     # Cross-check: if the host told us the fill and our own arithmetic would have
     # produced a materially different one, our window is wrong even though the
-    # displayed number is right. Recorded, never used to overrule the host.
+    # displayed number is right. Always recorded — and when the host reading is
+    # recent enough to still describe this session, the host wins: a >10-point
+    # gap is a denominator error (multiples), not measurement noise, and
+    # serving the phantom fill is how a fresh 1M session reported
+    # "16% fill, score 59". Our arithmetic never overrules the host; only the
+    # host overrules it.
     if host_fill_pct is not None:
         try:
             _tokens = quality_data.get("context_tokens")
@@ -31137,6 +31176,14 @@ def compute_quality_score(quality_data, session_id=None):
                         "window": model_context_window,
                         "window_source": model_context_window_source,
                     }
+                    # Sanity window: a reading older than ~5min describes a
+                    # different moment (same convention as the statusline's
+                    # 5-min staleness guard); fresher than that, the host's real
+                    # window beats our inferred one.
+                    if fill_source != "host-live" and (
+                            host_fill_age_s is not None and host_fill_age_s < 300):
+                        fill_pct = host_fill_pct
+                        fill_source = "host-stale-override"
         except (TypeError, ValueError):
             pass
 
@@ -31264,6 +31311,53 @@ def compute_quality_score(quality_data, session_id=None):
         signals[k] * _RESOURCE_HEALTH_WEIGHTS[k]
         for k in _RESOURCE_HEALTH_WEIGHTS
     )
+
+    # Which signal actually pulls ResourceHealth down? The displayed score IS
+    # resource_health, so attribute its deficit by weighted contribution —
+    # weight * (100 - signal) — not by which waste key happens to exist. This
+    # is what the "biggest drag" wording everywhere must reflect: a 70% fill
+    # drags harder than one stale read even when no waste was recorded.
+    _drag_deficit = {
+        k: _RESOURCE_HEALTH_WEIGHTS[k] * max(0.0, 100.0 - signals[k])
+        for k in _RESOURCE_HEALTH_WEIGHTS
+    }
+    top_drag = None
+    _worst_key = max(_drag_deficit, key=_drag_deficit.get)
+    _worst_pts = _drag_deficit[_worst_key]
+    if _worst_pts >= 3.0:
+        if _worst_key == "context_fill_degradation":
+            top_drag = {
+                "key": "context_fill",
+                "label": f"{round(fill_pct * 100)}% context fill",
+                "points": round(_worst_pts, 1),
+            }
+        elif _worst_key == "compaction_depth":
+            _loss = {0: 0, 1: 65, 2: 88}.get(compactions, 95)
+            top_drag = {
+                "key": "compactions",
+                "label": (
+                    f"{compactions} compaction{'s' if compactions != 1 else ''}"
+                    f" (~{_loss}% context loss)"),
+                "points": round(_worst_pts, 1),
+            }
+        else:  # absolute_waste_tokens — name the dominant waste cause
+            # Only causes that actually feed total_waste (and therefore this
+            # signal's deficit) qualify: reread-loop waste is diagnostic-only
+            # and must never be named as the drag it did not cause.
+            _waste_parts = {
+                "bloated_results": (bloated_data["estimated_waste_tokens"],
+                                    "bloated tool results"),
+                "stale_reads": (stale_data["estimated_waste_tokens"],
+                                "stale file reads"),
+                "duplicates": (dup_data["estimated_waste_tokens"],
+                               "repeated system reminders"),
+            }
+            _waste_cause = max(_waste_parts, key=lambda k: _waste_parts[k][0])
+            top_drag = {
+                "key": f"waste:{_waste_cause}",
+                "label": _waste_parts[_waste_cause][1],
+                "points": round(_worst_pts, 1),
+            }
     session_efficiency = sum(
         signals[k] * _SESSION_EFFICIENCY_WEIGHTS[k]
         for k in _SESSION_EFFICIENCY_WEIGHTS
@@ -31291,6 +31385,7 @@ def compute_quality_score(quality_data, session_id=None):
             "model_context_window_source": model_context_window_source,
             "window_contradicted": window_contradicted,
             "host_disagreement": host_disagreement,
+            "fill_source": fill_source,
             "band": band_name,
             "detail": f"{round(fill_pct * 100)}% fill, {band_name.lower()} ({curve_name})",
         },
@@ -31403,6 +31498,7 @@ def compute_quality_score(quality_data, session_id=None):
         "resource_health_grade": rh_grade,
         "session_efficiency": se_rounded,
         "session_efficiency_grade": se_grade,
+        "top_drag": top_drag,
         "signals": signals,
         "breakdown": breakdown,
         "fill_warning": fill_warning,
@@ -31551,6 +31647,9 @@ def quality_analyzer(session_id=None, as_json=False):
     print(f"  Content quality:     {grade} ({score}/100) ({band})")
     if fill_band:
         print(f"  Degradation band:    {fill_band} ({cfd.get('fill_pct', 0):.0f}% fill, ~{cfd.get('quality_estimate', 0)}/100 MRCR)")
+    top_drag = result.get("top_drag")
+    if top_drag:
+        print(f"  Biggest drag:        {top_drag['label']} (-{top_drag['points']} pts)")
     print(f"  Messages analyzed:   {result['total_messages']}")
     print(f"  Decisions captured:  {result['decisions_found']}")
     print()
@@ -33316,6 +33415,12 @@ def _codex_backfill_tool_archive(filepath=None, session_id=None, max_outputs=20)
     archive_dir = _archive_dir_for_session(sid)
     if not archive_dir:
         return 0
+    # No persistence without the shared redactor — tool output is the single
+    # most likely place a credential lands in a transcript.
+    try:
+        from credential_patterns import redact_credentials as _bf_redact
+    except Exception:
+        return 0
     archived = 0
     try:
         outputs = codex_session.iter_tool_outputs(
@@ -33347,11 +33452,23 @@ def _codex_backfill_tool_archive(filepath=None, session_id=None, max_outputs=20)
             if len(output_text) > 5_242_880:
                 output_text = output_text[:5_242_880] + "\n[... truncated by Token Optimizer archive cap]"
 
+            try:
+                # Redact BEFORE hashing/summarizing/persisting so the archive
+                # entry, manifest, and SessionStore row all carry the same
+                # safe bytes. A redactor refusal (broken custom pattern
+                # config) skips this output rather than storing it raw.
+                output_text = _bf_redact(output_text)
+            except Exception:
+                continue
+
             char_count = len(output_text)
             token_est = int(char_count / CHARS_PER_TOKEN)
             tool_name = str(item.get("tool_name") or "Tool")
             tool_type = str(item.get("tool_type") or "codex")
-            command_or_path = str(item.get("command_or_path") or "")
+            try:
+                command_or_path = _bf_redact(str(item.get("command_or_path") or ""))
+            except Exception:
+                continue
             output_hash = hashlib.sha256(output_text.encode("utf-8", errors="replace")).hexdigest()
             summary = _summarize_tool_output_for_recovery(output_text)
             entry_data = {
@@ -34436,33 +34553,31 @@ def compact_capture(transcript_path=None, session_id=None, trigger="auto", cwd=N
     if not state:
         return None
 
-    # Redact credentials from checkpoint text fields (SEC-004)
+    # Redact credentials from the whole checkpoint state (SEC-004). One
+    # recursive pass over every string — including dict keys, tuples, and any
+    # nested containers — BEFORE the .md render and the JSON sidecar build,
+    # so a field not individually listed (open_questions, todos, agent
+    # descriptions, paths, anything added later) can never bypass it.
     try:
-        from credential_patterns import redact_credentials as _cp_redact
+        from credential_patterns import redact_credentials_deep as _cp_redact_deep
         from credential_patterns import RedactionConfigError as _RedactCfgErr
     except Exception:
         # Without the shared redactor a checkpoint would persist transcript
         # text unredacted. Fail closed: no checkpoint rather than a raw one.
         return None
     try:
-        step = state.get("current_step", {})
-        if step.get("last_user"):
-            step["last_user"] = _cp_redact(step["last_user"])
-        if step.get("last_assistant"):
-            step["last_assistant"] = _cp_redact(step["last_assistant"])
-        state["decisions"] = [_cp_redact(d) if isinstance(d, str) else d for d in state.get("decisions", [])]
-        state["error_context"] = [
-            tuple(_cp_redact(x) if isinstance(x, str) else x for x in ec) if isinstance(ec, tuple)
-            else _cp_redact(ec) if isinstance(ec, str) else ec
-            for ec in state.get("error_context", [])
-        ]
+        state = _cp_redact_deep(state)
     except _RedactCfgErr:
-        # A configured-but-broken custom pattern file makes redact_credentials
+        # A configured-but-broken custom pattern file makes the redactor
         # refuse: writing the checkpoint anyway would persist transcript text
         # that org-specific rules were meant to cover. Skip the write.
         return None
     except Exception:
-        pass
+        # The deep pass is all-or-nothing (the rebuilt structure only binds
+        # on success), so a mid-pass failure leaves state fully UNREDACTED.
+        # Persisting it would write every raw field, not just one — skip the
+        # write rather than fail open.
+        return None
 
     # Generate checkpoint markdown
     sid = sanitize_session_id(session_id) if session_id else sanitize_session_id(filepath.stem)
@@ -34496,6 +34611,14 @@ def compact_capture(transcript_path=None, session_id=None, trigger="auto", cwd=N
                 fill_pct = cfd.get("fill_pct")
     except Exception:
         quality_summary = None
+    if quality_summary:
+        # The sidecar serializes this blob wholesale and the .md renders its
+        # `topic` (derived from the first user message). Same contract as the
+        # state pass above: redacted or absent, never raw.
+        try:
+            quality_summary = _cp_redact_deep(quality_summary)
+        except Exception:
+            quality_summary = None
     if backfill_tools:
         try:
             _codex_backfill_tool_archive(filepath=filepath, session_id=sid)

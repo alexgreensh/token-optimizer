@@ -1183,3 +1183,33 @@ def _redact_custom(text: str, custom: List[Tuple[str, "re.Pattern[str]"]]) -> st
         parts.append(_sub_with_placeholder(pat, label, text[last:]))
         text = "".join(parts)
     return text
+
+
+def redact_credentials_deep(value):
+    """Apply redact_credentials to every string in a nested structure.
+
+    One pass over a whole checkpoint/handoff state so a NEW string field can
+    never bypass the credential pass — the failure mode the per-field
+    redactors had (open_questions, todos, agent descriptions and paths were
+    persisted verbatim because nobody listed them).
+
+    Rebuilds dicts, lists, tuples and sets preserving container type; keys
+    are redacted too (a key derived from transcript text is attacker
+    content). Non-strings pass through unchanged. Returns a new structure;
+    the input is not mutated.
+
+    Raises RedactionConfigError exactly like redact_credentials — callers
+    persisting the result must treat that as "do not write".
+    """
+    if isinstance(value, str):
+        return redact_credentials(value)
+    if isinstance(value, dict):
+        return {
+            redact_credentials_deep(k): redact_credentials_deep(v)
+            for k, v in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return type(value)(redact_credentials_deep(v) for v in value)
+    if isinstance(value, (set, frozenset)):
+        return type(value)(redact_credentials_deep(v) for v in value)
+    return value

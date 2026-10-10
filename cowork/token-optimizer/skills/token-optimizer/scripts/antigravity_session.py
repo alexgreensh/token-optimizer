@@ -98,6 +98,17 @@ def context_window_for_model(model_id: str) -> int:
     return _DEFAULT_CONTEXT_WINDOW
 
 
+def _safe_topic(value: Any) -> Optional[str]:
+    """Topic is user text persisted to session_log — redact or drop."""
+    if not value:
+        return None
+    try:
+        from credential_patterns import redact_credentials
+        return redact_credentials(str(value))
+    except Exception:
+        return None
+
+
 def _parse_ts(value: Any) -> Optional[str]:
     if value is None:
         return None
@@ -297,7 +308,7 @@ def normalize_session(raw: dict) -> Optional[dict]:
     session = _base_canonical(str(conversation_id))
     session.update(
         {
-            "topic": raw.get("title") or None,
+            "topic": _safe_topic(raw.get("title")),
             "first_ts": _parse_ts(st),
             "last_ts": _parse_ts(et),
             "duration_minutes": round(duration_minutes, 2),

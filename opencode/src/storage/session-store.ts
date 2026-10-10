@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { redact } from "../util/redact.js";
 
 /** Reduce a session id to the charset used for its DB filename and for echoing
  * the id into checkpoint content. Single source of truth for all three callers. */
@@ -178,12 +179,16 @@ export class SessionStore {
 
   recordRead(idx: number, path: string): void {
     const db = this.connect();
-    db.run("INSERT INTO reads (idx, path, timestamp) VALUES (?, ?, ?)", [idx, path, Date.now() / 1000]);
+    // Paths are tool-supplied text persisted verbatim: a credential-shaped
+    // file name lands on disk otherwise. Redact at the store boundary so no
+    // caller can persist them raw (deterministic, so later path comparisons
+    // still match).
+    db.run("INSERT INTO reads (idx, path, timestamp) VALUES (?, ?, ?)", [idx, redact(path), Date.now() / 1000]);
   }
 
   recordWrite(idx: number, path: string): void {
     const db = this.connect();
-    db.run("INSERT INTO writes (idx, path, timestamp) VALUES (?, ?, ?)", [idx, path, Date.now() / 1000]);
+    db.run("INSERT INTO writes (idx, path, timestamp) VALUES (?, ?, ?)", [idx, redact(path), Date.now() / 1000]);
   }
 
   recordToolResult(idx: number, toolName: string, resultSize: number, isFailure: boolean): void {

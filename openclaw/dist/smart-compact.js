@@ -49,6 +49,7 @@ const crypto = __importStar(require("crypto"));
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const fs_utils_1 = require("./fs-utils");
+const redact_1 = require("./redact");
 const checkpoint_policy_1 = require("./checkpoint-policy");
 const DEFAULT_RECENT_MESSAGES = 10;
 function sanitizeSessionId(id) {
@@ -354,7 +355,10 @@ function writeCheckpointArtifact(session, maxMessages, options) {
     const filename = checkpointFilename(timestamp, trigger);
     const filepath = safeCheckpointPath(sessionId, filename);
     try {
-        (0, fs_utils_1.writeFileNoFollow)(filepath, body, 0o600);
+        // Credential pass on the WHOLE body at the write boundary — message text
+        // is the only untrusted input and a secret inside any of it must never
+        // land on disk (the file is restored into a later session's context).
+        (0, fs_utils_1.writeFileNoFollow)(filepath, (0, redact_1.redact)(body), 0o600);
     }
     catch {
         return null;
@@ -595,7 +599,8 @@ function captureCheckpointV2(session, maxRecentMessages = 10, options = {}) {
     const filename = checkpointFilename(timestamp, bodyOptions.trigger ?? "compact");
     const filepath = safeCheckpointPath(session.sessionId, filename);
     try {
-        (0, fs_utils_1.writeFileNoFollow)(filepath, lines.join("\n"), 0o600);
+        // Same write-boundary credential pass as the v1 artifact path.
+        (0, fs_utils_1.writeFileNoFollow)(filepath, (0, redact_1.redact)(lines.join("\n")), 0o600);
     }
     catch {
         return null;

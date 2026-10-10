@@ -529,8 +529,15 @@ def normalize_session(row: dict[str, Any], *, context_tokens: int | None = None)
         context_tokens=context_tokens,
     )
 
-    # Topic: use title from Hermes if available.
+    # Topic: use title from Hermes if available. It is user text persisted to
+    # session_log — redact credentials, or drop if the redactor refuses.
     title = str(row.get("title") or "").strip() or None
+    if title:
+        try:
+            from credential_patterns import redact_credentials
+            title = redact_credentials(title)
+        except Exception:
+            title = None
 
     # model_usage / model_usage_breakdown: mirrors the Codex normalizer's shape.
     # M1: billable uses the original fresh_input (input_tokens) + output so the

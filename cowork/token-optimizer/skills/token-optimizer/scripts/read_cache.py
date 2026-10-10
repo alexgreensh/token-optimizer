@@ -907,6 +907,13 @@ def _first_read_compress(
         # recorded the opportunity).
         try:
             import hashlib as _hl
+            # The skeleton is derived from file content and can carry a
+            # hardcoded credential; the path can carry tokens too. Same rule
+            # as the read-cache rows above: redacted or not persisted.
+            _safe_skel = _redact_for_storage(result.replacement_text or "")
+            _safe_path = _redact_for_storage(file_path[:500])
+            if _safe_skel is None or _safe_path is None:
+                return False
             _fr_tool_use_id = "fr_shadow_" + _hl.sha256(
                 f"{session_id}|{file_path}".encode("utf-8", errors="replace")
             ).hexdigest()[:16]
@@ -917,15 +924,15 @@ def _first_read_compress(
                 tool_use_id=_fr_tool_use_id,
                 tool_name="Read",
                 tool_type="read",
-                command_or_path=file_path[:500],
+                command_or_path=_safe_path,
                 output_hash=_fr_output_hash,
                 output_chars=len(result.replacement_text or ""),
                 output_tokens_est=skel_tokens,
-                compressed_preview=(result.replacement_text or "")[:1500],
-                source_file_path=file_path[:500],
+                compressed_preview=_safe_skel[:1500],
+                source_file_path=_safe_path,
                 language=language,
                 archived_from="first_read_skeleton",
-                output_text=(result.replacement_text or "")[:50000],
+                output_text=_safe_skel[:50000],
             )
         except Exception:
             pass

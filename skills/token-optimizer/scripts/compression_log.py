@@ -145,6 +145,20 @@ def log_compression_event(
         if original_tokens > 0:
             ratio = round(1.0 - compressed_tokens / original_tokens, 4)
 
+        # DB boundary: command_pattern/detail can embed a file name or label
+        # carrying a credential shape. Redact here so no caller can persist
+        # them raw; on a redactor refusal the text columns go NULL while the
+        # token counts still land.
+        try:
+            from credential_patterns import redact_credentials as _ce_redact
+            if command_pattern:
+                command_pattern = _ce_redact(command_pattern)
+            if detail:
+                detail = _ce_redact(detail)
+        except Exception:
+            command_pattern = None
+            detail = None
+
         safe_tier = tier if tier in _VALID_TIERS else "estimated"
         session_uuid = _extract_session_uuid(session_id)
         resolved_model = _resolve_model(model)

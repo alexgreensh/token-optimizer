@@ -28,11 +28,19 @@ SRC = (SCRIPTS / "measure.py").read_text(encoding="utf-8")
 
 def test_host_value_is_still_preferred():
     """The host wins. This layer observes, it does not overrule."""
-    assert "fill_pct = min(1.0, max(0.0, _used / 100.0))" in SRC
-    assert "host_fill_pct = fill_pct" in SRC
-    # Nothing may reassign fill_pct from our own arithmetic after the host set it.
-    block = SRC[SRC.index("if host_fill_pct is not None:"):][:1200]
-    assert "fill_pct =" not in block, "cross-check must not overrule the host"
+    assert "host_fill_pct = min(1.0, max(0.0, _used / 100.0))" in SRC
+    # Nothing may reassign fill_pct from our own arithmetic inside the
+    # cross-check. The only assignment allowed there is host-sourced: the
+    # sanity override exists because our transcript-token arithmetic is only
+    # as good as an inferred denominator, while the host measures the real
+    # window.
+    block = SRC[SRC.index("if host_fill_pct is not None:"):][:1600]
+    for line in block.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("fill_pct ="):
+            assert stripped == "fill_pct = host_fill_pct", (
+                f"cross-check must only adopt the host figure, never our own arithmetic: {stripped}"
+            )
 
 
 def test_disagreement_records_both_values_and_the_window_source():
@@ -48,7 +56,13 @@ def test_threshold_is_wide_enough_to_ignore_rounding():
 
 def test_gate_still_requires_freshness_and_session_match():
     """An unmatched or stale host figure must not be treated as ground truth."""
-    assert "if age < 10 and want_sid and live_sid == want_sid:" in SRC
+    # Session match is required before the host figure is read at all.
+    assert "if want_sid and live_sid == want_sid:" in SRC
+    # Fresh readings (<10s) remain authoritative.
+    assert "if age < 10:" in SRC
+    # Older same-session readings may only inform the bounded sanity
+    # override (<300s), never authoritative adoption.
+    assert "host_fill_age_s < 300" in SRC
 
 
 def test_crosscheck_is_silent_without_a_host_figure():
@@ -63,7 +77,7 @@ def test_disagreement_is_persisted_for_consumers():
 
 
 def test_crosscheck_cannot_raise_into_the_caller():
-    block = SRC[SRC.index("if host_fill_pct is not None:"):][:1200]
+    block = SRC[SRC.index("if host_fill_pct is not None:"):][:2000]
     assert "except (TypeError, ValueError):" in block
 
 

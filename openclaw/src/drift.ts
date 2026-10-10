@@ -7,6 +7,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import { redact } from "./redact";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -97,9 +98,12 @@ export function captureSnapshot(openclawDir: string): string {
     memoryMdSize: fileSize(path.join(openclawDir, "MEMORY.md")),
     agentsMdSize: fileSize(path.join(openclawDir, "AGENTS.md")),
     toolsMdSize: fileSize(path.join(openclawDir, "TOOLS.md")),
-    modelConfig: readModelConfig(openclawDir),
-    skills: skills.names,
-    agents: agents.names,
+    // Directory entry names and config text are user-derived strings persisted
+    // verbatim; a credential-shaped name must never land in a snapshot raw.
+    // Redaction is deterministic, so drift diffs still compare correctly.
+    modelConfig: redact(readModelConfig(openclawDir)),
+    skills: skills.names.map(redact),
+    agents: agents.names.map(redact),
   };
 
   fs.mkdirSync(SNAPSHOT_DIR, { recursive: true, mode: 0o700 });

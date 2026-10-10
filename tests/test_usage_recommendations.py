@@ -1,7 +1,7 @@
 """Usage recommendations: the daily-measured record both usage-based
 recommendations are read from.
 
-Contract (recs):
+Contract:
   * `usage_recommendations.json` (schema 1) lives in the Token Optimizer data
     dir and carries one item per usage-based recommendation: ``compact_window``
     and ``subagent_cache``. States: recommend | keep | not_enough_data |

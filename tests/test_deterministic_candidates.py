@@ -331,7 +331,7 @@ def test_poll_runs_on_the_same_side_of_an_edit_still_count(sandbox):
 
 
 def test_parameter_sweep_is_not_labeled_polling(sandbox):
-    """F-T2-11: run-0..run-5 collapse to one normalised shape, but each
+    """run-0..run-5 collapse to one normalised shape, but each
     literal command ran ONCE. That is a sweep, not a re-check loop: wrong
     label and wrong remedy text ("script that waits") otherwise."""
     steps = [_bash(f"run-{i}") for i in range(6)]
@@ -835,7 +835,7 @@ def test_inline_script_example_is_launcher_plus_first_60_chars_of_body(sandbox):
 
 def test_inline_scripts_that_differ_only_in_literals_still_match(sandbox):
     # Still grouped under one normalised key; the label is parameter_sweep
-    # because each literal body ran once (F-T2-11).
+    # because each literal body ran once.
     steps = [_bash(_heredoc(f"print('row {i}', {i * 7})")) for i in range(4)]
     res = run_dc("claude", [write_claude(sandbox / "s.jsonl", [steps], "s")])
     assert kinds(res).count("parameter_sweep") == 1

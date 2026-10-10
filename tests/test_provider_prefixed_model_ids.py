@@ -1,6 +1,6 @@
 """Provider-prefixed model ids resolve to the same window/settings as bare ids.
 
-F-T2-2: ``anthropic/claude-haiku-4-5``, ``bedrock/claude-sonnet-4-5`` and
+``anthropic/claude-haiku-4-5``, ``bedrock/claude-sonnet-4-5`` and
 Bedrock's dotted ``us.anthropic.claude-haiku-4-5`` all missed the anchored
 family regex in ``_claude_model_window`` and fell through to the 1M
 "unrecognized" default, understating fill ~5x for 200K models. The same prefix

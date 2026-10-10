@@ -227,7 +227,7 @@ def test_cli_too_thin_says_so_plainly(m):
 
 
 # ===========================================================================
-# compact2: truthful baseline, measured re-read cost, presentation, coach block
+# truthful baseline, measured re-read cost, presentation, coach block
 # ===========================================================================
 
 def _assistant_tool(ctx, tool, inp, tid, req, model="claude-sonnet-5"):

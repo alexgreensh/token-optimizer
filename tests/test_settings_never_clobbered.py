@@ -173,7 +173,7 @@ def test_declared_removal_does_not_license_other_removals(measure, capsys):
 
 
 def test_guard_refuses_a_write_that_drops_a_nested_env_key(measure, capsys):
-    """F-T1-13: a payload that keeps `env` can still drop a var inside it.
+    """a payload that keeps `env` can still drop a var inside it.
 
     The guard diffed top-level keys only, so ``{"env": {"MY_OWN_VAR": "k"}}``
     landed with ``env.MY_KEY`` (a real user var, e.g.
@@ -558,7 +558,7 @@ def test_no_write_site_uses_the_lossy_reader(measure):
 
 
 # ---------------------------------------------------------------------------
-# F-T1-10: a concurrent editor's VALUE edit / removal must survive our write
+# a concurrent editor's VALUE edit / removal must survive our write
 # ---------------------------------------------------------------------------
 
 def test_concurrent_value_edit_survives_a_stale_write(measure):
@@ -626,7 +626,7 @@ def test_deliberate_removal_still_applies_on_top_of_a_concurrent_edit(measure):
 
 
 # ---------------------------------------------------------------------------
-# F-T1-11: a non-regular file at settings.json must not block the read
+# a non-regular file at settings.json must not block the read
 # ---------------------------------------------------------------------------
 
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs POSIX FIFOs")

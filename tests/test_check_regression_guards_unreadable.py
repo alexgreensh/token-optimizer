@@ -1,4 +1,4 @@
-"""F-T2-13: an unreadable file in the tree must not abort the guard check."""
+"""an unreadable file in the tree must not abort the guard check."""
 
 import importlib.util
 import os

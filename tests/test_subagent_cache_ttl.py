@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Regression tests for the subagent prompt-cache TTL feature (1h for subagents).
 
-Contract (brief ttl.md + ttl4.md, FACTS.md):
+Contract:
   * `measure.py subagent-cache status|enable|disable [--json]` sets
     `subagentPromptCacheTtl: "1h"` in the USER settings.json (CLAUDE_CONFIG_DIR
     aware) -- and never overrides a value the user set, never fights an env
     override, never touches anything when a managed/project/local file already
     sets the key, never sets on Claude Code < 2.1.243, and never writes on
     unknown-state (unreadable / missing) settings.
-  * ADVISE-ONLY (ttl4): the automatic path never writes the key. The cached
+  * ADVISE-ONLY: the automatic path never writes the key. The cached
     verdict becomes a per-user recommendation in status/doctor/quick/coach
     ("would have saved / is costing about $X net; turn on/off: <cmd>").
     TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=1 is the ONLY way to get the automatic
@@ -1391,7 +1391,7 @@ def test_subagent_cache_block_shape(m):
 
 # ===========================================================================
 # Evidence-gated automatic path + cached verdict + detached background scan
-# (brief ttl3). The automatic enable happens ONLY when the user's own last
+# The automatic enable happens ONLY when the user's own last
 # 30 days say it pays; the payoff scan never runs inside SessionStart.
 # ===========================================================================
 
@@ -1459,7 +1459,7 @@ def test_session_start_without_cache_spawns_one_scan_and_writes_nothing(m, monke
 
 
 def test_session_start_with_fresh_positive_verdict_only_advises(m, monkeypatch):
-    """ADVISE-ONLY (ttl4): a positive verdict is recorded and surfaced as a
+    """ADVISE-ONLY: a positive verdict is recorded and surfaced as a
     recommendation; session start NEVER writes the key itself."""
     mod = _gated(m, monkeypatch)
     settings = m[1]
@@ -1918,7 +1918,7 @@ def test_ensure_health_writes_only_with_the_force_env(tmp_path):
 
 
 # ===========================================================================
-# Advise-only (ttl4): `disable` is final, the tripwire only rides the force
+# Advise-only: `disable` is final, the tripwire only rides the force
 # env, an earlier auto-set key is never removed silently, and the verdict is
 # a recommendation in status/doctor/quick/coach.
 # ===========================================================================
@@ -2174,12 +2174,11 @@ def test_coach_text_prints_the_advice_line(m, monkeypatch, capsys):
 
 
 # ===========================================================================
-# Settings-write hardening (t1 findings F-T1-3, F-T1-4, F-T1-5, F-T1-6,
-# F-T1-7, F-T1-8)
+# Settings-write hardening
 # ===========================================================================
 
 def test_non_dict_json_settings_is_a_clean_refusal(m):
-    """F-T1-3: `[1,2,3]` is valid JSON but not an object; enable must refuse
+    """`[1,2,3]` is valid JSON but not an object; enable must refuse
     cleanly (unknown-settings), not die at dict(data)."""
     mod, settings, _h = m
     settings.write_text("[1, 2, 3]", encoding="utf-8")
@@ -2192,7 +2191,7 @@ def test_non_dict_json_settings_is_a_clean_refusal(m):
 @pytest.mark.skipif(sys.platform == "win32",
                     reason="POSIX chmod semantics (Windows uses the read-only attribute)")
 def test_readonly_settings_file_is_never_replaced(m):
-    """F-T1-5: a settings.json with no write bits (chmod 444 = user froze it)
+    """a settings.json with no write bits (chmod 444 = user froze it)
     must be refused, not silently replaced via rename."""
     mod, settings, _h = m
     os.chmod(settings, 0o444)
@@ -2206,7 +2205,7 @@ def test_readonly_settings_file_is_never_replaced(m):
 
 
 def test_explicit_command_reclaims_a_released_cohort_lease(m):
-    """F-T1-4: an explicit `enable` must not lose to a herd writer's released
+    """an explicit `enable` must not lose to a herd writer's released
     lease tombstone (reuse_wall ~10s). The unflagged writer still yields."""
     mod, settings, _h = m
     now = time.time()
@@ -2230,7 +2229,7 @@ def test_explicit_command_reclaims_a_released_cohort_lease(m):
 
 
 def test_explicit_enable_creates_a_missing_settings_file(m):
-    """F-T1-6: `subagent-cache enable` on a machine with no settings.json
+    """`subagent-cache enable` on a machine with no settings.json
     creates it (allow_missing) and says so."""
     mod, settings, _h = m
     settings.unlink()
@@ -2242,7 +2241,7 @@ def test_explicit_enable_creates_a_missing_settings_file(m):
 
 
 def test_status_hints_when_the_marker_is_unreadable(m):
-    """F-T1-7: a "1h" key whose marker is corrupt/missing may be an orphaned
+    """a "1h" key whose marker is corrupt/missing may be an orphaned
     TO write -- `status` must say so instead of silently reporting user-set."""
     mod, settings, _h = m
     data = dict(USER_SETTINGS)
@@ -2262,7 +2261,7 @@ def test_status_hints_when_the_marker_is_unreadable(m):
 
 
 def test_bom_settings_file_reads_and_writes(m):
-    """F-T1-8: a UTF-8 BOM is tolerated (utf-8-sig); the file is rewritten
+    """a UTF-8 BOM is tolerated (utf-8-sig); the file is rewritten
     without the BOM and every other key survives."""
     mod, settings, _h = m
     settings.write_bytes(b"\xef\xbb\xbf" + json.dumps(USER_SETTINGS).encode("utf-8"))
@@ -2274,7 +2273,7 @@ def test_bom_settings_file_reads_and_writes(m):
 
 
 def test_comment_settings_stay_unknown(m):
-    """F-T1-8: // comments are NOT documented as tolerated; the file stays
+    """// comments are NOT documented as tolerated; the file stays
     'unknown' and is never written."""
     mod, settings, _h = m
     settings.write_text('{ "model": "opus", // frozen by hand\n}',

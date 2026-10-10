@@ -202,7 +202,7 @@ def test_model_settings_auto_is_per_model(tmp_path):
 
 
 def test_exact_id_beats_family_alias_regardless_of_key_order(tmp_path):
-    """F-T2-4: {"opus": 250K, "claude-opus-5-5": 400K} -- the alias iterates
+    """{"opus": 250K, "claude-opus-5-5": 400K} -- the alias iterates
     first but the exact id must win (200K/400K = 50%, not 200K/250K = 80%)."""
     settings = {"modelSettings": {"opus": {"autoCompactWindow": 250_000},
                                   "claude-opus-5-5": {"autoCompactWindow": 400_000}}}

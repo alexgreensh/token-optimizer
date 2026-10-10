@@ -11,8 +11,8 @@ quality summary the sidecar embeds), so no field can bypass it.
 The fixture plants a distinct secret shape in EVERY state field, runs the
 real compact_capture end-to-end, and asserts no secret survives in either
 artifact. A final test injects a brand-new state field via monkeypatch —
-that is the "new string field must not bypass the pass" guard the brief
-asks for: it fails the day a per-field allowlist replaces the deep pass.
+that is the "new string field must not bypass the pass" guard: it fails
+the day a per-field allowlist replaces the deep pass.
 """
 from __future__ import annotations
 
@@ -163,7 +163,7 @@ def test_all_checkpoint_fields_are_redacted_in_md_and_sidecar(m, monkeypatch):
 
 
 def test_open_questions_todos_agents_named_fields_redacted(m, monkeypatch):
-    """The brief's named gaps: open_questions, todos, agent descriptions."""
+    """The named gaps: open_questions, todos, agent descriptions."""
     mod, cp_dir, tmp_path = m
     _, _, sidecar = _capture(mod, cp_dir, tmp_path, monkeypatch)
     oq = json.dumps(sidecar.get("open_questions", []))

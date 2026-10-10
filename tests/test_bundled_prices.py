@@ -213,7 +213,7 @@ def _bundled_cards(mod, doc, section):
 
 
 def test_fallback_literals_equal_the_bundled_table(monkeypatch):
-    """F-T2-1: when prices.json is absent/disabled, the literals alone must
+    """when prices.json is absent/disabled, the literals alone must
     price every Claude card the bundled table carries -- first-party rates on
     anthropic / vertex-global / bedrock, +10% on vertex-regional."""
     mod = _fresh_measure_no_bundled(monkeypatch)
@@ -235,7 +235,7 @@ def test_fallback_literals_equal_the_bundled_table(monkeypatch):
 
 
 def test_haiku_5_5_prices_correctly_without_the_bundled_file(monkeypatch):
-    """F-T2-1 regression: the reported failure mode -- claude-haiku-5-5 was
+    """the reported failure mode -- claude-haiku-5-5 was
     priced on the generic $1/$5 haiku card when prices.json did not load."""
     mod = _fresh_measure_no_bundled(monkeypatch)
     assert mod._get_model_cost("claude-haiku-5-5", 1_000_000, 0, tier="anthropic") == pytest.approx(0.1)
@@ -449,7 +449,7 @@ def test_transcript_turns_apply_the_haiku_5_5_tier_per_request(tmp_path):
 
 
 def test_bare_haiku_alias_prices_and_windows_agree():
-    """F-T2-5: a bare `haiku` is read as the pre-5.5 generation by BOTH the
+    """a bare `haiku` is read as the pre-5.5 generation by BOTH the
     window table and the price table (conservative: a provider-dependent alias,
     and the same string is the family-bucket label that routing / model-mix
     code passes to _get_model_cost, so repricing it to Haiku 5.5 would silently

@@ -1449,7 +1449,7 @@ def test_windows_classifier_does_not_gain_the_orphan_class():
 
 
 def test_headless_flag_in_a_spaced_argv0_is_embedded_even_when_the_exe_dir_is_unresolvable(monkeypatch):
-    """F-T1-14: a rewritten title carrying `-p` inside argv[0] is positively headless.
+    """a rewritten title carrying `-p` inside argv[0] is positively headless.
 
     The executable's directory cannot be inspected (None), which used to force
     "unknown" before the flags were ever read. Headless is never killable, so

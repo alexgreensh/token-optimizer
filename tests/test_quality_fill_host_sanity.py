@@ -167,7 +167,7 @@ def _write_live_fill_tokens(qc: Path, sid: str, pct: float, age_s: float, tokens
 
 
 def test_pre_compact_host_reading_does_not_override_post_compact_transcript(m, monkeypatch):
-    """F-T1-9: session_id survives /compact, so a 60s-old host reading from
+    """session_id survives /compact, so a 60s-old host reading from
     just before the compact (92%, 184k tokens) still "describes this session".
     The transcript now says 20k tokens: the reading describes a different
     moment (a numerator change, not a wrong denominator), so it must not win."""

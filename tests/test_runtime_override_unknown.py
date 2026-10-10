@@ -1,4 +1,4 @@
-"""F-T2-12: an unrecognised TOKEN_OPTIMIZER_RUNTIME must not be silently ignored."""
+"""an unrecognised TOKEN_OPTIMIZER_RUNTIME must not be silently ignored."""
 
 import sys
 from pathlib import Path

@@ -762,7 +762,7 @@ def test_compaction_memo_off_a_line_boundary_recounts(sb, tmp_path):
 
 
 # --------------------------------------------------------------------------
-# F-T2-10: --session takes a pasted/truncated id
+# --session takes a pasted/truncated id
 # --------------------------------------------------------------------------
 
 def test_truncated_session_id_resolves_a_unique_prefix(sb):
@@ -822,7 +822,7 @@ def test_full_session_id_unaffected_by_prefix_resolution(sb):
 
 @pytest.mark.parametrize("seps", [(",", ":"), (", ", ": "), (",", ": "), (" , ", " : ")])
 def test_compactions_counted_whatever_the_json_spacing(sb, tmp_path, seps):
-    """F-T2-8: the cheap prefilter must not depend on how a writer spaced the
+    """the cheap prefilter must not depend on how a writer spaced the
     JSON; the parsed row decides. A message that merely quotes the marker
     does not count."""
     now = 1_800_000_000

@@ -1,7 +1,7 @@
 """Issue #215 follow-up: PowerShell matcher coverage, pinned exactly.
 
 The Windows shell tool is named ``PowerShell`` and the matcher
-``Bash|PowerShell`` covers it. The rule (from the issue brief): add the
+``Bash|PowerShell`` covers it. The rule: add the
 matcher ONLY where the handler genuinely works on PowerShell tool input --
 output-archiving/activity/intel handlers are tool-name-generic and qualify;
 Bash-GRAMMAR handlers (command rewriting/compression, the PreToolUse Bash

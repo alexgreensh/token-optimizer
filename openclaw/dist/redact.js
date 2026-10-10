@@ -8,7 +8,7 @@ const PATTERNS = [
     /\bsk-[A-Za-z0-9_-]{20,}\b/g,
     /\bAKIA[0-9A-Z]{16}\b/g,
     /\bBearer\s+[A-Za-z0-9._~+/=-]{16,}\b/gi,
-    /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/g,
+    /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g,
     /\b(?:npm_[A-Za-z0-9]{36}|xox[bpa]-[0-9A-Za-z-]{20,}|hf_[A-Za-z0-9]{34}|AIza[0-9A-Za-z_-]{35}|ya29\.[A-Za-z0-9_-]{20,})\b/g,
     /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis):\/\/[^:\s/]+:[^@\s]+@/gi,
     /https?:\/\/[^:\s/@]+:[^@\s]+@/gi,

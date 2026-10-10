@@ -89,7 +89,7 @@ function loadPricingTier(openclawDir) {
 }
 /** Default pricing (USD per token). Verified May 30, 2026. */
 exports.DEFAULT_PRICING = {
-    // Anthropic Claude (1M context for Fable/Opus/Sonnet as of March 13, 2026)
+    // Anthropic Claude (context windows: see claudeContextWindow() in quality.ts)
     // cacheWrite = 5m-TTL (1.25x input); cacheWrite1h = 1h-TTL (2x input).
     fable: { input: 10.0 / 1e6, output: 50.0 / 1e6, cacheRead: 1.0 / 1e6, cacheWrite: 12.5 / 1e6, cacheWrite1h: 20.0 / 1e6 },
     opus: { input: 5.0 / 1e6, output: 25.0 / 1e6, cacheRead: 0.5 / 1e6, cacheWrite: 6.25 / 1e6, cacheWrite1h: 10.0 / 1e6 },
@@ -201,6 +201,10 @@ Object.assign(OPENAI_LONG_CONTEXT_PRICING, prices_generated_1.GENERATED_OPENAI_L
 // tokens. Rates come only from the generated table.
 const GEMINI_LONG_CONTEXT_INPUT_THRESHOLD = 200_000;
 const GEMINI_LONG_CONTEXT_PRICING = { ...prices_generated_1.GENERATED_GEMINI_LONG_CONTEXT_PRICING };
+// Claude Haiku 5.5 is priced by prompt length: a request whose full prompt
+// (input + cache reads + cache writes) is over 100K tokens pays 5x on every rate.
+const ANTHROPIC_LONG_CONTEXT_INPUT_THRESHOLD = 100_000;
+const ANTHROPIC_LONG_CONTEXT_PRICING = { ...prices_generated_1.GENERATED_ANTHROPIC_LONG_CONTEXT_PRICING };
 const CLAUDE_GENERATION_RE = /(fable|mythos|opus|sonnet|haiku)[-._]?(\d+)(?:[-._](\d{1,2}))?(?![0-9])/;
 // Claude 3-era ids put the version before the family ("claude-3-5-sonnet-20241022").
 const CLAUDE_LEGACY_ID_RE = /claude-(\d)(?:[-.](\d))?-(opus|sonnet|haiku)(?![a-z])/;
@@ -578,7 +582,9 @@ function calculateCost(tokens, model, openclawDir, cacheWriteSplit) {
     const requestInputTokens = tokens.input + tokens.cacheRead + tokens.cacheWrite;
     const [longTable, longThreshold] = pricingKey.startsWith("gemini-")
         ? [GEMINI_LONG_CONTEXT_PRICING, GEMINI_LONG_CONTEXT_INPUT_THRESHOLD]
-        : [OPENAI_LONG_CONTEXT_PRICING, OPENAI_LONG_CONTEXT_INPUT_THRESHOLD];
+        : Object.prototype.hasOwnProperty.call(ANTHROPIC_LONG_CONTEXT_PRICING, pricingKey)
+            ? [ANTHROPIC_LONG_CONTEXT_PRICING, ANTHROPIC_LONG_CONTEXT_INPUT_THRESHOLD]
+            : [OPENAI_LONG_CONTEXT_PRICING, OPENAI_LONG_CONTEXT_INPUT_THRESHOLD];
     const rates = baseRates === exports.DEFAULT_PRICING[pricingKey]
         && requestInputTokens > longThreshold
         && Object.prototype.hasOwnProperty.call(longTable, pricingKey)

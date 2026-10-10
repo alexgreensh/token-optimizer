@@ -1,0 +1,113 @@
+{
+  "_doc": "Shared redaction vectors. Run by tests/test_redaction_vectors.py (Python redactor), pi/test/redaction-vectors.test.mjs, opencode/src/redaction-vectors.test.ts and openclaw/src/redaction-vectors.test.ts against the four redactors, which must agree. 'input' and 'absent' are arrays of parts joined at runtime so no secret-shaped literal sits in this file (push protection scans fixtures). 'absent' fragments must NOT survive redaction, 'present' fragments MUST survive. All values are invented.",
+  "vectors": [
+    {
+      "name": "pem-full-block",
+      "input": ["here is my key\n-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\nBKcwggSjAgEAAoIBAQC7Zk3Lm9Xq\n-----END PRIVATE KEY-----\nthanks, that was it"],
+      "absent": ["MIIEvQIBADANBg", "BKcwggSjAgEAAoIB", "7Zk3Lm9Xq", "-----BEGIN", "-----END"],
+      "present": ["here is my key", "thanks, that was it"]
+    },
+    {
+      "name": "pem-rsa-block",
+      "input": ["k=-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAwq9Zr1Tt\nuV5nB2cXk8Lp\n-----END RSA PRIVATE KEY----- done"],
+      "absent": ["MIIEowIBAAKCAQEA", "uV5nB2cXk8Lp"],
+      "present": [" done"]
+    },
+    {
+      "name": "pem-ec-block",
+      "input": ["-----BEGIN EC PRIVATE KEY-----\nMHcCAQEEIJ3kQw8Rt5Yx\n-----END EC PRIVATE KEY-----\nafter"],
+      "absent": ["MHcCAQEEIJ3kQw8Rt5Yx"],
+      "present": ["after"]
+    },
+    {
+      "name": "pem-openssh-block",
+      "input": ["-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmU\n-----END OPENSSH PRIVATE KEY-----\nafter"],
+      "absent": ["b3BlbnNzaC1rZXktdjEAAAAABG5vbmU"],
+      "present": ["after"]
+    },
+    {
+      "name": "pem-encrypted-block",
+      "input": ["-----BEGIN ENCRYPTED PRIVATE KEY-----\nMIIFHDBOBgkqhkiG9w0BBQ0wQTAp\n-----END ENCRYPTED PRIVATE KEY-----\nafter"],
+      "absent": ["MIIFHDBOBgkqhkiG9w0BBQ0wQTAp"],
+      "present": ["after"]
+    },
+    {
+      "name": "pem-unterminated-block-runs-to-end-of-text",
+      "input": ["note to self\n-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\nBKcwggSjAgEAAoIBAQC7Zk3Lm9Xq\nZm9vYmFyYmF6cXV4"],
+      "absent": ["MIIEvQIBADANBg", "BKcwggSjAgEAAoIB", "Zm9vYmFyYmF6cXV4"],
+      "present": ["note to self"]
+    },
+    {
+      "name": "pem-only-the-begin-line-survives-a-cut",
+      "input": ["-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC"],
+      "absent": ["MIIEvQIBADANBg"],
+      "present": []
+    },
+    {
+      "name": "pem-two-blocks-keep-the-text-between",
+      "input": ["-----BEGIN PRIVATE KEY-----\nAAAAfirstkeybody1234\n-----END PRIVATE KEY-----\nBETWEEN the keys\n-----BEGIN PRIVATE KEY-----\nBBBBsecondkeybody5678\n-----END PRIVATE KEY-----"],
+      "absent": ["AAAAfirstkeybody1234", "BBBBsecondkeybody5678"],
+      "present": ["BETWEEN the keys"]
+    },
+    {
+      "name": "github-pat",
+      "input": ["token ", "ghp_", "Q7r8T9u0V1w2X3y4Z5a6B7c8D9e0F1g2H3i4", " end"],
+      "absent": ["Q7r8T9u0V1w2"],
+      "present": ["token ", " end"]
+    },
+    {
+      "name": "openai-style-key",
+      "input": ["key=", "sk-", "Ab3dEf6hIj9kLm2nOp5qRs8t", " end"],
+      "absent": ["Ab3dEf6hIj9kLm2n"],
+      "present": [" end"]
+    },
+    {
+      "name": "aws-access-key",
+      "input": ["id ", "AKIA", "IOSFODNN7EXAMPLE", " end"],
+      "absent": ["IOSFODNN7EXAMPLE"],
+      "present": ["id ", " end"]
+    },
+    {
+      "name": "bearer-header",
+      "input": ["Authorization: Bearer ", "q1w2e3r4t5y6u7i8o9p0a1s2d3f4g5h6", " ok"],
+      "absent": ["q1w2e3r4t5y6u7i8o9p0"],
+      "present": [" ok"]
+    },
+    {
+      "name": "database-uri-credential",
+      "input": ["connect with postgres://svc:Sup3rS3cretPw!@db.internal/app now"],
+      "absent": ["Sup3rS3cretPw"],
+      "present": ["connect with ", "db.internal/app now"]
+    },
+    {
+      "name": "http-basic-auth-url",
+      "input": ["fetch https://deploy:Hunter2Hunter2@example.com/x now"],
+      "absent": ["Hunter2Hunter2"],
+      "present": ["example.com/x now"]
+    },
+    {
+      "name": "url-token-param",
+      "input": ["GET https://example.com/a?token=ZyXwVuTsRqPoNmLk&page=2"],
+      "absent": ["ZyXwVuTsRqPoNmLk"],
+      "present": ["page=2"]
+    },
+    {
+      "name": "db-env-password",
+      "input": ["PGPASSWORD=Tr0ub4dor3xyz psql -h db"],
+      "absent": ["Tr0ub4dor3xyz"],
+      "present": ["psql -h db"]
+    },
+    {
+      "name": "cli-password-flag",
+      "input": ["login --password Gr33nEggs4Breakfast --verbose"],
+      "absent": ["Gr33nEggs4Breakfast"],
+      "present": ["--verbose"]
+    },
+    {
+      "name": "benign-text-untouched",
+      "input": ["Refactor the key-value store; token budget is 4000, page=2, begin the private review."],
+      "absent": [],
+      "present": ["Refactor the key-value store; token budget is 4000, page=2, begin the private review."]
+    }
+  ]
+}

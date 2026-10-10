@@ -76,7 +76,7 @@ export interface CacheWriteSplit {
 
 /** Default pricing (USD per token). Verified May 30, 2026. */
 export const DEFAULT_PRICING: Record<string, ModelPricing> = {
-  // Anthropic Claude (1M context for Fable/Opus/Sonnet as of March 13, 2026)
+  // Anthropic Claude (context windows: see claudeContextWindow() in quality.ts)
   // cacheWrite = 5m-TTL (1.25x input); cacheWrite1h = 1h-TTL (2x input).
   fable:           { input: 10.0 / 1e6,  output: 50.0 / 1e6,  cacheRead: 1.0 / 1e6,   cacheWrite: 12.5 / 1e6, cacheWrite1h: 20.0 / 1e6 },
   opus:            { input: 5.0 / 1e6,   output: 25.0 / 1e6,  cacheRead: 0.5 / 1e6,   cacheWrite: 6.25 / 1e6, cacheWrite1h: 10.0 / 1e6 },

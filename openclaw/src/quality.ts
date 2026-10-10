@@ -36,9 +36,8 @@ export interface QualityReport {
 // Signal scorers (each returns 0-100)
 // ---------------------------------------------------------------------------
 
-/** Context window sizes by model family (tokens). Verified March 17, 2026. */
+/** Context window sizes by model family (tokens). Claude ids use claudeContextWindow() below. */
 const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
-  // Anthropic (Opus/Sonnet 1M GA since March 13, 2026)
   // (Claude ids resolve through claudeContextWindow() below, not this table.)
   // OpenAI GPT-5 family
   "gpt-5.6": 1_050_000,
@@ -150,6 +149,19 @@ export function contextWindowForModel(model: string): number {
 }
 
 /**
+ * Opus/Sonnet 4.6 are 1M only as the `[1m]` variant, but the runtime records
+ * the plain id. Observed tokens above the 200K window prove the 1M variant, so
+ * widen the window instead of reporting a fill above 100%. Any other model, or
+ * tokens that fit, keep the table window.
+ */
+export function promoteWindowForObservedTokens(model: string, window: number, tokens: number): number {
+  const lower = (model ?? "").toLowerCase();
+  if (window >= 1_000_000 || lower.includes("[1m]")) return window;
+  if (!/(?:^|[^a-z])(?:opus|sonnet)[-_.]4[-_.]6(?!\d)/.test(lower)) return window;
+  return tokens > window ? 1_000_000 : window;
+}
+
+/**
  * Signal 1: Context fill (20%)
  * How much of each model's context window is being used.
  * Uses per-model context window sizes for accurate measurement.
@@ -163,7 +175,8 @@ function scoreContextFill(
 
   if (runs.length > 0) {
     const fills = runs.map((r) => {
-      const window = contextWindowForModel(r.model);
+      const window = promoteWindowForObservedTokens(
+        r.model, contextWindowForModel(r.model), r.tokens.input);
       return r.tokens.input / window;
     });
     avgFill = fills.reduce((a, b) => a + b, 0) / fills.length;
@@ -678,7 +691,8 @@ export function scoreQuality(
  */
 export function scoreSessionQuality(run: AgentRun): { score: number; grade: string; band: string } {
   // Signal 1: Context fill (25%) - lower fill = better
-  const ctxWindow = contextWindowForModel(run.model);
+  const ctxWindow = promoteWindowForObservedTokens(
+    run.model, contextWindowForModel(run.model), run.tokens.input);
   const fillRatio = ctxWindow > 0 ? run.tokens.input / ctxWindow : 0;
   let fillScore: number;
   if (fillRatio < 0.2) fillScore = 100;

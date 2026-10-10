@@ -124,21 +124,38 @@ function _claudeHome() {
 }
 const CLAUDE_HOME = _claudeHome();
 
+// Host parse (Claude Code 2.1.296 Dd/FOo): scientific notation and thousand
+// separators first, then a decimal prefix. NaN or <= 0 is invalid and IGNORED
+// (the next source applies). Mirrors measure.py _host_parse_int; shared vectors
+// live in tests/fixtures/compact_window_env_vectors.json.
+const _HOST_SCI = /^[+-]?(\d+(\.\d*)?|\.\d+)[eE][+-]?\d+$/;
+const _HOST_GROUPED = /^[+-]?\d{1,3}([_,\u00A0\u202F ])\d{3}(?:\1\d{3})*$/;
+function _hostParseInt(raw) {
+  const text = String(raw).trim();
+  if (text.length <= 32) {
+    if (_HOST_SCI.test(text)) {
+      const n = Number(text);
+      return Number.isInteger(n) ? n : NaN;
+    }
+    if (_HOST_GROUPED.test(text)) return parseInt(text.replace(/[_,\u00A0\u202F ]/g, ''), 10);
+  }
+  return parseInt(text, 10);
+}
+function _parseCompactWindow(v) {
+  if (v === null || v === undefined || typeof v === 'boolean') return null;
+  if (typeof v === 'number') return Number.isFinite(v) && v > 0 ? Math.floor(v) : null;
+  const n = _hostParseInt(v);
+  return Number.isNaN(n) || n <= 0 ? null : n;
+}
 // ---- Effective compact window (JS twin of measure.py effective_compact_window) ----
 // Where THIS session auto-compacts, so the fill bar divides by the window the
 // user will actually hit. Precedence (code.claude.com/docs/en/model-config):
 // env CLAUDE_CODE_AUTO_COMPACT_WINDOW > per-model modelSettings (/autocompact)
 // > top-level autoCompactWindow. Explicit values clamp to 100000..1000000 and
-// cap at the model window; CLAUDE_AUTOCOMPACT_PCT_OVERRIDE (1-99) then scales it
+// cap at the model window; CLAUDE_AUTOCOMPACT_PCT_OVERRIDE (1-99, may be a float) then scales it
 // down (it can never raise it). Returns the window in tokens ONLY when a real
 // user override shrank it below the model window (the tuned ~967K default is
 // not an override of the host's own number); otherwise null.
-function _parseCompactWindow(v) {
-  if (v === null || v === undefined || typeof v === 'boolean') return null;
-  if (typeof v === 'number') return Number.isFinite(v) && v > 0 ? Math.floor(v) : null;
-  const m = /^\s*(\d+)/.exec(String(v));
-  return m ? parseInt(m[1], 10) : null;
-}
 function _canonModelId(model) {
   let m = String(model || '').trim().toLowerCase();
   if (!m) return '';
@@ -153,6 +170,7 @@ function _reducedCompactWindow(modelId, modelWindow, settings) {
     const envVal = (name) => (process.env[name] !== undefined ? process.env[name] : envBlock[name]);
     const clamp = (n) => Math.max(100000, Math.min(1000000, n));
     let tokens = null;
+    let autoForModel = false;
     const fromEnv = _parseCompactWindow(envVal('CLAUDE_CODE_AUTO_COMPACT_WINDOW'));
     if (fromEnv !== null) {
       tokens = clamp(fromEnv);
@@ -168,18 +186,22 @@ function _reducedCompactWindow(modelId, modelWindow, settings) {
           if (!entry || typeof entry !== 'object' || !('autoCompactWindow' in entry)) continue;
           const k = String(key).trim().toLowerCase();
           if (k === raw || k === family || _canonModelId(k) === canon) {
+            // `/autocompact auto` is per model and means the tuned default: it
+            // replaces the top-level value for this model (no fall-through).
+            if (entry.autoCompactWindow === 'auto') { autoForModel = true; break; }
             const w = _parseCompactWindow(entry.autoCompactWindow);
             if (w !== null) { tokens = clamp(w); break; }
           }
         }
       }
-      if (tokens === null && settings) {
+      if (tokens === null && settings && !autoForModel) {
         const top = _parseCompactWindow(settings.autoCompactWindow);
         if (top !== null) tokens = clamp(top);
       }
     }
     if (tokens !== null && tokens > modelWindow) tokens = modelWindow;
-    const pct = parseInt(String(envVal('CLAUDE_AUTOCOMPACT_PCT_OVERRIDE') ?? '').trim(), 10);
+    // The host reads the percentage with parseFloat ("50.5" and "50%" count).
+    const pct = parseFloat(String(envVal('CLAUDE_AUTOCOMPACT_PCT_OVERRIDE') ?? '').trim());
     if (Number.isFinite(pct) && pct >= 1 && pct < 100) {
       tokens = Math.floor((tokens === null ? Math.min(modelWindow, 967000) : tokens) * pct / 100);
     }

@@ -70,4 +70,37 @@ const cost = (t, r) => t.input * r.input + t.output * r.output + t.cacheRead * r
     (0, bun_test_1.expect)((0, pricing_1.claudePricingKey)("claude-3-5-haiku-20241022", pricing_1.DEFAULT_PRICING)).toBe("haiku-3-5");
     (0, bun_test_1.expect)((0, pricing_1.claudePricingKey)(123, pricing_1.DEFAULT_PRICING)).toBeNull();
 });
+(0, bun_test_1.test)("a Haiku 5.5 request past 100k prompt tokens (cache reads count) bills at the 5x long-context rate", () => {
+    const long = prices_generated_1.GENERATED_ANTHROPIC_LONG_CONTEXT_PRICING["haiku-5-5"];
+    const base = pricing_1.DEFAULT_PRICING["haiku-5-5"] ?? prices_generated_1.GENERATED_PRICING["haiku-5-5"];
+    (0, bun_test_1.expect)(long.input).toBeCloseTo(base.input * 5, 12);
+    const big = { input: 10_000, output: 1_000, cacheRead: 95_000, cacheWrite: 0 };
+    (0, bun_test_1.expect)((0, pricing_1.calculateCost)(big, "haiku-5-5")).toBeCloseTo(10_000 * long.input + 1_000 * long.output + 95_000 * long.cacheRead, 8);
+    const small = { input: 10_000, output: 1_000, cacheRead: 50_000, cacheWrite: 0 };
+    (0, bun_test_1.expect)((0, pricing_1.calculateCost)(small, "haiku-5-5")).toBeCloseTo(10_000 * base.input + 1_000 * base.output + 50_000 * base.cacheRead, 8);
+});
+const CLAUDE_WINDOWS = [
+    ["claude-haiku-5-5", 1_000_000],
+    ["anthropic/claude-haiku-5-5", 1_000_000],
+    ["claude-haiku-4-5", 200_000],
+    ["claude-haiku-4-5-20251001", 200_000],
+    ["claude-sonnet-4-6", 200_000],
+    ["claude-sonnet-4-6[1m]", 1_000_000],
+    ["claude-opus-4-6", 200_000],
+    ["claude-opus-4-6[1m]", 1_000_000],
+    ["claude-opus-4-7", 1_000_000],
+    ["claude-opus-4-8", 1_000_000],
+    ["claude-sonnet-5", 1_000_000],
+    ["claude-sonnet-5-5", 1_000_000],
+    ["claude-opus-5-5", 1_000_000],
+    ["claude-fable-5-1", 1_000_000],
+    ["claude-3-5-sonnet-20241022", 200_000],
+    ["claude-3-haiku-20240307", 200_000],
+    ["claude-opus-4-1-20250805", 200_000],
+];
+(0, bun_test_1.test)("Claude context windows follow the documented per-model table", () => {
+    for (const [model, window] of CLAUDE_WINDOWS) {
+        (0, bun_test_1.expect)([model, (0, quality_1.contextWindowForModel)(model)]).toEqual([model, window]);
+    }
+});
 //# sourceMappingURL=pricing-gpt56.test.js.map

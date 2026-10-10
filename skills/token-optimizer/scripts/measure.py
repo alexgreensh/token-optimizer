@@ -1250,7 +1250,7 @@ def _save_pricing_tier(tier):
 
 
 def _get_model_cost(model, input_tokens, output_tokens, cache_read=0, cache_create=0, tier=None,
-                    cache_create_1h=None, cache_create_5m=None):
+                    cache_create_1h=None, cache_create_5m=None, per_request=False):
     """Calculate USD cost for a given model and token counts using the active pricing tier.
 
     Returns cost in USD. OpenAI/Codex and Gemini models use provider-specific
@@ -1261,6 +1261,11 @@ def _get_model_cost(model, input_tokens, output_tokens, cache_read=0, cache_crea
       - cache_create_5m: 5-minute TTL writes (1.25x input rate, e.g. $6.25/MTok for Opus)
     When the split is unavailable (both None), the total cache_create uses the 5m rate
     (conservative; 5m is the more common tier for most Claude Code workloads).
+
+    per_request=True says the token counts are ONE API request. Only then does a
+    model with a prompt-length card (Haiku 5.5 over 100K) pay it: the tier is
+    decided per request, so a session total, a per-day sum or a 1M-token rate
+    probe must be priced on the base card or it reads ~5x too high.
     """
     if tier is None:
         tier = _load_pricing_tier()
@@ -1297,8 +1302,9 @@ def _get_model_cost(model, input_tokens, output_tokens, cache_read=0, cache_crea
 
     # Prompt-length surcharge: Anthropic counts ALL of a request's input
     # (input + cache reads + cache writes = full_input) against the
-    # long-context threshold. Haiku 5.5 >100K pays 5x on every rate.
-    if (normalized in lc_models
+    # long-context threshold. Haiku 5.5 >100K pays 5x on every rate. Applies
+    # to a single request only (per_request); aggregates use the base card.
+    if (per_request and normalized in lc_models
             and full_input > ANTHROPIC_LONG_CONTEXT_INPUT_THRESHOLD):
         rates = lc_models[normalized]
 
@@ -3320,6 +3326,73 @@ def _claude_model_window(model_str):
     return 1_000_000
 
 
+def _configured_model_string():
+    """The model string the user configured (env first, then settings), the
+    same lookup order detect_context_window() uses. Lowercased, may be ''."""
+    for var in ("CLAUDE_MODEL", "ANTHROPIC_MODEL"):
+        v = (os.environ.get(var) or "").strip().lower()
+        if v:
+            return v
+    for cfg_name in ("config.json", "settings.json"):
+        try:
+            with open(CLAUDE_DIR / cfg_name, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            m = cfg.get("model") or cfg.get("primaryModel") or ""
+            if isinstance(m, str) and m.strip():
+                return m.strip().lower()
+        except (OSError, ValueError, AttributeError):
+            continue
+    return ""
+
+
+def _plain_46_family(model_str):
+    """'opus' / 'sonnet' when model_str is a 4.6 id WITHOUT the [1m] suffix."""
+    m = (model_str or "").lower().strip()
+    if not m or "[1m]" in m or "1000k" in m:
+        return None
+    m = re.sub(r"[-@]\d{8}$", "", m).strip()
+    match = _CLAUDE_MODEL_ID_RE.match(m)
+    if not match:
+        return None
+    family, major, minor = match.groups()
+    if family in ("opus", "sonnet") and major == "4" and minor == "6":
+        return family
+    return None
+
+
+def _promote_plain_46_window(model_str, window, context_tokens):
+    """Opus/Sonnet 4.6 reach 1M only as the [1m] variant, but Claude Code
+    writes the PLAIN id into the transcript, so a 1M session looks 200K.
+
+    Two pieces of evidence say the window is bigger, in this order:
+      1. the configured (env/settings) model carries [1m] for the same family;
+      2. observed tokens exceed the window (arithmetic, needs no cooperation).
+    Returns (window, source_or_None, inferred_from_tokens). Explicit user
+    overrides (TOKEN_OPTIMIZER_CONTEXT_SIZE, --context-size, DISABLE_1M) are
+    never promoted: _context_window_for_model_str() returns them unchanged for
+    the [1m] spelling too, which is how that case is detected.
+    """
+    family = _plain_46_family(model_str)
+    if not family or window >= 1_000_000:
+        return window, None, False
+    promoted = _context_window_for_model_str(f"{model_str.strip()}[1m]")
+    if promoted <= window:
+        return window, None, False
+    configured = _configured_model_string()
+    if "[1m]" in configured:
+        c = _CLAUDE_MODEL_ID_RE.match(
+            re.sub(r"[-@]\d{8}$", "", configured.replace("[1m]", "").strip()))
+        if c and c.group(1) == family and (c.group(2) is None
+                                          or (c.group(2), c.group(3)) == ("4", "6")):
+            return promoted, f"settings/env model [1m]: {configured}", False
+    try:
+        if context_tokens is not None and float(context_tokens) > window:
+            return promoted, "observed tokens above the 200K window (plain 4.6 id, 1M variant)", True
+    except (TypeError, ValueError):
+        pass
+    return window, None, False
+
+
 def _context_window_for_model_str(model_str):
     """Resolve a context-window size for a SPECIFIC model string (e.g. one
     parsed straight out of a transcript message).
@@ -3371,13 +3444,12 @@ def _context_window_for_model_str(model_str):
 #   percentage of the window already used when compaction runs -- lower values
 #   compact EARLIER and it can never raise the threshold.
 #
-# modelSettings shape: verified 2026-10-10 from a real settings.json --
-#   "modelSettings": {"claude-opus-5-5": {"effortLevel": "medium"}, ...}
-#   i.e. keyed by FULL model id, one object per model. NOT VERIFIED: the field
-#   name inside that object that holds the compact window. `autoCompactWindow`
-#   is kept as the working assumption (it mirrors the top-level setting); if
-#   Claude Code writes a different name, per-model overrides are silently
-#   ignored here and the top-level setting applies.
+# modelSettings shape: verified 2026-10-10 from a real settings.json and from the
+# Claude Code 2.1.296 binary's schema --
+#   "modelSettings": {"claude-opus-5-5": {"autoCompactWindow": 500000 | "auto"}, ...}
+#   keyed by FULL model id, one object per model; /autocompact writes it.
+#   "auto" means the window tuned for the model and replaces the top-level
+#   autoCompactWindow for that model (it does not fall through to it).
 # ---------------------------------------------------------------------------
 _COMPACT_WINDOW_MIN = 100_000
 _COMPACT_WINDOW_MAX = 1_000_000
@@ -3385,12 +3457,40 @@ _COMPACT_WINDOW_MAX = 1_000_000
 _COMPACT_WINDOW_1M_DEFAULT = 967_000
 
 
-def _parse_compact_window_value(value):
-    """Parse a compact-window token count -> int, or None when unparseable.
+# Host parse of CLAUDE_CODE_AUTO_COMPACT_WINDOW (Claude Code 2.1.296 Dd/FOo/GFe):
+# scientific notation and thousand separators first, then a decimal prefix.
+# NaN or <= 0 is INVALID and IGNORED (the next source applies); a valid value is
+# capped at 1M and floored at 100K by _clamp_compact_window. Shared vectors:
+# tests/fixtures/compact_window_env_vectors.json (Python, statusline.js, parse.ts).
+_HOST_SCI_RE = re.compile(r"^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)[eE][+-]?[0-9]+$")
+_HOST_GROUPED_RE = re.compile("^[+-]?[0-9]{1,3}([_,\u00a0\u202f ])[0-9]{3}(?:\\1[0-9]{3})*$")
+_HOST_SEPARATOR_RE = re.compile("[_,\u00a0\u202f ]")
+_HOST_INT_PREFIX_RE = re.compile(r"^[+-]?[0-9]+")
+_HOST_FLOAT_PREFIX_RE = re.compile(r"^[+-]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?")
 
-    Decimal-prefix integer semantics (matches the desktop band's parser):
-    "500000" and 500000 -> 500000; "auto", "", None and garbage -> None so the
-    caller falls through to the next precedence level.
+
+def _host_parse_int(raw):
+    """Claude Code's Dd(): int, or None where the host yields NaN."""
+    text = str(raw).strip()
+    if len(text) <= 32:
+        if _HOST_SCI_RE.match(text):
+            try:
+                number = float(text)
+            except ValueError:
+                return None
+            return int(number) if math.isfinite(number) and number == int(number) else None
+        if _HOST_GROUPED_RE.match(text):
+            return int(_HOST_SEPARATOR_RE.sub("", text))
+    m = _HOST_INT_PREFIX_RE.match(text)
+    return int(m.group(0)) if m else None
+
+
+def _parse_compact_window_value(value):
+    """Parse a compact-window token count -> int, or None when it is ignored.
+
+    Numbers pass through when positive. Strings parse the way the host does
+    (see _host_parse_int); "auto", "", None, garbage, zero and negatives -> None
+    so the caller falls through to the next precedence level.
     """
     if value is None or isinstance(value, bool):
         return None
@@ -3398,10 +3498,8 @@ def _parse_compact_window_value(value):
         if not math.isfinite(value) or value <= 0:
             return None
         return int(value)
-    m = re.match(r"\s*(\d+)", str(value))
-    if not m:
-        return None
-    return int(m.group(1))
+    parsed = _host_parse_int(value)
+    return parsed if parsed is not None and parsed > 0 else None
 
 
 def _clamp_compact_window(tokens):
@@ -3514,6 +3612,14 @@ def _resolve_compact_window(model, env=None, settings=None):
             tokens = _clamp_compact_window(parsed_ms)
             source = f"modelSettings[{ms_key}].autoCompactWindow={ms_val}"
             user_override = True
+        elif ms_val == "auto":
+            # `/autocompact auto` is stored per model and means "the window
+            # tuned for this model": it replaces the top-level value for this
+            # model, it does not fall through to it (host: byModel[key] ?? top
+            # level, then "auto" -> tuned default).
+            tokens = default_tokens
+            source = (f"modelSettings[{ms_key}].autoCompactWindow='auto' "
+                      f"(tuned default, top-level autoCompactWindow not used); {default_source}")
         else:
             if ms_val is not None:
                 prefix = (f"modelSettings[{ms_key}].autoCompactWindow={ms_val!r} "
@@ -3542,13 +3648,15 @@ def _resolve_compact_window(model, env=None, settings=None):
     pct = None
     raw_pct = env.get("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE")
     if raw_pct is not None:
+        # The host reads it with parseFloat: a float prefix, "50.5" and "50%" count.
+        m_pct = _HOST_FLOAT_PREFIX_RE.match(str(raw_pct).strip())
         try:
-            pct = int(str(raw_pct).strip())
-        except (TypeError, ValueError):
+            pct = float(m_pct.group(0)) if m_pct else None
+        except ValueError:
             pct = None
-    if pct is not None and 1 <= pct < 100:
-        tokens = tokens * pct // 100
-        source += f" x CLAUDE_AUTOCOMPACT_PCT_OVERRIDE={pct}%"
+    if pct is not None and math.isfinite(pct) and 1 <= pct < 100:
+        tokens = int(tokens * pct / 100)
+        source += f" x CLAUDE_AUTOCOMPACT_PCT_OVERRIDE={pct:g}%"
         user_override = True
 
     return {
@@ -3660,7 +3768,8 @@ def detect_context_window():
          then conservative Codex effective default
       5. Claude: CLAUDE_MODEL / ANTHROPIC_MODEL env var -> check model family
       6. Claude config.json or settings.json model field -> check model family
-      7. Claude fallback: 1M (Opus 4.6+/4.7 and Sonnet 4.6 are 1M GA since March 2026)
+      7. Claude fallback: 1M (Sonnet 5+, Opus 4.7+, Fable and Haiku 5.5 are 1M with no
+         suffix; Opus/Sonnet 4.6 are 1M only as the [1m] variant)
     """
     global _context_window_cache
     # Resolve context flags from process env AND settings.json:
@@ -10860,7 +10969,8 @@ def _extract_costly_prompts(jsonl_path, tier=None, top_n=5):
                         cr = _safe_int(usage.get("cache_read_input_tokens", 0))
                         cc = _safe_int(usage.get("cache_creation_input_tokens", 0))
                         model = _record_model(msg)
-                        cost = _get_model_cost(model, inp, out, cr, cc, tier=tier)
+                        cost = _get_model_cost(model, inp, out, cr, cc, tier=tier,
+                                               per_request=True)
                         pending_prompt["tokens_in"] = inp + cr + cc
                         pending_prompt["tokens_out"] = out
                         pending_prompt["fresh_input"] = inp
@@ -10935,18 +11045,18 @@ def _extract_topic(text):
         if line:
             text = line
             break
-    # Truncate
-    if len(text) > 120:
-        text = text[:117] + "..."
     # The topic is user text persisted to session_log/quality-cache and
     # rendered into checkpoints — credentials must not ride along. If the
     # shared redactor is unavailable or refuses, drop the topic rather than
-    # persist it raw.
+    # persist it raw. Redact BEFORE truncating: a secret that straddles the
+    # cut is a prefix no pattern recognises.
     try:
         from credential_patterns import redact_credentials as _topic_redact
         text = _topic_redact(text)
     except Exception:
         return None
+    if len(text) > 120:
+        text = text[:117] + "..."
     return text or None
 
 
@@ -11604,9 +11714,11 @@ def parse_session_turns(filepath):
                 # Price cache-create by TTL tier when the per-turn split is available.
                 if cc_1h or cc_5m:
                     cost = _get_model_cost(model, inp_tok, out_tok, cr, cc, tier=tier,
-                                           cache_create_1h=cc_1h, cache_create_5m=cc_5m)
+                                           cache_create_1h=cc_1h, cache_create_5m=cc_5m,
+                                           per_request=True)
                 else:
-                    cost = _get_model_cost(model, inp_tok, out_tok, cr, cc, tier=tier)
+                    cost = _get_model_cost(model, inp_tok, out_tok, cr, cc, tier=tier,
+                                           per_request=True)
 
                 turns.append({
                     "turn_index": turn_index,
@@ -34005,6 +34117,15 @@ def compute_quality_score(quality_data, session_id=None):
         "session data" if quality_data.get("model_context_window") else ctx_window_source
     )
     model_name = quality_data.get("model") or quality_data.get("current_model")
+    # Transcripts carry the plain 4.6 id even for the 1M variant: promote when
+    # settings say [1m] or the observed tokens already prove it.
+    window_inferred_from_tokens = False
+    if quality_data.get("model_context_window"):
+        _promoted, _why, window_inferred_from_tokens = _promote_plain_46_window(
+            model_name, model_context_window, quality_data.get("context_tokens"))
+        if _why:
+            model_context_window = _promoted
+            model_context_window_source = _why
 
     # Effective compact window for this session's model (env > modelSettings
     # > autoCompactWindow > default). Fill denominates against it ONLY when a
@@ -34153,7 +34274,7 @@ def compute_quality_score(quality_data, session_id=None):
     fill_quality, curve_name = _estimate_quality_with_curve(
         model_fill,
         model=model_name,
-        context_window=quality_data.get("model_context_window") or ctx_window,
+        context_window=model_context_window,
     )
     # Scale to 0-100 score (76 at worst = 0, 98 at best = 100)
     fill_score = max(0, min(100, (fill_quality - 76) / (98 - 76) * 100))
@@ -34357,9 +34478,10 @@ def compute_quality_score(quality_data, session_id=None):
             "quality_estimate": fill_quality,
             "quality_curve": curve_name,
             "model": model_name or "unknown",
-            "model_context_window": quality_data.get("model_context_window") or ctx_window,
+            "model_context_window": model_context_window,
             "model_context_window_source": model_context_window_source,
             "window_contradicted": window_contradicted,
+            "window_inferred_from_tokens": window_inferred_from_tokens,
             "host_disagreement": host_disagreement,
             "fill_source": fill_source,
             "band": band_name,
@@ -36431,17 +36553,20 @@ def _codex_backfill_tool_archive(filepath=None, session_id=None, max_outputs=20)
             if entry_path.exists():
                 continue
 
-            if len(output_text) > 5_242_880:
-                output_text = output_text[:5_242_880] + "\n[... truncated by Token Optimizer archive cap]"
+            over_cap = len(output_text) > 5_242_880
 
             try:
                 # Redact BEFORE hashing/summarizing/persisting so the archive
                 # entry, manifest, and SessionStore row all carry the same
                 # safe bytes. A redactor refusal (broken custom pattern
                 # config) skips this output rather than storing it raw.
-                output_text = _bf_redact(output_text)
+                # Redact a window past the cap and cut AFTER: a secret
+                # straddling the cap is otherwise a prefix no pattern sees.
+                output_text = _bf_redact(output_text[:5_242_880 + 4096] if over_cap else output_text)
             except Exception:
                 continue
+            if over_cap:
+                output_text = output_text[:5_242_880] + "\n[... truncated by Token Optimizer archive cap]"
 
             char_count = len(output_text)
             token_est = int(char_count / CHARS_PER_TOKEN)
@@ -37235,6 +37360,16 @@ def _extract_session_state(filepath, tail_lines=500):
 
     question_re = re.compile(r'\?|TODO|FIXME|HACK|XXX', re.IGNORECASE)
 
+    # Redact each transcript string where it ENTERS the state, before any of
+    # the width cuts below (200/300/500...). A cut first leaves a secret that
+    # straddles it as a prefix no pattern recognises (a token shorter than its
+    # shape, a database URI cut before its "@", a PEM block cut before END).
+    # No redactor means no state: the caller writes nothing rather than raw text.
+    try:
+        from credential_patterns import redact_credentials as _ingest_redact
+    except Exception:
+        return None
+
     active_files = []  # (path, action, line_range)
     recent_reads = []  # paths of recently-Read files (pointer-only)
     decisions = []     # text snippets
@@ -37281,7 +37416,7 @@ def _extract_session_state(filepath, tail_lines=500):
 
         # User messages
         if rec_type == "user":
-            text = _extract_user_text(record)
+            text = _ingest_redact(_extract_user_text(record))
             if text.strip():
                 last_user_msg = text.strip()
             # Check for questions
@@ -37304,7 +37439,7 @@ def _extract_session_state(filepath, tail_lines=500):
                         continue
 
                     if block.get("type") == "text":
-                        txt = block.get("text", "")
+                        txt = _ingest_redact(block.get("text", ""))
                         assistant_text += txt + " "
 
                         # Decisions
@@ -37353,7 +37488,7 @@ def _extract_session_state(filepath, tail_lines=500):
                         # Track agent dispatches
                         if tool_name in ("Task", "Agent"):
                             agent_type = inp.get("subagent_type", inp.get("description", "unknown"))
-                            desc = inp.get("description", "")[:100]
+                            desc = _ingest_redact(inp.get("description", ""))[:100]
                             agent_state.append((agent_type, desc))
 
                         # Track TodoWrite state (keep the latest snapshot only)
@@ -37361,7 +37496,7 @@ def _extract_session_state(filepath, tail_lines=500):
                             todo_list = inp.get("todos", [])
                             if isinstance(todo_list, list):
                                 todos = [
-                                    (t.get("content", "")[:120], t.get("status", ""))
+                                    (_ingest_redact(t.get("content", ""))[:120], t.get("status", ""))
                                     for t in todo_list
                                     if isinstance(t, dict)
                                 ]
@@ -37469,6 +37604,29 @@ def _confine_transcript_path(transcript_path):
     return resolved
 
 
+def _redaction_skip_notice(session_id):
+    """One line, once per session, when a checkpoint was skipped because the
+    custom redaction pattern file is broken (fail closed: nothing is written).
+
+    Returns None when redaction is healthy, when the skip has another cause, or
+    when this session was already told (same run-once marker the other
+    once-per-session notices use). Never raises: a hook must not fail on it.
+    """
+    try:
+        from credential_patterns import custom_patterns_status
+        status = custom_patterns_status()
+        if status.get("active"):
+            return None
+        if _ran_once_this_session("redact-skip", session_id):
+            return None
+        return ("[Token Optimizer] Checkpoint skipped: custom redaction is INACTIVE "
+                f"({status.get('failure') or 'pattern file failed to load'}; file: "
+                f"{status.get('source') or 'unknown'}). Nothing is written to disk until "
+                "the pattern file is fixed or removed; `measure.py doctor` shows details.")
+    except Exception:
+        return None
+
+
 def compact_capture(transcript_path=None, session_id=None, trigger="auto", cwd=None, fill_pct=None, quality_score=None, backfill_tools=False):
     """Capture structured session state before compaction or session end.
 
@@ -37530,8 +37688,16 @@ def compact_capture(transcript_path=None, session_id=None, trigger="auto", cwd=N
             return None
         return str(checkpoint_path)
 
-    # Parse session state
-    state = _extract_session_state(filepath)
+    # Parse session state. The extractor redacts as it reads; a configured-but-
+    # broken custom pattern file makes it raise, and then nothing is written.
+    try:
+        from credential_patterns import RedactionConfigError as _ExtractCfgErr
+    except Exception:
+        return None
+    try:
+        state = _extract_session_state(filepath)
+    except _ExtractCfgErr:
+        return None
     if not state:
         return None
 
@@ -54402,6 +54568,11 @@ if __name__ == "__main__":
             if result and "--quiet" not in args:
                 # Only print for non-hook invocations (hooks should be quiet)
                 print(f"[Token Optimizer] Checkpoint saved: {result}")
+            elif not result:
+                _notice = _redaction_skip_notice(sid)
+                if _notice:
+                    # Sole hook output: one JSON object is a valid envelope on every host.
+                    print(json.dumps({"systemMessage": _notice}))
         except _HookTimeout:
             pass
         except Exception:

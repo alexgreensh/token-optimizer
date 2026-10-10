@@ -197,6 +197,10 @@ _MAX_DECISIONS = 10
 _SENTENCE_SPLIT_RE = re.compile(r"[.!?\n]+")
 
 
+# How far past the 5000-char decision sample the redactor reads (see below).
+_DECISION_REDACT_WINDOW = 6000
+
+
 def _extract_decisions(text: str, store: SessionStore) -> None:
     """Extract decision statements from tool output and store incrementally.
 
@@ -212,6 +216,20 @@ def _extract_decisions(text: str, store: SessionStore) -> None:
     if not _DECISION_RE.search(sample):
         return
 
+    # No persistence without the shared redactor: these sentences are raw
+    # tool output and may carry credentials (a decision quoting a token, a
+    # connection string, a PEM line). If the redactor is missing or refuses
+    # (broken custom pattern config), store nothing rather than persist text
+    # the org rules were meant to cover. Redact BEFORE the width cuts below:
+    # a secret straddling a cut is a prefix no pattern recognises. The window
+    # is read a little past the 5000-char sample so a secret that straddles
+    # the sample edge is whole when the redactor sees it.
+    try:
+        from credential_patterns import redact_credentials as _redact_decision
+        sample = _redact_decision(text[:_DECISION_REDACT_WINDOW])[:5000]
+    except Exception:
+        return
+
     sentences = [
         s.strip() for s in _SENTENCE_SPLIT_RE.split(sample)
         if 20 <= len(s.strip()) <= 200
@@ -224,17 +242,6 @@ def _extract_decisions(text: str, store: SessionStore) -> None:
             break
 
     if not new_decisions:
-        return
-
-    try:
-        # No persistence without the shared redactor: these sentences are raw
-        # tool output and may carry credentials (a decision quoting a token,
-        # a connection string, a PEM line). If the redactor is missing or
-        # refuses (broken custom pattern config), store nothing rather than
-        # persist text the org rules were meant to cover.
-        from credential_patterns import redact_credentials as _redact_decision
-        new_decisions = [_redact_decision(d) for d in new_decisions]
-    except Exception:
         return
 
     try:

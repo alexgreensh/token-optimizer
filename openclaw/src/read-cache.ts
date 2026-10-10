@@ -51,9 +51,12 @@ export function logSavingsEvent(
   detail?: string
 ): void {
   try {
-    const detailTrunc = detail && detail.length > MAX_SAVINGS_DETAIL_LEN
-      ? detail.slice(0, MAX_SAVINGS_DETAIL_LEN)
-      : (detail ?? null);
+    // Redact BEFORE cutting: a secret straddling the cut is a prefix no
+    // pattern recognises.
+    const redactedDetail = detail ? redact(detail) : null;
+    const detailTrunc = redactedDetail && redactedDetail.length > MAX_SAVINGS_DETAIL_LEN
+      ? redactedDetail.slice(0, MAX_SAVINGS_DETAIL_LEN)
+      : redactedDetail;
     const row = JSON.stringify({
       timestamp: new Date().toISOString(),
       event_type: eventType,
@@ -61,7 +64,7 @@ export function logSavingsEvent(
       session_id: sessionId || null,
       // Boundary redaction: detail can embed a file name carrying a
       // credential shape — never persist it raw.
-      detail: detailTrunc ? redact(detailTrunc) : null,
+      detail: detailTrunc || null,
     });
     try { fs.mkdirSync(SAVINGS_DIR, { recursive: true, mode: 0o700 }); } catch { /* best effort */ }
     fs.appendFileSync(SAVINGS_EVENTS_PATH, row + "\n", { encoding: "utf8", mode: 0o600 });

@@ -216,6 +216,26 @@ def _context_window_for_model(model: str) -> int:
     return _DEFAULT_CONTEXT_WINDOW
 
 
+_PLAIN_46_RE = re.compile(r"(?:^|[^a-z])(?:opus|sonnet)[-_.]4[-_.]6(?!\d)")
+
+
+def promote_window_for_observed_tokens(model: str, window: int, tokens) -> int:
+    """Opus/Sonnet 4.6 are 1M only as the ``[1m]`` variant, but runtimes record
+    the plain id. Tokens above the 200K window prove it is the 1M variant, so
+    widen instead of clamping to 100%. Any other model, or tokens that fit,
+    leave the window alone.
+    """
+    low = (model or "").lower()
+    if (window >= _LARGE_CONTEXT_WINDOW or "[1m]" in low or not _PLAIN_46_RE.search(low)):
+        return window
+    try:
+        if tokens is not None and float(tokens) > window:
+            return _LARGE_CONTEXT_WINDOW
+    except (TypeError, ValueError):
+        pass
+    return window
+
+
 # Public alias so hermes/__init__.py can import the single source of truth.
 context_window_for_model = _context_window_for_model
 
@@ -304,6 +324,10 @@ def compute_quality_score(
     signals_active (list), signals_omitted (list).
     """
     ctx_win = context_window if context_window and context_window > 0 else _context_window_for_model(model)
+    # Only a live prompt reading proves a window; the legacy lifetime sum
+    # re-counts every call and exceeds any window by construction.
+    if context_tokens is not _LIVE_CONTEXT_UNSET:
+        ctx_win = promote_window_for_observed_tokens(model, ctx_win, context_tokens)
 
     # Signal 1: Context fill (40% weight when present).
     if context_tokens is _LIVE_CONTEXT_UNSET:
@@ -499,7 +523,8 @@ def normalize_session(row: dict[str, Any], *, context_tokens: int | None = None)
     model_family = _resolve_model_family(model)
 
     # Context window for fill calculation.
-    ctx_window = _context_window_for_model(model)
+    ctx_window = promote_window_for_observed_tokens(
+        model, _context_window_for_model(model), context_tokens)
 
     # M1: Align with the savings engine's convention.
     #

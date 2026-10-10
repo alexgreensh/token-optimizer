@@ -548,7 +548,7 @@ def _crossturn_dedup(command: str, output: str, tool_use_id: str = ""):
             # secret split across the 500-char cutoff can't survive, matching the
             # archive path which redacts the command too. cmd_h stays on the raw
             # command -- the hash is non-reversible, like out_h.
-            safe_command = _redact_credentials(command)[:500]
+            safe_command = _redact_credentials(command, command=True)[:500]
             prior = store.get_command_output(cmd_h)
             # Record THIS run (redacted output) for the next comparison BEFORE we
             # return a delta, so deltas always chain off full (redacted) outputs,

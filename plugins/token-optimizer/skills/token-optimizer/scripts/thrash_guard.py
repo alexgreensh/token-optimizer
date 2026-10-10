@@ -437,7 +437,7 @@ def check(
         # inline secrets (-pPASSWORD, an auth header, a connection string) and
         # must never reach the on-disk streak store. The label shown to the
         # agent stays on the live (unredacted) command the agent already sees.
-        safe_command = _redact_credentials(normalized)[:500]
+        safe_command = _redact_credentials(normalized, command=True)[:500]
         now = time.time() if now is None else now
         is_fail = _looks_like_failure(
             output, stderr, exit_code=exit_code,

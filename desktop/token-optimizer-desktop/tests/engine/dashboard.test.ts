@@ -2,7 +2,7 @@
 // runs, the busy guard and the failure note, through register.tsx inside the engine.
 import { expect, test } from 'claude-code/testing'
 
-import { BUSY_TIMEOUT_MS, DASHBOARD_TIMEOUT_MS, NOTE_MS } from '../../src/actions.ts'
+import { BUSY_TIMEOUT_MS, busyTimeoutMs, DASHBOARD_TIMEOUT_MS, NOTE_MS } from '../../src/actions.ts'
 import { BAND, START, quality, stub, SCRIPTS, type World } from './world.ts'
 
 const OPENING = 'Opening the dashboard.'
@@ -80,7 +80,7 @@ for (const size of ['full', 'slim'] as const) {
     expect(argv.some(a => /^(sh|bash|cmd|cmd\.exe|powershell)(\.exe)?$/i.test(a) || a === '-c' || a === '/c')).toBe(false)
     expect(argv.filter(a => /\s/.test(a))).toEqual([])
     expect(runs[0]!.timeoutMs).toBe(DASHBOARD_TIMEOUT_MS)
-    expect(DASHBOARD_TIMEOUT_MS).toBeLessThan(BUSY_TIMEOUT_MS)
+    expect(DASHBOARD_TIMEOUT_MS).toBeLessThan(busyTimeoutMs('dashboard'))
 
     // Done: nothing left on the note line, no toast, back to the calm sentence.
     expect(w.toasts).toEqual([])
@@ -143,10 +143,30 @@ for (const size of ['full', 'slim'] as const) {
     await ui.press({ key: 'dashboard' })
     await w.clock.advance(1_000)
     expect(await has(ui, OPENING)).toBe(true)
-    await w.clock.advance(BUSY_TIMEOUT_MS)
+    await w.clock.advance(busyTimeoutMs('dashboard'))
     await w.clock.settle()
     expect(await has(ui, OPENING)).toBe(false)
     expect(await has(ui, FAILED)).toBe(true)
+    expect(w.toasts).toEqual([])
+    expect(dashboardRuns(w).length).toBe(1)
+  })
+
+  test(`${size}: a heavy rebuild is still "Opening the dashboard." past 120 s, then opens`, async ($, on) => {
+    // 150 s: past the old 120 s busy limit, inside the dashboard's own.
+    const { w, ui } = await mounted($, on, { dashboardDelayMs: 150_000 }, size)
+    await ui.press({ key: 'details' })
+    await ui.press({ key: 'dashboard' })
+    await w.clock.advance(BUSY_TIMEOUT_MS + 1_000)
+    expect(await has(ui, OPENING)).toBe(true)
+    expect(await has(ui, FAILED)).toBe(false)
+    // Still busy: a second click is ignored.
+    await ui.press({ key: 'dashboard' })
+    expect(dashboardRuns(w).length).toBe(1)
+
+    await w.clock.advance(40_000)
+    await w.clock.settle()
+    expect(await has(ui, OPENING)).toBe(false)
+    expect(await has(ui, FAILED)).toBe(false)
     expect(w.toasts).toEqual([])
     expect(dashboardRuns(w).length).toBe(1)
   })

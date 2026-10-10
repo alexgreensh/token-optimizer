@@ -7,6 +7,7 @@ import assert from 'node:assert/strict'
 
 import {
   BUSY_TIMEOUT_MS,
+  busyTimeoutMs,
   CAPTURE_TIMEOUT_MS,
   DASHBOARD_ARGS,
   DASHBOARD_FAILED,
@@ -50,6 +51,21 @@ test('a busy state lapses after 120 seconds so "Cleaning up." never sticks', () 
   assert.equal(busyNow(ui, T + BUSY_TIMEOUT_MS - 1), 'clean')
   assert.equal(busyNow(ui, T + BUSY_TIMEOUT_MS), null)
   assert.equal(busyNow(initialUi(), T), null)
+})
+
+test('only the dashboard\'s busy state outlives 120 seconds; every other button keeps exactly 120', () => {
+  assert.equal(BUSY_TIMEOUT_MS, 120_000)
+  for (const busy of ['clean', 'fresh-capture', 'fresh-clear'] as const) {
+    assert.equal(busyTimeoutMs(busy), BUSY_TIMEOUT_MS)
+    const ui = { ...initialUi(), busy, busySince: T }
+    assert.equal(busyNow(ui, T + 121_000), null)
+  }
+  assert.equal(busyTimeoutMs(null), BUSY_TIMEOUT_MS)
+  assert.equal(busyTimeoutMs('dashboard'), DASHBOARD_TIMEOUT_MS + 30_000)
+  const opening = { ...initialUi(), busy: 'dashboard' as const, busySince: T }
+  assert.equal(busyNow(opening, T + 121_000), 'dashboard')
+  assert.equal(busyNow(opening, T + DASHBOARD_TIMEOUT_MS + 30_000 - 1), 'dashboard')
+  assert.equal(busyNow(opening, T + DASHBOARD_TIMEOUT_MS + 30_000), null)
 })
 
 test('a note shows for a few seconds, then the sentence returns to its rule', () => {
@@ -213,15 +229,17 @@ test('the dashboard link runs the dashboard command and nothing else, with its o
   // not a tty and it cannot pass env, so without the flag a heavy rebuild is cut off and nothing opens).
   assert.deepEqual([...DASHBOARD_ARGS], ['dashboard', '--user'])
   assert.ok(DASHBOARD_TIMEOUT_MS > 0)
-  // Under the busy timeout, so the runner answers before the busy state gives up on its own.
-  assert.ok(DASHBOARD_TIMEOUT_MS < BUSY_TIMEOUT_MS)
+  // Under the dashboard's own busy timeout, so the runner answers before the busy state gives up on its own.
+  assert.ok(DASHBOARD_TIMEOUT_MS < busyTimeoutMs('dashboard'))
+  assert.equal(DASHBOARD_TIMEOUT_MS, 300_000)
 })
 
 test('the dashboard timeout covers a heavy rebuild with margin', () => {
-  // Measured: `measure.py dashboard --user` on a synthetic 800-session / 1.1 GB history in a sandbox HOME,
-  // cold (nothing cached): 38 s on both of two runs (25 s warm). The timeout keeps at least 2x that.
-  const MEASURED_COLD_HEAVY_MS = 38_000
-  assert.ok(DASHBOARD_TIMEOUT_MS >= 2 * MEASURED_COLD_HEAVY_MS)
+  // Measured: `measure.py dashboard --user` on a real, heavy history, cold (nothing cached): 80 s.
+  // (A synthetic 800-session / 1.1 GB history took 38 s, which undersized the first limit.)
+  // The timeout keeps at least 3x the real one for a slower disk.
+  const MEASURED_COLD_HEAVY_MS = 80_000
+  assert.ok(DASHBOARD_TIMEOUT_MS >= 3 * MEASURED_COLD_HEAVY_MS)
 })
 
 test('the dashboard link says what it is doing in the band\'s own note words', () => {
@@ -234,8 +252,11 @@ test('a second click on the dashboard link is ignored while anything is busy', (
   const opening = withBusy(initialUi(), 'dashboard', T)
   assert.equal(canOpenDashboard(opening, T + 1), false)
   assert.equal(canOpenDashboard(withBusy(initialUi(), 'clean', T), T + 1), false)
-  // A stale busy state has timed out and no longer blocks.
-  assert.equal(canOpenDashboard(opening, T + BUSY_TIMEOUT_MS), true)
+  // A stale busy state has timed out and no longer blocks: the dashboard's own at its longer limit,
+  // any other button's at 120 s.
+  assert.equal(canOpenDashboard(opening, T + BUSY_TIMEOUT_MS), false)
+  assert.equal(canOpenDashboard(opening, T + busyTimeoutMs('dashboard')), true)
+  assert.equal(canOpenDashboard(withBusy(initialUi(), 'clean', T), T + BUSY_TIMEOUT_MS), true)
 })
 
 test('the dashboard run failed when it threw, timed out, exited non-zero, or the opener could not open the browser', () => {

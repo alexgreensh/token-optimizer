@@ -35,8 +35,6 @@ Usage:
     python3 measure.py jsonl-trim --apply           # Trim with backup + sidecar
     python3 measure.py jsonl-dedup                 # Find duplicate system reminders (dry-run)
     python3 measure.py jsonl-dedup --apply          # Remove duplicates with backup
-    python3 measure.py deterministic-candidates          # Workflow parts that could be plain code, not model calls
-    python3 measure.py deterministic-candidates --days 14 --json  # Custom window, machine-readable
     python3 measure.py validate-impact                 # Compare before/after optimization metrics
     python3 measure.py validate-impact --strategy halves # Split sessions chronologically in half
     python3 measure.py validate-impact --days 14 --json  # Custom window, machine-readable
@@ -88,6 +86,7 @@ import textwrap
 import time
 import types
 import platform
+import posixpath
 import shutil
 from collections import deque
 from contextlib import contextmanager, nullcontext
@@ -150,7 +149,6 @@ def _detached_python_exe():
 import antigravity_session
 import codex_io
 import codex_session
-import deterministic_candidates
 import codex_state
 import copilot_session
 import cursor_session
@@ -3369,6 +3367,14 @@ def _context_window_for_model_str(model_str):
 #   cap at the model's own window. CLAUDE_AUTOCOMPACT_PCT_OVERRIDE is then the
 #   percentage of the window already used when compaction runs -- lower values
 #   compact EARLIER and it can never raise the threshold.
+#
+# modelSettings shape: verified 2026-10-10 from a real settings.json --
+#   "modelSettings": {"claude-opus-5-5": {"effortLevel": "medium"}, ...}
+#   i.e. keyed by FULL model id, one object per model. NOT VERIFIED: the field
+#   name inside that object that holds the compact window. `autoCompactWindow`
+#   is kept as the working assumption (it mirrors the top-level setting); if
+#   Claude Code writes a different name, per-model overrides are silently
+#   ignored here and the top-level setting applies.
 # ---------------------------------------------------------------------------
 _COMPACT_WINDOW_MIN = 100_000
 _COMPACT_WINDOW_MAX = 1_000_000
@@ -4309,15 +4315,6 @@ def doctor(as_json=False):
         score += 1
     else:
         checks.append(("!!", "SessionEnd hook", "missing (fix: python3 measure.py setup-hook)"))
-
-    # Advisory only: do not change proxy/tool-search settings or infer a bill.
-    from tool_search_diagnostic import diagnose_tool_search
-    _search_check = diagnose_tool_search(os.environ, settings, runtime=detect_runtime())
-    if _search_check is not None:
-        checks.append(_search_check)
-        total += 1
-        if _search_check[0] == "OK":
-            score += 1
 
     # 5. Smart Compaction
     total += 1
@@ -9380,108 +9377,13 @@ def generate_auto_recommendations(components, trends=None, days=30):
     return plan_md, total_count
 
 
-_DETCAND_COACH_BUDGET_S = 8.0
-_DETCAND_COACH_MAX_SESSIONS = 60
-_DETCAND_CLI_BUDGET_S = 60.0
-_DETCAND_CLI_MAX_SESSIONS = 300
-
-
-def _deterministic_candidates_data(days=30, budget_s=_DETCAND_COACH_BUDGET_S,
-                                   max_sessions=_DETCAND_COACH_MAX_SESSIONS,
-                                   use_cache=True, progress=None):
-    """Deterministic-candidate analysis over local transcripts (see deterministic_candidates.py).
-
-    Local, read-only, no model calls. Never raises: the coach must not fail
-    because of this block, so any error comes back as ``status: "error"``.
-    """
-    runtime = "unknown"
-    try:
-        runtime = detect_runtime()
-        if runtime not in ("claude", "codex"):
-            return deterministic_candidates.run(runtime, [], lambda *a: 0.0, days=days)
-        tier = _load_pricing_tier()
-
-        def price(model, fresh, out, cache_read, cache_create, cc_1h, cc_5m):
-            if not model or model == "unknown":
-                return None
-            if runtime == "codex":
-                return _get_model_cost(model, fresh, out, cache_read, cache_create, tier=tier)
-            if cc_1h or cc_5m:
-                return _get_model_cost(model, fresh, out, cache_read, cache_create, tier=tier,
-                                       cache_create_1h=cc_1h, cache_create_5m=cc_5m)
-            return _get_model_cost(model, fresh, out, cache_read, cache_create, tier=tier)
-
-        files = [(Path(jf), mt) for jf, mt, _proj in _find_all_jsonl_files(days=days)
-                 if _sidechain_path_reason(jf) is None]
-        return deterministic_candidates.run(
-            runtime, files, price, days=days, budget_s=budget_s, max_sessions=max_sessions,
-            cache_dir=SNAPSHOT_DIR, tier=tier, use_cache=use_cache, progress=progress)
-    except Exception as exc:  # never break coach --json
-        return {"status": "error", "runtime": runtime, "partial": True, "candidates": [],
-                "basis": deterministic_candidates.BASIS,
-                "error": f"{type(exc).__name__}: {str(exc)[:120]}"}
-
-
-def _cmd_deterministic_candidates(args):
-    """measure.py deterministic-candidates [--days N] [--json] [--budget SECONDS] [--max-sessions N] [--no-cache]"""
-    as_json = "--json" in args
-
-    def _opt(flag, cast, default):
-        if flag in args:
-            i = args.index(flag)
-            if i + 1 < len(args):
-                try:
-                    return cast(args[i + 1])
-                except ValueError:
-                    pass
-        return default
-
-    days = max(1, _opt("--days", int, 30))
-    budget = max(1.0, _opt("--budget", float, _DETCAND_CLI_BUDGET_S))
-    cap = max(1, _opt("--max-sessions", int, _DETCAND_CLI_MAX_SESSIONS))
-
-    def _progress(msg):
-        # Quiet unless a person is watching: never in --json, never when stderr is piped or captured.
-        # deterministic_candidates.run() throttles this to one line per 2 seconds.
-        if as_json:
-            return
-        try:
-            is_tty = sys.stderr.isatty()
-        except (AttributeError, ValueError, OSError):
-            is_tty = False
-        if is_tty:
-            print(f"  {msg}", file=sys.stderr)
-
-    data = _deterministic_candidates_data(days=days, budget_s=budget, max_sessions=cap,
-                                          use_cache="--no-cache" not in args, progress=_progress)
-    if as_json:
-        print(json.dumps(data, indent=2))
-        return
-    print()
-    print(f"  {_strip_ansi(str(data.get('summary') or deterministic_candidates.summary_line(data)))}")
-    for i, c in enumerate(data.get("candidates") or [], 1):
-        tok = c["tokens"]
-        print(f"\n  {i}. [{c['kind']}] seen {c['times_seen']}x in {c['sessions_seen']} session(s)")
-        print(f"     {_strip_ansi(str(c['example']))}")
-        print(f"     the turns that ran them used {tok['total_tokens']:,} tokens ({tok['input_tokens']:,} in incl. "
-              f"{tok['cache_read_tokens']:,} cache read, {tok['output_tokens']:,} out), "
-              f"~${c['cost_usd']:.2f} API-equivalent, {deterministic_candidates.BASIS}")
-        print(f"     -> {c['suggestion']}")
-    if data.get("candidates"):
-        print(f"\n  {deterministic_candidates.USED_NOT_SAVED_NOTE}")
-    print()
-
-
-def generate_coach_data(focus=None, components=None, trends=None, include_deterministic=False):
+def generate_coach_data(focus=None, components=None, trends=None):
     """Generate structured coaching data for Token Coach mode.
 
     Args:
         focus: Optional focus area ('skills', 'agentic', 'memory')
         components: Pre-computed measure_components() result (avoids duplicate call)
         trends: Pre-computed trends data (avoids duplicate call)
-        include_deterministic: Add the ``deterministic_candidates`` block (a
-            bounded transcript scan). Only the ``coach`` CLI asks for it; the
-            dashboard and rollup callers skip the scan.
 
     Returns a dict with:
     - snapshot: current component measurements
@@ -10333,9 +10235,15 @@ def generate_coach_data(focus=None, components=None, trends=None, include_determ
     if all_costly_prompts:
         result["costly_prompts"] = all_costly_prompts[:5]
 
-    if include_deterministic:
-        result["deterministic_candidates"] = _deterministic_candidates_data(
-            days=30, budget_s=_DETCAND_COACH_BUDGET_S, max_sessions=_DETCAND_COACH_MAX_SESSIONS)
+    # Compact-window replay of the user's own history: capped, cached, fail-open
+    # (Claude transcripts only). Never lets this block fail the coach.
+    if not is_codex:
+        try:
+            advice = _coach_compact_advice_block()
+            if advice:
+                result["compact_advice"] = advice
+        except Exception:
+            pass
 
     return result
 
@@ -10884,15 +10792,6 @@ def _extract_topic(text):
     # Truncate
     if len(text) > 120:
         text = text[:117] + "..."
-    # The topic is user text persisted to session_log/quality-cache and
-    # rendered into checkpoints — credentials must not ride along. If the
-    # shared redactor is unavailable or refuses, drop the topic rather than
-    # persist it raw.
-    try:
-        from credential_patterns import redact_credentials as _topic_redact
-        text = _topic_redact(text)
-    except Exception:
-        return None
     return text or None
 
 
@@ -13054,20 +12953,6 @@ def _log_compression_event(feature, original_text="", compressed_text="",
         ratio = 0.0
         if original_tokens > 0:
             ratio = round(1.0 - compressed_tokens / original_tokens, 4)
-
-        # DB boundary: command_pattern/detail can embed a file name or label
-        # that carries a credential shape. Redact here so NO caller (present
-        # or future) can persist them raw; on a redactor refusal the text
-        # columns go NULL while token counts still land.
-        try:
-            from credential_patterns import redact_credentials as _ce_redact
-            if command_pattern:
-                command_pattern = _ce_redact(command_pattern)
-            if detail:
-                detail = _ce_redact(detail)
-        except Exception:
-            command_pattern = None
-            detail = None
 
         # Derive stable join key and resolve event-time model.
         session_uuid, _ = _extract_session_uuid(session_id)
@@ -23797,372 +23682,6 @@ def _command_matches_process(command, process_name):
     return exe_base == process_name
 
 
-# POSIX process identity (macOS and Linux). Same contract as the Windows block
-# further down (issue #211): `kill_stale_sessions` acts on this inventory, and
-# process age or a `claude` argv[0] alone does not show that a conversation is
-# abandoned. A claude process can be hosted by the desktop app (driven over
-# stream-json, wrapped by Claude.app's `disclaimer` helper), an IDE, the SDK or
-# a headless `-p` run, or be a subcommand (`mcp`, `doctor` ...). So identity is
-# established from the real argv and the parent chain, and fails closed:
-# only a positively identified terminal CLI process is ever terminated.
-_POSIX_TERMINAL_PARENTS = frozenset({
-    # shells
-    "sh", "bash", "zsh", "fish", "dash", "ksh", "ksh93", "mksh", "pdksh", "tcsh", "csh",
-    "ash", "rbash", "xonsh", "nu", "nushell", "elvish", "pwsh", "osh", "oil",
-    # multiplexers and persistent-session hosts (a tmux-hosted interactive
-    # session IS a terminal session)
-    "tmux", "screen", "byobu", "zellij", "dtach", "abduco", "mosh-server",
-    # remote logins
-    "sshd", "sshd-session", "sshd-auth",
-    # terminal emulators that may be a direct parent
-    "terminal", "iterm2", "ghostty", "alacritty", "kitty", "wezterm", "wezterm-gui",
-    "hyper", "warp", "tabby", "rio", "foot", "xterm", "urxvt", "rxvt", "st", "konsole",
-    "gnome-terminal-", "gnome-terminal-server", "terminator", "tilix", "xfce4-terminal",
-    "lxterminal", "mate-terminal", "kgx", "ptyxis",
-})
-_POSIX_NO_TTY = ("??", "-", "?")
-_POSIX_ANCESTRY_MAX_HOPS = 16
-_POSIX_PS_ROW_RE = re.compile(
-    r"^\s*(\d+)\s+(\d+)\s+(\S+)\s+"
-    r"(\S+\s+\S+\s+\d+\s+\d{1,2}:\d{2}:\d{2}\s+\d{4})\s+"  # lstart (C locale)
-    r"(\S+)\s+(.*?)\s*$"
-)
-_POSIX_NAME_ROW_RE = re.compile(r"^\s*(\d+)\s+(\d+)\s+(.+?)\s*$")
-
-
-def _posix_comm_name(comm):
-    """Lower-case executable name from a ps COMM field ("-zsh" -> "zsh",
-    "tmux: server" -> "tmux", "/bin/bash" -> "bash"). Never raises."""
-    text = (comm or "").strip()
-    if not text:
-        return ""
-    text = text.split(": ", 1)[0].rsplit("/", 1)[-1]
-    return text.lstrip("-").strip().lower()
-
-
-def _posix_comm_is_claude(comm):
-    """True when a COMM field names a claude CLI executable (basename `claude`,
-    `.exe` stripped, or the versioned ccd-cli launcher). Matches desktop-hosted
-    sessions installed under a path with spaces (`.../Application Support/...`),
-    which the whitespace-split `ps` command column cannot show."""
-    text = (comm or "").strip()
-    if not text:
-        return False
-    base = text.rsplit("/", 1)[-1]
-    if base.endswith(".exe"):
-        base = base[:-4]
-    return base == "claude" or bool(_CCD_CLI_LAUNCHER_RE.search(text))
-
-
-def _posix_is_claude_host(comm, args):
-    """True when a process is the Claude desktop app (main, helper, disclaimer
-    wrapper, Electron build) or another claude process: a claude below it is hosted."""
-    if _posix_comm_name(comm).startswith("claude"):
-        return True
-    low = f"{comm or ''}\n{args or ''}".lower()
-    if "claude.app/" in low or "/.claude/remote/ccd-cli/" in low or "@anthropic-ai/claude-code" in low:
-        return True
-    if "app.asar" in low and "claude" in low:
-        return True
-    return _command_matches_process(args or "", "claude")
-
-
-def _posix_option_args(argv):
-    """Arguments that can be options: everything after argv[0] up to a bare --."""
-    args = list(argv[1:])
-    return args[:args.index("--")] if "--" in args else args
-
-
-def _posix_is_headless(options):
-    """True for SDK/headless/IDE switches and for subcommand processes."""
-    for raw in options:
-        a = raw.lower()
-        if len(a) > 1 and a[0] == "-" and a[1] != "-" and "p" in a.split("=")[0]:
-            return True  # -p, -pc ...
-        if any(a == f or a.startswith(f + "=") for f in _WIN_HEADLESS_FLAGS):
-            return True
-        if a in _WIN_HEADLESS_SUBCOMMANDS:
-            return True
-    return False
-
-
-def _posix_read_argv(pid):
-    """Exact argv of a process, or None when the OS will not say.
-
-    Linux reads NUL-separated /proc/<pid>/cmdline; macOS asks the kernel
-    (sysctl KERN_PROCARGS2). Unlike the `ps` command column, both keep an
-    argument that contains spaces as ONE token, so prompt text can neither
-    masquerade as a switch nor hide one. Callers fall back to the `ps` column.
-    """
-    try:
-        pid = int(pid)
-        if sys.platform.startswith("linux"):
-            with open(f"/proc/{pid}/cmdline", "rb") as fh:
-                data = fh.read()
-            if not data:
-                return None
-            parts = data.split(b"\0")
-            while parts and parts[-1] == b"":
-                parts.pop()  # trailing NUL, and the padding left by a rewritten title
-            return [p.decode("utf-8", "replace") for p in parts] or None
-        if sys.platform == "darwin":
-            import ctypes
-            import ctypes.util
-
-            libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
-            mib = (ctypes.c_int * 3)(1, 49, pid)  # CTL_KERN, KERN_PROCARGS2, pid
-            size = ctypes.c_size_t(0)
-            if libc.sysctl(mib, 3, None, ctypes.byref(size), None, 0) != 0 or size.value < 8:
-                return None
-            buf = ctypes.create_string_buffer(size.value)
-            if libc.sysctl(mib, 3, buf, ctypes.byref(size), None, 0) != 0:
-                return None
-            data = buf.raw[:size.value]
-            argc = int.from_bytes(data[:4], sys.byteorder)
-            rest = data[4:]
-            i = rest.index(b"\0")  # exec_path
-            while i < len(rest) and rest[i] == 0:
-                i += 1
-            parts = rest[i:].split(b"\0")[:argc]
-            if argc < 1 or len(parts) < argc:
-                return None
-            return [p.decode("utf-8", "replace") for p in parts]
-    except Exception:
-        return None
-    return None
-
-
-def _posix_exe_path(pid, comm=None):
-    """Real executable path of a process, or None.
-
-    /proc/<pid>/exe on Linux (a replaced binary reads "<path> (deleted)", whose
-    directory is still the right one to probe), proc_pidpath on macOS. A native
-    install deletes the previous version's binary after an update, so a
-    long-running session can legitimately have no resolvable path; callers treat
-    None as "no directory evidence", not as a reason to fail.
-    """
-    try:
-        pid = int(pid)
-        if sys.platform.startswith("linux"):
-            target = os.readlink(f"/proc/{pid}/exe")
-            return target[:-len(" (deleted)")] if target.endswith(" (deleted)") else target
-        if sys.platform == "darwin":
-            import ctypes
-            import ctypes.util
-
-            lib = ctypes.CDLL(ctypes.util.find_library("proc") or "/usr/lib/libproc.dylib", use_errno=True)
-            buf = ctypes.create_string_buffer(4096)
-            if lib.proc_pidpath(pid, buf, 4096) > 0:
-                return buf.value.decode("utf-8", "replace")
-    except Exception:
-        pass
-    return comm if comm and comm.startswith("/") else None
-
-
-def _posix_dir_is_electron_app(exe_path):
-    """True/False when the executable's directory is/is not an Electron app
-    directory; None when that cannot be determined (fail closed upstream)."""
-    if not exe_path:
-        return None
-    base = os.path.dirname(exe_path)
-    # os.path.exists swallows every OSError and reports False, which would turn
-    # an unreadable directory into "not Electron". Probe with os.stat so that
-    # anything other than "definitely absent" is indeterminate.
-    try:
-        os.stat(base or ".")
-    except (OSError, ValueError):
-        return None
-    probes = [os.path.join(base, *marker) for marker in _WIN_ELECTRON_MARKERS]
-    if os.path.basename(base) == "MacOS" and os.path.basename(os.path.dirname(base)) == "Contents":
-        contents = os.path.dirname(base)  # <App>.app/Contents
-        probes.append(os.path.join(contents, "Resources", "app.asar"))
-        probes.append(os.path.join(contents, "Frameworks", "Electron Framework.framework"))
-    found = False
-    for probe in probes:
-        try:
-            os.stat(probe)
-            found = True
-        except (FileNotFoundError, NotADirectoryError):
-            continue
-        except (OSError, ValueError):
-            return None
-    return found
-
-
-def _posix_is_init_parent(ppid, names, args_by_pid):
-    """True when ppid is the init process an orphan is reparented to: pid 1
-    (launchd, systemd, init) or a per-user `systemd --user` subreaper."""
-    if ppid == 1:
-        return True
-    entry = names.get(ppid)
-    if not entry or _posix_comm_name(entry[1]) != "systemd":
-        return False
-    return "--user" in (args_by_pid.get(ppid) or "").split()
-
-
-def _posix_ancestry_state(pid, names, args_by_pid, electron_parent_pids=frozenset()):
-    """Walk parents of pid. Returns "hosted", "complete" or "incomplete".
-
-    "complete" means the chain provably reached init/launchd (or a pid-namespace
-    root) without meeting the desktop app or another claude process. Missing
-    rows, cycles and over-long chains are "incomplete": absence of evidence is
-    never a negative host check.
-    """
-    seen = {pid}
-    cur = pid
-    for _ in range(_POSIX_ANCESTRY_MAX_HOPS):
-        entry = names.get(cur)
-        if not entry:
-            return "incomplete"
-        ppid = entry[0]
-        if ppid <= 0:
-            return "complete"
-        if ppid in seen:
-            return "incomplete"
-        parent = names.get(ppid)
-        if not parent:
-            return "incomplete"
-        if ppid in electron_parent_pids or _posix_is_claude_host(parent[1], args_by_pid.get(ppid)):
-            return "hosted"
-        if ppid == 1:
-            return "complete"
-        seen.add(ppid)
-        cur = ppid
-    return "incomplete"
-
-
-def _classify_posix_claude_process(detail, names, args_by_pid, electron_parent_pids=frozenset()):
-    """Classify one claude process on macOS/Linux by identity.
-
-    Same classes as `_classify_windows_claude_process`:
-    - "helper":           Electron child (--type=...). Never a session.
-    - "desktop_app":      The Electron main process of the desktop app (it has
-                          --type= children, or an Electron directory layout).
-                          Not a session; never terminable.
-    - "embedded_session": A Claude Code process hosted by another program
-                          (desktop app, IDE, SDK, a parent claude) or running
-                          headless (--print, stream-json, mcp ...). A real
-                          session owned by its host: never terminated by age.
-    - "terminal_cli":     Positively identified interactive terminal process:
-                          readable argv, no host/headless markers, a complete
-                          parent chain, a controlling TTY and a parent that is a
-                          shell, multiplexer, sshd or terminal. The only identity
-                          kill_stale_sessions may terminate.
-    - "orphan_cli":       An interactive session whose terminal died. ALL of:
-                          exact argv was read (KERN_PROCARGS2 or /proc cmdline,
-                          never the ps-split fallback), no --type=/headless
-                          flag/subcommand, no controlling TTY, the parent is the
-                          init process (pid 1 or `systemd --user`), and the
-                          executable is positively not an Electron app. Listed
-                          as ORPHAN; only `kill-stale --include-orphans` ends it.
-                          Anything short of that stays "unknown". Windows has no
-                          such class (parent-pid semantics differ).
-    - "unknown":          Anything else, including every case where identity
-                          evidence could not be read (unreadable ps, undecodable
-                          text, an orphan short of the conditions above). Listed,
-                          never terminated.
-
-    detail: pid, ppid, tty, argv (list), argv_exact (bool), exe (path or None).
-    names: {pid: (ppid, comm)} or None; args_by_pid: {pid: ps args string}.
-    """
-    if not detail:
-        return "unknown"
-    argv = detail.get("argv")
-    if not argv:
-        return "unknown"
-    exe = detail.get("exe") or ""
-    if "�" in exe or any("�" in a for a in argv):
-        return "unknown"  # undecodable text is never affirmative evidence
-    # One token holding spaces is either a rewritten process title or a spaced
-    # install path: the two cannot be told apart, so it is not exact argv.
-    argv_exact = bool(detail.get("argv_exact")) and (len(argv) > 1 or len(argv[0].split()) == 1)
-    if len(argv) == 1:
-        # A process that rewrote its title carries its whole command line in
-        # argv[0]; split it so a switch inside cannot hide.
-        argv = argv[0].split() or argv
-    options = _posix_option_args(argv)  # tokens after a bare -- are prompt text
-    if any(a.lower().startswith("--type=") for a in options):
-        return "helper"
-    pid = detail.get("pid")
-    if pid in electron_parent_pids:
-        return "desktop_app"
-    electron_dir = None
-    if exe:
-        electron_dir = _posix_dir_is_electron_app(exe)
-        if electron_dir is None:
-            return "unknown"
-        if electron_dir:
-            return "desktop_app"
-    if not names:
-        return "unknown"
-    ancestry = _posix_ancestry_state(pid, names, args_by_pid, electron_parent_pids)
-    if ancestry == "hosted":
-        return "embedded_session"
-    if ancestry != "complete":
-        return "unknown"
-    if _posix_is_headless(options):
-        return "embedded_session"
-    entry = names.get(pid)
-    if not entry or detail.get("ppid") != entry[0]:
-        return "unknown"  # the two snapshots disagree about the parent
-    if (detail.get("tty") or "?") in _POSIX_NO_TTY:
-        # No controlling terminal. Under a shell that is just a process that
-        # lost its tty (unknown). Under init it is the zombie `health` exists
-        # for, but only on exact argv and a binary positively not Electron
-        # (an unresolvable executable gives no such evidence).
-        if argv_exact and electron_dir is False and _posix_is_init_parent(entry[0], names, args_by_pid):
-            return "orphan_cli"
-        return "unknown"
-    parent = names.get(entry[0])
-    if parent and _posix_comm_name(parent[1]) in _POSIX_TERMINAL_PARENTS:
-        return "terminal_cli"
-    return "unknown"
-
-
-def _posix_process_names():
-    """Return {pid: (ppid, comm)} for every process, or None when unreadable.
-
-    COMM is the last column because it may contain spaces ("Claude Helper
-    (Renderer)"); on macOS it is the full executable path. None means the
-    parent chain cannot be established: callers treat every process as
-    unverified, never as a confirmed terminal session.
-    """
-    try:
-        result = subprocess.run(
-            ["ps", "-ww", "-eo", "pid,ppid,comm"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
-            env={**os.environ, "LC_ALL": "C", "LC_TIME": "C"}, creationflags=_NO_WINDOW,
-        )
-    except (subprocess.SubprocessError, OSError, ValueError):
-        return None
-    if result.returncode != 0:
-        return None
-    names = {}
-    for line in result.stdout.splitlines():
-        m = _POSIX_NAME_ROW_RE.match(line)
-        if m:
-            names[int(m.group(1))] = (int(m.group(2)), m.group(3))
-    return names or None
-
-
-def _posix_ancestor_pids(pid):
-    """Pids of every ancestor of `pid` (best effort, empty when ps is unreadable).
-
-    kill-stale runs inside the conversation it was asked from; that claude is an
-    ancestor of the command, not its direct parent, so it must be excluded too.
-    """
-    names = _posix_process_names()
-    out = set()
-    cur = pid
-    for _ in range(64):
-        entry = (names or {}).get(cur)
-        if not entry or entry[0] <= 0 or entry[0] in out:
-            break
-        out.add(entry[0])
-        cur = entry[0]
-    return out
-
-
 def _collect_posix_claude_sessions(process_name="claude"):
     """Collect running Claude/Codex CLI sessions via `ps` on macOS/Linux.
 
@@ -24170,92 +23689,51 @@ def _collect_posix_claude_sessions(process_name="claude"):
     subprocess or OS error -- the caller treats None as "health check
     unavailable" to preserve the historical POSIX contract. A non-zero
     `ps` exit with no sessions found returns `[]`.
-
-    For `claude`, every session carries ``identity`` ("terminal_cli",
-    "orphan_cli", "embedded_session" or "unknown") and ``identity_source: "ps"``; Electron
-    helpers and the desktop app's own process are dropped. See
-    `_classify_posix_claude_process`. Codex inventories are untagged: the Codex
-    path never terminates by age (see `_collect_health_data`/`kill_stale_sessions`).
     """
+    sessions = []
     try:
         result = subprocess.run(
-            ["ps", "-ww", "-eo", "pid,ppid,tty,lstart,etime,command"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+            ["ps", "-eo", "pid,tty,lstart,etime,command"],
+            capture_output=True, text=True, timeout=10,
             # Force C locale so lstart is always English 5-field format. Under
             # non-English locales (e.g. he_IL.UTF-8) ps emits localized dates
             # with a different field count, breaking the positional parse below
             # and dropping every session.
             env={**os.environ, "LC_ALL": "C", "LC_TIME": "C"}, creationflags=_NO_WINDOW,
         )
-    except (subprocess.SubprocessError, OSError, ValueError):
+    except (subprocess.SubprocessError, OSError):
         return None
     if result.returncode != 0:
-        return []
-    rows = []
-    for line in result.stdout.splitlines():
-        m = _POSIX_PS_ROW_RE.match(line)
-        if not m:
-            continue  # header and anything that is not a process row
-        rows.append({
-            "pid": int(m.group(1)), "ppid": int(m.group(2)), "tty": m.group(3),
-            "lstart": " ".join(m.group(4).split()), "etime": m.group(5), "args": m.group(6),
-        })
-    claude = process_name == "claude"
-    names = _posix_process_names() if claude else None
-    args_by_pid = {r["pid"]: r["args"] for r in rows}
-
-    # Parents of claude-named Electron children (--type=...) are the desktop
-    # app's main process, whatever their own name or directory layout.
-    electron_parent_pids = set()
-    if claude and names:
-        for r in rows:
-            if r["ppid"] > 0 and any(t.lower().startswith("--type=") for t in _posix_option_args(r["args"].split())):
-                comm = (names.get(r["pid"]) or (0, ""))[1]
-                if _posix_is_claude_host(comm, r["args"]):
-                    electron_parent_pids.add(r["ppid"])
-
-    sessions = []
-    for r in rows:
-        comm = (names.get(r["pid"]) or (0, ""))[1] if names else ""
-        command = r["args"]
-        if not (_command_matches_process(command, process_name)
-                or (claude and _posix_comm_is_claude(comm))):
+        return sessions
+    for line in result.stdout.strip().split("\n")[1:]:
+        line = line.strip()
+        if not line:
             continue
-        pid = r["pid"]
-        tty = r["tty"]
-        elapsed_seconds = _parse_elapsed_time(r["etime"])
-        has_terminal = tty not in _POSIX_NO_TTY
-        identity = None
-        if claude:
-            argv = _posix_read_argv(pid)
-            argv_exact = bool(argv)
-            if not argv:
-                # ps joins argv with spaces: still safe (a switch can never be
-                # hidden by splitting), merely coarser. On macOS COMM is argv[0]
-                # exactly, which keeps a spaced install path in one token.
-                if comm.startswith("/") and command.startswith(comm):
-                    argv = [comm] + command[len(comm):].split()
-                else:
-                    argv = command.split()
-            exe = _posix_exe_path(pid, comm)
-            detail = {"pid": pid, "ppid": r["ppid"], "tty": tty, "argv": argv,
-                      "argv_exact": argv_exact, "exe": exe}
-            identity = _classify_posix_claude_process(detail, names, args_by_pid, electron_parent_pids)
-            if identity in ("helper", "desktop_app"):
-                continue
-        session = {
+        parts = line.split()
+        if len(parts) < 9:
+            continue
+        # Fields: PID TTY LSTART(5 fields) ETIME COMMAND...
+        tty = parts[1]
+        command = " ".join(parts[8:])
+        if not _command_matches_process(command, process_name):
+            continue
+        try:
+            pid = int(parts[0])
+        except ValueError:
+            continue
+        lstart = " ".join(parts[2:7])
+        elapsed = parts[7]
+        elapsed_seconds = _parse_elapsed_time(elapsed)
+        has_terminal = tty not in ("??", "-", "?")
+        sessions.append({
             "pid": pid,
-            "started": r["lstart"],
+            "started": lstart,
             "elapsed_seconds": elapsed_seconds,
             "elapsed_human": _format_elapsed(elapsed_seconds),
             "command": command,
             "has_terminal": has_terminal,
             "tty": tty if has_terminal else None,
-        }
-        if identity is not None:
-            session["identity"] = identity
-            session["identity_source"] = "ps"
-        sessions.append(session)
+        })
     return sessions
 
 
@@ -24376,381 +23854,7 @@ def _windows_process_creation(pid):
     return {}
 
 
-# Windows process identity (issue #211). The Claude desktop app is Electron:
-# its main process, GPU/renderer/utility/crashpad children and the SSH broker
-# are all image-named claude*.exe, and the Code tab hosts its real sessions as
-# claude.exe children driven over stream-json. Image name alone cannot tell a
-# terminal CLI session from any of those, and kill_stale_sessions acts on this
-# inventory, so identity must be established from the command line and fail
-# closed: only a positively identified terminal CLI process is ever terminated.
-_WIN_HEADLESS_ARGS = ("--output-format", "--input-format", "--sdk-url")
-_WIN_ELECTRON_MARKERS = (
-    ("resources", "app.asar"),
-    ("icudtl.dat",),
-    ("chrome_100_percent.pak",),
-    ("resources.pak",),
-)
-
-
-def _windows_start_times_agree(process_start, cim_creation, tolerance_seconds=2):
-    """True only when Get-Process StartTime and CIM CreationDate match.
-
-    Both come from separate queries joined by PID; a PID reused between them
-    would otherwise borrow the old process's start time. Missing or
-    unparseable values on either side are not agreement.
-    """
-    try:
-        a = datetime.fromisoformat(process_start.strip().replace("Z", "+00:00"))
-        b = datetime.fromisoformat(cim_creation.strip().replace("Z", "+00:00"))
-        return abs((a - b).total_seconds()) <= tolerance_seconds
-    except (ValueError, TypeError, AttributeError):
-        return False
-
-
-def _windows_cim_process_details():
-    """Return {pid: {"ppid", "path", "cmdline", "creation"}} for claude* processes, or None.
-
-    Get-Process does not expose the command line on Windows PowerShell 5, so
-    this asks Win32_Process. None means identity could not be established
-    (PowerShell locked down, CIM unavailable): callers must treat every
-    process as unverified, never as a confirmed terminal session.
-    """
-    import csv as _csv
-    import io as _io
-
-    ps_cmd = (
-        "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
-        "Get-CimInstance Win32_Process -Filter 'Name LIKE ''claude%''' "
-        "-ErrorAction SilentlyContinue | "
-        "Select-Object ProcessId, ParentProcessId, ExecutablePath, CommandLine, "
-        "@{N='CreationDate';E={try { $_.CreationDate.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') } catch { '' }}} | "
-        "ConvertTo-Csv -NoTypeInformation"
-    )
-    try:
-        result = subprocess.run(
-            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
-            capture_output=True, text=True, encoding="utf-8", timeout=10, errors="replace", creationflags=_NO_WINDOW,
-        )
-    except (subprocess.SubprocessError, OSError, FileNotFoundError):
-        return None
-    if result.returncode != 0:
-        return None
-    rows = _read_strict_csv(result.stdout, ("ProcessId", "ParentProcessId", "ExecutablePath", "CommandLine", "CreationDate"))
-    if rows is None:
-        return None
-    details = {}
-    for row in rows:
-        try:
-            pid = int((row.get("ProcessId") or "").strip())
-        except ValueError:
-            continue
-        try:
-            ppid = int((row.get("ParentProcessId") or "").strip())
-        except ValueError:
-            ppid = None
-        details[pid] = {
-            "ppid": ppid,
-            "path": (row.get("ExecutablePath") or "").strip(),
-            "cmdline": (row.get("CommandLine") or "").strip(),
-            "creation": (row.get("CreationDate") or "").strip(),
-        }
-    return details
-
-
-def _windows_process_names():
-    """Return {pid: (ppid, image_name_lower)} for all processes, or None.
-
-    Used for ancestry: a claude.exe is only treated as a terminal session when
-    its parent is a known shell/terminal host. None = unavailable.
-    """
-    import csv as _csv
-    import io as _io
-
-    ps_cmd = (
-        "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
-        "Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | "
-        "Select-Object ProcessId, ParentProcessId, Name | "
-        "ConvertTo-Csv -NoTypeInformation"
-    )
-    try:
-        result = subprocess.run(
-            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
-            capture_output=True, text=True, encoding="utf-8", timeout=10, errors="replace", creationflags=_NO_WINDOW,
-        )
-    except (subprocess.SubprocessError, OSError, FileNotFoundError):
-        return None
-    if result.returncode != 0:
-        return None
-    rows = _read_strict_csv(result.stdout, ("ProcessId", "ParentProcessId", "Name"))
-    if rows is None:
-        return None
-    names = {}
-    for row in rows:
-        try:
-            pid = int((row.get("ProcessId") or "").strip())
-            ppid = int((row.get("ParentProcessId") or "").strip())
-        except ValueError:
-            continue
-        names[pid] = (ppid, (row.get("Name") or "").strip().lower())
-    return names or None
-
-
-def _windows_dir_is_electron_app(exe_path):
-    """True/False when the executable's directory is/is not an Electron app
-    directory; None when that cannot be determined (fail closed upstream)."""
-    if not exe_path:
-        return False
-    import ntpath as _ntpath
-
-    base = _ntpath.dirname(exe_path)
-    # os.path.exists swallows every OSError and reports False, which would turn
-    # an unreadable directory into "not Electron". Probe with os.stat so that
-    # anything other than "definitely absent" is indeterminate.
-    try:
-        os.stat(base or ".")
-    except (OSError, ValueError):
-        return None
-    found = False
-    for marker in _WIN_ELECTRON_MARKERS:
-        try:
-            os.stat(os.path.join(base, *marker))
-            found = True
-        except (FileNotFoundError, NotADirectoryError):
-            continue
-        except (OSError, ValueError):
-            return None
-    return found
-
-
-_WIN_TERMINAL_PARENTS = frozenset({
-    "cmd.exe", "powershell.exe", "pwsh.exe", "bash.exe", "sh.exe", "zsh.exe",
-    "wt.exe", "windowsterminal.exe", "conhost.exe", "openconsole.exe",
-    "mintty.exe", "wezterm-gui.exe", "alacritty.exe",
-})
-_WIN_HEADLESS_FLAGS = ("--output-format", "--input-format", "--sdk-url", "--print", "--ide")
-_WIN_HEADLESS_SUBCOMMANDS = frozenset({
-    "mcp", "doctor", "update", "install", "config", "migrate-installer",
-    "remote-control", "plugin", "agents", "setup-token", "login", "logout",
-})
-# Processes that anchor a process tree on Windows. Reaching one proves the
-# ancestry walk ended at a real root instead of at missing information.
-_WIN_STABLE_ROOTS = frozenset({
-    "explorer.exe", "winlogon.exe", "wininit.exe", "sihost.exe", "system",
-    "csrss.exe", "smss.exe",
-})
-# Service / scheduler hosts: a claude started from one is a background job, not
-# an interactive terminal, even when the chain reaches a real root.
-_WIN_SERVICE_HOSTS = frozenset({
-    "svchost.exe", "services.exe", "taskeng.exe", "taskhostw.exe", "taskhost.exe",
-})
-_WIN_ANCESTRY_MAX_HOPS = 16
-
-
-def _windows_ancestry_state(pid, names, electron_parent_pids):
-    """Walk parents of pid. Returns "hosted", "complete" or "incomplete".
-
-    "complete" means the chain provably reached a root without meeting a
-    desktop app or another claude process. Missing rows, cycles and over-long
-    chains are "incomplete": absence of evidence is never a negative host check.
-    """
-    seen = {pid}
-    cur = pid
-    for _ in range(_WIN_ANCESTRY_MAX_HOPS):
-        entry = names.get(cur)
-        if not entry:
-            return "incomplete"
-        ppid = entry[0]
-        if ppid == 0:
-            return "complete"
-        if ppid in seen:
-            return "incomplete"
-        if ppid in electron_parent_pids:
-            return "hosted"
-        parent = names.get(ppid)
-        if not parent:
-            return "incomplete"
-        if parent[1].startswith("claude"):
-            return "hosted"
-        if parent[1] in _WIN_SERVICE_HOSTS:
-            return "incomplete"
-        if parent[1] in _WIN_STABLE_ROOTS:
-            return "complete"
-        seen.add(ppid)
-        cur = ppid
-    return "incomplete"
-
-
-def _windows_cmdline_tokens(cmdline):
-    """Split a Windows command line the way the MSVC runtime does.
-
-    Quotes toggle grouping and are removed (so --"print" is --print),
-    backslashes before a quote follow the 2n / 2n+1 rule, and a doubled quote
-    inside a quoted run is a literal quote. Quoted prompt text therefore stays
-    one token and can never masquerade as a switch.
-    """
-    text = cmdline or ""
-    n = len(text)
-    pos = 0
-    tokens = []
-    # Program name: quotes toggle grouping and are removed; no escape processing.
-    while pos < n and text[pos] in " \t":
-        pos += 1
-    if pos < n:
-        buf = []
-        in_quote = False
-        while pos < n and (in_quote or text[pos] not in " \t"):
-            if text[pos] == '"':
-                in_quote = not in_quote
-            else:
-                buf.append(text[pos])
-            pos += 1
-        tokens.append("".join(buf))
-    while True:
-        while pos < n and text[pos] in " \t":
-            pos += 1
-        if pos >= n:
-            break
-        buf = []
-        in_quote = False
-        started = False
-        while pos < n:
-            ch = text[pos]
-            if ch == "\\":
-                k = pos
-                while k < n and text[k] == "\\":
-                    k += 1
-                slashes = k - pos
-                if k < n and text[k] == '"':
-                    buf.append("\\" * (slashes // 2))
-                    if slashes % 2:
-                        buf.append('"')
-                        pos = k + 1
-                    else:
-                        pos = k  # quote handled by the next iteration
-                else:
-                    buf.append("\\" * slashes)
-                    pos = k
-                started = True
-                continue
-            if ch == '"':
-                if in_quote and pos + 1 < n and text[pos + 1] == '"':
-                    buf.append('"')
-                    pos += 2
-                else:
-                    in_quote = not in_quote
-                    pos += 1
-                started = True
-                continue
-            if ch in " \t" and not in_quote:
-                break
-            buf.append(ch)
-            started = True
-            pos += 1
-        if started:
-            tokens.append("".join(buf))
-    return tokens
-
-
-def _windows_option_args(cmdline):
-    """Arguments that can be options: tokens after the program, up to a bare --."""
-    args = _windows_cmdline_tokens(cmdline)[1:]
-    return args[:args.index("--")] if "--" in args else args
-
-
-def _read_strict_csv(text, required):
-    """Parse PowerShell CSV output, or None when it is malformed or partial.
-
-    Unterminated quotes, short/long rows and a missing header all mean the
-    output may have been truncated, which must never be read as evidence.
-    """
-    import csv as _csv
-    import io as _io
-
-    try:
-        rows = list(_csv.reader(_io.StringIO((text or "").lstrip("\ufeff")), strict=True))
-    except (_csv.Error, ValueError):
-        return None
-    if not rows:
-        return []
-    header = rows[0]
-    if not all(col in header for col in required):
-        return None
-    out = []
-    for row in rows[1:]:
-        if not row:
-            continue
-        if len(row) != len(header):
-            return None
-        out.append(dict(zip(header, row)))
-    return out
-
-
-def _classify_windows_claude_process(image_name, detail, electron_parent_pids, names=None):
-    """Classify one claude* Windows process by identity.
-
-    Returns one of:
-    - "helper":           Electron child (--type=...), SSH broker or any other
-                          claude-adjacent image. Never a session.
-    - "desktop_app":      The Electron main process of the desktop app. Not a
-                          session; never terminable.
-    - "embedded_session": A Claude Code process hosted by another program
-                          (desktop app, IDE, SDK, a parent claude) or running
-                          headless (--print, stream-json, mcp). A real session
-                          owned by its host: never terminated by age.
-    - "terminal_cli":     Positively identified interactive terminal process:
-                          readable command line, no host/headless markers and
-                          a parent that is a known shell or terminal host. The
-                          only identity kill_stale_sessions may terminate.
-    - "unknown":          Anything else, including every case where identity
-                          evidence could not be read. Listed, never terminated.
-
-    There is deliberately no "orphan_cli" here (macOS/Linux only): a Windows
-    child keeps the pid of a parent that has exited and is not reparented to a
-    stable init process, so "the parent is gone" is not evidence of an orphan.
-    """
-    image = (image_name or "").strip().lower()
-    if image not in ("claude", "claude.exe"):
-        return "helper"
-    if not detail:
-        return "unknown"
-    cmdline = detail.get("cmdline") or ""
-    if not cmdline:
-        return "unknown"
-    if "\ufffd" in cmdline or "\ufffd" in (detail.get("path") or ""):
-        return "unknown"  # undecodable text is never affirmative evidence
-    args = _windows_option_args(cmdline)  # tokens after a bare -- are prompt text
-    if any(a.lower().startswith("--type=") for a in args):
-        return "helper"
-    if detail.get("pid") in electron_parent_pids:
-        return "desktop_app"
-    electron_dir = _windows_dir_is_electron_app(detail.get("path"))
-    if electron_dir is None:
-        return "unknown"
-    if electron_dir:
-        return "desktop_app"
-    if not detail.get("path") or not names:
-        return "unknown"
-    # Ancestry: hosted by the desktop app or by another claude process.
-    ancestry = _windows_ancestry_state(detail.get("pid"), names, electron_parent_pids)
-    if ancestry == "hosted":
-        return "embedded_session"
-    if ancestry != "complete":
-        return "unknown"
-    lowered = [a.lower() for a in args]
-    if any((len(a) > 1 and a[0] == "-" and a[1] != "-" and "p" in a.split("=")[0]) or any(a == f or a.startswith(f + "=") for f in _WIN_HEADLESS_FLAGS) for a in lowered):
-        return "embedded_session"
-    if any(a in _WIN_HEADLESS_SUBCOMMANDS for a in lowered):
-        return "embedded_session"
-    parent_entry = names.get(detail.get("pid"))
-    if parent_entry and detail.get("ppid") != parent_entry[0]:
-        return "unknown"  # the two snapshots disagree about the parent
-    parent_name = names.get(parent_entry[0], (None, ""))[1] if parent_entry else ""
-    if parent_name in _WIN_TERMINAL_PARENTS:
-        return "terminal_cli"
-    return "unknown"
-
-
-def _collect_windows_claude_sessions(process_name="claude", creation_fallback=True):
+def _collect_windows_claude_sessions(process_name="claude"):
     """Collect runtime processes on Windows via PowerShell Get-Process.
 
     Safety invariants:
@@ -24762,12 +23866,6 @@ def _collect_windows_claude_sessions(process_name="claude", creation_fallback=Tr
       requires the same strictness. The PowerShell-side wildcard pre-filter
       is a performance optimization only; the strict matcher below is the
       security layer.
-    - Process identity comes from the command line (Win32_Process), not the
-      image name: Electron children (--type=), the desktop app main process
-      and claude-ssh-broker are dropped, desktop/SDK-hosted sessions are
-      tagged "embedded_session", and anything without positive evidence of an
-      interactive terminal parent is tagged "unknown". Only "terminal_cli" is
-      ever terminable.
     - Uses SessionId (numeric) to detect service-hosted processes.
       Services run in session 0; unlike the literal 'Services' string,
       SessionId never localizes.
@@ -24818,15 +23916,6 @@ def _collect_windows_claude_sessions(process_name="claude", creation_fallback=Tr
     except (_csv.Error, ValueError):
         return sessions
 
-    cim_details = _windows_cim_process_details() if process_name == "claude" else None
-    proc_names = _windows_process_names() if cim_details else None
-    electron_parent_pids = set()
-    if cim_details:
-        for detail in cim_details.values():
-            if (any(a.lower().startswith("--type=") for a in _windows_option_args(detail.get("cmdline")))
-                    and detail.get("ppid")):
-                electron_parent_pids.add(detail["ppid"])
-
     for row in reader:
         image_name = (row.get("ProcessName") or "").strip()
         pid_str = row.get("Id") or ""
@@ -24847,20 +23936,11 @@ def _collect_windows_claude_sessions(process_name="claude", creation_fallback=Tr
             continue
         if pid <= 0:
             continue
-        identity = None
-        if process_name == "claude":
-            detail = dict(cim_details.get(pid) or {}) if cim_details else {}
-            detail["pid"] = pid
-            identity = _classify_windows_claude_process(image_name, detail, electron_parent_pids, proc_names)
-            if identity == "terminal_cli" and not _windows_start_times_agree(start_time, detail.get("creation")):
-                identity = "unknown"  # the two queries saw different processes under this PID
-            if identity in ("helper", "desktop_app"):
-                continue
         creation = _parse_iso_process_datetime(start_time) if start_time else None
         if creation is None:
             # StartTime unreadable (protected process) or unparseable: fall
             # back to the per-PID wmic/CIM lookup.
-            creation = _windows_process_creation(pid) if creation_fallback else {}
+            creation = _windows_process_creation(pid)
         elapsed_seconds = int(creation.get("elapsed_seconds") or 0)
         # SessionId 0 is the Services session (language-independent); any
         # other value indicates a user session. A missing/unparseable
@@ -24870,7 +23950,7 @@ def _collect_windows_claude_sessions(process_name="claude", creation_fallback=Tr
         except ValueError:
             session_id = -1
         has_terminal = session_id != 0
-        session = {
+        sessions.append({
             "pid": pid,
             "started": creation.get("started", "unknown"),
             "elapsed_seconds": elapsed_seconds,
@@ -24878,10 +23958,7 @@ def _collect_windows_claude_sessions(process_name="claude", creation_fallback=Tr
             "command": image_name if image_lower.endswith(".exe") else image_name + ".exe",
             "has_terminal": has_terminal,
             "tty": f"session-{session_id}" if has_terminal and session_id > 0 else None,
-        }
-        if identity is not None:
-            session["identity"] = identity
-        sessions.append(session)
+        })
     return sessions
 
 
@@ -25022,14 +24099,7 @@ def _collect_health_data():
             # down) can't threshold STALE/ZOMBIE. Surface explicitly so the user
             # isn't fooled into thinking all sessions are fresh.
             flags.append("UNKNOWN_AGE")
-        identity = s.get("identity")
-        if identity == "embedded_session":
-            flags.append("DESKTOP")
-        elif identity == "unknown":
-            flags.append("UNVERIFIED")
-        elif identity == "orphan_cli":
-            flags.append("ORPHAN")
-        elif s.get("has_terminal"):
+        if s.get("has_terminal"):
             flags.append("TERMINAL")
         else:
             flags.append("HEADLESS")
@@ -25072,13 +24142,8 @@ def _collect_health_data():
 
     # Build recommendations
     recommendations = []
-    # Sessions hosted by another app (DESKTOP) or with unreadable identity
-    # (UNVERIFIED) are not terminals the user can close and reopen.
-    # ORPHAN sessions have no terminal to close and reopen; they get their own
-    # recommendation below.
-    _own = [s for s in running_sessions if not any(f in s.get("flags", []) for f in ("DESKTOP", "UNVERIFIED", "ORPHAN"))]
-    outdated_count = sum(1 for s in _own if "OUTDATED" in s.get("flags", []))
-    stale_count = sum(1 for s in _own if any(f in s.get("flags", []) for f in ("STALE", "ZOMBIE")))
+    outdated_count = sum(1 for s in running_sessions if "OUTDATED" in s.get("flags", []))
+    stale_count = sum(1 for s in running_sessions if any(f in s.get("flags", []) for f in ("STALE", "ZOMBIE")))
 
     if outdated_count > 0 and installed_version:
         recommendations.append(
@@ -25090,13 +24155,6 @@ def _collect_health_data():
         recommendations.append(
             f"{stale_count} session{'s' if stale_count != 1 else ''} running "
             f"24+ hours. Check if still needed, long sessions accumulate context bloat."
-        )
-    orphan_count = sum(1 for s in running_sessions if "ORPHAN" in s.get("flags", []))
-    if orphan_count > 0:
-        recommendations.append(
-            f"{orphan_count} session{'s' if orphan_count != 1 else ''} with the terminal gone "
-            f"(ORPHAN). Never ended automatically. Review, then run "
-            f"`python3 measure.py kill-stale --include-orphans --dry-run` to preview ending them."
         )
     unknown_age_count = sum(1 for s in running_sessions if "UNKNOWN_AGE" in s.get("flags", []))
     if unknown_age_count > 0 and system == "Windows":
@@ -25227,17 +24285,17 @@ def health_selfcheck():
     else:
         try:
             res = subprocess.run(
-                ["ps", "-ww", "-eo", "pid,ppid,tty,lstart,etime,command"],
-                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+                ["ps", "-eo", "pid,tty,lstart,etime,command"],
+                capture_output=True, text=True, timeout=10,
                 # Match the production collectors: force C locale so this
                 # diagnostic mirrors what _collect_posix_claude_sessions sees.
                 env={**os.environ, "LC_ALL": "C", "LC_TIME": "C"}, creationflags=_NO_WINDOW,
             )
             ok = res.returncode == 0 and len(res.stdout.strip().split("\n")) > 1
-            check("ps -ww -eo pid,ppid,tty,lstart,etime,command", ok,
+            check("ps -eo pid,tty,lstart,etime,command", ok,
                   f"exit={res.returncode}, lines={len(res.stdout.strip().split(chr(10)))}")
         except (subprocess.SubprocessError, OSError) as e:
-            check("ps -ww -eo pid,ppid,tty,lstart,etime,command", False, f"exception: {e!r}")
+            check("ps -eo pid,tty,lstart,etime,command", False, f"exception: {e!r}")
 
         try:
             sessions = _collect_posix_claude_sessions()
@@ -25300,8 +24358,6 @@ def session_health():
             flag_str = f"  {'  '.join(flags)}" if flags else ""
             print(f"  PID {s['pid']:<7d} Started: {s['started']}  ({s['elapsed_human']} ago)")
             print(f"             Version: {version_str}{flag_str}")
-            if "ORPHAN" in flags:
-                print(f"             terminal gone; started {s['elapsed_human']} ago")
 
         if recommendations:
             print("\nRECOMMENDATIONS")
@@ -25316,90 +24372,11 @@ def session_health():
     print()
 
 
-def _windows_revalidate_terminal_cli(session, fresh_inventory=None):
-    """Re-check a Windows session right before termination.
-
-    The inventory is a snapshot; a PID can be reused or reclassified between
-    that snapshot and the kill. Re-collect (without per-PID fallback probes for
-    unrelated processes) and require the same PID with the same start time to
-    still classify as terminal_cli. A race between that snapshot and
-    TerminateProcess remains: PID-based termination has no process handle to
-    bind to, so a PID reused inside that interval could be terminated.
-    """
-    if session.get("started") in (None, "", "unknown"):
-        return False
-    if fresh_inventory is None:
-        try:
-            fresh_inventory = {x["pid"]: x for x in _collect_windows_claude_sessions(creation_fallback=False)}
-        except Exception:
-            return False
-    now = fresh_inventory.get(session["pid"])
-    return bool(
-        now
-        and now.get("identity") == "terminal_cli"
-        and now.get("started") == session.get("started")
-    )
-
-
-def _posix_revalidate_terminal_cli(session, fresh_inventory=None, identity="terminal_cli"):
-    """Re-check a POSIX session right before termination.
-
-    The inventory is a snapshot; a PID can be reused or reclassified between
-    that snapshot and the kill. Re-collect and require the same PID with the
-    same start time and command line to still classify as `identity`
-    (terminal_cli, or orphan_cli for `kill-stale --include-orphans`). A race
-    between that re-check and os.kill remains: a PID-based signal has no handle
-    to bind to, so a PID reused inside that interval could be signalled.
-    """
-    if session.get("started") in (None, "", "unknown"):
-        return False
-    if fresh_inventory is None:
-        try:
-            fresh = _collect_posix_claude_sessions("claude")
-        except Exception:
-            return False
-        if fresh is None:
-            return False
-        fresh_inventory = {x["pid"]: x for x in fresh}
-    now = fresh_inventory.get(session["pid"])
-    return bool(
-        now
-        and now.get("identity") == identity
-        and now.get("started") == session.get("started")
-        and now.get("command") == session.get("command")
-    )
-
-
-def _revalidate_terminal_cli(session, identity="terminal_cli"):
-    """Re-verify one identity-tagged session with the collector that tagged it.
-
-    `identity` is the class the session must still have (orphan_cli exists on
-    POSIX only; Windows sessions are always terminal_cli)."""
-    if session.get("identity_source") == "ps":
-        return _posix_revalidate_terminal_cli(session, identity=identity)
-    return identity == "terminal_cli" and _windows_revalidate_terminal_cli(session)
-
-
-def _parse_kill_stale_args(args):
-    """(hours, dry_run, include_orphans) from the `kill-stale` argv tail."""
-    hours = 12
-    for i, a in enumerate(args):
-        if a == "--hours" and i + 1 < len(args):
-            try:
-                hours = int(args[i + 1])
-            except ValueError:
-                pass
-    return hours, "--dry-run" in args, "--include-orphans" in args
-
-
-def kill_stale_sessions(threshold_hours=12, dry_run=False, include_orphans=False):
+def kill_stale_sessions(threshold_hours=12, dry_run=False):
     """Kill Claude Code sessions that have been running longer than threshold_hours.
 
-    Targets abandoned terminal sessions only: a session is terminable when its
-    collector positively identified it as a terminal CLI process. Orphans
-    (orphan_cli: terminal gone, reparented to init, macOS/Linux) are listed but
-    only terminated with include_orphans. Skips the current process's own PID
-    and ancestors to avoid self-termination.
+    Targets headless/zombie sessions that are no longer doing useful work.
+    Skips the current process's own PID to avoid self-termination.
     """
     import signal
 
@@ -25415,47 +24392,13 @@ def kill_stale_sessions(threshold_hours=12, dry_run=False, include_orphans=False
     threshold_seconds = threshold_hours * 3600
     my_pid = os.getpid()
     my_ppid = os.getppid()
-    # Never terminate the session this command is running inside of: it is an
-    # ancestor of this process (claude -> shell -> python), not its direct parent.
-    my_ancestors = set() if os.name == "nt" else _posix_ancestor_pids(my_pid)
 
-    # Fail closed: process age is not evidence that a conversation is
-    # abandoned. Sessions whose identity is known to belong to a host app
-    # (desktop/SDK/IDE/headless) or could not be established are never
-    # terminated, and neither is a session no collector tagged: the default
-    # below is "unknown", not "terminal_cli".
-    killable = ("terminal_cli", "orphan_cli") if include_orphans else ("terminal_cli",)
-    protected = [s for s in running
-                 if s.get("identity", "unknown") not in ("terminal_cli", "orphan_cli")
-                 and s["elapsed_seconds"] > threshold_seconds]
     stale = [s for s in running
              if s["elapsed_seconds"] > threshold_seconds
              and s["pid"] != my_pid
-             and s["pid"] != my_ppid
-             and s["pid"] not in my_ancestors
-             and s.get("identity", "unknown") in killable]
-    held_orphans = [] if include_orphans else [
-        s for s in running
-        if s.get("identity") == "orphan_cli"
-        and s["elapsed_seconds"] > threshold_seconds
-        and s["pid"] not in (my_pid, my_ppid)
-        and s["pid"] not in my_ancestors]
-
-    if protected:
-        print(f"\n  Skipping {len(protected)} long-running session{'s' if len(protected) != 1 else ''} "
-              "hosted by the Claude desktop app, an IDE or the SDK, or whose identity could not be verified.")
-        print("  Process age alone is not evidence that these are abandoned; they are never auto-terminated.")
-
-    if held_orphans:
-        n = len(held_orphans)
-        print(f"\n  {n} orphaned session{'s' if n != 1 else ''} (terminal gone, running >{threshold_hours}h) "
-              f"{'were' if n != 1 else 'was'} left alone. Orphans are only ended on request:")
-        print(f"    python3 measure.py kill-stale --include-orphans --hours {threshold_hours}   (add --dry-run to preview)")
+             and s["pid"] != my_ppid]
 
     if not stale:
-        if protected or held_orphans:
-            print(f"\n  No terminable stale sessions found (threshold: {threshold_hours}h).")
-            return
         print(f"\n  No stale sessions found (threshold: {threshold_hours}h).")
         print(f"  {len(running)} active session{'s' if len(running) != 1 else ''}, all within threshold.")
         return
@@ -25472,12 +24415,6 @@ def kill_stale_sessions(threshold_hours=12, dry_run=False, include_orphans=False
 
     killed = 0
     for s in stale:
-        # Re-collect per candidate, immediately before its termination: the
-        # window between verification and the signal is as small as a
-        # PID-based kill allows (no process handle is retained).
-        if not _revalidate_terminal_cli(s, identity=s.get("identity", "unknown")):
-            print(f"    PID {s['pid']} skipped: identity changed or could not be re-verified.")
-            continue
         try:
             os.kill(s["pid"], signal.SIGTERM)
             killed += 1
@@ -32510,20 +31447,6 @@ def compute_quality_score(quality_data, session_id=None):
     )
     fill_denominator = compact_window if compact_window_reduced else model_context_window
 
-    def _effective_fill(model_share, tokens=None):
-        """Share of the EFFECTIVE window for a given share of the model window.
-
-        Without a user override the two are the same number. With one, the
-        override is an absolute token count, so real tokens are divided by it
-        directly (no dependence on our inferred model window); only when the
-        token count is unknown is the model share rescaled.
-        """
-        if not compact_window_reduced or not fill_denominator:
-            return model_share
-        if tokens is not None and tokens > 0:
-            return min(1.0, max(0.0, float(tokens) / fill_denominator))
-        return min(1.0, max(0.0, model_share * model_context_window / fill_denominator))
-
     # fill_pct: share of the EFFECTIVE window (what the user sees, what nudges
     # gate on). model_fill: share of the MODEL window -- retrieval quality is a
     # function of real fill, so the MRCR curve and degradation bands keep the
@@ -32533,16 +31456,10 @@ def compute_quality_score(quality_data, session_id=None):
     # Set when observed tokens exceed the window: that is not a full context, it
     # is a wrong window, and it must not be reported as a percentage.
     window_contradicted = False
-    # Same-session host fill reading (any age). The host measures the real
-    # window; our token arithmetic is only as good as an inferred denominator.
-    # Below, a recent same-session reading that disagrees with our computed fill
-    # by >10 points wins the sanity check — the phantom-fill failure mode that
-    # produced "bar shows 16%, score is 59".
+    # Set when the host supplied the fill, so we can compare our own arithmetic
+    # against it afterwards.
     host_fill_pct = None
-    host_fill_age_s = None
     host_disagreement = None
-    # Which source produced fill_pct, for cache diagnosability.
-    fill_source = None
     try:
         live_fill_path = QUALITY_CACHE_DIR / "live-fill.json"
         if live_fill_path.exists():
@@ -32550,28 +31467,31 @@ def compute_quality_score(quality_data, session_id=None):
             age = time.time() - live.get("timestamp", 0) / 1000  # JS timestamp is ms
             live_sid = sanitize_session_id(str(live.get("session_id") or ""))
             want_sid = sanitize_session_id(str(session_id or ""))
-            if want_sid and live_sid == want_sid:
+            if age < 10 and want_sid and live_sid == want_sid:
                 _used = float(live["used_percentage"])
                 # json.loads accepts the non-standard literals NaN/Infinity. NaN
                 # compares False against everything, so max()/min() would pass it
                 # through as a silent 0.0 and suppress every nudge with no error.
                 if not math.isfinite(_used):
                     raise ValueError("non-finite used_percentage")
-                # The host's own percentage is the one number here that does not
-                # depend on our inferred window, so it is kept as reported.
-                host_fill_pct = min(1.0, max(0.0, _used / 100.0))
-                host_fill_age_s = age
                 live_tokens = live.get("context_tokens")
-                if not (isinstance(live_tokens, (int, float)) and live_tokens > 0):
-                    live_tokens = None
-                # The host knows the real window; we only infer it. When the
-                # host rescues us from a bad denominator the user sees a correct
-                # number and the misconfiguration stays invisible, so record the
-                # disagreement rather than quietly accepting the save.
-                if age < 10:
-                    model_fill = host_fill_pct
-                    fill_pct = _effective_fill(model_fill, live_tokens)
-                    fill_source = "host-live"
+                if isinstance(live_tokens, (int, float)) and live_tokens > 0 and model_context_window:
+                    # New-format payload carries the numerator: recompute both
+                    # fills against our own denominators.
+                    model_fill = min(1.0, max(0.0, live_tokens / model_context_window))
+                    fill_pct = min(1.0, max(0.0, live_tokens / fill_denominator))
+                else:
+                    # Legacy payload: used_percentage is the host's model-window
+                    # fill. Keep it as model_fill and scale it onto the
+                    # effective window when the user overrode it.
+                    model_fill = min(1.0, max(0.0, _used / 100.0))
+                    fill_pct = min(
+                        1.0, max(0.0, model_fill * model_context_window / fill_denominator))
+                    # The host knows the real window; we only infer it. When the
+                    # host rescues us from a bad denominator the user sees a correct
+                    # number and the misconfiguration stays invisible, so record the
+                    # disagreement rather than quietly accepting the save.
+                    host_fill_pct = model_fill
     except (json.JSONDecodeError, OSError, KeyError, TypeError, ValueError):
         # used_percentage arrives from a JSON file on disk. A non-numeric value
         # raises TypeError on the division, which was NOT caught here and
@@ -32589,8 +31509,7 @@ def compute_quality_score(quality_data, session_id=None):
                 # curve math keeps its 0-1 contract.
                 window_contradicted = raw_ratio > 1.0
                 model_fill = min(1.0, max(0.0, raw_ratio))
-                fill_pct = _effective_fill(model_fill, float(context_tokens))
-                fill_source = "transcript-tokens"
+                fill_pct = min(1.0, max(0.0, float(context_tokens) / fill_denominator))
         except (TypeError, ValueError):
             fill_pct = None
     if fill_pct is None:
@@ -32604,17 +31523,11 @@ def compute_quality_score(quality_data, session_id=None):
         else:
             model_fill = 0
         fill_pct = min(1.0, estimated_tokens / fill_denominator) if fill_denominator > 0 else 0
-        fill_source = "char-estimate"
     if model_fill is None:
         model_fill = fill_pct
     # Cross-check: if the host told us the fill and our own arithmetic would have
     # produced a materially different one, our window is wrong even though the
-    # displayed number is right. Always recorded — and when the host reading is
-    # recent enough to still describe this session, the host wins: a >10-point
-    # gap is a denominator error (multiples), not measurement noise, and
-    # serving the phantom fill is how a fresh 1M session reported
-    # "16% fill, score 59". Our arithmetic never overrules the host; only the
-    # host overrules it.
+    # displayed number is right. Recorded, never used to overrule the host.
     if host_fill_pct is not None:
         try:
             _tokens = quality_data.get("context_tokens")
@@ -32629,15 +31542,6 @@ def compute_quality_score(quality_data, session_id=None):
                         "window": model_context_window,
                         "window_source": model_context_window_source,
                     }
-                    # Sanity window: a reading older than ~5min describes a
-                    # different moment (same convention as the statusline's
-                    # 5-min staleness guard); fresher than that, the host's real
-                    # window beats our inferred one.
-                    if fill_source != "host-live" and (
-                            host_fill_age_s is not None and host_fill_age_s < 300):
-                        model_fill = host_fill_pct
-                        fill_pct = _effective_fill(model_fill, float(_tokens))
-                        fill_source = "host-stale-override"
         except (TypeError, ValueError):
             pass
 
@@ -32764,53 +31668,6 @@ def compute_quality_score(quality_data, session_id=None):
         signals[k] * _RESOURCE_HEALTH_WEIGHTS[k]
         for k in _RESOURCE_HEALTH_WEIGHTS
     )
-
-    # Which signal actually pulls ResourceHealth down? The displayed score IS
-    # resource_health, so attribute its deficit by weighted contribution —
-    # weight * (100 - signal) — not by which waste key happens to exist. This
-    # is what the "biggest drag" wording everywhere must reflect: a 70% fill
-    # drags harder than one stale read even when no waste was recorded.
-    _drag_deficit = {
-        k: _RESOURCE_HEALTH_WEIGHTS[k] * max(0.0, 100.0 - signals[k])
-        for k in _RESOURCE_HEALTH_WEIGHTS
-    }
-    top_drag = None
-    _worst_key = max(_drag_deficit, key=_drag_deficit.get)
-    _worst_pts = _drag_deficit[_worst_key]
-    if _worst_pts >= 3.0:
-        if _worst_key == "context_fill_degradation":
-            top_drag = {
-                "key": "context_fill",
-                "label": f"{round(fill_pct * 100)}% context fill",
-                "points": round(_worst_pts, 1),
-            }
-        elif _worst_key == "compaction_depth":
-            _loss = {0: 0, 1: 65, 2: 88}.get(compactions, 95)
-            top_drag = {
-                "key": "compactions",
-                "label": (
-                    f"{compactions} compaction{'s' if compactions != 1 else ''}"
-                    f" (~{_loss}% context loss)"),
-                "points": round(_worst_pts, 1),
-            }
-        else:  # absolute_waste_tokens — name the dominant waste cause
-            # Only causes that actually feed total_waste (and therefore this
-            # signal's deficit) qualify: reread-loop waste is diagnostic-only
-            # and must never be named as the drag it did not cause.
-            _waste_parts = {
-                "bloated_results": (bloated_data["estimated_waste_tokens"],
-                                    "bloated tool results"),
-                "stale_reads": (stale_data["estimated_waste_tokens"],
-                                "stale file reads"),
-                "duplicates": (dup_data["estimated_waste_tokens"],
-                               "repeated system reminders"),
-            }
-            _waste_cause = max(_waste_parts, key=lambda k: _waste_parts[k][0])
-            top_drag = {
-                "key": f"waste:{_waste_cause}",
-                "label": _waste_parts[_waste_cause][1],
-                "points": round(_worst_pts, 1),
-            }
     session_efficiency = sum(
         signals[k] * _SESSION_EFFICIENCY_WEIGHTS[k]
         for k in _SESSION_EFFICIENCY_WEIGHTS
@@ -32852,7 +31709,6 @@ def compute_quality_score(quality_data, session_id=None):
             "model_context_window_source": model_context_window_source,
             "window_contradicted": window_contradicted,
             "host_disagreement": host_disagreement,
-            "fill_source": fill_source,
             "band": band_name,
             "detail": _cfd_detail,
         },
@@ -32965,7 +31821,6 @@ def compute_quality_score(quality_data, session_id=None):
         "resource_health_grade": rh_grade,
         "session_efficiency": se_rounded,
         "session_efficiency_grade": se_grade,
-        "top_drag": top_drag,
         "signals": signals,
         "breakdown": breakdown,
         "fill_warning": fill_warning,
@@ -33120,9 +31975,6 @@ def quality_analyzer(session_id=None, as_json=False):
     print(f"  Content quality:     {grade} ({score}/100) ({band})")
     if fill_band:
         print(f"  Degradation band:    {fill_band} ({cfd.get('fill_pct', 0):.0f}% fill, ~{cfd.get('quality_estimate', 0)}/100 MRCR)")
-    top_drag = result.get("top_drag")
-    if top_drag:
-        print(f"  Biggest drag:        {top_drag['label']} (-{top_drag['points']} pts)")
     print(f"  Messages analyzed:   {result['total_messages']}")
     print(f"  Decisions captured:  {result['decisions_found']}")
     print()
@@ -34888,12 +33740,6 @@ def _codex_backfill_tool_archive(filepath=None, session_id=None, max_outputs=20)
     archive_dir = _archive_dir_for_session(sid)
     if not archive_dir:
         return 0
-    # No persistence without the shared redactor — tool output is the single
-    # most likely place a credential lands in a transcript.
-    try:
-        from credential_patterns import redact_credentials as _bf_redact
-    except Exception:
-        return 0
     archived = 0
     try:
         outputs = codex_session.iter_tool_outputs(
@@ -34925,23 +33771,11 @@ def _codex_backfill_tool_archive(filepath=None, session_id=None, max_outputs=20)
             if len(output_text) > 5_242_880:
                 output_text = output_text[:5_242_880] + "\n[... truncated by Token Optimizer archive cap]"
 
-            try:
-                # Redact BEFORE hashing/summarizing/persisting so the archive
-                # entry, manifest, and SessionStore row all carry the same
-                # safe bytes. A redactor refusal (broken custom pattern
-                # config) skips this output rather than storing it raw.
-                output_text = _bf_redact(output_text)
-            except Exception:
-                continue
-
             char_count = len(output_text)
             token_est = int(char_count / CHARS_PER_TOKEN)
             tool_name = str(item.get("tool_name") or "Tool")
             tool_type = str(item.get("tool_type") or "codex")
-            try:
-                command_or_path = _bf_redact(str(item.get("command_or_path") or ""))
-            except Exception:
-                continue
+            command_or_path = str(item.get("command_or_path") or "")
             output_hash = hashlib.sha256(output_text.encode("utf-8", errors="replace")).hexdigest()
             summary = _summarize_tool_output_for_recovery(output_text)
             entry_data = {
@@ -36026,31 +34860,33 @@ def compact_capture(transcript_path=None, session_id=None, trigger="auto", cwd=N
     if not state:
         return None
 
-    # Redact credentials from the whole checkpoint state (SEC-004). One
-    # recursive pass over every string — including dict keys, tuples, and any
-    # nested containers — BEFORE the .md render and the JSON sidecar build,
-    # so a field not individually listed (open_questions, todos, agent
-    # descriptions, paths, anything added later) can never bypass it.
+    # Redact credentials from checkpoint text fields (SEC-004)
     try:
-        from credential_patterns import redact_credentials_deep as _cp_redact_deep
+        from credential_patterns import redact_credentials as _cp_redact
         from credential_patterns import RedactionConfigError as _RedactCfgErr
     except Exception:
         # Without the shared redactor a checkpoint would persist transcript
         # text unredacted. Fail closed: no checkpoint rather than a raw one.
         return None
     try:
-        state = _cp_redact_deep(state)
+        step = state.get("current_step", {})
+        if step.get("last_user"):
+            step["last_user"] = _cp_redact(step["last_user"])
+        if step.get("last_assistant"):
+            step["last_assistant"] = _cp_redact(step["last_assistant"])
+        state["decisions"] = [_cp_redact(d) if isinstance(d, str) else d for d in state.get("decisions", [])]
+        state["error_context"] = [
+            tuple(_cp_redact(x) if isinstance(x, str) else x for x in ec) if isinstance(ec, tuple)
+            else _cp_redact(ec) if isinstance(ec, str) else ec
+            for ec in state.get("error_context", [])
+        ]
     except _RedactCfgErr:
-        # A configured-but-broken custom pattern file makes the redactor
+        # A configured-but-broken custom pattern file makes redact_credentials
         # refuse: writing the checkpoint anyway would persist transcript text
         # that org-specific rules were meant to cover. Skip the write.
         return None
     except Exception:
-        # The deep pass is all-or-nothing (the rebuilt structure only binds
-        # on success), so a mid-pass failure leaves state fully UNREDACTED.
-        # Persisting it would write every raw field, not just one — skip the
-        # write rather than fail open.
-        return None
+        pass
 
     # Generate checkpoint markdown
     sid = sanitize_session_id(session_id) if session_id else sanitize_session_id(filepath.stem)
@@ -36084,14 +34920,6 @@ def compact_capture(transcript_path=None, session_id=None, trigger="auto", cwd=N
                 fill_pct = cfd.get("fill_pct")
     except Exception:
         quality_summary = None
-    if quality_summary:
-        # The sidecar serializes this blob wholesale and the .md renders its
-        # `topic` (derived from the first user message). Same contract as the
-        # state pass above: redacted or absent, never raw.
-        try:
-            quality_summary = _cp_redact_deep(quality_summary)
-        except Exception:
-            quality_summary = None
     if backfill_tools:
         try:
             _codex_backfill_tool_archive(filepath=filepath, session_id=sid)
@@ -48696,31 +47524,115 @@ def _status_bar_finite(v):
 # compact windows. Read-only, deterministic, no model calls. Every figure is
 # an ESTIMATE derived from recorded prompt sizes; the output states its
 # assumptions and never presents a window as a recommendation.
+#
+# Replay rule: a recorded compact_boundary ALWAYS happens; a candidate window
+# can only ADD compactions before it. Extra compactions are never negative,
+# and a candidate at or above where the session really compacted (or, for an
+# open segment, above its real peak) is a no-op for that session. The row for
+# the user's own resolved window is the reference: 0 extra, 0 net by
+# construction.
 # ---------------------------------------------------------------------------
 
 _ADVICE_CANDIDATE_WINDOWS = (300_000, 400_000, 500_000, 650_000, 800_000)
-# Assumption constants, echoed verbatim in the output so the estimate is
-# auditable: what one compaction produces and what it leaves behind.
-_ADVICE_SUMMARY_OUTPUT_TOKENS = 4_000   # summary the model writes (output-priced)
-_ADVICE_POST_COMPACT_CONTEXT = 30_000   # summary + re-sent prefix after a compact
+# What one compaction costs. The summary length cannot be read back from a
+# transcript, so it stays an assumption. The other two are MEASURED from the
+# user's own recorded compactions and these constants are only the fallback
+# used when fewer than _ADVICE_MIN_MEASURED real compactions exist.
+_ADVICE_SUMMARY_OUTPUT_TOKENS = 4_000   # summary the model writes (output-priced), assumed
+_ADVICE_POST_COMPACT_CONTEXT = 30_000   # fallback: context on the first request after a compact
+_ADVICE_REREAD_DEFAULT = 20_000         # fallback: tokens re-read after a compact
+_ADVICE_MIN_MEASURED = 5                # recorded compactions needed to trust a median
+_ADVICE_REREAD_TURNS = 10               # assistant turns inspected after a boundary
 _ADVICE_MIN_SESSIONS = 3                # below this, say "history too thin"
+_ADVICE_ASSUMED_TAG = "assumed, too few real compactions to measure"
+_ADVICE_REREAD_TOOLS = frozenset({"Read", "Grep", "Glob", "Bash"})
+# coach --json: same discipline as the other coach blocks (cap, cache, never fails).
+_ADVICE_COACH_MAX_SESSIONS = 150
+_ADVICE_COACH_BUDGET_SECONDS = 4.0
+_ADVICE_COACH_CACHE_TTL_SECONDS = 6 * 3600
+_ADVICE_PATH_TOKEN_RE = re.compile(r"""[^\s"'<>|;&()=,]+""")
+_ADVICE_WIN_DRIVE_RE = re.compile(r"^[A-Za-z]:/")
 
 
-def _advice_session_turns(path):
-    """(turns, boundaries, model) replay data for a main-conversation transcript.
+def _advice_norm_path(p):
+    """Same file, same key: forward slashes, collapsed ./ and ../, no trailing
+    slash; case-folded only for Windows drive paths."""
+    if not isinstance(p, str) or not p.strip():
+        return None
+    s = p.strip().replace("\\", "/")
+    s = posixpath.normpath(s)
+    if s in (".", "/"):
+        return None
+    if _ADVICE_WIN_DRIVE_RE.match(s):
+        s = s.lower()
+    return s
 
-    turns: per-request context size (input + cache_read + cache_creation) of
-    each main-thread assistant usage row, in transcript order; streamed chunks
-    sharing a requestId collapse to the largest row. boundaries: indexes in
-    `turns` that directly follow a real compact_boundary row. model: the newest
-    model id on a main-thread row, or None.
+
+def _advice_tool_targets(name, inp):
+    """Normalised paths a Read/Grep/Glob/Bash tool_use targets (may be empty)."""
+    if name not in _ADVICE_REREAD_TOOLS or not isinstance(inp, dict):
+        return []
+    out = []
+    if name == "Read":
+        cands = [inp.get("file_path"), inp.get("path")]
+    elif name in ("Grep", "Glob"):
+        cands = [inp.get("path")]
+    else:  # Bash: path-like tokens in the command line
+        cmd = inp.get("command")
+        cands = []
+        if isinstance(cmd, str):
+            for tok in _ADVICE_PATH_TOKEN_RE.findall(cmd[:4000]):
+                if "/" in tok or "\\" in tok:
+                    cands.append(tok)
+    for c in cands:
+        n = _advice_norm_path(c)
+        if n:
+            out.append(n)
+    return out
+
+
+def _advice_result_text(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for b in content:
+            if isinstance(b, dict) and isinstance(b.get("text"), str):
+                parts.append(b["text"])
+            elif isinstance(b, str):
+                parts.append(b)
+        return "\n".join(parts)
+    return ""
+
+
+def _advice_session_data(path):
+    """Replay + measurement data for a main-conversation transcript.
+
+    Returns a dict:
+      turns          per-request context size (input + cache_read + cache_creation)
+                     of each main-thread assistant usage row, in order; streamed
+                     chunks sharing a requestId collapse to the largest row.
+      cache_reads    cache_read_input_tokens per turn (same indexing).
+      boundaries     indexes in `turns` that directly follow a compact_boundary.
+      model          newest model id on a main-thread row, or None.
+      post_compact_ctx  context size of the first request after each recorded
+                     boundary that has a following turn.
+      rereads        per such boundary: tokens of Read/Grep/Glob/Bash tool
+                     results, in the next _ADVICE_REREAD_TURNS assistant turns,
+                     that target a path (same normalised path) already targeted
+                     by one of those tools before the boundary.
+    Sidechain/subagent rows are ignored throughout.
     """
-    turns, boundaries, model = [], set(), None
+    turns, cache_reads, boundaries, model = [], [], set(), None
+    seen = set()            # normalised paths touched so far (cumulative)
+    bounds = []             # [start_turn_idx, frozenset(prior paths), reread_tokens]
+    pending = {}            # tool_use id -> bounds entry (None when not a re-read)
     prev_req = None
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             for line in f:
-                if '"assistant"' not in line and "compact_boundary" not in line:
+                if ('"assistant"' not in line and "compact_boundary" not in line
+                        and '"tool_result"' not in line):
                     continue
                 try:
                     rec = json.loads(line)
@@ -48728,20 +47640,35 @@ def _advice_session_turns(path):
                     continue
                 if not isinstance(rec, dict):
                     continue
-                if rec.get("type") == "system" and rec.get("subtype") == "compact_boundary":
-                    boundaries.add(len(turns))
+                rtype = rec.get("type")
+                if rtype == "system" and rec.get("subtype") == "compact_boundary":
+                    idx = len(turns)
+                    if idx not in boundaries:
+                        boundaries.add(idx)
+                        bounds.append([idx, frozenset(seen), 0])
                     continue
-                if (rec.get("type") != "assistant" or rec.get("isSidechain") is True
-                        or rec.get("agentId")):
+                if rec.get("isSidechain") is True or rec.get("agentId"):
                     continue
                 msg = rec.get("message")
-                if not isinstance(msg, dict) or msg.get("model") == "<synthetic>":
+                if not isinstance(msg, dict):
+                    continue
+                if rtype == "user":
+                    content = msg.get("content")
+                    if isinstance(content, list):
+                        for blk in content:
+                            if (isinstance(blk, dict) and blk.get("type") == "tool_result"):
+                                ent = pending.pop(blk.get("tool_use_id"), None)
+                                if ent is not None:
+                                    ent[2] += _estimate_tokens(
+                                        _advice_result_text(blk.get("content")))
+                    continue
+                if rtype != "assistant" or msg.get("model") == "<synthetic>":
                     continue
                 u = msg.get("usage")
                 if not isinstance(u, dict):
                     continue
-                ctx = (_safe_int(u.get("input_tokens"))
-                       + _safe_int(u.get("cache_read_input_tokens"))
+                cr = _safe_int(u.get("cache_read_input_tokens"))
+                ctx = (_safe_int(u.get("input_tokens")) + cr
                        + _safe_int(u.get("cache_creation_input_tokens")))
                 if ctx <= 0:
                     continue
@@ -48752,43 +47679,108 @@ def _advice_session_turns(path):
                 if req is not None and req == prev_req and turns:
                     # streamed chunk of the same request: keep the largest usage
                     turns[-1] = max(turns[-1], ctx)
-                    continue
-                prev_req = req
-                turns.append(ctx)
+                    cache_reads[-1] = max(cache_reads[-1], cr)
+                else:
+                    prev_req = req
+                    turns.append(ctx)
+                    cache_reads.append(cr)
+                tidx = len(turns) - 1
+                content = msg.get("content")
+                if isinstance(content, list):
+                    # Window owner: the latest boundary at or before this turn.
+                    owner = None
+                    for b in bounds:
+                        if b[0] <= tidx < b[0] + _ADVICE_REREAD_TURNS:
+                            owner = b
+                    for blk in content:
+                        if not (isinstance(blk, dict) and blk.get("type") == "tool_use"):
+                            continue
+                        targets = _advice_tool_targets(blk.get("name"), blk.get("input"))
+                        if not targets:
+                            continue
+                        if owner is not None and blk.get("id") and any(
+                                t in owner[1] for t in targets):
+                            pending[blk["id"]] = owner
+                        seen.update(targets)
     except (OSError, PermissionError):
-        return [], set(), None
-    return turns, boundaries, model
+        return {"turns": [], "cache_reads": [], "boundaries": set(), "model": None,
+                "post_compact_ctx": [], "rereads": []}
+    post_ctx, rereads = [], []
+    for b in bounds:
+        if b[0] < len(turns):
+            post_ctx.append(turns[b[0]])
+            rereads.append(b[2])
+    return {"turns": turns, "cache_reads": cache_reads, "boundaries": boundaries,
+            "model": model, "post_compact_ctx": post_ctx, "rereads": rereads}
 
 
-def _advice_replay(turns, boundaries, window):
+def _advice_session_turns(path):
+    """(turns, boundaries, model) -- the replay subset of _advice_session_data."""
+    d = _advice_session_data(path)
+    return d["turns"], d["boundaries"], d["model"]
+
+
+def _advice_median(values):
+    v = sorted(values)
+    n = len(v)
+    if n == 0:
+        return 0
+    mid = n // 2
+    return int(v[mid]) if n % 2 else int(round((v[mid - 1] + v[mid]) / 2))
+
+
+def _advice_measured_assumptions(rereads, post_ctx):
+    """Median re-read tokens and post-compact context from the user's own
+    recorded compactions, each with its n; a stated default below
+    _ADVICE_MIN_MEASURED real compactions."""
+    def _pick(values, default):
+        n = len(values)
+        if n >= _ADVICE_MIN_MEASURED:
+            return {"value": _advice_median(values), "n": n,
+                    "source": "measured"}
+        return {"value": default, "n": n, "source": _ADVICE_ASSUMED_TAG}
+    return {
+        "reread_tokens_per_compaction": _pick(rereads, _ADVICE_REREAD_DEFAULT),
+        "post_compact_context_tokens": _pick(post_ctx, _ADVICE_POST_COMPACT_CONTEXT),
+    }
+
+
+def _advice_replay(turns, boundaries, window, post_compact=_ADVICE_POST_COMPACT_CONTEXT):
     """Replay a session against a candidate compact window.
 
-    The simulated context starts from the real first request and grows by each
-    real turn-to-turn delta. When the simulated context reaches `window`, a
-    compaction fires and the context drops to the assumed post-compact size;
-    a real compact_boundary (or any context drop) resyncs the simulation to
-    the recorded value. Returns (simulated_compactions, avoided_tokens), where
-    avoided = prompt tokens the earlier compaction would have shaved off later
-    requests.
+    Recorded compactions always happen (a compact_boundary, or any drop in
+    context, ends a segment and resyncs the replay to the recorded value). The
+    candidate can only ADD compactions inside a segment: a segment whose real
+    peak never exceeded `window` is untouched, so a candidate at or above the
+    session's real behaviour is a no-op. Returns (extra_compactions,
+    avoided_tokens), never negative; avoided = prompt tokens the earlier
+    compaction would have shaved off later requests in the segment.
     """
-    sim = 0
-    avoided = 0
     if not turns:
         return 0, 0
-    v = turns[0]
-    prev = turns[0]
+    segments, cur = [], [0]
     for i in range(1, len(turns)):
-        ctx = turns[i]
-        if i in boundaries or ctx < prev:
-            v = ctx  # a real compaction/reset: recorded truth wins
-        else:
+        if i in boundaries or turns[i] < turns[i - 1]:
+            segments.append(cur)
+            cur = []
+        cur.append(i)
+    segments.append(cur)
+    extra = 0
+    avoided = 0
+    for seg in segments:
+        if window >= max(turns[i] for i in seg):
+            continue
+        v = turns[seg[0]]
+        prev = v
+        for i in seg[1:]:
+            ctx = turns[i]
             v += ctx - prev
             if v >= window:
-                sim += 1
-                v = _ADVICE_POST_COMPACT_CONTEXT + (ctx - prev)
-        avoided += max(0, ctx - v)
-        prev = ctx
-    return sim, avoided
+                extra += 1
+                v = post_compact + (ctx - prev)
+            avoided += max(0, ctx - v)
+            prev = ctx
+    return extra, avoided
 
 
 def _advice_quality_by_fill_band():
@@ -48830,30 +47822,39 @@ def _advice_quality_by_fill_band():
     }
 
 
-def compact_advice(days=30):
-    """Build the compact-advice report dict. Purely read-only; never raises."""
+def _advice_billing_mode():
+    """'api' | 'subscription' | 'unknown'. Only labels how dollars are read."""
+    try:
+        return keepwarm_billing_mode()
+    except Exception:
+        return "unknown"
+
+
+def _advice_round_pct(n, d):
+    return round(n / d * 100, 1) if d else 0.0
+
+
+def compact_advice(days=30, max_sessions=None, deadline_seconds=None):
+    """Build the compact-advice report dict. Purely read-only; never raises.
+
+    max_sessions / deadline_seconds cap the work (newest sessions first) for
+    the coach path; `truncated` says when a cap cut the scan short.
+    """
     out = {
-        "schema": 1,
+        "schema": 2,
         "days": days,
         "estimate": True,
+        "billing": _advice_billing_mode(),
         "sessions_scanned": 0,
         "sessions_replayed": 0,
+        "recorded_compactions": 0,
+        "total_cache_read_tokens": 0,
+        "truncated": False,
         "too_thin": True,
         "default_window": None,
-        "assumptions": {
-            "post_compact_context_tokens": _ADVICE_POST_COMPACT_CONTEXT,
-            "summary_output_tokens": _ADVICE_SUMMARY_OUTPUT_TOKENS,
-            "avoided_tokens_priced_as": "cache_read of the session's model card",
-            "compaction_cost_priced_as": (
-                "summary_output_tokens x output + post_compact_context_tokens x "
-                "cache_write of the session's model card"),
-            "note": (
-                "Simulated compaction fires when the replayed pre-request "
-                "context reaches the candidate window; a real compact_boundary "
-                "resyncs to the recorded context. Manual early compacts can "
-                "make a larger window show negative extra compactions (a "
-                "credit at the same per-compaction cost)."),
-        },
+        "smallest_positive_window": None,
+        "assumptions": {},
+        "measurements": {},
         "windows": [],
         "quality_by_fill_band": {},
     }
@@ -48862,20 +47863,56 @@ def compact_advice(days=30):
     except Exception:
         files = []
     out["sessions_scanned"] = len(files)
+    if max_sessions is not None and len(files) > max_sessions:
+        files = files[:max(0, int(max_sessions))]
+        out["truncated"] = True
+    deadline = (None if deadline_seconds is None
+                else time.monotonic() + float(deadline_seconds))
 
     sessions = []
     model_counts = {}
+    all_rereads, all_post_ctx = [], []
     for jf, _mtime, _proj in files:
+        if deadline is not None and time.monotonic() > deadline:
+            out["truncated"] = True
+            break
         try:
-            turns, boundaries, model = _advice_session_turns(jf)
+            d = _advice_session_data(jf)
         except Exception:
             continue
-        if len(turns) < 2:
+        all_rereads.extend(d["rereads"])
+        all_post_ctx.extend(d["post_compact_ctx"])
+        if len(d["turns"]) < 2:
             continue
-        sessions.append((turns, boundaries, model))
-        if model:
-            model_counts[model] = model_counts.get(model, 0) + 1
+        sessions.append(d)
+        if d["model"]:
+            model_counts[d["model"]] = model_counts.get(d["model"], 0) + 1
     out["sessions_replayed"] = len(sessions)
+    out["recorded_compactions"] = len(all_post_ctx)
+    total_cache_read = sum(sum(d["cache_reads"]) for d in sessions)
+    out["total_cache_read_tokens"] = total_cache_read
+
+    meas = _advice_measured_assumptions(all_rereads, all_post_ctx)
+    reread_tok = meas["reread_tokens_per_compaction"]["value"]
+    post_ctx = meas["post_compact_context_tokens"]["value"]
+    out["measurements"] = meas
+    out["assumptions"] = {
+        "post_compact_context_tokens": post_ctx,
+        "reread_tokens_per_compaction": reread_tok,
+        "summary_output_tokens": _ADVICE_SUMMARY_OUTPUT_TOKENS,
+        "summary_output_tokens_source": "assumed; the summary length is not recoverable from a transcript",
+        "avoided_tokens_priced_as": "cache_read of the session's model card",
+        "compaction_cost_priced_as": (
+            "summary_output_tokens x output + post_compact_context_tokens x "
+            "cache_write + reread_tokens_per_compaction x (input + cache_write), "
+            "all on the session's model card (the reread charge is deliberately "
+            "conservative)"),
+        "note": (
+            "A recorded compaction always happens in the replay; a candidate "
+            "window can only add compactions before it. Your own resolved "
+            "window is the reference row: 0 extra, 0 net by construction. "
+            "Dollars are API-equivalent list-price estimates."),
+    }
 
     tier_data = PRICING_TIERS.get(_load_pricing_tier(), PRICING_TIERS["anthropic"])
     modal_model = max(model_counts, key=model_counts.get) if model_counts else None
@@ -48893,64 +47930,164 @@ def compact_advice(days=30):
     candidates = list(_ADVICE_CANDIDATE_WINDOWS)
     if all(default_tokens != w for w in candidates):
         candidates.append(default_tokens)
+    candidates.sort()
 
     for w in candidates:
-        sim_total = 0
-        real_total = 0
+        # The row for the user's own window, and anything above it, is the
+        # reference behaviour: nothing is added, so nothing is computed.
+        reference = w >= default_tokens
+        extra_total = 0
         avoided_tokens = 0
         avoided_usd = 0.0
         cost_usd = 0.0
-        cost_tokens = 0
         affected = 0
-        for turns, boundaries, model in sessions:
-            real = len(boundaries)
-            sim, avoided = _advice_replay(turns, boundaries, w)
-            extra = sim - real
-            sim_total += sim
-            real_total += real
-            avoided_tokens += avoided
-            if extra != 0 or avoided > 0:
-                affected += 1
-            rates = _claude_rates_for_model(model, tier_data) or {}
-            read_rate = float(rates.get("cache_read", rates.get("input", 0.0)) or 0.0)
-            write_rate = float(rates.get("cache_write", rates.get("input", 0.0)) or 0.0)
-            out_rate = float(rates.get("output", 0.0) or 0.0)
-            per_compact_tokens = _ADVICE_SUMMARY_OUTPUT_TOKENS + _ADVICE_POST_COMPACT_CONTEXT
-            per_compact_usd = (
-                _ADVICE_SUMMARY_OUTPUT_TOKENS * out_rate
-                + _ADVICE_POST_COMPACT_CONTEXT * write_rate
-            ) / 1e6
-            avoided_usd += avoided * read_rate / 1e6
-            cost_tokens += extra * per_compact_tokens
-            cost_usd += extra * per_compact_usd
-        label = (f"{w // 1000}K" if w != default_tokens
-                 else f"default ({w:,} for {modal_model or 'unknown model'})")
+        if not reference:
+            for d in sessions:
+                extra, avoided = _advice_replay(
+                    d["turns"], d["boundaries"], w, post_compact=post_ctx)
+                if extra <= 0 and avoided <= 0:
+                    continue
+                extra_total += extra
+                avoided_tokens += avoided
+                if extra > 0:
+                    affected += 1
+                rates = _claude_rates_for_model(d["model"], tier_data) or {}
+                in_rate = float(rates.get("input", 0.0) or 0.0)
+                read_rate = float(rates.get("cache_read", in_rate) or 0.0)
+                write_rate = float(rates.get("cache_write", in_rate) or 0.0)
+                out_rate = float(rates.get("output", 0.0) or 0.0)
+                avoided_usd += avoided * read_rate / 1e6
+                cost_usd += extra * (
+                    _ADVICE_SUMMARY_OUTPUT_TOKENS * out_rate
+                    + post_ctx * write_rate
+                    + reread_tok * (in_rate + write_rate)) / 1e6
+        cost_tokens = extra_total * (_ADVICE_SUMMARY_OUTPUT_TOKENS + post_ctx + reread_tok)
+        is_default = w == default_tokens
+        label = f"{w // 1000}K" + (" default" if is_default else "")
         out["windows"].append({
             "window": w,
             "label": label,
-            "is_default": w == default_tokens,
-            "simulated_compactions": sim_total,
-            "real_compactions": real_total,
-            "extra_compactions": sim_total - real_total,
+            "is_default": is_default,
+            "reference": reference,
+            "extra_compactions": extra_total,
             "affected_sessions": affected,
             "affected_share": (round(affected / len(sessions), 3) if sessions else 0),
             "cache_read_tokens_avoided": avoided_tokens,
+            "avoided_share_pct": _advice_round_pct(avoided_tokens, total_cache_read),
             "compaction_cost_tokens": cost_tokens,
             "net_tokens": avoided_tokens - cost_tokens,
-            "net_usd": round(avoided_usd - cost_usd, 4),
+            "net_usd": round(avoided_usd - cost_usd, 2),
+            "net_usd_unrounded": avoided_usd - cost_usd,
             "estimate": True,
         })
 
+    # Smallest window whose net stays positive (after the measured costs) at
+    # every larger candidate below the user's own window. "Net" here is the
+    # priced one: a cache-read token is far cheaper than the output and
+    # cache-write tokens a compaction spends, so a positive token net can still
+    # be a loss.
+    below = sorted((e for e in out["windows"] if not e["reference"]),
+                   key=lambda e: e["window"])
+    smallest = None
+    for i, e in enumerate(below):
+        if all(x["net_usd_unrounded"] > 0 for x in below[i:]):
+            smallest = e["window"]
+            break
+    out["smallest_positive_window"] = smallest
+
     out["too_thin"] = (
         len(sessions) < _ADVICE_MIN_SESSIONS
-        or all(e["simulated_compactions"] == 0 and e["real_compactions"] == 0
-               for e in out["windows"])
+        or (out["recorded_compactions"] == 0
+            and all(e["extra_compactions"] == 0 for e in out["windows"]))
     )
     try:
         out["quality_by_fill_band"] = _advice_quality_by_fill_band()
     except Exception:
         out["quality_by_fill_band"] = {}
     return out
+
+
+def _advice_cache_path():
+    return SNAPSHOT_DIR / "compact_advice_cache.json"
+
+
+def _advice_coach_view(rep):
+    """The small `compact_advice` block coach --json carries."""
+    dw = rep.get("default_window") or {}
+    return {
+        "estimate": True,
+        "days": rep.get("days"),
+        "billing": rep.get("billing"),
+        "dollars": "API-equivalent list-price estimates, not a bill",
+        "resolved_window": {
+            "tokens": dw.get("tokens"),
+            "source": dw.get("source"),
+            "model": dw.get("model"),
+        },
+        "sessions_replayed": rep.get("sessions_replayed"),
+        "recorded_compactions": rep.get("recorded_compactions"),
+        "truncated": bool(rep.get("truncated")),
+        "too_thin": bool(rep.get("too_thin")),
+        "rows": [] if rep.get("too_thin") else [
+            {k: e.get(k) for k in (
+                "label", "window", "is_default", "extra_compactions",
+                "cache_read_tokens_avoided", "avoided_share_pct",
+                "compaction_cost_tokens", "net_tokens", "net_usd")}
+            for e in rep.get("windows", [])
+        ],
+        "smallest_positive_window": rep.get("smallest_positive_window"),
+        "assumptions": {k: dict(v) for k, v in (rep.get("measurements") or {}).items()},
+    }
+
+
+def _coach_compact_advice_block(days=30):
+    """Capped, cached, fail-open compact-advice block for `coach --json`.
+
+    Newest `_ADVICE_COACH_MAX_SESSIONS` sessions within a wall-clock budget;
+    the result is cached for six hours. Any failure returns None so coach never
+    fails because of it.
+    """
+    try:
+        cache_path = _advice_cache_path()
+        try:
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            if (isinstance(cached, dict) and cached.get("days") == days
+                    and cached.get("_schema") == 2
+                    and time.time() - float(cached.get("_cached_ts", 0))
+                    < _ADVICE_COACH_CACHE_TTL_SECONDS):
+                return {k: v for k, v in cached.items() if not k.startswith("_")}
+        except (OSError, ValueError, TypeError):
+            pass
+        rep = compact_advice(days=days, max_sessions=_ADVICE_COACH_MAX_SESSIONS,
+                             deadline_seconds=_ADVICE_COACH_BUDGET_SECONDS)
+        block = _advice_coach_view(rep)
+        try:
+            record = dict(block)
+            record["_cached_ts"] = time.time()
+            record["_schema"] = 2
+            SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+            fd, tmp_name = tempfile.mkstemp(
+                prefix=".compact_advice.", suffix=".tmp", dir=str(SNAPSHOT_DIR))
+            try:
+                if hasattr(os, "fchmod"):
+                    os.fchmod(fd, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    json.dump(record, fh)
+                os.replace(tmp_name, str(cache_path))
+            except Exception:
+                try:
+                    os.unlink(tmp_name)
+                except OSError:
+                    pass
+        except Exception:
+            pass
+        return block
+    except Exception:
+        return None
+
+
+def _advice_usd(v):
+    return f"{'-' if v < 0 else ''}${abs(v):,.2f}"
 
 
 def _compact_advice_cli(args):
@@ -48975,40 +48112,62 @@ def _compact_advice_cli(args):
     print("\nTOKEN OPTIMIZER: COMPACT-WINDOW ADVICE (estimates only)")
     print("=" * 58)
     print(f"  Sessions scanned: {report['sessions_scanned']} "
-          f"({report['sessions_replayed']} replayed, last {report['days']} days)")
+          f"({report['sessions_replayed']} replayed, last {report['days']} days, "
+          f"{report['recorded_compactions']} recorded compactions)")
     dw = report.get("default_window") or {}
     if dw.get("tokens"):
-        print(f"  Resolved default: {dw['tokens']:,} ({dw.get('source', '')})")
+        print(f"  Your resolved window: {dw['tokens']:,} ({dw.get('source', '')})")
     if report["too_thin"]:
         print("\n  History is too thin to estimate: not enough sessions ever")
         print("  reached a compaction context in this window. Re-run after more")
         print("  real sessions (or widen --days).")
     else:
         print("\n  Replays of YOUR sessions against candidate compact windows.")
-        print("  Not a recommendation — read the nets, keep the assumptions in mind.\n")
-        print(f"  {'window':<10} {'extra compacts':>15} {'avoided (cache-read)':>21} "
-              f"{'compact cost':>13} {'net tokens':>12} {'net usd':>9} {'sessions':>9}")
+        print("  Recorded compactions always happen; a smaller window can only add")
+        print("  compactions before them. Your own window is the reference row")
+        print("  (0 extra, 0 net by construction).")
+        print(f"  Total cache-read tokens in this window: "
+              f"{report['total_cache_read_tokens']:,}\n")
+        print(f"  {'window':<16} {'extra':>6} {'cache-read avoided':>19} {'share':>7} "
+              f"{'compact cost':>13} {'net tokens':>12} {'net $ API-equivalent':>21} "
+              f"{'sessions':>9}")
         for e in report["windows"]:
-            print(f"  {e['label']:<10} {e['extra_compactions']:>15} "
-                  f"{e['cache_read_tokens_avoided']:>21,} "
+            print(f"  {e['label']:<16} {e['extra_compactions']:>6} "
+                  f"{e['cache_read_tokens_avoided']:>19,} "
+                  f"{e['avoided_share_pct']:>6.1f}% "
                   f"{e['compaction_cost_tokens']:>13,} {e['net_tokens']:>12,} "
-                  f"{e['net_usd']:>9.4f} {e['affected_sessions']:>9}")
-        best = max(report["windows"], key=lambda e: e["net_tokens"])
-        if best["net_tokens"] > 0 and not best["is_default"]:
-            print(f"\n  Largest positive replay net: {best['label']} "
-                  f"(+{best['net_tokens']:,} tokens, ~${best['net_usd']:.4f}).")
-            print(f"  If you wanted to try it, the command is: /autocompact {best['window']}")
+                  f"{_advice_usd(e['net_usd']):>21} {e['affected_sessions']:>9}")
+        print("\n  Token counts are not equal in price: a cache read costs far less than the")
+        print("  output and cache-write tokens a compaction spends, so the dollar column")
+        print("  is the priced net.")
+        if report.get("billing") == "api":
+            print("  Dollars are API-equivalent: tokens priced at the list rate.")
         else:
-            print("\n  No candidate window beat the default on net tokens in this replay.")
+            print("  Dollars are API-equivalent: tokens priced at the list rate. On a")
+            print("  subscription this is not a bill, it is a size-of-the-effect gauge.")
         q = report.get("quality_by_fill_band") or {}
         if any(v.get("sessions") for v in q.values()):
             print("\n  Average quality score by model-fill band (recorded caches):")
             for band, v in q.items():
                 if v["sessions"]:
                     print(f"    {band:<7} avg {v['avg_score']:>5}  ({v['sessions']} sessions)")
-    print("\n  Assumptions:")
-    for k, v in report["assumptions"].items():
-        print(f"    {k}: {v}")
+        print("  Compaction can drop early instructions; the quality score does not measure that.")
+    print("\n  Assumptions (measured from your own recorded compactions where possible):")
+    for name, mm in (report.get("measurements") or {}).items():
+        print(f"    {name}: {mm['value']:,} ({mm['source']}, n={mm['n']})")
+    print(f"    summary_output_tokens: {_ADVICE_SUMMARY_OUTPUT_TOKENS:,} "
+          f"({report['assumptions'].get('summary_output_tokens_source', 'assumed')})")
+    for ln in textwrap.wrap(
+            "compaction_cost_priced_as: "
+            + report["assumptions"].get("compaction_cost_priced_as", ""),
+            width=88, initial_indent="    ", subsequent_indent="      "):
+        print(ln)
+    if report.get("smallest_positive_window") and not report["too_thin"]:
+        w = report["smallest_positive_window"]
+        print(f"\n  Smallest window whose net stays positive after the measured costs: {w // 1000}K.")
+        print("  To try one: /autocompact <n>")
+    elif not report["too_thin"]:
+        print("\n  No candidate window had a net that stays positive after the measured costs.")
     print()
 
 
@@ -52330,11 +51489,18 @@ if __name__ == "__main__":
         print(status)
         sys.exit(0 if status == "DAEMON_RUNNING" else 1)
     elif args[0] == "kill-stale":
-        hours, dry, include_orphans = _parse_kill_stale_args(args)
+        dry = "--dry-run" in args
+        hours = 12
+        for i, a in enumerate(args):
+            if a == "--hours" and i + 1 < len(args):
+                try:
+                    hours = int(args[i + 1])
+                except ValueError:
+                    pass
         if hours < 1:
             print("[Error] --hours must be >= 1")
             sys.exit(1)
-        kill_stale_sessions(threshold_hours=hours, dry_run=dry, include_orphans=include_orphans)
+        kill_stale_sessions(threshold_hours=hours, dry_run=dry)
     elif args[0] == "check-hook":
         check_hook()
     elif args[0] == "setup-hook":
@@ -52492,7 +51658,7 @@ if __name__ == "__main__":
         for i, a in enumerate(args):
             if a == "--focus" and i + 1 < len(args):
                 focus = args[i + 1]
-        data = generate_coach_data(focus=focus, include_deterministic=True)
+        data = generate_coach_data(focus=focus)
         if output_json:
             print(json.dumps(data, indent=2))
         else:
@@ -52535,19 +51701,11 @@ if __name__ == "__main__":
                     preview = _strip_ansi(str(p["text"]))[:70].replace("\n", " ")
                     print(f"    {i}. ${p['cost_usd']} ({p['tokens_in']:,} in) \"{preview}...\"")
                 print()
-            det = data.get("deterministic_candidates")
-            if det:
-                print(f"  {_strip_ansi(str(det.get('summary') or deterministic_candidates.summary_line(det)))}")
-                if det.get("candidates"):
-                    print("    Details: python3 measure.py deterministic-candidates")
-                print()
             if data["questions"]:
                 print("  Coaching questions:")
                 for q in data["questions"]:
                     print(f"    ? {q}")
                 print()
-    elif args[0] == "deterministic-candidates":
-        _cmd_deterministic_candidates(args[1:])
     elif args[0] == "validate-impact":
         output_json = "--json" in args
         strat = "auto"

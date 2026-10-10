@@ -88,6 +88,7 @@ import textwrap
 import time
 import types
 import platform
+import posixpath
 import shutil
 from collections import deque
 from contextlib import contextmanager, nullcontext
@@ -3369,6 +3370,14 @@ def _context_window_for_model_str(model_str):
 #   cap at the model's own window. CLAUDE_AUTOCOMPACT_PCT_OVERRIDE is then the
 #   percentage of the window already used when compaction runs -- lower values
 #   compact EARLIER and it can never raise the threshold.
+#
+# modelSettings shape: verified 2026-10-10 from a real settings.json --
+#   "modelSettings": {"claude-opus-5-5": {"effortLevel": "medium"}, ...}
+#   i.e. keyed by FULL model id, one object per model. NOT VERIFIED: the field
+#   name inside that object that holds the compact window. `autoCompactWindow`
+#   is kept as the working assumption (it mirrors the top-level setting); if
+#   Claude Code writes a different name, per-model overrides are silently
+#   ignored here and the top-level setting applies.
 # ---------------------------------------------------------------------------
 _COMPACT_WINDOW_MIN = 100_000
 _COMPACT_WINDOW_MAX = 1_000_000
@@ -10336,6 +10345,15 @@ def generate_coach_data(focus=None, components=None, trends=None, include_determ
     if include_deterministic:
         result["deterministic_candidates"] = _deterministic_candidates_data(
             days=30, budget_s=_DETCAND_COACH_BUDGET_S, max_sessions=_DETCAND_COACH_MAX_SESSIONS)
+    # Compact-window replay of the user's own history: capped, cached, fail-open
+    # (Claude transcripts only). Never lets this block fail the coach.
+    if not is_codex:
+        try:
+            advice = _coach_compact_advice_block()
+            if advice:
+                result["compact_advice"] = advice
+        except Exception:
+            pass
 
     return result
 
@@ -48696,31 +48714,115 @@ def _status_bar_finite(v):
 # compact windows. Read-only, deterministic, no model calls. Every figure is
 # an ESTIMATE derived from recorded prompt sizes; the output states its
 # assumptions and never presents a window as a recommendation.
+#
+# Replay rule: a recorded compact_boundary ALWAYS happens; a candidate window
+# can only ADD compactions before it. Extra compactions are never negative,
+# and a candidate at or above where the session really compacted (or, for an
+# open segment, above its real peak) is a no-op for that session. The row for
+# the user's own resolved window is the reference: 0 extra, 0 net by
+# construction.
 # ---------------------------------------------------------------------------
 
 _ADVICE_CANDIDATE_WINDOWS = (300_000, 400_000, 500_000, 650_000, 800_000)
-# Assumption constants, echoed verbatim in the output so the estimate is
-# auditable: what one compaction produces and what it leaves behind.
-_ADVICE_SUMMARY_OUTPUT_TOKENS = 4_000   # summary the model writes (output-priced)
-_ADVICE_POST_COMPACT_CONTEXT = 30_000   # summary + re-sent prefix after a compact
+# What one compaction costs. The summary length cannot be read back from a
+# transcript, so it stays an assumption. The other two are MEASURED from the
+# user's own recorded compactions and these constants are only the fallback
+# used when fewer than _ADVICE_MIN_MEASURED real compactions exist.
+_ADVICE_SUMMARY_OUTPUT_TOKENS = 4_000   # summary the model writes (output-priced), assumed
+_ADVICE_POST_COMPACT_CONTEXT = 30_000   # fallback: context on the first request after a compact
+_ADVICE_REREAD_DEFAULT = 20_000         # fallback: tokens re-read after a compact
+_ADVICE_MIN_MEASURED = 5                # recorded compactions needed to trust a median
+_ADVICE_REREAD_TURNS = 10               # assistant turns inspected after a boundary
 _ADVICE_MIN_SESSIONS = 3                # below this, say "history too thin"
+_ADVICE_ASSUMED_TAG = "assumed, too few real compactions to measure"
+_ADVICE_REREAD_TOOLS = frozenset({"Read", "Grep", "Glob", "Bash"})
+# coach --json: same discipline as the other coach blocks (cap, cache, never fails).
+_ADVICE_COACH_MAX_SESSIONS = 150
+_ADVICE_COACH_BUDGET_SECONDS = 4.0
+_ADVICE_COACH_CACHE_TTL_SECONDS = 6 * 3600
+_ADVICE_PATH_TOKEN_RE = re.compile(r"""[^\s"'<>|;&()=,]+""")
+_ADVICE_WIN_DRIVE_RE = re.compile(r"^[A-Za-z]:/")
 
 
-def _advice_session_turns(path):
-    """(turns, boundaries, model) replay data for a main-conversation transcript.
+def _advice_norm_path(p):
+    """Same file, same key: forward slashes, collapsed ./ and ../, no trailing
+    slash; case-folded only for Windows drive paths."""
+    if not isinstance(p, str) or not p.strip():
+        return None
+    s = p.strip().replace("\\", "/")
+    s = posixpath.normpath(s)
+    if s in (".", "/"):
+        return None
+    if _ADVICE_WIN_DRIVE_RE.match(s):
+        s = s.lower()
+    return s
 
-    turns: per-request context size (input + cache_read + cache_creation) of
-    each main-thread assistant usage row, in transcript order; streamed chunks
-    sharing a requestId collapse to the largest row. boundaries: indexes in
-    `turns` that directly follow a real compact_boundary row. model: the newest
-    model id on a main-thread row, or None.
+
+def _advice_tool_targets(name, inp):
+    """Normalised paths a Read/Grep/Glob/Bash tool_use targets (may be empty)."""
+    if name not in _ADVICE_REREAD_TOOLS or not isinstance(inp, dict):
+        return []
+    out = []
+    if name == "Read":
+        cands = [inp.get("file_path"), inp.get("path")]
+    elif name in ("Grep", "Glob"):
+        cands = [inp.get("path")]
+    else:  # Bash: path-like tokens in the command line
+        cmd = inp.get("command")
+        cands = []
+        if isinstance(cmd, str):
+            for tok in _ADVICE_PATH_TOKEN_RE.findall(cmd[:4000]):
+                if "/" in tok or "\\" in tok:
+                    cands.append(tok)
+    for c in cands:
+        n = _advice_norm_path(c)
+        if n:
+            out.append(n)
+    return out
+
+
+def _advice_result_text(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for b in content:
+            if isinstance(b, dict) and isinstance(b.get("text"), str):
+                parts.append(b["text"])
+            elif isinstance(b, str):
+                parts.append(b)
+        return "\n".join(parts)
+    return ""
+
+
+def _advice_session_data(path):
+    """Replay + measurement data for a main-conversation transcript.
+
+    Returns a dict:
+      turns          per-request context size (input + cache_read + cache_creation)
+                     of each main-thread assistant usage row, in order; streamed
+                     chunks sharing a requestId collapse to the largest row.
+      cache_reads    cache_read_input_tokens per turn (same indexing).
+      boundaries     indexes in `turns` that directly follow a compact_boundary.
+      model          newest model id on a main-thread row, or None.
+      post_compact_ctx  context size of the first request after each recorded
+                     boundary that has a following turn.
+      rereads        per such boundary: tokens of Read/Grep/Glob/Bash tool
+                     results, in the next _ADVICE_REREAD_TURNS assistant turns,
+                     that target a path (same normalised path) already targeted
+                     by one of those tools before the boundary.
+    Sidechain/subagent rows are ignored throughout.
     """
-    turns, boundaries, model = [], set(), None
+    turns, cache_reads, boundaries, model = [], [], set(), None
+    seen = set()            # normalised paths touched so far (cumulative)
+    bounds = []             # [start_turn_idx, frozenset(prior paths), reread_tokens]
+    pending = {}            # tool_use id -> bounds entry (None when not a re-read)
     prev_req = None
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             for line in f:
-                if '"assistant"' not in line and "compact_boundary" not in line:
+                if ('"assistant"' not in line and "compact_boundary" not in line
+                        and '"tool_result"' not in line):
                     continue
                 try:
                     rec = json.loads(line)
@@ -48728,20 +48830,35 @@ def _advice_session_turns(path):
                     continue
                 if not isinstance(rec, dict):
                     continue
-                if rec.get("type") == "system" and rec.get("subtype") == "compact_boundary":
-                    boundaries.add(len(turns))
+                rtype = rec.get("type")
+                if rtype == "system" and rec.get("subtype") == "compact_boundary":
+                    idx = len(turns)
+                    if idx not in boundaries:
+                        boundaries.add(idx)
+                        bounds.append([idx, frozenset(seen), 0])
                     continue
-                if (rec.get("type") != "assistant" or rec.get("isSidechain") is True
-                        or rec.get("agentId")):
+                if rec.get("isSidechain") is True or rec.get("agentId"):
                     continue
                 msg = rec.get("message")
-                if not isinstance(msg, dict) or msg.get("model") == "<synthetic>":
+                if not isinstance(msg, dict):
+                    continue
+                if rtype == "user":
+                    content = msg.get("content")
+                    if isinstance(content, list):
+                        for blk in content:
+                            if (isinstance(blk, dict) and blk.get("type") == "tool_result"):
+                                ent = pending.pop(blk.get("tool_use_id"), None)
+                                if ent is not None:
+                                    ent[2] += _estimate_tokens(
+                                        _advice_result_text(blk.get("content")))
+                    continue
+                if rtype != "assistant" or msg.get("model") == "<synthetic>":
                     continue
                 u = msg.get("usage")
                 if not isinstance(u, dict):
                     continue
-                ctx = (_safe_int(u.get("input_tokens"))
-                       + _safe_int(u.get("cache_read_input_tokens"))
+                cr = _safe_int(u.get("cache_read_input_tokens"))
+                ctx = (_safe_int(u.get("input_tokens")) + cr
                        + _safe_int(u.get("cache_creation_input_tokens")))
                 if ctx <= 0:
                     continue
@@ -48752,43 +48869,108 @@ def _advice_session_turns(path):
                 if req is not None and req == prev_req and turns:
                     # streamed chunk of the same request: keep the largest usage
                     turns[-1] = max(turns[-1], ctx)
-                    continue
-                prev_req = req
-                turns.append(ctx)
+                    cache_reads[-1] = max(cache_reads[-1], cr)
+                else:
+                    prev_req = req
+                    turns.append(ctx)
+                    cache_reads.append(cr)
+                tidx = len(turns) - 1
+                content = msg.get("content")
+                if isinstance(content, list):
+                    # Window owner: the latest boundary at or before this turn.
+                    owner = None
+                    for b in bounds:
+                        if b[0] <= tidx < b[0] + _ADVICE_REREAD_TURNS:
+                            owner = b
+                    for blk in content:
+                        if not (isinstance(blk, dict) and blk.get("type") == "tool_use"):
+                            continue
+                        targets = _advice_tool_targets(blk.get("name"), blk.get("input"))
+                        if not targets:
+                            continue
+                        if owner is not None and blk.get("id") and any(
+                                t in owner[1] for t in targets):
+                            pending[blk["id"]] = owner
+                        seen.update(targets)
     except (OSError, PermissionError):
-        return [], set(), None
-    return turns, boundaries, model
+        return {"turns": [], "cache_reads": [], "boundaries": set(), "model": None,
+                "post_compact_ctx": [], "rereads": []}
+    post_ctx, rereads = [], []
+    for b in bounds:
+        if b[0] < len(turns):
+            post_ctx.append(turns[b[0]])
+            rereads.append(b[2])
+    return {"turns": turns, "cache_reads": cache_reads, "boundaries": boundaries,
+            "model": model, "post_compact_ctx": post_ctx, "rereads": rereads}
 
 
-def _advice_replay(turns, boundaries, window):
+def _advice_session_turns(path):
+    """(turns, boundaries, model) -- the replay subset of _advice_session_data."""
+    d = _advice_session_data(path)
+    return d["turns"], d["boundaries"], d["model"]
+
+
+def _advice_median(values):
+    v = sorted(values)
+    n = len(v)
+    if n == 0:
+        return 0
+    mid = n // 2
+    return int(v[mid]) if n % 2 else int(round((v[mid - 1] + v[mid]) / 2))
+
+
+def _advice_measured_assumptions(rereads, post_ctx):
+    """Median re-read tokens and post-compact context from the user's own
+    recorded compactions, each with its n; a stated default below
+    _ADVICE_MIN_MEASURED real compactions."""
+    def _pick(values, default):
+        n = len(values)
+        if n >= _ADVICE_MIN_MEASURED:
+            return {"value": _advice_median(values), "n": n,
+                    "source": "measured"}
+        return {"value": default, "n": n, "source": _ADVICE_ASSUMED_TAG}
+    return {
+        "reread_tokens_per_compaction": _pick(rereads, _ADVICE_REREAD_DEFAULT),
+        "post_compact_context_tokens": _pick(post_ctx, _ADVICE_POST_COMPACT_CONTEXT),
+    }
+
+
+def _advice_replay(turns, boundaries, window, post_compact=_ADVICE_POST_COMPACT_CONTEXT):
     """Replay a session against a candidate compact window.
 
-    The simulated context starts from the real first request and grows by each
-    real turn-to-turn delta. When the simulated context reaches `window`, a
-    compaction fires and the context drops to the assumed post-compact size;
-    a real compact_boundary (or any context drop) resyncs the simulation to
-    the recorded value. Returns (simulated_compactions, avoided_tokens), where
-    avoided = prompt tokens the earlier compaction would have shaved off later
-    requests.
+    Recorded compactions always happen (a compact_boundary, or any drop in
+    context, ends a segment and resyncs the replay to the recorded value). The
+    candidate can only ADD compactions inside a segment: a segment whose real
+    peak never exceeded `window` is untouched, so a candidate at or above the
+    session's real behaviour is a no-op. Returns (extra_compactions,
+    avoided_tokens), never negative; avoided = prompt tokens the earlier
+    compaction would have shaved off later requests in the segment.
     """
-    sim = 0
-    avoided = 0
     if not turns:
         return 0, 0
-    v = turns[0]
-    prev = turns[0]
+    segments, cur = [], [0]
     for i in range(1, len(turns)):
-        ctx = turns[i]
-        if i in boundaries or ctx < prev:
-            v = ctx  # a real compaction/reset: recorded truth wins
-        else:
+        if i in boundaries or turns[i] < turns[i - 1]:
+            segments.append(cur)
+            cur = []
+        cur.append(i)
+    segments.append(cur)
+    extra = 0
+    avoided = 0
+    for seg in segments:
+        if window >= max(turns[i] for i in seg):
+            continue
+        v = turns[seg[0]]
+        prev = v
+        for i in seg[1:]:
+            ctx = turns[i]
             v += ctx - prev
             if v >= window:
-                sim += 1
-                v = _ADVICE_POST_COMPACT_CONTEXT + (ctx - prev)
-        avoided += max(0, ctx - v)
-        prev = ctx
-    return sim, avoided
+                extra += 1
+                v = post_compact + (ctx - prev)
+            avoided += max(0, ctx - v)
+            prev = ctx
+    return extra, avoided
 
 
 def _advice_quality_by_fill_band():
@@ -48830,30 +49012,39 @@ def _advice_quality_by_fill_band():
     }
 
 
-def compact_advice(days=30):
-    """Build the compact-advice report dict. Purely read-only; never raises."""
+def _advice_billing_mode():
+    """'api' | 'subscription' | 'unknown'. Only labels how dollars are read."""
+    try:
+        return keepwarm_billing_mode()
+    except Exception:
+        return "unknown"
+
+
+def _advice_round_pct(n, d):
+    return round(n / d * 100, 1) if d else 0.0
+
+
+def compact_advice(days=30, max_sessions=None, deadline_seconds=None):
+    """Build the compact-advice report dict. Purely read-only; never raises.
+
+    max_sessions / deadline_seconds cap the work (newest sessions first) for
+    the coach path; `truncated` says when a cap cut the scan short.
+    """
     out = {
-        "schema": 1,
+        "schema": 2,
         "days": days,
         "estimate": True,
+        "billing": _advice_billing_mode(),
         "sessions_scanned": 0,
         "sessions_replayed": 0,
+        "recorded_compactions": 0,
+        "total_cache_read_tokens": 0,
+        "truncated": False,
         "too_thin": True,
         "default_window": None,
-        "assumptions": {
-            "post_compact_context_tokens": _ADVICE_POST_COMPACT_CONTEXT,
-            "summary_output_tokens": _ADVICE_SUMMARY_OUTPUT_TOKENS,
-            "avoided_tokens_priced_as": "cache_read of the session's model card",
-            "compaction_cost_priced_as": (
-                "summary_output_tokens x output + post_compact_context_tokens x "
-                "cache_write of the session's model card"),
-            "note": (
-                "Simulated compaction fires when the replayed pre-request "
-                "context reaches the candidate window; a real compact_boundary "
-                "resyncs to the recorded context. Manual early compacts can "
-                "make a larger window show negative extra compactions (a "
-                "credit at the same per-compaction cost)."),
-        },
+        "smallest_positive_window": None,
+        "assumptions": {},
+        "measurements": {},
         "windows": [],
         "quality_by_fill_band": {},
     }
@@ -48862,20 +49053,56 @@ def compact_advice(days=30):
     except Exception:
         files = []
     out["sessions_scanned"] = len(files)
+    if max_sessions is not None and len(files) > max_sessions:
+        files = files[:max(0, int(max_sessions))]
+        out["truncated"] = True
+    deadline = (None if deadline_seconds is None
+                else time.monotonic() + float(deadline_seconds))
 
     sessions = []
     model_counts = {}
+    all_rereads, all_post_ctx = [], []
     for jf, _mtime, _proj in files:
+        if deadline is not None and time.monotonic() > deadline:
+            out["truncated"] = True
+            break
         try:
-            turns, boundaries, model = _advice_session_turns(jf)
+            d = _advice_session_data(jf)
         except Exception:
             continue
-        if len(turns) < 2:
+        all_rereads.extend(d["rereads"])
+        all_post_ctx.extend(d["post_compact_ctx"])
+        if len(d["turns"]) < 2:
             continue
-        sessions.append((turns, boundaries, model))
-        if model:
-            model_counts[model] = model_counts.get(model, 0) + 1
+        sessions.append(d)
+        if d["model"]:
+            model_counts[d["model"]] = model_counts.get(d["model"], 0) + 1
     out["sessions_replayed"] = len(sessions)
+    out["recorded_compactions"] = len(all_post_ctx)
+    total_cache_read = sum(sum(d["cache_reads"]) for d in sessions)
+    out["total_cache_read_tokens"] = total_cache_read
+
+    meas = _advice_measured_assumptions(all_rereads, all_post_ctx)
+    reread_tok = meas["reread_tokens_per_compaction"]["value"]
+    post_ctx = meas["post_compact_context_tokens"]["value"]
+    out["measurements"] = meas
+    out["assumptions"] = {
+        "post_compact_context_tokens": post_ctx,
+        "reread_tokens_per_compaction": reread_tok,
+        "summary_output_tokens": _ADVICE_SUMMARY_OUTPUT_TOKENS,
+        "summary_output_tokens_source": "assumed; the summary length is not recoverable from a transcript",
+        "avoided_tokens_priced_as": "cache_read of the session's model card",
+        "compaction_cost_priced_as": (
+            "summary_output_tokens x output + post_compact_context_tokens x "
+            "cache_write + reread_tokens_per_compaction x (input + cache_write), "
+            "all on the session's model card (the reread charge is deliberately "
+            "conservative)"),
+        "note": (
+            "A recorded compaction always happens in the replay; a candidate "
+            "window can only add compactions before it. Your own resolved "
+            "window is the reference row: 0 extra, 0 net by construction. "
+            "Dollars are API-equivalent list-price estimates."),
+    }
 
     tier_data = PRICING_TIERS.get(_load_pricing_tier(), PRICING_TIERS["anthropic"])
     modal_model = max(model_counts, key=model_counts.get) if model_counts else None
@@ -48893,64 +49120,164 @@ def compact_advice(days=30):
     candidates = list(_ADVICE_CANDIDATE_WINDOWS)
     if all(default_tokens != w for w in candidates):
         candidates.append(default_tokens)
+    candidates.sort()
 
     for w in candidates:
-        sim_total = 0
-        real_total = 0
+        # The row for the user's own window, and anything above it, is the
+        # reference behaviour: nothing is added, so nothing is computed.
+        reference = w >= default_tokens
+        extra_total = 0
         avoided_tokens = 0
         avoided_usd = 0.0
         cost_usd = 0.0
-        cost_tokens = 0
         affected = 0
-        for turns, boundaries, model in sessions:
-            real = len(boundaries)
-            sim, avoided = _advice_replay(turns, boundaries, w)
-            extra = sim - real
-            sim_total += sim
-            real_total += real
-            avoided_tokens += avoided
-            if extra != 0 or avoided > 0:
-                affected += 1
-            rates = _claude_rates_for_model(model, tier_data) or {}
-            read_rate = float(rates.get("cache_read", rates.get("input", 0.0)) or 0.0)
-            write_rate = float(rates.get("cache_write", rates.get("input", 0.0)) or 0.0)
-            out_rate = float(rates.get("output", 0.0) or 0.0)
-            per_compact_tokens = _ADVICE_SUMMARY_OUTPUT_TOKENS + _ADVICE_POST_COMPACT_CONTEXT
-            per_compact_usd = (
-                _ADVICE_SUMMARY_OUTPUT_TOKENS * out_rate
-                + _ADVICE_POST_COMPACT_CONTEXT * write_rate
-            ) / 1e6
-            avoided_usd += avoided * read_rate / 1e6
-            cost_tokens += extra * per_compact_tokens
-            cost_usd += extra * per_compact_usd
-        label = (f"{w // 1000}K" if w != default_tokens
-                 else f"default ({w:,} for {modal_model or 'unknown model'})")
+        if not reference:
+            for d in sessions:
+                extra, avoided = _advice_replay(
+                    d["turns"], d["boundaries"], w, post_compact=post_ctx)
+                if extra <= 0 and avoided <= 0:
+                    continue
+                extra_total += extra
+                avoided_tokens += avoided
+                if extra > 0:
+                    affected += 1
+                rates = _claude_rates_for_model(d["model"], tier_data) or {}
+                in_rate = float(rates.get("input", 0.0) or 0.0)
+                read_rate = float(rates.get("cache_read", in_rate) or 0.0)
+                write_rate = float(rates.get("cache_write", in_rate) or 0.0)
+                out_rate = float(rates.get("output", 0.0) or 0.0)
+                avoided_usd += avoided * read_rate / 1e6
+                cost_usd += extra * (
+                    _ADVICE_SUMMARY_OUTPUT_TOKENS * out_rate
+                    + post_ctx * write_rate
+                    + reread_tok * (in_rate + write_rate)) / 1e6
+        cost_tokens = extra_total * (_ADVICE_SUMMARY_OUTPUT_TOKENS + post_ctx + reread_tok)
+        is_default = w == default_tokens
+        label = f"{w // 1000}K" + (" default" if is_default else "")
         out["windows"].append({
             "window": w,
             "label": label,
-            "is_default": w == default_tokens,
-            "simulated_compactions": sim_total,
-            "real_compactions": real_total,
-            "extra_compactions": sim_total - real_total,
+            "is_default": is_default,
+            "reference": reference,
+            "extra_compactions": extra_total,
             "affected_sessions": affected,
             "affected_share": (round(affected / len(sessions), 3) if sessions else 0),
             "cache_read_tokens_avoided": avoided_tokens,
+            "avoided_share_pct": _advice_round_pct(avoided_tokens, total_cache_read),
             "compaction_cost_tokens": cost_tokens,
             "net_tokens": avoided_tokens - cost_tokens,
-            "net_usd": round(avoided_usd - cost_usd, 4),
+            "net_usd": round(avoided_usd - cost_usd, 2),
+            "net_usd_unrounded": avoided_usd - cost_usd,
             "estimate": True,
         })
 
+    # Smallest window whose net stays positive (after the measured costs) at
+    # every larger candidate below the user's own window. "Net" here is the
+    # priced one: a cache-read token is far cheaper than the output and
+    # cache-write tokens a compaction spends, so a positive token net can still
+    # be a loss.
+    below = sorted((e for e in out["windows"] if not e["reference"]),
+                   key=lambda e: e["window"])
+    smallest = None
+    for i, e in enumerate(below):
+        if all(x["net_usd_unrounded"] > 0 for x in below[i:]):
+            smallest = e["window"]
+            break
+    out["smallest_positive_window"] = smallest
+
     out["too_thin"] = (
         len(sessions) < _ADVICE_MIN_SESSIONS
-        or all(e["simulated_compactions"] == 0 and e["real_compactions"] == 0
-               for e in out["windows"])
+        or (out["recorded_compactions"] == 0
+            and all(e["extra_compactions"] == 0 for e in out["windows"]))
     )
     try:
         out["quality_by_fill_band"] = _advice_quality_by_fill_band()
     except Exception:
         out["quality_by_fill_band"] = {}
     return out
+
+
+def _advice_cache_path():
+    return SNAPSHOT_DIR / "compact_advice_cache.json"
+
+
+def _advice_coach_view(rep):
+    """The small `compact_advice` block coach --json carries."""
+    dw = rep.get("default_window") or {}
+    return {
+        "estimate": True,
+        "days": rep.get("days"),
+        "billing": rep.get("billing"),
+        "dollars": "API-equivalent list-price estimates, not a bill",
+        "resolved_window": {
+            "tokens": dw.get("tokens"),
+            "source": dw.get("source"),
+            "model": dw.get("model"),
+        },
+        "sessions_replayed": rep.get("sessions_replayed"),
+        "recorded_compactions": rep.get("recorded_compactions"),
+        "truncated": bool(rep.get("truncated")),
+        "too_thin": bool(rep.get("too_thin")),
+        "rows": [] if rep.get("too_thin") else [
+            {k: e.get(k) for k in (
+                "label", "window", "is_default", "extra_compactions",
+                "cache_read_tokens_avoided", "avoided_share_pct",
+                "compaction_cost_tokens", "net_tokens", "net_usd")}
+            for e in rep.get("windows", [])
+        ],
+        "smallest_positive_window": rep.get("smallest_positive_window"),
+        "assumptions": {k: dict(v) for k, v in (rep.get("measurements") or {}).items()},
+    }
+
+
+def _coach_compact_advice_block(days=30):
+    """Capped, cached, fail-open compact-advice block for `coach --json`.
+
+    Newest `_ADVICE_COACH_MAX_SESSIONS` sessions within a wall-clock budget;
+    the result is cached for six hours. Any failure returns None so coach never
+    fails because of it.
+    """
+    try:
+        cache_path = _advice_cache_path()
+        try:
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            if (isinstance(cached, dict) and cached.get("days") == days
+                    and cached.get("_schema") == 2
+                    and time.time() - float(cached.get("_cached_ts", 0))
+                    < _ADVICE_COACH_CACHE_TTL_SECONDS):
+                return {k: v for k, v in cached.items() if not k.startswith("_")}
+        except (OSError, ValueError, TypeError):
+            pass
+        rep = compact_advice(days=days, max_sessions=_ADVICE_COACH_MAX_SESSIONS,
+                             deadline_seconds=_ADVICE_COACH_BUDGET_SECONDS)
+        block = _advice_coach_view(rep)
+        try:
+            record = dict(block)
+            record["_cached_ts"] = time.time()
+            record["_schema"] = 2
+            SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+            fd, tmp_name = tempfile.mkstemp(
+                prefix=".compact_advice.", suffix=".tmp", dir=str(SNAPSHOT_DIR))
+            try:
+                if hasattr(os, "fchmod"):
+                    os.fchmod(fd, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    json.dump(record, fh)
+                os.replace(tmp_name, str(cache_path))
+            except Exception:
+                try:
+                    os.unlink(tmp_name)
+                except OSError:
+                    pass
+        except Exception:
+            pass
+        return block
+    except Exception:
+        return None
+
+
+def _advice_usd(v):
+    return f"{'-' if v < 0 else ''}${abs(v):,.2f}"
 
 
 def _compact_advice_cli(args):
@@ -48975,40 +49302,65 @@ def _compact_advice_cli(args):
     print("\nTOKEN OPTIMIZER: COMPACT-WINDOW ADVICE (estimates only)")
     print("=" * 58)
     print(f"  Sessions scanned: {report['sessions_scanned']} "
-          f"({report['sessions_replayed']} replayed, last {report['days']} days)")
+          f"({report['sessions_replayed']} replayed, last {report['days']} days, "
+          f"{report['recorded_compactions']} recorded compactions)")
     dw = report.get("default_window") or {}
     if dw.get("tokens"):
-        print(f"  Resolved default: {dw['tokens']:,} ({dw.get('source', '')})")
+        print(f"  Your resolved window: {dw['tokens']:,} ({dw.get('source', '')})")
     if report["too_thin"]:
         print("\n  History is too thin to estimate: not enough sessions ever")
         print("  reached a compaction context in this window. Re-run after more")
         print("  real sessions (or widen --days).")
     else:
         print("\n  Replays of YOUR sessions against candidate compact windows.")
-        print("  Not a recommendation — read the nets, keep the assumptions in mind.\n")
-        print(f"  {'window':<10} {'extra compacts':>15} {'avoided (cache-read)':>21} "
-              f"{'compact cost':>13} {'net tokens':>12} {'net usd':>9} {'sessions':>9}")
+        print("  Recorded compactions always happen; a smaller window can only add")
+        print("  compactions before them. Your own window is the reference row")
+        print("  (0 extra, 0 net by construction).")
+        print(f"  Total cache-read tokens in this window: "
+              f"{report['total_cache_read_tokens']:,}\n")
+        print(f"  {'window':<16} {'extra':>6} {'cache-read avoided':>19} {'share':>7} "
+              f"{'compact cost':>13} {'net tokens':>12} {'net $ API-equivalent':>21} "
+              f"{'sessions':>9}")
         for e in report["windows"]:
-            print(f"  {e['label']:<10} {e['extra_compactions']:>15} "
-                  f"{e['cache_read_tokens_avoided']:>21,} "
+            print(f"  {e['label']:<16} {e['extra_compactions']:>6} "
+                  f"{e['cache_read_tokens_avoided']:>19,} "
+                  f"{e['avoided_share_pct']:>6.1f}% "
                   f"{e['compaction_cost_tokens']:>13,} {e['net_tokens']:>12,} "
-                  f"{e['net_usd']:>9.4f} {e['affected_sessions']:>9}")
-        best = max(report["windows"], key=lambda e: e["net_tokens"])
-        if best["net_tokens"] > 0 and not best["is_default"]:
-            print(f"\n  Largest positive replay net: {best['label']} "
-                  f"(+{best['net_tokens']:,} tokens, ~${best['net_usd']:.4f}).")
-            print(f"  If you wanted to try it, the command is: /autocompact {best['window']}")
+                  f"{_advice_usd(e['net_usd']):>21} {e['affected_sessions']:>9}")
+        print("\n  Token counts are not equal in price: a cache read costs far less than the")
+        print("  output and cache-write tokens a compaction spends, so the dollar column")
+        print("  is the priced net.")
+        if report.get("billing") == "api":
+            print("  Dollars are API-equivalent: tokens priced at the list rate.")
         else:
-            print("\n  No candidate window beat the default on net tokens in this replay.")
+            print("  Dollars are API-equivalent: tokens priced at the list rate. On a")
+            print("  subscription this is not a bill, it is a size-of-the-effect gauge.")
         q = report.get("quality_by_fill_band") or {}
         if any(v.get("sessions") for v in q.values()):
             print("\n  Average quality score by model-fill band (recorded caches):")
             for band, v in q.items():
                 if v["sessions"]:
                     print(f"    {band:<7} avg {v['avg_score']:>5}  ({v['sessions']} sessions)")
-    print("\n  Assumptions:")
-    for k, v in report["assumptions"].items():
-        print(f"    {k}: {v}")
+        print("  Compaction can drop early instructions; the quality score does not measure that.")
+        # Half of the score IS the fill curve, so this table is not independent proof.
+        print("  Half of the score is context fill itself, so read this as the scoring")
+        print("  curve at work, not as separate evidence that fuller sessions go worse.")
+    print("\n  Assumptions (measured from your own recorded compactions where possible):")
+    for name, mm in (report.get("measurements") or {}).items():
+        print(f"    {name}: {mm['value']:,} ({mm['source']}, n={mm['n']})")
+    print(f"    summary_output_tokens: {_ADVICE_SUMMARY_OUTPUT_TOKENS:,} "
+          f"({report['assumptions'].get('summary_output_tokens_source', 'assumed')})")
+    for ln in textwrap.wrap(
+            "compaction_cost_priced_as: "
+            + report["assumptions"].get("compaction_cost_priced_as", ""),
+            width=88, initial_indent="    ", subsequent_indent="      "):
+        print(ln)
+    if report.get("smallest_positive_window") and not report["too_thin"]:
+        w = report["smallest_positive_window"]
+        print(f"\n  Smallest window whose net stays positive after the measured costs: {w // 1000}K.")
+        print("  To try one: /autocompact <n>")
+    elif not report["too_thin"]:
+        print("\n  No candidate window had a net that stays positive after the measured costs.")
     print()
 
 

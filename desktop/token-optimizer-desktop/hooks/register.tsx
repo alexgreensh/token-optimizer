@@ -25,6 +25,7 @@ import {
   WARM_PROMPT,
   attachesHandoff,
   busyNow,
+  busyTimeoutMs,
   canOpenDashboard,
   dashboardFailed,
   dashboardStatus,
@@ -521,7 +522,7 @@ const BUSY_WORDS: Record<Exclude<Busy, null>, string> = {
 /** A busy state ends by itself: a step label never outlives its work. */
 function armBusyTimeout($: EngineInterface, busy: Exclude<Busy, null>, since: number): void {
   try {
-    $.clock.after(BUSY_TIMEOUT_MS, () => void expireBusy($, busy, since))
+    $.clock.after(busyTimeoutMs(busy), () => void expireBusy($, busy, since))
   } catch {
     // busyNow() still treats it as over after the timeout.
   }

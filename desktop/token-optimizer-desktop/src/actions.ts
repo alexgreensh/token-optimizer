@@ -23,11 +23,14 @@ export const RESUME_TIMEOUT_MS = 20_000
 
 /**
  * `measure.py dashboard` regenerates the page and opens it in the browser (whatever the OS
- * opener is), so it can take a while on a long history. Bounded, and under BUSY_TIMEOUT_MS so
- * the runner answers before the busy state gives up on its own. Measured cold on a synthetic
- * 800-session / 1.1 GB history: 38 s (25 s warm); 90 s is more than twice that.
+ * opener is), so it can take a while on a long history. Bounded, and under the dashboard's
+ * busy timeout (see busyTimeoutMs) so the runner answers before the busy state gives up on its
+ * own. Measured cold on a real, heavy history: 80 s (a synthetic 800-session / 1.1 GB one took
+ * 38 s), so a slower disk needs room well past that.
  */
-export const DASHBOARD_TIMEOUT_MS = 90_000
+export const DASHBOARD_TIMEOUT_MS = 300_000
+/** How long past the runner's limit the dashboard's busy state waits before giving up on its own. */
+const DASHBOARD_BUSY_GRACE_MS = 30_000
 /**
  * The arguments of that command. Never `--quiet`: quiet regenerates without opening anything.
  * `--user` marks the run as a person's click: the runner cannot pass env and its stdin is not a tty,
@@ -97,10 +100,18 @@ export function isArmed(ui: UiState, now: number): boolean {
   return ui.freshArmedAt !== null && now - ui.freshArmedAt < FRESH_ARM_MS
 }
 
+/**
+ * How long a busy state lasts before it ends by itself. The dashboard outlives the others: its
+ * runner is allowed DASHBOARD_TIMEOUT_MS, and the busy state must not give up before it answers.
+ */
+export function busyTimeoutMs(busy: Busy): number {
+  return busy === 'dashboard' ? DASHBOARD_TIMEOUT_MS + DASHBOARD_BUSY_GRACE_MS : BUSY_TIMEOUT_MS
+}
+
 /** The busy state as it stands at `now`: a stale one has timed out. */
 export function busyNow(ui: UiState, now: number): Busy {
   if (ui.busy === null || ui.busySince === null) return null
-  return now - ui.busySince < BUSY_TIMEOUT_MS ? ui.busy : null
+  return now - ui.busySince < busyTimeoutMs(ui.busy) ? ui.busy : null
 }
 
 /** The "Full dashboard" link is ignored while anything else is busy (a second click included). */

@@ -28287,6 +28287,10 @@ def _settings_write_guard(settings_data, allow_removing_keys=None, dest=None):
         the state that produced the original bug.
       * Any top-level key present on disk but absent from the outgoing dict
         must be declared in ``allow_removing_keys``, else REFUSE.
+      * Same one level down inside ``env``: a var present in the on-disk
+        ``env`` map but absent from the outgoing ``env`` map must be
+        declared as ``env.VAR`` (or the whole subtree licensed by
+        declaring ``env``), else REFUSE.
 
     Deliberate removals stay possible: pass ``allow_removing_keys={"statusLine"}``
     (uninstall paths) or a wider set. The opt-in is per-key and explicit, so a
@@ -28321,6 +28325,23 @@ def _settings_write_guard(settings_data, allow_removing_keys=None, dest=None):
     dropped = sorted(set(current) - set(settings_data) - allowed)
     if dropped:
         return False, "would DROP top-level key(s): " + ", ".join(dropped)
+    # F-T1-13: the same data-loss class one level down. `env` is a flat
+    # string->string map a caller can carry forward while silently dropping
+    # a var inside it (e.g. CLAUDE_AUTOCOMPACT_PCT_OVERRIDE). Diff its keys
+    # too. A deliberate nested removal stays possible by declaring the
+    # dotted name in allow_removing_keys ({"env.MY_VAR"}); declaring the
+    # top-level "env" licenses the whole subtree.
+    if "env" not in allowed:
+        cur_env = current.get("env")
+        out_env = settings_data.get("env")
+        if isinstance(cur_env, dict) and isinstance(out_env, dict):
+            nested = sorted(
+                "env." + key
+                for key in set(cur_env) - set(out_env)
+                if "env." + key not in allowed
+            )
+            if nested:
+                return False, "would DROP env var(s): " + ", ".join(nested)
     return True, "ok"
 
 

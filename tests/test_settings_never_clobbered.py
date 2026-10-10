@@ -172,6 +172,53 @@ def test_declared_removal_does_not_license_other_removals(measure, capsys):
     assert _read(settings) == FULL_SETTINGS
 
 
+def test_guard_refuses_a_write_that_drops_a_nested_env_key(measure, capsys):
+    """F-T1-13: a payload that keeps `env` can still drop a var inside it.
+
+    The guard diffed top-level keys only, so ``{"env": {"MY_OWN_VAR": "k"}}``
+    landed with ``env.MY_KEY`` (a real user var, e.g.
+    CLAUDE_AUTOCOMPACT_PCT_OVERRIDE) silently gone. Nested env drops are the
+    same data-loss class and must refuse the same way.
+    """
+    mod, settings = measure
+    payload = dict(FULL_SETTINGS)
+    payload["env"] = {"MY_OWN_VAR": "k"}
+    assert mod._write_settings_atomic(payload) is False
+    err = capsys.readouterr().err
+    assert "REFUSED settings.json write" in err
+    assert "env.MY_KEY" in err
+    assert _read(settings) == FULL_SETTINGS, "the on-disk file was modified by a refused write"
+
+
+def test_guard_allows_nested_env_addition_and_value_change(measure):
+    """Adding a var or changing a var's value inside env stays allowed."""
+    mod, settings = measure
+    payload = dict(FULL_SETTINGS)
+    payload["env"] = dict(FULL_SETTINGS["env"], NEW_VAR="1", MY_KEY="changed")
+    assert mod._write_settings_atomic(payload) is True
+    on_disk = _read(settings)
+    assert on_disk["env"]["NEW_VAR"] == "1"
+    assert on_disk["env"]["MY_KEY"] == "changed"
+
+
+def test_guard_allows_a_declared_nested_env_removal(measure):
+    """A deliberate nested env removal works when declared as ``env.VAR``."""
+    mod, settings = measure
+    payload = dict(FULL_SETTINGS)
+    payload["env"] = {}
+    assert mod._write_settings_atomic(payload, allow_removing_keys={"env.MY_KEY"}) is True
+    assert _read(settings)["env"] == {}
+
+
+def test_guard_allows_nested_env_removal_when_env_itself_is_declared(measure):
+    """Declaring the top-level ``env`` licenses its whole subtree."""
+    mod, settings = measure
+    payload = dict(FULL_SETTINGS)
+    payload["env"] = {}
+    assert mod._write_settings_atomic(payload, allow_removing_keys={"env"}) is True
+    assert _read(settings)["env"] == {}
+
+
 def test_guard_refuses_when_on_disk_file_is_malformed(measure, capsys):
     mod, settings = measure
     settings.write_text('{"model": "opus", ', encoding="utf-8")  # truncated

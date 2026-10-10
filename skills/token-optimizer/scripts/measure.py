@@ -11953,6 +11953,10 @@ def _claude_price_key(model_id, claude_models):
             return "fable"
     elif "mythos" in str(model_id).lower() and "fable" in claude_models:
         return "fable"
+    # A bare `haiku` keeps the family card (Haiku 4.5 rates), matching the
+    # 200K window _claude_model_window gives it: the alias is provider-
+    # dependent, and "haiku" is also the family-bucket label that routing and
+    # model-mix callers pass in, so it must not float to the 5.5 card.
     return _normalize_model_name(model_id)
 
 

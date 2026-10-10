@@ -446,3 +446,20 @@ def test_transcript_turns_apply_the_haiku_5_5_tier_per_request(tmp_path):
     big = (1000 * lc["input"] + 500 * lc["output"] + 120_000 * lc["cache_read"]) / 1e6
     assert costs[:3] == [pytest.approx(round(small, 6))] * 3
     assert costs[3] == pytest.approx(round(big, 6))
+
+
+def test_bare_haiku_alias_prices_and_windows_agree():
+    """F-T2-5: a bare `haiku` is read as the pre-5.5 generation by BOTH the
+    window table and the price table (conservative: a provider-dependent alias,
+    and the same string is the family-bucket label that routing / model-mix
+    code passes to _get_model_cost, so repricing it to Haiku 5.5 would silently
+    reprice every aggregate). Haiku 5.5 itself stays 1M / $0.10."""
+    cards = measure.PRICING_TIERS["anthropic"]["claude_models"]
+    for alias in ("haiku", "claude-haiku"):
+        assert measure._claude_price_key(alias, cards) == "haiku"
+        assert measure._claude_model_window(alias) == 200_000
+        assert measure._get_model_cost(alias, 1_000_000, 0, tier="anthropic") == pytest.approx(
+            cards["haiku"]["input"])
+    assert cards["haiku"]["input"] == cards["haiku_4_5"]["input"]
+    assert measure._claude_price_key("claude-haiku-5-5", cards) == "haiku_5_5"
+    assert measure._claude_model_window("claude-haiku-5-5") == 1_000_000

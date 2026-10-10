@@ -40,3 +40,29 @@ test("Claude 3-era ids price as their own model, not the current family card", (
   expect(claudePricingKey("claude-3-opus-20240229")).toBe("opus-3");
   expect(claudePricingKey(123 as unknown as string)).toBeNull();
 });
+
+const CLAUDE_WINDOWS: Array<[string, number]> = [
+  ["claude-haiku-5-5", 1_000_000],
+  ["anthropic/claude-haiku-5-5", 1_000_000],
+  ["claude-haiku-4-5", 200_000],
+  ["claude-haiku-4-5-20251001", 200_000],
+  ["claude-sonnet-4-6", 200_000],
+  ["claude-sonnet-4-6[1m]", 1_000_000],
+  ["claude-opus-4-6", 200_000],
+  ["claude-opus-4-6[1m]", 1_000_000],
+  ["claude-opus-4-7", 1_000_000],
+  ["claude-opus-4-8", 1_000_000],
+  ["claude-sonnet-5", 1_000_000],
+  ["claude-sonnet-5-5", 1_000_000],
+  ["claude-opus-5-5", 1_000_000],
+  ["claude-fable-5-1", 1_000_000],
+  ["claude-3-5-sonnet-20241022", 200_000],
+  ["claude-3-haiku-20240307", 200_000],
+  ["claude-opus-4-1-20250805", 200_000],
+];
+
+test("Claude context windows follow the documented per-model table", () => {
+  for (const [model, window] of CLAUDE_WINDOWS) {
+    expect([model, contextWindowForModel(model)]).toEqual([model, window]);
+  }
+});

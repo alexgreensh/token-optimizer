@@ -3,6 +3,7 @@ import type { TokenBreakdown } from "./models";
 import { calculateCost, claudePricingKey, DEFAULT_PRICING, normalizeModelName, resetPricingCache, tierMultiplier } from "./pricing";
 import { contextWindowForModel, freshSessionSavingsUsd } from "./quality";
 import {
+  GENERATED_ANTHROPIC_LONG_CONTEXT_PRICING,
   GENERATED_GEMINI_LONG_CONTEXT_PRICING,
   GENERATED_OPENAI_LONG_CONTEXT_PRICING,
   GENERATED_PRICING,
@@ -82,4 +83,42 @@ test("Claude 3-era ids price as their own model, not the current family card", (
   expect(claudePricingKey("claude-3-opus-20240229", DEFAULT_PRICING)).toBe("opus-3");
   expect(claudePricingKey("claude-3-5-haiku-20241022", DEFAULT_PRICING)).toBe("haiku-3-5");
   expect(claudePricingKey(123 as unknown as string, DEFAULT_PRICING)).toBeNull();
+});
+
+test("a Haiku 5.5 request past 100k prompt tokens (cache reads count) bills at the 5x long-context rate", () => {
+  const long = GENERATED_ANTHROPIC_LONG_CONTEXT_PRICING["haiku-5-5"];
+  const base = DEFAULT_PRICING["haiku-5-5"] ?? GENERATED_PRICING["haiku-5-5"];
+  expect(long.input).toBeCloseTo(base.input * 5, 12);
+  const big: TokenBreakdown = { input: 10_000, output: 1_000, cacheRead: 95_000, cacheWrite: 0 };
+  expect(calculateCost(big, "haiku-5-5")).toBeCloseTo(
+    10_000 * long.input + 1_000 * long.output + 95_000 * long.cacheRead, 8);
+  const small: TokenBreakdown = { input: 10_000, output: 1_000, cacheRead: 50_000, cacheWrite: 0 };
+  expect(calculateCost(small, "haiku-5-5")).toBeCloseTo(
+    10_000 * base.input + 1_000 * base.output + 50_000 * base.cacheRead, 8);
+});
+
+const CLAUDE_WINDOWS: Array<[string, number]> = [
+  ["claude-haiku-5-5", 1_000_000],
+  ["anthropic/claude-haiku-5-5", 1_000_000],
+  ["claude-haiku-4-5", 200_000],
+  ["claude-haiku-4-5-20251001", 200_000],
+  ["claude-sonnet-4-6", 200_000],
+  ["claude-sonnet-4-6[1m]", 1_000_000],
+  ["claude-opus-4-6", 200_000],
+  ["claude-opus-4-6[1m]", 1_000_000],
+  ["claude-opus-4-7", 1_000_000],
+  ["claude-opus-4-8", 1_000_000],
+  ["claude-sonnet-5", 1_000_000],
+  ["claude-sonnet-5-5", 1_000_000],
+  ["claude-opus-5-5", 1_000_000],
+  ["claude-fable-5-1", 1_000_000],
+  ["claude-3-5-sonnet-20241022", 200_000],
+  ["claude-3-haiku-20240307", 200_000],
+  ["claude-opus-4-1-20250805", 200_000],
+];
+
+test("Claude context windows follow the documented per-model table", () => {
+  for (const [model, window] of CLAUDE_WINDOWS) {
+    expect([model, contextWindowForModel(model)]).toEqual([model, window]);
+  }
 });

@@ -73,7 +73,7 @@ Tool Search (default since Jan 2026) reduced total MCP overhead by 85-96%.
 | `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` | Disable background tasks | Enabled |
 | `ENABLE_CLAUDEAI_MCP_SERVERS=false` | Opt out of claude.ai cloud-synced MCP servers | Enabled |
 | `CLAUDE_CODE_MAX_OUTPUT_TOKENS` | Max output tokens (higher = larger autocompact buffer) | 16,384 |
-| `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` | Auto-removed if found (inverted semantics cause premature compaction) | not set (~98%) |
+| `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` | Documented: % of the compact window used when auto-compact fires (1-100, lower compacts earlier, cannot raise it). Reported, never removed | not set (model default, ~967K on 1M models) |
 | `includeGitInstructions: false` (setting) | Same as DISABLE_GIT env var, in settings.json | true |
 | `effortLevel` (setting) | "high" maximizes quality + cost; "medium" saves 15-25% output tokens | auto |
 

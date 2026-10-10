@@ -124,6 +124,71 @@ function _claudeHome() {
 }
 const CLAUDE_HOME = _claudeHome();
 
+// ---- Effective compact window (JS twin of measure.py effective_compact_window) ----
+// Where THIS session auto-compacts, so the fill bar divides by the window the
+// user will actually hit. Precedence (code.claude.com/docs/en/model-config):
+// env CLAUDE_CODE_AUTO_COMPACT_WINDOW > per-model modelSettings (/autocompact)
+// > top-level autoCompactWindow. Explicit values clamp to 100000..1000000 and
+// cap at the model window; CLAUDE_AUTOCOMPACT_PCT_OVERRIDE (1-99) then scales it
+// down (it can never raise it). Returns the window in tokens ONLY when a real
+// user override shrank it below the model window (the tuned ~967K default is
+// not an override of the host's own number); otherwise null.
+function _parseCompactWindow(v) {
+  if (v === null || v === undefined || typeof v === 'boolean') return null;
+  if (typeof v === 'number') return Number.isFinite(v) && v > 0 ? Math.floor(v) : null;
+  const m = /^\s*(\d+)/.exec(String(v));
+  return m ? parseInt(m[1], 10) : null;
+}
+function _canonModelId(model) {
+  let m = String(model || '').trim().toLowerCase();
+  if (!m) return '';
+  m = m.split('/').pop().replace('[1m]', '').trim().replace(/[-@]\d{8}$/, '');
+  if (m && !m.startsWith('claude-')) m = 'claude-' + m;
+  return m;
+}
+function _reducedCompactWindow(modelId, modelWindow, settings) {
+  try {
+    if (!(modelWindow > 0)) return null;
+    const envBlock = (settings && typeof settings.env === 'object' && settings.env) || {};
+    const envVal = (name) => (process.env[name] !== undefined ? process.env[name] : envBlock[name]);
+    const clamp = (n) => Math.max(100000, Math.min(1000000, n));
+    let tokens = null;
+    const fromEnv = _parseCompactWindow(envVal('CLAUDE_CODE_AUTO_COMPACT_WINDOW'));
+    if (fromEnv !== null) {
+      tokens = clamp(fromEnv);
+    } else {
+      const ms = settings && settings.modelSettings;
+      if (ms && typeof ms === 'object') {
+        const raw = String(modelId || '').trim().toLowerCase();
+        const canon = _canonModelId(modelId);
+        const fam = /^(?:claude[-_])?(fable|mythos|opus|sonnet|haiku)/.exec(canon);
+        const family = fam ? fam[1] : '';
+        for (const key of Object.keys(ms)) {
+          const entry = ms[key];
+          if (!entry || typeof entry !== 'object' || !('autoCompactWindow' in entry)) continue;
+          const k = String(key).trim().toLowerCase();
+          if (k === raw || k === family || _canonModelId(k) === canon) {
+            const w = _parseCompactWindow(entry.autoCompactWindow);
+            if (w !== null) { tokens = clamp(w); break; }
+          }
+        }
+      }
+      if (tokens === null && settings) {
+        const top = _parseCompactWindow(settings.autoCompactWindow);
+        if (top !== null) tokens = clamp(top);
+      }
+    }
+    if (tokens !== null && tokens > modelWindow) tokens = modelWindow;
+    const pct = parseInt(String(envVal('CLAUDE_AUTOCOMPACT_PCT_OVERRIDE') ?? '').trim(), 10);
+    if (Number.isFinite(pct) && pct >= 1 && pct < 100) {
+      tokens = Math.floor((tokens === null ? Math.min(modelWindow, 967000) : tokens) * pct / 100);
+    }
+    return tokens !== null && tokens < modelWindow ? tokens : null;
+  } catch (e) {
+    return null;
+  }
+}
+
 let input = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', chunk => input += chunk);
@@ -188,9 +253,32 @@ process.stdin.on('end', () => {
     // Context window bar with degradation-aware colors
     // Fill bands: <50% green, 50-70% yellow, 70-80% orange, 80%+ red (blinking)
     let ctx = '';
-    const used = usedPct != null
+    const hostUsed = usedPct != null
       ? Math.round(usedPct)
       : (remaining != null ? Math.max(0, Math.min(100, 100 - Math.round(remaining))) : null);
+
+    // Fill on the window the session will actually compact at. When the user
+    // shrank it (env / /autocompact / autoCompactWindow / PCT override), divide
+    // the live token count by that window instead of the model window.
+    const cw = data.context_window || {};
+    const modelWindow = typeof cw.context_window_size === 'number' ? cw.context_window_size : null;
+    const cu = cw.current_usage || null;
+    const liveTokens = cu
+      ? (Number(cu.input_tokens) || 0) + (Number(cu.cache_creation_input_tokens) || 0)
+        + (Number(cu.cache_read_input_tokens) || 0)
+      : (hostUsed != null && modelWindow ? Math.round(hostUsed / 100 * modelWindow) : null);
+    let used = hostUsed;
+    try {
+      let settingsForWindow = null;
+      const sp = path.join(CLAUDE_HOME, 'settings.json');
+      if (fs.existsSync(sp)) settingsForWindow = JSON.parse(fs.readFileSync(sp, 'utf8'));
+      const reduced = modelWindow
+        ? _reducedCompactWindow(data.model && data.model.id, modelWindow, settingsForWindow)
+        : null;
+      if (reduced && liveTokens !== null && liveTokens >= 0) {
+        used = Math.max(0, Math.min(100, Math.round(liveTokens / reduced * 100)));
+      }
+    } catch (e) {}
 
     // Sanitize session_id for safe use in filesystem paths
     const safeSessionId = sessionId ? sessionId.replace(/[^a-zA-Z0-9_-]/g, '') : null;
@@ -212,8 +300,13 @@ process.stdin.on('end', () => {
 
       // Write live fill data for quality score to use (bridges statusline -> quality cache)
       try {
+        // used_percentage stays the HOST's model-window fill (measure.py scales
+        // it onto the effective compact window); context_tokens + window carry
+        // the numerator so it can recompute exactly.
         const liveFillData = JSON.stringify({
-          used_percentage: clamped,
+          used_percentage: hostUsed != null ? Math.max(0, Math.min(100, hostUsed)) : clamped,
+          context_tokens: liveTokens !== null && liveTokens > 0 ? liveTokens : undefined,
+          context_window: modelWindow || undefined,
           timestamp: Date.now(),
           session_id: sessionId || null
         });
@@ -253,6 +346,20 @@ process.stdin.on('end', () => {
         const rlTmp = path.join(cacheDir, `.rate-limits.${process.pid}.tmp`);
         fs.writeFileSync(rlTmp, payload);
         fs.renameSync(rlTmp, path.join(cacheDir, 'rate-limits.json'));
+      } catch (e) {}
+    }
+
+    // ---- Bridge the native prompt_cache object to a per-session sidecar ----
+    // Claude Code v2.1.251+ includes prompt_cache (ttl, expires_at, warm, ...)
+    // in the status-line input for MAIN conversations. measure.py status-bar
+    // reads prompt-cache-<sid>.json and prefers it over the transcript guess
+    // for the cache countdown and cache-cold warning. Older Claude Code sends
+    // no such field and we simply write nothing.
+    if (data.prompt_cache && typeof data.prompt_cache === 'object' && safeSessionId) {
+      try {
+        const pcTmp = path.join(cacheDir, `.prompt-cache.${process.pid}.tmp`);
+        fs.writeFileSync(pcTmp, JSON.stringify({ ...data.prompt_cache, timestamp: Date.now() }));
+        fs.renameSync(pcTmp, path.join(cacheDir, `prompt-cache-${safeSessionId}.json`));
       } catch (e) {}
     }
 

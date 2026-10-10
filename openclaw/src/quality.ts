@@ -39,9 +39,7 @@ export interface QualityReport {
 /** Context window sizes by model family (tokens). Verified March 17, 2026. */
 const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   // Anthropic (Opus/Sonnet 1M GA since March 13, 2026)
-  opus: 1_000_000,
-  sonnet: 1_000_000,
-  haiku: 200_000,
+  // (Claude ids resolve through claudeContextWindow() below, not this table.)
   // OpenAI GPT-5 family
   "gpt-5.6": 1_050_000,
   "gpt-5.6-sol": 1_050_000,
@@ -96,6 +94,38 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
 const DEFAULT_CONTEXT_WINDOW = 200_000;
 
 /**
+ * Context window for a Claude model id, per Claude Code's model-config docs
+ * (checked 2026-10-10): Fable, Sonnet 5+, Opus 4.7+ and Haiku 5.5 are 1M with
+ * no suffix; Sonnet 4.6 / Opus 4.6 are 1M only as the `[1m]` variant (200K
+ * without); every older Claude is 200K. Returns null when the id carries no
+ * Claude family so callers fall through to their other rules.
+ */
+export function claudeContextWindow(model: string): number | null {
+  const raw = (model ?? "").toLowerCase().trim();
+  const oneM = raw.includes("[1m]") || raw.includes("1000k");
+  const id = raw
+    .replace("[1m]", "")
+    .replace(/^.*\//, "")
+    .replace(/[-@]\d{8}$/, "");
+  if (/claude[-_]?[0-3]\b/.test(id) || /claude-\d(?:[-.]\d)?-(opus|sonnet|haiku)/.test(id)) return 200_000;
+  const m = /(fable|mythos|opus|sonnet|haiku)(?:[-_.](\d+))?(?:[-_.](\d{1,2}))?(?!\d)/.exec(id);
+  if (!m) return null;
+  const [, family, majorRaw, minorRaw] = m;
+  if (family === "fable" || family === "mythos") return 1_000_000;
+  const major = majorRaw === undefined ? null : parseInt(majorRaw, 10);
+  const minor = minorRaw === undefined ? 0 : parseInt(minorRaw, 10);
+  if (family === "haiku") {
+    if (major === null) return 200_000; // bare alias: conservative
+    return major > 5 || (major === 5 && minor >= 5) ? 1_000_000 : 200_000;
+  }
+  // opus / sonnet: a bare alias resolves to the current 5.x line (1M).
+  if (major === null || major >= 5) return 1_000_000;
+  if (major === 4 && family === "opus" && minor >= 7) return 1_000_000;
+  if (major === 4 && minor === 6) return oneM ? 1_000_000 : 200_000;
+  return 200_000;
+}
+
+/**
  * Resolve a model's context window. Tries exact match, then a Claude-family rule,
  * then substring match, so a full model id (e.g. "claude-sonnet-4-6",
  * "anthropic/claude-opus-4-8") resolves to its real window instead of silently
@@ -108,14 +138,10 @@ export function contextWindowForModel(model: string): number {
   const lower = model.toLowerCase();
   const direct = MODEL_CONTEXT_WINDOWS[lower];
   if (direct !== undefined) return direct;
-  // Claude families. All haiku and all Claude 2.x/3.x are 200K; only Claude 4.x+
-  // non-haiku is 1M GA (since March 2026). Match before the generic substring
-  // loop so this rule is authoritative.
-  if (lower.includes("claude") || lower.includes("fable") || lower.includes("opus") || lower.includes("sonnet")) {
-    if (lower.includes("haiku")) return 200_000;
-    // Legacy generations never had 1M -- don't over-promote them.
-    if (lower.includes("claude-2") || lower.includes("claude-3")) return 200_000;
-    return 1_000_000;
+  // Claude families: one table-driven rule (see claudeContextWindow).
+  if (lower.includes("claude") || lower.includes("fable") || lower.includes("opus") || lower.includes("sonnet") || lower.includes("haiku")) {
+    const claude = claudeContextWindow(lower);
+    if (claude !== null) return claude;
   }
   for (const [key, value] of Object.entries(MODEL_CONTEXT_WINDOWS)) {
     if (lower.includes(key)) return value;

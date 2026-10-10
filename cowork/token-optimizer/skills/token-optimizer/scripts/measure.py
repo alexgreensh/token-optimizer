@@ -709,6 +709,15 @@ PRICING_TIERS = {
             "sonnet_legacy": {"input": 3.0,  "output": 15.0, "cache_read": 0.3,  "cache_write": 3.75,  "cache_write_1h": 6.0},
             "haiku":  {"input": 1.0,  "output": 5.0,  "cache_read": 0.1,  "cache_write": 1.25,  "cache_write_1h": 2.0},
         },
+        # Long-context surcharge cards, applied when a request's full prompt
+        # (input + cache reads + cache writes) exceeds
+        # ANTHROPIC_LONG_CONTEXT_INPUT_THRESHOLD. Claude Haiku 5.5 is priced by
+        # prompt length: >100K pays 5x on every rate. Verified 2026-10-10 from
+        # platform.claude.com/docs/en/about-claude/pricing ("Long context
+        # pricing") and LiteLLM's claude-haiku-5-5 *_above_100k_tokens fields.
+        "claude_models_lc": {
+            "haiku_5_5": {"input": 0.5, "output": 2.5, "cache_read": 0.05, "cache_write": 0.625, "cache_write_1h": 1.0},
+        },
     },
     "vertex-global": {
         "label": "Vertex AI Global",
@@ -725,6 +734,9 @@ PRICING_TIERS = {
             "sonnet_legacy": {"input": 3.0,  "output": 15.0, "cache_read": 0.3,  "cache_write": 3.75,  "cache_write_1h": 6.0},
             "haiku":  {"input": 1.0,  "output": 5.0,  "cache_read": 0.1,  "cache_write": 1.25,  "cache_write_1h": 2.0},
         },
+        "claude_models_lc": {
+            "haiku_5_5": {"input": 0.5, "output": 2.5, "cache_read": 0.05, "cache_write": 0.625, "cache_write_1h": 1.0},
+        },
     },
     "vertex-regional": {
         "label": "Vertex AI Regional",
@@ -739,6 +751,9 @@ PRICING_TIERS = {
             "sonnet": {"input": 3.3,  "output": 16.5, "cache_read": 0.33, "cache_write": 4.125, "cache_write_1h": 6.6},
             "sonnet_legacy": {"input": 3.3,  "output": 16.5, "cache_read": 0.33, "cache_write": 4.125, "cache_write_1h": 6.6},
             "haiku":  {"input": 1.1,  "output": 5.5,  "cache_read": 0.11, "cache_write": 1.375, "cache_write_1h": 2.2},
+        },
+        "claude_models_lc": {
+            "haiku_5_5": {"input": 0.55, "output": 2.75, "cache_read": 0.055, "cache_write": 0.6875, "cache_write_1h": 1.1},
         },
     },
     "bedrock": {
@@ -756,8 +771,17 @@ PRICING_TIERS = {
             "sonnet_legacy": {"input": 3.0,  "output": 15.0, "cache_read": 0.3,  "cache_write": 3.75,  "cache_write_1h": 6.0},
             "haiku":  {"input": 1.0,  "output": 5.0,  "cache_read": 0.1,  "cache_write": 1.25,  "cache_write_1h": 2.0},
         },
+        "claude_models_lc": {
+            "haiku_5_5": {"input": 0.5, "output": 2.5, "cache_read": 0.05, "cache_write": 0.625, "cache_write_1h": 1.0},
+        },
     },
 }
+
+# Anthropic long-context surcharge threshold: a request whose full prompt
+# (input + cache reads + cache writes) exceeds this bills at the
+# "claude_models_lc" card when the model has one. Haiku 5.5's threshold is
+# 100K; other 1M Claude models have no long-context surcharge.
+ANTHROPIC_LONG_CONTEXT_INPUT_THRESHOLD = 100_000
 
 # --- Sonnet 5 introductory pricing (date-gated) ------------------------------------------
 # Sonnet 5 launched with INTRODUCTORY pricing ($2/$10 per MTok; cache_read 0.2, cache_write
@@ -990,11 +1014,19 @@ def _apply_bundled_prices(path=None):
         card.setdefault("cache_read", round(card["input"] * 0.1, 6))
         card.setdefault("cache_write", round(card["input"] * 1.25, 6))
         card.setdefault("cache_write_1h", round(card["input"] * 2, 6))
+    claude_lc = _clean_price_cards(doc.get("anthropic_long_context"))
+    for card in claude_lc.values():
+        card.setdefault("cache_read", round(card["input"] * 0.1, 6))
+        card.setdefault("cache_write", round(card["input"] * 1.25, 6))
+        card.setdefault("cache_write_1h", round(card["input"] * 2, 6))
     # First-party rates apply on Vertex global and Bedrock; Vertex regional is +10%.
     for tier_name, tier in PRICING_TIERS.items():
         mult = 1.1 if tier_name == "vertex-regional" else 1.0
         for key, card in claude.items():
             tier["claude_models"][key] = {f: round(v * mult, 6) for f, v in card.items()}
+        lc_table = tier.setdefault("claude_models_lc", {})
+        for key, card in claude_lc.items():
+            lc_table[key] = {f: round(v * mult, 6) for f, v in card.items()}
     for table, section in ((OPENAI_MODEL_PRICING, "openai"),
                            (OPENAI_LONG_CONTEXT_PRICING, "openai_long_context"),
                            (GEMINI_MODEL_PRICING, "gemini"),
@@ -1251,11 +1283,20 @@ def _get_model_cost(model, input_tokens, output_tokens, cache_read=0, cache_crea
     normalized = _claude_price_key(model, tier_data["claude_models"]) if model else None
     if normalized and normalized in tier_data["claude_models"]:
         rates = tier_data["claude_models"][normalized]
+        lc_models = tier_data.get("claude_models_lc") or {}
     else:
         # Non-Claude model: use Anthropic tier rates for Claude, skip for others
         rates = PRICING_TIERS["anthropic"]["claude_models"].get(normalized or "", None)
+        lc_models = PRICING_TIERS["anthropic"].get("claude_models_lc") or {}
         if rates is None:
             return 0.0
+
+    # Prompt-length surcharge: Anthropic counts ALL of a request's input
+    # (input + cache reads + cache writes = full_input) against the
+    # long-context threshold. Haiku 5.5 >100K pays 5x on every rate.
+    if (normalized in lc_models
+            and full_input > ANTHROPIC_LONG_CONTEXT_INPUT_THRESHOLD):
+        rates = lc_models[normalized]
 
     # Price cache-write tokens by TTL tier when the split is available.
     # 1h tier = 2x input (cache_write_1h); 5m tier = 1.25x input (cache_write).
@@ -3195,26 +3236,84 @@ def calculate_totals(components):
 
 
 def _is_1m_model(model_str):
-    """Check if a model string indicates a 1M-context-eligible model.
+    """Check if a model string indicates a 1M-context model.
 
-    Since March 2026, all Claude models on Max/Team/Enterprise plans have 1M.
-    Rather than hardcoding model names (which change constantly), we assume
-    1M for any non-haiku Claude model string. Haiku stays at 200K.
-    Users can always override with TOKEN_OPTIMIZER_CONTEXT_SIZE or --context-size.
+    Verified 2026-10-10 from code.claude.com/docs/en/model-config#extended-context:
+      - Fable 5.1/5, Sonnet 5 and later, Haiku 5.5, Opus 4.7 and later run
+        with the 1M window by default (no [1m] suffix).
+      - Sonnet 4.6 and Opus 4.6 reach 1M ONLY through their [1m] variant.
+      - Older models (Haiku <= 4.5, Sonnet <= 4.5, Opus <= 4.5) are 200K.
+    A bare family alias (`sonnet`, `opus`, `fable`) resolves to a 1M-native
+    model on the Anthropic API; bare `haiku` is left at 200K because the
+    alias resolves to Haiku 5.5 on the Anthropic API but Haiku 4.5 on other
+    providers (conservative, overridable with TOKEN_OPTIMIZER_CONTEXT_SIZE).
     """
-    m = model_str.lower().strip()
+    return _claude_model_window(model_str) >= 1_000_000
+
+
+_CLAUDE_MODEL_ID_RE = re.compile(
+    r"^(?:claude[-_])?(fable|mythos|opus|sonnet|haiku)"
+    r"(?:[-_](\d+))?(?:[-_](\d+))?"
+)
+
+
+def _claude_model_window(model_str):
+    """Context window for a Claude model string, per the verified doc table.
+
+    1M-native models (Fable, Sonnet 5+, Haiku 5.5, Opus 4.7+) get 1M with no
+    suffix; Sonnet 4.6 / Opus 4.6 get 1M only with the ``[1m]`` variant;
+    everything else is 200K. Unrecognized strings fall back to the 1M default
+    that detect_context_window() documents (most users are on 1M-native
+    models); override with TOKEN_OPTIMIZER_CONTEXT_SIZE.
+    """
+    m = (model_str or "").lower().strip()
     if not m:
-        return False
-    # Direct 1M indicators
-    if "1m" in m or "1000k" in m:
-        return True
-    # Haiku models explicitly stay at 200K
-    if "haiku" in m:
-        return False
-    # Any other Claude model string (opus, sonnet, or future models) -> assume 1M eligible
-    # This covers: 'opus', 'sonnet', 'claude-opus-4-6', 'claude-opus-4-7', 'claude-sonnet-4-6', etc.
-    # Users on non-Max plans who actually have 200K can set TOKEN_OPTIMIZER_CONTEXT_SIZE=200000
-    return True
+        return 200_000
+    one_m_suffix = "[1m]" in m or "1000k" in m
+    m = m.replace("[1m]", "").strip()
+    # Strip date suffixes (-20250929 / @20250929): same model, same window.
+    m = re.sub(r"[-@]\d{8}$", "", m).strip()
+    match = _CLAUDE_MODEL_ID_RE.match(m)
+    if not match:
+        # Claude 3-era and older ids ("claude-3-5-sonnet-20241022",
+        # "claude-3-haiku", "claude-2", "instant") are all 200K windows.
+        if (_CLAUDE_LEGACY_ID_RE.search(m)
+                or re.search(r"claude[-_]?[0-3]\b", m)
+                or "instant" in m):
+            return 200_000
+        # Unrecognized (e.g. gateway alias): keep the historical 1M default.
+        return 1_000_000
+    family, major_raw, minor_raw = match.groups()
+    if family in ("fable", "mythos"):
+        return 1_000_000  # every Fable/Mythos release is 1M-native
+    try:
+        major = int(major_raw) if major_raw else None
+        minor = int(minor_raw) if minor_raw else 0
+    except ValueError:
+        return 1_000_000
+    if family == "haiku":
+        if major is None:
+            return 200_000  # bare alias: provider-dependent version, conservative
+        return 1_000_000 if (major, minor) >= (5, 5) else 200_000
+    if family == "sonnet":
+        if major is None:
+            return 1_000_000  # alias resolves to Sonnet 5.5 on the Anthropic API
+        if major >= 5:
+            return 1_000_000
+        if major == 4 and minor == 6:
+            return 1_000_000 if one_m_suffix else 200_000
+        return 200_000
+    if family == "opus":
+        if major is None:
+            return 1_000_000  # alias resolves to Opus 5.5 on the Anthropic API
+        if major >= 5:
+            return 1_000_000
+        if major == 4 and minor >= 7:
+            return 1_000_000
+        if major == 4 and minor == 6:
+            return 1_000_000 if one_m_suffix else 200_000
+        return 200_000
+    return 1_000_000
 
 
 def _context_window_for_model_str(model_str):
@@ -3225,7 +3324,8 @@ def _context_window_for_model_str(model_str):
       1. CLAUDE_CODE_DISABLE_1M_CONTEXT=1 -> 200k (kills the 1M tier globally).
       2. TOKEN_OPTIMIZER_CONTEXT_SIZE=<int> -> that exact size.
       3. _cli_context_size (parsed from the CLI --context-size flag).
-      4. The model string itself: 1M for a 1M variant, 200k otherwise.
+      4. The model string itself: _claude_model_window() (1M-native models,
+         [1m] variants, 200K otherwise).
 
     Note: the env overrides in steps 1-3 are GLOBAL -- they are not keyed
     to the model string. A user who exports TOKEN_OPTIMIZER_CONTEXT_SIZE=200000
@@ -3251,9 +3351,212 @@ def _context_window_for_model_str(model_str):
     m = (model_str or "").lower().strip()
     if not m:
         return None
-    if "haiku" in m:
-        return 200_000
-    return 1_000_000 if _is_1m_model(m) else 200_000
+    return _claude_model_window(m)
+
+
+# ---------------------------------------------------------------------------
+# Effective compact-window resolver (the single source for "where this session
+# will auto-compact"). Verified 2026-10-10 from
+# code.claude.com/docs/en/model-config#context-window-and-auto-compaction and
+# the settings reference:
+#   precedence: env CLAUDE_CODE_AUTO_COMPACT_WINDOW > per-model
+#   modelSettings[<canonical id>].autoCompactWindow (written by /autocompact)
+#   > top-level autoCompactWindow > default (~967K on 1M-native models, the
+#   model limit on 200K models). Explicit values clamp to 100000..1000000 and
+#   cap at the model's own window. CLAUDE_AUTOCOMPACT_PCT_OVERRIDE is then the
+#   percentage of the window already used when compaction runs -- lower values
+#   compact EARLIER and it can never raise the threshold.
+# ---------------------------------------------------------------------------
+_COMPACT_WINDOW_MIN = 100_000
+_COMPACT_WINDOW_MAX = 1_000_000
+# Native 1M models compact at ~967K by default (docs: "approximately 967K").
+_COMPACT_WINDOW_1M_DEFAULT = 967_000
+
+
+def _parse_compact_window_value(value):
+    """Parse a compact-window token count -> int, or None when unparseable.
+
+    Decimal-prefix integer semantics (matches the desktop band's parser):
+    "500000" and 500000 -> 500000; "auto", "", None and garbage -> None so the
+    caller falls through to the next precedence level.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        if not math.isfinite(value) or value <= 0:
+            return None
+        return int(value)
+    m = re.match(r"\s*(\d+)", str(value))
+    if not m:
+        return None
+    return int(m.group(1))
+
+
+def _clamp_compact_window(tokens):
+    """Explicit windows accept 100000..1000000 per the settings reference."""
+    return max(_COMPACT_WINDOW_MIN, min(_COMPACT_WINDOW_MAX, int(tokens)))
+
+
+def _canonical_compact_model_id(model):
+    """Canonical id Claude Code matches modelSettings keys against.
+
+    The host canonicalizes aliases, [1m] variants, date-suffixed ids and
+    recognized provider ids, so "claude-opus-5-5[1m]" and
+    "claude-opus-5-5-20261001" both read the "claude-opus-5-5" entry.
+    """
+    m = str(model or "").strip().lower()
+    if not m:
+        return ""
+    m = m.split("/")[-1]                    # provider-prefixed ids
+    m = m.replace("[1m]", "").strip()
+    m = re.sub(r"[-@]\d{8}$", "", m)        # -20250929 / @20250929 date suffix
+    if m and not m.startswith("claude-"):
+        m = "claude-" + m                   # bare "opus-5-5" -> canonical form
+    return m
+
+
+def _model_settings_window(model, model_settings):
+    """(value, key) of the modelSettings entry's autoCompactWindow for `model`,
+    or (None, None). Matches by exact id, canonicalized id, or family alias."""
+    if not isinstance(model_settings, dict) or not model:
+        return None, None
+    raw = str(model).strip().lower()
+    canon = _canonical_compact_model_id(model)
+    family_match = _CLAUDE_MODEL_ID_RE.match(canon)
+    family = family_match.group(1) if family_match else ""
+    for key, entry in model_settings.items():
+        if not isinstance(entry, dict) or "autoCompactWindow" not in entry:
+            continue
+        key_l = str(key).strip().lower()
+        if key_l == raw or key_l == family or _canonical_compact_model_id(key_l) == canon:
+            return entry.get("autoCompactWindow"), key
+    return None, None
+
+
+def _compact_window_env():
+    """Live env values for the compact-window resolver: process env first, then
+    the settings.json env block (the host injects settings env into the
+    session, and hooks don't always inherit it)."""
+    out = {}
+    try:
+        for var in ("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"):
+            val = _resolve_feature_env(var)
+            if val is not None:
+                out[var] = val
+    except Exception:
+        pass
+    return out
+
+
+def _resolve_compact_window(model, env=None, settings=None):
+    """Full resolution of the effective compact window for a session model.
+
+    Returns {"tokens", "source", "user_override", "model_window",
+    "default_tokens"}. ``user_override`` is False when only the tuned default
+    produced the answer -- callers that mirror the host's own percentage must
+    only recompute fill when a real override shrank the window (PR #210).
+    """
+    if env is None:
+        env = _compact_window_env()
+    if settings is None:
+        try:
+            settings, _settings_path = _read_settings_json()
+        except Exception:
+            settings = {}
+    if not isinstance(env, dict):
+        env = {}
+    if not isinstance(settings, dict):
+        settings = {}
+
+    model_window = _context_window_for_model_str(model)
+    if not model_window:
+        try:
+            model_window = detect_context_window()[0]
+        except Exception:
+            model_window = 1_000_000
+
+    default_tokens = (_COMPACT_WINDOW_1M_DEFAULT if model_window >= 1_000_000
+                      else model_window)
+    default_source = (
+        "default (~967K for 1M-native models)" if model_window >= 1_000_000
+        else f"default (model window {model_window})"
+    )
+
+    tokens = None
+    source = None
+    user_override = False
+
+    # 1. env var wins over every settings source.
+    raw_env = env.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW")
+    parsed = _parse_compact_window_value(raw_env)
+    if parsed is not None:
+        tokens = _clamp_compact_window(parsed)
+        source = f"env CLAUDE_CODE_AUTO_COMPACT_WINDOW={raw_env}"
+        user_override = True
+    else:
+        prefix = ""
+        # 2. /autocompact's per-model entry beats the top-level setting.
+        ms_val, ms_key = _model_settings_window(model, settings.get("modelSettings"))
+        parsed_ms = _parse_compact_window_value(ms_val)
+        if parsed_ms is not None:
+            tokens = _clamp_compact_window(parsed_ms)
+            source = f"modelSettings[{ms_key}].autoCompactWindow={ms_val}"
+            user_override = True
+        else:
+            if ms_val is not None:
+                prefix = (f"modelSettings[{ms_key}].autoCompactWindow={ms_val!r} "
+                          "(not a window, ignored); ")
+            # 3. Top-level autoCompactWindow.
+            top_val = settings.get("autoCompactWindow")
+            parsed_top = _parse_compact_window_value(top_val)
+            if parsed_top is not None:
+                tokens = _clamp_compact_window(parsed_top)
+                source = f"{prefix}autoCompactWindow={top_val}"
+                user_override = True
+            else:
+                # 4. Default.
+                tokens = default_tokens
+                source = f"{prefix}{default_source}"
+
+    # A window can never exceed the model's own context window.
+    if tokens > model_window:
+        tokens = model_window
+        source += f"; capped at model window {model_window}"
+
+    # CLAUDE_AUTOCOMPACT_PCT_OVERRIDE applies to whatever the window resolved
+    # to: it is the USED percentage at which compaction runs, so a lower value
+    # compacts earlier. Values outside 1..100 cannot raise the threshold and
+    # are ignored.
+    pct = None
+    raw_pct = env.get("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE")
+    if raw_pct is not None:
+        try:
+            pct = int(str(raw_pct).strip())
+        except (TypeError, ValueError):
+            pct = None
+    if pct is not None and 1 <= pct < 100:
+        tokens = tokens * pct // 100
+        source += f" x CLAUDE_AUTOCOMPACT_PCT_OVERRIDE={pct}%"
+        user_override = True
+
+    return {
+        "tokens": int(tokens),
+        "source": source,
+        "user_override": user_override,
+        "model_window": model_window,
+        "default_tokens": default_tokens,
+    }
+
+
+def effective_compact_window(model, env=None, settings=None):
+    """(tokens, provenance): where this session's model will auto-compact.
+
+    ``env``/``settings`` default to the live process env + settings.json when
+    omitted; callers pass dicts in tests. See _resolve_compact_window for the
+    precedence and clamp rules.
+    """
+    resolved = _resolve_compact_window(model, env=env, settings=settings)
+    return resolved["tokens"], resolved["source"]
 
 
 _codex_config_cache: tuple[float, dict] | None = None
@@ -3411,10 +3714,8 @@ def detect_context_window():
     if detect_runtime() == "hermes":
         model = os.environ.get("HERMES_MODEL", "").lower()
         if model:
-            if "haiku" in model:
-                return remember((200_000, f"hermes env: {model} (Haiku = 200K)"))
-            if _is_1m_model(model):
-                return remember((1_000_000, f"hermes env: {model} (1M)"))
+            w = _claude_model_window(model)
+            return remember((w, f"hermes env: {model} ({'1M' if w >= 1_000_000 else '200K'})"))
         return remember((200_000, "hermes default (200K. Override: TOKEN_OPTIMIZER_CONTEXT_SIZE)"))
     # Foreign runtimes (cursor, antigravity, grok, opencode, copilot) must not
     # inherit Claude's model env vars, ~/.claude config, or the 1M Claude
@@ -3428,15 +3729,12 @@ def detect_context_window():
     if not model:
         model = os.environ.get("ANTHROPIC_MODEL", "").lower()
     if model:
-        # Haiku stays at 200K
-        if "haiku" in model:
-            reason = f"model: {model} (Haiku = 200K)"
-            if "claude-3-haiku" in model or "3-haiku" in model:
-                reason += " [WARNING: Claude 3 Haiku retired April 2026. Migrate to claude-haiku-4-5-20251001]"
-                print(f"[Token Optimizer] WARNING: {model} was retired April 2026. Migrate to claude-haiku-4-5-20251001.", file=sys.stderr)
-            return remember((200_000, reason))
-        if _is_1m_model(model):
-            return remember((1_000_000, f"model: {model} (1M)"))
+        reason = f"model: {model}"
+        if "claude-3-haiku" in model or "3-haiku" in model:
+            reason += " [WARNING: Claude 3 Haiku retired April 2026. Migrate to claude-haiku-5-5]"
+            print(f"[Token Optimizer] WARNING: {model} was retired April 2026. Migrate to claude-haiku-5-5.", file=sys.stderr)
+        w = _claude_model_window(model)
+        return remember((w, f"{reason} ({'1M' if w >= 1_000_000 else '200K'})"))
     # Check config files for model preference
     for cfg_name in ("config.json", "settings.json"):
         cfg_path = CLAUDE_DIR / cfg_name
@@ -3446,20 +3744,18 @@ def detect_context_window():
                     cfg = json.load(f)
                 m = (cfg.get("model") or cfg.get("primaryModel") or "").lower()
                 if m:
-                    if "haiku" in m:
-                        reason = f"{cfg_name.split('.')[0]}: {m} (Haiku = 200K)"
-                        if "claude-3-haiku" in m or "3-haiku" in m:
-                            reason += " [WARNING: Claude 3 Haiku retired April 2026. Migrate to claude-haiku-4-5-20251001]"
-                            print(f"[Token Optimizer] WARNING: {m} was retired April 2026. Migrate to claude-haiku-4-5-20251001.", file=sys.stderr)
-                        return remember((200_000, reason))
-                    if _is_1m_model(m):
-                        return remember((1_000_000, f"{cfg_name.split('.')[0]}: {m} (1M)"))
+                    reason = f"{cfg_name.split('.')[0]}: {m}"
+                    if "claude-3-haiku" in m or "3-haiku" in m:
+                        reason += " [WARNING: Claude 3 Haiku retired April 2026. Migrate to claude-haiku-5-5]"
+                        print(f"[Token Optimizer] WARNING: {m} was retired April 2026. Migrate to claude-haiku-5-5.", file=sys.stderr)
+                    w = _claude_model_window(m)
+                    return remember((w, f"{reason} ({'1M' if w >= 1_000_000 else '200K'})"))
             except (json.JSONDecodeError, PermissionError, OSError):
                 pass
-    # Since March 2026: Opus 4.6+/4.7 and Sonnet 4.6 have 1M context GA.
-    # Most Claude Code users are on these models. Default to 1M.
-    # Users on Haiku or older models can override with TOKEN_OPTIMIZER_CONTEXT_SIZE=200000.
-    return remember((1_000_000, "default (1M, Opus/Sonnet 4.6+ GA. Override: TOKEN_OPTIMIZER_CONTEXT_SIZE)"))
+    # Most Claude Code models are 1M-native now (Sonnet 5+, Opus 4.7+, Fable,
+    # Haiku 5.5). Default to 1M; users on 200K models can override with
+    # TOKEN_OPTIMIZER_CONTEXT_SIZE=200000.
+    return remember((1_000_000, "default (1M, Sonnet 5+/Opus 4.7+/Haiku 5.5 native. Override: TOKEN_OPTIMIZER_CONTEXT_SIZE)"))
 
 
 # CLI override for context size (set by --context-size flag parsing)
@@ -3615,9 +3911,17 @@ def score_to_band(score):
     return "Poor"
 
 
-def _estimate_messages_until_compact(ctx_window, overhead, avg_msg_tokens=5000):
-    """Estimate how many messages fit before auto-compact fires (~80% fill)."""
-    compact_threshold = int(ctx_window * 0.80)
+def _estimate_messages_until_compact(ctx_window, overhead, avg_msg_tokens=5000, model=None):
+    """Estimate how many messages fit before auto-compact fires.
+
+    Uses the resolved effective compact window (env > /autocompact >
+    autoCompactWindow > ~967K-on-1M / model-limit default), not a fixed
+    fraction of the model window.
+    """
+    try:
+        compact_threshold = _resolve_compact_window(model)["tokens"]
+    except Exception:
+        compact_threshold = ctx_window
     usable = max(0, compact_threshold - overhead)
     return max(0, usable // avg_msg_tokens)
 
@@ -3916,8 +4220,13 @@ def quick_scan(as_json=False):
     print(f"    Quality estimate:      {grade} ({quality_est}/100) ({_qcurve} MRCR curve at this fill level; heuristic, not measured)")
     next_danger = int(ctx_window * 0.50)
     print(f"    Next danger zone:      {next_danger:,} (50%, \"lost in the middle\" begins)")
-    compact_at = int(ctx_window * 0.80)
-    print(f"    Auto-compact fires at: ~{compact_at:,} (60-70% of context LOST per compaction)")
+    try:
+        _cw_res = _resolve_compact_window(None)
+        compact_at = _cw_res["tokens"]
+        compact_at_note = f" ({_cw_res['source']})" if _cw_res.get("user_override") else ""
+    except Exception:
+        compact_at, compact_at_note = ctx_window, ""
+    print(f"    Auto-compact fires at: ~{compact_at:,}{compact_at_note} (60-70% of context LOST per compaction)")
 
     if top_offenders:
         print("\n  TOP OFFENDERS")
@@ -4062,16 +4371,17 @@ def doctor(as_json=False):
     else:
         checks.append(("!!", "Dashboard", "not generated (fix: python3 measure.py dashboard)"))
 
-    # 9. Auto-remove harmful env vars (CLAUDE_AUTOCOMPACT_PCT_OVERRIDE etc.)
+    # 9. Explain the compaction-percentage override (READ-ONLY).
+    # CLAUDE_AUTOCOMPACT_PCT_OVERRIDE is documented; doctor explains what it
+    # does and flags very-low values. It must NEVER be edited or removed here
+    # (the old auto-delete destroyed a documented user setting).
     total += 1
-    removed = _auto_remove_bad_env_vars(settings)
-    if removed:
-        for var, val in removed:
-            checks.append(("OK", "Env cleanup", f"REMOVED {var}={val} (inverted semantics, caused premature compaction)"))
-        score += 1
-    else:
-        checks.append(("OK", "Env vars", "no harmful overrides"))
-        score += 1
+    try:
+        _env_checks = _autocompact_pct_override_explanation()
+    except Exception:
+        _env_checks = [("OK", "Env override", "status unknown (read failed)")]
+    checks.extend(_env_checks)
+    score += 1
 
     # 10. Broken symlinks
     total += 1
@@ -8334,7 +8644,7 @@ def _generate_codex_auto_recommendations(components, trends=None, days=30):
 
     habits.append(
         "**Use Codex status line/context remaining as the first compaction signal**: "
-        "Codex logs real `model_context_window` and token counts. Compact around 50-70% for long tasks, earlier when switching topics. "
+        "Codex logs real `model_context_window` and token counts. For long tasks compact well before the window fills (quality sags long before the limit), earlier when switching topics. "
         "Do not assume a 1M API window; trust the logged Codex window for the active session."
     )
     habits.append(
@@ -9007,11 +9317,20 @@ def generate_auto_recommendations(components, trends=None, days=30):
         )
 
     # --- Rule 13: Compact habits (always include) ---
+    try:
+        _cw = _resolve_compact_window(None)
+        _compact_where = (f"Auto-compact fires at ~{_cw['tokens']:,} tokens "
+                          f"({_cw['source']}). ")
+    except Exception:
+        _compact_where = ""
     habits.append(
-        "**Use /compact at 50-70% context fill**: "
-        "Output quality degrades as context fills, especially past 70%. "
-        "Don't wait for auto-compact. Run /compact proactively when you notice "
-        "the conversation getting long or when switching topics within a session."
+        "**Compact on your own schedule, not at the auto-compact line**: "
+        "Output quality degrades as context fills, well before auto-compact runs. "
+        f"{_compact_where}"
+        "Run /compact proactively when the conversation gets long or the topic changes, "
+        "and use `/autocompact <tokens>` to pull the line in for a model. "
+        "`measure.py compact-advice` replays your own session history to estimate "
+        "whether compacting earlier would save tokens."
     )
     habits.append(
         "**Use /clear between unrelated topics**: "
@@ -24524,40 +24843,68 @@ def _write_settings_atomic(settings_data, allow_removing_keys=None):
         return _write_settings_atomic_locked(merged, allow_removing_keys)
 
 
-# Env vars that should be auto-removed from settings.json.
-# CLAUDE_AUTOCOMPACT_PCT_OVERRIDE is undocumented and has inverted semantics
-# (value = remaining%, not used%). Setting it to 70 triggers compaction at
-# 30% used, silently destroying sessions.
-BAD_ENV_VARS = ["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"]
+# CLAUDE_AUTOCOMPACT_PCT_OVERRIDE is a DOCUMENTED setting (verified
+# 2026-10-10 from code.claude.com/docs/en/model-config#context-window-and-auto-compaction):
+# "Set the percentage (1-100) of the compact window already used at which
+# auto-compaction runs. The variable can't raise the threshold, so values
+# above the default percentage are ignored." Lower = compacts earlier. It
+# applies to subagents too. An earlier release misread it as undocumented
+# with inverted semantics and AUTO-DELETED it from the user's settings.json;
+# that deletion is gone. Token Optimizer only ever EXPLAINS the value
+# (see _autocompact_pct_override_explanation), never writes it.
+_AUTOCOMPACT_PCT_LOW_NOTE = 25  # below this % of the window, flag "very early"
 
 
-def _auto_remove_bad_env_vars(settings=None):
-    """Auto-remove harmful env vars from settings.json. Returns list of (var, val) removed.
+def _autocompact_pct_override_value(settings=None):
+    """Read-only lookup of CLAUDE_AUTOCOMPACT_PCT_OVERRIDE.
 
-    When settings is passed, operates on a copy of the env block to avoid mutating the caller's dict.
+    Returns ``(value, source)``: the raw string value and where it came from
+    (``"process env"``, ``"settings env"``, or ``(None, None)`` when unset).
+    Never writes, never mutates the passed dict.
     """
+    env_val = os.environ.get("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE")
+    if env_val is not None:
+        return env_val, "process env"
     if settings is None:
-        # Writes back. Never act on an unknown-state {}.
         settings, _ok = _read_settings_for_write()
-        if not _ok:
-            return []
-    env_block = dict(settings.get("env", {}))
-    removed = []
-    for var in BAD_ENV_VARS:
-        if var in env_block:
-            removed.append((var, env_block.pop(var)))
-    if removed:
-        settings = dict(settings, env=env_block)
-        try:
-            if not _write_settings_atomic(settings):
-                print("  [Token Optimizer] Warning: settings.json was not changed (locked or refused).")
-                return []
-        except (PermissionError, OSError) as e:
-            print(f"  [Token Optimizer] Warning: could not write settings.json: {e}")
-            return []
-        for var, val in removed:
-            print(f"  [Auto-fix] Removed {var}={val} from settings.json (inverted semantics, caused premature compaction)")
-    return removed
+    if isinstance(settings, dict):
+        env_block = settings.get("env")
+        if isinstance(env_block, dict) and "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE" in env_block:
+            return env_block.get("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"), "settings env"
+    return None, None
+
+
+def _autocompact_pct_override_explanation(settings=None):
+    """Explain-only: what CLAUDE_AUTOCOMPACT_PCT_OVERRIDE does, per the docs.
+
+    Returns a list of check tuples ``(status, name, detail)`` for doctor.
+    Read-only: this must never touch settings.json.
+    """
+    value, source = _autocompact_pct_override_value(settings)
+    if value is None:
+        return [("OK", "Env vars",
+                 "no CLAUDE_AUTOCOMPACT_PCT_OVERRIDE override (not set; "
+                 "documented: sets the used %% of the compact window at which "
+                 "auto-compaction runs, lower = earlier)")]
+    detail = (
+        f"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE={value} ({source}) is DOCUMENTED: "
+        "auto-compaction runs when this percentage of the compact window is "
+        "already USED, so a lower value compacts EARLIER; it cannot raise "
+        "the threshold. Kept as-is; Token Optimizer never edits it."
+    )
+    try:
+        pct = int(str(value).strip())
+    except (TypeError, ValueError):
+        return [("!!", "Env override", detail + " (value is not an integer 1-100)")]
+    if not 1 <= pct <= 100:
+        return [("!!", "Env override", detail + " (outside the documented 1-100 range)")]
+    if pct <= _AUTOCOMPACT_PCT_LOW_NOTE:
+        detail += (
+            f" NOTE: {pct}% is very low -- sessions will compact at {pct}% "
+            "of the compact window, very early. Raise it (or remove the "
+            "override) if compactions feel too frequent."
+        )
+    return [("OK", "Env override", detail)]
 
 
 def _is_token_optimizer_session_end_hook(hook: dict) -> bool:
@@ -31066,7 +31413,27 @@ def compute_quality_score(quality_data, session_id=None):
     model_context_window_source = (
         "session data" if quality_data.get("model_context_window") else ctx_window_source
     )
+    model_name = quality_data.get("model") or quality_data.get("current_model")
+
+    # Effective compact window for this session's model (env > modelSettings
+    # > autoCompactWindow > default). Fill denominates against it ONLY when a
+    # real user override shrank the window below the model window (PR #210
+    # semantics: the tuned default is not an override of the host's number).
+    compact_window_resolved = _resolve_compact_window(model_name)
+    compact_window = compact_window_resolved["tokens"]
+    compact_window_source = compact_window_resolved["source"]
+    compact_window_reduced = (
+        compact_window_resolved["user_override"]
+        and 0 < compact_window < model_context_window
+    )
+    fill_denominator = compact_window if compact_window_reduced else model_context_window
+
+    # fill_pct: share of the EFFECTIVE window (what the user sees, what nudges
+    # gate on). model_fill: share of the MODEL window -- retrieval quality is a
+    # function of real fill, so the MRCR curve and degradation bands keep the
+    # model denominator.
     fill_pct = None
+    model_fill = None
     # Set when observed tokens exceed the window: that is not a full context, it
     # is a wrong window, and it must not be reported as a percentage.
     window_contradicted = False
@@ -31088,12 +31455,24 @@ def compute_quality_score(quality_data, session_id=None):
                 # through as a silent 0.0 and suppress every nudge with no error.
                 if not math.isfinite(_used):
                     raise ValueError("non-finite used_percentage")
-                fill_pct = min(1.0, max(0.0, _used / 100.0))
-                # The host knows the real window; we only infer it. When the
-                # host rescues us from a bad denominator the user sees a correct
-                # number and the misconfiguration stays invisible, so record the
-                # disagreement rather than quietly accepting the save.
-                host_fill_pct = fill_pct
+                live_tokens = live.get("context_tokens")
+                if isinstance(live_tokens, (int, float)) and live_tokens > 0 and model_context_window:
+                    # New-format payload carries the numerator: recompute both
+                    # fills against our own denominators.
+                    model_fill = min(1.0, max(0.0, live_tokens / model_context_window))
+                    fill_pct = min(1.0, max(0.0, live_tokens / fill_denominator))
+                else:
+                    # Legacy payload: used_percentage is the host's model-window
+                    # fill. Keep it as model_fill and scale it onto the
+                    # effective window when the user overrode it.
+                    model_fill = min(1.0, max(0.0, _used / 100.0))
+                    fill_pct = min(
+                        1.0, max(0.0, model_fill * model_context_window / fill_denominator))
+                    # The host knows the real window; we only infer it. When the
+                    # host rescues us from a bad denominator the user sees a correct
+                    # number and the misconfiguration stays invisible, so record the
+                    # disagreement rather than quietly accepting the save.
+                    host_fill_pct = model_fill
     except (json.JSONDecodeError, OSError, KeyError, TypeError, ValueError):
         # used_percentage arrives from a JSON file on disk. A non-numeric value
         # raises TypeError on the division, which was NOT caught here and
@@ -31110,7 +31489,8 @@ def compute_quality_score(quality_data, session_id=None):
                 # contradiction first; the clamp still runs so downstream
                 # curve math keeps its 0-1 contract.
                 window_contradicted = raw_ratio > 1.0
-                fill_pct = min(1.0, max(0.0, raw_ratio))
+                model_fill = min(1.0, max(0.0, raw_ratio))
+                fill_pct = min(1.0, max(0.0, float(context_tokens) / fill_denominator))
         except (TypeError, ValueError):
             fill_pct = None
     if fill_pct is None:
@@ -31119,7 +31499,13 @@ def compute_quality_score(quality_data, session_id=None):
         total_chars += sum(rsize for _, _, rsize, _ in quality_data["tool_results"])
         total_chars += sum(ssize for _, _, ssize in quality_data["system_reminders"])
         estimated_tokens = total_chars / CHARS_PER_TOKEN
-        fill_pct = min(1.0, estimated_tokens / ctx_window) if ctx_window > 0 else 0
+        if ctx_window > 0:
+            model_fill = min(1.0, estimated_tokens / ctx_window)
+        else:
+            model_fill = 0
+        fill_pct = min(1.0, estimated_tokens / fill_denominator) if fill_denominator > 0 else 0
+    if model_fill is None:
+        model_fill = fill_pct
     # Cross-check: if the host told us the fill and our own arithmetic would have
     # produced a materially different one, our window is wrong even though the
     # displayed number is right. Recorded, never used to overrule the host.
@@ -31140,9 +31526,8 @@ def compute_quality_score(quality_data, session_id=None):
         except (TypeError, ValueError):
             pass
 
-    model_name = quality_data.get("model") or quality_data.get("current_model")
     fill_quality, curve_name = _estimate_quality_with_curve(
-        fill_pct,
+        model_fill,
         model=model_name,
         context_window=quality_data.get("model_context_window") or ctx_window,
     )
@@ -31278,12 +31663,26 @@ def compute_quality_score(quality_data, session_id=None):
     elif compactions >= 3:
         compaction_loss_pct = 95  # near-total
 
-    band_name, _ = _degradation_band(fill_pct)
+    # Bands describe retrieval-quality zones, so they follow the model-window
+    # fill (model_fill), not the compact-window fill that nudges gate on.
+    band_name, _ = _degradation_band(model_fill)
+
+    _cfd_detail = f"{round(fill_pct * 100)}% fill, {band_name.lower()} ({curve_name})"
+    if compact_window_reduced:
+        _cfd_detail = (
+            f"{round(fill_pct * 100)}% of compact window "
+            f"({round(model_fill * 100)}% of model window), "
+            f"{band_name.lower()} ({curve_name})"
+        )
 
     breakdown = {
         "context_fill_degradation": {
             "score": signals["context_fill_degradation"],
             "fill_pct": round(fill_pct * 100, 1),
+            "model_fill_pct": round(model_fill * 100, 1),
+            "compact_window": compact_window,
+            "compact_window_source": compact_window_source,
+            "compact_window_reduced": compact_window_reduced,
             "quality_estimate": fill_quality,
             "quality_curve": curve_name,
             "model": model_name or "unknown",
@@ -31292,7 +31691,7 @@ def compute_quality_score(quality_data, session_id=None):
             "window_contradicted": window_contradicted,
             "host_disagreement": host_disagreement,
             "band": band_name,
-            "detail": f"{round(fill_pct * 100)}% fill, {band_name.lower()} ({curve_name})",
+            "detail": _cfd_detail,
         },
         "stale_reads": {
             "score": signals["stale_reads"],
@@ -31409,6 +31808,12 @@ def compute_quality_score(quality_data, session_id=None):
         "tool_call_warning": tool_call_warning,
         "regime_change": regime_change,
         "tool_calls": tc,
+        # The window fill_pct was measured against: the user's effective
+        # compact window when an override shrank it, else the model window.
+        # Callers that convert fill% back to tokens MUST use this window.
+        "fill_denominator": fill_denominator,
+        "compact_window": compact_window,
+        "compact_window_source": compact_window_source,
     }
 
 
@@ -39483,7 +39888,7 @@ def _maybe_fresh_session_nudge(result, cache_path, quality_data, quiet=False):
         result["_fresh_nudge_fired"] = True
         return None
     saved, _window = _fresh_session_savings_estimate(
-        fill_pct, window=result.get("model_context_window"))
+        fill_pct, window=result.get("fill_denominator") or result.get("model_context_window"))
     result["_fresh_nudge_fired"] = True
     _log_compression_event(
         feature="fresh_session_nudge",
@@ -46229,7 +46634,21 @@ Fields:
   last_request_epoch     epoch seconds of the last MAIN-thread assistant
                          request in the transcript (subagent rows ignored)
   cache_lifetime         "1h" | "5m" | null: the last measured cache-write
-                         lifetime on the main thread (null = unmeasured)
+                         lifetime on the main thread (null = unmeasured).
+                         Prefers the native prompt_cache object that
+                         statusline.js bridges on Claude Code v2.1.251+; falls
+                         back to transcript usage rows on older hosts
+  cache_expires_at       epoch seconds the prompt cache expires, from the
+                         bridged native prompt_cache object, else null
+  cache_warm             native prompt_cache.warm when bridged, else null
+  cache_source           "prompt_cache" | "transcript" | null: which source
+                         cache_lifetime came from
+  compactWindow          {"tokens": int|null, "source": str}: the resolver's
+                         compact window for this session's model
+                         (CLAUDE_CODE_AUTO_COMPACT_WINDOW > /autocompact
+                         modelSettings > autoCompactWindow > model default).
+                         null tokens = no override known, use what the host
+                         reports
   last_checkpoint_epoch  this session's newest checkpoint (quality cache or
                          checkpoint file) across Token Optimizer's storage dirs
   compactions            compact_boundary rows in the transcript, or null
@@ -46688,19 +47107,22 @@ def _status_bar_compactions(path, session_id=None):
 
 
 def _status_bar_transcript_state(path):
-    """(last_request_epoch, cache_lifetime) from a transcript, read from the end.
+    """(last_request_epoch, cache_lifetime, model) from a transcript, read from the end.
 
     last_request_epoch: timestamp of the newest MAIN-thread assistant row that
     carries usage (isSidechain / agentId rows and <synthetic> rows skipped).
     cache_lifetime: the newest non-unknown _keepwarm_ttl_kind on main-thread rows,
-    so read-only turns after a 1h write still report "1h". Scans at most 16 MB
-    backwards. Returns (None, None) when the file is missing or unreadable.
+    so read-only turns after a 1h write still report "1h". model: the newest
+    main-thread assistant row's message.model (raw id, for the compact-window
+    resolver). Scans at most 16 MB backwards. Returns (None, None, None) when
+    the file is missing or unreadable.
     """
     last_ts = None
     lifetime = None
+    model = None
 
     def _take(raw):
-        nonlocal last_ts, lifetime
+        nonlocal last_ts, lifetime, model
         raw = raw.strip()
         if not raw or b'"assistant"' not in raw:
             return
@@ -46715,6 +47137,10 @@ def _status_bar_transcript_state(path):
         msg = rec.get("message")
         if not isinstance(msg, dict) or msg.get("model") == "<synthetic>":
             return
+        if model is None:
+            m = msg.get("model")
+            if isinstance(m, str) and m:
+                model = m
         usage = msg.get("usage")
         if not isinstance(usage, dict) or not usage:
             return
@@ -46743,13 +47169,13 @@ def _status_bar_transcript_state(path):
                 carry = parts[0]
                 for raw in reversed(parts[1:]):
                     _take(raw)
-                    if last_ts is not None and lifetime is not None:
-                        return last_ts, lifetime
+                    if last_ts is not None and lifetime is not None and model is not None:
+                        return last_ts, lifetime, model
             if pos == 0 and carry:
                 _take(carry)
     except (OSError, TypeError, ValueError):
-        return None, None
-    return last_ts, lifetime
+        return None, None, None
+    return last_ts, lifetime, model
 
 
 def _status_bar_quality_cache_dirs():
@@ -46866,6 +47292,43 @@ def _status_bar_earlier_checkpoint(session_id):
     return {"epoch": epoch, "about": about}
 
 
+_PROMPT_CACHE_SIDECAR_MAX_AGE_S = 600
+
+
+def _status_bar_prompt_cache(session_id):
+    """The session's native prompt_cache object, bridged by statusline.js, or None.
+
+    Claude Code v2.1.251+ hands the status line a `prompt_cache` object
+    (ttl, expires_at, warm, hit_ratio, ...; main conversations only).
+    statusline.js mirrors it to prompt-cache-<sid>.json so this payload can
+    source the cache countdown/cold state from it instead of guessing from
+    the transcript. Stale or malformed files fall back to the transcript.
+    """
+    best = _status_bar_freshest(f"prompt-cache-{session_id}.json")
+    if best is None:
+        return None
+    try:
+        data = json.loads(best.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    try:
+        if time.time() - float(data.get("timestamp", 0)) / 1000 > _PROMPT_CACHE_SIDECAR_MAX_AGE_S:
+            return None
+    except (TypeError, ValueError):
+        return None
+    ttl = data.get("ttl")
+    if ttl not in ("5m", "1h"):
+        ttl = None
+    try:
+        expires_at = int(data["expires_at"]) if data.get("expires_at") is not None else None
+    except (TypeError, ValueError):
+        expires_at = None
+    warm = data.get("warm") if isinstance(data.get("warm"), bool) else None
+    return {"ttl": ttl, "expires_at": expires_at, "warm": warm}
+
+
 def status_bar_payload(session_id, transcript=None, sync=False):
     """Build the status-bar JSON object (see STATUS_BAR_HELP). Never raises."""
     sid = sanitize_session_id(session_id)
@@ -46879,6 +47342,10 @@ def status_bar_payload(session_id, transcript=None, sync=False):
         "refresh_started": False,
         "last_request_epoch": None,
         "cache_lifetime": None,
+        "cache_expires_at": None,
+        "cache_warm": None,
+        "cache_source": None,
+        "compactWindow": {"tokens": None, "source": "unresolved"},
         "last_checkpoint_epoch": None,
         "earlier_checkpoint": None,
         "compactions": None,
@@ -46889,9 +47356,33 @@ def status_bar_payload(session_id, transcript=None, sync=False):
 
     try:
         path = Path(transcript) if transcript else _find_session_jsonl_by_id(sid)
+        session_model = None
         if path is not None:
-            out["last_request_epoch"], out["cache_lifetime"] = _status_bar_transcript_state(path)
+            out["last_request_epoch"], out["cache_lifetime"], session_model = (
+                _status_bar_transcript_state(path))
             out["compactions"] = _status_bar_compactions(path, sid)
+        # The native prompt_cache object (v2.1.251+) is authoritative for the
+        # cache countdown/cold state when statusline.js bridged it recently;
+        # the transcript-derived lifetime stays as the fallback.
+        pc = _status_bar_prompt_cache(sid)
+        if pc is not None:
+            if pc["ttl"]:
+                out["cache_lifetime"] = pc["ttl"]
+            out["cache_expires_at"] = pc["expires_at"]
+            out["cache_warm"] = pc["warm"]
+            out["cache_source"] = "prompt_cache"
+        elif out["cache_lifetime"] is not None:
+            out["cache_source"] = "transcript"
+        # The resolver's compact window for THIS session's model, so the band
+        # can honor /autocompact and autoCompactWindow, not just the env var.
+        # tokens is null when no override is known: the band then uses the
+        # host's own reported number.
+        model = session_model or os.environ.get("CLAUDE_MODEL") or os.environ.get("ANTHROPIC_MODEL")
+        resolved = _resolve_compact_window(model)
+        out["compactWindow"] = {
+            "tokens": resolved["tokens"] if resolved["user_override"] else None,
+            "source": resolved["source"],
+        }
     except Exception:
         pass
     try:
@@ -47007,6 +47498,327 @@ def _status_bar_finite(v):
     if isinstance(v, (list, tuple)):
         return [_status_bar_finite(x) for x in v]
     return v
+
+
+# ---------------------------------------------------------------------------
+# compact-advice: replay the user's own session history against candidate
+# compact windows. Read-only, deterministic, no model calls. Every figure is
+# an ESTIMATE derived from recorded prompt sizes; the output states its
+# assumptions and never presents a window as a recommendation.
+# ---------------------------------------------------------------------------
+
+_ADVICE_CANDIDATE_WINDOWS = (300_000, 400_000, 500_000, 650_000, 800_000)
+# Assumption constants, echoed verbatim in the output so the estimate is
+# auditable: what one compaction produces and what it leaves behind.
+_ADVICE_SUMMARY_OUTPUT_TOKENS = 4_000   # summary the model writes (output-priced)
+_ADVICE_POST_COMPACT_CONTEXT = 30_000   # summary + re-sent prefix after a compact
+_ADVICE_MIN_SESSIONS = 3                # below this, say "history too thin"
+
+
+def _advice_session_turns(path):
+    """(turns, boundaries, model) replay data for a main-conversation transcript.
+
+    turns: per-request context size (input + cache_read + cache_creation) of
+    each main-thread assistant usage row, in transcript order; streamed chunks
+    sharing a requestId collapse to the largest row. boundaries: indexes in
+    `turns` that directly follow a real compact_boundary row. model: the newest
+    model id on a main-thread row, or None.
+    """
+    turns, boundaries, model = [], set(), None
+    prev_req = None
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if '"assistant"' not in line and "compact_boundary" not in line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if not isinstance(rec, dict):
+                    continue
+                if rec.get("type") == "system" and rec.get("subtype") == "compact_boundary":
+                    boundaries.add(len(turns))
+                    continue
+                if (rec.get("type") != "assistant" or rec.get("isSidechain") is True
+                        or rec.get("agentId")):
+                    continue
+                msg = rec.get("message")
+                if not isinstance(msg, dict) or msg.get("model") == "<synthetic>":
+                    continue
+                u = msg.get("usage")
+                if not isinstance(u, dict):
+                    continue
+                ctx = (_safe_int(u.get("input_tokens"))
+                       + _safe_int(u.get("cache_read_input_tokens"))
+                       + _safe_int(u.get("cache_creation_input_tokens")))
+                if ctx <= 0:
+                    continue
+                m = msg.get("model")
+                if isinstance(m, str) and m:
+                    model = m
+                req = rec.get("requestId") or msg.get("id")
+                if req is not None and req == prev_req and turns:
+                    # streamed chunk of the same request: keep the largest usage
+                    turns[-1] = max(turns[-1], ctx)
+                    continue
+                prev_req = req
+                turns.append(ctx)
+    except (OSError, PermissionError):
+        return [], set(), None
+    return turns, boundaries, model
+
+
+def _advice_replay(turns, boundaries, window):
+    """Replay a session against a candidate compact window.
+
+    The simulated context starts from the real first request and grows by each
+    real turn-to-turn delta. When the simulated context reaches `window`, a
+    compaction fires and the context drops to the assumed post-compact size;
+    a real compact_boundary (or any context drop) resyncs the simulation to
+    the recorded value. Returns (simulated_compactions, avoided_tokens), where
+    avoided = prompt tokens the earlier compaction would have shaved off later
+    requests.
+    """
+    sim = 0
+    avoided = 0
+    if not turns:
+        return 0, 0
+    v = turns[0]
+    prev = turns[0]
+    for i in range(1, len(turns)):
+        ctx = turns[i]
+        if i in boundaries or ctx < prev:
+            v = ctx  # a real compaction/reset: recorded truth wins
+        else:
+            v += ctx - prev
+            if v >= window:
+                sim += 1
+                v = _ADVICE_POST_COMPACT_CONTEXT + (ctx - prev)
+        avoided += max(0, ctx - v)
+        prev = ctx
+    return sim, avoided
+
+
+def _advice_quality_by_fill_band():
+    """Average recorded quality score per model-fill band across the quality caches."""
+    sums = {"<50%": [0, 0], "50-70%": [0, 0], "70-80%": [0, 0], "80%+": [0, 0]}
+    seen = set()
+    for d in _status_bar_quality_cache_dirs():
+        try:
+            files = list(d.glob("quality-cache-*.json"))
+        except OSError:
+            continue
+        for f in files:
+            key = str(f)
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                q = json.loads(f.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(q, dict):
+                continue
+            score = q.get("score")
+            cfd = (q.get("breakdown") or {}).get("context_fill_degradation") or {}
+            fill = cfd.get("model_fill_pct")
+            if fill is None:
+                fill = cfd.get("fill_pct")
+            if not isinstance(score, (int, float)) or isinstance(score, bool):
+                continue
+            if not isinstance(fill, (int, float)) or isinstance(fill, bool):
+                continue
+            band = ("<50%" if fill < 50 else "50-70%" if fill < 70
+                    else "70-80%" if fill < 80 else "80%+")
+            sums[band][0] += score
+            sums[band][1] += 1
+    return {
+        band: {"sessions": n, "avg_score": round(total / n, 1) if n else None}
+        for band, (total, n) in sums.items()
+    }
+
+
+def compact_advice(days=30):
+    """Build the compact-advice report dict. Purely read-only; never raises."""
+    out = {
+        "schema": 1,
+        "days": days,
+        "estimate": True,
+        "sessions_scanned": 0,
+        "sessions_replayed": 0,
+        "too_thin": True,
+        "default_window": None,
+        "assumptions": {
+            "post_compact_context_tokens": _ADVICE_POST_COMPACT_CONTEXT,
+            "summary_output_tokens": _ADVICE_SUMMARY_OUTPUT_TOKENS,
+            "avoided_tokens_priced_as": "cache_read of the session's model card",
+            "compaction_cost_priced_as": (
+                "summary_output_tokens x output + post_compact_context_tokens x "
+                "cache_write of the session's model card"),
+            "note": (
+                "Simulated compaction fires when the replayed pre-request "
+                "context reaches the candidate window; a real compact_boundary "
+                "resyncs to the recorded context. Manual early compacts can "
+                "make a larger window show negative extra compactions (a "
+                "credit at the same per-compaction cost)."),
+        },
+        "windows": [],
+        "quality_by_fill_band": {},
+    }
+    try:
+        files = _find_all_jsonl_files(days=days)
+    except Exception:
+        files = []
+    out["sessions_scanned"] = len(files)
+
+    sessions = []
+    model_counts = {}
+    for jf, _mtime, _proj in files:
+        try:
+            turns, boundaries, model = _advice_session_turns(jf)
+        except Exception:
+            continue
+        if len(turns) < 2:
+            continue
+        sessions.append((turns, boundaries, model))
+        if model:
+            model_counts[model] = model_counts.get(model, 0) + 1
+    out["sessions_replayed"] = len(sessions)
+
+    tier_data = PRICING_TIERS.get(_load_pricing_tier(), PRICING_TIERS["anthropic"])
+    modal_model = max(model_counts, key=model_counts.get) if model_counts else None
+    try:
+        default_res = _resolve_compact_window(modal_model)
+        default_tokens = default_res["tokens"]
+        out["default_window"] = {
+            "tokens": default_tokens,
+            "source": default_res["source"],
+            "model": modal_model,
+        }
+    except Exception:
+        default_tokens = _COMPACT_WINDOW_1M_DEFAULT
+
+    candidates = list(_ADVICE_CANDIDATE_WINDOWS)
+    if all(default_tokens != w for w in candidates):
+        candidates.append(default_tokens)
+
+    for w in candidates:
+        sim_total = 0
+        real_total = 0
+        avoided_tokens = 0
+        avoided_usd = 0.0
+        cost_usd = 0.0
+        cost_tokens = 0
+        affected = 0
+        for turns, boundaries, model in sessions:
+            real = len(boundaries)
+            sim, avoided = _advice_replay(turns, boundaries, w)
+            extra = sim - real
+            sim_total += sim
+            real_total += real
+            avoided_tokens += avoided
+            if extra != 0 or avoided > 0:
+                affected += 1
+            rates = _claude_rates_for_model(model, tier_data) or {}
+            read_rate = float(rates.get("cache_read", rates.get("input", 0.0)) or 0.0)
+            write_rate = float(rates.get("cache_write", rates.get("input", 0.0)) or 0.0)
+            out_rate = float(rates.get("output", 0.0) or 0.0)
+            per_compact_tokens = _ADVICE_SUMMARY_OUTPUT_TOKENS + _ADVICE_POST_COMPACT_CONTEXT
+            per_compact_usd = (
+                _ADVICE_SUMMARY_OUTPUT_TOKENS * out_rate
+                + _ADVICE_POST_COMPACT_CONTEXT * write_rate
+            ) / 1e6
+            avoided_usd += avoided * read_rate / 1e6
+            cost_tokens += extra * per_compact_tokens
+            cost_usd += extra * per_compact_usd
+        label = (f"{w // 1000}K" if w != default_tokens
+                 else f"default ({w:,} for {modal_model or 'unknown model'})")
+        out["windows"].append({
+            "window": w,
+            "label": label,
+            "is_default": w == default_tokens,
+            "simulated_compactions": sim_total,
+            "real_compactions": real_total,
+            "extra_compactions": sim_total - real_total,
+            "affected_sessions": affected,
+            "affected_share": (round(affected / len(sessions), 3) if sessions else 0),
+            "cache_read_tokens_avoided": avoided_tokens,
+            "compaction_cost_tokens": cost_tokens,
+            "net_tokens": avoided_tokens - cost_tokens,
+            "net_usd": round(avoided_usd - cost_usd, 4),
+            "estimate": True,
+        })
+
+    out["too_thin"] = (
+        len(sessions) < _ADVICE_MIN_SESSIONS
+        or all(e["simulated_compactions"] == 0 and e["real_compactions"] == 0
+               for e in out["windows"])
+    )
+    try:
+        out["quality_by_fill_band"] = _advice_quality_by_fill_band()
+    except Exception:
+        out["quality_by_fill_band"] = {}
+    return out
+
+
+def _compact_advice_cli(args):
+    """`measure.py compact-advice [--json] [--days N]` — replay history against
+    candidate compact windows. Read-only; prints estimates, never settings."""
+    output_json = "--json" in args
+    days = 30
+    i = 0
+    while i < len(args):
+        if args[i] == "--days" and i + 1 < len(args):
+            try:
+                days = max(1, int(args[i + 1]))
+            except ValueError:
+                pass
+            i += 2
+        else:
+            i += 1
+    report = compact_advice(days=days)
+    if output_json:
+        print(json.dumps(report, indent=2))
+        return
+    print("\nTOKEN OPTIMIZER: COMPACT-WINDOW ADVICE (estimates only)")
+    print("=" * 58)
+    print(f"  Sessions scanned: {report['sessions_scanned']} "
+          f"({report['sessions_replayed']} replayed, last {report['days']} days)")
+    dw = report.get("default_window") or {}
+    if dw.get("tokens"):
+        print(f"  Resolved default: {dw['tokens']:,} ({dw.get('source', '')})")
+    if report["too_thin"]:
+        print("\n  History is too thin to estimate: not enough sessions ever")
+        print("  reached a compaction context in this window. Re-run after more")
+        print("  real sessions (or widen --days).")
+    else:
+        print("\n  Replays of YOUR sessions against candidate compact windows.")
+        print("  Not a recommendation — read the nets, keep the assumptions in mind.\n")
+        print(f"  {'window':<10} {'extra compacts':>15} {'avoided (cache-read)':>21} "
+              f"{'compact cost':>13} {'net tokens':>12} {'net usd':>9} {'sessions':>9}")
+        for e in report["windows"]:
+            print(f"  {e['label']:<10} {e['extra_compactions']:>15} "
+                  f"{e['cache_read_tokens_avoided']:>21,} "
+                  f"{e['compaction_cost_tokens']:>13,} {e['net_tokens']:>12,} "
+                  f"{e['net_usd']:>9.4f} {e['affected_sessions']:>9}")
+        best = max(report["windows"], key=lambda e: e["net_tokens"])
+        if best["net_tokens"] > 0 and not best["is_default"]:
+            print(f"\n  Largest positive replay net: {best['label']} "
+                  f"(+{best['net_tokens']:,} tokens, ~${best['net_usd']:.4f}).")
+            print(f"  If you wanted to try it, the command is: /autocompact {best['window']}")
+        else:
+            print("\n  No candidate window beat the default on net tokens in this replay.")
+        q = report.get("quality_by_fill_band") or {}
+        if any(v.get("sessions") for v in q.values()):
+            print("\n  Average quality score by model-fill band (recorded caches):")
+            for band, v in q.items():
+                if v["sessions"]:
+                    print(f"    {band:<7} avg {v['avg_score']:>5}  ({v['sessions']} sessions)")
+    print("\n  Assumptions:")
+    for k, v in report["assumptions"].items():
+        print(f"    {k}: {v}")
+    print()
 
 
 def _install_date():
@@ -47778,7 +48590,7 @@ _SETTINGS_MACHINE_WRITTEN_KEYS = frozenset({
     "compactInstructions",    # TO: generate_compact_instructions
     "mcpServers",             # TO: _manage_mcp
     "_disabledMcpServers",    # TO: _manage_mcp
-    "env",                    # TO: _auto_remove_bad_env_vars
+    "env",                    # Host: settings env injection; TO historically (removed writer)
     "enabledPlugins",         # Host: /plugin UI
 })
 
@@ -48442,9 +49254,11 @@ def run_ensure_health():
     files, and may spawn a detached verified installer subprocess on
     script-install systems. All side effects are idempotent.
 
-    Task ordering matters: fast, always-safe writes (cleanupPeriodDays,
-    bad env var removal) run first so they are guaranteed to complete
-    even if a later task exhausts the wall-clock budget.
+    Task ordering matters: fast, always-safe writes (cleanupPeriodDays)
+    run first so they are guaranteed to complete even if a later task
+    exhausts the wall-clock budget. (The old "bad env var removal" first
+    task is gone: CLAUDE_AUTOCOMPACT_PCT_OVERRIDE is documented and is
+    never touched here.)
     """
     # Foreign-runtime guardrail, defense-in-depth: every Claude
     # write below is gated on `not _is_codex`, so under OpenCode or Copilot
@@ -48492,13 +49306,10 @@ def run_ensure_health():
                     print("  [Token Optimizer] cleanupPeriodDays was not changed (settings.json locked or refused).", file=sys.stderr)
         except Exception as _e:
             print(f"  [Token Optimizer] cleanupPeriodDays write failed: {_e}", file=sys.stderr)
-    # Silent auto-fix of known harmful settings.
-    # Claude Code only: reads/writes ~/.claude/settings.json.
-    if _is_claude:
-        try:
-            _auto_remove_bad_env_vars()
-        except Exception:
-            pass
+    # CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: documented setting. ensure-health
+    # used to AUTO-DELETE it from settings.json; that path is gone and must
+    # never return. Read-only here: nothing to do at startup. See
+    # _autocompact_pct_override_explanation (doctor) for the explain-only path.
 
     # Capture the pristine structural baseline once on first run. Records the
     # pre-pruning prefix overhead that structural savings are measured against.
@@ -49989,6 +50800,9 @@ if __name__ == "__main__":
     elif args[0] == "status-bar":
         # Desktop status band: one JSON read. See STATUS_BAR_HELP.
         _status_bar_cli(args[1:])
+    elif args[0] == "compact-advice":
+        # Replay session history against candidate compact windows. Read-only.
+        _compact_advice_cli(args[1:])
     elif args[0] == "runway-json":
         # Machine-readable runway snapshot so a non-Python dashboard (the OpenClaw
         # / OpenCode TypeScript surfaces) can render the "Your plan goes further"

@@ -46,6 +46,7 @@ exposes.  Unknown models get a conservative 200 K context window and
 from __future__ import annotations
 
 import logging
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -105,36 +106,55 @@ _UNKNOWN_MODEL = "unknown"
 # Conservative context window used when model is unrecognised.
 _DEFAULT_CONTEXT_WINDOW = 200_000
 
-# Fail-safe window for an unrecognised *modern* Claude (non-haiku) model. Every
-# non-haiku Claude family since the 4.x GA line ships at 1M, so this is the
-# right value AND the safe direction: too large only understates fill, whereas
-# the 200K default cries "100% CRITICAL" wolf on a 1M model.
+# Fail-safe window for an unrecognised *modern* Claude model with no parseable
+# version. Too large only understates fill, whereas the 200K default cries
+# "100% CRITICAL" wolf on a 1M model.
 _LARGE_CONTEXT_WINDOW = 1_000_000
+
+_CLAUDE_FAMILY_RE = re.compile(
+    r"(fable|mythos|opus|sonnet|haiku)(?:[-_.](\d+))?(?:[-_.](\d{1,2}))?(?!\d)")
+
+
+def _claude_context_window(low: str):
+    """Claude window per Claude Code's model-config docs (checked 2026-10-10).
+
+    Fable, Sonnet 5+, Opus 4.7+ and Haiku 5.5 are 1M with no suffix; Sonnet
+    4.6 / Opus 4.6 are 1M only as the ``[1m]`` variant (200K without); every
+    older Claude is 200K. None when ``low`` is not a Claude id.
+    """
+    if not (low.startswith("claude") or re.match(
+            r"^(fable|mythos|opus|sonnet|haiku)(?:[-_.]\d|$)", low)):
+        return None
+    one_m = "[1m]" in low or "1000k" in low
+    ident = re.sub(r"[-@]\d{8}$", "", low.replace("[1m]", ""))
+    if re.search(r"claude[-_]?[0-3]\b", ident) or re.search(
+            r"claude-\d(?:[-.]\d)?-(opus|sonnet|haiku)", ident):
+        return 200_000
+    m = _CLAUDE_FAMILY_RE.search(ident)
+    if not m:
+        return None
+    family, major_raw, minor_raw = m.groups()
+    if family in ("fable", "mythos"):
+        return 1_000_000
+    major = int(major_raw) if major_raw else None
+    minor = int(minor_raw) if minor_raw else 0
+    if family == "haiku":
+        if major is None:
+            return 200_000
+        return 1_000_000 if (major, minor) >= (5, 5) else 200_000
+    if major is None or major >= 5:
+        return 1_000_000
+    if major == 4 and family == "opus" and minor >= 7:
+        return 1_000_000
+    if major == 4 and minor == 6:
+        return 1_000_000 if one_m else 200_000
+    return 200_000
+
 
 # Known Hermes model → approximate context window (tokens).
 # Claude context windows; OpenAI/Gemini models handled via measure.py pricing.
 _MODEL_CONTEXT_WINDOWS: dict[str, int] = {
-    # Claude 4.x/5 non-haiku is 1M GA (since March 2026). Prefix-match below
-    # propagates these to versioned ids (e.g. claude-opus-4-8, sonnet-4-6).
-    # Claude 3.x and all haiku genuinely stay 200K -- do NOT promote them.
-    # The Claude 5 family shares no prefix with any 4.x key, so it needs
-    # explicit entries; the _claude family fallback in _context_window_for_model
-    # is the durable backstop for whatever ships next (opus-6, sonnet-6, ...).
-    "claude-fable-5": 1_000_000,
-    "claude-mythos-5": 1_000_000,
-    "claude-opus-5": 1_000_000,
-    "claude-sonnet-5": 1_000_000,
-    "claude-opus-4-5": 1_000_000,
-    "claude-sonnet-4-5": 1_000_000,
-    "claude-haiku-4-5": 200_000,
-    "claude-haiku-3-5": 200_000,
-    "claude-opus-4": 1_000_000,
-    "claude-sonnet-4": 1_000_000,
-    "claude-haiku-3": 200_000,
-    "claude-3-5-sonnet-20241022": 200_000,
-    "claude-3-5-haiku-20241022": 200_000,
-    "claude-3-opus-20240229": 200_000,
-    "claude-3-haiku-20240307": 200_000,
+    # Claude ids resolve through _claude_context_window() (per-model doc table).
     "gpt-4o": 128_000,
     "gpt-4o-mini": 128_000,
     "gpt-4.1": 1_047_576,
@@ -178,23 +198,16 @@ def _context_window_for_model(model: str) -> int:
     # like their bare form instead of falling through to the default.
     if "/" in low:
         low = low.rsplit("/", 1)[-1]
-    # Direct lookup first.
+    claude = _claude_context_window(low)
+    if claude is not None:
+        return claude
+    # Direct lookup, then prefix match for versioned variants.
     if low in _MODEL_CONTEXT_WINDOWS:
         return _MODEL_CONTEXT_WINDOWS[low]
-    # Prefix match for versioned variants (e.g. claude-sonnet-4-5-20250514).
     for key, window in _MODEL_CONTEXT_WINDOWS.items():
         if low.startswith(key):
             return window
-    # Durable fallback for a Claude family that shares no prefix with any known
-    # key. Modern non-haiku Claude (4.x/5 and whatever comes next) is 1M; only
-    # haiku, and the legacy 2.x/3.x lines, stay at 200K. This stops each new
-    # family from silently regressing to a false-CRITICAL 200K. See
-    # _LARGE_CONTEXT_WINDOW for why failing large is the safe direction.
-    if (
-        low.startswith("claude-")
-        and "haiku" not in low
-        and not low.startswith(("claude-2", "claude-3"))
-    ):
+    if low.startswith("claude-") and not low.startswith(("claude-2", "claude-3")):
         return _LARGE_CONTEXT_WINDOW
     return _DEFAULT_CONTEXT_WINDOW
 

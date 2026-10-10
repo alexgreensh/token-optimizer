@@ -28,11 +28,15 @@ SRC = (SCRIPTS / "measure.py").read_text(encoding="utf-8")
 
 def test_host_value_is_still_preferred():
     """The host wins. This layer observes, it does not overrule."""
-    assert "fill_pct = min(1.0, max(0.0, _used / 100.0))" in SRC
-    assert "host_fill_pct = fill_pct" in SRC
+    # The host's used_percentage is the model-window fill; it is kept verbatim as
+    # model_fill and only RESCALED onto the effective compact window when the
+    # user shrank it (never recomputed from our own token arithmetic).
+    assert "model_fill = min(1.0, max(0.0, _used / 100.0))" in SRC
+    assert "host_fill_pct = model_fill" in SRC
     # Nothing may reassign fill_pct from our own arithmetic after the host set it.
     block = SRC[SRC.index("if host_fill_pct is not None:"):][:1200]
     assert "fill_pct =" not in block, "cross-check must not overrule the host"
+    assert "model_fill =" not in block, "cross-check must not overrule the host"
 
 
 def test_disagreement_records_both_values_and_the_window_source():

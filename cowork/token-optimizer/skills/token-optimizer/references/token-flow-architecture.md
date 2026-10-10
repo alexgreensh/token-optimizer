@@ -279,7 +279,7 @@ Continue until /clear or session end
 | 70-85% | Noticeable cutting corners |
 | 85%+ | Hallucinations, drift, forgetfulness |
 
-**Recommendation**: Manually /compact at 50-70% to stay in peak zone. Auto-compact triggers near ~98% of context (the default), which is past the quality degradation threshold. Token Optimizer auto-removes `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` if found (undocumented env var with inverted semantics that causes premature compaction).
+**Recommendation**: Manually /compact at 50-70% to stay in peak zone. Auto-compact fires at the model's compact window — ~967K on 1M-native models, the model limit on 200K models — tunable via `autoCompactWindow`, `/autocompact`, or `CLAUDE_CODE_AUTO_COMPACT_WINDOW`. That is past the quality degradation threshold either way. `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` is a documented knob (the % of the compact window already used when compaction fires; lower compacts earlier) — Token Optimizer reports it but never removes it.
 
 ---
 

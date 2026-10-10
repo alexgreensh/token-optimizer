@@ -34,7 +34,7 @@ def test_contradiction_is_detected_before_the_clamp():
     assert "window_contradicted = raw_ratio > 1.0" in SRC
     # Order matters: detection must precede the clamp that erases the evidence.
     assert SRC.index("window_contradicted = raw_ratio > 1.0") < SRC.index(
-        "fill_pct = min(1.0, max(0.0, raw_ratio))"
+        "model_fill = min(1.0, max(0.0, raw_ratio))"
     )
 
 

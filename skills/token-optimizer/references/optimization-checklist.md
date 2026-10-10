@@ -352,11 +352,11 @@ These save more than config changes over a full day of usage.
 **Target**: Keep context lean, extend productive session length
 
 **Rules**:
-- [ ] Run `/compact` at 50-70% context (auto-compact default is ~98%, past the quality degradation zone)
+- [ ] Run `/compact` at 50-70% context (auto-compact fires at the model's compact window: ~967K on 1M models, the model limit on 200K models — past the quality degradation zone)
 - [ ] Run `/compact` at natural breakpoints (after commit, after feature)
 - [ ] Run `/clear` between unrelated topics (cheaper than compact, no summary overhead)
 - [ ] Check `/context` periodically to know your fill level
-- [ ] Verify `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` is NOT set (auto-removed by doctor/quick if found)
+- [ ] If `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` is set, confirm it's intentional: it is the % of the compact window already used when compaction fires, so low values compact early (documented; doctor reports it, never removes it)
 
 **Measured**: Community measurements show /compact can reduce conversation history from 77K to 4K tokens (18x reduction), freeing context from ~50% to 90%.
 
@@ -700,7 +700,7 @@ These are settings that affect token usage and context behavior. The optimizer a
 ---
 
 ### 32. CLAUDE_AUTOCOMPACT_PCT_OVERRIDE
-**Auto-removed by Token Optimizer.** This undocumented env var has inverted semantics (value = remaining%, not used%) and silently triggers early compaction. Token Optimizer's doctor and quick commands auto-remove it when detected.
+**Documented env var, reported but never removed by Token Optimizer.** It is the percentage of the compact window already used when auto-compaction fires — a lower value compacts *earlier*, and values ≥100 or invalid values cannot raise the threshold past the resolved window. Doctor explains the setting and warns when a low value would compact very early.
 
 ---
 

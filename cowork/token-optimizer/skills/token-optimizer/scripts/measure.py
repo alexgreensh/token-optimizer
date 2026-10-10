@@ -4462,7 +4462,7 @@ def doctor(as_json=False):
         checks.append(("OK", "SessionEnd hook", "active (plugin hooks.json)"))
         score += 1
     else:
-        checks.append(("!!", "SessionEnd hook", "missing (fix: python3 measure.py setup-hook)"))
+        checks.append(("!!", "SessionEnd hook", _hint("missing (fix: python3 measure.py setup-hook)")))
 
     # Advisory only: do not change proxy/tool-search settings or infer a bill.
     from tool_search_diagnostic import diagnose_tool_search
@@ -4484,7 +4484,7 @@ def doctor(as_json=False):
         missing = [e for e, v in sc_status.items() if not v]
         checks.append(("!!", "Smart Compaction", f"{sc_count}/4 hooks (missing: {', '.join(missing)})"))
     else:
-        checks.append(("!!", "Smart Compaction", "not installed (fix: python3 measure.py setup-smart-compact)"))
+        checks.append(("!!", "Smart Compaction", _hint("not installed (fix: python3 measure.py setup-smart-compact)")))
 
     # 6. Quality bar
     total += 1
@@ -4498,7 +4498,7 @@ def doctor(as_json=False):
             missing.append("status line")
         if not qb["hook"]:
             missing.append("cache hook")
-        checks.append(("!!", "Quality bar", f"missing: {', '.join(missing)} (fix: python3 measure.py setup-quality-bar)"))
+        checks.append(("!!", "Quality bar", _hint(f"missing: {', '.join(missing)} (fix: python3 measure.py setup-quality-bar)")))
 
     # 7. Trends DB
     total += 1
@@ -4521,7 +4521,7 @@ def doctor(as_json=False):
         except Exception:
             checks.append(("!!", "Trends DB", "exists but unreadable"))
     else:
-        checks.append(("!!", "Trends DB", "not found (fix: python3 measure.py collect)"))
+        checks.append(("!!", "Trends DB", _hint("not found (fix: python3 measure.py collect)")))
 
     # 8. Dashboard freshness
     total += 1
@@ -4535,7 +4535,7 @@ def doctor(as_json=False):
         checks.append(("OK", "Dashboard", f"fresh ({age_str})"))
         score += 1
     else:
-        checks.append(("!!", "Dashboard", "not generated (fix: python3 measure.py dashboard)"))
+        checks.append(("!!", "Dashboard", _hint("not generated (fix: python3 measure.py dashboard)")))
 
     # 9. Explain the compaction-percentage override (READ-ONLY).
     # CLAUDE_AUTOCOMPACT_PCT_OVERRIDE is documented; doctor explains what it
@@ -4600,7 +4600,7 @@ def doctor(as_json=False):
             checks.append(("!!", "Dashboard daemon",
                            f"self-heal disabled by a permanent install failure "
                            f"({_mk or 'reason unknown'}) "
-                           "(fix: python3 measure.py setup-daemon)"))
+                           f"(fix: {_measure_cli()} setup-daemon)"))
         elif _daemon_resurrection_blocked() is not None:
             checks.append(("OK", "Dashboard daemon", "disabled by user (opt-out honored)"))
             score += 1
@@ -4611,7 +4611,7 @@ def doctor(as_json=False):
         elif _daemon_service_installed(_normalized_platform()):
             checks.append(("!!", "Dashboard daemon",
                            "installed but not serving "
-                           "(fix: python3 measure.py setup-daemon)"))
+                           f"(fix: {_measure_cli()} setup-daemon)"))
         else:
             checks.append(("OK", "Dashboard daemon",
                            "not installed (self-installs at SessionStart)"))
@@ -4905,7 +4905,7 @@ def drift_check(as_json=False):
         if as_json:
             print(json.dumps({"error": "No snapshots found. Run 'quick' first to create a baseline."}))
         else:
-            print("\n  No snapshots found. Run 'python3 measure.py quick' first to create a baseline.")
+            print(_hint("\n  No snapshots found. Run 'python3 measure.py quick' first to create a baseline."))
         return
 
     snaps = sorted(snap_dir.glob("snap_*.json"), key=lambda f: f.stat().st_mtime)
@@ -4913,7 +4913,7 @@ def drift_check(as_json=False):
         if as_json:
             print(json.dumps({"error": "No snapshots found. Run 'quick' first to create a baseline."}))
         else:
-            print("\n  No snapshots found. Run 'python3 measure.py quick' first to create a baseline.")
+            print(_hint("\n  No snapshots found. Run 'python3 measure.py quick' first to create a baseline."))
         return
 
     # Load most recent snapshot (baseline)
@@ -5315,11 +5315,11 @@ def compare_snapshots():
     after_path = SNAPSHOT_DIR / "snapshot_after.json"
 
     if not before_path.exists():
-        print("\n[Error] No 'before' snapshot found. Run: python3 measure.py snapshot before")
+        print(_hint("\n[Error] No 'before' snapshot found. Run: python3 measure.py snapshot before"))
         return
 
     if not after_path.exists():
-        print("\n[Error] No 'after' snapshot found. Run: python3 measure.py snapshot after")
+        print(_hint("\n[Error] No 'after' snapshot found. Run: python3 measure.py snapshot after"))
         return
 
     try:
@@ -5327,7 +5327,7 @@ def compare_snapshots():
             before = json.load(f)
     except (json.JSONDecodeError, OSError) as e:
         print(f"\n[Error] Cannot read 'before' snapshot: {e}")
-        print("  Re-run: python3 measure.py snapshot before")
+        print(_hint("  Re-run: python3 measure.py snapshot before"))
         return
 
     try:
@@ -5335,7 +5335,7 @@ def compare_snapshots():
             after = json.load(f)
     except (json.JSONDecodeError, OSError) as e:
         print(f"\n[Error] Cannot read 'after' snapshot: {e}")
-        print("  Re-run: python3 measure.py snapshot after")
+        print(_hint("  Re-run: python3 measure.py snapshot after"))
         return
 
     # Warn if 'before' snapshot is stale (>24h old)
@@ -6087,7 +6087,7 @@ def generate_dashboard(coord_path):
     coord = Path(coord_path)
     if not coord.exists():
         print(f"Error: coord-path does not exist: {coord_path}")
-        print("Usage: python3 measure.py dashboard --coord-path /tmp/token-optimizer-XXXXXXXXXX")
+        print(_hint("Usage: python3 measure.py dashboard --coord-path /tmp/token-optimizer-XXXXXXXXXX"))
         sys.exit(1)
 
     # Locate the template
@@ -6326,6 +6326,15 @@ def _measure_cli(*args):
     parts = ["python3", shlex.quote(str(Path(__file__).resolve()))]
     parts.extend(args)
     return " ".join(parts)
+
+
+def _hint(text):
+    """Make a printed hint pasteable from any directory.
+
+    Hints are written as `python3 measure.py <subcommand>`; this swaps that
+    bare prefix for the resolved, quoted script path (`_measure_cli()`).
+    """
+    return text.replace("python3 measure.py", _measure_cli())
 
 
 def _display_path(absolute_path):
@@ -9239,7 +9248,7 @@ def generate_auto_recommendations(components, trends=None, days=30):
             f"**Review {skill_count} skills ({skill_tokens:,} tokens, no usage data)**: "
             f"You have {skill_count} skills but no session data to determine which are unused. "
             f"Each skill costs ~{avg_per_skill} tokens at startup whether you use it or not.\n"
-            f"  Install the SessionEnd hook (`python3 measure.py setup-hook`) to enable usage-based "
+            f"  Install the SessionEnd hook (`{_measure_cli()} setup-hook`) to enable usage-based "
             f"recommendations. Meanwhile, manually review: do you use all {skill_count} regularly?"
             + _skill_slim_clause(avg_per_skill, _runtime) +
             f"  Archiving {est_archive} (harder step, truly-dead skills) would free ~{est_savings:,} tokens/session. "
@@ -9374,7 +9383,7 @@ def generate_auto_recommendations(components, trends=None, days=30):
         quick.append(
             "**Install SessionEnd hook for usage tracking**: "
             "No SessionEnd hook detected. One-time setup, takes 10 seconds. "
-            "Run `python3 measure.py setup-hook`. "
+            f"Run `{_measure_cli()} setup-hook`. "
             "This enables the Trends tab (which skills you actually use, model mix, daily patterns) "
             "and the Health tab (stale sessions, version checks). Without it, you only get data "
             "from manual `measure.py collect` runs. The hook runs automatically after every session "
@@ -9416,7 +9425,7 @@ def generate_auto_recommendations(components, trends=None, days=30):
             f"has multiple install paths: {', '.join(dupe_names[:5])}.\n"
             f"  Claude Code loads skills from EVERY registered install path, so duplicates "
             f"genuinely consume extra context tokens (a Claude Code bug).\n"
-            f"  Fix: `python3 measure.py plugin-cleanup` (or `--dry-run` to preview). "
+            f"  Fix: `{_measure_cli()} plugin-cleanup` (or `--dry-run` to preview). "
             f"Run `--dry-run` first to preview changes. "
             f"~{wasted:,} tokens recoverable."
         )
@@ -9429,7 +9438,7 @@ def generate_auto_recommendations(components, trends=None, days=30):
                 f"Plugin '{node_mod[0]['plugin']}' has an install path inside node_modules. "
                 f"This is likely unintentional and may load skills from dependency internals.\n"
                 f"  Path: {node_mod[0]['path']}\n"
-                f"  Fix: `python3 measure.py plugin-cleanup` removes stale/suspicious paths."
+                f"  Fix: `{_measure_cli()} plugin-cleanup` removes stale/suspicious paths."
             )
         if worktree and not plugin_dupes:
             quick.append(
@@ -9440,7 +9449,7 @@ def generate_auto_recommendations(components, trends=None, days=30):
                 f"  Fix: 1) Remove old manual worktrees: `git worktree list` then `git worktree remove <name>` "
                 f"for unused ones. 2) Use `claude -w` instead of `git worktree add` going forward, "
                 f"the built-in flag avoids the duplication bug. "
-                f"3) `python3 measure.py plugin-cleanup` removes stale cache dirs."
+                f"3) `{_measure_cli()} plugin-cleanup` removes stale cache dirs."
             )
 
     # --- Rule 10: Rules directory overhead ---
@@ -9978,7 +9987,7 @@ def generate_coach_data(focus=None, components=None, trends=None, include_determ
             "name": "No Codex Stop Hook" if is_codex else "No SessionEnd Hook",
             "severity": "low",
             "detail": "Automatic dashboard refresh and continuity checkpoints are not active",
-            "fix": "Run: TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-install --project ." if is_codex else "Run: python3 measure.py setup-hook",
+            "fix": _hint("Run: TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-install --project .") if is_codex else _hint("Run: python3 measure.py setup-hook"),
             "savings": "Enables trends data for better coaching",
         })
         score -= 3
@@ -21260,7 +21269,7 @@ def _coach_cli(args):
     if det:
         print(f"  {_strip_ansi(str(det.get('summary') or deterministic_candidates.summary_line(det)))}")
         if det.get("candidates"):
-            print("    Details: python3 measure.py deterministic-candidates")
+            print(_hint("    Details: python3 measure.py deterministic-candidates"))
         print()
     # Usage recommendations: the daily-measured record carries the content;
     # one line per recommend item, never a scan here.
@@ -23066,7 +23075,7 @@ def _migrate_model_daily(conn, quiet=False):
         if not quiet:
             print("[Token Optimizer] Migrated model_daily for corrected model attribution.")
             print("  New sessions will have correct model mix. For full historical accuracy:")
-            print("  python3 measure.py collect --rebuild")
+            print(_hint("  python3 measure.py collect --rebuild"))
     except sqlite3.Error as e:
         print(f"  [Token Optimizer] model_daily migration failed: {e}", file=sys.stderr)
 
@@ -26601,7 +26610,10 @@ def _classify_posix_claude_process(detail, names, args_by_pid, electron_parent_p
     if exe:
         electron_dir = _posix_dir_is_electron_app(exe)
         if electron_dir is None:
-            return "unknown"
+            # Positive headless evidence (-p, --print, mcp ...) is never
+            # killable either way, so it names the session even when the
+            # executable's directory cannot be inspected (F-T1-14).
+            return "embedded_session" if _posix_is_headless(options) else "unknown"
         if electron_dir:
             return "desktop_app"
     if not names:
@@ -28287,6 +28299,10 @@ def _settings_write_guard(settings_data, allow_removing_keys=None, dest=None):
         the state that produced the original bug.
       * Any top-level key present on disk but absent from the outgoing dict
         must be declared in ``allow_removing_keys``, else REFUSE.
+      * Same one level down inside ``env``: a var present in the on-disk
+        ``env`` map but absent from the outgoing ``env`` map must be
+        declared as ``env.VAR`` (or the whole subtree licensed by
+        declaring ``env``), else REFUSE.
 
     Deliberate removals stay possible: pass ``allow_removing_keys={"statusLine"}``
     (uninstall paths) or a wider set. The opt-in is per-key and explicit, so a
@@ -28297,6 +28313,9 @@ def _settings_write_guard(settings_data, allow_removing_keys=None, dest=None):
     if not isinstance(settings_data, dict):
         return False, f"outgoing settings is {type(settings_data).__name__}, not a dict"
     target = dest if dest is not None else SETTINGS_PATH
+    if os.path.lexists(target) and not _is_regular_file(target):
+        # F-T1-11: never open() a FIFO/socket/device (it can block forever).
+        return False, "settings.json on disk is not a regular file; cannot prove this write is non-destructive"
     try:
         with open(target, "r", encoding="utf-8-sig") as f:
             current = json.load(f)
@@ -28321,6 +28340,23 @@ def _settings_write_guard(settings_data, allow_removing_keys=None, dest=None):
     dropped = sorted(set(current) - set(settings_data) - allowed)
     if dropped:
         return False, "would DROP top-level key(s): " + ", ".join(dropped)
+    # F-T1-13: the same data-loss class one level down. `env` is a flat
+    # string->string map a caller can carry forward while silently dropping
+    # a var inside it (e.g. CLAUDE_AUTOCOMPACT_PCT_OVERRIDE). Diff its keys
+    # too. A deliberate nested removal stays possible by declaring the
+    # dotted name in allow_removing_keys ({"env.MY_VAR"}); declaring the
+    # top-level "env" licenses the whole subtree.
+    if "env" not in allowed:
+        cur_env = current.get("env")
+        out_env = settings_data.get("env")
+        if isinstance(cur_env, dict) and isinstance(out_env, dict):
+            nested = sorted(
+                "env." + key
+                for key in set(cur_env) - set(out_env)
+                if "env." + key not in allowed
+            )
+            if nested:
+                return False, "would DROP env var(s): " + ", ".join(nested)
     return True, "ok"
 
 
@@ -28424,6 +28460,59 @@ def _write_settings_atomic_locked(settings_data, allow_removing_keys=None, _repo
     return True
 
 
+def _merge_concurrent_settings(snapshot, mine, allow_removing_keys=None):
+    """Three-way merge (F-T1-10) of our payload onto what is on disk right now.
+
+    ``snapshot`` is the ``(path, base)`` pair recorded by
+    ``_read_settings_for_write``; ``mine`` is the caller's payload derived from
+    that read. Only the keys the caller actually CHANGED relative to ``base``
+    are applied on top of the fresh file, so a value edit or key removal made
+    by another editor between our read and our write survives. ``env`` is
+    merged per variable for the same reason. Returns the merged dict, or None
+    when there is nothing to merge (no recorded read, the file is unchanged, or
+    the payload drops keys it was not licensed to drop, which the write guard
+    then refuses as before). Caller must hold the settings lease.
+    """
+    if not snapshot or not isinstance(mine, dict):
+        return None
+    snapshot_path, base = snapshot
+    try:
+        current_path = str(SETTINGS_PATH.resolve(strict=False))
+    except (OSError, ValueError):
+        current_path = str(SETTINGS_PATH)
+    if snapshot_path != current_path or not isinstance(base, dict):
+        return None
+    allowed = set(allow_removing_keys or ())
+    if set(base) - set(mine) - allowed:
+        return None
+    fresh, _path, fresh_ok = _read_settings_json_checked()
+    if not fresh_ok or not isinstance(fresh, dict) or not SETTINGS_PATH.exists():
+        return None
+    if fresh == base:
+        return None
+    merged = dict(fresh)
+    for key, value in mine.items():
+        if key in base and base[key] == value:
+            continue
+        base_env, fresh_env = base.get("env"), fresh.get("env")
+        if key == "env" and isinstance(value, dict) and isinstance(base_env, dict) \
+                and isinstance(fresh_env, dict):
+            env = dict(fresh_env)
+            for var, val in value.items():
+                if var not in base_env or base_env[var] != val:
+                    env[var] = val
+            for var in base_env:
+                if var not in value and ("env" in allowed or "env." + var in allowed):
+                    env.pop(var, None)
+            merged["env"] = env
+        else:
+            merged[key] = value
+    for key in allowed:
+        if key not in mine:
+            merged.pop(key, None)
+    return merged
+
+
 def _write_settings_atomic(settings_data, allow_removing_keys=None,
                            user_initiated=False):
     """Write settings.json atomically using tempfile + os.replace().
@@ -28466,7 +28555,10 @@ def _write_settings_atomic(settings_data, allow_removing_keys=None,
             # distinguish "lease denied" from "guard refused".
             _log_settings_lease_denied()
             return False
-        if _write_settings_atomic_locked(settings_data, allow_removing_keys, _report_refusal=False):
+        payload = _merge_concurrent_settings(snapshot, settings_data, allow_removing_keys)
+        if payload is None:
+            payload = settings_data
+        if _write_settings_atomic_locked(payload, allow_removing_keys, _report_refusal=False):
             return True
 
         refusal = getattr(_SETTINGS_WRITE_READ_STATE, "last_refusal", None)
@@ -31625,7 +31717,7 @@ def _install_launchd_daemon(dry_run=False, soft_fail=False, effective_host=None)
             _print_daemon_network_note(effective_host)
             print(f"  It updates automatically after every {runtime_name_for_humans()} session.")
             print("  Starts on login, so the URL always works.\n")
-            print("  To remove: python3 measure.py setup-daemon --uninstall")
+            print(_hint("  To remove: python3 measure.py setup-daemon --uninstall"))
         else:
             print("[Token Optimizer] Server bootstrapped but port not yet reachable.")
             print(f"  Give it 30s, then open: http://localhost:{DAEMON_PORT}/token-optimizer")
@@ -31819,7 +31911,7 @@ def _clear_daemon_install_failed_marker():
             "[Token Optimizer] Warning: could not remove "
             f"{DAEMON_INSTALL_FAILED_BREADCRUMB} -- daemon self-heal stays "
             "DISABLED until this file is removed (delete it manually, then "
-            "re-run: python3 measure.py setup-daemon).",
+            f"re-run: {_measure_cli()} setup-daemon).",
             file=sys.stderr,
         )
     except Exception:
@@ -32767,7 +32859,7 @@ def _install_systemd_user_daemon(dry_run=False, soft_fail=False, effective_host=
             "    - this is a headless SSH session without lingering enabled",
             "    - the user dbus is not running in this shell",
             "  Try: loginctl enable-linger $USER    (may need sudo on some distros)",
-            "  Then re-run: python3 measure.py setup-daemon",
+            _hint("  Then re-run: python3 measure.py setup-daemon"),
             f"  Meanwhile, the dashboard file still works: {DASHBOARD_PATH.as_uri()}",
         )
 
@@ -32863,7 +32955,7 @@ def _install_systemd_user_daemon(dry_run=False, soft_fail=False, effective_host=
             print(f"  It updates automatically after every {runtime_name_for_humans()} session.")
             print("  Starts at login via default.target.\n")
             print("  Survive logout: loginctl enable-linger $USER (may need sudo)")
-            print("  To remove: python3 measure.py setup-daemon --uninstall")
+            print(_hint("  To remove: python3 measure.py setup-daemon --uninstall"))
         else:
             print("[Token Optimizer] Unit enabled but port not yet reachable.")
             print(f"  Give it 30s, then open: http://localhost:{DAEMON_PORT}/token-optimizer")
@@ -35393,10 +35485,26 @@ def compute_quality_score(quality_data, session_id=None):
         for k in _RESOURCE_HEALTH_WEIGHTS
     }
     top_drag = None
-    _worst_key = max(_drag_deficit, key=_drag_deficit.get)
-    _worst_pts = _drag_deficit[_worst_key]
-    if _worst_pts >= 3.0:
-        if _worst_key == "context_fill_degradation":
+    # Fill is intrinsic to any conversation: a deficit under ~10 pts (about 22%
+    # fill) is the cost of having talked at all, not a drag worth naming on an
+    # otherwise healthy session. Compactions and waste keep the 3-point floor.
+    _fill_floor = 10.0
+    _nameable = {
+        k: pts for k, pts in _drag_deficit.items()
+        if pts >= (_fill_floor if k == "context_fill_degradation" else 3.0)
+    }
+    if _nameable:
+        _worst_key = max(_nameable, key=_nameable.get)
+        _worst_pts = _nameable[_worst_key]
+        if _worst_key == "context_fill_degradation" and window_contradicted:
+            # Tokens exceed the window: the window is wrong, the context is not
+            # necessarily full. Say that instead of "100% context fill".
+            top_drag = {
+                "key": "context_window_mismatch",
+                "label": "context window mismatch (tokens exceed the detected window)",
+                "points": round(_worst_pts, 1),
+            }
+        elif _worst_key == "context_fill_degradation":
             top_drag = {
                 "key": "context_fill",
                 "label": f"{round(fill_pct * 100)}% context fill",
@@ -35672,6 +35780,38 @@ def _find_session_jsonl_by_id(session_id):
         if candidate.exists():
             return candidate
     return None
+
+
+def _session_id_prefix_matches(prefix):
+    """``<id>.jsonl`` transcripts whose session id starts with ``prefix``.
+
+    F-T2-10: ``status-bar --session`` takes a pasted, possibly truncated id
+    (our own listings print ``s[:8]``). A short id sanitizes to "unknown"
+    and a longer prefix finds no exact file; both used to degrade silently.
+    This collects every candidate so the caller can resolve a UNIQUE prefix
+    and say why when the match is zero or ambiguous. ``prefix`` must already
+    be reduced to the session-id charset (no glob metacharacters can sneak
+    in). Never raises; returns [] for runtimes without a projects tree.
+    """
+    if not prefix:
+        return []
+    if (_use_codex_session_adapter() or _use_hermes_session_adapter()
+            or _use_antigravity_session_adapter()):
+        return []
+    projects_base = CLAUDE_DIR / "projects"
+    if not projects_base.is_dir():
+        return []
+    out = []
+    try:
+        for project_dir in projects_base.iterdir():
+            if not project_dir.is_dir():
+                continue
+            for p in project_dir.glob(prefix + "*.jsonl"):
+                if p.is_file():
+                    out.append(p)
+    except OSError:
+        return []
+    return out
 
 
 def quality_analyzer(session_id=None, as_json=False):
@@ -37380,7 +37520,7 @@ def attention_optimize(filepath=None, dry_run=True, apply=False):
         print(f"  Before: {before_score}/100 attention score")
         print(f"  After:  {after_score}/100 attention score (estimated)")
         print()
-        print(f"  To apply: python3 measure.py attention-optimize {display_name} --apply")
+        print(_hint(f"  To apply: python3 measure.py attention-optimize {display_name} --apply"))
         print()
         return {"before_score": before_score, "after_score": after_score, "moves": moves}
 
@@ -38113,7 +38253,7 @@ def _purge_all_data(confirm=False, force=False):
             f"Purge complete. {deleted} director{'y' if deleted == 1 else 'ies'} removed"
             f" ({_fmt_size(total_bytes)})."
         )
-        print("Tip: Run 'python3 measure.py cleanup-duplicate-hooks' if you are uninstalling.")
+        print(_hint("Tip: Run 'python3 measure.py cleanup-duplicate-hooks' if you are uninstalling."))
     else:
         print(
             f"Purge finished with {errors} error(s)."
@@ -41757,7 +41897,7 @@ def generate_compact_instructions(as_json=False, install=False, dry_run=False):
     print(f"  {instructions_text}")
     print()
     print("  To activate automatically:")
-    print("    python3 measure.py compact-instructions --install")
+    print(_hint("    python3 measure.py compact-instructions --install"))
     print()
     print("  Or manually add to .claude/settings.json:")
     print('    {"compactInstructions": "<paste above>"}')
@@ -42357,6 +42497,14 @@ def _read_settings_json():
     return data, path
 
 
+def _is_regular_file(path) -> bool:
+    """True when ``path`` (symlinks followed) is a regular file. Never opens it."""
+    try:
+        return stat.S_ISREG(os.stat(path).st_mode)
+    except (OSError, ValueError):
+        return False
+
+
 def _read_settings_json_checked():
     """Read settings.json, return (data, path, ok).
 
@@ -42369,6 +42517,11 @@ def _read_settings_json_checked():
     round-tripping an unknown-state ``{}`` destroys every key the user has.
     """
     if SETTINGS_PATH.exists():
+        # F-T1-11: open() on a FIFO blocks until a writer appears, which would
+        # stall a SessionStart hook to its deadline. Anything that is not a
+        # regular file (FIFO, socket, device, directory) is "unknown", not data.
+        if not _is_regular_file(SETTINGS_PATH):
+            return {}, SETTINGS_PATH, False
         try:
             # utf-8-sig tolerates a BOM (F-T1-8; whether the host tolerates
             # one is not verified, but a BOM-prefixed file must at least be
@@ -42520,7 +42673,7 @@ def setup_smart_compact(dry_run=False, uninstall=False, status_only=False):
         else:
             missing = [e for e, v in current_status.items() if not v]
             print(f"\n  Missing: {', '.join(missing)}")
-            print("  Run: python3 measure.py setup-smart-compact")
+            print(_hint("  Run: python3 measure.py setup-smart-compact"))
         print()
         return
 
@@ -42667,7 +42820,7 @@ def setup_smart_compact(dry_run=False, uninstall=False, status_only=False):
     print("    Stop hook:            Saves checkpoint when session ends normally")
     print("    SessionEnd hook:      Saves checkpoint on /clear or termination")
     print(f"\n  Checkpoints stored in: {CHECKPOINT_DIR}")
-    print("  To remove: python3 measure.py setup-smart-compact --uninstall")
+    print(_hint("  To remove: python3 measure.py setup-smart-compact --uninstall"))
 
 
 # same unified base as CHECKPOINT_DIR/SNAPSHOT_DIR. RUNTIME_DIR on desktop
@@ -45643,7 +45796,7 @@ def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=F
             if not current["hook"]:
                 missing.append("cache hook")
             print(f"\n  Missing: {', '.join(missing)}")
-            print("  Run: python3 measure.py setup-quality-bar")
+            print(_hint("  Run: python3 measure.py setup-quality-bar"))
         print()
         return
 
@@ -45695,7 +45848,7 @@ def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=F
         _set_quality_bar_disabled(True)
         print(f"[Token Optimizer] Quality bar removed. {removed} component(s) removed.")
         print("  Opt-out is sticky: SessionStart will not auto-restore.")
-        print("  To re-enable later, run: python3 measure.py setup-quality-bar")
+        print(_hint("  To re-enable later, run: python3 measure.py setup-quality-bar"))
         return
 
     # Install
@@ -45806,7 +45959,7 @@ def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=F
         print("    Status line:  model | effort | project ████ 43% | ContextQ:74")
         print("    Quality updates every ~2 minutes during active sessions")
         print("    Colors: green (85%+), dim (70-84%), yellow (50-69%), red (<50%)")
-        print("\n  To remove: python3 measure.py setup-quality-bar --uninstall")
+        print(_hint("\n  To remove: python3 measure.py setup-quality-bar --uninstall"))
 
     if warnings:
         print()
@@ -51201,6 +51354,27 @@ def _status_bar_prompt_cache(session_id):
 def status_bar_payload(session_id, transcript=None, sync=False):
     """Build the status-bar JSON object (see STATUS_BAR_HELP). Never raises."""
     sid = sanitize_session_id(session_id)
+    session_note = None
+    # F-T2-10: --session may carry a pasted truncated id. A <6-char id
+    # sanitizes to "unknown"; a longer prefix finds no exact transcript.
+    # Resolve a UNIQUE prefix to the real session; when it matches zero or
+    # many, say so in savings_reason instead of degrading silently.
+    prefix = re.sub(r"[^a-zA-Z0-9_-]", "", str(session_id or ""))
+    try:
+        path = Path(transcript) if transcript else (
+            _find_session_jsonl_by_id(sid) if sid != "unknown" else None)
+    except Exception:
+        path = None
+    if path is None and prefix:
+        matches = _session_id_prefix_matches(prefix)
+        if len(matches) == 1:
+            path = matches[0]
+            sid = matches[0].stem
+        elif len(matches) > 1:
+            session_note = ("session id prefix '%s' is ambiguous "
+                            "(%d sessions match)" % (prefix, len(matches)))
+        elif sid == "unknown":
+            session_note = "no session id matches '%s'" % prefix
     out = {
         "schema": _STATUS_BAR_SCHEMA,
         "session_id": sid,
@@ -51219,12 +51393,11 @@ def status_bar_payload(session_id, transcript=None, sync=False):
         "earlier_checkpoint": None,
         "compactions": None,
     }
-    if sid == "unknown":
-        out["savings_reason"] = "no session id"
+    if sid == "unknown" or session_note:
+        out["savings_reason"] = session_note or "no session id"
         return out
 
     try:
-        path = Path(transcript) if transcript else _find_session_jsonl_by_id(sid)
         session_model = None
         if path is not None:
             out["last_request_epoch"], out["cache_lifetime"], session_model = (
@@ -53795,7 +53968,7 @@ def run_ensure_health():
             print(json.dumps({"systemMessage":
                 "  [Token Optimizer] Dashboard daemon self-heal disabled: "
                 f"install failed permanently ({_mk_reason or 'reason unknown'}). "
-                "Retry: python3 measure.py setup-daemon"}))
+                f"Retry: {_measure_cli()} setup-daemon"}))
     except Exception as _e:
         print(f"  [Token Optimizer] dashboard daemon self-heal failed: {_e}", file=sys.stderr)
 
@@ -54823,7 +54996,7 @@ if __name__ == "__main__":
                 print(f"  Hook config: {result['hook_file']}")
                 print(f"  Modules: {len(result['copied'])} copied"
                       + (f", {len(result['skipped'])} missing: {result['skipped']}" if result["skipped"] else ""))
-                print("  Run `python3 measure.py copilot-doctor` to verify readiness.")
+                print(_hint("  Run `python3 measure.py copilot-doctor` to verify readiness."))
                 sys.exit(0)
             except RuntimeError as exc:
                 print(f"[Token Optimizer] {exc}", file=sys.stderr)

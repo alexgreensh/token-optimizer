@@ -390,8 +390,28 @@ class LeaseLock:
                 return False
             if not validate_claim(claim):
                 return False
-            os.unlink(self.path)
-            return True
+            # Rename to a unique name instead of unlinking the pathname: a
+            # successor linked after the check above would be moved, not
+            # deleted, and is put back below.
+            victim = self.path.with_name(
+                f".{self.path.name}.stale-{secrets.token_hex(8)}"
+            )
+            os.rename(str(self.path), str(victim))
+            try:
+                ours = os.path.samestat(os.stat(victim), claimed)
+            except OSError:
+                ours = False
+            try:
+                if not ours:
+                    os.link(str(victim), str(self.path))
+            except OSError:
+                pass
+            finally:
+                try:
+                    victim.unlink()
+                except OSError:
+                    pass
+            return ours
         except OSError:
             return False
         finally:

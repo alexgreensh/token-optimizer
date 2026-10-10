@@ -117,7 +117,7 @@ TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=1   # always on: the only automatic write, wit
 
 ## Risk rating
 
-Low. The feature writes nothing by default: it recommends, with your own numbers and the exact command, and only an explicit `subagent-cache enable` or the `TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=1` opt-in changes a settings key. Every override path (user value, env, managed/project/local files) takes precedence over any write. The undo is exact: it only removes what Token Optimizer set, and under the opt-in the tripwire reverts if the economics go negative. Failures fail closed: unknown-state or frozen settings are never written.
+Low. The feature writes nothing by default: it recommends, with your own numbers and the exact command, and only an explicit `subagent-cache enable` or the `TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=1` opt-in changes a settings key. Every override path (user value, env, managed/project/local files) takes precedence over any write. The undo is exact: it only removes what Token Optimizer set, and under the opt-in the tripwire reverts if the economics go negative. Failures fail closed: unknown-state or frozen settings are never written. If another program saves `settings.json` while Token Optimizer is writing it, the write is merged again onto that save (up to twice), which narrows the window for a lost edit to a few milliseconds. It cannot close it, because a program that ignores Token Optimizer's lock is not stopped.
 
 ## Related environment variables
 

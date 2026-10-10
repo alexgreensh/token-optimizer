@@ -305,7 +305,8 @@ def _quality_cache_self_heal(measure) -> None:
         _qb_cfg = {}
     if _qb_cfg.get("quality_bar_disabled"):
         return
-    if not measure.SETTINGS_PATH.exists():
+    # a FIFO at settings.json would block read_text() on the per-turn hot path
+    if not measure._is_regular_file(measure.SETTINGS_PATH):
         return
     try:
         _sh_hooks = json.loads(measure.SETTINGS_PATH.read_text(encoding="utf-8"))

@@ -1971,6 +1971,12 @@ def _mcp_read_json(path, skipped=None):
             return None
     except OSError:
         return None
+    # open() on a FIFO blocks until a writer shows up, and this runs on the
+    # SessionStart path. A directory, socket or device is not a config either.
+    if not _is_regular_file(path):
+        if skipped is not None:
+            skipped.append({"path": str(path), "reason": "NotRegularFile"})
+        return None
     try:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -2369,7 +2375,7 @@ def _scan_plugin_skills_and_commands():
     # Load enabledPlugins from settings.json to filter out disabled plugins
     enabled_plugins = None
     settings_path = CLAUDE_DIR / "settings.json"
-    if settings_path.exists():
+    if _is_regular_file(settings_path):
         try:
             with open(settings_path, "r", encoding="utf-8") as f:
                 settings = json.load(f)
@@ -2766,7 +2772,7 @@ def measure_components():
     # Read settings.json once (used for hooks, env vars, MCP, file exclusion)
     settings_path = CLAUDE_DIR / "settings.json"
     _cached_settings = None
-    if settings_path.exists():
+    if _is_regular_file(settings_path):
         try:
             with open(settings_path, "r", encoding="utf-8") as f:
                 _cached_settings = json.load(f)
@@ -2777,7 +2783,7 @@ def measure_components():
     global_deny_rules = _extract_deny_read_rules(_cached_settings)
     project_settings_path = cwd / ".claude" / "settings.json"
     _project_settings = None
-    if project_settings_path.exists():
+    if _is_regular_file(project_settings_path):
         try:
             with open(project_settings_path, "r", encoding="utf-8") as f:
                 _project_settings = json.load(f)
@@ -3410,6 +3416,8 @@ def _configured_model_string():
             return v
     for cfg_name in ("config.json", "settings.json"):
         try:
+            if not _is_regular_file(CLAUDE_DIR / cfg_name):
+                continue
             with open(CLAUDE_DIR / cfg_name, "r", encoding="utf-8") as f:
                 cfg = json.load(f)
             m = cfg.get("model") or cfg.get("primaryModel") or ""
@@ -3950,7 +3958,7 @@ def detect_context_window():
     # Check config files for model preference
     for cfg_name in ("config.json", "settings.json"):
         cfg_path = CLAUDE_DIR / cfg_name
-        if cfg_path.exists():
+        if _is_regular_file(cfg_path):
             try:
                 with open(cfg_path, "r", encoding="utf-8") as f:
                     cfg = json.load(f)
@@ -7449,7 +7457,7 @@ def plugin_cleanup(dry_run=False, quiet=False):
 
             # Load enabledPlugins to only check active plugins
             enabled = None
-            if SETTINGS_PATH.exists():
+            if _is_regular_file(SETTINGS_PATH):
                 try:
                     settings = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
                     enabled = settings.get("enabledPlugins")
@@ -15233,7 +15241,8 @@ def _keepwarm_json_says_api(path):
     """
     try:
         path = Path(path)
-        if not path.exists():
+        # A FIFO would block read_text() forever; only a regular file is a config.
+        if not _is_regular_file(path):
             return None
         cfg = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, ValueError):
@@ -19553,6 +19562,9 @@ def _subagent_cache_external_key_holder():
         try:
             if not src.exists():
                 continue
+            if not _is_regular_file(src):
+                # a FIFO would block read_text(); unknown means "do not write"
+                return {"path": str(src), "unreadable": True}
             data = json.loads(src.read_text(encoding="utf-8-sig"))
         except (json.JSONDecodeError, PermissionError, OSError, ValueError):
             return {"path": str(src), "unreadable": True}
@@ -19597,7 +19609,7 @@ def _subagent_cache_undo(data, now, why, user_initiated=False):
     if not _write_settings_atomic(payload, allow_removing_keys={_SUBAGENT_CACHE_KEY},
                                   user_initiated=user_initiated):
         return {"state": "write-refused", "changed": False,
-                "reason": "settings.json locked or guard refused the write",
+                "reason": _settings_write_refusal_reason(),
                 "notice": None}
     _subagent_cache_write_marker({
         "state": why,
@@ -19672,6 +19684,49 @@ def _subagent_cache_verdict_for(now, since_ts=None):
     return "fresh", rec
 
 
+def _reclaim_stale_lock_file(lock, stale_seconds, now):
+    """Free an abandoned O_EXCL lock without ever deleting a live successor.
+
+    Returns True when the pathname is free (stale lock removed, or already
+    gone) so the caller retries the create, False when the lock is live or
+    cannot be moved. A bare ``unlink`` after an age check can delete the lock a
+    faster process just re-created, and then two processes both think they hold
+    it. So the stale file is renamed to a unique name first (atomic: it takes
+    whatever sits at the path at that instant), identity-checked against what
+    the age check saw, and only then unlinked. If the rename grabbed a live
+    successor instead, it is linked back (no-replace) and left alone.
+    """
+    try:
+        seen = lock.stat()
+    except OSError:
+        return True
+    if float(now) - seen.st_mtime < stale_seconds:
+        return False
+    victim = lock.with_name(f"{lock.name}.stale-{os.urandom(6).hex()}")
+    try:
+        os.rename(str(lock), str(victim))
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    try:
+        moved = os.stat(str(victim))
+        ours = (os.path.samestat(seen, moved)
+                and moved.st_mtime_ns == seen.st_mtime_ns)
+    except OSError:
+        ours = False
+    if not ours:
+        try:
+            os.link(str(victim), str(lock))
+        except OSError:
+            pass
+    try:
+        os.unlink(str(victim))
+    except OSError:
+        pass
+    return bool(ours)
+
+
 def _subagent_cache_scan_acquire_lock(now=None):
     """Take the scan lock (O_EXCL); its owner token, or None when it is held.
 
@@ -19687,15 +19742,8 @@ def _subagent_cache_scan_acquire_lock(now=None):
             try:
                 fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
             except FileExistsError:
-                try:
-                    age = float(now) - lock.stat().st_mtime
-                except OSError:
-                    continue
-                if age < _SUBAGENT_CACHE_SCAN_LOCK_STALE:
-                    return None
-                try:
-                    lock.unlink()
-                except OSError:
+                if not _reclaim_stale_lock_file(
+                        lock, _SUBAGENT_CACHE_SCAN_LOCK_STALE, now):
                     return None
                 continue
             try:
@@ -20018,7 +20066,7 @@ def subagent_cache_enable(now=None, automatic=True):
     payload[_SUBAGENT_CACHE_KEY] = "1h"
     if not _write_settings_atomic(payload, user_initiated=not automatic):
         return {"state": "write-refused", "changed": False,
-                "reason": "settings.json locked or guard refused the write",
+                "reason": _settings_write_refusal_reason(),
                 "notice": None}
     _subagent_cache_write_marker({
         "state": "set",
@@ -20777,15 +20825,7 @@ def _recs_lock_acquire(now=None):
                 fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY,
                              0o600)
             except FileExistsError:
-                try:
-                    age = float(now) - lock.stat().st_mtime
-                except OSError:
-                    continue
-                if age < _RECS_LOCK_STALE:
-                    return None
-                try:
-                    lock.unlink()
-                except OSError:
+                if not _reclaim_stale_lock_file(lock, _RECS_LOCK_STALE, now):
                     return None
                 continue
             try:
@@ -28426,7 +28466,7 @@ def _is_hook_installed(settings=None):
     """
     # Check user settings.json
     if settings is None:
-        if SETTINGS_PATH.exists():
+        if _is_regular_file(SETTINGS_PATH):
             try:
                 with open(SETTINGS_PATH, "r", encoding="utf-8-sig") as f:
                     settings = json.load(f)
@@ -28496,7 +28536,7 @@ def _is_hook_current(settings=None):
     that returns False.
     """
     if settings is None:
-        if not SETTINGS_PATH.exists():
+        if not _is_regular_file(SETTINGS_PATH):
             return False
         try:
             with open(SETTINGS_PATH, "r", encoding="utf-8-sig") as f:
@@ -28675,7 +28715,63 @@ def _log_settings_lease_denied():
         pass
 
 
-def _write_settings_atomic_locked(settings_data, allow_removing_keys=None, _report_refusal=True):
+# Why a write was held back because settings.json changed under it.
+_SETTINGS_CHANGED_REFUSAL = (
+    "settings.json changed while Token Optimizer was writing it (another "
+    "program saved it twice in a row); nothing was written, your latest edit is kept"
+)
+_SETTINGS_WRITE_TRIES = 2
+
+
+def _settings_file_identity(path=None):
+    """(st_mtime_ns, st_size, st_ino) of the settings file, ``("absent",)`` when unreadable.
+
+    A cheap fingerprint taken at the merge read and compared right before
+    ``os.replace``. It narrows the window in which an unlocked external editor
+    can be overwritten to the gap between that last stat and the replace, a
+    few milliseconds. It does not close the window: nothing stops an editor
+    that ignores our lease.
+    """
+    try:
+        st = os.stat(path if path is not None else SETTINGS_PATH)
+    except (OSError, ValueError):
+        return ("absent",)
+    return (st.st_mtime_ns, st.st_size, st.st_ino)
+
+
+def _settings_write_refusal_reason():
+    """Why the last ``_write_settings_atomic`` on this thread returned False."""
+    return (getattr(_SETTINGS_WRITE_READ_STATE, "last_refusal", None)
+            or "settings.json locked or guard refused the write")
+
+
+def _existing_line_ending(path):
+    """"\r\n" when the file at ``path`` is mostly CRLF, else "\n".
+
+    A new file, an unreadable one, or one with no line break gets "\n". A mixed
+    file follows whichever ending it has more of.
+    """
+    try:
+        with open(path, "rb") as f:
+            raw = f.read(1_048_576)
+    except OSError:
+        return "\n"
+    crlf = raw.count(b"\r\n")
+    return "\r\n" if crlf > raw.count(b"\n") - crlf else "\n"
+
+
+def _note_settings_os_error(exc):
+    """Record an OSError from the temp write / replace as the refusal reason."""
+    hint = ("; another program may have it open"
+            if isinstance(exc, PermissionError) else "")
+    _SETTINGS_WRITE_READ_STATE.last_refusal = (
+        f"could not write settings.json ({exc.__class__.__name__}: {exc}){hint}"
+    )
+    _SETTINGS_WRITE_READ_STATE.os_error = True
+
+
+def _write_settings_atomic_locked(settings_data, allow_removing_keys=None, _report_refusal=True,
+                                  expect_identity=None):
     """Atomic settings.json write assuming the settings lease is ALREADY held.
 
     This is the lock-free body of ``_write_settings_atomic``, extracted so
@@ -28689,7 +28785,14 @@ def _write_settings_atomic_locked(settings_data, allow_removing_keys=None, _repo
     no serialization of its own. Same tempfile + os.replace + mode/symlink
     semantics as ``_write_settings_atomic`` (see the checked-read fix). Returns True iff the
     write landed.
+
+    ``expect_identity`` is the ``_settings_file_identity`` taken when the
+    payload was merged. When given and the file no longer matches right before
+    ``os.replace``, nothing is replaced and ``identity_changed`` is set on the
+    thread state so the caller can re-merge.
     """
+    _SETTINGS_WRITE_READ_STATE.identity_changed = False
+    _SETTINGS_WRITE_READ_STATE.os_error = False
     # Write THROUGH a symlink and preserve the mode.
     # os.replace onto the link path detaches it, turning a dotfiles-managed
     # symlink into a regular file (the user's repo silently stops tracking
@@ -28714,22 +28817,50 @@ def _write_settings_atomic_locked(settings_data, allow_removing_keys=None, _repo
         dest_mode = stat.S_IMODE(os.stat(dest).st_mode)
     except OSError:
         dest_mode = None
-    tmp_fd, tmp_path = tempfile.mkstemp(
-        dir=str(dest.parent),
-        prefix=".settings-",
-        suffix=".json",
-    )
     try:
-        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-            json.dump(settings_data, f, indent=2, ensure_ascii=False)
-            f.write("\n")
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            dir=str(dest.parent),
+            prefix=".settings-",
+            suffix=".json",
+        )
+    except OSError as exc:
+        _note_settings_os_error(exc)
+        return False
+    try:
+        # newline="" switches off text-mode translation (Windows would turn
+        # every "\n" into "\r\n"); the ending is the file's own, set below.
+        eol = _existing_line_ending(dest)
+        with os.fdopen(tmp_fd, "w", encoding="utf-8", newline="") as f:
+            f.write(json.dumps(settings_data, indent=2, ensure_ascii=False)
+                    .replace("\n", eol) + eol)
+        if dest_mode is None:
+            # Created from nothing: mkstemp gave 0600, but a fresh settings.json
+            # should follow the umask like any file the user's tools create.
+            # (os.umask can only be read by setting it; restored at once.)
+            if os.name != "nt":
+                try:
+                    _umask = os.umask(0)
+                    os.umask(_umask)
+                    dest_mode = 0o666 & ~_umask
+                except OSError:
+                    dest_mode = None
         if dest_mode is not None:
             try:
                 os.chmod(tmp_path, dest_mode)
             except OSError:
                 pass
+        if expect_identity is not None and _settings_file_identity(dest) != expect_identity:
+            _SETTINGS_WRITE_READ_STATE.identity_changed = True
+            return False
         os.replace(tmp_path, str(dest))
         tmp_path = None  # successfully replaced; do not unlink the destination
+    except OSError as exc:
+        # Windows refuses the replace while another program holds the file open
+        # (a sharing violation); a full disk fails the temp write. Both are a
+        # refused write with a real reason, never a traceback. The finally
+        # below removes the temp file.
+        _note_settings_os_error(exc)
+        return False
     finally:
         if tmp_path is not None:
             try:
@@ -28746,8 +28877,10 @@ def _merge_concurrent_settings(snapshot, mine, allow_removing_keys=None):
     ``_read_settings_for_write``; ``mine`` is the caller's payload derived from
     that read. Only the keys the caller actually CHANGED relative to ``base``
     are applied on top of the fresh file, so a value edit or key removal made
-    by another editor between our read and our write survives. ``env`` is
-    merged per variable for the same reason. Returns the merged dict, or None
+    by another editor between our read and our write is kept, as long as it
+    landed before ``_write_settings_atomic`` fingerprinted the file (an edit
+    after that is caught by the identity check before the replace and merged on
+    a second try). ``env`` is merged per variable for the same reason. Returns the merged dict, or None
     when there is nothing to merge (no recorded read, the file is unchanged, or
     the payload drops keys it was not licensed to drop, which the write guard
     then refuses as before). Caller must hold the settings lease.
@@ -28812,6 +28945,12 @@ def _write_settings_atomic(settings_data, allow_removing_keys=None,
     unlinking the already-renamed destination. Any exception encountered
     during the write propagates naturally after cleanup.
 
+    A concurrent edit by a program that ignores our lease is handled on a best
+    effort basis: the merge keeps what it saved before our read, and a
+    size/mtime/inode check right before ``os.replace`` re-merges once if it
+    saved in between. That narrows the window to milliseconds; it cannot
+    close it, because an unlocked writer is not stopped.
+
     Returns True iff the write actually landed, False when the advisory lease
     was denied and nothing was written. Callers that report
     success to the user MUST check this -- a lease miss is logged to
@@ -28827,6 +28966,8 @@ def _write_settings_atomic(settings_data, allow_removing_keys=None,
     """
     snapshot = getattr(_SETTINGS_WRITE_READ_STATE, "snapshot", None)
     _SETTINGS_WRITE_READ_STATE.snapshot = None
+    # A reason left by an earlier write must not explain this one.
+    _SETTINGS_WRITE_READ_STATE.last_refusal = None
     with _settings_lock(user_initiated=user_initiated) as acquired:
         if not acquired:
             # Lease denial was completely silent (write-return audit 2026-08-29).
@@ -28834,11 +28975,32 @@ def _write_settings_atomic(settings_data, allow_removing_keys=None,
             # distinguish "lease denied" from "guard refused".
             _log_settings_lease_denied()
             return False
-        payload = _merge_concurrent_settings(snapshot, settings_data, allow_removing_keys)
-        if payload is None:
-            payload = settings_data
-        if _write_settings_atomic_locked(payload, allow_removing_keys, _report_refusal=False):
-            return True
+        # Fingerprint the file before the merge reads it, then re-check right
+        # before os.replace. If another program saved in between, re-merge onto
+        # what it saved (two tries), so its edit is not written over. This
+        # narrows the window to the stat-to-replace gap (milliseconds); an
+        # editor that ignores our lease can still win inside that gap.
+        for _attempt in range(_SETTINGS_WRITE_TRIES):
+            identity = _settings_file_identity() if snapshot else None
+            payload = _merge_concurrent_settings(snapshot, settings_data, allow_removing_keys)
+            if payload is None:
+                payload = settings_data
+            if _write_settings_atomic_locked(payload, allow_removing_keys,
+                                             _report_refusal=False,
+                                             expect_identity=identity):
+                return True
+            if not getattr(_SETTINGS_WRITE_READ_STATE, "identity_changed", False):
+                break
+        else:
+            _SETTINGS_WRITE_READ_STATE.last_refusal = _SETTINGS_CHANGED_REFUSAL
+            _report_settings_write_refusal(_SETTINGS_CHANGED_REFUSAL)
+            return False
+
+        if getattr(_SETTINGS_WRITE_READ_STATE, "os_error", False):
+            # The OS refused the temp write or the replace; a re-merge cannot
+            # help and the guard did not refuse, so say nothing more. The
+            # reason is in last_refusal for the caller to report.
+            return False
 
         refusal = getattr(_SETTINGS_WRITE_READ_STATE, "last_refusal", None)
 
@@ -28866,6 +29028,7 @@ def _write_settings_atomic(settings_data, allow_removing_keys=None,
         if removed - allowed:
             return refuse()
 
+        identity = _settings_file_identity()
         fresh, fresh_ok = _read_settings_for_write()
         if not fresh_ok or not isinstance(fresh, dict):
             return refuse()
@@ -28879,7 +29042,12 @@ def _write_settings_atomic(settings_data, allow_removing_keys=None,
         for key in allowed:
             if key not in settings_data:
                 merged.pop(key, None)
-        return _write_settings_atomic_locked(merged, allow_removing_keys)
+        if _write_settings_atomic_locked(merged, allow_removing_keys, expect_identity=identity):
+            return True
+        if getattr(_SETTINGS_WRITE_READ_STATE, "identity_changed", False):
+            _SETTINGS_WRITE_READ_STATE.last_refusal = _SETTINGS_CHANGED_REFUSAL
+            _report_settings_write_refusal(_SETTINGS_CHANGED_REFUSAL)
+        return False
 
 
 # CLAUDE_AUTOCOMPACT_PCT_OVERRIDE is a DOCUMENTED setting (verified
@@ -29356,6 +29524,10 @@ def setup_hook(dry_run=False, uninstall=False):
     # Load existing settings
     settings = {}
     if SETTINGS_PATH.exists():
+        if not _is_regular_file(SETTINGS_PATH):
+            # Never open() a FIFO: it blocks forever.
+            print(f"[Error] Could not read {SETTINGS_PATH}: it is not a regular file.")
+            sys.exit(1)
         try:
             with open(SETTINGS_PATH, "r", encoding="utf-8-sig") as f:
                 settings = json.load(f)
@@ -38658,7 +38830,7 @@ def _security_report(as_json=False):
     cleanup_period = None
     try:
         settings_path = RUNTIME_DIR / "settings.json"
-        if settings_path.exists():
+        if _is_regular_file(settings_path):
             settings = json.loads(settings_path.read_text())
             cleanup_period = settings.get("cleanupPeriodDays")
     except Exception:
@@ -42842,7 +43014,9 @@ def _read_settings_json_checked():
             # comments stay malformed.
             with open(SETTINGS_PATH, "r", encoding="utf-8-sig") as f:
                 return json.load(f), SETTINGS_PATH, True
-        except (json.JSONDecodeError, PermissionError, OSError):
+        except (json.JSONDecodeError, UnicodeDecodeError, PermissionError, OSError):
+            # UnicodeDecodeError is a ValueError, not an OSError: a cp1252
+            # file saved by an ANSI editor is "unknown", not a traceback.
             return {}, SETTINGS_PATH, False
     return {}, SETTINGS_PATH, True
 
@@ -54569,7 +54743,7 @@ def run_ensure_health():
         try:
             _eh_qb_disabled = _read_config_flag("quality_bar_disabled", False)
             _eh_is_plugin = _is_running_from_plugin_cache() or _is_plugin_installed()
-            if not _eh_qb_disabled and SETTINGS_PATH.exists():
+            if not _eh_qb_disabled and _is_regular_file(SETTINGS_PATH):
                 try:
                     settings = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
                 except (json.JSONDecodeError, ValueError):
@@ -56711,7 +56885,7 @@ if __name__ == "__main__":
                 if CONFIG_PATH.exists():
                     _qb_cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
                     _qb_disabled = _qb_cfg.get("quality_bar_disabled", False)
-                if not _is_plugin and not _qb_disabled and SETTINGS_PATH.exists():
+                if not _is_plugin and not _qb_disabled and _is_regular_file(SETTINGS_PATH):
                     _sh_settings = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
                     _sh_hooks = _sh_settings.get("hooks", {}).get("UserPromptSubmit", [])
                     # Recognize the consolidated dispatcher too, so a script

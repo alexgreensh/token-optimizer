@@ -183,7 +183,7 @@ The interactive `/token-coach` skill reads `coach --json` to drive a coaching co
 | `health` | Check the health of the current running session (fill, quality, active hooks) | n/a |
 | `health-selfcheck` | Self-test the health collection system | n/a |
 | `ensure-health` | SessionStart self-healer: repair drifted config, reinstall missing status line. Runs automatically via hook. | n/a |
-| `kill-stale` | Kill sessions older than a threshold (default 12h) still marked running | `--hours N`, `--dry-run` |
+| `kill-stale` | Kill terminal sessions older than a threshold (default 12h). Orphans (terminal gone, macOS/Linux) are only ended with `--include-orphans` | `--hours N`, `--dry-run`, `--include-orphans` |
 | `plugin-cleanup` | Remove stale or orphaned plugin cache entries | `--dry-run` |
 | `collect` | Parse session JSONL files and ingest them into the history database | `--days N`, `--quiet`, `--rebuild` |
 | `session-end-flush` | SessionEnd entry point: collect, regenerate dashboard, and capture checkpoint in one process | `--defer` |

@@ -23536,6 +23536,17 @@ def _posix_dir_is_electron_app(exe_path):
     return found
 
 
+def _posix_is_init_parent(ppid, names, args_by_pid):
+    """True when ppid is the init process an orphan is reparented to: pid 1
+    (launchd, systemd, init) or a per-user `systemd --user` subreaper."""
+    if ppid == 1:
+        return True
+    entry = names.get(ppid)
+    if not entry or _posix_comm_name(entry[1]) != "systemd":
+        return False
+    return "--user" in (args_by_pid.get(ppid) or "").split()
+
+
 def _posix_ancestry_state(pid, names, args_by_pid, electron_parent_pids=frozenset()):
     """Walk parents of pid. Returns "hosted", "complete" or "incomplete".
 
@@ -23584,12 +23595,21 @@ def _classify_posix_claude_process(detail, names, args_by_pid, electron_parent_p
                           parent chain, a controlling TTY and a parent that is a
                           shell, multiplexer, sshd or terminal. The only identity
                           kill_stale_sessions may terminate.
+    - "orphan_cli":       An interactive session whose terminal died. ALL of:
+                          exact argv was read (KERN_PROCARGS2 or /proc cmdline,
+                          never the ps-split fallback), no --type=/headless
+                          flag/subcommand, no controlling TTY, the parent is the
+                          init process (pid 1 or `systemd --user`), and the
+                          executable is positively not an Electron app. Listed
+                          as ORPHAN; only `kill-stale --include-orphans` ends it.
+                          Anything short of that stays "unknown". Windows has no
+                          such class (parent-pid semantics differ).
     - "unknown":          Anything else, including every case where identity
-                          evidence could not be read (orphans reparented to
-                          init, unreadable ps, undecodable text). Listed, never
-                          terminated.
+                          evidence could not be read (unreadable ps, undecodable
+                          text, an orphan short of the conditions above). Listed,
+                          never terminated.
 
-    detail: pid, ppid, tty, argv (list), exe (path or None).
+    detail: pid, ppid, tty, argv (list), argv_exact (bool), exe (path or None).
     names: {pid: (ppid, comm)} or None; args_by_pid: {pid: ps args string}.
     """
     if not detail:
@@ -23600,6 +23620,9 @@ def _classify_posix_claude_process(detail, names, args_by_pid, electron_parent_p
     exe = detail.get("exe") or ""
     if "�" in exe or any("�" in a for a in argv):
         return "unknown"  # undecodable text is never affirmative evidence
+    # One token holding spaces is either a rewritten process title or a spaced
+    # install path: the two cannot be told apart, so it is not exact argv.
+    argv_exact = bool(detail.get("argv_exact")) and (len(argv) > 1 or len(argv[0].split()) == 1)
     if len(argv) == 1:
         # A process that rewrote its title carries its whole command line in
         # argv[0]; split it so a switch inside cannot hide.
@@ -23610,6 +23633,7 @@ def _classify_posix_claude_process(detail, names, args_by_pid, electron_parent_p
     pid = detail.get("pid")
     if pid in electron_parent_pids:
         return "desktop_app"
+    electron_dir = None
     if exe:
         electron_dir = _posix_dir_is_electron_app(exe)
         if electron_dir is None:
@@ -23629,6 +23653,12 @@ def _classify_posix_claude_process(detail, names, args_by_pid, electron_parent_p
     if not entry or detail.get("ppid") != entry[0]:
         return "unknown"  # the two snapshots disagree about the parent
     if (detail.get("tty") or "?") in _POSIX_NO_TTY:
+        # No controlling terminal. Under a shell that is just a process that
+        # lost its tty (unknown). Under init it is the zombie `health` exists
+        # for, but only on exact argv and a binary positively not Electron
+        # (an unresolvable executable gives no such evidence).
+        if argv_exact and electron_dir is False and _posix_is_init_parent(entry[0], names, args_by_pid):
+            return "orphan_cli"
         return "unknown"
     parent = names.get(entry[0])
     if parent and _posix_comm_name(parent[1]) in _POSIX_TERMINAL_PARENTS:
@@ -23689,7 +23719,7 @@ def _collect_posix_claude_sessions(process_name="claude"):
     `ps` exit with no sessions found returns `[]`.
 
     For `claude`, every session carries ``identity`` ("terminal_cli",
-    "embedded_session" or "unknown") and ``identity_source: "ps"``; Electron
+    "orphan_cli", "embedded_session" or "unknown") and ``identity_source: "ps"``; Electron
     helpers and the desktop app's own process are dropped. See
     `_classify_posix_claude_process`. Codex inventories are untagged: the Codex
     path never terminates by age (see `_collect_health_data`/`kill_stale_sessions`).
@@ -23745,6 +23775,7 @@ def _collect_posix_claude_sessions(process_name="claude"):
         identity = None
         if claude:
             argv = _posix_read_argv(pid)
+            argv_exact = bool(argv)
             if not argv:
                 # ps joins argv with spaces: still safe (a switch can never be
                 # hidden by splitting), merely coarser. On macOS COMM is argv[0]
@@ -23754,7 +23785,8 @@ def _collect_posix_claude_sessions(process_name="claude"):
                 else:
                     argv = command.split()
             exe = _posix_exe_path(pid, comm)
-            detail = {"pid": pid, "ppid": r["ppid"], "tty": tty, "argv": argv, "exe": exe}
+            detail = {"pid": pid, "ppid": r["ppid"], "tty": tty, "argv": argv,
+                      "argv_exact": argv_exact, "exe": exe}
             identity = _classify_posix_claude_process(detail, names, args_by_pid, electron_parent_pids)
             if identity in ("helper", "desktop_app"):
                 continue
@@ -24218,6 +24250,10 @@ def _classify_windows_claude_process(image_name, detail, electron_parent_pids, n
                           only identity kill_stale_sessions may terminate.
     - "unknown":          Anything else, including every case where identity
                           evidence could not be read. Listed, never terminated.
+
+    There is deliberately no "orphan_cli" here (macOS/Linux only): a Windows
+    child keeps the pid of a parent that has exited and is not reparented to a
+    stable init process, so "the parent is gone" is not evidence of an orphan.
     """
     image = (image_name or "").strip().lower()
     if image not in ("claude", "claude.exe"):
@@ -24538,6 +24574,8 @@ def _collect_health_data():
             flags.append("DESKTOP")
         elif identity == "unknown":
             flags.append("UNVERIFIED")
+        elif identity == "orphan_cli":
+            flags.append("ORPHAN")
         elif s.get("has_terminal"):
             flags.append("TERMINAL")
         else:
@@ -24583,7 +24621,9 @@ def _collect_health_data():
     recommendations = []
     # Sessions hosted by another app (DESKTOP) or with unreadable identity
     # (UNVERIFIED) are not terminals the user can close and reopen.
-    _own = [s for s in running_sessions if not any(f in s.get("flags", []) for f in ("DESKTOP", "UNVERIFIED"))]
+    # ORPHAN sessions have no terminal to close and reopen; they get their own
+    # recommendation below.
+    _own = [s for s in running_sessions if not any(f in s.get("flags", []) for f in ("DESKTOP", "UNVERIFIED", "ORPHAN"))]
     outdated_count = sum(1 for s in _own if "OUTDATED" in s.get("flags", []))
     stale_count = sum(1 for s in _own if any(f in s.get("flags", []) for f in ("STALE", "ZOMBIE")))
 
@@ -24597,6 +24637,13 @@ def _collect_health_data():
         recommendations.append(
             f"{stale_count} session{'s' if stale_count != 1 else ''} running "
             f"24+ hours. Check if still needed, long sessions accumulate context bloat."
+        )
+    orphan_count = sum(1 for s in running_sessions if "ORPHAN" in s.get("flags", []))
+    if orphan_count > 0:
+        recommendations.append(
+            f"{orphan_count} session{'s' if orphan_count != 1 else ''} with the terminal gone "
+            f"(ORPHAN). Never ended automatically. Review, then run "
+            f"`python3 measure.py kill-stale --include-orphans --dry-run` to preview ending them."
         )
     unknown_age_count = sum(1 for s in running_sessions if "UNKNOWN_AGE" in s.get("flags", []))
     if unknown_age_count > 0 and system == "Windows":
@@ -24800,6 +24847,8 @@ def session_health():
             flag_str = f"  {'  '.join(flags)}" if flags else ""
             print(f"  PID {s['pid']:<7d} Started: {s['started']}  ({s['elapsed_human']} ago)")
             print(f"             Version: {version_str}{flag_str}")
+            if "ORPHAN" in flags:
+                print(f"             terminal gone; started {s['elapsed_human']} ago")
 
         if recommendations:
             print("\nRECOMMENDATIONS")
@@ -24839,12 +24888,13 @@ def _windows_revalidate_terminal_cli(session, fresh_inventory=None):
     )
 
 
-def _posix_revalidate_terminal_cli(session, fresh_inventory=None):
+def _posix_revalidate_terminal_cli(session, fresh_inventory=None, identity="terminal_cli"):
     """Re-check a POSIX session right before termination.
 
     The inventory is a snapshot; a PID can be reused or reclassified between
     that snapshot and the kill. Re-collect and require the same PID with the
-    same start time and command line to still classify as terminal_cli. A race
+    same start time and command line to still classify as `identity`
+    (terminal_cli, or orphan_cli for `kill-stale --include-orphans`). A race
     between that re-check and os.kill remains: a PID-based signal has no handle
     to bind to, so a PID reused inside that interval could be signalled.
     """
@@ -24861,25 +24911,42 @@ def _posix_revalidate_terminal_cli(session, fresh_inventory=None):
     now = fresh_inventory.get(session["pid"])
     return bool(
         now
-        and now.get("identity") == "terminal_cli"
+        and now.get("identity") == identity
         and now.get("started") == session.get("started")
         and now.get("command") == session.get("command")
     )
 
 
-def _revalidate_terminal_cli(session):
-    """Re-verify one identity-tagged session with the collector that tagged it."""
+def _revalidate_terminal_cli(session, identity="terminal_cli"):
+    """Re-verify one identity-tagged session with the collector that tagged it.
+
+    `identity` is the class the session must still have (orphan_cli exists on
+    POSIX only; Windows sessions are always terminal_cli)."""
     if session.get("identity_source") == "ps":
-        return _posix_revalidate_terminal_cli(session)
-    return _windows_revalidate_terminal_cli(session)
+        return _posix_revalidate_terminal_cli(session, identity=identity)
+    return identity == "terminal_cli" and _windows_revalidate_terminal_cli(session)
 
 
-def kill_stale_sessions(threshold_hours=12, dry_run=False):
+def _parse_kill_stale_args(args):
+    """(hours, dry_run, include_orphans) from the `kill-stale` argv tail."""
+    hours = 12
+    for i, a in enumerate(args):
+        if a == "--hours" and i + 1 < len(args):
+            try:
+                hours = int(args[i + 1])
+            except ValueError:
+                pass
+    return hours, "--dry-run" in args, "--include-orphans" in args
+
+
+def kill_stale_sessions(threshold_hours=12, dry_run=False, include_orphans=False):
     """Kill Claude Code sessions that have been running longer than threshold_hours.
 
     Targets abandoned terminal sessions only: a session is terminable when its
-    collector positively identified it as a terminal CLI process. Skips the
-    current process's own PID to avoid self-termination.
+    collector positively identified it as a terminal CLI process. Orphans
+    (orphan_cli: terminal gone, reparented to init, macOS/Linux) are listed but
+    only terminated with include_orphans. Skips the current process's own PID
+    and ancestors to avoid self-termination.
     """
     import signal
 
@@ -24904,23 +24971,36 @@ def kill_stale_sessions(threshold_hours=12, dry_run=False):
     # (desktop/SDK/IDE/headless) or could not be established are never
     # terminated, and neither is a session no collector tagged: the default
     # below is "unknown", not "terminal_cli".
+    killable = ("terminal_cli", "orphan_cli") if include_orphans else ("terminal_cli",)
     protected = [s for s in running
-                 if s.get("identity", "unknown") != "terminal_cli"
+                 if s.get("identity", "unknown") not in ("terminal_cli", "orphan_cli")
                  and s["elapsed_seconds"] > threshold_seconds]
     stale = [s for s in running
              if s["elapsed_seconds"] > threshold_seconds
              and s["pid"] != my_pid
              and s["pid"] != my_ppid
              and s["pid"] not in my_ancestors
-             and s.get("identity", "unknown") == "terminal_cli"]
+             and s.get("identity", "unknown") in killable]
+    held_orphans = [] if include_orphans else [
+        s for s in running
+        if s.get("identity") == "orphan_cli"
+        and s["elapsed_seconds"] > threshold_seconds
+        and s["pid"] not in (my_pid, my_ppid)
+        and s["pid"] not in my_ancestors]
 
     if protected:
         print(f"\n  Skipping {len(protected)} long-running session{'s' if len(protected) != 1 else ''} "
               "hosted by the Claude desktop app, an IDE or the SDK, or whose identity could not be verified.")
         print("  Process age alone is not evidence that these are abandoned; they are never auto-terminated.")
 
+    if held_orphans:
+        n = len(held_orphans)
+        print(f"\n  {n} orphaned session{'s' if n != 1 else ''} (terminal gone, running >{threshold_hours}h) "
+              f"{'were' if n != 1 else 'was'} left alone. Orphans are only ended on request:")
+        print(f"    python3 measure.py kill-stale --include-orphans --hours {threshold_hours}   (add --dry-run to preview)")
+
     if not stale:
-        if protected:
+        if protected or held_orphans:
             print(f"\n  No terminable stale sessions found (threshold: {threshold_hours}h).")
             return
         print(f"\n  No stale sessions found (threshold: {threshold_hours}h).")
@@ -24942,7 +25022,7 @@ def kill_stale_sessions(threshold_hours=12, dry_run=False):
         # Re-collect per candidate, immediately before its termination: the
         # window between verification and the signal is as small as a
         # PID-based kill allows (no process handle is retained).
-        if not _revalidate_terminal_cli(s):
+        if not _revalidate_terminal_cli(s, identity=s.get("identity", "unknown")):
             print(f"    PID {s['pid']} skipped: identity changed or could not be re-verified.")
             continue
         try:
@@ -51193,18 +51273,11 @@ if __name__ == "__main__":
         print(status)
         sys.exit(0 if status == "DAEMON_RUNNING" else 1)
     elif args[0] == "kill-stale":
-        dry = "--dry-run" in args
-        hours = 12
-        for i, a in enumerate(args):
-            if a == "--hours" and i + 1 < len(args):
-                try:
-                    hours = int(args[i + 1])
-                except ValueError:
-                    pass
+        hours, dry, include_orphans = _parse_kill_stale_args(args)
         if hours < 1:
             print("[Error] --hours must be >= 1")
             sys.exit(1)
-        kill_stale_sessions(threshold_hours=hours, dry_run=dry)
+        kill_stale_sessions(threshold_hours=hours, dry_run=dry, include_orphans=include_orphans)
     elif args[0] == "check-hook":
         check_hook()
     elif args[0] == "setup-hook":

@@ -20873,9 +20873,13 @@ def _recs_subagent_item(now=None):
         return dict(item, state="keep", enough_data=True,
                     headline="you set the key yourself; left alone",
                     reason=(st.get("reason") or "user-set"))
-    return dict(item, state="keep", enough_data=True,
-                headline=(line.split("; nothing to do")[0].rstrip()
-                          or "your current setting fits your usage"),
+    headline = (line.split("; nothing to do")[0].rstrip()
+                or "your current setting fits your usage")
+    if headline.startswith("would not pay: "):
+        # Reads as a sentence after the "Subagent cache:" label.
+        headline = ("a 1 hour cache would not pay on your usage ("
+                    + headline[len("would not pay: "):] + ")")
+    return dict(item, state="keep", enough_data=True, headline=headline,
                 reason=decision["reason"])
 
 

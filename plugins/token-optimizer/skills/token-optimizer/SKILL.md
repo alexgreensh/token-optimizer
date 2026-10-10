@@ -117,7 +117,7 @@ python3 "$MEASURE_PY" dashboard --coord-path "$COORD_PATH"
 
 **4. Implement.** Only what the user approved, one change at a time, following the playbook (actions 4A-4P: CLAUDE.md, MEMORY.md, skills, file exclusion, MCP, hooks, cache, rules, settings, descriptions, compact instructions, model routing, smart compaction, quality check, version-aware optimizations, smart routing). Templates are in `examples/`. Also offer, with the measured numbers:
 
-- `python3 "$MEASURE_PY" subagent-cache status`: the subagent cache lifetime and what it is worth to this user.
+- `python3 "$MEASURE_PY" subagent-cache status`: the subagent cache lifetime and what it is worth to this user. Relay its `advice:` line verbatim (their own numbers + `subagent-cache enable|disable`); Token Optimizer recommends, it never sets the key for them.
 - `python3 "$MEASURE_PY" compact-advice`: whether an earlier compaction window would pay off on their own history. It is an estimate; the user decides.
 - Repeated work a script could do instead of a model: hand over to `token-coach`, goal e.
 

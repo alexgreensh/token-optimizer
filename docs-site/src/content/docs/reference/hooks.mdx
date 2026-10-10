@@ -20,7 +20,7 @@ Twenty-six triggers fire across eleven hook events.
 | `PreCompact` | `dynamic-compact-instructions` | Injects mode-aware PRESERVE/DROP guidance into the compact prompt |
 | `PreCompact` | `compact-capture` | Saves a session checkpoint before compaction |
 | `PreCompact` | `read_cache.py --clear` | Clears the per-session read cache |
-| `SessionStart` | `ensure-health` (async) | Self-heals config drift, installs the status line if the slot is empty, and applies the one-time `subagentPromptCacheTtl` enable when the cached payoff verdict says it pays (a missing or day-old verdict starts a detached background scan; the hook itself never scans) |
+| `SessionStart` | `ensure-health` (async) | Self-heals config drift, installs the status line if the slot is empty, and keeps the cached `subagentPromptCacheTtl` payoff verdict fresh for the advise-only recommendation (a missing or day-old verdict starts a detached background scan; the hook itself never scans, and never writes the key -- only `TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=1` opts in to that) |
 | `SessionStart` | `quality-cache --force` | Pre-populates the quality score for the status line |
 | `SessionStart: compact` | `compact-restore --compact` | Restores the full checkpoint after a compaction |
 | `SessionStart` | `compact-restore --new-session-only` | Injects a keyword-matched checkpoint on a fresh session |

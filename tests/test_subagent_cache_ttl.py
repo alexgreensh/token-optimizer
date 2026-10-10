@@ -1,28 +1,34 @@
 #!/usr/bin/env python3
 """Regression tests for the subagent prompt-cache TTL feature (1h for subagents).
 
-Contract (brief ttl.md, FACTS.md):
+Contract (brief ttl.md + ttl4.md, FACTS.md):
   * `measure.py subagent-cache status|enable|disable [--json]` sets
     `subagentPromptCacheTtl: "1h"` in the USER settings.json (CLAUDE_CONFIG_DIR
     aware) -- and never overrides a value the user set, never fights an env
     override, never touches anything when a managed/project/local file already
     sets the key, never sets on Claude Code < 2.1.243, and never writes on
     unknown-state (unreadable / missing) settings.
+  * ADVISE-ONLY (ttl4): the automatic path never writes the key. The cached
+    verdict becomes a per-user recommendation in status/doctor/quick/coach
+    ("would have saved / is costing about $X net; turn on/off: <cmd>").
+    TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=1 is the ONLY way to get the automatic
+    write (explicit opt-in, and only it keeps the 14-day tripwire); =0 stays
+    never (and undoes a previous TO-set value).
   * enable records a marker in TO's own data dir (timestamp + previous state);
     disable removes the key ONLY when the marker says TO set it and the value
     is still "1h"; a user who removes/changes the key afterwards is never
-    re-set ("user-declined").
-  * Opt-out env TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=0 (also false/off/no) blocks
-    the automatic set and UNDOES a previous TO-set value.
+    re-set ("user-declined"), and `disable` is final ("removed" is sticky for
+    every automatic path).
   * Payoff check: from the user's own sidechain transcripts, count subagent 5m
     cache writes that followed a 5-60 min gap (would have been reads at 1h)
     versus all subagent cache writes (2x instead of 1.25x at 1h). Net estimate
     in tokens and dollars, labelled an estimate.
-  * Tripwire: 14+ days of post-enable data with a negative net estimate ->
-    the next SessionStart reverts (only when TO set it), records
-    "auto-reverted", and prints one line saying so.
-  * SessionStart wiring: enable runs off the ensure path, prints the one-line
-    notice at most ONCE via the systemMessage channel.
+  * Tripwire (opted-in automation only): 14+ days of post-enable data with a
+    negative net estimate -> the next SessionStart reverts (only when TO set
+    it), records "auto-reverted", and prints one line saying so.
+  * SessionStart wiring: with the force env off, session start never writes
+    and never emits a notice; it only keeps the cached verdict fresh and
+    records the judgement.
   * Clean no-ops: Cowork (never reads ~/.claude), Codex and other runtimes.
 
 Run: python3 -m pytest tests/test_subagent_cache_ttl.py -q
@@ -55,11 +61,6 @@ USER_SETTINGS = {
 
 NOTICE_EXPECTED = (
     "Token Optimizer set the subagent cache to 1 hour (was 5 minutes)."
-)
-# The evidence-gated automatic path carries the user's own numbers.
-NOTICE_EVIDENCE = (
-    "Token Optimizer set the subagent cache to 1 hour: your last 30 days "
-    "would have saved about "
 )
 
 
@@ -1457,21 +1458,21 @@ def test_session_start_without_cache_spawns_one_scan_and_writes_nothing(m, monke
     assert settings.read_text(encoding="utf-8") == before
 
 
-def test_session_start_with_fresh_positive_verdict_enables(m, monkeypatch):
+def test_session_start_with_fresh_positive_verdict_only_advises(m, monkeypatch):
+    """ADVISE-ONLY (ttl4): a positive verdict is recorded and surfaced as a
+    recommendation; session start NEVER writes the key itself."""
     mod = _gated(m, monkeypatch)
     settings = m[1]
+    before = settings.read_text(encoding="utf-8")
     _no_inline_scan(mod, monkeypatch)
     _verdict(m, requests=500, saved=2.0, premium=1.0, tokens=1_234_567)
-    lines = mod._subagent_cache_session_start_lines()
-    assert len(lines) == 1
-    assert NOTICE_EVIDENCE + "1,234,567 tokens" in lines[0]
-    assert "Undo:" in lines[0] and "subagent-cache disable" in lines[0]
-    assert _read(settings)[KEY] == "1h"
+    assert mod._subagent_cache_session_start_lines() == []
+    assert settings.read_text(encoding="utf-8") == before
     assert mod._spawn_log == []
-    mk = _marker(m)
-    assert mk["state"] == "set"
-    assert mk["auto_decision"]["decision"] == "enable"
-    assert mk["auto_decision"]["ts"] > 0
+    ad = _marker(m)["auto_decision"]
+    assert ad["decision"] == "recommend"
+    assert "pays" in ad["reason"]
+    assert ad["ts"] > 0
 
 
 def test_session_start_with_fresh_negative_verdict_does_not_write(m, monkeypatch):
@@ -1508,8 +1509,9 @@ def test_exactly_the_minimum_sample_counts(m, monkeypatch):
     settings = m[1]
     _verdict(m, requests=mod._SUBAGENT_CACHE_TRIPWIRE_MIN_REQUESTS,
              saved=2.0, premium=1.0)
-    assert len(mod._subagent_cache_session_start_lines()) == 1
-    assert _read(settings)[KEY] == "1h"
+    assert mod._subagent_cache_session_start_lines() == []
+    assert KEY not in _read(settings)
+    assert _marker(m)["auto_decision"]["decision"] == "recommend"
 
 
 def test_margin_is_one_point_one_five_inclusive(m, monkeypatch):
@@ -1519,10 +1521,12 @@ def test_margin_is_one_point_one_five_inclusive(m, monkeypatch):
     assert mod._subagent_cache_session_start_lines() == []
     assert KEY not in _read(settings)
     assert _marker(m)["auto_decision"]["decision"] == "would-not-pay"
-    # A fresh verdict a day later lands exactly on the margin.
+    # A fresh verdict a day later lands exactly on the margin: still advise,
+    # still no write.
     _verdict(m, saved=1.15, premium=1.0)
-    assert len(mod._subagent_cache_session_start_lines()) == 1
-    assert _read(settings)[KEY] == "1h"
+    assert mod._subagent_cache_session_start_lines() == []
+    assert KEY not in _read(settings)
+    assert _marker(m)["auto_decision"]["decision"] == "recommend"
 
 
 def test_zero_saving_never_enables_even_with_zero_premium(m, monkeypatch):
@@ -1610,7 +1614,10 @@ def test_guards_still_win_over_a_positive_verdict(m, monkeypatch):
     assert _read(settings)[KEY] == "5m"
 
 
-def test_version_probe_waits_for_the_evidence(m, monkeypatch):
+def test_version_probe_never_runs_on_the_advise_only_path(m, monkeypatch):
+    """Advise-only: `claude --version` is only probed right before a real
+    write, and session start never writes -- so it must never run there,
+    whatever the verdict says."""
     mod = _gated(m, monkeypatch)
     calls = []
     monkeypatch.setattr(mod, "_subagent_cache_claude_code_version",
@@ -1618,7 +1625,9 @@ def test_version_probe_waits_for_the_evidence(m, monkeypatch):
     mod._subagent_cache_session_start_lines()          # no verdict yet
     _verdict(m, saved=0.1, premium=1.0)                # verdict says no
     mod._subagent_cache_session_start_lines()
-    assert calls == [], "claude --version must not run for an unproven user"
+    _verdict(m, saved=9.0, premium=1.0)                # verdict says yes
+    mod._subagent_cache_session_start_lines()
+    assert calls == [], "claude --version must not run when nothing can be written"
 
 
 def test_manual_enable_is_unconditional(m, monkeypatch):
@@ -1794,7 +1803,7 @@ def test_status_shows_auto_decision_and_reason(m, monkeypatch):
     _two_spawns(m[2])
     st = mod.subagent_cache_status()
     ad = st["auto_decision"]
-    assert ad["decision"] in ("would-not-pay", "not-enough-data", "enable")
+    assert ad["decision"] in ("would-not-pay", "not-enough-data", "recommend")
     assert ad["reason"]
 
 
@@ -1815,7 +1824,7 @@ def test_status_text_prints_the_decision(m, monkeypatch, capsys):
     _two_spawns(m[2])
     mod._subagent_cache_cli(["subagent-cache", "status"])
     out = capsys.readouterr().out
-    assert "auto:" in out
+    assert "verdict:" in out
 
 
 def test_block_reads_the_cache_and_never_scans(m, monkeypatch):
@@ -1838,9 +1847,9 @@ def test_block_without_cache_is_an_honest_pending(m, monkeypatch):
 
 # --- end to end through ensure-health -------------------------------------
 
-@pytest.mark.skipif(sys.platform == "win32",
-                    reason="POSIX-only: fake claude shim on PATH")
-def test_ensure_health_applies_a_cached_positive_verdict(tmp_path):
+def _advise_only_e2e_env(tmp_path):
+    """A full ensure-health sandbox: temp HOME/CLAUDE_CONFIG_DIR/data dir, a
+    fake `claude` reporting 2.1.250, and a fresh positive cached verdict."""
     home = tmp_path / "home"
     claude_dir = home / ".claude"
     claude_dir.mkdir(parents=True)
@@ -1870,16 +1879,406 @@ def test_ensure_health_applies_a_cached_positive_verdict(tmp_path):
     env["CLAUDE_CONFIG_DIR"] = str(claude_dir)
     env["TOKEN_OPTIMIZER_SNAPSHOT_DIR"] = str(data_dir)
     env["PATH"] = f"{fake_bin}:{env.get('PATH', '')}"
-    res = subprocess.run(
+    return env, claude_dir
+
+
+def _run_ensure_health(tmp_path, env):
+    return subprocess.run(
         [sys.executable, str(MEASURE), "ensure-health", "--once-mark"],
         input=json.dumps({"cwd": str(tmp_path), "hook_event_name": "SessionStart",
                           "session_id": "01subagentgate0000000000000",
                           "source": "startup"}),
         text=True, capture_output=True, env=env, timeout=120)
+
+
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="POSIX-only: fake claude shim on PATH")
+def test_ensure_health_never_writes_the_key_on_the_default_path(tmp_path):
+    """ADVISE-ONLY end to end: a fresh positive verdict + unset env means the
+    SessionStart hook records the recommendation and writes NOTHING."""
+    env, claude_dir = _advise_only_e2e_env(tmp_path)
+    res = _run_ensure_health(tmp_path, env)
+    assert res.returncode == 0, res.stderr[-2000:]
+    assert KEY not in json.loads((claude_dir / "settings.json").read_text())
+
+
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="POSIX-only: fake claude shim on PATH")
+def test_ensure_health_writes_only_with_the_force_env(tmp_path):
+    """TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=1 is the ONLY automatic writer."""
+    env, claude_dir = _advise_only_e2e_env(tmp_path)
+    env[FORCE_ENV] = "1"
+    res = _run_ensure_health(tmp_path, env)
     assert res.returncode == 0, res.stderr[-2000:]
     assert json.loads((claude_dir / "settings.json").read_text())[KEY] == "1h"
     msgs = [json.loads(line).get("systemMessage", "")
             for line in res.stdout.splitlines() if line.strip().startswith("{")]
-    notices = [s for s in msgs if NOTICE_EVIDENCE in s]
+    notices = [s for s in msgs if NOTICE_EXPECTED in s]
     assert len(notices) == 1, msgs
-    assert "777,000 tokens" in notices[0]
+
+
+# ===========================================================================
+# Advise-only (ttl4): `disable` is final, the tripwire only rides the force
+# env, an earlier auto-set key is never removed silently, and the verdict is
+# a recommendation in status/doctor/quick/coach.
+# ===========================================================================
+
+def _set_marker(m, **kw):
+    mod, _s, _h = m
+    rec = {"state": "set", "set_ts": time.time(), "set_by": "token-optimizer"}
+    rec.update(kw)
+    mod._subagent_cache_write_marker(rec)
+    return rec
+
+
+def test_disable_is_final_removed_is_sticky_even_for_the_force_env(m):
+    """`subagent-cache disable` is final: marker "removed" blocks EVERY
+    automatic path, including the force-env opt-in."""
+    mod, settings, _h = m          # the fixture forces TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=1
+    mod.subagent_cache_enable()
+    assert _read(settings)[KEY] == "1h"
+    r = mod.subagent_cache_disable()
+    assert r["state"] == "removed" and r["changed"] is True
+    assert _marker(m)["state"] == "removed"
+    # The next session start (force env still on) must not re-set it.
+    assert mod._subagent_cache_session_start_lines() == []
+    assert KEY not in _read(settings)
+    assert _marker(m)["state"] == "removed"
+    # Only an explicit `enable` can bring it back.
+    r2 = mod.subagent_cache_enable(automatic=False)
+    assert r2["state"] == "set" and _read(settings)[KEY] == "1h"
+
+
+def test_no_auto_revert_without_the_force_env(m, monkeypatch):
+    """A key an earlier version auto-set is never removed silently: without
+    the force env the 14-day tripwire does not run, so a negative post-enable
+    window leaves the key alone and shows up as advice instead."""
+    mod = _gated(m, monkeypatch)
+    settings, home = m[1], m[2]
+    data = dict(USER_SETTINGS)
+    data[KEY] = "1h"
+    _write_settings(settings, data)
+    mk = _set_marker(m, set_ts=time.time() - 15 * 86400)
+    _loss_history(home)
+    _pad(home)
+    mod.subagent_cache_scan_run(now=time.time(), since_ts=mk["set_ts"])
+    lines = mod._subagent_cache_session_start_lines()
+    assert lines == []
+    assert _read(settings)[KEY] == "1h"          # kept, not silently removed
+    assert _marker(m)["state"] == "set"
+
+
+def test_advise_tick_spawns_the_post_enable_scan_for_a_to_set_key(m, monkeypatch):
+    """The "is costing / is paying" line for a TO-set key needs the post-enable
+    window verdict; session start spawns that scan (with --since) when the
+    cache has none."""
+    mod = _gated(m, monkeypatch)
+    data = dict(USER_SETTINGS)
+    data[KEY] = "1h"
+    _write_settings(m[1], data)
+    set_ts = time.time() - 1000
+    _set_marker(m, set_ts=set_ts)
+    assert mod._subagent_cache_session_start_lines() == []
+    assert len(mod._spawn_log) == 1
+    assert "--since" in mod._spawn_log[0][0]
+    assert repr(float(set_ts)) in mod._spawn_log[0][0]
+
+
+def test_advise_tick_spawns_the_plain_scan_for_a_user_set_1h_key(m, monkeypatch):
+    """A user-set "1h" also gets judged (costing/paying direction): session
+    start keeps the last-30-days verdict fresh for it."""
+    mod = _gated(m, monkeypatch)
+    data = dict(USER_SETTINGS)
+    data[KEY] = "1h"
+    _write_settings(m[1], data)
+    assert mod._subagent_cache_session_start_lines() == []
+    assert len(mod._spawn_log) == 1
+    assert "--since" not in mod._spawn_log[0][0]
+
+
+def test_no_scan_for_a_declined_or_a_user_set_5m(m, monkeypatch):
+    """Users who made their choice need no verdict work at session start."""
+    mod = _gated(m, monkeypatch)
+    mod._subagent_cache_write_marker({"state": "user-declined"})
+    assert mod._subagent_cache_session_start_lines() == []
+    assert mod._spawn_log == []
+    data = dict(USER_SETTINGS)
+    data[KEY] = "5m"
+    _write_settings(m[1], data)
+    mod._subagent_cache_write_marker({"state": "user-set", "set_by": "user"})
+    assert mod._subagent_cache_session_start_lines() == []
+    assert mod._spawn_log == []
+
+
+# --- the recommendation line ------------------------------------------------
+
+def test_recommendation_enable_when_the_history_pays(m, monkeypatch):
+    mod = _gated(m, monkeypatch)
+    _verdict(m, requests=500, saved=2.0, premium=1.0)
+    st = mod.subagent_cache_status(use_cache=True)
+    rec = st["recommendation"]
+    assert rec["action"] == "enable"
+    assert "would have saved" in rec["line"]
+    assert "$1.00" in rec["line"]                      # net = saved - premium
+    assert "turn on:" in rec["line"] and "subagent-cache enable" in rec["line"]
+
+
+def test_recommendation_disable_when_the_key_costs(m, monkeypatch):
+    mod = _gated(m, monkeypatch)
+    data = dict(USER_SETTINGS)
+    data[KEY] = "1h"
+    _write_settings(m[1], data)
+    set_ts = time.time() - 20 * 86400
+    _set_marker(m, set_ts=set_ts)
+    _verdict(m, requests=500, saved=0.3, premium=1.0, since_ts=set_ts)
+    st = mod.subagent_cache_status(use_cache=True)
+    rec = st["recommendation"]
+    assert rec["action"] == "disable"
+    assert "is costing" in rec["line"] and "$0.70" in rec["line"]
+    assert "turn off:" in rec["line"] and "subagent-cache disable" in rec["line"]
+
+
+def test_recommendation_paying_line_for_a_set_key(m, monkeypatch):
+    """A "1h" key that pays gets the paying line, in both set_by directions."""
+    mod = _gated(m, monkeypatch)
+    data = dict(USER_SETTINGS)
+    data[KEY] = "1h"
+    _write_settings(m[1], data)
+    set_ts = time.time() - 20 * 86400
+    _set_marker(m, set_ts=set_ts)
+    _verdict(m, requests=500, saved=3.0, premium=1.0, since_ts=set_ts)
+    rec = mod.subagent_cache_status(use_cache=True)["recommendation"]
+    assert rec["action"] == "keep"
+    assert "is paying" in rec["line"] and "turn off" not in rec["line"]
+
+
+def test_recommendation_neutral_when_thin(m, monkeypatch):
+    mod = _gated(m, monkeypatch)
+    _verdict(m, requests=50, saved=99.0, premium=1.0)
+    rec = mod.subagent_cache_status(use_cache=True)["recommendation"]
+    assert rec["action"] == "none"
+    assert "not enough data" in rec["line"] and "200" in rec["line"]
+
+
+def test_recommendation_pending_without_a_verdict(m, monkeypatch):
+    mod = _gated(m, monkeypatch)
+    rec = mod.subagent_cache_status(use_cache=True)["recommendation"]
+    assert rec["action"] == "none"
+    assert "scan" in rec["line"].lower()
+
+
+def test_recommendation_none_for_user_set_5m_and_opted_out(m, monkeypatch):
+    mod = _gated(m, monkeypatch)
+    data = dict(USER_SETTINGS)
+    data[KEY] = "5m"
+    _write_settings(m[1], data)
+    _verdict(m, requests=500, saved=9.0, premium=1.0)
+    assert mod.subagent_cache_status(use_cache=True)["recommendation"] is None
+    monkeypatch.setenv(FORCE_ENV, "0")
+    assert mod.subagent_cache_status(use_cache=True)["recommendation"] is None
+
+
+def test_recommendation_says_api_equivalent_on_subscription(m, monkeypatch):
+    mod = _gated(m, monkeypatch)
+    monkeypatch.setattr(mod, "keepwarm_billing_mode", lambda *a, **k: "subscription")
+    _verdict(m, requests=500, saved=2.0, premium=1.0)
+    rec = mod.subagent_cache_status(use_cache=True)["recommendation"]
+    assert "API-equivalent" in rec["line"]
+
+
+def test_status_text_prints_the_advice_line(m, monkeypatch, capsys):
+    """The explicit `status` command scans live, so the advice comes from the
+    live payoff -- stub it rather than the transcript history."""
+    mod = _gated(m, monkeypatch)
+    paying = dict(mod._subagent_cache_payoff_zero(30))
+    paying.update({"subagent_requests": 500, "savings_usd_est": 2.0,
+                   "extra_write_cost_usd_est": 1.0, "net_usd_est": 1.0,
+                   "missed_read_tokens": 50000})
+    monkeypatch.setattr(mod, "subagent_cache_payoff",
+                        lambda **kw: paying)
+    mod._subagent_cache_cli(["subagent-cache", "status"])
+    out = capsys.readouterr().out
+    assert "advice:" in out and "subagent-cache enable" in out
+
+
+def test_quick_text_prints_only_actionable_advice(m, monkeypatch, capsys):
+    mod = _gated(m, monkeypatch)
+    monkeypatch.setattr(mod, "measure_components", lambda: {})
+    monkeypatch.setattr(mod, "calculate_totals", lambda c: {"estimated_total": 0})
+    monkeypatch.setattr(mod, "detect_context_window", lambda: (200000, "test"))
+    monkeypatch.setattr(mod, "_estimate_quality_with_curve",
+                        lambda *a, **k: (50.0, "generic-fill"))
+    monkeypatch.setattr(mod, "_collect_trends_data", lambda **kw: {})
+    monkeypatch.setattr(mod, "_auto_snapshot", lambda *a, **k: None)
+    _verdict(m, requests=500, saved=2.0, premium=1.0)
+    mod.quick_scan()
+    out = capsys.readouterr().out
+    assert "subagent-cache enable" in out
+
+
+def test_quick_text_silent_while_the_scan_is_pending(m, monkeypatch, capsys):
+    mod = _gated(m, monkeypatch)
+    monkeypatch.setattr(mod, "measure_components", lambda: {})
+    monkeypatch.setattr(mod, "calculate_totals", lambda c: {"estimated_total": 0})
+    monkeypatch.setattr(mod, "detect_context_window", lambda: (200000, "test"))
+    monkeypatch.setattr(mod, "_estimate_quality_with_curve",
+                        lambda *a, **k: (50.0, "generic-fill"))
+    monkeypatch.setattr(mod, "_collect_trends_data", lambda **kw: {})
+    monkeypatch.setattr(mod, "_auto_snapshot", lambda *a, **k: None)
+    mod.quick_scan()
+    out = capsys.readouterr().out
+    assert "subagent-cache enable" not in out and "SUBAGENT CACHE" not in out
+
+
+def test_doctor_prints_the_neutral_pending_line(m, monkeypatch, capsys):
+    mod = _gated(m, monkeypatch)
+    mod.doctor()
+    out = capsys.readouterr().out
+    assert "Subagent cache" in out
+    assert "no payoff verdict yet" in out or "background" in out
+
+
+def test_doctor_prints_the_advice_line(m, monkeypatch, capsys):
+    mod = _gated(m, monkeypatch)
+    _verdict(m, requests=500, saved=2.0, premium=1.0)
+    mod.doctor()
+    out = capsys.readouterr().out
+    assert "subagent-cache enable" in out
+
+
+def test_coach_json_carries_the_recommendation(m, monkeypatch):
+    mod = _gated(m, monkeypatch)
+    monkeypatch.setattr(mod, "generate_coach_data",
+                        lambda **kw: {"health_score": 75})
+    _verdict(m, requests=500, saved=2.0, premium=1.0)
+    out, _ = _capture(lambda: mod._coach_cli(["coach", "--json"]))
+    data = json.loads(out)
+    rec = data["subagent_cache"]["recommendation"]
+    assert rec["action"] == "enable" and "subagent-cache enable" in rec["line"]
+
+
+def test_coach_text_prints_the_advice_line(m, monkeypatch, capsys):
+    mod = _gated(m, monkeypatch)
+    monkeypatch.setattr(mod, "generate_coach_data", lambda **kw: {
+        "health_score": 75,
+        "snapshot": {"total_overhead": 0, "overhead_pct": 0,
+                     "context_window": 200000, "usable_tokens": 0,
+                     "skill_count": 0, "skill_tokens": 0,
+                     "claude_md_tokens": 0, "mcp_server_count": 0,
+                     "mcp_tokens": 0},
+        "patterns_bad": [], "patterns_good": [], "questions": []})
+    _verdict(m, requests=500, saved=2.0, premium=1.0)
+    mod._coach_cli(["coach"])
+    out = capsys.readouterr().out
+    assert "subagent-cache enable" in out
+
+
+# ===========================================================================
+# Settings-write hardening (t1 findings F-T1-3, F-T1-4, F-T1-5, F-T1-6,
+# F-T1-7, F-T1-8)
+# ===========================================================================
+
+def test_non_dict_json_settings_is_a_clean_refusal(m):
+    """F-T1-3: `[1,2,3]` is valid JSON but not an object; enable must refuse
+    cleanly (unknown-settings), not die at dict(data)."""
+    mod, settings, _h = m
+    settings.write_text("[1, 2, 3]", encoding="utf-8")
+    r = mod.subagent_cache_enable(automatic=False)
+    assert r["state"] == "unknown-settings", r
+    assert r["changed"] is False
+    assert settings.read_text(encoding="utf-8") == "[1, 2, 3]"
+
+
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="POSIX chmod semantics (Windows uses the read-only attribute)")
+def test_readonly_settings_file_is_never_replaced(m):
+    """F-T1-5: a settings.json with no write bits (chmod 444 = user froze it)
+    must be refused, not silently replaced via rename."""
+    mod, settings, _h = m
+    os.chmod(settings, 0o444)
+    try:
+        r = mod.subagent_cache_enable(automatic=False)
+        assert r["state"] == "write-refused", r
+        assert r["changed"] is False
+        assert KEY not in _read(settings)
+    finally:
+        os.chmod(settings, 0o644)
+
+
+def test_explicit_command_reclaims_a_released_cohort_lease(m):
+    """F-T1-4: an explicit `enable` must not lose to a herd writer's released
+    lease tombstone (reuse_wall ~10s). The unflagged writer still yields."""
+    mod, settings, _h = m
+    now = time.time()
+    lease = settings.parent / ".settings.lease"
+    lease.write_text(json.dumps({
+        "pid": os.getpid() + 424242,   # a different, long-gone writer
+        "nonce": "ab" * 16,
+        "released": 1,
+        "reuse_wall": now + 10,
+        "created_wall": now - 1,
+        "expires_wall": now + 10,
+    }), encoding="utf-8")
+    payload = dict(_read(settings))
+    payload["x-probe"] = 1
+    assert mod._write_settings_atomic(payload) is False, (
+        "the herd-throttled path must still defer to the tombstone")
+    r = mod.subagent_cache_enable(automatic=False)
+    assert r["state"] == "set" and r["changed"] is True, r
+    assert _read(settings)[KEY] == "1h"
+    assert "x-probe" not in _read(settings)
+
+
+def test_explicit_enable_creates_a_missing_settings_file(m):
+    """F-T1-6: `subagent-cache enable` on a machine with no settings.json
+    creates it (allow_missing) and says so."""
+    mod, settings, _h = m
+    settings.unlink()
+    r = mod.subagent_cache_enable(automatic=False)
+    assert r["state"] == "set" and r["changed"] is True, r
+    assert r.get("created_settings") is True
+    assert _read(settings)[KEY] == "1h"
+    assert "creat" in (r.get("notice") or "").lower()
+
+
+def test_status_hints_when_the_marker_is_unreadable(m):
+    """F-T1-7: a "1h" key whose marker is corrupt/missing may be an orphaned
+    TO write -- `status` must say so instead of silently reporting user-set."""
+    mod, settings, _h = m
+    data = dict(USER_SETTINGS)
+    data[KEY] = "1h"
+    _write_settings(settings, data)
+    mp = mod._subagent_cache_marker_path()
+    mp.parent.mkdir(parents=True, exist_ok=True)
+    mp.write_text("{ corrupt !!!", encoding="utf-8")
+    st = mod.subagent_cache_status()
+    assert st["state"] == "user-set"
+    assert st.get("hint") and "marker" in st["hint"]
+    assert "unreadable" in st["hint"] or "corrupt" in st["hint"]
+    # Absent marker: weaker but still flagged (may be an old TO write).
+    mp.unlink()
+    st = mod.subagent_cache_status()
+    assert st.get("hint") and "no token optimizer marker" in st["hint"].lower()
+
+
+def test_bom_settings_file_reads_and_writes(m):
+    """F-T1-8: a UTF-8 BOM is tolerated (utf-8-sig); the file is rewritten
+    without the BOM and every other key survives."""
+    mod, settings, _h = m
+    settings.write_bytes(b"\xef\xbb\xbf" + json.dumps(USER_SETTINGS).encode("utf-8"))
+    r = mod.subagent_cache_enable(automatic=False)
+    assert r["state"] == "set", r
+    assert _read(settings)[KEY] == "1h"
+    assert _read(settings)["model"] == "opus"
+    assert not settings.read_bytes().startswith(b"\xef\xbb\xbf")
+
+
+def test_comment_settings_stay_unknown(m):
+    """F-T1-8: // comments are NOT documented as tolerated; the file stays
+    'unknown' and is never written."""
+    mod, settings, _h = m
+    settings.write_text('{ "model": "opus", // frozen by hand\n}',
+                        encoding="utf-8")
+    r = mod.subagent_cache_enable(automatic=False)
+    assert r["state"] == "unknown-settings", r
+    assert "// frozen by hand" in settings.read_text(encoding="utf-8")

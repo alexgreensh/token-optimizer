@@ -28449,7 +28449,32 @@ def _log_settings_lease_denied():
         pass
 
 
-def _write_settings_atomic_locked(settings_data, allow_removing_keys=None, _report_refusal=True):
+# Why a write was held back because settings.json changed under it.
+_SETTINGS_CHANGED_REFUSAL = (
+    "settings.json changed while Token Optimizer was writing it (another "
+    "program saved it twice in a row); nothing was written, your latest edit is kept"
+)
+_SETTINGS_WRITE_TRIES = 2
+
+
+def _settings_file_identity(path=None):
+    """(st_mtime_ns, st_size, st_ino) of the settings file, ``("absent",)`` when unreadable.
+
+    A cheap fingerprint taken at the merge read and compared right before
+    ``os.replace``. It narrows the window in which an unlocked external editor
+    can be overwritten to the gap between that last stat and the replace, a
+    few milliseconds. It does not close the window: nothing stops an editor
+    that ignores our lease.
+    """
+    try:
+        st = os.stat(path if path is not None else SETTINGS_PATH)
+    except (OSError, ValueError):
+        return ("absent",)
+    return (st.st_mtime_ns, st.st_size, st.st_ino)
+
+
+def _write_settings_atomic_locked(settings_data, allow_removing_keys=None, _report_refusal=True,
+                                  expect_identity=None):
     """Atomic settings.json write assuming the settings lease is ALREADY held.
 
     This is the lock-free body of ``_write_settings_atomic``, extracted so
@@ -28463,7 +28488,13 @@ def _write_settings_atomic_locked(settings_data, allow_removing_keys=None, _repo
     no serialization of its own. Same tempfile + os.replace + mode/symlink
     semantics as ``_write_settings_atomic`` (see the checked-read fix). Returns True iff the
     write landed.
+
+    ``expect_identity`` is the ``_settings_file_identity`` taken when the
+    payload was merged. When given and the file no longer matches right before
+    ``os.replace``, nothing is replaced and ``identity_changed`` is set on the
+    thread state so the caller can re-merge.
     """
+    _SETTINGS_WRITE_READ_STATE.identity_changed = False
     # Write THROUGH a symlink and preserve the mode.
     # os.replace onto the link path detaches it, turning a dotfiles-managed
     # symlink into a regular file (the user's repo silently stops tracking
@@ -28502,6 +28533,9 @@ def _write_settings_atomic_locked(settings_data, allow_removing_keys=None, _repo
                 os.chmod(tmp_path, dest_mode)
             except OSError:
                 pass
+        if expect_identity is not None and _settings_file_identity(dest) != expect_identity:
+            _SETTINGS_WRITE_READ_STATE.identity_changed = True
+            return False
         os.replace(tmp_path, str(dest))
         tmp_path = None  # successfully replaced; do not unlink the destination
     finally:
@@ -28520,8 +28554,10 @@ def _merge_concurrent_settings(snapshot, mine, allow_removing_keys=None):
     ``_read_settings_for_write``; ``mine`` is the caller's payload derived from
     that read. Only the keys the caller actually CHANGED relative to ``base``
     are applied on top of the fresh file, so a value edit or key removal made
-    by another editor between our read and our write survives. ``env`` is
-    merged per variable for the same reason. Returns the merged dict, or None
+    by another editor between our read and our write is kept, as long as it
+    landed before ``_write_settings_atomic`` fingerprinted the file (an edit
+    after that is caught by the identity check before the replace and merged on
+    a second try). ``env`` is merged per variable for the same reason. Returns the merged dict, or None
     when there is nothing to merge (no recorded read, the file is unchanged, or
     the payload drops keys it was not licensed to drop, which the write guard
     then refuses as before). Caller must hold the settings lease.
@@ -28586,6 +28622,12 @@ def _write_settings_atomic(settings_data, allow_removing_keys=None,
     unlinking the already-renamed destination. Any exception encountered
     during the write propagates naturally after cleanup.
 
+    A concurrent edit by a program that ignores our lease is handled on a best
+    effort basis: the merge keeps what it saved before our read, and a
+    size/mtime/inode check right before ``os.replace`` re-merges once if it
+    saved in between. That narrows the window to milliseconds; it cannot
+    close it, because an unlocked writer is not stopped.
+
     Returns True iff the write actually landed, False when the advisory lease
     was denied and nothing was written. Callers that report
     success to the user MUST check this -- a lease miss is logged to
@@ -28608,11 +28650,26 @@ def _write_settings_atomic(settings_data, allow_removing_keys=None,
             # distinguish "lease denied" from "guard refused".
             _log_settings_lease_denied()
             return False
-        payload = _merge_concurrent_settings(snapshot, settings_data, allow_removing_keys)
-        if payload is None:
-            payload = settings_data
-        if _write_settings_atomic_locked(payload, allow_removing_keys, _report_refusal=False):
-            return True
+        # Fingerprint the file before the merge reads it, then re-check right
+        # before os.replace. If another program saved in between, re-merge onto
+        # what it saved (two tries), so its edit is not written over. This
+        # narrows the window to the stat-to-replace gap (milliseconds); an
+        # editor that ignores our lease can still win inside that gap.
+        for _attempt in range(_SETTINGS_WRITE_TRIES):
+            identity = _settings_file_identity() if snapshot else None
+            payload = _merge_concurrent_settings(snapshot, settings_data, allow_removing_keys)
+            if payload is None:
+                payload = settings_data
+            if _write_settings_atomic_locked(payload, allow_removing_keys,
+                                             _report_refusal=False,
+                                             expect_identity=identity):
+                return True
+            if not getattr(_SETTINGS_WRITE_READ_STATE, "identity_changed", False):
+                break
+        else:
+            _SETTINGS_WRITE_READ_STATE.last_refusal = _SETTINGS_CHANGED_REFUSAL
+            _report_settings_write_refusal(_SETTINGS_CHANGED_REFUSAL)
+            return False
 
         refusal = getattr(_SETTINGS_WRITE_READ_STATE, "last_refusal", None)
 
@@ -28640,6 +28697,7 @@ def _write_settings_atomic(settings_data, allow_removing_keys=None,
         if removed - allowed:
             return refuse()
 
+        identity = _settings_file_identity()
         fresh, fresh_ok = _read_settings_for_write()
         if not fresh_ok or not isinstance(fresh, dict):
             return refuse()
@@ -28653,7 +28711,12 @@ def _write_settings_atomic(settings_data, allow_removing_keys=None,
         for key in allowed:
             if key not in settings_data:
                 merged.pop(key, None)
-        return _write_settings_atomic_locked(merged, allow_removing_keys)
+        if _write_settings_atomic_locked(merged, allow_removing_keys, expect_identity=identity):
+            return True
+        if getattr(_SETTINGS_WRITE_READ_STATE, "identity_changed", False):
+            _SETTINGS_WRITE_READ_STATE.last_refusal = _SETTINGS_CHANGED_REFUSAL
+            _report_settings_write_refusal(_SETTINGS_CHANGED_REFUSAL)
+        return False
 
 
 # CLAUDE_AUTOCOMPACT_PCT_OVERRIDE is a DOCUMENTED setting (verified

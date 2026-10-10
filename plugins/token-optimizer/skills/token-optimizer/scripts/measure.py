@@ -10346,8 +10346,10 @@ def generate_coach_data(focus=None, components=None, trends=None, include_determ
         result["deterministic_candidates"] = _deterministic_candidates_data(
             days=30, budget_s=_DETCAND_COACH_BUDGET_S, max_sessions=_DETCAND_COACH_MAX_SESSIONS)
     # Compact-window replay of the user's own history: capped, cached, fail-open
-    # (Claude transcripts only). Never lets this block fail the coach.
-    if not is_codex:
+    # (Claude transcripts only). Never lets this block fail the coach. Like the
+    # deterministic scan it replays transcripts, so only the coach CLI asks for
+    # it: the dashboard and rollup callers must not pay for a history replay.
+    if include_deterministic and not is_codex:
         try:
             advice = _coach_compact_advice_block()
             if advice:

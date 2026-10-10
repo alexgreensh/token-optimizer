@@ -563,10 +563,14 @@ def test_generate_coach_data_includes_compact_advice_and_survives_failure(m, mon
     monkeypatch.setattr(m, "_collect_trends_data", lambda **kw: None)
     monkeypatch.setattr(m, "parse_session_turns", lambda *a, **kw: [])
     monkeypatch.setattr(m, "detect_runtime", lambda: "claude")
-    data = m.generate_coach_data()
+    monkeypatch.setattr(m, "_deterministic_candidates_data", lambda **kw: {"candidates": []})
+    # Only the coach CLI asks for the history replays: the dashboard and rollup
+    # callers use the default and must not pay for one.
+    assert "compact_advice" not in m.generate_coach_data()
+    data = m.generate_coach_data(include_deterministic=True)
     assert "compact_advice" in data and data["compact_advice"]["rows"]
     m._advice_cache_path().unlink()   # the first call cached its block
     monkeypatch.setattr(m, "compact_advice",
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
-    data = m.generate_coach_data()
+    data = m.generate_coach_data(include_deterministic=True)
     assert isinstance(data, dict) and "compact_advice" not in data

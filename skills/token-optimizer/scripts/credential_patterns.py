@@ -37,7 +37,7 @@ CREDENTIAL_PATTERNS: List[Tuple[str, "re.Pattern[str]"]] = [
     # its numeric head. The legacy rows below still catch bodies under 20 characters.
     ("Slack token",             re.compile(r"xox[bpa]-[0-9A-Za-z\-]{20,}")),
     ("Slack app-level token",   re.compile(r"xapp-\d-[A-Z0-9]+-\d+-[0-9a-f]+")),
-    ("Slack webhook URL",       re.compile(r"https://hooks\.slack\.com/services/\S+")),
+    ("Slack webhook URL",       re.compile(r"https://hooks\.slack\.com/services/[A-Za-z0-9/_-]+")),
     ("Slack bot token",         re.compile(r"xoxb-[0-9]+-[a-zA-Z0-9]+")),
     ("Slack user token",        re.compile(r"xoxp-[0-9]+-[a-zA-Z0-9]+")),
     ("Slack app token",         re.compile(r"xoxa-[0-9]+-[a-zA-Z0-9]+")),

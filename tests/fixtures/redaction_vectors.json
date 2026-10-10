@@ -456,6 +456,12 @@
       "input": ["Authorization: Bearer abcdefghij12345 end"],
       "absent": [],
       "present": ["Bearer abcdefghij12345"]
+    },
+    {
+      "name": "slack-webhook-keeps-closing-quote-and-paren",
+      "input": ["post(\"https://hooks.slack.com/services/T0FAKE0/B0FAKE0/", "FAKEhookTok9Qw7Lm3", "\") ok"],
+      "absent": ["FAKEhookTok9Qw7Lm3"],
+      "present": ["post(\"", "\") ok"]
     }
   ]
 }

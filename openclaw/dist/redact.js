@@ -1,6 +1,33 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.redact = redact;
+/** The generic assignment rule (see the comment in PATTERNS). ASSIGNMENT matches the name, separator and
+ * opening quote and checks the value only with zero-width guards; VALUE then reads the value, and only when it
+ * is going to be hidden. A bare KEY before a colon is skipped without reading its value, so a long run of them
+ * stays linear, and the scan resumes right after the name so an assignment inside the value is still found. */
+const ASSIGNMENT = /((?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|CREDENTIAL)(?:e?s)?(?![A-Za-z])(?=([A-Za-z0-9_.-]{0,80}))\2["']?[ \t]*[=:][ \t]*["']?)(?![=>:])(?!(?<=")"|(?<=')')(?!""|'')(?!\[(?:CREDENTIAL )?REDACTED)(?!-?\d{1,6}(?:[.,]\d+)?[kKmM%]?["']?(?![\w$]))(?!(?:true|false|yes|no|on|off|null|none|nil|undefined)["']?(?![\w$]))(?!(?:string|number|boolean|bool|str|int|float|any|unknown|object|void)(?![\w$]))(?![A-Za-z_][\w.]*[(\[])(?!\$[{(])(?!\$[A-Z_][A-Z0-9_]*(?![\w$]))/gi;
+const ASSIGNMENT_VALUE = /(?:(?<=")[^"\n]+(?=")|(?<=')[^'\n]+(?=')|\S+)/y;
+function redactAssignments(text) {
+    ASSIGNMENT.lastIndex = 0;
+    let out = "";
+    let last = 0;
+    for (let m = ASSIGNMENT.exec(text); m !== null; m = ASSIGNMENT.exec(text)) {
+        const end = m.index + m[0].length;
+        const before = text.charAt(m.index - 1);
+        const bareKeyBeforeColon = /^key/i.test(m[0]) && /:[ \t]*["']?$/.test(m[0])
+            && !/[_-]/.test(before) && !(m[0].charAt(0) === "K" && /[a-z]/.test(before));
+        if (bareKeyBeforeColon)
+            continue;
+        ASSIGNMENT_VALUE.lastIndex = end;
+        const value = ASSIGNMENT_VALUE.exec(text);
+        if (value === null)
+            continue;
+        out += text.slice(last, end) + "[REDACTED]";
+        last = end + value[0].length;
+        ASSIGNMENT.lastIndex = last;
+    }
+    return out + text.slice(last);
+}
 /** Redaction before checkpoint persistence; checkpoints must never store credentials.
  * Same pattern set as pi/src/redact.ts, opencode/src/util/redact.ts and the Python
  * skills/token-optimizer/scripts/credential_patterns.py — keep all four in sync.
@@ -32,7 +59,10 @@ const PATTERNS = [
     // YAML labels and JSON keys. The VALUE is hidden whole, quoted values with spaces included; the
     // name and the surrounding quotes stay. Skipped: placeholders, small numbers, booleans, type
     // names, calls, $VAR refs, empty strings.
-    [/((?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|CREDENTIAL)(?:e?s)?(?![A-Za-z])(?=([A-Za-z0-9_.-]{0,80}))\2["']?[ \t]*[=:][ \t]*["']?)(?![=>:])(?!(?<=")"|(?<=')')(?!""|'')(?!\[(?:CREDENTIAL )?REDACTED)(?!-?\d{1,6}(?:[.,]\d+)?[kKmM%]?["']?(?![\w$]))(?!(?:true|false|yes|no|on|off|null|none|nil|undefined)["']?(?![\w$]))(?!(?:string|number|boolean|bool|str|int|float|any|unknown|object|void)(?![\w$]))(?![A-Za-z_][\w.]*[(\[])(?!\$[{(])(?!\$[A-Z_][A-Z0-9_]*(?![\w$]))(?:(?<=")[^"\n]+(?=")|(?<=')[^'\n]+(?=')|\S+)/gi, "$1[REDACTED]"],
+    // KEY before a COLON is an ordinary word in code (React key: item.id, "key": "user_id", primary key: id),
+    // so there it counts only inside a compound name: _key / -key, or camelCase (apiKey, privateKey).
+    // With = nothing changes. TOKEN/SECRET/PASSWORD/PASSWD/PWD/CREDENTIAL are unchanged for both.
+    redactAssignments,
     [/(\b(?:PGPASSWORD|MYSQL_PWD|REDIS_PASSWORD|MONGO_PASSWORD|DB_PASSWORD|DATABASE_PASSWORD|PGPASSWD)=["']?)(?!\[CREDENTIAL REDACTED:)[^\s"'\n]+/gi, "$1[REDACTED]"],
     [/(\b(?:aws_secret_access_key|aws_secret|secret_access_key|SecretAccessKey)["'\s:=]+)(?!\[CREDENTIAL REDACTED:)[A-Za-z0-9/+=]{40}/gi, "$1[REDACTED]"],
     [/((?:--password|--passwd|--passcode|--auth-token)(?![\w-])(?:\s*=\s*|\s+))(?!-)(?!\[CREDENTIAL REDACTED:)(?:"[^"\n]*"|'[^'\n]*'|[^\s"']+)/gi, "$1[REDACTED]"],
@@ -45,8 +75,8 @@ const PATTERNS = [
 ];
 function redact(text) {
     let result = text;
-    for (const [pattern, replacement] of PATTERNS)
-        result = result.replace(pattern, replacement);
+    for (const step of PATTERNS)
+        result = typeof step === "function" ? step(result) : result.replace(step[0], step[1]);
     return result;
 }
 //# sourceMappingURL=redact.js.map

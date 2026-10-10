@@ -72,14 +72,18 @@ def test_expand_pointer_is_unchanged_on_posix(monkeypatch, posix):
 
 @pytest.mark.parametrize("flavour", ["windows", "posix"])
 @pytest.mark.parametrize("interp", ["python", "python3", "py", "python3.12", "python.exe", "py.exe"])
-def test_recogniser_accepts_every_interpreter_name(monkeypatch, flavour, interp):
+def test_recogniser_accepts_every_interpreter_name(monkeypatch, tmp_path, flavour, interp):
+    # A path that is absolute on the host running the test ("/opt/..." has no drive on
+    # Windows, and the recogniser only accepts an absolute path to this installation).
+    scripts = (tmp_path / "to" / "scripts").resolve()
+    script = (scripts / "measure.py").as_posix()
     monkeypatch.setattr(refetch_fingerprint, "_windows_hints", lambda: flavour == "windows")
-    monkeypatch.setattr(refetch_fingerprint, "measure_py_path", lambda: "/opt/to/scripts/measure.py")
-    monkeypatch.setattr(recovery_output, "__file__", "/opt/to/scripts/recovery_output.py")
-    assert recovery_output.is_expand_command(f"{interp} /opt/to/scripts/measure.py expand original")
-    assert recovery_output.is_expand_command(f"{interp} /opt/to/scripts/measure.py expand original --session s-1")
-    assert not recovery_output.is_expand_command(f"{interp} /opt/to/scripts/measure.py expand original | cat")
-    assert not recovery_output.is_expand_command(f"{interp} /opt/to/scripts/measure.py expand original; id")
+    monkeypatch.setattr(refetch_fingerprint, "measure_py_path", lambda: script)
+    monkeypatch.setattr(recovery_output, "__file__", str(scripts / "recovery_output.py"))
+    assert recovery_output.is_expand_command(f"{interp} {script} expand original")
+    assert recovery_output.is_expand_command(f"{interp} {script} expand original --session s-1")
+    assert not recovery_output.is_expand_command(f"{interp} {script} expand original | cat")
+    assert not recovery_output.is_expand_command(f"{interp} {script} expand original; id")
 
 
 @pytest.mark.parametrize("interp", ["perl", "ruby", "pythonic", "python3 -c", "sh"])
@@ -113,23 +117,26 @@ def test_measure_cli_is_unchanged_on_posix(posix):
 
 
 def test_runtime_command_is_a_flag_on_windows_and_an_env_prefix_on_posix(monkeypatch):
-    script = runtime_env.shell_path((SCRIPTS / "measure.py").resolve())
+    # The path is quoted by the same predicate, so read it after each switch.
     monkeypatch.setattr(refetch_fingerprint, "_windows_hints", lambda: True)
+    script = runtime_env.shell_path((SCRIPTS / "measure.py").resolve())
     win = runtime_env.runtime_cli("codex", "codex-install", "--project", ".")
     assert win == f"python {script} --runtime codex codex-install --project ."
     assert "=" not in win.split("measure.py")[0]  # no VAR=value for cmd.exe or PowerShell
     monkeypatch.setattr(refetch_fingerprint, "_windows_hints", lambda: False)
+    script = runtime_env.shell_path((SCRIPTS / "measure.py").resolve())
     assert runtime_env.runtime_cli("codex", "codex-install", "--project", ".") == \
         f"TOKEN_OPTIMIZER_RUNTIME=codex python3 {script} codex-install --project ."
 
 
 def test_with_measure_cli_rewrites_the_env_prefix_only_on_windows(monkeypatch):
-    script = runtime_env.shell_path((SCRIPTS / "measure.py").resolve())
     text = "Run: TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-install --project ."
     monkeypatch.setattr(refetch_fingerprint, "_windows_hints", lambda: True)
+    script = runtime_env.shell_path((SCRIPTS / "measure.py").resolve())
     assert runtime_env.with_measure_cli(text) == \
         f"Run: python {script} --runtime codex codex-install --project ."
     monkeypatch.setattr(refetch_fingerprint, "_windows_hints", lambda: False)
+    script = runtime_env.shell_path((SCRIPTS / "measure.py").resolve())
     assert runtime_env.with_measure_cli(text) == \
         f"Run: TOKEN_OPTIMIZER_RUNTIME=codex python3 {script} codex-install --project ."
     assert runtime_env.with_measure_cli("python3 measure.py doctor") == f"python3 {script} doctor"
@@ -204,11 +211,12 @@ def test_fleet_auditor_hint_uses_the_same_builder(monkeypatch):
     sys.modules.pop("fleet", None)
     import fleet
     try:
-        script = runtime_env.shell_path((SCRIPTS / "measure.py").resolve())
         text = "TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py codex-install --project ."
         monkeypatch.setattr(refetch_fingerprint, "_windows_hints", lambda: True)
+        script = runtime_env.shell_path((SCRIPTS / "measure.py").resolve())
         assert fleet._with_measure_cli(text) == f"python {script} --runtime codex codex-install --project ."
         monkeypatch.setattr(refetch_fingerprint, "_windows_hints", lambda: False)
+        script = runtime_env.shell_path((SCRIPTS / "measure.py").resolve())
         assert fleet._with_measure_cli(text) == f"TOKEN_OPTIMIZER_RUNTIME=codex python3 {script} codex-install --project ."
     finally:
         sys.modules.pop("fleet", None)

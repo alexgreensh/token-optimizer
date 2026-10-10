@@ -193,7 +193,9 @@ def test_realistic_output_is_not_slower_than_a_generous_bound(monkeypatch):
             best = min(best, time.process_time() - c0)
         return best
 
-    probe = max(_cpu_best(lambda: probe_re.findall(text)), 1e-4)
+    # Floor of one coarse clock tick: Windows' process_time moves in ~16 ms steps,
+    # so a sub-tick probe reads as zero there and would shrink the bound to nothing.
+    probe = max(_cpu_best(lambda: probe_re.findall(text)), 0.02)
     elapsed = _cpu_best(lambda: cp.redact_credentials(text))
     # The sub-count assert above is the primary discriminator (it fails the
     # instant the gate drops); this bound only catches a pathological UNIFORM

@@ -204,7 +204,7 @@ def test_hint_with_a_space_in_the_install_path_round_trips(tmp_path, monkeypatch
     # One shell word for the path, and the recognizer accepts it. A Windows host
     # prints forward slashes (an unquoted backslash is an escape in Bash).
     shown = spaced.as_posix() if os.name == 'nt' else str(spaced)
-    assert shlex.split(hint) == ['python3', shown, 'expand', 'original']
+    assert shlex.split(hint) == [refetch_fingerprint.hint_python(), shown, 'expand', 'original']
     assert recovery_output.is_expand_command(hint)
     # The form older releases printed is still in live transcripts.
     assert recovery_output.is_expand_command(f'python3 {spaced} expand original')

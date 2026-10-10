@@ -81,7 +81,7 @@ def test_dashboard_hints_go_through_tcli_or_health_cli():
     assert "function tcli(" in html
     bad = []
     for n, line in enumerate(html.splitlines(), 1):
-        if BARE not in line or "tcli(" in line or "h.cli ||" in line or "health.cli) ||" in line:
+        if BARE not in line or "tcli(" in line or "tcliHtml(" in line or "h.cli ||" in line or "health.cli) ||" in line:
             continue
         if line.lstrip().startswith(("//", "*")) or "split('python3 measure.py')" in line:
             continue

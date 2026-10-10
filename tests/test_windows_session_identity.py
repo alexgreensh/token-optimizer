@@ -55,15 +55,19 @@ def _csv(rows, header):
 
 
 def _install_fake_powershell(monkeypatch, measure, procs, cim=True, names=True,
-                             parents=((SHELL_PID, 1, "pwsh.exe"), (1, 0, "explorer.exe")), electron_dir=None):
+                             parents=((SHELL_PID, 1, "pwsh.exe"), (1, 0, "explorer.exe")), electron_dir=None,
+                             start_time=None):
     """procs: dicts with pid, ppid, name, session, path, cmdline.
+
+    start_time: the Get-Process StartTime column (default OLD); a localised
+    rendering goes here to prove the parser copes.
 
     electron_dir: None keeps the REAL marker probe (callers use tmp_path);
     a callable stubs it.
     """
     calls = []
     gp = _csv(
-        [{"Id": p["pid"], "ProcessName": p["name"], "SessionId": p.get("session", 1), "StartTime": OLD}
+        [{"Id": p["pid"], "ProcessName": p["name"], "SessionId": p.get("session", 1), "StartTime": start_time or OLD}
          for p in procs],
         ["Id", "ProcessName", "SessionId", "StartTime"],
     )
@@ -905,17 +909,8 @@ def test_collector_with_dotted_locale_output_is_not_unverified(monkeypatch):
     measure = _load_measure()
     procs = [dict(pid=500, ppid=SHELL_PID, name="claude", path=CLI, cmdline=f'"{CLI}"',
                   creation=DOTTED)]
-    _install_fake_powershell(monkeypatch, measure, procs)
-    # Get-Process side also localised: patch the fixture's StartTime column.
-    real_run = measure.subprocess.run
-
-    def dotted_run(argv, **kw):
-        res = real_run(argv, **kw)
-        if "Select-Object Id, ProcessName" in argv[-1]:
-            res.stdout = res.stdout.replace(OLD, DOTTED)
-        return res
-
-    monkeypatch.setattr(measure.subprocess, "run", dotted_run)
+    # Get-Process side is localised too.
+    _install_fake_powershell(monkeypatch, measure, procs, start_time=DOTTED)
     [s] = measure._collect_windows_claude_sessions()
     assert s["identity"] == "terminal_cli"
     assert s["elapsed_seconds"] > 86400 * 365

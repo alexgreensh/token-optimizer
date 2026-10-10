@@ -674,7 +674,7 @@ def _iter_lines(path: Path, deadline: float | None):
         return
     with open(path, "r", encoding="utf-8", errors="replace") as fh:
         for n, line in enumerate(fh):
-            if deadline is not None and (n & 1023) == 0 and time.monotonic() > deadline:
+            if deadline is not None and (n & 1023) == 0 and time.monotonic() >= deadline:
                 raise BudgetExceeded()
             if len(line) > MAX_JSONL_LINE_CHARS:
                 continue
@@ -1059,7 +1059,7 @@ def detect_sequences(traces: list[Trace], deadline: float | None) -> tuple[list[
     partial = False
 
     def over() -> bool:
-        return deadline is not None and time.monotonic() > deadline
+        return deadline is not None and time.monotonic() >= deadline
 
     # k = 1: keys in 3+ sessions
     sess_count: Counter = Counter()
@@ -1450,7 +1450,10 @@ def run(
         partial = False
         scanned = 0
         for i, (path, _mt) in enumerate(considered):
-            if time.monotonic() > parse_deadline:
+            # >=: a spent budget (0.0 included) must stop even when the clock has
+            # not ticked since `started`. Windows' monotonic clock moves in ~15 ms
+            # steps, so a strict > let a zero budget scan every file.
+            if time.monotonic() >= parse_deadline:
                 partial = True
                 break
             if progress:

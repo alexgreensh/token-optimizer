@@ -13,6 +13,7 @@ _RECOVERY_TOOLS = frozenset({'headroom_retrieve', 'caveman_retrieve'})
 # Shell tools whose `command` can be our own `measure.py expand` (the archive matcher
 # covers both; PowerShell is the Windows-native one).
 _SHELL_TOOLS = frozenset({'Bash', 'PowerShell'})
+_QUOTE_OR_EXPANSION = re.compile(r"""['"$`\\]""")
 _PYTHON = re.compile(r'python(?:3(?:\.\d+)?)?(?:\.exe)?\Z', re.IGNORECASE)
 
 
@@ -51,7 +52,15 @@ def _is_printed_hint(command: str) -> bool:
     except Exception:
         return False
     text = command.strip()
-    for shown in {shell_path(raw), raw, raw.replace('\\', '/')}:
+    fwd = raw.replace('\\', '/')
+    shown_forms = {shell_path(raw), raw, fwd}
+    # Plainly quoted forms: single quotes (what a Windows install printed before
+    # cmd.exe-safe double quotes) and double quotes. A path that itself holds a
+    # quote or a shell-expanding character has no plain quoted form, so only the
+    # printer's own escaped form above can match it.
+    if not _QUOTE_OR_EXPANSION.search(fwd):
+        shown_forms.update((f"'{raw}'", f"'{fwd}'", f'"{fwd}"'))
+    for shown in shown_forms:
         prefix = f'python3 {shown} expand '
         if text.startswith(prefix) and _HINT_TAIL.match(text[len(prefix):]):
             return True

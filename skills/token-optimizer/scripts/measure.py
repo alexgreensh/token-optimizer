@@ -20425,6 +20425,14 @@ def _subagent_cache_recommendation(state, current, payoff, billing,
             if decision["decision"] == "not-enough-data":
                 return {"action": "none", "line": decision["reason"]}
             if net < 0:
+                if state != "set":
+                    # No marker says Token Optimizer set this key, so
+                    # `subagent-cache disable` would answer nothing-to-undo.
+                    return {"action": "disable", "manual": True,
+                            "line": (f"is costing about ${abs(net):.2f} net "
+                                     f"({est}) over {window}; remove "
+                                     f"{_SUBAGENT_CACHE_KEY} from "
+                                     f"settings.json by hand")}
                 return {"action": "disable",
                         "line": (f"is costing about ${abs(net):.2f} net ({est}) "
                                  f"over {window}; turn off: `{cmd} disable`")}
@@ -20866,6 +20874,17 @@ def _recs_subagent_item(now=None):
                     direction="on",
                     command=f"python3 {mp} subagent-cache enable",
                     headline=line.split("; turn on:")[0].rstrip(),
+                    reason=decision["reason"])
+    if action == "disable" and rec.get("manual"):
+        # The user set the key by hand: no command can undo it, so the item
+        # carries the manual step in `tradeoff` and an empty `command`.
+        numbers["recommended"] = "off"
+        return dict(item, state="recommend", enough_data=True,
+                    direction="off", command="",
+                    headline=line.split("; remove ")[0].rstrip(),
+                    tradeoff=(f"Token Optimizer did not set this key, so it "
+                              f"cannot remove it: delete {_SUBAGENT_CACHE_KEY} "
+                              f"from settings.json by hand."),
                     reason=decision["reason"])
     if action == "disable":
         numbers["recommended"] = "off"

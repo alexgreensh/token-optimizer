@@ -384,14 +384,40 @@ def test_subagent_item_recommends_enable(m, monkeypatch):
 def test_subagent_item_recommends_disable(m, monkeypatch):
     mod, settings, _h = m
     _write_settings(settings, dict(USER_SETTINGS, **{KEY: "1h"}))
+    set_ts = time.time() - 20 * 86400
+    mod._subagent_cache_write_marker(
+        {"state": "set", "set_ts": set_ts, "set_by": "token-optimizer"})
     _stub_compact(m, monkeypatch, _compact_report())
-    _verdict(m, requests=500, saved=0.50, premium=1.0)   # net -0.50
+    _verdict(m, requests=500, saved=0.50, premium=1.0,
+             since_ts=set_ts)   # net -0.50
     rec = mod.usage_recommendations_refresh()
     it = _rec_items(m, rec)["subagent_cache"]
     assert it["state"] == "recommend"
     assert it["command"].endswith("subagent-cache disable")
     assert it["numbers"]["recommended"] == "off"
     assert it["numbers"]["setting"] == "1h"
+
+
+def test_subagent_item_user_set_key_is_manual_advice_without_a_command(m, monkeypatch):
+    """A key the user set by hand cannot be undone by `subagent-cache
+    disable` (no marker says we set it), so the item must not hand out that
+    command; the advice is to remove the key by hand."""
+    mod, settings, _h = m
+    _write_settings(settings, dict(USER_SETTINGS, **{KEY: "1h"}))
+    _stub_compact(m, monkeypatch, _compact_report())
+    _verdict(m, requests=500, saved=0.50, premium=1.0)   # net -0.50
+    rec = mod.usage_recommendations_refresh()
+    it = _rec_items(m, rec)["subagent_cache"]
+    assert it["state"] == "recommend"
+    assert it["command"] == ""
+    assert it["direction"] == "off"
+    assert it["numbers"]["recommended"] == "off"
+    assert "subagent-cache disable" not in json.dumps(it)
+    assert "by hand" in (it["tradeoff"] + it["headline"])
+    st = mod.subagent_cache_status(use_cache=True)
+    assert st["recommendation"]["action"] == "disable"
+    assert "subagent-cache disable" not in st["recommendation"]["line"]
+    assert "by hand" in st["recommendation"]["line"]
 
 
 def test_subagent_item_keep_when_paying(m, monkeypatch):

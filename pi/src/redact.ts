@@ -2,21 +2,39 @@
  * opening quote and checks the value only with zero-width guards; VALUE then reads the value, and only when it
  * is going to be hidden. A bare KEY before a colon is skipped without reading its value, so a long run of them
  * stays linear, and the scan resumes right after the name so an assignment inside the value is still found. */
-const ASSIGNMENT = /((?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|CREDENTIAL)(?:e?s)?(?![A-Za-z])(?=([A-Za-z0-9_.-]{0,80}))\2["']?[ \t]*[=:][ \t]*["']?)(?![=>:])(?!(?<=")"|(?<=')')(?!""|'')(?!\[(?:CREDENTIAL )?REDACTED)(?!-?\d{1,6}(?:[.,]\d+)?[kKmM%]?["']?(?![\w$]))(?!(?:true|false|yes|no|on|off|null|none|nil|undefined)["']?(?![\w$]))(?!(?:string|number|boolean|bool|str|int|float|any|unknown|object|void)(?![\w$]))(?![A-Za-z_][\w.]*[(\[])(?!\$[{(])(?!\$[A-Z_][A-Z0-9_]*(?![\w$]))/gi;
+const ASSIGNMENT = /((?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|CREDENTIAL)(?:e?s)?(?![A-Za-z])(?=([A-Za-z0-9_.-]{0,80}))\2["']?[ \t]*[=:][ \t]*(?=(["']?))\3)(?![=>:])(?!(?<=")"|(?<=')')(?!""|'')(?!\[(?:CREDENTIAL )?REDACTED)(?!-?\d{1,6}(?:[.,]\d+)?[kKmM%]?["']?(?![\w$]))(?!(?:true|false|yes|no|on|off|null|none|nil|undefined)["']?(?![\w$]))(?!(?:string|number|boolean|bool|str|int|float|any|unknown|object|void)(?![\w$]))(?![A-Za-z_][\w.]*[(\[])(?!\$[{(])(?!\$[A-Z_][A-Z0-9_]*(?![\w$]))/gi;
 const ASSIGNMENT_VALUE = /(?:(?<=")[^"\n]+(?=")|(?<=')[^'\n]+(?=')|\S+)/y;
+/** Names that end in a locator (token_type, KEY_FILE, SECRET_NAME, *_id, *_url, *_count ...) hold a pointer or a
+ * setting, not a secret. Same list as _ASSIGN_LOCATOR_SUFFIX_RE in credential_patterns.py. */
+const LOCATOR_SUFFIX = /^[_.-]*(?:path|file|dir|url|uri|name|id|count|limit|max|min|size|length|len|ttl|expiry|expires|type|field|header|endpoint|regex|budget|label)s?$/i;
+/** A word that, glued to "key", still makes a secret name (apikey, secretkey, privatekey ...). */
+const KEY_QUALIFIER = /(?:api|access|auth|secret|private|public|client|session|refresh|bearer|app|db|user|admin|root|master|signing|encryption|license|ssh|gpg|jwt|oauth|service|webhook)$/i;
+/** KEY is the only keyword that is also an everyday word, so it needs more than the word itself:
+ * - before a COLON it must be a compound (_key, -key, or camelCase apiKey);
+ * - inside another word (monkey=, hotkey=) it is not a name, unless a capital K or a qualifier word comes first. */
+function keyIsSecretName(text: string, m: RegExpExecArray): boolean {
+  const before = text.charAt(m.index - 1);
+  if (/:[ \t]*["']?$/.test(m[0]) && !/[_-]/.test(before) && !(m[0].charAt(0) === 'K' && /[a-z]/.test(before))) return false;
+  if (/\p{L}/u.test(before) && m[0].charAt(0) !== 'K' && !KEY_QUALIFIER.test(text.slice(Math.max(0, m.index - 12), m.index))) return false;
+  return true;
+}
 function redactAssignments(text: string): string {
   ASSIGNMENT.lastIndex = 0;
   let out = '';
   let last = 0;
   for (let m = ASSIGNMENT.exec(text); m !== null; m = ASSIGNMENT.exec(text)) {
     const end = m.index + m[0].length;
-    const before = text.charAt(m.index - 1);
-    const bareKeyBeforeColon = /^key/i.test(m[0]) && /:[ \t]*["']?$/.test(m[0])
-      && !/[_-]/.test(before) && !(m[0].charAt(0) === 'K' && /[a-z]/.test(before));
-    if (bareKeyBeforeColon) continue;
+    // A skipped match resumes one character on, like the Python engine, so a keyword inside it is still tried.
+    if (LOCATOR_SUFFIX.test(m[2]) || (/^key/i.test(m[0]) && !keyIsSecretName(text, m))) {
+      ASSIGNMENT.lastIndex = m.index + 1;
+      continue;
+    }
     ASSIGNMENT_VALUE.lastIndex = end;
     const value = ASSIGNMENT_VALUE.exec(text);
-    if (value === null) continue;
+    if (value === null) {
+      ASSIGNMENT.lastIndex = m.index + 1;
+      continue;
+    }
     out += text.slice(last, end) + '[REDACTED]';
     last = end + value[0].length;
     ASSIGNMENT.lastIndex = last;
@@ -53,7 +71,9 @@ const PATTERNS: ([RegExp, string] | ((text: string) => string))[] = [
   // (optionally plural, so tokenizer and keyboard stay readable) followed by = or :. Also covers
   // YAML labels and JSON keys. The VALUE is hidden whole, quoted values with spaces included; the
   // name and the surrounding quotes stay. Skipped: placeholders, small numbers, booleans, type
-  // names, calls, $VAR refs, empty strings.
+  // names, calls, $VAR refs, empty strings. The opening quote is atomic, so a skipped quoted value
+  // (max_tokens="4096") is never re-read as an unquoted one. Names ending in a locator suffix
+  // (token_type, KEY_FILE, SECRET_NAME) and key inside another word with = (monkey=) are skipped.
   // KEY before a COLON is an ordinary word in code (React key: item.id, "key": "user_id", primary key: id),
   // so there it counts only inside a compound name: _key / -key, or camelCase (apiKey, privateKey).
   // With = nothing changes. TOKEN/SECRET/PASSWORD/PASSWD/PWD/CREDENTIAL are unchanged for both.

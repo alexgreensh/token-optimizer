@@ -648,6 +648,145 @@ const VECTORS = [
       "key: ",
       " x"
     ]
+  },
+  {
+    "name": "PY1 quoted small number is still a number",
+    "input": [
+      "max_tokens=\"4096\""
+    ],
+    "same": true
+  },
+  {
+    "name": "PY1 quoted booleans are still booleans",
+    "input": [
+      "ok=\"true\" password=\"false\""
+    ],
+    "same": true
+  },
+  {
+    "name": "PY1 an existing quoted placeholder is not wrapped again",
+    "input": [
+      "PASSWORD='[CREDENTIAL REDACTED: Secret assignment]' x"
+    ],
+    "same": true
+  },
+  {
+    "name": "PY1 single-quoted small number",
+    "input": [
+      "api_key: '8080'"
+    ],
+    "same": true
+  },
+  {
+    "name": "PY2 key inside another word with = is not a name",
+    "input": [
+      "https://x.com/s?monkey=SOMEVALUE"
+    ],
+    "same": true
+  },
+  {
+    "name": "PY2 hotkey and turkey with = are not names",
+    "input": [
+      "hotkey=ctrl+k turkey=gobble"
+    ],
+    "same": true
+  },
+  {
+    "name": "PY2 qualifier plus key still counts: apikey",
+    "input": [
+      "apikey=FAKErunTogether88"
+    ],
+    "absent": [
+      "FAKErunTogether88"
+    ],
+    "present": [
+      "apikey="
+    ]
+  },
+  {
+    "name": "PY2 qualifier plus key still counts: secretkey and privatekey",
+    "input": [
+      "secretkey=FAKEsecKey11Qw privatekey=FAKEprivKey22Lm"
+    ],
+    "absent": [
+      "FAKEsecKey11Qw",
+      "FAKEprivKey22Lm"
+    ],
+    "present": [
+      "secretkey=",
+      "privatekey="
+    ]
+  },
+  {
+    "name": "PY2 capital K still counts: monKey",
+    "input": [
+      "monKey=FAKEcapitalK33Zx"
+    ],
+    "absent": [
+      "FAKEcapitalK33Zx"
+    ],
+    "present": [
+      "monKey="
+    ]
+  },
+  {
+    "name": "PY3 KEY_FILE and SECRET_NAME hold no secret",
+    "input": [
+      "KEY_FILE=/etc/app/key.pem\nSECRET_NAME=prod-db"
+    ],
+    "same": true
+  },
+  {
+    "name": "PY3 token_type=bearer",
+    "input": [
+      "token_type=bearer"
+    ],
+    "same": true
+  },
+  {
+    "name": "PY3 locator suffixes: count id url path limit",
+    "input": [
+      "token_count=abc user_key_id=u-77f1 SECRET_URL=https://vault.example.com/x password_path=/run/secrets/pw api_key_limit=lots"
+    ],
+    "same": true
+  },
+  {
+    "name": "PY3 more locators: dir uri header endpoint type label size ttl",
+    "input": [
+      "key_dir=keys token_uri=tok token_header=X-Auth secret_endpoint=ep password_type=basic key_label=main token_size=big secret_ttl=soon"
+    ],
+    "same": true
+  },
+  {
+    "name": "PY3 locator suffix, plural",
+    "input": [
+      "api_key_names=a,b"
+    ],
+    "same": true
+  },
+  {
+    "name": "PY3 a name that only starts like a locator is still a secret: token_pathway",
+    "input": [
+      "token_pathway=FAKEpathway44Qw"
+    ],
+    "absent": [
+      "FAKEpathway44Qw"
+    ],
+    "present": [
+      "token_pathway="
+    ]
+  },
+  {
+    "name": "PY3 a locator in the middle does not exempt: KEY_FILE_SECRET",
+    "input": [
+      "KEY_FILE_SECRET=FAKEmidFile55Zx"
+    ],
+    "absent": [
+      "FAKEmidFile55Zx"
+    ],
+    "present": [
+      "KEY_FILE_SECRET="
+    ]
   }
 ];
 

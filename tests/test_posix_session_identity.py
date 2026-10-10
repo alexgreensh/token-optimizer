@@ -122,8 +122,10 @@ def install_ps(monkeypatch, measure, procs, table_rc=0, names_rc=0, table_raises
         # os.getpid). kill-stale reads its own ancestry from the table and fails
         # closed, terminating nothing, when its own pid is absent.
         procs = base_procs
-        if not any(p["pid"] == os.getpid() for p in procs):
-            procs = list(procs) + [proc(os.getpid(), os.getppid(), "python3")]
+        # measure.os, not os: the module under test sees a proxy that tests patch.
+        me, parent = measure.os.getpid(), measure.os.getppid()
+        if not any(p["pid"] == me for p in procs):
+            procs = list(procs) + [proc(me, parent, "python3")]
         if argv_[0] != "ps":
             return subprocess.CompletedProcess(argv_, 1, stdout="", stderr="")
         joined = " ".join(argv_)

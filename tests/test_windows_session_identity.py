@@ -866,10 +866,14 @@ def test_windows_ancestor_walk_follows_the_parent_chain_and_survives_cycles():
 
 
 def test_windows_ancestor_walk_stops_at_a_parent_that_has_exited():
-    """Windows never reparents: a child keeps the pid of a dead parent. The walk ends
-    there with what it proved so far (the dead parent's pid), not with 'unknown'."""
+    """Windows never reparents: a child keeps the pid of a dead parent. Below a
+    system root (explorer and friends, whose own parent has always exited) the walk
+    ends with what it proved. Anywhere else a gap could hide the session we run
+    inside of, so the answer is 'unknown' and kill-stale refuses."""
     measure = _load_measure()
-    assert measure._windows_ancestor_pids(9999, {9999: (9998, "python.exe")}) == {9998}
+    assert measure._windows_ancestor_pids(9999, {9999: (9998, "python.exe")}) is None
+    assert measure._windows_ancestor_pids(
+        9999, {9999: (9998, "python.exe"), 9998: (7, "explorer.exe")}) == {9998, 7}
     assert measure._windows_ancestor_pids(9999, {9999: (0, "python.exe")}) == set()
 
 

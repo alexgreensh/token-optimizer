@@ -128,3 +128,45 @@ def test_thrash_guard_streak_store_redacts_command(sandbox, command, secret):
         "thrash guard stored nothing; test would pass vacuously"
     leaked = sorted({t for t, b in blobs if secret in b})
     assert not leaked, f"{secret!r} stored in {leaked}"
+
+
+CODEX_RUNNER = """
+import json, os, sys
+sys.path.insert(0, {scripts!r})
+import measure
+measure._use_codex_session_adapter = lambda filepath=None: True
+n = measure._codex_backfill_tool_archive(filepath={rollout!r}, session_id="sess-codex", max_outputs=5)
+print("backfilled", n)
+"""
+
+
+def _codex_rollout(path: Path, command: str, ended_command: str) -> None:
+    big = "".join(f"row-{i:04d}: ok\n" for i in range(400)) + "END"
+    recs = [
+        {"payload": {"type": "function_call", "call_id": "call_1", "name": "exec_command",
+                     "arguments": json.dumps({"cmd": command})}},
+        {"payload": {"type": "function_call_output", "call_id": "call_1", "output": big}},
+        {"payload": {"type": "exec_command_end", "call_id": "call_2", "cmd": ended_command,
+                     "exit_code": 1, "aggregated_output": big, "stdout": big}},
+    ]
+    path.write_text("\n".join(json.dumps(r) for r in recs), encoding="utf-8")
+
+
+@pytest.mark.parametrize("command,secret", CASES + [LONG], ids=[c[1][:14] for c in CASES + [LONG]])
+def test_codex_backfill_stores_redacted_command(sandbox, tmp_path, command, secret):
+    """measure._codex_backfill_tool_archive writes command_or_path to the archive JSON and the session store."""
+    env, snap = sandbox
+    rollout = tmp_path / "rollout-codex.jsonl"
+    _codex_rollout(rollout, command, command)
+    code = CODEX_RUNNER.format(scripts=str(SCRIPTS), rollout=str(rollout))
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env, timeout=120)
+    assert proc.returncode == 0, proc.stderr
+    assert "backfilled 0" not in proc.stdout, proc.stdout
+    entries = list((snap / "tool-archive" / "sess-codex").glob("*.json"))
+    assert entries, "backfill wrote no archive entry; test would pass vacuously"
+    stored = [json.loads(e.read_text(encoding="utf-8")).get("command_or_path", "") for e in entries]
+    assert any(stored), "no command_or_path stored; test would pass vacuously"
+    assert not [c for c in stored if secret in c], f"{secret!r} in archive entry command_or_path: {stored}"
+    blobs = list(_db_blobs(snap))
+    assert any(t == "tool_outputs" for t, _ in blobs), "no session-store row; test would pass vacuously"
+    assert not sorted({t for t, b in blobs if secret in b}), f"{secret!r} in session store"

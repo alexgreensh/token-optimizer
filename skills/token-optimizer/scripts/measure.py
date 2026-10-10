@@ -4801,7 +4801,8 @@ def git_context(as_json=False):
     def _run_git(*cmd):
         try:
             r = _sp.run(["git"] + list(cmd), capture_output=True, text=True,
-                        encoding="utf-8", errors="replace", timeout=10)
+                        encoding="utf-8", errors="replace", timeout=10,
+                        creationflags=_NO_WINDOW)
             return r.stdout.strip() if r.returncode == 0 else ""
         except (FileNotFoundError, _sp.TimeoutExpired):
             return ""

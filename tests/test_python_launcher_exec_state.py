@@ -280,3 +280,120 @@ def test_override_interpreter_keeps_cwd(tmp_path):
     seen = _run(tmp_path, proj, warm=False,
                 extra_env={"TOKEN_OPTIMIZER_PYTHON": _for_bash(sys.executable)})
     assert _same_dir(seen["cwd"], proj)
+
+
+# ---------------------------------------------------------------------------
+# An exported ``cd`` shell function must not reach the hook's stdout (finding 4),
+# and the launcher must never leave a directory it cannot return to (finding 9).
+# ---------------------------------------------------------------------------
+
+WHERE_PROBE = """\
+import json, os
+try:
+    cwd = os.getcwd()
+except OSError as exc:
+    cwd = "ERR:" + type(exc).__name__
+print(json.dumps({"cwd": cwd, "env_pwd": os.environ.get("PWD")}))
+"""
+
+
+def _launch_via(tmp_path: Path, prelude: str, cwd: Path, probe_src: str = WHERE_PROBE,
+                *, cache: Path | None = None):
+    """Run the launcher from a ``bash -c`` wrapper that first runs ``prelude``."""
+    probe = tmp_path / "where_probe.py"
+    probe.write_text(probe_src)
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("OLDPWD", "TOKEN_OPTIMIZER_PYTHON", "CDPATH")}
+    cache = cache or (tmp_path / "cache")
+    cache.mkdir(mode=0o700, exist_ok=True)
+    env["TOKEN_OPTIMIZER_PY_CACHE"] = str(cache)
+    script = prelude + '\nexec bash "$1" "$2"\n'
+    return subprocess.run(["bash", "-c", script, "wrapper", str(LAUNCHER), str(probe)],
+                          cwd=cwd, env=env, input="", capture_output=True, text=True,
+                          timeout=60)
+
+
+@pytest.mark.parametrize("warm", [False, True], ids=["cache-miss", "cache-hit"])
+def test_exported_cd_function_does_not_write_into_hook_stdout(tmp_path, warm):
+    """``export -f cd`` wrappers ("cd then ls") print; the launcher must use the builtin."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    prelude = 'cd() { builtin cd "$@" && echo CD-FUNC-NOISE; }; export -f cd'
+    if warm:
+        _launch_via(tmp_path, prelude, proj)
+    done = _launch_via(tmp_path, prelude, proj)
+
+    assert "CD-FUNC-NOISE" not in done.stdout, done.stdout
+    seen = json.loads(done.stdout)  # stdout is exactly the hook's own output
+    assert _same_dir(seen["cwd"], proj), seen
+
+
+def test_launcher_has_no_bare_cd():
+    """Source-level pin: every directory change in the launcher is ``builtin cd``."""
+    import re
+
+    bare = [
+        (n, line.strip())
+        for n, line in enumerate(LAUNCHER.read_text().splitlines(), 1)
+        if re.search(r"(^|[;&|(]\s*|\bthen\s+|\bdo\s+|CDPATH=''\s+)cd\s", line)
+        and not line.lstrip().startswith("#")
+    ]
+    assert bare == [], bare
+
+
+@pytest.mark.parametrize("warm", [False, True], ids=["cache-miss", "cache-hit"])
+def test_vanished_start_dir_is_not_replaced_by_the_plugin_dir(tmp_path, warm):
+    """A removed worktree: the interpreter must not wake up inside ``hooks/``."""
+    gone = tmp_path / "gone worktree"
+    gone.mkdir()
+    cache = tmp_path / "cache"
+    if warm:
+        _launch_via(tmp_path, "true", tmp_path, cache=cache)
+    # ``cwd=gone``, removed from inside the wrapper right before the launcher runs.
+    probe = tmp_path / "where_probe.py"
+    probe.write_text(WHERE_PROBE)
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("OLDPWD", "TOKEN_OPTIMIZER_PYTHON", "CDPATH")}
+    cache.mkdir(mode=0o700, exist_ok=True)
+    env["TOKEN_OPTIMIZER_PY_CACHE"] = str(cache)
+    done = subprocess.run(
+        ["bash", "-c", 'rmdir "$PWD" && exec bash "$1" "$2"', "wrapper",
+         str(LAUNCHER), str(probe)],
+        cwd=gone, env=env, input="", capture_output=True, text=True, timeout=60)
+
+    assert done.returncode == 0, done.stderr
+    seen = json.loads(done.stdout)
+    assert not _same_dir(seen["cwd"], LAUNCHER.parent), seen
+    assert not _same_dir(str(seen["env_pwd"]), LAUNCHER.parent), seen
+
+
+@pytest.mark.skipif(os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+                    reason="needs a directory the current user cannot search")
+@pytest.mark.parametrize("warm", [False, True], ids=["cache-miss", "cache-hit"])
+def test_unsearchable_start_dir_is_not_replaced_by_the_plugin_dir(tmp_path, warm):
+    """Started in a directory without +x: the cwd must stay put (it cannot be re-entered)."""
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    cache = tmp_path / "cache"
+    cache.mkdir(mode=0o700)
+    probe = tmp_path / "where_probe.py"
+    probe.write_text(WHERE_PROBE)
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("OLDPWD", "TOKEN_OPTIMIZER_PYTHON", "CDPATH")}
+    env["TOKEN_OPTIMIZER_PY_CACHE"] = str(cache)
+    try:
+        if warm:
+            subprocess.run(["bash", str(LAUNCHER), str(probe)], cwd=tmp_path, env=env,
+                           input="", capture_output=True, text=True, timeout=60)
+        # chdir first, lock afterwards: the process keeps a directory it can no
+        # longer search, exactly like a host whose project dir lost its +x bit.
+        done = subprocess.run(
+            ["bash", "-c", 'cd "$1" && chmod 000 "$1" && exec bash "$2" "$3"', "wrapper",
+             str(locked), str(LAUNCHER), str(probe)],
+            cwd=tmp_path, env=env, input="", capture_output=True, text=True, timeout=60)
+    finally:
+        locked.chmod(0o755)
+
+    assert done.returncode == 0, done.stderr
+    seen = json.loads(done.stdout)
+    assert not _same_dir(seen["cwd"], LAUNCHER.parent), seen

@@ -56,14 +56,32 @@ _SAFE_PREFIXES="/usr/bin /usr/local/bin /opt/homebrew/bin /opt/homebrew/opt /hom
 # directory (the hook must run in the project the host launched it from, not in
 # the plugin's hooks/ dir), $PWD (logical, as the host had it) and OLDPWD
 # (restored, or left unset if it was unset -- never exported as an empty string).
+#
+# `builtin cd` everywhere: a user who exports a `cd` shell function (the classic
+# "cd then ls" wrapper; bash imports it from the environment) would otherwise
+# have it run here, and whatever it prints would land in the hook's stdout ahead
+# of the hook's own output (it used to be captured by the old $(...) form).
+#
+# Never leave a directory we cannot return to: if the start dir was removed
+# (worktree cleanup), lost its +x bit, or its path no longer leads back to the
+# same directory, the jump would be one-way and the interpreter would wake up
+# inside the plugin's hooks/ dir with a PWD that points there. In that case skip
+# the canonicalisation (callers treat failure as "cache off for this run").
+# `-ef` is a builtin test (no fork) that follows symlinks, so a logical $PWD
+# through a symlink still passes.
 _canonicalize_dir() {
     local _start=$PWD _had_old=${OLDPWD+x} _oldpwd=${OLDPWD:-} _rc=1
-    if CDPATH='' cd -P -- "$1" 2>/dev/null; then
+    if [ -n "$_start" ] && [ -d "$_start" ] && [ -x "$_start" ] && [ "$_start" -ef . ]; then
+        :
+    else
+        return 1
+    fi
+    if CDPATH='' builtin cd -P -- "$1" 2>/dev/null; then
         _CANON_DIR=$PWD
         _rc=0
         # Best effort: if the start dir vanished or lost +x there is nothing
         # better to restore, and the launcher must still never abort (set -e).
-        if [ -n "$_start" ]; then CDPATH='' cd -- "$_start" 2>/dev/null || :; fi
+        CDPATH='' builtin cd -- "$_start" 2>/dev/null || :
     fi
     if [ -n "$_had_old" ]; then OLDPWD=$_oldpwd; else unset OLDPWD; fi
     return "$_rc"

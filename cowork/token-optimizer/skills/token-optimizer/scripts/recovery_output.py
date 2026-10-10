@@ -10,6 +10,9 @@ import shlex
 from pathlib import Path
 
 _RECOVERY_TOOLS = frozenset({'headroom_retrieve', 'caveman_retrieve'})
+# Shell tools whose `command` can be our own `measure.py expand` (the archive matcher
+# covers both; PowerShell is the Windows-native one).
+_SHELL_TOOLS = frozenset({'Bash', 'PowerShell'})
 _PYTHON = re.compile(r'python(?:3(?:\.\d+)?)?(?:\.exe)?\Z', re.IGNORECASE)
 
 
@@ -80,5 +83,5 @@ def is_expand_command(command: str) -> bool:
 def is_recovery_output(tool_name: str, tool_input) -> bool:
     if is_recovery_tool(tool_name):
         return True
-    return (tool_name == 'Bash' and isinstance(tool_input, dict)
+    return (tool_name in _SHELL_TOOLS and isinstance(tool_input, dict)
             and is_expand_command(tool_input.get('command', '')))

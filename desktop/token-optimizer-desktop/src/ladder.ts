@@ -2,6 +2,7 @@
 // at most one button. Pure.
 import type { Limit, Mood, Snapshot } from './contracts.ts'
 import type { IconName } from './icons.ts'
+import { DASHBOARD_OPENING } from './actions.ts'
 import { clock, gradeOf, renewalPhrase, tokens, type FormatOptions } from './format.ts'
 
 export type Tone = 'good' | 'caution' | 'bad' | 'cold'
@@ -42,6 +43,7 @@ export function sentence(s: Snapshot, opts: FormatOptions = {}): Sentence {
   if (s.busy === 'clean') return say('compact', 'good', [plain('Cleaning up.')])
   if (s.busy === 'fresh-capture') return say('bookmark', 'good', [plain('Saving checkpoint.')])
   if (s.busy === 'fresh-clear') return say('bookmark', 'good', [plain('Clearing.')])
+  if (s.busy === 'dashboard') return say('gauge', 'good', [plain(DASHBOARD_OPENING)])
   if (s.busy === 'warming') return say('hourglass', 'good', [plain('Keeping the cache warm.')])
   if (s.freshArmed) {
     return say('bookmark', 'caution', [plain('Start fresh clears this conversation after saving a checkpoint.')], {

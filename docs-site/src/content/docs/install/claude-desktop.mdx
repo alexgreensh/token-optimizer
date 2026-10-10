@@ -28,6 +28,10 @@ If you installed the separate `token-optimizer-desktop` plugin from an earlier r
 - The **arrow beside Clawd** unfolds one more line: branch, session time, tool calls, compactions (when any), when the last checkpoint was saved (any kind, or a relevant one from an earlier session), and the tokens Token Optimizer saved you in the last 30 days, the same total the dashboard shows.
 - Clawd acts out what the session is doing: thinking, reading, typing, subagents, waiting for your permission, writing, compacting, done, stopped, API error, cold cache, napping.
 
+## Full dashboard
+
+With the line unfolded (the arrow beside Clawd), the last thing on it is a plain text link, **Full dashboard**, in both the full and the slim band. The folded band does not show it. A click regenerates the Token Optimizer dashboard and opens it in your default browser, the same as the `token-dashboard` skill. While it runs the band says "Opening the dashboard."; if it cannot, it says "Could not open the dashboard." for a few seconds and nothing else happens. Clicking again while it is still opening is ignored.
+
 ## Buttons
 
 - **Clean up** compacts with Token Optimizer's guidance, the same as typing `/compact`.

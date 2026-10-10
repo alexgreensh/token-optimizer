@@ -412,3 +412,15 @@ def test_exact_auto_beats_family_number(measure):
     # 'auto' on the exact key = tuned default, replaces the top-level value.
     assert res["tokens"] == 967_000
     assert res["user_override"] is False
+
+
+def test_env_window_source_explains_host_reading_of_suffix_value(measure):
+    """F-T2-3: '500k' is read by the host as 500 and floored to 100000. The
+    source must say so rather than present 100000 as the user's own number."""
+    r = measure._resolve_compact_window(
+        "claude-opus-5-5", env={"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "500k"}, settings={})
+    assert r["tokens"] == 100_000
+    assert "read as 500" in r["source"] and "floored to 100000" in r["source"]
+    clean = measure._resolve_compact_window(
+        "claude-opus-5-5", env={"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "500000"}, settings={})
+    assert clean["source"] == "env CLAUDE_CODE_AUTO_COMPACT_WINDOW=500000"

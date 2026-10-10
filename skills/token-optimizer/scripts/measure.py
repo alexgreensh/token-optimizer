@@ -3627,6 +3627,14 @@ def _resolve_compact_window(model, env=None, settings=None):
     if parsed is not None:
         tokens = _clamp_compact_window(parsed)
         source = f"env CLAUDE_CODE_AUTO_COMPACT_WINDOW={raw_env}"
+        if str(raw_env).strip() != str(tokens):
+            # The host's own reading ("500k" is 500, floored) is not the number
+            # the user typed: say so instead of presenting it as their override.
+            if tokens == parsed:
+                source += f" (read as {parsed})"
+            else:
+                bound = "floored to" if tokens > parsed else "capped at"
+                source += f" (read as {parsed}, {bound} {tokens})"
         user_override = True
     else:
         prefix = ""

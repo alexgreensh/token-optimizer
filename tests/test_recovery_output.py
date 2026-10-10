@@ -172,15 +172,26 @@ def test_the_hint_token_optimizer_prints_is_recognized():
     assert not is_expand_command(expand_command('original') + ' | cat')
 
 
-@pytest.mark.parametrize('path,shown', [
-    ('/opt/to/scripts/measure.py', '/opt/to/scripts/measure.py'),
+@pytest.mark.parametrize('path,posix_shown,windows_shown', [
+    ('/opt/to/scripts/measure.py', '/opt/to/scripts/measure.py', '/opt/to/scripts/measure.py'),
+    # A Windows host double-quotes (one argument in cmd.exe too); macOS/Linux single-quote.
     ('/Users/First Last/Library/Application Support/to/measure.py',
-     "'/Users/First Last/Library/Application Support/to/measure.py'"),
-    ("/home/o'brien/to/measure.py", '"/home/o\'brien/to/measure.py"'),
+     "'/Users/First Last/Library/Application Support/to/measure.py'",
+     '"/Users/First Last/Library/Application Support/to/measure.py"'),
+    ("/home/o'brien/to/measure.py", '"/home/o\'brien/to/measure.py"', '"/home/o\'brien/to/measure.py"'),
 ])
-def test_hint_path_is_pasteable(path, shown):
+def test_hint_path_is_pasteable(path, posix_shown, windows_shown):
     from refetch_fingerprint import shell_path
-    assert shell_path(path) == shown
+    assert shell_path(path) == (windows_shown if os.name == 'nt' else posix_shown)
+
+
+def test_hint_path_is_pasteable_under_either_rule_on_any_host(monkeypatch):
+    import refetch_fingerprint
+    spaced = '/Users/First Last/Library/Application Support/to/measure.py'
+    monkeypatch.setattr(refetch_fingerprint, '_windows_hints', lambda: False)
+    assert refetch_fingerprint.shell_path(spaced) == f"'{spaced}'"
+    monkeypatch.setattr(refetch_fingerprint, '_windows_hints', lambda: True)
+    assert refetch_fingerprint.shell_path(spaced) == f'"{spaced}"'
 
 
 def test_hint_with_a_space_in_the_install_path_round_trips(tmp_path, monkeypatch):
@@ -208,7 +219,7 @@ def test_windows_shaped_hint_is_recognized(monkeypatch):
     monkeypatch.setattr(refetch_fingerprint.os, 'name', 'nt')
     hint = refetch_fingerprint.expand_command('original')
     # Double quotes: cmd.exe, PowerShell and Git Bash all read them as one argument.
-    assert hint == 'python3 "C:/Users/First Last/.claude/plugins/cache/to/scripts/measure.py" expand original'
+    assert hint == 'python "C:/Users/First Last/.claude/plugins/cache/to/scripts/measure.py" expand original'
     assert recovery_output.is_expand_command(hint)
     assert recovery_output.is_expand_command(hint + ' --session abc-1')
     assert recovery_output.is_expand_command(f'python3 {win} expand original')
@@ -227,7 +238,7 @@ def test_windows_hint_without_a_space_is_bare_and_recognized(monkeypatch):
     monkeypatch.setattr(refetch_fingerprint, 'measure_py_path', lambda: win)
     monkeypatch.setattr(refetch_fingerprint.os, 'name', 'nt')
     hint = refetch_fingerprint.expand_command('original')
-    assert hint == 'python3 D:/a/token-optimizer/skills/token-optimizer/scripts/measure.py expand original'
+    assert hint == 'python D:/a/token-optimizer/skills/token-optimizer/scripts/measure.py expand original'
     assert recovery_output.is_expand_command(hint)
 
 

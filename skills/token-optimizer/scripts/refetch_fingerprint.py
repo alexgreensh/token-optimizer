@@ -173,7 +173,26 @@ def measure_py_path() -> str:
 def expand_command(key: str) -> str:
     """The exact Bash command that retrieves an archived result — one source of
     truth for both the archive footer and the guard's deny reason."""
-    return f"python3 {shell_path(measure_py_path())} expand {key}"
+    return f"{hint_python()} {shell_path(measure_py_path())} expand {key}"
+
+
+def _windows_hints() -> bool:
+    """True when printed commands must run in cmd.exe, PowerShell and Git Bash.
+
+    The one predicate every hint helper reads, so the Windows forms can be
+    exercised on any OS by patching it.
+    """
+    return os.name == "nt"
+
+
+def hint_python() -> str:
+    """The interpreter name a printed command should use on this OS.
+
+    ``python.exe`` ships with python.org AND Microsoft Store installs; ``python3``
+    exists on Windows only as a Store alias. macOS and Linux keep ``python3``
+    (``python`` is Python 2 or absent on many of them).
+    """
+    return "python" if _windows_hints() else "python3"
 
 
 _SHELL_SAFE_PATH = re.compile(r"[A-Za-z0-9_./:@%+=,-]+\Z")
@@ -199,7 +218,7 @@ def shell_path(path: str) -> str:
     is single-quoted. A path that needs no quoting is returned as is.
     """
     text = str(path)
-    if os.name == "nt":
+    if _windows_hints():
         text = text.replace("\\", "/")
         if _SHELL_SAFE_PATH.match(text) and "%" not in text:
             return text

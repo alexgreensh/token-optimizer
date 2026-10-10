@@ -7,6 +7,7 @@ the scripts directory. Other notices already print the resolved script path.
 """
 
 import importlib.util
+import os
 import shlex
 import sys
 from pathlib import Path
@@ -28,18 +29,31 @@ def _load_measure():
     return module
 
 
+def _host_hint(path):
+    """What the hint builder prints for `path` on THIS host: python3 + POSIX quoting on
+    macOS/Linux, python + forward slashes and cmd.exe-safe quoting on Windows."""
+    from refetch_fingerprint import hint_python, shell_path
+    return f"{hint_python()} {shell_path(str(path))}"
+
+
 def test_cli_command_prefix_uses_the_resolved_script_path():
     measure = _load_measure()
-    expected = f"python3 {shlex.quote(str(MEASURE_PATH.resolve()))}"
+    expected = _host_hint(MEASURE_PATH.resolve())
     assert measure._measure_cli() == expected
     assert measure._measure_cli("kill-stale", "--dry-run") == expected + " kill-stale --dry-run"
+    if os.name != "nt":  # the POSIX output is exactly what it always was
+        assert expected == f"python3 {shlex.quote(str(MEASURE_PATH.resolve()))}"
 
 
 def test_a_script_path_with_spaces_stays_one_shell_word(monkeypatch):
     measure = _load_measure()
     monkeypatch.setattr(measure, "__file__", "/Users/a b/plugins/token optimizer/measure.py")
     cmd = measure._measure_cli("kill-stale")
-    assert shlex.split(cmd)[:2] == ["python3", str(Path("/Users/a b/plugins/token optimizer/measure.py").resolve())]
+    resolved = Path("/Users/a b/plugins/token optimizer/measure.py").resolve()
+    # Windows prints forward slashes ("D:/Users/a b/..."), a POSIX host the path as is.
+    shown = resolved.as_posix() if os.name == "nt" else str(resolved)
+    from refetch_fingerprint import hint_python
+    assert shlex.split(cmd)[:2] == [hint_python(), shown]
 
 
 def test_health_data_hands_the_dashboard_the_resolved_command(monkeypatch):

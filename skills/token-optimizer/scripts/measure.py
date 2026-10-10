@@ -116,7 +116,16 @@ from plugin_env import (
     snapshot_dir_candidates,
 )
 from utf8_io import enforce_utf8_io, reexec_in_utf8_mode
-from runtime_env import _safe_home, claude_home, detect_runtime, is_cowork, runtime_home, runtime_name_for_humans, shell_path
+from runtime_env import (
+    _safe_home, claude_home, consume_runtime_flag, detect_runtime, hint_python, is_cowork,
+    runtime_home, runtime_name_for_humans, shell_path, _windows_hints,
+)
+
+if __name__ == "__main__":
+    # `--runtime NAME` is the cmd.exe/PowerShell spelling of TOKEN_OPTIMIZER_RUNTIME=NAME
+    # (printed on Windows, where the env-prefix form does not parse). It must land in
+    # the environment before anything below reads the runtime.
+    sys.argv[:] = consume_runtime_flag(sys.argv, os.environ)
 from spawn_utils import spawn_detached
 
 # Every console-attached child we spawn on Windows flashes a cmd
@@ -4726,9 +4735,7 @@ def doctor(as_json=False):
         if _scb.get("hint"):
             print(f"  {'':5s}   note: {_scb['hint']}")
         if _sc_state == "set":
-            print(f"  {'':5s} Undo: python3 "
-                  f"{_shell_script_path()} "
-                  "subagent-cache disable")
+            print(f"  {'':5s} Undo: {_subagent_cache_cmd('disable')}")
     except Exception:
         pass  # doctor must never fail on this optional row
 
@@ -6359,22 +6366,48 @@ def _measure_cli(*args):
     """The command that runs this script, for hints a user will paste into a shell.
 
     Always the resolved script path (quoted): a bare `python3 measure.py` only works
-    from inside the scripts directory, which is where nobody is. On Windows the path
-    uses forward slashes and double quotes, the one form cmd.exe, PowerShell and Git
-    Bash all read as a single argument (`runtime_env.shell_path`).
+    from inside the scripts directory, which is where nobody is. On Windows the
+    interpreter is `python`, and the path uses forward slashes and double quotes, the
+    one form cmd.exe, PowerShell and Git Bash all read as a single argument
+    (`runtime_env.shell_path`).
     """
-    parts = ["python3", _shell_script_path()]
+    parts = [hint_python(), _shell_script_path()]
     parts.extend(args)
     return " ".join(parts)
+
+
+def _runtime_cli(runtime, *args):
+    """`_measure_cli` pinned to a runtime for hints.
+
+    macOS/Linux: the Bash `TOKEN_OPTIMIZER_RUNTIME=NAME python3 <script>` prefix,
+    unchanged. cmd.exe and PowerShell cannot parse that, so on Windows it is
+    `python <script> --runtime NAME` (a leading global flag, see `consume_runtime_flag`).
+    """
+    if _windows_hints():
+        parts = [hint_python(), _shell_script_path(), "--runtime", runtime]
+    else:
+        parts = [f"TOKEN_OPTIMIZER_RUNTIME={runtime}", hint_python(), _shell_script_path()]
+    parts.extend(args)
+    return " ".join(parts)
+
+
+_ENV_PREFIXED_BARE_HINT = re.compile(r"TOKEN_OPTIMIZER_RUNTIME=(\w+) python3 measure\.py")
 
 
 def _hint(text):
     """Make a printed hint pasteable from any directory.
 
     Hints are written as `python3 measure.py <subcommand>`; this swaps that
-    bare prefix for the resolved, quoted script path (`_measure_cli()`).
+    bare prefix for the resolved, quoted script path (`_measure_cli()`). A
+    `TOKEN_OPTIMIZER_RUNTIME=X` prefix (Bash only) becomes `--runtime X` on Windows.
     """
+    text = _ENV_PREFIXED_BARE_HINT.sub(lambda m: _runtime_cli(m.group(1)), text)
     return text.replace("python3 measure.py", _measure_cli())
+
+
+def _subagent_cache_cmd(action=None):
+    """The `subagent-cache [action]` command users are told to run (advice, enable, undo)."""
+    return _measure_cli("subagent-cache", *([action] if action else []))
 
 
 def _display_path(absolute_path):
@@ -6420,8 +6453,8 @@ def _collect_hook_status_for_dashboard():
             "installed": session_end_installed,
             "label": "Session Tracking",
             "description": "Collects usage data after each session. Powers Trends and Health tabs.",
-            "install_cmd": f"python3 {mp_cmd} setup-hook",
-            "uninstall_cmd": f"python3 {mp_cmd} setup-hook --uninstall",
+            "install_cmd": f"{hint_python()} {mp_cmd} setup-hook",
+            "uninstall_cmd": f"{hint_python()} {mp_cmd} setup-hook --uninstall",
         },
         "smart_compact": {
             "installed": all(smart_compact_status.values()),
@@ -6429,8 +6462,8 @@ def _collect_hook_status_for_dashboard():
             "detail": smart_compact_status,
             "label": "Smart Compaction",
             "description": "Captures session state before compaction, restores it after. Protects your working memory.",
-            "install_cmd": f"python3 {mp_cmd} setup-smart-compact",
-            "uninstall_cmd": f"python3 {mp_cmd} setup-smart-compact --uninstall",
+            "install_cmd": f"{hint_python()} {mp_cmd} setup-smart-compact",
+            "uninstall_cmd": f"{hint_python()} {mp_cmd} setup-smart-compact --uninstall",
         },
     }
 
@@ -6448,7 +6481,7 @@ def _collect_codex_hook_status_for_dashboard():
         return by_name.get(name, {}).get("status") == "OK"
 
     project_arg = shlex.quote(str(project))
-    base = f"TOKEN_OPTIMIZER_RUNTIME=codex python3 {mp_cmd} codex-install --project {project_arg}"
+    base = f"{_runtime_cli('codex')} codex-install --project {project_arg}"
     try:
         hooks_text = (project / ".codex" / "hooks.json").read_text(encoding="utf-8")
     except OSError:
@@ -6466,7 +6499,7 @@ def _collect_codex_hook_status_for_dashboard():
             "partial": by_name.get("Compact prompt", {}).get("status") == "WARN",
             "label": "Codex Compact Prompt",
             "description": "Adds Token Optimizer compact guidance to Codex config so manual compaction preserves decisions, files, and continuation state.",
-            "install_cmd": f"TOKEN_OPTIMIZER_RUNTIME=codex python3 {mp_cmd} codex-compact-prompt --install",
+            "install_cmd": f"{_runtime_cli('codex')} codex-compact-prompt --install",
             "uninstall_cmd": "Edit ~/.codex/config.toml and remove compact_prompt / experimental_compact_prompt_file",
         },
         "codex_bash_compression": {
@@ -6524,8 +6557,8 @@ def _collect_copilot_hook_status_for_dashboard():
     def _ok(name):
         return by_name.get(name, {}).get("status") == "ok"
 
-    install_cmd = f"TOKEN_OPTIMIZER_RUNTIME=copilot python3 {mp_cmd} copilot-install"
-    doctor_cmd = f"TOKEN_OPTIMIZER_RUNTIME=copilot python3 {mp_cmd} copilot-doctor"
+    install_cmd = f"{_runtime_cli('copilot')} copilot-install"
+    doctor_cmd = f"{_runtime_cli('copilot')} copilot-doctor"
 
     return {
         "copilot_hooks": {
@@ -6534,7 +6567,7 @@ def _collect_copilot_hook_status_for_dashboard():
             "label": "Copilot CLI Hooks",
             "description": "Wires Token Optimizer into ~/.copilot/hooks/: sessionStart continuity restore, preToolUse bash compression (capability-gated), postToolUse crash-recovery tally + nudges, stop-time rollup.",
             "install_cmd": install_cmd,
-            "uninstall_cmd": f"TOKEN_OPTIMIZER_RUNTIME=copilot python3 {mp_cmd} copilot-uninstall",
+            "uninstall_cmd": f"{_runtime_cli('copilot')} copilot-uninstall",
         },
         "copilot_capabilities": {
             "installed": _ok("capabilities"),
@@ -6582,8 +6615,8 @@ def _collect_cursor_hook_status_for_dashboard():
     def _ok(name):
         return by_name.get(name, {}).get("status") == "ok"
 
-    install_cmd = f"TOKEN_OPTIMIZER_RUNTIME=cursor python3 {mp_cmd} cursor-install"
-    doctor_cmd = f"TOKEN_OPTIMIZER_RUNTIME=cursor python3 {mp_cmd} cursor-doctor"
+    install_cmd = f"{_runtime_cli('cursor')} cursor-install"
+    doctor_cmd = f"{_runtime_cli('cursor')} cursor-doctor"
 
     return {
         "cursor_hooks": {
@@ -6592,7 +6625,7 @@ def _collect_cursor_hook_status_for_dashboard():
             "label": "Cursor Hooks",
             "description": "Merges Token Optimizer into ~/.cursor/hooks.json: sessionStart continuity restore, preToolUse Shell bash compression, postToolUse tally + nudges, preCompact capture, stop-time rollup and session-end dashboard refresh.",
             "install_cmd": install_cmd,
-            "uninstall_cmd": f"TOKEN_OPTIMIZER_RUNTIME=cursor python3 {mp_cmd} cursor-uninstall",
+            "uninstall_cmd": f"{_runtime_cli('cursor')} cursor-uninstall",
         },
         "cursor_payload": {
             "installed": _ok("hook payload"),
@@ -6635,8 +6668,8 @@ def _collect_grok_hook_status_for_dashboard():
     def _ok(name):
         return by_name.get(name, {}).get("status") == "ok"
 
-    install_cmd = f"TOKEN_OPTIMIZER_RUNTIME=grok python3 {mp_cmd} grok-install"
-    doctor_cmd = f"TOKEN_OPTIMIZER_RUNTIME=grok python3 {mp_cmd} grok-doctor"
+    install_cmd = f"{_runtime_cli('grok')} grok-install"
+    doctor_cmd = f"{_runtime_cli('grok')} grok-doctor"
 
     return {
         "grok_hooks": {
@@ -6645,7 +6678,7 @@ def _collect_grok_hook_status_for_dashboard():
             "label": "Grok Build Hooks",
             "description": "Wires Token Optimizer into $GROK_HOME/hooks/token-optimizer.json: sessionStart continuity restore, userPromptSubmit quality tracking, preToolUse bash compression (capability-gated), postToolUse crash-recovery tally + nudges, stop-time rollup.",
             "install_cmd": install_cmd,
-            "uninstall_cmd": f"TOKEN_OPTIMIZER_RUNTIME=grok python3 {mp_cmd} grok-uninstall",
+            "uninstall_cmd": f"{_runtime_cli('grok')} grok-uninstall",
         },
         "grok_session_store": {
             "installed": _ok("session store"),
@@ -6662,7 +6695,7 @@ def _collect_grok_hook_status_for_dashboard():
             "installed": _ok("dashboard daemon"),
             "label": "Dashboard Port 24848",
             "description": "Confirms that port 24848 is available or already serving the Grok Build Token Optimizer dashboard.",
-            "install_cmd": f"TOKEN_OPTIMIZER_RUNTIME=grok python3 {mp_cmd} open-dashboard",
+            "install_cmd": f"{_runtime_cli('grok')} open-dashboard",
             "uninstall_cmd": "",
         },
     }
@@ -6684,8 +6717,8 @@ def _collect_hermes_hook_status_for_dashboard():
     def _ok(name):
         return by_name.get(name, {}).get("status") == "OK"
 
-    install_cmd = f"TOKEN_OPTIMIZER_RUNTIME=hermes python3 {mp_cmd} hermes-install"
-    doctor_cmd = f"TOKEN_OPTIMIZER_RUNTIME=hermes python3 {mp_cmd} hermes-doctor"
+    install_cmd = f"{_runtime_cli('hermes')} hermes-install"
+    doctor_cmd = f"{_runtime_cli('hermes')} hermes-doctor"
 
     return {
         "hermes_plugin": {
@@ -6715,7 +6748,7 @@ def _collect_hermes_hook_status_for_dashboard():
             "installed": _ok(f"Dashboard port {hermes_doctor.DASHBOARD_PORT}"),
             "label": "Dashboard Port 24844",
             "description": "Confirms that port 24844 is available or already serving the Hermes Token Optimizer dashboard.",
-            "install_cmd": f"TOKEN_OPTIMIZER_RUNTIME=hermes python3 {mp_cmd} open-dashboard",
+            "install_cmd": f"{_runtime_cli('hermes')} open-dashboard",
             "uninstall_cmd": "",
         },
     }
@@ -6738,8 +6771,8 @@ def _collect_antigravity_hook_status_for_dashboard():
     def _ok(name):
         return by_name.get(name, {}).get("status") == "ok"
 
-    install_cmd = f"TOKEN_OPTIMIZER_RUNTIME=antigravity python3 {mp_cmd} antigravity-install"
-    doctor_cmd = f"TOKEN_OPTIMIZER_RUNTIME=antigravity python3 {mp_cmd} antigravity-doctor"
+    install_cmd = f"{_runtime_cli('antigravity')} antigravity-install"
+    doctor_cmd = f"{_runtime_cli('antigravity')} antigravity-doctor"
 
     return {
         "antigravity_plugin": {
@@ -6747,7 +6780,7 @@ def _collect_antigravity_hook_status_for_dashboard():
             "label": "Antigravity Plugin",
             "description": "Installs the Token Optimizer plugin into ~/.gemini/config/plugins/token-optimizer/. Provides continuity restore, context nudges, bash compression, and stop rollup.",
             "install_cmd": install_cmd,
-            "uninstall_cmd": f"TOKEN_OPTIMIZER_RUNTIME=antigravity python3 {mp_cmd} antigravity-uninstall",
+            "uninstall_cmd": f"{_runtime_cli('antigravity')} antigravity-uninstall",
         },
         "antigravity_hooks": {
             "installed": _ok("plugin hooks"),
@@ -6755,7 +6788,7 @@ def _collect_antigravity_hook_status_for_dashboard():
             "label": "Antigravity Hook Declarations",
             "description": "Verifies hooks.json declares PreInvocation, PreToolUse (run_command matcher), and Stop.",
             "install_cmd": install_cmd,
-            "uninstall_cmd": f"TOKEN_OPTIMIZER_RUNTIME=antigravity python3 {mp_cmd} antigravity-uninstall",
+            "uninstall_cmd": f"{_runtime_cli('antigravity')} antigravity-uninstall",
         },
         "antigravity_consent": {
             "installed": _ok("consent record"),
@@ -6772,7 +6805,7 @@ def _collect_antigravity_hook_status_for_dashboard():
             "installed": _ok("dashboard daemon"),
             "label": "Dashboard Port 24847",
             "description": "Confirms that port 24847 is available or already serving the Antigravity Token Optimizer dashboard.",
-            "install_cmd": f"TOKEN_OPTIMIZER_RUNTIME=antigravity python3 {mp_cmd} open-dashboard",
+            "install_cmd": f"{_runtime_cli('antigravity')} open-dashboard",
             "uninstall_cmd": "",
         },
     }
@@ -6874,8 +6907,8 @@ def _collect_codex_skill_inventory(cfg: dict, *, project: Path) -> dict[str, lis
             "tokens": meta.get("tokens", 0),
             "source": source,
             "path": _display_path(resolved),
-            "disable_cmd": f"TOKEN_OPTIMIZER_RUNTIME=codex python3 {mp_cmd} codex-skill disable --path {shlex.quote(resolved)}",
-            "enable_cmd": f"TOKEN_OPTIMIZER_RUNTIME=codex python3 {mp_cmd} codex-skill enable --path {shlex.quote(resolved)}",
+            "disable_cmd": f"{_runtime_cli('codex')} codex-skill disable --path {shlex.quote(resolved)}",
+            "enable_cmd": f"{_runtime_cli('codex')} codex-skill enable --path {shlex.quote(resolved)}",
         }
         _pkey = _plugin_key_for(resolved)
         if resolved in disabled_paths or (_pkey is not None and _pkey in disabled_plugin_keys):
@@ -6905,8 +6938,8 @@ def _collect_codex_mcp_inventory(cfg: dict) -> list[dict]:
             "transport": transport,
             "tokens": TOKENS_PER_DEFERRED_TOOL,
             "enabled": enabled,
-            "disable_cmd": f"TOKEN_OPTIMIZER_RUNTIME=codex python3 {mp_cmd} codex-mcp disable {shlex.quote(str(name))}",
-            "enable_cmd": f"TOKEN_OPTIMIZER_RUNTIME=codex python3 {mp_cmd} codex-mcp enable {shlex.quote(str(name))}",
+            "disable_cmd": f"{_runtime_cli('codex')} codex-mcp disable {shlex.quote(str(name))}",
+            "enable_cmd": f"{_runtime_cli('codex')} codex-mcp enable {shlex.quote(str(name))}",
         })
     return sorted(items, key=lambda item: item["name"])
 
@@ -7118,7 +7151,7 @@ def _collect_management_data(components=None, trends=None):
     if detect_runtime() == "codex":
         project = Path.cwd().resolve(strict=False)
         project_arg = shlex.quote(str(project))
-        base = f"TOKEN_OPTIMIZER_RUNTIME=codex python3 {mp_cmd} codex-install --project {project_arg}"
+        base = f"{_runtime_cli('codex')} codex-install --project {project_arg}"
         cfg = _read_codex_config()
         codex_skills = _collect_codex_skill_inventory(cfg, project=project)
         codex_mcp = _collect_codex_mcp_inventory(cfg)
@@ -7137,9 +7170,9 @@ def _collect_management_data(components=None, trends=None):
                 "install_with_bash_compression_cmd": base + " --enable-bash-compression",
                 "install_with_hot_path_hooks_cmd": base + " --enable-hot-path-hooks --enable-prompt-hooks",
                 "install_with_status_line_cmd": base + " --enable-status-line",
-                "refresh_cmd": f"TOKEN_OPTIMIZER_RUNTIME=codex python3 {mp_cmd} session-end-flush --trigger manual --no-defer",
-                "doctor_cmd": f"TOKEN_OPTIMIZER_RUNTIME=codex python3 {mp_cmd} codex-doctor --project {project_arg}",
-                "dashboard_cmd": f"TOKEN_OPTIMIZER_RUNTIME=codex python3 {mp_cmd} dashboard",
+                "refresh_cmd": f"{_runtime_cli('codex')} session-end-flush --trigger manual --no-defer",
+                "doctor_cmd": f"{_runtime_cli('codex')} codex-doctor --project {project_arg}",
+                "dashboard_cmd": f"{_runtime_cli('codex')} dashboard",
             },
             "skills": {"active": codex_skills["active"], "archived": [], "disabled": codex_skills["disabled"]},
             "mcp_servers": {"active": codex_mcp_active, "disabled": codex_mcp_disabled, "cloud": []},
@@ -7184,7 +7217,7 @@ def _collect_management_data(components=None, trends=None):
             "skill_name": sd.get("skill_name", name),
             "tokens": sd.get("frontmatter_tokens", 100),
             "description": sd.get("description", ""),
-            "archive_cmd": f"python3 {mp_cmd} skill archive {shlex.quote(name)}",
+            "archive_cmd": f"{hint_python()} {mp_cmd} skill archive {shlex.quote(name)}",
         })
 
     # Archived skills (scan backup dirs)
@@ -7230,7 +7263,7 @@ def _collect_management_data(components=None, trends=None):
                     "archive_dir": archive_dir.name,
                     "description": desc,
                     "symlink": is_symlink_record,
-                    "restore_cmd": f"python3 {mp_cmd} skill restore {shlex.quote(item.name)}",
+                    "restore_cmd": f"{hint_python()} {mp_cmd} skill restore {shlex.quote(item.name)}",
                 })
 
     # MCP servers (local settings.json)
@@ -7247,7 +7280,7 @@ def _collect_management_data(components=None, trends=None):
             "source": "local",
             "tool_count": tool_count,
             "command": cfg.get("command", ""),
-            "disable_cmd": f"python3 {mp_cmd} mcp disable {shlex.quote(name)}",
+            "disable_cmd": f"{hint_python()} {mp_cmd} mcp disable {shlex.quote(name)}",
         })
 
     disabled_mcps = []
@@ -7255,7 +7288,7 @@ def _collect_management_data(components=None, trends=None):
         disabled_mcps.append({
             "name": name,
             "source": "local",
-            "enable_cmd": f"python3 {mp_cmd} mcp enable {shlex.quote(name)}",
+            "enable_cmd": f"{hint_python()} {mp_cmd} mcp enable {shlex.quote(name)}",
         })
 
     # Cloud-synced MCP servers (Claude Desktop config)
@@ -8007,7 +8040,7 @@ def generate_standalone_dashboard(days=30, quiet=False, force=False):
     if not quiet:
         print(f"  Dashboard: {DASHBOARD_PATH}")
         print(f"  Local:  {DASHBOARD_PATH.as_uri()}")
-        print(f"  Remote: python3 {_display_path(Path(__file__).resolve())} dashboard --serve")
+        print(f"  Remote: {hint_python()} {_display_path(Path(__file__).resolve())} dashboard --serve")
 
     return str(DASHBOARD_PATH)
 
@@ -8895,7 +8928,10 @@ def _generate_codex_auto_recommendations(components, trends=None, days=30):
         quick.append(
             "**Install the default Codex hooks for real data**: "
             "The aggressive default (max savings) enables SessionStart/UserPromptSubmit, Stop, plus silent PostToolUse archiving and context-intel, so Token Optimizer tracks prompt quality, loop signals, output bloat, dashboard refresh, and continuity. All hooks run silently (no visible Codex Desktop rows). "
-            "Run `TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py codex-install --project .`."
+            "Run `" + (f"{hint_python()} skills/token-optimizer/scripts/measure.py --runtime codex"
+                       if _windows_hints()
+                       else "TOKEN_OPTIMIZER_RUNTIME=codex python3 skills/token-optimizer/scripts/measure.py")
+            + " codex-install --project .`."
         )
     if "UserPromptSubmit" not in hook_names:
         medium.append(
@@ -19932,7 +19968,7 @@ def subagent_cache_enable(now=None, automatic=True):
         "set_by": "token-optimizer",
         "auto_decision": dict(decision, ts=float(now)),
     })
-    undo_cmd = f"python3 {_shell_script_path()} subagent-cache disable"
+    undo_cmd = _subagent_cache_cmd("disable")
     what = "Token Optimizer set the subagent cache to 1 hour (was 5 minutes)."
     if settings_missing:
         what += " Created settings.json -- it did not exist."
@@ -20317,8 +20353,7 @@ def evaluate_subagent_cache_tripwire(now=None, payoff=None):
     result = _subagent_cache_undo(data, now, "auto-reverted")
     if not result.get("changed"):
         return dict(out, net_usd_est=net)
-    enable_cmd = (f"python3 {_shell_script_path()} "
-                  f"subagent-cache enable")
+    enable_cmd = _subagent_cache_cmd("enable")
     return {
         "reverted": True,
         "net_usd_est": net,
@@ -20402,8 +20437,7 @@ def _subagent_cache_recommendation(state, current, payoff, billing,
             return None
         if current not in (None, "1h"):
             return None  # a user-set "5m" (or anything else) is their choice
-        cmd = (f"python3 {_shell_script_path()} "
-               f"subagent-cache")
+        cmd = _subagent_cache_cmd()
         est = "API-equivalent estimate" if billing == "subscription" else "estimate"
         days = int((payoff or {}).get("window_days") or 30)
         if post_enable_days is not None:
@@ -27732,6 +27766,7 @@ def _collect_health_data():
         "automated": automated,
         "recommendations": recommendations,
         "cli": _measure_cli(),
+        "cli_windows": _windows_hints(),
     }
 
 

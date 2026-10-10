@@ -2249,13 +2249,28 @@ function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>
 function tcli(text) {
   var d = window.__TOKEN_DATA__;
   var cli = d && d.health && d.health.cli;
-  return cli ? String(text).split('python3 measure.py').join(cli) : text;
+  if (!cli) return text;
+  text = String(text);
+  // `VAR=x cmd` is Bash only: a Windows cli (python "..." ) takes --runtime instead.
+  if (d.health.cli_windows) {
+    text = text.replace(/TOKEN_OPTIMIZER_RUNTIME=(\w+) python3 measure\.py/g, function (m, rt) {
+      return cli + ' --runtime ' + rt;
+    });
+  }
+  return text.split('python3 measure.py').join(cli);
 }
 // Same, for strings that carry markup and go to innerHTML: the path is escaped.
 function tcliHtml(html) {
   var d = window.__TOKEN_DATA__;
   var cli = d && d.health && d.health.cli;
-  return cli ? String(html).split('python3 measure.py').join(esc(String(cli))) : html;
+  if (!cli) return html;
+  html = String(html);
+  if (d.health.cli_windows) {
+    html = html.replace(/TOKEN_OPTIMIZER_RUNTIME=(\w+) python3 measure\.py/g, function (m, rt) {
+      return esc(String(cli)) + ' --runtime ' + rt;
+    });
+  }
+  return html.split('python3 measure.py').join(esc(String(cli)));
 }
 
 function redactPaths(s) {

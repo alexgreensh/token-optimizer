@@ -209,10 +209,19 @@ test('a hand-off still being stamped is held; one a crash left half-saved is dro
 
 test('the dashboard link runs the dashboard command and nothing else, with its own bounded timeout', () => {
   // No --quiet: quiet regenerates without opening the browser.
-  assert.deepEqual([...DASHBOARD_ARGS], ['dashboard'])
+  // --user: a person clicked, so measure.py must not apply the 20 s hook budget (the runner's stdin is
+  // not a tty and it cannot pass env, so without the flag a heavy rebuild is cut off and nothing opens).
+  assert.deepEqual([...DASHBOARD_ARGS], ['dashboard', '--user'])
   assert.ok(DASHBOARD_TIMEOUT_MS > 0)
   // Under the busy timeout, so the runner answers before the busy state gives up on its own.
   assert.ok(DASHBOARD_TIMEOUT_MS < BUSY_TIMEOUT_MS)
+})
+
+test('the dashboard timeout covers a heavy rebuild with margin', () => {
+  // Measured: `measure.py dashboard --user` on a synthetic 800-session / 1.1 GB history in a sandbox HOME,
+  // cold (nothing cached): 38 s on both of two runs (25 s warm). The timeout keeps at least 2x that.
+  const MEASURED_COLD_HEAVY_MS = 38_000
+  assert.ok(DASHBOARD_TIMEOUT_MS >= 2 * MEASURED_COLD_HEAVY_MS)
 })
 
 test('the dashboard link says what it is doing in the band\'s own note words', () => {

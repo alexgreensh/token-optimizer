@@ -24,11 +24,16 @@ export const RESUME_TIMEOUT_MS = 20_000
 /**
  * `measure.py dashboard` regenerates the page and opens it in the browser (whatever the OS
  * opener is), so it can take a while on a long history. Bounded, and under BUSY_TIMEOUT_MS so
- * the runner answers before the busy state gives up on its own.
+ * the runner answers before the busy state gives up on its own. Measured cold on a synthetic
+ * 800-session / 1.1 GB history: 38 s (25 s warm); 90 s is more than twice that.
  */
-export const DASHBOARD_TIMEOUT_MS = 60_000
-/** The arguments of that command. Never `--quiet`: quiet regenerates without opening anything. */
-export const DASHBOARD_ARGS = ['dashboard'] as const
+export const DASHBOARD_TIMEOUT_MS = 90_000
+/**
+ * The arguments of that command. Never `--quiet`: quiet regenerates without opening anything.
+ * `--user` marks the run as a person's click: the runner cannot pass env and its stdin is not a tty,
+ * so without it measure.py reads the run as a hook and cuts a heavy rebuild off at its 20 s hook budget.
+ */
+export const DASHBOARD_ARGS = ['dashboard', '--user'] as const
 /** The band's note line while the dashboard opens. */
 export const DASHBOARD_OPENING = 'Opening the dashboard.'
 /** The note after it failed, shown for NOTE_MS. */

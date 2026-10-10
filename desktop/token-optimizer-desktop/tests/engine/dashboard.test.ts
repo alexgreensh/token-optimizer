@@ -72,7 +72,7 @@ for (const size of ['full', 'slim'] as const) {
     expect(runs.length).toBe(1)
     const argv = runs[0]!.argv
     // The same launcher the other measure.py calls use: python, the module runner, the scripts folder, then the command.
-    expect(argv.slice(-1)).toEqual(['dashboard'])
+    expect(argv.slice(-2)).toEqual(['dashboard', '--user'])
     expect(argv.some(a => a.endsWith('module_runner.py'))).toBe(true)
     expect(argv).toContain(SCRIPTS)
     expect(argv).not.toContain('--quiet')

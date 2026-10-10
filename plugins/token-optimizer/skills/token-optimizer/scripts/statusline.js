@@ -156,10 +156,16 @@ function _parseCompactWindow(v) {
 // down (it can never raise it). Returns the window in tokens ONLY when a real
 // user override shrank it below the model window (the tuned ~967K default is
 // not an override of the host's own number); otherwise null.
+// Bedrock inference-profile ids are dot/colon-qualified
+// ("us.anthropic.claude-haiku-4-5", "bedrock:claude-sonnet-4-5"): a leading
+// chain of KNOWN provider/region tokens. Version dots ("gpt-4.1",
+// "claude-3.5-sonnet") are never cut. Mirror of measure.py's
+// _canonical_compact_model_id.
+const _PROVIDER_PREFIX_RE = /^(?:(?:anthropic|openai|google|gemini|vertex|bedrock|openrouter|gateway|litellm|azure|aws|amazon|us|us-gov|eu|ap|apac|au|ca|cn|global|jp|sa|me|af|il)[.:])+/;
 function _canonModelId(model) {
   let m = String(model || '').trim().toLowerCase();
   if (!m) return '';
-  m = m.split('/').pop().replace('[1m]', '').trim().replace(/[-@]\d{8}$/, '');
+  m = m.split('/').pop().replace(_PROVIDER_PREFIX_RE, '').replace('[1m]', '').trim().replace(/[-@]\d{8}$/, '');
   if (m && !m.startsWith('claude-')) m = 'claude-' + m;
   return m;
 }
@@ -181,17 +187,28 @@ function _reducedCompactWindow(modelId, modelWindow, settings) {
         const canon = _canonModelId(modelId);
         const fam = /^(?:claude[-_])?(fable|mythos|opus|sonnet|haiku)/.exec(canon);
         const family = fam ? fam[1] : '';
-        for (const key of Object.keys(ms)) {
-          const entry = ms[key];
-          if (!entry || typeof entry !== 'object' || !('autoCompactWindow' in entry)) continue;
-          const k = String(key).trim().toLowerCase();
-          if (k === raw || k === family || _canonModelId(k) === canon) {
+        // Two passes: an exact/canonical id outranks a family alias regardless
+        // of key order; the first matching key decides (a non-window value is
+        // ignored like the host, not skipped to the next key).
+        let matched = false;
+        for (const kind of ['exact', 'family']) {
+          for (const key of Object.keys(ms)) {
+            const entry = ms[key];
+            if (!entry || typeof entry !== 'object' || !('autoCompactWindow' in entry)) continue;
+            const k = String(key).trim().toLowerCase();
+            const hit = kind === 'exact'
+              ? (k === raw || _canonModelId(k) === canon)
+              : (family !== '' && k === family);
+            if (!hit) continue;
+            matched = true;
             // `/autocompact auto` is per model and means the tuned default: it
             // replaces the top-level value for this model (no fall-through).
             if (entry.autoCompactWindow === 'auto') { autoForModel = true; break; }
             const w = _parseCompactWindow(entry.autoCompactWindow);
-            if (w !== null) { tokens = clamp(w); break; }
+            if (w !== null) tokens = clamp(w);
+            break;
           }
+          if (matched) break;
         }
       }
       if (tokens === null && settings && !autoForModel) {

@@ -201,6 +201,21 @@ def test_model_settings_auto_is_per_model(tmp_path):
     assert _pct_shown(out) == 50  # opus is not the model set to auto
 
 
+def test_exact_id_beats_family_alias_regardless_of_key_order(tmp_path):
+    """F-T2-4: {"opus": 250K, "claude-opus-5-5": 400K} -- the alias iterates
+    first but the exact id must win (200K/400K = 50%, not 200K/250K = 80%)."""
+    settings = {"modelSettings": {"opus": {"autoCompactWindow": 250_000},
+                                  "claude-opus-5-5": {"autoCompactWindow": 400_000}}}
+    out, _ = _run(tmp_path, _payload(tokens=200_000), settings=settings)
+    assert _pct_shown(out) == 50
+
+
+def test_family_alias_still_applies_when_no_exact_key(tmp_path):
+    settings = {"modelSettings": {"opus": {"autoCompactWindow": 250_000}}}
+    out, _ = _run(tmp_path, _payload(tokens=200_000), settings=settings)
+    assert _pct_shown(out) == 80
+
+
 def test_pct_override_accepts_a_float(tmp_path):
     out, _ = _run(tmp_path, _payload(tokens=250_000),
                   env_extra={"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "50.5"})

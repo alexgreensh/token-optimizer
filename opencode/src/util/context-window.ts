@@ -80,12 +80,20 @@ const DEFAULT_CONTEXT_WINDOW = 200_000;
  * without); every older Claude is 200K. Returns null when the id carries no
  * Claude family so callers fall through to their other rules.
  */
+// Bedrock inference-profile ids are dot/colon-qualified
+// ("us.anthropic.claude-haiku-4-5", "bedrock:claude-sonnet-4-5"): a leading
+// chain of KNOWN provider/region tokens. Version dots ("gpt-4.1",
+// "claude-3.5-sonnet") are never cut. Mirror of measure.py's
+// _DOTTED_PROVIDER_PREFIX_RE.
+const PROVIDER_PREFIX_RE = /^(?:(?:anthropic|openai|google|gemini|vertex|bedrock|openrouter|gateway|litellm|azure|aws|amazon|us|us-gov|eu|ap|apac|au|ca|cn|global|jp|sa|me|af|il)[.:])+/;
+
 export function claudeContextWindow(model: string): number | null {
   const raw = (model ?? "").toLowerCase().trim();
   const oneM = raw.includes("[1m]") || raw.includes("1000k");
   const id = raw
     .replace("[1m]", "")
     .replace(/^.*\//, "")
+    .replace(PROVIDER_PREFIX_RE, "")
     .replace(/[-@]\d{8}$/, "");
   if (/claude[-_]?[0-3]\b/.test(id) || /claude-\d(?:[-.]\d)?-(opus|sonnet|haiku)/.test(id)) return 200_000;
   const m = /(fable|mythos|opus|sonnet|haiku)(?:[-_.](\d+))?(?:[-_.](\d{1,2}))?(?!\d)/.exec(id);

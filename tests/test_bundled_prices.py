@@ -8,6 +8,7 @@ moved beyond 2x.
 """
 
 import copy
+import importlib.util
 import json
 import sys
 from pathlib import Path
@@ -187,6 +188,65 @@ def test_loader_can_be_disabled(tmp_path, monkeypatch, restore_tables):
     path = _write(tmp_path, _doc(openai={"gpt-x": {"input": 1.0, "output": 2.0}}))
     assert measure._apply_bundled_prices(path) is False
     assert "gpt-x" not in measure.OPENAI_MODEL_PRICING
+
+
+def _fresh_measure_no_bundled(monkeypatch):
+    """A fresh measure.py with the bundled file disabled, so PRICING_TIERS
+    shows exactly what ships in the literals."""
+    monkeypatch.setenv("TOKEN_OPTIMIZER_BUNDLED_PRICES", "0")
+    spec = importlib.util.spec_from_file_location(
+        "measure_no_bundled_under_test", SCRIPTS / "measure.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _bundled_cards(mod, doc, section):
+    """What the loader would merge for a section: cleaned cards with derived
+    cache rates filled in."""
+    cards = mod._clean_price_cards(doc.get(section))
+    for card in cards.values():
+        card.setdefault("cache_read", round(card["input"] * 0.1, 6))
+        card.setdefault("cache_write", round(card["input"] * 1.25, 6))
+        card.setdefault("cache_write_1h", round(card["input"] * 2, 6))
+    return cards
+
+
+def test_fallback_literals_equal_the_bundled_table(monkeypatch):
+    """F-T2-1: when prices.json is absent/disabled, the literals alone must
+    price every Claude card the bundled table carries -- first-party rates on
+    anthropic / vertex-global / bedrock, +10% on vertex-regional."""
+    mod = _fresh_measure_no_bundled(monkeypatch)
+    doc = json.loads(
+        (REPO / "skills" / "token-optimizer" / "pricing" / "prices.json").read_text(encoding="utf-8"))
+    for section, table in (("anthropic", "claude_models"),
+                           ("anthropic_long_context", "claude_models_lc")):
+        bundled = _bundled_cards(mod, doc, section)
+        assert bundled, f"{section} produced no cards"
+        for tier_name, tier in mod.PRICING_TIERS.items():
+            mult = 1.1 if tier_name == "vertex-regional" else 1.0
+            literal = tier[table]
+            assert set(literal) == set(bundled), (
+                f"{tier_name}.{table}: cards {sorted(set(literal) ^ set(bundled))} "
+                "differ from the bundled table")
+            for key, card in bundled.items():
+                want = {f: round(v * mult, 6) for f, v in card.items()}
+                assert literal[key] == want, f"{tier_name}.{table}[{key}]: {literal[key]} != {want}"
+
+
+def test_haiku_5_5_prices_correctly_without_the_bundled_file(monkeypatch):
+    """F-T2-1 regression: the reported failure mode -- claude-haiku-5-5 was
+    priced on the generic $1/$5 haiku card when prices.json did not load."""
+    mod = _fresh_measure_no_bundled(monkeypatch)
+    assert mod._get_model_cost("claude-haiku-5-5", 1_000_000, 0, tier="anthropic") == pytest.approx(0.1)
+    assert mod._get_model_cost("claude-haiku-5-5", 0, 1_000_000, tier="anthropic") == pytest.approx(0.5)
+    # Long-context card too: a >100K-prompt request pays the 5x surcharge.
+    thr = mod.ANTHROPIC_LONG_CONTEXT_INPUT_THRESHOLD
+    cost = mod._get_model_cost("claude-haiku-5-5", 1_000, 1_000, thr + 1, 0,
+                               tier="anthropic", per_request=True)
+    lc = mod.PRICING_TIERS["anthropic"]["claude_models_lc"]["haiku_5_5"]
+    want = 1_000 * lc["input"] / 1e6 + 1_000 * lc["output"] / 1e6 + (thr + 1) * lc["cache_read"] / 1e6
+    assert cost == pytest.approx(want)
 
 
 def test_claude_generation_resolution():
@@ -386,3 +446,20 @@ def test_transcript_turns_apply_the_haiku_5_5_tier_per_request(tmp_path):
     big = (1000 * lc["input"] + 500 * lc["output"] + 120_000 * lc["cache_read"]) / 1e6
     assert costs[:3] == [pytest.approx(round(small, 6))] * 3
     assert costs[3] == pytest.approx(round(big, 6))
+
+
+def test_bare_haiku_alias_prices_and_windows_agree():
+    """F-T2-5: a bare `haiku` is read as the pre-5.5 generation by BOTH the
+    window table and the price table (conservative: a provider-dependent alias,
+    and the same string is the family-bucket label that routing / model-mix
+    code passes to _get_model_cost, so repricing it to Haiku 5.5 would silently
+    reprice every aggregate). Haiku 5.5 itself stays 1M / $0.10."""
+    cards = measure.PRICING_TIERS["anthropic"]["claude_models"]
+    for alias in ("haiku", "claude-haiku"):
+        assert measure._claude_price_key(alias, cards) == "haiku"
+        assert measure._claude_model_window(alias) == 200_000
+        assert measure._get_model_cost(alias, 1_000_000, 0, tier="anthropic") == pytest.approx(
+            cards["haiku"]["input"])
+    assert cards["haiku"]["input"] == cards["haiku_4_5"]["input"]
+    assert measure._claude_price_key("claude-haiku-5-5", cards) == "haiku_5_5"
+    assert measure._claude_model_window("claude-haiku-5-5") == 1_000_000

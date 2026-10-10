@@ -698,89 +698,91 @@ CLAUDE_MD_INJECTION_OVERHEAD = 75
 # Per-MTok pricing for Claude models across providers.
 # Non-Claude models are unaffected by tier selection.
 
+# Fallback Claude rate cards: a card-for-card mirror of the "anthropic"
+# section of the bundled pricing/prices.json, kept in literals so pricing
+# stays correct when the file is absent or disabled (F-T2-1). A regression
+# test pins literal == bundled, so a card the refresh pipeline adds must be
+# mirrored here at the same time. First-party rates apply on anthropic /
+# vertex-global / bedrock; vertex-regional is +10% via _claude_cards.
+_FALLBACK_CLAUDE_MODELS = {
+    # cache_write = 5-minute TTL (1.25x input); cache_write_1h = 1-hour TTL (2x input).
+    # Verified 2026-09-24 from platform.claude.com/docs/en/about-claude/pricing.
+    "fable":  {"input": 10.0, "output": 50.0, "cache_read": 1.0,  "cache_write": 12.5,  "cache_write_1h": 20.0},
+    "fable_5": {"input": 10.0, "output": 50.0, "cache_read": 1.0, "cache_write": 12.5, "cache_write_1h": 20.0},
+    # Fable 5.1 / Mythos 5.1: cache reads are 0.025x input ($0.25), not 0.1x.
+    "fable_5_1": {"input": 10.0, "output": 50.0, "cache_read": 0.25, "cache_write": 12.5, "cache_write_1h": 20.0},
+    "mythos_5": {"input": 10.0, "output": 50.0, "cache_read": 1.0, "cache_write": 12.5, "cache_write_1h": 20.0},
+    "mythos_5_1": {"input": 10.0, "output": 50.0, "cache_read": 0.25, "cache_write": 12.5, "cache_write_1h": 20.0},
+    # Opus 5.5 is $4/$20 with 0.05x cache reads; Opus 4.5+ is $5/$25; Opus <=4.1 is $15/$75.
+    "opus_5_5": {"input": 4.0, "output": 20.0, "cache_read": 0.2, "cache_write": 5.0, "cache_write_1h": 8.0},
+    "opus":   {"input": 5.0,  "output": 25.0, "cache_read": 0.5,  "cache_write": 6.25,  "cache_write_1h": 10.0},
+    "opus_3":  {"input": 15.0, "output": 75.0, "cache_read": 1.5, "cache_write": 18.75, "cache_write_1h": 30.0},
+    "opus_4":  {"input": 15.0, "output": 75.0, "cache_read": 1.5, "cache_write": 18.75, "cache_write_1h": 30.0},
+    "opus_4_1": {"input": 15.0, "output": 75.0, "cache_read": 1.5, "cache_write": 18.75, "cache_write_1h": 30.0},
+    "opus_4_5": {"input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25, "cache_write_1h": 10.0},
+    "opus_4_6": {"input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25, "cache_write_1h": 10.0},
+    "opus_4_7": {"input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25, "cache_write_1h": 10.0},
+    "opus_4_8": {"input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25, "cache_write_1h": 10.0},
+    "opus_5":  {"input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25, "cache_write_1h": 10.0},
+    # Sonnet 5's launch rate became the standard price (2026-08-29, see the
+    # _SONNET_INTRO_PRICING_UNTIL block below); Sonnet <=4.6 stays $3/$15.
+    "sonnet": {"input": 2.0, "output": 10.0, "cache_read": 0.2, "cache_write": 2.5, "cache_write_1h": 4.0},
+    "sonnet_4": {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75, "cache_write_1h": 6.0},
+    "sonnet_4_5": {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75, "cache_write_1h": 6.0},
+    "sonnet_4_6": {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75, "cache_write_1h": 6.0},
+    "sonnet_5": {"input": 2.0, "output": 10.0, "cache_read": 0.2, "cache_write": 2.5, "cache_write_1h": 4.0},
+    # Sonnet 5.5's cache reads are 0.05x input ($0.10), not the usual 0.1x.
+    "sonnet_5_5": {"input": 2.0, "output": 10.0, "cache_read": 0.1, "cache_write": 2.5, "cache_write_1h": 4.0},
+    # Sonnet 4.6 / 4.5 / 4.0 keep the $3/$15 card. Sonnet 5 (2026-06-30) is $2/$10,
+    # so one shared "sonnet" bucket silently misprices the older generation by 50%.
+    "sonnet_legacy": {"input": 3.0,  "output": 15.0, "cache_read": 0.3,  "cache_write": 3.75,  "cache_write_1h": 6.0},
+    "haiku":  {"input": 1.0,  "output": 5.0,  "cache_read": 0.1,  "cache_write": 1.25,  "cache_write_1h": 2.0},
+    "haiku_3": {"input": 0.25, "output": 1.25, "cache_read": 0.03, "cache_write": 0.3, "cache_write_1h": 0.5},
+    "haiku_3_5": {"input": 0.8, "output": 4.0, "cache_read": 0.08, "cache_write": 1.0, "cache_write_1h": 1.6},
+    "haiku_4_5": {"input": 1.0, "output": 5.0, "cache_read": 0.1, "cache_write": 1.25, "cache_write_1h": 2.0},
+    # Haiku 5.5 is $0.10/$0.50 for prompts up to 100K tokens; longer prompts pay
+    # the 5x long-context card below.
+    "haiku_5_5": {"input": 0.1, "output": 0.5, "cache_read": 0.01, "cache_write": 0.125, "cache_write_1h": 0.2},
+}
+
+# Long-context surcharge cards, applied when a request's full prompt
+# (input + cache reads + cache writes) exceeds
+# ANTHROPIC_LONG_CONTEXT_INPUT_THRESHOLD. Claude Haiku 5.5 is priced by
+# prompt length: >100K pays 5x on every rate. Verified 2026-10-10 from
+# platform.claude.com/docs/en/about-claude/pricing ("Long context
+# pricing") and LiteLLM's claude-haiku-5-5 *_above_100k_tokens fields.
+# Mirrors the bundled "anthropic_long_context" section.
+_FALLBACK_CLAUDE_MODELS_LC = {
+    "haiku_5_5": {"input": 0.5, "output": 2.5, "cache_read": 0.05, "cache_write": 0.625, "cache_write_1h": 1.0},
+}
+
+
+def _claude_cards(table, mult=1.0):
+    """Tier-adjusted copy of a fallback card table (vertex-regional is +10%)."""
+    return {key: {f: round(v * mult, 6) for f, v in card.items()} for key, card in table.items()}
+
+
 PRICING_TIERS = {
     "anthropic": {
         "label": "Anthropic API",
-        "claude_models": {
-            # cache_write = 5-minute TTL (1.25x input); cache_write_1h = 1-hour TTL (2x input).
-            # Verified 2026-09-24 from platform.claude.com/docs/en/about-claude/pricing.
-            "fable":  {"input": 10.0, "output": 50.0, "cache_read": 1.0,  "cache_write": 12.5,  "cache_write_1h": 20.0},
-            # Fable 5.1 / Mythos 5.1: cache reads are 0.025x input ($0.25), not 0.1x.
-            "fable_5_1": {"input": 10.0, "output": 50.0, "cache_read": 0.25, "cache_write": 12.5, "cache_write_1h": 20.0},
-            # Opus 5.5 is $4/$20 with 0.05x cache reads; every other Opus is $5/$25.
-            "opus_5_5": {"input": 4.0, "output": 20.0, "cache_read": 0.2, "cache_write": 5.0, "cache_write_1h": 8.0},
-            "opus":   {"input": 5.0,  "output": 25.0, "cache_read": 0.5,  "cache_write": 6.25,  "cache_write_1h": 10.0},
-            "sonnet": {"input": 3.0,  "output": 15.0, "cache_read": 0.3,  "cache_write": 3.75,  "cache_write_1h": 6.0},
-            # Sonnet 4.6 / 4.5 / 4.0 keep the $3/$15 card. Sonnet 5 (2026-06-30) is $2/$10,
-            # so one shared "sonnet" bucket silently misprices the older generation by 50%.
-            "sonnet_legacy": {"input": 3.0,  "output": 15.0, "cache_read": 0.3,  "cache_write": 3.75,  "cache_write_1h": 6.0},
-            "haiku":  {"input": 1.0,  "output": 5.0,  "cache_read": 0.1,  "cache_write": 1.25,  "cache_write_1h": 2.0},
-        },
-        # Long-context surcharge cards, applied when a request's full prompt
-        # (input + cache reads + cache writes) exceeds
-        # ANTHROPIC_LONG_CONTEXT_INPUT_THRESHOLD. Claude Haiku 5.5 is priced by
-        # prompt length: >100K pays 5x on every rate. Verified 2026-10-10 from
-        # platform.claude.com/docs/en/about-claude/pricing ("Long context
-        # pricing") and LiteLLM's claude-haiku-5-5 *_above_100k_tokens fields.
-        "claude_models_lc": {
-            "haiku_5_5": {"input": 0.5, "output": 2.5, "cache_read": 0.05, "cache_write": 0.625, "cache_write_1h": 1.0},
-        },
+        "claude_models": _claude_cards(_FALLBACK_CLAUDE_MODELS),
+        "claude_models_lc": _claude_cards(_FALLBACK_CLAUDE_MODELS_LC),
     },
     "vertex-global": {
         "label": "Vertex AI Global",
-        "claude_models": {
-            "fable":  {"input": 10.0, "output": 50.0, "cache_read": 1.0,  "cache_write": 12.5,  "cache_write_1h": 20.0},
-            # Fable 5.1 / Mythos 5.1: cache reads are 0.025x input ($0.25), not 0.1x.
-            "fable_5_1": {"input": 10.0, "output": 50.0, "cache_read": 0.25, "cache_write": 12.5, "cache_write_1h": 20.0},
-            # Opus 5.5 is $4/$20 with 0.05x cache reads; every other Opus is $5/$25.
-            "opus_5_5": {"input": 4.0, "output": 20.0, "cache_read": 0.2, "cache_write": 5.0, "cache_write_1h": 8.0},
-            "opus":   {"input": 5.0,  "output": 25.0, "cache_read": 0.5,  "cache_write": 6.25,  "cache_write_1h": 10.0},
-            "sonnet": {"input": 3.0,  "output": 15.0, "cache_read": 0.3,  "cache_write": 3.75,  "cache_write_1h": 6.0},
-            # Sonnet 4.6 / 4.5 / 4.0 keep the $3/$15 card. Sonnet 5 (2026-06-30) is $2/$10,
-            # so one shared "sonnet" bucket silently misprices the older generation by 50%.
-            "sonnet_legacy": {"input": 3.0,  "output": 15.0, "cache_read": 0.3,  "cache_write": 3.75,  "cache_write_1h": 6.0},
-            "haiku":  {"input": 1.0,  "output": 5.0,  "cache_read": 0.1,  "cache_write": 1.25,  "cache_write_1h": 2.0},
-        },
-        "claude_models_lc": {
-            "haiku_5_5": {"input": 0.5, "output": 2.5, "cache_read": 0.05, "cache_write": 0.625, "cache_write_1h": 1.0},
-        },
+        "claude_models": _claude_cards(_FALLBACK_CLAUDE_MODELS),
+        "claude_models_lc": _claude_cards(_FALLBACK_CLAUDE_MODELS_LC),
     },
     "vertex-regional": {
         "label": "Vertex AI Regional",
-        "claude_models": {
-            # Vertex regional applies a +10% surcharge on all Claude rates.
-            "fable":  {"input": 11.0, "output": 55.0, "cache_read": 1.1,  "cache_write": 13.75, "cache_write_1h": 22.0},
-            # Fable 5.1 / Mythos 5.1: cache reads are 0.025x input ($0.25), not 0.1x.
-            "fable_5_1": {"input": 11.0, "output": 55.0, "cache_read": 0.275, "cache_write": 13.75, "cache_write_1h": 22.0},
-            # Opus 5.5 is $4/$20 with 0.05x cache reads; every other Opus is $5/$25.
-            "opus_5_5": {"input": 4.4, "output": 22.0, "cache_read": 0.22, "cache_write": 5.5, "cache_write_1h": 8.8},
-            "opus":   {"input": 5.5,  "output": 27.5, "cache_read": 0.55, "cache_write": 6.875, "cache_write_1h": 11.0},
-            "sonnet": {"input": 3.3,  "output": 16.5, "cache_read": 0.33, "cache_write": 4.125, "cache_write_1h": 6.6},
-            "sonnet_legacy": {"input": 3.3,  "output": 16.5, "cache_read": 0.33, "cache_write": 4.125, "cache_write_1h": 6.6},
-            "haiku":  {"input": 1.1,  "output": 5.5,  "cache_read": 0.11, "cache_write": 1.375, "cache_write_1h": 2.2},
-        },
-        "claude_models_lc": {
-            "haiku_5_5": {"input": 0.55, "output": 2.75, "cache_read": 0.055, "cache_write": 0.6875, "cache_write_1h": 1.1},
-        },
+        # Vertex regional applies a +10% surcharge on all Claude rates.
+        "claude_models": _claude_cards(_FALLBACK_CLAUDE_MODELS, 1.1),
+        "claude_models_lc": _claude_cards(_FALLBACK_CLAUDE_MODELS_LC, 1.1),
     },
     "bedrock": {
         "label": "AWS Bedrock",
-        "claude_models": {
-            "fable":  {"input": 10.0, "output": 50.0, "cache_read": 1.0,  "cache_write": 12.5,  "cache_write_1h": 20.0},
-            # Fable 5.1 / Mythos 5.1: cache reads are 0.025x input ($0.25), not 0.1x.
-            "fable_5_1": {"input": 10.0, "output": 50.0, "cache_read": 0.25, "cache_write": 12.5, "cache_write_1h": 20.0},
-            # Opus 5.5 is $4/$20 with 0.05x cache reads; every other Opus is $5/$25.
-            "opus_5_5": {"input": 4.0, "output": 20.0, "cache_read": 0.2, "cache_write": 5.0, "cache_write_1h": 8.0},
-            "opus":   {"input": 5.0,  "output": 25.0, "cache_read": 0.5,  "cache_write": 6.25,  "cache_write_1h": 10.0},
-            "sonnet": {"input": 3.0,  "output": 15.0, "cache_read": 0.3,  "cache_write": 3.75,  "cache_write_1h": 6.0},
-            # Sonnet 4.6 / 4.5 / 4.0 keep the $3/$15 card. Sonnet 5 (2026-06-30) is $2/$10,
-            # so one shared "sonnet" bucket silently misprices the older generation by 50%.
-            "sonnet_legacy": {"input": 3.0,  "output": 15.0, "cache_read": 0.3,  "cache_write": 3.75,  "cache_write_1h": 6.0},
-            "haiku":  {"input": 1.0,  "output": 5.0,  "cache_read": 0.1,  "cache_write": 1.25,  "cache_write_1h": 2.0},
-        },
-        "claude_models_lc": {
-            "haiku_5_5": {"input": 0.5, "output": 2.5, "cache_read": 0.05, "cache_write": 0.625, "cache_write_1h": 1.0},
-        },
+        "claude_models": _claude_cards(_FALLBACK_CLAUDE_MODELS),
+        "claude_models_lc": _claude_cards(_FALLBACK_CLAUDE_MODELS_LC),
     },
 }
 
@@ -793,12 +795,11 @@ ANTHROPIC_LONG_CONTEXT_INPUT_THRESHOLD = 100_000
 # --- Sonnet 5 introductory pricing (date-gated) ------------------------------------------
 # Sonnet 5 launched with INTRODUCTORY pricing ($2/$10 per MTok; cache_read 0.2, cache_write
 # 2.5 [5m] / 4.0 [1h]) in effect through 2026-08-31; the STANDARD rate ($3/$15) resumes
-# 2026-09-01. The PRICING_TIERS literal above holds the canonical STANDARD card; while the
-# introductory window is open we swap the introductory card into the FIRST-PARTY Anthropic tier
-# so dollar savings stay accurate today AND flip back automatically on 2026-09-01 with no manual
-# edit. Vertex/Bedrock introductory status is unverified, so those tiers are left at the standard
-# rate (conservative -- no new drift). The single "sonnet" bucket cannot distinguish Sonnet 5
-# from Sonnet 4.6, so 4.6 is repriced too (accepted 2026-07-10). Verified 2026-07-10 from
+# 2026-09-01. Since 2026-08-29 that launch rate IS the standard price (see
+# _apply_sonnet_intro_pricing below), so the _FALLBACK_CLAUDE_MODELS literal above already
+# carries $2/$10 on every tier -- matching what the bundled file forces onto Vertex/Bedrock
+# anyway -- and the swap below is a belt-and-braces no-op kept for its pinned-date tests.
+# Verified 2026-07-10 and re-verified 2026-10-10 from
 # platform.claude.com/docs/en/about-claude/pricing.
 _SONNET_STANDARD_RATES = {"input": 3.0, "output": 15.0, "cache_read": 0.3,
                           "cache_write": 3.75, "cache_write_1h": 6.0}
@@ -1197,10 +1198,26 @@ _KNOWN_PROVIDER_PREFIXES = {
     "openrouter", "gateway", "litellm", "azure", "aws",
 }
 
+# Bedrock inference-profile ids are DOT-qualified
+# ("us.anthropic.claude-haiku-4-5", "global.anthropic.claude-sonnet-4-5"):
+# a leading chain of known provider/region tokens separated by dots. Dots stay
+# out of the slash/colon loop so ids like "claude-3.5-sonnet" or "gpt-4.1"
+# are never cut on a version dot.
+_DOTTED_PROVIDER_TOKENS = _KNOWN_PROVIDER_PREFIXES | {
+    "amazon", "us", "us-gov", "eu", "ap", "apac", "au", "ca", "cn",
+    "global", "jp", "sa", "me", "af", "il",
+}
+_DOTTED_PROVIDER_PREFIX_RE = re.compile(
+    r"^(?:(?:" + "|".join(sorted(_DOTTED_PROVIDER_TOKENS)) + r")\.)+")
+
 
 def _strip_provider_prefixes(model):
     value = str(model).strip().lower()
     while True:
+        dotted = _DOTTED_PROVIDER_PREFIX_RE.match(value)
+        if dotted:
+            value = value[dotted.end():]
+            continue
         slash = value.find("/")
         colon = value.find(":")
         if slash == -1 and colon == -1:
@@ -3279,7 +3296,7 @@ def _claude_model_window(model_str):
     that detect_context_window() documents (most users are on 1M-native
     models); override with TOKEN_OPTIMIZER_CONTEXT_SIZE.
     """
-    m = (model_str or "").lower().strip()
+    m = _strip_provider_prefixes(str(model_str or "").split("/")[-1])
     if not m:
         return 200_000
     one_m_suffix = "[1m]" in m or "1000k" in m
@@ -3350,7 +3367,7 @@ def _configured_model_string():
 
 def _plain_46_family(model_str):
     """'opus' / 'sonnet' when model_str is a 4.6 id WITHOUT the [1m] suffix."""
-    m = (model_str or "").lower().strip()
+    m = _strip_provider_prefixes(str(model_str or "").split("/")[-1])
     if not m or "[1m]" in m or "1000k" in m:
         return None
     m = re.sub(r"[-@]\d{8}$", "", m).strip()
@@ -3520,7 +3537,8 @@ def _canonical_compact_model_id(model):
     m = str(model or "").strip().lower()
     if not m:
         return ""
-    m = m.split("/")[-1]                    # provider-prefixed ids
+    # provider-prefixed ids ("anthropic/x", "us.anthropic.x", "bedrock:x")
+    m = _strip_provider_prefixes(m.split("/")[-1])
     m = m.replace("[1m]", "").strip()
     m = re.sub(r"[-@]\d{8}$", "", m)        # -20250929 / @20250929 date suffix
     if m and not m.startswith("claude-"):
@@ -3537,12 +3555,19 @@ def _model_settings_window(model, model_settings):
     canon = _canonical_compact_model_id(model)
     family_match = _CLAUDE_MODEL_ID_RE.match(canon)
     family = family_match.group(1) if family_match else ""
-    for key, entry in model_settings.items():
-        if not isinstance(entry, dict) or "autoCompactWindow" not in entry:
-            continue
-        key_l = str(key).strip().lower()
-        if key_l == raw or key_l == family or _canonical_compact_model_id(key_l) == canon:
-            return entry.get("autoCompactWindow"), key
+    # Two passes: an exact/canonical id outranks a family alias regardless of
+    # key order; the first matching key decides.
+    for match_family in (False, True):
+        for key, entry in model_settings.items():
+            if not isinstance(entry, dict) or "autoCompactWindow" not in entry:
+                continue
+            key_l = str(key).strip().lower()
+            if match_family:
+                hit = bool(family) and key_l == family
+            else:
+                hit = key_l == raw or _canonical_compact_model_id(key_l) == canon
+            if hit:
+                return entry.get("autoCompactWindow"), key
     return None, None
 
 
@@ -3605,6 +3630,14 @@ def _resolve_compact_window(model, env=None, settings=None):
     if parsed is not None:
         tokens = _clamp_compact_window(parsed)
         source = f"env CLAUDE_CODE_AUTO_COMPACT_WINDOW={raw_env}"
+        if str(raw_env).strip() != str(tokens):
+            # The host's own reading ("500k" is 500, floored) is not the number
+            # the user typed: say so instead of presenting it as their override.
+            if tokens == parsed:
+                source += f" (read as {parsed})"
+            else:
+                bound = "floored to" if tokens > parsed else "capped at"
+                source += f" (read as {parsed}, {bound} {tokens})"
         user_override = True
     else:
         prefix = ""
@@ -12001,6 +12034,10 @@ def _claude_price_key(model_id, claude_models):
             return "fable"
     elif "mythos" in str(model_id).lower() and "fable" in claude_models:
         return "fable"
+    # A bare `haiku` keeps the family card (Haiku 4.5 rates), matching the
+    # 200K window _claude_model_window gives it: the alias is provider-
+    # dependent, and "haiku" is also the family-bucket label that routing and
+    # model-mix callers pass in, so it must not float to the 5.5 card.
     return _normalize_model_name(model_id)
 
 
@@ -35250,6 +35287,7 @@ def compute_quality_score(quality_data, session_id=None):
     # produced "bar shows 16%, score is 59".
     host_fill_pct = None
     host_fill_age_s = None
+    host_live_tokens = None
     host_disagreement = None
     # Which source produced fill_pct, for cache diagnosability.
     fill_source = None
@@ -35274,6 +35312,7 @@ def compute_quality_score(quality_data, session_id=None):
                 live_tokens = live.get("context_tokens")
                 if not (isinstance(live_tokens, (int, float)) and live_tokens > 0):
                     live_tokens = None
+                host_live_tokens = live_tokens
                 # The host knows the real window; we only infer it. When the
                 # host rescues us from a bad denominator the user sees a correct
                 # number and the misconfiguration stays invisible, so record the
@@ -35317,6 +35356,10 @@ def compute_quality_score(quality_data, session_id=None):
         fill_source = "char-estimate"
     if model_fill is None:
         model_fill = fill_pct
+    # F-T1-9: the session id survives /compact, so a reading from just before one
+    # still names this session. When the host's token count is off ours by more
+    # than 2x it describes a different moment (a numerator change), not a wrong
+    # denominator, so the override below skips it.
     # Cross-check: if the host told us the fill and our own arithmetic would have
     # produced a materially different one, our window is wrong even though the
     # displayed number is right. Always recorded — and when the host reading is
@@ -35343,7 +35386,11 @@ def compute_quality_score(quality_data, session_id=None):
                     # different moment (same convention as the statusline's
                     # 5-min staleness guard); fresher than that, the host's real
                     # window beats our inferred one.
-                    if fill_source != "host-live" and (
+                    _other_moment = bool(  # host tokens >2x off ours (see above)
+                        host_live_tokens and float(_tokens) > 0
+                        and max(host_live_tokens, float(_tokens))
+                        > 2.0 * min(host_live_tokens, float(_tokens)))
+                    if fill_source != "host-live" and not _other_moment and (
                             host_fill_age_s is not None and host_fill_age_s < 300):
                         model_fill = host_fill_pct
                         fill_pct = _effective_fill(model_fill, float(_tokens))
@@ -51057,7 +51104,9 @@ def _status_bar_put_back(aside, lock):
         pass
 
 
-_COMPACT_MARK = b'"subtype":"compact_boundary"'
+# Prefilter only: the parsed row decides. Matching the bare word keeps rows from
+# writers that space their JSON ("subtype": "compact_boundary") in the count.
+_COMPACT_MARK = b"compact_boundary"
 
 
 def _status_bar_compactions(path, session_id=None):

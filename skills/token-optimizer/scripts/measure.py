@@ -26601,7 +26601,10 @@ def _classify_posix_claude_process(detail, names, args_by_pid, electron_parent_p
     if exe:
         electron_dir = _posix_dir_is_electron_app(exe)
         if electron_dir is None:
-            return "unknown"
+            # Positive headless evidence (-p, --print, mcp ...) is never
+            # killable either way, so it names the session even when the
+            # executable's directory cannot be inspected (F-T1-14).
+            return "embedded_session" if _posix_is_headless(options) else "unknown"
         if electron_dir:
             return "desktop_app"
     if not names:

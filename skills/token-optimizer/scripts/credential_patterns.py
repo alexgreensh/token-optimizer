@@ -20,18 +20,29 @@ from typing import Dict, List, Optional, Tuple
 # (label, compiled_regex) pairs. Label is used in redaction placeholders.
 CREDENTIAL_PATTERNS: List[Tuple[str, "re.Pattern[str]"]] = [
     ("AWS access key",          re.compile(r"AKIA[0-9A-Z]{16}")),
-    ("OpenAI/Anthropic key",    re.compile(r"sk-[a-zA-Z0-9]{20,}")),
-    ("Anthropic key",           re.compile(r"sk-ant-[a-zA-Z0-9\-]{20,}")),
+    # Anthropic first so a sk-ant- key keeps its own label; the generic sk- class
+    # carries "_" and "-" (sk-proj-..., sk-ant-api03-...) exactly like the TS engines.
+    ("Anthropic key",           re.compile(r"sk-ant-[a-zA-Z0-9_\-]{20,}")),
+    ("OpenAI/Anthropic key",    re.compile(r"sk-[a-zA-Z0-9_\-]{20,}")),
     ("GitHub PAT classic",      re.compile(r"ghp_[a-zA-Z0-9]{36}")),
     ("GitHub OAuth token",      re.compile(r"gho_[a-zA-Z0-9]{36}")),
+    ("GitHub user-to-server token", re.compile(r"ghu_[a-zA-Z0-9]{36}")),
     ("GitHub server token",     re.compile(r"ghs_[a-zA-Z0-9]{36}")),
     ("GitHub refresh token",    re.compile(r"ghr_[a-zA-Z0-9]{36}")),
-    ("GitHub fine-grained PAT", re.compile(r"github_pat_[a-zA-Z0-9_]{80,}")),
+    ("GitHub fine-grained PAT", re.compile(r"github_pat_[a-zA-Z0-9_]{20,}")),
     ("npm token",               re.compile(r"npm_[a-zA-Z0-9]{36}")),
+    # Current Slack shapes: long dash-separated bodies (xoxb-1-2-<24 secret>),
+    # app-level tokens, and incoming-webhook URLs (the URL path IS the secret).
+    # Listed before the short legacy rows so the whole token is claimed, not just
+    # its numeric head. The legacy rows below still catch bodies under 20 characters.
+    ("Slack token",             re.compile(r"xox[bpa]-[0-9A-Za-z\-]{20,}")),
+    ("Slack app-level token",   re.compile(r"xapp-\d-[A-Z0-9]+-\d+-[0-9a-f]+")),
+    ("Slack webhook URL",       re.compile(r"https://hooks\.slack\.com/services/\S+")),
     ("Slack bot token",         re.compile(r"xoxb-[0-9]+-[a-zA-Z0-9]+")),
     ("Slack user token",        re.compile(r"xoxp-[0-9]+-[a-zA-Z0-9]+")),
     ("Slack app token",         re.compile(r"xoxa-[0-9]+-[a-zA-Z0-9]+")),
     ("Stripe live key",         re.compile(r"sk_live_[a-zA-Z0-9]{24,}")),
+    ("Stripe test key",         re.compile(r"sk_test_[a-zA-Z0-9]{24,}")),
     ("Stripe restricted key",   re.compile(r"rk_live_[a-zA-Z0-9]{24,}")),
     ("HuggingFace token",       re.compile(r"hf_[a-zA-Z0-9]{34}")),
     # GitLab: personal/project/group access (glpat), deploy (gldt), runner (glrt),
@@ -152,8 +163,8 @@ PATTERNS_ONLY: List["re.Pattern[str]"] = [pat for _, pat in CREDENTIAL_PATTERNS]
 # coarse pre-filter — but only if other prefixes didn't already match.
 # ---------------------------------------------------------------------------
 _CREDENTIAL_PREFIXES: Tuple[str, ...] = (
-    "AKIA", "sk-", "ghp_", "gho_", "ghs_", "ghr_", "github_pat_",
-    "npm_", "xoxb-", "xoxp-", "xoxa-", "sk_live_", "rk_live_", "hf_",
+    "AKIA", "sk-", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_",
+    "npm_", "xoxb-", "xoxp-", "xoxa-", "xapp-", "sk_live_", "sk_test_", "rk_live_", "hf_",
     "glpat-", "gldt-", "glrt-", "glcbt-", "glptt-", "glft-", "glimt-", "glagent-", "glsoat-",  # GitLab
     "Bearer", "bearer", "AIza", "ya29.", "eyJ",
     "-----BEGIN",  # PEM private key

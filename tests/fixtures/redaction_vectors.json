@@ -192,6 +192,60 @@
       "input": ["x ", "[CREDENTIAL REDACTED: ghp_", "Q7r8T9u0V1w2X3y4Z5a6B7c8D9e0F1g2H3i4", "] y"],
       "absent": ["Q7r8T9u0V1w2", "ghp_Q7r8"],
       "present": ["x ", " y"]
+    },
+    {
+      "name": "slack-bot-token-long",
+      "input": ["slack xoxb-1234567890-1234567890123-", "AbCdEfGhIjKlMnOpQrStUvWx", " end"],
+      "absent": ["AbCdEfGhIjKlMnOpQrStUvWx"],
+      "present": ["slack ", " end"]
+    },
+    {
+      "name": "slack-user-token-long",
+      "input": ["slack xoxp-1234567890-1234567890-1234567890-", "0123456789abcdef0123456789abcdef", " end"],
+      "absent": ["0123456789abcdef0123456789abcdef"],
+      "present": ["slack ", " end"]
+    },
+    {
+      "name": "openai-project-key",
+      "input": ["key=sk-proj-", "Ab3dEf6hIj9kLm2nOp5qRs8tUv_Wx-Yz0", " end"],
+      "absent": ["Ab3dEf6hIj9kLm2nOp5q", "Wx-Yz0"],
+      "present": ["key=", " end"]
+    },
+    {
+      "name": "anthropic-key-with-underscore",
+      "input": ["key=sk-ant-api03-", "Ab3dEf_6hIj9kLm2nOp5qRs8tUvWx", " end"],
+      "absent": ["Ab3dEf_6hIj9kLm2nOp5q", "6hIj9kLm2nOp5qRs8tUvWx"],
+      "present": ["key=", " end"]
+    },
+    {
+      "name": "github-user-token-ghu",
+      "input": ["token ghu_", "Qa5Wd8Ps2Mz7Kc4Tn1Vr9Bx3Yl6Hf0Ge2Ju7", " end"],
+      "absent": ["Qa5Wd8Ps2Mz7Kc4Tn1Vr"],
+      "present": ["token ", " end"]
+    },
+    {
+      "name": "github-fine-grained-pat-short-body",
+      "input": ["token github_pat_", "11ZShortFakePat0123456789abcdefABCDEF", " end"],
+      "absent": ["11ZShortFakePat0123456789"],
+      "present": ["token ", " end"]
+    },
+    {
+      "name": "stripe-test-key",
+      "input": ["pay with sk_test_", "51FakeTestKeyZz9Qw7Lm3PaXy", " now"],
+      "absent": ["51FakeTestKeyZz9Qw7Lm3PaXy"],
+      "present": ["pay with ", " now"]
+    },
+    {
+      "name": "slack-app-level-token",
+      "input": ["slack xapp-1-A0123456789-1234567890123-", "0123456789abcdef0123456789abcdef", " end"],
+      "absent": ["0123456789abcdef0123456789abcdef", "A0123456789"],
+      "present": ["slack ", " end"]
+    },
+    {
+      "name": "slack-incoming-webhook-url",
+      "input": ["notify https://hooks.slack.com/services/T0FAKE0/B0FAKE0/", "FAKEhookTok9Qw7Lm3", " now"],
+      "absent": ["FAKEhookTok9Qw7Lm3", "T0FAKE0", "B0FAKE0"],
+      "present": ["notify ", " now"]
     }
   ]
 }

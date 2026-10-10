@@ -40,6 +40,10 @@
 - `measure.py inject-routing [--dry-run]` -- Inject model routing block into CLAUDE.md
 - `measure.py setup-coach-injection [--uninstall]` -- Inject coaching block
 
+## Deterministic Candidates
+
+- `measure.py deterministic-candidates [--days N] [--json] [--budget SECONDS] [--max-sessions N] [--no-cache]` -- Parts of your workflow that could be plain code instead of model calls: repeated tool-call sequences (3+ calls in 3+ sessions), templated subagent launches (5+), polling loops (same command 4+ times with no edit between), and passing test/build/lint turns whose reply was short. Local, read-only, no model calls; every figure is "measured on your transcripts" (tokens at real cache weights, API-equivalent dollars), examples are credential-redacted command shapes, top 10 by tokens. Default window 30 days; results are cached in the Token Optimizer data dir keyed by the newest transcript. `measure.py coach --json` carries the same block as `deterministic_candidates` (8 s budget, `"partial": true` if it ran out). Claude Code and Codex are measurable; other runtimes return `not measurable on <runtime>`.
+
 ## JSONL Toolkit
 
 - `measure.py jsonl-inspect` -- Stats, record counts, largest records

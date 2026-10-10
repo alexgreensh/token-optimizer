@@ -35,6 +35,8 @@ Usage:
     python3 measure.py jsonl-trim --apply           # Trim with backup + sidecar
     python3 measure.py jsonl-dedup                 # Find duplicate system reminders (dry-run)
     python3 measure.py jsonl-dedup --apply          # Remove duplicates with backup
+    python3 measure.py deterministic-candidates          # Workflow parts that could be plain code, not model calls
+    python3 measure.py deterministic-candidates --days 14 --json  # Custom window, machine-readable
     python3 measure.py validate-impact                 # Compare before/after optimization metrics
     python3 measure.py validate-impact --strategy halves # Split sessions chronologically in half
     python3 measure.py validate-impact --days 14 --json  # Custom window, machine-readable
@@ -148,6 +150,7 @@ def _detached_python_exe():
 import antigravity_session
 import codex_io
 import codex_session
+import deterministic_candidates
 import codex_state
 import copilot_session
 import cursor_session
@@ -9049,13 +9052,97 @@ def generate_auto_recommendations(components, trends=None, days=30):
     return plan_md, total_count
 
 
-def generate_coach_data(focus=None, components=None, trends=None):
+_DETCAND_COACH_BUDGET_S = 8.0
+_DETCAND_COACH_MAX_SESSIONS = 60
+_DETCAND_CLI_BUDGET_S = 60.0
+_DETCAND_CLI_MAX_SESSIONS = 300
+
+
+def _deterministic_candidates_data(days=30, budget_s=_DETCAND_COACH_BUDGET_S,
+                                   max_sessions=_DETCAND_COACH_MAX_SESSIONS,
+                                   use_cache=True, progress=None):
+    """Deterministic-candidate analysis over local transcripts (see deterministic_candidates.py).
+
+    Local, read-only, no model calls. Never raises: the coach must not fail
+    because of this block, so any error comes back as ``status: "error"``.
+    """
+    runtime = "unknown"
+    try:
+        runtime = detect_runtime()
+        if runtime not in ("claude", "codex"):
+            return deterministic_candidates.run(runtime, [], lambda *a: 0.0, days=days)
+        tier = _load_pricing_tier()
+
+        def price(model, fresh, out, cache_read, cache_create, cc_1h, cc_5m):
+            if not model or model == "unknown":
+                return None
+            if runtime == "codex":
+                return _get_model_cost(model, fresh, out, cache_read, cache_create, tier=tier)
+            if cc_1h or cc_5m:
+                return _get_model_cost(model, fresh, out, cache_read, cache_create, tier=tier,
+                                       cache_create_1h=cc_1h, cache_create_5m=cc_5m)
+            return _get_model_cost(model, fresh, out, cache_read, cache_create, tier=tier)
+
+        files = [(Path(jf), mt) for jf, mt, _proj in _find_all_jsonl_files(days=days)
+                 if _sidechain_path_reason(jf) is None]
+        return deterministic_candidates.run(
+            runtime, files, price, days=days, budget_s=budget_s, max_sessions=max_sessions,
+            cache_dir=SNAPSHOT_DIR, tier=tier, use_cache=use_cache, progress=progress)
+    except Exception as exc:  # never break coach --json
+        return {"status": "error", "runtime": runtime, "partial": True, "candidates": [],
+                "basis": deterministic_candidates.BASIS,
+                "error": f"{type(exc).__name__}: {str(exc)[:120]}"}
+
+
+def _cmd_deterministic_candidates(args):
+    """measure.py deterministic-candidates [--days N] [--json] [--budget SECONDS] [--max-sessions N] [--no-cache]"""
+    as_json = "--json" in args
+
+    def _opt(flag, cast, default):
+        if flag in args:
+            i = args.index(flag)
+            if i + 1 < len(args):
+                try:
+                    return cast(args[i + 1])
+                except ValueError:
+                    pass
+        return default
+
+    days = max(1, _opt("--days", int, 30))
+    budget = max(1.0, _opt("--budget", float, _DETCAND_CLI_BUDGET_S))
+    cap = max(1, _opt("--max-sessions", int, _DETCAND_CLI_MAX_SESSIONS))
+
+    def _progress(msg):
+        if not as_json:
+            print(f"  {msg}", file=sys.stderr)
+
+    data = _deterministic_candidates_data(days=days, budget_s=budget, max_sessions=cap,
+                                          use_cache="--no-cache" not in args, progress=_progress)
+    if as_json:
+        print(json.dumps(data, indent=2))
+        return
+    print()
+    print(f"  {_strip_ansi(str(data.get('summary') or deterministic_candidates.summary_line(data)))}")
+    for i, c in enumerate(data.get("candidates") or [], 1):
+        tok = c["tokens"]
+        print(f"\n  {i}. [{c['kind']}] seen {c['times_seen']}x in {c['sessions_seen']} session(s)")
+        print(f"     {_strip_ansi(str(c['example']))}")
+        print(f"     {tok['total_tokens']:,} tokens ({tok['input_tokens']:,} in incl. {tok['cache_read_tokens']:,} cache read, "
+              f"{tok['output_tokens']:,} out), ~${c['cost_usd']:.2f} API-equivalent, {deterministic_candidates.BASIS}")
+        print(f"     -> {c['suggestion']}")
+    print()
+
+
+def generate_coach_data(focus=None, components=None, trends=None, include_deterministic=False):
     """Generate structured coaching data for Token Coach mode.
 
     Args:
         focus: Optional focus area ('skills', 'agentic', 'memory')
         components: Pre-computed measure_components() result (avoids duplicate call)
         trends: Pre-computed trends data (avoids duplicate call)
+        include_deterministic: Add the ``deterministic_candidates`` block (a
+            bounded transcript scan). Only the ``coach`` CLI asks for it; the
+            dashboard and rollup callers skip the scan.
 
     Returns a dict with:
     - snapshot: current component measurements
@@ -9906,6 +9993,10 @@ def generate_coach_data(focus=None, components=None, trends=None):
 
     if all_costly_prompts:
         result["costly_prompts"] = all_costly_prompts[:5]
+
+    if include_deterministic:
+        result["deterministic_candidates"] = _deterministic_candidates_data(
+            days=30, budget_s=_DETCAND_COACH_BUDGET_S, max_sessions=_DETCAND_COACH_MAX_SESSIONS)
 
     return result
 
@@ -50494,7 +50585,7 @@ if __name__ == "__main__":
         for i, a in enumerate(args):
             if a == "--focus" and i + 1 < len(args):
                 focus = args[i + 1]
-        data = generate_coach_data(focus=focus)
+        data = generate_coach_data(focus=focus, include_deterministic=True)
         if output_json:
             print(json.dumps(data, indent=2))
         else:
@@ -50537,11 +50628,19 @@ if __name__ == "__main__":
                     preview = _strip_ansi(str(p["text"]))[:70].replace("\n", " ")
                     print(f"    {i}. ${p['cost_usd']} ({p['tokens_in']:,} in) \"{preview}...\"")
                 print()
+            det = data.get("deterministic_candidates")
+            if det:
+                print(f"  {_strip_ansi(str(det.get('summary') or deterministic_candidates.summary_line(det)))}")
+                if det.get("candidates"):
+                    print("    Details: python3 measure.py deterministic-candidates")
+                print()
             if data["questions"]:
                 print("  Coaching questions:")
                 for q in data["questions"]:
                     print(f"    ? {q}")
                 print()
+    elif args[0] == "deterministic-candidates":
+        _cmd_deterministic_candidates(args[1:])
     elif args[0] == "validate-impact":
         output_json = "--json" in args
         strat = "auto"

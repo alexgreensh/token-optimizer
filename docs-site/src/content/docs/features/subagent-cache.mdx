@@ -25,7 +25,7 @@ A marker in Token Optimizer's own data directory (timestamp plus previous state)
 
 ## The payoff check
 
-`subagent-cache status` judges the feature on your own transcripts, not a hypothetical. For the last 30 days it counts subagent cache writes that followed a 5 to 60 minute gap on the same agent prefix: writes that would have been cheap cache reads at a 1h TTL — against all subagent cache writes, each of which pays the 2x 1-hour write rate instead of 1.25x. The net comes out in tokens and API-equivalent dollars, always labelled an estimate.
+`subagent-cache status` judges the feature on your own transcripts, not a hypothetical. For the last 30 days it counts subagent cache writes that followed a 5 to 60 minute gap on the same agent prefix: writes that would have been cheap cache reads at a 1h TTL, against all subagent cache writes, each of which pays the 2x 1-hour write rate instead of 1.25x. The net comes out in tokens and API-equivalent dollars, always labelled an estimate.
 
 ```bash
 cd ~/.claude/skills/token-optimizer/scripts

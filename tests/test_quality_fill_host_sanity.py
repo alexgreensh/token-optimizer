@@ -154,3 +154,43 @@ def test_fresh_host_still_authoritative(m, monkeypatch):
     result = mod.compute_quality_score(_qdata(), session_id=sid)
     assert result["score"] >= 80
     assert result["breakdown"]["context_fill_degradation"]["fill_pct"] == 16.0
+
+
+def _write_live_fill_tokens(qc: Path, sid: str, pct: float, age_s: float, tokens: int, window: int):
+    (qc / "live-fill.json").write_text(json.dumps({
+        "used_percentage": pct,
+        "context_tokens": tokens,
+        "context_window": window,
+        "session_id": sid,
+        "timestamp": int((time.time() - age_s) * 1000),
+    }), encoding="utf-8")
+
+
+def test_pre_compact_host_reading_does_not_override_post_compact_transcript(m, monkeypatch):
+    """F-T1-9: session_id survives /compact, so a 60s-old host reading from
+    just before the compact (92%, 184k tokens) still "describes this session".
+    The transcript now says 20k tokens: the reading describes a different
+    moment (a numerator change, not a wrong denominator), so it must not win."""
+    mod, qc, _ = m
+    monkeypatch.setattr(mod, "detect_context_window", lambda: (200_000, "default"))
+    sid = "sess-post-compact"
+    _write_live_fill_tokens(qc, sid, 92.0, age_s=60, tokens=184_000, window=200_000)
+    result = mod.compute_quality_score(_qdata(context_tokens=20_000, compactions=1), session_id=sid)
+    fd = result["breakdown"]["context_fill_degradation"]
+    assert fd.get("fill_source") != "host-stale-override"
+    assert fd["fill_pct"] == pytest.approx(10.0, abs=0.5)
+    assert result["score"] >= 80
+
+
+def test_denominator_error_still_overrides_when_host_tokens_match(m, monkeypatch):
+    """The override this check exists for is unchanged: the host's token count
+    matches ours (same moment), only the window we inferred is wrong."""
+    mod, qc, _ = m
+    monkeypatch.setattr(mod, "detect_context_window",
+                        lambda: (200_000, "env: CLAUDE_CODE_DISABLE_1M_CONTEXT"))
+    sid = "sess-denominator"
+    _write_live_fill_tokens(qc, sid, 14.0, age_s=45, tokens=145_000, window=1_000_000)
+    result = mod.compute_quality_score(_qdata(context_tokens=140_000), session_id=sid)
+    fd = result["breakdown"]["context_fill_degradation"]
+    assert fd.get("fill_source") == "host-stale-override"
+    assert result["score"] >= 80

@@ -34207,6 +34207,7 @@ def compute_quality_score(quality_data, session_id=None):
     # produced "bar shows 16%, score is 59".
     host_fill_pct = None
     host_fill_age_s = None
+    host_live_tokens = None
     host_disagreement = None
     # Which source produced fill_pct, for cache diagnosability.
     fill_source = None
@@ -34231,6 +34232,7 @@ def compute_quality_score(quality_data, session_id=None):
                 live_tokens = live.get("context_tokens")
                 if not (isinstance(live_tokens, (int, float)) and live_tokens > 0):
                     live_tokens = None
+                host_live_tokens = live_tokens
                 # The host knows the real window; we only infer it. When the
                 # host rescues us from a bad denominator the user sees a correct
                 # number and the misconfiguration stays invisible, so record the
@@ -34274,6 +34276,10 @@ def compute_quality_score(quality_data, session_id=None):
         fill_source = "char-estimate"
     if model_fill is None:
         model_fill = fill_pct
+    # F-T1-9: the session id survives /compact, so a reading from just before one
+    # still names this session. When the host's token count is off ours by more
+    # than 2x it describes a different moment (a numerator change), not a wrong
+    # denominator, so the override below skips it.
     # Cross-check: if the host told us the fill and our own arithmetic would have
     # produced a materially different one, our window is wrong even though the
     # displayed number is right. Always recorded — and when the host reading is
@@ -34300,7 +34306,11 @@ def compute_quality_score(quality_data, session_id=None):
                     # different moment (same convention as the statusline's
                     # 5-min staleness guard); fresher than that, the host's real
                     # window beats our inferred one.
-                    if fill_source != "host-live" and (
+                    _other_moment = bool(  # host tokens >2x off ours (see above)
+                        host_live_tokens and float(_tokens) > 0
+                        and max(host_live_tokens, float(_tokens))
+                        > 2.0 * min(host_live_tokens, float(_tokens)))
+                    if fill_source != "host-live" and not _other_moment and (
                             host_fill_age_s is not None and host_fill_age_s < 300):
                         model_fill = host_fill_pct
                         fill_pct = _effective_fill(model_fill, float(_tokens))

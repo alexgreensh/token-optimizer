@@ -447,3 +447,109 @@ def test_existing_settings_keep_their_mode(measure):
     payload["effortLevel"] = "low"
     assert mod._write_settings_atomic(payload) is True
     assert stat.S_IMODE(settings.stat().st_mode) == 0o640
+
+
+# ---------------------------------------------------------------------------
+# F10e: reclaiming a stale lock must never delete a live successor's lock
+# ---------------------------------------------------------------------------
+
+def _stale_lock_race(mod, monkeypatch, lock_path, stale_seconds, acquire):
+    """Another process reclaims and re-creates the lock right after our age check."""
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text("crashed-holder", encoding="ascii")
+    old = __import__("time").time() - stale_seconds - 60
+    os.utime(lock_path, (old, old))
+    real_stat = Path.stat
+    state = {"raced": False}
+
+    def stat(self, *args, **kwargs):
+        result = real_stat(self, *args, **kwargs)
+        if self == lock_path and not state["raced"]:
+            state["raced"] = True
+            os.unlink(lock_path)
+            lock_path.write_text("live-holder-A", encoding="ascii")
+        return result
+
+    monkeypatch.setattr(Path, "stat", stat)
+    try:
+        token = acquire()
+    finally:
+        monkeypatch.setattr(Path, "stat", real_stat)
+    assert state["raced"], "the race was never injected"
+    assert token is None, "a second process took a lock that was live"
+    assert lock_path.read_text(encoding="ascii") == "live-holder-A", "the live lock was deleted"
+    assert [p.name for p in lock_path.parent.iterdir() if ".stale-" in p.name] == []
+
+
+def _stale_lock_plain(lock_path, stale_seconds, acquire):
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text("crashed-holder", encoding="ascii")
+    old = __import__("time").time() - stale_seconds - 60
+    os.utime(lock_path, (old, old))
+    token = acquire()
+    assert token, "a genuinely stale lock was not reclaimed"
+    assert lock_path.read_text(encoding="ascii") == token
+    assert [p.name for p in lock_path.parent.iterdir() if ".stale-" in p.name] == []
+
+
+def test_recs_lock_reclaim_does_not_delete_a_live_successor(measure, monkeypatch):
+    mod, _ = measure
+    _stale_lock_race(mod, monkeypatch, mod._recs_lock_path(), mod._RECS_LOCK_STALE,
+                     mod._recs_lock_acquire)
+
+
+def test_recs_lock_reclaims_a_genuinely_stale_lock(measure):
+    mod, _ = measure
+    _stale_lock_plain(mod._recs_lock_path(), mod._RECS_LOCK_STALE, mod._recs_lock_acquire)
+
+
+def test_scan_lock_reclaim_does_not_delete_a_live_successor(measure, monkeypatch):
+    mod, _ = measure
+    _stale_lock_race(mod, monkeypatch, mod._subagent_cache_scan_lock_path(),
+                     mod._SUBAGENT_CACHE_SCAN_LOCK_STALE, mod._subagent_cache_scan_acquire_lock)
+
+
+def test_scan_lock_reclaims_a_genuinely_stale_lock(measure):
+    mod, _ = measure
+    _stale_lock_plain(mod._subagent_cache_scan_lock_path(), mod._SUBAGENT_CACHE_SCAN_LOCK_STALE,
+                      mod._subagent_cache_scan_acquire_lock)
+
+
+def test_lease_reclaim_does_not_unlink_a_successor(tmp_path, monkeypatch):
+    monkeypatch.syspath_prepend(str(SCRIPTS))
+    import hook_runtime
+
+    path = tmp_path / "lease"
+    first = hook_runtime.LeaseLock(path, acquire_timeout=0, lease_seconds=0.1, reclaim_grace=0.0)
+    assert first.acquire() is True
+    __import__("time").sleep(0.25)  # the lease expires; its holder is gone
+
+    real_unlink, real_rename = os.unlink, os.rename
+    state = {"raced": False}
+
+    def inject_successor():
+        state["raced"] = True
+        real_unlink(path)
+        path.write_text("successor", encoding="utf-8")
+
+    def unlink(target, *a, **k):
+        if Path(target) == path and not state["raced"]:
+            inject_successor()
+        return real_unlink(target, *a, **k)
+
+    def rename(src, dst, *a, **k):
+        if Path(src) == path and not state["raced"]:
+            inject_successor()
+        return real_rename(src, dst, *a, **k)
+
+    monkeypatch.setattr(os, "unlink", unlink)
+    monkeypatch.setattr(os, "rename", rename)
+    second = hook_runtime.LeaseLock(path, acquire_timeout=0, reclaim_grace=0.0)
+    got = second.acquire()
+    monkeypatch.setattr(os, "unlink", real_unlink)
+    monkeypatch.setattr(os, "rename", real_rename)
+    assert state["raced"], "the race was never injected"
+    assert got is False
+    assert path.read_text(encoding="utf-8") == "successor", "the successor's lease was deleted"
+    assert [p.name for p in tmp_path.iterdir() if ".stale-" in p.name] == []
+    first.release()

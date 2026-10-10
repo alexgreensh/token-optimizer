@@ -19597,6 +19597,49 @@ def _subagent_cache_verdict_for(now, since_ts=None):
     return "fresh", rec
 
 
+def _reclaim_stale_lock_file(lock, stale_seconds, now):
+    """Free an abandoned O_EXCL lock without ever deleting a live successor.
+
+    Returns True when the pathname is free (stale lock removed, or already
+    gone) so the caller retries the create, False when the lock is live or
+    cannot be moved. A bare ``unlink`` after an age check can delete the lock a
+    faster process just re-created, and then two processes both think they hold
+    it. So the stale file is renamed to a unique name first (atomic: it takes
+    whatever sits at the path at that instant), identity-checked against what
+    the age check saw, and only then unlinked. If the rename grabbed a live
+    successor instead, it is linked back (no-replace) and left alone.
+    """
+    try:
+        seen = lock.stat()
+    except OSError:
+        return True
+    if float(now) - seen.st_mtime < stale_seconds:
+        return False
+    victim = lock.with_name(f"{lock.name}.stale-{os.urandom(6).hex()}")
+    try:
+        os.rename(str(lock), str(victim))
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    try:
+        moved = os.stat(str(victim))
+        ours = (os.path.samestat(seen, moved)
+                and moved.st_mtime_ns == seen.st_mtime_ns)
+    except OSError:
+        ours = False
+    if not ours:
+        try:
+            os.link(str(victim), str(lock))
+        except OSError:
+            pass
+    try:
+        os.unlink(str(victim))
+    except OSError:
+        pass
+    return bool(ours)
+
+
 def _subagent_cache_scan_acquire_lock(now=None):
     """Take the scan lock (O_EXCL); its owner token, or None when it is held.
 
@@ -19612,15 +19655,8 @@ def _subagent_cache_scan_acquire_lock(now=None):
             try:
                 fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
             except FileExistsError:
-                try:
-                    age = float(now) - lock.stat().st_mtime
-                except OSError:
-                    continue
-                if age < _SUBAGENT_CACHE_SCAN_LOCK_STALE:
-                    return None
-                try:
-                    lock.unlink()
-                except OSError:
+                if not _reclaim_stale_lock_file(
+                        lock, _SUBAGENT_CACHE_SCAN_LOCK_STALE, now):
                     return None
                 continue
             try:
@@ -20693,15 +20729,7 @@ def _recs_lock_acquire(now=None):
                 fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY,
                              0o600)
             except FileExistsError:
-                try:
-                    age = float(now) - lock.stat().st_mtime
-                except OSError:
-                    continue
-                if age < _RECS_LOCK_STALE:
-                    return None
-                try:
-                    lock.unlink()
-                except OSError:
+                if not _reclaim_stale_lock_file(lock, _RECS_LOCK_STALE, now):
                     return None
                 continue
             try:

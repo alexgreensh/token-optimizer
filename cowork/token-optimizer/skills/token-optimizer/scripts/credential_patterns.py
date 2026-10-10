@@ -44,7 +44,11 @@ CREDENTIAL_PATTERNS: List[Tuple[str, "re.Pattern[str]"]] = [
     ("Google API key",          re.compile(r"AIza[0-9A-Za-z_\-]{35}")),
     ("Google OAuth token",      re.compile(r"ya29\.[0-9A-Za-z_\-]{20,}")),
     ("JWT",                     re.compile(r"eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}")),
-    ("PEM private key",         re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
+    # Whole block: the key body is the secret, the BEGIN line is not. A block
+    # with no END (cut by a length limit, or still being typed) runs to the end
+    # of the text so a truncated body is never left behind.
+    ("PEM private key",         re.compile(
+        r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|\Z)")),
     ("Database URI",            re.compile(r"(?:postgres|postgresql|mysql|mongodb|mongodb\+srv|redis)://[^:\s/]+:[^@\s]+@", re.I)),
     ("HTTP basic auth URL",     re.compile(r"https?://[^:\s/@]+:[^@\s]+@", re.I)),
     # Credentials passed as URL query/matrix parameters OR OAuth-implicit-flow

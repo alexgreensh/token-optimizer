@@ -64,6 +64,9 @@ except Exception:  # pragma: no cover - fail-open if shared estimator missing
 _ARCHIVE_THRESHOLD = 4096       # chars: only archive results >= this size
 _ARCHIVE_PREVIEW_SIZE = 1500    # chars: preview included in replacement output
 _ARCHIVE_MAX_SIZE = 5_242_880   # 5MB: truncate responses beyond this
+# Read this far past the cap when redacting, so a secret that straddles the cap
+# is whole when the redactor sees it (the cut is applied after redaction).
+_ARCHIVE_CAP_REDACT_OVERSHOOT = 4096
 _STDIN_MAX_BYTES = _ARCHIVE_MAX_SIZE + 262_144  # 5MB response plus JSON overhead
 _ARCHIVE_RETENTION_HOURS_DEFAULT = 24
 _ARCHIVE_RETENTION_MAX_FILES_DEFAULT = 1000
@@ -1365,7 +1368,17 @@ def archive_result(quiet: bool = False) -> None:
     truncated = original_char_count > _ARCHIVE_MAX_SIZE
 
     if truncated:
-        tool_response = tool_response[:_ARCHIVE_MAX_SIZE] + (
+        # Redact a window that reaches past the cap BEFORE cutting at it: a
+        # secret straddling the cap is otherwise a prefix no pattern
+        # recognises. If the redactor refuses, fall back to the plain cut; the
+        # redaction below then raises the same way and skips the write.
+        try:
+            tool_response = _redact_credentials(
+                tool_response[:_ARCHIVE_MAX_SIZE + _ARCHIVE_CAP_REDACT_OVERSHOOT]
+            )[:_ARCHIVE_MAX_SIZE]
+        except Exception:
+            tool_response = tool_response[:_ARCHIVE_MAX_SIZE]
+        tool_response += (
             f"\n\n[TRUNCATED at 5MB. Original size: {original_char_count} chars]"
         )
 

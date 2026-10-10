@@ -65,13 +65,17 @@ A plugin's own settings.json cannot set the cache TTLs (only `agent` and `subage
 
 ## Context Quality Degradation
 
-| Fill Level | Quality | Recommendation |
-|------------|---------|----------------|
-| 0-30% | Peak performance | Work freely |
-| 30-50% | Good quality | Monitor context |
-| 50-70% | Minor degradation | Run /compact soon |
-| 70-85% | Noticeable quality loss | Run /compact NOW |
-| 85%+ | Hallucinations, corner-cutting | /clear or new session |
+Token Optimizer's quality score uses a published long-context retrieval curve for Claude models, as a share of the model's window. It is an estimate, not a measurement:
+
+| Window filled | Estimated retrieval quality |
+|---------------|-----------------------------|
+| 0-10% | 98 to 96 (minimal loss) |
+| 10-25% | 96 to 93 |
+| 25-50% | 93 to 88 |
+| 50-70% | 88 to 80 |
+| 70-100% | 80 to 76 |
+
+On a 1M window those bands span far more tokens than on 200K, so the same absolute token count costs less quality on a 1M window. For when to compact, run `measure.py compact-advice`, which answers from the user's own sessions instead of a fixed percentage.
 
 ## MCP Tool Costs (Real Examples)
 

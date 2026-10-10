@@ -1,5 +1,5 @@
 ---
-description: Check running Claude Code or Codex sessions, find zombies, offer to clean up safely
+description: Checks running Claude Code or Codex sessions, finds zombies, and offers a safe cleanup. Use when sessions feel stuck or many are open.
 ---
 
 # Session Health Check
@@ -68,8 +68,8 @@ export TOKEN_OPTIMIZER_RUNTIME="$RUNTIME"
 4. If ANY sessions are flagged STALE or ZOMBIE, ask the user:
    "I found N session(s) that look stale. Want me to show details so you can decide which to terminate?"
 
-5. **CRITICAL SAFETY RULES — follow these exactly:**
-   - NEVER auto-kill anything. Always ask first and get explicit confirmation.
+5. **Terminate only with the user's explicit confirmation**, because a session that looks stale may be doing real work:
+   - Never auto-kill anything. Ask first and wait for confirmation.
    - HEADLESS sessions might be intentional background processes (cron agents, heartbeat monitors, scheduled tasks). Always warn: "This session is headless, it might be a background agent running on purpose. Are you sure you want to terminate it?"
    - Let the user pick specific PIDs to terminate, or offer "terminate all ZOMBIE-flagged sessions" as a batch option.
    - Always run a dry-run first to preview what would be terminated, then ask for confirmation before running without `--dry-run`.

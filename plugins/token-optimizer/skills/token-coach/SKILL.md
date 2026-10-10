@@ -1,21 +1,18 @@
 ---
 name: token-coach
-description: Plan a token-efficient Claude Code or Codex setup, or get a quick health check. Coaching, not the full audit (use token-optimizer for that).
+description: Coaches a token-efficient Claude Code or Codex setup from the user's own usage data. Use when planning a build, a slow or costly setup, multi-agent design, or deciding which workflow steps need a model.
 ---
 
-# Token Coach: Plan Token-Efficient Before You Build
+# Token Coach
 
-> **Never recommend cutting our own tools.** When you surface optimization or setup-overhead recommendations, NEVER suggest removing, archiving, trimming, disabling, or consolidating Token Optimizer's own skills — `token-optimizer`, `token-coach`, `token-dashboard`, `fleet-auditor`. They are the measurement layer; a tool that tells the user to delete itself to "save ~200 tokens" is self-defeating and embarrassing. Exclude them from every unused-skill / archive / consolidation suggestion, no matter how rarely they were invoked (an audit tool you don't explicitly call is not an "unused" skill).
+A coaching conversation about where the user's tokens go and what to change, grounded in numbers measured on their machine. The deliverable is a short, prioritised action plan the user agrees with. For a full audit that edits their setup, hand over to `token-optimizer`.
 
-Interactive coaching for Claude Code or Codex architecture decisions. Analyzes your setup, identifies patterns (good and bad), and gives personalized advice with real numbers.
+Token Optimizer's own skills (`token-optimizer`, `token-coach`, `token-dashboard`, `fleet-auditor`, `resume-checkpoint`) are the measurement layer, so leave them out of every unused-skill, archive or consolidation suggestion, however rarely they run.
 
-**Use when**: Building something new, existing setup feels slow, designing multi-agent systems, or want a quick health check.
+## 1. Collect the data
 
----
+Run exactly this first. It finds the newest installed copy, so a stale plugin cache never answers:
 
-## Phase 0: Initialize
-
-1. **Resolve runtime and measure.py path** (same as token-optimizer):
 ```bash
 RUNTIME="${TOKEN_OPTIMIZER_RUNTIME:-}"
 if [ -z "$RUNTIME" ]; then
@@ -54,158 +51,77 @@ $(find -L "$HOME/.claude/skills" "$HOME/.claude/plugins/cache" "$HOME/.claude/to
 EOF
 if [ -z "$MEASURE_PY" ] || [ ! -f "$MEASURE_PY" ]; then echo "[Error] measure.py not found. Is Token Optimizer installed?"; exit 1; fi
 export TOKEN_OPTIMIZER_RUNTIME="$RUNTIME"
+# The coach files ship beside measure.py, so they are always the same version.
+COACH_DIR="$(cd -P -- "$(dirname -- "$MEASURE_PY")/../../token-coach" 2>/dev/null && pwd)"
+[ -d "$COACH_DIR/references" ] || echo "[Error] token-coach references not found beside $MEASURE_PY. Reinstall Token Optimizer."
 ```
 
-2. **Collect coaching data**:
+Then gather, skipping any command that fails (older installs lack some):
+
 ```bash
-python3 "$MEASURE_PY" coach --json
+python3 "$MEASURE_PY" coach --json                      # snapshot, patterns, history, questions
+python3 "$MEASURE_PY" quality current --json            # this session's quality score and issues
+python3 "$MEASURE_PY" subagent-cache status --json      # Claude Code: subagent cache lifetime and its payoff
+python3 "$MEASURE_PY" compact-advice --json             # Claude Code: would an earlier compact window pay off
+[ "$RUNTIME" = "codex" ] && python3 "$MEASURE_PY" codex-doctor --project "$PWD" --json
 ```
-Parse the JSON output. This gives you: snapshot (current measurements), detected patterns, coaching questions, focus suggestions, and **history** (trend data from past sessions).
 
-The `history` key contains (when trends.db has enough data):
-- `quality_recent_avg` / `quality_prior_avg` - 7-day vs older quality scores
-- `duration_recent_avg` / `duration_prior_avg` - session length trends (minutes)
-- `cache_hit_recent_avg` / `cache_hit_prior_avg` - prompt cache hit rate trends
-- `grade_d_pct_recent` / `grade_distribution` - recent grade breakdown
-- `total_cost_usd` / `cost_per_session_usd` / `sessions_in_period` - spend summary
-- `quality_short_sessions` / `quality_long_sessions` / `optimal_session_hint` - duration-quality correlation
-- `compression_measured_saved` / `compression_opportunity_tokens` - compression gap
-- `multi_model_session_pct` - percentage of recent sessions that switched models mid-session
+What the coach JSON holds: `snapshot` (current overhead), `patterns_good` and `patterns_bad` (named patterns with detail and fix), `history` (7-day against earlier: quality, session length, cache hit rate, grade spread, cost per session, short against long sessions, compression gap, share of sessions that switched model), and `deterministic_candidates` when present (work the user repeats that a script could do). Field-by-field meaning and the numbers to quote: [references/quick-reference.md](references/quick-reference.md).
 
-Historical patterns also appear in the `patterns_bad` array (e.g. "Quality Declining", "Session Duration Creep", "Cache Hit Rate Dropping", "Cache Hit Rate Dropping (Model Switches)", "Frequent Model Switching", "High Cost Per Session", "Compression Opportunity Gap").
+Every number you quote comes from these outputs or from the quick reference. When the data is thin or a command returned nothing, say so and coach from what the user tells you; an invented figure costs the user's trust in every real one.
 
-3. **Check context quality** (v2.0):
-```bash
-python3 "$MEASURE_PY" quality current --json 2>/dev/null
-```
-If available, parse the quality score and issues. This enriches coaching with session-level insights (not just setup overhead). If the command fails (pre-v2.0 install), skip gracefully.
+## 2. Ask what they want
 
-4. **For Codex, check setup readiness**:
-```bash
-if [ "$RUNTIME" = "codex" ]; then
-  python3 "$MEASURE_PY" codex-doctor --project "$PWD" --json 2>/dev/null
-fi
-```
-Use this to tell the user whether balanced hooks, compact prompt guidance, dashboard refresh, and status-line support are installed.
-
-5. **Keep-Warm consent (first run only, Claude Code)**:
-```bash
-python3 "$MEASURE_PY" keepwarm-consent-status   # JSON: {billing_mode, consent, should_ask}
-```
-If `should_ask` is `false`, skip silently. If `true` (API-billed, not yet asked), offer Keep-Warm once after the coaching conversation. First compute the projection from the user's own history:
-```bash
-python3 "$MEASURE_PY" keepwarm-backfill --json --no-fence   # read modes."probe-only".net_usd
-```
-Then pitch: when a session pauses past its 1h cache window and resumes, the prefix is re-written at up to 2x; Keep-Warm pings before expiry (~0.1x, max 2 pings/pause) so resumes stay warm, with a tripwire that auto-disables if it stops paying off. If `modes."probe-only".net_usd` is positive, say "a history-replay projection from your own last 30 days nets ~$<net_usd>/30d at probe-only"; if backfill yields nothing or `net_usd <= 0`, drop the dollar sentence (do not invent one) and say savings depend on their own pattern and the dashboard shows it once pings fire.
-
-Record the answer — **yes/no FIRST** so an interrupted run never strands an "asked" marker with no answer: `keepwarm-enable` (yes) or `keepwarm-disable` (no), both terminal. Only if the user defers/ignores (records neither) run `keepwarm-consent-asked` as the shown-marker. `keepwarm-enable` records consent and installs the scheduler (macOS); other OSes are scheduler-pending, watchdog-only. Confirm it is armed with `keepwarm-scheduler status` and `keepwarm-tick --dry-run`. It is off by default and refuses on subscription auth.
-
-## Phase 1: Intake
-
-Ask ONE question:
+Ask one question and wait for the answer before showing findings:
 
 > What's your goal today?
-> a) Building something new, want it token-efficient from the start
-> b) Existing project feels sluggish / context fills too fast
-> c) Designing a multi-agent system, want architecture advice
-> d) Quick health check with actionable tips
+> a) Building something new and want it token-efficient from the start
+> b) An existing setup feels slow or context fills too fast
+> c) Designing a multi-agent system
+> d) Quick health check
+> e) Review a workflow or automation: which steps need a model at all
 
-Wait for the answer. Don't dump info before they choose.
+Skip the question when the request already answers it.
 
-## Phase 2: Load Context (based on intake)
+## 3. Load what that goal needs
 
-Resolve the token-coach skill directory:
-```bash
-COACH_DIR=""
-if [ -d "$HOME/.codex/skills/token-coach" ]; then
-  COACH_DIR="$HOME/.codex/skills/token-coach"
-elif [ -d "$HOME/.codex/skills/token-optimizer/../token-coach" ]; then
-  COACH_DIR="$HOME/.codex/skills/token-optimizer/../token-coach"
-elif [ -d "$HOME/.claude/skills/token-coach" ]; then
-  COACH_DIR="$HOME/.claude/skills/token-coach"
-elif [ -d "$HOME/.claude/skills/token-optimizer/../token-coach" ]; then
-  COACH_DIR="$HOME/.claude/skills/token-optimizer/../token-coach"
-else
-  # Newest cached token-coach copy, not first-match — mirrors the measure.py
-  # resolver so a stale plugin-cache copy never shadows a fresher one.
-  COACH_DIR=""; _cbest=""
-  while IFS= read -r _cd; do
-    [ -d "$_cd" ] || continue
-    _cr="$(cd -P -- "$_cd/../.." 2>/dev/null && pwd)"
-    _cv="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$_cr/.claude-plugin/plugin.json" 2>/dev/null | head -1)"
-    [ -n "$_cv" ] || _cv="0.0.0"
-    if [ -z "$_cbest" ] || [ "$(printf '%s\n%s\n' "$_cv" "$_cbest" | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n | tail -n1)" = "$_cv" ]; then
-      _cbest="$_cv"; COACH_DIR="$_cd"
-    fi
-  done <<EOF
-$(find -L "$HOME/.codex/plugins/cache" "$HOME/.claude/plugins/cache" "$HOME/.config/opencode/plugins/cache" -path '*/token-coach' -type d 2>/dev/null)
-EOF
-fi
-```
+| Goal | Read | Example to follow |
+|------|------|-------------------|
+| a, b | [references/coach-patterns.md](references/coach-patterns.md), quick reference | `examples/coaching-session-new-project.md` (a), `examples/coaching-session-heavy-setup.md` (b) |
+| c | [references/agentic-systems.md](references/agentic-systems.md), quick reference | `examples/coaching-session-agentic.md` |
+| d | quick reference only | none, keep it fast |
+| e | [references/deterministic-stages.md](references/deterministic-stages.md) | none |
 
-Load references based on intake choice:
-- **Option a or b**: Read `$COACH_DIR/references/coach-patterns.md` + `$COACH_DIR/references/quick-reference.md`
-- **Option c**: Read `$COACH_DIR/references/agentic-systems.md` + `$COACH_DIR/references/quick-reference.md`
-- **Option d**: Read `$COACH_DIR/references/quick-reference.md` only (fast path)
+For a, b and c also read [references/coaching-scripts.md](references/coaching-scripts.md) for how each conversation tends to run. All paths are under `$COACH_DIR`. The examples show tone and pacing; the user's data decides the content.
 
-Read the matching example from `$COACH_DIR/examples/` as a few-shot template:
-- Option a: `coaching-session-new-project.md`
-- Option b: `coaching-session-heavy-setup.md`
-- Option c: `coaching-session-agentic.md`
-- Option d: Skip example (keep it fast)
+## 4. Coach
 
-Read `$COACH_DIR/references/coaching-scripts.md` for conversation structure.
+This is a conversation. One or two findings, then a question; the user steers the rest.
 
-## Phase 3: Coach (conversation, not report)
+- **Open with what hurts most.** A session quality score under 70 comes first ("quality is 58 of 100, and stale tool results are holding 40K tokens"). Otherwise a worsening trend beats a static number: falling quality, growing session length, a dropping cache hit rate.
+- **Use their numbers and name the pattern.** "47 skills cost about 4,700 tokens at every start, the 50-Skill Trap" lands; "skills cost tokens" does not.
+- **Explain the mechanism in a sentence** so the advice survives cases this skill never listed. Example: switching model mid-session throws away the prompt cache, so pick the model at the start; a cheaper model inside a subagent is fine because it has its own context.
+- **Subagent cache.** Subagents get a 5-minute cache even on a subscription. Token Optimizer sets it to 1 hour; report what `subagent-cache status` measured, including when the payoff is negative for this user's pattern.
+- **Compaction window.** Present `compact-advice` as an estimate from their own history with cost and quality side by side, and give the command it printed. Earlier compaction saves cache-read tokens on every later turn and risks losing early instructions, so the user decides.
+- **Goal e, or any time `deterministic_candidates` is non-empty:** walk the workflow step by step and sort each step into "inputs decide the output, so plain code" and "needs judgement, so a model", following the deterministic-stages reference.
+- **Codex users** hear Codex terms only: `AGENTS.md`, Codex memories, balanced Codex hooks, reasoning effort and the model picker, compact prompt guidance. Claude model names and `CLAUDE.md` mean nothing to them.
 
-This is a CONVERSATION. Not a wall of text.
+Sound like a knowledgeable friend. Two to four exchanges is typical; follow the user's questions over any script.
 
-1. Lead with the 1-2 most impactful findings from the coaching data
-2. If quality data is available and score < 70, lead with that instead: "Your current session quality is [X]/100. [Top issue] is eating [Y tokens]."
-3. If `history` data is available, weave in trend insights naturally:
-   - Quality trending down? Lead with that, it's more urgent than a static snapshot
-   - Cost data? Ground advice in dollars ("At $X.XX/session across Y sessions, routing alone could save $Z/month")
-   - Duration-quality correlation? "Your short sessions score X vs Y for long ones" is a concrete, actionable insight
-   - Grade distribution? "N% of your sessions scored D" hits harder than an abstract score
-   - Model switching? If multi_model_session_pct is high, explain: switching models mid-session invalidates the prompt cache. Set model at session start, not mid-conversation. Subagent routing to cheaper models is fine (separate context)
-   - Don't dump all history data at once. Pick the 1-2 most relevant trends for their intake choice
-4. Reference their actual numbers ("You have 47 skills costing ~4,700 tokens at startup")
-5. Ask a follow-up question. Don't dump everything at once.
-6. For agentic systems (option c): walk through their architecture step by step
-7. Use the coaching scripts for structure, but keep it natural
+## 5. Agree the action plan
 
-For Codex specifically, translate all advice to native Codex concepts:
-- `AGENTS.md` instead of `CLAUDE.md`
-- Codex memories instead of `MEMORY.md`
-- balanced Codex hooks instead of Claude hooks
-- Intelligence levels (Low/Medium/High/Extra High) and model selection (GPT-5.6 Sol/Terra/Luna, GPT-5.5, GPT-5.4, GPT-5.4-Mini, GPT-5.3-Codex, GPT-5.2) instead of Opus/Sonnet/Haiku routing
-- Reasoning effort settings instead of model-per-agent routing
-- compact prompt guidance instead of PreCompact/PostCompact lifecycle hooks
-- Never reference Claude-specific concepts (Opus, Sonnet, Haiku, CLAUDE.md) when coaching a Codex user
+Close with three to five actions ordered by impact. Each has a bold name, one line on what to do, the estimated saving and where that estimate comes from, and whether it is a quick win or a deeper change. Include, when they apply:
 
-**Tone**: Knowledgeable friend, not corporate consultant. Be direct about what matters and why. Use real numbers from their data.
+- Quality under 70 on Claude Code: `python3 "$MEASURE_PY" setup-smart-compact`. On Codex: `TOKEN_OPTIMIZER_RUNTIME=codex python3 "$MEASURE_PY" codex-install --project .`
+- Quality under 50: `/compact` or `/clear` before more work.
+- Steps to move from a model to a script, each with the mechanism (hook, script, scheduled job).
 
-**Anti-patterns to call out**: Reference the anti-patterns from coach-patterns.md. Name them ("You've got the 50-Skill Trap going on").
+Then check the plan against the data: every figure traces to a command output or the quick reference, and no action touches Token Optimizer's own skills. Fix what fails and check again before sending.
 
-Continue the conversation for 2-4 exchanges. Let the user ask questions. Adjust advice based on what they tell you about their workflow.
+Offer `/token-optimizer` when they want the changes made for them, and the dashboard (`python3 "$MEASURE_PY" dashboard`; on Codex quote the `Dashboard:` line it prints, never a remembered path) when they want to watch the trend.
 
-## Phase 4: Action Plan
+## Keep-Warm (Claude Code, asked once)
 
-After the conversation, generate a prioritized action plan:
+After the plan, run `python3 "$MEASURE_PY" keepwarm-consent-status`. Only when `should_ask` is true, follow [references/keepwarm-consent.md](references/keepwarm-consent.md) exactly: it spends the user's money, so the wording and the order of commands are fixed.
 
-1. Summarize 3-5 concrete actions, ordered by impact
-2. Include estimated token savings for each action (use the numbers from quick-reference.md)
-3. If quality score < 70 in Claude Code: include "Set up Smart Compaction" as a recommended action (`python3 $MEASURE_PY setup-smart-compact`)
-4. If quality score < 70 in Codex: include "Install balanced Codex hooks and compact prompt guidance" (`TOKEN_OPTIMIZER_RUNTIME=codex python3 $MEASURE_PY codex-install --project .`)
-5. If quality score < 50: recommend immediate `/compact` or `/clear` before continuing
-6. Flag which actions are quick wins vs deeper changes
-7. Offer to run `/token-optimizer` for the full audit + implementation if they want to go beyond coaching
-
-**Format**: Keep it scannable. Numbered list with bold action names, one-line description, estimated savings.
-
-## Phase 5: Dashboard (optional)
-
-If measure.py generated a coach dashboard tab, mention it:
-"Your Token Health Score and pattern analysis are in the dashboard. Run `python3 $MEASURE_PY dashboard` to see it."
-
-For Codex, also give the generated file location. Never hardcode it: cite the `  Dashboard: ` line printed by `TOKEN_OPTIMIZER_RUNTIME=codex python3 $MEASURE_PY dashboard`.
+Written for and checked on Claude Opus 5.5 and Sonnet 5.5, and GPT-5.6 on Codex.

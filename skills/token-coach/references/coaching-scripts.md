@@ -113,7 +113,7 @@ Keep it under 2 minutes of reading. "That's the quick view. For the deep dive, r
 "Identity (1-2 lines), critical behavioral rules, key file paths, and model routing instructions. Everything else should be in skills, reference files, or MEMORY.md. Target: under 50 lines, under 800 tokens."
 
 ### "Is this costing me money or just context?"
-"Both, but differently. Context overhead affects output quality (degrades past 50% fill). Token costs affect your bill. Skills cost tokens but only on invocation. CLAUDE.md costs tokens every single message. Multi-agent workflows multiply everything."
+"Both, but differently. Context overhead affects output quality (degrades as the window fills). Token costs affect your bill. Skills cost tokens but only on invocation. CLAUDE.md costs tokens every single message. Multi-agent workflows multiply everything."
 
 ### "Should I use /compact or /clear?"
 "Different tools for different situations. /compact preserves conversation context but may lose nuance. /clear gives you a completely fresh window. Rule of thumb: /compact within a topic, /clear between topics."

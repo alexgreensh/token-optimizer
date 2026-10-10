@@ -38,7 +38,7 @@ MESSAGE SEND
 | - System prompt base           ~3,000 tokens        |
 | - Built-in tools (18+)       ~12,000 tokens         |
 |   Read, Write, Edit, Bash, Grep, Glob, Task, etc.  |
-|   (Source: /context output, Claude Code v2.1.59)     |
+|   (Source: the /context output; varies by build)    |
 |                                                     |
 | NOTE: The "system prompt" is often reported as      |
 | ~3,000 tokens. But built-in tool definitions        |
@@ -51,7 +51,7 @@ MESSAGE SEND
 +-----------------------------------------------------+
 | PHASE 2: MCP Tools (VARIABLE)                      |
 |----------------------------------------------------|
-| Tool Search (default since Jan 2026):                |
+| Tool Search (on by default):                         |
 | - ToolSearch tool def           ~500 tokens          |
 | - Deferred tool names           ~15 tokens each     |
 | - Full definitions load on use only                  |
@@ -291,15 +291,19 @@ Continue until /clear or session end
 ```
 
 ### Context Fill Degradation
-| Fill Level | Quality Impact |
-|------------|----------------|
-| 0-30% | Peak performance |
-| 30-50% | Normal operation |
-| 50-70% | Minor degradation (subtle) |
-| 70-85% | Noticeable cutting corners |
-| 85%+ | Hallucinations, drift, forgetfulness |
+Token Optimizer's quality score follows a published long-context retrieval curve for Claude models, by share of the window filled (an estimate, not a measurement):
 
-**Recommendation**: Manually /compact at phase boundaries to stay in the peak zone. Auto-compact on 1M models fires at about 967K tokens by default, far past the quality degradation threshold, so set a lower per-model window with `/autocompact <n>` (100K-1M, saved per model; `/autocompact auto` restores the tuned window) or the `autoCompactWindow` setting. Token Optimizer auto-removes `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` if found (undocumented env var with inverted semantics that causes premature compaction).
+| Window filled | Estimated retrieval quality |
+|---------------|-----------------------------|
+| 0-10% | 98 to 96 |
+| 10-25% | 96 to 93 |
+| 25-50% | 93 to 88 |
+| 50-70% | 88 to 80 |
+| 70-100% | 80 to 76 |
+
+**Recommendation**: Compact manually at phase boundaries instead of waiting. Auto-compact on 1M models fires at about 967K tokens by default, well past where quality has dropped, so set a lower per-model window with `/autocompact <n>` (100K-1M, saved per model; `/autocompact auto` restores the tuned window) or the `autoCompactWindow` setting. `measure.py compact-advice` estimates from the user's own history whether an earlier window pays off.
+
+Token Optimizer auto-removes `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` if found (undocumented env var with inverted semantics that causes premature compaction).
 
 ---
 
@@ -329,7 +333,7 @@ Continue until /clear or session end
 **Pricing**:
 - Cache reads: 0.1x base input (90% cheaper)
 - Cache writes: 1.25x base input for a 5-minute cache, 2x for a 1-hour cache
-- Minimum cacheable size: 1,024 tokens (Sonnet/Opus), 2,048 tokens (Haiku)
+- Minimum cacheable prompt size varies by model; see the prompt caching docs
 
 **What gets cached**: System prompt (including CLAUDE.md), tool definitions, conversation history prefix up to last cache breakpoint.
 
@@ -343,7 +347,7 @@ Continue until /clear or session end
 **What caching does NOT fix** (why optimization still matters):
 - Context window SIZE: cached tokens still occupy your window
 - Rate limits: cache reads count toward subscription usage quotas
-- Quality: lost-in-the-middle degradation starts at 50-70% fill regardless of caching
+- Quality: lost-in-the-middle degradation grows as the window fills, regardless of caching
 - Multi-agent amplification: each subagent inherits full overhead at full size
 
 **Structuring for cache hits**: Stable sections first (identity, rules), volatile sections last. This maximizes the cached prefix length.
@@ -359,19 +363,16 @@ Most Claude Code users are on Max subscriptions ($100-200/month), not per-token 
 ### Why Overhead Hurts (Even on Subscription)
 ```
 1. FASTER CONTEXT FILL
-   20K overhead = 10% of context gone before you type
-   35K overhead = 18% gone. You hit compaction 18% sooner.
+   20K overhead = 10% of a 200K window (2% of 1M) gone before you type
+   35K overhead = 18% of 200K (3.5% of 1M). Compaction arrives that much sooner.
 
 2. MORE COMPACTION CYCLES
    Each compaction is lossy. More compactions = more context lost.
    A session with 35K overhead compacts ~2x more often than 20K.
 
 3. QUALITY DEGRADATION
-   Claude's performance degrades as context fills:
-   0-50%:  Peak performance
-   50-70%: Minor degradation
-   70%+:   Noticeable quality loss, cutting corners
-   With 35K overhead, you reach 70% after fewer messages.
+   Retrieval quality slips as the window fills (see the curve above).
+   With 35K overhead you reach any given fill level after fewer messages.
 
 4. BEHAVIORAL MULTIPLIER
    Every message re-sends the overhead. 100 messages/day

@@ -23,10 +23,13 @@ session-level fields only:
     - Message count risk                                   — weight 0.35
     - Output / input ratio                                 — weight 0.25
 
-  Omitted signals (unavailable from session row):
+  Omitted signals (not weighted in the score):
     - Cache hit rate (cache_read is present but unreliable on Hermes; included
       as informational only; not wired into the score to avoid noise)
-    - Compaction events (Hermes does not persist compaction counts)
+    - Compaction events (the sessions row carries no successful-compaction
+      count. It does carry compression-health fields: failure cooldown, error,
+      fallback streak, ineffective count, recovery deadline — those gate the
+      nudge, not the quality score)
     - API calls / turn ratio (api_call_count available; included as optional
       compaction proxy in the grade dict but not in the weighted score because
       Hermes call counts are not directly comparable to CC turns)
@@ -159,7 +162,8 @@ ACTIVE_QUALITY_SIGNALS = (
 
 OMITTED_QUALITY_SIGNALS = (
     "cache_hit_rate",      # cache_read present but unreliable in Hermes
-    "compaction_events",   # not persisted in sessions row
+    "compaction_events",   # no successful-compaction count in the sessions row
+                           # (compression-health fields exist and gate the nudge)
     "api_per_message",     # api_call_count not directly comparable to CC turns
 )
 

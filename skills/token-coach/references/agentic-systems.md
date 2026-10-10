@@ -93,6 +93,8 @@ Add to CLAUDE.md: "Default subagents to model='haiku' for data gathering, model=
 
 Use Explore when you just need to find things. Use Plan when you need reasoning without edits. Use General-purpose only when the agent needs to write files.
 
+Built-in Explore and Plan run on the main conversation's model, and General-purpose does too unless `CLAUDE_CODE_SUBAGENT_MODEL` or the `model` field sets another. To get a lighter tier for reads, define a read-only custom subagent with `model: haiku` (or set `CLAUDE_CODE_SUBAGENT_MODEL` together with `CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1`, which also forces Explore and Plan).
+
 ### Pattern 7: Agent Team Cost-Benefit Analysis
 Anthropic's docs report that agent teams use roughly 7x the tokens of a single session in plan mode.
 - Agent teams buy wall-clock speed with token cost
@@ -111,7 +113,7 @@ Anthropic's docs report that agent teams use roughly 7x the tokens of a single s
 ### The Clone Army
 **Problem**: Every agent is general-purpose with full tools and default model.
 **Symptoms**: High cost. Agents doing simple reads with Opus.
-**Fix**: Use Explore agents for reads, Plan agents for analysis. Route model by task complexity.
+**Fix**: Use read-only agents for reads and give them a lighter `model`; Explore and Plan inherit the main model unless you force one. Route model by task complexity.
 
 ### The Skill Dump
 **Problem**: Custom agents assigned all available skills "just in case."

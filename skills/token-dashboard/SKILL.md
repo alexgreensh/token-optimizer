@@ -1,6 +1,6 @@
 ---
 name: token-dashboard
-description: Open the Token Optimizer dashboard in your browser (context usage, quality, savings). Use to view the dashboard.
+description: Opens the Token Optimizer dashboard in the browser (context usage, quality, savings). Use when the user asks to see the dashboard.
 disable-model-invocation: true
 ---
 
@@ -53,9 +53,8 @@ export TOKEN_OPTIMIZER_RUNTIME="$RUNTIME"
 
 2. **Collect and open**:
 ```bash
-# TOKEN_OPTIMIZER_INTERACTIVE=1 marks this as a user-initiated open so the 20s
-# hook budget does NOT kill a heavy rebuild (Bug B: on a large history the
-# dashboard would otherwise be skipped and served stale). The user is actively
+# TOKEN_OPTIMIZER_INTERACTIVE=1 marks this as a user-initiated open, so the 20s
+# hook budget does not cut off a heavy rebuild on a large history. The user is
 # waiting for this open, so it runs unbounded.
 TOKEN_OPTIMIZER_INTERACTIVE=1 python3 "$MEASURE_PY" collect --quiet && \
   TOKEN_OPTIMIZER_INTERACTIVE=1 python3 "$MEASURE_PY" dashboard
@@ -63,9 +62,11 @@ TOKEN_OPTIMIZER_INTERACTIVE=1 python3 "$MEASURE_PY" collect --quiet && \
 
 This collects the latest session data into the trends database, regenerates the dashboard HTML, and opens it in your default browser.
 
-3. **Tell the user** the dashboard is open. Probe the daemon BEFORE mentioning any URL (v5.3.3+):
+3. **Tell the user** the dashboard is open. Probe the daemon before mentioning any URL:
    - Probe daemon: `python3 "$MEASURE_PY" daemon-status 2>/dev/null`
    - If DAEMON_RUNNING: lead with `URL: http://localhost:24842/token-optimizer` (bookmarkable, auto-updates), then mention the file fallback.
-   - If DAEMON_NOT_RUNNING: do NOT print the `localhost:24842` URL. Tell the user the dashboard opened as a file, and suggest `python3 $MEASURE_PY setup-daemon` (macOS and Windows) if they want a bookmarkable URL.
+   - If DAEMON_NOT_RUNNING: do not print the `localhost:24842` URL. Tell the user the dashboard opened as a file, and suggest `python3 $MEASURE_PY setup-daemon` (macOS and Windows) if they want a bookmarkable URL.
    - File path: never hardcode it. It is install-dependent. Cite the `  Dashboard: ` line from the step-2 output.
    - For Codex when DAEMON_NOT_RUNNING: do not imply the Claude daemon is required; the generated file works, and Stop hooks refresh it when balanced hooks are installed.
+
+Written for and checked on Claude Opus 5.5 and Sonnet 5.5, and GPT-5.6 on Codex.

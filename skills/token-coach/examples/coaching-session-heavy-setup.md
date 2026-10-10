@@ -6,7 +6,7 @@ User chose option (b): Existing project feels sluggish / context fills too fast.
 
 ## Coach Output
 
-**Coach**: Found the weight. Your setup uses ~32,400 tokens at startup. That's 16.2% of your context window before you type anything. With auto-compact headroom reserved on top, most of that window is already spoken for.
+**Coach**: Found the weight. Your setup uses ~32,400 tokens at startup. That's 16.2% of your 200K window before you type anything (on a 1M window it would be about 3%). With auto-compact headroom reserved on top, most of that window is already spoken for.
 
 The top 3 overhead sources:
 1. **54 skills**: ~5,400 tokens in the startup menu. You've got the 50-Skill Trap going on.
@@ -17,7 +17,7 @@ When does it feel slow? Early in sessions, after a few messages, or during multi
 
 **User**: After about 10-15 messages. Compaction keeps hitting and I lose context.
 
-**Coach**: That tracks. You're starting at 16.2% used. Each message adds conversation history plus file reads. By message 10-15, you're likely at 70%+ where quality degrades and compaction triggers.
+**Coach**: That tracks. You're starting at 16.2% used. Each message adds conversation history plus file reads. By message 10-15, you're likely deep into the window, where retrieval quality has slipped and compaction triggers.
 
 Two things would help most:
 

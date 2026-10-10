@@ -94,6 +94,30 @@ _VALID_RUNTIMES = frozenset(
         _RUNTIME_GROK,
     }
 )
+# Unrecognised TOKEN_OPTIMIZER_RUNTIME values already reported by this process.
+_WARNED_BAD_OVERRIDES: set = set()
+
+
+def _warn_bad_override(value: str) -> None:
+    """Say once per process that an override value was not honoured."""
+    if value in _WARNED_BAD_OVERRIDES:
+        return
+    _WARNED_BAD_OVERRIDES.add(value)
+    hint = ""
+    if value == "pi":
+        hint = (
+            " Pi is not a Python runtime: its extension is configured with "
+            "TOKEN_OPTIMIZER_PI_HOME."
+        )
+    try:
+        sys.stderr.write(
+            f"[Token Optimizer] ignoring {_RUNTIME_OVERRIDE}={value!r}: accepted values are "
+            f"{', '.join(sorted(_VALID_RUNTIMES))}; falling back to auto-detection.{hint}\n"
+        )
+    except Exception:
+        pass
+
+
 _CLAUDE_PLUGIN_ENVS = ("CLAUDE_PLUGIN_ROOT", "CLAUDE_PLUGIN_DATA")
 # Claude Cowork host markers. Cowork is Claude Code running in a cloud/local VM,
 # so these REFINE the claude runtime (via is_cowork()) rather than name a new one.
@@ -1140,6 +1164,8 @@ def detect_runtime() -> str:
     override = os.environ.get(_RUNTIME_OVERRIDE, "").strip().lower()
     if override in _VALID_RUNTIMES:
         return override
+    if override:
+        _warn_bad_override(override)
 
     if _opencode_process_signal():
         return _RUNTIME_OPENCODE

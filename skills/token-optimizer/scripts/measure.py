@@ -49938,7 +49938,9 @@ def _status_bar_put_back(aside, lock):
         pass
 
 
-_COMPACT_MARK = b'"subtype":"compact_boundary"'
+# Prefilter only: the parsed row decides. Matching the bare word keeps rows from
+# writers that space their JSON ("subtype": "compact_boundary") in the count.
+_COMPACT_MARK = b"compact_boundary"
 
 
 def _status_bar_compactions(path, session_id=None):

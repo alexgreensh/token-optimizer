@@ -759,3 +759,20 @@ def test_compaction_memo_off_a_line_boundary_recounts(sb, tmp_path):
     # A memo that stopped partway into the second row.
     memo.write_text(json.dumps({"path": str(f), "size": len(mark) + 5, "count": 1}), encoding="utf-8")
     assert sb._status_bar_compactions(f, "sess-mid") == 3
+
+
+@pytest.mark.parametrize("seps", [(",", ":"), (", ", ": "), (",", ": "), (" , ", " : ")])
+def test_compactions_counted_whatever_the_json_spacing(sb, tmp_path, seps):
+    """F-T2-8: the cheap prefilter must not depend on how a writer spaced the
+    JSON; the parsed row decides. A message that merely quotes the marker
+    does not count."""
+    now = 1_800_000_000
+    iso = datetime.fromtimestamp(now - 30, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    rows = [{"type": "user", "message": {"content": 'the word "subtype": "compact_boundary" in text'}},
+            {"type": "system", "subtype": "compact_boundary", "timestamp": iso},
+            {"type": "assistant"},
+            {"type": "system", "subtype": "compact_boundary", "timestamp": iso}]
+    f = tmp_path / "spaced.jsonl"
+    f.write_text("\n".join(json.dumps(r, separators=seps) for r in rows) + "\n", encoding="utf-8")
+    assert sb._status_bar_compactions(f) == 2
+    assert sb._recent_compact_boundary(f, now=now) is True

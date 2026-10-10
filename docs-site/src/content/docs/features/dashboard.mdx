@@ -13,6 +13,8 @@ The dashboard renders one self-contained HTML file with four panels: Overview (a
 
 After every session, the SessionEnd hook regenerates the dashboard data so the page is current the next time you open it. You do not have to rerun the audit by hand.
 
+The Coach view carries a "From your own usage" section: the daily usage-recommendations record (compact window and subagent cache lifetime), one card per recommendation with the measured numbers, the exact command, and a Wins row once you acted on an earlier recommendation and the measurement moved. It reads the same local record as `measure.py recommendations` -- the page never scans for it, and Token Optimizer never changes either setting.
+
 ## When it runs
 
 You open the dashboard on demand. The underlying data refreshes automatically on SessionEnd through the `session-end-flush` hook. The daemon, when installed, keeps the HTTP server alive between sessions so the page is always one click away.

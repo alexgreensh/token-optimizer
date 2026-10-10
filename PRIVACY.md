@@ -153,6 +153,10 @@ On Claude Code 2.1.243+, Token Optimizer measures whether `subagentPromptCacheTt
 - `TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=1` is the only automatic write -- an explicit opt-in that also keeps a 14-day tripwire which reverts the change if it costs more than it saves
 - The payoff check reads your own session transcripts locally, in a background process, and keeps one small verdict file and a marker in Token Optimizer's data directory; nothing leaves the machine
 
+## Usage Recommendations
+
+On Claude Code, a daily background measurement reads your own session transcripts and writes two local files in Token Optimizer's data directory: `usage_recommendations.json` (the current record -- one item each for the compact window and the subagent cache lifetime) and `usage_recommendations_history.jsonl` (one compact line per measurement, capped at 180 lines, used to show measured "wins" after you change a setting yourself). They feed the `recommendations` command and the dashboard's "From your own usage" section. Nothing leaves the machine, and Token Optimizer never writes `autoCompactWindow` or `subagentPromptCacheTtl` for you.
+
 ## Data Deletion
 
 To delete all Token Optimizer data across all platforms:

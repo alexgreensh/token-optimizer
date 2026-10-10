@@ -415,3 +415,50 @@ test('gather survives a missing or rejected auto-compaction environment read', a
   assert.deepEqual(result.fiveHour, baseline.fiveHour)
   assert.equal(result.sessionId, baseline.sessionId)
 })
+
+test('a compact window from settings or /autocompact, resolved by the status command, sets the context mark', async () => {
+  const w = withTokenOptimizer(world())
+  const io = fakeIo(w)
+  io.usage = async () => ({ context: { tokens: 200_000, window: 1_000_000, percent: 20 } })
+  const run = io.run
+  let window: number | null = 400_000
+  io.run = async (argv, init) => {
+    const out = await run(argv, init)
+    return argv.includes('status-bar') ? { ...out, stdout: JSON.stringify({ ...JSON.parse(out.stdout), compactWindow: { tokens: window, source: 'setting: autoCompactWindow' } }) } : out
+  }
+
+  const first = await gather(io, null, { savings: true })
+  assert.equal(first.compactWindow, 400_000)
+  assert.equal(first.contextWindow, 400_000)
+  assert.equal(first.contextPercent, 50)
+  assert.equal(first.contextWindowReduced, true)
+
+  // A refresh that does not run the status command keeps the resolved window.
+  const kept = await gather(io, first)
+  assert.equal(kept.contextWindow, 400_000)
+  assert.equal(kept.contextPercent, 50)
+
+  // The env override and the setting both apply: the smaller one wins.
+  io.envAutoCompactWindow = async () => '250000'
+  const both = await gather(io, kept, { savings: true })
+  assert.equal(both.contextWindow, 250_000)
+  assert.equal(both.contextPercent, 80)
+
+  // The user removes both: the host's own figures come back, and the reduced flag clears.
+  io.envAutoCompactWindow = async () => undefined
+  window = null
+  const cleared = await gather(io, both, { savings: true })
+  assert.equal(cleared.compactWindow, null)
+  assert.equal(cleared.contextWindow, 1_000_000)
+  assert.equal(cleared.contextPercent, 20)
+  assert.equal(cleared.contextWindowReduced, false)
+})
+
+test('an older Token Optimizer that reports no compact window changes nothing', async () => {
+  const io = fakeIo(withTokenOptimizer(world()))
+  io.usage = async () => ({ context: { tokens: 200_000, window: 1_000_000, percent: 20 } })
+  const got = await gather(io, null, { savings: true })
+  assert.equal(got.compactWindow, null)
+  assert.equal(got.contextWindow, 1_000_000)
+  assert.equal(got.contextPercent, 20)
+})

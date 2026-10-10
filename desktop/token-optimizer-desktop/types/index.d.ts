@@ -55,6 +55,8 @@ export type TokenOptimizerDesktopSession = {
   lastRequestEpoch: number | null
   /** Last measured cache lifetime; null while unmeasured. */
   cacheLifetime: '1h' | '5m' | null
+  /** The user's compact window from settings or /autocompact, as the status command resolved it. */
+  compactWindow?: number | null
   /** When Token Optimizer last saved a checkpoint, epoch seconds. */
   checkpointEpoch: number | null
   /** The earlier session's checkpoint flagged as resumable for this one (epoch seconds). */

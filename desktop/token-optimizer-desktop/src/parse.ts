@@ -17,6 +17,8 @@ export type StatusBar = {
   savingsReason: string | null
   lastRequestEpoch: number | null
   cacheLifetime: CacheLifetime | null
+  /** The user's own compact window (settings, /autocompact, env) as Token Optimizer resolved it; null when there is none. */
+  compactWindow: number | null
   checkpointEpoch: number | null
   /** The earlier session's checkpoint Token Optimizer flagged as resumable for this one. */
   earlierCheckpoint: EarlierCheckpoint
@@ -216,6 +218,10 @@ export function parseStatusBar(json: unknown): StatusBar | null {
     savingsReason: text(out.savings_reason),
     lastRequestEpoch: lastRequest !== null && lastRequest > 0 ? lastRequest : null,
     cacheLifetime: lifetime,
+    compactWindow: (() => {
+      const n = num(toRecord(out.compactWindow)?.tokens)
+      return n !== null && n > 0 ? Math.floor(n) : null
+    })(),
     checkpointEpoch: checkpoint !== null && checkpoint > 0 ? checkpoint : null,
     earlierCheckpoint: parseEarlier(out.earlier_checkpoint),
     compactions: (() => {
@@ -249,17 +255,29 @@ function compactWindow(value: unknown): number | null {
   return Number.isNaN(window) ? null : Math.max(100_000, Math.min(1_000_000, window))
 }
 
+/** Token Optimizer's own resolved window (settings or /autocompact): a number, within the same bounds. */
+function resolvedWindow(value: number | null | undefined): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.max(100_000, Math.min(1_000_000, Math.floor(value))) : null
+}
+
+/** The smaller of the raw env override and the resolved window; null when neither applies. */
+export function smallerCompactWindow(env: unknown, resolved?: number | null): number | null {
+  const all = [compactWindow(env), resolvedWindow(resolved)].filter((n): n is number => n !== null)
+  return all.length > 0 ? Math.min(...all) : null
+}
+
 /**
  * `$.session.usage()`'s `{ context, rateLimits }`; anything missing reads as null.
- * A smaller auto-compaction ceiling changes both the window and its fill.
+ * A smaller auto-compaction ceiling (the raw env value, or the window Token Optimizer resolved
+ * from settings) changes both the window and its fill.
  */
-export function parseUsage(usage: unknown, autoCompactWindow?: unknown): UsageView {
+export function parseUsage(usage: unknown, autoCompactWindow?: unknown, resolved?: number | null): UsageView {
   const all = toRecord(usage)
   const context = toRecord(all?.context)
   const tokens = num(context?.tokens)
   const reportedWindow = num(context?.window)
   const window = reportedWindow !== null && reportedWindow > 0 ? reportedWindow : null
-  const ceiling = compactWindow(autoCompactWindow)
+  const ceiling = smallerCompactWindow(autoCompactWindow, resolved)
   const reduced = window !== null && ceiling !== null && ceiling < window
   const effectiveWindow = reduced ? ceiling : window
   const calculated = reduced && ceiling !== null && tokens !== null && tokens >= 0 ? (tokens / ceiling) * 100 : null

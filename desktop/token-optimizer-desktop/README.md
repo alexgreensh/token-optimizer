@@ -23,7 +23,7 @@ The cache countdown is an estimate: 1 hour on Claude plans, 5 minutes on the API
 
 The `–` button beside the arrow shrinks the band to one line and `+` brings it back; the arrow still unfolds the details row under it, and the choice is remembered across sessions and restarts. `TOKEN_OPTIMIZER_STATUS_BAR_SIZE=slim` sets the starting size before a choice is stored, and the terminal status line uses the same variable to print one line.
 
-The context mark honors `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, using Claude Code's 100K-1M bounds and the model's smaller window. This does not read `/autocompact`, `--autocompact`, or `autoCompactWindow` settings.
+The context mark measures against your own compact window when you set one: `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, `/autocompact`, or the `autoCompactWindow` setting, within Claude Code's 100K-1M bounds and never above the model's window. A window given only with `--autocompact` for one launch is not visible to it.
 
 ## Full docs
 

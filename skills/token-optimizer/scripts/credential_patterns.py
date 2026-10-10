@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -1066,7 +1067,17 @@ def scan_for_credentials(text: str) -> List[Tuple[str, str, int]]:
 # M-16: regex to find already-redacted placeholders so they can be protected
 # from re-matching during a second redaction pass.
 _PLACEHOLDER_RE = re.compile(r"\[CREDENTIAL REDACTED: [^\]]+\]")
-_PLACEHOLDER_SENTINEL = "\x00\x01REDACTED\x00\x01"
+# The sentinel carries a per-call random nonce (see _new_placeholder_sentinel):
+# input that happens to contain a fixed sentinel string could otherwise be
+# swapped for a protected placeholder, shifting every placeholder after it.
+_PLACEHOLDER_SENTINEL_PREFIX = "\x00\x01REDACTED"
+
+
+def _new_placeholder_sentinel(text: str) -> str:
+    while True:
+        sentinel = f"{_PLACEHOLDER_SENTINEL_PREFIX}{secrets.token_hex(8)}\x00\x01"
+        if sentinel not in text:
+            return sentinel
 
 # Per-pattern literal anchors (checked on a lowercased copy of the ORIGINAL
 # text, once, before the loop). A pattern whose anchors are all absent cannot
@@ -1178,6 +1189,7 @@ def redact_credentials(text: str) -> str:
     # a smuggled secret collapses to e.g. "GitHub PAT classic".
     placeholders = []
     ordered = list(state.patterns) + CREDENTIAL_PATTERNS
+    sentinel = _new_placeholder_sentinel(text)
 
     def _clean_interior(ph):
         interior = ph[len("[CREDENTIAL REDACTED: "):-1]
@@ -1193,7 +1205,7 @@ def redact_credentials(text: str) -> str:
 
     def _save_placeholder(m):
         placeholders.append(_clean_interior(m.group(0)))
-        return _PLACEHOLDER_SENTINEL
+        return sentinel
     if "[CREDENTIAL REDACTED:" in text:
         text = _PLACEHOLDER_RE.sub(_save_placeholder, text)
 
@@ -1207,7 +1219,7 @@ def redact_credentials(text: str) -> str:
 
     # M-16: restore protected placeholders.
     for ph in placeholders:
-        text = text.replace(_PLACEHOLDER_SENTINEL, ph, 1)
+        text = text.replace(sentinel, ph, 1)
     return text
 
 

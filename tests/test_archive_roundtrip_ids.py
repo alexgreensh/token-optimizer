@@ -135,6 +135,8 @@ def test_codex_backfill_never_drops_a_different_payload_for_the_same_id(tmp_path
     assert _markers(tmp_path) == ["FIRST", "SECOND"]
     for name in _entries(tmp_path):
         assert re.fullmatch(r"[a-zA-Z0-9_-]{1,128}\.json", name)
+
+
 # --------------------------------------------------------------------- F9a
 
 def test_expand_returns_stored_text_byte_for_byte(tmp_path):
@@ -198,3 +200,27 @@ def test_distinct_overlong_ids_do_not_collide():
     a = archive_result._safe_archive_key("x" * 200 + "1")
     b = archive_result._safe_archive_key("x" * 200 + "2")
     assert a != b
+
+
+# --------------------------------------------------------------------- F9d
+
+def test_sentinel_text_in_the_input_cannot_shift_placeholders():
+    from credential_patterns import redact_credentials
+    sentinel = "\x00\x01REDACTED\x00\x01"
+    secret = "ghp_" + "Zx9Qm2Lp7Rt4Vb8Nc3Hj6Ks1Wd5Yf0Ga2Eu7"[:36]
+    text = f"A{sentinel} B [CREDENTIAL REDACTED: JWT] C {secret} D"
+    out = redact_credentials(text)
+    assert secret not in out
+    # The input's own sentinel text is data: it stays where it was, and the
+    # real placeholder stays where it was.
+    assert out.startswith(f"A{sentinel} B [CREDENTIAL REDACTED: JWT] C ")
+    assert out.count(sentinel) == 1
+    assert out.endswith(" D")
+
+
+def test_repeated_sentinel_text_with_several_placeholders_stays_put():
+    from credential_patterns import redact_credentials
+    sentinel = "\x00\x01REDACTED\x00\x01"
+    text = (f"{sentinel}[CREDENTIAL REDACTED: JWT]{sentinel}"
+            f"[CREDENTIAL REDACTED: AWS access key]{sentinel}")
+    assert redact_credentials(text) == text

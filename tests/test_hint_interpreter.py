@@ -226,8 +226,8 @@ def _doctor(tmp_path, *prefix, env_runtime=None):
     env = {k: v for k, v in os.environ.items() if not k.startswith(("CLAUDE", "CODEX", "TOKEN_OPTIMIZER"))}
     home = tmp_path / "home"
     (home / ".claude").mkdir(parents=True, exist_ok=True)
-    env.update(HOME=str(home), USERPROFILE=str(home), CODEX_HOME=str(home / ".codex"),
-               CLAUDE_CONFIG_DIR=str(home / ".claude"),
+    env.update({"HOME": str(home), "USERPROFILE": str(home), "CODEX_HOME": str(home / ".codex"),
+                "CLAUDE_CONFIG_DIR": str(home / ".claude")},
                TOKEN_OPTIMIZER_SNAPSHOT_DIR=str(tmp_path / "snap"),
                TOKEN_OPTIMIZER_NO_PROC_SCAN="1")
     if env_runtime:

@@ -26928,12 +26928,18 @@ def _parse_wmi_datetime(wmi_ts):
 _PS_DOTTED_TIME_RE = re.compile(r"(?<=[T ])(\d{2})\.(\d{2})\.(\d{2})(?=$|[Zz+\-.,])")
 
 
+# .NET ToString('o') writes seven fractional digits. Before Python 3.11,
+# fromisoformat accepts exactly three or six, so pad/trim the fraction to six.
+_PS_FRACTION_RE = re.compile(r"(?<=\d{2}:\d{2}:\d{2})\.(\d+)")
+
+
 def _normalize_ps_iso(iso_ts):
-    """Return a string datetime.fromisoformat accepts, or "" when empty."""
+    """Return a string datetime.fromisoformat accepts (3.9+), or "" when empty."""
     s = (iso_ts or "").strip()
     if not s:
         return ""
     s = _PS_DOTTED_TIME_RE.sub(r"\1:\2:\3", s)
+    s = _PS_FRACTION_RE.sub(lambda m: "." + m.group(1)[:6].ljust(6, "0"), s)
     if s.endswith(("Z", "z")):
         s = s[:-1] + "+00:00"
     return s

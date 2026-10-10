@@ -8,7 +8,9 @@ const PATTERNS: [RegExp, string][] = [
   [/\bsk-[A-Za-z0-9_-]{20,}\b/g, "[REDACTED]"],
   [/\bAKIA[0-9A-Z]{16}\b/g, "[REDACTED]"],
   [/\bBearer\s+[A-Za-z0-9._~+/=-]{16,}\b/gi, "[REDACTED]"],
-  [/eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, "[REDACTED]"],
+  // The lookbehind keeps this linear: without it every eyJ inside a long base64url run
+  // restarts a scan to the end of the run (about 8 s at 100 KB).
+  [/(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, "[REDACTED]"],
   [/(?:[sr]k_live_|sk_test_)[A-Za-z0-9]{24,}/g, "[REDACTED]"],
   // Slack app-level token (xapp-) and incoming-webhook URL: both are live credentials.
   [/\bxapp-\d-[A-Z0-9]+-\d+-[A-Za-z0-9]+/g, "[REDACTED]"],

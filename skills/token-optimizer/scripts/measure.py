@@ -129,6 +129,41 @@ from spawn_utils import spawn_detached
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
+def _windows_stdio_kwargs():
+    """Usable std streams to hand a console-less child on Windows, else {}.
+
+    With creationflags=CREATE_NO_WINDOW and no std streams, a Windows child gets
+    a hidden console (python.exe) or NULL handles (pythonw.exe), so everything
+    it prints is lost. Passing the parent's streams makes CPython hand the child
+    the parent's own handles. Same guard as hooks/run.py (kept as a copy: this
+    script must not import from hooks/). Off Windows the child inherits the
+    streams anyway, so nothing is added.
+    """
+    if sys.platform != "win32":
+        return {}
+    kwargs = {}
+    for name in ("stdin", "stdout", "stderr"):
+        stream = getattr(sys, name, None)
+        if stream is None:
+            continue
+        try:
+            stream.fileno()
+        except (AttributeError, OSError, ValueError):
+            continue
+        kwargs[name] = stream
+    return kwargs
+
+
+def _run_script_child(script, extra_args=(), **run_kwargs):
+    """Run a sibling script under this interpreter with its output visible."""
+    return subprocess.run(
+        [sys.executable, str(script), *extra_args],
+        creationflags=_NO_WINDOW,
+        **_windows_stdio_kwargs(),
+        **run_kwargs,
+    )
+
+
 def _detached_python_exe():
     """Interpreter to use for FIRE-AND-FORGET python children.
 
@@ -4766,7 +4801,8 @@ def git_context(as_json=False):
     def _run_git(*cmd):
         try:
             r = _sp.run(["git"] + list(cmd), capture_output=True, text=True,
-                        encoding="utf-8", errors="replace", timeout=10)
+                        encoding="utf-8", errors="replace", timeout=10,
+                        creationflags=_NO_WINDOW)
             return r.stdout.strip() if r.returncode == 0 else ""
         except (FileNotFoundError, _sp.TimeoutExpired):
             return ""
@@ -26835,6 +26871,20 @@ def _collect_posix_claude_sessions(process_name="claude"):
     return sessions
 
 
+def _local_start_label(started):
+    """Format a process start time in local time, as the POSIX collector does.
+
+    A timezone-aware value (the Windows collectors report UTC or an offset) is
+    converted to the local zone first; a naive value is already local.
+    """
+    if started.tzinfo is not None:
+        try:
+            started = started.astimezone()
+        except (ValueError, OverflowError, OSError):
+            pass
+    return started.strftime("%a %b %d %H:%M:%S %Y")
+
+
 def _parse_wmi_datetime(wmi_ts):
     """Parse a WMI CIM_DATETIME to elapsed seconds since process start.
 
@@ -26879,7 +26929,7 @@ def _parse_wmi_datetime(wmi_ts):
         return None
 
     return {
-        "started": started.strftime("%a %b %d %H:%M:%S %Y"),
+        "started": _local_start_label(started),
         "elapsed_seconds": max(0, int(elapsed)),
     }
 
@@ -26892,12 +26942,18 @@ def _parse_wmi_datetime(wmi_ts):
 _PS_DOTTED_TIME_RE = re.compile(r"(?<=[T ])(\d{2})\.(\d{2})\.(\d{2})(?=$|[Zz+\-.,])")
 
 
+# .NET ToString('o') writes seven fractional digits. Before Python 3.11,
+# fromisoformat accepts exactly three or six, so pad/trim the fraction to six.
+_PS_FRACTION_RE = re.compile(r"(?<=\d{2}:\d{2}:\d{2})\.(\d+)")
+
+
 def _normalize_ps_iso(iso_ts):
-    """Return a string datetime.fromisoformat accepts, or "" when empty."""
+    """Return a string datetime.fromisoformat accepts (3.9+), or "" when empty."""
     s = (iso_ts or "").strip()
     if not s:
         return ""
     s = _PS_DOTTED_TIME_RE.sub(r"\1:\2:\3", s)
+    s = _PS_FRACTION_RE.sub(lambda m: "." + m.group(1)[:6].ljust(6, "0"), s)
     if s.endswith(("Z", "z")):
         s = s[:-1] + "+00:00"
     return s
@@ -26917,7 +26973,7 @@ def _parse_iso_process_datetime(iso_ts):
     else:
         elapsed = (datetime.now(timezone.utc) - started).total_seconds()
     return {
-        "started": started.strftime("%a %b %d %H:%M:%S %Y"),
+        "started": _local_start_label(started),
         "elapsed_seconds": max(0, int(elapsed)),
     }
 
@@ -57286,10 +57342,9 @@ if __name__ == "__main__":
         from pathlib import Path as _P
         rc_script = _P(__file__).resolve().parent / "read_cache.py"
         if rc_script.exists():
-            import subprocess
-            subprocess.run(
-                [sys.executable, str(rc_script), "--clear", "--session", sid] + (["--quiet"] if quiet else []),
-                timeout=5, creationflags=_NO_WINDOW
+            _run_script_child(
+                rc_script, ["--clear", "--session", sid] + (["--quiet"] if quiet else []),
+                timeout=5,
             )
     elif args[0] == "read-cache-stats":
         # Show read cache stats
@@ -57300,19 +57355,14 @@ if __name__ == "__main__":
         from pathlib import Path as _P
         rc_script = _P(__file__).resolve().parent / "read_cache.py"
         if rc_script.exists():
-            import subprocess
-            subprocess.run(
-                [sys.executable, str(rc_script), "--stats", "--session", sid],
-                timeout=5, creationflags=_NO_WINDOW
-            )
+            _run_script_child(rc_script, ["--stats", "--session", sid], timeout=5)
     elif args[0] == "structure-proof":
         from pathlib import Path as _P
         proof_script = _P(__file__).resolve().parent / "structure_replay.py"
         if not proof_script.exists():
             print(f"[Token Optimizer] structure_replay.py not found at {proof_script}")
             sys.exit(1)
-        import subprocess
-        result = subprocess.run([sys.executable, str(proof_script)] + args[1:], creationflags=_NO_WINDOW)
+        result = _run_script_child(proof_script, args[1:])
         sys.exit(result.returncode)
     else:
         print("Usage:")

@@ -28561,6 +28561,17 @@ def _write_settings_atomic_locked(settings_data, allow_removing_keys=None, _repo
         with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
             json.dump(settings_data, f, indent=2, ensure_ascii=False)
             f.write("\n")
+        if dest_mode is None:
+            # Created from nothing: mkstemp gave 0600, but a fresh settings.json
+            # should follow the umask like any file the user's tools create.
+            # (os.umask can only be read by setting it; restored at once.)
+            if os.name != "nt":
+                try:
+                    _umask = os.umask(0)
+                    os.umask(_umask)
+                    dest_mode = 0o666 & ~_umask
+                except OSError:
+                    dest_mode = None
         if dest_mode is not None:
             try:
                 os.chmod(tmp_path, dest_mode)

@@ -420,3 +420,30 @@ def test_lease_denied_reason_is_reported(measure, monkeypatch, tmp_path):
     result = mod.subagent_cache_enable(automatic=False)
     assert result["state"] == "write-refused"
     assert "lease denied" in result["reason"], result
+
+
+# ---------------------------------------------------------------------------
+# F10c: a settings.json created from nothing follows the umask, not mkstemp's 0600
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+@pytest.mark.parametrize("umask,expected", [(0o022, 0o644), (0o077, 0o600), (0o002, 0o664)])
+def test_new_settings_file_gets_the_umask_mode(measure, umask, expected):
+    mod, settings = measure
+    settings.unlink()
+    old = os.umask(umask)
+    try:
+        assert mod._write_settings_atomic({"effortLevel": "low"}) is True
+    finally:
+        os.umask(old)
+    assert stat.S_IMODE(settings.stat().st_mode) == expected
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_existing_settings_keep_their_mode(measure):
+    mod, settings = measure
+    settings.chmod(0o640)
+    payload = _read(settings)
+    payload["effortLevel"] = "low"
+    assert mod._write_settings_atomic(payload) is True
+    assert stat.S_IMODE(settings.stat().st_mode) == 0o640

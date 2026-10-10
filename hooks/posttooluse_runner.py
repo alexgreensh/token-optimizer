@@ -874,7 +874,8 @@ def _quality_cache_self_heal() -> None:
             if measure.CONFIG_PATH.exists():
                 _qb_cfg = json.loads(measure.CONFIG_PATH.read_text(encoding="utf-8"))
                 _qb_disabled = _qb_cfg.get("quality_bar_disabled", False)
-            if not _is_plugin and not _qb_disabled and measure.SETTINGS_PATH.exists():
+            if (not _is_plugin and not _qb_disabled
+                    and measure._is_regular_file(measure.SETTINGS_PATH)):
                 _sh_settings = json.loads(
                     measure.SETTINGS_PATH.read_text(encoding="utf-8")
                 )

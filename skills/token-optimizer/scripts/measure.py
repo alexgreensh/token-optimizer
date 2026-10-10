@@ -1919,6 +1919,12 @@ def _mcp_read_json(path, skipped=None):
             return None
     except OSError:
         return None
+    # open() on a FIFO blocks until a writer shows up, and this runs on the
+    # SessionStart path. A directory, socket or device is not a config either.
+    if not _is_regular_file(path):
+        if skipped is not None:
+            skipped.append({"path": str(path), "reason": "NotRegularFile"})
+        return None
     try:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -2317,7 +2323,7 @@ def _scan_plugin_skills_and_commands():
     # Load enabledPlugins from settings.json to filter out disabled plugins
     enabled_plugins = None
     settings_path = CLAUDE_DIR / "settings.json"
-    if settings_path.exists():
+    if _is_regular_file(settings_path):
         try:
             with open(settings_path, "r", encoding="utf-8") as f:
                 settings = json.load(f)
@@ -2714,7 +2720,7 @@ def measure_components():
     # Read settings.json once (used for hooks, env vars, MCP, file exclusion)
     settings_path = CLAUDE_DIR / "settings.json"
     _cached_settings = None
-    if settings_path.exists():
+    if _is_regular_file(settings_path):
         try:
             with open(settings_path, "r", encoding="utf-8") as f:
                 _cached_settings = json.load(f)
@@ -2725,7 +2731,7 @@ def measure_components():
     global_deny_rules = _extract_deny_read_rules(_cached_settings)
     project_settings_path = cwd / ".claude" / "settings.json"
     _project_settings = None
-    if project_settings_path.exists():
+    if _is_regular_file(project_settings_path):
         try:
             with open(project_settings_path, "r", encoding="utf-8") as f:
                 _project_settings = json.load(f)
@@ -3358,6 +3364,8 @@ def _configured_model_string():
             return v
     for cfg_name in ("config.json", "settings.json"):
         try:
+            if not _is_regular_file(CLAUDE_DIR / cfg_name):
+                continue
             with open(CLAUDE_DIR / cfg_name, "r", encoding="utf-8") as f:
                 cfg = json.load(f)
             m = cfg.get("model") or cfg.get("primaryModel") or ""
@@ -3898,7 +3906,7 @@ def detect_context_window():
     # Check config files for model preference
     for cfg_name in ("config.json", "settings.json"):
         cfg_path = CLAUDE_DIR / cfg_name
-        if cfg_path.exists():
+        if _is_regular_file(cfg_path):
             try:
                 with open(cfg_path, "r", encoding="utf-8") as f:
                     cfg = json.load(f)
@@ -7365,7 +7373,7 @@ def plugin_cleanup(dry_run=False, quiet=False):
 
             # Load enabledPlugins to only check active plugins
             enabled = None
-            if SETTINGS_PATH.exists():
+            if _is_regular_file(SETTINGS_PATH):
                 try:
                     settings = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
                     enabled = settings.get("enabledPlugins")
@@ -15146,7 +15154,8 @@ def _keepwarm_json_says_api(path):
     """
     try:
         path = Path(path)
-        if not path.exists():
+        # A FIFO would block read_text() forever; only a regular file is a config.
+        if not _is_regular_file(path):
             return None
         cfg = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, ValueError):
@@ -19466,6 +19475,9 @@ def _subagent_cache_external_key_holder():
         try:
             if not src.exists():
                 continue
+            if not _is_regular_file(src):
+                # a FIFO would block read_text(); unknown means "do not write"
+                return {"path": str(src), "unreadable": True}
             data = json.loads(src.read_text(encoding="utf-8-sig"))
         except (json.JSONDecodeError, PermissionError, OSError, ValueError):
             return {"path": str(src), "unreadable": True}
@@ -28200,7 +28212,7 @@ def _is_hook_installed(settings=None):
     """
     # Check user settings.json
     if settings is None:
-        if SETTINGS_PATH.exists():
+        if _is_regular_file(SETTINGS_PATH):
             try:
                 with open(SETTINGS_PATH, "r", encoding="utf-8-sig") as f:
                     settings = json.load(f)
@@ -28270,7 +28282,7 @@ def _is_hook_current(settings=None):
     that returns False.
     """
     if settings is None:
-        if not SETTINGS_PATH.exists():
+        if not _is_regular_file(SETTINGS_PATH):
             return False
         try:
             with open(SETTINGS_PATH, "r", encoding="utf-8-sig") as f:
@@ -29193,6 +29205,10 @@ def setup_hook(dry_run=False, uninstall=False):
     # Load existing settings
     settings = {}
     if SETTINGS_PATH.exists():
+        if not _is_regular_file(SETTINGS_PATH):
+            # Never open() a FIFO: it blocks forever.
+            print(f"[Error] Could not read {SETTINGS_PATH}: it is not a regular file.")
+            sys.exit(1)
         try:
             with open(SETTINGS_PATH, "r", encoding="utf-8-sig") as f:
                 settings = json.load(f)
@@ -38471,7 +38487,7 @@ def _security_report(as_json=False):
     cleanup_period = None
     try:
         settings_path = RUNTIME_DIR / "settings.json"
-        if settings_path.exists():
+        if _is_regular_file(settings_path):
             settings = json.loads(settings_path.read_text())
             cleanup_period = settings.get("cleanupPeriodDays")
     except Exception:
@@ -54377,7 +54393,7 @@ def run_ensure_health():
         try:
             _eh_qb_disabled = _read_config_flag("quality_bar_disabled", False)
             _eh_is_plugin = _is_running_from_plugin_cache() or _is_plugin_installed()
-            if not _eh_qb_disabled and SETTINGS_PATH.exists():
+            if not _eh_qb_disabled and _is_regular_file(SETTINGS_PATH):
                 try:
                     settings = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
                 except (json.JSONDecodeError, ValueError):
@@ -56519,7 +56535,7 @@ if __name__ == "__main__":
                 if CONFIG_PATH.exists():
                     _qb_cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
                     _qb_disabled = _qb_cfg.get("quality_bar_disabled", False)
-                if not _is_plugin and not _qb_disabled and SETTINGS_PATH.exists():
+                if not _is_plugin and not _qb_disabled and _is_regular_file(SETTINGS_PATH):
                     _sh_settings = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
                     _sh_hooks = _sh_settings.get("hooks", {}).get("UserPromptSubmit", [])
                     # Recognize the consolidated dispatcher too, so a script

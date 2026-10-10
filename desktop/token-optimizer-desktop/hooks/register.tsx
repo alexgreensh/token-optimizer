@@ -16,12 +16,18 @@ import type { TokenOptimizerDesktopSession } from '../types/index.d.ts'
 import {
   BUSY_TIMEOUT_MS,
   CAPTURE_TIMEOUT_MS,
+  DASHBOARD_ARGS,
+  DASHBOARD_FAILED,
+  DASHBOARD_TIMEOUT_MS,
   HANDOFF_KEY,
   HANDOFF_TTL_MS,
   RESUME_TIMEOUT_MS,
   WARM_PROMPT,
   attachesHandoff,
   busyNow,
+  canOpenDashboard,
+  dashboardFailed,
+  dashboardStatus,
   handoffFate,
   initialUi,
   isArmed,
@@ -509,6 +515,7 @@ const BUSY_WORDS: Record<Exclude<Busy, null>, string> = {
   clean: 'Clean up',
   'fresh-capture': 'Start fresh',
   'fresh-clear': 'Start fresh',
+  dashboard: 'Opening the dashboard',
 }
 
 /** A busy state ends by itself: a step label never outlives its work. */
@@ -526,9 +533,11 @@ async function expireBusy($: EngineInterface, busy: Exclude<Busy, null>, since: 
   const now = await $.clock.now()
   // The clear waits for the turn to end and can still land: the hand-off stays
   // for the conversation it creates, within 10 minutes of the save.
-  const line = busy === 'fresh-clear' ? 'Start fresh clears when the current turn ends.' : `${BUSY_WORDS[busy]} timed out.`
+  const line =
+    busy === 'fresh-clear' ? 'Start fresh clears when the current turn ends.' : busy === 'dashboard' ? DASHBOARD_FAILED : `${BUSY_WORDS[busy]} timed out.`
   await setUi($, u => withNote(withBusy(u, null, now), line, now))
-  toast($, line)
+  // The dashboard link fails by its note alone.
+  if (busy !== 'dashboard') toast($, line)
 }
 
 /** Deletes the held hand-off, store first; true only when the delete succeeded (the mirror follows it). */
@@ -700,6 +709,32 @@ async function runWarm($: EngineInterface, known: number | null, gen: number): P
   } finally {
     warmInFlight = false
   }
+}
+
+/**
+ * "Full dashboard": the dashboard command (it regenerates the page and opens it in the
+ * browser, whatever the OS opener is) through the runner Start fresh uses. A click while
+ * anything is busy is ignored; a failure is a note for NOTE_MS and nothing else.
+ */
+async function openDashboard($: EngineInterface): Promise<void> {
+  const now = await $.clock.now()
+  const ui = (await attempt(() => read($, uiAtom), null)) ?? initialUi()
+  if (!canOpenDashboard(ui, now)) return
+  await setUi($, u => withBusy(u, 'dashboard', now))
+  armBusyTimeout($, 'dashboard', now)
+  $.clock.after(0, () => void attempt(() => runDashboard($, now), undefined))
+}
+
+async function runDashboard($: EngineInterface, since: number): Promise<void> {
+  const io = dataIo($)
+  const root = await attempt(async () => findTokenOptimizerRoot(io, await readHome(io)), null)
+  const result = root ? await attempt(() => runMeasure(io, root, DASHBOARD_ARGS, { timeoutMs: DASHBOARD_TIMEOUT_MS }), null) : null
+  const ui = await attempt(() => read($, uiAtom), null)
+  // Timed out meanwhile, or another step took over: the person was told already.
+  if (!ui || ui.busy !== 'dashboard' || ui.busySince !== since) return
+  const now = await $.clock.now()
+  const failed = dashboardFailed(result)
+  await setUi($, u => (failed ? withNote(withBusy(u, null, now), DASHBOARD_FAILED, now) : withBusy(u, null, now)))
 }
 
 /** Start fresh: first press arms, a second within 5 s runs it. */
@@ -905,7 +940,7 @@ async function toggleDetails($: EngineInterface): Promise<void> {
   if (opening) $.clock.after(0, () => void attempt(() => refresh($, { savings: true }), undefined))
 }
 
-async function act($: EngineInterface, id: ActionId): Promise<void> {
+async function act($: EngineInterface, id: ActionId | 'dashboard'): Promise<void> {
   // One press at a time: the claim is taken before the first await, so a second press
   // arriving while this one reads the clock sees it (an unread time counts as now).
   const prior = claim
@@ -920,6 +955,7 @@ async function act($: EngineInterface, id: ActionId): Promise<void> {
   mine.at = now
   try {
     if (id === 'clean' || id === 'clean-first') await cleanUp($)
+    else if (id === 'dashboard') await openDashboard($)
     else if (id === 'fresh') await startFresh($)
     else await keepWarm($)
   } catch {
@@ -1021,7 +1057,7 @@ function clawdLayers($: EngineInterface, layer: ClawdLayer, now: number): ClawdL
 /** Below this, "saved this session" is noise and stays off the row. */
 const SESSION_SAVED_MIN = 1000
 
-type Handlers = { act: (id: ActionId) => void; details: () => void; size: () => void }
+type Handlers = { act: (id: ActionId) => void; dashboard: () => void; details: () => void; size: () => void }
 
 /** The five marks with their hover cards: one line, never wrapped, in both sizes. */
 function markRow(D: Desktop, markList: Mark[], cardList: Card[], t: Tones, on: Handlers) {
@@ -1078,7 +1114,7 @@ function cardBox(D: Desktop, card: Card, index: number, t: Tones, on: Handlers) 
 }
 
 /** The unfolded row, shared by both sizes: the facts, any card action the moment calls for, the savings. */
-function detailRow(D: Desktop, m: Model, on: Handlers) {
+function detailRow(D: Desktop, m: Model, on: Handlers, size: BandSize) {
   const { Box, Text, Button } = D
   const { snap, tones: t } = m
   const say = sentence(snap)
@@ -1119,6 +1155,23 @@ function detailRow(D: Desktop, m: Model, on: Handlers) {
       </Box>
     )
 
+  // The end of the row: a plain text link (a Button drawn without chrome, the only thing the
+  // desktop lets be pressed), its label its accessible name. The slim band has no sentence
+  // line to carry "Opening the dashboard.", so there the status stands beside the link.
+  const status = size === 'slim' ? dashboardStatus(snap.busy, snap.note) : null
+  const dashboardLink = (
+    <Box flexDirection="row" alignItems="center" columnGap={1}>
+      {status !== null ? (
+        <Box key="dashboard-status">
+          <Text>{status}</Text>
+        </Box>
+      ) : (
+        ''
+      )}
+      <Button key="dashboard" plain label="Full dashboard" onPress={() => on.dashboard()} />
+    </Box>
+  )
+
   return (
     <Box key="row" flexDirection="row" flexWrap="wrap" alignItems="center" justifyContent="space-between" columnGap={2} rowGap={1}>
       <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} rowGap={1}>
@@ -1138,7 +1191,10 @@ function detailRow(D: Desktop, m: Model, on: Handlers) {
           ''
         )}
       </Box>
-      {savingsBlock}
+      <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} rowGap={1}>
+        {savingsBlock}
+        {dashboardLink}
+      </Box>
     </Box>
   )
 }
@@ -1199,7 +1255,7 @@ function drawBand(D: Desktop, m: Model, on: Handlers) {
           {markRow(D, markList, cardList, t, on)}
         </Box>
       </Box>
-      {m.sheetOpen ? detailRow(D, m, on) : ''}
+      {m.sheetOpen ? detailRow(D, m, on, 'full') : ''}
     </Box>
   )
 }
@@ -1248,7 +1304,7 @@ function drawSlim(D: Desktop, m: Model, on: Handlers) {
         ''
       )}
     </Box>
-    {m.sheetOpen ? detailRow(D, m, on) : ''}
+    {m.sheetOpen ? detailRow(D, m, on, 'slim') : ''}
     </Box>
   )
 }
@@ -1594,6 +1650,7 @@ export const register: Register = on => {
     }
     const handlers: Handlers = {
       act: id => void act($, id),
+      dashboard: () => void act($, 'dashboard'),
       details: () => void toggleDetails($),
       size: () => void toggleSize($),
     }

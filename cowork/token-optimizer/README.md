@@ -620,7 +620,7 @@ It needs Claude Code 2.1.287 or newer and Anthropic's mods feature. Anthropic ca
 
 - **One sentence, one button**: the most urgent thing about your session, with at most one button to act on it.
 - **Five marks**: quality grade, context fill, cache countdown, 5-hour limit and weekly limit, each with its label. Hover any mark for a card with the detail.
-- **The arrow beside Clawd** unfolds one more line: branch, session time, tool calls, compactions (when there are any), when the last checkpoint was saved (any kind, or a relevant one from an earlier session), and how many tokens Token Optimizer saved you in the last 30 days, the same total the dashboard shows.
+- **The arrow beside Clawd** unfolds one more line: branch, session time, tool calls, compactions (when there are any), when the last checkpoint was saved (any kind, or a relevant one from an earlier session), and how many tokens Token Optimizer saved you in the last 30 days, the same total the dashboard shows. The last thing on that line is a **Full dashboard** link that regenerates the dashboard and opens it in your browser.
 - **Clawd acts out the session**: thinking, reading, typing, subagents, waiting for your permission, writing, compacting, done, stopped, API error, cold cache, napping.
 - **Clean up**: compacts with Token Optimizer's guidance.
 - **Start fresh**: asks for a second click, then saves a checkpoint, clears, and hands the checkpoint to your first message.

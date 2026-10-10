@@ -43102,6 +43102,8 @@ def _running_under_hook():
         for tests and explicit hook launches).
       * ``TOKEN_OPTIMIZER_HOOK`` env var set (``1``/``true``/``yes``/``on``),
         so a launcher can mark the hook context without changing argv.
+      * (``--user`` on argv declares a user-initiated run and beats the stdin
+        heuristic below, but not an explicit ``--hook`` / TOKEN_OPTIMIZER_HOOK.)
       * stdin is NOT a tty. Hook runners (Claude Code, Codex) pipe a JSON
         payload on stdin; an interactive terminal run has a tty on stdin.
         This is what catches the raw fossil command shape, which invokes
@@ -43134,6 +43136,12 @@ def _running_under_hook():
         "on",
     ):
         return True
+    # ``--user`` is the argv twin of TOKEN_OPTIMIZER_INTERACTIVE for launchers
+    # that cannot pass env (the desktop band's "Full dashboard" link): a person
+    # clicked, so the non-tty heuristic below must not read it as a hook. An
+    # explicit hook marker above still wins.
+    if "--user" in sys.argv:
+        return False
     try:
         return not sys.stdin.isatty()
     except (ValueError, OSError, AttributeError):

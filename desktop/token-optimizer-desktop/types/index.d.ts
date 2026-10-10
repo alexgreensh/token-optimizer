@@ -122,7 +122,7 @@ export type TokenOptimizerDesktopPose = {
 
 /** What a button is doing, the last outcome, and the Start fresh arm (src/actions.ts UiState). */
 export type TokenOptimizerDesktopUi = {
-  busy: 'clean' | 'fresh-capture' | 'fresh-clear' | null
+  busy: 'clean' | 'fresh-capture' | 'fresh-clear' | 'dashboard' | null
   busySince: number | null
   note: string | null
   noteUntil: number

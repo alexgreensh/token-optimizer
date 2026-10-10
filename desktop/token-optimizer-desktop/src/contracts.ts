@@ -75,7 +75,7 @@ export type Snapshot = {
   branch: string | null
   savings: Savings | null
   savingsLoading: boolean
-  busy: 'clean' | 'fresh-capture' | 'fresh-clear' | 'warming' | null
+  busy: 'clean' | 'fresh-capture' | 'fresh-clear' | 'dashboard' | 'warming' | null
   /** One-line outcome shown in place of "All clear." for a few seconds. */
   note: string | null
   /** A Start fresh hand-off waits for the first prompt. */

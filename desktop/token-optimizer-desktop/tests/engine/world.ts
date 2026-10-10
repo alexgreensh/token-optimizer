@@ -63,6 +63,10 @@ export type World = {
   /** How the next compact-capture / resume-lean runs answer. */
   capture: 'ok' | 'fail' | 'stub'
   lean: string
+  /** How `measure.py dashboard` answers: opened, exits 1, exits 0 but could not open the browser, the runner throws, or never answers. */
+  dashboard: 'ok' | 'fail' | 'browser-fail' | 'throws' | 'hang'
+  /** Mocked-clock delay before the dashboard command answers (ms). */
+  dashboardDelayMs: number
   /** How Clean up's /compact answers: a compaction, a refusal, or never. */
   compact: 'ok' | 'skip' | 'hang' | 'refused' | 'said-compacted'
   /** How `$.model.fork()` answers. */
@@ -107,7 +111,7 @@ export type World = {
   uiWriteHangs: number
   /** What a plugin-run `/clear` does beneath the band before its call resolves (the engine ends the old session inside it). */
   clearBeneath: (() => Promise<void>) | null
-  runs: { argv: string[]; stdin?: string }[]
+  runs: { argv: string[]; stdin?: string; timeoutMs?: number }[]
   toasts: string[]
   compacts: number
   forks: number
@@ -149,6 +153,8 @@ export function stub(on: On, patch: Partial<Omit<World, 'clock' | 'runs' | 'toas
     status: { savings: SAVED, savings_state: 'fresh', savings_reason: null, requestAgoS: 30, cache_lifetime: '1h' },
     capture: 'ok',
     lean: 'LEAN HANDOFF TEXT',
+    dashboard: 'ok',
+    dashboardDelayMs: 0,
     compact: 'ok',
     fork: { read: 600_000 },
     theme: 'light',
@@ -276,7 +282,7 @@ export function stub(on: On, patch: Partial<Omit<World, 'clock' | 'runs' | 'toas
   })
   on('process.run', async (_, e) => {
     const argv = [...e.argv]
-    w.runs.push({ argv, stdin: e.init?.stdin })
+    w.runs.push({ argv, stdin: e.init?.stdin, timeoutMs: e.init?.timeoutMs })
     if (argv[0] === 'git') return ok('feat/band\n')
     if (argv.includes('status-bar')) {
       const s = w.status
@@ -299,6 +305,14 @@ export function stub(on: On, patch: Partial<Omit<World, 'clock' | 'runs' | 'toas
       if (w.capture === 'fail') return ok('', 1)
       w.files[CHECKPOINT] = [2, w.capture === 'stub' ? 'Generated: x | Note: No transcript data available\n' : '# Checkpoint\nreal work']
       return ok(`[Token Optimizer] Checkpoint saved: ${CHECKPOINT}\n`)
+    }
+    if (argv.includes('dashboard')) {
+      if (w.dashboardDelayMs) await w.clock.sleep(w.dashboardDelayMs)
+      if (w.dashboard === 'hang') await w.clock.sleep(10 * 60_000)
+      if (w.dashboard === 'throws') throw new Error('spawn failed')
+      if (w.dashboard === 'fail') return ok('', 1)
+      if (w.dashboard === 'browser-fail') return ok('\n  Could not auto-open browser. Open manually:\n  file:///x/dashboard.html\n')
+      return ok('  Opened: http://localhost:24842/token-optimizer\n')
     }
     if (argv.includes('resume-lean')) return ok(w.lean ? `${w.lean}\n` : '', w.lean ? 0 : 1)
     return ok('', 1)

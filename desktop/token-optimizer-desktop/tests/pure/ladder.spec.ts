@@ -120,6 +120,9 @@ test('busy states lead, with no button', () => {
   assert.equal(text(sentence(snap({ busy: 'fresh-capture' }), TZ)), 'Saving checkpoint.')
   assert.equal(text(sentence(snap({ busy: 'fresh-clear' }), TZ)), 'Clearing.')
   assert.equal(text(sentence(snap({ busy: 'warming' }), TZ)), 'Keeping the cache warm.')
+  const dashboard = sentence(snap({ busy: 'dashboard' }), TZ)
+  assert.equal(text(dashboard), 'Opening the dashboard.')
+  assert.equal(dashboard.action, null)
 })
 
 test('Start fresh armed asks for the second click', () => {

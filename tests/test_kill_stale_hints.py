@@ -66,6 +66,7 @@ def test_orphan_hints_print_the_resolved_command(monkeypatch, capsys):
     monkeypatch.setattr(measure.os, "getpid", lambda: 9999)
     monkeypatch.setattr(measure.os, "getppid", lambda: 9998)
     monkeypatch.setattr(measure, "_posix_ancestor_pids", lambda pid: set())
+    monkeypatch.setattr(measure, "_windows_ancestor_pids", lambda pid, names=None: set())
     measure.kill_stale_sessions(threshold_hours=12)
     out = capsys.readouterr().out
     assert f"{prefix} kill-stale --include-orphans --hours 12" in out

@@ -190,8 +190,10 @@ def test_hint_with_a_space_in_the_install_path_round_trips(tmp_path, monkeypatch
     spaced = tmp_path / 'First Last' / 'scripts' / 'measure.py'
     monkeypatch.setattr(refetch_fingerprint, 'measure_py_path', lambda: str(spaced))
     hint = refetch_fingerprint.expand_command('original')
-    # One shell word for the path, and the recognizer accepts it.
-    assert shlex.split(hint) == ['python3', str(spaced), 'expand', 'original']
+    # One shell word for the path, and the recognizer accepts it. A Windows host
+    # prints forward slashes (an unquoted backslash is an escape in Bash).
+    shown = spaced.as_posix() if os.name == 'nt' else str(spaced)
+    assert shlex.split(hint) == ['python3', shown, 'expand', 'original']
     assert recovery_output.is_expand_command(hint)
     # The form older releases printed is still in live transcripts.
     assert recovery_output.is_expand_command(f'python3 {spaced} expand original')
@@ -205,10 +207,43 @@ def test_windows_shaped_hint_is_recognized(monkeypatch):
     monkeypatch.setattr(refetch_fingerprint, 'measure_py_path', lambda: win)
     monkeypatch.setattr(refetch_fingerprint.os, 'name', 'nt')
     hint = refetch_fingerprint.expand_command('original')
-    assert hint == "python3 'C:/Users/First Last/.claude/plugins/cache/to/scripts/measure.py' expand original"
+    # Double quotes: cmd.exe, PowerShell and Git Bash all read them as one argument.
+    assert hint == 'python3 "C:/Users/First Last/.claude/plugins/cache/to/scripts/measure.py" expand original'
     assert recovery_output.is_expand_command(hint)
+    assert recovery_output.is_expand_command(hint + ' --session abc-1')
     assert recovery_output.is_expand_command(f'python3 {win} expand original')
+    # Earlier releases single-quoted the forward-slash path; those pointers are still live.
+    assert recovery_output.is_expand_command(
+        "python3 'C:/Users/First Last/.claude/plugins/cache/to/scripts/measure.py' expand original")
     assert not recovery_output.is_expand_command(hint + ' | cat')
+    assert not recovery_output.is_expand_command(hint + ' & calc')
+    assert not recovery_output.is_expand_command(hint.replace('First Last', 'Someone Else'))
+
+
+def test_windows_hint_without_a_space_is_bare_and_recognized(monkeypatch):
+    import recovery_output
+    import refetch_fingerprint
+    win = 'D:\\a\\token-optimizer\\skills\\token-optimizer\\scripts\\measure.py'
+    monkeypatch.setattr(refetch_fingerprint, 'measure_py_path', lambda: win)
+    monkeypatch.setattr(refetch_fingerprint.os, 'name', 'nt')
+    hint = refetch_fingerprint.expand_command('original')
+    assert hint == 'python3 D:/a/token-optimizer/skills/token-optimizer/scripts/measure.py expand original'
+    assert recovery_output.is_expand_command(hint)
+
+
+@pytest.mark.parametrize('path,shown', [
+    ('C:\\Users\\u\\x\\measure.py', 'C:/Users/u/x/measure.py'),
+    ('C:\\Users\\First Last\\measure.py', '"C:/Users/First Last/measure.py"'),
+    ('C:\\Users\\O\'Brien\\measure.py', '"C:/Users/O\'Brien/measure.py"'),
+    ('C:\\Program Files (x86)\\to\\measure.py', '"C:/Program Files (x86)/to/measure.py"'),
+    # Expanded even inside double quotes (Bash/PowerShell `$`, cmd.exe `%`): single quotes.
+    ('C:\\Users\\a$b\\measure.py', "'C:/Users/a$b/measure.py'"),
+    ('C:\\Users\\50%\\measure.py', "'C:/Users/50%/measure.py'"),
+])
+def test_windows_hint_path_is_pasteable_in_every_shell(monkeypatch, path, shown):
+    import refetch_fingerprint
+    monkeypatch.setattr(refetch_fingerprint.os, 'name', 'nt')
+    assert refetch_fingerprint.shell_path(path) == shown
 
 
 @pytest.mark.parametrize('tool', ['Bash', 'PowerShell'])

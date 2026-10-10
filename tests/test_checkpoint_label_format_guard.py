@@ -1,4 +1,4 @@
-"""Checkpoint filename regex guard.
+r"""Checkpoint filename regex guard.
 
 The cross-session warning relies on a regex match against the checkpoint
 filename: `^([0-9a-fA-F-]{8,36})-\d{8}-\d{6}-`. If the filename format ever

@@ -546,7 +546,12 @@ def _with_measure_cli(text: str) -> str:
     script = Path(__file__).resolve().parents[2] / "token-optimizer" / "scripts" / "measure.py"
     if not script.is_file():
         return text
-    return text.replace("python3 measure.py", "python3 " + shlex.quote(str(script)))
+    try:
+        from refetch_fingerprint import shell_path
+        quoted = shell_path(str(script))
+    except ImportError:
+        quoted = shlex.quote(str(script))
+    return text.replace("python3 measure.py", "python3 " + quoted)
 
 
 @dataclass

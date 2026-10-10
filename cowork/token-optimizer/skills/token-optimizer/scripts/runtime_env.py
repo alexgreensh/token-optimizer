@@ -74,13 +74,28 @@ import sys
 import time
 from pathlib import Path
 
+def shell_path(path) -> str:
+    """``path`` quoted so it pastes into Bash, Git Bash, PowerShell and cmd.exe.
+
+    One implementation (``refetch_fingerprint.shell_path``) serves every printed
+    command, so the hints cannot drift from what ``recovery_output`` recognises.
+    """
+    try:
+        from refetch_fingerprint import shell_path as _shell_path
+    except ImportError:  # sibling module missing: the POSIX rules are still right
+        return shlex.quote(str(path))
+    return _shell_path(str(path))
+
+
 def measure_cli(*args: str) -> str:
     """Pasteable command that runs the sibling ``measure.py`` from any directory.
 
     The resolved, shell-quoted script path. A bare ``python3 measure.py`` only
-    works from inside the scripts directory, which is where nobody is.
+    works from inside the scripts directory, which is where nobody is. On Windows
+    the path uses forward slashes and double quotes (see ``shell_path``): a
+    backslash path in single quotes works in Git Bash only.
     """
-    parts = ["python3", shlex.quote(str(Path(__file__).resolve().parent / "measure.py"))]
+    parts = ["python3", shell_path(Path(__file__).resolve().parent / "measure.py")]
     parts.extend(args)
     return " ".join(parts)
 

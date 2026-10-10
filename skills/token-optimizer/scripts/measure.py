@@ -116,7 +116,7 @@ from plugin_env import (
     snapshot_dir_candidates,
 )
 from utf8_io import enforce_utf8_io, reexec_in_utf8_mode
-from runtime_env import _safe_home, claude_home, detect_runtime, is_cowork, runtime_home, runtime_name_for_humans
+from runtime_env import _safe_home, claude_home, detect_runtime, is_cowork, runtime_home, runtime_name_for_humans, shell_path
 from spawn_utils import spawn_detached
 
 # Every console-attached child we spawn on Windows flashes a cmd
@@ -4773,7 +4773,7 @@ def doctor(as_json=False):
             print(f"  {'':5s}   note: {_scb['hint']}")
         if _sc_state == "set":
             print(f"  {'':5s} Undo: python3 "
-                  f"{shlex.quote(str(Path(__file__).resolve()))} "
+                  f"{_shell_script_path()} "
                   "subagent-cache disable")
     except Exception:
         pass  # doctor must never fail on this optional row
@@ -6397,13 +6397,20 @@ def generate_dashboard(coord_path):
     return str(out_path)
 
 
+def _shell_script_path():
+    """This script's resolved path, quoted to paste into Bash, PowerShell and cmd.exe."""
+    return shell_path(Path(__file__).resolve())
+
+
 def _measure_cli(*args):
     """The command that runs this script, for hints a user will paste into a shell.
 
     Always the resolved script path (quoted): a bare `python3 measure.py` only works
-    from inside the scripts directory, which is where nobody is.
+    from inside the scripts directory, which is where nobody is. On Windows the path
+    uses forward slashes and double quotes, the one form cmd.exe, PowerShell and Git
+    Bash all read as a single argument (`runtime_env.shell_path`).
     """
-    parts = ["python3", shlex.quote(str(Path(__file__).resolve()))]
+    parts = ["python3", _shell_script_path()]
     parts.extend(args)
     return " ".join(parts)
 
@@ -6453,7 +6460,7 @@ def _collect_hook_status_for_dashboard():
     smart_compact_status = _is_smart_compact_installed(settings)
 
     # For executable commands: absolute path with shlex.quote (handles spaces/quotes)
-    mp_cmd = shlex.quote(str(Path(__file__).resolve()))
+    mp_cmd = _shell_script_path()
 
     return {
         "session_end": {
@@ -6479,7 +6486,7 @@ def _collect_codex_hook_status_for_dashboard():
     """Collect Codex project hook status for dashboard toggle panel."""
     import codex_doctor
 
-    mp_cmd = shlex.quote(str(Path(__file__).resolve()))
+    mp_cmd = _shell_script_path()
     project = Path.cwd().resolve(strict=False)
     checks = codex_doctor.run_checks(project=project)
     by_name = {check["name"]: check for check in checks}
@@ -6557,7 +6564,7 @@ def _collect_copilot_hook_status_for_dashboard():
     """
     import copilot_doctor  # noqa: PLC0415
 
-    mp_cmd = shlex.quote(str(Path(__file__).resolve()))
+    mp_cmd = _shell_script_path()
     checks = copilot_doctor.run_checks()
     by_name = {check["name"]: check for check in checks}
 
@@ -6615,7 +6622,7 @@ def _collect_cursor_hook_status_for_dashboard():
     """
     import cursor_doctor  # noqa: PLC0415
 
-    mp_cmd = shlex.quote(str(Path(__file__).resolve()))
+    mp_cmd = _shell_script_path()
     checks = cursor_doctor.run_checks()
     by_name = {check["name"]: check for check in checks}
 
@@ -6668,7 +6675,7 @@ def _collect_grok_hook_status_for_dashboard():
     """
     import grok_doctor  # noqa: PLC0415
 
-    mp_cmd = shlex.quote(str(Path(__file__).resolve()))
+    mp_cmd = _shell_script_path()
     checks = grok_doctor.run_checks()
     by_name = {check["name"]: check for check in checks}
 
@@ -6717,7 +6724,7 @@ def _collect_hermes_hook_status_for_dashboard():
     """
     import hermes_doctor  # noqa: PLC0415
 
-    mp_cmd = shlex.quote(str(Path(__file__).resolve()))
+    mp_cmd = _shell_script_path()
     checks = hermes_doctor.run_checks()
     by_name = {check["name"]: check for check in checks}
 
@@ -6771,7 +6778,7 @@ def _collect_antigravity_hook_status_for_dashboard():
     """
     import antigravity_doctor  # noqa: PLC0415
 
-    mp_cmd = shlex.quote(str(Path(__file__).resolve()))
+    mp_cmd = _shell_script_path()
     checks = antigravity_doctor.run_checks()
     by_name = {check["name"]: check for check in checks}
 
@@ -6900,7 +6907,7 @@ def _collect_codex_skill_inventory(cfg: dict, *, project: Path) -> dict[str, lis
     active = []
     disabled = []
     seen: set[str] = set()
-    mp_cmd = shlex.quote(str(Path(__file__).resolve()))
+    mp_cmd = _shell_script_path()
     for path, source in candidates:
         resolved = str(path.expanduser().resolve(strict=False))
         if resolved in seen:
@@ -6932,7 +6939,7 @@ def _collect_codex_mcp_inventory(cfg: dict) -> list[dict]:
     if not isinstance(servers, dict):
         return []
     items = []
-    mp_cmd = shlex.quote(str(Path(__file__).resolve()))
+    mp_cmd = _shell_script_path()
     for name, server in servers.items():
         if not isinstance(server, dict):
             server = {}
@@ -7154,7 +7161,7 @@ def _collect_management_data(components=None, trends=None):
     if components is None:
         components = measure_components()
 
-    mp_cmd = shlex.quote(str(Path(__file__).resolve()))
+    mp_cmd = _shell_script_path()
     if detect_runtime() == "codex":
         project = Path.cwd().resolve(strict=False)
         project_arg = shlex.quote(str(project))
@@ -19984,7 +19991,7 @@ def subagent_cache_enable(now=None, automatic=True):
         "set_by": "token-optimizer",
         "auto_decision": dict(decision, ts=float(now)),
     })
-    undo_cmd = f"python3 {shlex.quote(str(Path(__file__).resolve()))} subagent-cache disable"
+    undo_cmd = f"python3 {_shell_script_path()} subagent-cache disable"
     what = "Token Optimizer set the subagent cache to 1 hour (was 5 minutes)."
     if settings_missing:
         what += " Created settings.json -- it did not exist."
@@ -20369,7 +20376,7 @@ def evaluate_subagent_cache_tripwire(now=None, payoff=None):
     result = _subagent_cache_undo(data, now, "auto-reverted")
     if not result.get("changed"):
         return dict(out, net_usd_est=net)
-    enable_cmd = (f"python3 {shlex.quote(str(Path(__file__).resolve()))} "
+    enable_cmd = (f"python3 {_shell_script_path()} "
                   f"subagent-cache enable")
     return {
         "reverted": True,
@@ -20454,7 +20461,7 @@ def _subagent_cache_recommendation(state, current, payoff, billing,
             return None
         if current not in (None, "1h"):
             return None  # a user-set "5m" (or anything else) is their choice
-        cmd = (f"python3 {shlex.quote(str(Path(__file__).resolve()))} "
+        cmd = (f"python3 {_shell_script_path()} "
                f"subagent-cache")
         est = "API-equivalent estimate" if billing == "subscription" else "estimate"
         days = int((payoff or {}).get("window_days") or 30)

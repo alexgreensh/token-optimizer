@@ -41,6 +41,26 @@ CLI = "/Users/u/.local/bin/claude"
 STREAM = "--output-format stream-json --verbose --input-format stream-json"
 
 
+class _PosixOs:
+    """`os` as a POSIX host presents it, for the module under test only.
+
+    These tests fake `ps` and the POSIX process table, so the code under test must
+    take its POSIX branches. On a real Windows host `os.name` is "nt" and
+    kill_stale would walk the real Windows process table instead, find the fixture
+    pids absent and (correctly) refuse to terminate anything. Attribute writes
+    (monkeypatch.setattr(measure.os, "kill", ...)) land on the proxy, never on
+    the real `os`.
+    """
+
+    name = "posix"
+
+    def __init__(self, real):
+        self._real = real
+
+    def __getattr__(self, item):
+        return getattr(self._real, item)
+
+
 def _load_measure():
     scripts = str(MEASURE_PATH.parent)
     if scripts not in sys.path:
@@ -48,6 +68,7 @@ def _load_measure():
     spec = importlib.util.spec_from_file_location("measure_posix_identity_under_test", MEASURE_PATH)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    module.os = _PosixOs(module.os)
     return module
 
 

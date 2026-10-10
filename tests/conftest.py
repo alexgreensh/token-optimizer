@@ -155,6 +155,10 @@ FAILURE_ADVICE = (
 )
 
 
+def pytest_configure(config):
+    config.addinivalue_line("markers", "slow: timing-sensitive test (startup budgets)")
+
+
 def pytest_sessionstart(session):
     global BASELINE, UNAVAILABLE_REASON
     if not guard_enabled():

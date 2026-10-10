@@ -645,7 +645,7 @@ def test_post_compact_refresh_end_to_end_counts_once(sb, tmp_path):
     # Another refresh before the boundary lands: still 1.
     assert run(False) == 1
     # The boundary lands (fresh): a parse sees it and agrees; a second PostCompact does not add.
-    now_iso = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     with open(tr, "a", encoding="utf-8") as fh:
         fh.write(json.dumps({"type": "system", "subtype": "compact_boundary", "timestamp": now_iso}) + "\n")
     assert run(False) == 1

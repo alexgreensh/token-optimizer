@@ -378,13 +378,19 @@ def test_cim_property_names_match_the_parser(monkeypatch):
 
 # --- kill_stale ------------------------------------------------------------
 
-def _health_with(monkeypatch, measure, sessions):
+def _health_with(monkeypatch, measure, sessions, real_ancestry=False):
     monkeypatch.setattr(measure, "detect_runtime", lambda: "claude")
     monkeypatch.setattr(measure, "_collect_health_data", lambda: {"running_sessions": sessions})
     # Hermetic: these tests use made-up pids (1, 2, 9999...) but kill_stale walks the
     # REAL process table for ancestors, whose chain always ends at pid 1. Tests that
-    # want an ancestor set their own after calling this helper.
+    # want an ancestor set their own after calling this helper. Both walks are
+    # stubbed because kill_stale picks one by the host's os.name: on a real Windows
+    # host the unstubbed Windows walk cannot find the made-up pid in the real table
+    # and (correctly) refuses to terminate anything. `real_ancestry` leaves the
+    # Windows walk alone for tests that feed it a fake table (_as_windows_host).
     monkeypatch.setattr(measure, "_posix_ancestor_pids", lambda pid: set())
+    if not real_ancestry:
+        monkeypatch.setattr(measure, "_windows_ancestor_pids", lambda pid, names=None: set())
 
 
 def _session(pid, identity="terminal_cli", elapsed=13 * 3600, started="Wed Jan 01 00:00:00 2020"):
@@ -817,7 +823,7 @@ CHAIN = {9999: (9998, "python.exe"), 9998: (4000, "bash.exe"), 4000: (1, "claude
 
 def test_windows_kill_stale_never_kills_the_conversation_it_runs_inside_of(monkeypatch):
     measure = _load_measure()
-    _health_with(monkeypatch, measure, [_session(4000), _session(4001)])
+    _health_with(monkeypatch, measure, [_session(4000), _session(4001)], real_ancestry=True)
     killed = _as_windows_host(monkeypatch, measure, CHAIN)
     measure.kill_stale_sessions(threshold_hours=12)
     assert killed == [4001]
@@ -825,7 +831,7 @@ def test_windows_kill_stale_never_kills_the_conversation_it_runs_inside_of(monke
 
 def test_windows_kill_stale_dry_run_does_not_offer_the_ancestor(monkeypatch, capsys):
     measure = _load_measure()
-    _health_with(monkeypatch, measure, [_session(4000), _session(4001)])
+    _health_with(monkeypatch, measure, [_session(4000), _session(4001)], real_ancestry=True)
     killed = _as_windows_host(monkeypatch, measure, CHAIN)
     measure.kill_stale_sessions(threshold_hours=12, dry_run=True)
     out = capsys.readouterr().out
@@ -835,7 +841,7 @@ def test_windows_kill_stale_dry_run_does_not_offer_the_ancestor(monkeypatch, cap
 def test_windows_kill_stale_refuses_when_the_process_table_is_unreadable(monkeypatch, capsys):
     """No table means no proof that a candidate is not an ancestor: fail closed."""
     measure = _load_measure()
-    _health_with(monkeypatch, measure, [_session(4000), _session(4001)])
+    _health_with(monkeypatch, measure, [_session(4000), _session(4001)], real_ancestry=True)
     killed = _as_windows_host(monkeypatch, measure, None)
     measure.kill_stale_sessions(threshold_hours=12)
     assert killed == []
@@ -844,7 +850,7 @@ def test_windows_kill_stale_refuses_when_the_process_table_is_unreadable(monkeyp
 
 def test_windows_kill_stale_refuses_when_its_own_pid_is_not_in_the_table(monkeypatch):
     measure = _load_measure()
-    _health_with(monkeypatch, measure, [_session(4000), _session(4001)])
+    _health_with(monkeypatch, measure, [_session(4000), _session(4001)], real_ancestry=True)
     killed = _as_windows_host(monkeypatch, measure, {4000: (1, "claude.exe"), 4001: (1, "claude.exe")})
     measure.kill_stale_sessions(threshold_hours=12)
     assert killed == []
@@ -857,6 +863,43 @@ def test_windows_ancestor_walk_follows_the_parent_chain_and_survives_cycles():
     assert measure._windows_ancestor_pids(5, loop) == {6, 7, 5}
     assert measure._windows_ancestor_pids(9999, None) is None
     assert measure._windows_ancestor_pids(1234, CHAIN) is None  # self not in table
+
+
+def test_windows_ancestor_walk_stops_at_a_parent_that_has_exited():
+    """Windows never reparents: a child keeps the pid of a dead parent. The walk ends
+    there with what it proved so far (the dead parent's pid), not with 'unknown'."""
+    measure = _load_measure()
+    assert measure._windows_ancestor_pids(9999, {9999: (9998, "python.exe")}) == {9998}
+    assert measure._windows_ancestor_pids(9999, {9999: (0, "python.exe")}) == set()
+
+
+@pytest.mark.parametrize("failure", [FileNotFoundError("powershell"),
+                                      subprocess.TimeoutExpired("powershell", 10), OSError("denied")])
+def test_windows_process_table_failures_mean_unknown_not_empty(monkeypatch, failure):
+    """PowerShell absent, hung, or blocked: the ancestry is unknown and kill-stale refuses."""
+    measure = _load_measure()
+
+    def boom(*a, **kw):
+        raise failure
+
+    monkeypatch.setattr(measure.subprocess, "run", boom)
+    assert measure._windows_process_names() is None
+    assert measure._windows_ancestor_pids(9999) is None
+
+
+def test_windows_kill_stale_does_not_look_fixture_pids_up_in_the_real_process_table(monkeypatch):
+    """On a real Windows host kill_stale takes the nt branch. The made-up fixture pids
+    must not be looked up in the host's real process table: that lookup finds nothing
+    and (correctly) refuses every kill, which is how these tests failed on windows-latest."""
+    measure = _load_measure()
+    killed = []
+    monkeypatch.setattr(measure, "os", _NtOs(measure.os, killed, 9999, 9998))
+    _health_with(monkeypatch, measure, [_session(1)])
+    _revalidates(monkeypatch, measure)
+    monkeypatch.setattr(measure, "_windows_process_names",
+                        lambda: pytest.fail("kill_stale read the real Windows process table"))
+    measure.kill_stale_sessions(threshold_hours=12)
+    assert killed == [1]
 
 
 # --- culture-invariant dates ------------------------------------------------------

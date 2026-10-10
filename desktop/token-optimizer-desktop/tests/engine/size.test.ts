@@ -27,9 +27,9 @@ test('the – button slims the band to one line; + brings the full band back', a
 
   await ui.press({ key: 'size' })
 
-  // One line: no title, no details arrow, no details row. Clawd at 24 x 19.
+  // One line: no title, the row folded, its arrow still there. Clawd at 24 x 19.
   expect(await ui.find({ type: 'Text', text: 'Token Optimizer' })).toBeUndefined()
-  expect(await ui.find({ key: 'details' })).toBeUndefined()
+  expect((await ui.find({ key: 'details' }))?.props.label).toBe('▾')
   expect(await ui.find({ key: 'row' })).toBeUndefined()
   expect((await ui.find({ key: 'size' }))?.props.label).toBe('+')
   const tiny = await clawd(ui)
@@ -129,20 +129,29 @@ test('a refused write still switches the band; it just does not persist', async 
   expect(w.store['status-bar-size']).toBeUndefined()
 })
 
-test('a details row open when slim is pressed closes, and stays closed back in full', async ($, on) => {
+test('the unfolded row opens under the slim line and follows the user across sizes', async ($, on) => {
   const w = stub(on)
   await $.session.start(START)
   await w.clock.settle()
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await ui.press({ key: 'size' })
+  expect(await ui.find({ key: 'row' })).toBeUndefined()
+
+  // Slim keeps the arrow: the row is where branch, time, tool calls, checkpoint and savings live.
   await ui.press({ key: 'details' })
   expect(await ui.find({ key: 'row' })).toBeDefined()
+  expect((await ui.find({ key: 'details' }))?.props.label).toBe('▴')
+  expect(await ui.find({ type: 'Text', text: 'Token Optimizer' })).toBeUndefined()
 
+  // Back to full: still open. Slim again: still open.
   await ui.press({ key: 'size' })
-  expect(await ui.find({ key: 'row' })).toBeUndefined()
+  expect(await ui.find({ key: 'row' })).toBeDefined()
+  await ui.press({ key: 'size' })
+  expect(await ui.find({ key: 'row' })).toBeDefined()
 
-  await ui.press({ key: 'size' })
+  await ui.press({ key: 'details' })
   expect(await ui.find({ key: 'row' })).toBeUndefined()
-  expect((await ui.find({ key: 'details' }))?.props.label).toBe('▾')
+  expect((await ui.find({ key: 'size' }))?.props.label).toBe('+')
 })
 
 test('a sentence with a button shows its icon and that button on the slim line, nothing else', async ($, on) => {

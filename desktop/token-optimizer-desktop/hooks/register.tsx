@@ -891,10 +891,6 @@ async function toggleSize($: EngineInterface): Promise<void> {
   const next: BandSize = bandSize() === 'slim' ? 'full' : 'slim'
   sizeClicked = next
   await attempt(() => $.store.set(SIZE_KEY, next), undefined)
-  // Slim has no details row: an open one closes with the switch.
-  if (next === 'slim') {
-    await attempt(() => update($, sessionAtom, cur => (cur?.sheetOpen ? { ...cur, sheetOpen: false } : cur)), undefined)
-  }
   await attempt(() => update($, frameAtom, n => (n ?? 0) + 1), undefined)
 }
 
@@ -1081,11 +1077,11 @@ function cardBox(D: Desktop, card: Card, index: number, t: Tones, on: Handlers) 
   )
 }
 
-function drawBand(D: Desktop, m: Model, on: Handlers) {
-  const { Box, Text, Button, Svg } = D
+/** The unfolded row, shared by both sizes: the facts, any card action the moment calls for, the savings. */
+function detailRow(D: Desktop, m: Model, on: Handlers) {
+  const { Box, Text, Button } = D
   const { snap, tones: t } = m
   const say = sentence(snap)
-  const markList = marks(snap)
   const cardList = cards(snap)
   const detail = row(snap)
   // A card action joins the row only when the moment calls for it (quality sagging, the cache
@@ -1123,6 +1119,36 @@ function drawBand(D: Desktop, m: Model, on: Handlers) {
       </Box>
     )
 
+  return (
+    <Box key="row" flexDirection="row" flexWrap="wrap" alignItems="center" justifyContent="space-between" columnGap={2} rowGap={1}>
+      <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} rowGap={1}>
+        {detail.facts.map(f => (
+          <Box flexDirection="row" alignItems="center" columnGap={1}>
+            {icon(D, f.icon, t.ink)}
+            <Text>{runsOf(D, f.runs, t)}</Text>
+          </Box>
+        ))}
+        {rowActions.length > 0 ? (
+          <Box flexDirection="row" alignItems="center" columnGap={1}>
+            {rowActions.map(a => (
+              <Button key={`row-${a.id}`} label={a.label} onPress={() => on.act(a.id)} />
+            ))}
+          </Box>
+        ) : (
+          ''
+        )}
+      </Box>
+      {savingsBlock}
+    </Box>
+  )
+}
+
+function drawBand(D: Desktop, m: Model, on: Handlers) {
+  const { Box, Text, Button, Svg } = D
+  const { snap, tones: t } = m
+  const say = sentence(snap)
+  const markList = marks(snap)
+  const cardList = cards(snap)
   // The artifact's layout: Clawd and his arrow beside the sentence and the marks; the
   // unfolded row under all of it, from Clawd's left edge, savings on the right.
   return (
@@ -1173,42 +1199,20 @@ function drawBand(D: Desktop, m: Model, on: Handlers) {
           {markRow(D, markList, cardList, t, on)}
         </Box>
       </Box>
-      {m.sheetOpen ? (
-        <Box key="row" flexDirection="row" flexWrap="wrap" alignItems="center" justifyContent="space-between" columnGap={2} rowGap={1}>
-          <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} rowGap={1}>
-            {detail.facts.map(f => (
-              <Box flexDirection="row" alignItems="center" columnGap={1}>
-                {icon(D, f.icon, t.ink)}
-                <Text>{runsOf(D, f.runs, t)}</Text>
-              </Box>
-            ))}
-            {rowActions.length > 0 ? (
-              <Box flexDirection="row" alignItems="center" columnGap={1}>
-                {rowActions.map(a => (
-                  <Button key={`row-${a.id}`} label={a.label} onPress={() => on.act(a.id)} />
-                ))}
-              </Box>
-            ) : (
-              ''
-            )}
-          </Box>
-          {savingsBlock}
-        </Box>
-      ) : (
-        ''
-      )}
+      {m.sheetOpen ? detailRow(D, m, on) : ''}
     </Box>
   )
 }
 
-/** The slim band: one line. Tiny Clawd, the + button, the five marks, and what the sentence earns on the right. */
+/** The slim band: one line, plus the unfolded row when open. Tiny Clawd, the arrow and + buttons, the five marks, and what the sentence earns on the right. */
 function drawSlim(D: Desktop, m: Model, on: Handlers) {
   const { Box, Text, Button, Svg } = D
   const { snap, tones: t } = m
   const side = slimSide(sentence(snap))
   return (
     // Keyed like the full band: the same one hover zone, so pointing still wakes Clawd's look.
-    <Box key="band" flexDirection="row" flexWrap="nowrap" alignItems="center" paddingX={1} columnGap={2}>
+    <Box key="band" flexDirection="column" paddingX={1} rowGap={1}>
+    <Box flexDirection="row" flexWrap="nowrap" alignItems="center" columnGap={2}>
       {/* The same layered pictures as the full band (same poses, fades, gaze layers), just small. */}
       <Box position="relative" flexShrink={0}>
         {m.clawd.map((c, i) => (
@@ -1222,7 +1226,11 @@ function drawSlim(D: Desktop, m: Model, on: Handlers) {
           </Box>
         ))}
       </Box>
-      <Button key="size" label="+" onPress={() => on.size()} />
+      <Box flexDirection="row" columnGap={1} flexShrink={0}>
+        {/* The same arrow as the full band: the unfolded row is where the detail lives. */}
+        <Button key="details" label={m.sheetOpen ? '▴' : '▾'} onPress={() => on.details()} />
+        <Button key="size" label="+" onPress={() => on.size()} />
+      </Box>
       <Box flexGrow={1} flexShrink={1}>
         {markRow(D, marks(snap), cards(snap), t, on)}
       </Box>
@@ -1239,6 +1247,8 @@ function drawSlim(D: Desktop, m: Model, on: Handlers) {
       ) : (
         ''
       )}
+    </Box>
+    {m.sheetOpen ? detailRow(D, m, on) : ''}
     </Box>
   )
 }

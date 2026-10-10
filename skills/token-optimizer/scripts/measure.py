@@ -695,89 +695,91 @@ CLAUDE_MD_INJECTION_OVERHEAD = 75
 # Per-MTok pricing for Claude models across providers.
 # Non-Claude models are unaffected by tier selection.
 
+# Fallback Claude rate cards: a card-for-card mirror of the "anthropic"
+# section of the bundled pricing/prices.json, kept in literals so pricing
+# stays correct when the file is absent or disabled (F-T2-1). A regression
+# test pins literal == bundled, so a card the refresh pipeline adds must be
+# mirrored here at the same time. First-party rates apply on anthropic /
+# vertex-global / bedrock; vertex-regional is +10% via _claude_cards.
+_FALLBACK_CLAUDE_MODELS = {
+    # cache_write = 5-minute TTL (1.25x input); cache_write_1h = 1-hour TTL (2x input).
+    # Verified 2026-09-24 from platform.claude.com/docs/en/about-claude/pricing.
+    "fable":  {"input": 10.0, "output": 50.0, "cache_read": 1.0,  "cache_write": 12.5,  "cache_write_1h": 20.0},
+    "fable_5": {"input": 10.0, "output": 50.0, "cache_read": 1.0, "cache_write": 12.5, "cache_write_1h": 20.0},
+    # Fable 5.1 / Mythos 5.1: cache reads are 0.025x input ($0.25), not 0.1x.
+    "fable_5_1": {"input": 10.0, "output": 50.0, "cache_read": 0.25, "cache_write": 12.5, "cache_write_1h": 20.0},
+    "mythos_5": {"input": 10.0, "output": 50.0, "cache_read": 1.0, "cache_write": 12.5, "cache_write_1h": 20.0},
+    "mythos_5_1": {"input": 10.0, "output": 50.0, "cache_read": 0.25, "cache_write": 12.5, "cache_write_1h": 20.0},
+    # Opus 5.5 is $4/$20 with 0.05x cache reads; Opus 4.5+ is $5/$25; Opus <=4.1 is $15/$75.
+    "opus_5_5": {"input": 4.0, "output": 20.0, "cache_read": 0.2, "cache_write": 5.0, "cache_write_1h": 8.0},
+    "opus":   {"input": 5.0,  "output": 25.0, "cache_read": 0.5,  "cache_write": 6.25,  "cache_write_1h": 10.0},
+    "opus_3":  {"input": 15.0, "output": 75.0, "cache_read": 1.5, "cache_write": 18.75, "cache_write_1h": 30.0},
+    "opus_4":  {"input": 15.0, "output": 75.0, "cache_read": 1.5, "cache_write": 18.75, "cache_write_1h": 30.0},
+    "opus_4_1": {"input": 15.0, "output": 75.0, "cache_read": 1.5, "cache_write": 18.75, "cache_write_1h": 30.0},
+    "opus_4_5": {"input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25, "cache_write_1h": 10.0},
+    "opus_4_6": {"input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25, "cache_write_1h": 10.0},
+    "opus_4_7": {"input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25, "cache_write_1h": 10.0},
+    "opus_4_8": {"input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25, "cache_write_1h": 10.0},
+    "opus_5":  {"input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25, "cache_write_1h": 10.0},
+    # Sonnet 5's launch rate became the standard price (2026-08-29, see the
+    # _SONNET_INTRO_PRICING_UNTIL block below); Sonnet <=4.6 stays $3/$15.
+    "sonnet": {"input": 2.0, "output": 10.0, "cache_read": 0.2, "cache_write": 2.5, "cache_write_1h": 4.0},
+    "sonnet_4": {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75, "cache_write_1h": 6.0},
+    "sonnet_4_5": {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75, "cache_write_1h": 6.0},
+    "sonnet_4_6": {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75, "cache_write_1h": 6.0},
+    "sonnet_5": {"input": 2.0, "output": 10.0, "cache_read": 0.2, "cache_write": 2.5, "cache_write_1h": 4.0},
+    # Sonnet 5.5's cache reads are 0.05x input ($0.10), not the usual 0.1x.
+    "sonnet_5_5": {"input": 2.0, "output": 10.0, "cache_read": 0.1, "cache_write": 2.5, "cache_write_1h": 4.0},
+    # Sonnet 4.6 / 4.5 / 4.0 keep the $3/$15 card. Sonnet 5 (2026-06-30) is $2/$10,
+    # so one shared "sonnet" bucket silently misprices the older generation by 50%.
+    "sonnet_legacy": {"input": 3.0,  "output": 15.0, "cache_read": 0.3,  "cache_write": 3.75,  "cache_write_1h": 6.0},
+    "haiku":  {"input": 1.0,  "output": 5.0,  "cache_read": 0.1,  "cache_write": 1.25,  "cache_write_1h": 2.0},
+    "haiku_3": {"input": 0.25, "output": 1.25, "cache_read": 0.03, "cache_write": 0.3, "cache_write_1h": 0.5},
+    "haiku_3_5": {"input": 0.8, "output": 4.0, "cache_read": 0.08, "cache_write": 1.0, "cache_write_1h": 1.6},
+    "haiku_4_5": {"input": 1.0, "output": 5.0, "cache_read": 0.1, "cache_write": 1.25, "cache_write_1h": 2.0},
+    # Haiku 5.5 is $0.10/$0.50 for prompts up to 100K tokens; longer prompts pay
+    # the 5x long-context card below.
+    "haiku_5_5": {"input": 0.1, "output": 0.5, "cache_read": 0.01, "cache_write": 0.125, "cache_write_1h": 0.2},
+}
+
+# Long-context surcharge cards, applied when a request's full prompt
+# (input + cache reads + cache writes) exceeds
+# ANTHROPIC_LONG_CONTEXT_INPUT_THRESHOLD. Claude Haiku 5.5 is priced by
+# prompt length: >100K pays 5x on every rate. Verified 2026-10-10 from
+# platform.claude.com/docs/en/about-claude/pricing ("Long context
+# pricing") and LiteLLM's claude-haiku-5-5 *_above_100k_tokens fields.
+# Mirrors the bundled "anthropic_long_context" section.
+_FALLBACK_CLAUDE_MODELS_LC = {
+    "haiku_5_5": {"input": 0.5, "output": 2.5, "cache_read": 0.05, "cache_write": 0.625, "cache_write_1h": 1.0},
+}
+
+
+def _claude_cards(table, mult=1.0):
+    """Tier-adjusted copy of a fallback card table (vertex-regional is +10%)."""
+    return {key: {f: round(v * mult, 6) for f, v in card.items()} for key, card in table.items()}
+
+
 PRICING_TIERS = {
     "anthropic": {
         "label": "Anthropic API",
-        "claude_models": {
-            # cache_write = 5-minute TTL (1.25x input); cache_write_1h = 1-hour TTL (2x input).
-            # Verified 2026-09-24 from platform.claude.com/docs/en/about-claude/pricing.
-            "fable":  {"input": 10.0, "output": 50.0, "cache_read": 1.0,  "cache_write": 12.5,  "cache_write_1h": 20.0},
-            # Fable 5.1 / Mythos 5.1: cache reads are 0.025x input ($0.25), not 0.1x.
-            "fable_5_1": {"input": 10.0, "output": 50.0, "cache_read": 0.25, "cache_write": 12.5, "cache_write_1h": 20.0},
-            # Opus 5.5 is $4/$20 with 0.05x cache reads; every other Opus is $5/$25.
-            "opus_5_5": {"input": 4.0, "output": 20.0, "cache_read": 0.2, "cache_write": 5.0, "cache_write_1h": 8.0},
-            "opus":   {"input": 5.0,  "output": 25.0, "cache_read": 0.5,  "cache_write": 6.25,  "cache_write_1h": 10.0},
-            "sonnet": {"input": 3.0,  "output": 15.0, "cache_read": 0.3,  "cache_write": 3.75,  "cache_write_1h": 6.0},
-            # Sonnet 4.6 / 4.5 / 4.0 keep the $3/$15 card. Sonnet 5 (2026-06-30) is $2/$10,
-            # so one shared "sonnet" bucket silently misprices the older generation by 50%.
-            "sonnet_legacy": {"input": 3.0,  "output": 15.0, "cache_read": 0.3,  "cache_write": 3.75,  "cache_write_1h": 6.0},
-            "haiku":  {"input": 1.0,  "output": 5.0,  "cache_read": 0.1,  "cache_write": 1.25,  "cache_write_1h": 2.0},
-        },
-        # Long-context surcharge cards, applied when a request's full prompt
-        # (input + cache reads + cache writes) exceeds
-        # ANTHROPIC_LONG_CONTEXT_INPUT_THRESHOLD. Claude Haiku 5.5 is priced by
-        # prompt length: >100K pays 5x on every rate. Verified 2026-10-10 from
-        # platform.claude.com/docs/en/about-claude/pricing ("Long context
-        # pricing") and LiteLLM's claude-haiku-5-5 *_above_100k_tokens fields.
-        "claude_models_lc": {
-            "haiku_5_5": {"input": 0.5, "output": 2.5, "cache_read": 0.05, "cache_write": 0.625, "cache_write_1h": 1.0},
-        },
+        "claude_models": _claude_cards(_FALLBACK_CLAUDE_MODELS),
+        "claude_models_lc": _claude_cards(_FALLBACK_CLAUDE_MODELS_LC),
     },
     "vertex-global": {
         "label": "Vertex AI Global",
-        "claude_models": {
-            "fable":  {"input": 10.0, "output": 50.0, "cache_read": 1.0,  "cache_write": 12.5,  "cache_write_1h": 20.0},
-            # Fable 5.1 / Mythos 5.1: cache reads are 0.025x input ($0.25), not 0.1x.
-            "fable_5_1": {"input": 10.0, "output": 50.0, "cache_read": 0.25, "cache_write": 12.5, "cache_write_1h": 20.0},
-            # Opus 5.5 is $4/$20 with 0.05x cache reads; every other Opus is $5/$25.
-            "opus_5_5": {"input": 4.0, "output": 20.0, "cache_read": 0.2, "cache_write": 5.0, "cache_write_1h": 8.0},
-            "opus":   {"input": 5.0,  "output": 25.0, "cache_read": 0.5,  "cache_write": 6.25,  "cache_write_1h": 10.0},
-            "sonnet": {"input": 3.0,  "output": 15.0, "cache_read": 0.3,  "cache_write": 3.75,  "cache_write_1h": 6.0},
-            # Sonnet 4.6 / 4.5 / 4.0 keep the $3/$15 card. Sonnet 5 (2026-06-30) is $2/$10,
-            # so one shared "sonnet" bucket silently misprices the older generation by 50%.
-            "sonnet_legacy": {"input": 3.0,  "output": 15.0, "cache_read": 0.3,  "cache_write": 3.75,  "cache_write_1h": 6.0},
-            "haiku":  {"input": 1.0,  "output": 5.0,  "cache_read": 0.1,  "cache_write": 1.25,  "cache_write_1h": 2.0},
-        },
-        "claude_models_lc": {
-            "haiku_5_5": {"input": 0.5, "output": 2.5, "cache_read": 0.05, "cache_write": 0.625, "cache_write_1h": 1.0},
-        },
+        "claude_models": _claude_cards(_FALLBACK_CLAUDE_MODELS),
+        "claude_models_lc": _claude_cards(_FALLBACK_CLAUDE_MODELS_LC),
     },
     "vertex-regional": {
         "label": "Vertex AI Regional",
-        "claude_models": {
-            # Vertex regional applies a +10% surcharge on all Claude rates.
-            "fable":  {"input": 11.0, "output": 55.0, "cache_read": 1.1,  "cache_write": 13.75, "cache_write_1h": 22.0},
-            # Fable 5.1 / Mythos 5.1: cache reads are 0.025x input ($0.25), not 0.1x.
-            "fable_5_1": {"input": 11.0, "output": 55.0, "cache_read": 0.275, "cache_write": 13.75, "cache_write_1h": 22.0},
-            # Opus 5.5 is $4/$20 with 0.05x cache reads; every other Opus is $5/$25.
-            "opus_5_5": {"input": 4.4, "output": 22.0, "cache_read": 0.22, "cache_write": 5.5, "cache_write_1h": 8.8},
-            "opus":   {"input": 5.5,  "output": 27.5, "cache_read": 0.55, "cache_write": 6.875, "cache_write_1h": 11.0},
-            "sonnet": {"input": 3.3,  "output": 16.5, "cache_read": 0.33, "cache_write": 4.125, "cache_write_1h": 6.6},
-            "sonnet_legacy": {"input": 3.3,  "output": 16.5, "cache_read": 0.33, "cache_write": 4.125, "cache_write_1h": 6.6},
-            "haiku":  {"input": 1.1,  "output": 5.5,  "cache_read": 0.11, "cache_write": 1.375, "cache_write_1h": 2.2},
-        },
-        "claude_models_lc": {
-            "haiku_5_5": {"input": 0.55, "output": 2.75, "cache_read": 0.055, "cache_write": 0.6875, "cache_write_1h": 1.1},
-        },
+        # Vertex regional applies a +10% surcharge on all Claude rates.
+        "claude_models": _claude_cards(_FALLBACK_CLAUDE_MODELS, 1.1),
+        "claude_models_lc": _claude_cards(_FALLBACK_CLAUDE_MODELS_LC, 1.1),
     },
     "bedrock": {
         "label": "AWS Bedrock",
-        "claude_models": {
-            "fable":  {"input": 10.0, "output": 50.0, "cache_read": 1.0,  "cache_write": 12.5,  "cache_write_1h": 20.0},
-            # Fable 5.1 / Mythos 5.1: cache reads are 0.025x input ($0.25), not 0.1x.
-            "fable_5_1": {"input": 10.0, "output": 50.0, "cache_read": 0.25, "cache_write": 12.5, "cache_write_1h": 20.0},
-            # Opus 5.5 is $4/$20 with 0.05x cache reads; every other Opus is $5/$25.
-            "opus_5_5": {"input": 4.0, "output": 20.0, "cache_read": 0.2, "cache_write": 5.0, "cache_write_1h": 8.0},
-            "opus":   {"input": 5.0,  "output": 25.0, "cache_read": 0.5,  "cache_write": 6.25,  "cache_write_1h": 10.0},
-            "sonnet": {"input": 3.0,  "output": 15.0, "cache_read": 0.3,  "cache_write": 3.75,  "cache_write_1h": 6.0},
-            # Sonnet 4.6 / 4.5 / 4.0 keep the $3/$15 card. Sonnet 5 (2026-06-30) is $2/$10,
-            # so one shared "sonnet" bucket silently misprices the older generation by 50%.
-            "sonnet_legacy": {"input": 3.0,  "output": 15.0, "cache_read": 0.3,  "cache_write": 3.75,  "cache_write_1h": 6.0},
-            "haiku":  {"input": 1.0,  "output": 5.0,  "cache_read": 0.1,  "cache_write": 1.25,  "cache_write_1h": 2.0},
-        },
-        "claude_models_lc": {
-            "haiku_5_5": {"input": 0.5, "output": 2.5, "cache_read": 0.05, "cache_write": 0.625, "cache_write_1h": 1.0},
-        },
+        "claude_models": _claude_cards(_FALLBACK_CLAUDE_MODELS),
+        "claude_models_lc": _claude_cards(_FALLBACK_CLAUDE_MODELS_LC),
     },
 }
 
@@ -790,12 +792,11 @@ ANTHROPIC_LONG_CONTEXT_INPUT_THRESHOLD = 100_000
 # --- Sonnet 5 introductory pricing (date-gated) ------------------------------------------
 # Sonnet 5 launched with INTRODUCTORY pricing ($2/$10 per MTok; cache_read 0.2, cache_write
 # 2.5 [5m] / 4.0 [1h]) in effect through 2026-08-31; the STANDARD rate ($3/$15) resumes
-# 2026-09-01. The PRICING_TIERS literal above holds the canonical STANDARD card; while the
-# introductory window is open we swap the introductory card into the FIRST-PARTY Anthropic tier
-# so dollar savings stay accurate today AND flip back automatically on 2026-09-01 with no manual
-# edit. Vertex/Bedrock introductory status is unverified, so those tiers are left at the standard
-# rate (conservative -- no new drift). The single "sonnet" bucket cannot distinguish Sonnet 5
-# from Sonnet 4.6, so 4.6 is repriced too (accepted 2026-07-10). Verified 2026-07-10 from
+# 2026-09-01. Since 2026-08-29 that launch rate IS the standard price (see
+# _apply_sonnet_intro_pricing below), so the _FALLBACK_CLAUDE_MODELS literal above already
+# carries $2/$10 on every tier -- matching what the bundled file forces onto Vertex/Bedrock
+# anyway -- and the swap below is a belt-and-braces no-op kept for its pinned-date tests.
+# Verified 2026-07-10 and re-verified 2026-10-10 from
 # platform.claude.com/docs/en/about-claude/pricing.
 _SONNET_STANDARD_RATES = {"input": 3.0, "output": 15.0, "cache_read": 0.3,
                           "cache_write": 3.75, "cache_write_1h": 6.0}

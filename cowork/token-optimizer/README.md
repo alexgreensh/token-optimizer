@@ -623,6 +623,7 @@ It needs Claude Code 2.1.287 or newer and Anthropic's mods feature. Anthropic ca
 - **Clean up**: compacts with Token Optimizer's guidance.
 - **Start fresh**: asks for a second click, then saves a checkpoint, clears, and hands the checkpoint to your first message.
 - **Keep warm**: a manual, one-click cache refresh. It is offered only while the cache is still warm, never runs on its own, and uses a small amount of your usage. Afterwards it tells you how many tokens it re-read from the cache.
+- **Two sizes**: the `–` button beside the arrow shrinks the band to one line (tiny Clawd, the marks, and whatever needs attention) and `+` brings it back. The choice is remembered across sessions and restarts; `TOKEN_OPTIMIZER_STATUS_BAR_SIZE=slim` sets the starting size and makes the terminal status line print one line too.
 
 Point at the bar and Clawd looks over. The cache countdown is an estimate, because Claude does not publish the exact expiry: 1 hour on Claude plans, 5 minutes on the API, measured from the session itself when possible.
 

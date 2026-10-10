@@ -30,9 +30,13 @@ def _vlen(s):
     return len(_ANSI.sub("", s))
 
 
-def _run(payload, cols=None):
+def _run(payload, cols=None, extra_env=None):
     env = dict(os.environ)
     env.pop("COLUMNS", None)
+    # A real slim setting would shrink every run here to one line.
+    env.pop("TOKEN_OPTIMIZER_STATUS_BAR_SIZE", None)
+    if extra_env:
+        env.update(extra_env)
     if cols is not None:
         env["COLUMNS"] = str(cols)
     p = subprocess.run(
@@ -92,3 +96,33 @@ def test_every_line_ends_reset_no_color_bleed():
         for ln in out.split("\n"):
             if _ANSI.search(ln):  # only lines that opened a color must close it
                 assert ln.endswith("\x1b[0m") or "\x1b[0m" in ln, f"unreset line: {ln!r}"
+
+
+SLIM = {"TOKEN_OPTIMIZER_STATUS_BAR_SIZE": "slim"}
+
+
+def test_slim_is_one_line_with_the_important_fields():
+    """TOKEN_OPTIMIZER_STATUS_BAR_SIZE=slim collapses the status line to row 1:
+    model, project, context bar and ContextQ, on a single line."""
+    out = _run(PAYLOAD, extra_env=SLIM)
+    assert "\n" not in out, f"expected one line, got: {out!r}"
+    plain = _ANSI.sub("", out)
+    assert "Opus 4.8" in plain
+    assert "42%" in plain
+    assert "ContextQ:" in plain
+    # Row-2-only fields stay off the slim line.
+    assert "Eff:" not in plain
+    assert "Compacts:" not in plain
+
+
+def test_slim_stays_one_line_when_narrow():
+    """Slim is a single line by choice: COLUMNS does not reflow it."""
+    out = _run(PAYLOAD, cols=40, extra_env=SLIM)
+    assert "\n" not in out, f"expected one line at 40 cols, got: {out!r}"
+
+
+def test_slim_other_values_keep_two_rows():
+    """Anything but 'slim' is the full line (same rule as the desktop band)."""
+    for value in ("full", "wide", "0"):
+        out = _run(PAYLOAD, extra_env={"TOKEN_OPTIMIZER_STATUS_BAR_SIZE": value})
+        assert len(out.split("\n")) == 2, f"SIZE={value!r} should keep two rows: {out!r}"

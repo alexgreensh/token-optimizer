@@ -92,11 +92,15 @@ export type World = {
   duringCompact?: () => Promise<void>
   /** The engine leaves the 5-hour limit out of its usage (as it can right after a compact). */
   dropFiveHour?: boolean
+  /** The 5-hour limit's percentUsed (default 40). */
+  fiveHourUsed?: number
   /** When the live session began (`$.session.usage().startedAt`, mocked-clock ms); a clear sets it to its own moment; null when the engine cannot say. */
   startedAt: number | null
   /** How many of the next `$.store.get` / `$.store.delete` calls throw. */
   storeGetFails: number
   storeDeleteFails: number
+  /** How many of the next `$.store.set` calls throw. */
+  storeSetFails: number
   /** Mocked-clock delay before each `$.store.set` lands (ms). */
   storeSetDelayMs: number
   /** How many of the next writes of the band's UI state hang (10 minutes on the mocked clock). */
@@ -163,6 +167,7 @@ export function stub(on: On, patch: Partial<Omit<World, 'clock' | 'runs' | 'toas
     uiWriteHangs: 0,
     storeGetFails: 0,
     storeDeleteFails: 0,
+    storeSetFails: 0,
     storeSetDelayMs: 0,
     clearBeneath: null,
     runs: [],
@@ -185,6 +190,10 @@ export function stub(on: On, patch: Partial<Omit<World, 'clock' | 'runs' | 'toas
     return { value: w.store[e.key] }
   })
   on('store.set', async (_, e) => {
+    if (w.storeSetFails > 0) {
+      w.storeSetFails -= 1
+      throw new Error('store write failed')
+    }
     if (w.storeSetDelayMs) await w.clock.sleep(w.storeSetDelayMs)
     w.store[e.key] = e.value
     return { value: undefined }
@@ -208,7 +217,7 @@ export function stub(on: On, patch: Partial<Omit<World, 'clock' | 'runs' | 'toas
       ...(w.startedAt === null ? {} : { startedAt: w.startedAt }),
       context: w.context ?? { window: 1_000_000, tokens: 620_000, percent: 62 },
       rateLimits: [
-        ...(w.dropFiveHour ? [] : [{ kind: 'five_hour', percentUsed: 40, resetsAt: '2026-10-03T12:00:00Z' }]),
+        ...(w.dropFiveHour ? [] : [{ kind: 'five_hour', percentUsed: w.fiveHourUsed ?? 40, resetsAt: '2026-10-03T12:00:00Z' }]),
         { kind: 'seven_day', percentUsed: 20 },
       ],
       // An engine that reports no start time is a case the band must survive; the types now require it.

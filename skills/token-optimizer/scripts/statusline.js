@@ -490,7 +490,12 @@ process.stdin.on('end', () => {
     };
     const _cols = parseInt(process.env.COLUMNS, 10);
     const _width = Number.isFinite(_cols) && _cols > 4 ? _cols : null;
-    if (_width) {
+    // TOKEN_OPTIMIZER_STATUS_BAR_SIZE=slim: one line with the most important
+    // fields (row 1), never wrapped, whatever COLUMNS says.
+    const _slim = (process.env.TOKEN_OPTIMIZER_STATUS_BAR_SIZE || '').trim().toLowerCase() === 'slim';
+    if (_slim) {
+      process.stdout.write(row1Segs.join(SEP));
+    } else if (_width) {
       const rows = [...packRows(row1Segs, _width), ...packRows(row2Parts, _width)];
       process.stdout.write(rows.join('\n'));
     } else {

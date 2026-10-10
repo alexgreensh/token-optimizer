@@ -96,3 +96,15 @@ def test_dashboard_commands_use_the_resolved_cli_from_health_data():
     html = DASHBOARD.read_text(encoding="utf-8")
     assert "health.cli" in html and "h.cli" in html
     assert "python3 measure.py kill-stale" not in html
+
+
+def test_hints_with_markup_escape_the_resolved_path():
+    """A hint that carries markup is assigned to innerHTML, so the resolved script
+    path (which may hold &, < or quotes) goes through esc() there."""
+    import re
+    src = DASHBOARD.read_text(encoding="utf-8")
+    assert "function tcliHtml(" in src
+    assert ".join(esc(String(cli)))" in src
+    for line in src.splitlines():
+        if "tcli('" in line and "esc(" not in line:
+            assert not re.search(r"<span|<div|<code|&middot;", line), line.strip()[:120]

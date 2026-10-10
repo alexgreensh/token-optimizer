@@ -69,6 +69,26 @@ MUTATIONS = [
 ]
 
 
+def _copy_repo(src: Path, dst: Path) -> None:
+    """Copy the tree for mutation, skipping (with a warning) anything unreadable.
+
+    One chmod-000 file must not abort the whole check: the guards never read it.
+    """
+    def _copy(s, d):
+        try:
+            return shutil.copy2(s, d)
+        except OSError as exc:
+            print(f"warning: skipping unreadable file {s}: {exc}", file=sys.stderr)
+            return d
+
+    try:
+        shutil.copytree(src, dst, copy_function=_copy, ignore=shutil.ignore_patterns(
+            ".git", "node_modules", "docs-site", "research", "__pycache__", "*.pyc"))
+    except shutil.Error as exc:
+        for entry in exc.args[0]:
+            print(f"warning: skipping unreadable path {entry[0]}: {entry[2]}", file=sys.stderr)
+
+
 def _run_guard(copy_root: Path, tests: list[str]) -> int:
     proc = subprocess.run(
         [sys.executable, "-m", "pytest", "-q", "-x", "-p", "no:cacheprovider", *tests],
@@ -89,8 +109,7 @@ def main() -> int:
             mutated = mutated.replace(old, new, 1)
         with tempfile.TemporaryDirectory() as tmp:
             copy_root = Path(tmp) / "repo"
-            shutil.copytree(REPO, copy_root, ignore=shutil.ignore_patterns(
-                ".git", "node_modules", "docs-site", "research", "__pycache__", "*.pyc"))
+            _copy_repo(REPO, copy_root)
             (copy_root / "skills" / "token-optimizer" / "scripts" / MEASURE).write_text(mutated, encoding="utf-8")
             code = _run_guard(copy_root, tests)
         if code == 0:

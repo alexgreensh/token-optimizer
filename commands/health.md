@@ -63,14 +63,15 @@ export TOKEN_OPTIMIZER_RUNTIME="$RUNTIME"
    - Codex / OpenCode / standalone: `TOKEN_OPTIMIZER_RUNTIME="$RUNTIME" bash "$TO_LAUNCHER" "$MEASURE_PY" health`
      (only if `$TO_LAUNCHER` is empty, fall back to `TOKEN_OPTIMIZER_RUNTIME="$RUNTIME" python3 "$MEASURE_PY" health` — the bare-python3 form flashes a console window on Windows)
 
-3. Present results clearly. For each session show: PID, elapsed time, version, and flags (STALE >24h, ZOMBIE >48h, OUTDATED, HEADLESS, TERMINAL).
+3. Present results clearly. For each session show: PID, elapsed time, version, and flags (STALE >24h, ZOMBIE >48h, OUTDATED, HEADLESS, TERMINAL, DESKTOP, UNVERIFIED).
 
-4. If ANY sessions are flagged STALE or ZOMBIE, ask the user:
+4. If ANY sessions are flagged STALE or ZOMBIE (and are not DESKTOP or UNVERIFIED), ask the user:
    "I found N session(s) that look stale. Want me to show details so you can decide which to terminate?"
 
 5. **CRITICAL SAFETY RULES — follow these exactly:**
    - NEVER auto-kill anything. Always ask first and get explicit confirmation.
    - HEADLESS sessions might be intentional background processes (cron agents, heartbeat monitors, scheduled tasks). Always warn: "This session is headless, it might be a background agent running on purpose. Are you sure you want to terminate it?"
+   - DESKTOP sessions are hosted by the Claude desktop app and UNVERIFIED sessions are processes whose identity could not be read. `kill-stale` never terminates either, because process age alone does not show that a conversation is abandoned. On Windows, a process whose parent chain cannot be fully read (for example an orphaned zombie whose parent already exited) is also UNVERIFIED and is never killed automatically. Do not suggest killing them by PID; point the user to the app itself or the operating system's process manager.
    - Let the user pick specific PIDs to terminate, or offer "terminate all ZOMBIE-flagged sessions" as a batch option.
    - Always run a dry-run first to preview what would be terminated, then ask for confirmation before running without `--dry-run`.
    - Claude Code plugin dry-run: `bash "$CLAUDE_PLUGIN_ROOT/hooks/python-launcher.sh" $MEASURE_PY kill-stale --dry-run`

@@ -23516,7 +23516,377 @@ def _windows_process_creation(pid):
     return {}
 
 
-def _collect_windows_claude_sessions(process_name="claude"):
+# Windows process identity (issue #211). The Claude desktop app is Electron:
+# its main process, GPU/renderer/utility/crashpad children and the SSH broker
+# are all image-named claude*.exe, and the Code tab hosts its real sessions as
+# claude.exe children driven over stream-json. Image name alone cannot tell a
+# terminal CLI session from any of those, and kill_stale_sessions acts on this
+# inventory, so identity must be established from the command line and fail
+# closed: only a positively identified terminal CLI process is ever terminated.
+_WIN_HEADLESS_ARGS = ("--output-format", "--input-format", "--sdk-url")
+_WIN_ELECTRON_MARKERS = (
+    ("resources", "app.asar"),
+    ("icudtl.dat",),
+    ("chrome_100_percent.pak",),
+    ("resources.pak",),
+)
+
+
+def _windows_start_times_agree(process_start, cim_creation, tolerance_seconds=2):
+    """True only when Get-Process StartTime and CIM CreationDate match.
+
+    Both come from separate queries joined by PID; a PID reused between them
+    would otherwise borrow the old process's start time. Missing or
+    unparseable values on either side are not agreement.
+    """
+    try:
+        a = datetime.fromisoformat(process_start.strip().replace("Z", "+00:00"))
+        b = datetime.fromisoformat(cim_creation.strip().replace("Z", "+00:00"))
+        return abs((a - b).total_seconds()) <= tolerance_seconds
+    except (ValueError, TypeError, AttributeError):
+        return False
+
+
+def _windows_cim_process_details():
+    """Return {pid: {"ppid", "path", "cmdline", "creation"}} for claude* processes, or None.
+
+    Get-Process does not expose the command line on Windows PowerShell 5, so
+    this asks Win32_Process. None means identity could not be established
+    (PowerShell locked down, CIM unavailable): callers must treat every
+    process as unverified, never as a confirmed terminal session.
+    """
+    import csv as _csv
+    import io as _io
+
+    ps_cmd = (
+        "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
+        "Get-CimInstance Win32_Process -Filter 'Name LIKE ''claude%''' "
+        "-ErrorAction SilentlyContinue | "
+        "Select-Object ProcessId, ParentProcessId, ExecutablePath, CommandLine, "
+        "@{N='CreationDate';E={try { $_.CreationDate.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') } catch { '' }}} | "
+        "ConvertTo-Csv -NoTypeInformation"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
+            capture_output=True, text=True, encoding="utf-8", timeout=10, errors="replace", creationflags=_NO_WINDOW,
+        )
+    except (subprocess.SubprocessError, OSError, FileNotFoundError):
+        return None
+    if result.returncode != 0:
+        return None
+    rows = _read_strict_csv(result.stdout, ("ProcessId", "ParentProcessId", "ExecutablePath", "CommandLine", "CreationDate"))
+    if rows is None:
+        return None
+    details = {}
+    for row in rows:
+        try:
+            pid = int((row.get("ProcessId") or "").strip())
+        except ValueError:
+            continue
+        try:
+            ppid = int((row.get("ParentProcessId") or "").strip())
+        except ValueError:
+            ppid = None
+        details[pid] = {
+            "ppid": ppid,
+            "path": (row.get("ExecutablePath") or "").strip(),
+            "cmdline": (row.get("CommandLine") or "").strip(),
+            "creation": (row.get("CreationDate") or "").strip(),
+        }
+    return details
+
+
+def _windows_process_names():
+    """Return {pid: (ppid, image_name_lower)} for all processes, or None.
+
+    Used for ancestry: a claude.exe is only treated as a terminal session when
+    its parent is a known shell/terminal host. None = unavailable.
+    """
+    import csv as _csv
+    import io as _io
+
+    ps_cmd = (
+        "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
+        "Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | "
+        "Select-Object ProcessId, ParentProcessId, Name | "
+        "ConvertTo-Csv -NoTypeInformation"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
+            capture_output=True, text=True, encoding="utf-8", timeout=10, errors="replace", creationflags=_NO_WINDOW,
+        )
+    except (subprocess.SubprocessError, OSError, FileNotFoundError):
+        return None
+    if result.returncode != 0:
+        return None
+    rows = _read_strict_csv(result.stdout, ("ProcessId", "ParentProcessId", "Name"))
+    if rows is None:
+        return None
+    names = {}
+    for row in rows:
+        try:
+            pid = int((row.get("ProcessId") or "").strip())
+            ppid = int((row.get("ParentProcessId") or "").strip())
+        except ValueError:
+            continue
+        names[pid] = (ppid, (row.get("Name") or "").strip().lower())
+    return names or None
+
+
+def _windows_dir_is_electron_app(exe_path):
+    """True/False when the executable's directory is/is not an Electron app
+    directory; None when that cannot be determined (fail closed upstream)."""
+    if not exe_path:
+        return False
+    import ntpath as _ntpath
+
+    base = _ntpath.dirname(exe_path)
+    # os.path.exists swallows every OSError and reports False, which would turn
+    # an unreadable directory into "not Electron". Probe with os.stat so that
+    # anything other than "definitely absent" is indeterminate.
+    try:
+        os.stat(base or ".")
+    except (OSError, ValueError):
+        return None
+    found = False
+    for marker in _WIN_ELECTRON_MARKERS:
+        try:
+            os.stat(os.path.join(base, *marker))
+            found = True
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        except (OSError, ValueError):
+            return None
+    return found
+
+
+_WIN_TERMINAL_PARENTS = frozenset({
+    "cmd.exe", "powershell.exe", "pwsh.exe", "bash.exe", "sh.exe", "zsh.exe",
+    "wt.exe", "windowsterminal.exe", "conhost.exe", "openconsole.exe",
+    "mintty.exe", "wezterm-gui.exe", "alacritty.exe",
+})
+_WIN_HEADLESS_FLAGS = ("--output-format", "--input-format", "--sdk-url", "--print", "--ide")
+_WIN_HEADLESS_SUBCOMMANDS = frozenset({
+    "mcp", "doctor", "update", "install", "config", "migrate-installer",
+    "remote-control", "plugin", "agents", "setup-token", "login", "logout",
+})
+# Processes that anchor a process tree on Windows. Reaching one proves the
+# ancestry walk ended at a real root instead of at missing information.
+_WIN_STABLE_ROOTS = frozenset({
+    "explorer.exe", "winlogon.exe", "wininit.exe", "sihost.exe", "system",
+    "csrss.exe", "smss.exe",
+})
+# Service / scheduler hosts: a claude started from one is a background job, not
+# an interactive terminal, even when the chain reaches a real root.
+_WIN_SERVICE_HOSTS = frozenset({
+    "svchost.exe", "services.exe", "taskeng.exe", "taskhostw.exe", "taskhost.exe",
+})
+_WIN_ANCESTRY_MAX_HOPS = 16
+
+
+def _windows_ancestry_state(pid, names, electron_parent_pids):
+    """Walk parents of pid. Returns "hosted", "complete" or "incomplete".
+
+    "complete" means the chain provably reached a root without meeting a
+    desktop app or another claude process. Missing rows, cycles and over-long
+    chains are "incomplete": absence of evidence is never a negative host check.
+    """
+    seen = {pid}
+    cur = pid
+    for _ in range(_WIN_ANCESTRY_MAX_HOPS):
+        entry = names.get(cur)
+        if not entry:
+            return "incomplete"
+        ppid = entry[0]
+        if ppid == 0:
+            return "complete"
+        if ppid in seen:
+            return "incomplete"
+        if ppid in electron_parent_pids:
+            return "hosted"
+        parent = names.get(ppid)
+        if not parent:
+            return "incomplete"
+        if parent[1].startswith("claude"):
+            return "hosted"
+        if parent[1] in _WIN_SERVICE_HOSTS:
+            return "incomplete"
+        if parent[1] in _WIN_STABLE_ROOTS:
+            return "complete"
+        seen.add(ppid)
+        cur = ppid
+    return "incomplete"
+
+
+def _windows_cmdline_tokens(cmdline):
+    """Split a Windows command line the way the MSVC runtime does.
+
+    Quotes toggle grouping and are removed (so --"print" is --print),
+    backslashes before a quote follow the 2n / 2n+1 rule, and a doubled quote
+    inside a quoted run is a literal quote. Quoted prompt text therefore stays
+    one token and can never masquerade as a switch.
+    """
+    text = cmdline or ""
+    n = len(text)
+    pos = 0
+    tokens = []
+    # Program name: quotes toggle grouping and are removed; no escape processing.
+    while pos < n and text[pos] in " \t":
+        pos += 1
+    if pos < n:
+        buf = []
+        in_quote = False
+        while pos < n and (in_quote or text[pos] not in " \t"):
+            if text[pos] == '"':
+                in_quote = not in_quote
+            else:
+                buf.append(text[pos])
+            pos += 1
+        tokens.append("".join(buf))
+    while True:
+        while pos < n and text[pos] in " \t":
+            pos += 1
+        if pos >= n:
+            break
+        buf = []
+        in_quote = False
+        started = False
+        while pos < n:
+            ch = text[pos]
+            if ch == "\\":
+                k = pos
+                while k < n and text[k] == "\\":
+                    k += 1
+                slashes = k - pos
+                if k < n and text[k] == '"':
+                    buf.append("\\" * (slashes // 2))
+                    if slashes % 2:
+                        buf.append('"')
+                        pos = k + 1
+                    else:
+                        pos = k  # quote handled by the next iteration
+                else:
+                    buf.append("\\" * slashes)
+                    pos = k
+                started = True
+                continue
+            if ch == '"':
+                if in_quote and pos + 1 < n and text[pos + 1] == '"':
+                    buf.append('"')
+                    pos += 2
+                else:
+                    in_quote = not in_quote
+                    pos += 1
+                started = True
+                continue
+            if ch in " \t" and not in_quote:
+                break
+            buf.append(ch)
+            started = True
+            pos += 1
+        if started:
+            tokens.append("".join(buf))
+    return tokens
+
+
+def _windows_option_args(cmdline):
+    """Arguments that can be options: tokens after the program, up to a bare --."""
+    args = _windows_cmdline_tokens(cmdline)[1:]
+    return args[:args.index("--")] if "--" in args else args
+
+
+def _read_strict_csv(text, required):
+    """Parse PowerShell CSV output, or None when it is malformed or partial.
+
+    Unterminated quotes, short/long rows and a missing header all mean the
+    output may have been truncated, which must never be read as evidence.
+    """
+    import csv as _csv
+    import io as _io
+
+    try:
+        rows = list(_csv.reader(_io.StringIO((text or "").lstrip("\ufeff")), strict=True))
+    except (_csv.Error, ValueError):
+        return None
+    if not rows:
+        return []
+    header = rows[0]
+    if not all(col in header for col in required):
+        return None
+    out = []
+    for row in rows[1:]:
+        if not row:
+            continue
+        if len(row) != len(header):
+            return None
+        out.append(dict(zip(header, row)))
+    return out
+
+
+def _classify_windows_claude_process(image_name, detail, electron_parent_pids, names=None):
+    """Classify one claude* Windows process by identity.
+
+    Returns one of:
+    - "helper":           Electron child (--type=...), SSH broker or any other
+                          claude-adjacent image. Never a session.
+    - "desktop_app":      The Electron main process of the desktop app. Not a
+                          session; never terminable.
+    - "embedded_session": A Claude Code process hosted by another program
+                          (desktop app, IDE, SDK, a parent claude) or running
+                          headless (--print, stream-json, mcp). A real session
+                          owned by its host: never terminated by age.
+    - "terminal_cli":     Positively identified interactive terminal process:
+                          readable command line, no host/headless markers and
+                          a parent that is a known shell or terminal host. The
+                          only identity kill_stale_sessions may terminate.
+    - "unknown":          Anything else, including every case where identity
+                          evidence could not be read. Listed, never terminated.
+    """
+    image = (image_name or "").strip().lower()
+    if image not in ("claude", "claude.exe"):
+        return "helper"
+    if not detail:
+        return "unknown"
+    cmdline = detail.get("cmdline") or ""
+    if not cmdline:
+        return "unknown"
+    if "\ufffd" in cmdline or "\ufffd" in (detail.get("path") or ""):
+        return "unknown"  # undecodable text is never affirmative evidence
+    args = _windows_option_args(cmdline)  # tokens after a bare -- are prompt text
+    if any(a.lower().startswith("--type=") for a in args):
+        return "helper"
+    if detail.get("pid") in electron_parent_pids:
+        return "desktop_app"
+    electron_dir = _windows_dir_is_electron_app(detail.get("path"))
+    if electron_dir is None:
+        return "unknown"
+    if electron_dir:
+        return "desktop_app"
+    if not detail.get("path") or not names:
+        return "unknown"
+    # Ancestry: hosted by the desktop app or by another claude process.
+    ancestry = _windows_ancestry_state(detail.get("pid"), names, electron_parent_pids)
+    if ancestry == "hosted":
+        return "embedded_session"
+    if ancestry != "complete":
+        return "unknown"
+    lowered = [a.lower() for a in args]
+    if any((len(a) > 1 and a[0] == "-" and a[1] != "-" and "p" in a.split("=")[0]) or any(a == f or a.startswith(f + "=") for f in _WIN_HEADLESS_FLAGS) for a in lowered):
+        return "embedded_session"
+    if any(a in _WIN_HEADLESS_SUBCOMMANDS for a in lowered):
+        return "embedded_session"
+    parent_entry = names.get(detail.get("pid"))
+    if parent_entry and detail.get("ppid") != parent_entry[0]:
+        return "unknown"  # the two snapshots disagree about the parent
+    parent_name = names.get(parent_entry[0], (None, ""))[1] if parent_entry else ""
+    if parent_name in _WIN_TERMINAL_PARENTS:
+        return "terminal_cli"
+    return "unknown"
+
+
+def _collect_windows_claude_sessions(process_name="claude", creation_fallback=True):
     """Collect runtime processes on Windows via PowerShell Get-Process.
 
     Safety invariants:
@@ -23528,6 +23898,12 @@ def _collect_windows_claude_sessions(process_name="claude"):
       requires the same strictness. The PowerShell-side wildcard pre-filter
       is a performance optimization only; the strict matcher below is the
       security layer.
+    - Process identity comes from the command line (Win32_Process), not the
+      image name: Electron children (--type=), the desktop app main process
+      and claude-ssh-broker are dropped, desktop/SDK-hosted sessions are
+      tagged "embedded_session", and anything without positive evidence of an
+      interactive terminal parent is tagged "unknown". Only "terminal_cli" is
+      ever terminable.
     - Uses SessionId (numeric) to detect service-hosted processes.
       Services run in session 0; unlike the literal 'Services' string,
       SessionId never localizes.
@@ -23578,6 +23954,15 @@ def _collect_windows_claude_sessions(process_name="claude"):
     except (_csv.Error, ValueError):
         return sessions
 
+    cim_details = _windows_cim_process_details() if process_name == "claude" else None
+    proc_names = _windows_process_names() if cim_details else None
+    electron_parent_pids = set()
+    if cim_details:
+        for detail in cim_details.values():
+            if (any(a.lower().startswith("--type=") for a in _windows_option_args(detail.get("cmdline")))
+                    and detail.get("ppid")):
+                electron_parent_pids.add(detail["ppid"])
+
     for row in reader:
         image_name = (row.get("ProcessName") or "").strip()
         pid_str = row.get("Id") or ""
@@ -23598,11 +23983,20 @@ def _collect_windows_claude_sessions(process_name="claude"):
             continue
         if pid <= 0:
             continue
+        identity = None
+        if process_name == "claude":
+            detail = dict(cim_details.get(pid) or {}) if cim_details else {}
+            detail["pid"] = pid
+            identity = _classify_windows_claude_process(image_name, detail, electron_parent_pids, proc_names)
+            if identity == "terminal_cli" and not _windows_start_times_agree(start_time, detail.get("creation")):
+                identity = "unknown"  # the two queries saw different processes under this PID
+            if identity in ("helper", "desktop_app"):
+                continue
         creation = _parse_iso_process_datetime(start_time) if start_time else None
         if creation is None:
             # StartTime unreadable (protected process) or unparseable: fall
             # back to the per-PID wmic/CIM lookup.
-            creation = _windows_process_creation(pid)
+            creation = _windows_process_creation(pid) if creation_fallback else {}
         elapsed_seconds = int(creation.get("elapsed_seconds") or 0)
         # SessionId 0 is the Services session (language-independent); any
         # other value indicates a user session. A missing/unparseable
@@ -23612,7 +24006,7 @@ def _collect_windows_claude_sessions(process_name="claude"):
         except ValueError:
             session_id = -1
         has_terminal = session_id != 0
-        sessions.append({
+        session = {
             "pid": pid,
             "started": creation.get("started", "unknown"),
             "elapsed_seconds": elapsed_seconds,
@@ -23620,7 +24014,10 @@ def _collect_windows_claude_sessions(process_name="claude"):
             "command": image_name if image_lower.endswith(".exe") else image_name + ".exe",
             "has_terminal": has_terminal,
             "tty": f"session-{session_id}" if has_terminal and session_id > 0 else None,
-        })
+        }
+        if identity is not None:
+            session["identity"] = identity
+        sessions.append(session)
     return sessions
 
 
@@ -23761,7 +24158,12 @@ def _collect_health_data():
             # down) can't threshold STALE/ZOMBIE. Surface explicitly so the user
             # isn't fooled into thinking all sessions are fresh.
             flags.append("UNKNOWN_AGE")
-        if s.get("has_terminal"):
+        identity = s.get("identity")
+        if identity == "embedded_session":
+            flags.append("DESKTOP")
+        elif identity == "unknown":
+            flags.append("UNVERIFIED")
+        elif s.get("has_terminal"):
             flags.append("TERMINAL")
         else:
             flags.append("HEADLESS")
@@ -23804,8 +24206,11 @@ def _collect_health_data():
 
     # Build recommendations
     recommendations = []
-    outdated_count = sum(1 for s in running_sessions if "OUTDATED" in s.get("flags", []))
-    stale_count = sum(1 for s in running_sessions if any(f in s.get("flags", []) for f in ("STALE", "ZOMBIE")))
+    # Sessions hosted by another app (DESKTOP) or with unreadable identity
+    # (UNVERIFIED) are not terminals the user can close and reopen.
+    _own = [s for s in running_sessions if not any(f in s.get("flags", []) for f in ("DESKTOP", "UNVERIFIED"))]
+    outdated_count = sum(1 for s in _own if "OUTDATED" in s.get("flags", []))
+    stale_count = sum(1 for s in _own if any(f in s.get("flags", []) for f in ("STALE", "ZOMBIE")))
 
     if outdated_count > 0 and installed_version:
         recommendations.append(
@@ -24034,6 +24439,31 @@ def session_health():
     print()
 
 
+def _windows_revalidate_terminal_cli(session, fresh_inventory=None):
+    """Re-check a Windows session right before termination.
+
+    The inventory is a snapshot; a PID can be reused or reclassified between
+    that snapshot and the kill. Re-collect (without per-PID fallback probes for
+    unrelated processes) and require the same PID with the same start time to
+    still classify as terminal_cli. A race between that snapshot and
+    TerminateProcess remains: PID-based termination has no process handle to
+    bind to, so a PID reused inside that interval could be terminated.
+    """
+    if session.get("started") in (None, "", "unknown"):
+        return False
+    if fresh_inventory is None:
+        try:
+            fresh_inventory = {x["pid"]: x for x in _collect_windows_claude_sessions(creation_fallback=False)}
+        except Exception:
+            return False
+    now = fresh_inventory.get(session["pid"])
+    return bool(
+        now
+        and now.get("identity") == "terminal_cli"
+        and now.get("started") == session.get("started")
+    )
+
+
 def kill_stale_sessions(threshold_hours=12, dry_run=False):
     """Kill Claude Code sessions that have been running longer than threshold_hours.
 
@@ -24055,12 +24485,31 @@ def kill_stale_sessions(threshold_hours=12, dry_run=False):
     my_pid = os.getpid()
     my_ppid = os.getppid()
 
+    # Fail closed: process age is not evidence that a conversation is
+    # abandoned. Sessions whose identity is known to belong to a host app
+    # (desktop/SDK) or could not be established are never terminated.
+    # Sessions without an identity tag (POSIX collector) keep prior behavior.
+    # NOTE: the "terminal_cli" default below is for collectors that do not
+    # tag identity (POSIX). Any collector that can mis-identify processes must
+    # set s["identity"] explicitly; the Windows collector always does.
+    protected = [s for s in running
+                 if s.get("identity", "terminal_cli") != "terminal_cli"
+                 and s["elapsed_seconds"] > threshold_seconds]
     stale = [s for s in running
              if s["elapsed_seconds"] > threshold_seconds
              and s["pid"] != my_pid
-             and s["pid"] != my_ppid]
+             and s["pid"] != my_ppid
+             and s.get("identity", "terminal_cli") == "terminal_cli"]
+
+    if protected:
+        print(f"\n  Skipping {len(protected)} long-running session{'s' if len(protected) != 1 else ''} "
+              "hosted by the Claude desktop app or whose identity could not be verified.")
+        print("  Process age alone is not evidence that these are abandoned; they are never auto-terminated.")
 
     if not stale:
+        if protected:
+            print(f"\n  No terminable stale sessions found (threshold: {threshold_hours}h).")
+            return
         print(f"\n  No stale sessions found (threshold: {threshold_hours}h).")
         print(f"  {len(running)} active session{'s' if len(running) != 1 else ''}, all within threshold.")
         return
@@ -24077,6 +24526,12 @@ def kill_stale_sessions(threshold_hours=12, dry_run=False):
 
     killed = 0
     for s in stale:
+        # Re-collect per candidate, immediately before its termination: the
+        # window between verification and TerminateProcess is as small as a
+        # PID-based kill allows (no process handle is retained).
+        if "identity" in s and not _windows_revalidate_terminal_cli(s):
+            print(f"    PID {s['pid']} skipped: identity changed or could not be re-verified.")
+            continue
         try:
             os.kill(s["pid"], signal.SIGTERM)
             killed += 1

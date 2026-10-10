@@ -37990,7 +37990,9 @@ def expand_archived(tool_use_id=None, session_id=None, list_all=False):
                     # re-popped tokens as a debit (netted in _get_savings_summary),
                     # deduped per item so a second expand never double-debits.
                     _log_reexpand_debit(sd.name, tool_use_id, response)
-                    print(response)
+                    # No added newline: expand returns the stored text as stored.
+                    sys.stdout.write(response)
+                    sys.stdout.flush()
                     return
                 else:
                     print(f"[Error] Archived entry found but response is empty: {entry_path}", file=sys.stderr)

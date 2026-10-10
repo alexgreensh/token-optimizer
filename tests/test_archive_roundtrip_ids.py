@@ -135,3 +135,14 @@ def test_codex_backfill_never_drops_a_different_payload_for_the_same_id(tmp_path
     assert _markers(tmp_path) == ["FIRST", "SECOND"]
     for name in _entries(tmp_path):
         assert re.fullmatch(r"[a-zA-Z0-9_-]{1,128}\.json", name)
+# --------------------------------------------------------------------- F9a
+
+def test_expand_returns_stored_text_byte_for_byte(tmp_path):
+    body = ("line one\nline two\n" * 400) + "no trailing newline"
+    key, _ = _key_from(_archive(tmp_path, "tu_exact", body))
+    p = _expand_bytes(tmp_path, key)
+    assert p.returncode == 0, p.stderr
+    out = p.stdout
+    if os.linesep != "\n":  # Windows text mode turns \n into \r\n on the way out
+        out = out.replace(os.linesep.encode(), b"\n")
+    assert out == body.encode("utf-8")

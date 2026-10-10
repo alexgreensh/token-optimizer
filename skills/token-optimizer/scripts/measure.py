@@ -28274,6 +28274,11 @@ def kill_stale_sessions(threshold_hours=12, dry_run=False, include_orphans=False
             print(f"    PID {s['pid']} already gone.")
         except PermissionError:
             print(f"    PID {s['pid']} permission denied (owned by another user).")
+        except OSError as e:
+            # Windows raises a plain OSError (WinError 87), not ProcessLookupError,
+            # for a pid that exited between the re-check and the signal. One
+            # candidate failing must not skip the rest.
+            print(f"    PID {s['pid']} could not be signalled (it may have just exited): {e}")
 
     print(f"\n  Terminated {killed} stale session{'s' if killed != 1 else ''}.")
     if killed > 0:

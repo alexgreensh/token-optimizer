@@ -141,3 +141,26 @@ def test_windows_ancestor_pids_stops_quietly_at_a_dead_root_parent():
     assert measure._windows_ancestor_pids(9999, names=names) == {9998}
 
 
+# --- Finding 10b: os.kill raising OSError on a pid that just exited ----------
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX branch")
+def test_kill_loop_survives_oserror_and_continues(monkeypatch, capsys):
+    measure = _load_measure()
+    sessions = [_session(4000), _session(4001), _session(4002)]
+    _arrange(monkeypatch, measure, sessions)
+    monkeypatch.setattr(measure, "_posix_ancestor_pids", lambda pid: set())
+    attempted = []
+
+    def kill(pid, sig):
+        attempted.append(pid)
+        if pid == 4000:
+            raise OSError(87, "The parameter is incorrect")  # Windows: pid just exited
+
+    monkeypatch.setattr(measure.os, "kill", kill)
+    measure.kill_stale_sessions(threshold_hours=12)
+    out = capsys.readouterr().out
+    assert attempted == [4000, 4001, 4002]
+    assert "Terminated 2 stale sessions" in out
+    assert "PID 4000 could not be signalled" in out
+
+

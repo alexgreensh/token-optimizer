@@ -48152,6 +48152,9 @@ def _compact_advice_cli(args):
                 if v["sessions"]:
                     print(f"    {band:<7} avg {v['avg_score']:>5}  ({v['sessions']} sessions)")
         print("  Compaction can drop early instructions; the quality score does not measure that.")
+        # Half of the score IS the fill curve, so this table is not independent proof.
+        print("  Half of the score is context fill itself, so read this as the scoring")
+        print("  curve at work, not as separate evidence that fuller sessions go worse.")
     print("\n  Assumptions (measured from your own recorded compactions where possible):")
     for name, mm in (report.get("measurements") or {}).items():
         print(f"    {name}: {mm['value']:,} ({mm['source']}, n={mm['n']})")

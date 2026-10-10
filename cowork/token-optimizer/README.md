@@ -699,6 +699,16 @@ TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=1           # opt in to the automatic write + 
 TOKEN_OPTIMIZER_SUBAGENT_CACHE_1H=0           # never: opt out permanently
 ```
 
+### Usage recommendations
+
+Claude Code only. Once a day, Token Optimizer re-measures the two settings your own history can answer -- the auto-compact window and the subagent cache lifetime -- against your last 30 days and writes one `usage_recommendations.json` record in its own data directory. The measurement runs as a detached background process (spawned at session start or when the dashboard collects its data), never inside a hook, and a partial run retries the next day. The record shows in `quick`, `doctor`, `status`, `coach`, the audit, and the dashboard's Coach view under "From your own usage". When you act on a recommendation and the measured numbers move, the record says so as a "since you changed it" win -- observational, never causal. Token Optimizer never writes either setting: every command it prints is one you run yourself.
+
+```bash
+python3 measure.py recommendations            # the daily record: state, numbers, the exact command
+python3 measure.py recommendations --json     # machine-readable
+python3 measure.py recommendations refresh    # re-measure now (bounded; locks against a second run)
+```
+
 ### Fleet Auditor
 
 Scans across Claude Code, Codex, and custom transcript setups to find idle burns, model misrouting, and config bloat with dollar savings per finding.

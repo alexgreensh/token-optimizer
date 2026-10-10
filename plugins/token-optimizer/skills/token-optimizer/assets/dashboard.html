@@ -5094,6 +5094,57 @@ var DB = (function() {
       return;
     }
 
+    // "From your own usage": the daily-measured usage-recommendations record
+    // (usage_recommendations.json). One card per applicable item; every
+    // inserted string goes through esc(); not_applicable items render
+    // nowhere, and the Wins row hides when empty.
+    var ur = c.usage_recommendations;
+    if (ur) {
+      var urItems = (ur.items || []).filter(function(it) {
+        return it && it.state !== 'not_applicable';
+      });
+      var urWins = ur.wins || [];
+      if (urItems.length > 0 || !ur.present) {
+        html += '<div class="card wide"><div class="card-header"><span>From your own usage</span>' +
+          (ur.measured_ts
+            ? '<span class="label">measured ' + esc(timeAgo(new Date(ur.measured_ts * 1000))) + ', last ' + esc(String(ur.window_days || 30)) + ' days</span>'
+            : '') +
+          '</div>' +
+          (!ur.present || urItems.length === 0
+            ? '<div style="color:var(--c-text-dim);font-size:14px;">Measuring in the background, check back after your next session</div>'
+            : '') +
+          '</div>';
+        urItems.forEach(function(it) {
+          var label = it.id === 'compact_window' ? 'Compact window'
+            : it.id === 'subagent_cache' ? 'Subagent cache'
+            : String(it.id || 'Recommendation');
+          if (it.state === 'recommend') {
+            html += '<div class="card wide"><div class="card-header"><span>' + esc(label) + '</span></div>' +
+              '<div style="font-size:15px;color:var(--c-text-main);">' + esc(it.headline || '') + '</div>' +
+              (it.tradeoff ? '<div style="font-size:13px;color:var(--c-text-dim);margin-top:4px;">' + esc(it.tradeoff) + '</div>' : '');
+            if (it.command) {
+              html += '<pre class="hook-command-pre">' + esc(it.command) + '</pre>' +
+                '<button class="hook-action-btn" data-usage-rec-cmd="' + esc(it.command) + '">Copy command</button>';
+            }
+            html += '</div>';
+          } else {
+            // keep / not_enough_data: one quiet line, no command.
+            html += '<div class="card wide"><div style="color:var(--c-text-dim);font-size:14px;">' +
+              esc(label) + ': ' + esc(it.headline || '') + '</div></div>';
+          }
+        });
+        if (urWins.length > 0) {
+          html += '<div class="card wide"><div class="card-header"><span>Wins</span></div>';
+          urWins.forEach(function(w) {
+            html += '<div style="padding:4px 0;font-size:14px;color:' +
+              (w.improved ? 'var(--c-accent-cyan)' : 'var(--c-text-dim)') + ';">' +
+              (w.line ? esc(w.line) : '') + '</div>';
+          });
+          html += '</div>';
+        }
+      }
+    }
+
     // Health Score hero
     var score = c.health_score || 0;
     var healthGrade = score >= 90 ? 'S' : score >= 80 ? 'A' : score >= 70 ? 'B' : score >= 55 ? 'C' : score >= 40 ? 'D' : 'F';
@@ -5249,6 +5300,13 @@ var DB = (function() {
       '</div></div>';
 
     el.innerHTML = html;
+
+    el.querySelectorAll('[data-usage-rec-cmd]').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var cmd = btn.getAttribute('data-usage-rec-cmd');
+        if (cmd) copyHookCmd(cmd);
+      });
+    });
 
     var coachPromptEl = document.getElementById('coach-prompt');
     if (coachPromptEl) {

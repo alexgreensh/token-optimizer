@@ -35414,10 +35414,26 @@ def compute_quality_score(quality_data, session_id=None):
         for k in _RESOURCE_HEALTH_WEIGHTS
     }
     top_drag = None
-    _worst_key = max(_drag_deficit, key=_drag_deficit.get)
-    _worst_pts = _drag_deficit[_worst_key]
-    if _worst_pts >= 3.0:
-        if _worst_key == "context_fill_degradation":
+    # Fill is intrinsic to any conversation: a deficit under ~10 pts (about 22%
+    # fill) is the cost of having talked at all, not a drag worth naming on an
+    # otherwise healthy session. Compactions and waste keep the 3-point floor.
+    _fill_floor = 10.0
+    _nameable = {
+        k: pts for k, pts in _drag_deficit.items()
+        if pts >= (_fill_floor if k == "context_fill_degradation" else 3.0)
+    }
+    if _nameable:
+        _worst_key = max(_nameable, key=_nameable.get)
+        _worst_pts = _nameable[_worst_key]
+        if _worst_key == "context_fill_degradation" and window_contradicted:
+            # Tokens exceed the window: the window is wrong, the context is not
+            # necessarily full. Say that instead of "100% context fill".
+            top_drag = {
+                "key": "context_window_mismatch",
+                "label": "context window mismatch (tokens exceed the detected window)",
+                "points": round(_worst_pts, 1),
+            }
+        elif _worst_key == "context_fill_degradation":
             top_drag = {
                 "key": "context_fill",
                 "label": f"{round(fill_pct * 100)}% context fill",

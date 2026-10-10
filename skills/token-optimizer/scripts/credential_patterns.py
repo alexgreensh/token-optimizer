@@ -56,9 +56,15 @@ CREDENTIAL_PATTERNS: List[Tuple[str, "re.Pattern[str]"]] = [
     # support variable-width lookbehinds. Instead, redact_credentials protects
     # placeholders with a sentinel before running patterns. The lookahead here
     # is a defense-in-depth for direct pattern.search() callers.
-    # 16-character floor, as in the TS engines: "the bearer of bad news" is prose, and a
-    # real bearer credential is longer than any English word that follows the word.
-    ("Bearer token",            re.compile(r"Bearer\s+[a-zA-Z0-9\-._~+/]{16,}=*", re.I)),
+    # Same rule as the TS engines (keep the four in step). 16-character floor, and the value
+    # must look like a token: a digit, a token punctuation mark, an interior capital, or a
+    # run of 24+ plain letters (no English word is that long). "the bearer of bad news" and
+    # "Bearer responsibilities" are prose. Only the word "bearer" is case-insensitive; the
+    # interior-capital test must not be.
+    ("Bearer token",            re.compile(
+        r"\b(?i:bearer)\s+"
+        r"(?=[A-Za-z0-9._~+/=-]*(?:[0-9._~+/=-]|[A-Za-z][A-Z])|[A-Za-z]{24})"
+        r"[A-Za-z0-9._~+/=-]{16,}\b")),
     ("Google API key",          re.compile(r"AIza[0-9A-Za-z_\-]{35}")),
     ("Google OAuth token",      re.compile(r"ya29\.[0-9A-Za-z_\-]{20,}")),
     # Linear on adversarial input. The old form rescanned a long base64url run from every

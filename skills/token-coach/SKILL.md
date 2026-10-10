@@ -1,6 +1,6 @@
 ---
 name: token-coach
-description: Coaches a token-efficient Claude Code or Codex setup from the user's own usage data. Use when planning a build, a slow or costly setup, multi-agent design, or deciding which workflow steps need a model.
+description: Coaches a token-efficient Claude Code or Codex setup from the user's own usage data. Use when planning a build, fixing a slow or costly setup, or deciding which workflow steps need a model.
 ---
 
 # Token Coach

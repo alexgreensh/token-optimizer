@@ -66,3 +66,14 @@ def test_decoy_in_cwd_cannot_be_run_via_traversal(tmp_path):
     r = _run(scripts, "decoy", cwd=cwd)  # decoy is a valid identifier but NOT in scripts_dir
     assert r.returncode == 0
     assert "DECOY_RAN" not in r.stdout  # refused: not present in scripts_dir
+
+
+def test_pycache_written_despite_pythondontwritebytecode(tmp_path, monkeypatch):
+    # Some apps start hooks with PYTHONDONTWRITEBYTECODE=1; the .pyc cache must still be saved.
+    (tmp_path / "cached_mod.py").write_text('print("ran")\n')
+    monkeypatch.delenv("PYTHONPYCACHEPREFIX", raising=False)
+    monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "1")
+    r = _run(tmp_path, "cached_mod")
+    assert r.returncode == 0
+    assert "ran" in r.stdout
+    assert list((tmp_path / "__pycache__").glob("cached_mod.*.pyc"))

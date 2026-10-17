@@ -94,6 +94,9 @@ def main() -> int:
 
     _warn_readonly_scripts_dir_once(scripts_dir)
 
+    # A host-set PYTHONDONTWRITEBYTECODE=1 would stop __pycache__ being written.
+    sys.dont_write_bytecode = False
+
     sys.path = [p for p in sys.path if p not in ("", ".")]
     sys.path.insert(0, scripts_dir)
     sys.argv = [module_name, *script_args]

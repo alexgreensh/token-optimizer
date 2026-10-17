@@ -97,7 +97,7 @@ Checkpoint capture and restore, plus the cold-resume path for reopening a forgot
 
 | Command | Description | Key flags |
 |---|---|---|
-| `compact-capture` | Save a checkpoint of session state (decisions, errors, agent state, open TODOs) | `--trigger auto\|stop\|stop-failure`, `--quiet`, `--budget-seconds N` (time limit, default 8, max 60) |
+| `compact-capture` | Save a checkpoint of session state (decisions, errors, agent state, open TODOs) | `--trigger auto\|stop\|stop-failure`, `--quiet`, `--budget-seconds N` (time limit, default 14, max 60) |
 | `compact-restore` | Inject the most recent checkpoint as context on a new session | `--compact`, `--new-session-only` |
 | `checkpoint-trigger` | Save a milestone checkpoint (for example before sub-agent dispatch) | `--milestone NAME`, `--quiet` |
 | `list-checkpoints` | List saved checkpoints with age and filename, newest first | n/a |

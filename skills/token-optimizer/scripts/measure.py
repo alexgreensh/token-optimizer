@@ -70,6 +70,7 @@ import errno
 import hashlib
 import heapq
 import hmac
+import io
 import json
 import math
 import os
@@ -39151,6 +39152,61 @@ def _security_report(as_json=False):
 # PreCompact state capture, SessionStart restoration, Compact Instructions generation.
 # All logic in Python for cross-platform compatibility.
 
+def _iter_tail_lines(filepath, tail_lines, chunk_size=1 << 20):
+    """Return the tail lines of a JSONL transcript covering its last records.
+
+    Equivalent to what ``for line in open(filepath)`` yields, restricted to a
+    suffix window large enough that the caller's ``deque(maxlen=tail_lines)``
+    sees the same records as a whole-file pass: the window extends backwards
+    from EOF until it holds tail_lines lines that pass the caller's own
+    filters (size cap + json.loads), or the file start is reached. A large
+    transcript then costs a small window read instead of reading and parsing
+    every byte. The window grows geometrically, so even a transcript whose
+    tail needs most of the file costs about one extra pass, not a rescan per
+    chunk.
+
+    Two equivalence details:
+
+    - Lines come from ``StringIO(text, newline=None)``, which iterates with
+      the same universal-newline semantics as text-mode file iteration, so
+      the caller's ``len(line)`` cap and ``json.loads`` see identical
+      strings.
+    - A window starting mid-file can cut inside a line (and inside a
+      multi-byte UTF-8 sequence, where ``errors="replace"`` would diverge
+      from a whole-file decode), so its first line is dropped and the window
+      must hold tail_lines valid records without it. At byte 0 the window is
+      the whole file and nothing is dropped.
+    """
+    with open(filepath, "rb") as f:
+        f.seek(0, os.SEEK_END)
+        pos = f.tell()
+        buf = b""
+        grow = chunk_size
+        while True:
+            start = max(0, pos - grow)
+            f.seek(start)
+            buf = f.read(pos - start) + buf
+            pos = start
+            grow *= 2
+            lines = io.StringIO(
+                buf.decode("utf-8", errors="replace"), newline=None
+            ).readlines()
+            candidates = lines if pos == 0 else lines[1:]
+            valid = 0
+            for line in reversed(candidates):
+                if len(line) > codex_session.MAX_JSONL_LINE_CHARS:
+                    continue
+                try:
+                    json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                valid += 1
+                if valid >= tail_lines:
+                    break
+            if pos == 0 or valid >= tail_lines:
+                return candidates
+
+
 def _extract_session_state(filepath, tail_lines=500):
     """Extract structured session state from a JSONL transcript.
 
@@ -39198,14 +39254,13 @@ def _extract_session_state(filepath, tail_lines=500):
     except OSError:
         return None
     try:
-        with open(filepath, "r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                if len(line) > codex_session.MAX_JSONL_LINE_CHARS:
-                    continue
-                try:
-                    records.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue
+        for line in _iter_tail_lines(filepath, tail_lines):
+            if len(line) > codex_session.MAX_JSONL_LINE_CHARS:
+                continue
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
     except (PermissionError, OSError):
         return None
 
@@ -39345,10 +39400,16 @@ def _capture_git_state(cwd=None):
         kw = {"capture_output": True, "text": True, "timeout": 2}
         if cwd:
             kw["cwd"] = cwd
-        br = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], **kw, creationflags=_NO_WINDOW)
-        sha = subprocess.run(["git", "rev-parse", "--short", "HEAD"], **kw, creationflags=_NO_WINDOW)
-        if br.returncode == 0 and sha.returncode == 0:
-            return br.stdout.strip() or None, sha.stdout.strip() or None
+        # One spawn, not two: rev-parse mode flags apply in argument order,
+        # so the HEAD before --abbrev-ref resolves to the full sha and the
+        # HEAD after it to the branch. The sha is only a display label; [:7]
+        # matches git's default --short abbreviation for any repo below its
+        # auto-lengthen threshold.
+        r = subprocess.run(["git", "rev-parse", "HEAD", "--abbrev-ref", "HEAD"], **kw, creationflags=_NO_WINDOW)
+        if r.returncode == 0:
+            out = r.stdout.splitlines()
+            if len(out) >= 2:
+                return out[1].strip() or None, out[0].strip()[:7] or None
     except Exception:
         pass
     return None, None
@@ -58060,7 +58121,7 @@ if __name__ == "__main__":
         print("  python3 measure.py setup-hook --dry-run # Show what would be installed")
         print("  python3 measure.py setup-hook --uninstall  # Remove Token Optimizer's SessionEnd hook")
         print("  python3 measure.py compact-capture          # Capture session state checkpoint")
-        print("  python3 measure.py compact-capture --budget-seconds N  # Allow up to N s (default 8, max 60)")
+        print("  python3 measure.py compact-capture --budget-seconds N  # Allow up to N s (default 14, max 60)")
         print("  python3 measure.py checkpoint-trigger --milestone pre-fanout  # Milestone checkpoint with guards")
         print("  python3 measure.py compact-restore          # Restore context from checkpoint")
         print("  python3 measure.py continue-last --topic TEXT  # Show Codex continuity hint for a topic")

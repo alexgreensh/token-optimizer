@@ -10,15 +10,18 @@ PROMPT = "skills/token-optimizer/scripts/codex_compact_prompt.py"
 DOCTOR = "skills/token-optimizer/scripts/codex_doctor.py"
 T = "tests/test_codex_install_issue_276.py"
 L = "tests/test_windows_hook_launcher.py"
+N = "tests/test_codex_shell_neutral_hooks_278.py"
 
 MUTATIONS = [
     ("Windows Codex hook command starts with a quote again (cmd strips it)",
-     [L + "::test_windows_codex_command_never_starts_with_a_quote"],
+     [L + "::test_windows_codex_command_never_starts_with_a_quote",
+      N + "::test_spaced_interpreter_without_short_name_falls_back"],
      INSTALL,
      [("        _WIN_UNQUOTED_PREFIX,\n", "")]),
 
     ("Windows hooks saved by older versions are not repaired",
-     [T + "::test_heal_repairs_only_our_quoted_launcher_commands"],
+     [T + "::test_heal_repairs_only_our_quoted_launcher_commands",
+      T + "::test_heal_falls_back_to_unquoted_set_prefix_when_no_neutral_form"],
      INSTALL,
      [("                            handler[\"command\"] = f\"{_WIN_UNQUOTED_PREFIX} {command}\"\n",
        "                            pass\n")]),

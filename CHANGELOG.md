@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+- Codex on Windows: hook commands now run under PowerShell, which is the shell Codex uses for hooks, as well as cmd.exe. The 5.13.57 command only worked under cmd.exe, so hooks still failed with "hook exited with code 1". Any Token Optimizer command rewrites existing hooks to the new form; restart Codex afterwards, and approve the Token Optimizer entries if Codex asks you to review the changed hooks. Paths with `$`, a backtick or `%`, or a Python path with spaces and no short name, keep the cmd.exe-only form, and `codex-doctor` says so. Thanks @porkmagus (#278).
+- Codex: the Stop hook passes its session id to the background checkpoint job, and no longer saves an anonymous "unknown" checkpoint when the host sent no session id. `codex-doctor` shows which fields the Stop hook received (names only, never values).
+
 ## [5.13.57] - 2026-10-22
 
 - Codex on Windows: hooks run again instead of failing with "hook exited with code 1" after every tool call and reply. Re-run `codex-install` once to pick up the fix. Thanks @porkmagus for the detailed report (#276).

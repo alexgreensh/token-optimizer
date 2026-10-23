@@ -83,35 +83,111 @@ def _cmd_quote(token: str) -> str:
     return quoted if quoted.startswith('"') else f'"{quoted}"'
 
 
-def _windows_launcher_command(root: Path, script: str, args, extra_env: dict) -> str:
+# Characters a Windows path may carry and still parse the same in cmd.exe,
+# Windows PowerShell 5.1 and PowerShell 7 when written as a bare first token.
+_SHELL_NEUTRAL_EXE_RE = re.compile(r"^[A-Za-z0-9_.:\\/+~-]+$")
+
+
+def _short_path(path: str) -> str | None:
+    """Windows 8.3 short form of ``path``, or None when there is none."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+
+        buf = ctypes.create_unicode_buffer(32768)
+        n = ctypes.windll.kernel32.GetShortPathNameW(path, buf, len(buf))
+        if 0 < n < len(buf) and os.path.exists(buf.value):
+            return buf.value
+    except (AttributeError, ImportError, OSError, ValueError):
+        pass
+    return None
+
+
+def _shell_neutral_exe(path: str) -> str | None:
+    """Return ``path`` as a bare token every Codex Windows hook shell parses
+    identically, or None when no such spelling exists.
+
+    Codex runs a command hook through the session shell: PowerShell
+    (``powershell -NoProfile -Command <cmd>``, preferring pwsh) or, when no
+    session shell is known, ``%COMSPEC% /C``. A quoted first token needs ``&``
+    in PowerShell and is mangled by cmd's /C quote stripping; a ``set X=Y &&``
+    prefix is not PowerShell 5.1 syntax at all (issue #278). A bare first token
+    works in both, so a path that needs quoting goes through its 8.3 short name.
+    """
+    if _SHELL_NEUTRAL_EXE_RE.match(path):
+        return path
+    short = _short_path(path)
+    if short and _SHELL_NEUTRAL_EXE_RE.match(short):
+        return short
+    return None
+
+
+# PowerShell also treats the typographic quotes (U+2018..U+201E) as quote
+# characters, so a path holding one would end the double-quoted token early.
+_SHELL_UNSAFE_ARG_CHARS = '"$`%!\r\n\x00\u2018\u2019\u201a\u201b\u201c\u201d\u201e\u201f'
+
+
+def _shell_neutral_arg(token: str) -> str | None:
+    """Double-quote ``token`` so cmd.exe and PowerShell pass it verbatim.
+
+    Returns None for a token neither shell takes literally inside double
+    quotes: ``$`` and the backtick expand in PowerShell, ``%`` and ``!`` can
+    expand in cmd, and a literal quote, newline or trailing backslash breaks
+    the MSVCRT argv split. PowerShell's typographic quotes are rejected too.
+    (A literal ``%`` was already a documented limit.)
+    """
+    if any(ch in token for ch in _SHELL_UNSAFE_ARG_CHARS) or token.endswith("\\"):
+        return None
+    return f'"{token}"'
+
+
+def _windows_launcher_command(root: Path, script: str, args, extra_env: dict,
+                              *, silent: bool = False) -> str:
     """Build the baked Windows hook command for a versioned marketplace root.
 
     The command invokes the readable launcher file that install() copies to
     the STABLE parent of the version dirs (.../token-optimizer/
     windows-launcher.py, which survives the marketplace swapping
-    .../token-optimizer/<X.Y.Z>/ on upgrade) by quoted path -- issue #183:
-    the retired base64 `python -c` exec-bootstrap tripped
-    generic-loader antivirus signatures on the literal encoded-exec
-    string. Every value token is force-quoted (see _cmd_quote): the runner
-    path and --baked-root can contain cmd.exe metacharacters (& | < > ^)
-    with no surrounding space, which list2cmdline alone leaves bare and cmd
-    then parses as command separators -- the base64 form hid them inside the
-    payload, so this restores that safety. Quoting keeps the /C single-parse
-    problem (issue #180) solved with no expansion form. The launcher resolves
-    the newest semver sibling of the baked root at runtime; --baked-root is
-    the fail-open fallback only. The trailing marker keeps the command
-    recognizable to ownership checks; the launcher strips it before
-    dispatching, so the runner's sys.argv stays exactly [run.py, script,
-    *args].
+    .../token-optimizer/<X.Y.Z>/ on upgrade) -- issue #183: the retired base64
+    `python -c` exec-bootstrap tripped generic-loader antivirus signatures on
+    the literal encoded-exec string.
+
+    Shell contract (issue #278): Codex hands the command to PowerShell on
+    native Windows (``-Command``), or to ``%COMSPEC% /C`` when it has no session
+    shell. The same text must run in both, so it is ``<python> "<arg>" ...``:
+    a bare first token, double-quoted arguments, no ``set ... &&`` prefix, no
+    ``>NUL`` redirect (``silent=True`` adds a TOKEN_OPTIMIZER_HOOK_SILENT env
+    pair; the launcher then sends stdout/stderr to the null device in-process).
+    The launcher sets TOKEN_OPTIMIZER_RUNTIME itself. When a path cannot be
+    written that way (no 8.3 name for a spaced interpreter, or a ``$`` / ``%``
+    in a path) the cmd.exe-only form of issue #276 is returned so the hook
+    still works under cmd; the doctor flags it.
     """
-    # The command must NOT start with a double quote. Codex hands it to
-    # cmd.exe as a raw /C string; when that string's first character is a
-    # quote, cmd strips the first and the LAST quote on the line (/S rules),
-    # which unpairs every quoted path ("The filename, directory name, or
-    # volume label syntax is incorrect", issue #276). A leading builtin keeps
-    # the line intact whether or not the host wraps it in an outer pair of
-    # quotes. The launcher sets this variable too; the prefix is only there
-    # to give cmd an unquoted first token.
+    exe = _shell_neutral_exe(sys.executable)
+    launcher = _shell_neutral_arg(str(root.parent / _LAUNCHER_FILENAME))
+    baked = _shell_neutral_arg(str(root))
+    tail = [_shell_neutral_arg(script), *(_shell_neutral_arg(a) for a in args),
+            _shell_neutral_arg(_LAUNCHER_MARKER)]
+    env = dict(extra_env)
+    if silent:
+        env["TOKEN_OPTIMIZER_HOOK_SILENT"] = "1"
+    env_parts = [_shell_neutral_arg(f"{k}={v}") for k, v in env.items()]
+    if exe and launcher and baked and all(tail) and all(env_parts):
+        parts = [exe, launcher, "--baked-root", baked]
+        for env_part in env_parts:
+            parts += ["--env", env_part]
+        parts += ["--", *tail]
+        return " ".join(parts)
+    return _cmd_only_launcher_command(root, script, args, extra_env, silent=silent)
+
+
+def _cmd_only_launcher_command(root: Path, script: str, args, extra_env: dict,
+                               *, silent: bool = False) -> str:
+    """cmd.exe-only launcher command (issue #276 shape): an unquoted ``set``
+    builtin first so cmd's /C quote stripping keeps the quoted paths intact.
+    PowerShell cannot run it; used only when no shell-neutral spelling exists.
+    """
     parts = [
         _WIN_UNQUOTED_PREFIX,
         _cmd_quote(sys.executable),
@@ -123,7 +199,21 @@ def _windows_launcher_command(root: Path, script: str, args, extra_env: dict) ->
         parts += ["--env", _cmd_quote(f"{key}={value}")]
     parts += ["--", _cmd_quote(script), *(_cmd_quote(a) for a in args),
               _cmd_quote(_LAUNCHER_MARKER)]
-    return " ".join(parts)
+    command = " ".join(parts)
+    return f"{command} >NUL 2>&1" if silent else command
+
+
+_SET_PREFIX_RE = re.compile(r"^\s*set\s", re.IGNORECASE)
+
+
+def is_shell_neutral_command(command: str) -> bool:
+    """True when one of our Windows launcher commands runs under both
+    PowerShell and cmd.exe (see _windows_launcher_command)."""
+    if _LAUNCHER_MARKER not in command or _LAUNCHER_B64_RE.search(command):
+        return False
+    if command.startswith(('"', "'", "&", "@")) or _SET_PREFIX_RE.match(command):
+        return False
+    return not any(tok in command for tok in (" && ", " >NUL", " 2>&1"))
 
 
 def decode_launcher_command(command: str) -> str | None:
@@ -174,13 +264,12 @@ def _hook_command(script: str, *args: str, redirect_quiet: bool = False,
             # already launching, which removes the nested-quoting and
             # console-codepage problems entirely. Audit by reading the file;
             # legacy base64 commands still decode via --decode-launcher.
-            command = _windows_launcher_command(root, script, args, extra_env)
+            return _windows_launcher_command(
+                root, script, args, extra_env, silent=redirect_quiet)
         else:
             prefix = f'set "TOKEN_OPTIMIZER_RUNTIME=codex" && {_win_env}'
             argv = [sys.executable, str(root / "hooks" / "run.py"), script, *args]
         redirect = " >NUL 2>&1" if redirect_quiet else ""
-        if _SEMVER_DIR_RE.match(root.name):
-            return f"{command}{redirect}"
         return f"{prefix}{subprocess.list2cmdline(argv)}{redirect}"
 
     command_args = " ".join(shlex.quote(arg) for arg in (script, *args))
@@ -691,14 +780,68 @@ def install(
     return path, "installed", details
 
 
+_CMD_TOKEN_RE = re.compile(r'"[^"]*"|\S+')
+
+
+def neutralize_launcher_command(command: str) -> str | None:
+    """Rewrite one of our cmd.exe-only launcher commands (issue #276 shape or
+    the older quoted-first-token shape) into the shell-neutral form of issue
+    #278, or return None when it is already neutral, not ours, or cannot be
+    written that way (the caller then falls back to the #276 repair).
+
+    Pure text transform over the generated shape: optional
+    ``set "TOKEN_OPTIMIZER_RUNTIME=codex" &&`` prefix, quoted interpreter,
+    quoted launcher, ``--baked-root``, ``--env`` pairs, ``--``, quoted script
+    and args, marker, optional ``>NUL 2>&1``. Anything that does not fit is
+    left alone rather than guessed at.
+    """
+    if _LAUNCHER_MARKER not in command or _LAUNCHER_B64_RE.search(command):
+        return None
+    if is_shell_neutral_command(command):
+        return None
+    tokens = _CMD_TOKEN_RE.findall(command.strip())
+    silent = False
+    if tokens[-2:] == [">NUL", "2>&1"]:
+        silent = True
+        tokens = tokens[:-2]
+    if tokens[:2] == ['set', '"TOKEN_OPTIMIZER_RUNTIME=codex"'] and tokens[2:3] == ["&&"]:
+        tokens = tokens[3:]
+    if len(tokens) < 6 or "--" not in tokens:
+        return None
+    if tokens[-1] != f'"{_LAUNCHER_MARKER}"':
+        return None
+    exe_raw = tokens[0].strip('"')
+    exe = _shell_neutral_exe(exe_raw)
+    if exe is None or tokens[0].count('"') not in (0, 2):
+        return None
+    out = [exe]
+    for tok in tokens[1:]:
+        if tok.startswith('"'):
+            neutral = _shell_neutral_arg(tok[1:-1]) if tok.endswith('"') and len(tok) >= 2 else None
+            if neutral is None:
+                return None
+            out.append(neutral)
+        elif tok in ("--baked-root", "--env", "--"):
+            out.append(tok)
+        else:
+            return None
+    if silent:
+        sep = out.index("--")
+        out[sep:sep] = ["--env", _shell_neutral_arg("TOKEN_OPTIMIZER_HOOK_SILENT=1")]
+    return " ".join(out)
+
+
 def heal_quoted_launcher_commands(paths=None) -> int:
-    """Repair Windows hook commands that start with a double quote.
+    """Repair Windows hook commands that PowerShell or cmd.exe cannot run.
 
     Versions before 5.13.57 saved launcher commands that open with the quoted
-    python.exe path. cmd.exe strips that first quote and the last one, so the
-    hook fails before Python starts and can never repair itself (issue #276).
-    This rewrites only our own launcher commands, only that one way, and
-    returns how many it fixed. Never raises.
+    python.exe path, which cmd.exe mangles (issue #276). 5.13.57 added a cmd-only
+    ``set ... &&`` prefix, which PowerShell -- the shell Codex normally runs
+    hooks in -- cannot parse (issue #278). Either way the hook fails before
+    Python starts and can never repair itself, so any Token Optimizer run
+    rewrites our own launcher commands into the shell-neutral form (or, if no
+    such spelling exists, the cmd-only repair) and returns how many it
+    fixed. Never raises.
     """
     if paths is None:
         paths = []
@@ -722,8 +865,13 @@ def heal_quoted_launcher_commands(paths=None) -> int:
                         continue
                     for handler in group.get("hooks", []):
                         command = handler.get("command") if isinstance(handler, dict) else None
-                        if (isinstance(command, str) and command.startswith('"')
-                                and _LAUNCHER_MARKER in command):
+                        if not isinstance(command, str):
+                            continue
+                        neutral = neutralize_launcher_command(command)
+                        if neutral is not None:
+                            handler["command"] = neutral
+                            changed += 1
+                        elif (command.startswith('"') and _LAUNCHER_MARKER in command):
                             handler["command"] = f"{_WIN_UNQUOTED_PREFIX} {command}"
                             changed += 1
             if changed:

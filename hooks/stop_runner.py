@@ -125,6 +125,23 @@ def _read_hook_input() -> dict:
         return {}
 
 
+def _record_payload_shape(hook_input: dict) -> None:
+    """Remember WHICH identity fields the host sent this Stop hook (never their
+    values), so the doctor can tell "host sent nothing" from "we lost it"
+    (issue #278). Best effort."""
+    try:
+        def has(key):
+            return "yes" if isinstance(hook_input.get(key), str) and hook_input.get(key) else "no"
+        measure._record_hook_status(
+            "stop_payload",
+            f"stdin fields: {len(hook_input)}; session_id={has('session_id')}; "
+            f"transcript_path={has('transcript_path')}; "
+            f"CODEX_THREAD_ID env={'yes' if os.environ.get('CODEX_THREAD_ID') else 'no'}",
+        )
+    except Exception:
+        pass
+
+
 def _is_session_end(hook_input: dict) -> bool:
     """True when the firing hook is SessionEnd, not Stop.
 
@@ -292,10 +309,15 @@ def _sub_session_end_flush_stop(hook_input: dict) -> None:
     budget = _runner_budget(8)
     if budget < 0.1:
         return
-    measure._dispatch_session_end_flush(
-        ["session-end-flush", "--trigger", "stop", "--quiet", "--defer"],
-        budget_seconds=budget,
-    )
+    args = ["session-end-flush", "--trigger", "stop", "--quiet", "--defer"]
+    # The deferred worker has no stdin, so hand it the session identity the
+    # host gave THIS hook; without it the worker can only guess and (on Codex)
+    # wrote an "unknown" placeholder checkpoint (issue #278).
+    for flag, key in (("--session-id", "session_id"), ("--transcript-path", "transcript_path")):
+        value = hook_input.get(key)
+        if isinstance(value, str) and value and len(value) <= 4096 and "\x00" not in value:
+            args += [flag, value]
+    measure._dispatch_session_end_flush(args, budget_seconds=budget)
 
 
 def _sub_keepwarm_arm(hook_input: dict) -> None:
@@ -345,6 +367,7 @@ def main() -> int:
     try:
         hook_input = _read_hook_input()
         is_session_end = _is_session_end(hook_input)
+        _record_payload_shape(hook_input)
 
         # ONE shared HookDeadline for the entire runner. The budget differs by
         # event: 13s for Stop (under the 15s declared timeout), 58s for SessionEnd

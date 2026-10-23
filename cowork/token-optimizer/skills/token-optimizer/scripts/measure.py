@@ -8760,6 +8760,39 @@ def _record_hook_status(key, result):
         pass
 
 
+def _flush_capture_checkpoint(args):
+    """The checkpoint step of the deferred Stop/SessionEnd flush worker.
+
+    The worker has no stdin, so the Stop runner hands it the session identity
+    the host gave the hook as ``--session-id`` / ``--transcript-path``. On Codex
+    with no identity from the host or the environment, no checkpoint is
+    written: an anonymous "unknown" file can outrank real ones on restore
+    (issue #278). Returns the checkpoint path or None.
+    """
+    flush_trigger = "end"
+    sid = None
+    transcript = None
+    for i, a in enumerate(args):
+        if a == "--trigger" and i + 1 < len(args):
+            flush_trigger = args[i + 1]
+        elif a == "--session-id" and i + 1 < len(args):
+            sid = args[i + 1]
+        elif a == "--transcript-path" and i + 1 < len(args):
+            transcript = args[i + 1]
+    if (_use_codex_session_adapter() and not sid and not transcript
+            and _find_current_session_jsonl() is None):
+        _record_hook_status(
+            "stop_capture",
+            "skipped: the Stop hook payload and environment carried no session id")
+        return None
+    path = compact_capture(trigger=flush_trigger, backfill_tools=True,
+                           session_id=sid, transcript_path=transcript)
+    _record_hook_status(
+        "stop_capture",
+        "ok: checkpoint written" if path else "no checkpoint written (session transcript not found)")
+    return path
+
+
 def _run_session_end_flush_worker(args, budget_seconds=20):
     """Run heavyweight Stop-hook work outside Codex's visible hook budget.
 
@@ -8844,11 +8877,7 @@ def _run_session_end_flush_worker(args, budget_seconds=20):
             except Exception:
                 pass
             try:
-                flush_trigger = "end"
-                for i, a in enumerate(args):
-                    if a == "--trigger" and i + 1 < len(args):
-                        flush_trigger = args[i + 1]
-                compact_capture(trigger=flush_trigger, backfill_tools=True)
+                _flush_capture_checkpoint(args)
             except Exception:
                 pass
             # Data-retention enforcement (enterprise compliance)
@@ -40911,6 +40940,11 @@ def compact_capture(transcript_path=None, session_id=None, trigger="auto", cwd=N
     trigger_suffix = f"-{trigger}" if trigger and trigger != "auto" else ""
 
     if not filepath or not filepath.exists():
+        if not session_id and _use_codex_session_adapter():
+            # Codex with no session identity at all: an anonymous "unknown"
+            # placeholder only adds a file that can outrank real checkpoints on
+            # restore, and hides that the host sent no identity (issue #278).
+            return None
         # Write minimal checkpoint with safe permissions
         sid = sanitize_session_id(session_id)
         checkpoint_path = CHECKPOINT_DIR / f"{sid}-{ts_file}{trigger_suffix}.md"

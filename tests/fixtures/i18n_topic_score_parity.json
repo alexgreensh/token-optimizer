@@ -42,6 +42,13 @@
     "why": "a Han run is captured as one token, so an identical run in the checkpoint matches."
   },
   {
+    "name": "cyrillic_short_words",
+    "prompt": "кот мир",
+    "checkpoint": "кот мир",
+    "expect_match": true,
+    "why": "Synthetic short Cyrillic topic words are retained in Python, OpenClaw and OpenCode; the previous CJK-only floor discarded both and produced no match."
+  },
+  {
     "name": "ascii_regression",
     "prompt": "continue the keepwarm experiment",
     "checkpoint": "keepwarm experiment daemon notes",

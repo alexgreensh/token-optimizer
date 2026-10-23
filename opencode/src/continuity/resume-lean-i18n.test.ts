@@ -2,13 +2,13 @@
  * Session continuity blind to non-English prompts (OpenCode).
  *
  * Mirrors the Python measure.py fix: the topic tokenizer is a two-branch class
- * (ASCII/accented-Latin run OR a whole non-ASCII run) so Korean/Chinese/Japanese
+ * (ASCII/accented-Latin run OR a whole non-ASCII run) so non-Latin scripts
  * and accented Latin stop tokenizing to nothing.
  *
  * The parity fixture (``tests/fixtures/i18n_topic_score_parity.json``) is the
  * SAME JSON asserted by the Python and OpenClaw suites, so all three runtimes
- * score identical non-English inputs the same way — including the two documented
- * known limits (Chinese cross-run matching, short-Korean-noun len>3 floor).
+ * score identical non-English inputs the same way — including the documented
+ * Chinese cross-run segmentation limit.
  */
 import { test, expect } from "bun:test";
 import { resumeTopicScore } from "./resume-lean.js";

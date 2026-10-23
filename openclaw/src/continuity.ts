@@ -133,16 +133,18 @@ const CONTINUATION_WORDS = new Set(["continue", "resume"]);
 const RECOVER_TOKEN_RE = /[a-zA-Z0-9_./:-]+/g;
 
 // --- Non-English topic tokenizer — mirrors Python measure.py _topic_tokens ---
-// Two branches: ASCII/accented-Latin run OR a whole non-ASCII (CJK) run as one token (a token
-// never mixes ASCII and non-ASCII). Latin-1/Extended-A ranges skip × U+00D7 / ÷ U+00F7 (symbols).
+// Two branches: ASCII/accented-Latin run OR a whole non-ASCII run as one token (a token never
+// mixes ASCII and non-ASCII). Latin-1/Extended-A ranges skip × U+00D7 / ÷ U+00F7 (symbols).
 const TOPIC_TOKEN_RE = /[a-zA-Z0-9_.:À-ÖØ-öø-ÿĀ-ɏ/-]+|[^\x00-\x7F]+/g;
-// Script-aware floor: CJK (Hangul/Han/Kana, >= U+3000) kept at len>=2 (결제/모듈 are real words);
-// ASCII/accented-Latin keep the len>3 English stopword heuristic. Code-point counts match Python.
-const CJK_MIN = 0x3000;
+// Script-aware floor: short words in non-Latin scripts (CJK, Cyrillic, Arabic, etc.) are kept
+// at len>=2; ASCII/accented-Latin keep the len>3 English stopword heuristic. Code-point counts
+// and script classification match Python.
 function topicTokenKept(w: string): boolean {
   const cps = [...w];
-  const isCjk = cps.some((ch) => (ch.codePointAt(0) ?? 0) >= CJK_MIN);
-  return isCjk ? cps.length >= 2 : cps.length > 3;
+  const hasNonLatinLetter = cps.some((ch) =>
+    /\p{Letter}/u.test(ch) && !/\p{Script=Latin}/u.test(ch),
+  );
+  return hasNonLatinLetter ? cps.length >= 2 : cps.length > 3;
 }
 function extractTopicTokens(text: string, stop?: ReadonlySet<string>): Set<string> {
   const out = new Set<string>();

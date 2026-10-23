@@ -90,6 +90,7 @@ import tempfile
 import textwrap
 import time
 import types
+import unicodedata
 import platform
 import posixpath
 import shutil
@@ -42606,25 +42607,25 @@ _RESUME_TOPIC_STOPWORDS = frozenset({
 
 
 # --- Non-English topic tokenizer — single source of truth on the Python side ---
-# Two branches: an ASCII/accented-Latin run, OR a whole non-ASCII run (CJK etc.) as one
-# token, so a token never mixes ASCII and non-ASCII ("measure.py를" -> "measure.py" + "를").
+# Two branches: an ASCII/accented-Latin run, OR a whole non-ASCII run as one token, so a token
+# never mixes ASCII and non-ASCII ("measure.py를" -> "measure.py" + "를").
 # The Latin-1/Extended-A ranges deliberately skip U+00D7 (×) and U+00F7 (÷): they sit inside
 # the block but are math symbols, not letters. U+0100–U+024F is Latin Extended-A/B, all letters.
 _TOPIC_TOKEN_RE = re.compile(r"[a-zA-Z0-9_.:À-ÖØ-öø-ÿĀ-ɏ/-]+|[^\x00-\x7F]+")
-# Script-aware length floor. CJK scripts (Hangul/Han/Kana, all >= U+3000) carry a full topic
-# word in two characters — 결제 (payment), 모듈 (module) — so they are kept at len>=2. ASCII and
-# accented Latin keep the len>3 English stopword heuristic (a 2-char Latin token like "ré" is
-# stopword-like, not content). This is why the floor cannot be a single constant.
-_CJK_MIN = 0x3000
+# Script-aware length floor. Short words in non-Latin scripts (CJK, Cyrillic, Arabic, etc.)
+# carry topic meaning at len>=2. ASCII and accented Latin keep the len>3 English stopword
+# heuristic (a 2-char Latin token like "ré" is stopword-like, not content).
 
-
-def _has_cjk(w):
-    """True when a token contains any CJK / non-Latin-script char (ord >= U+3000)."""
-    return any(ord(ch) >= _CJK_MIN for ch in w)
+def _has_non_latin_letter(w):
+    """True when a token contains a letter from a non-Latin Unicode script."""
+    return any(
+        ch.isalpha() and not unicodedata.name(ch, "").startswith("LATIN")
+        for ch in w
+    )
 
 
 def _topic_token_kept(w):
-    if _has_cjk(w):
+    if _has_non_latin_letter(w):
         return len(w) >= 2
     return len(w) > 3
 

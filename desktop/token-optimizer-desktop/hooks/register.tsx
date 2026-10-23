@@ -1387,7 +1387,14 @@ export const register: Register = on => {
     return result
   })
 
-  // A clear: no session.start follows; this start carries the new id.
+  // A clear: no session.start follows; this start carries the new id. It also
+  // carries the session's transcript path, which compact-capture wants, each time
+  // it fires. This is the only
+  // classic.SessionStart handler on purpose: a policy plugin seated ahead of
+  // ours (Claude Code's `cc-plugin-sec-default` on managed machines) skips every
+  // classic.* event for a person's plugin and Claude Code tells the user once
+  // per skipped event, so each extra classic handler costs one notice there.
+  // Without a path the status and checkpoint commands look the session up by id.
   on('classic.SessionStart', async ($, e, next) => {
     const result = await next(e)
     noteTranscript(e.session_id, e.transcript_path)
@@ -1445,16 +1452,6 @@ export const register: Register = on => {
       else toast($, `Start fresh's hand-off could not be kept. The checkpoint is still at ${handoff.checkpointPath}.`)
       throw error
     }
-  })
-
-  // compact-capture wants the transcript; these classic events carry its path.
-  on('classic.UserPromptSubmit', ($, e, next) => {
-    noteTranscript(e.session_id, e.transcript_path)
-    return next(e)
-  })
-  on('classic.Stop', ($, e, next) => {
-    noteTranscript(e.session_id, e.transcript_path)
-    return next(e)
   })
 
   on('turn.start', async ($, e, next) => {

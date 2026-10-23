@@ -50,6 +50,23 @@ Three switches, set in the `env` block of `~/.claude/settings.json` like the oth
 - `"TOKEN_OPTIMIZER_STATUS_BAR_ANIMATE": "0"` keeps Clawd still.
 - `"TOKEN_OPTIMIZER_STATUS_BAR_SIZE": "slim"` starts the band as one line instead of the full band. The `–` button beside the arrow shrinks it and `+` brings it back. The arrow still unfolds the details row under it, and the choice is remembered across sessions and restarts.
 
+## The "hook was skipped" notice on managed machines
+
+On a machine with managed settings, or a Team or Enterprise login, Claude Code seats a built-in guard (`cc-plugin-sec-default`) ahead of every plugin you install. The guard sends every settings-hook event (`classic.*`) past installed plugins, so those handlers never run. Claude Code then tells you once per session and event:
+
+> token-optimizer: its classic.SessionStart hook was skipped. "cc-plugin-sec-default" runs first and sent the event on past it.
+
+Both parts are Claude Code behavior: the guard's rule is in [its public source](https://github.com/anthropics/claude-code/blob/main/mods/sec-default/hooks/register.ts) and the notice is raised by Claude Code. An organization cannot reorder a plugin installed from a marketplace ahead of the guard, so Token Optimizer cannot move itself either.
+
+Token Optimizer registers two settings-hook handlers and no others, so you see at most two of these notices: `classic.SessionStart` at the start of a session, and `classic.PermissionRequest` the first time Claude asks for a permission.
+
+What the skipped handlers cost the status bar, read from the module's code:
+
+- **`classic.SessionStart`**: after `/clear`, the bar does not learn the new session id from this event, so it can keep the old session's figures until its next refresh. Start fresh's hand-off still reaches your first message. The transcript path it carries is an optional hint; without it Token Optimizer looks the session up by id.
+- **`classic.PermissionRequest`**: Clawd does not switch to "waiting for your permission".
+
+Your hooks in `hooks.json` (compression, checkpoints, quality scoring) are a separate path and keep running. Neither handler can be dropped without losing these behaviors on machines with no guard, and Claude Code lets a plugin register hooks only while it loads, so a plugin cannot register them only when the guard is absent.
+
 ## Where it works
 
 The Claude desktop app only. The terminal keeps its existing [status line](/features/status-line/). VS Code is not supported.

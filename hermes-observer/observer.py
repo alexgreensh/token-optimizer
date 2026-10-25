@@ -10,18 +10,20 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import sqlite3
 import stat
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 SCHEMA_VERSION = 1
 OBSERVER_NAME = "token-optimizer-observer"
 DB_NAME = "state.db"
-MAX_DB_BYTES = 64 * 1024 * 1024
+MAX_DB_BYTES = 4 * 1024 * 1024 * 1024
 MAX_SCAN_ROWS = 10_000
+MAX_CANDIDATE_ROWS = 3 * (MAX_SCAN_ROWS + 1)
 MAX_DATE_BUCKETS = 30
 MAX_OUTPUT_BYTES = 64 * 1024
 MAX_TEXT_BYTES = 8 * 1024
@@ -55,74 +57,151 @@ class ObserverError(Exception):
         self.message = message
 
 
-def _walk_without_symlinks(path: Path) -> None:
-    """Reject symlinks in every lexical component, including ancestors."""
-    current = Path(path.anchor)
-    for component in path.parts[1:]:
-        if component in ("", ".", ".."):
-            raise ObserverError("home_invalid", "Hermes home must be a canonical absolute directory")
+_Identity = tuple[int, int, int, int | None]
+_IdentityHook = Callable[[str, Path], None]
+
+
+def _validate_lexical_home(hermes_home: str) -> Path:
+    """Reject noncanonical syntax before ``Path`` can erase its evidence."""
+    if not isinstance(hermes_home, str) or not hermes_home:
+        raise ObserverError("home_invalid", "Hermes home must be explicitly supplied")
+    if "\x00" in hermes_home:
+        raise ObserverError("home_invalid", "Hermes home must be a canonical absolute directory")
+    home = Path(hermes_home)
+    if not home.is_absolute():
+        raise ObserverError("home_relative", "Hermes home must be an absolute directory")
+    # pathlib normalizes all of these, so inspect the caller's spelling first.
+    components = hermes_home.split("/")
+    if (
+        any(component in (".", "..") for component in components)
+        or "//" in hermes_home
+        or (len(hermes_home) > 1 and hermes_home.endswith("/"))
+    ):
+        raise ObserverError("home_invalid", "Hermes home must be a canonical absolute directory")
+    return home
+
+
+def _home_components(home: Path) -> list[Path]:
+    current = Path(home.anchor)
+    paths = [current]
+    for component in home.parts[1:]:
         current = current / component
+        paths.append(current)
+    return paths
+
+
+def _identity(info: os.stat_result, *, include_size: bool) -> _Identity:
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_size if include_size else None)
+
+
+def _capture_identities(home: Path, db: Path) -> dict[Path, _Identity]:
+    """Capture every ancestor, the home, and the database without following links."""
+    identities: dict[Path, _Identity] = {}
+    home_paths = _home_components(home)
+    for path in [*home_paths, db]:
         try:
-            info = current.lstat()
+            info = path.lstat()
         except FileNotFoundError as exc:
-            raise ObserverError("home_missing", "Hermes home does not exist") from exc
+            code = "database_missing" if path == db else "home_missing"
+            message = "state.db is missing" if path == db else "Hermes home does not exist"
+            raise ObserverError(code, message) from exc
         except OSError as exc:
-            raise ObserverError("home_invalid", "Hermes home cannot be safely inspected") from exc
+            raise ObserverError("source_changed", "Hermes source cannot be safely inspected") from exc
         if stat.S_ISLNK(info.st_mode):
-            raise ObserverError("home_symlink", "Hermes home must not contain symlink components")
+            code = "database_symlink" if path == db else "home_symlink"
+            message = (
+                "state.db must not be a symlink"
+                if path == db
+                else "Hermes home must not contain symlink components"
+            )
+            raise ObserverError(code, message)
+        if path in home_paths and not stat.S_ISDIR(info.st_mode):
+            code = "home_not_directory" if path == home else "home_invalid"
+            raise ObserverError(code, "Hermes home must be a directory")
+        if path == db and not stat.S_ISREG(info.st_mode):
+            raise ObserverError("database_not_regular", "state.db must be a regular file")
+        identities[path] = _identity(info, include_size=path == db)
+    return identities
+
+
+def _open_guard(path: Path, expected: _Identity, *, directory: bool) -> int:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    if directory:
+        flags |= getattr(os, "O_DIRECTORY", 0)
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(path, flags)
+        actual = _identity(os.fstat(descriptor), include_size=not directory)
+    except OSError as exc:
+        if descriptor is not None:
+            os.close(descriptor)
+        raise ObserverError("source_changed", "Hermes source changed during inspection") from exc
+    if actual != expected:
+        os.close(descriptor)
+        raise ObserverError("source_changed", "Hermes source changed during inspection")
+    return descriptor
+
+
+def _assert_source_stable(
+    home: Path,
+    db: Path,
+    expected: dict[Path, _Identity],
+    home_fd: int,
+    db_fd: int,
+) -> None:
+    try:
+        current = _capture_identities(home, db)
+        descriptors = (
+            _identity(os.fstat(home_fd), include_size=False),
+            _identity(os.fstat(db_fd), include_size=True),
+        )
+    except ObserverError as exc:
+        raise ObserverError("source_changed", "Hermes source changed during inspection") from exc
+    except OSError as exc:
+        raise ObserverError("source_changed", "Hermes source changed during inspection") from exc
+    if current != expected or descriptors != (expected[home], expected[db]):
+        raise ObserverError("source_changed", "Hermes source changed during inspection")
 
 
 def validate_state_db(hermes_home: str, *, max_db_bytes: int = MAX_DB_BYTES) -> Path:
     """Validate and return the direct-child state.db without following links."""
-    if not isinstance(hermes_home, str) or not hermes_home:
-        raise ObserverError("home_invalid", "Hermes home must be explicitly supplied")
-    home = Path(hermes_home)
-    if not home.is_absolute():
-        raise ObserverError("home_relative", "Hermes home must be an absolute directory")
-    if ".." in home.parts or "." in home.parts:
-        raise ObserverError("home_invalid", "Hermes home must be a canonical absolute directory")
-
-    _walk_without_symlinks(home)
+    home = _validate_lexical_home(hermes_home)
+    db = home / DB_NAME
+    identities = _capture_identities(home, db)
     try:
-        home_info = home.lstat()
         resolved_home = home.resolve(strict=True)
     except (OSError, RuntimeError) as exc:
         raise ObserverError("home_invalid", "Hermes home cannot be safely inspected") from exc
-    if not stat.S_ISDIR(home_info.st_mode):
-        raise ObserverError("home_not_directory", "Hermes home must be a directory")
     if resolved_home != home:
         raise ObserverError("home_invalid", "Hermes home must be a canonical real directory")
-
-    db = home / DB_NAME
-    try:
-        db_info = db.lstat()
-    except FileNotFoundError as exc:
-        raise ObserverError("database_missing", "state.db is missing") from exc
-    except OSError as exc:
-        raise ObserverError("database_invalid", "state.db cannot be safely inspected") from exc
-    if stat.S_ISLNK(db_info.st_mode):
-        raise ObserverError("database_symlink", "state.db must not be a symlink")
-    if not stat.S_ISREG(db_info.st_mode):
-        raise ObserverError("database_not_regular", "state.db must be a regular file")
     try:
         resolved_db = db.resolve(strict=True)
     except (OSError, RuntimeError) as exc:
         raise ObserverError("database_invalid", "state.db cannot be safely inspected") from exc
     if resolved_db.parent != resolved_home or resolved_db.name != DB_NAME:
         raise ObserverError("database_escape", "state.db must be the direct child of Hermes home")
-    if max_db_bytes < 0 or db_info.st_size > max_db_bytes:
+    db_size = identities[db][3]
+    if max_db_bytes < 0 or db_size is None or db_size > max_db_bytes:
         raise ObserverError("database_oversized", "state.db exceeds the configured size limit")
     return db
 
 
 def _connect_read_only(db: Path) -> sqlite3.Connection:
-    """Open a WAL-visible, query-only SQLite connection."""
+    """Open a WAL-visible, read-only SQLite connection."""
     try:
         # nofollow binds the leaf-symlink policy to SQLite's own open rather
         # than relying only on the preceding lstat check.
         uri = f"{db.as_uri()}?mode=ro&nofollow=1"
         conn = sqlite3.connect(uri, uri=True, timeout=BUSY_TIMEOUT_MS / 1000)
         conn.row_factory = sqlite3.Row
+        return conn
+    except sqlite3.Error as exc:
+        raise ObserverError("database_malformed", "state.db is not a readable SQLite database") from exc
+
+
+def _configure_connection(conn: sqlite3.Connection) -> None:
+    """Apply defensive settings after the caller verifies post-open identity."""
+    try:
         conn.execute("PRAGMA query_only = ON")
         conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
         # Prevent schema-defined functions or virtual-table surprises where the
@@ -131,7 +210,6 @@ def _connect_read_only(db: Path) -> sqlite3.Connection:
             conn.execute("PRAGMA trusted_schema = OFF")
         except sqlite3.Error:
             pass
-        return conn
     except sqlite3.Error as exc:
         raise ObserverError("database_malformed", "state.db is not a readable SQLite database") from exc
 
@@ -184,30 +262,63 @@ def _safe_cost(value: Any) -> float | None:
 
 def _day(value: Any) -> str | None:
     """Convert a numeric Unix time or bounded ISO timestamp to a UTC date."""
-    if value is None:
+    timestamp = _timestamp(value)
+    if timestamp is None:
         return None
     try:
-        if isinstance(value, (int, float)) and math.isfinite(float(value)):
-            return datetime.fromtimestamp(float(value), tz=timezone.utc).date().isoformat()
-        text = str(value)[:64]
-        if text.endswith("Z"):
-            text = text[:-1] + "+00:00"
-        parsed = datetime.fromisoformat(text)
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed.astimezone(timezone.utc).date().isoformat()
+        return datetime.fromtimestamp(timestamp, tz=timezone.utc).date().isoformat()
     except (ValueError, TypeError, OverflowError, OSError):
         return None
 
 
+def _timestamp(value: Any) -> float | None:
+    """Normalize supported Unix REAL/INTEGER and ISO TEXT timestamps."""
+    try:
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            timestamp = float(value)
+            return timestamp if math.isfinite(timestamp) else None
+        if not isinstance(value, str) or len(value.encode("utf-8")) > 64:
+            return None
+        text = value[:-1] + "+00:00" if value.endswith("Z") else value
+        parsed = datetime.fromisoformat(text)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        timestamp = parsed.astimezone(timezone.utc).timestamp()
+        return timestamp if math.isfinite(timestamp) else None
+    except (ValueError, TypeError, OverflowError, OSError):
+        return None
+
+
+def _id_sort_key(value: Any) -> tuple[str, str]:
+    """Deterministic internal tie-breaker; IDs are never copied to output."""
+    if isinstance(value, bytes):
+        return ("bytes", value.hex())
+    return (type(value).__name__, str(value))
+
+
+def _row_sort_key(row: sqlite3.Row) -> tuple[float, tuple[str, str]]:
+    timestamp = _timestamp(row["started_at"])
+    return (-(timestamp if timestamp is not None else -math.inf), _id_sort_key(row["id"]))
+
+
 def _query_rows(conn: sqlite3.Connection, columns: set[str]) -> list[sqlite3.Row]:
-    selected = [name if name in columns else f"NULL AS {name}" for name in _SELECT_COLUMNS]
-    sql = (
-        f"SELECT {', '.join(selected)} FROM sessions "
-        "ORDER BY started_at DESC LIMIT ?"
+    selected = ["id", *[name if name in columns else f"NULL AS {name}" for name in _SELECT_COLUMNS]]
+    select_sql = f"SELECT {', '.join(selected)} FROM sessions"
+    queries = (
+        select_sql
+        + " WHERE typeof(started_at) IN ('integer','real')"
+        + " ORDER BY CAST(started_at AS REAL) DESC, CAST(id AS TEXT) ASC LIMIT ?",
+        select_sql
+        + " WHERE typeof(started_at) = 'text'"
+        + " ORDER BY julianday(started_at) DESC, CAST(id AS TEXT) ASC LIMIT ?",
+        select_sql
+        + " WHERE typeof(started_at) NOT IN ('integer','real','text')"
+        + " ORDER BY CAST(id AS TEXT) ASC LIMIT ?",
     )
     try:
-        return conn.execute(sql, (MAX_SCAN_ROWS + 1,)).fetchall()
+        candidates: list[sqlite3.Row] = []
+        for sql in queries:
+            candidates.extend(conn.execute(sql, (MAX_SCAN_ROWS + 1,)).fetchall())
     except sqlite3.OperationalError as exc:
         message = str(exc).lower()
         if "locked" in message or "busy" in message:
@@ -215,17 +326,63 @@ def _query_rows(conn: sqlite3.Connection, columns: set[str]) -> list[sqlite3.Row
         raise ObserverError("database_malformed", "sessions data cannot be read") from exc
     except sqlite3.Error as exc:
         raise ObserverError("database_malformed", "sessions data cannot be read") from exc
+    if len(candidates) > MAX_CANDIDATE_ROWS:
+        raise ObserverError("internal_error", "candidate row bound was exceeded")
+    candidates.sort(key=_row_sort_key)
+    return candidates[: MAX_SCAN_ROWS + 1]
 
 
-def inspect_database(hermes_home: str, *, max_db_bytes: int = MAX_DB_BYTES) -> dict[str, Any]:
+def inspect_database(
+    hermes_home: str,
+    *,
+    max_db_bytes: int = MAX_DB_BYTES,
+    _identity_hook: _IdentityHook | None = None,
+) -> dict[str, Any]:
     """Return a deterministic, bounded aggregate report for one profile."""
     db = validate_state_db(hermes_home, max_db_bytes=max_db_bytes)
-    conn = _connect_read_only(db)
+    home = db.parent
+    expected = _capture_identities(home, db)
+    captured_size = expected[db][3]
+    if max_db_bytes < 0 or captured_size is None or captured_size > max_db_bytes:
+        raise ObserverError("database_oversized", "state.db exceeds the configured size limit")
+    home_fd = _open_guard(home, expected[home], directory=True)
     try:
+        db_fd = _open_guard(db, expected[db], directory=False)
+    except Exception:
+        os.close(home_fd)
+        raise
+    conn: sqlite3.Connection | None = None
+    try:
+        if _identity_hook is not None:
+            _identity_hook("before_connect", db)
+        conn = _connect_read_only(db)
+        if _identity_hook is not None:
+            _identity_hook("after_connect", db)
+        _assert_source_stable(home, db, expected, home_fd, db_fd)
+        database_rows = conn.execute("PRAGMA database_list").fetchall()
+        main_paths = [str(row[2]) for row in database_rows if str(row[1]) == "main"]
+        if main_paths != [str(db)]:
+            raise ObserverError("source_changed", "SQLite opened an unexpected database object")
+        _configure_connection(conn)
+        _assert_source_stable(home, db, expected, home_fd, db_fd)
+        if _identity_hook is not None:
+            _identity_hook("before_schema", db)
+        _assert_source_stable(home, db, expected, home_fd, db_fd)
         columns = _schema_columns(conn)
+        _assert_source_stable(home, db, expected, home_fd, db_fd)
+        if _identity_hook is not None:
+            _identity_hook("before_query", db)
+        _assert_source_stable(home, db, expected, home_fd, db_fd)
         rows = _query_rows(conn, columns)
+        _assert_source_stable(home, db, expected, home_fd, db_fd)
+        if _identity_hook is not None:
+            _identity_hook("after_query", db)
+        _assert_source_stable(home, db, expected, home_fd, db_fd)
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
+        os.close(db_fd)
+        os.close(home_fd)
 
     truncated = len(rows) > MAX_SCAN_ROWS
     if truncated:
@@ -271,7 +428,7 @@ def inspect_database(hermes_home: str, *, max_db_bytes: int = MAX_DB_BYTES) -> d
         }
         for key, value in values.items():
             tokens[key] = min(MAX_COUNTER, tokens[key] + value)
-        row_total = min(MAX_COUNTER, sum(values.values()))
+        row_total = min(MAX_COUNTER, values["input"] + values["output"])
         tokens["total"] = min(MAX_COUNTER, tokens["total"] + row_total)
 
         row_estimated = _safe_cost(row["estimated_cost_usd"])

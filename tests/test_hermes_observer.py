@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -63,7 +64,7 @@ def _create_db(home: Path, rows: list[tuple] | None = None) -> Path:
 
 def _row(
     session_id: str,
-    started_at: float,
+    started_at: object,
     *,
     ended_at: float | None = None,
     input_tokens: int = 100,
@@ -145,12 +146,29 @@ def test_aggregate_report_from_realistic_sqlite_fixture(tmp_path):
     }
     assert report["tokens"] == {
         "cache_read": 160, "cache_write": 80, "input": 4500,
-        "output": 660, "reasoning": 33, "total": 5433,
+        "output": 660, "reasoning": 33, "total": 5160,
     }
     assert report["cost_usd"] == {"actual": 0.08, "effective": 0.28, "estimated": 0.3}
     assert report["context"]["occupancy_available"] is False
     assert report["source"] == {"sessions_scanned": 3, "truncated": False}
     assert [bucket["date"] for bucket in report["daily"]] == ["2026-01-02", "2026-01-03"]
+    assert [bucket["tokens"] for bucket in report["daily"]] == [1200, 3960]
+
+
+def test_total_means_input_plus_output_and_keeps_other_counters_separate(tmp_path):
+    home = tmp_path / "profile"
+    _create_db(home, [_row("id", 1_700_000_000, input_tokens=11, output_tokens=7,
+                           cache_read=101, cache_write=103, reasoning=107)])
+    report = _load_observer().inspect_database(str(home))
+    assert report["tokens"] == {
+        "cache_read": 101,
+        "cache_write": 103,
+        "input": 11,
+        "output": 7,
+        "reasoning": 107,
+        "total": 18,
+    }
+    assert report["daily"][0]["tokens"] == 18
 
 
 def test_committed_wal_only_row_is_visible_while_writer_remains_open(tmp_path):
@@ -208,6 +226,40 @@ def test_missing_symlink_nonregular_and_configured_oversize_are_rejected(tmp_pat
         observer.validate_state_db(str(oversized), max_db_bytes=db.stat().st_size - 1)
 
 
+def test_default_database_limit_accepts_realistic_size_and_rejects_above_limit(tmp_path):
+    observer = _load_observer()
+    realistic = tmp_path / "realistic"
+    realistic_db = _create_db(realistic)
+    with realistic_db.open("r+b") as stream:
+        stream.truncate(487_473_152)
+    assert observer.MAX_DB_BYTES >= realistic_db.stat().st_size
+    assert observer.validate_state_db(str(realistic)) == realistic_db
+
+    oversized = tmp_path / "over-default"
+    oversized_db = _create_db(oversized)
+    with oversized_db.open("r+b") as stream:
+        stream.truncate(observer.MAX_DB_BYTES + 1)
+    with pytest.raises(observer.ObserverError, match="size limit"):
+        observer.validate_state_db(str(oversized))
+
+
+@pytest.mark.parametrize("spelling", ["dot", "dotdot", "repeat", "trailing"])
+def test_lexically_noncanonical_home_is_rejected_before_pathlib_normalizes_it(tmp_path, spelling):
+    observer = _load_observer()
+    home = tmp_path / "profile"
+    _create_db(home)
+    parent = str(home.parent)
+    variants = {
+        "dot": f"{parent}/./profile",
+        "dotdot": f"{parent}/other/../profile",
+        "repeat": f"{parent}//profile",
+        "trailing": f"{home}/",
+    }
+    with pytest.raises(observer.ObserverError) as caught:
+        observer.validate_state_db(variants[spelling])
+    assert caught.value.code == "home_invalid"
+
+
 def test_symlinked_home_and_symlinked_ancestor_are_rejected(tmp_path):
     observer = _load_observer()
     real_home = tmp_path / "real" / "profile"
@@ -224,6 +276,71 @@ def test_symlinked_home_and_symlinked_ancestor_are_rejected(tmp_path):
     parent_alias.symlink_to(real_parent, target_is_directory=True)
     with pytest.raises(observer.ObserverError, match="symlink"):
         observer.validate_state_db(str(parent_alias / "profile"))
+
+
+def test_ancestor_replacement_during_open_fails_closed(tmp_path):
+    observer = _load_observer()
+    ancestor = tmp_path / "ancestor"
+    home = ancestor / "profile"
+    _create_db(home, [_row("never-report-this", 1_700_000_000)])
+
+    def replace_ancestor(stage, _db):
+        if stage == "after_connect":
+            parked = tmp_path / "parked"
+            ancestor.rename(parked)
+            shutil.copytree(parked, ancestor)
+
+    with pytest.raises(observer.ObserverError) as caught:
+        observer.inspect_database(str(home), _identity_hook=replace_ancestor)
+    assert caught.value.code == "source_changed"
+
+
+def test_database_replacement_during_open_fails_closed(tmp_path):
+    observer = _load_observer()
+    home = tmp_path / "profile"
+    db = _create_db(home, [_row("never-report-this", 1_700_000_000)])
+
+    def replace_database(stage, _db):
+        if stage == "after_connect":
+            parked = home / "parked.db"
+            db.rename(parked)
+            shutil.copy2(parked, db)
+
+    with pytest.raises(observer.ObserverError) as caught:
+        observer.inspect_database(str(home), _identity_hook=replace_database)
+    assert caught.value.code == "source_changed"
+
+
+def test_newest_rows_normalize_mixed_real_and_iso_timestamps(tmp_path, monkeypatch):
+    observer = _load_observer()
+    monkeypatch.setattr(observer, "MAX_SCAN_ROWS", 2)
+    home = tmp_path / "profile"
+    _create_db(home, [
+        _row("numeric-newest", datetime(2026, 1, 3, tzinfo=timezone.utc).timestamp(), input_tokens=30),
+        _row("iso-second", "2026-01-02T00:00:00Z", input_tokens=20),
+        _row("lexically-dominant-but-old", "2000-01-01T00:00:00Z", input_tokens=900),
+        _row("numeric-older", datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp(), input_tokens=10),
+    ])
+    report = observer.inspect_database(str(home))
+    assert report["source"] == {"sessions_scanned": 2, "truncated": True}
+    assert report["tokens"]["input"] == 50
+    assert "numeric-newest" not in json.dumps(report)
+    assert "iso-second" not in json.dumps(report)
+
+
+def test_equal_normalized_times_use_id_as_deterministic_nonoutput_tie_breaker(tmp_path, monkeypatch):
+    observer = _load_observer()
+    monkeypatch.setattr(observer, "MAX_SCAN_ROWS", 1)
+    home = tmp_path / "profile"
+    instant = datetime(2026, 1, 3, tzinfo=timezone.utc)
+    _create_db(home, [
+        _row("a-private-id", instant.timestamp(), input_tokens=7),
+        _row("b-private-id", instant.isoformat(), input_tokens=99),
+    ])
+    report = observer.inspect_database(str(home))
+    assert report["tokens"]["input"] == 7
+    rendered = json.dumps(report)
+    assert "a-private-id" not in rendered and "b-private-id" not in rendered
 
 
 def test_runtime_does_not_import_or_invoke_network_or_subprocess_apis():

@@ -190,6 +190,7 @@ def test_committed_wal_only_row_is_visible_while_writer_remains_open(tmp_path):
     writer.commit()
     try:
         assert (home / "state.db-wal").exists()
+        assert (home / "state.db-shm").exists()
         proc = _run(OBSERVER, "report", "--hermes-home", str(home), "--format", "json")
         assert proc.returncode == 0, proc.stderr
         report = json.loads(proc.stdout)
@@ -197,6 +198,105 @@ def test_committed_wal_only_row_is_visible_while_writer_remains_open(tmp_path):
         assert report["tokens"]["input"] == 777
     finally:
         writer.close()
+
+
+def test_wal_without_shm_fails_before_sqlite_and_creates_nothing(tmp_path):
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    seed_db = seed / "state.db"
+    writer = sqlite3.connect(seed_db)
+    assert writer.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+    writer.execute("PRAGMA wal_autocheckpoint=0")
+    writer.execute(
+        "CREATE TABLE sessions (id TEXT PRIMARY KEY, started_at REAL, ended_at REAL, "
+        "input_tokens INTEGER, output_tokens INTEGER)"
+    )
+    writer.commit()
+    writer.execute(
+        "INSERT INTO sessions VALUES (?,?,?,?,?)",
+        ("wal-only-secret-id", 1_700_000_000, None, 321, 9),
+    )
+    writer.commit()
+
+    home = tmp_path / "profile"
+    home.mkdir()
+    shutil.copy2(seed_db, home / "state.db")
+    shutil.copy2(seed / "state.db-wal", home / "state.db-wal")
+    writer.close()
+    assert not (home / "state.db-shm").exists()
+
+    before = _snapshot(home)
+    package_before = _snapshot(PACKAGE)
+    for script, args in (
+        (OBSERVER, ("report", "--hermes-home", str(home), "--format", "json")),
+        (DOCTOR, ("--hermes-home", str(home), "--format", "json")),
+    ):
+        proc = _run(script, *args)
+        assert proc.returncode == 1
+        error = json.loads(proc.stdout)["error"]
+        assert error == {
+            "code": "wal_sidecars_unavailable",
+            "message": "WAL state cannot be inspected without creating SQLite sidecars",
+        }
+        assert _snapshot(home) == before
+        assert _snapshot(PACKAGE) == package_before
+        assert not (home / "state.db-shm").exists()
+        assert not (home / "state.db-journal").exists()
+
+
+def test_sidecar_creation_before_connect_is_detected_without_connecting(tmp_path, monkeypatch):
+    observer = _load_observer()
+    home = tmp_path / "profile"
+    db = _create_db(home, [_row("never-report-this", 1_700_000_000)])
+    connect_calls = []
+    real_connect = observer._connect_read_only
+
+    def record_connect(path):
+        connect_calls.append(path)
+        return real_connect(path)
+
+    writer = None
+
+    def switch_to_wal(stage, _db):
+        nonlocal writer
+        if stage == "before_connect":
+            writer = sqlite3.connect(db)
+            assert writer.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+            writer.execute(
+                "INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                _row("racing-writer", 1_700_000_001),
+            )
+            writer.commit()
+
+    monkeypatch.setattr(observer, "_connect_read_only", record_connect)
+    try:
+        with pytest.raises(observer.ObserverError) as caught:
+            observer.inspect_database(str(home), _identity_hook=switch_to_wal)
+        assert caught.value.code == "source_changed"
+        assert connect_calls == []
+    finally:
+        if writer is not None:
+            writer.close()
+
+
+def test_symlinked_or_nonregular_wal_sidecars_are_rejected(tmp_path):
+    observer = _load_observer()
+    external = tmp_path / "external-sidecar"
+    external.write_bytes(b"not a WAL")
+
+    linked = tmp_path / "linked-sidecar"
+    db = _create_db(linked)
+    Path(f"{db}-wal").symlink_to(external)
+    with pytest.raises(observer.ObserverError) as caught:
+        observer.validate_state_db(str(linked))
+    assert caught.value.code == "wal_state_unsafe"
+
+    nonregular = tmp_path / "nonregular-sidecar"
+    db = _create_db(nonregular)
+    Path(f"{db}-shm").mkdir()
+    with pytest.raises(observer.ObserverError) as caught:
+        observer.validate_state_db(str(nonregular))
+    assert caught.value.code == "wal_state_unsafe"
 
 
 def test_live_wal_checkpoint_can_grow_main_database_during_inspection(tmp_path):

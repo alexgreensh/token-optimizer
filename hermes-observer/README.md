@@ -24,8 +24,14 @@ python3 hermes-observer/doctor.py --hermes-home /absolute/profile/path --format 
   those boundaries; legitimate growth remains accepted while it stays within the
   configured limit. Any observed replacement fails closed.
 - Uses a WAL-aware SQLite `mode=ro` connection with `query_only` enabled and a
-  short busy timeout. It does not use `immutable=1`, so committed live WAL rows
-  remain visible.
+  short busy timeout. Before connecting it validates the database's WAL header
+  and the `state.db-wal`/`state.db-shm` objects as non-symlink regular files,
+  binds existing sidecars to read-only descriptors, and rechecks their identity
+  and presence around SQLite operations. A WAL-mode source without both existing
+  sidecars fails closed with `wal_sidecars_unavailable`; this prevents SQLite
+  from creating `state.db-wal` or `state.db-shm`. It does not use `immutable=1`,
+  which could silently omit committed rows present only in the WAL, or `nolock=1`,
+  which does not reliably open a WAL database.
 - Emits aggregate token, cost, activity, date-bucket, and context-availability
   data only. It never emits prompts, messages, tool output, titles, working
   directories, model strings, private paths, or raw session IDs.
@@ -33,8 +39,12 @@ python3 hermes-observer/doctor.py --hermes-home /absolute/profile/path --format 
   reads, cache writes, and reasoning remain separately reported counters.
 - Has no network, subprocess, daemon, hook, installer, updater, browser, trend
   database, configuration-editing, or dynamic-extension behavior.
-- Creates and modifies no files. JSON and text output, scanned rows, and date
-  buckets are capped.
+- Creates no profile or package files and never writes the database or WAL.
+  Python bytecode creation is disabled for the doctor's sibling import. On a
+  live WAL source, SQLite may use the already-existing SHM file for read-lock
+  coordination; the observer will not open WAL mode when SQLite would need to
+  create a sidecar. JSON and text output, scanned rows, and date buckets are
+  capped.
 
 ## Beta limitations
 
@@ -51,12 +61,16 @@ Newest-session selection separately bounds numeric and ISO-text timestamp
 candidates, normalizes supported forms to UTC in Python, and uses the internal
 session ID only as a deterministic tie-breaker. The ID is never emitted.
 
-Python's SQLite API cannot bind a normal WAL-aware connection to an already
-opened database descriptor. The identity protocol therefore detects persistent
-or overlapping path/object replacement, but an attacker with write access that
-replaces and restores every pathname entirely between two checks remains a
-residual race. `mode=ro` is retained instead of `/proc` or `immutable=1` so this
-works on macOS and keeps committed WAL rows visible.
+Python's SQLite API cannot bind a normal WAL-aware connection to already opened
+read-only database/WAL/SHM descriptors. The identity protocol therefore detects
+persistent or overlapping path/object replacement, but an attacker with write
+access that replaces and restores every pathname—or creates and removes WAL
+state entirely—between two checks remains a residual portable-stdlib race.
+`mode=ro` is retained instead of `/proc`, `nolock=1`, or `immutable=1` so this
+works on macOS and keeps committed WAL rows visible. A clean database whose
+header remains in WAL mode but whose WAL/SHM sidecars were removed is rejected
+until both sidecars are present; this conservative limitation avoids creating
+new files.
 
 ## Review sabotage proof
 

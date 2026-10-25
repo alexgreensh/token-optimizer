@@ -35,8 +35,11 @@ python3 hermes-observer/doctor.py --hermes-home /absolute/profile/path --format 
 - Emits aggregate token, cost, activity, date-bucket, and context-availability
   data only. It never emits prompts, messages, tool output, titles, working
   directories, model strings, private paths, or raw session IDs.
-- Defines token `total` and daily token totals as input plus output only. Cache
-  reads, cache writes, and reasoning remain separately reported counters.
+- Defines token `total` as exactly the final reported `input + output`, including
+  at saturation. Each component is bounded to `10^18`, so token `total` is
+  bounded to `2 * 10^18`. Daily token totals apply the same independent input
+  and output component bounds and are therefore also bounded to `2 * 10^18`.
+  Cache reads, cache writes, and reasoning remain separately reported counters.
 - Has no network, subprocess, daemon, hook, installer, updater, browser, trend
   database, configuration-editing, or dynamic-extension behavior.
 - Never writes SQL, `state.db`, `state.db-wal`, configuration, analytics,
@@ -45,6 +48,10 @@ python3 hermes-observer/doctor.py --hermes-home /absolute/profile/path --format 
   locks as required for a supported same-user WAL-visible `mode=ro` read. Python
   bytecode creation is disabled for the doctor's sibling import. JSON and text
   output, scanned rows, and date buckets are capped.
+  Mutation tests seed `config.yaml` and a nested unrelated binary and verify
+  their inventory, bytes, modes, sizes, and nanosecond timestamps are unchanged
+  across both existing-SHM and SQLite-created-SHM reads. Only the direct-child
+  `state.db-shm` is excluded from that comparison.
 
 ## Beta limitations
 
@@ -57,9 +64,14 @@ unavailable rather than inferred from cumulative tokens. Reports scan at most
 passed through from Hermes aggregates; the observer does not load pricing data
 or estimate missing costs.
 
-Newest-session selection separately bounds numeric and ISO-text timestamp
-candidates, normalizes supported forms to UTC in Python, and uses the internal
-session ID only as a deterministic tie-breaker. The ID is never emitted.
+Newest-session selection accepts numeric Unix seconds from `-62135596800`
+through `253402300799`, or calendar-valid canonical extended UTC text in exactly
+`YYYY-MM-DDTHH:MM:SSZ` form (years `0001` through `9999`). SQL candidate filters
+and ordering enforce that same grammar before Python normalization, so compact
+ISO (`20260104T000000Z`), spaces, offsets, fractional seconds, and invalid dates
+are ignored rather than consuming the bounded candidate set. Numeric and text
+candidates are separately bounded, then normalized together; the internal
+session ID is only a deterministic tie-breaker and is never emitted.
 
 Python's SQLite API cannot bind a normal WAL-aware connection to already opened
 read-only database/WAL/SHM descriptors. The identity protocol therefore detects

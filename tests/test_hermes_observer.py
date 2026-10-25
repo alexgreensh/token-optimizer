@@ -124,8 +124,24 @@ def _snapshot_except_shm(root: Path) -> dict[str, tuple]:
     return {
         path: metadata
         for path, metadata in _snapshot(root).items()
-        if path != "." and Path(path).name != "state.db-shm"
+        if path not in (".", "state.db-shm")
     }
+
+
+def _seed_unrelated_profile_files(home: Path) -> dict[str, tuple]:
+    """Create representative profile state whose full metadata must be preserved."""
+    config = home / "config.yaml"
+    nested_dir = home / "unrelated" / "nested"
+    nested_dir.mkdir(parents=True)
+    nested = nested_dir / "keep.bin"
+    config.write_bytes(b"model: private-provider\nfeature: unchanged\n")
+    nested.write_bytes(b"\x00unrelated profile bytes\xff")
+    config.chmod(0o640)
+    nested_dir.chmod(0o750)
+    nested.chmod(0o600)
+    os.utime(config, ns=(1_700_000_001_000_000_000, 1_700_000_002_000_000_000))
+    os.utime(nested, ns=(1_700_000_003_000_000_000, 1_700_000_004_000_000_000))
+    return _snapshot_except_shm(home)
 
 
 def _sha256(path: Path) -> str:
@@ -184,6 +200,42 @@ def test_total_means_input_plus_output_and_keeps_other_counters_separate(tmp_pat
     assert report["daily"][0]["tokens"] == 18
 
 
+def test_token_totals_remain_exact_at_component_saturation_bounds(tmp_path):
+    observer = _load_observer()
+    home = tmp_path / "profile"
+    _create_db(home, [
+        _row("first", "2026-01-02T00:00:00Z",
+             input_tokens=observer.MAX_COUNTER, output_tokens=observer.MAX_COUNTER),
+        _row("second", "2026-01-02T00:00:01Z",
+             input_tokens=observer.MAX_COUNTER, output_tokens=observer.MAX_COUNTER),
+        _row("input-only-a", "2026-01-03T00:00:00Z",
+             input_tokens=observer.MAX_COUNTER, output_tokens=0),
+        _row("input-only-b", "2026-01-03T00:00:01Z",
+             input_tokens=observer.MAX_COUNTER, output_tokens=0),
+    ])
+    report = observer.inspect_database(str(home))
+    assert report["tokens"]["input"] == observer.MAX_COUNTER
+    assert report["tokens"]["output"] == observer.MAX_COUNTER
+    assert report["tokens"]["total"] == 2 * observer.MAX_COUNTER
+    assert report["tokens"]["total"] == (
+        report["tokens"]["input"] + report["tokens"]["output"]
+    )
+    assert report["daily"] == [
+        {
+            "cost_usd": 0.02,
+            "date": "2026-01-02",
+            "sessions": 2,
+            "tokens": 2 * observer.MAX_COUNTER,
+        },
+        {
+            "cost_usd": 0.02,
+            "date": "2026-01-03",
+            "sessions": 2,
+            "tokens": observer.MAX_COUNTER,
+        },
+    ]
+
+
 def test_committed_wal_only_row_is_visible_while_writer_remains_open(tmp_path):
     home = tmp_path / "profile"
     home.mkdir()
@@ -205,7 +257,8 @@ def test_committed_wal_only_row_is_visible_while_writer_remains_open(tmp_path):
         wal = home / "state.db-wal"
         assert wal.exists()
         assert (home / "state.db-shm").exists()
-        before = _snapshot_except_shm(home)
+        before = _seed_unrelated_profile_files(home)
+        shm_before = _snapshot(home)["state.db-shm"]
         db_hash = _sha256(db)
         wal_hash = _sha256(wal)
         proc = _run(OBSERVER, "report", "--hermes-home", str(home), "--format", "json")
@@ -214,6 +267,7 @@ def test_committed_wal_only_row_is_visible_while_writer_remains_open(tmp_path):
         assert report["sessions"]["total"] == 1
         assert report["tokens"]["input"] == 777
         assert _snapshot_except_shm(home) == before
+        assert _snapshot(home)["state.db-shm"] != shm_before
         assert _sha256(db) == db_hash
         assert _sha256(wal) == wal_hash
     finally:
@@ -245,6 +299,8 @@ def test_wal_without_shm_creates_only_shm_and_reads_committed_rows(tmp_path):
     writer.close()
     assert not (home / "state.db-shm").exists()
 
+    seeded = _seed_unrelated_profile_files(home)
+
     db = home / "state.db"
     wal = home / "state.db-wal"
     package_before = _snapshot(PACKAGE)
@@ -253,6 +309,7 @@ def test_wal_without_shm_creates_only_shm_and_reads_committed_rows(tmp_path):
         (DOCTOR, ("--hermes-home", str(home), "--format", "json")),
     ):
         before = _snapshot_except_shm(home)
+        assert before == seeded
         db_hash = _sha256(db)
         wal_hash = _sha256(wal)
         proc = _run(script, *args)
@@ -570,6 +627,46 @@ def test_newest_rows_normalize_mixed_real_and_iso_timestamps(tmp_path, monkeypat
     assert report["tokens"]["input"] == 50
     assert "numeric-newest" not in json.dumps(report)
     assert "iso-second" not in json.dumps(report)
+
+
+def test_compact_iso_is_ignored_and_cannot_displace_supported_newest_rows(tmp_path, monkeypatch):
+    observer = _load_observer()
+    monkeypatch.setattr(observer, "MAX_SCAN_ROWS", 1)
+    home = tmp_path / "profile"
+    _create_db(home, [
+        _row("supported-newest", "2026-01-04T00:00:00Z", input_tokens=7),
+        _row("supported-older", "2026-01-03T00:00:00Z", input_tokens=5),
+        _row("unsupported-compact-newer", "20260105T000000Z", input_tokens=900),
+        _row("unsupported-space-newer", "2026-01-06 00:00:00Z", input_tokens=800),
+    ])
+    report = observer.inspect_database(str(home))
+    assert report["source"] == {"sessions_scanned": 1, "truncated": True}
+    assert report["tokens"]["input"] == 7
+    assert report["daily"][0]["date"] == "2026-01-04"
+
+
+def test_timestamp_parser_and_sql_candidates_share_strict_extended_iso_grammar(tmp_path):
+    observer = _load_observer()
+    assert observer._timestamp("2026-01-04T00:00:00Z") is not None
+    for unsupported in (
+        "20260104T000000Z",
+        "2026-01-04 00:00:00Z",
+        "2026-01-04T00:00:00+00:00",
+        "2026-02-30T00:00:00Z",
+    ):
+        assert observer._timestamp(unsupported) is None
+
+    home = tmp_path / "profile"
+    _create_db(home, [
+        _row("valid", "2026-01-04T00:00:00Z", input_tokens=7),
+        _row("compact", "20260105T000000Z", input_tokens=900),
+        _row("space", "2026-01-06 00:00:00Z", input_tokens=800),
+        _row("offset", "2026-01-07T00:00:00+00:00", input_tokens=700),
+        _row("invalid-day", "2026-02-30T00:00:00Z", input_tokens=600),
+    ])
+    report = observer.inspect_database(str(home))
+    assert report["sessions"]["total"] == 1
+    assert report["tokens"]["input"] == 7
 
 
 def test_equal_normalized_times_use_id_as_deterministic_nonoutput_tie_breaker(tmp_path, monkeypatch):

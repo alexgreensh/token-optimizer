@@ -13,6 +13,7 @@ import argparse
 import json
 import math
 import os
+import re
 import sqlite3
 import stat
 import sys
@@ -25,13 +26,20 @@ OBSERVER_NAME = "token-optimizer-observer"
 DB_NAME = "state.db"
 MAX_DB_BYTES = 4 * 1024 * 1024 * 1024
 MAX_SCAN_ROWS = 10_000
-MAX_CANDIDATE_ROWS = 3 * (MAX_SCAN_ROWS + 1)
+MAX_CANDIDATE_ROWS = 2 * (MAX_SCAN_ROWS + 1)
 MAX_DATE_BUCKETS = 30
 MAX_OUTPUT_BYTES = 64 * 1024
 MAX_TEXT_BYTES = 8 * 1024
 BUSY_TIMEOUT_MS = 250
 MAX_COUNTER = 10**18
+MAX_TOKEN_TOTAL = 2 * MAX_COUNTER
 MAX_COST_USD = 10**12
+MIN_UNIX_TIMESTAMP = -62_135_596_800
+MAX_UNIX_TIMESTAMP = 253_402_300_799
+
+_EXTENDED_UTC_TIMESTAMP = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z"
+)
 
 _REQUIRED_COLUMNS = frozenset({"id", "started_at", "input_tokens", "output_tokens"})
 _SELECT_COLUMNS = (
@@ -441,19 +449,23 @@ def _day(value: Any) -> str | None:
 
 
 def _timestamp(value: Any) -> float | None:
-    """Normalize supported Unix REAL/INTEGER and ISO TEXT timestamps."""
+    """Normalize bounded Unix seconds or canonical extended UTC ISO text."""
     try:
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             timestamp = float(value)
-            return timestamp if math.isfinite(timestamp) else None
-        if not isinstance(value, str) or len(value.encode("utf-8")) > 64:
+            if not math.isfinite(timestamp):
+                return None
+            return timestamp if MIN_UNIX_TIMESTAMP <= timestamp <= MAX_UNIX_TIMESTAMP else None
+        if not isinstance(value, str) or _EXTENDED_UTC_TIMESTAMP.fullmatch(value) is None:
             return None
-        text = value[:-1] + "+00:00" if value.endswith("Z") else value
+        text = value[:-1] + "+00:00"
         parsed = datetime.fromisoformat(text)
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
         timestamp = parsed.astimezone(timezone.utc).timestamp()
-        return timestamp if math.isfinite(timestamp) else None
+        return (
+            timestamp
+            if math.isfinite(timestamp) and MIN_UNIX_TIMESTAMP <= timestamp <= MAX_UNIX_TIMESTAMP
+            else None
+        )
     except (ValueError, TypeError, OverflowError, OSError):
         return None
 
@@ -476,13 +488,15 @@ def _query_rows(conn: sqlite3.Connection, columns: set[str]) -> list[sqlite3.Row
     queries = (
         select_sql
         + " WHERE typeof(started_at) IN ('integer','real')"
+        + f" AND started_at BETWEEN {MIN_UNIX_TIMESTAMP} AND {MAX_UNIX_TIMESTAMP}"
         + " ORDER BY CAST(started_at AS REAL) DESC, CAST(id AS TEXT) ASC LIMIT ?",
         select_sql
         + " WHERE typeof(started_at) = 'text'"
+        + " AND length(started_at) = 20"
+        + " AND started_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z'"
+        + " AND substr(started_at, 1, 4) BETWEEN '0001' AND '9999'"
+        + " AND strftime('%Y-%m-%dT%H:%M:%SZ', started_at) = started_at"
         + " ORDER BY julianday(started_at) DESC, CAST(id AS TEXT) ASC LIMIT ?",
-        select_sql
-        + " WHERE typeof(started_at) NOT IN ('integer','real','text')"
-        + " ORDER BY CAST(id AS TEXT) ASC LIMIT ?",
     )
     try:
         candidates: list[sqlite3.Row] = []
@@ -618,9 +632,6 @@ def inspect_database(
         }
         for key, value in values.items():
             tokens[key] = min(MAX_COUNTER, tokens[key] + value)
-        row_total = min(MAX_COUNTER, values["input"] + values["output"])
-        tokens["total"] = min(MAX_COUNTER, tokens["total"] + row_total)
-
         row_estimated = _safe_cost(row["estimated_cost_usd"])
         row_actual = _safe_cost(row["actual_cost_usd"])
         if row_estimated is not None:
@@ -633,18 +644,38 @@ def inspect_database(
 
         day = _day(row["started_at"])
         if day is not None:
-            bucket = daily.setdefault(day, {"date": day, "sessions": 0, "tokens": 0, "cost_usd": 0.0})
+            bucket = daily.setdefault(
+                day,
+                {
+                    "date": day,
+                    "sessions": 0,
+                    "_input": 0,
+                    "_output": 0,
+                    "cost_usd": 0.0,
+                },
+            )
             bucket["sessions"] += 1
-            bucket["tokens"] = min(MAX_COUNTER, bucket["tokens"] + row_total)
+            bucket["_input"] = min(MAX_COUNTER, bucket["_input"] + values["input"])
+            bucket["_output"] = min(MAX_COUNTER, bucket["_output"] + values["output"])
             if selected_cost is not None:
                 bucket["cost_usd"] = min(MAX_COST_USD, bucket["cost_usd"] + selected_cost)
+
+    # Derivation after component saturation preserves the public invariant even
+    # at the bounds: total is always exactly the reported input plus output.
+    tokens["total"] = tokens["input"] + tokens["output"]
 
     chosen_days = sorted(daily)[-MAX_DATE_BUCKETS:]
     daily_rows = []
     for day in chosen_days:
         bucket = daily[day]
-        bucket["cost_usd"] = round(bucket["cost_usd"], 6)
-        daily_rows.append(bucket)
+        daily_rows.append(
+            {
+                "cost_usd": round(bucket["cost_usd"], 6),
+                "date": bucket["date"],
+                "sessions": bucket["sessions"],
+                "tokens": bucket["_input"] + bucket["_output"],
+            }
+        )
 
     return {
         "context": {

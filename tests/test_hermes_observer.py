@@ -199,6 +199,38 @@ def test_committed_wal_only_row_is_visible_while_writer_remains_open(tmp_path):
         writer.close()
 
 
+def test_live_wal_checkpoint_can_grow_main_database_during_inspection(tmp_path):
+    observer = _load_observer()
+    home = tmp_path / "profile"
+    db = _create_db(home)
+    writer = sqlite3.connect(db)
+    assert writer.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+    writer.execute("PRAGMA wal_autocheckpoint=0")
+    writer.executemany(
+        "INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [_row(f"live-{index}", 1_700_000_000 + index) for index in range(500)],
+    )
+    writer.commit()
+    size_before = db.stat().st_size
+    checkpointed = False
+
+    def checkpoint_during_inspection(stage, _db):
+        nonlocal checkpointed
+        if stage == "before_schema":
+            assert writer.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0] == 0
+            assert db.stat().st_size > size_before
+            checkpointed = True
+
+    try:
+        report = observer.inspect_database(
+            str(home), _identity_hook=checkpoint_during_inspection
+        )
+        assert checkpointed
+        assert report["sessions"]["total"] == 500
+    finally:
+        writer.close()
+
+
 def test_missing_symlink_nonregular_and_configured_oversize_are_rejected(tmp_path):
     observer = _load_observer()
     missing = tmp_path / "missing"
@@ -309,6 +341,30 @@ def test_database_replacement_during_open_fails_closed(tmp_path):
     with pytest.raises(observer.ObserverError) as caught:
         observer.inspect_database(str(home), _identity_hook=replace_database)
     assert caught.value.code == "source_changed"
+
+
+def test_database_replacement_after_initial_validation_fails_before_open(tmp_path, monkeypatch):
+    observer = _load_observer()
+    home = tmp_path / "profile"
+    db = _create_db(home, [_row("never-open-this", 1_700_000_000)])
+    connect_calls = []
+    real_connect = observer._connect_read_only
+
+    def record_connect(path):
+        connect_calls.append(path)
+        return real_connect(path)
+
+    def replace_database(stage, _db):
+        if stage == "after_validation":
+            parked = home / "parked.db"
+            db.rename(parked)
+            shutil.copy2(parked, db)
+
+    monkeypatch.setattr(observer, "_connect_read_only", record_connect)
+    with pytest.raises(observer.ObserverError) as caught:
+        observer.inspect_database(str(home), _identity_hook=replace_database)
+    assert caught.value.code == "source_changed"
+    assert connect_calls == []
 
 
 def test_newest_rows_normalize_mixed_real_and_iso_timestamps(tmp_path, monkeypatch):

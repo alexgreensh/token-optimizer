@@ -16,7 +16,7 @@ import stat
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, NamedTuple
 
 SCHEMA_VERSION = 1
 OBSERVER_NAME = "token-optimizer-observer"
@@ -57,8 +57,19 @@ class ObserverError(Exception):
         self.message = message
 
 
-_Identity = tuple[int, int, int, int | None]
+_Identity = tuple[int, int, int]
 _IdentityHook = Callable[[str, Path], None]
+
+
+class _SourceCapture(NamedTuple):
+    identities: dict[Path, _Identity]
+    db_size: int
+
+
+class _ValidatedSource(NamedTuple):
+    home: Path
+    db: Path
+    identities: dict[Path, _Identity]
 
 
 def _validate_lexical_home(hermes_home: str) -> Path:
@@ -90,13 +101,15 @@ def _home_components(home: Path) -> list[Path]:
     return paths
 
 
-def _identity(info: os.stat_result, *, include_size: bool) -> _Identity:
-    return (info.st_dev, info.st_ino, info.st_mode, info.st_size if include_size else None)
+def _identity(info: os.stat_result) -> _Identity:
+    """Return object identity and type/mode, excluding mutable file size."""
+    return (info.st_dev, info.st_ino, info.st_mode)
 
 
-def _capture_identities(home: Path, db: Path) -> dict[Path, _Identity]:
+def _capture_source(home: Path, db: Path) -> _SourceCapture:
     """Capture every ancestor, the home, and the database without following links."""
     identities: dict[Path, _Identity] = {}
+    db_size: int | None = None
     home_paths = _home_components(home)
     for path in [*home_paths, db]:
         try:
@@ -120,18 +133,29 @@ def _capture_identities(home: Path, db: Path) -> dict[Path, _Identity]:
             raise ObserverError(code, "Hermes home must be a directory")
         if path == db and not stat.S_ISREG(info.st_mode):
             raise ObserverError("database_not_regular", "state.db must be a regular file")
-        identities[path] = _identity(info, include_size=path == db)
-    return identities
+        identities[path] = _identity(info)
+        if path == db:
+            db_size = info.st_size
+    if db_size is None:
+        raise ObserverError("source_changed", "Hermes source cannot be safely inspected")
+    return _SourceCapture(identities, db_size)
 
 
-def _open_guard(path: Path, expected: _Identity, *, directory: bool) -> int:
+def _open_guard(
+    path: Path,
+    expected: _Identity,
+    *,
+    directory: bool,
+    max_db_bytes: int,
+) -> int:
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     if directory:
         flags |= getattr(os, "O_DIRECTORY", 0)
     descriptor: int | None = None
     try:
         descriptor = os.open(path, flags)
-        actual = _identity(os.fstat(descriptor), include_size=not directory)
+        info = os.fstat(descriptor)
+        actual = _identity(info)
     except OSError as exc:
         if descriptor is not None:
             os.close(descriptor)
@@ -139,6 +163,9 @@ def _open_guard(path: Path, expected: _Identity, *, directory: bool) -> int:
     if actual != expected:
         os.close(descriptor)
         raise ObserverError("source_changed", "Hermes source changed during inspection")
+    if not directory and (max_db_bytes < 0 or info.st_size > max_db_bytes):
+        os.close(descriptor)
+        raise ObserverError("database_oversized", "state.db exceeds the configured size limit")
     return descriptor
 
 
@@ -148,26 +175,28 @@ def _assert_source_stable(
     expected: dict[Path, _Identity],
     home_fd: int,
     db_fd: int,
+    max_db_bytes: int,
 ) -> None:
     try:
-        current = _capture_identities(home, db)
-        descriptors = (
-            _identity(os.fstat(home_fd), include_size=False),
-            _identity(os.fstat(db_fd), include_size=True),
-        )
+        current = _capture_source(home, db)
+        home_info = os.fstat(home_fd)
+        db_info = os.fstat(db_fd)
+        descriptors = (_identity(home_info), _identity(db_info))
     except ObserverError as exc:
         raise ObserverError("source_changed", "Hermes source changed during inspection") from exc
     except OSError as exc:
         raise ObserverError("source_changed", "Hermes source changed during inspection") from exc
-    if current != expected or descriptors != (expected[home], expected[db]):
+    if current.identities != expected or descriptors != (expected[home], expected[db]):
         raise ObserverError("source_changed", "Hermes source changed during inspection")
+    if max_db_bytes < 0 or current.db_size > max_db_bytes or db_info.st_size > max_db_bytes:
+        raise ObserverError("database_oversized", "state.db exceeds the configured size limit")
 
 
-def validate_state_db(hermes_home: str, *, max_db_bytes: int = MAX_DB_BYTES) -> Path:
-    """Validate and return the direct-child state.db without following links."""
+def _validate_source(hermes_home: str, *, max_db_bytes: int) -> _ValidatedSource:
+    """Validate a source and retain the identity captured by that first validation."""
     home = _validate_lexical_home(hermes_home)
     db = home / DB_NAME
-    identities = _capture_identities(home, db)
+    captured = _capture_source(home, db)
     try:
         resolved_home = home.resolve(strict=True)
     except (OSError, RuntimeError) as exc:
@@ -180,10 +209,14 @@ def validate_state_db(hermes_home: str, *, max_db_bytes: int = MAX_DB_BYTES) -> 
         raise ObserverError("database_invalid", "state.db cannot be safely inspected") from exc
     if resolved_db.parent != resolved_home or resolved_db.name != DB_NAME:
         raise ObserverError("database_escape", "state.db must be the direct child of Hermes home")
-    db_size = identities[db][3]
-    if max_db_bytes < 0 or db_size is None or db_size > max_db_bytes:
+    if max_db_bytes < 0 or captured.db_size > max_db_bytes:
         raise ObserverError("database_oversized", "state.db exceeds the configured size limit")
-    return db
+    return _ValidatedSource(home, db, captured.identities)
+
+
+def validate_state_db(hermes_home: str, *, max_db_bytes: int = MAX_DB_BYTES) -> Path:
+    """Validate and return the direct-child state.db without following links."""
+    return _validate_source(hermes_home, max_db_bytes=max_db_bytes).db
 
 
 def _connect_read_only(db: Path) -> sqlite3.Connection:
@@ -339,15 +372,17 @@ def inspect_database(
     _identity_hook: _IdentityHook | None = None,
 ) -> dict[str, Any]:
     """Return a deterministic, bounded aggregate report for one profile."""
-    db = validate_state_db(hermes_home, max_db_bytes=max_db_bytes)
-    home = db.parent
-    expected = _capture_identities(home, db)
-    captured_size = expected[db][3]
-    if max_db_bytes < 0 or captured_size is None or captured_size > max_db_bytes:
-        raise ObserverError("database_oversized", "state.db exceeds the configured size limit")
-    home_fd = _open_guard(home, expected[home], directory=True)
+    validated = _validate_source(hermes_home, max_db_bytes=max_db_bytes)
+    home, db, expected = validated
+    if _identity_hook is not None:
+        _identity_hook("after_validation", db)
+    home_fd = _open_guard(
+        home, expected[home], directory=True, max_db_bytes=max_db_bytes
+    )
     try:
-        db_fd = _open_guard(db, expected[db], directory=False)
+        db_fd = _open_guard(
+            db, expected[db], directory=False, max_db_bytes=max_db_bytes
+        )
     except Exception:
         os.close(home_fd)
         raise
@@ -358,26 +393,26 @@ def inspect_database(
         conn = _connect_read_only(db)
         if _identity_hook is not None:
             _identity_hook("after_connect", db)
-        _assert_source_stable(home, db, expected, home_fd, db_fd)
+        _assert_source_stable(home, db, expected, home_fd, db_fd, max_db_bytes)
         database_rows = conn.execute("PRAGMA database_list").fetchall()
         main_paths = [str(row[2]) for row in database_rows if str(row[1]) == "main"]
         if main_paths != [str(db)]:
             raise ObserverError("source_changed", "SQLite opened an unexpected database object")
         _configure_connection(conn)
-        _assert_source_stable(home, db, expected, home_fd, db_fd)
+        _assert_source_stable(home, db, expected, home_fd, db_fd, max_db_bytes)
         if _identity_hook is not None:
             _identity_hook("before_schema", db)
-        _assert_source_stable(home, db, expected, home_fd, db_fd)
+        _assert_source_stable(home, db, expected, home_fd, db_fd, max_db_bytes)
         columns = _schema_columns(conn)
-        _assert_source_stable(home, db, expected, home_fd, db_fd)
+        _assert_source_stable(home, db, expected, home_fd, db_fd, max_db_bytes)
         if _identity_hook is not None:
             _identity_hook("before_query", db)
-        _assert_source_stable(home, db, expected, home_fd, db_fd)
+        _assert_source_stable(home, db, expected, home_fd, db_fd, max_db_bytes)
         rows = _query_rows(conn, columns)
-        _assert_source_stable(home, db, expected, home_fd, db_fd)
+        _assert_source_stable(home, db, expected, home_fd, db_fd, max_db_bytes)
         if _identity_hook is not None:
             _identity_hook("after_query", db)
-        _assert_source_stable(home, db, expected, home_fd, db_fd)
+        _assert_source_stable(home, db, expected, home_fd, db_fd, max_db_bytes)
     finally:
         if conn is not None:
             conn.close()

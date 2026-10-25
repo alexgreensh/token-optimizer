@@ -17,10 +17,12 @@ python3 hermes-observer/doctor.py --hermes-home /absolute/profile/path --format 
 - Rejects symlinked path components, symlinked/non-regular databases, malformed or
   unsupported schemas, and databases above the injectable 4 GiB default limit.
 - Rejects noncanonical path spellings before normalization (`.`, `..`, repeated
-  separators, and non-root trailing separators). It records device, inode, mode,
-  and (for the database) size identities for the full ancestry, holds read-only
-  descriptors for the home and database, and revalidates around open, schema,
-  and data reads. Any observed replacement fails closed.
+  separators, and non-root trailing separators). It records device, inode, and
+  mode identities for the full ancestry, retains the first validation baseline,
+  holds read-only descriptors for the home and database, and revalidates around
+  open, schema, and data reads. Mutable database size is checked independently at
+  those boundaries; legitimate growth remains accepted while it stays within the
+  configured limit. Any observed replacement fails closed.
 - Uses a WAL-aware SQLite `mode=ro` connection with `query_only` enabled and a
   short busy timeout. It does not use `immutable=1`, so committed live WAL rows
   remain visible.
@@ -52,7 +54,7 @@ session ID only as a deterministic tie-breaker. The ID is never emitted.
 Python's SQLite API cannot bind a normal WAL-aware connection to an already
 opened database descriptor. The identity protocol therefore detects persistent
 or overlapping path/object replacement, but an attacker with write access that
-replaces and restores every pathname entirely between two checks remains an
+replaces and restores every pathname entirely between two checks remains a
 residual race. `mode=ro` is retained instead of `/proc` or `immutable=1` so this
 works on macOS and keeps committed WAL rows visible.
 

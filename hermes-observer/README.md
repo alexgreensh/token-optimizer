@@ -27,11 +27,11 @@ python3 hermes-observer/doctor.py --hermes-home /absolute/profile/path --format 
   short busy timeout. Before connecting it validates the database's WAL header
   and the `state.db-wal`/`state.db-shm` objects as non-symlink regular files,
   binds existing sidecars to read-only descriptors, and rechecks their identity
-  and presence around SQLite operations. A WAL-mode source without both existing
-  sidecars fails closed with `wal_sidecars_unavailable`; this prevents SQLite
-  from creating `state.db-wal` or `state.db-shm`. It does not use `immutable=1`,
-  which could silently omit committed rows present only in the WAL, or `nolock=1`,
-  which does not reliably open a WAL database.
+  and presence around SQLite operations. A WAL-mode source must have an existing
+  `state.db-wal`; if `state.db-shm` is absent, SQLite may create it and the
+  observer immediately validates and binds its identity. It does not use
+  `immutable=1`, which could silently omit committed rows present only in the
+  WAL, or `nolock=1`, which does not reliably open a WAL database.
 - Emits aggregate token, cost, activity, date-bucket, and context-availability
   data only. It never emits prompts, messages, tool output, titles, working
   directories, model strings, private paths, or raw session IDs.
@@ -39,12 +39,12 @@ python3 hermes-observer/doctor.py --hermes-home /absolute/profile/path --format 
   reads, cache writes, and reasoning remain separately reported counters.
 - Has no network, subprocess, daemon, hook, installer, updater, browser, trend
   database, configuration-editing, or dynamic-extension behavior.
-- Creates no profile or package files and never writes the database or WAL.
-  Python bytecode creation is disabled for the doctor's sibling import. On a
-  live WAL source, SQLite may use the already-existing SHM file for read-lock
-  coordination; the observer will not open WAL mode when SQLite would need to
-  create a sidecar. JSON and text output, scanned rows, and date buckets are
-  capped.
+- Never writes SQL, `state.db`, `state.db-wal`, configuration, analytics,
+  bytecode, or any other profile/package file. The one narrow filesystem-write
+  exception is SQLite itself creating or updating `state.db-shm` read marks and
+  locks as required for a supported same-user WAL-visible `mode=ro` read. Python
+  bytecode creation is disabled for the doctor's sibling import. JSON and text
+  output, scanned rows, and date buckets are capped.
 
 ## Beta limitations
 
@@ -67,10 +67,10 @@ persistent or overlapping path/object replacement, but an attacker with write
 access that replaces and restores every pathname—or creates and removes WAL
 state entirely—between two checks remains a residual portable-stdlib race.
 `mode=ro` is retained instead of `/proc`, `nolock=1`, or `immutable=1` so this
-works on macOS and keeps committed WAL rows visible. A clean database whose
-header remains in WAL mode but whose WAL/SHM sidecars were removed is rejected
-until both sidecars are present; this conservative limitation avoids creating
-new files.
+works on macOS and keeps committed WAL rows visible. A missing `state.db-shm`
+is acceptable only when `state.db-wal` already exists; SQLite may create SHM for
+coordination. A WAL-mode database with no WAL, and every hostile or non-regular
+sidecar, is rejected before a query.
 
 ## Review sabotage proof
 

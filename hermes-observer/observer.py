@@ -2,8 +2,10 @@
 """Bounded, standalone reporting for one explicitly selected Hermes profile.
 
 This module intentionally uses only the Python standard library.  It reads the
-profile's direct-child state.db through a WAL-aware, read-only SQLite connection
-and emits aggregates only.  It does not import Token Optimizer's runtime.
+profile's direct-child state.db through a WAL-aware SQLite ``mode=ro`` connection
+and emits aggregates only.  SQLite may create or update only ``state.db-shm``
+for WAL read coordination; the observer does not write SQL, the database, WAL,
+or any other profile/package file.  It does not import Token Optimizer's runtime.
 """
 from __future__ import annotations
 
@@ -147,7 +149,7 @@ def _sidecar_paths(db: Path) -> tuple[Path, Path]:
 
 
 def _capture_sidecars(db: Path) -> dict[Path, _Identity | None]:
-    """Capture optional WAL state without following or accepting special files."""
+    """Capture WAL/SHM identity without following or accepting special files."""
     captured: dict[Path, _Identity | None] = {}
     for path in _sidecar_paths(db):
         try:
@@ -300,6 +302,42 @@ def _assert_sidecars_stable(
         raise ObserverError("source_changed", "SQLite sidecar state changed during inspection")
 
 
+def _adopt_sqlite_created_shm(
+    db: Path,
+    expected: dict[Path, _Identity | None],
+    descriptors: dict[Path, int],
+) -> None:
+    """Bind an SHM file SQLite created during the immediately preceding read.
+
+    WAL identity may never change.  SHM may make exactly one absent-to-regular
+    transition caused by a SQLite operation; after adoption its identity is as
+    strict as every other source object.  Contents are intentionally not hashed:
+    SQLite updates SHM read marks and locks as part of supported WAL reads.
+    """
+    wal, shm = _sidecar_paths(db)
+    try:
+        current = _capture_sidecars(db)
+    except ObserverError as exc:
+        raise ObserverError("source_changed", "SQLite sidecar state changed during inspection") from exc
+    if current[wal] != expected[wal]:
+        raise ObserverError("source_changed", "SQLite WAL state changed during inspection")
+    if expected[shm] is not None:
+        _assert_sidecars_stable(db, expected, descriptors)
+        return
+    identity = current[shm]
+    if identity is None:
+        return
+    descriptor = _open_guard(shm, identity, directory=False, max_db_bytes=None)
+    try:
+        if _capture_sidecars(db) != current:
+            raise ObserverError("source_changed", "SQLite SHM state changed during inspection")
+    except Exception:
+        os.close(descriptor)
+        raise
+    expected[shm] = identity
+    descriptors[shm] = descriptor
+
+
 def _database_header_uses_wal(db_fd: int) -> bool:
     """Read the SQLite header through the guarded descriptor without mutating it."""
     try:
@@ -310,22 +348,23 @@ def _database_header_uses_wal(db_fd: int) -> bool:
     return header.startswith(b"SQLite format 3\x00") and header[18:20] == b"\x02\x02"
 
 
-def _require_safe_wal_state(
-    db: Path, db_fd: int, sidecars: dict[Path, _Identity | None]
-) -> None:
+def _require_safe_wal_state(db: Path, db_fd: int, sidecars: dict[Path, _Identity | None]) -> None:
+    """Reject WAL mode without WAL; missing SHM is the one permitted transition."""
     wal, shm = _sidecar_paths(db)
     wal_exists = sidecars[wal] is not None
     shm_exists = sidecars[shm] is not None
-    if (wal_exists or shm_exists or _database_header_uses_wal(db_fd)) and not (
-        wal_exists and shm_exists
-    ):
-        # A mode=ro connection may still create both sidecars for a WAL-mode
-        # database, and creates -shm when only -wal exists. Fail before SQLite
-        # gets a chance to do so. immutable=1 is deliberately not used because
-        # it can silently omit committed rows that live only in the WAL.
+    if shm_exists and not wal_exists:
         raise ObserverError(
             "wal_sidecars_unavailable",
-            "WAL state cannot be inspected without creating SQLite sidecars",
+            "SQLite SHM exists without a WAL and cannot be safely inspected",
+        )
+    if _database_header_uses_wal(db_fd) and not wal_exists:
+        # mode=ro may create SHM for an existing WAL, but it must never create
+        # WAL/database state. immutable=1 is not used because it can omit rows
+        # committed only in WAL.
+        raise ObserverError(
+            "wal_sidecars_unavailable",
+            "WAL mode cannot be inspected without an existing state.db-wal",
         )
 
 
@@ -468,7 +507,7 @@ def inspect_database(
     max_db_bytes: int = MAX_DB_BYTES,
     _identity_hook: _IdentityHook | None = None,
 ) -> dict[str, Any]:
-    """Return a deterministic, bounded aggregate report for one profile."""
+    """Return bounded aggregates; only SQLite WAL-read SHM updates are permitted."""
     validated = _validate_source(hermes_home, max_db_bytes=max_db_bytes)
     home, db, expected, expected_sidecars = validated
     if _identity_hook is not None:
@@ -493,30 +532,37 @@ def inspect_database(
             _assert_sidecars_stable(db, expected_sidecars, sidecar_fds)
             _require_safe_wal_state(db, db_fd, expected_sidecars)
 
+        def sqlite_read_completed() -> None:
+            _assert_source_stable(home, db, expected, home_fd, db_fd, max_db_bytes)
+            _adopt_sqlite_created_shm(db, expected_sidecars, sidecar_fds)
+            assert_all_stable()
+
         assert_all_stable()
         if _identity_hook is not None:
             _identity_hook("before_connect", db)
         assert_all_stable()
         conn = _connect_read_only(db)
+        sqlite_read_completed()
         if _identity_hook is not None:
             _identity_hook("after_connect", db)
         assert_all_stable()
         database_rows = conn.execute("PRAGMA database_list").fetchall()
+        sqlite_read_completed()
         main_paths = [str(row[2]) for row in database_rows if str(row[1]) == "main"]
         if main_paths != [str(db)]:
             raise ObserverError("source_changed", "SQLite opened an unexpected database object")
         _configure_connection(conn)
-        assert_all_stable()
+        sqlite_read_completed()
         if _identity_hook is not None:
             _identity_hook("before_schema", db)
         assert_all_stable()
         columns = _schema_columns(conn)
-        assert_all_stable()
+        sqlite_read_completed()
         if _identity_hook is not None:
             _identity_hook("before_query", db)
         assert_all_stable()
         rows = _query_rows(conn, columns)
-        assert_all_stable()
+        sqlite_read_completed()
         if _identity_hook is not None:
             _identity_hook("after_query", db)
         assert_all_stable()

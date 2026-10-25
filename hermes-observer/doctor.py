@@ -7,8 +7,8 @@ import json
 import sys
 from typing import Any
 
-# Importing the sibling module must not create __pycache__; the observer suite
-# is intentionally write-free even when invoked from a read-only directory.
+# Importing the sibling module must not create __pycache__. The only permitted
+# filesystem mutation is SQLite-managed state.db-shm WAL read coordination.
 sys.dont_write_bytecode = True
 import observer
 

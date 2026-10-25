@@ -1,4 +1,4 @@
-"""Contract tests for the standalone, read-only Hermes observer."""
+"""Contract tests for the standalone Hermes observer and its narrow SHM exception."""
 from __future__ import annotations
 
 import ast
@@ -119,6 +119,19 @@ def _snapshot(root: Path) -> dict[str, tuple]:
     return result
 
 
+def _snapshot_except_shm(root: Path) -> dict[str, tuple]:
+    """Snapshot everything except SQLite's permitted WAL coordination file."""
+    return {
+        path: metadata
+        for path, metadata in _snapshot(root).items()
+        if path != "." and Path(path).name != "state.db-shm"
+    }
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def test_aggregate_report_from_realistic_sqlite_fixture(tmp_path):
     home = tmp_path / "profile"
     day1 = datetime(2026, 1, 2, 10, tzinfo=timezone.utc).timestamp()
@@ -189,18 +202,25 @@ def test_committed_wal_only_row_is_visible_while_writer_remains_open(tmp_path):
     )
     writer.commit()
     try:
-        assert (home / "state.db-wal").exists()
+        wal = home / "state.db-wal"
+        assert wal.exists()
         assert (home / "state.db-shm").exists()
+        before = _snapshot_except_shm(home)
+        db_hash = _sha256(db)
+        wal_hash = _sha256(wal)
         proc = _run(OBSERVER, "report", "--hermes-home", str(home), "--format", "json")
         assert proc.returncode == 0, proc.stderr
         report = json.loads(proc.stdout)
         assert report["sessions"]["total"] == 1
         assert report["tokens"]["input"] == 777
+        assert _snapshot_except_shm(home) == before
+        assert _sha256(db) == db_hash
+        assert _sha256(wal) == wal_hash
     finally:
         writer.close()
 
 
-def test_wal_without_shm_fails_before_sqlite_and_creates_nothing(tmp_path):
+def test_wal_without_shm_creates_only_shm_and_reads_committed_rows(tmp_path):
     seed = tmp_path / "seed"
     seed.mkdir()
     seed_db = seed / "state.db"
@@ -225,23 +245,62 @@ def test_wal_without_shm_fails_before_sqlite_and_creates_nothing(tmp_path):
     writer.close()
     assert not (home / "state.db-shm").exists()
 
-    before = _snapshot(home)
+    db = home / "state.db"
+    wal = home / "state.db-wal"
     package_before = _snapshot(PACKAGE)
     for script, args in (
         (OBSERVER, ("report", "--hermes-home", str(home), "--format", "json")),
         (DOCTOR, ("--hermes-home", str(home), "--format", "json")),
     ):
+        before = _snapshot_except_shm(home)
+        db_hash = _sha256(db)
+        wal_hash = _sha256(wal)
         proc = _run(script, *args)
-        assert proc.returncode == 1
-        error = json.loads(proc.stdout)["error"]
-        assert error == {
-            "code": "wal_sidecars_unavailable",
-            "message": "WAL state cannot be inspected without creating SQLite sidecars",
-        }
-        assert _snapshot(home) == before
+        assert proc.returncode == 0, proc.stderr
+        document = json.loads(proc.stdout)
+        if script == OBSERVER:
+            assert document["sessions"]["total"] == 1
+            assert document["tokens"]["input"] == 321
+        else:
+            assert document["session_count"] == 1
+        assert (home / "state.db-shm").is_file()
+        assert _snapshot_except_shm(home) == before
+        assert _sha256(db) == db_hash
+        assert _sha256(wal) == wal_hash
         assert _snapshot(PACKAGE) == package_before
-        assert not (home / "state.db-shm").exists()
         assert not (home / "state.db-journal").exists()
+
+
+def test_query_only_and_mode_ro_each_prevent_sql_writes(tmp_path):
+    observer = _load_observer()
+    home = tmp_path / "profile"
+    db = _create_db(home, [_row("unchanged", 1_700_000_000)])
+    before = _sha256(db)
+
+    query_only = observer._connect_read_only(db)
+    try:
+        observer._configure_connection(query_only)
+        assert query_only.execute("PRAGMA query_only").fetchone()[0] == 1
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            query_only.execute("DELETE FROM sessions")
+    finally:
+        query_only.close()
+
+    mode_ro = observer._connect_read_only(db)
+    try:
+        mode_ro.execute("PRAGMA query_only = OFF")
+        assert mode_ro.execute("PRAGMA query_only").fetchone()[0] == 0
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            mode_ro.execute("DELETE FROM sessions")
+    finally:
+        mode_ro.close()
+
+    assert _sha256(db) == before
+    verifier = sqlite3.connect(db)
+    try:
+        assert verifier.execute("SELECT count(*) FROM sessions").fetchone()[0] == 1
+    finally:
+        verifier.close()
 
 
 def test_sidecar_creation_before_connect_is_detected_without_connecting(tmp_path, monkeypatch):
@@ -297,6 +356,35 @@ def test_symlinked_or_nonregular_wal_sidecars_are_rejected(tmp_path):
     with pytest.raises(observer.ObserverError) as caught:
         observer.validate_state_db(str(nonregular))
     assert caught.value.code == "wal_state_unsafe"
+
+
+@pytest.mark.parametrize("sidecar_name", ["state.db-wal", "state.db-shm"])
+def test_existing_sidecar_replacement_during_inspection_fails_closed(tmp_path, sidecar_name):
+    observer = _load_observer()
+    home = tmp_path / "profile"
+    db = _create_db(home)
+    writer = sqlite3.connect(db)
+    assert writer.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+    writer.execute("PRAGMA wal_autocheckpoint=0")
+    writer.execute(
+        "INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        _row("never-report-replaced-sidecar", 1_700_000_001),
+    )
+    writer.commit()
+
+    def replace_sidecar(stage, _db):
+        if stage == "before_schema":
+            sidecar = home / sidecar_name
+            parked = home / f"parked-{sidecar_name}"
+            sidecar.rename(parked)
+            shutil.copy2(parked, sidecar)
+
+    try:
+        with pytest.raises(observer.ObserverError) as caught:
+            observer.inspect_database(str(home), _identity_hook=replace_sidecar)
+        assert caught.value.code == "source_changed"
+    finally:
+        writer.close()
 
 
 def test_live_wal_checkpoint_can_grow_main_database_during_inspection(tmp_path):
@@ -519,7 +607,7 @@ def test_runtime_does_not_import_or_invoke_network_or_subprocess_apis():
         assert "http://" not in source and "https://" not in source
 
 
-def test_report_and_doctor_make_no_filesystem_writes(tmp_path):
+def test_report_and_doctor_change_no_files_when_shm_is_not_required(tmp_path):
     home = tmp_path / "profile"
     _create_db(home, [_row("secret-id", 1_700_000_000)])
     before = _snapshot(tmp_path)
@@ -613,13 +701,17 @@ def test_malformed_or_unsupported_schema_fails_clearly(tmp_path):
 def test_manifest_has_exact_contract_and_hashes():
     manifest = json.loads((PACKAGE / "manifest.json").read_text(encoding="utf-8"))
     assert set(manifest) == {
-        "schema_version", "name", "entrypoints", "runtime_files", "network", "writes_by_default"
+        "schema_version", "name", "entrypoints", "runtime_files", "network",
+        "writes_by_default", "write_scope",
     }
     assert manifest["schema_version"] == 1
     assert manifest["name"] == "token-optimizer-observer"
     assert manifest["entrypoints"] == {"doctor": "doctor.py", "report": "observer.py"}
     assert manifest["network"] == "none"
-    assert manifest["writes_by_default"] is False
+    assert manifest["writes_by_default"] is True
+    assert manifest["write_scope"] == {
+        "state.db-shm": "SQLite-managed WAL read coordination only"
+    }
     assert set(manifest["runtime_files"]) == {"doctor.py", "observer.py"}
     for name, expected in manifest["runtime_files"].items():
         actual = hashlib.sha256((PACKAGE / name).read_bytes()).hexdigest()

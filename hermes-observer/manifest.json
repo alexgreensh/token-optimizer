@@ -6,9 +6,12 @@
     "doctor": "doctor.py"
   },
   "runtime_files": {
-    "observer.py": "472329304491fa563b405f70a978bd17dae542c2abdf7f0543831be609e9e835",
-    "doctor.py": "50718d0fa545da46d216681dd5a90af19b72c694267412ac9e641b0a47f9ca96"
+    "observer.py": "2d2c3b5659070cb4b82867c24e2ea33fe5e059cdf6163221739d94d67e6a8ba2",
+    "doctor.py": "103c39b95bf20d8ab0eed4f459642c365a29dc80ec123acc8da0c9426707a627"
   },
   "network": "none",
-  "writes_by_default": false
+  "writes_by_default": true,
+  "write_scope": {
+    "state.db-shm": "SQLite-managed WAL read coordination only"
+  }
 }

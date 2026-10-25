@@ -66,12 +66,15 @@ or estimate missing costs.
 
 Newest-session selection accepts numeric Unix seconds from `-62135596800`
 through `253402300799`, or calendar-valid canonical extended UTC text in exactly
-`YYYY-MM-DDTHH:MM:SSZ` form (years `0001` through `9999`). SQL candidate filters
-and ordering enforce that same grammar before Python normalization, so compact
-ISO (`20260104T000000Z`), spaces, offsets, fractional seconds, and invalid dates
-are ignored rather than consuming the bounded candidate set. Numeric and text
-candidates are separately bounded, then normalized together; the internal
-session ID is only a deterministic tie-breaker and is never emitted.
+`YYYY-MM-DDTHH:MM:SSZ` form (years `0001` through `9999`, hours
+`00` through `23`, and minutes/seconds `00` through `59`). SQL candidate
+filters enforce Gregorian month/day and leap-year bounds directly instead of
+relying on SQLite date normalization, then Python performs the final
+normalization. Compact ISO (`20260104T000000Z`), spaces, offsets, fractional
+seconds, leap seconds, `24:00`, and invalid dates are ignored rather than
+consuming the bounded candidate set. Numeric and text candidates are separately
+bounded, then normalized together; the internal session ID is only a
+deterministic tie-breaker and is never emitted.
 
 Python's SQLite API cannot bind a normal WAL-aware connection to already opened
 read-only database/WAL/SHM descriptors. The identity protocol therefore detects

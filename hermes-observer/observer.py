@@ -495,8 +495,19 @@ def _query_rows(conn: sqlite3.Connection, columns: set[str]) -> list[sqlite3.Row
         + " AND length(started_at) = 20"
         + " AND started_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z'"
         + " AND substr(started_at, 1, 4) BETWEEN '0001' AND '9999'"
-        + " AND strftime('%Y-%m-%dT%H:%M:%SZ', started_at) = started_at"
-        + " ORDER BY julianday(started_at) DESC, CAST(id AS TEXT) ASC LIMIT ?",
+        + " AND substr(started_at, 6, 2) BETWEEN '01' AND '12'"
+        + " AND substr(started_at, 12, 2) BETWEEN '00' AND '23'"
+        + " AND substr(started_at, 15, 2) BETWEEN '00' AND '59'"
+        + " AND substr(started_at, 18, 2) BETWEEN '00' AND '59'"
+        + " AND substr(started_at, 9, 2) BETWEEN '01' AND CASE"
+        + " WHEN substr(started_at, 6, 2) = '02' THEN CASE"
+        + " WHEN CAST(substr(started_at, 1, 4) AS INTEGER) % 400 = 0"
+        + " OR (CAST(substr(started_at, 1, 4) AS INTEGER) % 4 = 0"
+        + " AND CAST(substr(started_at, 1, 4) AS INTEGER) % 100 != 0)"
+        + " THEN '29' ELSE '28' END"
+        + " WHEN substr(started_at, 6, 2) IN ('04','06','09','11') THEN '30'"
+        + " ELSE '31' END"
+        + " ORDER BY CAST(started_at AS TEXT) COLLATE BINARY DESC, CAST(id AS TEXT) ASC LIMIT ?",
     )
     try:
         candidates: list[sqlite3.Row] = []

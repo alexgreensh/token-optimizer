@@ -6,7 +6,7 @@
     "doctor": "doctor.py"
   },
   "runtime_files": {
-    "observer.py": "646143fe8e6223d8dcc4e1e913332306fdcc705d88463fbf20fcd487716df64a",
+    "observer.py": "4dda32985d754da1e9aa572ce2e266f313d5ff588215c3c42de0de2912e3cd5d",
     "doctor.py": "103c39b95bf20d8ab0eed4f459642c365a29dc80ec123acc8da0c9426707a627"
   },
   "network": "none",

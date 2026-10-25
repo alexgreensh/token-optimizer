@@ -647,26 +647,67 @@ def test_compact_iso_is_ignored_and_cannot_displace_supported_newest_rows(tmp_pa
 
 def test_timestamp_parser_and_sql_candidates_share_strict_extended_iso_grammar(tmp_path):
     observer = _load_observer()
-    assert observer._timestamp("2026-01-04T00:00:00Z") is not None
-    for unsupported in (
+    supported = (
+        "0001-01-01T00:00:00Z",
+        "2000-02-29T23:59:59Z",
+        "2024-02-29T00:00:00Z",
+        "2026-01-04T00:00:00Z",
+        "9999-12-31T23:59:59Z",
+    )
+    for timestamp in supported:
+        assert observer._timestamp(timestamp) is not None
+    unsupported = (
         "20260104T000000Z",
         "2026-01-04 00:00:00Z",
         "2026-01-04T00:00:00+00:00",
-        "2026-02-30T00:00:00Z",
-    ):
-        assert observer._timestamp(unsupported) is None
+        "2026-01-04T00:00:00.0Z",
+        "0000-01-01T00:00:00Z",
+        "2026-00-01T00:00:00Z",
+        "2026-13-01T00:00:00Z",
+        "2026-01-00T00:00:00Z",
+        "2026-04-31T00:00:00Z",
+        "1900-02-29T00:00:00Z",
+        "2023-02-29T00:00:00Z",
+        "2026-01-04T24:00:00Z",
+        "2026-01-04T23:60:00Z",
+        "2026-01-04T23:59:60Z",
+    )
+    for timestamp in unsupported:
+        assert observer._timestamp(timestamp) is None
 
     home = tmp_path / "profile"
+    rows = [
+        *[
+            _row(f"supported-{index}", timestamp, input_tokens=1)
+            for index, timestamp in enumerate(supported)
+        ],
+        *[
+            _row(f"unsupported-{index}", timestamp, input_tokens=100)
+            for index, timestamp in enumerate(unsupported)
+        ],
+    ]
+    _create_db(home, rows)
+    report = observer.inspect_database(str(home))
+    assert report["sessions"]["total"] == len(supported)
+    assert report["tokens"]["input"] == len(supported)
+
+
+def test_invalid_normalized_text_cannot_consume_bounded_candidate_rows(tmp_path, monkeypatch):
+    observer = _load_observer()
+    monkeypatch.setattr(observer, "MAX_SCAN_ROWS", 1)
+    home = tmp_path / "profile"
     _create_db(home, [
-        _row("valid", "2026-01-04T00:00:00Z", input_tokens=7),
-        _row("compact", "20260105T000000Z", input_tokens=900),
-        _row("space", "2026-01-06 00:00:00Z", input_tokens=800),
-        _row("offset", "2026-01-07T00:00:00+00:00", input_tokens=700),
-        _row("invalid-day", "2026-02-30T00:00:00Z", input_tokens=600),
+        _row("supported-newest", "2026-01-04T23:59:59Z", input_tokens=7),
+        _row("supported-older", "2026-01-03T23:59:59Z", input_tokens=5),
+        # SQLite accepts 24:00 and some releases normalize invalid calendar dates.
+        _row("invalid-24-hour-newest", "2026-01-06T24:00:00Z", input_tokens=900),
+        _row("invalid-24-hour-next", "2026-01-05T24:00:00Z", input_tokens=850),
+        _row("invalid-calendar", "2026-02-30T23:59:59Z", input_tokens=800),
     ])
     report = observer.inspect_database(str(home))
-    assert report["sessions"]["total"] == 1
+    assert report["source"] == {"sessions_scanned": 1, "truncated": True}
     assert report["tokens"]["input"] == 7
+    assert report["daily"][0]["date"] == "2026-01-04"
 
 
 def test_equal_normalized_times_use_id_as_deterministic_nonoutput_tie_breaker(tmp_path, monkeypatch):

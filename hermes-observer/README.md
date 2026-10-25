@@ -13,16 +13,19 @@ python3 hermes-observer/doctor.py --hermes-home /absolute/profile/path --format 
 
 ## Privacy and safety limits
 
-- Reads only the direct-child `state.db` of the supplied absolute profile path.
+- Reads only the direct-child SQLite source (`state.db` and any existing
+  `state.db-wal`/`state.db-shm`) of the supplied absolute profile path.
 - Rejects symlinked path components, symlinked/non-regular databases, malformed or
-  unsupported schemas, and databases above the injectable 4 GiB default limit.
+  unsupported schemas, and SQLite sources whose cumulative database, WAL, and
+  SHM size exceeds the injectable 4 GiB default limit.
 - Rejects noncanonical path spellings before normalization (`.`, `..`, repeated
   separators, and non-root trailing separators). It records device, inode, and
   mode identities for the full ancestry, retains the first validation baseline,
   holds read-only descriptors for the home and database, and revalidates around
-  open, schema, and data reads. Mutable database size is checked independently at
-  those boundaries; legitimate growth remains accepted while it stays within the
-  configured limit. Any observed replacement fails closed.
+  open, schema, and data reads. Mutable database and sidecar sizes are summed and
+  rechecked at those boundaries; legitimate live growth remains accepted while
+  the complete SQLite source stays within the configured limit. Any observed
+  replacement fails closed.
 - Uses a WAL-aware SQLite `mode=ro` connection with `query_only` enabled and a
   short busy timeout. Before connecting it validates the database's WAL header
   and the `state.db-wal`/`state.db-shm` objects as non-symlink regular files,
@@ -86,14 +89,6 @@ works on macOS and keeps committed WAL rows visible. A missing `state.db-shm`
 is acceptable only when `state.db-wal` already exists; SQLite may create SHM for
 coordination. A WAL-mode database with no WAL, and every hostile or non-regular
 sidecar, is rejected before a query.
-
-## Review sabotage proof
-
-The corrected total semantics have an explicit red/green check. Replacing the
-input-plus-output expression with `sum(values.values())` and running
-`test_total_means_input_plus_output_and_keeps_other_counters_separate` failed
-with `total: 329 != 18`; restoring the expression made the same test pass
-(`1 passed`).
 
 `manifest.json` hashes the two executable runtime files (`observer.py` and
 `doctor.py`). The manifest does not hash itself, avoiding a recursive self-hash

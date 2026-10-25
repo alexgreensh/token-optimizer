@@ -10,6 +10,7 @@ or any other profile/package file.  It does not import Token Optimizer's runtime
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 import json
 import math
 import os
@@ -80,7 +81,12 @@ class _ValidatedSource(NamedTuple):
     home: Path
     db: Path
     identities: dict[Path, _Identity]
-    sidecars: dict[Path, _Identity | None]
+    sidecars: dict[Path, "_FileCapture | None"]
+
+
+class _FileCapture(NamedTuple):
+    identity: _Identity
+    size: int
 
 
 def _validate_lexical_home(hermes_home: str) -> Path:
@@ -156,9 +162,9 @@ def _sidecar_paths(db: Path) -> tuple[Path, Path]:
     return (Path(f"{db}-wal"), Path(f"{db}-shm"))
 
 
-def _capture_sidecars(db: Path) -> dict[Path, _Identity | None]:
+def _capture_sidecars(db: Path) -> dict[Path, _FileCapture | None]:
     """Capture WAL/SHM identity without following or accepting special files."""
-    captured: dict[Path, _Identity | None] = {}
+    captured: dict[Path, _FileCapture | None] = {}
     for path in _sidecar_paths(db):
         try:
             info = path.lstat()
@@ -173,8 +179,32 @@ def _capture_sidecars(db: Path) -> dict[Path, _Identity | None]:
             raise ObserverError(
                 "wal_state_unsafe", "SQLite sidecars must be non-symlink regular files"
             )
-        captured[path] = _identity(info)
+        captured[path] = _FileCapture(_identity(info), info.st_size)
     return captured
+
+
+def _sidecar_identities(
+    captured: dict[Path, _FileCapture | None],
+) -> dict[Path, _Identity | None]:
+    return {
+        path: item.identity if item is not None else None
+        for path, item in captured.items()
+    }
+
+
+def _assert_source_size_limit(
+    db_sizes: tuple[int, ...],
+    sidecar_sizes: tuple[int, ...],
+    max_db_bytes: int,
+) -> None:
+    """Bound each coherent view of the complete SQLite source."""
+    if max_db_bytes < 0 or any(
+        db_size + sum(sidecar_sizes) > max_db_bytes for db_size in db_sizes
+    ):
+        raise ObserverError(
+            "database_oversized",
+            "state.db and its SQLite sidecars exceed the configured size limit",
+        )
 
 
 def _open_guard(
@@ -216,7 +246,7 @@ def _assert_source_stable(
     home_fd: int,
     db_fd: int,
     max_db_bytes: int,
-) -> None:
+) -> tuple[int, int]:
     try:
         current = _capture_source(home, db)
         home_info = os.fstat(home_fd)
@@ -228,8 +258,8 @@ def _assert_source_stable(
         raise ObserverError("source_changed", "Hermes source changed during inspection") from exc
     if current.identities != expected or descriptors != (expected[home], expected[db]):
         raise ObserverError("source_changed", "Hermes source changed during inspection")
-    if max_db_bytes < 0 or current.db_size > max_db_bytes or db_info.st_size > max_db_bytes:
-        raise ObserverError("database_oversized", "state.db exceeds the configured size limit")
+    _assert_source_size_limit((current.db_size, db_info.st_size), (), max_db_bytes)
+    return current.db_size, db_info.st_size
 
 
 def _validate_source(hermes_home: str, *, max_db_bytes: int) -> _ValidatedSource:
@@ -249,9 +279,12 @@ def _validate_source(hermes_home: str, *, max_db_bytes: int) -> _ValidatedSource
         raise ObserverError("database_invalid", "state.db cannot be safely inspected") from exc
     if resolved_db.parent != resolved_home or resolved_db.name != DB_NAME:
         raise ObserverError("database_escape", "state.db must be the direct child of Hermes home")
-    if max_db_bytes < 0 or captured.db_size > max_db_bytes:
-        raise ObserverError("database_oversized", "state.db exceeds the configured size limit")
     sidecars = _capture_sidecars(db)
+    _assert_source_size_limit(
+        (captured.db_size,),
+        tuple(item.size for item in sidecars.values() if item is not None),
+        max_db_bytes,
+    )
     return _ValidatedSource(home, db, captured.identities, sidecars)
 
 
@@ -274,46 +307,64 @@ def _connect_read_only(db: Path) -> sqlite3.Connection:
 
 
 def _open_sidecar_guards(
-    expected: dict[Path, _Identity | None],
+    expected: dict[Path, _FileCapture | None],
+    resources: ExitStack,
 ) -> dict[Path, int]:
     descriptors: dict[Path, int] = {}
-    try:
-        for path, identity in expected.items():
-            if identity is not None:
-                descriptors[path] = _open_guard(
-                    path, identity, directory=False, max_db_bytes=None
-                )
-    except Exception:
-        for descriptor in descriptors.values():
-            os.close(descriptor)
-        raise
+    for path, captured in expected.items():
+        if captured is not None:
+            descriptor = _open_guard(
+                path, captured.identity, directory=False, max_db_bytes=None
+            )
+            resources.callback(os.close, descriptor)
+            descriptors[path] = descriptor
     return descriptors
 
 
 def _assert_sidecars_stable(
     db: Path,
-    expected: dict[Path, _Identity | None],
+    expected: dict[Path, _FileCapture | None],
     descriptors: dict[Path, int],
+    db_sizes: tuple[int, int],
+    max_db_bytes: int,
 ) -> None:
     try:
         current = _capture_sidecars(db)
-        descriptor_identities = {
-            path: _identity(os.fstat(descriptor))
-            for path, descriptor in descriptors.items()
+        descriptor_info = {
+            path: os.fstat(descriptor) for path, descriptor in descriptors.items()
         }
     except (ObserverError, OSError) as exc:
         raise ObserverError("source_changed", "SQLite sidecar state changed during inspection") from exc
     expected_descriptors = {
-        path: identity for path, identity in expected.items() if identity is not None
+        path: captured.identity
+        for path, captured in expected.items()
+        if captured is not None
     }
-    if current != expected or descriptor_identities != expected_descriptors:
+    descriptor_identities = {
+        path: _identity(info) for path, info in descriptor_info.items()
+    }
+    if (
+        _sidecar_identities(current) != _sidecar_identities(expected)
+        or descriptor_identities != expected_descriptors
+    ):
         raise ObserverError("source_changed", "SQLite sidecar state changed during inspection")
+    _assert_source_size_limit(
+        (db_sizes[0],),
+        tuple(item.size for item in current.values() if item is not None),
+        max_db_bytes,
+    )
+    _assert_source_size_limit(
+        (db_sizes[1],),
+        tuple(info.st_size for info in descriptor_info.values()),
+        max_db_bytes,
+    )
 
 
 def _adopt_sqlite_created_shm(
     db: Path,
-    expected: dict[Path, _Identity | None],
+    expected: dict[Path, _FileCapture | None],
     descriptors: dict[Path, int],
+    resources: ExitStack,
 ) -> None:
     """Bind an SHM file SQLite created during the immediately preceding read.
 
@@ -327,22 +378,22 @@ def _adopt_sqlite_created_shm(
         current = _capture_sidecars(db)
     except ObserverError as exc:
         raise ObserverError("source_changed", "SQLite sidecar state changed during inspection") from exc
-    if current[wal] != expected[wal]:
+    if _sidecar_identities(current)[wal] != _sidecar_identities(expected)[wal]:
         raise ObserverError("source_changed", "SQLite WAL state changed during inspection")
     if expected[shm] is not None:
-        _assert_sidecars_stable(db, expected, descriptors)
         return
-    identity = current[shm]
-    if identity is None:
+    captured = current[shm]
+    if captured is None:
         return
-    descriptor = _open_guard(shm, identity, directory=False, max_db_bytes=None)
+    descriptor = _open_guard(shm, captured.identity, directory=False, max_db_bytes=None)
     try:
-        if _capture_sidecars(db) != current:
+        if _sidecar_identities(_capture_sidecars(db)) != _sidecar_identities(current):
             raise ObserverError("source_changed", "SQLite SHM state changed during inspection")
     except Exception:
         os.close(descriptor)
         raise
-    expected[shm] = identity
+    resources.callback(os.close, descriptor)
+    expected[shm] = captured
     descriptors[shm] = descriptor
 
 
@@ -356,7 +407,9 @@ def _database_header_uses_wal(db_fd: int) -> bool:
     return header.startswith(b"SQLite format 3\x00") and header[18:20] == b"\x02\x02"
 
 
-def _require_safe_wal_state(db: Path, db_fd: int, sidecars: dict[Path, _Identity | None]) -> None:
+def _require_safe_wal_state(
+    db: Path, db_fd: int, sidecars: dict[Path, _FileCapture | None]
+) -> None:
     """Reject WAL mode without WAL; missing SHM is the one permitted transition."""
     wal, shm = _sidecar_paths(db)
     wal_exists = sidecars[wal] is not None
@@ -537,29 +590,35 @@ def inspect_database(
     home, db, expected, expected_sidecars = validated
     if _identity_hook is not None:
         _identity_hook("after_validation", db)
-    home_fd = _open_guard(
-        home, expected[home], directory=True, max_db_bytes=max_db_bytes
-    )
-    try:
+    with ExitStack() as resources:
+        home_fd = _open_guard(
+            home, expected[home], directory=True, max_db_bytes=max_db_bytes
+        )
+        resources.callback(os.close, home_fd)
         db_fd = _open_guard(
             db, expected[db], directory=False, max_db_bytes=max_db_bytes
         )
-    except Exception:
-        os.close(home_fd)
-        raise
-    conn: sqlite3.Connection | None = None
-    sidecar_fds: dict[Path, int] = {}
-    try:
-        sidecar_fds = _open_sidecar_guards(expected_sidecars)
+        resources.callback(os.close, db_fd)
+        sidecar_fds = _open_sidecar_guards(expected_sidecars, resources)
 
         def assert_all_stable() -> None:
-            _assert_source_stable(home, db, expected, home_fd, db_fd, max_db_bytes)
-            _assert_sidecars_stable(db, expected_sidecars, sidecar_fds)
+            db_sizes = _assert_source_stable(
+                home, db, expected, home_fd, db_fd, max_db_bytes
+            )
+            _assert_sidecars_stable(
+                db,
+                expected_sidecars,
+                sidecar_fds,
+                db_sizes,
+                max_db_bytes,
+            )
             _require_safe_wal_state(db, db_fd, expected_sidecars)
 
         def sqlite_read_completed() -> None:
             _assert_source_stable(home, db, expected, home_fd, db_fd, max_db_bytes)
-            _adopt_sqlite_created_shm(db, expected_sidecars, sidecar_fds)
+            _adopt_sqlite_created_shm(
+                db, expected_sidecars, sidecar_fds, resources
+            )
             assert_all_stable()
 
         assert_all_stable()
@@ -567,6 +626,7 @@ def inspect_database(
             _identity_hook("before_connect", db)
         assert_all_stable()
         conn = _connect_read_only(db)
+        resources.callback(conn.close)
         sqlite_read_completed()
         if _identity_hook is not None:
             _identity_hook("after_connect", db)
@@ -591,13 +651,6 @@ def inspect_database(
         if _identity_hook is not None:
             _identity_hook("after_query", db)
         assert_all_stable()
-    finally:
-        if conn is not None:
-            conn.close()
-        for descriptor in sidecar_fds.values():
-            os.close(descriptor)
-        os.close(db_fd)
-        os.close(home_fd)
 
     truncated = len(rows) > MAX_SCAN_ROWS
     if truncated:

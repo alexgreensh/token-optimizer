@@ -6,8 +6,8 @@
     "doctor": "doctor.py"
   },
   "runtime_files": {
-    "observer.py": "4dda32985d754da1e9aa572ce2e266f313d5ff588215c3c42de0de2912e3cd5d",
-    "doctor.py": "103c39b95bf20d8ab0eed4f459642c365a29dc80ec123acc8da0c9426707a627"
+    "observer.py": "7ece6d1f69131b000611f2adcda1d6f60a061e6b82cfa612555e1d8ef9a32fd4",
+    "doctor.py": "31230a7366bc6b8a7b07b75323883dd2e8ff94ace9366b04f07da7cc85843310"
   },
   "network": "none",
   "writes_by_default": true,

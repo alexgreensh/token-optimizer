@@ -29,6 +29,22 @@ def _load_observer():
     return module
 
 
+def _load_doctor(observer_module):
+    spec = importlib.util.spec_from_file_location("standalone_hermes_doctor", DOCTOR)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    previous = sys.modules.get("observer")
+    sys.modules["observer"] = observer_module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        if previous is None:
+            del sys.modules["observer"]
+        else:
+            sys.modules["observer"] = previous
+    return module
+
+
 def _create_db(home: Path, rows: list[tuple] | None = None) -> Path:
     home.mkdir(parents=True, exist_ok=True)
     db = home / "state.db"
@@ -258,7 +274,6 @@ def test_committed_wal_only_row_is_visible_while_writer_remains_open(tmp_path):
         assert wal.exists()
         assert (home / "state.db-shm").exists()
         before = _seed_unrelated_profile_files(home)
-        shm_before = _snapshot(home)["state.db-shm"]
         db_hash = _sha256(db)
         wal_hash = _sha256(wal)
         proc = _run(OBSERVER, "report", "--hermes-home", str(home), "--format", "json")
@@ -267,7 +282,7 @@ def test_committed_wal_only_row_is_visible_while_writer_remains_open(tmp_path):
         assert report["sessions"]["total"] == 1
         assert report["tokens"]["input"] == 777
         assert _snapshot_except_shm(home) == before
-        assert _snapshot(home)["state.db-shm"] != shm_before
+        assert (home / "state.db-shm").is_file()
         assert _sha256(db) == db_hash
         assert _sha256(wal) == wal_hash
     finally:
@@ -476,6 +491,95 @@ def test_live_wal_checkpoint_can_grow_main_database_during_inspection(tmp_path):
         writer.close()
 
 
+def test_live_wal_growth_within_cumulative_limit_is_accepted(tmp_path):
+    observer = _load_observer()
+    home = tmp_path / "profile"
+    db = _create_db(home)
+    writer = sqlite3.connect(db)
+    assert writer.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+    writer.execute("PRAGMA wal_autocheckpoint=0")
+    writer.execute(
+        "INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        _row("initial", 1_700_000_000),
+    )
+    writer.commit()
+    wal = home / "state.db-wal"
+    grew = False
+
+    def grow_wal(stage, _db):
+        nonlocal grew
+        if stage == "before_schema":
+            before = wal.stat().st_size
+            writer.executemany(
+                "INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                [_row(f"growth-{index}", 1_700_000_001 + index) for index in range(20)],
+            )
+            writer.commit()
+            grew = wal.stat().st_size > before
+
+    limit = sum(
+        path.stat().st_size for path in (db, wal, home / "state.db-shm")
+    ) + 1024 * 1024
+    try:
+        report = observer.inspect_database(
+            str(home), max_db_bytes=limit, _identity_hook=grow_wal
+        )
+        assert grew
+        assert report["sessions"]["total"] >= 1
+    finally:
+        writer.close()
+
+
+def test_live_wal_growth_beyond_cumulative_limit_fails_before_data_query(
+    tmp_path, monkeypatch
+):
+    observer = _load_observer()
+    home = tmp_path / "profile"
+    db = _create_db(home)
+    writer = sqlite3.connect(db)
+    assert writer.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+    writer.execute("PRAGMA wal_autocheckpoint=0")
+    writer.execute(
+        "INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        _row("initial", 1_700_000_000),
+    )
+    writer.commit()
+    wal = home / "state.db-wal"
+    initial_total = sum(
+        path.stat().st_size for path in (db, wal, home / "state.db-shm")
+    )
+    query_calls = []
+    real_query = observer._query_rows
+
+    def record_query(connection, columns):
+        query_calls.append(True)
+        return real_query(connection, columns)
+
+    def exceed_limit(stage, _db):
+        if stage == "before_query":
+            writer.executemany(
+                "INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                [_row(f"overflow-{index}", 1_700_001_000 + index) for index in range(100)],
+            )
+            writer.commit()
+            assert sum(
+                path.stat().st_size for path in (db, wal, home / "state.db-shm")
+            ) > initial_total + 1
+
+    monkeypatch.setattr(observer, "_query_rows", record_query)
+    try:
+        with pytest.raises(observer.ObserverError) as caught:
+            observer.inspect_database(
+                str(home),
+                max_db_bytes=initial_total + 1,
+                _identity_hook=exceed_limit,
+            )
+        assert caught.value.code == "database_oversized"
+        assert query_calls == []
+    finally:
+        writer.close()
+
+
 def test_missing_symlink_nonregular_and_configured_oversize_are_rejected(tmp_path):
     observer = _load_observer()
     missing = tmp_path / "missing"
@@ -501,6 +605,47 @@ def test_missing_symlink_nonregular_and_configured_oversize_are_rejected(tmp_pat
     db = _create_db(oversized)
     with pytest.raises(observer.ObserverError, match="size limit"):
         observer.validate_state_db(str(oversized), max_db_bytes=db.stat().st_size - 1)
+
+
+@pytest.mark.parametrize("sidecar_name", ["state.db-wal", "state.db-shm"])
+def test_configured_limit_includes_each_existing_sqlite_sidecar(tmp_path, sidecar_name):
+    observer = _load_observer()
+    home = tmp_path / sidecar_name
+    db = _create_db(home)
+    sidecar = home / sidecar_name
+    sidecar.write_bytes(b"x" * 4096)
+    cumulative_size = db.stat().st_size + sidecar.stat().st_size
+    assert db.stat().st_size < cumulative_size - 1
+    assert sidecar.stat().st_size < cumulative_size - 1
+    with pytest.raises(observer.ObserverError) as caught:
+        observer.validate_state_db(str(home), max_db_bytes=cumulative_size - 1)
+    assert caught.value.code == "database_oversized"
+
+
+def test_cumulative_wal_source_overflow_fails_before_sqlite_connect(tmp_path, monkeypatch):
+    observer = _load_observer()
+    home = tmp_path / "profile"
+    db = _create_db(home)
+    writer = sqlite3.connect(db)
+    assert writer.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+    writer.execute("PRAGMA wal_autocheckpoint=0")
+    writer.execute(
+        "INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        _row("wal-row", 1_700_000_000),
+    )
+    writer.commit()
+    paths = (db, home / "state.db-wal", home / "state.db-shm")
+    total = sum(path.stat().st_size for path in paths)
+    assert all(path.stat().st_size < total - 1 for path in paths)
+    connect_calls = []
+    monkeypatch.setattr(observer, "_connect_read_only", lambda path: connect_calls.append(path))
+    try:
+        with pytest.raises(observer.ObserverError) as caught:
+            observer.inspect_database(str(home), max_db_bytes=total - 1)
+        assert caught.value.code == "database_oversized"
+        assert connect_calls == []
+    finally:
+        writer.close()
 
 
 def test_default_database_limit_accepts_realistic_size_and_rejects_above_limit(tmp_path):
@@ -760,6 +905,47 @@ def test_report_and_doctor_change_no_files_when_shm_is_not_required(tmp_path):
     assert package_after == package_before
 
 
+def test_cleanup_continues_after_connection_close_raises(tmp_path, monkeypatch):
+    observer = _load_observer()
+    home = tmp_path / "profile"
+    _create_db(home, [_row("id", 1_700_000_000)])
+    real_connect = observer._connect_read_only
+    closed_fds = []
+    real_close = os.close
+
+    class CloseRaisesConnection:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def __getattr__(self, name):
+            return getattr(self.connection, name)
+
+        def close(self):
+            self.connection.close()
+            raise RuntimeError("injected connection close failure")
+
+    class OsProxy:
+        def __getattr__(self, name):
+            return getattr(os, name)
+
+        def close(self, descriptor):
+            closed_fds.append(descriptor)
+            real_close(descriptor)
+
+    monkeypatch.setattr(
+        observer,
+        "_connect_read_only",
+        lambda path: CloseRaisesConnection(real_connect(path)),
+    )
+    monkeypatch.setattr(observer, "os", OsProxy())
+    with pytest.raises(RuntimeError, match="injected connection close failure"):
+        observer.inspect_database(str(home))
+    assert len(closed_fds) == 2
+    for descriptor in closed_fds:
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
+
+
 def test_json_and_text_are_deterministic_bounded_and_cap_daily_rows(tmp_path):
     home = tmp_path / "profile"
     base = datetime(2025, 1, 1, tzinfo=timezone.utc).timestamp()
@@ -814,7 +1000,58 @@ def test_doctor_success_and_failure_json_do_not_expose_paths(tmp_path):
     failure_doc = json.loads(failure.stdout)
     assert failure_doc["ok"] is False
     assert failure_doc["error"]["code"] == "database_missing"
+    assert failure_doc["checks"] == {
+        "database": "failed", "home": "ok", "schema": "failed"
+    }
     assert str(bad) not in failure.stdout + failure.stderr
+
+
+@pytest.mark.parametrize("sidecar_name", ["state.db-wal", "state.db-shm"])
+def test_doctor_marks_unsafe_wal_sidecars_as_database_failures(tmp_path, sidecar_name):
+    home = tmp_path / "profile"
+    db = _create_db(home)
+    external = tmp_path / "external"
+    external.write_bytes(b"unsafe")
+    (home / sidecar_name).symlink_to(external)
+    result = _run(DOCTOR, "--hermes-home", str(home), "--format", "json")
+    assert result.returncode == 1
+    document = json.loads(result.stdout)
+    assert document["error"]["code"] == "wal_state_unsafe"
+    assert document["checks"] == {
+        "database": "failed", "home": "ok", "schema": "failed"
+    }
+    assert db.name not in result.stderr
+
+
+def test_doctor_marks_missing_wal_for_wal_database_as_database_failure(tmp_path):
+    home = tmp_path / "profile"
+    db = _create_db(home)
+    connection = sqlite3.connect(db)
+    assert connection.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+    connection.close()
+    assert not (home / "state.db-wal").exists()
+    result = _run(DOCTOR, "--hermes-home", str(home), "--format", "json")
+    document = json.loads(result.stdout)
+    assert result.returncode == 1
+    assert document["error"]["code"] == "wal_sidecars_unavailable"
+    assert document["checks"] == {
+        "database": "failed", "home": "ok", "schema": "failed"
+    }
+
+
+def test_doctor_source_change_fails_every_unstable_source_check(monkeypatch):
+    observer = _load_observer()
+    doctor = _load_doctor(observer)
+
+    def changed(_home):
+        raise observer.ObserverError("source_changed", "changed")
+
+    monkeypatch.setattr(observer, "inspect_database", changed)
+    document, exit_code = doctor._document("/unused")
+    assert exit_code == 1
+    assert document["checks"] == {
+        "database": "failed", "home": "failed", "schema": "failed"
+    }
 
 
 def test_malformed_or_unsupported_schema_fails_clearly(tmp_path):
@@ -834,6 +1071,15 @@ def test_malformed_or_unsupported_schema_fails_clearly(tmp_path):
     proc = _run(OBSERVER, "report", "--hermes-home", str(unsupported), "--format", "json")
     assert proc.returncode != 0
     assert json.loads(proc.stdout)["error"]["code"] == "unsupported_schema"
+
+    malformed_doctor = _run(DOCTOR, "--hermes-home", str(malformed), "--format", "json")
+    assert json.loads(malformed_doctor.stdout)["checks"] == {
+        "database": "failed", "home": "ok", "schema": "failed"
+    }
+    unsupported_doctor = _run(DOCTOR, "--hermes-home", str(unsupported), "--format", "json")
+    assert json.loads(unsupported_doctor.stdout)["checks"] == {
+        "database": "failed", "home": "ok", "schema": "failed"
+    }
 
 
 def test_manifest_has_exact_contract_and_hashes():

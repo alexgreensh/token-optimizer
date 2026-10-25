@@ -13,6 +13,43 @@ sys.dont_write_bytecode = True
 import observer
 
 
+_FAILED_ALL = {"database": "failed", "home": "failed", "schema": "failed"}
+_ERROR_CHECKS: dict[str, dict[str, str]] = {
+    # The home itself could not be established as a stable, canonical source.
+    "home_invalid": _FAILED_ALL,
+    "home_relative": _FAILED_ALL,
+    "home_missing": _FAILED_ALL,
+    "home_symlink": _FAILED_ALL,
+    "home_not_directory": _FAILED_ALL,
+    "source_changed": _FAILED_ALL,
+    # The home was validated, but the database or its WAL source was not.
+    **{
+        code: {"database": "failed", "home": "ok", "schema": "failed"}
+        for code in (
+            "database_missing",
+            "database_symlink",
+            "database_not_regular",
+            "database_invalid",
+            "database_escape",
+            "database_oversized",
+            "database_malformed",
+            "database_busy",
+            "unsupported_schema",
+            "wal_state_unsafe",
+            "wal_sidecars_unavailable",
+        )
+    },
+    # These indicate a defect in the observer rather than a validated source.
+    "internal_error": _FAILED_ALL,
+    "output_limit": _FAILED_ALL,
+}
+
+
+def _checks_for_error(code: str) -> dict[str, str]:
+    """Classify known observer failures explicitly; unknown failures fail closed."""
+    return dict(_ERROR_CHECKS.get(code, _FAILED_ALL))
+
+
 def _document(home: str) -> tuple[dict[str, Any], int]:
     try:
         report = observer.inspect_database(home)
@@ -26,15 +63,9 @@ def _document(home: str) -> tuple[dict[str, Any], int]:
             0,
         )
     except observer.ObserverError as error:
-        home_ok = not error.code.startswith("home_")
-        database_ok = home_ok and not error.code.startswith("database_")
         return (
             {
-                "checks": {
-                    "database": "ok" if database_ok else "failed",
-                    "home": "ok" if home_ok else "failed",
-                    "schema": "failed",
-                },
+                "checks": _checks_for_error(error.code),
                 "error": {"code": error.code, "message": error.message},
                 "ok": False,
                 "schema_version": observer.SCHEMA_VERSION,

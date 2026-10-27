@@ -14,6 +14,7 @@ N = "tests/test_codex_shell_neutral_hooks_278.py"
 W = "tests/test_hook_wire_contract.py"
 C = "tests/test_copilot_windows_powershell_hook.py"
 P = "tests/test_windows_pid_liveness.py"
+S = "tests/test_windows_settings_hook_interpreter.py"
 
 MUTATIONS = [
     ("#278 a $ % backtick or ! in the plugin path forces the cmd-only hook again",
@@ -68,4 +69,11 @@ MUTATIONS = [
      MEASURE,
      [('            if os.name == "nt":\n                # No `ps` on Windows',
        '            if False:\n                # No `ps` on Windows')]),
+
+    ("Windows settings.json hooks call bare python3 (missing or the Store stub in Git Bash)",
+     [S + "::test_windows_smart_compact_hooks_name_the_real_interpreter",
+      S + "::test_setup_quality_bar_on_windows_writes_the_real_interpreter"],
+     MEASURE,
+     [('    if sys.platform == "win32":\n        return (shlex.quote(str(sys.executable)',
+       '    if False:\n        return (shlex.quote(str(sys.executable)')]),
 ]

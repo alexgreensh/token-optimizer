@@ -1,3 +1,0 @@
-candidate=payload_cwd
-event=PostToolUse
-time=2026-10-27T23:23:54Z

@@ -44904,14 +44904,28 @@ def _smart_compact_hook_commands():
     resolved to), the hook exits 0 silently instead of erroring on every event.
     Mirrors the launcher guard in hooks.json.
     """
-    mp = _get_measure_py_path()
-    guard = f"[ -r '{mp}' ] || exit 0; "
+    py, mp = _settings_hook_python_and_script(_get_measure_py_path())
+    guard = f"[ -r {mp} ] || exit 0; "
     return {
-        "PreCompact": f"{guard}python3 '{mp}' compact-capture --trigger auto",
-        "SessionStart": f"{guard}python3 '{mp}' compact-restore",
-        "Stop": f"{guard}python3 '{mp}' compact-capture --trigger stop",
-        "SessionEnd": f"{guard}python3 '{mp}' compact-capture --trigger end",
+        "PreCompact": f"{guard}{py} {mp} compact-capture --trigger auto",
+        "SessionStart": f"{guard}{py} {mp} compact-restore",
+        "Stop": f"{guard}{py} {mp} compact-capture --trigger stop",
+        "SessionEnd": f"{guard}{py} {mp} compact-capture --trigger end",
     }
+
+
+def _settings_hook_python_and_script(mp):
+    """(interpreter, script) shell tokens for a settings.json hook command.
+
+    Claude Code runs these through Git Bash on Windows, where bare ``python3``
+    is often missing or the Microsoft Store stub (exit 9009 on every event),
+    so Windows names the running interpreter with forward slashes, quoted for
+    bash (an apostrophe in the path is safe). POSIX keeps ``python3 '<mp>'``.
+    """
+    if sys.platform == "win32":
+        return (shlex.quote(str(sys.executable).replace("\\", "/")),
+                shlex.quote(str(mp).replace("\\", "/")))
+    return "python3", f"'{mp}'"
 
 
 def _is_smart_compact_installed(settings=None):
@@ -48361,7 +48375,8 @@ def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=F
         skipped.append("cache hook")
     else:
         hooks = settings.setdefault("hooks", {})
-        hook_cmd = f"python3 '{mp}' quality-cache --quiet"
+        _py, _mp = _settings_hook_python_and_script(mp)
+        hook_cmd = f"{_py} {_mp} quality-cache --quiet"
         hook_entry = {"type": "command", "command": hook_cmd}
         hook_group = {"hooks": [hook_entry]}
         hooks.setdefault("UserPromptSubmit", []).append(hook_group)

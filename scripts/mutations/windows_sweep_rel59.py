@@ -13,6 +13,7 @@ M = "tests/test_codex_windows_shell_matrix_278.py"
 N = "tests/test_codex_shell_neutral_hooks_278.py"
 W = "tests/test_hook_wire_contract.py"
 C = "tests/test_copilot_windows_powershell_hook.py"
+P = "tests/test_windows_pid_liveness.py"
 
 MUTATIONS = [
     ("#278 a $ % backtick or ! in the plugin path forces the cmd-only hook again",
@@ -56,4 +57,15 @@ MUTATIONS = [
      [W + "::test_claude_plugin_hooks_survive_an_upgrade_with_a_windows_style_root"],
      CLAUDE_HOOKS,
      [('case \\"$D\\" in *\\\\\\\\*) D=\\"$(printf \'%s\' \\"$D\\" | tr \'\\\\\\\\\' \'/\')\\";; esac; ', "")]),
+
+    ("Windows liveness probe sends CTRL_C_EVENT via os.kill(pid, 0)",
+     [P + "::test_windows_never_sends_a_signal_and_reads_the_process_table"],
+     MEASURE,
+     [('    if os.name == "nt":\n        return _win_pid_is_running(pid)\n', "")]),
+
+    ("purge --force on Windows asks POSIX ps and never stops the daemon",
+     [P + "::test_purge_force_on_windows_identifies_and_stops_the_daemon"],
+     MEASURE,
+     [('            if os.name == "nt":\n                # No `ps` on Windows',
+       '            if False:\n                # No `ps` on Windows')]),
 ]

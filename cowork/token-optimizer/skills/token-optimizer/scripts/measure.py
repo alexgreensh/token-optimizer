@@ -48422,7 +48422,10 @@ def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=F
         else:
             settings["statusLine"] = {
                 "type": "command",
-                "command": f"node '{sl_path}'"
+                # A plain '...' wrap broke on an apostrophe in the path
+                # (C:\Users\O'Brien). Keep the familiar form otherwise.
+                "command": (f"node '{sl_path}'" if "'" not in str(sl_path)
+                            else f"node {shlex.quote(str(sl_path))}"),
             }
             installed.append("status line")
 

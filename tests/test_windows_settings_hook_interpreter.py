@@ -83,3 +83,18 @@ def test_setup_quality_bar_on_windows_writes_the_real_interpreter(m, monkeypatch
     assert ours, commands
     for c in ours:
         assert shlex.split(c)[0] == PY.replace("\\", "/"), c
+
+
+def test_status_line_command_survives_an_apostrophe_in_the_path(m, monkeypatch, tmp_path):
+    settings_path = tmp_path / "claude" / "settings.json"
+    settings_path.write_text("{}", encoding="utf-8")
+    sl = r"C:\Users\O'Brien\.claude\skills\token-optimizer\scripts\statusline.js"
+    monkeypatch.setattr(m, "SETTINGS_PATH", settings_path)
+    monkeypatch.setattr(m, "_is_running_from_plugin_cache", lambda: False)
+    monkeypatch.setattr(m, "_is_plugin_installed", lambda: False)
+    monkeypatch.setattr(m, "_get_measure_py_path", lambda: MP)
+    monkeypatch.setattr(m, "_get_statusline_path", lambda: sl)
+    m.setup_quality_bar(quiet=False)
+    import json
+    data = json.loads(settings_path.read_text(encoding="utf-8"))
+    assert shlex.split(data["statusLine"]["command"]) == ["node", sl]

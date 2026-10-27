@@ -106,4 +106,9 @@ MUTATIONS = [
      [IS + "::test_wsl_root_targets_the_single_windows_profile"],
      "install.sh",
      [('            export "${export_as}=${guessed}"\n', "")]),
+
+    ("status line command breaks on an apostrophe in the path",
+     [S + "::test_status_line_command_survives_an_apostrophe_in_the_path"],
+     MEASURE,
+     [("""if "'" not in str(sl_path)""", "if True")]),
 ]

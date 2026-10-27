@@ -120,10 +120,8 @@ for group in data.get("hooks", {}).get("SessionEnd", []):
 # for an older guard-style hooks.json. _hook_command_identity strips the resolver.
 _GUARD = ('L="${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh"; [ -r "$L" ] || exit 0; '
           'exec "$b" "$L" "${CLAUDE_PLUGIN_ROOT}/hooks/run.py"')
-_RESOLVER = ('D="${CLAUDE_PLUGIN_ROOT}"; '
-             'case "$D" in *\\\\*) D="$(printf \'%s\' "$D" | tr \'\\\\\' \'/\')";; esac; '
-             '[ -r "$D/hooks/python-launcher.sh" ] || '
-             'D="$(ls -d "${D%/*}"/*/ 2>/dev/null | grep -E "/[0-9]+[.][0-9]+[.][0-9]+/$" | sort -V | tail -n1)"; '
+_RESOLVER = ('D="${CLAUDE_PLUGIN_ROOT}"; [ -r "$D/hooks/python-launcher.sh" ] || '
+             'D="$(ls -d "${D%[/\\\\]*}"/*/ 2>/dev/null | grep -E "/[0-9]+[.][0-9]+[.][0-9]+/$" | sort -V | tail -n1)"; '
              'D="${D%/}"; [ -r "$D/hooks/python-launcher.sh" ] || exit 0; '
              'exec "$b" "$D/hooks/python-launcher.sh" "$D/hooks/run.py"')
 def resolverize(o):

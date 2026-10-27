@@ -34168,6 +34168,11 @@ def _generate_windows_launcher_cmd(daemon_script_path, log_dir):
 
     return (
         "@echo off\r\n"
+        # cmd.exe reads a batch file in the console (OEM) code page, but this
+        # file is written as UTF-8: a profile path like C:\Users\Jos\u00e9 was
+        # garbled and the daemon never started. Switch to UTF-8 first; this
+        # line and everything above it is plain ASCII.
+        "chcp 65001\r\n"
         "REM Token Optimizer dashboard daemon launcher (v5.3.2+).\r\n"
         "REM Auto-generated. Resolves Python at runtime so interpreter upgrades\r\n"
         "REM do not break the scheduled task.\r\n"
@@ -34181,7 +34186,7 @@ def _generate_windows_launcher_cmd(daemon_script_path, log_dir):
         f'set "STDOUT_LOG={log_dir}\\stdout.log"\r\n'
         f'set "STDERR_LOG={log_dir}\\stderr.log"\r\n'
         'if not exist "%DAEMON_SCRIPT%" (\r\n'
-        '  echo [%DATE% %TIME%] daemon script missing: %DAEMON_SCRIPT% >> "%STDERR_LOG%"\r\n'
+        '  echo [%DATE% %TIME%] daemon script missing: "%DAEMON_SCRIPT%" >> "%STDERR_LOG%"\r\n'
         "  exit /b 1\r\n"
         ")\r\n"
         'set "PYW_EXE="\r\n'

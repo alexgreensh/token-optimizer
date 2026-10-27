@@ -15,6 +15,11 @@ W = "tests/test_hook_wire_contract.py"
 C = "tests/test_copilot_windows_powershell_hook.py"
 P = "tests/test_windows_pid_liveness.py"
 S = "tests/test_windows_settings_hook_interpreter.py"
+D = "tests/test_windows_dashboard_launcher_cmd.py"
+PL = "tests/test_python_launcher_windows_pythonw.py"
+PY_LAUNCHER = "hooks/python-launcher.sh"
+NP = "tests/test_python_launcher_no_python3_issue21.py"
+IS = "tests/test_install_sh_copilot_wsl_issue78.py"
 
 MUTATIONS = [
     ("#278 a $ % backtick or ! in the plugin path forces the cmd-only hook again",
@@ -57,7 +62,7 @@ MUTATIONS = [
     ("Claude plugin hooks on Windows lose the new version after an update",
      [W + "::test_claude_plugin_hooks_survive_an_upgrade_with_a_windows_style_root"],
      CLAUDE_HOOKS,
-     [('case \\"$D\\" in *\\\\\\\\*) D=\\"$(printf \'%s\' \\"$D\\" | tr \'\\\\\\\\\' \'/\')\\";; esac; ', "")]),
+     [('${D%[/\\\\\\\\]*}', '${D%/*}')]),
 
     ("Windows liveness probe sends CTRL_C_EVENT via os.kill(pid, 0)",
      [P + "::test_windows_never_sends_a_signal_and_reads_the_process_table"],
@@ -76,4 +81,29 @@ MUTATIONS = [
      MEASURE,
      [('    if sys.platform == "win32":\n        return (shlex.quote(str(sys.executable)',
        '    if False:\n        return (shlex.quote(str(sys.executable)')]),
+
+    ("dashboard-launcher.cmd is read in the OEM code page and garbles non-ASCII paths",
+     [D + "::test_utf8_code_page_is_set_before_any_path"],
+     MEASURE,
+     [('        "chcp 65001\\r\\n"\n', "")]),
+
+    ("Windows conda Pythons are refused by the hook launcher",
+     [PL + "::test_safe_prefix_accepts_default_windows_conda_scoop_uv_installs"],
+     PY_LAUNCHER,
+     [("        /[a-zA-Z]/Users/*/miniconda3/*|/[a-zA-Z]/Users/*/anaconda3/*)   return 0 ;;\n", "")]),
+
+    ("#21 hook launcher gives up when Windows has python but no python3",
+     [NP + "::test_only_python_on_path_is_used"],
+     PY_LAUNCHER,
+     [('if py=$(find_interpreter "python"); then', "if false; then")]),
+
+    ("#21 hook launcher gives up when Windows has only the py launcher",
+     [NP + "::test_only_the_py_launcher_on_path_runs_py_dash_3"],
+     PY_LAUNCHER,
+     [('if pyl=$(find_interpreter "py"); then', "if false; then")]),
+
+    ("#78 install.sh --copilot under WSL root writes to /root/.copilot again",
+     [IS + "::test_wsl_root_targets_the_single_windows_profile"],
+     "install.sh",
+     [('            export "${export_as}=${guessed}"\n', "")]),
 ]

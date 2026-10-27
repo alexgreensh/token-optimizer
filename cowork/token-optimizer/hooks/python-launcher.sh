@@ -187,6 +187,16 @@ _is_safe_prefix() {
         # managers are enumerated here. (mise pattern, trekie86.)
         /[a-zA-Z]/Users/*/AppData/Local/mise/shims/*)                   return 0 ;;
         /[a-zA-Z]/Users/*/.pyenv/pyenv-win/shims/*)                     return 0 ;;
+        # Default per-user installs of conda, Scoop and uv-managed Pythons,
+        # and the all-users conda dirs under ProgramData (admin-writable).
+        # Same trust tier as AppData/Local/Programs/Python above: without
+        # them every hook exited 0 doing nothing for these users.
+        /[a-zA-Z]/Users/*/miniconda3/*|/[a-zA-Z]/Users/*/anaconda3/*)   return 0 ;;
+        /[a-zA-Z]/Users/*/miniforge3/*|/[a-zA-Z]/Users/*/mambaforge/*)  return 0 ;;
+        /[a-zA-Z]/ProgramData/miniconda3/*|/[a-zA-Z]/ProgramData/anaconda3/*) return 0 ;;
+        /[a-zA-Z]/Users/*/scoop/apps/python+([0-9])/*)                  return 0 ;;
+        /[a-zA-Z]/Users/*/scoop/apps/python/*)                          return 0 ;;
+        /[a-zA-Z]/Users/*/AppData/Roaming/uv/python/*)                  return 0 ;;
         # All-users `py` launcher lives in the (admin-only-writable) Windows dir.
         # Exact filename keeps the anti-hijack intent (no wildcard in that dir).
         /[a-zA-Z]/Windows/py.exe)                                      return 0 ;;

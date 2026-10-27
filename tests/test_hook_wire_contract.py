@@ -808,17 +808,23 @@ def test_claude_plugin_hooks_survive_an_upgrade_mid_session(sandbox):
 @pytest.mark.skipif(sys.platform == "win32", reason="simulates MSYS separators with POSIX file names")
 def test_claude_plugin_hooks_survive_an_upgrade_with_a_windows_style_root(sandbox):
     """On Windows, Claude Code hands Git Bash a CLAUDE_PLUGIN_ROOT with
-    backslashes (C:\\...\\token-optimizer\\5.13.50). The upgrade fallback split
-    it on "/" only, found no sibling, and every hook quietly exited 0 until a
-    restart. Simulated here: a root spelled with backslashes where Git Bash
-    would treat them as separators must still find the newest version."""
-    base, old, new = _version_cache(sandbox, REPO, host_dir=".claude")
-    new.symlink_to(REPO, target_is_directory=True)
+    backslashes (C:\\...\\token-optimizer\\5.13.50). The upgrade fallback cut
+    the version off at the last "/" only, found no sibling, and every hook
+    quietly exited 0 until a restart. It now cuts at the last "/" or "\\".
+
+    Simulated on POSIX with a folder whose NAME holds a backslash: the root
+    ``<cache>/plugins\\token-optimizer\\5.13.50`` must resolve to the sibling
+    ``5.13.51`` inside ``<cache>/plugins\\token-optimizer`` (Git Bash reads the
+    same text as nested folders)."""
     warm(sandbox, "claude")
+    cache = sandbox.home / ".claude" / "plugins" / "cache" / "mk"
+    parent = cache / "plugins\\token-optimizer"
+    parent.mkdir(parents=True)
+    new = parent / "5.13.51"
+    new.symlink_to(REPO, target_is_directory=True)
     e = pick(harness_entries("claude", sandbox), "PreToolUse", matcher_prefix="Read")
     env = harness_env("claude", sandbox)
-    rel = old.relative_to(sandbox.home)
-    env["CLAUDE_PLUGIN_ROOT"] = str(sandbox.home) + "\\" + "\\".join(rel.parts)
+    env["CLAUDE_PLUGIN_ROOT"] = str(parent) + "\\5.13.50"  # deleted by the update
     r = fire_entry(sandbox, e, env)
     used = " ".join(" ".join(map(str, p.get("argv") or [])) for p in r.procs)
     assert r.rc == 0 and r.ran(*e.expected_handler()), r

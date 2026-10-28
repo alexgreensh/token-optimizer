@@ -5,6 +5,7 @@
 - Codex on Windows: hook commands now run under PowerShell, which is the shell Codex uses for hooks, as well as cmd.exe. The 5.13.57 command only worked under cmd.exe, so hooks still failed with "hook exited with code 1". Any Token Optimizer command rewrites existing hooks to the new form; restart Codex afterwards, and approve the Token Optimizer entries if Codex asks you to review the changed hooks. Paths with `$`, a backtick, `%` or `!` (for example in your Windows user name) work too. If Python itself sits in such a folder, `codex-doctor` tells you exactly what to change. Thanks @porkmagus (#278).
 - Codex: the Stop hook passes its session id to the background checkpoint job, and no longer saves an anonymous "unknown" checkpoint when the host sent no session id. `codex-doctor` shows which fields the Stop hook received (names only, never values).
 - Codex: the Stop hook finds your session's transcript from the session id alone, and never saves an empty "No transcript data available" checkpoint. `codex-doctor` says why a checkpoint was skipped.
+- Codex on Windows: the automatic hook repair also updates the launcher it relies on, so quiet hooks stay quiet after the repair, and a folder name containing `&&` no longer makes it rewrite your hooks and ask for a Codex restart on every run.
 - Codex on Windows: hooks installed from a development checkout run under PowerShell too.
 - GitHub Copilot CLI on Windows: hooks now fire. The installer only wrote the Linux and macOS form, which Copilot skips on Windows.
 - Claude Code on Windows: after a plugin update replaces the version a session started with, hooks find the new version instead of quietly doing nothing until a restart.
@@ -15,6 +16,8 @@
 
 - GitHub Copilot CLI: the `preToolUse` hook loads again. `copilot-install` wrote its matcher in a form Copilot rejects, so Copilot skipped the hook and bash output was never compressed. Re-run `copilot-install` once to pick up the fix. `copilot-doctor` now reports a hook config whose matcher Copilot would skip instead of showing it as OK. Thanks @imabusyman (#284).
 - GitHub Copilot CLI: the end-of-session rollup, dashboard refresh and in-flight tally cleanup run again. `copilot-install` registered them under a `stop` event that Copilot does not have, so they never fired. They now run on `sessionEnd`. Re-run `copilot-install` once to switch. Session cleanup no longer depends on the refresh being available. `copilot-doctor` warns while the old entry is present or the bridge cannot find `measure.py`, and no longer crashes on a malformed hook file.
+- Context fill no longer reads about double on turns that call the advisor tool. Token Optimizer now sizes the context from the last executor request, the same number Claude Code shows, so checkpoints, nudges and the status line stop firing early. Thanks @Buttermilkplug (#287).
+- Checkpoints and session topics now keep your real task instead of harness text such as meta notes, the `/compact` wrapper or a resume prompt. Thanks @Buttermilkplug (#288).
 - Advisor tool sessions: the tokens the advisor model uses are now counted in your costs and priced at the advisor model's own rate. Before, they were left out of the total.
 - Keep-warm history and the cache-expiry waste check now size advisor turns by their real context, so a paid cache rewrite after a long pause is no longer missed.
 - Checkpoints and session topics no longer pick up "Request interrupted by user", cut-off notices, a bare `/model`, `/context` or `/exit`, or a leading system reminder as your current task.
@@ -22,6 +25,9 @@
 - The most expensive prompts list now shows only prompts you typed, not compact summaries or command notes.
 - Session message counts no longer include notes Claude Code writes on its own, only messages from you and replies.
 - OpenClaw: older Claude Code style logs no longer take a system note as their session topic.
+
+- Session topics and resume matching now keep short words in Chinese, Japanese, Korean and other non-Latin scripts, so "continue the 결제 work" finds the right session. Python, OpenClaw and OpenCode apply the same rule. Thanks @dajiaohuang (#279).
+- Claude desktop status bar: on managed or Team machines you see at most two "hook was skipped" notices per session instead of four. The notice comes from Claude Code's built-in security guard; the docs explain it. Thanks @asaarela-bw (#281).
 
 - Hermes: terminal output is compressed with the same engine Claude Code uses (git, find, tests, builds, logs and more), and the full original stays one command away.
 - Hermes: re-reading a file you already read returns a short structure map, and re-reading it after an edit returns only the diff.

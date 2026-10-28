@@ -6,6 +6,7 @@ gets no such marker, so a bare `measure.py expand <id>` copied from the pointer
 resolved the Claude Code runtime and answered "No archive directory found".
 The pointer now pins `--runtime codex`, like Hermes, and the pinned form is
 still recognised as a recovery command so an expand is never re-archived.
+A bare expand also finds it now, through expand's cross-runtime fallback.
 """
 
 from __future__ import annotations
@@ -73,11 +74,16 @@ def test_codex_pointer_retrieves_from_a_bare_codex_shell(archived):
     assert out.stdout.rstrip("\n") == BODY.rstrip("\n")
 
 
-def test_bare_expand_from_codex_shell_misses(archived):
-    """Documents why the pin is needed: without it the shell resolves Claude Code."""
+def test_bare_and_claude_pinned_expand_from_codex_shell(archived):
+    """A bare expand resolves Claude Code here and only finds the Codex entry
+    through the cross-runtime fallback; an explicit --runtime claude stays
+    strict and misses, which is why the pointer pins codex."""
     home, _ = archived
     out = _run(SCRIPTS / "measure.py", ["expand", TOOL_USE_ID], _env(home))
-    assert out.returncode != 0 or BODY.strip() not in out.stdout
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.rstrip("\n") == BODY.rstrip("\n")
+    strict = _run(SCRIPTS / "measure.py", ["--runtime", "claude", "expand", TOOL_USE_ID], _env(home))
+    assert strict.returncode != 0 and BODY.strip() not in strict.stdout
 
 
 def test_pinned_codex_pointer_is_a_recovery_command(archived):

@@ -124,3 +124,76 @@ def test_js_plugins_never_print_a_measure_expand_pointer(plugin):
         if "tool-archive" in text or re.search(r"measure\.py[^\n]*\bexpand\b", text):
             offenders.append(str(path.relative_to(REPO)))
     assert not offenders, offenders
+
+
+# ------------------------------------------- unpinned expand: cross-runtime fallback
+
+def _measure(home: Path, *args) -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, str(SCRIPTS / "measure.py"), *args], env=_env(home),
+                          capture_output=True, text=True, timeout=180)
+
+
+def _key(pointer: str) -> str:
+    return pointer.rsplit(" ", 1)[1]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="bash_compress wraps POSIX commands")
+@pytest.mark.parametrize("runtime", ["copilot", "codex"])
+def test_bare_expand_falls_back_to_another_runtimes_archive(tmp_path, runtime):
+    """The unpinned-Claude gap: an archive written under another runtime, then
+    a bare `measure.py expand <id>` whose shell resolves Claude Code."""
+    home = tmp_path / "home"
+    key = _key(_archive_via_bash_compress(home, runtime))
+    out = _measure(home, "expand", key)
+    assert out.returncode == 0, out.stderr
+    assert "file_150.txt" in out.stdout
+    # With --session too (the same id lookup, scoped).
+    out = _measure(home, "expand", key, "--session", "unknown")
+    assert out.returncode != 0  # "unknown" never names a session dir, as today
+
+
+@pytest.mark.skipif(os.name != "posix", reason="bash_compress wraps POSIX commands")
+def test_bare_expand_of_a_missing_id_still_reports_not_found(tmp_path):
+    home = tmp_path / "home"
+    _archive_via_bash_compress(home, "copilot")
+    out = _measure(home, "expand", "0123456789abcdef")
+    assert out.returncode == 1
+    assert "Tool result not found: 0123456789abcdef" in out.stderr
+    # Ids are validated before any lookup: traversal never reaches the fallback.
+    out = _measure(home, "expand", "../../../etc/passwd")
+    assert out.returncode == 1 and "Invalid tool_use_id" in out.stderr
+
+
+@pytest.mark.skipif(os.name != "posix", reason="bash_compress wraps POSIX commands")
+def test_explicit_runtime_expand_stays_strict(tmp_path):
+    home = tmp_path / "home"
+    key = _key(_archive_via_bash_compress(home, "copilot"))
+    out = _measure(home, "--runtime", "claude", "expand", key)
+    assert out.returncode == 1
+    assert "file_150.txt" not in out.stdout
+    out = _measure(home, "--runtime", "grok", "expand", key)
+    assert out.returncode == 1 and "file_150.txt" not in out.stdout
+
+
+@pytest.mark.skipif(os.name != "posix", reason="bash_compress wraps POSIX commands")
+def test_fallback_never_follows_a_symlinked_entry(tmp_path):
+    home = tmp_path / "home"
+    key = _key(_archive_via_bash_compress(home, "copilot"))
+    entry = next((home / ".copilot").rglob(f"{key}.json"))
+    secret = tmp_path / "outside.json"
+    secret.write_text('{"response": "outside-the-archive"}', encoding="utf-8")
+    entry.unlink()
+    entry.symlink_to(secret)
+    out = _measure(home, "expand", key)
+    assert "outside-the-archive" not in out.stdout
+    assert out.returncode == 1
+
+
+def test_bare_expand_is_still_a_recovery_command():
+    sys.path.insert(0, str(SCRIPTS))
+    import recovery_output
+    from refetch_fingerprint import measure_py_path, shell_path
+
+    bare = f"python3 {shell_path(measure_py_path())} expand 0123456789abcdef"
+    assert recovery_output.is_expand_command(bare)
+    assert recovery_output.is_recovery_output("Bash", {"command": bare})

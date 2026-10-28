@@ -1,8 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.1.17
 
 - Fix: the context fill bar no longer reads about double on turns that called the advisor tool. It now uses the real context size, the same number Claude Code shows (#287).
+- Fix: GitHub Copilot sessions are found when `TOKEN_OPTIMIZER_COPILOT_HOME` points at a custom Copilot folder.
 
 ## 0.1.16
 

@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [5.13.59] - 2026-10-28
 
 - Codex on Windows: hook commands now run under PowerShell, which is the shell Codex uses for hooks, as well as cmd.exe. The 5.13.57 command only worked under cmd.exe, so hooks still failed with "hook exited with code 1". Any Token Optimizer command rewrites existing hooks to the new form; restart Codex afterwards, and approve the Token Optimizer entries if Codex asks you to review the changed hooks. Paths with `$`, a backtick, `%` or `!` (for example in your Windows user name) work too. If Python itself sits in such a folder, `codex-doctor` tells you exactly what to change. Thanks @porkmagus (#278).
 - Codex: the Stop hook passes its session id to the background checkpoint job, and no longer saves an anonymous "unknown" checkpoint when the host sent no session id. `codex-doctor` shows which fields the Stop hook received (names only, never values).
@@ -29,6 +29,12 @@
 - Session topics and resume matching now keep short words in Chinese, Japanese, Korean and other non-Latin scripts, so "continue the 결제 work" finds the right session. Python, OpenClaw and OpenCode apply the same rule. Thanks @dajiaohuang (#279).
 - Claude desktop status bar: on managed or Team machines you see at most two "hook was skipped" notices per session instead of four. The notice comes from Claude Code's built-in security guard; the docs explain it. Thanks @asaarela-bw (#281).
 
+- Saved tool results: the `expand` command shown by Codex, Copilot, Cursor, OpenCode, Antigravity, Grok and Devin now names its tool, so it finds the result from any shell. A plain `expand <id>` also looks in every tool's saved results when the id is not in its own.
+- A relocated Claude Code config folder (`CLAUDE_CONFIG_DIR`) is now honored by the cache checks, durable memory, the fleet auditor and the `claude` lookup for keep-warm and health, and older dashboard rows from that folder are labeled Claude Code.
+- `cleanup` now removes the compact instructions Token Optimizer added and service files left from another operating system, works right after any other Token Optimizer command, and keeps your own compact instructions when you reinstall (#106).
+- Running `setup-hook`, `setup-smart-compact` and `setup-quality-bar` one after another no longer fails with "settings.json write was refused".
+- Cost-saving suggestions now price advisor turns at the advisor model too.
+
 - Hermes: terminal output is compressed with the same engine Claude Code uses (git, find, tests, builds, logs and more), and the full original stays one command away.
 - Hermes: re-reading a file you already read returns a short structure map, and re-reading it after an edit returns only the diff.
 - Hermes: large MCP results come back as a preview with the full result saved, and repeating the same MCP call reads the saved copy instead.
@@ -40,6 +46,7 @@
 - Hermes: Token Optimizer's credential patterns, including your custom ones, now also mask secrets in Hermes's own output and logs.
 - Hermes: `/token-optimizer` can show what a past session cost, save a checkpoint now, and print a saved tool result.
 - Hermes: a session is now recorded once when it ends instead of after its first turn, so the dashboard shows the whole session, and the context nudge fires at most once per session as intended.
+- Hermes: dashboard totals keep growing when the dashboard refreshes while a session is still running, instead of freezing at that moment.
 - Hermes: `hermes-doctor` lists every live hook and warns when the installed plugin is older than your checkout. Re-run `install.sh --hermes` to get plugin 0.2.0.
 - `measure.py --runtime NAME` now also uses that runtime's data folder, so commands like `expand` find results saved there.
 

@@ -21,7 +21,34 @@ import pytest
 REPO = Path(__file__).resolve().parent.parent
 INSTALL_SH = REPO / "install.sh"
 
-pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+
+def _posix_bash():
+    """The bash install.sh runs under. On Windows that is Git Bash:
+    shutil.which("bash") there often finds WSL's C:\\Windows\\System32\\bash.exe,
+    which on a host with no distro prints a UTF-16 "Windows Subsystem for
+    Linux has no installed distributions" and runs nothing (GitHub runners).
+    Same resolution rule as test_antigravity_install_sh._install_bash."""
+    if os.name != "nt":
+        return shutil.which("bash")
+    for c in (
+        os.environ.get("GIT_BASH"),
+        r"C:\Program Files\Git\bin\bash.exe",
+        r"C:\Program Files\Git\usr\bin\bash.exe",
+        r"C:\Program Files (x86)\Git\bin\bash.exe",
+    ):
+        if c and Path(c).exists():
+            return c
+    b = shutil.which("bash")
+    if b and "system32" in b.lower():  # the WSL launcher, not a POSIX bash
+        return None
+    return b
+
+
+BASH = _posix_bash()
+
+pytestmark = pytest.mark.skipif(
+    BASH is None,
+    reason="needs a POSIX bash (Git Bash on Windows; WSL's bash.exe launcher is not one)")
 
 
 def _recover(tmp_path, *, proc_version="Linux version 5.15 microsoft-standard-WSL2",
@@ -43,15 +70,15 @@ def _recover(tmp_path, *, proc_version="Linux version 5.15 microsoft-standard-WS
            if k not in ("WSL_DISTRO_NAME", "TOKEN_OPTIMIZER_COPILOT_HOME", "COPILOT_HOME")}
     env.update({
         "_TO_INSTALL_SH_TEST_MODE": "1",
-        "_TO_PROC_VERSION": str(proc),
-        "_TO_WSL_USERS_DIR": str(users_dir),
-        "_TO_POWERSHELL": str(tmp_path / "no-powershell.exe"),
-        "_TO_CMD_EXE": str(tmp_path / "no-cmd.exe"),
+        "_TO_PROC_VERSION": proc.as_posix(),
+        "_TO_WSL_USERS_DIR": users_dir.as_posix(),
+        "_TO_POWERSHELL": (tmp_path / "no-powershell.exe").as_posix(),
+        "_TO_CMD_EXE": (tmp_path / "no-cmd.exe").as_posix(),
         "HOME": home,
     })
     if preset:
         env["TOKEN_OPTIMIZER_COPILOT_HOME"] = preset
-    proc_run = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+    proc_run = subprocess.run([BASH, "-c", script], capture_output=True, text=True,
                               timeout=60, env=env, cwd=str(tmp_path))
     out = [line for line in proc_run.stdout.splitlines() if line.startswith("RESULT=")]
     assert out, (proc_run.stdout, proc_run.stderr)

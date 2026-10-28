@@ -226,3 +226,45 @@ def test_vscode_copilot_home_matches_python_resolver(tmp_path):
     py = _run_py("import runtime_env; print(runtime_env.copilot_home())", env)
     ts = _run_ts(home, {"TOKEN_OPTIMIZER_COPILOT_HOME": str(relocated)})
     assert Path(ts["cacheDir"]).parent == Path(py)
+
+
+# ------------------------------------------------- trends platform backfill
+
+_BACKFILL = r"""
+import json, sys, measure
+conn = measure._init_trends_db()
+for path in json.loads(sys.argv[1]):
+    conn.execute("INSERT INTO session_log (date, jsonl_path, platform) VALUES ('2026-01-01', ?, NULL)", (path,))
+conn.commit(); conn.close()
+results = []
+for _ in range(2):  # the backfill runs on every open; the second must change nothing
+    conn = measure._init_trends_db()
+    results.append(dict(conn.execute("SELECT jsonl_path, platform FROM session_log").fetchall()))
+    conn.close()
+print(json.dumps(results))
+"""
+
+
+def test_platform_backfill_tags_relocated_claude_config_rows(tmp_path):
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    config = tmp_path / "my_cfg"  # '_' is a LIKE wildcard: must be matched literally
+    config.mkdir()
+    cfg = config.resolve()
+    rows = {
+        str(cfg / "projects" / "-repo" / "s1.jsonl"): "claude",
+        str(home / ".claude" / "projects" / "-repo" / "s2.jsonl"): "claude",
+        str(home / ".codex" / "sessions" / "2026" / "rollout.jsonl"): "codex",
+        str(cfg / "projects" / "x" / ".codex" / "sessions" / "r.jsonl"): "codex",
+        "copilot:abc": "copilot",
+        str(tmp_path / "myXcfg" / "projects" / "-repo" / "s3.jsonl"): None,
+        str(cfg / "projectsX" / "s4.jsonl"): None,
+        str(tmp_path / "elsewhere" / "s5.jsonl"): None,
+    }
+    env = _env(home, config)
+    out = subprocess.run([sys.executable, "-c", _BACKFILL, json.dumps(list(rows))], cwd=str(SCRIPTS),
+                         env=env, capture_output=True, text=True, timeout=180)
+    assert out.returncode == 0, out.stderr
+    first, second = json.loads(out.stdout.strip().splitlines()[-1])
+    assert first == rows
+    assert second == rows

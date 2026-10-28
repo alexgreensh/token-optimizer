@@ -125,7 +125,6 @@ def _powershells():
 def test_powershell_command_really_runs_with_the_payload_on_stdin(monkeypatch, tmp_path):
     """On a machine with PowerShell (the Windows CI jobs): the hook gets the
     payload on stdin, its arguments, and TOKEN_OPTIMIZER_RUNTIME=copilot."""
-    ci = _load(monkeypatch, "win32")
     folder = tmp_path / "Jo$h O'Brien 100%"
     folder.mkdir()
     bridge = folder / "copilot_hook_bridge.py"
@@ -133,7 +132,12 @@ def test_powershell_command_really_runs_with_the_payload_on_stdin(monkeypatch, t
         "import json, os, sys\n"
         "print(json.dumps({'argv': sys.argv[1:], 'stdin': sys.stdin.read(),"
         " 'runtime': os.environ.get('TOKEN_OPTIMIZER_RUNTIME')}))\n", encoding="utf-8")
-    command = ci._powershell_hook_command(sys.executable, str(bridge), "post-tool-use")
+    # Only the command is built as on Windows. sys is process-global, so the
+    # stand-in platform must be gone before subprocess runs pwsh: on Linux,
+    # subprocess would otherwise take its Windows code path and crash.
+    with monkeypatch.context() as patch:
+        ci = _load(patch, "win32")
+        command = ci._powershell_hook_command(sys.executable, str(bridge), "post-tool-use")
     for program in _powershells():
         proc = subprocess.run([program, "-NoProfile", "-Command", command],
                               input=b'{"toolName":"bash"}', capture_output=True, timeout=120,

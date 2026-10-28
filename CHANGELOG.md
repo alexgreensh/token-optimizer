@@ -12,6 +12,8 @@
 - Claude Code on Windows: smart compaction and quality bar hooks use your real Python instead of `python3`, which Git Bash often lacks.
 - Windows: hooks accept Python installed by conda, Scoop or uv in their default folders.
 - Windows: the dashboard background service starts when your user folder has accented letters.
+- Windows: sessions collected by older versions now show under the right tool (Claude Code or Codex) in the dashboard.
+- Automatic price releases now reach npm too.
 - Windows: `purge --force` stops the dashboard service before deleting its files, and background locks no longer mistake a running process for a dead one.
 
 - GitHub Copilot CLI: the `preToolUse` hook loads again. `copilot-install` wrote its matcher in a form Copilot rejects, so Copilot skipped the hook and bash output was never compressed. Re-run `copilot-install` once to pick up the fix. `copilot-doctor` now reports a hook config whose matcher Copilot would skip instead of showing it as OK. Thanks @imabusyman (#284).

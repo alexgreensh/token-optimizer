@@ -2163,6 +2163,103 @@ def _resume_usage(usage):
     return usage
 
 
+_USAGE_BUCKET_KEYS = ("inp", "out", "cr", "cc", "cc_1h", "cc_5m")
+
+
+def _usage_buckets(usage):
+    """Billing buckets of one usage dict (or iteration), never raising."""
+    if not isinstance(usage, dict):
+        return dict.fromkeys(_USAGE_BUCKET_KEYS, 0)
+    nested = usage.get("cache_creation", {})
+    if not isinstance(nested, dict):
+        nested = {}
+    cc_1h = _safe_int(nested.get("ephemeral_1h_input_tokens", 0)
+                      or usage.get("ephemeral_1h_input_tokens", 0))
+    cc_5m = _safe_int(nested.get("ephemeral_5m_input_tokens", 0)
+                      or usage.get("ephemeral_5m_input_tokens", 0))
+    return {
+        "inp": max(0, _safe_int(usage.get("input_tokens", 0))),
+        "out": max(0, _safe_int(usage.get("output_tokens", 0))),
+        "cr": max(0, _safe_int(usage.get("cache_read_input_tokens", 0))),
+        "cc": max(0, _safe_int(usage.get("cache_creation_input_tokens", 0))
+                  or (cc_1h + cc_5m)),
+        "cc_1h": max(0, cc_1h),
+        "cc_5m": max(0, cc_5m),
+    }
+
+
+def _billed_usage_parts(usage, model, tier=None):
+    """Split one response's usage into [(price_model, buckets), ...].
+
+    The first part is the executor (priced at the response model). Advisor
+    iterations (type "advisor_message") run on the advisor's own model, so
+    each becomes its own part priced at that model when the rate card knows
+    it, else at the executor model. Tokens are never dropped: when the
+    top-level usage already covers the advisor tokens they are moved out of
+    the executor part, otherwise (the documented shape, top-level is the
+    executor sum only) they are added on top.
+    """
+    agg = _usage_buckets(usage)
+    iterations = usage.get("iterations") if isinstance(usage, dict) else None
+    if not isinstance(iterations, list):
+        return [(model, agg)]
+    executor_sum = dict.fromkeys(_USAGE_BUCKET_KEYS, 0)
+    advisor_sum = dict.fromkeys(_USAGE_BUCKET_KEYS, 0)
+    advisors = []
+    for iteration in iterations:
+        if not isinstance(iteration, dict):
+            continue
+        kind = iteration.get("type")
+        if kind == "message":
+            for k, v in _usage_buckets(iteration).items():
+                executor_sum[k] += v
+        elif kind == "advisor_message":
+            buckets = _usage_buckets(iteration)
+            if not any(buckets.values()):
+                continue
+            adv_model = iteration.get("model")
+            if not (isinstance(adv_model, str) and adv_model
+                    and _is_priced_model(adv_model, tier)):
+                adv_model = model
+            advisors.append((adv_model, buckets))
+            for k, v in buckets.items():
+                advisor_sum[k] += v
+    if not advisors:
+        return [(model, agg)]
+    executor = dict(agg)
+    if all(agg[k] >= executor_sum[k] + advisor_sum[k] for k in _USAGE_BUCKET_KEYS):
+        executor = {k: agg[k] - advisor_sum[k] for k in _USAGE_BUCKET_KEYS}
+    return [(model, executor)] + advisors
+
+
+def _price_usage_parts(parts, tier=None, per_request=False, ttl_split=True):
+    """USD for _billed_usage_parts output; cache writes priced by TTL split."""
+    total = 0.0
+    for part_model, b in parts:
+        if ttl_split and (b["cc_1h"] or b["cc_5m"]):
+            total += _get_model_cost(part_model, b["inp"], b["out"], b["cr"], b["cc"],
+                                     tier=tier, cache_create_1h=b["cc_1h"],
+                                     cache_create_5m=b["cc_5m"], per_request=per_request)
+        else:
+            total += _get_model_cost(part_model, b["inp"], b["out"], b["cr"], b["cc"],
+                                     tier=tier, per_request=per_request)
+    return total
+
+
+def _turn_prefix_cached(turn):
+    """Cached prefix a turn leaves behind: final executor when known (#287)."""
+    if "ctx_cache" in turn:
+        return max(0, _safe_int(turn.get("ctx_cache")))
+    return _safe_int(turn.get("cache_read")) + _safe_int(turn.get("cache_creation"))
+
+
+def _turn_resume_write(turn):
+    """Cache written when a turn starts: first executor when known (#287)."""
+    if "resume_cache_creation" in turn:
+        return max(0, _safe_int(turn.get("resume_cache_creation")))
+    return _safe_int(turn.get("cache_creation"))
+
+
 def _context_token_count(usage):
     """Input footprint, including flat or TTL-split cache writes."""
     if not isinstance(usage, dict):
@@ -2430,12 +2527,9 @@ def get_session_baselines(limit=10):
                         if "message" in data and isinstance(data["message"], dict):
                             msg = data["message"]
                             if "usage" in msg:
-                                u = msg["usage"]
-                                first_usage = (
-                                    u.get("input_tokens", 0)
-                                    + u.get("cache_creation_input_tokens", 0)
-                                    + u.get("cache_read_input_tokens", 0)
-                                )
+                                # Context size, not the advisor-summed bill (#287).
+                                first_usage = _context_token_count(
+                                    _context_usage(msg["usage"]))
                                 break
                     except (json.JSONDecodeError, KeyError, TypeError):
                         continue
@@ -11990,21 +12084,14 @@ def _extract_costly_prompts(jsonl_path, tier=None, top_n=5):
                     if is_sidechain:
                         continue
                     content = msg.get("content") if isinstance(msg, dict) else msg
-                    text = ""
-                    if isinstance(content, str):
-                        text = content
-                    elif isinstance(content, list):
+                    if isinstance(content, list):
                         # Skip if all items are tool_result
                         types = [i.get("type") for i in content if isinstance(i, dict)]
                         if types and all(t == "tool_result" for t in types):
                             continue
-                        for block in content:
-                            if isinstance(block, dict) and block.get("type") == "text":
-                                text = block.get("text", "")
-                                break
-                            elif isinstance(block, str):
-                                text = block
-                                break
+                    # Same filter as checkpoints: harness text (meta records,
+                    # compact summaries, command caveats) is not a prompt.
+                    text = _task_user_text(record)
                     if text and len(text) > 5:
                         pending_prompt = {
                             "text": text[:300],
@@ -12022,8 +12109,9 @@ def _extract_costly_prompts(jsonl_path, tier=None, top_n=5):
                         cr = _safe_int(usage.get("cache_read_input_tokens", 0))
                         cc = _safe_int(usage.get("cache_creation_input_tokens", 0))
                         model = _record_model(msg)
-                        cost = _get_model_cost(model, inp, out, cr, cc, tier=tier,
-                                               per_request=True)
+                        cost = _price_usage_parts(
+                            _billed_usage_parts(usage, model, tier=tier),
+                            tier=tier, per_request=True, ttl_split=False)
                         pending_prompt["tokens_in"] = inp + cr + cc
                         pending_prompt["tokens_out"] = out
                         pending_prompt["fresh_input"] = inp
@@ -12409,6 +12497,8 @@ def _parse_session_jsonl(filepath, window_start=None, window_end=None):
                         isinstance(b, dict) and b.get("type") == "tool_result" for b in _c
                     ):
                         pass                         # tool output, not a human turn
+                    elif record.get("isMeta") or record.get("isCompactSummary"):
+                        pass                         # harness-written, not a human turn
                     else:
                         message_count += 1
 
@@ -12508,26 +12598,31 @@ def _parse_session_jsonl(filepath, window_start=None, window_end=None):
                         # each other — use the map's own size as a monotonic
                         # per-session counter.
                         key = req_id if req_id else f"__noreq__{len(request_usage_map)}"
-                        prev = request_usage_map.get(key)
-                        if prev is None:
-                            request_usage_map[key] = {
-                                "inp": inp_tok, "out": out_tok, "cr": cr, "cc": cc,
-                                "cc_1h": cc_1h, "cc_5m": cc_5m, "model": model,
-                                "ts": ts_str,
-                            }
-                        else:
-                            # Streaming: keep MAX of each token category.
-                            # Model + timestamp: prefer later (non-empty) values.
-                            prev["inp"] = max(prev["inp"], inp_tok)
-                            prev["out"] = max(prev["out"], out_tok)
-                            prev["cr"] = max(prev["cr"], cr)
-                            prev["cc"] = max(prev["cc"], cc)
-                            prev["cc_1h"] = max(prev["cc_1h"], cc_1h)
-                            prev["cc_5m"] = max(prev["cc_5m"], cc_5m)
-                            if model and model != "unknown":
-                                prev["model"] = model
-                            if ts_str:
-                                prev["ts"] = ts_str
+                        # Advisor iterations bill at the advisor's own model:
+                        # each is a separate entry under "<request>#advisor<n>"
+                        # so streamed copies still dedup by MAX per entry.
+                        parts = _billed_usage_parts(usage, model)
+                        for part_index, (part_model, b) in enumerate(parts):
+                            part_key = key if part_index == 0 else f"{key}#advisor{part_index}"
+                            prev = request_usage_map.get(part_key)
+                            if prev is None:
+                                request_usage_map[part_key] = {
+                                    "inp": b["inp"], "out": b["out"], "cr": b["cr"],
+                                    "cc": b["cc"], "cc_1h": b["cc_1h"],
+                                    "cc_5m": b["cc_5m"], "model": part_model,
+                                    "ts": ts_str,
+                                }
+                                if part_index:
+                                    request_usage_map[part_key]["advisor"] = True
+                            else:
+                                # Streaming: keep MAX of each token category.
+                                # Model + timestamp: prefer later (non-empty) values.
+                                for field in _USAGE_BUCKET_KEYS:
+                                    prev[field] = max(prev[field], b[field])
+                                if part_model and part_model != "unknown":
+                                    prev["model"] = part_model
+                                if ts_str:
+                                    prev["ts"] = ts_str
 
     except (PermissionError, OSError):
         return None
@@ -12554,9 +12649,11 @@ def _parse_session_jsonl(filepath, window_start=None, window_end=None):
         total_cache_create += u["cc"]
         total_cache_create_1h += u["cc_1h"]
         total_cache_create_5m += u["cc_5m"]
-        api_calls += 1
         ts_s = u.get("ts")
-        if ts_s and isinstance(ts_s, str):
+        if not u.get("advisor"):
+            # An advisor part belongs to its request: not another API call.
+            api_calls += 1
+        if ts_s and isinstance(ts_s, str) and not u.get("advisor"):
             try:
                 api_call_timestamps.append(datetime.fromisoformat(ts_s.replace("Z", "+00:00")))
             except (ValueError, TypeError):
@@ -12752,14 +12849,8 @@ def parse_session_turns(filepath):
                         prev_call_ts = call_ts
                     except (ValueError, TypeError):
                         pass
-                # Price cache-create by TTL tier when the per-turn split is available.
-                if cc_1h or cc_5m:
-                    cost = _get_model_cost(model, inp_tok, out_tok, cr, cc, tier=tier,
-                                           cache_create_1h=cc_1h, cache_create_5m=cc_5m,
-                                           per_request=True)
-                else:
-                    cost = _get_model_cost(model, inp_tok, out_tok, cr, cc, tier=tier,
-                                           per_request=True)
+                cost = _price_usage_parts(_billed_usage_parts(usage, model, tier=tier),
+                                          tier=tier, per_request=True)
 
                 turns.append({
                     "turn_index": turn_index,
@@ -12776,6 +12867,13 @@ def parse_session_turns(filepath):
                     "tools_used": tools,
                     "cost_usd": round(cost, 6),
                 })
+                ctx_usage = _context_usage(usage)
+                if ctx_usage is not usage:
+                    # Cached prefix the next turn can reuse: the final executor
+                    # only, matching the live keep-warm arm (#287).
+                    turns[-1]["ctx_cache"] = (
+                        _context_token_count(ctx_usage)
+                        - _safe_int(ctx_usage.get("input_tokens")))
                 resume_usage = _resume_usage(usage)
                 if resume_usage is not usage:
                     # Billing stays aggregate; pause warmth uses the first
@@ -18347,9 +18445,10 @@ def _keepwarm_reconstruct_session_events(turns, now):
         gap = cur_epoch - prev_epoch
         if gap <= boundary:
             continue
-        prev_cached = (int(prev_turn.get("cache_read", 0) or 0)
-                       + int(prev_turn.get("cache_creation", 0) or 0))
-        cc = int(cur_turn.get("cache_creation", 0) or 0)
+        # Executor occupancy, not the advisor-summed aggregate (#287), so
+        # replay agrees with the live arm path.
+        prev_cached = _turn_prefix_cached(prev_turn)
+        cc = _turn_resume_write(cur_turn)
         if prev_cached <= 0:
             continue
         rewrote = cc >= _CACHE_REWRITE_PREFIX_FRACTION * prev_cached
@@ -18366,8 +18465,7 @@ def _keepwarm_reconstruct_session_events(turns, now):
         })
 
     last_epoch, last_turn = parsed[-1]
-    last_cached = (int(last_turn.get("cache_read", 0) or 0)
-                   + int(last_turn.get("cache_creation", 0) or 0))
+    last_cached = _turn_prefix_cached(last_turn)
     tail = None
     # Only a tail that idled past the boundary AND had a cacheable prefix is a
     # ping candidate (matches the live arm eligibility floor downstream).
@@ -21084,7 +21182,9 @@ def subagent_cache_payoff(days=30, now=None, since_ts=None,
             reqs = []
             for u in (parsed.get("request_usage") or {}).values():
                 ts_s = u.get("ts")
-                if not ts_s or not isinstance(ts_s, str):
+                if u.get("advisor") or not ts_s or not isinstance(ts_s, str):
+                    # Advisor parts run on the advisor's own cache, not this
+                    # subagent's prefix.
                     continue
                 try:
                     ts = datetime.fromisoformat(ts_s.replace("Z", "+00:00")).timestamp()
@@ -22595,13 +22695,15 @@ def _detect_explicit_ttl(turns, tier_data, profile, dominant_model=None, detail_
             first_write_tokens = cc
         if prev is not None:
             gap = turn.get("gap_since_prev_seconds")
-            prev_cached = int(prev.get("cache_read", 0) or 0) + int(prev.get("cache_creation", 0) or 0)
+            # Threshold basis is executor occupancy (#287); the dollars below
+            # stay on the billed aggregate `cc`.
+            prev_cached = _turn_prefix_cached(prev)
             if (
                 gap is not None
                 and boundary is not None
                 and gap > boundary
                 and prev_cached > 0
-                and cc >= _CACHE_REWRITE_PREFIX_FRACTION * prev_cached
+                and _turn_resume_write(turn) >= _CACHE_REWRITE_PREFIX_FRACTION * prev_cached
             ):
                 if cc_1h or cc_5m:
                     split_1h = min(cc_1h, cc)
@@ -36778,8 +36880,19 @@ def _extract_user_text(record):
 _HARNESS_TASK_PREFIXES = (
     "<local-command-caveat>", "<local-command-stdout>",
     "<local-command-stderr>", "<task-notification>",
-    "[SYSTEM NOTIFICATION",
+    "[SYSTEM NOTIFICATION", "[Request interrupted by user",
+    "Your response above was cut off mid-stream",
 )
+# Built-in commands that only change the session or UI. Run bare, they are not
+# a task. With arguments, or when an installed skill owns the name, they are.
+_LOCAL_SLASH_COMMANDS = frozenset((
+    "add-dir", "agents", "bug", "config", "context", "continue", "cost",
+    "doctor", "exit", "export", "fast", "feedback", "help", "hooks", "ide",
+    "init", "login", "logout", "mcp", "memory", "model", "output-style",
+    "permissions", "privacy-settings", "quit", "release-notes", "resume",
+    "rewind", "settings", "stats", "status", "statusline", "terminal-setup",
+    "theme", "upgrade", "usage", "vim",
+))
 _COMMAND_TASK_TAG_RE = re.compile(r"\s*<command-(name|message|args)>")
 
 
@@ -36802,12 +36915,16 @@ def _command_task_text(text):
         pos = end + len(close)
     command = _SLASH_COMMAND_RE.fullmatch(
         "<command-name>" + fields.get("name", "") + "</command-name>")
-    if command is None or "args" not in fields:
+    if command is None:
         return ""
     name = command.group(1)
     if name.lower() in ("compact", "clear"):
         return ""
-    args = fields["args"].strip()
+    # Some versions omit an empty <command-args>: treat a missing tag as empty.
+    args = fields.get("args", "").strip()
+    if (not args and name.lower() in _LOCAL_SLASH_COMMANDS
+            and not _resolve_installed_skill(name)):
+        return ""
     return "/" + name + (" " + args if args else "")
 
 
@@ -36837,6 +36954,11 @@ def _task_user_text(record):
         if not isinstance(part, str):
             continue
         text = part.strip()
+        # A <system-reminder> block can lead a real prompt: drop the block,
+        # keep what follows. An unclosed block is all harness.
+        while text.startswith("<system-reminder>"):
+            end = text.find("</system-reminder>")
+            text = "" if end < 0 else text[end + len("</system-reminder>"):].strip()
         if not text or text.startswith(_HARNESS_TASK_PREFIXES):
             continue
         if text.startswith(("<command-name>", "<command-message>", "<command-args>")):
@@ -46761,7 +46883,9 @@ def quality_cache(throttle_seconds=120, warn_threshold=70, quiet=False, session_
         result["session_start_ts"] = _extract_session_start_ts(filepath)
         result["active_agents"] = _extract_active_agents(filepath)
 
-        # Cache hit rate for statusline (v5.4.27)
+        # Cache hit rate for statusline (v5.4.27). A billing ratio, so it reads
+        # the top-level (advisor-summed) usage on purpose, unlike context fill,
+        # which uses _context_usage (#287).
         try:
             total_input_all = 0
             total_cache_read = 0
@@ -54168,7 +54292,11 @@ def _advice_session_data(path):
       turns          per-request context size (input + cache_read + cache_creation)
                      of each main-thread assistant usage row, in order; streamed
                      chunks sharing a requestId collapse to the largest row.
-      cache_reads    cache_read_input_tokens per turn (same indexing).
+      cache_reads    cache_read_input_tokens per turn (same indexing). This is
+                     the billed aggregate, while `turns` is executor occupancy
+                     (#287). On advisor sessions avoided reads (derived from
+                     `turns`) are measured against the larger billed total, so
+                     avoided_share_pct can only understate the saving.
       boundaries     indexes in `turns` that directly follow a compact_boundary.
       model          newest model id on a main-thread row, or None.
       post_compact_ctx  context size of the first request after each recorded

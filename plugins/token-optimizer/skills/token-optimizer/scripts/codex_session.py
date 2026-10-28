@@ -202,6 +202,28 @@ _TOPIC_PREFIXES = (
 )
 
 
+# Codex writes these as role=user messages, but nobody typed them: injected
+# repo instructions, environment context and turn markers. They must never
+# become the session topic or the checkpoint's Active Task (#288).
+_INJECTED_USER_PREFIXES = (
+    "# AGENTS.md instructions", "<environment_context>", "<user_instructions>",
+    "<turn_aborted>", "<user_action>", "<INSTRUCTIONS>",
+)
+
+
+def _task_user_text(text: str) -> str:
+    """User text a human typed, or "" for injected Codex context."""
+    text = str(text or "").strip()
+    if not text or text.startswith(_INJECTED_USER_PREFIXES):
+        return ""
+    return text
+
+
+def _pick_topic(topics: dict[str, str | None]) -> str | None:
+    """Prefer the event_msg user_message over its response_item duplicate."""
+    return topics.get("user_message") or topics.get("message")
+
+
 def _extract_topic(text: str) -> str | None:
     text = " ".join(text.split())
     if not text:
@@ -423,7 +445,7 @@ def _parse_session_records(records, incomplete=False, sampled=False):
     model_usage_breakdown: dict[str, dict[str, int]] = {}
     version = None
     slug = None
-    topic = None
+    topics: dict[str, str | None] = {}
     first_ts = None
     last_ts = None
     message_count = 0
@@ -534,7 +556,10 @@ def _parse_session_records(records, incomplete=False, sampled=False):
             text_chars = payload.get('_optimizer_chars', len(text))
             role = payload.get("role")
             if payload_type == "user_message" or role == "user":
-                topic = topic or _extract_topic(text)
+                if not topics.get(payload_type):
+                    task = _task_user_text(text)
+                    if task:
+                        topics[payload_type] = _extract_topic(task)
                 input_text_chars += text_chars
             elif payload_type == "agent_message" or role == "assistant":
                 output_text_chars += text_chars
@@ -610,7 +635,7 @@ def _parse_session_records(records, incomplete=False, sampled=False):
         "scan_mode": "recent_tail" if incomplete else "full",
         "version": version,
         "slug": slug,
-        "topic": topic,
+        "topic": _pick_topic(topics),
         "duration_minutes": duration_minutes,
         "wall_duration_minutes": wall_duration_minutes,
         "duration_source": duration_source,
@@ -712,7 +737,7 @@ def parse_jsonl_for_quality(filepath: str | Path) -> dict[str, Any] | None:
     compaction_ratios: list[dict[str, Any]] = []
     last_usage: dict[str, int] | None = None
     current_model = _UNKNOWN_MODEL
-    topic = None
+    topics: dict[str, str | None] = {}
     idx = 0
     prev_was_compacted = False
     last_turn_context: int | None = None
@@ -782,8 +807,10 @@ def parse_jsonl_for_quality(filepath: str | Path) -> dict[str, Any] | None:
         elif payload_type in {"user_message", "message", "agent_message"}:
             text = _extract_text(payload)
             role = "assistant" if payload_type == "agent_message" else str(payload.get("role") or "user")
-            if role == "user":
-                topic = topic or _extract_topic(text)
+            if role == "user" and not topics.get(payload_type):
+                task = _task_user_text(text)
+                if task:
+                    topics[payload_type] = _extract_topic(task)
             substantive = len(text.split()) > (20 if role == "assistant" else 10)
             messages.append((idx, role, len(text), substantive))
             if re.search(r"\b(chose|decided|because|switched|going with)\b", text, re.IGNORECASE):
@@ -838,7 +865,7 @@ def parse_jsonl_for_quality(filepath: str | Path) -> dict[str, Any] | None:
         "context_tokens": last_turn_context or None,
         "model_context_window": last_usage["model_context_window"] if last_usage else None,
         "model": current_model if current_model != _UNKNOWN_MODEL else _DEFAULT_MODEL,
-        "topic": topic,
+        "topic": _pick_topic(topics),
     }
 
 
@@ -959,7 +986,10 @@ def extract_session_state(filepath: str | Path, tail_lines: int = 500, max_files
             if not text:
                 continue
             if role == "user":
-                last_user_msg = text
+                if _task_user_text(text):
+                    last_user_msg = text
+                else:
+                    continue  # injected context: not a task, not a question
             elif role == "assistant":
                 last_assistant_msg = text
                 _append_decisions(text, decisions)

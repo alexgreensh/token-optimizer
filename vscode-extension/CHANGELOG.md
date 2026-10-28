@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Fix: the context fill bar no longer reads about double on turns that called the advisor tool. It now uses the real context size, the same number Claude Code shows (#287).
+
 ## 0.1.16
 
 - Fix: honor `CLAUDE_CONFIG_DIR`. With a relocated Claude Code config, the companion now reads live fill, usage limits, quality scores, sessions, and effort from that directory instead of a stale `~/.claude` (#198).

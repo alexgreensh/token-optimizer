@@ -221,7 +221,7 @@ def _advisor_transcript(mod, root, usage):
     return path
 
 
-def test_advisor_context_uses_final_executor_without_changing_billing(m, monkeypatch):
+def test_advisor_context_uses_final_executor_and_bills_advisor_on_top(m, monkeypatch):
     mod, _, root = m
     usage = _advisor_usage()
     path = _advisor_transcript(mod, root, usage)
@@ -246,8 +246,15 @@ def test_advisor_context_uses_final_executor_without_changing_billing(m, monkeyp
     plain = dict(usage)
     plain.pop("iterations")
     baseline = _advisor_transcript(mod, root, plain)
-    assert mod.parse_session_turns(baseline)[0]["cost_usd"] == billed_turn["cost_usd"]
-    assert mod._parse_session_jsonl(baseline) == billed_session
+    # Executor billing is unchanged; the advisor iteration (no model on it,
+    # so priced at the executor's) is added on top, never dropped.
+    advisor_cost = mod._get_model_cost("claude-sonnet-5-5", 494_410, 0, per_request=True)
+    assert billed_turn["cost_usd"] == pytest.approx(
+        mod.parse_session_turns(baseline)[0]["cost_usd"] + advisor_cost, abs=1e-6)
+    plain_session = mod._parse_session_jsonl(baseline)
+    assert billed_session["total_input_tokens"] == plain_session["total_input_tokens"] + 494_410
+    assert billed_session["total_output_tokens"] == plain_session["total_output_tokens"]
+    assert billed_session["api_calls"] == plain_session["api_calls"] == 1
 
 
 @pytest.mark.parametrize("iterations", [None, "x", {}, [], [None, 5],
@@ -378,7 +385,7 @@ def test_malformed_executor_cache_creation_container_falls_back(m, nested):
 
 @pytest.mark.parametrize("warm", [True, False])
 @pytest.mark.parametrize("flip_final", [True, False])
-def test_advisor_keepwarm_books_executor_resume_once_without_changing_billing(m, monkeypatch, warm, flip_final):
+def test_advisor_keepwarm_books_executor_resume_once(m, monkeypatch, warm, flip_final):
     mod, _, root = m
     read, write = (350_000, 150_000) if warm else (150_000, 350_000)
     executor = {"type": "message", "input_tokens": 100,
@@ -423,7 +430,9 @@ def test_advisor_keepwarm_books_executor_resume_once_without_changing_billing(m,
     plain = dict(usage)
     plain.pop("iterations")
     _advisor_transcript(mod, root, plain)
-    assert mod.parse_session_turns(path)[0]["cost_usd"] == billed_cost
+    advisor_cost = mod._get_model_cost("claude-sonnet-5-5", 900_000, 0, per_request=True)
+    assert billed_cost == pytest.approx(
+        mod.parse_session_turns(path)[0]["cost_usd"] + advisor_cost, abs=1e-6)
 
 
 def test_keepwarm_ordinary_and_invalid_executor_keep_aggregate_comparison(m):

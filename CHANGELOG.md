@@ -15,6 +15,13 @@
 
 - GitHub Copilot CLI: the `preToolUse` hook loads again. `copilot-install` wrote its matcher in a form Copilot rejects, so Copilot skipped the hook and bash output was never compressed. Re-run `copilot-install` once to pick up the fix. `copilot-doctor` now reports a hook config whose matcher Copilot would skip instead of showing it as OK. Thanks @imabusyman (#284).
 - GitHub Copilot CLI: the end-of-session rollup, dashboard refresh and in-flight tally cleanup run again. `copilot-install` registered them under a `stop` event that Copilot does not have, so they never fired. They now run on `sessionEnd`. Re-run `copilot-install` once to switch. Session cleanup no longer depends on the refresh being available. `copilot-doctor` warns while the old entry is present or the bridge cannot find `measure.py`, and no longer crashes on a malformed hook file.
+- Advisor tool sessions: the tokens the advisor model uses are now counted in your costs and priced at the advisor model's own rate. Before, they were left out of the total.
+- Keep-warm history and the cache-expiry waste check now size advisor turns by their real context, so a paid cache rewrite after a long pause is no longer missed.
+- Checkpoints and session topics no longer pick up "Request interrupted by user", cut-off notices, a bare `/model`, `/context` or `/exit`, or a leading system reminder as your current task.
+- Codex: injected AGENTS.md instructions, environment context and interrupted-turn markers no longer show up as your session topic or current task.
+- The most expensive prompts list now shows only prompts you typed, not compact summaries or command notes.
+- Session message counts no longer include notes Claude Code writes on its own, only messages from you and replies.
+- OpenClaw: older Claude Code style logs no longer take a system note as their session topic.
 
 ## [5.13.58] - 2026-10-27
 

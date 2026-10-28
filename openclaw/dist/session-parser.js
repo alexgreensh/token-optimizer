@@ -48,6 +48,7 @@ exports.findOpenClawDir = findOpenClawDir;
 exports.listAgents = listAgents;
 exports.findSessionFiles = findSessionFiles;
 exports.extractTopic = extractTopic;
+exports.topicUserText = topicUserText;
 exports.parseSession = parseSession;
 exports.scanAllSessions = scanAllSessions;
 exports.parseSessionTurns = parseSessionTurns;
@@ -228,6 +229,46 @@ function extractUserMessageText(record) {
     }
     return "";
 }
+// Harness-written user text (same rule as measure.py _task_user_text, #288):
+// never a session topic.
+const HARNESS_TOPIC_PREFIXES = [
+    "<local-command-caveat>", "<local-command-stdout>", "<local-command-stderr>",
+    "<task-notification>", "[SYSTEM NOTIFICATION", "[Request interrupted by user",
+    "Your response above was cut off mid-stream",
+];
+const LOCAL_SLASH_COMMANDS = new Set([
+    "add-dir", "agents", "bug", "clear", "compact", "config", "context", "continue",
+    "cost", "doctor", "exit", "export", "fast", "feedback", "help", "hooks", "ide",
+    "init", "login", "logout", "mcp", "memory", "model", "output-style",
+    "permissions", "privacy-settings", "quit", "release-notes", "resume", "rewind",
+    "settings", "stats", "status", "statusline", "terminal-setup", "theme",
+    "upgrade", "usage", "vim",
+]);
+/** User text that can name the session, or "" for harness/meta records. */
+function topicUserText(record) {
+    if (record.isMeta || record.isCompactSummary)
+        return "";
+    let text = extractUserMessageText(record).trim();
+    while (text.startsWith("<system-reminder>")) {
+        const end = text.indexOf("</system-reminder>");
+        text = end < 0 ? "" : text.slice(end + "</system-reminder>".length).trim();
+    }
+    if (!text || HARNESS_TOPIC_PREFIXES.some((p) => text.startsWith(p)))
+        return "";
+    if (/^<command-(name|message|args)>/.test(text)) {
+        const name = /<command-name>\s*\/?\s*([A-Za-z0-9:_+.-]+)\s*<\/command-name>/.exec(text);
+        if (!name)
+            return "";
+        const args = (/<command-args>([\s\S]*?)<\/command-args>/.exec(text)?.[1] ?? "").trim();
+        const cmd = name[1].toLowerCase();
+        if (cmd === "compact" || cmd === "clear")
+            return "";
+        if (!args && LOCAL_SLASH_COMMANDS.has(cmd))
+            return "";
+        return "/" + name[1] + (args ? " " + args : "");
+    }
+    return text;
+}
 /**
  * Normalize a record's discriminator to a Claude-Code-style role.
  *
@@ -310,7 +351,7 @@ function parseSession(filePath, agentName, openclawDir) {
         }
         // Capture first user message text for topic extraction
         if (recType === "user" && firstUserText === null) {
-            const txt = extractUserMessageText(record);
+            const txt = topicUserText(record);
             if (txt)
                 firstUserText = txt;
         }

@@ -24311,6 +24311,68 @@ def _migrate_streaming_dedup(conn, quiet=False):
         print(f"  [Token Optimizer] migration failed: {e}", file=sys.stderr)
 
 
+def _hermes_refresh_session_totals(conn, dedup_key, parsed):
+    """Refresh an existing Hermes row's per-session numbers from a newer snapshot.
+
+    Returns True when the row was updated. The rule is monotonic: Hermes's
+    state.db message and token counters only grow during a session, so the new
+    snapshot wins only when it is >= the stored row on every counter and > on
+    at least one. Quality and skills columns keep their own rules (they need a
+    rollup's live reading) and are not touched here.
+    """
+    stored = conn.execute(
+        "SELECT message_count, input_tokens, output_tokens, api_calls "
+        "FROM session_log WHERE jsonl_path = ?",
+        (dedup_key,),
+    ).fetchone()
+    if stored is None:
+        return False
+    new = (
+        int(parsed.get("message_count") or 0),
+        int(parsed.get("total_input_tokens") or 0),
+        int(parsed.get("total_output_tokens") or 0),
+        int(parsed.get("api_calls") or 0),
+    )
+    old = tuple(int(v or 0) for v in stored)
+    if any(n < o for n, o in zip(new, old)) or new == old:
+        return False
+    conn.execute(
+        """UPDATE session_log
+           SET duration_minutes = ?, input_tokens = ?, output_tokens = ?,
+               message_count = ?, api_calls = ?, cache_hit_rate = ?,
+               cache_create_1h_tokens = ?, cache_create_5m_tokens = ?,
+               avg_call_gap_seconds = ?, max_call_gap_seconds = ?,
+               p95_call_gap_seconds = ?, subagents_json = ?, tool_calls_json = ?,
+               model_usage_json = ?, all_model_usage_json = ?,
+               model_usage_breakdown_json = ?, version = ?, topic = ?,
+               collected_at = ?
+           WHERE jsonl_path = ?""",
+        (
+            parsed["duration_minutes"],
+            parsed["total_input_tokens"],
+            parsed["total_output_tokens"],
+            parsed["message_count"],
+            parsed.get("api_calls", 0),
+            parsed["cache_hit_rate"],
+            parsed.get("total_cache_create_1h", 0),
+            parsed.get("total_cache_create_5m", 0),
+            parsed.get("avg_call_gap_seconds"),
+            parsed.get("max_call_gap_seconds"),
+            parsed.get("p95_call_gap_seconds"),
+            json.dumps(parsed.get("subagents_used", {})),
+            json.dumps(parsed.get("tool_calls", {})),
+            json.dumps(parsed.get("model_usage", {})),
+            json.dumps(parsed.get("model_usage", {})),
+            json.dumps(parsed.get("model_usage_breakdown", {})),
+            parsed.get("version"),
+            parsed.get("topic"),
+            datetime.now().isoformat(),
+            dedup_key,
+        ),
+    )
+    return True
+
+
 def _collect_hermes_sessions(days=90, quiet=False, rebuild=False):
     """Collect Hermes sessions from state.db into the trends DB.
 
@@ -24365,6 +24427,17 @@ def _collect_hermes_sessions(days=90, quiet=False, rebuild=False):
                 continue
 
             if _is_file_collected(conn, dedup_key):
+                # A collect that ran while the session was still live stored
+                # its totals at that point. Hermes's state.db counters only
+                # grow, so refresh the per-session numbers whenever this
+                # snapshot is at least as far along on every counter and ahead
+                # on one. A snapshot behind on any counter is stale (e.g. a
+                # dashboard collect that read state.db before a finished
+                # rollup wrote) and never overwrites the newer row. Totals are
+                # replaced, never added, and the aggregates are rebuilt from
+                # session_log, so a refresh cannot double count.
+                if _hermes_refresh_session_totals(conn, dedup_key, parsed):
+                    updated_count += 1
                 # A rollup carries the session's live occupancy, which an
                 # earlier mid-session collect could not see. Refresh the stored
                 # grade in place so the first write does not freeze a
@@ -58232,7 +58305,8 @@ if __name__ == "__main__":
         # plugin's on_session_end hook via hermes_hook_bridge.run_rollup().
         # --session <id> and --platform / --reason are accepted and silently
         # consumed so the bridge's exact call signature never causes an error;
-        # a full recent collect is always run (INSERT OR IGNORE is idempotent).
+        # a full recent collect is always run (idempotent: rows are keyed per
+        # session and only refreshed when state.db has moved further along).
         # Wall-clock backstop: same rationale as copilot-rollup above -- the
         # Hermes bridge spawns this fire-and-forget with start_new_session=True
         # and no PID tracking, so the parent hook deadline never propagates.

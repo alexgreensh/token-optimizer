@@ -145,7 +145,8 @@ jobs:
           fi
           gh release view "$TAG" >/dev/null 2>&1 \
             || gh release create "$TAG" --title "$TAG" --notes-file "$RUNNER_TEMP/release-notes.md"
-          gh workflow run sign-release.yml -f tag="$TAG"
+          # Run from the tag: the npm-publish environment only accepts v* refs,
+          gh workflow run sign-release.yml --ref "$TAG" -f tag="$TAG"
           echo "Released $TAG and dispatched signing."
 
       - name: Open a review PR instead

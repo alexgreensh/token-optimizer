@@ -46,14 +46,30 @@ def _gen_command(repo_root: Path, script="skills/token-optimizer/scripts/codex_h
 
 
 def test_nonversioned_root_keeps_direct_path():
-    """Dev / install.sh layouts (non-semver dir) keep the simple baked command."""
+    """Dev / install.sh layouts (non-semver dir) bake this root, never a
+    runtime version resolver. POSIX runs the checkout's hooks/run.py directly.
+    Native Windows (5.13.59, #278) runs the checkout's own windows-launcher.py
+    pinned to it with --baked-root, the shell-neutral form that also runs
+    under PowerShell, where the old ``set ... && run.py`` form exited 1."""
     with tempfile.TemporaryDirectory() as td:
         root = Path(td) / "token-optimizer-codex-prod"
-        root.mkdir()
+        (root / "hooks").mkdir(parents=True)
         cmd = _gen_command(root)
         assert "bash -c" not in cmd, f"non-versioned should not wrap in bash -c: {cmd}"
-        assert str(root / "hooks" / "run.py") in cmd, f"expected baked path: {cmd}"
-        assert "TOKEN_OPTIMIZER_RUNTIME=codex" in cmd
+        assert "sort -V" not in cmd, f"non-versioned must not resolve a version: {cmd}"
+        if sys.platform != "win32":
+            assert str(root / "hooks" / "run.py") in cmd, f"expected baked path: {cmd}"
+            assert "TOKEN_OPTIMIZER_RUNTIME=codex" in cmd
+            return
+        import re
+        quoted = re.findall(r'"([^"]*)"', cmd)
+        launcher = next((q for q in quoted if q.lower().endswith("windows-launcher.py")), None)
+        assert launcher, f"expected the checkout's windows-launcher.py: {cmd}"
+        # The literal path or its 8.3 short form: both name this checkout.
+        assert os.path.samefile(os.path.dirname(launcher), root / "hooks"), cmd
+        baked = re.search(r'--baked-root "([^"]*)"', cmd)
+        assert baked and os.path.samefile(baked.group(1), root), cmd
+        assert "run.py" not in cmd and "set " not in cmd, f"old cmd-only form: {cmd}"
 
 
 @requires_posix_version_resolver

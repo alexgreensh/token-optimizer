@@ -50,3 +50,6 @@ scratchpad/
 desktop/token-optimizer-desktop/.claude-plugin/types/
 desktop/token-optimizer-desktop/node_modules/
 .regression-guards-tmp/
+
+# Session transcripts written by a hook probe in cloud sandboxes; never commit them
+tr-probe-out/

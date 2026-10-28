@@ -40,8 +40,8 @@ def is_recovery_tool(tool_name: str) -> bool:
 # failed output must never be archived), not new tool output.
 _HINT_TAIL = re.compile(
     r'[a-zA-Z0-9_][a-zA-Z0-9_-]*(?: --session [a-zA-Z0-9_][a-zA-Z0-9_-]*)?\]?\Z')
-# A printed hint may pin its runtime with a leading `--runtime NAME` (Hermes
-# archives live under the Hermes home; see refetch_fingerprint.expand_command).
+# A printed hint may pin its runtime with a leading `--runtime NAME` (Hermes and
+# Codex archives live under their own homes; see refetch_fingerprint.expand_command).
 _RUNTIME_PIN = re.compile(r'--runtime [a-z][a-z0-9-]{0,31} ')
 _RUNTIME_NAME = re.compile(r'[a-z][a-z0-9-]{0,31}')
 

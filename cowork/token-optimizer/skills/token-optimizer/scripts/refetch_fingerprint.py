@@ -173,20 +173,27 @@ def measure_py_path() -> str:
 def _pinned_runtime_flag() -> str:
     """`--runtime NAME ` when a printed command must name its runtime, else "".
 
-    Hermes keeps its archives under its own home, and its terminal tool does
-    not pass any Token Optimizer runtime marker to the commands it runs (it sets
-    HERMES_HOME only when the user overrode it). A bare `measure.py expand <key>`
-    run from Hermes would then look in the Claude Code archive and find nothing.
-    The leading `--runtime` flag (consume_runtime_flag) works in every shell.
+    Hermes and Codex keep their archives under their own homes, and neither
+    passes a Token Optimizer runtime marker to the shell commands the model
+    runs: Hermes sets HERMES_HOME only when the user overrode it, and Codex
+    sets TOKEN_OPTIMIZER_RUNTIME=codex on our hook commands only, never on the
+    model's shell (CODEX_HOME likewise only when the user set it). A bare
+    `measure.py expand <key>` run from either would then look in the Claude
+    Code archive and find nothing. The leading `--runtime` flag
+    (consume_runtime_flag) works in every shell.
     """
     try:
         from runtime_env import detect_runtime
 
-        if detect_runtime() == "hermes":
-            return "--runtime hermes "
+        runtime = detect_runtime()
+        if runtime in _PINNED_RUNTIMES:
+            return f"--runtime {runtime} "
     except Exception:
         pass
     return ""
+
+
+_PINNED_RUNTIMES = frozenset({"hermes", "codex"})
 
 
 def expand_command(key: str) -> str:

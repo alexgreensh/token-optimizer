@@ -386,6 +386,23 @@ def _fake_tree(home: Path) -> Path:
     return root
 
 
+# Captured before any test patches sys.executable (codex_install shares the
+# sys module, so the patched "python" would also be what we spawn).
+REAL_PYTHON = sys.executable
+
+
+def _pinned_env(tmp_path, **extra):
+    """Subprocess env with HOME and CLAUDE_CONFIG_DIR inside tmp_path, so no
+    spawned hook can reach the real ~/.claude or scheduler folders."""
+    home = tmp_path / "h"
+    (home / ".claude").mkdir(parents=True, exist_ok=True)
+    env = dict(os.environ)
+    env["HOME"] = str(home)
+    env["CLAUDE_CONFIG_DIR"] = str(home / ".claude")
+    env.update(extra)
+    return env
+
+
 def test_bootstrap_command_runs_the_hook_end_to_end(monkeypatch, tmp_path):
     """Generate the bootstrap form for a user folder with a $ in it, pass it
     through the PowerShell 5.1 model, and run the resulting argv for real."""
@@ -398,8 +415,8 @@ def test_bootstrap_command_runs_the_hook_end_to_end(monkeypatch, tmp_path):
     cmd = ci._windows_launcher_command(root, "hooks/stop_runner.py", ["--quiet"], {})
     assert ci.is_shell_neutral_command(cmd) and " -c " in cmd, cmd
     argv = shells.powershell_run(cmd, "5.1")
-    argv[0] = sys.executable
-    env = dict(os.environ, USERPROFILE=str(home), HOME=str(tmp_path / "h"))
+    argv[0] = REAL_PYTHON
+    env = _pinned_env(tmp_path, USERPROFILE=str(home))
     proc = subprocess.run(argv, input=b'{"session_id":"abc123def"}', capture_output=True,
                           timeout=120, env=env, cwd=str(tmp_path))
     assert proc.returncode == 0, proc.stderr
@@ -423,7 +440,7 @@ def test_launcher_resolves_a_relative_baked_root_next_to_itself(tmp_path):
     proc = subprocess.run(
         [sys.executable, str(launcher), "--baked-root", "pinned", "--", "hooks/x.py"],
         input=b"{}", capture_output=True, timeout=60, cwd=str(tmp_path / "elsewhere"),
-        env=dict(os.environ, HOME=str(tmp_path / "h")))
+        env=_pinned_env(tmp_path))
     assert proc.returncode == 0, proc.stderr
     out = json.loads(proc.stdout.decode().strip().splitlines()[-1])
     assert Path(out["root"]).resolve() == renamed.resolve()
@@ -448,10 +465,10 @@ def test_dev_checkout_command_runs_the_checkout_in_every_shell(monkeypatch, tmp_
     monkeypatch.setattr(ci.sys, "executable", "python")
     cmd = ci._hook_command("hooks/stop_runner.py", "--quiet")
     assert ci.is_shell_neutral_command(cmd) and "&&" not in cmd, cmd
-    env = dict(os.environ, HOME=str(tmp_path / "h"))
+    env = _pinned_env(tmp_path)
     for shell in ("cmd", "powershell-5.1", "pwsh-7"):
         argv = shells.run_in(shell, cmd, env)
-        argv[0] = sys.executable
+        argv[0] = REAL_PYTHON
         proc = subprocess.run(argv, input=b"{}", capture_output=True, timeout=60, env=env,
                               cwd=str(tmp_path))
         assert proc.returncode == 0, (shell, proc.stderr)

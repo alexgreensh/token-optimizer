@@ -13684,6 +13684,32 @@ def _origin_insert_parts(conn, table):
     return "", "", ()
 
 
+def _claude_projects_like_patterns() -> tuple:
+    """Prefix LIKE patterns (ESCAPE '!') for transcripts under the resolved
+    Claude config's projects/ dir, or () when that is the default ~/.claude
+    (the literal pattern already covers it) or unresolvable.
+
+    Anchored at the start of the path, so a "copilot:"/"hermes:" dedup key or
+    a path that merely contains the folder name further down never matches.
+    Both separator spellings are offered: rows written on Windows store
+    backslashes.
+    """
+    try:
+        projects = Path(CLAUDE_DIR) / "projects"
+        if projects == Path(HOME) / ".claude" / "projects":
+            return ()
+        native = str(projects)
+        forms = {native, native.replace("\\", "/")}
+        out = []
+        for form in sorted(forms):
+            esc = form.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+            sep = "\\" if "\\" in form else "/"
+            out.append(esc + sep + "%")
+        return tuple(out)
+    except Exception:
+        return ()
+
+
 def _init_trends_db():
     """Initialize the trends SQLite DB. Returns a connection.
     
@@ -13853,11 +13879,16 @@ def _init_trends_db():
     # running collector.
     _platform_patterns = ("%/.claude/projects/%", "%/.codex/sessions/%", "%/.codex/archived_sessions/%",
                           "hermes:%", "copilot:%", "cursor:%", "antigravity:%")
+    # A relocated Claude config (CLAUDE_CONFIG_DIR) keeps its transcripts under
+    # <config>/projects/, which the literal ~/.claude pattern above misses.
+    _claude_cfg_patterns = _claude_projects_like_patterns()
+    _cfg_where = " OR ".join(["jsonl_path LIKE ? ESCAPE '!'"] * len(_claude_cfg_patterns))
     try:
         _needs_platform = conn.execute(
             "SELECT 1 FROM session_log WHERE platform IS NULL AND ("
-            + " OR ".join(["jsonl_path LIKE ?"] * len(_platform_patterns)) + ") LIMIT 1",
-            _platform_patterns,
+            + " OR ".join(["jsonl_path LIKE ?"] * len(_platform_patterns))
+            + (" OR " + _cfg_where if _cfg_where else "") + ") LIMIT 1",
+            _platform_patterns + _claude_cfg_patterns,
         ).fetchone()
     except sqlite3.Error:
         _needs_platform = True
@@ -13899,6 +13930,17 @@ def _init_trends_db():
             "WHERE platform IS NULL "
             "AND jsonl_path LIKE 'antigravity:%'"
         )
+        # Last, so every other runtime's definitive pattern has claimed its rows
+        # first; the Codex path patterns are excluded again so a config dir
+        # that happens to sit inside a Codex home can never tag a Codex file.
+        if _cfg_where:
+            conn.execute(
+                "UPDATE session_log SET platform = 'claude' "
+                "WHERE platform IS NULL AND (" + _cfg_where + ") "
+                "AND jsonl_path NOT LIKE '%/.codex/sessions/%' "
+                "AND jsonl_path NOT LIKE '%/.codex/archived_sessions/%'",
+                _claude_cfg_patterns,
+            )
         conn.commit()
     except _SkipMigration:
         pass

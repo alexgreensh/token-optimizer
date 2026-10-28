@@ -39,3 +39,10 @@ The mod API declarations leave several behaviours the status bar depends on unst
 - **`$.session.usage()` can omit a rate limit for one refresh** (seen right after a compact). Keep the last known value.
 - **Only a `Button` can be pressed, and its label is text:** a picture cannot be made clickable.
 - **Hot reload (`CLAUDE_CODE_PLUGIN_DIR_WATCH`) prints a "reloaded" line into the session per reload;** installed plugins do not.
+
+## Managed machines: the built-in guard skips `classic.*` handlers (2026-10-27, #281)
+
+- **On a machine with managed settings, or a Team or Enterprise login, Claude Code seats a built-in guard, `cc-plugin-sec-default`, ahead of installed plugins.** Its public source passes every `classic.*` event on past a person's plugin (`on('classic.*', ($, e, next) => next.to(e, 'append'))`), and Claude Code shows a notice once per session and event: `its <event> hook was skipped. "cc-plugin-sec-default" runs first and sent the event on past it.`
+- **A plugin cannot move ahead of the guard or register hooks only when it is absent,** because hooks register while the module loads. The only lever is registering fewer `classic.*` handlers.
+- **Keep only `classic.*` handlers that carry a signal nothing else gives.** The status bar keeps `classic.SessionStart` (the only source of the transcript path and the /clear reset) and `classic.PermissionRequest`. `classic.UserPromptSubmit` and `classic.Stop` were dropped in 5.13.59: without a transcript path, the status and checkpoint commands look the session up by id. A source test pins the registered set.
+- Not yet seen live on a guarded machine; the behaviour comes from the guard's source and `claude plugin validate`'s list of registered hooks.

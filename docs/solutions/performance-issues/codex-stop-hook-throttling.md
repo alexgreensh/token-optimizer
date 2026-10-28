@@ -55,6 +55,21 @@ for event, groups in hooks.items():
 PY
 ```
 
+`shell=True` runs the command through `/bin/sh`, which is right on macOS and Linux only. On Windows, Codex runs a hook through its configured session shell (PowerShell, `-Command`) or, with none set, `%COMSPEC% /C` with the command passed raw. A command that works in one can fail in the other (issue #278), so on Windows run each command both ways:
+
+```powershell
+$hooks = (Get-Content .codex\hooks.json -Raw | ConvertFrom-Json).hooks
+$payload = '{"session_id":"qa_actual_hook_probe","source":"startup","transcript_path":""}'
+foreach ($event in $hooks.PSObject.Properties) {
+  foreach ($group in $event.Value) { foreach ($hook in $group.hooks) {
+    $payload | powershell -NoProfile -Command $hook.command; "$($event.Name) powershell rc=$LASTEXITCODE"
+    $payload | cmd.exe /d /s /c "`"$($hook.command)`""; "$($event.Name) cmd rc=$LASTEXITCODE"
+  } }
+}
+```
+
+Both runs must exit 0, and quiet hooks (Stop, SubagentStop, PostToolUse) must print nothing. `tests/test_codex_windows_shell_matrix_278.py` models both shells for paths with spaces, `$`, `%`, `!`, backticks and non-Latin letters; the windows-latest CI job runs the real shells.
+
 Expected result:
 
 - `SessionStart` completes in under 1 second.

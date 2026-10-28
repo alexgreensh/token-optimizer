@@ -107,6 +107,16 @@ def _session_rows(db_root: Path, exclude: Path | None, session_id: str) -> int:
     return count
 
 
+
+def _pinned_env(home: Path) -> dict:
+    """Child env with HOME and CLAUDE_CONFIG_DIR inside the test's own tree."""
+    env = _clean_env(home)
+    claude_dir = Path(home) / ".claude"
+    claude_dir.mkdir(parents=True, exist_ok=True)
+    env["HOME"] = str(home)
+    env["CLAUDE_CONFIG_DIR"] = str(claude_dir)
+    return env
+
 # ---------------------------------------------------------------------------
 # The reported bug: the rollup lands in the profile that ran the session
 # ---------------------------------------------------------------------------
@@ -158,7 +168,7 @@ def test_secondary_profile_tool_results_are_archived_in_that_profile(plugin, pro
     import re
 
     key = re.search(r"--runtime hermes expand ([A-Za-z0-9_-]+)", out).group(1)
-    env = {**_clean_env(secondary.parents[2]), "HERMES_HOME": str(secondary)}
+    env = {**_pinned_env(secondary.parents[2]), "HERMES_HOME": str(secondary)}
     proc = subprocess.run([sys.executable, str(SCRIPTS / "measure.py"), "--runtime", "hermes",
                            "expand", key], env=env, capture_output=True, text=True, timeout=120)
     assert proc.stdout.strip() == FIND_OUTPUT.strip()
@@ -205,7 +215,7 @@ def test_without_hermes_the_env_var_still_decides(home, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def _install_into(home: Path, profile: Path, enable: bool = True) -> None:
-    env = {**_clean_env(home), "HERMES_HOME": str(profile)}
+    env = {**_pinned_env(home), "HERMES_HOME": str(profile)}
     cmd = [sys.executable, str(SCRIPTS / "measure.py"), "hermes-install"] + (["--enable"] if enable else [])
     subprocess.run(cmd, check=True, env=env, capture_output=True, text=True, timeout=120)
 
@@ -252,7 +262,7 @@ def test_doctor_stays_quiet_without_profiles(home, monkeypatch):
 def test_hermes_subcommand_help_prints_usage_and_runs_nothing(home, tmp_path, command):
     _make_state_db(home, "sess_help_01")
     proc = subprocess.run([sys.executable, str(SCRIPTS / "measure.py"), command, "--help"],
-                          env=_clean_env(home), capture_output=True, text=True, timeout=120,
+                          env=_pinned_env(home), capture_output=True, text=True, timeout=120,
                           stdin=subprocess.DEVNULL)
     assert proc.returncode == 0
     assert proc.stdout.startswith(f"usage: measure.py {command}"), proc.stdout[:300]

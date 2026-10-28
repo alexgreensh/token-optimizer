@@ -302,8 +302,12 @@ def test_status_without_a_toml_parser(monkeypatch):
 
 def test_heal_repairs_only_our_quoted_launcher_commands(tmp_path):
     marker = codex_install._LAUNCHER_MARKER
-    ours = (r'"C:\Python315\python.exe" "C:\u\.codex\plugins\cache\alexgreensh-token-optimizer\token-optimizer\windows-launcher.py"'
-            r' --baked-root "C:\u\.codex\plugins\cache\alexgreensh-token-optimizer\token-optimizer\5.13.56"'
+    # Heal refreshes the launcher the command names before rewriting it, so
+    # the plugin folder has to exist.
+    base = tmp_path / "cache" / "alexgreensh-token-optimizer" / "token-optimizer"
+    (base / "5.13.56").mkdir(parents=True)
+    ours = (rf'"C:\Python315\python.exe" "{base / "windows-launcher.py"}"'
+            rf' --baked-root "{base / "5.13.56"}"'
             f' -- "hooks/stop_runner.py" "{marker}" >NUL 2>&1')
     foreign = r'"C:\tools\python.exe" "C:\tools\my_hook.py"'
     hooks = {"hooks": {

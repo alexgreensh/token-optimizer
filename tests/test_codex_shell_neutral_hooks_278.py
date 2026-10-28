@@ -202,7 +202,9 @@ def test_neutralize_refuses_spaced_interpreter_and_foreign(monkeypatch):
 def test_heal_converts_ours_and_leaves_foreign_alone(monkeypatch, tmp_path):
     ci = _load(monkeypatch)
     m = ci._LAUNCHER_MARKER
-    ours = (r'"C:\Python315\python.exe" "C:\u\windows-launcher.py" --baked-root "C:\u\5.13.56" '
+    root = _fake_install(tmp_path, parent_name="plain")
+    launcher = root.parent / "windows-launcher.py"
+    ours = (rf'"C:\Python315\python.exe" "{launcher}" --baked-root "{root}" '
             rf'-- "hooks/stop_runner.py" "{m}" >NUL 2>&1')
     foreign = r'"C:\tools\python.exe" "C:\tools\my_hook.py"'
     path = tmp_path / "hooks.json"
@@ -214,6 +216,84 @@ def test_heal_converts_ours_and_leaves_foreign_alone(monkeypatch, tmp_path):
     assert "TOKEN_OPTIMIZER_HOOK_SILENT=1" in fixed
     assert data["E1"][0]["hooks"][0]["command"] == foreign
     assert ci.heal_quoted_launcher_commands([path]) == 0
+
+
+def _old_launcher_source():
+    """The launcher as it shipped before the silent pair existed (5.13.58)."""
+    src = LAUNCHER_SOURCE.read_text(encoding="utf-8")
+    start = src.index("    # Per-hook \"no output\"")
+    end = src.index("    runner = root")
+    return (src[:start]
+            + "    for pair in env_pairs:\n"
+              "        key, sep, value = pair.partition('=')\n"
+              "        if sep and key:\n"
+              "            os.environ[key] = value\n"
+            + src[end:])
+
+
+def test_heal_refreshes_a_stale_launcher_so_quiet_hooks_stay_quiet(monkeypatch, tmp_path):
+    """CE finding: heal swapped `>NUL 2>&1` for the silent pair, but the
+    launcher left on disk by 5.13.58 ignores that pair, so quiet hooks
+    started printing into Codex until the next codex-install."""
+    ci = _load(monkeypatch)
+    m = ci._LAUNCHER_MARKER
+    root = _fake_install(tmp_path, parent_name="plain")
+    launcher = root.parent / "windows-launcher.py"
+    launcher.write_text(_old_launcher_source(), encoding="utf-8")
+    quiet = (rf'"C:\Python315\python.exe" "{launcher}" --baked-root "{root}" '
+             rf'-- "hooks/run.py" "{m}" >NUL 2>&1')
+    path = tmp_path / "hooks.json"
+    _write_hooks(path, [quiet])
+    assert ci.heal_quoted_launcher_commands([path]) == 1
+    assert launcher.read_bytes() == LAUNCHER_SOURCE.read_bytes()
+    healed = json.loads(path.read_text(encoding="utf-8"))["hooks"]["E0"][0]["hooks"][0]["command"]
+    assert "TOKEN_OPTIMIZER_HOOK_SILENT=1" in healed
+    proc = subprocess.run(
+        [sys.executable, str(launcher), "--baked-root", str(root),
+         "--env", "TOKEN_OPTIMIZER_HOOK_SILENT=1", "--", "hooks/run.py"],
+        input=b"{}", capture_output=True, timeout=60, env=_env(tmp_path))
+    assert proc.returncode == 0 and proc.stdout == b"" and proc.stderr == b""
+
+
+def test_heal_keeps_the_old_command_when_the_launcher_cannot_be_refreshed(monkeypatch, tmp_path):
+    ci = _load(monkeypatch)
+    m = ci._LAUNCHER_MARKER
+    root = _fake_install(tmp_path, parent_name="plain")
+    launcher = root.parent / "windows-launcher.py"
+    quiet = (rf'set "TOKEN_OPTIMIZER_RUNTIME=codex" && C:\Python315\python.exe "{launcher}" '
+             rf'--baked-root "{root}" -- "hooks/run.py" "{m}" >NUL 2>&1')
+    path = tmp_path / "hooks.json"
+    _write_hooks(path, [quiet])
+
+    def refuse(target):
+        raise ValueError("read-only folder")
+    monkeypatch.setattr(ci, "_copy_launcher_to", refuse)
+    assert ci.heal_quoted_launcher_commands([path]) == 0
+    kept = json.loads(path.read_text(encoding="utf-8"))["hooks"]["E0"][0]["hooks"][0]["command"]
+    assert kept == quiet
+
+
+def test_heal_is_idempotent_when_a_quoted_path_contains_and_and(monkeypatch, tmp_path):
+    """CE finding: ` && ` inside a quoted folder made a neutral command look
+    cmd-only, so every measure.py run rewrote hooks.json and asked for a
+    Codex restart."""
+    ci = _load(monkeypatch)
+    m = ci._LAUNCHER_MARKER
+    root = _fake_install(tmp_path, parent_name="Tom && Jerry")
+    launcher = root.parent / "windows-launcher.py"
+    neutral = (rf'C:\Python315\python.exe "{launcher}" --baked-root "{root}" '
+               rf'--env "TOKEN_OPTIMIZER_HOOK_SILENT=1" -- "hooks/run.py" "{m}"')
+    assert ci.is_shell_neutral_command(neutral)
+    assert ci.neutralize_launcher_command(neutral) is None
+    path = tmp_path / "hooks.json"
+    _write_hooks(path, [neutral])
+    before = path.read_bytes()
+    assert ci.heal_quoted_launcher_commands([path]) == 0
+    assert ci.heal_quoted_launcher_commands([path]) == 0
+    assert path.read_bytes() == before
+    # a real unquoted operator is still caught
+    assert not ci.is_shell_neutral_command(neutral + " && calc")
+    assert not ci.is_shell_neutral_command(neutral + " >NUL 2>&1")
 
 
 # ---- real shells ----------------------------------------------------------

@@ -6,10 +6,10 @@ description: "Install Token Optimizer for NousResearch Hermes via a shallow clon
 import { Aside, Steps } from '@astrojs/starlight/components';
 
 <Aside type="caution">
-Beta (v0.1.0). Token Optimizer for Hermes has been through a full internal test suite but has not yet been validated against a live Hermes install. Live smoke-testing is the remaining gate before stable release.
+Beta (v0.2.0). Token Optimizer for Hermes is tested against Hermes's documented plugin hook contract but has not yet been validated against a live Hermes install. Live smoke-testing is the remaining gate before stable release.
 </Aside>
 
-Token Optimizer for NousResearch Hermes adds per-turn usage capture, cost tracking, context-quality scoring, a proactive pre-turn context nudge, and the shared dashboard. It reads from Hermes's own `~/.hermes/state.db` with read-only access; it never writes back.
+Token Optimizer for NousResearch Hermes adds terminal output compression, cheaper re-reads, loop warnings, checkpoints that survive compaction, prior-session hints, per-turn usage capture, cost and quality tracking, and the shared dashboard. It reads Hermes's own `~/.hermes/state.db` read-only and never writes back. Keep the cloned repo: the plugin runs its engines from there.
 
 ## Prerequisites
 

@@ -40,6 +40,10 @@ def is_recovery_tool(tool_name: str) -> bool:
 # failed output must never be archived), not new tool output.
 _HINT_TAIL = re.compile(
     r'[a-zA-Z0-9_][a-zA-Z0-9_-]*(?: --session [a-zA-Z0-9_][a-zA-Z0-9_-]*)?\]?\Z')
+# A printed hint may pin its runtime with a leading `--runtime NAME` (Hermes
+# archives live under the Hermes home; see refetch_fingerprint.expand_command).
+_RUNTIME_PIN = re.compile(r'--runtime [a-z][a-z0-9-]{0,31} ')
+_RUNTIME_NAME = re.compile(r'[a-z][a-z0-9-]{0,31}')
 
 
 def _is_printed_hint(command: str) -> bool:
@@ -66,8 +70,14 @@ def _is_printed_hint(command: str) -> bool:
         shown_forms.update((f"'{raw}'", f"'{fwd}'", f'"{fwd}"'))
     for interp in _INTERPRETERS:
         for shown in shown_forms:
-            prefix = f'{interp} {shown} expand '
-            if text.startswith(prefix) and _HINT_TAIL.match(text[len(prefix):]):
+            head = f'{interp} {shown} '
+            if not text.startswith(head):
+                continue
+            rest = text[len(head):]
+            pinned = _RUNTIME_PIN.match(rest)
+            if pinned:
+                rest = rest[pinned.end():]
+            if rest.startswith('expand ') and _HINT_TAIL.match(rest[len('expand '):]):
                 return True
     return False
 
@@ -85,6 +95,9 @@ def is_expand_command(command: str) -> bool:
         return True
     try:
         tokens = shlex.split(command)
+        if (len(tokens) >= 4 and tokens[2] == '--runtime'
+                and _RUNTIME_NAME.fullmatch(tokens[3])):
+            tokens = tokens[:2] + tokens[4:]
         if len(tokens) not in (4, 6) or tokens[2] != 'expand':
             return False
         if not _PYTHON.fullmatch(Path(tokens[0]).name):

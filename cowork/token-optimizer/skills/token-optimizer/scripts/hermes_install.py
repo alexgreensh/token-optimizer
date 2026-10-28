@@ -61,6 +61,20 @@ _RUNTIME_MODULES = (
     "spawn_utils.py",
 )
 
+# Engine scripts the plugin runs as child processes from THIS checkout (found
+# through the measure-path locator, never copied, so they update with the
+# checkout). Checked up front: a checkout missing one would install a plugin
+# with that feature silently off.
+_ENGINE_SCRIPTS = (
+    "hermes_tool_hooks.py",
+    "bash_compress_hook.py",
+    "archive_result.py",
+    "context_intel.py",
+    "read_cache.py",
+    "refetch_guard.py",
+    "credential_patterns.py",
+)
+
 # Plain-text locator file written into the plugin dir: one line, the absolute
 # path to the canonical measure.py. hermes_hook_bridge._locate_measure_py reads
 # it. We do NOT copy measure.py itself (version-drift risk — nothing refreshes a
@@ -420,6 +434,12 @@ def install(
                 "It must sit next to hermes_install.py for the plugin to import it."
             )
         runtime_srcs.append(src)
+    missing_engines = [name for name in _ENGINE_SCRIPTS if not (scripts_dir / name).is_file()]
+    if missing_engines:
+        raise ValueError(
+            f"Token Optimizer engine scripts missing from {scripts_dir}: "
+            f"{', '.join(missing_engines)}. Update the checkout, then re-run the installer."
+        )
 
     hermes_root = hermes_home()
     install_dir = _plugin_install_dir(hermes_root)
@@ -450,6 +470,7 @@ def install(
         "plugin_dir": str(install_dir),
         "hermes_home": str(hermes_root),
         "files": listed_files,
+        "hooks": _declared_hooks(payload / "plugin.yaml"),
         "dry_run": dry_run,
     }
 
@@ -529,6 +550,26 @@ def install(
         )
 
     return install_dir, "installed", details
+
+
+def _declared_hooks(manifest: Path) -> list[str]:
+    """Hook names listed in plugin.yaml (simple text read; no PyYAML needed)."""
+    hooks: list[str] = []
+    try:
+        lines = manifest.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return hooks
+    in_hooks = False
+    for raw in lines:
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if not raw[:1].isspace():
+            in_hooks = stripped in ("hooks:", "provides_hooks:")
+            continue
+        if in_hooks and stripped.startswith("- "):
+            hooks.append(stripped[2:].strip().strip("'\""))
+    return hooks
 
 
 def _activation_dry_run_note(hermes_root: Path, enable: bool) -> str:
@@ -653,6 +694,8 @@ def main(argv: list[str] | None = None) -> int:
         prefix = "Would update" if args.dry_run else "Updated"
         n_files = len(details.get("files", []))
         print(f"[Token Optimizer] {prefix} {install_dir} ({action}; {n_files} files)")
+        if details.get("hooks"):
+            print(f"[Token Optimizer] Hooks: {len(details['hooks'])} ({', '.join(details['hooks'])})")
         if "activation" in details:
             print(f"[Token Optimizer] {details['activation']}")
         # v5.11.1: print the activation note on ALL uninstall outcomes,

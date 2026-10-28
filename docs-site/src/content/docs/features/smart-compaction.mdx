@@ -141,7 +141,7 @@ Defined with defaults in the [configuration reference](/reference/configuration/
 
 ## Platform availability
 
-Claude Code (CLI and VS Code), Codex, OpenCode, and OpenClaw. Hermes and Copilot do not run the compaction hooks. See the [capability matrix](/reference/capability-matrix/).
+Claude Code (CLI and VS Code), Codex, OpenCode, and OpenClaw. Hermes checkpoints right before its own compressor runs and restores afterwards; it has no hook for instructions to the summary. Copilot does not run the compaction hooks. See the [capability matrix](/reference/capability-matrix/).
 
 ## Related
 

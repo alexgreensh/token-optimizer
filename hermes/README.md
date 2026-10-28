@@ -1,17 +1,34 @@
 # Token Optimizer for Hermes
 
-**Beta (v0.1.0).** Per-turn token capture, context-quality scoring, proactive context nudges, before/after savings measurement, and a dashboard for [NousResearch Hermes](https://github.com/NousResearch/hermes-agent), the autonomous agent that runs in your terminal and messaging apps.
+**Beta (v0.2.0).** The Token Optimizer feature set for [NousResearch Hermes](https://github.com/NousResearch/hermes-agent): smaller terminal and tool output, cheaper re-reads, loop warnings, checkpoints that survive compaction, prior-session hints, cost and quality tracking, and the shared dashboard.
 
-Native Python plugin. Reads Hermes's own `~/.hermes/state.db` read-only. Model-agnostic. No telemetry. No Python dependency conflicts.
+Native Python plugin. Reads Hermes's own `~/.hermes/state.db` read-only. Model-agnostic. No telemetry, no network calls, no Python dependencies.
 
 ## What It Does
 
-- **Per-turn usage capture** via `post_api_request`: accumulates `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, and `reasoning_tokens` into a thread-safe in-process tally for each session.
-- **Proactive context nudge** via `pre_llm_call`: injects a one-line warning into the next turn when estimated context usage reaches ~70% of the model's window. Fires at most once per session to avoid spam; the gate never re-arms inside a session.
-- **Session rollup** via `on_session_finalize` and `on_session_end`: when a session ends, the plugin reads the final sessions row from `state.db` and writes it into Token Optimizer's shared `trends.db`. A double-rollup guard ensures only one subprocess fires even when both hooks arrive for the same session.
-- **`/token-optimizer` slash command**: shows a token and cost summary for the most recent Hermes sessions, available inside Hermes at any time.
-- **`hermes token-optimizer` CLI subcommand**: opens the dashboard at `http://localhost:24844`.
-- **Dashboard**: the same shared Token Optimizer dashboard (Overview, Quality, Waste, Sessions, Daily tabs) served from the shared engine, populated with Hermes session data.
+**Less context spent on output**
+- **Terminal output compression** (`transform_terminal_output`): git, find, ls, test runners, builds, logs, lint, JSON, docker, kubectl and cloud CLI output is condensed to what matters. Failed commands and error output always come through whole. The full original is saved, and the output ends with a command that prints it again.
+- **Large MCP results** (`transform_tool_result`): a preview plus a pointer to the saved copy. Repeating the exact same MCP call is answered from the saved copy (`pre_tool_call`).
+- **Cheaper re-reads** (`pre_tool_call`): re-reading an unchanged file returns a short structure map; re-reading after an edit returns only the diff. Partial reads (offset/limit) are never blocked.
+- **Loop warnings**: running the same command with the same output three times, a run of failures, or re-sending the same long inline script gets a one-line note asking for a different approach.
+- **Repeated output dedup**: a command whose output repeats a recent run returns a short reference instead.
+
+**Work that survives compaction and new sessions**
+- **Checkpoints** of the active task, decisions, files, todos and next step, built from Hermes's own session messages: at 20/35/50/65/80% context fill, right before Hermes compacts, before the first subagent fan-out, after a batch of edits, at the end of each turn, on a fatal API error, and at session end. `/token-optimizer checkpoint` saves one on demand.
+- **Restore after compaction** (`post_compaction`): the checkpoint comes back with the next turn or tool result, and files read before the compaction are served in full again.
+- **Prior-session hints** (`pre_llm_call`): a new session gets a pointer to the last checkpoint, and every prompt is matched against recent checkpoints by topic (several languages), so "continue the parser work" brings back the right session.
+
+**Nudges**
+- **Context fill nudge**: one line at about 70% fill, only when Hermes's own compressor is off or failing. Hermes owns compression, so Token Optimizer stays quiet while it is healthy.
+- **Lean-output nudge**: at 75-89% fill, a short note asks for focused answers. At most 3 per session, 5 minutes apart.
+- **Subagent sprawl**: a note when 8 or more subagents run at once.
+
+**Tracking**
+- **Per-turn usage** (`post_api_request`) and a **session rollup** into the shared `trends.db` at session end, with skill usage (`on_skill_lifecycle`) and every compression saving attributed to the session.
+- **Credential safety**: archives, checkpoints and logs are redacted, and Token Optimizer's credential patterns (plus your custom pattern file) are registered with Hermes's own redactor.
+- **`/token-optimizer`** slash command and **`hermes token-optimizer`** CLI subcommand (dashboard).
+
+The full feature-by-feature comparison with Claude Code and Codex is in [`docs/hermes-parity.md`](../docs/hermes-parity.md).
 
 ## Install
 
@@ -22,9 +39,11 @@ git clone https://github.com/alexgreensh/token-optimizer.git
 token-optimizer/install.sh --hermes
 ```
 
-Preview without writing anything: `token-optimizer/install.sh --hermes --dry-run`. (Direct equivalent if you prefer: `python3 token-optimizer/skills/token-optimizer/scripts/measure.py hermes-install`.)
+Preview without writing anything: `token-optimizer/install.sh --hermes --dry-run`. (Direct equivalent: `python3 token-optimizer/skills/token-optimizer/scripts/measure.py hermes-install`.)
 
-The installer copies the plugin payload (manifest plus the runtime modules it needs) into `~/.hermes/plugins/token-optimizer/`. Hermes discovers plugins from that directory, but user plugins must also be allow-listed in your Hermes config before they activate:
+The installer copies the plugin into `~/.hermes/plugins/token-optimizer/` and writes a small `measure-path` file pointing back at your checkout, which is where the compression and checkpoint engines run from. Keep the checkout; `git pull` in it updates the engines, and re-running the installer refreshes the plugin files.
+
+Hermes also needs the plugin allow-listed in its config:
 
 ```yaml
 plugins:
@@ -32,17 +51,17 @@ plugins:
     - token-optimizer
 ```
 
-Add that to `~/.hermes/config.yaml`, or let the installer do it for you with `--enable`:
+Add that to `~/.hermes/config.yaml`, or let the installer do it with `--enable`:
 
 ```bash
 python3 token-optimizer/skills/token-optimizer/scripts/measure.py hermes-install --enable
 ```
 
-`--enable` is idempotent and backs up your config before touching it. If your config layout is unusual, the installer leaves it alone and prints the exact snippet to add manually.
+`--enable` is idempotent and backs up your config before touching it. If your config layout is unusual, the installer leaves it alone and prints the snippet to add.
 
-The install is idempotent: re-running replaces files in place without touching other Hermes plugins or state.
+**HERMES_HOME override**: if your Hermes home is not at `~/.hermes`, set `HERMES_HOME=/path/to/.hermes` before installing.
 
-**HERMES_HOME override**: if your Hermes home is not at `~/.hermes`, set `HERMES_HOME=/path/to/.hermes` before installing. The installer validates that the path is a real directory under your home before accepting it.
+**Upgrading from 0.1.0**: re-run the installer, then restart Hermes. `hermes-doctor` warns when the installed copy is older than your checkout.
 
 **Verify the install:**
 
@@ -50,7 +69,7 @@ The install is idempotent: re-running replaces files in place without touching o
 python3 token-optimizer/skills/token-optimizer/scripts/measure.py hermes-doctor
 ```
 
-The doctor checks: HERMES_HOME resolution, plugin directory presence, required files (manifest plus all runtime modules), declared hooks, a bridge smoke test (can the plugin reach `measure.py`?), the `plugins.enabled` activation entry, `state.db` readability, and dashboard port availability.
+The doctor loads the installed plugin and lists every hook it registers (17), checks the engine scripts in your checkout, the credential patterns shared with Hermes, whether the installed copy is current, the `plugins.enabled` entry, `state.db` readability, and the dashboard port.
 
 **Uninstall:**
 
@@ -58,112 +77,108 @@ The doctor checks: HERMES_HOME resolution, plugin directory presence, required f
 token-optimizer/install.sh --hermes --uninstall
 ```
 
-After uninstalling, remove `- token-optimizer` from `plugins.enabled` in your Hermes config so Hermes does not log a missing-plugin warning on the next start.
+Then remove `- token-optimizer` from `plugins.enabled` in your Hermes config.
 
 ## Usage Inside Hermes
 
-Once the plugin is installed and allow-listed in `plugins.enabled`, the hooks activate automatically on the next Hermes start. No further configuration is required.
+Everything above runs on its own once the plugin is installed and allow-listed.
 
 | Surface | How to use |
 |---------|-----------|
-| `/token-optimizer` | Slash command inside any Hermes session. Prints a token and cost summary for recent sessions. |
-| `hermes token-optimizer` | CLI subcommand run from your shell. Opens the dashboard at `http://localhost:24844`. Pass `--port <n>` to override the port. |
-| Dashboard | Visit `http://localhost:24844` after launching via the CLI subcommand, or open it from the main Token Optimizer dashboard if you run Claude Code or Codex alongside Hermes. |
+| `/token-optimizer` | Token and cost summary for recent sessions. |
+| `/token-optimizer cost [words]` | What a past session cost, e.g. `/token-optimizer cost yesterday parser`. |
+| `/token-optimizer checkpoint` | Save a checkpoint of this session now. |
+| `/token-optimizer expand <id>` | Print a saved tool result in full. |
+| `hermes token-optimizer` | Opens the dashboard at `http://localhost:24844`. `--port <n>` to change it. |
 
-## The Context Nudge
-
-Before each turn, the `pre_llm_call` hook checks live context usage. Hermes owns compression, so Token Optimizer stays silent while the native compressor is enabled and healthy; it warns only when compression is disabled, failed, or ineffective. If the estimated fill reaches 70% (the threshold is inclusive), the plugin appends a one-line notice to the user message:
+Saved output can also be read with the command printed under it, for example:
 
 ```
-[Token Optimizer] Context ~73% full (~146,000 input tokens vs assumed 200,000 window) Grade: C. Avoid adding large files; prefer targeted reads.
+python3 /path/to/token-optimizer/skills/token-optimizer/scripts/measure.py --runtime hermes expand 8616734fdb056ab2
 ```
 
-At 85% or above, the tip escalates to suggest `/compact`.
+## Turning Features Off
 
-**Important caveats:** Hermes does not expose the live context window size to plugins, so the fill percentage is an estimate against an assumed window (200,000 tokens by default, or the mapped window for known models). The displayed percentage is capped at 100 to avoid absurd figures on large-window models. The nudge fires at most once per session, and the gate never re-arms within that session: once it has fired, a later drop back under the threshold and a second crossing stay silent. It never raises an exception into the Hermes host.
+Each feature has its own switch. Set it to `0` in the environment Hermes runs in:
+
+| Variable | Turns off |
+|---|---|
+| `TOKEN_OPTIMIZER_HERMES_TERMINAL` | terminal output compression and loop warnings |
+| `TOKEN_OPTIMIZER_HERMES_TOOL_RESULTS` | tool result archive and MCP previews |
+| `TOKEN_OPTIMIZER_HERMES_READ_CACHE` | structure-map and diff re-reads |
+| `TOKEN_OPTIMIZER_HERMES_REFETCH_GUARD` | answering repeated MCP calls from the saved copy |
+| `TOKEN_OPTIMIZER_HERMES_CHECKPOINTS` | all checkpoints |
+| `TOKEN_OPTIMIZER_HERMES_RESTORE` | restore after compaction |
+| `TOKEN_OPTIMIZER_HERMES_CONTINUITY` | prior-session hints |
+| `TOKEN_OPTIMIZER_HERMES_VERBOSITY` | lean-output nudge |
+| `TOKEN_OPTIMIZER_HERMES_REDACTION` | sharing credential patterns with Hermes |
+
+The shared switches work too: `TOKEN_OPTIMIZER_BASH_COMPRESS=0` stops terminal compression but keeps loop warnings, and `TOKEN_OPTIMIZER_READ_CACHE=0` stops re-read savings.
 
 ## Context-Quality Score
 
-Each session is scored on a 0-100 scale using the signals available in Hermes's session rows.
-
-### Active signals
+Each session is scored 0-100 from the signals Hermes's session rows carry.
 
 | Signal | Weight | What it measures |
 |--------|--------|-----------------|
-| Context usage | 40% | Latest provider-reported prompt tokens divided by the mapped model context window. Omitted when live prompt usage is unavailable; cumulative session totals are never used as occupancy. |
-| Message count risk | 35% | Session length relative to a risk curve (<=20 messages scores 100; >100 scores 10). |
-| Output / input ratio | 25% | Productivity signal: output tokens divided by input tokens. Low ratios indicate context-heavy sessions producing little output. |
+| Context usage | 40% | Latest provider-reported prompt tokens over the model's context window. Omitted when unavailable; cumulative totals are never used as occupancy. |
+| Message count risk | 35% | Session length against a risk curve (20 messages or fewer scores 100; over 100 scores 10). |
+| Output / input ratio | 25% | Output tokens over input tokens. |
 
-### Omitted signals (and why)
+Cache hit rate, compaction depth and API calls per turn are left out of the score: Hermes documents `cache_read_tokens` as unreliable, the sessions row has no successful-compaction count, and call counts do not compare with Claude Code turns.
 
-| Signal | Why omitted |
-|--------|------------|
-| Cache hit rate | `cache_read_tokens` is present in the Hermes schema but documented as unreliable; wiring it into the score would introduce noise rather than signal. It is included as informational metadata but not weighted. |
-| Compaction events | The sessions row carries no successful-compaction count. It does carry compression-health fields (failure cooldown, fallback streak, ineffective count, recovery deadline), which the plugin uses for compression-health gating, not for the weighted score. |
-| API calls per turn | `api_call_count` is available but not directly comparable to Claude Code's turn-based counts. It is carried as metadata but excluded from the weighted score. |
-
-Grades: **S** (90-100), **A** (80-89), **B** (70-79), **C** (55-69), **D** (40-54), **F** (0-39). Thresholds are the same across all Token Optimizer platforms.
+Grades: **S** (90-100), **A** (80-89), **B** (70-79), **C** (55-69), **D** (40-54), **F** (0-39), the same on every platform.
 
 ## Savings
 
-Token Optimizer estimates "before" vs "after" savings by comparing session cost trajectories in `trends.db`. The Hermes adapter feeds sessions into the same shared engine used for Claude Code and Codex sessions.
-
-**What "savings" means here:** the before/after engine compares your average cost-per-session before and after you began using Token Optimizer. It is a correlation of cost trends, not a per-action guarantee that any individual nudge saved money.
-
-**Model pricing:** each session is priced at its real model (Claude, GPT-4.1, Gemini, Nous Portal, OpenRouter). Hermes pre-computes `estimated_cost_usd` in its sessions table; the adapter uses that directly. If the column is NULL or `cost_status` is `"unknown"`, the adapter falls back to Token Optimizer's own pricing engine using the stored token counts. Free or local models are proxy-priced at the runtime default rate rather than zero so they appear in the cost signal.
-
-**Conservative by design:** two imprecisions in the current adapter both understate savings rather than inflate them:
-
-1. `cache_write_tokens` is rolled into the `input_tokens` total rather than split into its cheaper cache-write tier, making the "after" cost slightly higher than the true billed amount.
-2. If Hermes under-reports `cache_read_tokens`, the inferred cache hit rate is lower, fresh input is higher, and the "after" cost again comes out slightly high.
-
-A smaller "after" cost means a smaller savings number. The math leans conservative.
+Compression savings are measured per call and stored with the Hermes session. Session cost comes from Hermes's own `estimated_cost_usd`, falling back to Token Optimizer's pricing for the stored token counts. Before/after savings compare your average cost per session before and after you started using Token Optimizer; it is a trend, not a per-action guarantee. Two small imprecisions (cache writes priced as input, under-reported cache reads) both make the saving look smaller, not larger.
 
 ## Privacy and Safety
 
-- `hermes_state.py` opens `~/.hermes/state.db` with the `file:...?mode=ro&immutable=1` URI and sets `PRAGMA query_only = ON` as defence-in-depth. It never writes to the file and never opens a long-lived connection.
-- The plugin runs in-process inside Hermes. All hooks are wrapped in `try/except`; no exception is ever raised into the Hermes host.
-- No data is sent to any external service. No telemetry. No network calls.
-- `trends.db` (Token Optimizer's own SQLite database, separate from Hermes's `state.db`) is written by the rollup subprocess, not by the plugin's hooks directly.
+- `state.db` is opened read-only (`mode=ro`, `PRAGMA query_only = ON`). Token Optimizer never writes to it.
+- Engines run in short child processes, never inside Hermes. Every hook catches its own errors; a failure leaves Hermes's output and turn exactly as they were. Hooks that run before a tool stay well inside Hermes's hook timeout, because Hermes blocks a tool when that hook times out.
+- Archives and checkpoints are redacted before they are written, and stored with private permissions under `~/.hermes/`. A checkpoint is built from a temporary private file that is deleted right after.
+- No telemetry. No network calls.
 
 ## Model Support
 
-The plugin is model-agnostic. Hermes routes sessions to whichever model the user configures (Nous Portal, OpenRouter, Anthropic, OpenAI, Gemini, local). Context window sizes are mapped for common Claude, GPT-4.1, and Gemini model IDs; unrecognised models fall back to a conservative 200,000-token assumed window.
+Model-agnostic: Hermes routes to Nous Portal, OpenRouter, Anthropic, OpenAI, Gemini or a local model. Context windows are mapped for common Claude, GPT and Gemini models; others fall back to 200,000 tokens.
 
 ## Requirements
 
-- Python 3.x
-- A working Hermes install (the plugin copies into Hermes's plugin directory and relies on Hermes to load and invoke it)
-- The Token Optimizer repo cloned locally (the installer reads from `hermes/` in the repo root)
+- Python 3 (the interpreter Hermes runs on)
+- A working Hermes install
+- The Token Optimizer repo cloned locally (the plugin runs its engines from there)
 
-**Beta status:** the plugin has been through full internal testing but has not yet been validated against a live Hermes install. Live smoke-testing is the remaining gate before a stable release. Expect rough edges; file issues on the [Token Optimizer repo](https://github.com/alexgreensh/token-optimizer).
+**Beta status:** fully tested against Hermes's documented hook contract (upstream commit `7ee6d99c`), not yet validated against a live Hermes install. File issues on the [Token Optimizer repo](https://github.com/alexgreensh/token-optimizer).
 
 ## How It Works
 
 ```
-Hermes turn lifecycle
-    pre_llm_call  ──► nudge check (fill > 70%?)  ──► inject {"context": "..."} or None
-    post_api_request  ──► accumulate usage into in-process tally (input/output/cache)
-    on_session_finalize / on_session_end
-        ──► hermes_hook_bridge.run_rollup()
-            ──► measure.py hermes-rollup
-                ──► hermes_state.recent_sessions()  (reads state.db read-only)
-                ──► hermes_session.normalize_session()  (token rollup, cost, quality score)
-                ──► INSERT OR IGNORE into trends.db
-                ──► _rebuild_aggregate_tables()  (daily_stats, model_daily)
+Hermes turn
+  pre_llm_call ............ restore / prior-session hints / lean-output / fill nudge
+  post_api_request ........ token tally, fill-band checkpoints
+  pre_tool_call ........... read_file: structure map or diff; mcp__*: saved copy; delegate_task: checkpoint
+  transform_terminal_output  compression, dedup, loop warnings, archive + expand pointer
+  transform_tool_result ... MCP preview, archive, read-cache refresh after edits, pending notes
+  post_tool_call .......... edit-batch checkpoint
+  pre_auxiliary_call ...... checkpoint right before Hermes compacts
+  post_compaction ......... forget pre-compaction reads, queue the restore
+  api_request_error ....... checkpoint on a fatal error
+  subagent_start/stop ..... sprawl note
+  on_skill_lifecycle ...... skill usage counts
+  on_session_end .......... (every turn) checkpoint
+  on_session_finalize ..... end checkpoint, rollup into trends.db, dashboard refresh
+  on_session_start/reset/delete  per-session state
 
-/token-optimizer command
-    ──► hermes_hook_bridge.run_summary()
-        ──► measure.py hermes-summary  ──► usage_trends()
-
-hermes token-optimizer CLI
-    ──► hermes_hook_bridge.run_dashboard(port=24844)
-        ──► dashboard served at http://localhost:24844
+Engines (child processes, from your checkout)
+  hermes_tool_hooks.py .... bash_compress_hook, archive_result, context_intel, read_cache, refetch_guard
+  measure.py hermes-checkpoint ... state.db messages -> checkpoint
+  measure.py hermes-turn-context . compact_restore, continuity hints, lean-output tiers
+  measure.py hermes-rollup ....... state.db sessions -> trends.db
 ```
 
-Session data flows one way: from Hermes's `state.db` into Token Optimizer's `trends.db`. The plugin never writes back to `state.db`.
-
-For the full Token Optimizer feature set, quality signal details, waste pattern detection, and the shared savings methodology, see the [main README](../README.md).
+Data flows one way: from Hermes's `state.db` into Token Optimizer's own files. The plugin never writes back.
 
 ## License
 

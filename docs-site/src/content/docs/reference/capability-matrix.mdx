@@ -27,41 +27,41 @@ Each runtime serves its dashboard on a fixed port, so multiple runtimes run side
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | Quality scoring | 7 signals | 7 signals | 7 signals (GPT-5.x curves) | 7 signals | 7 signals (MRCR curves) | 7 signals (two-stage) | 3 signals | 3 signals | 3 signals | 3 signals | 3 signals |
 | S/A/B/C/D/F grades | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| Smart Compaction (PreCompact/PostCompact) | Yes | Yes | Approx. via prompt + Stop | Approx. via prompt + Stop | Yes (mode-aware) | Yes (progressive) | No (nudge only) | No (server-side) | No (server-side) | No (observational only) | No (no PreCompact hook) |
-| Session continuity / checkpoints | Yes | Yes | Yes | Yes | Yes | Yes (progressive) | Yes (via history db) | Part (session-start restore) | Part (session-start restore) | Part (per-workspace restore) | Yes (PreInvocation restore) |
+| Smart Compaction (PreCompact/PostCompact) | Yes | Yes | Approx. via prompt + Stop | Approx. via prompt + Stop | Yes (mode-aware) | Yes (progressive) | Approx. (checkpoint before Hermes compacts, restore after) | No (server-side) | No (server-side) | No (observational only) | No (no PreCompact hook) |
+| Session continuity / checkpoints | Yes | Yes | Yes | Yes | Yes | Yes (progressive) | Yes (from state.db; restore after compaction) | Part (session-start restore) | Part (session-start restore) | Part (per-workspace restore) | Yes (PreInvocation restore) |
 | Status line (terminal quality bar) | Yes | Via VSIX | Opt-in Codex status line | Not a separate Desktop bar | No | No | No | No | No | No | No |
 | Dashboard (visual HTML) | Yes (24842) | Yes (24842) | Yes (24843) | Yes (24843) | Yes | Yes (8-tab) | Yes (24844) | No (`copilot-summary` instead) | Yes | Yes (24846, verify) | Yes (24847) |
 | Daemon (bookmarkable URL) | Yes | Yes | Yes | Yes | No shared installer | No (own build) | Foreground dashboard; setup blocked | Setup blocked | Setup blocked | Foreground dashboard; setup blocked | Foreground dashboard; setup blocked |
 | Keep-Warm automation | Watcher/reporting; LLM pings disabled | Same gate | No | No | No | No | No | No | No | No | No |
-| Bash output compression | Yes | Yes | Experimental opt-in | Experimental opt-in | No | No | No | Part (gated on CLI ≥1.0.24) | No | Yes (observed) | Yes (PreToolUse rewrite, re-validated wrapper) |
-| Delta read substitution | Yes | Yes | No | No | No | No | No | No (blocked #2585) | No (blocked #2585) | No | No |
-| Structure-map substitution | Yes | Yes | No | No | No | No | No | No (blocked #2585) | No (blocked #2585) | No | No |
-| First-read retarget (opened file full; related skeletons) | Promoted cohorts | Promoted cohorts | No | No | No | No | No | No (blocked #2585) | No (blocked #2585) | No | No |
-| Per-prompt quality / lean-output steering | Yes | Yes | Via UserPromptSubmit | Via UserPromptSubmit | Yes | verify | No | No (regressed #3727) | No (regressed #3727) | No | No |
-| Quality nudges and loop detection | Yes | Yes | verify | verify | Yes (native gates) | No | Limited nudge; no loop detection | No (regressed #3727) | No (regressed #3727) | Part (tool-call proxy) | Part (from last decoded generation) |
+| Bash output compression | Yes | Yes | Experimental opt-in | Experimental opt-in | No | No | Yes (output transform) | Part (gated on CLI ≥1.0.24) | No | Yes (observed) | Yes (PreToolUse rewrite, re-validated wrapper) |
+| Delta read substitution | Yes | Yes | No | No | No | No | Yes | No (blocked #2585) | No (blocked #2585) | No | No |
+| Structure-map substitution | Yes | Yes | No | No | No | No | Yes | No (blocked #2585) | No (blocked #2585) | No | No |
+| First-read retarget (opened file full; related skeletons) | Promoted cohorts | Promoted cohorts | No | No | No | No | Promoted cohorts | No (blocked #2585) | No (blocked #2585) | No | No |
+| Per-prompt quality / lean-output steering | Yes | Yes | Via UserPromptSubmit | Via UserPromptSubmit | Yes | verify | Part (75-89% fill tier) | No (regressed #3727) | No (regressed #3727) | No | No |
+| Quality nudges and loop detection | Yes | Yes | verify | verify | Yes (native gates) | No | Limited nudge; loop detection yes | No (regressed #3727) | No (regressed #3727) | Part (tool-call proxy) | Part (from last decoded generation) |
 | Cache-health watchdog | Yes | Yes | Part | Part | Part | Part | Part | Part | Part | Part | Part |
 | Cost tracking | Yes (Claude) | Yes | Yes (GPT-5.x) | Yes | Yes (30+ models) | Yes (30+ models, 4 tiers) | Yes (model-agnostic) | Yes (AI Credits) | Yes (per-request nanoAIU) | No (no cost data) | Yes (Gemini list estimate; credits when reported) |
 | Fleet Auditor | Yes | Yes | Yes (cross-system) | Yes | No (verify) | Via own dashboard | No | No | No | No | No |
 | Token Coach | Yes | Yes | Yes (AGENTS.md) | Yes | verify | Yes | No | No | No | No | No |
 | Memory / config audit | Yes | Yes | Yes (AGENTS.md + memories) | Yes | No (verify) | Yes | No | No | No | No | No |
-| Read-cache (warn/block modes) | Yes | Yes | No | No | No | Yes | No | No | No | No | No |
+| Read-cache (warn/block modes) | Yes | Yes | No | No | No | Yes | Yes | No | No | No | No |
 | Git-aware context | Yes (CLI) | Yes (same engine) | Shared CLI analysis | Shared CLI analysis | No | Yes | No | No | No | No | No |
 | Drift detection | Yes (CLI) | Yes (same engine) | Shared CLI analysis | Shared CLI analysis | No | Yes | No | No | No | No | No |
 | Impact validation | Yes (CLI) | Yes (same engine) | Shared CLI analysis | Shared CLI analysis | No | Yes | No | No | No | No | No |
 | Agent cost breakdown | No (verify) | No | No | No | No | Yes | No | No | No | No | No |
 | Model-switch simulation | No (verify) | No | No | No | No | Yes | No | No | No | No | No |
 | Proactive context nudge | Yes | Yes | Yes | Yes | Yes | No (verify) | Limited (at 70%, only when native compression needs help) | Part (version-gated) | No | Part (30/80 tool calls) | Part (from last decoded generation) |
-| Crash recovery | Yes (StopFailure) | Yes | Approx. (Stop + compact) | Approx. | verify | verify | verify | Yes (in-flight tally) | Yes (debug-log source) | Yes (in-flight tally) | Part (killed/incomplete flagged) |
+| Crash recovery | Yes (StopFailure) | Yes | Approx. (Stop + compact) | Approx. | verify | verify | Yes (checkpoint on fatal API error) | Yes (in-flight tally) | Yes (debug-log source) | Yes (in-flight tally) | Part (killed/incomplete flagged) |
 
 ## How to read the gaps
 
 The repeated **No** entries fall into a few clear groups.
 
-**Read interception (delta and structure map)** needs a hook that can rewrite the result of a file read before the model sees it. Claude Code supports this; Codex lacks `updatedInput` on its Read hook; Copilot's `additionalContext` on `preToolUse` is broken upstream in Copilot CLI. Cursor, OpenCode and OpenClaw have no equivalent hook in their APIs. Antigravity's `PreToolUse` can overwrite what is about to be read but cannot rewrite the tool result, so the substitution features are unavailable there too.
+**Read interception (delta and structure map)** needs a hook that can rewrite the result of a file read before the model sees it. Claude Code supports this; Codex lacks `updatedInput` on its Read hook; Copilot's `additionalContext` on `preToolUse` is broken upstream in Copilot CLI. Cursor, OpenCode and OpenClaw have no equivalent hook in their APIs. Antigravity's `PreToolUse` can overwrite what is about to be read but cannot rewrite the tool result, so the substitution features are unavailable there too. Hermes's `pre_tool_call` can answer a read itself, so delta and structure-map reads work there.
 
-**Bash output compression** needs a hook that can rewrite tool input silently. Available on Claude Code, Cursor (every Shell rewrite is recorded as `honoured` or `ignored`), and Antigravity (whose rewritten command is re-validated by the wrapper before execution), experimental opt-in on Codex, gated on a Copilot CLI version, and unavailable on the TypeScript platforms and Hermes. On Claude Code, build and test commands (gcc, cargo, npm, make, go, mvn, and more) are also compressed PostToolUse even when they are not read-only: the command already ran, so the hook collapses repetition in the captured output while preserving every distinct error line, exit status, and summary.
+**Bash output compression** needs a hook that can rewrite tool input silently. Available on Claude Code, Cursor (every Shell rewrite is recorded as `honoured` or `ignored`), and Antigravity (whose rewritten command is re-validated by the wrapper before execution), experimental opt-in on Codex, gated on a Copilot CLI version, and unavailable on the TypeScript platforms. Hermes compresses the captured output through its `transform_terminal_output` hook, so every command is covered without rewriting what runs. On Claude Code, build and test commands (gcc, cargo, npm, make, go, mvn, and more) are also compressed PostToolUse even when they are not read-only: the command already ran, so the hook collapses repetition in the captured output while preserving every distinct error line, exit status, and summary.
 
-**Quality Nudges and Loop Detection** need a session-visible notification surface to inject a warning the model can act on. Claude Code has it via `UserPromptSubmit`; Cursor's `postToolUse` context surface fires on a tool-call-count proxy when `preCompact` has not supplied real context numbers. OpenCode appends native warnings through its system-transform path; OpenClaw does not carry these shared nudges. Hermes exposes `pre_llm_call`, which supports a limited fallback context nudge but not loop detection.
+**Quality Nudges and Loop Detection** need a session-visible notification surface to inject a warning the model can act on. Claude Code has it via `UserPromptSubmit`; Cursor's `postToolUse` context surface fires on a tool-call-count proxy when `preCompact` has not supplied real context numbers. OpenCode appends native warnings through its system-transform path; OpenClaw does not carry these shared nudges. Hermes exposes `pre_llm_call` for nudges and returns loop warnings with the terminal output itself.
 
 **Status line** needs a host status surface. Claude Code has it (and the VS Code VSIX surfaces it in the editor). Codex CLI has an explicit `--enable-status-line` installer option; that does not add the Claude desktop status bar to Codex Desktop.
 

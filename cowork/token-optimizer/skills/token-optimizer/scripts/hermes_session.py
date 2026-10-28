@@ -672,6 +672,139 @@ def normalize_session(row: dict[str, Any], *, context_tokens: int | None = None)
     }
 
 
+# ---------------------------------------------------------------------------
+# Checkpoint support: Hermes messages -> Claude-Code-shaped transcript records
+# ---------------------------------------------------------------------------
+#
+# The shared checkpoint engine (measure.compact_capture) reads a Claude Code
+# JSONL transcript. Hermes keeps its transcript in state.db instead, so we
+# translate the message rows into the record shape that engine reads. Only the
+# fields the engine looks at are produced: user text, assistant text, and
+# tool_use blocks named like their Claude Code equivalents so file edits,
+# reads, todos and delegated agents land in the right checkpoint sections.
+
+# Progressive checkpoint fill bands and edit-batch thresholds. Mirrors of
+# measure._PROGRESSIVE_BANDS / _EDIT_BATCH_*_THRESHOLD (pinned by a test) so
+# the in-process Hermes plugin can decide when to checkpoint without importing
+# the 60K-line measure module into the Hermes host.
+PROGRESSIVE_BANDS = (20, 35, 50, 65, 80)
+EDIT_BATCH_WRITE_THRESHOLD = 4
+EDIT_BATCH_FILE_THRESHOLD = 3
+
+# Hermes read_file's default line limit (tools/file_operations_common.py).
+HERMES_DEFAULT_READ_LIMIT = 2000
+
+_PATCH_FILE_RE = re.compile(r"^\*\*\* (?:Update|Add|Delete) File:\s*(.+?)\s*$", re.MULTILINE)
+
+
+def _json_or(value: Any, default: Any) -> Any:
+    if isinstance(value, (dict, list)):
+        return value
+    if isinstance(value, str) and value.strip()[:1] in ("{", "["):
+        try:
+            import json as _json
+
+            return _json.loads(value)
+        except ValueError:
+            return default
+    return default
+
+
+def _text_of(content: Any) -> str:
+    """Plain text of a Hermes message content (string or list of parts)."""
+    parsed = _json_or(content, None) if isinstance(content, str) else content
+    if isinstance(parsed, list):
+        parts = []
+        for part in parsed:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict) and isinstance(part.get("text"), str):
+                parts.append(part["text"])
+        return "\n".join(p for p in parts if p)
+    return content if isinstance(content, str) else ""
+
+
+def hermes_tool_to_claude(name: str, args: Any) -> list[tuple[str, dict]]:
+    """Map one Hermes tool call to Claude Code (name, input) pairs.
+
+    Returns a list because one Hermes call can stand for several Claude Code
+    calls (a multi-file patch, a delegate_task batch). Unknown tools keep their
+    Hermes name, so the checkpoint engine simply ignores them.
+    """
+    args = args if isinstance(args, dict) else {}
+    name = str(name or "")
+    if name == "read_file":
+        # Hermes: offset is 1-indexed (default 1), limit defaults to 2000 lines.
+        # Claude Code: offset/limit absent (0) means "the whole file". Map the
+        # Hermes defaults to absent so a plain read counts as a full read.
+        inp: dict = {"file_path": str(args.get("path") or "")}
+        offset = _safe_int(args.get("offset"), 0)
+        limit = _safe_int(args.get("limit"), 0)
+        if offset > 1:
+            inp["offset"] = offset
+        if limit > 0 and limit != HERMES_DEFAULT_READ_LIMIT:
+            inp["limit"] = limit
+        return [("Read", inp)]
+    if name == "write_file":
+        return [("Write", {"file_path": str(args.get("path") or "")})]
+    if name == "patch":
+        path = args.get("path")
+        if isinstance(path, str) and path:
+            return [("Edit", {"file_path": path})]
+        body = args.get("patch")
+        if isinstance(body, str):
+            return [("Edit", {"file_path": p}) for p in _PATCH_FILE_RE.findall(body)]
+        return []
+    if name == "terminal":
+        return [("Bash", {"command": str(args.get("command") or "")})]
+    if name == "todo_list":
+        todos = args.get("todos")
+        return [("TodoWrite", {"todos": todos if isinstance(todos, list) else []})]
+    if name == "delegate_task":
+        tasks = args.get("tasks")
+        if not isinstance(tasks, list):
+            tasks = [args]
+        out = []
+        for task in tasks:
+            if isinstance(task, dict):
+                goal = str(task.get("goal") or "")
+                out.append(("Agent", {"subagent_type": "delegate_task", "description": goal}))
+        return out
+    return [(name, args)]
+
+
+def messages_to_transcript_records(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Translate Hermes message rows into Claude-Code-shaped transcript records.
+
+    ``tool`` and ``system`` rows are skipped: tool output is not task text and
+    must not become the checkpoint's "active task". Never raises.
+    """
+    records: list[dict[str, Any]] = []
+    for msg in messages or []:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        if role == "user":
+            text = _text_of(msg.get("content"))
+            if text.strip():
+                records.append({"type": "user", "message": {"role": "user", "content": text}})
+        elif role == "assistant":
+            blocks: list[dict[str, Any]] = []
+            text = _text_of(msg.get("content"))
+            if text.strip():
+                blocks.append({"type": "text", "text": text})
+            for call in _json_or(msg.get("tool_calls"), []) or []:
+                if not isinstance(call, dict):
+                    continue
+                fn = call.get("function") if isinstance(call.get("function"), dict) else call
+                tool_args = _json_or(fn.get("arguments"), fn.get("arguments") or {})
+                for cc_name, cc_input in hermes_tool_to_claude(fn.get("name"), tool_args):
+                    blocks.append({"type": "tool_use", "name": cc_name, "input": cc_input})
+            if blocks:
+                records.append({"type": "assistant", "message": {"role": "assistant", "content": blocks}})
+    return records
+
+
 if __name__ == "__main__":
     import json
     import sys as _sys

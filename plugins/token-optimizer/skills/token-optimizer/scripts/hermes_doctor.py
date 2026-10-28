@@ -47,12 +47,81 @@ REQUIRED_PLUGIN_FILES = (
 _CONFIG_NAMES = ("config.yaml", "config.yml")
 _ACTIVATION_SNIPPET = "plugins:\n  enabled:\n    - token-optimizer\n"
 
+# Every hook the plugin registers (hermes/__init__.py HOOKS, hermes/plugin.yaml).
+# A test pins all three lists together.
 EXPECTED_HOOKS = {
     "pre_llm_call",
     "post_api_request",
-    "on_session_finalize",
+    "pre_tool_call",
+    "post_tool_call",
+    "transform_terminal_output",
+    "transform_tool_result",
+    "pre_auxiliary_call",
+    "post_compaction",
+    "api_request_error",
+    "subagent_start",
+    "subagent_stop",
+    "on_skill_lifecycle",
+    "on_session_start",
     "on_session_end",
+    "on_session_finalize",
+    "on_session_reset",
+    "on_session_delete",
 }
+
+# Engine scripts the plugin runs from the checkout (found via measure-path).
+# They are not copied into the plugin dir, so a checkout missing one silently
+# switches that feature off; the doctor names it instead.
+REQUIRED_ENGINE_SCRIPTS = (
+    "hermes_tool_hooks.py",
+    "bash_compress_hook.py",
+    "archive_result.py",
+    "context_intel.py",
+    "read_cache.py",
+    "refetch_guard.py",
+    "credential_patterns.py",
+)
+
+# Copied into the plugin dir by hermes_install; a copy older than the checkout
+# means the plugin runs stale code until the installer is re-run.
+_COPIED_RUNTIME_MODULES = (
+    "hermes_hook_bridge.py",
+    "hermes_state.py",
+    "hermes_session.py",
+    "runtime_env.py",
+    "spawn_utils.py",
+)
+
+# Loads the INSTALLED plugin in a child process with a stand-in Hermes context
+# and prints what register() actually registered. A child keeps the plugin's
+# sys.path change and module state out of the doctor.
+_REGISTRATION_PROBE = r"""
+import importlib.util, json, sys
+plugin_dir = sys.argv[1]
+spec = importlib.util.spec_from_file_location("to_hermes_doctor_probe", plugin_dir + "/__init__.py")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+class Ctx:
+    def __init__(self):
+        self.hooks, self.commands, self.cli, self.patterns = [], [], [], 0
+    def register_hook(self, name, callback, **kw):
+        if not callable(callback):
+            raise TypeError(name)
+        self.hooks.append(name)
+    def register_command(self, name, *a, **k):
+        self.commands.append(name)
+    def register_cli_command(self, name, *a, **k):
+        self.cli.append(name)
+    def register_redaction_patterns(self, patterns):
+        self.patterns = len(list(patterns))
+        return self.patterns
+
+ctx = Ctx()
+module.register(ctx)
+print(json.dumps({"hooks": ctx.hooks, "commands": ctx.commands, "cli": ctx.cli,
+                  "patterns": ctx.patterns}))
+"""
 
 SKILL_INSTALL_FILES = (
     "SKILL.md",
@@ -216,6 +285,110 @@ def _plugin_yaml_checks() -> list[dict[str, str]]:
         checks.append(_check("WARN", "Plugin version", "missing or blank version in plugin.yaml"))
 
     return checks
+
+
+def _registration_checks() -> list[dict[str, str]]:
+    """Load the installed plugin and check every expected hook is registered.
+
+    Reports each hook by name, so a Hermes user can see exactly which Token
+    Optimizer features are live.
+    """
+    plugin_dir = _plugin_install_dir(hermes_home())
+    init = plugin_dir / "__init__.py"
+    if not init.is_file():
+        return [_check("FAIL", "Registered hooks", f"{init} not found; re-run: python3 hermes_install.py")]
+    if init.is_symlink():
+        return [_check("FAIL", "Registered hooks", f"{init} is a symlink; re-run hermes_install.py")]
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", _REGISTRATION_PROBE, str(plugin_dir)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            creationflags=_NO_WINDOW,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return [_check("WARN", "Registered hooks", f"could not load the plugin: {exc}")]
+    data = None
+    for line in reversed((result.stdout or "").strip().splitlines()):
+        try:
+            data = json.loads(line)
+            break
+        except ValueError:
+            continue
+    if not isinstance(data, dict):
+        err = (result.stderr or "").strip().splitlines()
+        return [_check("FAIL", "Registered hooks",
+                       f"plugin failed to register: {err[-1] if err else 'no output'}")]
+    registered = set(data.get("hooks") or [])
+    missing = sorted(EXPECTED_HOOKS - registered)
+    checks: list[dict[str, str]] = []
+    if missing:
+        checks.append(_check("FAIL", "Registered hooks",
+                             f"{len(EXPECTED_HOOKS) - len(missing)}/{len(EXPECTED_HOOKS)}; "
+                             f"not registered: {', '.join(missing)}; re-run: python3 hermes_install.py"))
+    else:
+        checks.append(_check("OK", "Registered hooks",
+                             f"{len(EXPECTED_HOOKS)}/{len(EXPECTED_HOOKS)}: {', '.join(sorted(registered & EXPECTED_HOOKS))}"))
+    if "token-optimizer" in (data.get("commands") or []):
+        checks.append(_check("OK", "Slash command", "/token-optimizer registered"))
+    else:
+        checks.append(_check("WARN", "Slash command", "/token-optimizer not registered"))
+    patterns = int(data.get("patterns") or 0)
+    if patterns:
+        checks.append(_check("OK", "Credential redaction", f"{patterns} patterns shared with Hermes's redactor"))
+    else:
+        checks.append(_check("WARN", "Credential redaction",
+                             "no patterns registered (TOKEN_OPTIMIZER_HERMES_REDACTION=0, or credential_patterns.py not found)"))
+    return checks
+
+
+def _engine_checks() -> list[dict[str, str]]:
+    """The checkout the plugin points at must hold every engine script."""
+    plugin_dir = _plugin_install_dir(hermes_home())
+    locator = plugin_dir / "measure-path"
+    try:
+        measure_py = Path(locator.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return [_check("FAIL", "Engine scripts", f"cannot read {locator}; re-run: python3 hermes_install.py")]
+    sdir = measure_py.parent
+    missing = [name for name in REQUIRED_ENGINE_SCRIPTS if not (sdir / name).is_file()]
+    if missing:
+        return [_check("FAIL", "Engine scripts",
+                       f"missing in {sdir}: {', '.join(missing)}; update the Token Optimizer checkout")]
+    return [_check("OK", "Engine scripts", f"{len(REQUIRED_ENGINE_SCRIPTS)} present in {sdir}")]
+
+
+def _freshness_checks() -> list[dict[str, str]]:
+    """WARN when the installed copies or plugin version lag the checkout."""
+    import hashlib  # noqa: PLC0415
+
+    plugin_dir = _plugin_install_dir(hermes_home())
+    if not plugin_dir.is_dir():
+        return []
+    here = Path(__file__).resolve().parent
+    stale = []
+    for name in _COPIED_RUNTIME_MODULES:
+        src, dst = here / name, plugin_dir / name
+        try:
+            if src.is_file() and dst.is_file() and \
+                    hashlib.sha256(src.read_bytes()).digest() != hashlib.sha256(dst.read_bytes()).digest():
+                stale.append(name)
+        except OSError:
+            continue
+    for name in ("__init__.py", "plugin.yaml"):
+        src, dst = _repo_root() / "hermes" / name, plugin_dir / name
+        try:
+            if src.is_file() and dst.is_file() and src.read_bytes() != dst.read_bytes():
+                stale.append(name)
+        except OSError:
+            continue
+    if stale:
+        return [_check("WARN", "Installed copy up to date",
+                       f"differs from this checkout: {', '.join(stale)}; re-run: python3 hermes_install.py")]
+    return [_check("OK", "Installed copy up to date", "plugin files match this checkout")]
 
 
 def _bridge_smoke_check() -> list[dict[str, str]]:
@@ -429,6 +602,9 @@ def run_checks() -> list[dict[str, str]]:
     checks.extend(_plugin_dir_checks())
     checks.extend(_plugin_yaml_checks())
     checks.extend(_bridge_smoke_check())
+    checks.extend(_registration_checks())
+    checks.extend(_engine_checks())
+    checks.extend(_freshness_checks())
     checks.extend(_activation_check())
     checks.extend(_state_db_checks())
     checks.append(_dashboard_port_check())

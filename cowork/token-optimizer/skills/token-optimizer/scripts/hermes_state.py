@@ -412,6 +412,64 @@ def session_token_totals(session_id: str) -> dict[str, Any]:
     }
 
 
+# Message columns the checkpoint builder reads. Content-bearing columns are
+# capped per row so one huge tool result cannot balloon a checkpoint read.
+_MESSAGE_COLUMNS = ("id", "role", "content", "tool_call_id", "tool_calls", "tool_name", "timestamp")
+_MESSAGE_TEXT_CAP = 20_000
+_MAX_MESSAGE_ROWS = 2_000
+
+
+def session_messages(
+    session_id: str, *, limit: int = 500, live: bool = True
+) -> list[dict[str, Any]]:
+    """Return the last ``limit`` message rows of a session, oldest first.
+
+    Read-only, like every reader here. Rows are returned whether or not Hermes
+    has since compacted them away (``active``/``compacted`` are ignored on
+    purpose): a pre-compaction checkpoint must see what the model saw. Each row
+    is a dict with ``role``, ``content``, ``tool_calls`` (raw JSON text),
+    ``tool_name``, ``tool_call_id`` and ``timestamp``; text is capped per row.
+
+    ``live=True`` (default) opens the WAL-visible view so a checkpoint written
+    during a live session sees the latest turns. Never raises: an absent,
+    locked, or unexpected DB yields an empty list.
+    """
+    if not session_id:
+        return []
+    db = state_db_path()
+    if not db.exists():
+        return []
+    limit = max(1, min(int(limit or 1), _MAX_MESSAGE_ROWS))
+    try:
+        with _ro_connect(db, immutable=not live) as conn:
+            available = _table_columns(conn, "messages")
+            if not available or "session_id" not in available or "role" not in available:
+                return []
+            cols = [c for c in _MESSAGE_COLUMNS if c in available]
+            order = "id" if "id" in available else ("timestamp" if "timestamp" in available else "rowid")
+            sql = (
+                f"SELECT {', '.join(cols)} FROM messages WHERE session_id = ? "
+                f"ORDER BY {order} DESC LIMIT ?"
+            )
+            rows = conn.execute(sql, (session_id, limit)).fetchall()
+    except (sqlite3.Error, OSError) as exc:
+        logger.debug("[hermes_state] session_messages(%r) error: %s", session_id, exc)
+        return []
+    out: list[dict[str, Any]] = []
+    for row in reversed(rows):
+        item: dict[str, Any] = {}
+        for col in cols:
+            try:
+                val = row[col]
+            except (IndexError, KeyError):
+                val = None
+            if isinstance(val, str) and len(val) > _MESSAGE_TEXT_CAP:
+                val = val[:_MESSAGE_TEXT_CAP]
+            item[col] = val
+        out.append(item)
+    return out
+
+
 def db_status() -> dict[str, Any]:
     """Lightweight presence/readability report for the doctor."""
     db = state_db_path()

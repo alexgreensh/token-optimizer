@@ -31370,7 +31370,7 @@ def _maybe_self_heal_sessionend_fossils_on_hook():
         _clear_hook_budget(deadline)
 
 
-def setup_hook(dry_run=False, uninstall=False):
+def setup_hook(dry_run=False, uninstall=False, user_initiated=False):
     """Install or uninstall the SessionEnd hook for automatic usage collection.
 
     ``uninstall=True`` removes ONLY Token Optimizer's own SessionEnd hook
@@ -31426,7 +31426,7 @@ def setup_hook(dry_run=False, uninstall=False):
             import shutil
             shutil.copy2(str(SETTINGS_PATH), str(backup_path))
         try:
-            if not _write_settings_atomic(settings):
+            if not _write_settings_atomic(settings, user_initiated=user_initiated):
                 print("[Error] settings.json write was refused; no SessionEnd hooks were removed.", file=sys.stderr)
                 return
             print(f"[Token Optimizer] Removed {removed} Token Optimizer SessionEnd hook(s) from settings.json.")
@@ -31518,7 +31518,7 @@ def setup_hook(dry_run=False, uninstall=False):
 
     # Write atomically
     try:
-        if not _write_settings_atomic(settings):
+        if not _write_settings_atomic(settings, user_initiated=user_initiated):
             print("[Error] settings.json write was refused; SessionEnd hook was not installed.", file=sys.stderr)
             return
         action = "upgraded" if upgrading else "installed"
@@ -44682,7 +44682,8 @@ def _remove_our_compact_instructions(settings):
     return True
 
 
-def generate_compact_instructions(as_json=False, install=False, dry_run=False):
+def generate_compact_instructions(as_json=False, install=False, dry_run=False,
+                                  user_initiated=False):
     """Generate project-specific Compact Instructions.
 
     Analyzes CLAUDE.md, recent session patterns, and common loss patterns
@@ -44761,7 +44762,7 @@ def generate_compact_instructions(as_json=False, install=False, dry_run=False):
                 user_part + _COMPACT_INSTR_MARKER + instructions_text
                 if user_part else instructions_text
             )
-            if not _write_settings_atomic(settings):
+            if not _write_settings_atomic(settings, user_initiated=user_initiated):
                 print("[Error] settings.json write was refused; compact instructions were not updated.", file=sys.stderr)
                 return instructions_text
             print(f"[Token Optimizer] Compact Instructions updated in {settings_path}")
@@ -44782,7 +44783,7 @@ def generate_compact_instructions(as_json=False, install=False, dry_run=False):
                 return instructions_text
             settings["compactInstructions"] = instructions_text
 
-        if not _write_settings_atomic(settings):
+        if not _write_settings_atomic(settings, user_initiated=user_initiated):
             print("[Error] settings.json write was refused; compact instructions were not installed.", file=sys.stderr)
             return instructions_text
         print(f"[Token Optimizer] Compact Instructions installed to {settings_path}")
@@ -45557,7 +45558,8 @@ def _is_smart_compact_installed(settings=None):
     return status
 
 
-def setup_smart_compact(dry_run=False, uninstall=False, status_only=False):
+def setup_smart_compact(dry_run=False, uninstall=False, status_only=False,
+                        user_initiated=False):
     """Install, uninstall, or check status of smart compaction hooks.
 
     Appends to existing hooks (never overwrites). Safe to run multiple times.
@@ -45626,7 +45628,7 @@ def setup_smart_compact(dry_run=False, uninstall=False, status_only=False):
         # back out (a user-written part stays).
         ci_removed = _remove_our_compact_instructions(settings)
         if not _write_settings_atomic(settings, allow_removing_keys={"compactInstructions"},
-                                      user_initiated=True):
+                                      user_initiated=user_initiated):
             print("[Error] settings.json write was refused; smart compact hooks were not removed.", file=sys.stderr)
             return
         print(f"[Token Optimizer] Removed smart compact hooks. {removed} hook(s) removed.")
@@ -45722,7 +45724,7 @@ def setup_smart_compact(dry_run=False, uninstall=False, status_only=False):
         return
 
     settings["hooks"] = hooks
-    if not _write_settings_atomic(settings):
+    if not _write_settings_atomic(settings, user_initiated=user_initiated):
         print("[Error] settings.json write was refused; smart compact hooks were not installed.", file=sys.stderr)
         return
 
@@ -45733,7 +45735,7 @@ def setup_smart_compact(dry_run=False, uninstall=False, status_only=False):
 
     # Also install compact instructions (tells Claude WHAT to preserve)
     print()
-    generate_compact_instructions(install=True)
+    generate_compact_instructions(install=True, user_initiated=user_initiated)
 
     print("\n  What happens now:")
     print("    Compact Instructions: Guides Claude on what to preserve during compaction")
@@ -48818,7 +48820,8 @@ def _get_v5_savings_recommendation():
     }
 
 
-def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=False, quiet=False):
+def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=False, quiet=False,
+                      user_initiated=False):
     """Install, uninstall, or check quality bar (status line + cache hook).
 
     Installs:
@@ -48836,6 +48839,12 @@ def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=F
     a silent repair never re-injects the integration advisory into context on
     every turn. The advisory is only shown on an explicit,
     interactive `setup-quality-bar` run.
+
+    user_initiated=True is passed only by the `setup-quality-bar` CLI command
+    (the same for setup-hook / setup-smart-compact / compact-instructions):
+    an explicit command takes the settings lease past the hook-herd
+    reservation, so commands typed back to back are not refused. The
+    automatic heal callers keep the default and the non-blocking lease.
 
     Side-effects on config.json:
       install        -> clears "quality_bar_disabled" (explicit opt-in)
@@ -48937,7 +48946,8 @@ def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=F
         settings["hooks"] = hooks
         # Deliberate top-level removal: declare it so the choke-point guard
         # allows this one and only this one.
-        if not _write_settings_atomic(settings, allow_removing_keys={"statusLine"}):
+        if not _write_settings_atomic(settings, allow_removing_keys={"statusLine"},
+                                      user_initiated=user_initiated):
             print("[Error] settings.json write was refused; Quality Bar was not removed.", file=sys.stderr)
             return
         _set_quality_bar_disabled(True)
@@ -49036,7 +49046,7 @@ def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=F
         return
 
     if installed:
-        if not _write_settings_atomic(settings):
+        if not _write_settings_atomic(settings, user_initiated=user_initiated):
             if not quiet:
                 print("[Error] settings.json write was refused; Quality Bar was not installed.", file=sys.stderr)
             return
@@ -58861,7 +58871,7 @@ if __name__ == "__main__":
     elif args[0] == "setup-hook":
         dry = "--dry-run" in args
         uninstall = "--uninstall" in args
-        setup_hook(dry_run=dry, uninstall=uninstall)
+        setup_hook(dry_run=dry, uninstall=uninstall, user_initiated=True)
     elif args[0] == "setup-all-hooks":
         dry = "--dry-run" in args
         verbose = "--verbose" in args or "-v" in args
@@ -59605,7 +59615,8 @@ if __name__ == "__main__":
         output_json = "--json" in args
         install = "--install" in args
         dry = "--dry-run" in args
-        generate_compact_instructions(as_json=output_json, install=install, dry_run=dry)
+        generate_compact_instructions(as_json=output_json, install=install, dry_run=dry,
+                                      user_initiated=True)
     elif args[0] == "dynamic-compact-instructions":
         hook_input = _read_stdin_hook_input()
         sid = hook_input.get("session_id") or os.environ.get("CLAUDE_SESSION_ID", "")
@@ -59614,7 +59625,8 @@ if __name__ == "__main__":
         dry = "--dry-run" in args
         uninstall = "--uninstall" in args
         status = "--status" in args
-        setup_smart_compact(dry_run=dry, uninstall=uninstall, status_only=status)
+        setup_smart_compact(dry_run=dry, uninstall=uninstall, status_only=status,
+                            user_initiated=True)
     elif args[0] == "daemon-revive":
         # Detached child spawned by _daemon_midsession_pulse. Revives a dead
         # dashboard daemon OFF the hot path: force=True bypasses the 24h
@@ -60186,7 +60198,8 @@ if __name__ == "__main__":
         dry = "--dry-run" in args
         uninstall = "--uninstall" in args
         status = "--status" in args
-        setup_quality_bar(dry_run=dry, uninstall=uninstall, status_only=status)
+        setup_quality_bar(dry_run=dry, uninstall=uninstall, status_only=status,
+                          user_initiated=True)
     elif args[0] == "setup-vscode-extension":
         # Manage the VS Code status-bar extension auto-install.
         #   --uninstall : sticky opt-out (+ remove the extension if a CLI is present)

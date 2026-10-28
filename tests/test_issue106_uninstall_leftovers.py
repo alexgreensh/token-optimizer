@@ -91,17 +91,6 @@ def _files(home: Path) -> set[str]:
     return out
 
 
-def _release_lease(home: Path) -> None:
-    """Separate user commands run seconds apart. The settings lease reserves a
-    finished write for ~10s against the hook herd; drop that released
-    tombstone so back-to-back install commands in a test behave like a user
-    typing them one after another (the lease semantics are not under test)."""
-    try:
-        (home / ".claude" / ".settings.lease").unlink()
-    except FileNotFoundError:
-        pass
-
-
 def _run(home: Path, args, stdin=None, shell=False):
     cmd = args if shell else [sys.executable, str(home / ".claude/skills/token-optimizer/scripts/measure.py"), *args]
     return subprocess.run(
@@ -142,9 +131,8 @@ def test_script_install_cleanup_leaves_only_documented_files(tmp_path):
     settings_path.write_text(json.dumps(USER_SETTINGS, indent=2), encoding="utf-8")
     transcript = _write_transcript(home)
 
-    # Install every opt-in component through its own command.
+    # Install every opt-in component through its own command, back to back.
     for verb in ("setup-quality-bar", "setup-smart-compact", "setup-hook"):
-        _release_lease(home)
         proc = _run(home, [verb])
         assert proc.returncode == 0, (verb, proc.stdout, proc.stderr)
         assert "refused" not in proc.stderr, (verb, proc.stderr)
@@ -171,15 +159,25 @@ def test_script_install_cleanup_leaves_only_documented_files(tmp_path):
     assert any("/checkpoints/" in f for f in data_files), sorted(data_files)
     assert any(f.endswith("trends.db") for f in data_files), sorted(data_files)
 
-    # A Token Optimizer settings write moments before cleanup (here the
-    # compact-instructions refresh; in real life any SessionStart heal) must
-    # not make cleanup lose the settings lease and leave every entry behind.
-    _release_lease(home)
+    # Re-running compact-instructions must refresh our part and keep the user's.
     proc = _run(home, ["compact-instructions", "--install"])
     assert proc.returncode == 0, proc.stderr
     refreshed = json.loads(settings_path.read_text(encoding="utf-8"))["compactInstructions"]
     assert refreshed.startswith(USER_SETTINGS["compactInstructions"])
     assert refreshed.count("# Token Optimizer additions:") == 1
+
+    # Then a hook-style write from another process (not user-initiated), which
+    # leaves the ~10s herd reservation on the lease, exactly as a SessionStart
+    # heal does. Cleanup runs straight after it.
+    code = (
+        "import sys; sys.path.insert(0, sys.argv[1]); import measure; "
+        "s, ok = measure._read_settings_for_write(); assert ok; "
+        "sys.exit(0 if measure._write_settings_atomic(s) else 3)"
+    )
+    hook_write = subprocess.run(
+        [sys.executable, "-c", code, str(home / ".claude/skills/token-optimizer/scripts")],
+        capture_output=True, text=True, env=_env(home), cwd=str(home), timeout=120)
+    assert hook_write.returncode == 0, hook_write.stderr
 
     before = _files(home)
     proc = _run(home, ["cleanup", "--confirm"])

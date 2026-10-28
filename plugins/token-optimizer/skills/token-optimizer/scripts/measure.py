@@ -13684,6 +13684,32 @@ def _origin_insert_parts(conn, table):
     return "", "", ()
 
 
+def _claude_projects_like_patterns() -> tuple:
+    """Prefix LIKE patterns (ESCAPE '!') for transcripts under the resolved
+    Claude config's projects/ dir, or () when that is the default ~/.claude
+    (the literal pattern already covers it) or unresolvable.
+
+    Anchored at the start of the path, so a "copilot:"/"hermes:" dedup key or
+    a path that merely contains the folder name further down never matches.
+    Both separator spellings are offered: rows written on Windows store
+    backslashes.
+    """
+    try:
+        projects = Path(CLAUDE_DIR) / "projects"
+        if projects == Path(HOME) / ".claude" / "projects":
+            return ()
+        native = str(projects)
+        forms = {native, native.replace("\\", "/")}
+        out = []
+        for form in sorted(forms):
+            esc = form.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+            sep = "\\" if "\\" in form else "/"
+            out.append(esc + sep + "%")
+        return tuple(out)
+    except Exception:
+        return ()
+
+
 def _init_trends_db():
     """Initialize the trends SQLite DB. Returns a connection.
     
@@ -13853,11 +13879,16 @@ def _init_trends_db():
     # running collector.
     _platform_patterns = ("%/.claude/projects/%", "%/.codex/sessions/%", "%/.codex/archived_sessions/%",
                           "hermes:%", "copilot:%", "cursor:%", "antigravity:%")
+    # A relocated Claude config (CLAUDE_CONFIG_DIR) keeps its transcripts under
+    # <config>/projects/, which the literal ~/.claude pattern above misses.
+    _claude_cfg_patterns = _claude_projects_like_patterns()
+    _cfg_where = " OR ".join(["jsonl_path LIKE ? ESCAPE '!'"] * len(_claude_cfg_patterns))
     try:
         _needs_platform = conn.execute(
             "SELECT 1 FROM session_log WHERE platform IS NULL AND ("
-            + " OR ".join(["jsonl_path LIKE ?"] * len(_platform_patterns)) + ") LIMIT 1",
-            _platform_patterns,
+            + " OR ".join(["jsonl_path LIKE ?"] * len(_platform_patterns))
+            + (" OR " + _cfg_where if _cfg_where else "") + ") LIMIT 1",
+            _platform_patterns + _claude_cfg_patterns,
         ).fetchone()
     except sqlite3.Error:
         _needs_platform = True
@@ -13899,6 +13930,17 @@ def _init_trends_db():
             "WHERE platform IS NULL "
             "AND jsonl_path LIKE 'antigravity:%'"
         )
+        # Last, so every other runtime's definitive pattern has claimed its rows
+        # first; the Codex path patterns are excluded again so a config dir
+        # that happens to sit inside a Codex home can never tag a Codex file.
+        if _cfg_where:
+            conn.execute(
+                "UPDATE session_log SET platform = 'claude' "
+                "WHERE platform IS NULL AND (" + _cfg_where + ") "
+                "AND jsonl_path NOT LIKE '%/.codex/sessions/%' "
+                "AND jsonl_path NOT LIKE '%/.codex/archived_sessions/%'",
+                _claude_cfg_patterns,
+            )
         conn.commit()
     except _SkipMigration:
         pass
@@ -16673,6 +16715,10 @@ def _keepwarm_resolve_claude_bin():
         Path("/usr/local/bin/claude"),
         home / ".local" / "bin" / "claude",
     ]
+    # Claude Code's local installer lives under its config dir, so a relocated
+    # CLAUDE_CONFIG_DIR moves it off ~/.claude/local.
+    if CLAUDE_DIR / "local" / "claude" not in candidates:
+        candidates.insert(1, CLAUDE_DIR / "local" / "claude")
     for cand in candidates:
         try:
             if cand.is_file() and os.access(str(cand), os.X_OK):
@@ -29528,6 +29574,10 @@ def _resolve_runtime_bin(process_name):
         Path("/usr/local/bin") / process_name,
         home / ".bun" / "bin" / process_name,
     ]
+    # Claude Code's local installer lives under its config dir, so a relocated
+    # CLAUDE_CONFIG_DIR moves it off ~/.claude/local.
+    if process_name == "claude" and CLAUDE_DIR / "local" / process_name not in candidates:
+        candidates.insert(2, CLAUDE_DIR / "local" / process_name)
     for cand in candidates:
         try:
             if cand.is_file() and os.access(str(cand), os.X_OK):
@@ -37010,7 +37060,8 @@ def _external_memory_present() -> bool:
          without touching the filesystem.
       2. A neutral coordination marker file, whose mere existence means an
          external durable-memory tool is active:
-         ``${TO_EXTERNAL_MEMORY_MARKER:-~/.claude/durable-memory.json}``.
+         ``${TO_EXTERNAL_MEMORY_MARKER:-<claude home>/durable-memory.json}``, where the
+         Claude home honors CLAUDE_CONFIG_DIR (CLAUDE_DIR / claude_home()).
 
     The external tool writes the marker once (set-and-forget), so detection is
     automatic with no per-session configuration. Cached in a module global so
@@ -37034,7 +37085,7 @@ def _external_memory_present() -> bool:
         marker = (
             Path(marker_env).expanduser()
             if marker_env
-            else Path.home() / ".claude" / "durable-memory.json"
+            else CLAUDE_DIR / "durable-memory.json"
         )
         try:
             if marker.exists():
@@ -40395,6 +40446,78 @@ def _log_reexpand_debit(session_id, tool_use_id, response_text):
         pass
 
 
+def _find_archive_entry(archive_roots, tool_use_id, session_id=None, strict=False):
+    """First ``<root>/<session>/<tool_use_id>.json`` that exists, or None.
+
+    *tool_use_id* must already have passed expand's ``[a-zA-Z0-9_-]+`` check, so
+    the filename can never leave its session dir. *strict* (the cross-runtime
+    fallback) additionally requires a regular, non-symlink file whose resolved
+    path stays inside its archive root.
+    """
+    for archive_root in archive_roots:
+        if session_id:
+            sid = sanitize_session_id(session_id)
+            if sid == "unknown":
+                continue
+            session_dirs = [archive_root / sid]
+        elif archive_root.is_dir() and not archive_root.is_symlink():
+            try:
+                session_dirs = [d for d in archive_root.iterdir()
+                                if d.is_dir() and not d.is_symlink()]
+            except OSError:
+                continue
+        else:
+            continue
+        for sd in session_dirs:
+            entry_path = sd / f"{tool_use_id}.json"
+            try:
+                if not entry_path.exists():
+                    continue
+                if strict:
+                    if (archive_root.is_symlink() or sd.is_symlink()
+                            or entry_path.is_symlink() or not entry_path.is_file()):
+                        continue
+                    entry_path.resolve(strict=True).relative_to(archive_root.resolve(strict=True))
+            except (OSError, ValueError):
+                continue
+            return entry_path
+    return None
+
+
+# Every runtime whose archive an unpinned expand may fall back to, in lookup order.
+_EXPAND_FALLBACK_RUNTIMES = ("claude", "codex", "hermes", "copilot", "cursor",
+                             "opencode", "antigravity", "grok", "devin")
+
+
+def _expand_may_cross_runtimes():
+    """True for a bare expand: no --runtime / TOKEN_OPTIMIZER_RUNTIME pin and
+    no sandbox snapshot override."""
+    return not (os.environ.get("TOKEN_OPTIMIZER_RUNTIME", "").strip()
+                or os.environ.get("TOKEN_OPTIMIZER_SNAPSHOT_DIR", "").strip())
+
+
+def _cross_runtime_archive_roots(exclude):
+    """tool-archive dirs under every other runtime's home. Never raises."""
+    roots = []
+    seen = set(exclude)
+    try:
+        from runtime_env import runtime_home_for
+        from plugin_env import snapshot_roots_for_home
+    except Exception:
+        return roots
+    for runtime in _EXPAND_FALLBACK_RUNTIMES:
+        try:
+            home = runtime_home_for(runtime)
+            for snapshot_root in snapshot_roots_for_home(home):
+                root = snapshot_root / "tool-archive"
+                if root not in seen:
+                    seen.add(root)
+                    roots.append(root)
+        except Exception:
+            continue
+    return roots
+
+
 def expand_archived(tool_use_id=None, session_id=None, list_all=False):
     """Retrieve an archived tool result, or list all archived results.
 
@@ -40467,48 +40590,43 @@ def expand_archived(tool_use_id=None, session_id=None, list_all=False):
         print("[Error] Invalid tool_use_id format.", file=sys.stderr)
         sys.exit(1)
 
-    if not any(root.is_dir() for root in archive_roots):
+    entry_path = _find_archive_entry(archive_roots, tool_use_id, session_id)
+    if entry_path is None and _expand_may_cross_runtimes():
+        # Not in this runtime's archive. A pointer printed by Claude Code is
+        # never pinned, so a shell that detects another runtime (or a scan
+        # that failed open to Claude Code when the archive was written under
+        # another runtime) would otherwise miss an entry that exists. Only an
+        # unpinned expand falls back; an explicit --runtime stays strict.
+        fallback_roots = _cross_runtime_archive_roots(archive_roots)
+        entry_path = _find_archive_entry(fallback_roots, tool_use_id, session_id, strict=True)
+        if entry_path is None and not any(root.is_dir() for root in archive_roots):
+            archive_roots = archive_roots + [r for r in fallback_roots if r.is_dir()]
+
+    if entry_path is None and not any(root.is_dir() for root in archive_roots):
         print("[Error] No archive directory found. No results have been archived yet.", file=sys.stderr)
         sys.exit(1)
 
-    # Determine search scope
-    if session_id:
-        sid = sanitize_session_id(session_id)
-        search_dirs = [
-            archive_root / sid for archive_root in archive_roots
-            if sid != "unknown"
-        ]
-    else:
-        search_dirs = []
-        for archive_root in archive_roots:
-            if archive_root.is_dir() and not archive_root.is_symlink():
-                search_dirs.extend(
-                    d for d in archive_root.iterdir()
-                    if d.is_dir() and not d.is_symlink()
-                )
-
-    for sd in search_dirs:
-        entry_path = sd / f"{tool_use_id}.json"
-        if entry_path.exists():
-            try:
-                data = json.loads(entry_path.read_text(encoding="utf-8"))
-                response = data.get("response", "")
-                if response:
-                    # B6 integrity: re-popping an archived result means it did NOT
-                    # stay collapsed, so reverse its tool_archive credit. Log the
-                    # re-popped tokens as a debit (netted in _get_savings_summary),
-                    # deduped per item so a second expand never double-debits.
-                    _log_reexpand_debit(sd.name, tool_use_id, response)
-                    # No added newline: expand returns the stored text as stored.
-                    sys.stdout.write(response)
-                    sys.stdout.flush()
-                    return
-                else:
-                    print(f"[Error] Archived entry found but response is empty: {entry_path}", file=sys.stderr)
-                    sys.exit(1)
-            except (json.JSONDecodeError, OSError) as e:
-                print(f"[Error] Failed to read archived result: {e}", file=sys.stderr)
+    if entry_path is not None:
+        sd = entry_path.parent
+        try:
+            data = json.loads(entry_path.read_text(encoding="utf-8"))
+            response = data.get("response", "")
+            if response:
+                # B6 integrity: re-popping an archived result means it did NOT
+                # stay collapsed, so reverse its tool_archive credit. Log the
+                # re-popped tokens as a debit (netted in _get_savings_summary),
+                # deduped per item so a second expand never double-debits.
+                _log_reexpand_debit(sd.name, tool_use_id, response)
+                # No added newline: expand returns the stored text as stored.
+                sys.stdout.write(response)
+                sys.stdout.flush()
+                return
+            else:
+                print(f"[Error] Archived entry found but response is empty: {entry_path}", file=sys.stderr)
                 sys.exit(1)
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"[Error] Failed to read archived result: {e}", file=sys.stderr)
+            sys.exit(1)
 
     print(f"[Error] Tool result not found: {tool_use_id}", file=sys.stderr)
     if not session_id:
@@ -48798,13 +48916,16 @@ def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=F
             # is a clobber rather than an intentional choice).
             try:
                 _rt_seg = RUNTIME_DIR.relative_to(HOME).as_posix()
+                _rt_base = f"os.homedir(), '{_rt_seg}'"
             except ValueError:
-                _rt_seg = ".claude"
+                # Runtime dir outside HOME (e.g. CLAUDE_CONFIG_DIR on a
+                # relocated volume): print its absolute path, never ~/.claude.
+                _rt_base = json.dumps(RUNTIME_DIR.as_posix())
             warnings.append(
                 "You already have a custom status line configured.\n"
                 "  To integrate quality scoring, add this to your status line script:\n\n"
                 "    // Read context quality score\n"
-                f"    const qFile = path.join(os.homedir(), '{_rt_seg}', 'token-optimizer', 'quality-cache.json');\n"
+                f"    const qFile = path.join({_rt_base}, 'token-optimizer', 'quality-cache.json');\n"
                 "    let qScore = '';\n"
                 "    if (fs.existsSync(qFile)) {\n"
                 "      try {\n"

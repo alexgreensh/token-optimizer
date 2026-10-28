@@ -241,6 +241,24 @@ def find_sibling_plugin_data_dirs(active: Path | None = None) -> list[Path]:
     return siblings
 
 
+def snapshot_roots_for_home(home: Path) -> list[Path]:
+    """Snapshot roots Token Optimizer may have used under another runtime's
+    *home*: each safe ``plugins/data/token-optimizer-*`` identity's ``data``
+    dir, then the legacy ``_backups/token-optimizer``. Read-side recovery only
+    (expand's cross-runtime fallback); never a write target. Never raises."""
+    roots: list[Path] = []
+    try:
+        base = home / "plugins" / "data"
+        if base.is_dir() and not base.is_symlink():
+            for path in sorted(base.glob(f"{_PLUGIN_NAME}-*"), key=lambda p: p.name):
+                if _is_safe_subdir(path, base):
+                    roots.append(path / "data")
+    except OSError:
+        pass
+    roots.append(home / "_backups" / "token-optimizer")
+    return roots
+
+
 def snapshot_dir_candidates() -> list[Path]:
     """Return active then sibling snapshot roots for read-side recovery."""
     override = os.environ.get("TOKEN_OPTIMIZER_SNAPSHOT_DIR", "").strip()

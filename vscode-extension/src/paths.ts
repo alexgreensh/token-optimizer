@@ -69,12 +69,66 @@ export function resolvePaths(homeDir: string = os.homedir()): ClaudePaths {
   };
 }
 
-// Paths for a GitHub Copilot Token Optimizer install at ~/.copilot/token-optimizer/.
+function realOrResolved(p: string): string {
+  try { return fs.realpathSync.native(p); } catch { return path.resolve(p); }
+}
+
+function isUnder(child: string, parent: string): boolean {
+  const rel = path.relative(parent, child);
+  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
+function isWsl(): boolean {
+  if (process.platform !== 'linux') return false;
+  for (const probe of ['/proc/version', '/proc/sys/kernel/osrelease']) {
+    try {
+      const low = fs.readFileSync(probe, 'utf8').toLowerCase();
+      if (low.includes('microsoft') || low.includes('wsl')) return true;
+    } catch {
+      // probe unreadable: try the next one
+    }
+  }
+  return false;
+}
+
+// Copilot's home for Token Optimizer data, resolved like the plugin's
+// runtime_env.copilot_home(): TOKEN_OPTIMIZER_COPILOT_HOME wins, then
+// COPILOT_HOME. Either must be an absolute, existing, non-symlink directory
+// strictly under the user's home, or (inside WSL only) under /mnt/ for a
+// Windows-profile install. A set-but-rejected value falls back to ~/.copilot,
+// as the plugin does. Ignoring the override made the companion read an empty
+// ~/.copilot while the plugin wrote elsewhere. Keep both copies in step.
+export function resolveCopilotDir(
+  homeDir: string = os.homedir(),
+  env: NodeJS.ProcessEnv = process.env
+): string {
+  const fallback = path.join(homeDir, '.copilot');
+  const ours = (env.TOKEN_OPTIMIZER_COPILOT_HOME || '').trim();
+  const raw = ours || (env.COPILOT_HOME || '').trim();
+  if (!raw) return fallback;
+  try {
+    const win = process.platform === 'win32';
+    const tilde = win ? /^~(?=$|[\\/])/ : /^~(?=$|\/)/;
+    const p = tilde.test(raw) ? homeDir + raw.slice(1) : raw;
+    if (!path.isAbsolute(p)) return fallback;
+    const st = fs.lstatSync(p);
+    if (st.isSymbolicLink() || !st.isDirectory()) return fallback;
+    const resolved = realOrResolved(p);
+    if (isUnder(resolved, realOrResolved(homeDir))) return resolved;
+    if (isWsl() && isUnder(resolved, realOrResolved('/mnt'))) return resolved;
+  } catch {
+    // missing or unreadable override: fall back like the plugin does
+  }
+  return fallback;
+}
+
+// Paths for a GitHub Copilot Token Optimizer install at <copilot home>/token-optimizer/
+// (~/.copilot unless TOKEN_OPTIMIZER_COPILOT_HOME / COPILOT_HOME relocates it).
 // The cache-file names (live-fill.json, rate-limits.json, quality-cache-*.json) are
 // intentionally identical to the Claude layout so cacheReader / dataSource are
 // runtime-agnostic — only the base directory changes.
 export function resolveCopilotPaths(homeDir: string = os.homedir()): ClaudePaths {
-  const copilotDir = path.join(homeDir, '.copilot');
+  const copilotDir = resolveCopilotDir(homeDir);
   const cacheDir = path.join(copilotDir, 'token-optimizer');
   return {
     // claudeDir is used only by DataSource.readEffort (reads ~/.claude/settings.json).
@@ -126,7 +180,7 @@ function mostRecentMtimeMs(dir: string): number {
 // mixed user follows whichever runtime they used most recently.
 export function resolveAutoPaths(homeDir: string = os.homedir()): ClaudePaths {
   const claudeCache = path.join(resolveClaudeDir(homeDir), 'token-optimizer');
-  const copilotCache = path.join(homeDir, '.copilot', 'token-optimizer');
+  const copilotCache = path.join(resolveCopilotDir(homeDir), 'token-optimizer');
   const copilotMs = mostRecentMtimeMs(copilotCache);
   const claudeMs = mostRecentMtimeMs(claudeCache);
   if (copilotMs > 0 && copilotMs > claudeMs) return resolveCopilotPaths(homeDir);
@@ -142,7 +196,7 @@ export function resolveAutoPaths(homeDir: string = os.homedir()): ClaudePaths {
 export function detectPluginInstalled(homeDir: string = os.homedir()): boolean {
   const candidates = [
     path.join(resolveClaudeDir(homeDir), 'token-optimizer'),
-    path.join(homeDir, '.copilot', 'token-optimizer'),
+    path.join(resolveCopilotDir(homeDir), 'token-optimizer'),
   ];
   for (const dir of candidates) {
     try {

@@ -13692,23 +13692,23 @@ def _claude_projects_like_patterns() -> tuple:
 
     Anchored at the start of the path, so a "copilot:"/"hermes:" dedup key or
     a path that merely contains the folder name further down never matches.
-    Both separator spellings are offered: rows written on Windows store
-    backslashes.
+    Forward slashes only: callers match it against _PLATFORM_PATH_SQL, which
+    folds the backslashes of rows written on Windows to forward slashes.
     """
     try:
         projects = Path(CLAUDE_DIR) / "projects"
         if projects == Path(HOME) / ".claude" / "projects":
             return ()
-        native = str(projects)
-        forms = {native, native.replace("\\", "/")}
-        out = []
-        for form in sorted(forms):
-            esc = form.replace("!", "!!").replace("%", "!%").replace("_", "!_")
-            sep = "\\" if "\\" in form else "/"
-            out.append(esc + sep + "%")
-        return tuple(out)
+        form = str(projects).replace("\\", "/")
+        esc = form.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+        return (esc + "/%",)
     except Exception:
         return ()
+
+
+# session_log.jsonl_path with Windows backslashes folded to forward slashes,
+# so one path pattern matches rows written on every OS (the platform backfill).
+_PLATFORM_PATH_SQL = "REPLACE(jsonl_path, '\\', '/')"
 
 
 def _init_trends_db():
@@ -13883,11 +13883,14 @@ def _init_trends_db():
     # A relocated Claude config (CLAUDE_CONFIG_DIR) keeps its transcripts under
     # <config>/projects/, which the literal ~/.claude pattern above misses.
     _claude_cfg_patterns = _claude_projects_like_patterns()
-    _cfg_where = " OR ".join(["jsonl_path LIKE ? ESCAPE '!'"] * len(_claude_cfg_patterns))
+    # Paths are matched with backslashes folded to '/', so a row written on
+    # Windows (C:\Users\me\.claude\projects\...) is tagged like a POSIX one.
+    _p = _PLATFORM_PATH_SQL
+    _cfg_where = " OR ".join([f"{_p} LIKE ? ESCAPE '!'"] * len(_claude_cfg_patterns))
     try:
         _needs_platform = conn.execute(
             "SELECT 1 FROM session_log WHERE platform IS NULL AND ("
-            + " OR ".join(["jsonl_path LIKE ?"] * len(_platform_patterns))
+            + " OR ".join([f"{_p} LIKE ?"] * len(_platform_patterns))
             + (" OR " + _cfg_where if _cfg_where else "") + ") LIMIT 1",
             _platform_patterns + _claude_cfg_patterns,
         ).fetchone()
@@ -13896,41 +13899,17 @@ def _init_trends_db():
     try:
         if not _needs_platform:
             raise _SkipMigration
-        conn.execute(
-            "UPDATE session_log SET platform = 'claude' "
-            "WHERE platform IS NULL "
-            "AND jsonl_path LIKE '%/.claude/projects/%'"
-        )
-        conn.execute(
-            "UPDATE session_log SET platform = 'codex' "
-            "WHERE platform IS NULL "
-            "AND jsonl_path LIKE '%/.codex/sessions/%'"
-        )
-        conn.execute(
-            "UPDATE session_log SET platform = 'codex' "
-            "WHERE platform IS NULL "
-            "AND jsonl_path LIKE '%/.codex/archived_sessions/%'"
-        )
-        conn.execute(
-            "UPDATE session_log SET platform = 'hermes' "
-            "WHERE platform IS NULL "
-            "AND jsonl_path LIKE 'hermes:%'"
-        )
-        conn.execute(
-            "UPDATE session_log SET platform = 'copilot' "
-            "WHERE platform IS NULL "
-            "AND jsonl_path LIKE 'copilot:%'"
-        )
-        conn.execute(
-            "UPDATE session_log SET platform = 'cursor' "
-            "WHERE platform IS NULL "
-            "AND jsonl_path LIKE 'cursor:%'"
-        )
-        conn.execute(
-            "UPDATE session_log SET platform = 'antigravity' "
-            "WHERE platform IS NULL "
-            "AND jsonl_path LIKE 'antigravity:%'"
-        )
+        for _platform, _pattern in (("claude", "%/.claude/projects/%"),
+                                    ("codex", "%/.codex/sessions/%"),
+                                    ("codex", "%/.codex/archived_sessions/%"),
+                                    ("hermes", "hermes:%"),
+                                    ("copilot", "copilot:%"),
+                                    ("cursor", "cursor:%"),
+                                    ("antigravity", "antigravity:%")):
+            conn.execute(
+                f"UPDATE session_log SET platform = ? WHERE platform IS NULL AND {_p} LIKE ?",
+                (_platform, _pattern),
+            )
         # Last, so every other runtime's definitive pattern has claimed its rows
         # first; the Codex path patterns are excluded again so a config dir
         # that happens to sit inside a Codex home can never tag a Codex file.
@@ -13938,8 +13917,8 @@ def _init_trends_db():
             conn.execute(
                 "UPDATE session_log SET platform = 'claude' "
                 "WHERE platform IS NULL AND (" + _cfg_where + ") "
-                "AND jsonl_path NOT LIKE '%/.codex/sessions/%' "
-                "AND jsonl_path NOT LIKE '%/.codex/archived_sessions/%'",
+                f"AND {_p} NOT LIKE '%/.codex/sessions/%' "
+                f"AND {_p} NOT LIKE '%/.codex/archived_sessions/%'",
                 _claude_cfg_patterns,
             )
         conn.commit()

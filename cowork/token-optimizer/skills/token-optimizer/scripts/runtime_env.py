@@ -1847,8 +1847,12 @@ def opencode_data_home() -> Path:
 
 def runtime_home() -> Path:
     """Return the home directory used by the active runtime."""
-    runtime = detect_runtime()
+    return runtime_home_for(detect_runtime())
 
+
+def runtime_home_for(runtime: str) -> Path:
+    """Return the home directory a named runtime uses (Claude Code for an
+    unknown name), resolved with the same overrides as runtime_home()."""
     if runtime == _RUNTIME_CODEX:
         return codex_home()
 

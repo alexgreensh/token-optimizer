@@ -9,6 +9,7 @@ Zero external dependencies. Python 3.10+ (for match/case and type unions).
 from __future__ import annotations  # PEP 604 union syntax compat for Python 3.9
 
 import json
+import os
 import re
 import sqlite3
 from datetime import datetime
@@ -19,7 +20,34 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 HOME = Path.home()
-CLAUDE_DIR = HOME / ".claude"
+
+
+def _resolve_claude_dir() -> Path:
+    """Claude Code's config dir, honoring CLAUDE_CONFIG_DIR (#198).
+
+    Uses Token Optimizer's runtime_env.claude_home() when it is importable (the
+    plugin layout puts it on sys.path); standalone, applies the same rules: an
+    absolute, existing, non-symlink directory wins, else ~/.claude.
+    """
+    try:
+        from runtime_env import claude_home  # type: ignore
+        return claude_home()
+    except Exception:
+        pass
+    fallback = HOME / ".claude"
+    raw = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+    if not raw:
+        return fallback
+    try:
+        candidate = Path(raw).expanduser()
+        if candidate.is_absolute() and candidate.is_dir() and not candidate.is_symlink():
+            return candidate.resolve(strict=False)
+    except (OSError, RuntimeError):
+        pass
+    return fallback
+
+
+CLAUDE_DIR = _resolve_claude_dir()
 CHARS_PER_TOKEN = 4.0
 _KNOWN_PROVIDER_PREFIXES = {
     "anthropic", "openai", "google", "gemini", "vertex", "bedrock",

@@ -16673,6 +16673,10 @@ def _keepwarm_resolve_claude_bin():
         Path("/usr/local/bin/claude"),
         home / ".local" / "bin" / "claude",
     ]
+    # Claude Code's local installer lives under its config dir, so a relocated
+    # CLAUDE_CONFIG_DIR moves it off ~/.claude/local.
+    if CLAUDE_DIR / "local" / "claude" not in candidates:
+        candidates.insert(1, CLAUDE_DIR / "local" / "claude")
     for cand in candidates:
         try:
             if cand.is_file() and os.access(str(cand), os.X_OK):
@@ -29528,6 +29532,10 @@ def _resolve_runtime_bin(process_name):
         Path("/usr/local/bin") / process_name,
         home / ".bun" / "bin" / process_name,
     ]
+    # Claude Code's local installer lives under its config dir, so a relocated
+    # CLAUDE_CONFIG_DIR moves it off ~/.claude/local.
+    if process_name == "claude" and CLAUDE_DIR / "local" / process_name not in candidates:
+        candidates.insert(2, CLAUDE_DIR / "local" / process_name)
     for cand in candidates:
         try:
             if cand.is_file() and os.access(str(cand), os.X_OK):
@@ -37010,7 +37018,8 @@ def _external_memory_present() -> bool:
          without touching the filesystem.
       2. A neutral coordination marker file, whose mere existence means an
          external durable-memory tool is active:
-         ``${TO_EXTERNAL_MEMORY_MARKER:-~/.claude/durable-memory.json}``.
+         ``${TO_EXTERNAL_MEMORY_MARKER:-<claude home>/durable-memory.json}``, where the
+         Claude home honors CLAUDE_CONFIG_DIR (CLAUDE_DIR / claude_home()).
 
     The external tool writes the marker once (set-and-forget), so detection is
     automatic with no per-session configuration. Cached in a module global so
@@ -37034,7 +37043,7 @@ def _external_memory_present() -> bool:
         marker = (
             Path(marker_env).expanduser()
             if marker_env
-            else Path.home() / ".claude" / "durable-memory.json"
+            else CLAUDE_DIR / "durable-memory.json"
         )
         try:
             if marker.exists():
@@ -48798,13 +48807,16 @@ def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=F
             # is a clobber rather than an intentional choice).
             try:
                 _rt_seg = RUNTIME_DIR.relative_to(HOME).as_posix()
+                _rt_base = f"os.homedir(), '{_rt_seg}'"
             except ValueError:
-                _rt_seg = ".claude"
+                # Runtime dir outside HOME (e.g. CLAUDE_CONFIG_DIR on a
+                # relocated volume): print its absolute path, never ~/.claude.
+                _rt_base = json.dumps(RUNTIME_DIR.as_posix())
             warnings.append(
                 "You already have a custom status line configured.\n"
                 "  To integrate quality scoring, add this to your status line script:\n\n"
                 "    // Read context quality score\n"
-                f"    const qFile = path.join(os.homedir(), '{_rt_seg}', 'token-optimizer', 'quality-cache.json');\n"
+                f"    const qFile = path.join({_rt_base}, 'token-optimizer', 'quality-cache.json');\n"
                 "    let qScore = '';\n"
                 "    if (fs.existsSync(qFile)) {\n"
                 "      try {\n"

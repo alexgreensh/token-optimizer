@@ -1111,3 +1111,52 @@ def test_stale_cache_entries_from_before_the_scrubbers_are_not_served(sandbox, m
     # same inputs, current algorithm: the stored entry must not be a hit
     res = dc.run("claude", files, price, cache_dir=cache_dir, max_sessions=60, use_cache=True, budget_s=30.0)
     assert "Tr0ub4dor3xyz" not in json.dumps(res)
+
+
+# ---------------------------------------------------------------------------
+# Advisor turns are priced per part (executor + advisor model), like measure.py
+# ---------------------------------------------------------------------------
+
+ADV_EXECUTOR = "claude-sonnet-5-5"
+ADV_MODEL = "claude-opus-5-5"
+ADVISOR_USAGE = {
+    # Documented shape: top level is the executor sum; the advisor rides in iterations.
+    "input_tokens": 200, "output_tokens": 20,
+    "cache_read_input_tokens": 80_000, "cache_creation_input_tokens": 1_000,
+    "iterations": [
+        {"type": "message", "input_tokens": 100, "output_tokens": 10,
+         "cache_read_input_tokens": 40_000, "cache_creation_input_tokens": 500},
+        {"type": "advisor_message", "model": ADV_MODEL, "input_tokens": 300_000,
+         "output_tokens": 2_000, "cache_read_input_tokens": 50_000},
+        {"type": "message", "input_tokens": 100, "output_tokens": 10,
+         "cache_read_input_tokens": 40_000, "cache_creation_input_tokens": 500},
+    ],
+}
+
+
+def test_advisor_turns_are_priced_at_the_advisor_model(sandbox, monkeypatch):
+    import measure
+    turns = [[_bash("python3 -m pytest -q tests/test_a.py")] for _ in range(3)]
+    path = write_claude(sandbox / "s.jsonl", turns, "adv", model=ADV_EXECUTOR,
+                        usage=ADVISOR_USAGE, reply="All green.")
+    monkeypatch.setattr(measure, "detect_runtime", lambda: "claude")
+    monkeypatch.setattr(measure, "_load_pricing_tier", lambda: "anthropic")
+    monkeypatch.setattr(measure, "SNAPSHOT_DIR", sandbox)
+    monkeypatch.setattr(measure, "_find_all_jsonl_files",
+                        lambda **kw: [(str(path), path.stat().st_mtime, "proj")])
+    res = measure._deterministic_candidates_data(use_cache=False)
+    (chk,) = [c for c in res["candidates"] if c["kind"] == "check_only_turn"]
+
+    per_call = measure._price_usage_parts(
+        measure._billed_usage_parts(ADVISOR_USAGE, ADV_EXECUTOR, tier="anthropic"),
+        tier="anthropic")
+    one_model = measure._get_model_cost(ADV_EXECUTOR, 300_200, 2_020, 130_000, 1_000,
+                                        tier="anthropic")
+    # The advisor is pricier than the executor, so pricing it at the executor
+    # model (the old behaviour) under-ranks advisor turns.
+    assert per_call > one_model
+    # 3 user turns x 2 API calls each (the check call and the short reply).
+    assert chk["cost_usd"] == pytest.approx(6 * per_call, abs=1e-3)
+    # Advisor tokens are counted, not dropped.
+    assert chk["tokens"]["output_tokens"] == 6 * 2_020
+    assert chk["tokens"]["input_tokens"] == 6 * (200 + 80_000 + 1_000 + 300_000 + 50_000)

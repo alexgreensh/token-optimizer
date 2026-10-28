@@ -10698,7 +10698,8 @@ def _deterministic_candidates_data(days=30, budget_s=_DETCAND_COACH_BUDGET_S,
                  if _sidechain_path_reason(jf) is None]
         return deterministic_candidates.run(
             runtime, files, price, days=days, budget_s=budget_s, max_sessions=max_sessions,
-            cache_dir=SNAPSHOT_DIR, tier=tier, use_cache=use_cache, progress=progress)
+            cache_dir=SNAPSHOT_DIR, tier=tier, use_cache=use_cache, progress=progress,
+            split_usage=lambda model, usage: _billed_usage_parts(usage, model, tier=tier))
     except Exception as exc:  # never break coach --json
         return {"status": "error", "runtime": runtime, "partial": True, "candidates": [],
                 "basis": deterministic_candidates.BASIS,

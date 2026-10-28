@@ -177,9 +177,15 @@ def _is_safe_home_dir_relaxed(path: Path) -> bool:
         return False
 
 
-def hermes_home() -> Path:
-    """Return the Hermes data directory, safely honoring HERMES_HOME when valid."""
-    raw = os.environ.get(_HERMES_HOME_ENV, "").strip()
+def hermes_home(home: str | os.PathLike | None = None) -> Path:
+    """Return the Hermes data directory, safely honoring HERMES_HOME when valid.
+
+    ``home`` names a profile home explicitly (the Hermes plugin passes the
+    profile whose hook is running: in a multiplexed gateway os.environ holds
+    the launch profile's HERMES_HOME, not the active one). It goes through the
+    same safety checks as the env var.
+    """
+    raw = str(home).strip() if home else os.environ.get(_HERMES_HOME_ENV, "").strip()
     if raw:
         candidate = Path(raw).expanduser()
         if _is_safe_home_dir(candidate):
@@ -197,9 +203,9 @@ def hermes_home() -> Path:
     return Path.home() / _DEFAULT_HERMES_DIR
 
 
-def state_db_path() -> Path:
-    """Return the canonical path to Hermes's state.db."""
-    return hermes_home() / _DB_NAME
+def state_db_path(home: str | os.PathLike | None = None) -> Path:
+    """Return the canonical path to Hermes's state.db (of ``home`` when given)."""
+    return hermes_home(home) / _DB_NAME
 
 
 # ---------------------------------------------------------------------------
@@ -293,7 +299,9 @@ def _row_to_dict(row: sqlite3.Row, available_cols: set[str]) -> dict[str, Any]:
 # Public API
 # ---------------------------------------------------------------------------
 
-def get_session(session_id: str, *, live: bool = False) -> dict[str, Any] | None:
+def get_session(
+    session_id: str, *, live: bool = False, home: str | os.PathLike | None = None,
+) -> dict[str, Any] | None:
     """Return a single session row as a dict, or None when not found.
 
     Absent DB or locked DB returns None gracefully.  Missing columns in the
@@ -302,11 +310,12 @@ def get_session(session_id: str, *, live: bool = False) -> dict[str, Any] | None
     ``live=True`` opens the DB WAL-visible (plain ``mode=ro``) so a probe
     running alongside a live Hermes session sees writes that are committed but
     not yet checkpointed. The default keeps the immutable snapshot view used
-    for collecting already-ended sessions.
+    for collecting already-ended sessions. ``home`` reads that profile's
+    state.db instead of the one HERMES_HOME names.
     """
     if not session_id:
         return None
-    db = state_db_path()
+    db = state_db_path(home) if home else state_db_path()
     if not db.exists():
         return None
     try:

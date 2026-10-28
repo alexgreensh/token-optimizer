@@ -251,7 +251,7 @@ def test_plugin_registers_every_declared_hook(plugin):
 
 def test_manifest_version_bumped_for_new_features():
     text = (HERMES_PAYLOAD / "plugin.yaml").read_text(encoding="utf-8")
-    assert re.search(r'^version:\s*"0\.2\.0"\s*$', text, re.MULTILINE)
+    assert re.search(r'^version:\s*"0\.2\.1"\s*$', text, re.MULTILINE)
 
 
 def test_register_survives_a_host_that_rejects_one_hook(plugin):

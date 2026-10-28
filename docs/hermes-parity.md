@@ -4,7 +4,7 @@ What Token Optimizer does on Claude Code and Codex, and how each feature reaches
 
 Sources for the feature list: README feature sections, `docs/codex.md` parity tables, `HOOKS.md`, `hooks/hooks.json`, `skills/token-optimizer/SKILL.md`, `measure.py` subcommands, and the Codex, Copilot and Devin adapters.
 
-How Hermes runs it: the plugin (`hermes/__init__.py`, version 0.2.0) lives inside the Hermes process. Every engine call happens in a short child process running the same scripts the Claude Code hooks run (`hermes_tool_hooks.py` routes a Claude-Code-shaped payload to them; `measure.py hermes-checkpoint` and `hermes-turn-context` cover checkpoints and per-turn context). Every hook fails open: on any error the tool output, the turn and the session continue unchanged.
+How Hermes runs it: the plugin (`hermes/__init__.py`, version 0.2.1) lives inside the Hermes process. Every engine call happens in a short child process running the same scripts the Claude Code hooks run (`hermes_tool_hooks.py` routes a Claude-Code-shaped payload to them; `measure.py hermes-checkpoint` and `hermes-turn-context` cover checkpoints and per-turn context). Every hook fails open: on any error the tool output, the turn and the session continue unchanged.
 
 Status key: **Yes** works, **Part** partly works (reason given), **No** not available (reason given).
 

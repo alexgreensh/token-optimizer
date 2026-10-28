@@ -1,6 +1,6 @@
 # Token Optimizer for Hermes
 
-**Beta (v0.2.0).** The Token Optimizer feature set for [NousResearch Hermes](https://github.com/NousResearch/hermes-agent): smaller terminal and tool output, cheaper re-reads, loop warnings, checkpoints that survive compaction, prior-session hints, cost and quality tracking, and the shared dashboard.
+**Beta (v0.2.1).** The Token Optimizer feature set for [NousResearch Hermes](https://github.com/NousResearch/hermes-agent): smaller terminal and tool output, cheaper re-reads, loop warnings, checkpoints that survive compaction, prior-session hints, cost and quality tracking, and the shared dashboard.
 
 Native Python plugin. Reads Hermes's own `~/.hermes/state.db` read-only. Model-agnostic. No telemetry, no network calls, no Python dependencies.
 
@@ -60,6 +60,8 @@ python3 token-optimizer/skills/token-optimizer/scripts/measure.py hermes-install
 `--enable` is idempotent and backs up your config before touching it. If your config layout is unusual, the installer leaves it alone and prints the snippet to add.
 
 **HERMES_HOME override**: if your Hermes home is not at `~/.hermes`, set `HERMES_HOME=/path/to/.hermes` before installing.
+
+**Profiles**: install once per profile you want tracked, e.g. `HERMES_HOME=~/.hermes/profiles/work measure.py hermes-install --enable`. Each profile keeps its own data under `<profile>/_backups/token-optimizer/`. With `gateway.multiplex_profiles: true` one gateway runs every profile's hooks, and the plugin follows the profile each hook runs for, so a session lands in its own profile's dashboard. `hermes-doctor` lists every profile and whether the plugin is installed, enabled and current there.
 
 **Upgrading from 0.1.0**: re-run the installer, then restart Hermes. `hermes-doctor` warns when the installed copy is older than your checkout.
 

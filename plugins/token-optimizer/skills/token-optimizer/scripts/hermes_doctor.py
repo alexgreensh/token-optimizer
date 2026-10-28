@@ -361,13 +361,10 @@ def _engine_checks() -> list[dict[str, str]]:
     return [_check("OK", "Engine scripts", f"{len(REQUIRED_ENGINE_SCRIPTS)} present in {sdir}")]
 
 
-def _freshness_checks() -> list[dict[str, str]]:
-    """WARN when the installed copies or plugin version lag the checkout."""
+def _stale_files(plugin_dir: Path) -> list[str]:
+    """Installed plugin files that differ from this checkout's copies."""
     import hashlib  # noqa: PLC0415
 
-    plugin_dir = _plugin_install_dir(hermes_home())
-    if not plugin_dir.is_dir():
-        return []
     here = Path(__file__).resolve().parent
     stale = []
     for name in _COPIED_RUNTIME_MODULES:
@@ -385,6 +382,15 @@ def _freshness_checks() -> list[dict[str, str]]:
                 stale.append(name)
         except OSError:
             continue
+    return stale
+
+
+def _freshness_checks() -> list[dict[str, str]]:
+    """WARN when the installed copies or plugin version lag the checkout."""
+    plugin_dir = _plugin_install_dir(hermes_home())
+    if not plugin_dir.is_dir():
+        return []
+    stale = _stale_files(plugin_dir)
     if stale:
         return [_check("WARN", "Installed copy up to date",
                        f"differs from this checkout: {', '.join(stale)}; re-run: python3 hermes_install.py")]
@@ -450,12 +456,7 @@ def _activation_check() -> list[dict[str, str]]:
     importable, else a conservative text scan).
     """
     hermes_root = hermes_home()
-    cfg = None
-    for name in _CONFIG_NAMES:
-        candidate = hermes_root / name
-        if candidate.exists():
-            cfg = candidate
-            break
+    cfg = _config_path(hermes_root)
 
     snippet_hint = f"add to Hermes config:\n{_ACTIVATION_SNIPPET}"
 
@@ -471,6 +472,27 @@ def _activation_check() -> list[dict[str, str]]:
     except OSError as exc:
         return [_check("WARN", "Plugin activation", f"could not read {cfg}: {exc}")]
 
+    if _config_enables_plugin(text):
+        # v5.11.1: use the full path, not just the basename, so the OK
+        # message is unambiguous about which config was checked.
+        return [_check("OK", "Plugin activation", f"token-optimizer allow-listed in {cfg}")]
+    return [_check(
+        "WARN",
+        "Plugin activation",
+        f"token-optimizer not under plugins.enabled in {cfg}; {snippet_hint}",
+    )]
+
+
+def _config_path(hermes_root: Path) -> Path | None:
+    for name in _CONFIG_NAMES:
+        candidate = hermes_root / name
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _config_enables_plugin(text: str) -> bool:
+    """Is token-optimizer listed under plugins.enabled in this config text?"""
     enabled = False
     try:
         import yaml  # type: ignore[import]  # noqa: PLC0415
@@ -483,16 +505,59 @@ def _activation_check() -> list[dict[str, str]]:
                     enabled = _PLUGIN_NAME in [str(x).strip() for x in listed]
     except Exception:  # noqa: BLE001 — PyYAML absent or unparseable; fall back to text scan
         enabled = _activation_text_scan(text)
+    return enabled
 
-    if enabled:
-        # v5.11.1: use the full path, not just the basename, so the OK
-        # message is unambiguous about which config was checked.
-        return [_check("OK", "Plugin activation", f"token-optimizer allow-listed in {cfg}")]
-    return [_check(
-        "WARN",
-        "Plugin activation",
-        f"token-optimizer not under plugins.enabled in {cfg}; {snippet_hint}",
-    )]
+
+def _profile_homes(home: Path) -> list[tuple[str, Path]]:
+    """Every Hermes profile next to ``home``: the root home plus profiles/<name>.
+
+    Empty for a single-profile setup (no profiles directory), so the doctor
+    only talks about profiles to people who have them.
+    """
+    root = home.parent.parent if home.parent.name == "profiles" else home
+    profiles_dir = root / "profiles"
+    try:
+        named = sorted(
+            (d.name, d) for d in profiles_dir.iterdir() if d.is_dir() and not d.is_symlink()
+        )
+    except OSError:
+        return []
+    if not named:
+        return []
+    return [("default", root), *named]
+
+
+def _profile_checks() -> list[dict[str, str]]:
+    """One line per Hermes profile: is the plugin installed, enabled, current?
+
+    With gateway.multiplex_profiles one gateway runs every profile's hooks,
+    and each profile only reports into its own dashboard when the plugin is
+    installed and allow-listed THERE. A profile left on an older install keeps
+    the old behavior, so name it.
+    """
+    profiles = _profile_homes(hermes_home())
+    if not profiles:
+        return []
+    states: list[str] = []
+    fixes: list[str] = []
+    for name, root in profiles:
+        if not (_plugin_install_dir(root) / "__init__.py").is_file():
+            states.append(f"{name}: not installed")
+            continue
+        cfg = _config_path(root)
+        try:
+            enabled = cfg is not None and _config_enables_plugin(cfg.read_text(encoding="utf-8"))
+        except OSError:
+            enabled = False
+        stale = _stale_files(_plugin_install_dir(root))
+        problems = ([] if enabled else ["not enabled"]) + (["out of date"] if stale else [])
+        states.append(f"{name}: {', '.join(problems) if problems else 'installed, enabled, current'}")
+        if problems:
+            fixes.append(f"HERMES_HOME={root} python3 measure.py hermes-install --enable")
+    detail = "; ".join(states)
+    if fixes:
+        return [_check("WARN", "Hermes profiles", f"{detail}. Fix: " + " ; ".join(fixes))]
+    return [_check("OK", "Hermes profiles", detail)]
 
 
 def _activation_text_scan(text: str) -> bool:
@@ -606,6 +671,7 @@ def run_checks() -> list[dict[str, str]]:
     checks.extend(_engine_checks())
     checks.extend(_freshness_checks())
     checks.extend(_activation_check())
+    checks.extend(_profile_checks())
     checks.extend(_state_db_checks())
     checks.append(_dashboard_port_check())
     return checks

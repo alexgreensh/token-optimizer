@@ -158,6 +158,11 @@ def _import_state():
 #           below the threshold and a second crossing stay silent. Cleared
 #           when the session ends (finalize, or the CLI exit-path
 #           on_session_end), never at the end of an ordinary turn.
+#
+# Profiles: Hermes imports a directory plugin once per profile home (its own
+# module name per home, hermes_cli/plugins_loader._directory_module_name), so
+# every map below belongs to one profile and session ids cannot collide across
+# profiles. What crosses profiles is the process env: see _active_hermes_home.
 # ---------------------------------------------------------------------------
 
 _LOCK = threading.Lock()
@@ -211,6 +216,32 @@ _VERBOSITY_COOLDOWN_S = 300     # mirrors measure._VERBOSITY_COOLDOWN_SEC
 # Hermes tools whose output already went through transform_terminal_output.
 _TERMINAL_TOOLS = frozenset({"terminal", "process_manage"})
 _EDIT_TOOLS = frozenset({"write_file", "patch"})
+
+
+def _active_hermes_home() -> str:
+    """Home of the Hermes profile this hook runs for.
+
+    A multiplexed gateway (or cron, or the desktop app) runs every profile's
+    hooks in one process; os.environ["HERMES_HOME"] names the launch profile
+    there, and the active one is only visible through
+    hermes_constants.get_hermes_home(). The bridge resolves it the same way and
+    hands it to every child; this copy is for the in-process state.db probe.
+    """
+    bridge = _import_bridge()
+    resolver = getattr(bridge, "active_hermes_home", None)
+    if callable(resolver):
+        try:
+            return str(resolver() or "")
+        except Exception:
+            pass
+    try:
+        from hermes_constants import get_hermes_home  # noqa: PLC0415
+
+        return str(Path(get_hermes_home()).expanduser())
+    except Exception:
+        import os  # noqa: PLC0415
+
+        return os.environ.get("HERMES_HOME", "").strip()
 
 
 def _enabled(name: str) -> bool:
@@ -424,8 +455,9 @@ def _native_compression_needs_help(session_id: str) -> bool:
         if state is None:
             return False
         # live=True: the probe runs inside the live host, so it must see
-        # committed WAL writes, not just the last checkpoint.
-        row = state.get_session(session_id, live=True) or {}
+        # committed WAL writes, not just the last checkpoint. home: the
+        # profile this hook runs for, not the launch profile's HERMES_HOME.
+        row = state.get_session(session_id, live=True, home=_active_hermes_home() or None) or {}
         now = time.time()
 
         # Hermes keeps the last failure text after its cooldown expires. Treat

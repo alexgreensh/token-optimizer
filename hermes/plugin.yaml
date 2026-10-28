@@ -1,5 +1,5 @@
 name: token-optimizer
-version: "0.2.0"
+version: "0.2.1"
 description: "Token Optimizer for Hermes: terminal output compression, large-result archive with expand, delta re-reads, loop detection, checkpoints with restore after compaction, cross-session continuity hints, context nudges, credential redaction, session rollup into the shared dashboard, and the /token-optimizer command."
 author: AlexGreenshpun
 hooks:

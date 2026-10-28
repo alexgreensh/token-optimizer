@@ -119,6 +119,44 @@ def _locate_measure_py() -> Path | None:
 
 
 # ---------------------------------------------------------------------------
+# Active Hermes profile home
+# ---------------------------------------------------------------------------
+#
+# One Hermes process can serve several profiles (gateway.multiplex_profiles,
+# cron ticking every profile's jobs, the desktop app). Hermes binds the profile
+# a hook runs for with a context-local override that
+# hermes_constants.get_hermes_home() reads; os.environ["HERMES_HOME"] keeps
+# naming the LAUNCH profile. Every child below therefore gets the active
+# profile's home in HERMES_HOME, so it reads that profile's state.db and writes
+# that profile's trends.db, checkpoints, archive and read cache. Outside Hermes
+# (or on a Hermes without the override) this is the env var, as before.
+
+_HERMES_ENV = {"TOKEN_OPTIMIZER_RUNTIME": "hermes", "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+
+
+def active_hermes_home() -> str:
+    """Home of the Hermes profile the current hook runs for ("" = default)."""
+    try:
+        from hermes_constants import get_hermes_home  # noqa: PLC0415
+
+        home = get_hermes_home()
+        if home:
+            return str(Path(home).expanduser())
+    except Exception:
+        pass
+    return os.environ.get("HERMES_HOME", "").strip()
+
+
+def _child_env(**extra: str) -> dict:
+    """Environment for a child engine process, pinned to the active profile."""
+    env = {**os.environ, **_HERMES_ENV, **extra}
+    home = active_hermes_home()
+    if home:
+        env["HERMES_HOME"] = home
+    return env
+
+
+# ---------------------------------------------------------------------------
 # Internal subprocess helper
 # ---------------------------------------------------------------------------
 
@@ -139,8 +177,7 @@ def _run_measure(args: list[str], *, capture_output: bool = True, timeout: int =
             encoding="utf-8",
             errors="replace",
             timeout=timeout,
-            env={**os.environ, "TOKEN_OPTIMIZER_RUNTIME": "hermes",
-                 "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+            env=_child_env(),
             creationflags=_NO_WINDOW,
         )
         if result.returncode != 0 and result.stderr:
@@ -207,8 +244,7 @@ def run_rollup(
     try:
         _proc = spawn_detached(
             cmd,
-            env={**os.environ, "TOKEN_OPTIMIZER_RUNTIME": "hermes",
-                 "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+            env=_child_env(),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -223,9 +259,7 @@ def run_rollup(
     try:
         spawn_detached(
             [sys.executable, str(measure_py), "dashboard", "--quiet"],
-            env={**os.environ, "TOKEN_OPTIMIZER_RUNTIME": "hermes",
-                 "TOKEN_OPTIMIZER_INTERACTIVE": "1",
-                 "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+            env=_child_env(TOKEN_OPTIMIZER_INTERACTIVE="1"),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -264,8 +298,7 @@ def run_dashboard(session_id: str = "", port: int = DASHBOARD_PORT) -> None:
     try:
         _proc = spawn_detached(
             args,
-            env={**os.environ, "TOKEN_OPTIMIZER_RUNTIME": "hermes",
-                 "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+            env=_child_env(),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -286,9 +319,6 @@ def run_dashboard(session_id: str = "", port: int = DASHBOARD_PORT) -> None:
 # short child process (the same scripts Claude Code's hooks run), so a slow or
 # broken engine can never stall or crash Hermes. All helpers fail open: they
 # return None / "" on any problem and the caller keeps the original output.
-
-_HERMES_ENV = {"TOKEN_OPTIMIZER_RUNTIME": "hermes", "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
-
 
 def scripts_dir() -> Path | None:
     """Directory holding measure.py and the engine scripts, or None."""
@@ -311,7 +341,7 @@ def _run_json(cmd: list[str], payload: dict, timeout: float) -> str:
             encoding="utf-8",
             errors="replace",
             timeout=max(0.1, float(timeout)),
-            env={**os.environ, **_HERMES_ENV},
+            env=_child_env(),
             creationflags=_NO_WINDOW,
         )
     except subprocess.TimeoutExpired:
@@ -410,7 +440,7 @@ def spawn_checkpoint(
     try:
         proc = spawn_detached(
             cmd,
-            env={**os.environ, **_HERMES_ENV},
+            env=_child_env(),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )

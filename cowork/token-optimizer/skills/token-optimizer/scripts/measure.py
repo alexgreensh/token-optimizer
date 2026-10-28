@@ -24716,6 +24716,36 @@ def hermes_checkpoint(session_id, trigger="stop", fill_pct=None, cwd=None):
             pass
 
 
+_HERMES_PROFILE_HELP = (
+    "\nProfiles: reads and writes the Hermes home in HERMES_HOME (default ~/.hermes).\n"
+    "For a profile: HERMES_HOME=~/.hermes/profiles/<name> measure.py <command>"
+)
+_HERMES_SUBCOMMAND_HELP = {
+    "hermes-rollup": (
+        "usage: measure.py hermes-rollup [--quiet] [--session ID] [--platform P] [--reason R]\n"
+        "                                [--context-tokens N] [--skills-json JSON]\n\n"
+        "Ingest the last 90 days of Hermes sessions from state.db into trends.db.\n"
+        "Run by the Hermes plugin at session end; safe to run by hand (idempotent).\n"
+        "--session, --platform and --reason are accepted for the plugin's call shape;\n"
+        "every recent session is collected either way." + _HERMES_PROFILE_HELP
+    ),
+    "hermes-checkpoint": (
+        "usage: measure.py hermes-checkpoint --session ID [--trigger T] [--fill-pct N]\n"
+        "                                    [--cwd DIR] [--quiet]\n\n"
+        "Write a checkpoint for a Hermes session from its state.db messages." + _HERMES_PROFILE_HELP
+    ),
+    "hermes-turn-context": (
+        "usage: measure.py hermes-turn-context < payload.json\n\n"
+        "Per-turn context for the Hermes plugin (continuity pointer, prior-session hint,\n"
+        "lean-output nudge). Reads one JSON payload on stdin, prints one JSON object." + _HERMES_PROFILE_HELP
+    ),
+    "hermes-summary": (
+        "usage: measure.py hermes-summary [--days N] [--quiet] [--session ID]\n\n"
+        "Ingest recent Hermes sessions, then print usage trends." + _HERMES_PROFILE_HELP
+    ),
+}
+
+
 def _hermes_checkpoint_cli(args):
     """``hermes-checkpoint --session <id> [--trigger T] [--fill-pct N] [--cwd DIR] [--quiet]``."""
     sid = ""
@@ -28139,7 +28169,7 @@ def usage_trends(days=30, as_json=False):
 
     print(f"\nUSAGE TRENDS (last {days} days)")
     print("=" * 55)
-    print(f"\n  Sessions: {session_count} | Avg duration: {avg_dur:.0f} min | Avg tokens/session: {_fmt_tokens(avg_in)} in / {_fmt_tokens(avg_out)} out")
+    print(f"\n  Sessions: {session_count} | Avg duration: {avg_dur:.0f} min | Avg tokens/session: {_fmt_tokens(avg_in)} in (incl. cache reads) / {_fmt_tokens(avg_out)} out")
 
     skill_sessions = trends["skills"]["used"]
     installed_count = trends["skills"]["installed_count"]
@@ -28181,7 +28211,9 @@ def usage_trends(days=30, as_json=False):
 
     total_model_tokens = trends["model_mix"]
     if total_model_tokens:
-        print("\nMODEL MIX")
+        # Model shares count fresh input + output (cache reads excluded), unlike
+        # the per-session average above; say so, or the two read as contradictory.
+        print("\nMODEL MIX (share of tokens, excl. cache reads)")
         grand_total = sum(total_model_tokens.values())
         for model, tokens in sorted(total_model_tokens.items(), key=lambda x: -x[1]):
             pct = tokens / grand_total * 100 if grand_total else 0
@@ -58521,6 +58553,10 @@ if __name__ == "__main__":
     elif args[0] == "hermes-install":
         import hermes_install
         sys.exit(hermes_install.main(args[1:]))
+    elif args[0] in _HERMES_SUBCOMMAND_HELP and ("--help" in args[1:] or "-h" in args[1:]):
+        # Print usage, never run: `hermes-rollup --help` used to start a rollup.
+        print(_HERMES_SUBCOMMAND_HELP[args[0]])
+        sys.exit(0)
     elif args[0] == "hermes-rollup":
         # Ingest recent Hermes sessions into trends.db.  Called by the Hermes
         # plugin's on_session_end hook via hermes_hook_bridge.run_rollup().

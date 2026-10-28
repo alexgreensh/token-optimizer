@@ -35597,6 +35597,15 @@ def _retained_paths() -> list[tuple[str, Path]]:
         pass
     # Always include the resolved snapshot dir even under a sandbox override.
     paths.append(("session data (this install)", SNAPSHOT_DIR))
+    # Compaction checkpoints (conversation-context captures) live under the
+    # per-session state base, which on a script install is NOT inside
+    # SNAPSHOT_DIR (#106 named them as undisclosed). Disclose them too.
+    try:
+        listed = {p for _, p in paths}
+        if CHECKPOINT_DIR not in listed:
+            paths.append(("checkpoints (this install)", CHECKPOINT_DIR))
+    except NameError:
+        pass
     return paths
 
 
@@ -35673,6 +35682,9 @@ def _remove_our_settings_entries(settings: dict) -> list[str]:
       ``quality-cache`` (our cache hook).
     - ``SessionEnd`` hook entries that are ours (reuses
       _remove_token_optimizer_session_end_hooks).
+    - ``compactInstructions`` when it is the block setup-smart-compact
+      generated (removed) or holds our appended section (only that section
+      is removed; the user's own text stays).
 
     Foreign statusLines, foreign hooks, and every other settings key are left
     byte-identical. Returns a list of human-readable descriptions of what was
@@ -35740,6 +35752,10 @@ def _remove_our_settings_entries(settings: dict) -> list[str]:
     n_session_end = _remove_token_optimizer_session_end_hooks(settings)
     if n_session_end:
         removed.append(f"{n_session_end} SessionEnd hook(s)")
+    # compactInstructions written by setup-smart-compact (#106: it outlived
+    # cleanup). Only our generated block / appended section is removed.
+    if _remove_our_compact_instructions(settings):
+        removed.append("compactInstructions (token-optimizer)")
     return removed
 
 
@@ -35788,6 +35804,24 @@ def cleanup(dry_run=False, this_install_only=False):
     # the preview stays side-effect-free.
     if not dry_run:
         _unlink_if_exists(PLIST_PATH)
+        # Same reasoning for the other platforms' per-identity daemon files:
+        # each platform's uninstaller sweeps only its own launcher, so a HOME
+        # synced or migrated from another OS kept dashboard-launcher.cmd /
+        # .schtasks-daemon.xml (Windows) or the Linux launcher after cleanup
+        # (#106). They are plain files once the scheduler job is gone.
+        if not _daemon_snapshot_sandboxed():
+            for _snap in _daemon_identity_snapshot_dirs(this_install_only):
+                _gone, _ = _sweep_identity_daemon_files(
+                    _snap, ("daemon_script", "daemon_token", "daemon_host",
+                            "windows_launcher", "linux_launcher"))
+                try:
+                    for _xml in _snap.glob("*schtasks-daemon*.xml"):
+                        if _unlink_if_exists(_xml):
+                            _gone.append(str(_xml))
+                except OSError:
+                    pass
+                for _path in _gone:
+                    print(f"  Deleted: {_path}")
     print()
 
     # 2. settings.json
@@ -35837,7 +35871,14 @@ def cleanup(dry_run=False, this_install_only=False):
                     # silent no-op. Reporting "Removed" for a write that never
                     # landed leaves the user with the dangling statusLine this
                     # command exists to clear, so surface it instead.
-                    if _write_settings_atomic(fresh, allow_removing_keys={"statusLine"}):
+                    # user_initiated: cleanup is an explicit user command. Under
+                    # the hook cohort throttle any Token Optimizer settings
+                    # write in the previous ~10s (a SessionStart heal, a setup
+                    # command) made this write lose the lease, and the whole
+                    # removal was skipped (#106 leftovers).
+                    if _write_settings_atomic(
+                            fresh, allow_removing_keys={"statusLine", "compactInstructions"},
+                            user_initiated=True):
                         for entry in our_entries:
                             print(f"    Removed: {entry}")
                         print(f"    Backup: {backed}")
@@ -44584,6 +44625,63 @@ def checkpoint_trigger(milestone=None, session_id=None, transcript_path=None, qu
     return cp_path
 
 
+_COMPACT_INSTR_HEAD = "When summarizing this session, pay special attention to:"
+_COMPACT_INSTR_TAIL = (
+    "Always include the specific next step with enough detail to continue without asking."
+)
+_COMPACT_INSTR_BULLETS = frozenset({
+    "- Architectural decisions and their reasoning",
+    "- Skill invocations and their outcomes",
+    "- External service interactions and their results",
+    "- Modified file paths with line ranges",
+    "- Error-fix sequences (what was tried, what failed, what worked)",
+    "- Open questions and unresolved TODOs",
+    "- Agent/team state (task assignments, completion status)",
+})
+# Separator used when our instructions are appended to the user's own text.
+_COMPACT_INSTR_MARKER = "\n\n# Token Optimizer additions:\n"
+
+
+def _compact_instructions_generated(text):
+    """True when ``text`` is exactly a block generate_compact_instructions writes."""
+    if not isinstance(text, str):
+        return False
+    lines = text.strip().split("\n")
+    if len(lines) < 2 or lines[0] != _COMPACT_INSTR_HEAD or lines[-1] != _COMPACT_INSTR_TAIL:
+        return False
+    return all(line in _COMPACT_INSTR_BULLETS for line in lines[1:-1])
+
+
+def _split_compact_instructions(text):
+    """Split a ``compactInstructions`` value into (user_part, ours_present).
+
+    Ours is either the whole value (a block we generated) or a section we
+    appended after the user's own text behind ``_COMPACT_INSTR_MARKER``.
+    Anything else is the user's and is returned untouched.
+    """
+    if not isinstance(text, str):
+        return text, False
+    if _COMPACT_INSTR_MARKER in text:
+        return text.split(_COMPACT_INSTR_MARKER, 1)[0].rstrip(), True
+    if _compact_instructions_generated(text):
+        return "", True
+    return text, False
+
+
+def _remove_our_compact_instructions(settings):
+    """Drop our compactInstructions (keeping any user-written part). True if changed."""
+    if not isinstance(settings, dict) or "compactInstructions" not in settings:
+        return False
+    user_part, ours = _split_compact_instructions(settings.get("compactInstructions"))
+    if not ours:
+        return False
+    if user_part:
+        settings["compactInstructions"] = user_part
+    else:
+        del settings["compactInstructions"]
+    return True
+
+
 def generate_compact_instructions(as_json=False, install=False, dry_run=False):
     """Generate project-specific Compact Instructions.
 
@@ -44595,7 +44693,7 @@ def generate_compact_instructions(as_json=False, install=False, dry_run=False):
     """
     components = measure_components()
     instructions_parts = [
-        "When summarizing this session, pay special attention to:",
+        _COMPACT_INSTR_HEAD,
     ]
 
     # Analyze CLAUDE.md content for project priorities
@@ -44618,7 +44716,7 @@ def generate_compact_instructions(as_json=False, install=False, dry_run=False):
         "- Modified file paths with line ranges",
         "- Error-fix sequences (what was tried, what failed, what worked)",
         "- Open questions and unresolved TODOs",
-        "Always include the specific next step with enough detail to continue without asking.",
+        _COMPACT_INSTR_TAIL,
     ])
 
     # Check for agent usage in recent sessions
@@ -44650,13 +44748,19 @@ def generate_compact_instructions(as_json=False, install=False, dry_run=False):
             )
             return instructions_text
         existing = settings.get("compactInstructions", "")
+        user_part, ours_present = _split_compact_instructions(existing)
 
-        if existing and "Token Optimizer" in existing:
+        if existing and ours_present:
+            # Refresh only our part. A value that also holds the user's own
+            # text keeps it: replacing the whole value used to erase it.
             if dry_run:
                 print(f"\n  [Dry run] Would update existing compact instructions in {settings_path}")
                 print(f"\n  Compact instructions preview:\n  {instructions_text}\n")
                 return instructions_text
-            settings["compactInstructions"] = instructions_text
+            settings["compactInstructions"] = (
+                user_part + _COMPACT_INSTR_MARKER + instructions_text
+                if user_part else instructions_text
+            )
             if not _write_settings_atomic(settings):
                 print("[Error] settings.json write was refused; compact instructions were not updated.", file=sys.stderr)
                 return instructions_text
@@ -44665,7 +44769,7 @@ def generate_compact_instructions(as_json=False, install=False, dry_run=False):
 
         if existing:
             # User has their own instructions, append ours
-            combined = existing.rstrip() + "\n\n# Token Optimizer additions:\n" + instructions_text
+            combined = existing.rstrip() + _COMPACT_INSTR_MARKER + instructions_text
             if dry_run:
                 print(f"\n  [Dry run] Would append to existing compact instructions in {settings_path}")
                 print(f"\n  Appended:\n  {instructions_text}\n")
@@ -45518,10 +45622,16 @@ def setup_smart_compact(dry_run=False, uninstall=False, status_only=False):
             return
 
         settings["hooks"] = hooks
-        if not _write_settings_atomic(settings):
+        # setup-smart-compact also installed compactInstructions; take ours
+        # back out (a user-written part stays).
+        ci_removed = _remove_our_compact_instructions(settings)
+        if not _write_settings_atomic(settings, allow_removing_keys={"compactInstructions"},
+                                      user_initiated=True):
             print("[Error] settings.json write was refused; smart compact hooks were not removed.", file=sys.stderr)
             return
         print(f"[Token Optimizer] Removed smart compact hooks. {removed} hook(s) removed.")
+        if ci_removed:
+            print("[Token Optimizer] Removed Token Optimizer compact instructions.")
         return
 
     # Install

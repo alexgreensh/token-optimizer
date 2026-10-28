@@ -268,3 +268,24 @@ def test_platform_backfill_tags_relocated_claude_config_rows(tmp_path):
     first, second = json.loads(out.stdout.strip().splitlines()[-1])
     assert first == rows
     assert second == rows
+
+
+def test_platform_backfill_tags_rows_written_on_windows(tmp_path):
+    """Rows collected on Windows store backslash paths. The backfill folds
+    them to '/', so they are tagged like POSIX rows on every OS (before
+    5.13.59 the forward-slash patterns left them NULL)."""
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    rows = {
+        r"C:\Users\me\.claude\projects\-repo\s1.jsonl": "claude",
+        r"C:\Users\me\.codex\sessions\2026\10\rollout.jsonl": "codex",
+        r"C:\Users\me\.codex\archived_sessions\rollout.jsonl": "codex",
+        r"C:\Users\me\elsewhere\s2.jsonl": None,
+        r"C:\Users\me\.claude\projectsX\s3.jsonl": None,
+    }
+    out = subprocess.run([sys.executable, "-c", _BACKFILL, json.dumps(list(rows))], cwd=str(SCRIPTS),
+                         env=_env(home, None), capture_output=True, text=True, timeout=180)
+    assert out.returncode == 0, out.stderr
+    first, second = json.loads(out.stdout.strip().splitlines()[-1])
+    assert first == rows
+    assert second == rows

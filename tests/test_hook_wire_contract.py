@@ -805,6 +805,32 @@ def test_claude_plugin_hooks_survive_an_upgrade_mid_session(sandbox):
     assert not failures, "\n\n".join(failures)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="simulates MSYS separators with POSIX file names")
+def test_claude_plugin_hooks_survive_an_upgrade_with_a_windows_style_root(sandbox):
+    """On Windows, Claude Code hands Git Bash a CLAUDE_PLUGIN_ROOT with
+    backslashes (C:\\...\\token-optimizer\\5.13.50). The upgrade fallback cut
+    the version off at the last "/" only, found no sibling, and every hook
+    quietly exited 0 until a restart. It now cuts at the last "/" or "\\".
+
+    Simulated on POSIX with a folder whose NAME holds a backslash: the root
+    ``<cache>/plugins\\token-optimizer\\5.13.50`` must resolve to the sibling
+    ``5.13.51`` inside ``<cache>/plugins\\token-optimizer`` (Git Bash reads the
+    same text as nested folders)."""
+    warm(sandbox, "claude")
+    cache = sandbox.home / ".claude" / "plugins" / "cache" / "mk"
+    parent = cache / "plugins\\token-optimizer"
+    parent.mkdir(parents=True)
+    new = parent / "5.13.51"
+    new.symlink_to(REPO, target_is_directory=True)
+    e = pick(harness_entries("claude", sandbox), "PreToolUse", matcher_prefix="Read")
+    env = harness_env("claude", sandbox)
+    env["CLAUDE_PLUGIN_ROOT"] = str(parent) + "\\5.13.50"  # deleted by the update
+    r = fire_entry(sandbox, e, env)
+    used = " ".join(" ".join(map(str, p.get("argv") or [])) for p in r.procs)
+    assert r.rc == 0 and r.ran(*e.expected_handler()), r
+    assert str(new) + "/hooks/run.py" in used, used
+
+
 def test_claude_plugin_hooks_pick_the_highest_semver_sibling(sandbox):
     """sort -V, not lexical order: 5.13.10 is newer than 5.13.9, and 5.9.0 is
     older than 5.13.0. Hosts sort with BSD sort (macOS) and GNU sort (Linux,
@@ -927,6 +953,50 @@ def test_checkpoint_hooks_really_write_the_checkpoint(harness, sandbox):
             failures.append(f"{e.id}: checkpoint {made[-1].name} lost the session's work:\n{body[:600]}")
     assert ran_any, f"{harness}: no checkpoint-writing hook wired"
     assert not failures, "\n\n".join(failures)
+
+
+@pytest.mark.parametrize("harness", ["codex-global", "codex-plugin"])
+def test_codex_stop_finds_the_transcript_from_the_session_id_alone(harness, sandbox):
+    """#278: an automatic Codex Stop wrote ``unknown-...-stop.md`` holding only
+    "No transcript data available" while the rollout was right there. With
+    just the session id (Codex may send no transcript_path), Stop must find
+    the real rollout and write a checkpoint with the session's work; with no
+    identity at all it must write nothing rather than an empty placeholder."""
+    warm(sandbox, harness)
+    e = pick(harness_entries(harness, sandbox), "Stop", handler="stop_runner")
+    cps = sandbox.checkpoints_for(harness)
+    sandbox.codex_rollout(SID)
+
+    before = _snapshot(cps)
+    time.sleep(1.05)
+    r = fire_entry(sandbox, e, harness_env(harness, sandbox), transcript_path=None)
+    made = [p for p in _new_files(cps, before) if p.suffix == ".md"]
+    assert r.rc == 0, r
+    ours = [p for p in made if p.name.startswith(SID) and p.stem.endswith("-stop")]
+    assert ours, f"no {SID}-*-stop.md checkpoint\n{r}\nnew={[p.name for p in made]}"
+    body = ours[-1].read_text(encoding="utf-8")
+    assert "app.py" in body and "No transcript data available" not in body, body[:600]
+
+    # Neither a session id nor a transcript, or an id with no rollout on disk:
+    # nothing real to capture, so no placeholder either.
+    before = _snapshot(cps)
+    time.sleep(1.05)
+    # (fire_entry would create a rollout for the id it is given, so call fire.)
+    for sid in (None, "5e6f7a8b-9c0d-4e1f-8a2b-3c4d5e6f7a8b"):
+        payload = sandbox.payload(e.event, e.matcher, session_id=sid, transcript_path=None)
+        r = sandbox.fire(e.command, payload, harness_env(harness, sandbox))
+        assert r.rc == 0, r
+    deadline = time.time() + 10  # the deferred Stop worker runs detached
+    while time.time() < deadline:
+        made = [p for p in _new_files(cps, before) if p.suffix == ".md"]
+        if made:
+            break
+        time.sleep(0.5)
+    for p in _new_files(cps, before):
+        if p.suffix == ".md":
+            text = p.read_text(encoding="utf-8")
+            assert not p.name.startswith("unknown-") and "No transcript data available" not in text, \
+                f"{p.name}: {text[:300]}"
 
 
 def test_posttooluse_bash_compresses_and_archives_on_the_wire(sandbox):

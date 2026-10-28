@@ -54,6 +54,18 @@ import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 
+# Run as CI does, even inside an agent session. A Claude Code, Codex or
+# Copilot session exports its own identity (CLAUDE_CODE_REMOTE, CLAUDECODE,
+# CLAUDE_PLUGIN_ROOT, CODEX_THREAD_ID, ...). Product code reads those to pick a
+# runtime or a lean cloud path, so with them set some guards stopped testing
+# anything: the #117 process-budget guard passed with the bug planted back.
+# Set TO_TEST_KEEP_HOST_ENV=1 to keep them on purpose.
+_HOST_AGENT_ENV_PREFIXES = ("CLAUDE", "CODEX_", "COPILOT_", "CURSOR_", "AI_AGENT",
+                            "OPENCODE", "HERMES_", "GROK_", "ANTIGRAVITY_", "DEVIN_")
+if os.environ.get("TO_TEST_KEEP_HOST_ENV", "") not in ("1", "true", "yes"):
+    for _key in [k for k in os.environ if k.upper().startswith(_HOST_AGENT_ENV_PREFIXES)]:
+        os.environ.pop(_key, None)
+
 # Real-home protection (see tests/_home_guard.py). This MUST run at conftest
 # import, before any test module imports a product script that caches
 # HOME-derived paths at import time.

@@ -706,3 +706,33 @@ def test_suffixless_exec_preserves_stdin_stdout_and_exit(tmp_path, cached):
     assert rc == 7
     assert 'GUI echo=hello\n{"data":"שלום"}' in out
     assert not err
+
+
+@pytest.mark.parametrize("binpath", [
+    "/c/Users/alex/miniconda3/python.exe",
+    "/c/Users/alex/miniconda3/envs/work/python.exe",
+    "/c/Users/alex/anaconda3/python.exe",
+    "/c/Users/alex/miniforge3/python.exe",
+    "/c/Users/alex/mambaforge/python.exe",
+    "/c/ProgramData/miniconda3/python.exe",
+    "/c/ProgramData/anaconda3/python.exe",
+    "/c/Users/alex/scoop/apps/python/current/python.exe",
+    "/c/Users/alex/scoop/apps/python313/current/python.exe",
+    "/c/Users/alex/AppData/Roaming/uv/python/cpython-3.13.1-windows-x86_64-none/python.exe",
+])
+def test_safe_prefix_accepts_default_windows_conda_scoop_uv_installs(binpath):
+    """Default conda, Scoop and uv Pythons were refused on Windows, so every
+    hook exited 0 doing nothing for those users."""
+    out, _rc, _err = _run(_safe_prefix_driver(binpath), "", {})
+    assert "safe=0" in out, (binpath, out)
+
+
+@pytest.mark.parametrize("binpath", [
+    "/c/Users/alex/scoop/apps/python-evil/current/python.exe",
+    "/c/Users/alex/miniconda3/../../../tmp/evil/python.exe",
+    "/c/Temp/miniconda3/python.exe",
+    "/tmp/miniconda3/python.exe",
+])
+def test_safe_prefix_still_refuses_lookalike_windows_dirs(binpath):
+    out, _rc, _err = _run(_safe_prefix_driver(binpath), "", {})
+    assert "safe=1" in out, (binpath, out)

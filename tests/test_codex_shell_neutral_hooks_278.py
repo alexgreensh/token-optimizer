@@ -320,21 +320,29 @@ def test_doctor_flags_cmd_only_commands(monkeypatch, tmp_path):
 
 
 def test_doctor_flags_generated_dev_checkout_command(monkeypatch, tmp_path):
-    """F1: a non-semver (dev checkout) Windows install keeps the cmd-only
-    command, which has no launcher marker; the doctor must still warn."""
+    """F1: a non-semver (dev checkout) Windows install used to write a cmd-only
+    command with no launcher marker. It now writes the shell-neutral form
+    through the checkout's own launcher; an old one still gets a warning that
+    says how to fix it."""
     import codex_doctor
     ci = codex_doctor.codex_install
     monkeypatch.setattr(codex_doctor, "codex_home", lambda: tmp_path)
     monkeypatch.setattr(ci.sys, "platform", "win32")
+    monkeypatch.setattr(ci.sys, "executable", r"C:\Python315\python.exe")
     monkeypatch.setattr(ci, "_repo_root", lambda: Path(r"C:\dev\token-optimizer"))
     command = ci._hook_command("stop_runner.py")
-    assert ci._LAUNCHER_MARKER not in command
+    assert ci.is_shell_neutral_command(command), command
+    assert "windows-launcher.py" in command and "&&" not in command
     (tmp_path / "hooks.json").write_text(json.dumps({"hooks": {"Stop": [
         {"hooks": [{"type": "command", "command": command}]}]}}), encoding="utf-8")
+    assert [c["status"] for c in codex_doctor._hook_shell_check()] == ["OK"]
+    old = r'set "TOKEN_OPTIMIZER_RUNTIME=codex" && C:\Python315\python.exe C:\dev\token-optimizer\hooks\run.py stop_runner.py'
+    (tmp_path / "hooks.json").write_text(json.dumps({"hooks": {"Stop": [
+        {"hooks": [{"type": "command", "command": old}]}]}}), encoding="utf-8")
     checks = codex_doctor._hook_shell_check()
-    assert [c["status"] for c in checks] == ["WARN"], (command, checks)
+    assert [c["status"] for c in checks] == ["WARN"], (old, checks)
     detail = checks[0]["detail"]
-    assert "development checkout" in detail and "Reinstalling does not change this" in detail
+    assert "development checkout" in detail and "codex-install" in detail
     assert "run any measure.py" not in detail
 
 
@@ -431,9 +439,14 @@ def test_compact_capture_writes_no_unknown_placeholder_on_codex(monkeypatch, tmp
     monkeypatch.setattr(m, "_find_current_session_jsonl", lambda: None)
     assert m.compact_capture(trigger="stop") is None
     assert not list((tmp_path / "checkpoints").glob("unknown-*"))
-    # A named session whose transcript is missing still leaves its own marker.
-    named = m.compact_capture(trigger="stop", session_id="abcdef123456")
-    assert named and "abcdef123456" in named
+    # A named session whose transcript cannot be found gets no placeholder
+    # either: "No transcript data available" restores nothing (issue #278).
+    status = {}
+    monkeypatch.setattr(m, "_record_hook_status", lambda k, v: status.__setitem__(k, v))
+    assert m.compact_capture(trigger="stop", session_id="abcdef123456") is None
+    assert not list((tmp_path / "checkpoints").glob("*.md"))
+    assert status["stop_capture"].startswith("skipped: no Codex transcript matches")
+    assert "abcdef123456" not in status["stop_capture"]
 
 
 def test_reinstall_replaces_the_old_command_without_duplicating(monkeypatch, tmp_path):

@@ -2,10 +2,16 @@
 
 ## [Unreleased]
 
-## [Unreleased]
-
-- Codex on Windows: hook commands now run under PowerShell, which is the shell Codex uses for hooks, as well as cmd.exe. The 5.13.57 command only worked under cmd.exe, so hooks still failed with "hook exited with code 1". Any Token Optimizer command rewrites existing hooks to the new form; restart Codex afterwards, and approve the Token Optimizer entries if Codex asks you to review the changed hooks. Paths with `$`, a backtick or `%`, or a Python path with spaces and no short name, keep the cmd.exe-only form, and `codex-doctor` says so. Thanks @porkmagus (#278).
+- Codex on Windows: hook commands now run under PowerShell, which is the shell Codex uses for hooks, as well as cmd.exe. The 5.13.57 command only worked under cmd.exe, so hooks still failed with "hook exited with code 1". Any Token Optimizer command rewrites existing hooks to the new form; restart Codex afterwards, and approve the Token Optimizer entries if Codex asks you to review the changed hooks. Paths with `$`, a backtick, `%` or `!` (for example in your Windows user name) work too. If Python itself sits in such a folder, `codex-doctor` tells you exactly what to change. Thanks @porkmagus (#278).
 - Codex: the Stop hook passes its session id to the background checkpoint job, and no longer saves an anonymous "unknown" checkpoint when the host sent no session id. `codex-doctor` shows which fields the Stop hook received (names only, never values).
+- Codex: the Stop hook finds your session's transcript from the session id alone, and never saves an empty "No transcript data available" checkpoint. `codex-doctor` says why a checkpoint was skipped.
+- Codex on Windows: hooks installed from a development checkout run under PowerShell too.
+- GitHub Copilot CLI on Windows: hooks now fire. The installer only wrote the Linux and macOS form, which Copilot skips on Windows.
+- Claude Code on Windows: after a plugin update replaces the version a session started with, hooks find the new version instead of quietly doing nothing until a restart.
+- Claude Code on Windows: smart compaction and quality bar hooks use your real Python instead of `python3`, which Git Bash often lacks.
+- Windows: hooks accept Python installed by conda, Scoop or uv in their default folders.
+- Windows: the dashboard background service starts when your user folder has accented letters.
+- Windows: `purge --force` stops the dashboard service before deleting its files, and background locks no longer mistake a running process for a dead one.
 
 - GitHub Copilot CLI: the `preToolUse` hook loads again. `copilot-install` wrote its matcher in a form Copilot rejects, so Copilot skipped the hook and bash output was never compressed. Re-run `copilot-install` once to pick up the fix. `copilot-doctor` now reports a hook config whose matcher Copilot would skip instead of showing it as OK. Thanks @imabusyman (#284).
 - GitHub Copilot CLI: the end-of-session rollup, dashboard refresh and in-flight tally cleanup run again. `copilot-install` registered them under a `stop` event that Copilot does not have, so they never fired. They now run on `sessionEnd`. Re-run `copilot-install` once to switch. Session cleanup no longer depends on the refresh being available. `copilot-doctor` warns while the old entry is present or the bridge cannot find `measure.py`, and no longer crashes on a malformed hook file.

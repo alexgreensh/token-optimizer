@@ -8820,6 +8820,59 @@ def _session_refresh_due(min_interval_seconds=120):
 HOOK_STATUS_FILE = RUNTIME_DIR / "token-optimizer" / "hook-status.json"
 
 
+def _pid_is_running(pid):
+    """True when process ``pid`` exists, on every OS. Never raises.
+
+    ``os.kill(pid, 0)`` is a liveness probe only on POSIX. On Windows signal 0
+    is CTRL_C_EVENT: Python calls GenerateConsoleCtrlEvent, which fails for
+    any pid when the caller has no console (hooks run detached, so a live lock
+    owner read as dead) and, with a console, interrupts the whole console
+    group. Windows asks the process table instead. When the answer is unknown
+    the process counts as running, so a lock is never stolen from a live owner.
+    """
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        return _win_pid_is_running(pid)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists, owned by someone else
+    except OSError:
+        return False
+    return True
+
+
+def _win_pid_is_running(pid):
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            # 5 = access denied: the process exists but is not ours.
+            # 87 = invalid parameter: no such process.
+            return ctypes.get_last_error() != 87
+        try:
+            code = wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return True
+            return code.value == 259  # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:
+        return True
+
+
 def _record_hook_status(key, result):
     """Remember the last outcome of a background hook job, for the doctor.
 
@@ -16538,13 +16591,7 @@ def _keepwarm_scheduler_install_lock(soft_fail=False):
     max_age = 10 * 60
 
     def _pid_alive(pid):
-        if pid <= 0:
-            return False
-        try:
-            os.kill(pid, 0)
-            return True
-        except OSError:
-            return False
+        return _pid_is_running(pid)
 
     def _try_reclaim_stale():
         try:
@@ -17447,15 +17494,7 @@ def _keepwarm_acquire_ping_lock(session_id, now=None):
             owner_pid = None
         alive = False
         if owner_pid and owner_pid > 0:
-            try:
-                os.kill(owner_pid, 0)
-                alive = True
-            except ProcessLookupError:
-                alive = False
-            except PermissionError:
-                alive = True  # exists but not ours -> treat as live
-            except OSError:
-                alive = False
+            alive = _pid_is_running(owner_pid)
         if not alive and age > _KEEPWARM_STALE_LOCK_SECONDS:
             try:
                 os.unlink(str(lock_path))
@@ -17929,15 +17968,7 @@ def _keepwarm_tick_singleton():
                     owner = None
                 alive = False
                 if owner and owner > 0:
-                    try:
-                        os.kill(owner, 0)
-                        alive = True
-                    except ProcessLookupError:
-                        alive = False
-                    except PermissionError:
-                        alive = True
-                    except OSError:
-                        alive = False
+                    alive = _pid_is_running(owner)
                 if not alive and (now - st.st_mtime) > _KEEPWARM_STALE_LOCK_SECONDS:
                     try:
                         os.unlink(str(lock_path))
@@ -33342,13 +33373,7 @@ def _daemon_install_lock(soft_fail=False):
     MAX_LOCK_AGE = 10 * 60  # 10 minutes
 
     def _pid_alive(pid):
-        if pid <= 0:
-            return False
-        try:
-            os.kill(pid, 0)
-            return True
-        except OSError:
-            return False
+        return _pid_is_running(pid)
 
     def _try_reclaim_stale():
         """Return True if we successfully reaped a stale lock, False otherwise."""
@@ -34143,6 +34168,11 @@ def _generate_windows_launcher_cmd(daemon_script_path, log_dir):
 
     return (
         "@echo off\r\n"
+        # cmd.exe reads a batch file in the console (OEM) code page, but this
+        # file is written as UTF-8: a profile path like C:\Users\Jos\u00e9 was
+        # garbled and the daemon never started. Switch to UTF-8 first; this
+        # line and everything above it is plain ASCII.
+        "chcp 65001\r\n"
         "REM Token Optimizer dashboard daemon launcher (v5.3.2+).\r\n"
         "REM Auto-generated. Resolves Python at runtime so interpreter upgrades\r\n"
         "REM do not break the scheduled task.\r\n"
@@ -34156,7 +34186,7 @@ def _generate_windows_launcher_cmd(daemon_script_path, log_dir):
         f'set "STDOUT_LOG={log_dir}\\stdout.log"\r\n'
         f'set "STDERR_LOG={log_dir}\\stderr.log"\r\n'
         'if not exist "%DAEMON_SCRIPT%" (\r\n'
-        '  echo [%DATE% %TIME%] daemon script missing: %DAEMON_SCRIPT% >> "%STDERR_LOG%"\r\n'
+        '  echo [%DATE% %TIME%] daemon script missing: "%DAEMON_SCRIPT%" >> "%STDERR_LOG%"\r\n'
         "  exit /b 1\r\n"
         ")\r\n"
         'set "PYW_EXE="\r\n'
@@ -40352,11 +40382,9 @@ def _purge_all_data(confirm=False, force=False):
         try:
             raw = pid_file.read_text(encoding="utf-8").strip()
             candidate_pid = int(raw)
-            try:
-                os.kill(candidate_pid, 0)
+            if _pid_is_running(candidate_pid):
                 running_pid = candidate_pid
-            except OSError:
-                pass  # process not alive; PID file is stale
+            # else: process not alive; PID file is stale
         except (OSError, ValueError):
             pass
 
@@ -40372,9 +40400,14 @@ def _purge_all_data(confirm=False, force=False):
         # Verify PID identity before SIGTERM to avoid killing a recycled PID
         is_ours = False
         try:
-            result = _sp.run(["ps", "-p", str(running_pid), "-o", "comm="],
-                             capture_output=True, text=True, timeout=3)
-            proc_name = result.stdout.strip().lower()
+            if os.name == "nt":
+                # No `ps` on Windows: the daemon was never stopped there, and
+                # the purge then hit the files it still held open.
+                proc_name = ((_windows_process_names() or {}).get(running_pid) or (0, ""))[1]
+            else:
+                result = _sp.run(["ps", "-p", str(running_pid), "-o", "comm="],
+                                 capture_output=True, text=True, timeout=3)
+                proc_name = result.stdout.strip().lower()
             is_ours = "python" in proc_name or "measure" in proc_name
         except Exception:
             is_ours = False
@@ -40564,9 +40597,8 @@ def _security_report(as_json=False):
     pid_file = DAEMON_LOG_DIR / "daemon.pid"
     if pid_file.exists():
         try:
-            daemon_pid = int(pid_file.read_text().strip())
-            os.kill(daemon_pid, 0)
-            daemon_running = True
+            daemon_pid = int(pid_file.read_text(encoding="utf-8").strip())
+            daemon_running = _pid_is_running(daemon_pid)
         except (ValueError, OSError):
             pass
 
@@ -41081,10 +41113,19 @@ def compact_capture(transcript_path=None, session_id=None, trigger="auto", cwd=N
     trigger_suffix = f"-{trigger}" if trigger and trigger != "auto" else ""
 
     if not filepath or not filepath.exists():
-        if not session_id and _use_codex_session_adapter():
-            # Codex with no session identity at all: an anonymous "unknown"
-            # placeholder only adds a file that can outrank real checkpoints on
-            # restore, and hides that the host sent no identity (issue #278).
+        if _use_codex_session_adapter(transcript_path or None):
+            # Codex with no readable transcript: a "No transcript data
+            # available" placeholder (named "unknown" when the host sent no
+            # session id) holds nothing to restore, can outrank real
+            # checkpoints, and hides that capture failed (issue #278). Say
+            # why instead, for the doctor; never the id or path themselves.
+            _record_hook_status(
+                "stop_capture" if trigger in ("stop", "end") else "checkpoint_capture",
+                "skipped: " + (
+                    "the transcript path the host sent is outside the Codex sessions folder or unreadable"
+                    if transcript_path else
+                    "no Codex transcript matches the session id the host sent" if session_id else
+                    "the hook payload and environment carried no session id"))
             return None
         # Write minimal checkpoint with safe permissions
         sid = sanitize_session_id(session_id)
@@ -44883,14 +44924,28 @@ def _smart_compact_hook_commands():
     resolved to), the hook exits 0 silently instead of erroring on every event.
     Mirrors the launcher guard in hooks.json.
     """
-    mp = _get_measure_py_path()
-    guard = f"[ -r '{mp}' ] || exit 0; "
+    py, mp = _settings_hook_python_and_script(_get_measure_py_path())
+    guard = f"[ -r {mp} ] || exit 0; "
     return {
-        "PreCompact": f"{guard}python3 '{mp}' compact-capture --trigger auto",
-        "SessionStart": f"{guard}python3 '{mp}' compact-restore",
-        "Stop": f"{guard}python3 '{mp}' compact-capture --trigger stop",
-        "SessionEnd": f"{guard}python3 '{mp}' compact-capture --trigger end",
+        "PreCompact": f"{guard}{py} {mp} compact-capture --trigger auto",
+        "SessionStart": f"{guard}{py} {mp} compact-restore",
+        "Stop": f"{guard}{py} {mp} compact-capture --trigger stop",
+        "SessionEnd": f"{guard}{py} {mp} compact-capture --trigger end",
     }
+
+
+def _settings_hook_python_and_script(mp):
+    """(interpreter, script) shell tokens for a settings.json hook command.
+
+    Claude Code runs these through Git Bash on Windows, where bare ``python3``
+    is often missing or the Microsoft Store stub (exit 9009 on every event),
+    so Windows names the running interpreter with forward slashes, quoted for
+    bash (an apostrophe in the path is safe). POSIX keeps ``python3 '<mp>'``.
+    """
+    if sys.platform == "win32":
+        return (shlex.quote(str(sys.executable).replace("\\", "/")),
+                shlex.quote(str(mp).replace("\\", "/")))
+    return "python3", f"'{mp}'"
 
 
 def _is_smart_compact_installed(settings=None):
@@ -48340,7 +48395,8 @@ def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=F
         skipped.append("cache hook")
     else:
         hooks = settings.setdefault("hooks", {})
-        hook_cmd = f"python3 '{mp}' quality-cache --quiet"
+        _py, _mp = _settings_hook_python_and_script(mp)
+        hook_cmd = f"{_py} {_mp} quality-cache --quiet"
         hook_entry = {"type": "command", "command": hook_cmd}
         hook_group = {"hooks": [hook_entry]}
         hooks.setdefault("UserPromptSubmit", []).append(hook_group)
@@ -48381,7 +48437,10 @@ def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=F
         else:
             settings["statusLine"] = {
                 "type": "command",
-                "command": f"node '{sl_path}'"
+                # A plain '...' wrap broke on an apostrophe in the path
+                # (C:\Users\O'Brien). Keep the familiar form otherwise.
+                "command": (f"node '{sl_path}'" if "'" not in str(sl_path)
+                            else f"node {shlex.quote(str(sl_path))}"),
             }
             installed.append("status line")
 

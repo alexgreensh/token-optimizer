@@ -313,6 +313,7 @@ def _hook_shell_check() -> list[dict[str, str]]:
     ours = 0
     cmd_only = 0
     dev_only = 0
+    advices: list[str] = []
     for groups in data["hooks"].values():
         if not isinstance(groups, list):
             continue
@@ -338,22 +339,30 @@ def _hook_shell_check() -> list[dict[str, str]]:
                     continue
                 if not codex_install.is_shell_neutral_command(command):
                     cmd_only += 1
+                    advice = codex_install.explain_cmd_only_command(command)
+                    if advice and advice not in advices:
+                        advices.append(advice)
     if not ours:
         return []
     if dev_only and not cmd_only:
         return [_check(
             "WARN", "Hook shell compatibility",
             f"{dev_only} of {ours} hook command(s) come from a development checkout and only run under cmd.exe; "
-            "Codex normally runs hooks in PowerShell, where they exit 1. Reinstalling does not change this: "
-            "install Token Optimizer from the marketplace (versioned folder) or set Codex's shell to cmd.exe")]
+            "Codex normally runs hooks in PowerShell, where they exit 1. To fix: run measure.py codex-install "
+            "again from the checkout (it now writes a form PowerShell runs), then restart Codex")]
     if dev_only or cmd_only:
         cmd_only += dev_only
     if cmd_only:
+        # Say exactly what to change when the cause is known (an interpreter or
+        # plugin folder no PowerShell-safe spelling exists for), else the
+        # generic repair (issue #278).
+        fix = "; ".join(advices) if advices else (
+            "run any measure.py command to repair them or rerun measure.py codex-install, "
+            "then restart Codex")
         return [_check(
             "WARN", "Hook shell compatibility",
             f"{cmd_only} of {ours} hook command(s) only run under cmd.exe, but Codex normally runs hooks in "
-            "PowerShell, where they exit 1 before Token Optimizer starts; run any measure.py command "
-            "to repair them or rerun measure.py codex-install, then restart Codex")]
+            f"PowerShell, where they exit 1 before Token Optimizer starts. To fix: {fix}")]
     return [_check("OK", "Hook shell compatibility", f"{ours} hook command(s) run under PowerShell and cmd.exe")]
 
 

@@ -1101,7 +1101,7 @@ def test_copilot_install_then_hooks_run_clean_and_leave_claude_alone(machine):
     assert proc.returncode == 0, proc.stderr[-800:]
     hooks = json.loads((home / ".copilot" / "hooks" / "token-optimizer.json").read_text())["hooks"]
     # The hook bakes in exactly the trusted interpreter, never a PATH lookup.
-    assert os.path.realpath(py) in hooks["stop"][0]["bash"], hooks["stop"][0]["bash"]
+    assert os.path.realpath(py) in hooks["sessionEnd"][0]["bash"], hooks["sessionEnd"][0]["bash"]
     before = machine.files()
     settings_before = claude_settings.read_bytes()
     sid = "c0b1107a-0000-4000-8000-000000000001"
@@ -1111,7 +1111,7 @@ def test_copilot_install_then_hooks_run_clean_and_leave_claude_alone(machine):
                         "toolArgs": json.dumps({"command": "find . -name '*.py'"}),
                         "toolResult": {"resultType": "success",
                                        "textResultForLlm": "\n".join(f"./m{i}.py" for i in range(500))}},
-        "stop": {"sessionId": sid, "cwd": str(project), "timestamp": 1760860900000},
+        "sessionEnd": {"sessionId": sid, "cwd": str(project), "timestamp": 1760860900000, "reason": "complete"},
     }
     for event, payload in payloads.items():
         for entry in hooks[event]:

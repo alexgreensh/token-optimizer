@@ -7,13 +7,13 @@ Object.defineProperty(exports, "__esModule", { value: true });
  * Session continuity blind to non-English prompts (OpenClaw).
  *
  * Mirrors the Python measure.py fix: the topic tokenizer is a two-branch class
- * (ASCII/accented-Latin run OR a whole non-ASCII run) so Korean/Chinese/Japanese
+ * (ASCII/accented-Latin run OR a whole non-ASCII run) so non-Latin scripts
  * and accented Latin stop tokenizing to nothing.
  *
  * The parity fixture (``tests/fixtures/i18n_topic_score_parity.json``) is the
  * SAME JSON asserted by the Python and OpenCode suites, so all three runtimes
- * score identical non-English inputs the same way — including the two documented
- * known limits (Chinese cross-run matching, short-Korean-noun len>3 floor).
+ * score identical non-English inputs the same way — including the documented
+ * Chinese cross-run segmentation limit.
  */
 const bun_test_1 = require("bun:test");
 const continuity_js_1 = require("./continuity.js");

@@ -141,15 +141,23 @@ def test_allowed_source_open_checks(tmp_path, monkeypatch, kind):
     elif kind=='mode':source.chmod(0o644)
     elif kind=='oversize':
         with source.open('ab') as out:out.truncate(8*1024*1024+1)
-    else:
-        original=os.fstat
-        def foreign(fd):
-            result=original(fd)
-            return types.SimpleNamespace(st_mode=result.st_mode,st_uid=result.st_uid+1,st_nlink=result.st_nlink)
-        monkeypatch.setattr(os,'fstat',foreign)
     loader=devin_source.SourceOnly(tmp_path)
-    with pytest.raises((OSError,ImportError)):
-        spec=loader.find_spec('token_estimate');module=importlib.util.module_from_spec(spec);loader.exec_module(module)
+    # The foreign-owner fstat stands in only while the loader runs: left in
+    # place, pytest's own output capture calls os.fstat(...).st_size after the
+    # test body (Linux) and fails on the stand-in.
+    with monkeypatch.context() as patch:
+        if kind=='owner':
+            original=os.fstat
+            def foreign(fd):
+                result=original(fd)
+                return types.SimpleNamespace(st_mode=result.st_mode,st_uid=result.st_uid+1,st_nlink=result.st_nlink)
+            patch.setattr(os,'fstat',foreign)
+        # Each case must trip its own check, not the empty-manifest digest
+        # mismatch every unmanifested source would hit anyway.
+        reason={'symlink':'regular payload source required','oversize':'payload source exceeds bound'}.get(
+            kind,'private regular payload source required')
+        with pytest.raises((OSError,ImportError),match=reason):
+            spec=loader.find_spec('token_estimate');module=importlib.util.module_from_spec(spec);loader.exec_module(module)
 
 
 def test_real_installed_chain_and_stdlib_after_activation(tmp_path, monkeypatch):

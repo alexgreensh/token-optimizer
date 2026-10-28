@@ -260,6 +260,10 @@ def _decoy_db(path):
 def _env(home, **extra):
     env = {"HOME": str(home), "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
            "TOKEN_OPTIMIZER_NO_PROC_SCAN": "1", "PYTHONDONTWRITEBYTECODE": "1"}
+    # The fixture dated the sessions in this process's zone; the child must
+    # resolve "yesterday" in the same one (a user's hook and shell share it).
+    if os.environ.get("TZ"):
+        env["TZ"] = os.environ["TZ"]
     env.update({k: str(v) for k, v in extra.items()})
     return env
 

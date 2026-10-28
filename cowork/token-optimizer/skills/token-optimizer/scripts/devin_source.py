@@ -30,7 +30,7 @@ REPO_MODULES = frozenset((
     'devin_compress', 'devin_doctor', 'devin_hooks', 'devin_install', 'devin_source', 'devin_state',
     'devin_verify', 'grok_doctor', 'grok_hook_bridge', 'grok_install', 'grok_session',
     'grok_state', 'hermes_doctor', 'hermes_hook_bridge', 'hermes_install', 'hermes_session',
-    'hermes_state', 'hook_io', 'hook_runtime', 'injection', 'install_reconcile', 'measure',
+    'hermes_state', 'hermes_tool_hooks', 'hook_io', 'hook_runtime', 'injection', 'install_reconcile', 'measure',
     'outline', 'pipeline_analyzer', 'plugin_env', 'py_trust', 'quality_cache_gate',
     'read_cache', 'recovery_output', 'refetch_fingerprint', 'refetch_guard', 'routing_advisor',
     'runtime_env', 'session_store', 'spawn_utils', 'structure_map', 'structure_map_ts',

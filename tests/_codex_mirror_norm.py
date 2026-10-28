@@ -18,7 +18,7 @@ Keep _RESOLVER / _GUARD byte-identical to the sync script.
 """
 
 _RESOLVER = ('D="${CLAUDE_PLUGIN_ROOT}"; [ -r "$D/hooks/python-launcher.sh" ] || '
-             'D="$(ls -d "${D%/*}"/*/ 2>/dev/null | grep -E "/[0-9]+[.][0-9]+[.][0-9]+/$" | sort -V | tail -n1)"; '
+             'D="$(ls -d "${D%[/\\\\]*}"/*/ 2>/dev/null | grep -E "/[0-9]+[.][0-9]+[.][0-9]+/$" | sort -V | tail -n1)"; '
              'D="${D%/}"; [ -r "$D/hooks/python-launcher.sh" ] || exit 0; '
              'exec "$b" "$D/hooks/python-launcher.sh" "$D/hooks/run.py"')
 _GUARD = ('L="${CLAUDE_PLUGIN_ROOT}/hooks/python-launcher.sh"; [ -r "$L" ] || exit 0; '

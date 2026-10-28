@@ -253,7 +253,16 @@ def _stop_hook_activity_check() -> dict[str, str]:
     when = entry.get("at", "unknown time")
     result = str(entry.get("result", "unknown"))
     level = "WARN" if result.startswith("error") else "OK"
-    return _check(level, "Stop hook last run", f"{when}: {result}")
+    detail = f"{when}: {result}"
+    # What the host actually sent (field presence only, never values) and
+    # whether the checkpoint could be tied to a session (issue #278).
+    for key, label in (("stop_payload", "host payload"), ("stop_capture", "checkpoint")):
+        extra = data.get(key) if isinstance(data, dict) else None
+        if isinstance(extra, dict) and extra.get("result"):
+            detail += f"; {label} ({extra.get('at', 'unknown time')}): {extra['result']}"
+            if key == "stop_capture" and str(extra["result"]).startswith("skipped"):
+                level = "WARN"
+    return _check(level, "Stop hook last run", detail)
 
 
 def _status_line_check() -> dict[str, str]:
@@ -288,6 +297,73 @@ def _global_hook_check() -> dict[str, str]:
     if _has_our_hooks(data):
         return _check("OK", "Global hooks", str(hooks_path))
     return _check("WARN", "Global hooks", f"no Token Optimizer hooks in {hooks_path}; run measure.py codex-install")
+
+
+def _hook_shell_check() -> list[dict[str, str]]:
+    """Flag Windows launcher hook commands only cmd.exe can run (issue #278).
+
+    Codex runs a command hook in the session shell, normally PowerShell, which
+    cannot parse the ``set ... &&`` prefix or a quoted first token that older
+    installs wrote. The hook then exits 1 before Token Optimizer starts.
+    """
+    hooks_path = codex_home() / "hooks.json"
+    data, error = _load_json(hooks_path)
+    if error or not isinstance(data, dict) or not isinstance(data.get("hooks"), dict):
+        return []
+    ours = 0
+    cmd_only = 0
+    dev_only = 0
+    advices: list[str] = []
+    for groups in data["hooks"].values():
+        if not isinstance(groups, list):
+            continue
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            group_ours = codex_install._is_token_optimizer_group(group)
+            for hook in group.get("hooks", []):
+                command = hook.get("command") if isinstance(hook, dict) else None
+                if not isinstance(command, str):
+                    continue
+                # Dev-checkout installs (non-semver root) carry no launcher
+                # marker: they are `set "TOKEN_OPTIMIZER_RUNTIME=codex" && ...
+                # hooks/run.py`, cmd-only by construction.
+                dev_checkout = (command.startswith('set "TOKEN_OPTIMIZER_RUNTIME=codex" && ')
+                                and re.search(r"hooks[/\\]+run\.py", command) is not None
+                                and codex_install._LAUNCHER_MARKER not in command)
+                if not dev_checkout and not (group_ours and codex_install._LAUNCHER_MARKER in command):
+                    continue
+                ours += 1
+                if dev_checkout:
+                    dev_only += 1
+                    continue
+                if not codex_install.is_shell_neutral_command(command):
+                    cmd_only += 1
+                    advice = codex_install.explain_cmd_only_command(command)
+                    if advice and advice not in advices:
+                        advices.append(advice)
+    if not ours:
+        return []
+    if dev_only and not cmd_only:
+        return [_check(
+            "WARN", "Hook shell compatibility",
+            f"{dev_only} of {ours} hook command(s) come from a development checkout and only run under cmd.exe; "
+            "Codex normally runs hooks in PowerShell, where they exit 1. To fix: run measure.py codex-install "
+            "again from the checkout (it now writes a form PowerShell runs), then restart Codex")]
+    if dev_only or cmd_only:
+        cmd_only += dev_only
+    if cmd_only:
+        # Say exactly what to change when the cause is known (an interpreter or
+        # plugin folder no PowerShell-safe spelling exists for), else the
+        # generic repair (issue #278).
+        fix = "; ".join(advices) if advices else (
+            "run any measure.py command to repair them or rerun measure.py codex-install, "
+            "then restart Codex")
+        return [_check(
+            "WARN", "Hook shell compatibility",
+            f"{cmd_only} of {ours} hook command(s) only run under cmd.exe, but Codex normally runs hooks in "
+            f"PowerShell, where they exit 1 before Token Optimizer starts. To fix: {fix}")]
+    return [_check("OK", "Hook shell compatibility", f"{ours} hook command(s) run under PowerShell and cmd.exe")]
 
 
 def _global_hook_config_checks() -> list[dict[str, str]]:
@@ -456,6 +532,7 @@ def run_checks(project: Path | None = None) -> list[dict[str, str]]:
     checks.append(_status_line_check())
     checks.append(_global_hook_check())
     checks.append(_stop_hook_activity_check())
+    checks.extend(_hook_shell_check())
     checks.extend(_global_hook_config_checks())
     checks.append(_project_hook_check(project))
     checks.extend(_project_feature_checks(project))

@@ -619,3 +619,36 @@ def test_usable_context_ends_at_the_users_compact_window(m, monkeypatch):
     snap = m.generate_coach_data()["snapshot"]
     assert snap["usable_tokens"] == 500_000 - overhead
     assert snap["context_window"] == 1_000_000
+
+
+def test_advisor_replay_keeps_billed_cache_denominator(m, monkeypatch):
+    files = []
+    for session in range(4):
+        lines = []
+        for turn, ctx in enumerate((400_000, 490_000, 491_000, 492_000)):
+            executor = {"type": "message", "input_tokens": 100,
+                        "cache_read_input_tokens": ctx - 100,
+                        "cache_creation_input_tokens": 0}
+            usage = {"input_tokens": 200,
+                     "cache_read_input_tokens": 2 * (ctx - 100),
+                     "iterations": [executor,
+                         {"type": "advisor_message", "input_tokens": 500_000},
+                         dict(executor)]}
+            lines.append(json.dumps({"type": "assistant",
+                "requestId": f"r-{session}-{turn}", "message": {
+                    "model": "claude-sonnet-5-5", "usage": usage}}))
+        path = _write_session(m, lines, sid=f"advisor-{session}")
+        files.append((path, 0, "advisor"))
+    monkeypatch.setattr(m, "_find_all_jsonl_files", lambda **kw: files)
+    monkeypatch.setattr(m, "_resolve_compact_window", lambda *a, **kw:
+                        {"tokens": 1_000_000, "source": "test"})
+    monkeypatch.setattr(m, "_advice_billing_mode", lambda: "api")
+    monkeypatch.setattr(m, "_advice_quality_by_fill_band", lambda: {})
+    assert m._advice_session_data(files[0][0])["turns"] == [400_000, 490_000, 491_000, 492_000]
+    report = m.compact_advice()
+    assert report["total_cache_read_tokens"] == 14_980_800
+    windows = {w["window"]: w for w in report["windows"]}
+    for window in (300_000, 400_000):
+        row = windows[window]
+        assert row["cache_read_tokens_avoided"] == 4_440_000
+        assert row["avoided_share_pct"] == 29.6

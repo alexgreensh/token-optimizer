@@ -39,6 +39,8 @@ export declare function findSessionFiles(openclawDir: string, agentName: string,
  * 4. Truncate to 120 characters.
  */
 export declare function extractTopic(text: string): string;
+/** User text that can name the session, or "" for harness/meta records. */
+export declare function topicUserText(record: Record<string, unknown>): string;
 /**
  * Parse a single OpenClaw session JSONL file into an AgentRun.
  *

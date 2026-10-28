@@ -282,3 +282,27 @@ def test_missing_transcript_falls_back_to_working_set_at_cache_read(m, tmp_path,
     cache_read = float(_rates(m, "opus")["cache_read"])
     assert cost == pytest.approx(tok * cache_read / 1e6, rel=1e-9)
     assert "working-set fallback" in detail
+
+
+@pytest.mark.parametrize("age_minutes", [20, 180])
+def test_advisor_resume_credit_uses_executor_context_not_billed_sum(m, tmp_path, monkeypatch, age_minutes):
+    dbp = _db(m, tmp_path, monkeypatch)
+    ctx = _transcript(m, tmp_path, monkeypatch, ctx=491_151, age_minutes=age_minutes)
+    path = next((m.CLAUDE_DIR / "projects").glob(f"*/{SID}.jsonl"))
+    records = [json.loads(line) for line in path.read_text().splitlines()]
+    usage = records[1]["message"]["usage"]
+    executor = dict(usage, type="message")
+    usage.update({key: value * 2 for key, value in executor.items()
+                  if key.endswith("tokens")})
+    usage["iterations"] = [dict(executor),
+        {"type": "advisor_message", "input_tokens": 900_000}, executor]
+    path.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+    lean = "L" * 4000
+    m._log_resume_lean_savings(SID, lean)
+    (event, tokens, cost, model, detail), = _rows(dbp)
+    expected = ctx - m._RESUME_LEAN_SHARED_PREFIX_TOKENS - m._estimate_tokens(lean)
+    assert event == "resume_lean"
+    assert tokens == expected
+    rate = "cache_read" if age_minutes < 60 else "cache_write_1h"
+    assert cost == pytest.approx(expected * float(_rates(m, "opus")[rate]) / 1e6)
+    assert model == "opus"

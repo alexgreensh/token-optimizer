@@ -61,7 +61,7 @@ _PAYLOAD_MODULES = (
     "hermes_session.py",
     # spawn_utils supplies spawn_detached — without it the bridge logs
     # "spawn_utils import failed" on every hook and its degraded fallback does
-    # NOT detach, so Stop-hook spawns die with the hook. hook_runtime supplies
+    # NOT detach, so session-end spawns die with the hook. hook_runtime supplies
     # lease_lock (tally RMW); utf8_io is enforced at startup. Cursor and Grok
     # already ship all three.
     "spawn_utils.py",
@@ -71,6 +71,13 @@ _PAYLOAD_MODULES = (
     # copilot_session's topic redaction (both fall back to less without it).
     "credential_patterns.py",
 )
+
+
+# One-line locator written next to the bridge, naming the canonical measure.py
+# in the checkout. measure.py is NOT copied into the plugin dir (version drift:
+# nothing refreshes a plugin-dir copy on update). The bridge's session-end
+# rollup/dashboard spawns resolve it through this locator.
+_MEASURE_LOCATOR_NAME = "measure-path"
 
 
 def _plugin_dir(root: Path) -> Path:
@@ -141,6 +148,24 @@ def _resolve_safe_python() -> str:
     )
 
 
+# PowerShell ends a single-quoted string at any of these, so each is doubled.
+_PS_SINGLE_QUOTES = "'\u2018\u2019\u201a\u201b"
+
+
+def _ps_single_quote(value: str) -> str:
+    """``value`` as a PowerShell single-quoted literal: nothing inside expands
+    ($, backtick, %, ! are all literal there); quote characters are doubled."""
+    return "'" + "".join(ch * 2 if ch in _PS_SINGLE_QUOTES else ch for ch in value) + "'"
+
+
+def _powershell_hook_command(py: str, bridge: str, event: str) -> str:
+    """The Windows form of the hook: set the runtime for the child, then call
+    the interpreter by literal path with the call operator. The hook payload
+    on stdin is inherited by the native child."""
+    return (f"$env:TOKEN_OPTIMIZER_RUNTIME='copilot'; "
+            f"& {_ps_single_quote(py)} {_ps_single_quote(bridge)} {event}")
+
+
 def _hook_config(bridge_path: Path) -> dict:
     """The hooks file Copilot loads. Format per the official hooks reference:
     {"version": 1, "hooks": {event: [{"type": "command", "bash": ...}]}}.
@@ -154,16 +179,25 @@ def _hook_config(bridge_path: Path) -> dict:
     bridge_q = shlex.quote(str(bridge_path))
 
     def cmd(event: str) -> dict:
-        return {
+        entry = {
             "type": "command",
             "bash": f"TOKEN_OPTIMIZER_RUNTIME=copilot {py_q} {bridge_q} {event}",
             "timeoutSec": HOOK_TIMEOUT_SEC,
         }
+        if sys.platform == "win32":
+            # Copilot CLI runs the `powershell` field on Windows and skips a
+            # hook that only has `bash`, so without this no Token Optimizer
+            # hook ever fired on native Windows.
+            entry["powershell"] = _powershell_hook_command(py, str(bridge_path), event)
+        return entry
 
     pre = cmd("pre-tool-use")
     # Only the bash tool is rewritten; the matcher keeps every other tool
     # call out of the bridge's hot path entirely.
-    pre["matcher"] = {"toolName": "bash"}
+    # Copilot reads `matcher` as a regex string tested against the tool name
+    # (anchored as ^(?:PATTERN)$). An object is rejected and the whole hook
+    # entry is skipped.
+    pre["matcher"] = "bash"
 
     return {
         "version": 1,
@@ -171,7 +205,9 @@ def _hook_config(bridge_path: Path) -> dict:
             "sessionStart": [cmd("session-start")],
             "preToolUse": [pre],
             "postToolUse": [cmd("post-tool-use")],
-            "stop": [cmd("stop")],
+            # Copilot's end-of-session event. The lowercase `stop` event is not
+            # a Copilot event name, so a hook under it never fires.
+            "sessionEnd": [cmd("session-end")],
         },
     }
 
@@ -212,6 +248,22 @@ def install(*, dry_run: bool = False, home: Path = None) -> dict:
             "missing payload modules in this checkout: "
             f"{actions['skipped']} — refusing to wire hooks against an incomplete bridge."
         )
+
+    measure_py = _SCRIPT_DIR / "measure.py"
+    if measure_py.is_file():
+        actions["measure_locator"] = str(measure_py)
+        if not dry_run:
+            try:
+                locator = plugin_dir / _MEASURE_LOCATOR_NAME
+                tmp = locator.with_name(f".{locator.name}.tmp")
+                tmp.write_text(f"{measure_py}\n", encoding="utf-8")
+                os.replace(tmp, locator)  # swaps a symlink, never follows it
+            except OSError as exc:
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+                raise RuntimeError(f"failed writing measure-path locator: {exc}") from exc
 
     hook_path = hooks_dir / HOOK_FILE_NAME
     config = _hook_config(plugin_dir / "copilot_hook_bridge.py")

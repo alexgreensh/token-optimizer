@@ -27,7 +27,7 @@ _BASH_LOOP = "for b in bash /bin/bash /usr/bin/bash /usr/local/bin/bash /opt/hom
 # and the pre-5.13.51 guard that trusted ${CLAUDE_PLUGIN_ROOT} blindly.
 _RESOLVER = (
     'D=\\"${CLAUDE_PLUGIN_ROOT}\\"; [ -r \\"$D/hooks/python-launcher.sh\\" ] || '
-    'D=\\"$(ls -d \\"${D%/*}\\"/*/ 2>/dev/null | grep -E \\"/[0-9]+[.][0-9]+[.][0-9]+/$\\" | sort -V | tail -n1)\\"; '
+    'D=\\"$(ls -d \\"${D%[/\\\\\\\\]*}\\"/*/ 2>/dev/null | grep -E \\"/[0-9]+[.][0-9]+[.][0-9]+/$\\" | sort -V | tail -n1)\\"; '
     'D=\\"${D%/}\\"; [ -r \\"$D/hooks/python-launcher.sh\\" ] || exit 0; '
     'exec \\"$b\\" \\"$D/hooks/python-launcher.sh\\" \\"$D/hooks/run.py\\"'
 )

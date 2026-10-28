@@ -27,23 +27,29 @@ COLLECTOR = REPO / "cowork" / "collector" / "to_collector.py"
 MEASURE = REPO / "skills" / "token-optimizer" / "scripts" / "measure.py"
 
 # Force a known non-UTC zone so the UTC-vs-local day-bucketing test is
-# meaningful. Restored after this module so the process TZ doesn't leak into
-# other test files when the whole suite runs in one pytest process.
+# meaningful. Only while this module's tests run (and while LOCAL_DAY is
+# computed at import, below): pytest imports every test module at collection,
+# so a zone set at import and restored by a module fixture leaked into the
+# whole run whenever this module was deselected (CI shards), and every later
+# subprocess built with a fresh env then disagreed with the parent on "today".
+_TEST_TZ = "America/Los_Angeles"
 _ORIG_TZ = os.environ.get("TZ")
-os.environ["TZ"] = "America/Los_Angeles"
-if hasattr(time, "tzset"):
-    time.tzset()
+
+
+def _set_tz(value):
+    if value is None:
+        os.environ.pop("TZ", None)
+    else:
+        os.environ["TZ"] = value
+    if hasattr(time, "tzset"):
+        time.tzset()
 
 
 @pytest.fixture(scope="module", autouse=True)
-def _restore_tz():
+def _test_tz():
+    _set_tz(_TEST_TZ)
     yield
-    if _ORIG_TZ is None:
-        os.environ.pop("TZ", None)
-    else:
-        os.environ["TZ"] = _ORIG_TZ
-    if hasattr(time, "tzset"):
-        time.tzset()
+    _set_tz(_ORIG_TZ)
 
 
 def _load(name: str, path: Path):
@@ -112,7 +118,9 @@ def _nanos(dt: datetime) -> int:
 # 2026-08-14 02:30 UTC == 2026-08-13 19:30 PDT.
 EVENING_UTC = datetime(2026, 8, 14, 2, 30, tzinfo=timezone.utc)
 EVENING_NANOS = _nanos(EVENING_UTC)
+_set_tz(_TEST_TZ)
 LOCAL_DAY = EVENING_UTC.astimezone().strftime("%Y-%m-%d")   # 2026-08-13
+_set_tz(_ORIG_TZ)
 UTC_DAY = EVENING_UTC.strftime("%Y-%m-%d")                  # 2026-08-14
 
 

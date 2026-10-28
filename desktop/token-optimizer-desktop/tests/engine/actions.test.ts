@@ -174,7 +174,7 @@ test('Start fresh confirmed: capture, clear, then the held text joins the first 
   const w = stub(on, { captureDelayMs: 1000 })
   await $.session.start(START)
   await w.clock.settle() // the status read runs just after the start
-  await $.classic.UserPromptSubmit({ prompt: 'hi', transcript_path: '/t/sess-1.jsonl', session_id: 'sess-1' } as never).catch(() => undefined)
+  await $.classic.SessionStart({ source: 'startup', transcript_path: '/t/sess-1.jsonl', session_id: 'sess-1' } as never)
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
   ourClearEnds($, w, 'sess-1', 'sess-2')
 
@@ -193,6 +193,8 @@ test('Start fresh confirmed: capture, clear, then the held text joins the first 
   const capture = w.runs.find(r => r.argv.includes('compact-capture'))
   expect(capture?.argv.slice(-5)).toEqual(['compact-capture', '--trigger', 'start-fresh', '--budget-seconds', '25'])
   expect(JSON.parse(capture?.stdin ?? '{}').session_id).toBe('sess-1')
+  // The path the classic SessionStart carried is the hint the capture reads.
+  expect(JSON.parse(capture?.stdin ?? '{}').transcript_path).toBe('/t/sess-1.jsonl')
   expect(w.runs.find(r => r.argv.includes('resume-lean'))?.argv.slice(-3)).toEqual(['resume-lean', 'sess-1', '--print'])
   expect(w.commands).toEqual(['clear'])
 
@@ -604,6 +606,8 @@ test('a lost classic SessionStart still delivers the hand-off on the first promp
   await confirmFresh(ui)
   await w.clock.settle()
   expect(w.commands).toEqual(['clear'])
+  // No classic event ever arrived (a guarded host skips them): the capture is told only the session id and looks the transcript up itself.
+  expect(JSON.parse(w.runs.find(r => r.argv.includes('compact-capture'))?.stdin ?? '{}')).toEqual({ session_id: 'sess-1' })
   // No classic SessionStart ever arrives for sess-2.
   expect(await has(ui, 'Checkpoint ready, it joins your first message.')).toBe(true)
   const first = await $.prompt.submit({ text: 'continue', wait: false, origin: COMPOSER })

@@ -115,6 +115,69 @@ interface LatestUsage {
   model: string | null;
 }
 
+// Mirrors measure.py _safe_int: numeric strings count, junk/NaN/Infinity is 0.
+function safeInt(value: unknown): number {
+  const n = Number(value || 0);
+  return Number.isFinite(n) ? Math.trunc(n) : 0;
+}
+
+// Input footprint, including flat or TTL-split cache writes
+// (measure.py _context_token_count).
+export function contextTokenCount(usage: any): number {
+  if (!usage || typeof usage !== 'object' || Array.isArray(usage)) return 0;
+  let creation = safeInt(usage.cache_creation_input_tokens);
+  if (!creation) {
+    const nested =
+      usage.cache_creation && typeof usage.cache_creation === 'object' && !Array.isArray(usage.cache_creation)
+        ? usage.cache_creation
+        : {};
+    creation =
+      safeInt(nested.ephemeral_1h_input_tokens || usage.ephemeral_1h_input_tokens) +
+      safeInt(nested.ephemeral_5m_input_tokens || usage.ephemeral_5m_input_tokens);
+  }
+  return safeInt(usage.input_tokens) + safeInt(usage.cache_read_input_tokens) + creation;
+}
+
+// Present buckets must be finite and non-negative (measure.py _valid_context_usage).
+function validContextUsage(usage: any): boolean {
+  const values: unknown[] = [];
+  for (const key of ['input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens']) {
+    if (key in usage) values.push(usage[key]);
+  }
+  if (!safeInt(usage.cache_creation_input_tokens)) {
+    const nested = 'cache_creation' in usage ? usage.cache_creation : {};
+    if (!nested || typeof nested !== 'object' || Array.isArray(nested)) return false;
+    for (const key of ['ephemeral_1h_input_tokens', 'ephemeral_5m_input_tokens']) {
+      if (key in nested) values.push(nested[key]);
+      if (!nested[key] && key in usage) values.push(usage[key]);
+    }
+  }
+  return values.every((v) => {
+    if (v === null || typeof v === 'boolean' || typeof v === 'object') return false;
+    const n = Number(v);
+    return Number.isFinite(n) && n >= 0;
+  });
+}
+
+// Advisor/server-tool turns report the SUM of every executor iteration in the
+// top-level usage, so the bill reads ~2x the real context (#287). The final
+// `type: "message"` iteration is the live context. An unusable final executor
+// falls back to the aggregate, never an older executor. Same rule as
+// measure.py _context_usage.
+export function contextUsage(usage: any): any {
+  const iterations = usage && typeof usage === 'object' ? usage.iterations : undefined;
+  if (Array.isArray(iterations)) {
+    for (let i = iterations.length - 1; i >= 0; i--) {
+      const it = iterations[i];
+      if (it && typeof it === 'object' && !Array.isArray(it) && it.type === 'message') {
+        if (validContextUsage(it) && contextTokenCount(it) > 0) return it;
+        break;
+      }
+    }
+  }
+  return usage;
+}
+
 // Scan newline-delimited JSON for the last assistant turn carrying a usage
 // object, summing input + cache tokens (the live context footprint).
 export function parseLatestUsage(text: string): LatestUsage | null {
@@ -131,10 +194,7 @@ export function parseLatestUsage(text: string): LatestUsage | null {
     const message = obj?.message ?? obj;
     const usage = message?.usage;
     if (!usage) continue;
-    const tokens =
-      (usage.input_tokens || 0) +
-      (usage.cache_creation_input_tokens || 0) +
-      (usage.cache_read_input_tokens || 0);
+    const tokens = contextTokenCount(contextUsage(usage));
     if (tokens <= 0) continue;
     const model =
       (typeof message?.model === 'string' && message.model) ||

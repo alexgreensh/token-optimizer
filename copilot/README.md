@@ -52,7 +52,7 @@ For VS Code per-request credit costs, enable both `github.copilot.chat.agentDebu
 ```bash
 measure.py copilot-doctor      # per-source readiness + hook capability check
 measure.py copilot-summary     # credits-led session summary
-measure.py copilot-rollup      # ingest sessions into trends.db (auto on stop)
+measure.py copilot-rollup      # ingest sessions into trends.db (auto on sessionEnd)
 measure.py copilot-install     # wire hooks + seed capabilities
 measure.py copilot-uninstall   # remove only what was installed
 ```

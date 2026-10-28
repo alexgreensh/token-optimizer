@@ -165,3 +165,115 @@ def test_capture_git_state_single_spawn(monkeypatch):
 
 def test_capture_git_state_outside_repo(tmp_path):
     assert measure._capture_git_state(cwd=str(tmp_path)) == (None, None)
+
+
+@pytest.mark.parametrize("synthetic", [
+    {"isMeta": True, "message": {"content": "Your response was cut off. Resume?"}},
+    {"isCompactSummary": True, "message": {"content": "Summary TODO"}},
+    {"message": {"content": "<command-name>/compact</command-name>\n<command-message>compact</command-message>\n<command-args></command-args>"}},
+    {"message": {"content": "<local-command-caveat>Ignore?"}},
+    {"message": {"content": "<local-command-stdout>Output?"}},
+    {"message": {"content": "<local-command-stderr>Error?"}},
+    {"message": {"content": "<task-notification>Finished?"}},
+    {"message": {"content": "[SYSTEM NOTIFICATION] TODO"}},
+])
+def test_checkpoint_ignores_harness_task_and_questions(tmp_path, synthetic):
+    p = tmp_path / "checkpoint.jsonl"
+    records = [{"type": "user", "message": {"content": "fix the login bug"}},
+               {"type": "user", **synthetic}]
+    p.write_text("\n".join(json.dumps(r) for r in records), encoding="utf-8")
+    state = measure._extract_session_state(str(p))
+    assert state["current_step"]["last_user"] == "fix the login bug"
+    assert state["open_questions"] == []
+
+
+@pytest.mark.parametrize("content, expected", [
+    ("<command-name>/ce:debug</command-name>\n<command-message>ce:debug</command-message>\n<command-args>fix login and keep tests?</command-args>",
+     "/ce:debug fix login and keep tests?"),
+    ("<command-name>briefing</command-name><command-args></command-args>", "/briefing"),
+    ("<command-name>/compact</command-name><command-args>keep login details</command-args>", ""),
+    ("<command-name>/clear</command-name><command-args></command-args>", ""),
+    ("<command-name>/broken", ""),
+    ("<command-message>compact</command-message>", ""),
+    ("I saw <command-name>/compact</command-name> in the logs?", "I saw <command-name>/compact</command-name> in the logs?"),
+    ("Your response above was cut off. Please explain why?", "Your response above was cut off. Please explain why?"),
+    ("/debug fix login?", "/debug fix login?"),
+    ("תקן התחברות", "תקן התחברות"),
+    ([{"type": "tool_result", "text": "not human?", "content": "output?"}], ""),
+    ([{"type": "tool_result", "content": "output?"}, {"type": "text", "text": "real followup?"}], "real followup?"),
+    ([{"type": "text", "text": "<task-notification>done?"}, {"type": "text", "text": "real followup?"}], "real followup?"),
+    (None, ""),
+    (42, ""),
+])
+def test_task_text_preserves_genuine_commands_and_ignores_transport(tmp_path, content, expected):
+    record = {"type": "user", "message": {"content": content}}
+    p = tmp_path / "task.jsonl"
+    p.write_text(json.dumps(record), encoding="utf-8")
+    assert measure._task_user_text(record) == expected
+    assert measure._extract_session_state(str(p))["current_step"]["last_user"] == expected
+    assert measure._parse_session_jsonl(str(p))["topic"] == measure._extract_topic(expected)
+
+
+def test_raw_skill_and_scoring_text_unchanged():
+    content = "<command-name>/briefing</command-name><command-args>evening</command-args>"
+    record = {"type": "user", "message": {"content": content}, "isMeta": True}
+    assert measure._task_user_text(record) == ""
+    assert measure._extract_user_text(record) == content
+    assert measure._leading_user_text(record["message"]) == content
+
+
+def test_task_text_skips_malformed_text_values():
+    record = {"message": {"content": [
+        {"type": "text", "text": None}, {"type": "text", "text": 5}, "real task"]}}
+    assert measure._task_user_text(record) == "real task"
+
+
+def test_task_command_rejects_repeated_tags_without_backtracking():
+    # A wildcard nested in a repeated-tag regex takes exponential time here.
+    import time
+    text = "<command-args>x</command-args>" * 1000 + "!"
+    start = time.monotonic()
+    assert measure._task_user_text({"message": {"content": text}}) == ""
+    assert time.monotonic() - start < 1.0
+
+
+@pytest.mark.parametrize("duplicate_field", ["name", "message", "args"])
+@pytest.mark.parametrize("consumer", ["helper", "checkpoint", "topic"])
+def test_complete_duplicate_command_fields_cannot_become_task(tmp_path, duplicate_field, consumer):
+    duplicate_value = "/ce:review" if duplicate_field == "name" else "harness TODO?"
+    wrapper = (
+        "<command-name>/ce:debug</command-name>"
+        "<command-message>ce:debug</command-message>"
+        "<command-args>fix login</command-args>"
+        f"<command-{duplicate_field}>{duplicate_value}</command-{duplicate_field}>"
+    )
+    record = {"type": "user", "message": {"content": wrapper}}
+    if consumer == "helper":
+        assert measure._task_user_text(record) == ""
+    else:
+        p = tmp_path / "duplicate.jsonl"
+        real = {"type": "user", "message": {"content": "fix the login bug"}}
+        # Checkpoint keeps the latest human task; topic finds the first one.
+        records = [real, record] if consumer == "checkpoint" else [record, real]
+        p.write_text("\n".join(json.dumps(r) for r in records), encoding="utf-8")
+        if consumer == "checkpoint":
+            state = measure._extract_session_state(str(p))
+            assert state["current_step"]["last_user"] == "fix the login bug"
+            assert state["open_questions"] == []
+        else:
+            assert measure._parse_session_jsonl(str(p))["topic"] == "fix the login bug"
+
+
+def test_command_and_followup_blocks_keep_order_and_separator(tmp_path):
+    record = {"type": "user", "message": {"content": [
+        {"type": "text", "text": "<command-name>/ce:debug</command-name><command-args>fix login</command-args>"},
+        {"type": "text", "text": "Keep the logout flow unchanged?"},
+    ]}}
+    expected = "/ce:debug fix login\nKeep the logout flow unchanged?"
+    p = tmp_path / "followup.jsonl"
+    p.write_text(json.dumps(record), encoding="utf-8")
+    assert measure._task_user_text(record) == expected
+    state = measure._extract_session_state(str(p))
+    assert state["current_step"]["last_user"] == expected
+    assert state["open_questions"] == [expected]
+    assert measure._parse_session_jsonl(str(p))["topic"] == "/ce:debug fix login"

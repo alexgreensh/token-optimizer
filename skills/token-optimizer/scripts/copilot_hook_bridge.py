@@ -7,7 +7,7 @@ Thin, fast, fail-safe entry point invoked by Copilot's hooks system
     copilot_hook_bridge.py session-start
     copilot_hook_bridge.py pre-tool-use
     copilot_hook_bridge.py post-tool-use
-    copilot_hook_bridge.py stop
+    copilot_hook_bridge.py session-end
 
 Contract notes (verified against github/copilot-cli as of v1.0.60, 2026-06-10):
 
@@ -601,11 +601,39 @@ def _events_growth_level(session_id):
     return level
 
 
-def handle_stop(payload):
-    """Fire-and-forget rollup so trends stay fresh without blocking the CLI."""
-    fields = decode_payload(payload)
-    measure = _SCRIPT_DIR / "measure.py"
-    if not measure.exists():
+# The installer does NOT copy measure.py into the plugin dir (version-drift
+# risk: nothing refreshes a plugin-dir copy on update). It writes a one-line
+# "measure-path" locator next to this bridge naming the canonical measure.py.
+# Resolution order: a sibling measure.py (dev/test checkout), then the locator.
+# Same scheme as cursor_hook_bridge._locate_measure_py.
+_MEASURE_LOCATOR = _SCRIPT_DIR / "measure-path"
+
+
+def _locate_measure_py():
+    """Return the path to measure.py, or None if not found (refresh paused).
+
+    The plugin dir is user-writable, so only a regular, non-symlinked file
+    named measure.py is accepted from the locator.
+    """
+    sibling = _SCRIPT_DIR / "measure.py"
+    if sibling.is_file() and not sibling.is_symlink():
+        return sibling
+    try:
+        if _MEASURE_LOCATOR.is_file() and not _MEASURE_LOCATOR.is_symlink():
+            located = Path(_MEASURE_LOCATOR.read_text(encoding="utf-8").strip())
+            if (located.is_file() and not located.is_symlink()
+                    and located.name == "measure.py"):
+                return located
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def _spawn_session_end_refresh():
+    """Detached rollup + dashboard refresh. A no-op when measure.py cannot be
+    located; cleanup of the session's tally and lock never depends on this."""
+    measure = _locate_measure_py()
+    if measure is None:
         return
     env = dict(os.environ)
     env["TOKEN_OPTIMIZER_RUNTIME"] = "copilot"
@@ -625,11 +653,11 @@ def handle_stop(payload):
         pass
     else:
         if _proc is None:
-            logger.warning("[copilot_hook_bridge] handle_stop spawn_detached returned None")
-    # Parity Gap 2: also refresh the dashboard on session-end so a Copilot user
-    # sees current data without a manual open (Claude Code/Codex/Cowork already
-    # do this). Detached + TOKEN_OPTIMIZER_INTERACTIVE=1 so it runs UNBOUNDED off
-    # the hot path -- never blocks the CLI, never truncates on the 20s hook budget.
+            logger.warning("[copilot_hook_bridge] handle_session_end spawn_detached returned None")
+    # Also refresh the dashboard on session end so a Copilot user sees current
+    # data without a manual open. Detached + TOKEN_OPTIMIZER_INTERACTIVE=1 so it
+    # runs UNBOUNDED off the hot path -- never blocks the CLI, never truncates
+    # on the 20s hook budget.
     try:
         spawn_detached(
             [sys.executable, str(measure), "dashboard", "--quiet"],
@@ -639,6 +667,14 @@ def handle_stop(payload):
         )
     except (OSError, subprocess.SubprocessError):
         pass
+
+
+def handle_session_end(payload):
+    """Session-exit work, wired to Copilot's sessionEnd event: fire-and-forget
+    rollup and dashboard refresh, then drop this session's in-flight tally and
+    lock. The cleanup runs even when measure.py cannot be located."""
+    fields = decode_payload(payload)
+    _spawn_session_end_refresh()
     # Remove this session's in-flight tally: shutdown event is now authoritative.
     # Also drop the published lease lock file so a fast sessionStart doesn't
     # see a stale inflight-{sid}.lock from this session (candidate files age
@@ -657,7 +693,7 @@ def handle_stop(payload):
         # candidate onto the now-free name and run concurrently, while the
         # original holder -- which operates on its own candidate inode -- never
         # notices it was displaced. Nothing in the Copilot hook contract
-        # guarantees Stop is serialised after PostToolUse returns.
+        # guarantees sessionEnd is serialised after PostToolUse returns.
         #
         # So only remove the lock when it is provably unheld: take it
         # non-blocking, and if that fails, leave it for the sessionStart sweep.
@@ -668,7 +704,12 @@ def handle_stop(payload):
             except OSError:
                 pass
         else:
-            with lease_lock(lock_path, acquire_timeout=0) as acquired:
+            # reclaim_released: a lease its owner already released is free to
+            # take at once (session end is a mutation of its own, not one of the
+            # herd the post-release reuse reservation absorbs). A lease still
+            # held is never taken, so a live PostToolUse critical section is
+            # left alone.
+            with lease_lock(lock_path, acquire_timeout=0, reclaim_released=True) as acquired:
                 if acquired:
                     try:
                         lock_path.unlink()
@@ -676,11 +717,18 @@ def handle_stop(payload):
                         pass
 
 
+# Back-compat name for callers and tests that predate the sessionEnd wiring.
+handle_stop = handle_session_end
+
+
 _HANDLERS = {
     "session-start": handle_session_start,
     "pre-tool-use": handle_pre_tool_use,
     "post-tool-use": handle_post_tool_use,
-    "stop": handle_stop,
+    "session-end": handle_session_end,
+    # Legacy name written by earlier installs (under an event Copilot never
+    # fires). Kept so a manual `... stop` invocation still works.
+    "stop": handle_session_end,
 }
 
 

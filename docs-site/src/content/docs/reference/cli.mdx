@@ -202,7 +202,7 @@ Keep-Warm watching is opt-in; production LLM pings are disabled even after enabl
 |---|---|---|
 | `keepwarm-enable` | Enable Keep-Warm: record consent and install the scheduler on macOS | `--limits-lab` |
 | `keepwarm-disable` | Disable Keep-Warm (terminal opt-out) | n/a |
-| `keepwarm-arm` | Record a keep-warm arm record on session pause. Runs automatically via Stop hook. | `--quiet` |
+| `keepwarm-arm` | Record a keep-warm arm record on session pause. Runs automatically at the end of each session (sessionEnd hook). | `--quiet` |
 | `keepwarm-tick` | The trigger loop: evaluate armed sessions; normal production skips LLM pings. Runs every ~5 minutes via scheduler. | `--dry-run`, `--quiet` |
 | `keepwarm-scheduler` | Install, uninstall, or check the scheduler | `install`, `uninstall`, `status` |
 | `keepwarm-consent-status` | Return machine-readable consent and billing state for the first-run pitch | n/a |
@@ -270,7 +270,7 @@ Adapter commands target a specific platform. All require the matching `TOKEN_OPT
 | `copilot-doctor` | Check Copilot readiness and per-source capability freshness | `--json` |
 | `copilot-home` | Print resolved Copilot home | n/a |
 | `copilot-summary` | Credits-led session summary | n/a |
-| `copilot-rollup` | Ingest recent Copilot sessions (CLI and VS Code) into the history database. Runs automatically via Stop hook. | `--quiet` |
+| `copilot-rollup` | Ingest recent Copilot sessions (CLI and VS Code) into the history database. Runs automatically at the end of each session (sessionEnd hook). | `--quiet` |
 
 ### Hermes
 

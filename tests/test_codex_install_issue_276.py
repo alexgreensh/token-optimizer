@@ -302,8 +302,12 @@ def test_status_without_a_toml_parser(monkeypatch):
 
 def test_heal_repairs_only_our_quoted_launcher_commands(tmp_path):
     marker = codex_install._LAUNCHER_MARKER
-    ours = (r'"C:\Python315\python.exe" "C:\u\.codex\plugins\cache\alexgreensh-token-optimizer\token-optimizer\windows-launcher.py"'
-            r' --baked-root "C:\u\.codex\plugins\cache\alexgreensh-token-optimizer\token-optimizer\5.13.56"'
+    # Heal refreshes the launcher the command names before rewriting it, so
+    # the plugin folder has to exist.
+    base = tmp_path / "cache" / "alexgreensh-token-optimizer" / "token-optimizer"
+    (base / "5.13.56").mkdir(parents=True)
+    ours = (rf'"C:\Python315\python.exe" "{base / "windows-launcher.py"}"'
+            rf' --baked-root "{base / "5.13.56"}"'
             f' -- "hooks/stop_runner.py" "{marker}" >NUL 2>&1')
     foreign = r'"C:\tools\python.exe" "C:\tools\my_hook.py"'
     hooks = {"hooks": {
@@ -315,8 +319,29 @@ def test_heal_repairs_only_our_quoted_launcher_commands(tmp_path):
     assert codex_install.heal_quoted_launcher_commands([path]) == 1
     data = json.loads(path.read_text(encoding="utf-8"))
     fixed = data["hooks"]["Stop"][0]["hooks"][0]["command"]
-    assert fixed == f"{codex_install._WIN_UNQUOTED_PREFIX} {ours}"
+    # Issue #278: the exact generated shape is rewritten to the shell-neutral
+    # form (PowerShell and cmd.exe both run it), not the cmd-only set prefix.
+    assert fixed == codex_install.neutralize_launcher_command(ours)
+    assert codex_install.is_shell_neutral_command(fixed)
     assert not fixed.startswith('"')
     assert data["hooks"]["SessionStart"][0]["hooks"][0]["command"] == foreign
     # Second run is a no-op.
+    assert codex_install.heal_quoted_launcher_commands([path]) == 0
+
+
+def test_heal_falls_back_to_unquoted_set_prefix_when_no_neutral_form(tmp_path, monkeypatch):
+    """A quoted launcher command whose interpreter cannot be written
+    shell-neutral (spaced path, no 8.3 short name) still gets the #276
+    cmd-only repair, so cmd.exe at least stops stripping its quotes."""
+    monkeypatch.setattr(codex_install, "_short_path", lambda p: None)
+    marker = codex_install._LAUNCHER_MARKER
+    ours = (r'"C:\Program Files\Python\python.exe" "C:\u\w.py" --baked-root "C:\u\5.13.56"'
+            f' -- "hooks/stop_runner.py" "{marker}"')
+    path = tmp_path / "hooks.json"
+    path.write_text(json.dumps({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": ours}]}]}}),
+                    encoding="utf-8")
+    assert codex_install.neutralize_launcher_command(ours) is None
+    assert codex_install.heal_quoted_launcher_commands([path]) == 1
+    fixed = json.loads(path.read_text(encoding="utf-8"))["hooks"]["Stop"][0]["hooks"][0]["command"]
+    assert fixed == f"{codex_install._WIN_UNQUOTED_PREFIX} {ours}"
     assert codex_install.heal_quoted_launcher_commands([path]) == 0

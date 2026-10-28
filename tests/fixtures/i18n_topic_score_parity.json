@@ -42,6 +42,27 @@
     "why": "a Han run is captured as one token, so an identical run in the checkpoint matches."
   },
   {
+    "name": "cyrillic_short_words",
+    "prompt": "кот мир",
+    "checkpoint": "кот мир",
+    "expect_match": true,
+    "why": "Synthetic short Cyrillic topic words are retained in Python, OpenClaw and OpenCode; the previous CJK-only floor discarded both and produced no match."
+  },
+  {
+    "name": "fullwidth_latin_in_japanese",
+    "prompt": "ＡＰＩ 接続",
+    "checkpoint": "ＡＰＩ 接続",
+    "expect_match": true,
+    "why": "Fullwidth Latin sits above U+3000, so a 3-char word like ＡＰＩ is kept by all three runtimes (fixed code-point ranges, no Unicode script tables)."
+  },
+  {
+    "name": "cyrillic_function_words_do_not_match",
+    "prompt": "на не что",
+    "checkpoint": "на не про",
+    "expect_match": false,
+    "why": "2-letter Cyrillic function words (на, не) are dropped by the len>=3 floor for alphabetic non-Latin scripts, so two unrelated Russian texts do not match on them."
+  },
+  {
     "name": "ascii_regression",
     "prompt": "continue the keepwarm experiment",
     "checkpoint": "keepwarm experiment daemon notes",

@@ -105,7 +105,11 @@ MUTATIONS = [
        "    return resolved\n"),
       # The read side's sibling search (a later defence layer) goes too: the
       # 5.11.93 CLI read only the active identity, which is what the user hit.
-      ('    candidates.extend(path / "data" for path in find_sibling_plugin_data_dirs(active))\n', "")]),
+      ('    candidates.extend(path / "data" for path in find_sibling_plugin_data_dirs(active))\n', ""),
+      # So does expand's cross-runtime fallback (5.13.59), which re-scans
+      # every token-optimizer-* identity under each runtime's home.
+      ("            for path in sorted(base.glob(f\"{_PLUGIN_NAME}-*\"), key=lambda p: p.name):\n",
+       "            for path in ():\n")]),
 
     ("#57 class: a Codex plugin hook is detected as Claude (state + statusLine into ~/.claude)",
      [MATRIX + "::test_fresh_process_detects_the_host[codex_plugin]",

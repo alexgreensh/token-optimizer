@@ -143,7 +143,7 @@ Consequences and mitigations:
 measure.py copilot-install     # wire hooks + seed capabilities
 measure.py copilot-doctor      # per-source readiness + capability freshness
 measure.py copilot-summary     # credits-led session summary
-measure.py copilot-rollup      # ingest sessions into trends.db (auto on stop hook)
+measure.py copilot-rollup      # ingest sessions into trends.db (auto on the sessionEnd hook)
 measure.py copilot-uninstall   # remove only what we installed
 ```
 
@@ -184,7 +184,7 @@ Rates are configurable when GitHub changes billing:
 5. Confirm: `~/.copilot/token-optimizer/capabilities.json` matches your CLI
    version; `inflight-<session>.json` appeared during the session and was
    cleaned on exit; `copilot-summary` shows the session with premium-request
-   cost; the trends DB gained a row after the stop-hook rollup.
+   cost; the trends DB gained a row after the sessionEnd rollup.
 6. If a whitelisted command (e.g. `git status`) ran, check Copilot's transcript:
    the command should have been wrapped through `bash_compress.py`. If it ran
    unwrapped, your CLI version ignores `updatedInput` — file it against the

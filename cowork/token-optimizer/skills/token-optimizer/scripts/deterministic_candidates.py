@@ -32,7 +32,10 @@ An inline script (``python3 - <<'EOF'``, ``python3 -c``, ``bash -c``, ``node -e`
 differs: the call key carries a fingerprint of the redacted, literal-blanked body.
 
 Pricing is injected (``price_fn``) so this module stays free of measure.py and the
-numbers come from the same rate cards as every other dollar figure in the tool.
+numbers come from the same rate cards as every other dollar figure in the tool. A
+turn whose usage carries advisor iterations is split into billed parts by the
+injected ``split_usage`` (measure.py's ``_billed_usage_parts``), and each part is
+priced at its own model, exactly as every other per-turn dollar figure is.
 """
 
 from __future__ import annotations
@@ -51,7 +54,8 @@ from credential_patterns import CommandMarks, scrub_command_syntax
 # Part of the cache key. Bump when the SHAPE of stored examples changes, so a cache
 # written by an older algorithm (possibly holding an example the newer scrubbers would
 # have blanked) is never served again. 3: command-shape secret scrubbers (review F4).
-ALGO_VERSION = 3
+# 4: advisor turns priced per part (a cached total priced every turn at one model).
+ALGO_VERSION = 4
 BASIS = "measured on your transcripts"
 USED_NOT_SAVED_NOTE = "Moving a step to code removes those turns; the saving is at most this much."
 PROGRESS_MIN_INTERVAL_S = 2.0
@@ -416,11 +420,13 @@ class Call:
 
 
 class Turn:
-    __slots__ = ("fresh", "cr", "cc", "cc1h", "cc5m", "out", "model", "reply_chars", "ut")
+    __slots__ = ("fresh", "cr", "cc", "cc1h", "cc5m", "out", "model", "reply_chars", "ut", "usage")
 
     def __init__(self, ut):
         self.fresh = self.cr = self.cc = self.cc1h = self.cc5m = self.out = 0
         self.model = "unknown"
+        # Raw usage, kept only when it carries advisor iterations (priced per part).
+        self.usage = None
         self.reply_chars = 0
         self.ut = ut
 
@@ -726,6 +732,8 @@ def extract_claude(path: Path | str, keys: _KeyMaker, seen_ids: set,
                 turn.cc = max(turn.cc, cc)
                 turn.cc1h = max(turn.cc1h, cc1)
                 turn.cc5m = max(turn.cc5m, cc5)
+                if _has_advisor_iterations(usage):
+                    turn.usage = usage
             model = msg.get("model")
             if isinstance(model, str) and model and model != "<synthetic>":
                 turn.model = model
@@ -1201,23 +1209,53 @@ def detect_check_turns(traces: list[Trace]) -> list[_Cand]:
 # ---------------------------------------------------------------------------
 
 PriceFn = Callable[[str, int, int, int, int, int, int], "float | None"]
+# (executor model, raw usage) -> [(price_model, {"inp","out","cr","cc","cc_1h","cc_5m"}), ...]
+SplitFn = Callable[[str, dict], list]
 
 
-def _price_turns(traces: list[Trace], turns: Iterable[tuple[int, int]], price: PriceFn) -> dict[str, Any]:
+def _has_advisor_iterations(usage: Any) -> bool:
+    its = usage.get("iterations") if isinstance(usage, dict) else None
+    return isinstance(its, list) and any(
+        isinstance(i, dict) and i.get("type") == "advisor_message" for i in its)
+
+
+def _turn_parts(t: Turn, split: SplitFn | None) -> list[tuple[str, tuple[int, int, int, int, int, int]]]:
+    """Billed parts of one turn as (model, (fresh, out, cr, cc, cc1h, cc5m))."""
+    if t.usage is not None and split is not None:
+        try:
+            parts = split(t.model, t.usage)
+        except Exception:
+            parts = None
+        if parts:
+            return [(pm, (int(b.get("inp", 0)), int(b.get("out", 0)), int(b.get("cr", 0)),
+                          int(b.get("cc", 0)), int(b.get("cc_1h", 0)), int(b.get("cc_5m", 0))))
+                    for pm, b in parts]
+    return [(t.model, (t.fresh, t.out, t.cr, t.cc, t.cc1h, t.cc5m))]
+
+
+def _price_turns(traces: list[Trace], turns: Iterable[tuple[int, int]], price: PriceFn,
+                 split: SplitFn | None = None) -> dict[str, Any]:
     fresh = cr = cc = out = 0
     cost = 0.0
     priced = unpriced = 0
     for si, ti in turns:
         t = traces[si].turns[ti]
-        fresh += t.fresh
-        cr += t.cr
-        cc += t.cc
-        out += t.out
-        c = price(t.model, t.fresh, t.out, t.cr, t.cc, t.cc1h, t.cc5m)
-        if c is None or (c == 0 and (t.fresh or t.cr or t.cc or t.out)):
+        turn_cost = 0.0
+        turn_unpriced = False
+        for pm, (p_fresh, p_out, p_cr, p_cc, p_1h, p_5m) in _turn_parts(t, split):
+            fresh += p_fresh
+            cr += p_cr
+            cc += p_cc
+            out += p_out
+            c = price(pm, p_fresh, p_out, p_cr, p_cc, p_1h, p_5m)
+            if c is None or (c == 0 and (p_fresh or p_cr or p_cc or p_out)):
+                turn_unpriced = True
+            else:
+                turn_cost += c
+        if turn_unpriced:
             unpriced += 1
         else:
-            cost += c
+            cost += turn_cost
             priced += 1
     input_tokens = fresh + cr + cc
     return {
@@ -1242,7 +1280,8 @@ def _finish_example(text: str, redact: Redactor) -> str:
 
 
 def analyse(traces: list[Trace], price: PriceFn, redact: Redactor,
-            deadline: float | None = None) -> tuple[list[dict], dict[str, Any], bool]:
+            deadline: float | None = None,
+            split: SplitFn | None = None) -> tuple[list[dict], dict[str, Any], bool]:
     """Run all detectors. Returns (candidates, union totals, partial)."""
     cands = detect_check_turns(traces) + detect_polling(traces) + detect_subagents(traces)
     partial = False
@@ -1254,7 +1293,7 @@ def analyse(traces: list[Trace], price: PriceFn, redact: Redactor,
         partial = True
     scored = []
     for c in cands:
-        stats = _price_turns(traces, c.turns, price)
+        stats = _price_turns(traces, c.turns, price, split)
         scored.append((stats["total_tokens"], stats["cost_usd"], c, stats))
     scored.sort(key=lambda r: (-r[0], -r[1], -r[2].times))
     top = scored[:MAX_CANDIDATES]
@@ -1278,7 +1317,7 @@ def analyse(traces: list[Trace], price: PriceFn, redact: Redactor,
         if c.kind == "templated_subagent":
             entry["tokens_scope"] = "launching turns only; subagent transcripts are not attributed"
         out.append(entry)
-    totals = _price_turns(traces, union, price)
+    totals = _price_turns(traces, union, price, split)
     return out, totals, partial
 
 
@@ -1379,6 +1418,7 @@ def run(
     use_cache: bool = True,
     redact: Redactor | None = None,
     progress: Callable[[str], None] | None = None,
+    split_usage: SplitFn | None = None,
 ) -> dict[str, Any]:
     """Scan ``files`` (newest first) and return the deterministic_candidates block.
 
@@ -1436,7 +1476,7 @@ def run(
                 traces.append(tr)
         if len(files) > len(considered):
             base["sessions_not_scanned_cap"] = len(files) - len(considered)
-        cands, totals, a_partial = analyse(traces, price, redact, total_deadline)
+        cands, totals, a_partial = analyse(traces, price, redact, total_deadline, split_usage)
         partial = partial or a_partial
         base.update(
             status="ok" if cands else "no_data",

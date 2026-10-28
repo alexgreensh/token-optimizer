@@ -53,7 +53,7 @@ This writes hooks to `~/.codex/hooks.json` (`%USERPROFILE%\.codex\hooks.json` on
 python3 "${TO}skills/token-optimizer/scripts/measure.py" --runtime codex codex-doctor --project "$PWD"
 ```
 
-(On Windows use the same `python "$($to.FullName)\..."` path as above, with `codex-doctor --project "$PWD"`.) Finish one Codex turn first. The `Stop hook last run` line shows when the Stop hook last ran and what it did. `skipped: last refresh and checkpoint were under 2 minutes ago` is normal: the dashboard refresh and checkpoint run at most once every 2 minutes.
+(On Windows use the same `python "$($to.FullName)\..."` path as above, with `codex-doctor --project "$PWD"`.) Finish one Codex turn first. The `Stop hook last run` line shows when the Stop hook last ran and what it did. `skipped: last refresh and checkpoint were under 2 minutes ago` is normal: the dashboard refresh and checkpoint run at most once every 2 minutes. The `Hook shell compatibility` line warns if a hook command could only run under cmd.exe: Codex normally runs hooks in PowerShell, so those exit 1 before Token Optimizer starts. Any `measure.py` command repairs them (restart Codex afterwards), or rerun `codex-install`. If a repair is not possible, for example because Python is installed in a folder whose name has `$` or `%`, the line says exactly what to change. The Stop line also lists which fields Codex sent (names only, never values) and whether a checkpoint could be tied to a session.
 
 The default profile is `aggressive` (max savings). It installs:
 

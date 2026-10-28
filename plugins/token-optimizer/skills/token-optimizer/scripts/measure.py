@@ -90,6 +90,7 @@ import tempfile
 import textwrap
 import time
 import types
+import unicodedata
 import platform
 import posixpath
 import shutil
@@ -148,6 +149,13 @@ def _redirect_bytecode_out_of_repo():
 # main-guard line must appear only once in this file, see below.)
 if __name__ in ("__main__",):
     _redirect_bytecode_out_of_repo()
+    # A leading `--runtime NAME` must reach the environment BEFORE plugin_env
+    # (imported just below) fixes its data directories from the active
+    # runtime at import. Applied later, the flag changed hints but every
+    # archive, checkpoint and trends path still pointed at the default
+    # runtime (`measure.py --runtime hermes expand <id>` found nothing).
+    from runtime_env import consume_runtime_flag as _consume_runtime_flag_early
+    sys.argv[:] = _consume_runtime_flag_early(sys.argv, os.environ)
 
 from hook_io import read_stdin_hook_input as _read_stdin_hook_input_shared
 from hook_runtime import (
@@ -2102,6 +2110,178 @@ def _safe_int(value):
         return 0
 
 
+def _context_usage(usage):
+    """Select live executor usage, leaving aggregate usage for billing.
+
+    Advisor/server-tool responses can sum several executor reads in the
+    top-level usage. Only the final message iteration describes occupancy.
+    An unusable final executor falls back to the aggregate, never an older
+    executor (which may describe a different context). Ignore advisor tails.
+    """
+    if isinstance(usage, dict) and isinstance(usage.get("iterations"), list):
+        for iteration in reversed(usage["iterations"]):
+            if isinstance(iteration, dict) and iteration.get("type") == "message":
+                if (_valid_context_usage(iteration)
+                        and _context_token_count(iteration) > 0):
+                    return iteration
+                break
+    return usage
+
+
+def _valid_context_usage(usage):
+    """Reject corrupt present executor buckets before lossy int coercion.
+
+    Missing buckets are optional. TTL splits matter only when the flat
+    cache-write count is absent or zero, matching _context_token_count.
+    """
+    values = [usage[key] for key in ("input_tokens", "cache_read_input_tokens",
+              "cache_creation_input_tokens") if key in usage]
+    if not _safe_int(usage.get("cache_creation_input_tokens")):
+        nested = usage.get("cache_creation", {})
+        if not isinstance(nested, dict):
+            return False
+        for key in ("ephemeral_1h_input_tokens", "ephemeral_5m_input_tokens"):
+            if key in nested:
+                values.append(nested[key])
+            if not nested.get(key) and key in usage:
+                values.append(usage[key])
+    try:
+        return all(math.isfinite(float(value)) and float(value) >= 0
+                   for value in values)
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
+def _resume_usage(usage):
+    """The first executor tests whether the cache survived the pause.
+
+    Later executors may read cache written earlier in this same response;
+    that is not evidence that a keep-warm ping avoided the initial rewrite.
+    Unusable first-executor data keeps the aggregate comparison, not a later
+    executor that could hide a paid rewrite.
+    """
+    if isinstance(usage, dict) and isinstance(usage.get("iterations"), list):
+        for iteration in usage["iterations"]:
+            if isinstance(iteration, dict) and iteration.get("type") == "message":
+                if (_valid_context_usage(iteration)
+                        and _context_token_count(iteration) > 0):
+                    return iteration
+                break
+    return usage
+
+
+_USAGE_BUCKET_KEYS = ("inp", "out", "cr", "cc", "cc_1h", "cc_5m")
+
+
+def _usage_buckets(usage):
+    """Billing buckets of one usage dict (or iteration), never raising."""
+    if not isinstance(usage, dict):
+        return dict.fromkeys(_USAGE_BUCKET_KEYS, 0)
+    nested = usage.get("cache_creation", {})
+    if not isinstance(nested, dict):
+        nested = {}
+    cc_1h = _safe_int(nested.get("ephemeral_1h_input_tokens", 0)
+                      or usage.get("ephemeral_1h_input_tokens", 0))
+    cc_5m = _safe_int(nested.get("ephemeral_5m_input_tokens", 0)
+                      or usage.get("ephemeral_5m_input_tokens", 0))
+    return {
+        "inp": max(0, _safe_int(usage.get("input_tokens", 0))),
+        "out": max(0, _safe_int(usage.get("output_tokens", 0))),
+        "cr": max(0, _safe_int(usage.get("cache_read_input_tokens", 0))),
+        "cc": max(0, _safe_int(usage.get("cache_creation_input_tokens", 0))
+                  or (cc_1h + cc_5m)),
+        "cc_1h": max(0, cc_1h),
+        "cc_5m": max(0, cc_5m),
+    }
+
+
+def _billed_usage_parts(usage, model, tier=None):
+    """Split one response's usage into [(price_model, buckets), ...].
+
+    The first part is the executor (priced at the response model). Advisor
+    iterations (type "advisor_message") run on the advisor's own model, so
+    each becomes its own part priced at that model when the rate card knows
+    it, else at the executor model. Tokens are never dropped: when the
+    top-level usage already covers the advisor tokens they are moved out of
+    the executor part, otherwise (the documented shape, top-level is the
+    executor sum only) they are added on top.
+    """
+    agg = _usage_buckets(usage)
+    iterations = usage.get("iterations") if isinstance(usage, dict) else None
+    if not isinstance(iterations, list):
+        return [(model, agg)]
+    executor_sum = dict.fromkeys(_USAGE_BUCKET_KEYS, 0)
+    advisor_sum = dict.fromkeys(_USAGE_BUCKET_KEYS, 0)
+    advisors = []
+    for iteration in iterations:
+        if not isinstance(iteration, dict):
+            continue
+        kind = iteration.get("type")
+        if kind == "message":
+            for k, v in _usage_buckets(iteration).items():
+                executor_sum[k] += v
+        elif kind == "advisor_message":
+            buckets = _usage_buckets(iteration)
+            if not any(buckets.values()):
+                continue
+            adv_model = iteration.get("model")
+            if not (isinstance(adv_model, str) and adv_model
+                    and _is_priced_model(adv_model, tier)):
+                adv_model = model
+            advisors.append((adv_model, buckets))
+            for k, v in buckets.items():
+                advisor_sum[k] += v
+    if not advisors:
+        return [(model, agg)]
+    executor = dict(agg)
+    if all(agg[k] >= executor_sum[k] + advisor_sum[k] for k in _USAGE_BUCKET_KEYS):
+        executor = {k: agg[k] - advisor_sum[k] for k in _USAGE_BUCKET_KEYS}
+    return [(model, executor)] + advisors
+
+
+def _price_usage_parts(parts, tier=None, per_request=False, ttl_split=True):
+    """USD for _billed_usage_parts output; cache writes priced by TTL split."""
+    total = 0.0
+    for part_model, b in parts:
+        if ttl_split and (b["cc_1h"] or b["cc_5m"]):
+            total += _get_model_cost(part_model, b["inp"], b["out"], b["cr"], b["cc"],
+                                     tier=tier, cache_create_1h=b["cc_1h"],
+                                     cache_create_5m=b["cc_5m"], per_request=per_request)
+        else:
+            total += _get_model_cost(part_model, b["inp"], b["out"], b["cr"], b["cc"],
+                                     tier=tier, per_request=per_request)
+    return total
+
+
+def _turn_prefix_cached(turn):
+    """Cached prefix a turn leaves behind: final executor when known (#287)."""
+    if "ctx_cache" in turn:
+        return max(0, _safe_int(turn.get("ctx_cache")))
+    return _safe_int(turn.get("cache_read")) + _safe_int(turn.get("cache_creation"))
+
+
+def _turn_resume_write(turn):
+    """Cache written when a turn starts: first executor when known (#287)."""
+    if "resume_cache_creation" in turn:
+        return max(0, _safe_int(turn.get("resume_cache_creation")))
+    return _safe_int(turn.get("cache_creation"))
+
+
+def _context_token_count(usage):
+    """Input footprint, including flat or TTL-split cache writes."""
+    if not isinstance(usage, dict):
+        return 0
+    creation = _safe_int(usage.get("cache_creation_input_tokens"))
+    if not creation:
+        nested = usage.get("cache_creation")
+        if not isinstance(nested, dict):
+            nested = {}
+        creation = sum(_safe_int(nested.get(key) or usage.get(key)) for key in (
+            "ephemeral_1h_input_tokens", "ephemeral_5m_input_tokens"))
+    return (_safe_int(usage.get("input_tokens"))
+            + _safe_int(usage.get("cache_read_input_tokens")) + creation)
+
+
 def estimate_tokens_from_file(filepath):
     """Estimate tokens by reading file content (character count / 4)."""
     try:
@@ -2354,12 +2534,9 @@ def get_session_baselines(limit=10):
                         if "message" in data and isinstance(data["message"], dict):
                             msg = data["message"]
                             if "usage" in msg:
-                                u = msg["usage"]
-                                first_usage = (
-                                    u.get("input_tokens", 0)
-                                    + u.get("cache_creation_input_tokens", 0)
-                                    + u.get("cache_read_input_tokens", 0)
-                                )
+                                # Context size, not the advisor-summed bill (#287).
+                                first_usage = _context_token_count(
+                                    _context_usage(msg["usage"]))
                                 break
                     except (json.JSONDecodeError, KeyError, TypeError):
                         continue
@@ -7166,9 +7343,16 @@ def _collect_copilot_hook_status_for_dashboard():
     return {
         "copilot_hooks": {
             "installed": _ok("TO hook config"),
-            "partial": by_name.get("TO hook config", {}).get("status") == "warn",
+            # Installed stays tied to the hook config; a dead legacy `stop` entry
+            # or a bridge that cannot find measure.py (session-end refresh paused), or a
+            # damaged hook payload (missing bridge modules) is installed-but-partial,
+            # not healthy.
+            "partial": any(
+                by_name.get(n, {}).get("status") == "warn"
+                for n in ("TO hook config", "TO session-end hook", "session-end refresh")
+            ) or by_name.get("hook payload", {}).get("status") in ("warn", "fail"),
             "label": "Copilot CLI Hooks",
-            "description": "Wires Token Optimizer into ~/.copilot/hooks/: sessionStart continuity restore, preToolUse bash compression (capability-gated), postToolUse crash-recovery tally + nudges, stop-time rollup.",
+            "description": "Wires Token Optimizer into ~/.copilot/hooks/: sessionStart continuity restore, preToolUse bash compression (capability-gated), postToolUse crash-recovery tally + nudges, session-end rollup.",
             "install_cmd": install_cmd,
             "uninstall_cmd": f"{_runtime_cli('copilot')} copilot-uninstall",
         },
@@ -8737,6 +8921,59 @@ def _session_refresh_due(min_interval_seconds=120):
 HOOK_STATUS_FILE = RUNTIME_DIR / "token-optimizer" / "hook-status.json"
 
 
+def _pid_is_running(pid):
+    """True when process ``pid`` exists, on every OS. Never raises.
+
+    ``os.kill(pid, 0)`` is a liveness probe only on POSIX. On Windows signal 0
+    is CTRL_C_EVENT: Python calls GenerateConsoleCtrlEvent, which fails for
+    any pid when the caller has no console (hooks run detached, so a live lock
+    owner read as dead) and, with a console, interrupts the whole console
+    group. Windows asks the process table instead. When the answer is unknown
+    the process counts as running, so a lock is never stolen from a live owner.
+    """
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        return _win_pid_is_running(pid)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists, owned by someone else
+    except OSError:
+        return False
+    return True
+
+
+def _win_pid_is_running(pid):
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            # 5 = access denied: the process exists but is not ours.
+            # 87 = invalid parameter: no such process.
+            return ctypes.get_last_error() != 87
+        try:
+            code = wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return True
+            return code.value == 259  # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:
+        return True
+
+
 def _record_hook_status(key, result):
     """Remember the last outcome of a background hook job, for the doctor.
 
@@ -8758,6 +8995,39 @@ def _record_hook_status(key, result):
         os.replace(tmp, HOOK_STATUS_FILE)
     except Exception:
         pass
+
+
+def _flush_capture_checkpoint(args):
+    """The checkpoint step of the deferred Stop/SessionEnd flush worker.
+
+    The worker has no stdin, so the Stop runner hands it the session identity
+    the host gave the hook as ``--session-id`` / ``--transcript-path``. On Codex
+    with no identity from the host or the environment, no checkpoint is
+    written: an anonymous "unknown" file can outrank real ones on restore
+    (issue #278). Returns the checkpoint path or None.
+    """
+    flush_trigger = "end"
+    sid = None
+    transcript = None
+    for i, a in enumerate(args):
+        if a == "--trigger" and i + 1 < len(args):
+            flush_trigger = args[i + 1]
+        elif a == "--session-id" and i + 1 < len(args):
+            sid = args[i + 1]
+        elif a == "--transcript-path" and i + 1 < len(args):
+            transcript = args[i + 1]
+    if (_use_codex_session_adapter() and not sid and not transcript
+            and _find_current_session_jsonl() is None):
+        _record_hook_status(
+            "stop_capture",
+            "skipped: the Stop hook payload and environment carried no session id")
+        return None
+    path = compact_capture(trigger=flush_trigger, backfill_tools=True,
+                           session_id=sid, transcript_path=transcript)
+    _record_hook_status(
+        "stop_capture",
+        "ok: checkpoint written" if path else "no checkpoint written (session transcript not found)")
+    return path
 
 
 def _run_session_end_flush_worker(args, budget_seconds=20):
@@ -8844,11 +9114,7 @@ def _run_session_end_flush_worker(args, budget_seconds=20):
             except Exception:
                 pass
             try:
-                flush_trigger = "end"
-                for i, a in enumerate(args):
-                    if a == "--trigger" and i + 1 < len(args):
-                        flush_trigger = args[i + 1]
-                compact_capture(trigger=flush_trigger, backfill_tools=True)
+                _flush_capture_checkpoint(args)
             except Exception:
                 pass
             # Data-retention enforcement (enterprise compliance)
@@ -10432,7 +10698,8 @@ def _deterministic_candidates_data(days=30, budget_s=_DETCAND_COACH_BUDGET_S,
                  if _sidechain_path_reason(jf) is None]
         return deterministic_candidates.run(
             runtime, files, price, days=days, budget_s=budget_s, max_sessions=max_sessions,
-            cache_dir=SNAPSHOT_DIR, tier=tier, use_cache=use_cache, progress=progress)
+            cache_dir=SNAPSHOT_DIR, tier=tier, use_cache=use_cache, progress=progress,
+            split_usage=lambda model, usage: _billed_usage_parts(usage, model, tier=tier))
     except Exception as exc:  # never break coach --json
         return {"status": "error", "runtime": runtime, "partial": True, "candidates": [],
                 "basis": deterministic_candidates.BASIS,
@@ -11825,21 +12092,14 @@ def _extract_costly_prompts(jsonl_path, tier=None, top_n=5):
                     if is_sidechain:
                         continue
                     content = msg.get("content") if isinstance(msg, dict) else msg
-                    text = ""
-                    if isinstance(content, str):
-                        text = content
-                    elif isinstance(content, list):
+                    if isinstance(content, list):
                         # Skip if all items are tool_result
                         types = [i.get("type") for i in content if isinstance(i, dict)]
                         if types and all(t == "tool_result" for t in types):
                             continue
-                        for block in content:
-                            if isinstance(block, dict) and block.get("type") == "text":
-                                text = block.get("text", "")
-                                break
-                            elif isinstance(block, str):
-                                text = block
-                                break
+                    # Same filter as checkpoints: harness text (meta records,
+                    # compact summaries, command caveats) is not a prompt.
+                    text = _task_user_text(record)
                     if text and len(text) > 5:
                         pending_prompt = {
                             "text": text[:300],
@@ -11857,8 +12117,9 @@ def _extract_costly_prompts(jsonl_path, tier=None, top_n=5):
                         cr = _safe_int(usage.get("cache_read_input_tokens", 0))
                         cc = _safe_int(usage.get("cache_creation_input_tokens", 0))
                         model = _record_model(msg)
-                        cost = _get_model_cost(model, inp, out, cr, cc, tier=tier,
-                                               per_request=True)
+                        cost = _price_usage_parts(
+                            _billed_usage_parts(usage, model, tier=tier),
+                            tier=tier, per_request=True, ttl_split=False)
                         pending_prompt["tokens_in"] = inp + cr + cc
                         pending_prompt["tokens_out"] = out
                         pending_prompt["fresh_input"] = inp
@@ -12198,22 +12459,10 @@ def _parse_session_jsonl(filepath, window_start=None, window_end=None):
 
                 rec_type = record.get("type")
 
-                # Extract topic from first user message
+                # Topic and checkpoint task share a human-task-only view. Keep
+                # raw user text for message scoring and slash-skill accounting.
                 if rec_type == "user" and topic is None:
-                    msg = record.get("message", {})
-                    content = msg.get("content") if isinstance(msg, dict) else msg
-                    if isinstance(content, str):
-                        topic = _extract_topic(content)
-                    elif isinstance(content, list):
-                        for block in content:
-                            if isinstance(block, dict) and block.get("type") == "text":
-                                topic = _extract_topic(block.get("text", ""))
-                                if topic:
-                                    break
-                            elif isinstance(block, str):
-                                topic = _extract_topic(block)
-                                if topic:
-                                    break
+                    topic = _extract_topic(_task_user_text(record))
 
                 if rec_type in ("user", "assistant"):
                     _conversation_records += 1
@@ -12256,6 +12505,8 @@ def _parse_session_jsonl(filepath, window_start=None, window_end=None):
                         isinstance(b, dict) and b.get("type") == "tool_result" for b in _c
                     ):
                         pass                         # tool output, not a human turn
+                    elif record.get("isMeta") or record.get("isCompactSummary"):
+                        pass                         # harness-written, not a human turn
                     else:
                         message_count += 1
 
@@ -12355,26 +12606,31 @@ def _parse_session_jsonl(filepath, window_start=None, window_end=None):
                         # each other — use the map's own size as a monotonic
                         # per-session counter.
                         key = req_id if req_id else f"__noreq__{len(request_usage_map)}"
-                        prev = request_usage_map.get(key)
-                        if prev is None:
-                            request_usage_map[key] = {
-                                "inp": inp_tok, "out": out_tok, "cr": cr, "cc": cc,
-                                "cc_1h": cc_1h, "cc_5m": cc_5m, "model": model,
-                                "ts": ts_str,
-                            }
-                        else:
-                            # Streaming: keep MAX of each token category.
-                            # Model + timestamp: prefer later (non-empty) values.
-                            prev["inp"] = max(prev["inp"], inp_tok)
-                            prev["out"] = max(prev["out"], out_tok)
-                            prev["cr"] = max(prev["cr"], cr)
-                            prev["cc"] = max(prev["cc"], cc)
-                            prev["cc_1h"] = max(prev["cc_1h"], cc_1h)
-                            prev["cc_5m"] = max(prev["cc_5m"], cc_5m)
-                            if model and model != "unknown":
-                                prev["model"] = model
-                            if ts_str:
-                                prev["ts"] = ts_str
+                        # Advisor iterations bill at the advisor's own model:
+                        # each is a separate entry under "<request>#advisor<n>"
+                        # so streamed copies still dedup by MAX per entry.
+                        parts = _billed_usage_parts(usage, model)
+                        for part_index, (part_model, b) in enumerate(parts):
+                            part_key = key if part_index == 0 else f"{key}#advisor{part_index}"
+                            prev = request_usage_map.get(part_key)
+                            if prev is None:
+                                request_usage_map[part_key] = {
+                                    "inp": b["inp"], "out": b["out"], "cr": b["cr"],
+                                    "cc": b["cc"], "cc_1h": b["cc_1h"],
+                                    "cc_5m": b["cc_5m"], "model": part_model,
+                                    "ts": ts_str,
+                                }
+                                if part_index:
+                                    request_usage_map[part_key]["advisor"] = True
+                            else:
+                                # Streaming: keep MAX of each token category.
+                                # Model + timestamp: prefer later (non-empty) values.
+                                for field in _USAGE_BUCKET_KEYS:
+                                    prev[field] = max(prev[field], b[field])
+                                if part_model and part_model != "unknown":
+                                    prev["model"] = part_model
+                                if ts_str:
+                                    prev["ts"] = ts_str
 
     except (PermissionError, OSError):
         return None
@@ -12401,9 +12657,11 @@ def _parse_session_jsonl(filepath, window_start=None, window_end=None):
         total_cache_create += u["cc"]
         total_cache_create_1h += u["cc_1h"]
         total_cache_create_5m += u["cc_5m"]
-        api_calls += 1
         ts_s = u.get("ts")
-        if ts_s and isinstance(ts_s, str):
+        if not u.get("advisor"):
+            # An advisor part belongs to its request: not another API call.
+            api_calls += 1
+        if ts_s and isinstance(ts_s, str) and not u.get("advisor"):
             try:
                 api_call_timestamps.append(datetime.fromisoformat(ts_s.replace("Z", "+00:00")))
             except (ValueError, TypeError):
@@ -12599,14 +12857,8 @@ def parse_session_turns(filepath):
                         prev_call_ts = call_ts
                     except (ValueError, TypeError):
                         pass
-                # Price cache-create by TTL tier when the per-turn split is available.
-                if cc_1h or cc_5m:
-                    cost = _get_model_cost(model, inp_tok, out_tok, cr, cc, tier=tier,
-                                           cache_create_1h=cc_1h, cache_create_5m=cc_5m,
-                                           per_request=True)
-                else:
-                    cost = _get_model_cost(model, inp_tok, out_tok, cr, cc, tier=tier,
-                                           per_request=True)
+                cost = _price_usage_parts(_billed_usage_parts(usage, model, tier=tier),
+                                          tier=tier, per_request=True)
 
                 turns.append({
                     "turn_index": turn_index,
@@ -12623,6 +12875,22 @@ def parse_session_turns(filepath):
                     "tools_used": tools,
                     "cost_usd": round(cost, 6),
                 })
+                ctx_usage = _context_usage(usage)
+                if ctx_usage is not usage:
+                    # Cached prefix the next turn can reuse: the final executor
+                    # only, matching the live keep-warm arm (#287).
+                    turns[-1]["ctx_cache"] = (
+                        _context_token_count(ctx_usage)
+                        - _safe_int(ctx_usage.get("input_tokens")))
+                resume_usage = _resume_usage(usage)
+                if resume_usage is not usage:
+                    # Billing stays aggregate; pause warmth uses the first
+                    # executor, before any cache writes inside this response.
+                    resume_read = _safe_int(resume_usage.get("cache_read_input_tokens"))
+                    turns[-1]["resume_cache_read"] = resume_read
+                    turns[-1]["resume_cache_creation"] = (
+                        _context_token_count(resume_usage) - resume_read
+                        - _safe_int(resume_usage.get("input_tokens")))
                 turn_index += 1
 
     except (PermissionError, OSError):
@@ -13417,6 +13685,32 @@ def _origin_insert_parts(conn, table):
     return "", "", ()
 
 
+def _claude_projects_like_patterns() -> tuple:
+    """Prefix LIKE patterns (ESCAPE '!') for transcripts under the resolved
+    Claude config's projects/ dir, or () when that is the default ~/.claude
+    (the literal pattern already covers it) or unresolvable.
+
+    Anchored at the start of the path, so a "copilot:"/"hermes:" dedup key or
+    a path that merely contains the folder name further down never matches.
+    Forward slashes only: callers match it against _PLATFORM_PATH_SQL, which
+    folds the backslashes of rows written on Windows to forward slashes.
+    """
+    try:
+        projects = Path(CLAUDE_DIR) / "projects"
+        if projects == Path(HOME) / ".claude" / "projects":
+            return ()
+        form = str(projects).replace("\\", "/")
+        esc = form.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+        return (esc + "/%",)
+    except Exception:
+        return ()
+
+
+# session_log.jsonl_path with Windows backslashes folded to forward slashes,
+# so one path pattern matches rows written on every OS (the platform backfill).
+_PLATFORM_PATH_SQL = "REPLACE(jsonl_path, '\\', '/')"
+
+
 def _init_trends_db():
     """Initialize the trends SQLite DB. Returns a connection.
     
@@ -13586,52 +13880,47 @@ def _init_trends_db():
     # running collector.
     _platform_patterns = ("%/.claude/projects/%", "%/.codex/sessions/%", "%/.codex/archived_sessions/%",
                           "hermes:%", "copilot:%", "cursor:%", "antigravity:%")
+    # A relocated Claude config (CLAUDE_CONFIG_DIR) keeps its transcripts under
+    # <config>/projects/, which the literal ~/.claude pattern above misses.
+    _claude_cfg_patterns = _claude_projects_like_patterns()
+    # Paths are matched with backslashes folded to '/', so a row written on
+    # Windows (C:\Users\me\.claude\projects\...) is tagged like a POSIX one.
+    _p = _PLATFORM_PATH_SQL
+    _cfg_where = " OR ".join([f"{_p} LIKE ? ESCAPE '!'"] * len(_claude_cfg_patterns))
     try:
         _needs_platform = conn.execute(
             "SELECT 1 FROM session_log WHERE platform IS NULL AND ("
-            + " OR ".join(["jsonl_path LIKE ?"] * len(_platform_patterns)) + ") LIMIT 1",
-            _platform_patterns,
+            + " OR ".join([f"{_p} LIKE ?"] * len(_platform_patterns))
+            + (" OR " + _cfg_where if _cfg_where else "") + ") LIMIT 1",
+            _platform_patterns + _claude_cfg_patterns,
         ).fetchone()
     except sqlite3.Error:
         _needs_platform = True
     try:
         if not _needs_platform:
             raise _SkipMigration
-        conn.execute(
-            "UPDATE session_log SET platform = 'claude' "
-            "WHERE platform IS NULL "
-            "AND jsonl_path LIKE '%/.claude/projects/%'"
-        )
-        conn.execute(
-            "UPDATE session_log SET platform = 'codex' "
-            "WHERE platform IS NULL "
-            "AND jsonl_path LIKE '%/.codex/sessions/%'"
-        )
-        conn.execute(
-            "UPDATE session_log SET platform = 'codex' "
-            "WHERE platform IS NULL "
-            "AND jsonl_path LIKE '%/.codex/archived_sessions/%'"
-        )
-        conn.execute(
-            "UPDATE session_log SET platform = 'hermes' "
-            "WHERE platform IS NULL "
-            "AND jsonl_path LIKE 'hermes:%'"
-        )
-        conn.execute(
-            "UPDATE session_log SET platform = 'copilot' "
-            "WHERE platform IS NULL "
-            "AND jsonl_path LIKE 'copilot:%'"
-        )
-        conn.execute(
-            "UPDATE session_log SET platform = 'cursor' "
-            "WHERE platform IS NULL "
-            "AND jsonl_path LIKE 'cursor:%'"
-        )
-        conn.execute(
-            "UPDATE session_log SET platform = 'antigravity' "
-            "WHERE platform IS NULL "
-            "AND jsonl_path LIKE 'antigravity:%'"
-        )
+        for _platform, _pattern in (("claude", "%/.claude/projects/%"),
+                                    ("codex", "%/.codex/sessions/%"),
+                                    ("codex", "%/.codex/archived_sessions/%"),
+                                    ("hermes", "hermes:%"),
+                                    ("copilot", "copilot:%"),
+                                    ("cursor", "cursor:%"),
+                                    ("antigravity", "antigravity:%")):
+            conn.execute(
+                f"UPDATE session_log SET platform = ? WHERE platform IS NULL AND {_p} LIKE ?",
+                (_platform, _pattern),
+            )
+        # Last, so every other runtime's definitive pattern has claimed its rows
+        # first; the Codex path patterns are excluded again so a config dir
+        # that happens to sit inside a Codex home can never tag a Codex file.
+        if _cfg_where:
+            conn.execute(
+                "UPDATE session_log SET platform = 'claude' "
+                "WHERE platform IS NULL AND (" + _cfg_where + ") "
+                f"AND {_p} NOT LIKE '%/.codex/sessions/%' "
+                f"AND {_p} NOT LIKE '%/.codex/archived_sessions/%'",
+                _claude_cfg_patterns,
+            )
         conn.commit()
     except _SkipMigration:
         pass
@@ -15573,21 +15862,10 @@ def _keepwarm_prefix_proxy(usage):
     cache_creation may be the flat int field OR a nested object (sum its ephemeral
     splits). Falls back to 0 on malformed input.
     """
+    usage = _context_usage(usage)
     if not isinstance(usage, dict):
         return 0
-    cr = int(usage.get("cache_read_input_tokens", 0) or 0)
-    cc = usage.get("cache_creation_input_tokens", 0)
-    if cc is None:
-        cc = 0
-    cc = int(cc or 0)
-    if cc == 0:
-        nested = usage.get("cache_creation", {})
-        if isinstance(nested, dict):
-            cc = int(
-                (nested.get("ephemeral_1h_input_tokens", 0) or 0)
-                + (nested.get("ephemeral_5m_input_tokens", 0) or 0)
-            )
-    return cr + cc
+    return _context_token_count(usage) - _safe_int(usage.get("input_tokens"))
 
 
 def _keepwarm_iso_to_epoch(ts):
@@ -16417,6 +16695,10 @@ def _keepwarm_resolve_claude_bin():
         Path("/usr/local/bin/claude"),
         home / ".local" / "bin" / "claude",
     ]
+    # Claude Code's local installer lives under its config dir, so a relocated
+    # CLAUDE_CONFIG_DIR moves it off ~/.claude/local.
+    if CLAUDE_DIR / "local" / "claude" not in candidates:
+        candidates.insert(1, CLAUDE_DIR / "local" / "claude")
     for cand in candidates:
         try:
             if cand.is_file() and os.access(str(cand), os.X_OK):
@@ -16440,13 +16722,7 @@ def _keepwarm_scheduler_install_lock(soft_fail=False):
     max_age = 10 * 60
 
     def _pid_alive(pid):
-        if pid <= 0:
-            return False
-        try:
-            os.kill(pid, 0)
-            return True
-        except OSError:
-            return False
+        return _pid_is_running(pid)
 
     def _try_reclaim_stale():
         try:
@@ -17349,15 +17625,7 @@ def _keepwarm_acquire_ping_lock(session_id, now=None):
             owner_pid = None
         alive = False
         if owner_pid and owner_pid > 0:
-            try:
-                os.kill(owner_pid, 0)
-                alive = True
-            except ProcessLookupError:
-                alive = False
-            except PermissionError:
-                alive = True  # exists but not ours -> treat as live
-            except OSError:
-                alive = False
+            alive = _pid_is_running(owner_pid)
         if not alive and age > _KEEPWARM_STALE_LOCK_SECONDS:
             try:
                 os.unlink(str(lock_path))
@@ -17831,15 +18099,7 @@ def _keepwarm_tick_singleton():
                     owner = None
                 alive = False
                 if owner and owner > 0:
-                    try:
-                        os.kill(owner, 0)
-                        alive = True
-                    except ProcessLookupError:
-                        alive = False
-                    except PermissionError:
-                        alive = True
-                    except OSError:
-                        alive = False
+                    alive = _pid_is_running(owner)
                 if not alive and (now - st.st_mtime) > _KEEPWARM_STALE_LOCK_SECONDS:
                     try:
                         os.unlink(str(lock_path))
@@ -18218,9 +18478,10 @@ def _keepwarm_reconstruct_session_events(turns, now):
         gap = cur_epoch - prev_epoch
         if gap <= boundary:
             continue
-        prev_cached = (int(prev_turn.get("cache_read", 0) or 0)
-                       + int(prev_turn.get("cache_creation", 0) or 0))
-        cc = int(cur_turn.get("cache_creation", 0) or 0)
+        # Executor occupancy, not the advisor-summed aggregate (#287), so
+        # replay agrees with the live arm path.
+        prev_cached = _turn_prefix_cached(prev_turn)
+        cc = _turn_resume_write(cur_turn)
         if prev_cached <= 0:
             continue
         rewrote = cc >= _CACHE_REWRITE_PREFIX_FRACTION * prev_cached
@@ -18237,8 +18498,7 @@ def _keepwarm_reconstruct_session_events(turns, now):
         })
 
     last_epoch, last_turn = parsed[-1]
-    last_cached = (int(last_turn.get("cache_read", 0) or 0)
-                   + int(last_turn.get("cache_creation", 0) or 0))
+    last_cached = _turn_prefix_cached(last_turn)
     tail = None
     # Only a tail that idled past the boundary AND had a cacheable prefix is a
     # ping candidate (matches the live arm eligibility floor downstream).
@@ -18955,8 +19215,8 @@ def keepwarm_resume_is_warm(turn, prefix_proxy):
         prefix = 0
     if prefix <= 0 or not isinstance(turn, dict):
         return None
-    cr = int(turn.get("cache_read", 0) or 0)
-    cc = int(turn.get("cache_creation", 0) or 0)
+    cr = int(turn.get("resume_cache_read", turn.get("cache_read", 0)) or 0)
+    cc = int(turn.get("resume_cache_creation", turn.get("cache_creation", 0)) or 0)
     warm = (cr >= _KEEPWARM_WARM_READ_FRACTION * prefix
             and cc < _KEEPWARM_WARM_WRITE_FRACTION * prefix)
     return bool(warm)
@@ -20955,7 +21215,9 @@ def subagent_cache_payoff(days=30, now=None, since_ts=None,
             reqs = []
             for u in (parsed.get("request_usage") or {}).values():
                 ts_s = u.get("ts")
-                if not ts_s or not isinstance(ts_s, str):
+                if u.get("advisor") or not ts_s or not isinstance(ts_s, str):
+                    # Advisor parts run on the advisor's own cache, not this
+                    # subagent's prefix.
                     continue
                 try:
                     ts = datetime.fromisoformat(ts_s.replace("Z", "+00:00")).timestamp()
@@ -22466,13 +22728,15 @@ def _detect_explicit_ttl(turns, tier_data, profile, dominant_model=None, detail_
             first_write_tokens = cc
         if prev is not None:
             gap = turn.get("gap_since_prev_seconds")
-            prev_cached = int(prev.get("cache_read", 0) or 0) + int(prev.get("cache_creation", 0) or 0)
+            # Threshold basis is executor occupancy (#287); the dollars below
+            # stay on the billed aggregate `cc`.
+            prev_cached = _turn_prefix_cached(prev)
             if (
                 gap is not None
                 and boundary is not None
                 and gap > boundary
                 and prev_cached > 0
-                and cc >= _CACHE_REWRITE_PREFIX_FRACTION * prev_cached
+                and _turn_resume_write(turn) >= _CACHE_REWRITE_PREFIX_FRACTION * prev_cached
             ):
                 if cc_1h or cc_5m:
                     split_1h = min(cc_1h, cc)
@@ -24073,6 +24337,68 @@ def _migrate_streaming_dedup(conn, quiet=False):
         print(f"  [Token Optimizer] migration failed: {e}", file=sys.stderr)
 
 
+def _hermes_refresh_session_totals(conn, dedup_key, parsed):
+    """Refresh an existing Hermes row's per-session numbers from a newer snapshot.
+
+    Returns True when the row was updated. The rule is monotonic: Hermes's
+    state.db message and token counters only grow during a session, so the new
+    snapshot wins only when it is >= the stored row on every counter and > on
+    at least one. Quality and skills columns keep their own rules (they need a
+    rollup's live reading) and are not touched here.
+    """
+    stored = conn.execute(
+        "SELECT message_count, input_tokens, output_tokens, api_calls "
+        "FROM session_log WHERE jsonl_path = ?",
+        (dedup_key,),
+    ).fetchone()
+    if stored is None:
+        return False
+    new = (
+        int(parsed.get("message_count") or 0),
+        int(parsed.get("total_input_tokens") or 0),
+        int(parsed.get("total_output_tokens") or 0),
+        int(parsed.get("api_calls") or 0),
+    )
+    old = tuple(int(v or 0) for v in stored)
+    if any(n < o for n, o in zip(new, old)) or new == old:
+        return False
+    conn.execute(
+        """UPDATE session_log
+           SET duration_minutes = ?, input_tokens = ?, output_tokens = ?,
+               message_count = ?, api_calls = ?, cache_hit_rate = ?,
+               cache_create_1h_tokens = ?, cache_create_5m_tokens = ?,
+               avg_call_gap_seconds = ?, max_call_gap_seconds = ?,
+               p95_call_gap_seconds = ?, subagents_json = ?, tool_calls_json = ?,
+               model_usage_json = ?, all_model_usage_json = ?,
+               model_usage_breakdown_json = ?, version = ?, topic = ?,
+               collected_at = ?
+           WHERE jsonl_path = ?""",
+        (
+            parsed["duration_minutes"],
+            parsed["total_input_tokens"],
+            parsed["total_output_tokens"],
+            parsed["message_count"],
+            parsed.get("api_calls", 0),
+            parsed["cache_hit_rate"],
+            parsed.get("total_cache_create_1h", 0),
+            parsed.get("total_cache_create_5m", 0),
+            parsed.get("avg_call_gap_seconds"),
+            parsed.get("max_call_gap_seconds"),
+            parsed.get("p95_call_gap_seconds"),
+            json.dumps(parsed.get("subagents_used", {})),
+            json.dumps(parsed.get("tool_calls", {})),
+            json.dumps(parsed.get("model_usage", {})),
+            json.dumps(parsed.get("model_usage", {})),
+            json.dumps(parsed.get("model_usage_breakdown", {})),
+            parsed.get("version"),
+            parsed.get("topic"),
+            datetime.now().isoformat(),
+            dedup_key,
+        ),
+    )
+    return True
+
+
 def _collect_hermes_sessions(days=90, quiet=False, rebuild=False):
     """Collect Hermes sessions from state.db into the trends DB.
 
@@ -24115,6 +24441,11 @@ def _collect_hermes_sessions(days=90, quiet=False, rebuild=False):
             parsed = hermes_session.normalize_session(row, context_tokens=live_context_tokens)
             if not parsed:
                 continue
+            # Skill loads the plugin counted from Hermes's on_skill_lifecycle
+            # hook (state.db does not record them).
+            rollup_skills = globals().get("_HERMES_ROLLUP_SKILLS", {}).get(session_id)
+            if rollup_skills:
+                parsed["skills_used"] = dict(rollup_skills)
 
             slug = parsed.get("slug") or ""
             dedup_key = f"hermes:{slug}" if slug else None
@@ -24122,6 +24453,17 @@ def _collect_hermes_sessions(days=90, quiet=False, rebuild=False):
                 continue
 
             if _is_file_collected(conn, dedup_key):
+                # A collect that ran while the session was still live stored
+                # its totals at that point. Hermes's state.db counters only
+                # grow, so refresh the per-session numbers whenever this
+                # snapshot is at least as far along on every counter and ahead
+                # on one. A snapshot behind on any counter is stale (e.g. a
+                # dashboard collect that read state.db before a finished
+                # rollup wrote) and never overwrites the newer row. Totals are
+                # replaced, never added, and the aggregates are rebuilt from
+                # session_log, so a refresh cannot double count.
+                if _hermes_refresh_session_totals(conn, dedup_key, parsed):
+                    updated_count += 1
                 # A rollup carries the session's live occupancy, which an
                 # earlier mid-session collect could not see. Refresh the stored
                 # grade in place so the first write does not freeze a
@@ -24137,6 +24479,12 @@ def _collect_hermes_sessions(days=90, quiet=False, rebuild=False):
                             parsed.get("quality_grade", "F"),
                             dedup_key,
                         ),
+                    )
+                    updated_count += 1
+                if rollup_skills:
+                    conn.execute(
+                        "UPDATE session_log SET skills_json = ? WHERE jsonl_path = ?",
+                        (json.dumps(parsed["skills_used"]), dedup_key),
                     )
                     updated_count += 1
                 continue
@@ -24212,6 +24560,44 @@ def _collect_hermes_sessions(days=90, quiet=False, rebuild=False):
     return new_count
 
 
+_HERMES_SKILLS_MAX = 200
+
+
+def _parse_hermes_rollup_skills(args):
+    """Parse ``--session`` + ``--skills-json`` out of hermes-rollup CLI args.
+
+    Returns ``{session_id: {skill_name: loads}}`` or ``{}``. The JSON comes
+    from the plugin's in-memory count; anything malformed is dropped, names
+    are capped at 128 characters and counts must be positive integers.
+    """
+    session = ""
+    raw = ""
+    i = 0
+    while i < len(args):
+        if args[i] == "--session" and i + 1 < len(args):
+            session = args[i + 1]
+            i += 2
+        elif args[i] == "--skills-json" and i + 1 < len(args):
+            raw = args[i + 1]
+            i += 2
+        else:
+            i += 1
+    if not session or not raw or len(raw) > 65_536:
+        return {}
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    skills = {}
+    for name, count in list(data.items())[:_HERMES_SKILLS_MAX]:
+        if (isinstance(name, str) and name.strip() and isinstance(count, int)
+                and not isinstance(count, bool) and count > 0):
+            skills[name.strip()[:128]] = min(count, 1_000_000)
+    return {session: skills} if skills else {}
+
+
 def _parse_hermes_rollup_context(args):
     """Parse ``--session``/``--context-tokens`` out of hermes-rollup CLI args.
 
@@ -24241,6 +24627,186 @@ def _parse_hermes_rollup_context(args):
         else:
             i += 1
     return {session: context_tokens} if session and context_tokens is not None else {}
+
+
+# Private scratch dir for the short-lived transcript a Hermes checkpoint is
+# built from. Files are removed right after use; stragglers from a killed run
+# are swept after a day.
+_HERMES_TRANSCRIPT_STALE_SECONDS = 24 * 3600
+
+
+def _hermes_transcript_dir():
+    return CHECKPOINT_DIR.parent / "hermes-transcripts"
+
+
+def _sweep_hermes_transcripts(directory, now=None):
+    now = time.time() if now is None else now
+    try:
+        for p in directory.glob("*.jsonl"):
+            try:
+                if not p.is_symlink() and now - p.stat().st_mtime > _HERMES_TRANSCRIPT_STALE_SECONDS:
+                    p.unlink()
+            except OSError:
+                continue
+    except OSError:
+        pass
+
+
+def hermes_checkpoint(session_id, trigger="stop", fill_pct=None, cwd=None):
+    """Write a session checkpoint for a Hermes session.
+
+    Hermes keeps its transcript in state.db, not a JSONL file. Read the
+    session's messages read-only, translate them into the record shape the
+    shared checkpoint engine reads, and hand that to ``compact_capture``. The
+    translated file lives in Token Optimizer's own private directory for the
+    duration of the call only.
+
+    Returns the checkpoint path, or None (no session id, no messages, or the
+    engine declined). Never falls back to guessing another transcript: a
+    Claude Code session on the same machine must never become a Hermes
+    checkpoint.
+    """
+    sid = str(session_id or "").strip()
+    if not sid:
+        return None
+    try:
+        import hermes_state as _hs  # noqa: PLC0415
+        import hermes_session as _hsess  # noqa: PLC0415
+    except Exception:
+        return None
+    records = _hsess.messages_to_transcript_records(_hs.session_messages(sid, limit=500))
+    if not records:
+        return None
+    if not cwd:
+        # The session's own working directory, so the checkpoint's git line
+        # describes the user's project, not wherever this process started.
+        row_cwd = (_hs.get_session(sid, live=True) or {}).get("cwd")
+        try:
+            if isinstance(row_cwd, str) and row_cwd and Path(row_cwd).is_dir():
+                cwd = row_cwd
+        except (OSError, ValueError):
+            cwd = None
+    directory = _hermes_transcript_dir()
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(str(directory), 0o700)
+        except OSError:
+            pass
+    except OSError:
+        return None
+    _sweep_hermes_transcripts(directory)
+    fd, tmp_name = tempfile.mkstemp(prefix=".hermes-", suffix=".jsonl", dir=str(directory))
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            for record in records:
+                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+        return compact_capture(
+            session_id=sid,
+            trigger=trigger,
+            cwd=cwd,
+            fill_pct=fill_pct,
+            _trusted_transcript=tmp_path,
+        )
+    finally:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+
+
+def _hermes_checkpoint_cli(args):
+    """``hermes-checkpoint --session <id> [--trigger T] [--fill-pct N] [--cwd DIR] [--quiet]``."""
+    sid = ""
+    trigger = "stop"
+    fill_pct = None
+    cwd = None
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--session" and i + 1 < len(args):
+            sid = args[i + 1]
+            i += 2
+        elif a == "--trigger" and i + 1 < len(args):
+            trigger = args[i + 1]
+            i += 2
+        elif a == "--fill-pct" and i + 1 < len(args):
+            try:
+                fill_pct = float(args[i + 1])
+            except ValueError:
+                fill_pct = None
+            i += 2
+        elif a == "--cwd" and i + 1 < len(args):
+            cwd = args[i + 1] or None
+            i += 2
+        else:
+            i += 1
+    quiet = "--quiet" in args or "-q" in args
+    if cwd is not None:
+        try:
+            if not Path(cwd).is_dir():
+                cwd = None
+        except (OSError, ValueError):
+            cwd = None
+    result = hermes_checkpoint(sid, trigger=trigger, fill_pct=fill_pct, cwd=cwd)
+    if result and not quiet:
+        print(f"[Token Optimizer] Checkpoint saved: {result}")
+    return result
+
+
+def hermes_turn_context(payload):
+    """Per-turn model context for a Hermes session, in one process.
+
+    Same engines Claude Code's SessionStart / UserPromptSubmit hooks run:
+      - first turn: the new-session checkpoint pointer (compact_restore)
+      - every turn: the topic-matched prior-session hint (_continuity_prompt_hint)
+      - when the plugin passes a live fill reading: the lean-output nudge
+        (_verbosity_nudge_text). Hermes has no session-efficiency signal, so
+        only the strong tier (75-89% fill) can apply; the plugin paces it.
+
+    ``payload`` keys: session_id, prompt, first_turn, fill_pct, score.
+    Returns {"parts": [...], "verbosity": bool}. Never raises.
+    """
+    out = {"parts": [], "verbosity": False}
+    if not isinstance(payload, dict):
+        return out
+    sid = str(payload.get("session_id") or "").strip()
+    if not sid:
+        return out
+    if payload.get("first_turn"):
+        from contextlib import redirect_stdout as _redirect_stdout  # noqa: PLC0415
+
+        buf = io.StringIO()
+        try:
+            with _redirect_stdout(buf):
+                compact_restore(session_id=sid, new_session_only=True)
+        except Exception:
+            pass
+        pointer = buf.getvalue().strip()
+        if pointer:
+            out["parts"].append(pointer)
+    prompt = str(payload.get("prompt") or "").strip()
+    if prompt:
+        try:
+            hint = (_continuity_prompt_hint(prompt_text=prompt[:4000], session_id=sid) or "").strip()
+        except Exception:
+            hint = ""
+        if hint:
+            out["parts"].append(hint)
+    fill = payload.get("fill_pct")
+    if isinstance(fill, (int, float)) and not isinstance(fill, bool):
+        score = payload.get("score")
+        score = float(score) if isinstance(score, (int, float)) and not isinstance(score, bool) else 100.0
+        # No efficiency signal on Hermes: 100 keeps the gentle tier off.
+        window = payload.get("context_window")
+        cached = ({"model_context_window": int(window)}
+                  if isinstance(window, int) and not isinstance(window, bool) and window > 0 else {})
+        nudge = _verbosity_nudge_text(float(fill), score, 100, cached)
+        if nudge:
+            out["parts"].append(nudge)
+            out["verbosity"] = True
+    return out
 
 
 def _resolve_copilot_home_wsl_aware(mnt_root=None):
@@ -29061,6 +29627,10 @@ def _resolve_runtime_bin(process_name):
         Path("/usr/local/bin") / process_name,
         home / ".bun" / "bin" / process_name,
     ]
+    # Claude Code's local installer lives under its config dir, so a relocated
+    # CLAUDE_CONFIG_DIR moves it off ~/.claude/local.
+    if process_name == "claude" and CLAUDE_DIR / "local" / process_name not in candidates:
+        candidates.insert(2, CLAUDE_DIR / "local" / process_name)
     for cand in candidates:
         try:
             if cand.is_file() and os.access(str(cand), os.X_OK):
@@ -30829,7 +31399,7 @@ def _maybe_self_heal_sessionend_fossils_on_hook():
         _clear_hook_budget(deadline)
 
 
-def setup_hook(dry_run=False, uninstall=False):
+def setup_hook(dry_run=False, uninstall=False, user_initiated=False):
     """Install or uninstall the SessionEnd hook for automatic usage collection.
 
     ``uninstall=True`` removes ONLY Token Optimizer's own SessionEnd hook
@@ -30885,7 +31455,7 @@ def setup_hook(dry_run=False, uninstall=False):
             import shutil
             shutil.copy2(str(SETTINGS_PATH), str(backup_path))
         try:
-            if not _write_settings_atomic(settings):
+            if not _write_settings_atomic(settings, user_initiated=user_initiated):
                 print("[Error] settings.json write was refused; no SessionEnd hooks were removed.", file=sys.stderr)
                 return
             print(f"[Token Optimizer] Removed {removed} Token Optimizer SessionEnd hook(s) from settings.json.")
@@ -30977,7 +31547,7 @@ def setup_hook(dry_run=False, uninstall=False):
 
     # Write atomically
     try:
-        if not _write_settings_atomic(settings):
+        if not _write_settings_atomic(settings, user_initiated=user_initiated):
             print("[Error] settings.json write was refused; SessionEnd hook was not installed.", file=sys.stderr)
             return
         action = "upgraded" if upgrading else "installed"
@@ -33244,13 +33814,7 @@ def _daemon_install_lock(soft_fail=False):
     MAX_LOCK_AGE = 10 * 60  # 10 minutes
 
     def _pid_alive(pid):
-        if pid <= 0:
-            return False
-        try:
-            os.kill(pid, 0)
-            return True
-        except OSError:
-            return False
+        return _pid_is_running(pid)
 
     def _try_reclaim_stale():
         """Return True if we successfully reaped a stale lock, False otherwise."""
@@ -34045,6 +34609,11 @@ def _generate_windows_launcher_cmd(daemon_script_path, log_dir):
 
     return (
         "@echo off\r\n"
+        # cmd.exe reads a batch file in the console (OEM) code page, but this
+        # file is written as UTF-8: a profile path like C:\Users\Jos\u00e9 was
+        # garbled and the daemon never started. Switch to UTF-8 first; this
+        # line and everything above it is plain ASCII.
+        "chcp 65001\r\n"
         "REM Token Optimizer dashboard daemon launcher (v5.3.2+).\r\n"
         "REM Auto-generated. Resolves Python at runtime so interpreter upgrades\r\n"
         "REM do not break the scheduled task.\r\n"
@@ -34058,7 +34627,7 @@ def _generate_windows_launcher_cmd(daemon_script_path, log_dir):
         f'set "STDOUT_LOG={log_dir}\\stdout.log"\r\n'
         f'set "STDERR_LOG={log_dir}\\stderr.log"\r\n'
         'if not exist "%DAEMON_SCRIPT%" (\r\n'
-        '  echo [%DATE% %TIME%] daemon script missing: %DAEMON_SCRIPT% >> "%STDERR_LOG%"\r\n'
+        '  echo [%DATE% %TIME%] daemon script missing: "%DAEMON_SCRIPT%" >> "%STDERR_LOG%"\r\n'
         "  exit /b 1\r\n"
         ")\r\n"
         'set "PYW_EXE="\r\n'
@@ -35057,6 +35626,15 @@ def _retained_paths() -> list[tuple[str, Path]]:
         pass
     # Always include the resolved snapshot dir even under a sandbox override.
     paths.append(("session data (this install)", SNAPSHOT_DIR))
+    # Compaction checkpoints (conversation-context captures) live under the
+    # per-session state base, which on a script install is NOT inside
+    # SNAPSHOT_DIR (#106 named them as undisclosed). Disclose them too.
+    try:
+        listed = {p for _, p in paths}
+        if CHECKPOINT_DIR not in listed:
+            paths.append(("checkpoints (this install)", CHECKPOINT_DIR))
+    except NameError:
+        pass
     return paths
 
 
@@ -35133,6 +35711,9 @@ def _remove_our_settings_entries(settings: dict) -> list[str]:
       ``quality-cache`` (our cache hook).
     - ``SessionEnd`` hook entries that are ours (reuses
       _remove_token_optimizer_session_end_hooks).
+    - ``compactInstructions`` when it is the block setup-smart-compact
+      generated (removed) or holds our appended section (only that section
+      is removed; the user's own text stays).
 
     Foreign statusLines, foreign hooks, and every other settings key are left
     byte-identical. Returns a list of human-readable descriptions of what was
@@ -35200,6 +35781,10 @@ def _remove_our_settings_entries(settings: dict) -> list[str]:
     n_session_end = _remove_token_optimizer_session_end_hooks(settings)
     if n_session_end:
         removed.append(f"{n_session_end} SessionEnd hook(s)")
+    # compactInstructions written by setup-smart-compact (#106: it outlived
+    # cleanup). Only our generated block / appended section is removed.
+    if _remove_our_compact_instructions(settings):
+        removed.append("compactInstructions (token-optimizer)")
     return removed
 
 
@@ -35248,6 +35833,24 @@ def cleanup(dry_run=False, this_install_only=False):
     # the preview stays side-effect-free.
     if not dry_run:
         _unlink_if_exists(PLIST_PATH)
+        # Same reasoning for the other platforms' per-identity daemon files:
+        # each platform's uninstaller sweeps only its own launcher, so a HOME
+        # synced or migrated from another OS kept dashboard-launcher.cmd /
+        # .schtasks-daemon.xml (Windows) or the Linux launcher after cleanup
+        # (#106). They are plain files once the scheduler job is gone.
+        if not _daemon_snapshot_sandboxed():
+            for _snap in _daemon_identity_snapshot_dirs(this_install_only):
+                _gone, _ = _sweep_identity_daemon_files(
+                    _snap, ("daemon_script", "daemon_token", "daemon_host",
+                            "windows_launcher", "linux_launcher"))
+                try:
+                    for _xml in _snap.glob("*schtasks-daemon*.xml"):
+                        if _unlink_if_exists(_xml):
+                            _gone.append(str(_xml))
+                except OSError:
+                    pass
+                for _path in _gone:
+                    print(f"  Deleted: {_path}")
     print()
 
     # 2. settings.json
@@ -35297,7 +35900,14 @@ def cleanup(dry_run=False, this_install_only=False):
                     # silent no-op. Reporting "Removed" for a write that never
                     # landed leaves the user with the dangling statusLine this
                     # command exists to clear, so surface it instead.
-                    if _write_settings_atomic(fresh, allow_removing_keys={"statusLine"}):
+                    # user_initiated: cleanup is an explicit user command. Under
+                    # the hook cohort throttle any Token Optimizer settings
+                    # write in the previous ~10s (a SessionStart heal, a setup
+                    # command) made this write lose the lease, and the whole
+                    # removal was skipped (#106 leftovers).
+                    if _write_settings_atomic(
+                            fresh, allow_removing_keys={"statusLine", "compactInstructions"},
+                            user_initiated=True):
                         for entry in our_entries:
                             print(f"    Removed: {entry}")
                         print(f"    Backup: {backed}")
@@ -36544,7 +37154,8 @@ def _external_memory_present() -> bool:
          without touching the filesystem.
       2. A neutral coordination marker file, whose mere existence means an
          external durable-memory tool is active:
-         ``${TO_EXTERNAL_MEMORY_MARKER:-~/.claude/durable-memory.json}``.
+         ``${TO_EXTERNAL_MEMORY_MARKER:-<claude home>/durable-memory.json}``, where the
+         Claude home honors CLAUDE_CONFIG_DIR (CLAUDE_DIR / claude_home()).
 
     The external tool writes the marker once (set-and-forget), so detection is
     automatic with no per-session configuration. Cached in a module global so
@@ -36568,7 +37179,7 @@ def _external_memory_present() -> bool:
         marker = (
             Path(marker_env).expanduser()
             if marker_env
-            else Path.home() / ".claude" / "durable-memory.json"
+            else CLAUDE_DIR / "durable-memory.json"
         )
         try:
             if marker.exists():
@@ -36645,6 +37256,100 @@ def _extract_user_text(record):
     elif isinstance(msg, str):
         return msg
     return ""
+
+
+_HARNESS_TASK_PREFIXES = (
+    "<local-command-caveat>", "<local-command-stdout>",
+    "<local-command-stderr>", "<task-notification>",
+    "[SYSTEM NOTIFICATION", "[Request interrupted by user",
+    "Your response above was cut off mid-stream",
+)
+# Built-in commands that only change the session or UI. Run bare, they are not
+# a task. With arguments, or when an installed skill owns the name, they are.
+_LOCAL_SLASH_COMMANDS = frozenset((
+    "add-dir", "agents", "bug", "config", "context", "continue", "cost",
+    "doctor", "exit", "export", "fast", "feedback", "help", "hooks", "ide",
+    "init", "login", "logout", "mcp", "memory", "model", "output-style",
+    "permissions", "privacy-settings", "quit", "release-notes", "resume",
+    "rewind", "settings", "stats", "status", "statusline", "terminal-setup",
+    "theme", "upgrade", "usage", "vim",
+))
+_COMMAND_TASK_TAG_RE = re.compile(r"\s*<command-(name|message|args)>")
+
+
+def _command_task_text(text):
+    """Unwrap a complete command once, with bounded, non-backtracking scans."""
+    fields = {}
+    pos = 0
+    while pos < len(text):
+        if not text[pos:].strip():
+            break
+        tag = _COMMAND_TASK_TAG_RE.match(text, pos)
+        if tag is None or tag.group(1) in fields:
+            return ""
+        name = tag.group(1)
+        close = "</command-" + name + ">"
+        end = text.find(close, tag.end())
+        if end < 0:
+            return ""
+        fields[name] = text[tag.end():end]
+        pos = end + len(close)
+    command = _SLASH_COMMAND_RE.fullmatch(
+        "<command-name>" + fields.get("name", "") + "</command-name>")
+    if command is None:
+        return ""
+    name = command.group(1)
+    if name.lower() in ("compact", "clear"):
+        return ""
+    # Some versions omit an empty <command-args>: treat a missing tag as empty.
+    args = fields.get("args", "").strip()
+    if (not args and name.lower() in _LOCAL_SLASH_COMMANDS
+            and not _resolve_installed_skill(name)):
+        return ""
+    return "/" + name + (" " + args if args else "")
+
+
+def _task_user_text(record):
+    """Task text for continuity only, excluding harness/meta/tool transport.
+
+    A slash-command wrapper is transport, but its name and arguments can be
+    a real task. Preserve those without changing raw scoring/skill-use input.
+    """
+    if record.get("isMeta") or record.get("isCompactSummary"):
+        return ""
+    message = record.get("message", {})
+    content = message.get("content") if isinstance(message, dict) else message
+    if isinstance(content, str):
+        parts = [content]
+    elif isinstance(content, list):
+        parts = [
+            block if isinstance(block, str) else block.get("text", "")
+            for block in content
+            if isinstance(block, str) or (
+                isinstance(block, dict) and block.get("type") == "text")
+        ]
+    else:
+        return ""
+    texts = []
+    for part in parts:
+        if not isinstance(part, str):
+            continue
+        text = part.strip()
+        # A <system-reminder> block can lead a real prompt: drop the block,
+        # keep what follows. An unclosed block is all harness.
+        while text.startswith("<system-reminder>"):
+            end = text.find("</system-reminder>")
+            text = "" if end < 0 else text[end + len("</system-reminder>"):].strip()
+        if not text or text.startswith(_HARNESS_TASK_PREFIXES):
+            continue
+        if text.startswith(("<command-name>", "<command-message>", "<command-args>")):
+            # Only a complete wrapper is an invocation. Do not turn malformed
+            # harness markup into a recovered task, or strip tags from prose.
+            text = _command_task_text(text)
+            if not text:
+                continue
+        texts.append(text)
+    return "\n".join(texts)
 
 
 def _read_stdin_hook_input(max_bytes=65536):
@@ -36809,9 +37514,7 @@ def _parse_jsonl_for_quality(filepath):
                     # raise and abort the whole parse (losing all quality data).
                     usage = msg.get("usage")
                     if isinstance(usage, dict):
-                        tok = (_safe_int(usage.get("input_tokens"))
-                               + _safe_int(usage.get("cache_creation_input_tokens"))
-                               + _safe_int(usage.get("cache_read_input_tokens")))
+                        tok = _context_token_count(_context_usage(usage))
                         if tok > 0:
                             context_tokens = tok
                     model_str = msg.get("model")
@@ -39837,6 +40540,78 @@ def _log_reexpand_debit(session_id, tool_use_id, response_text):
         pass
 
 
+def _find_archive_entry(archive_roots, tool_use_id, session_id=None, strict=False):
+    """First ``<root>/<session>/<tool_use_id>.json`` that exists, or None.
+
+    *tool_use_id* must already have passed expand's ``[a-zA-Z0-9_-]+`` check, so
+    the filename can never leave its session dir. *strict* (the cross-runtime
+    fallback) additionally requires a regular, non-symlink file whose resolved
+    path stays inside its archive root.
+    """
+    for archive_root in archive_roots:
+        if session_id:
+            sid = sanitize_session_id(session_id)
+            if sid == "unknown":
+                continue
+            session_dirs = [archive_root / sid]
+        elif archive_root.is_dir() and not archive_root.is_symlink():
+            try:
+                session_dirs = [d for d in archive_root.iterdir()
+                                if d.is_dir() and not d.is_symlink()]
+            except OSError:
+                continue
+        else:
+            continue
+        for sd in session_dirs:
+            entry_path = sd / f"{tool_use_id}.json"
+            try:
+                if not entry_path.exists():
+                    continue
+                if strict:
+                    if (archive_root.is_symlink() or sd.is_symlink()
+                            or entry_path.is_symlink() or not entry_path.is_file()):
+                        continue
+                    entry_path.resolve(strict=True).relative_to(archive_root.resolve(strict=True))
+            except (OSError, ValueError):
+                continue
+            return entry_path
+    return None
+
+
+# Every runtime whose archive an unpinned expand may fall back to, in lookup order.
+_EXPAND_FALLBACK_RUNTIMES = ("claude", "codex", "hermes", "copilot", "cursor",
+                             "opencode", "antigravity", "grok", "devin")
+
+
+def _expand_may_cross_runtimes():
+    """True for a bare expand: no --runtime / TOKEN_OPTIMIZER_RUNTIME pin and
+    no sandbox snapshot override."""
+    return not (os.environ.get("TOKEN_OPTIMIZER_RUNTIME", "").strip()
+                or os.environ.get("TOKEN_OPTIMIZER_SNAPSHOT_DIR", "").strip())
+
+
+def _cross_runtime_archive_roots(exclude):
+    """tool-archive dirs under every other runtime's home. Never raises."""
+    roots = []
+    seen = set(exclude)
+    try:
+        from runtime_env import runtime_home_for
+        from plugin_env import snapshot_roots_for_home
+    except Exception:
+        return roots
+    for runtime in _EXPAND_FALLBACK_RUNTIMES:
+        try:
+            home = runtime_home_for(runtime)
+            for snapshot_root in snapshot_roots_for_home(home):
+                root = snapshot_root / "tool-archive"
+                if root not in seen:
+                    seen.add(root)
+                    roots.append(root)
+        except Exception:
+            continue
+    return roots
+
+
 def expand_archived(tool_use_id=None, session_id=None, list_all=False):
     """Retrieve an archived tool result, or list all archived results.
 
@@ -39909,48 +40684,43 @@ def expand_archived(tool_use_id=None, session_id=None, list_all=False):
         print("[Error] Invalid tool_use_id format.", file=sys.stderr)
         sys.exit(1)
 
-    if not any(root.is_dir() for root in archive_roots):
+    entry_path = _find_archive_entry(archive_roots, tool_use_id, session_id)
+    if entry_path is None and _expand_may_cross_runtimes():
+        # Not in this runtime's archive. A pointer printed by Claude Code is
+        # never pinned, so a shell that detects another runtime (or a scan
+        # that failed open to Claude Code when the archive was written under
+        # another runtime) would otherwise miss an entry that exists. Only an
+        # unpinned expand falls back; an explicit --runtime stays strict.
+        fallback_roots = _cross_runtime_archive_roots(archive_roots)
+        entry_path = _find_archive_entry(fallback_roots, tool_use_id, session_id, strict=True)
+        if entry_path is None and not any(root.is_dir() for root in archive_roots):
+            archive_roots = archive_roots + [r for r in fallback_roots if r.is_dir()]
+
+    if entry_path is None and not any(root.is_dir() for root in archive_roots):
         print("[Error] No archive directory found. No results have been archived yet.", file=sys.stderr)
         sys.exit(1)
 
-    # Determine search scope
-    if session_id:
-        sid = sanitize_session_id(session_id)
-        search_dirs = [
-            archive_root / sid for archive_root in archive_roots
-            if sid != "unknown"
-        ]
-    else:
-        search_dirs = []
-        for archive_root in archive_roots:
-            if archive_root.is_dir() and not archive_root.is_symlink():
-                search_dirs.extend(
-                    d for d in archive_root.iterdir()
-                    if d.is_dir() and not d.is_symlink()
-                )
-
-    for sd in search_dirs:
-        entry_path = sd / f"{tool_use_id}.json"
-        if entry_path.exists():
-            try:
-                data = json.loads(entry_path.read_text(encoding="utf-8"))
-                response = data.get("response", "")
-                if response:
-                    # B6 integrity: re-popping an archived result means it did NOT
-                    # stay collapsed, so reverse its tool_archive credit. Log the
-                    # re-popped tokens as a debit (netted in _get_savings_summary),
-                    # deduped per item so a second expand never double-debits.
-                    _log_reexpand_debit(sd.name, tool_use_id, response)
-                    # No added newline: expand returns the stored text as stored.
-                    sys.stdout.write(response)
-                    sys.stdout.flush()
-                    return
-                else:
-                    print(f"[Error] Archived entry found but response is empty: {entry_path}", file=sys.stderr)
-                    sys.exit(1)
-            except (json.JSONDecodeError, OSError) as e:
-                print(f"[Error] Failed to read archived result: {e}", file=sys.stderr)
+    if entry_path is not None:
+        sd = entry_path.parent
+        try:
+            data = json.loads(entry_path.read_text(encoding="utf-8"))
+            response = data.get("response", "")
+            if response:
+                # B6 integrity: re-popping an archived result means it did NOT
+                # stay collapsed, so reverse its tool_archive credit. Log the
+                # re-popped tokens as a debit (netted in _get_savings_summary),
+                # deduped per item so a second expand never double-debits.
+                _log_reexpand_debit(sd.name, tool_use_id, response)
+                # No added newline: expand returns the stored text as stored.
+                sys.stdout.write(response)
+                sys.stdout.flush()
+                return
+            else:
+                print(f"[Error] Archived entry found but response is empty: {entry_path}", file=sys.stderr)
                 sys.exit(1)
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"[Error] Failed to read archived result: {e}", file=sys.stderr)
+            sys.exit(1)
 
     print(f"[Error] Tool result not found: {tool_use_id}", file=sys.stderr)
     if not session_id:
@@ -40182,11 +40952,9 @@ def _purge_all_data(confirm=False, force=False):
         try:
             raw = pid_file.read_text(encoding="utf-8").strip()
             candidate_pid = int(raw)
-            try:
-                os.kill(candidate_pid, 0)
+            if _pid_is_running(candidate_pid):
                 running_pid = candidate_pid
-            except OSError:
-                pass  # process not alive; PID file is stale
+            # else: process not alive; PID file is stale
         except (OSError, ValueError):
             pass
 
@@ -40202,9 +40970,14 @@ def _purge_all_data(confirm=False, force=False):
         # Verify PID identity before SIGTERM to avoid killing a recycled PID
         is_ours = False
         try:
-            result = _sp.run(["ps", "-p", str(running_pid), "-o", "comm="],
-                             capture_output=True, text=True, timeout=3)
-            proc_name = result.stdout.strip().lower()
+            if os.name == "nt":
+                # No `ps` on Windows: the daemon was never stopped there, and
+                # the purge then hit the files it still held open.
+                proc_name = ((_windows_process_names() or {}).get(running_pid) or (0, ""))[1]
+            else:
+                result = _sp.run(["ps", "-p", str(running_pid), "-o", "comm="],
+                                 capture_output=True, text=True, timeout=3)
+                proc_name = result.stdout.strip().lower()
             is_ours = "python" in proc_name or "measure" in proc_name
         except Exception:
             is_ours = False
@@ -40394,9 +41167,8 @@ def _security_report(as_json=False):
     pid_file = DAEMON_LOG_DIR / "daemon.pid"
     if pid_file.exists():
         try:
-            daemon_pid = int(pid_file.read_text().strip())
-            os.kill(daemon_pid, 0)
-            daemon_running = True
+            daemon_pid = int(pid_file.read_text(encoding="utf-8").strip())
+            daemon_running = _pid_is_running(daemon_pid)
         except (ValueError, OSError):
             pass
 
@@ -40642,7 +41414,7 @@ def _extract_session_state(filepath, tail_lines=500):
 
         # User messages
         if rec_type == "user":
-            text = _ingest_redact(_extract_user_text(record))
+            text = _ingest_redact(_task_user_text(record))
             if text.strip():
                 last_user_msg = text.strip()
             # Check for questions
@@ -40865,12 +41637,21 @@ def _redaction_skip_notice(session_id):
         return None
 
 
-def compact_capture(transcript_path=None, session_id=None, trigger="auto", cwd=None, fill_pct=None, quality_score=None, backfill_tools=False):
+class _SkipTranscriptQuality(Exception):
+    """Internal: leave the transcript-derived quality block out of a checkpoint."""
+
+
+def compact_capture(transcript_path=None, session_id=None, trigger="auto", cwd=None, fill_pct=None, quality_score=None, backfill_tools=False, _trusted_transcript=None):
     """Capture structured session state before compaction or session end.
 
     Writes a markdown checkpoint to CHECKPOINT_DIR.
     Called by PreCompact, Stop, and SessionEnd hooks via CLI.
     Progressive checkpoints pass fill_pct and trigger="progressive-{band}".
+
+    ``_trusted_transcript`` is for internal callers only: a transcript Token
+    Optimizer built itself in its own private directory (the Hermes adapter
+    translates Hermes's state.db messages into one). It skips the confinement
+    meant for hook-supplied paths. Never pass hook input through it.
 
     Returns the checkpoint file path, or None on failure.
     """
@@ -40893,7 +41674,9 @@ def compact_capture(transcript_path=None, session_id=None, trigger="auto", cwd=N
     ts = now.strftime("%Y-%m-%dT%H:%M:%S%z")
     ts_file = now.strftime("%Y%m%d-%H%M%S")
 
-    if transcript_path:
+    if _trusted_transcript is not None:
+        filepath = Path(_trusted_transcript)
+    elif transcript_path:
         # A supplied path that fails confinement is a forged hook input — do
         # not checkpoint from it, and do not fall through to inference (which
         # would let a bad pointer silently capture a different session).
@@ -40911,6 +41694,20 @@ def compact_capture(transcript_path=None, session_id=None, trigger="auto", cwd=N
     trigger_suffix = f"-{trigger}" if trigger and trigger != "auto" else ""
 
     if not filepath or not filepath.exists():
+        if _use_codex_session_adapter(transcript_path or None):
+            # Codex with no readable transcript: a "No transcript data
+            # available" placeholder (named "unknown" when the host sent no
+            # session id) holds nothing to restore, can outrank real
+            # checkpoints, and hides that capture failed (issue #278). Say
+            # why instead, for the doctor; never the id or path themselves.
+            _record_hook_status(
+                "stop_capture" if trigger in ("stop", "end") else "checkpoint_capture",
+                "skipped: " + (
+                    "the transcript path the host sent is outside the Codex sessions folder or unreadable"
+                    if transcript_path else
+                    "no Codex transcript matches the session id the host sent" if session_id else
+                    "the hook payload and environment carried no session id"))
+            return None
         # Write minimal checkpoint with safe permissions
         sid = sanitize_session_id(session_id)
         checkpoint_path = CHECKPOINT_DIR / f"{sid}-{ts_file}{trigger_suffix}.md"
@@ -40967,6 +41764,11 @@ def compact_capture(transcript_path=None, session_id=None, trigger="auto", cwd=N
     sid = sanitize_session_id(session_id) if session_id else sanitize_session_id(filepath.stem)
     quality_summary = None
     try:
+        if _trusted_transcript is not None:
+            # A translated transcript carries no usage data, so scoring it
+            # would print a fake perfect grade. The caller passes the real
+            # fill instead; the quality block is simply left out.
+            raise _SkipTranscriptQuality()
         # Prefer the per-session quality cache over re-parsing the whole transcript.
         # _parse_jsonl_for_quality is O(file): a ~200MB session costs ~8s, and this
         # runs on the synchronous Stop hook, so an unbounded reparse shows up as
@@ -41010,7 +41812,12 @@ def compact_capture(transcript_path=None, session_id=None, trigger="auto", cwd=N
             pass
     fill_info = f" | Fill: {fill_pct:.0f}%" if fill_pct is not None else ""
     quality_info = f" | Quality: {quality_score:.1f}" if quality_score is not None else ""
-    git_branch, git_sha = _capture_git_state(cwd)
+    if _trusted_transcript is not None and not cwd:
+        # No known working directory: this process's own cwd is not the
+        # session's project, so its git state would be someone else's.
+        git_branch, git_sha = None, None
+    else:
+        git_branch, git_sha = _capture_git_state(cwd)
     git_line = ""
     if git_branch or git_sha:
         git_line = f" | Git: {git_branch or '?'}@{git_sha or '?'}"
@@ -42606,27 +43413,42 @@ _RESUME_TOPIC_STOPWORDS = frozenset({
 
 
 # --- Non-English topic tokenizer — single source of truth on the Python side ---
-# Two branches: an ASCII/accented-Latin run, OR a whole non-ASCII run (CJK etc.) as one
-# token, so a token never mixes ASCII and non-ASCII ("measure.py를" -> "measure.py" + "를").
+# Two branches: an ASCII/accented-Latin run, OR a whole non-ASCII run as one token, so a token
+# never mixes ASCII and non-ASCII ("measure.py를" -> "measure.py" + "를").
 # The Latin-1/Extended-A ranges deliberately skip U+00D7 (×) and U+00F7 (÷): they sit inside
 # the block but are math symbols, not letters. U+0100–U+024F is Latin Extended-A/B, all letters.
 _TOPIC_TOKEN_RE = re.compile(r"[a-zA-Z0-9_.:À-ÖØ-öø-ÿĀ-ɏ/-]+|[^\x00-\x7F]+")
-# Script-aware length floor. CJK scripts (Hangul/Han/Kana, all >= U+3000) carry a full topic
-# word in two characters — 결제 (payment), 모듈 (module) — so they are kept at len>=2. ASCII and
-# accented Latin keep the len>3 English stopword heuristic (a 2-char Latin token like "ré" is
-# stopword-like, not content). This is why the floor cannot be a single constant.
-_CJK_MIN = 0x3000
+# Script-aware length floor, defined by fixed code-point ranges so Python, OpenClaw and
+# OpenCode classify every character the same way on any Unicode version.
+#   * Any char at or above U+3000 (Han, Kana, Hangul, fullwidth forms): a 2-char word such as
+#     결제 (payment) or 모듈 (module) is a full topic, so keep len>=2.
+#   * Other non-Latin letters (Cyrillic, Greek, Arabic, Hebrew, Indic...): keep len>=3, which
+#     keeps "кот" but drops 2-letter function words such as "на", "في", "של".
+#   * Latin (ASCII, accented, extended, letterlike): the len>3 English stopword heuristic.
+# Combining marks (accents, niqqud, harakat) never count toward the length.
+_TOPIC_WIDE_MIN = 0x3000
+_TOPIC_LATIN_RANGES = (
+    (0x0000, 0x036F), (0x1D00, 0x1DFF), (0x1E00, 0x1EFF), (0x2000, 0x214F),
+    (0x2C60, 0x2C7F), (0xA720, 0xA7FF), (0xAB30, 0xAB6F),
+)
+_TOPIC_MARK_RANGES = (
+    (0x0300, 0x036F), (0x0483, 0x0489), (0x0591, 0x05C7), (0x0610, 0x061A), (0x064B, 0x065F),
+    (0x0670, 0x0670), (0x06D6, 0x06ED), (0x1AB0, 0x1AFF), (0x1DC0, 0x1DFF), (0x200B, 0x200F),
+    (0x20D0, 0x20FF), (0xFE00, 0xFE0F), (0xFE20, 0xFE2F),
+)
 
 
-def _has_cjk(w):
-    """True when a token contains any CJK / non-Latin-script char (ord >= U+3000)."""
-    return any(ord(ch) >= _CJK_MIN for ch in w)
+def _in_ranges(cp, ranges):
+    return any(lo <= cp <= hi for lo, hi in ranges)
 
 
 def _topic_token_kept(w):
-    if _has_cjk(w):
-        return len(w) >= 2
-    return len(w) > 3
+    cps = [ord(ch) for ch in w if not _in_ranges(ord(ch), _TOPIC_MARK_RANGES)]
+    if any(cp >= _TOPIC_WIDE_MIN for cp in cps):
+        return len(cps) >= 2
+    if any(not _in_ranges(cp, _TOPIC_LATIN_RANGES) for cp in cps):
+        return len(cps) >= 3
+    return len(cps) > 3
 
 
 def _topic_tokens(text, stopwords=frozenset()):
@@ -43741,9 +44563,7 @@ def _transcript_last_turn(sid_safe):
             u = msg.get("usage") or {}
             if not isinstance(u, dict):
                 continue
-            ctx = (_safe_int(u.get("input_tokens"))
-                   + _safe_int(u.get("cache_read_input_tokens"))
-                   + _safe_int(u.get("cache_creation_input_tokens")))
+            ctx = _context_token_count(_context_usage(u))
             if ctx <= 0:
                 continue
             model = _normalize_model_name(msg.get("model"))
@@ -43902,7 +44722,65 @@ def checkpoint_trigger(milestone=None, session_id=None, transcript_path=None, qu
     return cp_path
 
 
-def generate_compact_instructions(as_json=False, install=False, dry_run=False):
+_COMPACT_INSTR_HEAD = "When summarizing this session, pay special attention to:"
+_COMPACT_INSTR_TAIL = (
+    "Always include the specific next step with enough detail to continue without asking."
+)
+_COMPACT_INSTR_BULLETS = frozenset({
+    "- Architectural decisions and their reasoning",
+    "- Skill invocations and their outcomes",
+    "- External service interactions and their results",
+    "- Modified file paths with line ranges",
+    "- Error-fix sequences (what was tried, what failed, what worked)",
+    "- Open questions and unresolved TODOs",
+    "- Agent/team state (task assignments, completion status)",
+})
+# Separator used when our instructions are appended to the user's own text.
+_COMPACT_INSTR_MARKER = "\n\n# Token Optimizer additions:\n"
+
+
+def _compact_instructions_generated(text):
+    """True when ``text`` is exactly a block generate_compact_instructions writes."""
+    if not isinstance(text, str):
+        return False
+    lines = text.strip().split("\n")
+    if len(lines) < 2 or lines[0] != _COMPACT_INSTR_HEAD or lines[-1] != _COMPACT_INSTR_TAIL:
+        return False
+    return all(line in _COMPACT_INSTR_BULLETS for line in lines[1:-1])
+
+
+def _split_compact_instructions(text):
+    """Split a ``compactInstructions`` value into (user_part, ours_present).
+
+    Ours is either the whole value (a block we generated) or a section we
+    appended after the user's own text behind ``_COMPACT_INSTR_MARKER``.
+    Anything else is the user's and is returned untouched.
+    """
+    if not isinstance(text, str):
+        return text, False
+    if _COMPACT_INSTR_MARKER in text:
+        return text.split(_COMPACT_INSTR_MARKER, 1)[0].rstrip(), True
+    if _compact_instructions_generated(text):
+        return "", True
+    return text, False
+
+
+def _remove_our_compact_instructions(settings):
+    """Drop our compactInstructions (keeping any user-written part). True if changed."""
+    if not isinstance(settings, dict) or "compactInstructions" not in settings:
+        return False
+    user_part, ours = _split_compact_instructions(settings.get("compactInstructions"))
+    if not ours:
+        return False
+    if user_part:
+        settings["compactInstructions"] = user_part
+    else:
+        del settings["compactInstructions"]
+    return True
+
+
+def generate_compact_instructions(as_json=False, install=False, dry_run=False,
+                                  user_initiated=False):
     """Generate project-specific Compact Instructions.
 
     Analyzes CLAUDE.md, recent session patterns, and common loss patterns
@@ -43913,7 +44791,7 @@ def generate_compact_instructions(as_json=False, install=False, dry_run=False):
     """
     components = measure_components()
     instructions_parts = [
-        "When summarizing this session, pay special attention to:",
+        _COMPACT_INSTR_HEAD,
     ]
 
     # Analyze CLAUDE.md content for project priorities
@@ -43936,7 +44814,7 @@ def generate_compact_instructions(as_json=False, install=False, dry_run=False):
         "- Modified file paths with line ranges",
         "- Error-fix sequences (what was tried, what failed, what worked)",
         "- Open questions and unresolved TODOs",
-        "Always include the specific next step with enough detail to continue without asking.",
+        _COMPACT_INSTR_TAIL,
     ])
 
     # Check for agent usage in recent sessions
@@ -43968,14 +44846,20 @@ def generate_compact_instructions(as_json=False, install=False, dry_run=False):
             )
             return instructions_text
         existing = settings.get("compactInstructions", "")
+        user_part, ours_present = _split_compact_instructions(existing)
 
-        if existing and "Token Optimizer" in existing:
+        if existing and ours_present:
+            # Refresh only our part. A value that also holds the user's own
+            # text keeps it: replacing the whole value used to erase it.
             if dry_run:
                 print(f"\n  [Dry run] Would update existing compact instructions in {settings_path}")
                 print(f"\n  Compact instructions preview:\n  {instructions_text}\n")
                 return instructions_text
-            settings["compactInstructions"] = instructions_text
-            if not _write_settings_atomic(settings):
+            settings["compactInstructions"] = (
+                user_part + _COMPACT_INSTR_MARKER + instructions_text
+                if user_part else instructions_text
+            )
+            if not _write_settings_atomic(settings, user_initiated=user_initiated):
                 print("[Error] settings.json write was refused; compact instructions were not updated.", file=sys.stderr)
                 return instructions_text
             print(f"[Token Optimizer] Compact Instructions updated in {settings_path}")
@@ -43983,7 +44867,7 @@ def generate_compact_instructions(as_json=False, install=False, dry_run=False):
 
         if existing:
             # User has their own instructions, append ours
-            combined = existing.rstrip() + "\n\n# Token Optimizer additions:\n" + instructions_text
+            combined = existing.rstrip() + _COMPACT_INSTR_MARKER + instructions_text
             if dry_run:
                 print(f"\n  [Dry run] Would append to existing compact instructions in {settings_path}")
                 print(f"\n  Appended:\n  {instructions_text}\n")
@@ -43996,7 +44880,7 @@ def generate_compact_instructions(as_json=False, install=False, dry_run=False):
                 return instructions_text
             settings["compactInstructions"] = instructions_text
 
-        if not _write_settings_atomic(settings):
+        if not _write_settings_atomic(settings, user_initiated=user_initiated):
             print("[Error] settings.json write was refused; compact instructions were not installed.", file=sys.stderr)
             return instructions_text
         print(f"[Token Optimizer] Compact Instructions installed to {settings_path}")
@@ -44695,14 +45579,28 @@ def _smart_compact_hook_commands():
     resolved to), the hook exits 0 silently instead of erroring on every event.
     Mirrors the launcher guard in hooks.json.
     """
-    mp = _get_measure_py_path()
-    guard = f"[ -r '{mp}' ] || exit 0; "
+    py, mp = _settings_hook_python_and_script(_get_measure_py_path())
+    guard = f"[ -r {mp} ] || exit 0; "
     return {
-        "PreCompact": f"{guard}python3 '{mp}' compact-capture --trigger auto",
-        "SessionStart": f"{guard}python3 '{mp}' compact-restore",
-        "Stop": f"{guard}python3 '{mp}' compact-capture --trigger stop",
-        "SessionEnd": f"{guard}python3 '{mp}' compact-capture --trigger end",
+        "PreCompact": f"{guard}{py} {mp} compact-capture --trigger auto",
+        "SessionStart": f"{guard}{py} {mp} compact-restore",
+        "Stop": f"{guard}{py} {mp} compact-capture --trigger stop",
+        "SessionEnd": f"{guard}{py} {mp} compact-capture --trigger end",
     }
+
+
+def _settings_hook_python_and_script(mp):
+    """(interpreter, script) shell tokens for a settings.json hook command.
+
+    Claude Code runs these through Git Bash on Windows, where bare ``python3``
+    is often missing or the Microsoft Store stub (exit 9009 on every event),
+    so Windows names the running interpreter with forward slashes, quoted for
+    bash (an apostrophe in the path is safe). POSIX keeps ``python3 '<mp>'``.
+    """
+    if sys.platform == "win32":
+        return (shlex.quote(str(sys.executable).replace("\\", "/")),
+                shlex.quote(str(mp).replace("\\", "/")))
+    return "python3", f"'{mp}'"
 
 
 def _is_smart_compact_installed(settings=None):
@@ -44757,7 +45655,8 @@ def _is_smart_compact_installed(settings=None):
     return status
 
 
-def setup_smart_compact(dry_run=False, uninstall=False, status_only=False):
+def setup_smart_compact(dry_run=False, uninstall=False, status_only=False,
+                        user_initiated=False):
     """Install, uninstall, or check status of smart compaction hooks.
 
     Appends to existing hooks (never overwrites). Safe to run multiple times.
@@ -44822,10 +45721,16 @@ def setup_smart_compact(dry_run=False, uninstall=False, status_only=False):
             return
 
         settings["hooks"] = hooks
-        if not _write_settings_atomic(settings):
+        # setup-smart-compact also installed compactInstructions; take ours
+        # back out (a user-written part stays).
+        ci_removed = _remove_our_compact_instructions(settings)
+        if not _write_settings_atomic(settings, allow_removing_keys={"compactInstructions"},
+                                      user_initiated=user_initiated):
             print("[Error] settings.json write was refused; smart compact hooks were not removed.", file=sys.stderr)
             return
         print(f"[Token Optimizer] Removed smart compact hooks. {removed} hook(s) removed.")
+        if ci_removed:
+            print("[Token Optimizer] Removed Token Optimizer compact instructions.")
         return
 
     # Install
@@ -44916,7 +45821,7 @@ def setup_smart_compact(dry_run=False, uninstall=False, status_only=False):
         return
 
     settings["hooks"] = hooks
-    if not _write_settings_atomic(settings):
+    if not _write_settings_atomic(settings, user_initiated=user_initiated):
         print("[Error] settings.json write was refused; smart compact hooks were not installed.", file=sys.stderr)
         return
 
@@ -44927,7 +45832,7 @@ def setup_smart_compact(dry_run=False, uninstall=False, status_only=False):
 
     # Also install compact instructions (tells Claude WHAT to preserve)
     print()
-    generate_compact_instructions(install=True)
+    generate_compact_instructions(install=True, user_initiated=user_initiated)
 
     print("\n  What happens now:")
     print("    Compact Instructions: Guides Claude on what to preserve during compaction")
@@ -45761,6 +46666,9 @@ def _verbosity_nudge_min_fill() -> int:
 
 _VERBOSITY_NUDGE_MIN_FILL = _verbosity_nudge_min_fill()
 _VERBOSITY_NUDGE_EFFICIENCY_THRESHOLD = 75
+# Lean-output nudge pacing: at most this many per session, this far apart.
+_VERBOSITY_MAX_NUDGES = 3
+_VERBOSITY_COOLDOWN_SEC = 300
 _NUDGE_SESSION_CAP = 3
 # Fresh-session nudge: when a session is BOTH long (high fill) and degraded
 # (quality < threshold), suggest starting a fresh session -- cold-resume-lean
@@ -46518,7 +47426,9 @@ def quality_cache(throttle_seconds=120, warn_threshold=70, quiet=False, session_
         result["session_start_ts"] = _extract_session_start_ts(filepath)
         result["active_agents"] = _extract_active_agents(filepath)
 
-        # Cache hit rate for statusline (v5.4.27)
+        # Cache hit rate for statusline (v5.4.27). A billing ratio, so it reads
+        # the top-level (advisor-summed) usage on purpose, unlike context fill,
+        # which uses _context_usage (#287).
         try:
             total_input_all = 0
             total_cache_read = 0
@@ -48007,7 +48917,8 @@ def _get_v5_savings_recommendation():
     }
 
 
-def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=False, quiet=False):
+def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=False, quiet=False,
+                      user_initiated=False):
     """Install, uninstall, or check quality bar (status line + cache hook).
 
     Installs:
@@ -48025,6 +48936,12 @@ def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=F
     a silent repair never re-injects the integration advisory into context on
     every turn. The advisory is only shown on an explicit,
     interactive `setup-quality-bar` run.
+
+    user_initiated=True is passed only by the `setup-quality-bar` CLI command
+    (the same for setup-hook / setup-smart-compact / compact-instructions):
+    an explicit command takes the settings lease past the hook-herd
+    reservation, so commands typed back to back are not refused. The
+    automatic heal callers keep the default and the non-blocking lease.
 
     Side-effects on config.json:
       install        -> clears "quality_bar_disabled" (explicit opt-in)
@@ -48126,7 +49043,8 @@ def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=F
         settings["hooks"] = hooks
         # Deliberate top-level removal: declare it so the choke-point guard
         # allows this one and only this one.
-        if not _write_settings_atomic(settings, allow_removing_keys={"statusLine"}):
+        if not _write_settings_atomic(settings, allow_removing_keys={"statusLine"},
+                                      user_initiated=user_initiated):
             print("[Error] settings.json write was refused; Quality Bar was not removed.", file=sys.stderr)
             return
         _set_quality_bar_disabled(True)
@@ -48152,7 +49070,8 @@ def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=F
         skipped.append("cache hook")
     else:
         hooks = settings.setdefault("hooks", {})
-        hook_cmd = f"python3 '{mp}' quality-cache --quiet"
+        _py, _mp = _settings_hook_python_and_script(mp)
+        hook_cmd = f"{_py} {_mp} quality-cache --quiet"
         hook_entry = {"type": "command", "command": hook_cmd}
         hook_group = {"hooks": [hook_entry]}
         hooks.setdefault("UserPromptSubmit", []).append(hook_group)
@@ -48170,13 +49089,16 @@ def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=F
             # is a clobber rather than an intentional choice).
             try:
                 _rt_seg = RUNTIME_DIR.relative_to(HOME).as_posix()
+                _rt_base = f"os.homedir(), '{_rt_seg}'"
             except ValueError:
-                _rt_seg = ".claude"
+                # Runtime dir outside HOME (e.g. CLAUDE_CONFIG_DIR on a
+                # relocated volume): print its absolute path, never ~/.claude.
+                _rt_base = json.dumps(RUNTIME_DIR.as_posix())
             warnings.append(
                 "You already have a custom status line configured.\n"
                 "  To integrate quality scoring, add this to your status line script:\n\n"
                 "    // Read context quality score\n"
-                f"    const qFile = path.join(os.homedir(), '{_rt_seg}', 'token-optimizer', 'quality-cache.json');\n"
+                f"    const qFile = path.join({_rt_base}, 'token-optimizer', 'quality-cache.json');\n"
                 "    let qScore = '';\n"
                 "    if (fs.existsSync(qFile)) {\n"
                 "      try {\n"
@@ -48193,7 +49115,10 @@ def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=F
         else:
             settings["statusLine"] = {
                 "type": "command",
-                "command": f"node '{sl_path}'"
+                # A plain '...' wrap broke on an apostrophe in the path
+                # (C:\Users\O'Brien). Keep the familiar form otherwise.
+                "command": (f"node '{sl_path}'" if "'" not in str(sl_path)
+                            else f"node {shlex.quote(str(sl_path))}"),
             }
             installed.append("status line")
 
@@ -48221,7 +49146,7 @@ def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=F
         return
 
     if installed:
-        if not _write_settings_atomic(settings):
+        if not _write_settings_atomic(settings, user_initiated=user_initiated):
             if not quiet:
                 print("[Error] settings.json write was refused; Quality Bar was not installed.", file=sys.stderr)
             return
@@ -53921,7 +54846,11 @@ def _advice_session_data(path):
       turns          per-request context size (input + cache_read + cache_creation)
                      of each main-thread assistant usage row, in order; streamed
                      chunks sharing a requestId collapse to the largest row.
-      cache_reads    cache_read_input_tokens per turn (same indexing).
+      cache_reads    cache_read_input_tokens per turn (same indexing). This is
+                     the billed aggregate, while `turns` is executor occupancy
+                     (#287). On advisor sessions avoided reads (derived from
+                     `turns`) are measured against the larger billed total, so
+                     avoided_share_pct can only understate the saving.
       boundaries     indexes in `turns` that directly follow a compact_boundary.
       model          newest model id on a main-thread row, or None.
       post_compact_ctx  context size of the first request after each recorded
@@ -53976,9 +54905,10 @@ def _advice_session_data(path):
                 u = msg.get("usage")
                 if not isinstance(u, dict):
                     continue
+                # Cache-read traffic is billed aggregate usage; occupancy is
+                # only the final executor iteration of an advisor response.
                 cr = _safe_int(u.get("cache_read_input_tokens"))
-                ctx = (_safe_int(u.get("input_tokens")) + cr
-                       + _safe_int(u.get("cache_creation_input_tokens")))
+                ctx = _context_token_count(_context_usage(u))
                 if ctx <= 0:
                     continue
                 m = msg.get("model")
@@ -57118,11 +58048,9 @@ def run_verbosity_steer(transcript_path=None, quiet=True, session_id=None):
         _now = _vs_time.time()
         _nudge_count = cached.get("nudge_count", 0) or 0
         _last_nudge = cached.get("last_nudge_time", 0) or 0
-        _COOLDOWN_SEC = 300
-        _MAX_NUDGES = 3
-        if _nudge_count >= _MAX_NUDGES:
+        if _nudge_count >= _VERBOSITY_MAX_NUDGES:
             return ""
-        if _now - _last_nudge < _COOLDOWN_SEC:
+        if _now - _last_nudge < _VERBOSITY_COOLDOWN_SEC:
             return ""
 
         # At 90%+ fill, don't add more tokens
@@ -57134,44 +58062,8 @@ def run_verbosity_steer(transcript_path=None, quiet=True, session_id=None):
                 )
             return ""
 
-        # Determine nudge tier.
-        #
-        # The spartan/ADHD phrasing is used verbatim because it produced the
-        # largest reduction in verbose output across multiple models while
-        # maintaining answer quality. Notes on what the data showed:
-        #   - Word ceilings were REMOVED. An earlier draft capped answers at
-        #     80/120 words. A cap makes a model either truncate a genuinely
-        #     complex answer or ignore the nudge, and a nudge that gets ignored
-        #     is the original failure this rewrite exists to fix.
-        #   - The real waste is elaboration, not preamble. The padding-focused
-        #     wording targeted preamble and restatement and cut half as much,
-        #     because verbose answers mostly repeat themselves rather than
-        #     restate the question.
-        #   - Quality held. On the hardest fixture (prompt-caching explainer,
-        #     1159 -> 759 words) the spartan answer kept every concept and
-        #     covered TTL MORE; what it dropped was the same point made six
-        #     times instead of three.
-        #   - Reasoning and deliverables are fenced off explicitly, because the
-        #     nudge fires mid-task where "spartan" could otherwise be read as
-        #     "write less code".
-        #   - Opus is roughly half as responsive as Sonnet here. Do not quote
-        #     the Sonnet figure as the product number.
-        if fill_pct >= 75:
-            nudge = (
-                f"[Token Optimizer] Context {_format_context_fill(fill_pct, cached)}, resource health {score:.0f}/100. "
-                "Answer in a focused and spartan way, as if the user has ADHD. Cut everything "
-                "that is not the answer itself. Think as long as you need, and size code, "
-                "diffs and file contents to the task."
-            )
-        elif (fill_pct >= _VERBOSITY_NUDGE_MIN_FILL
-              and session_efficiency < _VERBOSITY_NUDGE_EFFICIENCY_THRESHOLD):
-            nudge = (
-                f"[Token Optimizer] Context {_format_context_fill(fill_pct, cached)}, "
-                f"session efficiency {session_efficiency:.0f}/100. "
-                "Answer in a focused and spartan way, as if the user has ADHD. "
-                "Think as long as you need, and size code, diffs and file contents to the task."
-            )
-        else:
+        nudge = _verbosity_nudge_text(fill_pct, score, session_efficiency, cached)
+        if not nudge:
             return ""
 
         payload = json.dumps({
@@ -57246,6 +58138,62 @@ def run_verbosity_steer(transcript_path=None, quiet=True, session_id=None):
         return payload
     except Exception:
         return ""
+
+
+def _verbosity_nudge_text(fill_pct, score, session_efficiency, cached):
+    """The lean-output nudge for a fill level, or "" when none applies.
+
+    Shared by Claude Code / Codex (run_verbosity_steer) and Hermes
+    (hermes-turn-context), so every runtime gets the same tiers and wording.
+    ``cached`` is the quality-cache dict (or a small stand-in with
+    ``model_context_window``) that ``_format_context_fill`` reads.
+
+    Tiers:
+      90%+ fill                        -> "" (adding tokens makes it worse)
+      75-89% fill                      -> strong nudge
+      _VERBOSITY_NUDGE_MIN_FILL-74% and session efficiency below
+      _VERBOSITY_NUDGE_EFFICIENCY_THRESHOLD -> gentle nudge
+    """
+    if fill_pct >= 90:
+        return ""
+    # Determine nudge tier.
+    #
+    # The spartan/ADHD phrasing is used verbatim because it produced the
+    # largest reduction in verbose output across multiple models while
+    # maintaining answer quality. Notes on what the data showed:
+    #   - Word ceilings were REMOVED. An earlier draft capped answers at
+    #     80/120 words. A cap makes a model either truncate a genuinely
+    #     complex answer or ignore the nudge, and a nudge that gets ignored
+    #     is the original failure this rewrite exists to fix.
+    #   - The real waste is elaboration, not preamble. The padding-focused
+    #     wording targeted preamble and restatement and cut half as much,
+    #     because verbose answers mostly repeat themselves rather than
+    #     restate the question.
+    #   - Quality held. On the hardest fixture (prompt-caching explainer,
+    #     1159 -> 759 words) the spartan answer kept every concept and
+    #     covered TTL MORE; what it dropped was the same point made six
+    #     times instead of three.
+    #   - Reasoning and deliverables are fenced off explicitly, because the
+    #     nudge fires mid-task where "spartan" could otherwise be read as
+    #     "write less code".
+    #   - Opus is roughly half as responsive as Sonnet here. Do not quote
+    #     the Sonnet figure as the product number.
+    if fill_pct >= 75:
+        return (
+            f"[Token Optimizer] Context {_format_context_fill(fill_pct, cached)}, resource health {score:.0f}/100. "
+            "Answer in a focused and spartan way, as if the user has ADHD. Cut everything "
+            "that is not the answer itself. Think as long as you need, and size code, "
+            "diffs and file contents to the task."
+        )
+    if (fill_pct >= _VERBOSITY_NUDGE_MIN_FILL
+          and session_efficiency < _VERBOSITY_NUDGE_EFFICIENCY_THRESHOLD):
+        return (
+            f"[Token Optimizer] Context {_format_context_fill(fill_pct, cached)}, "
+            f"session efficiency {session_efficiency:.0f}/100. "
+            "Answer in a focused and spartan way, as if the user has ADHD. "
+            "Think as long as you need, and size code, diffs and file contents to the task."
+        )
+    return ""
 
 
 if __name__ == "__main__":
@@ -57448,7 +58396,7 @@ if __name__ == "__main__":
         sys.exit(0)
     elif args[0] == "copilot-rollup":
         # Ingest recent Copilot sessions (CLI + VS Code planes) into trends.db.
-        # Fired by the stop hook via copilot_hook_bridge.handle_stop(); extra
+        # Fired by the sessionEnd hook via copilot_hook_bridge.handle_session_end(); extra
         # flags are silently consumed (INSERT OR IGNORE keeps this idempotent).
         # Wall-clock backstop: this dispatch is spawned fire-and-forget by the
         # Stop hook bridge (start_new_session=True, DEVNULL, no PID tracking),
@@ -57578,7 +58526,8 @@ if __name__ == "__main__":
         # plugin's on_session_end hook via hermes_hook_bridge.run_rollup().
         # --session <id> and --platform / --reason are accepted and silently
         # consumed so the bridge's exact call signature never causes an error;
-        # a full recent collect is always run (INSERT OR IGNORE is idempotent).
+        # a full recent collect is always run (idempotent: rows are keyed per
+        # session and only refreshed when state.db has moved further along).
         # Wall-clock backstop: same rationale as copilot-rollup above -- the
         # Hermes bridge spawns this fire-and-forget with start_new_session=True
         # and no PID tracking, so the parent hook deadline never propagates.
@@ -57586,9 +58535,40 @@ if __name__ == "__main__":
         # session re-collects idempotently), a frozen orphan is not.
         quiet = "--quiet" in args or "-q" in args
         _HERMES_ROLLUP_CONTEXT = _parse_hermes_rollup_context(args[1:])
+        _HERMES_ROLLUP_SKILLS = _parse_hermes_rollup_skills(args[1:])
         _tok_hook_deadline = _install_hook_budget(60)
         try:
             _collect_hermes_sessions(days=90, quiet=quiet)
+        except _HookTimeout:
+            pass
+        except Exception:
+            pass
+        finally:
+            _clear_hook_budget(_tok_hook_deadline)
+        sys.exit(0)
+    elif args[0] == "hermes-checkpoint":
+        # Session checkpoint for a Hermes session, built from Hermes's own
+        # state.db messages (read-only). Spawned detached by the Hermes plugin
+        # at fill bands, before compaction, before subagent fan-out, after edit
+        # batches, at turn end and at session end. Same 60s backstop as
+        # hermes-rollup: a skipped checkpoint is invisible, a frozen orphan is not.
+        _tok_hook_deadline = _install_hook_budget(60)
+        try:
+            _hermes_checkpoint_cli(args[1:])
+        except _HookTimeout:
+            pass
+        except Exception:
+            pass
+        finally:
+            _clear_hook_budget(_tok_hook_deadline)
+        sys.exit(0)
+    elif args[0] == "hermes-turn-context":
+        # One child process per Hermes turn for continuity + lean-output (see
+        # hermes_turn_context). Reads a JSON payload on stdin, prints one JSON
+        # object. Same 8s budget as the Claude Code prompt hooks.
+        _tok_hook_deadline = _install_hook_budget(8)
+        try:
+            print(json.dumps(hermes_turn_context(_read_stdin_hook_input())))
         except _HookTimeout:
             pass
         except Exception:
@@ -57991,7 +58971,7 @@ if __name__ == "__main__":
     elif args[0] == "setup-hook":
         dry = "--dry-run" in args
         uninstall = "--uninstall" in args
-        setup_hook(dry_run=dry, uninstall=uninstall)
+        setup_hook(dry_run=dry, uninstall=uninstall, user_initiated=True)
     elif args[0] == "setup-all-hooks":
         dry = "--dry-run" in args
         verbose = "--verbose" in args or "-v" in args
@@ -58735,7 +59715,8 @@ if __name__ == "__main__":
         output_json = "--json" in args
         install = "--install" in args
         dry = "--dry-run" in args
-        generate_compact_instructions(as_json=output_json, install=install, dry_run=dry)
+        generate_compact_instructions(as_json=output_json, install=install, dry_run=dry,
+                                      user_initiated=True)
     elif args[0] == "dynamic-compact-instructions":
         hook_input = _read_stdin_hook_input()
         sid = hook_input.get("session_id") or os.environ.get("CLAUDE_SESSION_ID", "")
@@ -58744,7 +59725,8 @@ if __name__ == "__main__":
         dry = "--dry-run" in args
         uninstall = "--uninstall" in args
         status = "--status" in args
-        setup_smart_compact(dry_run=dry, uninstall=uninstall, status_only=status)
+        setup_smart_compact(dry_run=dry, uninstall=uninstall, status_only=status,
+                            user_initiated=True)
     elif args[0] == "daemon-revive":
         # Detached child spawned by _daemon_midsession_pulse. Revives a dead
         # dashboard daemon OFF the hot path: force=True bypasses the 24h
@@ -59316,7 +60298,8 @@ if __name__ == "__main__":
         dry = "--dry-run" in args
         uninstall = "--uninstall" in args
         status = "--status" in args
-        setup_quality_bar(dry_run=dry, uninstall=uninstall, status_only=status)
+        setup_quality_bar(dry_run=dry, uninstall=uninstall, status_only=status,
+                          user_initiated=True)
     elif args[0] == "setup-vscode-extension":
         # Manage the VS Code status-bar extension auto-install.
         #   --uninstall : sticky opt-out (+ remove the extension if a CLI is present)

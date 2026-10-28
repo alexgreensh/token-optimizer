@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -14,12 +15,42 @@ REPO = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO / "skills" / "token-optimizer" / "scripts"
 
 
+_PLUGIN_ENV_CONSTANTS = ("_PLUGIN_DATA_BASE", "_INSTALLED_PLUGINS", "_PLUGIN_DATA_ENV_VARS")
+
+
+def _plugin_env_constants():
+    module = sys.modules.get("plugin_env")
+    if module is None:
+        return None
+    return {name: getattr(module, name) for name in _PLUGIN_ENV_CONSTANTS}
+
+
+@pytest.fixture(autouse=True)
+def _restore_plugin_env_state():
+    """plugin_env caches its result and this file overrides its constants. After each
+    test, put the constants back to their pre-test values and drop the cache, so a
+    later test that imports measure does not resolve paths from this file's temp
+    folders. (Another autouse fixture may already hold monkeypatch, so this does not
+    rely on monkeypatch's teardown running after it.)"""
+    before = _plugin_env_constants()
+    yield
+    module = sys.modules.get("plugin_env")
+    if module is not None:
+        if before is not None:
+            for name, value in before.items():
+                setattr(module, name, value)
+        module.resolve_plugin_data_dir.cache_clear()
+
+
 def _load_plugin_env(monkeypatch: pytest.MonkeyPatch, data_base: Path):
     monkeypatch.syspath_prepend(str(SCRIPTS))
     module = importlib.import_module("plugin_env")
-    module._PLUGIN_DATA_BASE = data_base
-    module._INSTALLED_PLUGINS = data_base.parent / "installed_plugins.json"
-    module._PLUGIN_DATA_ENV_VARS = ("CLAUDE_PLUGIN_DATA",)
+    # monkeypatch restores these on teardown. Plain assignment left the test's
+    # temp folders in the shared module, so a later test that imports measure
+    # resolved its paths outside the sandbox.
+    monkeypatch.setattr(module, "_PLUGIN_DATA_BASE", data_base)
+    monkeypatch.setattr(module, "_INSTALLED_PLUGINS", data_base.parent / "installed_plugins.json")
+    monkeypatch.setattr(module, "_PLUGIN_DATA_ENV_VARS", ("CLAUDE_PLUGIN_DATA",))
     module.resolve_plugin_data_dir.cache_clear()
     return module
 
@@ -185,3 +216,34 @@ def test_expand_checks_sibling_archives_before_reporting_miss(
     measure.expand_archived("tool-1", session_id="session-1")
 
     assert "recovered from sibling" in capsys.readouterr().out
+
+
+def test_helper_overrides_are_undone_when_the_monkeypatch_ends(monkeypatch, tmp_path):
+    monkeypatch.syspath_prepend(str(SCRIPTS))
+    module = importlib.import_module("plugin_env")
+    before = _plugin_env_constants()
+    with monkeypatch.context() as inner:
+        _load_plugin_env(inner, tmp_path / "data")
+        assert module._PLUGIN_DATA_BASE == tmp_path / "data"
+    assert _plugin_env_constants() == before
+
+
+def test_helper_leaves_a_cached_result_behind_within_its_own_test(monkeypatch, tmp_path):
+    # First of an ordered pair: the next test checks the file's teardown dropped this.
+    active = tmp_path / "data" / "token-optimizer-active"
+    active.mkdir(parents=True)
+    monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(active))
+    module = _load_plugin_env(monkeypatch, tmp_path / "data")
+    assert module.resolve_plugin_data_dir() == active
+    assert module.resolve_plugin_data_dir.cache_info().currsize == 1
+
+
+def test_cached_result_does_not_outlive_the_test_that_set_it(monkeypatch):
+    # Runs right after the test above in file order. Imports the module itself, so it
+    # also passes alone or in any order. A leftover cache would still hold the previous
+    # test's temp folder and disagree with a fresh resolve; a cache another file filled
+    # under its own constants agrees with it.
+    monkeypatch.syspath_prepend(str(SCRIPTS))
+    module = importlib.import_module("plugin_env")
+    if module.resolve_plugin_data_dir.cache_info().currsize:
+        assert module.resolve_plugin_data_dir() == module.resolve_plugin_data_dir.__wrapped__()

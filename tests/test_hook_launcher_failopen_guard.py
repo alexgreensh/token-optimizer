@@ -158,8 +158,19 @@ def test_smart_compact_commands_are_guarded():
     sys.path.insert(0, str(REPO / "skills" / "token-optimizer" / "scripts"))
     import measure
 
+    import shlex
+
     cmds = measure._smart_compact_hook_commands()
     assert cmds
+    # The path is shell-quoted only when it needs it: POSIX always writes
+    # '<mp>', Windows writes shlex.quote(<mp with forward slashes>), which is
+    # bare for a path with no spaces or quotes (D:/a/.../measure.py on CI).
+    # Either way the guard must test exactly the script the command runs.
     for event, cmd in cmds.items():
-        assert cmd.startswith("[ -r '"), f"{event} smart-compact command is unguarded: {cmd}"
-        assert "|| exit 0;" in cmd
+        guard, sep, rest = cmd.partition(" || exit 0; ")
+        assert sep and guard.startswith("[ -r ") and guard.endswith(" ]"), (
+            f"{event} smart-compact command is unguarded: {cmd}")
+        guarded = shlex.split(guard[len("[ -r "):-2])
+        argv = shlex.split(rest)
+        assert len(guarded) == 1 and guarded[0] == argv[1], (event, cmd)
+        assert guarded[0].endswith("measure.py"), (event, cmd)

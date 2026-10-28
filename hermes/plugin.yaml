@@ -1,9 +1,22 @@
 name: token-optimizer
-version: "0.1.0"
-description: "Token Optimizer for Hermes — proactive context-usage nudges before each turn, per-turn token accumulation, session rollup into the shared dashboard, and /token-optimizer slash command."
+version: "0.2.0"
+description: "Token Optimizer for Hermes: terminal output compression, large-result archive with expand, delta re-reads, loop detection, checkpoints with restore after compaction, cross-session continuity hints, context nudges, credential redaction, session rollup into the shared dashboard, and the /token-optimizer command."
 author: AlexGreenshpun
 hooks:
   - pre_llm_call
   - post_api_request
-  - on_session_finalize
+  - pre_tool_call
+  - post_tool_call
+  - transform_terminal_output
+  - transform_tool_result
+  - pre_auxiliary_call
+  - post_compaction
+  - api_request_error
+  - subagent_start
+  - subagent_stop
+  - on_skill_lifecycle
+  - on_session_start
   - on_session_end
+  - on_session_finalize
+  - on_session_reset
+  - on_session_delete

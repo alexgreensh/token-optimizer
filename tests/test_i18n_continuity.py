@@ -2,15 +2,16 @@
 """Session continuity is blind to non-English prompts.
 
 The topic tokenizer extracted words with ``[a-zA-Z0-9_./:-]+``, which matches
-nothing above U+007F. Korean/Chinese/Japanese prompts tokenized to ``[]`` and
-scored a hard ``0.0`` before any threshold was consulted; accented Latin split
-at the accent (``módulo`` -> ``dulo``). The fix is a single shared tokenizer
+nothing above U+007F. Non-Latin prompts tokenized to ``[]`` and scored a hard
+``0.0`` before any threshold was consulted; accented Latin split at the accent
+(``módulo`` -> ``dulo``). The fix is a single shared tokenizer
 (``_topic_tokens`` = ``_TOPIC_TOKEN_RE`` + a script-aware length floor) used at
 all three topic-scoring sites (``_resume_topic_score`` x2, ``keyword_relevance_score``).
 
 Two design points:
-  * The floor is script-aware: CJK (>= U+3000) is kept at len>=2 because a 2-char
-    Hangul/Han word (결제, 모듈) carries a full topic; ASCII/accented Latin keep len>3.
+  * The floor uses fixed code-point ranges shared with OpenClaw and OpenCode: U+3000 and
+    above (CJK, fullwidth) keep len>=2, other non-Latin letters len>=3, Latin len>3.
+    Combining marks never count toward the length.
   * ``_RECOVER_TOKEN_RE`` is deliberately NOT widened — doing so makes non-Latin items
     produce 3+ tokens that fail the ASCII-only keep-set overlap test and drop needed lines.
 
@@ -77,6 +78,11 @@ def test_script_aware_floor_via_production_helper():
     mod = _measure()
     assert mod._topic_tokens("결제 모듈") == {"결제", "모듈"}          # 2-char Hangul kept
     assert mod._topic_tokens("ré tú de la") == set()                  # 2-char accented Latin dropped
+    assert mod._topic_tokens("кот мир") == {"кот", "мир"}              # short Cyrillic words kept
+    assert mod._topic_tokens("на не в") == set()                      # 2-letter Cyrillic function words dropped
+    assert mod._topic_tokens("في של") == set()                         # 2-letter Arabic/Hebrew dropped
+    assert mod._topic_tokens("שׁ") == set()                            # a niqqud mark is not a letter
+    assert mod._topic_tokens("ＡＰＩ 接続") == {"ａｐｉ", "接続"}          # fullwidth Latin kept like CJK
     assert "api" not in mod._topic_tokens("use the api key")          # 3-char ASCII dropped
     assert "keepwarm" in mod._topic_tokens("the keepwarm daemon")     # 4+ ASCII kept
 

@@ -88,7 +88,8 @@ def _state_dir():
     -- this detector WRITES state, so a foreign
     plugin's CLAUDE_PLUGIN_DATA sharing the same shared plugins/data root must
     never redirect that write into another plugin's directory, unlike the
-    pre-fix raw env read this duplicated); else ~/.claude/token-optimizer/data.
+    pre-fix raw env read this duplicated); else <claude_home()>/token-optimizer/data
+    (CLAUDE_CONFIG_DIR when set and valid, else ~/.claude).
     Returns None only if HOME itself is unresolvable, in which case the
     snapshot diff is skipped (no finding, no crash).
     """
@@ -103,8 +104,11 @@ def _state_dir():
     if plugin_data is not None:
         return plugin_data / "data"
     try:
-        return Path.home() / ".claude" / "token-optimizer" / "data"
-    except (RuntimeError, OSError):
+        # claude_home() honors CLAUDE_CONFIG_DIR, so a relocated Claude config
+        # keeps this detector's state beside the rest of Token Optimizer's.
+        from runtime_env import claude_home
+        return claude_home() / "token-optimizer" / "data"
+    except (ImportError, RuntimeError, OSError):
         return None
 
 
@@ -358,12 +362,22 @@ def _process_prefix_dirs(cwd):
     """Return the ordered list of process-library prefix directories to scan."""
     cwd_path = Path(cwd)
     home = Path.home()
-    return [
+    dirs = [
         cwd_path / ".a5c" / "processes",
         cwd_path / ".claude" / "processes",
         home / ".a5c" / "processes",
         home / ".claude" / "processes",
     ]
+    # A relocated Claude config (CLAUDE_CONFIG_DIR) keeps its user-level
+    # processes/ there; scan it too, without dropping the ~/.claude default.
+    try:
+        from runtime_env import claude_home
+        config_processes = claude_home() / "processes"
+        if config_processes not in dirs:
+            dirs.append(config_processes)
+    except (ImportError, RuntimeError, OSError):
+        pass
+    return dirs
 
 
 def _scan_process_prefixes(cwd):

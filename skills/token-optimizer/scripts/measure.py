@@ -10698,7 +10698,8 @@ def _deterministic_candidates_data(days=30, budget_s=_DETCAND_COACH_BUDGET_S,
                  if _sidechain_path_reason(jf) is None]
         return deterministic_candidates.run(
             runtime, files, price, days=days, budget_s=budget_s, max_sessions=max_sessions,
-            cache_dir=SNAPSHOT_DIR, tier=tier, use_cache=use_cache, progress=progress)
+            cache_dir=SNAPSHOT_DIR, tier=tier, use_cache=use_cache, progress=progress,
+            split_usage=lambda model, usage: _billed_usage_parts(usage, model, tier=tier))
     except Exception as exc:  # never break coach --json
         return {"status": "error", "runtime": runtime, "partial": True, "candidates": [],
                 "basis": deterministic_candidates.BASIS,
@@ -24357,6 +24358,68 @@ def _migrate_streaming_dedup(conn, quiet=False):
         print(f"  [Token Optimizer] migration failed: {e}", file=sys.stderr)
 
 
+def _hermes_refresh_session_totals(conn, dedup_key, parsed):
+    """Refresh an existing Hermes row's per-session numbers from a newer snapshot.
+
+    Returns True when the row was updated. The rule is monotonic: Hermes's
+    state.db message and token counters only grow during a session, so the new
+    snapshot wins only when it is >= the stored row on every counter and > on
+    at least one. Quality and skills columns keep their own rules (they need a
+    rollup's live reading) and are not touched here.
+    """
+    stored = conn.execute(
+        "SELECT message_count, input_tokens, output_tokens, api_calls "
+        "FROM session_log WHERE jsonl_path = ?",
+        (dedup_key,),
+    ).fetchone()
+    if stored is None:
+        return False
+    new = (
+        int(parsed.get("message_count") or 0),
+        int(parsed.get("total_input_tokens") or 0),
+        int(parsed.get("total_output_tokens") or 0),
+        int(parsed.get("api_calls") or 0),
+    )
+    old = tuple(int(v or 0) for v in stored)
+    if any(n < o for n, o in zip(new, old)) or new == old:
+        return False
+    conn.execute(
+        """UPDATE session_log
+           SET duration_minutes = ?, input_tokens = ?, output_tokens = ?,
+               message_count = ?, api_calls = ?, cache_hit_rate = ?,
+               cache_create_1h_tokens = ?, cache_create_5m_tokens = ?,
+               avg_call_gap_seconds = ?, max_call_gap_seconds = ?,
+               p95_call_gap_seconds = ?, subagents_json = ?, tool_calls_json = ?,
+               model_usage_json = ?, all_model_usage_json = ?,
+               model_usage_breakdown_json = ?, version = ?, topic = ?,
+               collected_at = ?
+           WHERE jsonl_path = ?""",
+        (
+            parsed["duration_minutes"],
+            parsed["total_input_tokens"],
+            parsed["total_output_tokens"],
+            parsed["message_count"],
+            parsed.get("api_calls", 0),
+            parsed["cache_hit_rate"],
+            parsed.get("total_cache_create_1h", 0),
+            parsed.get("total_cache_create_5m", 0),
+            parsed.get("avg_call_gap_seconds"),
+            parsed.get("max_call_gap_seconds"),
+            parsed.get("p95_call_gap_seconds"),
+            json.dumps(parsed.get("subagents_used", {})),
+            json.dumps(parsed.get("tool_calls", {})),
+            json.dumps(parsed.get("model_usage", {})),
+            json.dumps(parsed.get("model_usage", {})),
+            json.dumps(parsed.get("model_usage_breakdown", {})),
+            parsed.get("version"),
+            parsed.get("topic"),
+            datetime.now().isoformat(),
+            dedup_key,
+        ),
+    )
+    return True
+
+
 def _collect_hermes_sessions(days=90, quiet=False, rebuild=False):
     """Collect Hermes sessions from state.db into the trends DB.
 
@@ -24411,6 +24474,17 @@ def _collect_hermes_sessions(days=90, quiet=False, rebuild=False):
                 continue
 
             if _is_file_collected(conn, dedup_key):
+                # A collect that ran while the session was still live stored
+                # its totals at that point. Hermes's state.db counters only
+                # grow, so refresh the per-session numbers whenever this
+                # snapshot is at least as far along on every counter and ahead
+                # on one. A snapshot behind on any counter is stale (e.g. a
+                # dashboard collect that read state.db before a finished
+                # rollup wrote) and never overwrites the newer row. Totals are
+                # replaced, never added, and the aggregates are rebuilt from
+                # session_log, so a refresh cannot double count.
+                if _hermes_refresh_session_totals(conn, dedup_key, parsed):
+                    updated_count += 1
                 # A rollup carries the session's live occupancy, which an
                 # earlier mid-session collect could not see. Refresh the stored
                 # grade in place so the first write does not freeze a
@@ -31346,7 +31420,7 @@ def _maybe_self_heal_sessionend_fossils_on_hook():
         _clear_hook_budget(deadline)
 
 
-def setup_hook(dry_run=False, uninstall=False):
+def setup_hook(dry_run=False, uninstall=False, user_initiated=False):
     """Install or uninstall the SessionEnd hook for automatic usage collection.
 
     ``uninstall=True`` removes ONLY Token Optimizer's own SessionEnd hook
@@ -31402,7 +31476,7 @@ def setup_hook(dry_run=False, uninstall=False):
             import shutil
             shutil.copy2(str(SETTINGS_PATH), str(backup_path))
         try:
-            if not _write_settings_atomic(settings):
+            if not _write_settings_atomic(settings, user_initiated=user_initiated):
                 print("[Error] settings.json write was refused; no SessionEnd hooks were removed.", file=sys.stderr)
                 return
             print(f"[Token Optimizer] Removed {removed} Token Optimizer SessionEnd hook(s) from settings.json.")
@@ -31494,7 +31568,7 @@ def setup_hook(dry_run=False, uninstall=False):
 
     # Write atomically
     try:
-        if not _write_settings_atomic(settings):
+        if not _write_settings_atomic(settings, user_initiated=user_initiated):
             print("[Error] settings.json write was refused; SessionEnd hook was not installed.", file=sys.stderr)
             return
         action = "upgraded" if upgrading else "installed"
@@ -35573,6 +35647,15 @@ def _retained_paths() -> list[tuple[str, Path]]:
         pass
     # Always include the resolved snapshot dir even under a sandbox override.
     paths.append(("session data (this install)", SNAPSHOT_DIR))
+    # Compaction checkpoints (conversation-context captures) live under the
+    # per-session state base, which on a script install is NOT inside
+    # SNAPSHOT_DIR (#106 named them as undisclosed). Disclose them too.
+    try:
+        listed = {p for _, p in paths}
+        if CHECKPOINT_DIR not in listed:
+            paths.append(("checkpoints (this install)", CHECKPOINT_DIR))
+    except NameError:
+        pass
     return paths
 
 
@@ -35649,6 +35732,9 @@ def _remove_our_settings_entries(settings: dict) -> list[str]:
       ``quality-cache`` (our cache hook).
     - ``SessionEnd`` hook entries that are ours (reuses
       _remove_token_optimizer_session_end_hooks).
+    - ``compactInstructions`` when it is the block setup-smart-compact
+      generated (removed) or holds our appended section (only that section
+      is removed; the user's own text stays).
 
     Foreign statusLines, foreign hooks, and every other settings key are left
     byte-identical. Returns a list of human-readable descriptions of what was
@@ -35716,6 +35802,10 @@ def _remove_our_settings_entries(settings: dict) -> list[str]:
     n_session_end = _remove_token_optimizer_session_end_hooks(settings)
     if n_session_end:
         removed.append(f"{n_session_end} SessionEnd hook(s)")
+    # compactInstructions written by setup-smart-compact (#106: it outlived
+    # cleanup). Only our generated block / appended section is removed.
+    if _remove_our_compact_instructions(settings):
+        removed.append("compactInstructions (token-optimizer)")
     return removed
 
 
@@ -35764,6 +35854,24 @@ def cleanup(dry_run=False, this_install_only=False):
     # the preview stays side-effect-free.
     if not dry_run:
         _unlink_if_exists(PLIST_PATH)
+        # Same reasoning for the other platforms' per-identity daemon files:
+        # each platform's uninstaller sweeps only its own launcher, so a HOME
+        # synced or migrated from another OS kept dashboard-launcher.cmd /
+        # .schtasks-daemon.xml (Windows) or the Linux launcher after cleanup
+        # (#106). They are plain files once the scheduler job is gone.
+        if not _daemon_snapshot_sandboxed():
+            for _snap in _daemon_identity_snapshot_dirs(this_install_only):
+                _gone, _ = _sweep_identity_daemon_files(
+                    _snap, ("daemon_script", "daemon_token", "daemon_host",
+                            "windows_launcher", "linux_launcher"))
+                try:
+                    for _xml in _snap.glob("*schtasks-daemon*.xml"):
+                        if _unlink_if_exists(_xml):
+                            _gone.append(str(_xml))
+                except OSError:
+                    pass
+                for _path in _gone:
+                    print(f"  Deleted: {_path}")
     print()
 
     # 2. settings.json
@@ -35813,7 +35921,14 @@ def cleanup(dry_run=False, this_install_only=False):
                     # silent no-op. Reporting "Removed" for a write that never
                     # landed leaves the user with the dangling statusLine this
                     # command exists to clear, so surface it instead.
-                    if _write_settings_atomic(fresh, allow_removing_keys={"statusLine"}):
+                    # user_initiated: cleanup is an explicit user command. Under
+                    # the hook cohort throttle any Token Optimizer settings
+                    # write in the previous ~10s (a SessionStart heal, a setup
+                    # command) made this write lose the lease, and the whole
+                    # removal was skipped (#106 leftovers).
+                    if _write_settings_atomic(
+                            fresh, allow_removing_keys={"statusLine", "compactInstructions"},
+                            user_initiated=True):
                         for entry in our_entries:
                             print(f"    Removed: {entry}")
                         print(f"    Backup: {backed}")
@@ -44628,7 +44743,65 @@ def checkpoint_trigger(milestone=None, session_id=None, transcript_path=None, qu
     return cp_path
 
 
-def generate_compact_instructions(as_json=False, install=False, dry_run=False):
+_COMPACT_INSTR_HEAD = "When summarizing this session, pay special attention to:"
+_COMPACT_INSTR_TAIL = (
+    "Always include the specific next step with enough detail to continue without asking."
+)
+_COMPACT_INSTR_BULLETS = frozenset({
+    "- Architectural decisions and their reasoning",
+    "- Skill invocations and their outcomes",
+    "- External service interactions and their results",
+    "- Modified file paths with line ranges",
+    "- Error-fix sequences (what was tried, what failed, what worked)",
+    "- Open questions and unresolved TODOs",
+    "- Agent/team state (task assignments, completion status)",
+})
+# Separator used when our instructions are appended to the user's own text.
+_COMPACT_INSTR_MARKER = "\n\n# Token Optimizer additions:\n"
+
+
+def _compact_instructions_generated(text):
+    """True when ``text`` is exactly a block generate_compact_instructions writes."""
+    if not isinstance(text, str):
+        return False
+    lines = text.strip().split("\n")
+    if len(lines) < 2 or lines[0] != _COMPACT_INSTR_HEAD or lines[-1] != _COMPACT_INSTR_TAIL:
+        return False
+    return all(line in _COMPACT_INSTR_BULLETS for line in lines[1:-1])
+
+
+def _split_compact_instructions(text):
+    """Split a ``compactInstructions`` value into (user_part, ours_present).
+
+    Ours is either the whole value (a block we generated) or a section we
+    appended after the user's own text behind ``_COMPACT_INSTR_MARKER``.
+    Anything else is the user's and is returned untouched.
+    """
+    if not isinstance(text, str):
+        return text, False
+    if _COMPACT_INSTR_MARKER in text:
+        return text.split(_COMPACT_INSTR_MARKER, 1)[0].rstrip(), True
+    if _compact_instructions_generated(text):
+        return "", True
+    return text, False
+
+
+def _remove_our_compact_instructions(settings):
+    """Drop our compactInstructions (keeping any user-written part). True if changed."""
+    if not isinstance(settings, dict) or "compactInstructions" not in settings:
+        return False
+    user_part, ours = _split_compact_instructions(settings.get("compactInstructions"))
+    if not ours:
+        return False
+    if user_part:
+        settings["compactInstructions"] = user_part
+    else:
+        del settings["compactInstructions"]
+    return True
+
+
+def generate_compact_instructions(as_json=False, install=False, dry_run=False,
+                                  user_initiated=False):
     """Generate project-specific Compact Instructions.
 
     Analyzes CLAUDE.md, recent session patterns, and common loss patterns
@@ -44639,7 +44812,7 @@ def generate_compact_instructions(as_json=False, install=False, dry_run=False):
     """
     components = measure_components()
     instructions_parts = [
-        "When summarizing this session, pay special attention to:",
+        _COMPACT_INSTR_HEAD,
     ]
 
     # Analyze CLAUDE.md content for project priorities
@@ -44662,7 +44835,7 @@ def generate_compact_instructions(as_json=False, install=False, dry_run=False):
         "- Modified file paths with line ranges",
         "- Error-fix sequences (what was tried, what failed, what worked)",
         "- Open questions and unresolved TODOs",
-        "Always include the specific next step with enough detail to continue without asking.",
+        _COMPACT_INSTR_TAIL,
     ])
 
     # Check for agent usage in recent sessions
@@ -44694,14 +44867,20 @@ def generate_compact_instructions(as_json=False, install=False, dry_run=False):
             )
             return instructions_text
         existing = settings.get("compactInstructions", "")
+        user_part, ours_present = _split_compact_instructions(existing)
 
-        if existing and "Token Optimizer" in existing:
+        if existing and ours_present:
+            # Refresh only our part. A value that also holds the user's own
+            # text keeps it: replacing the whole value used to erase it.
             if dry_run:
                 print(f"\n  [Dry run] Would update existing compact instructions in {settings_path}")
                 print(f"\n  Compact instructions preview:\n  {instructions_text}\n")
                 return instructions_text
-            settings["compactInstructions"] = instructions_text
-            if not _write_settings_atomic(settings):
+            settings["compactInstructions"] = (
+                user_part + _COMPACT_INSTR_MARKER + instructions_text
+                if user_part else instructions_text
+            )
+            if not _write_settings_atomic(settings, user_initiated=user_initiated):
                 print("[Error] settings.json write was refused; compact instructions were not updated.", file=sys.stderr)
                 return instructions_text
             print(f"[Token Optimizer] Compact Instructions updated in {settings_path}")
@@ -44709,7 +44888,7 @@ def generate_compact_instructions(as_json=False, install=False, dry_run=False):
 
         if existing:
             # User has their own instructions, append ours
-            combined = existing.rstrip() + "\n\n# Token Optimizer additions:\n" + instructions_text
+            combined = existing.rstrip() + _COMPACT_INSTR_MARKER + instructions_text
             if dry_run:
                 print(f"\n  [Dry run] Would append to existing compact instructions in {settings_path}")
                 print(f"\n  Appended:\n  {instructions_text}\n")
@@ -44722,7 +44901,7 @@ def generate_compact_instructions(as_json=False, install=False, dry_run=False):
                 return instructions_text
             settings["compactInstructions"] = instructions_text
 
-        if not _write_settings_atomic(settings):
+        if not _write_settings_atomic(settings, user_initiated=user_initiated):
             print("[Error] settings.json write was refused; compact instructions were not installed.", file=sys.stderr)
             return instructions_text
         print(f"[Token Optimizer] Compact Instructions installed to {settings_path}")
@@ -45497,7 +45676,8 @@ def _is_smart_compact_installed(settings=None):
     return status
 
 
-def setup_smart_compact(dry_run=False, uninstall=False, status_only=False):
+def setup_smart_compact(dry_run=False, uninstall=False, status_only=False,
+                        user_initiated=False):
     """Install, uninstall, or check status of smart compaction hooks.
 
     Appends to existing hooks (never overwrites). Safe to run multiple times.
@@ -45562,10 +45742,16 @@ def setup_smart_compact(dry_run=False, uninstall=False, status_only=False):
             return
 
         settings["hooks"] = hooks
-        if not _write_settings_atomic(settings):
+        # setup-smart-compact also installed compactInstructions; take ours
+        # back out (a user-written part stays).
+        ci_removed = _remove_our_compact_instructions(settings)
+        if not _write_settings_atomic(settings, allow_removing_keys={"compactInstructions"},
+                                      user_initiated=user_initiated):
             print("[Error] settings.json write was refused; smart compact hooks were not removed.", file=sys.stderr)
             return
         print(f"[Token Optimizer] Removed smart compact hooks. {removed} hook(s) removed.")
+        if ci_removed:
+            print("[Token Optimizer] Removed Token Optimizer compact instructions.")
         return
 
     # Install
@@ -45656,7 +45842,7 @@ def setup_smart_compact(dry_run=False, uninstall=False, status_only=False):
         return
 
     settings["hooks"] = hooks
-    if not _write_settings_atomic(settings):
+    if not _write_settings_atomic(settings, user_initiated=user_initiated):
         print("[Error] settings.json write was refused; smart compact hooks were not installed.", file=sys.stderr)
         return
 
@@ -45667,7 +45853,7 @@ def setup_smart_compact(dry_run=False, uninstall=False, status_only=False):
 
     # Also install compact instructions (tells Claude WHAT to preserve)
     print()
-    generate_compact_instructions(install=True)
+    generate_compact_instructions(install=True, user_initiated=user_initiated)
 
     print("\n  What happens now:")
     print("    Compact Instructions: Guides Claude on what to preserve during compaction")
@@ -48752,7 +48938,8 @@ def _get_v5_savings_recommendation():
     }
 
 
-def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=False, quiet=False):
+def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=False, quiet=False,
+                      user_initiated=False):
     """Install, uninstall, or check quality bar (status line + cache hook).
 
     Installs:
@@ -48770,6 +48957,12 @@ def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=F
     a silent repair never re-injects the integration advisory into context on
     every turn. The advisory is only shown on an explicit,
     interactive `setup-quality-bar` run.
+
+    user_initiated=True is passed only by the `setup-quality-bar` CLI command
+    (the same for setup-hook / setup-smart-compact / compact-instructions):
+    an explicit command takes the settings lease past the hook-herd
+    reservation, so commands typed back to back are not refused. The
+    automatic heal callers keep the default and the non-blocking lease.
 
     Side-effects on config.json:
       install        -> clears "quality_bar_disabled" (explicit opt-in)
@@ -48871,7 +49064,8 @@ def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=F
         settings["hooks"] = hooks
         # Deliberate top-level removal: declare it so the choke-point guard
         # allows this one and only this one.
-        if not _write_settings_atomic(settings, allow_removing_keys={"statusLine"}):
+        if not _write_settings_atomic(settings, allow_removing_keys={"statusLine"},
+                                      user_initiated=user_initiated):
             print("[Error] settings.json write was refused; Quality Bar was not removed.", file=sys.stderr)
             return
         _set_quality_bar_disabled(True)
@@ -48973,7 +49167,7 @@ def setup_quality_bar(dry_run=False, uninstall=False, status_only=False, force=F
         return
 
     if installed:
-        if not _write_settings_atomic(settings):
+        if not _write_settings_atomic(settings, user_initiated=user_initiated):
             if not quiet:
                 print("[Error] settings.json write was refused; Quality Bar was not installed.", file=sys.stderr)
             return
@@ -58353,7 +58547,8 @@ if __name__ == "__main__":
         # plugin's on_session_end hook via hermes_hook_bridge.run_rollup().
         # --session <id> and --platform / --reason are accepted and silently
         # consumed so the bridge's exact call signature never causes an error;
-        # a full recent collect is always run (INSERT OR IGNORE is idempotent).
+        # a full recent collect is always run (idempotent: rows are keyed per
+        # session and only refreshed when state.db has moved further along).
         # Wall-clock backstop: same rationale as copilot-rollup above -- the
         # Hermes bridge spawns this fire-and-forget with start_new_session=True
         # and no PID tracking, so the parent hook deadline never propagates.
@@ -58797,7 +58992,7 @@ if __name__ == "__main__":
     elif args[0] == "setup-hook":
         dry = "--dry-run" in args
         uninstall = "--uninstall" in args
-        setup_hook(dry_run=dry, uninstall=uninstall)
+        setup_hook(dry_run=dry, uninstall=uninstall, user_initiated=True)
     elif args[0] == "setup-all-hooks":
         dry = "--dry-run" in args
         verbose = "--verbose" in args or "-v" in args
@@ -59541,7 +59736,8 @@ if __name__ == "__main__":
         output_json = "--json" in args
         install = "--install" in args
         dry = "--dry-run" in args
-        generate_compact_instructions(as_json=output_json, install=install, dry_run=dry)
+        generate_compact_instructions(as_json=output_json, install=install, dry_run=dry,
+                                      user_initiated=True)
     elif args[0] == "dynamic-compact-instructions":
         hook_input = _read_stdin_hook_input()
         sid = hook_input.get("session_id") or os.environ.get("CLAUDE_SESSION_ID", "")
@@ -59550,7 +59746,8 @@ if __name__ == "__main__":
         dry = "--dry-run" in args
         uninstall = "--uninstall" in args
         status = "--status" in args
-        setup_smart_compact(dry_run=dry, uninstall=uninstall, status_only=status)
+        setup_smart_compact(dry_run=dry, uninstall=uninstall, status_only=status,
+                            user_initiated=True)
     elif args[0] == "daemon-revive":
         # Detached child spawned by _daemon_midsession_pulse. Revives a dead
         # dashboard daemon OFF the hot path: force=True bypasses the 24h
@@ -60122,7 +60319,8 @@ if __name__ == "__main__":
         dry = "--dry-run" in args
         uninstall = "--uninstall" in args
         status = "--status" in args
-        setup_quality_bar(dry_run=dry, uninstall=uninstall, status_only=status)
+        setup_quality_bar(dry_run=dry, uninstall=uninstall, status_only=status,
+                          user_initiated=True)
     elif args[0] == "setup-vscode-extension":
         # Manage the VS Code status-bar extension auto-install.
         #   --uninstall : sticky opt-out (+ remove the extension if a CLI is present)

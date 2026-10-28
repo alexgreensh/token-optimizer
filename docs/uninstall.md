@@ -50,11 +50,16 @@ sweep and the OS scheduler cleanup to the active identity).
    and unregisters every runtime's scheduler artifact (LaunchAgent /
    systemd unit / scheduled task) by name. A sibling identity's
    `dashboard-server.py` + `0600 daemon-token` (a live local HTTP daemon
-   plus its CSRF secret) would otherwise outlive the uninstall.
+   plus its CSRF secret) would otherwise outlive the uninstall. Launcher
+   files another OS's daemon left in the same data dir (a HOME synced or
+   migrated between machines) are swept too.
 2. **Host config** (`settings.json`): backs up first, then removes ONLY
-   Token Optimizer's own entries (`statusLine`, `quality-cache` hook,
-   `SessionEnd` hooks), leaving your other hooks and every other settings
-   key byte-identical.
+   Token Optimizer's own entries (`statusLine`, every Token Optimizer hook in
+   every event, and the `compactInstructions` text `setup-smart-compact`
+   wrote; if you had your own compact instructions, only our appended
+   section is removed), leaving your other hooks and every other settings
+   key byte-identical. `cleanupPeriodDays` is kept on purpose: removing it
+   would let Claude Code start deleting your session transcripts.
 3. **Manifests** (`installed_plugins.json` / `known_marketplaces.json`):
    backs up first, then removes our STALE entries (whose `installPath` no
    longer exists), leaving other plugins' entries byte-identical. Active
@@ -79,6 +84,7 @@ lists every retained path with its on-disk status. To also purge them
 
 ```bash
 rm -rf ~/.claude/plugins/data/token-optimizer-*   # all identities' session data
+rm -rf ~/.cache/token-optimizer                   # interpreter + bytecode cache
 ```
 
 ### Per-component uninstall (script install or granular control)
@@ -102,10 +108,11 @@ the resolved identity. Add `--dry-run` to preview.
 Then remove the skill tree and tracking data (optional, full wipe):
 
 ```bash
-rm -rf ~/.claude/token-optimizer          # the install dir (script install)
+rm -rf ~/.claude/token-optimizer          # install dir: checkpoints, quality caches, config
 rm -rf ~/.claude/skills/token-optimizer   # the skill tree
-rm -rf ~/.claude/_backups/token-optimizer # backups written on hook changes
-rm -f  ~/.claude/.settings.lock           # advisory lock file
+rm -rf ~/.claude/_backups/token-optimizer # session data, trends, dashboard, settings backups
+rm -rf ~/.cache/token-optimizer           # interpreter + bytecode cache
+rm -f  ~/.claude/.settings.lease          # advisory settings lease file
 ```
 
 ### Self-disabling status line

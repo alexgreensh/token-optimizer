@@ -311,7 +311,10 @@ def is_shell_neutral_command(command: str) -> bool:
         return False
     if command.startswith(('"', "'", "&", "@")) or _SET_PREFIX_RE.match(command):
         return False
-    return not any(tok in command for tok in (" && ", " >NUL", " 2>&1"))
+    # Only unquoted tokens count: a folder such as "C:\Users\Tom && Jerry"
+    # inside a quoted path is not a cmd.exe operator.
+    bare = {tok for tok in _CMD_TOKEN_RE.findall(command) if not tok.startswith('"')}
+    return not (bare & {"&&", ">NUL", "2>&1"})
 
 
 def decode_launcher_command(command: str) -> str | None:
@@ -800,8 +803,12 @@ def _install_windows_launcher(root: Path) -> str:
     path. Idempotent (no rewrite when already current) and atomic
     (unique same-directory temp + replace, always cleaned up), so a
     concurrent hook run never reads a half-written launcher."""
+    return _copy_launcher_to(_windows_launcher_install_path(root))
+
+
+def _copy_launcher_to(target: Path) -> str:
+    """Write this release's launcher to `target` (see _install_windows_launcher)."""
     source = _repo_root() / "hooks" / _LAUNCHER_FILENAME
-    target = _windows_launcher_install_path(root)
     try:
         content = source.read_bytes()
     except OSError as exc:
@@ -1010,6 +1017,29 @@ def heal_quoted_launcher_commands(paths=None) -> int:
             pass
         paths.append(Path.cwd() / ".codex" / "hooks.json")
     fixed = 0
+    refreshed: dict[str, bool] = {}
+
+    def launcher_ready(command: str) -> bool:
+        # A rewritten command passes --env TOKEN_OPTIMIZER_HOOK_SILENT=1 where it
+        # used to redirect to NUL. Launchers before 5.13.59 ignore that flag, so
+        # the launcher the command names is refreshed first; if that copy fails
+        # the old command stays (still quiet under cmd.exe).
+        parts = parse_cmd_only_launcher_command(command)
+        if parts is None:
+            return False
+        target = parts["launcher"]
+        if target not in refreshed:
+            ok = False
+            try:
+                path_obj = Path(target)
+                if path_obj.name == _LAUNCHER_FILENAME and path_obj.parent.is_dir():
+                    _copy_launcher_to(path_obj)
+                    ok = True
+            except Exception:
+                ok = False
+            refreshed[target] = ok
+        return refreshed[target]
+
     for path in paths:
         try:
             if not path.is_file():
@@ -1027,7 +1057,8 @@ def heal_quoted_launcher_commands(paths=None) -> int:
                         if not isinstance(command, str):
                             continue
                         neutral = neutralize_launcher_command(command)
-                        if neutral is not None:
+                        if (neutral is not None and neutral != command
+                                and launcher_ready(command)):
                             handler["command"] = neutral
                             changed += 1
                         elif (command.startswith('"') and _LAUNCHER_MARKER in command):

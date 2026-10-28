@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.13.60] - 2026-10-28
+
+- Hermes: with `gateway.multiplex_profiles` (and cron on non-default profiles), each profile's sessions now land in that profile's own dashboard. Checkpoints, saved tool output and the read cache follow the profile too. Re-run `hermes-install` in each profile, then restart Hermes (plugin 0.2.1). Thanks @stusims (#291).
+- Hermes: `hermes-doctor` lists every profile and shows whether Token Optimizer is installed, enabled and current there.
+- `measure.py hermes-rollup --help` and the other `hermes-*` commands now print usage instead of running.
+- Usage trends say which figures include cache reads, so "Avg tokens/session" and "Model mix" no longer look contradictory.
+
 ## [5.13.59] - 2026-10-28
 
 - Codex on Windows: hook commands now run under PowerShell, which is the shell Codex uses for hooks, as well as cmd.exe. The 5.13.57 command only worked under cmd.exe, so hooks still failed with "hook exited with code 1". Any Token Optimizer command rewrites existing hooks to the new form; restart Codex afterwards, and approve the Token Optimizer entries if Codex asks you to review the changed hooks. Paths with `$`, a backtick, `%` or `!` (for example in your Windows user name) work too. If Python itself sits in such a folder, `codex-doctor` tells you exactly what to change. Thanks @porkmagus (#278).

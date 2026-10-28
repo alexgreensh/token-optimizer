@@ -12,7 +12,7 @@ import { computeRealizedSavings } from "../savings.js";
 // release (source of truth: opencode/package.json `version`). They are
 // intentionally independent: the adapter ships at its own cadence and is NOT
 // required to match the core number.
-const CORE_VERSION = "5.13.59";
+const CORE_VERSION = "5.13.60";
 const ADAPTER_VERSION = "1.2.0";
 
 export interface DashboardOptions {

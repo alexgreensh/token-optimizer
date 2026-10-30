@@ -11,7 +11,7 @@ import { AgentRun, WasteFinding, AuditReport, totalTokens, billableTokens, Sever
 import { QualityReport, contextWindowForModel, scoreSessionQuality, scoreToGrade } from "./quality";
 import { ContextAudit, SkillDetail, McpServer, ManageData } from "./context-audit";
 import type { RealizedSavings, SavingsEventsSummary, SavingsEventsWindow } from "./savings";
-import { readSavingsEventsByCategory } from "./savings";
+import { measuredSavingsFromSummary, readSavingsEventsByCategory } from "./savings";
 import { loadPricingTier, PRICING_TIER_LABELS, getPricing, normalizeModelName } from "./pricing";
 import { CoachData } from "./coach";
 
@@ -778,7 +778,8 @@ function renderTokensSavedCard(data: DashboardData): string {
     const byType = new Map<string, number>();
     for (const cat of windowed.categories) {
       if (cat.eventType === "setup_optimization" || cat.eventType === "mcp_cap" ||
-          cat.eventType === "hint_followed" || cat.eventType === "verbosity_steer") continue;
+          cat.eventType === "hint_followed" || cat.eventType === "verbosity_steer" ||
+          cat.eventType === "fresh_session_nudge") continue;
       byType.set(cat.eventType, cat.tokensSaved);
     }
     const reexpand = byType.get("tool_archive_reexpand");
@@ -1347,13 +1348,19 @@ function renderSavings(data: DashboardData): string {
     </div>`;
   };
 
+  const pricingCoverage = data.savingsEvents.unpricedEvents ? `<div class="daily-hint">${fmtTokens(data.savingsEvents.unpricedTokens ?? 0)} saved tokens across ${data.savingsEvents.unpricedEvents} events have no available model pricing.</div>` : "";
+
   // --- Early exit: no savings data at all ---
   if (!s || (!s.ready && s.cumulativeSavedUsd === 0 && s.monthlySavingsUsd === 0)) {
     const progressCard = s?.baselineBuilding ? buildingProgress(s.baselineBuilding) : "";
     const status = s?.status ?? "no sessions yet";
+    const measured = measuredSavingsFromSummary(data.savingsEvents);
+    const measuredCard = measured > 0 ? `<div class="card"><div class="card-header"><span>Counted savings</span></div><div class="daily-stat-val">${fmtCost(measured)}</div><div class="daily-hint">API-rate value for the selected period.</div></div>` : "";
     return `<div class="view" id="view-savings">
       ${header}
       ${opportunityPanel}
+      ${pricingCoverage}
+      ${measuredCard}
       ${progressCard || `<div class="card">
         <div class="empty-state">
           Realized savings need a baseline of your early usage to compare against.<br>
@@ -1516,6 +1523,7 @@ function renderSavings(data: DashboardData): string {
     ${cumulative}
     ${levers}
     ${measuredFloor}
+    ${pricingCoverage}
   </div>`;
 }
 

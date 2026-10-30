@@ -8,7 +8,8 @@ import * as fs from "fs";
 import * as path from "path";
 import { countedEvents } from "./counted-events";
 import { scanAllSessions } from "./session-parser";
-import { calculateCost, normalizeModelName, getPricing, claudePricingKey, pricedPrefixKey } from "./pricing";
+import { calculateCost, normalizeModelName, getPricing } from "./pricing";
+import { resolvePricedModel, loadSavingsSessions, priceSavingsEvent } from "./event-pricing";
 import type { AgentRun } from "./models";
 
 // --- Constants (mirror measure.py baseline tunables) ------------------------
@@ -37,6 +38,7 @@ const ESTIMATED_TIER_CATEGORIES = new Set<string>([
   "mcp_cap",
   "hint_followed",
   "verbosity_steer",
+  "fresh_session_nudge",
 ]);
 
 type TokenClass = "fi" | "cr" | "cw" | "out";
@@ -208,27 +210,6 @@ function classTokens(r: SessionRecord): Record<TokenClass, number> {
   // OpenClaw token usage is already decomposed (input is fresh; cacheRead and
   // cacheWrite are separate), so no cache_hit_rate derivation is needed.
   return { fi: r.input, cr: r.cacheRead, cw: r.cacheWrite, out: r.output };
-}
-
-function resolvePricedModel(model: string, openclawDir: string): string | null {
-  const pricing = getPricing(openclawDir);
-  const own = (key: string) => Object.prototype.hasOwnProperty.call(pricing, key);
-  if (own(model)) return model;
-  const id = model.toLowerCase();
-  const legacy = /claude-\d(?:[-.]\d)?-(?:opus|sonnet|haiku)(?![a-z])/.test(id);
-  const generation = legacy ? null : /(?:^|[^a-z])(fable|mythos|opus|sonnet|haiku)[-._]?(\d+)(?:[-._](\d{1,2})(?!\d))?/.exec(id);
-  if (generation) {
-    const [, family, major, minor] = generation;
-    const exact = `${family}-${major}${minor ? `-${minor}` : ""}`;
-    if (own(exact)) return exact;
-    if (family === "mythos") {
-      const alias = `fable-${major}${minor ? `-${minor}` : ""}`;
-      if (own(alias)) return alias;
-    }
-    return null;
-  }
-  const key = claudePricingKey(model, pricing) ?? pricedPrefixKey(model, pricing) ?? normalizeModelName(model);
-  return key && own(key) ? key : null;
 }
 
 /** Resolve the rate card without substituting another model. */
@@ -654,6 +635,8 @@ export interface SavingsEventsSummary {
   totalTokensSaved: number;
   totalCostSavedUsd: number;
   totalCount: number;
+  unpricedTokens?: number;
+  unpricedEvents?: number;
 }
 
 /**
@@ -686,6 +669,10 @@ export function readSavingsEventsByCategory(
         "token-optimizer"
       );
   const filePath = path.join(dir, "savings-events.jsonl");
+
+  const root = openclawDir ?? path.join(process.env.HOME ?? process.env.USERPROFILE ?? "", ".openclaw");
+  const sessionEvidence = loadSavingsSessions(root);
+  let unpricedTokens = 0, unpricedEvents = 0;
 
   const byType = new Map<
     string,
@@ -721,8 +708,17 @@ export function readSavingsEventsByCategory(
       }
       const tokens =
         typeof row.tokens_saved === "number" ? row.tokens_saved : 0;
-      const cost =
-        typeof row.cost_saved_usd === "number" ? row.cost_saved_usd : 0;
+      const session = typeof row.session_id === "string" ? sessionEvidence.get(row.session_id) : undefined;
+      const storedBuckets = row.model_token_buckets && typeof row.model_token_buckets === "object" ? row.model_token_buckets as Record<string, {input?: number; output?: number; cacheRead?: number; cacheWrite?: number}> : undefined;
+      const evidence = storedBuckets ? {model: typeof row.model === "string" ? row.model : undefined, modelTokenBuckets: storedBuckets} : session ?? (typeof row.model === "string" ? {model: row.model} : undefined);
+      const inferred = priceSavingsEvent(tokens, et, evidence, root);
+      const canReprice = row.pricing_status === "partial_or_unavailable" && row.unpriced_tokens === tokens && row.cost_saved_usd === 0 && !!evidence;
+      const cost = typeof row.cost_saved_usd === "number" && Number.isFinite(row.cost_saved_usd) && !canReprice
+        ? row.cost_saved_usd : inferred.cost;
+      const uncovered = canReprice ? inferred.unpricedTokens : typeof row.unpriced_tokens === "number" && Number.isFinite(row.unpriced_tokens)
+        ? Math.max(0, row.unpriced_tokens) : (typeof row.cost_saved_usd === "number" ? 0 : inferred.unpricedTokens);
+      unpricedTokens += uncovered;
+      if (uncovered > 0) unpricedEvents++;
       const entry = byType.get(et) ?? { count: 0, tokensSaved: 0, costSavedUsd: 0 };
       entry.count++;
       entry.tokensSaved += tokens;
@@ -747,7 +743,7 @@ export function readSavingsEventsByCategory(
   const totalCostSavedUsd = categories.reduce((s, c) => s + c.costSavedUsd, 0);
   const totalCount = categories.reduce((s, c) => s + c.count, 0);
 
-  return { categories, totalTokensSaved, totalCostSavedUsd, totalCount };
+  return { categories, totalTokensSaved, totalCostSavedUsd, totalCount, unpricedTokens, unpricedEvents };
 }
 
 /**
@@ -765,7 +761,10 @@ function measuredCompressionUsd(
   openclawDir: string,
   window: SavingsEventsWindow
 ): number {
-  const summary = readSavingsEventsByCategory(openclawDir, window);
+  return measuredSavingsFromSummary(readSavingsEventsByCategory(openclawDir, window));
+}
+
+export function measuredSavingsFromSummary(summary: SavingsEventsSummary): number {
   const byType = new Map<string, number>();
   for (const cat of summary.categories) {
     if (ESTIMATED_TIER_CATEGORIES.has(cat.eventType)) continue;
@@ -1009,12 +1008,11 @@ export function computeRealizedSavings(
   const monthlyScale = 30 / Math.max(1, days);
   const m = (x: number) => x * monthlyScale;
 
-  // Price the current volume in both arms, using the frozen baseline mix as the
-  // counterfactual and excluding the current premium share from the comparison.
-  const tFi = F / after.length;
-  const tCr = CR / after.length;
-  const tCw = CW / after.length;
-  const tOut = O / after.length;
+  // Price the frozen typical session in both arms, excluding premium shares.
+  const tFi = bs.meanTokens.fi;
+  const tCr = bs.meanTokens.cr;
+  const tCw = bs.meanTokens.cw;
+  const tOut = bs.meanTokens.out;
   const write1hFraction = CW > 0 ? Math.min(1, CW1H / CW) : 0;
   const comparison = comparableMix(bs.classShares, as.classShares, beforeShares, afterShares, openclawDir);
   const ttlComparison = (kind: keyof TtlShares) => comparableMix(

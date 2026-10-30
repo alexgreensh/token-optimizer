@@ -707,7 +707,8 @@ export default definePluginEntry({
               boundedSetAdd(_freshNudgeFiredSessions, sessionId);
               const { savedTokens } = freshSessionSavingsEstimate(nudgeSnapshot.fillPct, nudgeSnapshot.model, nudgeSnapshot.contextWindow);
               logSavingsEvent("fresh_session_nudge", savedTokens, sessionId,
-                `score=${nudgeSnapshot.qualityScore} fill_pct=${nudgeSnapshot.fillPct.toFixed(1)}`);
+                `score=${nudgeSnapshot.qualityScore} fill_pct=${nudgeSnapshot.fillPct.toFixed(1)}`,
+                {openclawDir, model: nudgeSnapshot.model});
               logCompressionEvent({
                 feature: "fresh_session_nudge", sessionId,
                 detail: `score=${nudgeSnapshot.qualityScore} fill_pct=${nudgeSnapshot.fillPct.toFixed(1)} est_saved=${savedTokens}`,

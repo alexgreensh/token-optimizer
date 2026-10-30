@@ -101,3 +101,25 @@ test("partial and missing session model prices expose unpriced coverage", () => 
   expect(result.unpricedEvents).toBe(2);
   store.close();
 });
+
+test("platform exclusion vectors preserve unattributed actions", () => {
+  const dir = join(process.cwd(), "..", ".scratch-parity", `vector-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  mkdirSync(dir, { recursive: true });
+  const store = new TrendsStore(dir);
+  store.recordSession({ sessionId: "real", project: null, model: "sonnet", tokensInput: 1, tokensOutput: 0,
+    tokensCacheRead: 0, tokensCacheWrite: 0, costUsd: 0, resourceHealth: null, sessionEfficiency: null,
+    toolCalls: 0, compactions: 0, mode: null, durationSeconds: 1 });
+  const db = new Database(join(dir, "trends.db"));
+  const insert = db.prepare(`INSERT INTO savings_events (timestamp, event_type, tokens_saved, cost_saved_usd, session_id, detail, model) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+  const now = Date.now(), a = new Date(now - 1000).toISOString(), b = new Date(now).toISOString();
+  insert.run(a, "checkpoint_restore", 100, 1, "real", "same", "sonnet");
+  insert.run(b, "checkpoint_restore", 100, 2, "real", "same", "sonnet");
+  insert.run(b, "tool_archive", 100, 1, "real", "replaced mcp__playwright__browser_take_screenshot", "sonnet");
+  insert.run(b, "checkpoint_restore", 100, 1, "", "same", "sonnet");
+  insert.run(b, "checkpoint_restore", 100, 2, "", "same", "sonnet");
+  const result = store.getCompressionSavings(30, now);
+  expect(result.totalEvents).toBe(3);
+  expect(result.totalTokensSaved).toBe(300);
+  expect((db.query("SELECT COUNT(*) AS n FROM savings_events").get() as { n: number }).n).toBe(5);
+  db.close(); store.close();
+});

@@ -47,13 +47,12 @@ def measure(tmp_path, monkeypatch):
 # ------------------------------------------------------------ payload fields
 
 
-def test_routing_payload_exposes_assumption_and_token_volume(measure, monkeypatch):
+def test_routing_payload_exposes_assumption_and_token_volume_without_session_rows(measure, monkeypatch):
     monkeypatch.setattr(
         measure, "_model_mix_shares",
         lambda days=30, since=None: {"shares": {"opus": 0.8, "sonnet": 0.2}, "total_tokens": 10_000_000},
     )
     monkeypatch.setattr(measure, "_pretool_baseline_mix", lambda: {"opus": 0.95, "sonnet": 0.05})
-    monkeypatch.setattr(measure, "_session_output_fraction", lambda days=30: 0.1)
     monkeypatch.setattr(measure, "_ROUTABLE_OPUS_FRACTION", 0.3)
 
     r = measure._compute_model_routing_savings(days=30)
@@ -73,7 +72,6 @@ def test_routing_payload_tokens_scale_to_a_month(measure, monkeypatch):
         lambda days=30, since=None: {"shares": {"opus": 1.0}, "total_tokens": 10_000_000},
     )
     monkeypatch.setattr(measure, "_pretool_baseline_mix", lambda: {"opus": 1.0})
-    monkeypatch.setattr(measure, "_session_output_fraction", lambda days=30: 0.1)
     monkeypatch.setattr(measure, "_ROUTABLE_OPUS_FRACTION", 0.3)
 
     r = measure._compute_model_routing_savings(days=15)
@@ -278,3 +276,48 @@ def test_billing_caption_is_reused_in_opportunity_card():
     assert "capacity freed inside your limits" in sub
     assert "$0 on" not in sub
     assert "billed spend you did not incur" in api
+
+
+def test_routing_fold_lists_each_token_class_and_b_scale_tokens():
+    s = _savings()
+    s["model_routing"].update({
+        "potential_tokens": 13_300_000_000,
+        "potential_tokens_monthly": 13_300_000_000,
+        "potential_by_class": {
+            "cache_read": {"tokens": 13_000_000_000, "usd": 1300.0},
+            "output": {"tokens": 40_000_000, "usd": 400.0},
+            "cache_create_1h": {"tokens": 150_000_000, "usd": 600.0},
+        },
+    })
+    text = _text(_render(s))
+    assert "~13.3B tokens/mo" in text
+    assert "How the routing figure is priced" in text
+    assert "Cache reads: ~13.0B tokens/mo, about $1,300 at API rates." in text
+    assert "Output: ~40.0M tokens/mo, about $400 at API rates." in text
+    assert "Cache writes (1 hour): ~150.0M tokens/mo, about $600 at API rates." in text
+    # Largest dollar class first.
+    assert text.index("Cache reads:") < text.index("Cache writes (1 hour):") < text.index("Output:")
+
+
+def test_routing_fold_absent_without_class_split():
+    text = _text(_render(_savings()))
+    assert "How the routing figure is priced" not in text
+
+
+def test_dashboard_discloses_premium_models_left_out_of_routing():
+    s = _savings()
+    s["model_routing"].update({"premium_models": ["fable"], "premium_share": 0.061, "premium_cost_usd": 37.4})
+    text = _text(_render(s))
+    assert ("Premium models you chose (Fable, 6% of tokens, about $37.4/mo at API rates) are left out, "
+            "so they do not offset the shift toward lighter models.") in text
+
+
+def test_dashboard_has_no_premium_line_without_premium_models():
+    assert "Premium models you chose" not in _text(_render(_savings()))
+
+
+def test_cli_discloses_premium_models_left_out_of_routing(measure, monkeypatch, capsys):
+    summary = _cli_summary({**_ROUTING, "premium_models": ["fable"], "premium_share": 0.061, "premium_cost_usd": 37.42})
+    out = _cli_out(measure, monkeypatch, capsys, summary)
+    assert ("premium models you chose (Fable, 6% of tokens, ~$37.42/mo at API rates) "
+            "are left out of the routing comparison") in out

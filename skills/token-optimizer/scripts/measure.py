@@ -50644,18 +50644,144 @@ def _session_output_fraction(days=30):
         return 0.0
 
 
-def _model_blended_rate_per_mtok(model, output_fraction):
-    """Per-MTok rate blending input + output by the measured output fraction.
+# Token classes routing is priced by. cache_read is billed at the cache-read rate,
+# cache_create at the 5-minute or 1-hour write rate, and "unsplit" holds tokens
+# from rows that never stored a class split (priced at the input rate).
+_ROUTING_CLASSES = ("fresh_input", "cache_create_5m", "cache_create_1h",
+                    "cache_read", "output", "unsplit")
+# Classes that make up `potential_tokens`: the tokens a model bills as new work.
+# Cache reads are counted separately because they dwarf every other class.
+_ROUTING_BILLABLE_CLASSES = ("fresh_input", "cache_create_5m", "cache_create_1h",
+                             "output", "unsplit")
 
-    rate = input_rate*(1-out_frac) + output_rate*out_frac. Captures the dominant
-    routing understatement (output is up to 5x input). Cache-class tokens stay
-    priced at the input rate (conservative). Returns 0.0 for unpriced models.
+
+def _routing_class_rates(model):
+    """$/MTok per token class for one model id, from its own generation card.
+
+    Probes _get_model_cost so every provider and generation card
+    (Opus 5.5 $4/$20, Opus 4.1 $15/$75, Sonnet 5.5 cache reads $0.10, ...)
+    prices exactly as the rest of the product does. Unpriced models return 0.0.
     """
     try:
-        f = max(0.0, min(1.0, float(output_fraction)))
-        return _model_rate_per_mtok(model) * (1.0 - f) + _model_output_rate_per_mtok(model) * f
+        m = 1_000_000
+        rates = {
+            "fresh_input": _get_model_cost(model, m, 0),
+            "output": _get_model_cost(model, 0, m),
+            "cache_read": _get_model_cost(model, 0, 0, m),
+            "cache_create_5m": _get_model_cost(model, 0, 0, 0, m, cache_create_1h=0, cache_create_5m=m),
+            "cache_create_1h": _get_model_cost(model, 0, 0, 0, m, cache_create_1h=m, cache_create_5m=0),
+        }
     except Exception:
-        return 0.0
+        rates = {k: 0.0 for k in _ROUTING_CLASSES if k != "unsplit"}
+    # Rows without a class split are priced at the input rate (conservative).
+    rates["unsplit"] = rates["fresh_input"]
+    return rates
+
+
+_SONNET_GENERATION_KEY_RE = re.compile(r"^sonnet_(\d+)(?:_(\d+))?$")
+
+
+def _routing_target_model():
+    """Model id of the lighter arm routing is priced against: the newest Sonnet
+    generation card in the active rate table (legacy Sonnet cards are skipped)."""
+    try:
+        tier = _load_pricing_tier()
+        cards = PRICING_TIERS.get(tier, PRICING_TIERS["anthropic"])["claude_models"]
+        best = None
+        for key in cards:
+            m = _SONNET_GENERATION_KEY_RE.match(key)
+            if m:
+                gen = (int(m.group(1)), int(m.group(2) or 0))
+                if best is None or gen > best[0]:
+                    best = (gen, key)
+        if best:
+            major, minor = best[0]
+            return f"claude-sonnet-{major}-{minor}" if best[1].count("_") == 2 else f"claude-sonnet-{major}"
+    except Exception:
+        pass
+    return "sonnet"
+
+
+def _bucket_int(value):
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _add_routing_buckets(dst, parts):
+    """Add one per-model usage bucket ({fresh_input, cache_read, cache_create,
+    cache_create_1h, cache_create_5m, output}) into class totals. Cache writes
+    without a TTL split are priced at the 5-minute rate, as _get_model_cost does."""
+    cc = _bucket_int(parts.get("cache_create"))
+    h1 = _bucket_int(parts.get("cache_create_1h"))
+    m5 = _bucket_int(parts.get("cache_create_5m"))
+    m5 += max(0, cc - h1 - m5)
+    dst["fresh_input"] = dst.get("fresh_input", 0) + _bucket_int(parts.get("fresh_input"))
+    dst["cache_read"] = dst.get("cache_read", 0) + _bucket_int(parts.get("cache_read"))
+    dst["output"] = dst.get("output", 0) + _bucket_int(parts.get("output"))
+    dst["cache_create_1h"] = dst.get("cache_create_1h", 0) + h1
+    dst["cache_create_5m"] = dst.get("cache_create_5m", 0) + m5
+
+
+def _routing_usage_by_model(days=30, since=None):
+    """Token usage per model id and token class over the window.
+
+    Returns {model_id: {class: tokens}} (classes in _ROUTING_CLASSES). Source per
+    session row, best first:
+      1. daily_usage_json: per-day, per-model class buckets (parent + subagents),
+         cut to the window by day.
+      2. model_usage_breakdown_json: per-model class buckets for the session; any
+         tokens in all_model_usage_json beyond those buckets (subagent work) go
+         to "unsplit".
+      3. all_model_usage_json / model_usage_json: token totals with no class
+         split, all "unsplit".
+    Never raises; empty when there is no data.
+    """
+    out = {}
+    try:
+        if not TRENDS_DB.exists():
+            return out
+        cutoff = str(since)[:10] if since else (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        conn = _init_trends_db()
+        try:
+            rows = conn.execute(
+                "SELECT date, daily_usage_json, model_usage_breakdown_json, "
+                "all_model_usage_json, model_usage_json FROM session_log WHERE date >= ?",
+                (cutoff,),
+            ).fetchall()
+        finally:
+            conn.close()
+        for row_date, du_raw, mb_raw, amu_raw, mu_raw in rows:
+            du = _safe_json_dict(du_raw)
+            if du:
+                undated_day = _undated_bill_day(du, row_date)
+                for day, models in du.items():
+                    day = undated_day if day == UNDATED_USAGE_KEY else day
+                    if not isinstance(models, dict) or str(day) < cutoff:
+                        continue
+                    for model, parts in models.items():
+                        if isinstance(parts, dict) and _normalize_model_name(model):
+                            _add_routing_buckets(out.setdefault(model, {}), parts)
+                continue
+            totals = _safe_json_dict(amu_raw) or _safe_json_dict(mu_raw)
+            mb = _safe_json_dict(mb_raw)
+            for model, parts in mb.items():
+                if isinstance(parts, dict) and _normalize_model_name(model):
+                    dst = out.setdefault(model, {})
+                    before = sum(dst.get(k, 0) for k in _ROUTING_BILLABLE_CLASSES)
+                    _add_routing_buckets(dst, parts)
+                    split = sum(dst.get(k, 0) for k in _ROUTING_BILLABLE_CLASSES) - before
+                    extra = _bucket_int(totals.get(model)) - split
+                    if extra > 0:
+                        dst["unsplit"] = dst.get("unsplit", 0) + extra
+            for model, tokens in totals.items():
+                if model not in mb and _normalize_model_name(model):
+                    dst = out.setdefault(model, {})
+                    dst["unsplit"] = dst.get("unsplit", 0) + _bucket_int(tokens)
+    except (sqlite3.Error, OSError):
+        return {}
+    return out
 
 
 def _earliest_model_mix(lookback_days=14):
@@ -50771,6 +50897,10 @@ def _compute_model_routing_savings(days=30, since=None):
     expensive models, the counterfactual cost (current volume priced at the
     baseline mix) minus the actual current cost is real, measured savings. This is
     the rare pillar that can show a genuine realized win (e.g. Opus 94% -> 67%).
+    Models priced above the baseline's costliest model (a premium model the user
+    chose) are left out of the comparison and the rest renormalized, so they do not
+    cancel a real shift toward lighter models; `premium_share` and
+    `premium_cost_usd` report them separately.
 
     POTENTIAL: an assumption, not a measurement. A fixed share
     (`routable_fraction`) of remaining Opus tokens (`potential_tokens`) is priced
@@ -50779,12 +50909,14 @@ def _compute_model_routing_savings(days=30, since=None):
     keep it out of any concrete opportunity total, because some Opus work is
     chosen deliberately.
 
-    Rates blend each model's input + output $/MTok by the measured output fraction
-    (SUM(output)/SUM(input+output) from session_log). Pricing everything at the
-    input rate alone understated routing savings 1.5-2x because output is up to 5x
-    input ($25 vs $5/MTok on Opus). Cache-class tokens stay input-priced
-    (conservative). The blend is grounded in the user's own token mix, not a
-    multiplier. Labelled measured (realized) and opportunity (potential). Never raises.
+    Pricing is per token class, never a blended per-token rate. Fresh input is
+    priced at the input rate, cache creation at the 5-minute or 1-hour write rate,
+    cache reads at the cache-read rate and output at the output rate, each at the
+    model's own generation card (Opus 5.5 $4/$20, Opus 4.1 $15/$75, ...). The
+    lighter arm uses the newest Sonnet card. The class split comes from the
+    per-day, per-model usage stored with each session; tokens from rows with no
+    split are priced at the input rate and reported as `unsplit_tokens`.
+    Labelled measured (realized) and opportunity (potential). Never raises.
     """
     # `zero` is returned only on no-data / error paths (no current mix, no
     # baseline, or an exception). Label it "unavailable" so a $0 here reads as
@@ -50793,6 +50925,8 @@ def _compute_model_routing_savings(days=30, since=None):
     zero = {
         "realized_cost_usd": 0.0, "potential_cost_usd": 0.0,
         "potential_tokens": 0, "potential_tokens_monthly": 0,
+        "potential_billable_tokens": 0, "potential_by_class": {}, "unsplit_tokens": 0,
+        "premium_models": [], "premium_share": 0.0, "premium_cost_usd": 0.0,
         "baseline_opus_share": 0.0, "current_opus_share": 0.0,
         "baseline_source": None, "evidence": "unavailable",
     }
@@ -50830,42 +50964,130 @@ def _compute_model_routing_savings(days=30, since=None):
         if not baseline_shares:
             return zero
 
-        # Blend input + output rates by the user's measured output fraction so the
-        # output-token delta (the bulk of the routing win) is not priced away.
-        out_frac = _session_output_fraction(days=days)
+        # Rows of per-model, per-class usage. When the DB holds none (adapters
+        # that only record model totals), the model-daily mix stands in as
+        # unsplit tokens priced at the input rate.
+        usage = _routing_usage_by_model(days=days, since=since)
+        from_rows = bool(usage)
+        if not from_rows:
+            usage = {m: {"unsplit": share * cur_total} for m, share in cur_shares.items()}
 
-        # Cost of the current token volume under each mix (per-MTok blended rates).
-        def _blended_rate(shares):
-            return sum(share * _model_blended_rate_per_mtok(model, out_frac) for model, share in shares.items())
+        # Mix keys from the model-daily fallback are already family buckets.
+        fam_of = {m: (_normalize_model_name(m) if from_rows else m) for m in usage}
+        fam_billable = {}
+        fam_models = {}
+        fam_classes = {}
+        class_totals = {k: 0.0 for k in _ROUTING_CLASSES}
+        for m, classes in usage.items():
+            fam = fam_of[m]
+            if not fam:
+                continue
+            billable = sum(classes.get(k, 0) for k in _ROUTING_BILLABLE_CLASSES)
+            fam_billable[fam] = fam_billable.get(fam, 0) + billable
+            fam_models.setdefault(fam, {})[m] = billable
+            dst = fam_classes.setdefault(fam, {k: 0.0 for k in _ROUTING_CLASSES})
+            for k in _ROUTING_CLASSES:
+                dst[k] += classes.get(k, 0)
+                class_totals[k] += classes.get(k, 0)
+        window_billable = sum(fam_billable.values())
+        if window_billable <= 0:
+            return zero
 
-        baseline_rate = _blended_rate(baseline_shares)
-        current_rate = _blended_rate(cur_shares)
-        # cur_total (model_daily.total_tokens) is already BILLABLE tokens only
-        # (fresh_input + cache_create + output; cache-reads excluded — see
-        # model_usage in _parse_session_jsonl). Pricing the full billable volume at
-        # the per-model rate delta is correct; if anything it slightly UNDER-states,
-        # since output and cache-writes cost more than the plain input rate used here.
-        realized_cost = max(0.0, (baseline_rate - current_rate) * cur_total / 1_000_000)
+        # Every family is priced at its own generation card (the model id the user
+        # ran most in that family), so both mixes use one constant rate card and
+        # a price change never shows up as a routing win.
+        rep = {f: max(ms, key=ms.get) for f, ms in fam_models.items()}
+        rates_cache = {}
 
-        # Potential: route a conservative share of remaining Opus to Sonnet.
-        opus_share = cur_shares.get("opus", 0.0)
-        opus_tokens = opus_share * cur_total
-        opus_rate = _model_blended_rate_per_mtok("opus", out_frac)
-        sonnet_rate = _model_blended_rate_per_mtok("sonnet", out_frac)
-        potential_cost = max(0.0, opus_tokens * _ROUTABLE_OPUS_FRACTION * (opus_rate - sonnet_rate) / 1_000_000)
-        # Token volume the assumption applies to: the share of remaining Opus
-        # tokens that would run on a lighter model. `potential_tokens` covers the
-        # requested window (same basis as potential_cost_usd); the monthly figure
-        # scales it to 30 days.
-        potential_tokens = int(round(opus_tokens * _ROUTABLE_OPUS_FRACTION))
+        def _rates(model):
+            if model not in rates_cache:
+                rates_cache[model] = _routing_class_rates(model)
+            return rates_cache[model]
+
+        def _mix_cost(shares, totals):
+            return sum(
+                totals[k] * sum(s * _rates(rep.get(f, f))[k] for f, s in shares.items())
+                for k in _ROUTING_CLASSES
+            ) / 1_000_000
+
+        # Effective $/MTok of a family under the window's own class mix.
+        pooled = sum(class_totals.values())
+
+        def _family_price(f):
+            if pooled <= 0:
+                return 0.0
+            r = _rates(rep.get(f, f))
+            return sum(class_totals[k] * r[k] for k in _ROUTING_CLASSES) / pooled
+
+        # Models priced above the most expensive model of the baseline are the
+        # user's own choice, not routing: they are taken out of the current mix
+        # (the rest renormalized) so the comparison measures the shift toward
+        # lighter models. Their share and cost are reported separately.
+        baseline_ceiling = max((_family_price(f) for f, s in baseline_shares.items() if s > 0), default=0.0)
+        premium = sorted(f for f, s in cur_shares.items() if s > 0 and _family_price(f) > baseline_ceiling > 0)
+        premium_share = sum(cur_shares[f] for f in premium)
+        premium_cost = sum(
+            classes.get(k, 0) * _rates(m)[k]
+            for m, classes in usage.items() if fam_of[m] in premium
+            for k in _ROUTING_CLASSES
+        ) / 1_000_000
+
+        # REALIZED: the remaining work, per token class, priced at the baseline mix
+        # vs the current mix. Both mixes come from the same model-daily source, so
+        # only the model shift moves the number. Never negative.
+        realized_cost = 0.0
+        if premium_share < 1.0:
+            kept = {f: s / (1.0 - premium_share) for f, s in cur_shares.items() if f not in premium}
+            kept_totals = {
+                k: sum(c[k] for f, c in fam_classes.items() if f not in premium) for k in _ROUTING_CLASSES
+            }
+            realized_cost = max(0.0, _mix_cost(baseline_shares, kept_totals) - _mix_cost(kept, kept_totals))
+
+        # POTENTIAL: a fixed share of remaining Opus work, per token class, priced
+        # at each Opus model's own card minus the current Sonnet card.
+        target = _routing_target_model()
+        target_rates = _rates(target)
+        by_class = {k: {"tokens": 0, "usd": 0.0} for k in _ROUTING_CLASSES}
+        for m, classes in usage.items():
+            if fam_of[m] != "opus":
+                continue
+            m_rates = _rates(m)
+            for k in _ROUTING_CLASSES:
+                tok = classes.get(k, 0)
+                if tok:
+                    by_class[k]["tokens"] += tok * _ROUTABLE_OPUS_FRACTION
+                    by_class[k]["usd"] += tok * _ROUTABLE_OPUS_FRACTION * (m_rates[k] - target_rates[k]) / 1_000_000
+        potential_cost = max(0.0, sum(v["usd"] for v in by_class.values()))
+        potential_tokens = int(round(sum(v["tokens"] for v in by_class.values())))
         potential_tokens_monthly = int(round(potential_tokens / max(days, 1) * 30))
+        potential_billable_tokens = int(round(sum(by_class[k]["tokens"] for k in _ROUTING_BILLABLE_CLASSES)))
+        unsplit_tokens = int(round(class_totals["unsplit"]))
+        opus_share = cur_shares.get("opus", 0.0)
 
         return {
             "realized_cost_usd": round(realized_cost, 4),
             "potential_cost_usd": round(potential_cost, 4),
+            # Routable tokens: the routable share of Opus tokens in every class the
+            # dollar figure prices (fresh input, cache creation, cache reads,
+            # output, and unsplit). potential_billable_tokens leaves out cache
+            # reads, which dwarf the other classes.
             "potential_tokens": potential_tokens,
             "potential_tokens_monthly": potential_tokens_monthly,
+            "potential_billable_tokens": potential_billable_tokens,
+            "potential_token_classes": [k for k in _ROUTING_CLASSES if by_class[k]["tokens"]],
+            "potential_by_class": {
+                k: {"tokens": int(round(v["tokens"])), "usd": round(v["usd"], 4)}
+                for k, v in by_class.items() if v["tokens"] or v["usd"]
+            },
             "potential_basis": "api_rate_equivalent",
+            "target_model": target,
+            "pricing_basis": "per_token_class_generation_card",
+            "unsplit_tokens": unsplit_tokens,
+            # Premium models (priced above the baseline's costliest model) are the
+            # user's own choice: excluded from realized routing, shown here.
+            "premium_models": premium,
+            "premium_share": round(premium_share, 4),
+            "premium_cost_usd": round(premium_cost, 4),
             "baseline_opus_share": round(baseline_shares.get("opus", 0.0), 4),
             "current_opus_share": round(opus_share, 4),
             "baseline_source": baseline_source,
@@ -55867,6 +56089,11 @@ def savings_report(days=30, as_json=False):
         c_share = routing.get("current_opus_share", 0.0) * 100
         print(f"  + model routing (realized): ~${r_monthly:.2f}{per} "
               f"(Opus {b_share:.0f}% -> {c_share:.0f}% vs baseline) [measured]")
+    if float(routing.get("premium_share", 0.0) or 0.0) > 0:
+        names = ", ".join(str(f)[:1].upper() + str(f)[1:] for f in routing.get("premium_models") or [])
+        print(f"  i  premium models you chose ({names}, {float(routing['premium_share']) * 100:.0f}% of tokens, "
+              f"~${_mo(float(routing.get('premium_cost_usd', 0.0) or 0.0)):.2f}{per} at API rates) "
+              f"are left out of the routing comparison")
     all_in = _mo(total_cost + routing_realized)
     if rr_usd > 0:
         all_in += _mo(rr_usd)

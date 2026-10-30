@@ -1317,21 +1317,13 @@ function renderSavings(data: DashboardData): string {
       <p>Current-volume counterfactual: what your sessions would have cost at your old model mix vs. what they actually cost now. ${measuringLine}.</p>
     </div>`;
 
-  // --- Opportunity panel (Item 4) — sum waste-detector realizable totals ---
-  // data.waste is already in scope (same DashboardData). Sum monthlyWasteUsd
-  // across all findings; rendered below the hero as an amber "Save more" panel.
-  const opportunityMonthlyUsd = data.waste.reduce((sum, f) => sum + (f.monthlyWasteUsd ?? 0), 0);
-
-  const opportunityPanel = opportunityMonthlyUsd > 0
+  // Findings can overlap, so show each estimate on its own.
+  const opportunities = data.waste.filter((f) => f.monthlyWasteUsd > 0);
+  const opportunityPanel = opportunities.length
     ? `<div class="savings-opportunity-panel">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--s-2)">
-          <div>
-            <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.1em;color:var(--c-warning);margin-bottom:4px">Money on the table &middot; opportunity</div>
-            <div style="font-size:13px;color:var(--c-text-dim)">${data.waste.length} waste pattern${data.waste.length !== 1 ? "s" : ""} detected — additional realizable savings</div>
-          </div>
-          <div style="font-family:var(--font-mono);font-size:32px;color:var(--c-warning);text-shadow:0 0 12px rgba(245,158,11,0.4)">${fmtCost(opportunityMonthlyUsd)}<span style="font-size:15px;opacity:0.7">/mo</span></div>
-        </div>
-        <div style="font-size:13px;color:var(--c-text-dim)">Run <code style="background:rgba(255,255,255,0.06);padding:1px 6px;border-radius:3px">/token-optimizer</code> or check the Waste tab to claim these savings.</div>
+        <div style="font-size:11px;font-weight:600;color:var(--c-warning)">Opportunities &middot; API-rate estimates</div>
+        ${opportunities.map((f) => `<div style="margin-top:8px">${esc(f.description)}: ${fmtCost(f.monthlyWasteUsd)}/mo${f.wasteType === "heartbeat_model_waste" ? ` if the detected heartbeat and cron runs use Haiku (${fmtTokens(f.monthlyWasteTokens)} tokens in detected runs)` : ""}</div>`).join("")}
+        <div style="font-size:13px;color:var(--c-text-dim);margin-top:8px">Findings can overlap. See the Waste tab for details.</div>
       </div>`
     : "";
 

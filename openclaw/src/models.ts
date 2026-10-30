@@ -34,6 +34,8 @@ export interface AgentRun {
   tokens: TokenBreakdown;
   costUsd: number;
   model: string;
+  rawModel?: string;
+  modelTokenBuckets?: Record<string, TokenBreakdown & { cacheWrite1h: number; cacheWrite5m: number }>;
   runType: RunType;
   outcome: Outcome;
   messageCount: number;

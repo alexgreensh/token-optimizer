@@ -13,6 +13,7 @@ import * as os from "os";
 import * as path from "path";
 import { estimateTokens as sharedEstimateTokens } from "./token-estimate";
 import { redact } from "./redact";
+import { countedEvents } from "./counted-events";
 
 export interface CompressionEvent {
   timestamp: string;
@@ -155,14 +156,15 @@ export function readRecentEvents(days: number): CompressionEvent[] {
       if (!trimmed) continue;
       const event = parseLine(trimmed);
       if (!event) continue;
-      const ts = Date.parse(event.timestamp);
-      if (Number.isNaN(ts) || ts < cutoff) continue;
       out.push(event);
     }
   } catch {
     // Silent: a corrupt telemetry file returns whatever parsed so far.
   }
-  return out;
+  return countedEvents(out, "compression").filter((event) => {
+    const ts = Date.parse(event.timestamp);
+    return Number.isFinite(ts) && ts >= cutoff;
+  });
 }
 
 /** Summary equivalent of Python's `_get_compression_summary`. */

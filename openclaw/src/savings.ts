@@ -45,8 +45,9 @@
  */
 import * as fs from "fs";
 import * as path from "path";
+import { countedEvents } from "./counted-events";
 import { scanAllSessions } from "./session-parser";
-import { calculateCost, normalizeModelName, getPricing } from "./pricing";
+import { calculateCost, normalizeModelName, getPricing, claudePricingKey, pricedPrefixKey } from "./pricing";
 import type { AgentRun } from "./models";
 
 // --- Constants (mirror measure.py baseline tunables) ------------------------
@@ -103,6 +104,7 @@ interface SessionRecord {
   cacheWrite5m: number;
   costUsd: number;
   durationSec: number; // session duration in seconds (quality gate)
+  modelTokenBuckets?: AgentRun["modelTokenBuckets"];
 }
 
 /**
@@ -113,6 +115,10 @@ interface SessionRecord {
  * (~1e40), and a negative silently zeroes/poisons the math. We parse, drop non-finite
  * to 0, and clamp to >= 0 so no string/NaN/negative ever reaches arithmetic.
  */
+function tCacheHit(fresh: number, cached: number): number {
+  return fresh + cached > 0 ? cached / (fresh + cached) : 0;
+}
+
 function numClamp(value: unknown): number {
   const n = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(n) || n < 0) return 0;
@@ -138,6 +144,7 @@ function sanitizeRecord(raw: {
   cacheWrite5m: unknown;
   costUsd: unknown;
   durationSec: unknown;
+  modelTokenBuckets?: AgentRun["modelTokenBuckets"];
 }): SessionRecord {
   const input = numClamp(raw.input);
   const output = numClamp(raw.output);
@@ -165,6 +172,7 @@ function sanitizeRecord(raw: {
     cacheWrite5m: cw5m,
     costUsd: numClamp(raw.costUsd),
     durationSec: numClamp(raw.durationSec),
+    modelTokenBuckets: raw.modelTokenBuckets,
   };
 }
 
@@ -172,7 +180,8 @@ function toRecord(r: AgentRun): SessionRecord {
   return sanitizeRecord({
     sessionId: r.sessionId,
     ts: r.timestamp.getTime(),
-    model: normalizeModelName(r.model) ?? r.model,
+    model: r.rawModel ?? r.model,
+    modelTokenBuckets: r.modelTokenBuckets,
     input: r.tokens.input,
     output: r.tokens.output,
     cacheRead: r.tokens.cacheRead,
@@ -217,6 +226,7 @@ function mergeAndPersistHistory(
         cacheWrite5m: r.cacheWrite5m,
         costUsd: r.costUsd,
         durationSec: r.durationSec,
+        modelTokenBuckets: r.modelTokenBuckets as AgentRun["modelTokenBuckets"],
       });
       byId.set(rec.sessionId, rec);
     }
@@ -242,15 +252,22 @@ function classTokens(r: SessionRecord): Record<TokenClass, number> {
   return { fi: r.input, cr: r.cacheRead, cw: r.cacheWrite, out: r.output };
 }
 
-/** Resolve the rate-card key for a model, proxying unpriced models. */
-function priceKey(model: string, proxy: string, openclawDir: string): string {
+function resolvePricedModel(model: string, openclawDir: string): string | null {
   const pricing = getPricing(openclawDir);
-  const key = pricing[model] ? model : normalizeModelName(model) ?? model;
-  return pricing[key] ? key : proxy;
+  const own = (key: string) => Object.prototype.hasOwnProperty.call(pricing, key);
+  if (own(model)) return model;
+  const key = claudePricingKey(model, pricing) ?? pricedPrefixKey(model, pricing) ?? normalizeModelName(model);
+  return key && own(key) ? key : null;
+}
+
+/** Resolve the rate card without substituting another model. */
+function priceKey(model: string, proxy: string, openclawDir: string): string {
+  const key = resolvePricedModel(model, openclawDir);
+  return key ?? model;
 }
 
 /**
- * Per-class cost of ONE session, priced at its OWN model (proxy if unpriced).
+ * Per-class cost of ONE session, priced at its own model.
  * Returned per class so the waterfall can use real per-class effective rates.
  */
 function sessionClassCost(
@@ -258,6 +275,15 @@ function sessionClassCost(
   proxy: string,
   openclawDir: string
 ): Record<TokenClass, number> {
+  if (r.modelTokenBuckets && Object.keys(r.modelTokenBuckets).length > 0) {
+    const total: Record<TokenClass, number> = {fi: 0, cr: 0, cw: 0, out: 0};
+    for (const [model, b] of Object.entries(r.modelTokenBuckets)) {
+      if (!b || !resolvePricedModel(model, openclawDir)) continue;
+      const cost = sessionClassCost({ ...r, model, input: numClamp(b.input), output: numClamp(b.output), cacheRead: numClamp(b.cacheRead), cacheWrite: numClamp(b.cacheWrite), cacheWrite1h: numClamp(b.cacheWrite1h), cacheWrite5m: numClamp(b.cacheWrite5m), modelTokenBuckets: undefined }, proxy, openclawDir);
+      for (const c of CLASSES) total[c] += cost[c];
+    }
+    return total;
+  }
   const model = priceKey(r.model, proxy, openclawDir);
   const t = classTokens(r);
   // Isolate each class by zeroing the others (calculateCost is linear in tokens,
@@ -306,28 +332,43 @@ function dominantPricedModel(records: SessionRecord[], openclawDir: string): str
   return best;
 }
 
+type ClassShares = Record<TokenClass, Record<string, number>>;
+function modelClassShares(records: SessionRecord[]): ClassShares {
+  const totals: ClassShares = {fi: {}, cr: {}, cw: {}, out: {}};
+  for (const r of records) {
+    const buckets = r.modelTokenBuckets && Object.keys(r.modelTokenBuckets).length ? r.modelTokenBuckets : {[r.model]: {input:r.input, output:r.output, cacheRead:r.cacheRead, cacheWrite:r.cacheWrite, cacheWrite1h:r.cacheWrite1h, cacheWrite5m:r.cacheWrite5m}};
+    for (const [model, b] of Object.entries(buckets)) {
+      if (!b) continue;
+      const values = {fi:numClamp(b.input), cr:numClamp(b.cacheRead), cw:numClamp(b.cacheWrite), out:numClamp(b.output)};
+      for (const c of CLASSES) totals[c][model] = (totals[c][model] ?? 0) + values[c];
+    }
+  }
+  for (const c of CLASSES) {
+    const sum = Object.values(totals[c]).reduce((a,b) => a+b, 0);
+    if (sum > 0) for (const model of Object.keys(totals[c])) totals[c][model] /= sum;
+  }
+  return totals;
+}
+
 // --- Mix-weighted pricing (counterfactual primitives) -----------------------
 // Price token classes at a MODEL MIX (share-weighted blend across the priced
 // models in an era). calculateCost is per-token linear, so we blend the per-MTok
-// rates by share and apply once. Unpriced shares fall back to the proxy model so
-// a mix dominated by an unpriced model still produces a non-zero price.
+// rates by share and apply once. Unpriced models have no rate card.
 
-/** Resolve a share map into [pricedModel, share] pairs, proxying unpriced models. */
+/** Resolve a share map into priced [model, share] pairs. */
 function pricedShares(
   shares: Record<string, number>,
   proxy: string,
   openclawDir: string
 ): Array<[string, number]> {
-  const pricing = getPricing(openclawDir);
   const blended: Record<string, number> = {};
   for (const [m, s] of Object.entries(shares)) {
     if (!s || s <= 0) continue;
-    const key = pricing[m] ? m : normalizeModelName(m) ?? m;
-    const model = pricing[key] ? key : proxy;
-    blended[model] = (blended[model] ?? 0) + s;
+    const model = resolvePricedModel(m, openclawDir);
+    if (model) blended[model] = (blended[model] ?? 0) + s;
   }
   const items = Object.entries(blended).filter(([, s]) => s > 0) as Array<[string, number]>;
-  if (items.length === 0) return [[proxy, 1]];
+  if (items.length === 0) return [];
   return items;
 }
 
@@ -384,6 +425,11 @@ function priceCacheWrite(
   return cost;
 }
 
+function priceClasses(fi: number, cr: number, cw: number, out: number, shares: ClassShares | undefined, fallback: Record<string, number>, proxy: string, dir: string): number {
+  const mix = (c: TokenClass) => shares && Object.keys(shares[c] ?? {}).length ? shares[c] : fallback;
+  return pricePool(fi, 0, 0, mix("fi"), proxy, dir) + pricePool(0, cr, 0, mix("cr"), proxy, dir) + pricePool(0, 0, out, mix("out"), proxy, dir) + priceCacheWrite(cw, 0, cw, mix("cw"), proxy, dir);
+}
+
 /** Cost of 1M fresh-input tokens at a model mix (the "input rate" for repricing). */
 function inputRate(
   shares: Record<string, number>,
@@ -400,6 +446,7 @@ interface EraStats {
   meanTokens: Record<TokenClass, number>; // winsorized mean per-session tokens
   effRate: Record<TokenClass, number>; // effective $/token observed (cost/token)
   shares: Record<string, number>; // model token shares (display label)
+  classShares?: ClassShares;
 }
 
 /**
@@ -460,7 +507,7 @@ function computeEraStats(
     effRate[c] = tokSum[c] > 0 ? costSum[c] / tokSum[c] : 0;
     costPerSession += costSum[c] / n; // == Σ effRate[c]*meanTokens[c]
   }
-  return { n, costPerSession, meanTokens, effRate, shares: modelShares(records) };
+  return { n, costPerSession, meanTokens, effRate, shares: modelShares(records), classShares: modelClassShares(records) };
 }
 
 // --- Baseline freeze --------------------------------------------------------
@@ -638,15 +685,14 @@ export function readSavingsEventsByCategory(
 
   try {
     const raw = fs.readFileSync(filePath, "utf-8");
+    const rows: Record<string, unknown>[] = [];
     for (const line of raw.split("\n")) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      let row: Record<string, unknown>;
       try {
-        row = JSON.parse(trimmed) as Record<string, unknown>;
-      } catch {
-        continue;
-      }
+        const row = JSON.parse(line);
+        if (row && typeof row === "object") rows.push(row);
+      } catch { /* malformed row */ }
+    }
+    for (const row of countedEvents(rows, "savings")) {
       const et = typeof row.event_type === "string" ? row.event_type : null;
       if (!et) continue;
       // Window filter: drop events outside the lookback. A row with a missing or
@@ -865,10 +911,11 @@ export function computeRealizedSavings(
     fresh = [];
   }
   const history = mergeAndPersistHistory(openclawDir, fresh)
-    .filter((r) => r.input >= MIN_INPUT_TOKENS && r.durationSec >= MIN_DURATION_SECONDS);
+    .filter((r) => r.input >= MIN_INPUT_TOKENS && r.durationSec >= MIN_DURATION_SECONDS && resolvePricedModel(r.model, openclawDir) !== null &&
+      (!r.modelTokenBuckets || Object.keys(r.modelTokenBuckets).every((model) => resolvePricedModel(model, openclawDir) !== null)));
   if (history.length === 0) return NOT_READY("no sessions yet");
 
-  // One proxy for unpriced models, derived from full history, used in both eras.
+  // Preserve the stored baseline metadata for existing installs.
   const globalProxy = dominantPricedModel(history, openclawDir);
   const { baseline, reason, baselineBuilding } = getOrComputeBaseline(openclawDir, history, now, globalProxy);
   const installDate = new Date(history[0].ts).toISOString().slice(0, 10);
@@ -892,8 +939,12 @@ export function computeRealizedSavings(
   }
 
   const bs = baseline.stats;
-  // Reuse the baseline's stored proxy so before/after price unpriced models
-  // identically (a frozen baseline keeps its original proxy).
+  if (Object.keys(bs.shares).some((model) => !resolvePricedModel(model, openclawDir))) {
+    const r = NOT_READY("baseline includes unpriced models");
+    r.installDate = installDate;
+    return r;
+  }
+  // Preserve the proxy field in existing frozen baselines.
   const proxy = baseline.proxy;
   // The "after" era's mix shares are needed for the ACTUAL arm. computeEraStats
   // is used here ONLY for the mix-share anchor (efficiency), not for volume.
@@ -907,8 +958,7 @@ export function computeRealizedSavings(
     Object.keys(bs.shares).length > 0 ? bs.shares : as.shares;
   const afterShares = as.shares;
 
-  // CURRENT window = the `after` sessions, aggregated ONLY to derive the current pool
-  // cache-hit (curHit, the one efficiency signal the "now" arm needs) and to confirm the
+  // CURRENT window = the `after` sessions, aggregated to confirm the
   // window is non-empty. The main pool is now priced per FROZEN typical session (below),
   // so current-window VOLUME is no longer priced directly.
   let F = 0, CR = 0, CW = 0;
@@ -924,8 +974,9 @@ export function computeRealizedSavings(
     return r;
   }
 
-  const curPool = F + CR;
-  const curHit = curPool > 0 ? CR / curPool : 0;
+  // Provider cache reuse is not attributed to Token Optimizer.
+  const curHit = tCacheHit(bs.meanTokens.fi, bs.meanTokens.cr);
+  const observedHit = tCacheHit(F, CR);
 
   const afterWindowDays = Math.max(1, (now - afterStart) / DAY_MS);
   const sessionsPerMonth = (after.length / afterWindowDays) * 30;
@@ -948,15 +999,13 @@ export function computeRealizedSavings(
   // fresh/cache_read split) priced at the baseline mix. Depends only on frozen inputs +
   // prices -> stable across runs. Cache-write has no recorded TTL split -> treat as 5m.
   const oldCps =
-    pricePool(tFi, tCr, tOut, beforeShares, proxy, openclawDir) +
-    priceCacheWrite(tCw, 0, tCw, beforeShares, proxy, openclawDir);
+    priceClasses(tFi, tCr, tCw, tOut, bs.classShares, beforeShares, proxy, openclawDir);
   // NOW / session (actual) = the SAME frozen tokens, but the pool redistributed at the
-  // CURRENT pool-hit (curHit) and priced at the CURRENT mix. Only efficiency moves it.
+  // baseline pool-hit and priced at the CURRENT mix.
   const curCRs = curHit * tPool;
   const curFs = tPool - curCRs;
   const nowCps =
-    pricePool(curFs, curCRs, tOut, afterShares, proxy, openclawDir) +
-    priceCacheWrite(tCw, 0, tCw, afterShares, proxy, openclawDir);
+    priceClasses(curFs, curCRs, tCw, tOut, as.classShares, afterShares, proxy, openclawDir);
   if (
     !Number.isFinite(oldCps) || !Number.isFinite(nowCps) ||
     oldCps <= 0 || nowCps <= 0
@@ -977,8 +1026,8 @@ export function computeRealizedSavings(
   // volume (mirrors Python `_get_savings_summary(days=days)`), so a stale event
   // outside the window is not summed and then monthly-scaled.
   const compMeasured = measuredCompressionUsd(openclawDir, { days, now });
-  const inAfter = inputRate(afterShares, proxy, openclawDir);
-  const inBefore = inputRate(beforeShares, proxy, openclawDir);
+  const inAfter = inputRate(as.classShares?.fi && Object.keys(as.classShares.fi).length ? as.classShares.fi : afterShares, proxy, openclawDir);
+  const inBefore = inputRate(bs.classShares?.fi && Object.keys(bs.classShares.fi).length ? bs.classShares.fi : beforeShares, proxy, openclawDir);
   const compReprice = inAfter > 0 ? inBefore / inAfter : 1;
   const compressionAddback = Math.max(0, compMeasured * compReprice);
 
@@ -1002,8 +1051,8 @@ export function computeRealizedSavings(
   // at the baseline model mix's output rate. Actual for this pool is 0, so the
   // whole repriced value is transformation. Mirrors measure.py verbosity_addback.
   const vsMeasured = estimatedVerbosityUsd(openclawDir, { days, now });
-  const outAfter = pricePool(0, 0, 1_000_000, afterShares, proxy, openclawDir);
-  const outBefore = pricePool(0, 0, 1_000_000, beforeShares, proxy, openclawDir);
+  const outAfter = pricePool(0, 0, 1_000_000, as.classShares?.out && Object.keys(as.classShares.out).length ? as.classShares.out : afterShares, proxy, openclawDir);
+  const outBefore = pricePool(0, 0, 1_000_000, bs.classShares?.out && Object.keys(bs.classShares.out).length ? bs.classShares.out : beforeShares, proxy, openclawDir);
   const vsReprice = outAfter > 0 ? outBefore / outAfter : 1;
   const verbosityAddback = Math.max(0, vsMeasured * vsReprice);
 
@@ -1030,18 +1079,14 @@ export function computeRealizedSavings(
   // --- Attribution breakdown (waterfall over the efficiency levers) ---
   // Morph the counterfactual into the actual one lever at a time. Routing first
   // (baseline footprint INCLUDING cache-write, repriced from baseline mix to the
-  // actual mix), then caching at the actual mix. The two UNROUNDED steps telescope
-  // exactly to the MAIN transformation; compression is the third (disjoint) lever.
+  // actual mix). Compression is a separate lever.
   // Always decompose the main pool, even when it is net-negative, so the waterfall sums to
   // the honest net including a pool that grew (shown honestly as a "-$X" lever).
   const vRouteS =
-    pricePool(tFi, tCr, tOut, afterShares, proxy, openclawDir) +
-    priceCacheWrite(tCw, 0, tCw, afterShares, proxy, openclawDir);
+    priceClasses(tFi, tCr, tCw, tOut, as.classShares, afterShares, proxy, openclawDir);
   const sRoute = (oldCps - vRouteS) * sessionsPerMonth; // before->after mix (incl. cache-write)
-  const sCache = (vRouteS - nowCps) * sessionsPerMonth; // remaining gap = caching
   const breakdown: SavingsBreakdownItem[] = [
-    { key: "routing", label: "Smarter model routing (incl. cache-write)", monthlyUsd: round2(sRoute) },
-    { key: "context_rereads", label: "Lighter sessions (better cache reuse)", monthlyUsd: round2(sCache) },
+    { key: "routing", label: "Model mix change (including premium choices)", monthlyUsd: round2(sRoute) },
     // Subagent lever omitted (OpenClaw has no sidechains; always 0).
     { key: "context_compression", label: "Lighter context (metered removals)", monthlyUsd: round2(compressionMonthly) },
     { key: "verbosity_steer", label: "Lean output nudges (less output, estimated)", monthlyUsd: round2(verbosityMonthly) },
@@ -1071,7 +1116,7 @@ export function computeRealizedSavings(
     beforeCostPerSession: round4(beforeCps),
     afterCostPerSession: round4(afterCps),
     beforeCacheHit: round4(tPool > 0 ? tCr / tPool : 0),
-    afterCacheHit: round4(curHit),
+    afterCacheHit: round4(observedHit),
     sessionsPerMonth,
     trackedDays: Math.max(1, Math.floor(afterWindowDays)),
     beforeMixLabel: mixLabel(beforeShares),

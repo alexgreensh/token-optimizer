@@ -164,6 +164,27 @@ export function claudePricingKey(modelId: string, table: Record<string, ModelPri
   return family === "mythos" && Object.prototype.hasOwnProperty.call(table, "fable") ? "fable" : null;
 }
 
+/** Undefined means an unversioned alias; null means an unknown explicit version. */
+function explicitClaudeRateKey(modelId: string): string | null | undefined {
+  const id = modelId.toLowerCase();
+  const legacy = CLAUDE_LEGACY_ID_RE.exec(id);
+  if (legacy) {
+    const [, major, minor, family] = legacy;
+    const key = `${family}-${major}${minor ? `-${minor}` : ""}`;
+    if (family === "sonnet" && major === "3" && minor === "5") return "sonnet-legacy";
+    return Object.prototype.hasOwnProperty.call(DEFAULT_PRICING, key) ? key : null;
+  }
+  const generation = CLAUDE_GENERATION_RE.exec(id);
+  if (!generation) return undefined;
+  const [, family, major, minor] = generation;
+  const key = `${family === "mythos" ? "fable" : family}-${major}${minor ? `-${minor}` : ""}`;
+  return Object.prototype.hasOwnProperty.call(DEFAULT_PRICING, key) ? key : null;
+}
+
+export function isUnpricedClaudeVersion(modelId: string): boolean {
+  return explicitClaudeRateKey(modelId) === null;
+}
+
 /**
  * Longest priced OpenAI/Gemini id that the model id equals or extends, so a
  * dated snapshot ("gpt-5.4-mini-2026-03-05") prices as its base model and a new
@@ -294,14 +315,18 @@ export function normalizeModelName(modelId: string): string {
 
 /** Resolve the rate card for a model key, proxying unpriced models. */
 function ratesFor(modelKey: string): ModelPricing {
-  const key = claudePricingKey(modelKey) ?? pricedPrefixKey(modelKey) ?? normalizeModelName(modelKey);
+  const explicit = explicitClaudeRateKey(modelKey);
+  if (explicit === null) return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  const key = explicit ?? claudePricingKey(modelKey) ?? pricedPrefixKey(modelKey) ?? normalizeModelName(modelKey);
   return (Object.prototype.hasOwnProperty.call(DEFAULT_PRICING, key) ? DEFAULT_PRICING[key] : undefined)
     ?? DEFAULT_PRICING[PROXY_MODEL];
 }
 
 /** Return a documented rate only when the model has a known price card. */
 export function knownModelRate(modelKey: string, klass: "input" | "output" | "cacheRead" | "cacheWrite"): number | null {
-  const key = claudePricingKey(modelKey) ?? pricedPrefixKey(modelKey) ?? normalizeModelName(modelKey);
+  const explicit = explicitClaudeRateKey(modelKey);
+  if (explicit === null) return null;
+  const key = explicit ?? claudePricingKey(modelKey) ?? pricedPrefixKey(modelKey) ?? normalizeModelName(modelKey);
   return Object.prototype.hasOwnProperty.call(DEFAULT_PRICING, key) ? DEFAULT_PRICING[key][klass] : null;
 }
 

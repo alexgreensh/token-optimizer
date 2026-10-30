@@ -14,7 +14,7 @@
  */
 
 import { contextWindowForModel } from "../util/context-window.js";
-import { claudePricingKey, DEFAULT_PRICING, normalizeModelName, pricedPrefixKey } from "../pricing.js";
+import { claudePricingKey, DEFAULT_PRICING, isUnpricedClaudeVersion, normalizeModelName, pricedPrefixKey } from "../pricing.js";
 
 // ---------------------------------------------------------------------------
 // Per-model input rates ($/M tokens). Mirrors Python PRICING_TIERS["anthropic"]
@@ -79,6 +79,7 @@ export function modelInputRatePer1M(model?: string): number {
   // through to this date-gated rate — keeping the nudge in step with the savings dashboard.
   const sonnetRate = DEFAULT_PRICING.sonnet.input * 1e6;
   if (!model) return sonnetRate;
+  if (isUnpricedClaudeVersion(model)) return 0;
   const lower = model.toLowerCase();
   const canonical = normalizeModelName(model);
 

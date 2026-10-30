@@ -155,9 +155,9 @@ test('eligible model shares are normalized exactly once for input and 1h writes'
   fs.writeFileSync(path.join(state,'session-history.json'),JSON.stringify(rows));
   const result=computeRealizedSavings(dir,30,now);
   assert.equal(result.ready,true);
-  assert.equal(result.beforeCostPerSession,6);
-  assert.equal(result.afterCostPerSession,3);
-  assert.equal(result.savingsPerSession,3);
+  assert.equal(result.beforeCostPerSession,12);
+  assert.equal(result.afterCostPerSession,6);
+  assert.equal(result.savingsPerSession,6);
 });
 test('unknown Claude generation is not priced as its family or major generation', () => {
   const fs=require('node:fs'),path=require('node:path');
@@ -219,4 +219,63 @@ test('native writer and historical rows use their session pricing and report mis
   const first=JSON.parse(fs.readFileSync(path.join(state,'savings-events.jsonl'),'utf8').split('\n')[0]);
   assert.equal(first.model,'opus-5-5');
   assert.equal(first.cost_saved_usd,4);
+});
+test('premium additions do not dilute eligible routing or change its frozen footprint', () => {
+  const fs=require('node:fs'),path=require('node:path');
+  const {computeRealizedSavings}=require('./savings.ts');
+  const dir=fs.mkdtempSync(path.join(process.cwd(),'.scratch-parity','premium-equal-'));
+  const state=path.join(dir,'token-optimizer');fs.mkdirSync(state);
+  const day=86400000,t=Date.parse('2026-01-01T00:00:00Z'),now=t+60*day;
+  const row=(id,ts,model)=>({sessionId:id,ts,model,input:100000,output:10000,cacheRead:0,cacheWrite:0,costUsd:0,durationSec:300});
+  const early=[row('install',t,'opus')];
+  for(let i=0;i<35;i++) early.push(row('before'+i,t+(2+i/2)*day,'opus'));
+  fs.writeFileSync(path.join(state,'savings-events.jsonl'), JSON.stringify({timestamp:new Date(now).toISOString(),event_type:'checkpoint_restore',session_id:'after0',tokens_saved:100000,cost_saved_usd:1,detail:'fixed'})+'\n');
+  const history=(extra)=>[...early,...Array.from({length:12},(_,i)=>{
+    const r=row('after'+i,now-(i+1)*day,'sonnet');
+    if(extra) {r.input*=2;r.output*=2;r.modelTokenBuckets={sonnet:{input:100000,output:10000,cacheRead:0,cacheWrite:0,cacheWrite1h:0,cacheWrite5m:0},fable:{input:100000,output:10000,cacheRead:0,cacheWrite:0,cacheWrite1h:0,cacheWrite5m:0}};}
+    return r;
+  })];
+  fs.writeFileSync(path.join(state,'session-history.json'),JSON.stringify(history(false)));
+  const base=computeRealizedSavings(dir,30,now);
+  fs.writeFileSync(path.join(state,'session-history.json'),JSON.stringify(history(true)));
+  const premium=computeRealizedSavings(dir,30,now);
+  assert.equal(premium.beforeCostPerSession,base.beforeCostPerSession);
+  assert.equal(premium.afterCostPerSession,base.afterCostPerSession);
+  assert.equal(premium.monthlySavingsUsd,base.monthlySavingsUsd);
+  assert.equal(premium.sessionsPerMonth,base.sessionsPerMonth);
+  assert.ok(premium.premiumTokens>0);
+});
+test('premium-only sessions do not increase eligible routing session count', () => {
+  const fs=require('node:fs'),path=require('node:path');
+  const {computeRealizedSavings}=require('./savings.ts');
+  const dir=fs.mkdtempSync(path.join(process.cwd(),'.scratch-parity','premium-only-'));
+  const state=path.join(dir,'token-optimizer');fs.mkdirSync(state);
+  const day=86400000,t=Date.parse('2026-01-01T00:00:00Z'),now=t+60*day;
+  const row=(id,ts,model)=>({sessionId:id,ts,model,input:100000,output:10000,cacheRead:0,cacheWrite:0,costUsd:0,durationSec:300});
+  const early=[row('install',t,'opus')];
+  for(let i=0;i<35;i++) early.push(row('before'+i,t+(2+i/2)*day,'opus'));
+  const after=Array.from({length:12},(_,i)=>row('after'+i,now-(i+1)*day,'sonnet'));
+  fs.writeFileSync(path.join(state,'session-history.json'),JSON.stringify([...early,...after]));
+  const base=computeRealizedSavings(dir,30,now);
+  const premium=Array.from({length:6},(_,i)=>row('premium'+i,now-(i+1)*day,'fable'));
+  fs.writeFileSync(path.join(state,'session-history.json'),JSON.stringify([...early,...after,...premium]));
+  const changed=computeRealizedSavings(dir,30,now);
+  assert.equal(changed.sessionsPerMonth,base.sessionsPerMonth);
+  assert.equal(changed.monthlySavingsUsd,base.monthlySavingsUsd);
+});
+test('an unobserved current class is omitted from both comparison arms', () => {
+  const fs=require('node:fs'),path=require('node:path');
+  const {computeRealizedSavings}=require('./savings.ts');
+  const dir=fs.mkdtempSync(path.join(process.cwd(),'.scratch-parity','missing-class-'));
+  const state=path.join(dir,'token-optimizer');fs.mkdirSync(state);
+  const day=86400000,t=Date.parse('2026-01-01T00:00:00Z'),now=t+60*day;
+  const row=(id,ts,model,output)=>({sessionId:id,ts,model,input:100000,output,cacheRead:0,cacheWrite:0,costUsd:0,durationSec:300});
+  const rows=[row('install',t,'opus',10000)];
+  for(let i=0;i<35;i++) rows.push(row('before'+i,t+(2+i/2)*day,'opus',10000));
+  for(let i=0;i<12;i++) rows.push(row('after'+i,now-(i+1)*day,'sonnet',0));
+  fs.writeFileSync(path.join(state,'session-history.json'),JSON.stringify(rows));
+  const result=computeRealizedSavings(dir,30,now);
+  assert.equal(result.ready,true);
+  assert.equal(result.beforeCostPerSession,0.5);
+  assert.equal(result.afterCostPerSession,0.2);
 });

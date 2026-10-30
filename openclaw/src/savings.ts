@@ -412,8 +412,8 @@ function comparableMix(before: ClassShares | undefined, after: ClassShares | und
   const eligible: Record<TokenClass, number> = {fi:0,cr:0,cw:0,out:0};
   const ceiling: Record<TokenClass, number> = {fi:0,cr:0,cw:0,out:0};
   for (const c of CLASSES) {
-    const bm = before && Object.values(before[c] ?? {}).some(x => x > 0) ? before[c] : beforeAll;
-    const am = after && Object.values(after[c] ?? {}).some(x => x > 0) ? after[c] : afterAll;
+    const bm = before ? (before[c] ?? {}) : beforeAll;
+    const am = after ? (after[c] ?? {}) : afterAll;
     ceiling[c] = Math.max(0, ...Object.entries(bm).filter(([,v]) => v > 0).map(([m]) => classRate(m,c,dir)));
     b[c] = bm;
     for (const [model, share] of Object.entries(am)) {
@@ -984,13 +984,11 @@ export function computeRealizedSavings(
   // CURRENT window = the `after` sessions, aggregated to confirm the
   // window is non-empty. The main pool is now priced per FROZEN typical session (below),
   // so current-window VOLUME is no longer priced directly.
-  let F = 0, CR = 0, CW = 0, CW1H = 0, O = 0;
+  let F = 0, CR = 0, CW = 0;
   for (const r of after) {
     F += r.input;
     CR += r.cacheRead;
     CW += r.cacheWrite;
-    CW1H += r.cacheWrite1h;
-    O += r.output;
   }
   const totalIn = F + CR + CW;
   if (totalIn <= 0) {
@@ -1003,7 +1001,6 @@ export function computeRealizedSavings(
   const observedHit = tCacheHit(F, CR);
 
   const afterWindowDays = Math.max(1, (now - afterStart) / DAY_MS);
-  const sessionsPerMonth = (after.length / afterWindowDays) * 30;
   // Window is `days`; scale aggregate window cost to a monthly figure.
   const monthlyScale = 30 / Math.max(1, days);
   const m = (x: number) => x * monthlyScale;
@@ -1013,7 +1010,6 @@ export function computeRealizedSavings(
   const tCr = bs.meanTokens.cr;
   const tCw = bs.meanTokens.cw;
   const tOut = bs.meanTokens.out;
-  const write1hFraction = CW > 0 ? Math.min(1, CW1H / CW) : 0;
   const comparison = comparableMix(bs.classShares, as.classShares, beforeShares, afterShares, openclawDir);
   const ttlComparison = (kind: keyof TtlShares) => comparableMix(
     bs.classShares && bs.ttlShares ? {...bs.classShares, cw:bs.ttlShares[kind]} : bs.classShares,
@@ -1021,19 +1017,36 @@ export function computeRealizedSavings(
     beforeShares, afterShares, openclawDir);
   const oneHour = ttlComparison("oneHour"), fiveMinute = ttlComparison("fiveMinute");
   let premiumTokens = 0, premiumCostUsd = 0;
+  let comparableWrites = 0, comparableWrite1h = 0;
+  const baselineTokens = {fi:tFi, cr:tCr, cw:tCw, out:tOut};
+  const hasComparableWork = (r: SessionRecord): boolean => {
+    const buckets = r.modelTokenBuckets && Object.keys(r.modelTokenBuckets).length ? r.modelTokenBuckets : {[r.model]: {input:r.input, output:r.output, cacheRead:r.cacheRead, cacheWrite:r.cacheWrite, cacheWrite1h:r.cacheWrite1h, cacheWrite5m:r.cacheWrite5m}};
+    return Object.entries(buckets).some(([model, b]) => {
+      if (!b) return false;
+      const v = {fi:numClamp(b.input), cr:numClamp(b.cacheRead), cw:numClamp(b.cacheWrite), out:numClamp(b.output)};
+      return CLASSES.some((c) => baselineTokens[c] > 0 && v[c] > 0 && classRate(model,c,openclawDir) <= comparison.ceiling[c] + 1e-15);
+    });
+  };
+  const comparableAfter = after.filter(hasComparableWork);
+  const sessionsPerMonth = (comparableAfter.length / afterWindowDays) * 30;
   for (const r of after) {
     const buckets = r.modelTokenBuckets && Object.keys(r.modelTokenBuckets).length ? r.modelTokenBuckets : {[r.model]: {input:r.input,output:r.output,cacheRead:r.cacheRead,cacheWrite:r.cacheWrite,cacheWrite1h:r.cacheWrite1h,cacheWrite5m:r.cacheWrite5m}};
     for (const [model, bucket] of Object.entries(buckets)) {
       if (!bucket) continue;
       const values = {fi:numClamp(bucket.input),cr:numClamp(bucket.cacheRead),cw:numClamp(bucket.cacheWrite),out:numClamp(bucket.output)};
       const costs = sessionClassCost({...r, model, input:values.fi, output:values.out, cacheRead:values.cr, cacheWrite:values.cw, cacheWrite1h:numClamp(bucket.cacheWrite1h), cacheWrite5m:numClamp(bucket.cacheWrite5m), modelTokenBuckets:undefined}, proxy, openclawDir);
-      for (const c of CLASSES) if (classRate(model,c,openclawDir) > comparison.ceiling[c] + 1e-15) { premiumTokens += values[c]; premiumCostUsd += costs[c]; }
+      for (const c of CLASSES) if (baselineTokens[c] > 0 && classRate(model,c,openclawDir) > comparison.ceiling[c] + 1e-15) { premiumTokens += values[c]; premiumCostUsd += costs[c]; }
+      if (classRate(model,"cw",openclawDir) <= comparison.ceiling.cw + 1e-15) {
+        comparableWrites += values.cw;
+        comparableWrite1h += Math.min(values.cw, numClamp(bucket.cacheWrite1h));
+      }
     }
   }
-  const eFi = tFi * comparison.eligible.fi, eCr = tCr * comparison.eligible.cr;
-  const eCw1h = tCw * write1hFraction * oneHour.eligible.cw;
-  const eCw5m = tCw * (1 - write1hFraction) * fiveMinute.eligible.cw;
-  const eOut = tOut * comparison.eligible.out;
+  const write1hFraction = comparableWrites > 0 ? Math.min(1, comparableWrite1h / comparableWrites) : 0;
+  const eFi = comparison.eligible.fi > 0 ? tFi : 0, eCr = comparison.eligible.cr > 0 ? tCr : 0;
+  const eCw1h = oneHour.eligible.cw > 0 ? tCw * write1hFraction : 0;
+  const eCw5m = fiveMinute.eligible.cw > 0 ? tCw * (1 - write1hFraction) : 0;
+  const eOut = comparison.eligible.out > 0 ? tOut : 0;
   // Price the eligible current volume at the frozen baseline mix.
   // Both arms use the current cache-write TTL split.
   const oldCps =
@@ -1067,8 +1080,8 @@ export function computeRealizedSavings(
   // volume (mirrors Python `_get_savings_summary(days=days)`), so a stale event
   // outside the window is not summed and then monthly-scaled.
   const compMeasured = measuredCompressionUsd(openclawDir, { days, now });
-  const inAfter = inputRate(as.classShares?.fi && Object.keys(as.classShares.fi).length ? as.classShares.fi : afterShares, proxy, openclawDir);
-  const inBefore = inputRate(bs.classShares?.fi && Object.keys(bs.classShares.fi).length ? bs.classShares.fi : beforeShares, proxy, openclawDir);
+  const inAfter = inputRate(comparison.after.fi, proxy, openclawDir);
+  const inBefore = inputRate(comparison.before.fi, proxy, openclawDir);
   const compReprice = inAfter > 0 ? inBefore / inAfter : 1;
   const compressionAddback = Math.max(0, compMeasured * compReprice);
 
@@ -1092,8 +1105,8 @@ export function computeRealizedSavings(
   // at the baseline model mix's output rate. Actual for this pool is 0, so the
   // whole repriced value is transformation. Mirrors measure.py verbosity_addback.
   const vsMeasured = estimatedVerbosityUsd(openclawDir, { days, now });
-  const outAfter = pricePool(0, 0, 1_000_000, as.classShares?.out && Object.keys(as.classShares.out).length ? as.classShares.out : afterShares, proxy, openclawDir);
-  const outBefore = pricePool(0, 0, 1_000_000, bs.classShares?.out && Object.keys(bs.classShares.out).length ? bs.classShares.out : beforeShares, proxy, openclawDir);
+  const outAfter = pricePool(0, 0, 1_000_000, comparison.after.out, proxy, openclawDir);
+  const outBefore = pricePool(0, 0, 1_000_000, comparison.before.out, proxy, openclawDir);
   const vsReprice = outAfter > 0 ? outBefore / outAfter : 1;
   const verbosityAddback = Math.max(0, vsMeasured * vsReprice);
 
@@ -1135,8 +1148,8 @@ export function computeRealizedSavings(
 
   // Cumulative: apply the per-session transformation rate across every
   // post-baseline session (transformation per current session * total sessions).
-  const perSessionTransformation = transformation / Math.max(1, after.length);
-  const allAfter = history.filter((r) => r.ts >= baseline.windowEnd);
+  const perSessionTransformation = transformation / Math.max(1, comparableAfter.length);
+  const allAfter = history.filter((r) => r.ts >= baseline.windowEnd && hasComparableWork(r));
   const cumulative = perSessionTransformation * allAfter.length;
 
   // Per-session arms (the dashboard reads before/after CPS): divide the MAIN-POOL

@@ -13783,32 +13783,51 @@ def _ensure_counted_views(conn):
         media = " OR ".join(f"detail GLOB {_sql_quote(g)}" for g in _MEDIA_TOOL_GLOBS)
         media_types = ", ".join(_sql_quote(t) for t in _MEDIA_ARCHIVE_EVENT_TYPES)
         win = _COUNTED_TWIN_WINDOW_SECONDS
+        # Twin check: an earlier row of the same shape in the same session within
+        # the window. Correlated EXISTS (not a window function) so a query with a
+        # timestamp filter only looks at the rows it reads; the lookup is served by
+        # the (session_id, kind, timestamp) indexes created in _init_trends_db.
+        def _twin(alias, table, kind_col, same):
+            return (
+                f"EXISTS (SELECT 1 FROM main.{table} p WHERE p.session_id = {alias}.session_id "
+                f"AND p.{kind_col} = {alias}.{kind_col} AND {same} "
+                f"AND p.timestamp <= {alias}.timestamp "
+                f"AND p.timestamp >= strftime('%Y-%m-%dT%H:%M:%S', julianday({alias}.timestamp) - {win + 1.0} / 86400.0) "
+                f"AND (p.timestamp < {alias}.timestamp OR p.id < {alias}.id) "
+                f"AND (julianday({alias}.timestamp) - julianday(p.timestamp)) * 86400.0 <= {win})"
+            )
+        se_twin = _twin("e", "savings_events", "event_type",
+                        "p.tokens_saved = e.tokens_saved AND COALESCE(p.detail, '') = COALESCE(e.detail, '')")
+        ce_twin = _twin("c", "compression_events", "feature",
+                        "p.original_tokens = c.original_tokens AND p.compressed_tokens = c.compressed_tokens "
+                        "AND COALESCE(p.command_pattern, '') = COALESCE(c.command_pattern, '')")
+        se_cols = ", ".join("e." + c for c in _table_columns(conn, "savings_events").split(", "))
+        ce_cols = ", ".join("c." + c for c in _table_columns(conn, "compression_events").split(", "))
         conn.execute(
             "CREATE TEMP VIEW IF NOT EXISTS counted_savings_events AS "
-            "SELECT " + _table_columns(conn, "savings_events") + " FROM ("
-            "  SELECT e.*, LAG(julianday(timestamp)) OVER ("
-            "    PARTITION BY COALESCE(session_id, ''), event_type, tokens_saved, COALESCE(detail, '')"
-            "    ORDER BY timestamp, id) AS _prev_jd"
-            "  FROM main.savings_events e"
-            ") WHERE NOT (" + _fixture_session_sql() + ")"
-            f" AND NOT (event_type IN ({media_types}) AND detail IS NOT NULL AND ({media}))"
-            f" AND NOT (tokens_saved > 0 AND _prev_jd IS NOT NULL"
-            f"          AND (julianday(timestamp) - _prev_jd) * 86400.0 <= {win})"
+            "SELECT " + se_cols + " FROM main.savings_events e "
+            "WHERE NOT " + _fixture_session_sql("e.session_id") +
+            f" AND NOT (e.event_type IN ({media_types}) AND e.detail IS NOT NULL AND ({media.replace('detail GLOB', 'e.detail GLOB')}))"
+            " AND NOT (e.tokens_saved > 0 AND e.session_id IS NOT NULL AND " + se_twin + ")"
         )
         conn.execute(
             "CREATE TEMP VIEW IF NOT EXISTS counted_compression_events AS "
-            "SELECT " + _table_columns(conn, "compression_events") + " FROM ("
-            "  SELECT c.*, LAG(julianday(timestamp)) OVER ("
-            "    PARTITION BY COALESCE(session_id, ''), feature, COALESCE(command_pattern, ''),"
-            "                 original_tokens, compressed_tokens"
-            "    ORDER BY timestamp, id) AS _prev_jd"
-            "  FROM main.compression_events c"
-            ") WHERE NOT (" + _fixture_session_sql() + ")"
-            f" AND NOT (original_tokens > compressed_tokens AND _prev_jd IS NOT NULL"
-            f"          AND (julianday(timestamp) - _prev_jd) * 86400.0 <= {win})"
+            "SELECT " + ce_cols + " FROM main.compression_events c "
+            "WHERE NOT " + _fixture_session_sql("c.session_id") +
+            " AND NOT (c.original_tokens > c.compressed_tokens AND c.session_id IS NOT NULL AND " + ce_twin + ")"
         )
+        # SQLite resolves view columns lazily: a database missing a column the
+        # filters use (very old installs, minimal schemas) only fails on first
+        # read. Probe now and fall back to the raw tables instead.
+        conn.execute("SELECT 1 FROM counted_savings_events LIMIT 0").fetchall()
+        conn.execute("SELECT 1 FROM counted_compression_events LIMIT 0").fetchall()
         return True
     except sqlite3.Error:
+        for view in ("counted_savings_events", "counted_compression_events"):
+            try:
+                conn.execute(f"DROP VIEW IF EXISTS temp.{view}")
+            except sqlite3.Error:
+                pass
         return False
 
 
@@ -14175,6 +14194,15 @@ def _init_trends_db():
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_compression_events_feature_tier "
             "ON compression_events (feature, tier)"
+        )
+        # Serves the counted views' same-session twin lookup.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_compression_events_session_feature_ts "
+            "ON compression_events (session_id, feature, timestamp)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_savings_events_session_type_ts "
+            "ON savings_events (session_id, event_type, timestamp)"
         )
         conn.commit()
     except sqlite3.Error as _e:

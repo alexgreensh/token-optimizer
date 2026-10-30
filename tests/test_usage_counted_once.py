@@ -223,6 +223,43 @@ def test_fork_total_does_not_depend_on_collect_order(tmp_path, monkeypatch):
     assert sum(r[3] for r in rows) == 3
 
 
+def _isolated_home(measure, tmp_path, monkeypatch):
+    """Run from inside tmp_path: the rollup's component scan also looks for a
+    CLAUDE.md in the working directory's parents, which must not be the real home."""
+    work = tmp_path / "work"
+    work.mkdir(parents=True, exist_ok=True)
+    monkeypatch.chdir(work)
+
+
+def test_fallback_rollup_counts_a_forked_message_once(tmp_path, monkeypatch):
+    """The no-database dashboard rollup applies the same one-count rule across files."""
+    measure = _load(tmp_path, monkeypatch)
+    _isolated_home(measure, tmp_path, monkeypatch)
+    when = _fork_fixture(tmp_path)
+
+    trends = measure._collect_trends_from_jsonl(days=30)
+
+    assert trends["total_input_tokens"] == 3000
+    assert trends["total_output_tokens"] == 1500
+    day = {d["date"]: d for d in trends["daily"]}[when.strftime("%Y-%m-%d")]
+    assert day["total_input"] == 3000
+    assert day["total_output"] == 1500
+
+
+def test_fallback_rollup_total_does_not_depend_on_file_order(tmp_path, monkeypatch):
+    measure = _load(tmp_path, monkeypatch)
+    _isolated_home(measure, tmp_path, monkeypatch)
+    _fork_fixture(tmp_path)
+    projects = _projects(tmp_path) / "-repo"
+    newer = datetime.now().timestamp() + 60
+    os.utime(projects / f"{SID_A}.jsonl", (newer, newer))   # parent now listed after the fork
+
+    trends = measure._collect_trends_from_jsonl(days=30)
+
+    assert trends["total_input_tokens"] == 3000
+    assert trends["total_output_tokens"] == 1500
+
+
 def test_daily_usage_of_a_fork_leaves_out_the_parents_requests(tmp_path, monkeypatch):
     measure = _load(tmp_path, monkeypatch)
     when = _fork_fixture(tmp_path)

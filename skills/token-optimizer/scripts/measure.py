@@ -27997,6 +27997,32 @@ def _collect_trends_from_jsonl(days=30):
     if not sessions:
         return None
 
+    # A request Claude Code copied into a forked or resumed session's transcript
+    # is one API call: the first session in this pass keeps it, later ones drop it.
+    seen_requests = set()
+    for idx, s in enumerate(sessions):
+        merged = _session_merged_requests(
+            s["jsonl_path"], s, _session_subagent_files(s["jsonl_path"]))
+        if merged is None:
+            continue
+        bases = {b for b in (_request_base_key(k) for k in merged) if b is not None}
+        repeated = bases & seen_requests
+        seen_requests.update(bases)
+        if not repeated:
+            continue
+        kept = {k: u for k, u in merged.items() if _request_base_key(k) not in repeated}
+        trimmed = dict(_parsed_without_requests(s, repeated))
+        trimmed["daily_usage_combined"] = _daily_usage_from_merged(kept)
+        all_model_usage = {}
+        for u in kept.values():
+            model_id = u.get("model") or "unknown"
+            if model_id.startswith("<"):
+                continue
+            all_model_usage[model_id] = all_model_usage.get(model_id, 0) + (
+                int(u.get("inp") or 0) + int(u.get("cc") or 0) + int(u.get("out") or 0))
+        trimmed["all_model_usage"] = all_model_usage
+        sessions[idx] = trimmed
+
     total_skills = {}
     total_subagents = {}
     total_tools = {}

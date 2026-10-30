@@ -13711,6 +13711,127 @@ def _claude_projects_like_patterns() -> tuple:
 _PLATFORM_PATH_SQL = "REPLACE(jsonl_path, '\\', '/')"
 
 
+# Counted views: the single place that decides which ledger rows count as
+# savings. Every savings total reads these views instead of the raw tables, so
+# the CLI report, dashboard, status bar and weekly card always agree. Rows are
+# never deleted or rewritten; the views only leave out rows that are not
+# savings:
+#   - media results (screenshots and other image-bearing tool results). Images
+#     bill by pixels, not by base64 length, so archiving one saved nothing.
+#   - fixture sessions written by test suites and benchmarks.
+#   - twin rows: two installs firing on one call write the same row within a
+#     few seconds; only the first one counts.
+_COUNTED_TWIN_WINDOW_SECONDS = 3.0
+# Session ids that only test suites and benchmark harnesses use. Matched with
+# GLOB (case-sensitive, anchored). Real ids are UUIDs, short hex agent ids, or
+# harness ids such as Codex "rollout-<date>-<uuid>"; none of them match.
+_FIXTURE_SESSION_GLOBS = (
+    "test-*", "test_*", "failwire-*", "unit-c-*", "torture-*", "torture_*",
+    "f3bench-*", "codex-test-*", "codex-sess-*", "sess_test*", "fixture-*",
+)
+_FIXTURE_SESSION_EXACT = (
+    "test", "test-123", "perf_test", "regtest", "demo", "sess", "s", "c",
+)
+# Tool names whose results carry images. Matched against the archive event's
+# detail text ("replaced <tool> (...)" / "blocked re-fetch of <tool> (...)").
+_MEDIA_TOOL_GLOBS = (
+    "*claude-in-chrome__computer*", "*computer_use__*", "*[Ss]creenshot*",
+)
+_MEDIA_ARCHIVE_EVENT_TYPES = ("tool_archive", "tool_archive_refetch_block")
+
+
+def _sql_quote(value):
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _fixture_session_sql(col="session_id"):
+    globs = " OR ".join(f"{col} GLOB {_sql_quote(g)}" for g in _FIXTURE_SESSION_GLOBS)
+    exact = ", ".join(_sql_quote(v) for v in _FIXTURE_SESSION_EXACT)
+    return f"({col} IS NOT NULL AND ({globs} OR {col} IN ({exact})))"
+
+
+def _is_fixture_session_id(session_id):
+    """Python mirror of _fixture_session_sql, for callers outside SQL."""
+    import fnmatch
+    if not session_id:
+        return False
+    sid = str(session_id)
+    if sid in _FIXTURE_SESSION_EXACT:
+        return True
+    return any(fnmatch.fnmatchcase(sid, g) for g in _FIXTURE_SESSION_GLOBS)
+
+
+def _table_columns(conn, table):
+    cols = [r[1] for r in conn.execute(f"PRAGMA main.table_info({table})").fetchall()]
+    if not cols:
+        raise sqlite3.OperationalError(f"no such table: {table}")
+    return ", ".join('"' + c.replace('"', '""') + '"' for c in cols)
+
+
+def _ensure_counted_views(conn):
+    """Create the per-connection counted views (idempotent, TEMP, read-only).
+
+    counted_savings_events and counted_compression_events have the same
+    columns as the tables they read. Safe to call on any trends.db connection;
+    returns False (and callers fall back to the raw table) only if the tables
+    are missing or the SQLite build lacks window functions."""
+    try:
+        have = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_temp_master WHERE type='view'").fetchall()}
+        if {"counted_savings_events", "counted_compression_events"} <= have:
+            return True
+        media = " OR ".join(f"detail GLOB {_sql_quote(g)}" for g in _MEDIA_TOOL_GLOBS)
+        media_types = ", ".join(_sql_quote(t) for t in _MEDIA_ARCHIVE_EVENT_TYPES)
+        win = _COUNTED_TWIN_WINDOW_SECONDS
+        conn.execute(
+            "CREATE TEMP VIEW IF NOT EXISTS counted_savings_events AS "
+            "SELECT " + _table_columns(conn, "savings_events") + " FROM ("
+            "  SELECT e.*, LAG(julianday(timestamp)) OVER ("
+            "    PARTITION BY COALESCE(session_id, ''), event_type, tokens_saved, COALESCE(detail, '')"
+            "    ORDER BY timestamp, id) AS _prev_jd"
+            "  FROM main.savings_events e"
+            ") WHERE NOT (" + _fixture_session_sql() + ")"
+            f" AND NOT (event_type IN ({media_types}) AND detail IS NOT NULL AND ({media}))"
+            f" AND NOT (tokens_saved > 0 AND _prev_jd IS NOT NULL"
+            f"          AND (julianday(timestamp) - _prev_jd) * 86400.0 <= {win})"
+        )
+        conn.execute(
+            "CREATE TEMP VIEW IF NOT EXISTS counted_compression_events AS "
+            "SELECT " + _table_columns(conn, "compression_events") + " FROM ("
+            "  SELECT c.*, LAG(julianday(timestamp)) OVER ("
+            "    PARTITION BY COALESCE(session_id, ''), feature, COALESCE(command_pattern, ''),"
+            "                 original_tokens, compressed_tokens"
+            "    ORDER BY timestamp, id) AS _prev_jd"
+            "  FROM main.compression_events c"
+            ") WHERE NOT (" + _fixture_session_sql() + ")"
+            f" AND NOT (original_tokens > compressed_tokens AND _prev_jd IS NOT NULL"
+            f"          AND (julianday(timestamp) - _prev_jd) * 86400.0 <= {win})"
+        )
+        return True
+    except sqlite3.Error:
+        return False
+
+
+def _counted_reread_excluded_sql(conn, key_col="event_key"):
+    """SQL condition that is true for counted_reread rows whose source event
+    the counted views leave out. Empty string when the views are unavailable."""
+    if not _ensure_counted_views(conn):
+        return ""
+    return (
+        f"({key_col} IN (SELECT 'se:'||id FROM main.savings_events "
+        "EXCEPT SELECT 'se:'||id FROM counted_savings_events) OR "
+        f"{key_col} IN (SELECT 'ce:'||id FROM main.compression_events "
+        "EXCEPT SELECT 'ce:'||id FROM counted_compression_events))"
+    )
+
+
+def _counted_table(conn, table):
+    """Name of the counted view for *table*, or the raw table if views fail."""
+    view = {"savings_events": "counted_savings_events",
+            "compression_events": "counted_compression_events"}[table]
+    return view if _ensure_counted_views(conn) else table
+
+
 def _init_trends_db():
     """Initialize the trends SQLite DB. Returns a connection.
     
@@ -14503,6 +14624,53 @@ def _compression_row_rate(model, fallback_rate, tier_data):
     return fallback_rate
 
 
+_UNSTAMPED_MODELS = frozenset({"", "unknown", "<synthetic>", "none", "null"})
+
+
+def _compression_session_rates(conn, session_uuids):
+    """{session_uuid: [(share, input_rate)]} from each session's own model mix.
+
+    Used for compression rows logged without a usable model stamp: the hook
+    often cannot read the live transcript, so it writes "unknown". Each row is
+    priced at ITS OWN session's mix (never a window average), the same rule
+    _session_model_reprice applies to savings_events."""
+    out = {}
+    ids = [u for u in set(session_uuids) if u]
+    if not ids:
+        return out
+    try:
+        sl_cols = {r[1] for r in conn.execute("PRAGMA table_info(session_log)").fetchall()}
+        if "session_uuid" not in sl_cols:
+            return out
+        mu = "model_usage_json" if "model_usage_json" in sl_cols else "NULL"
+        amu = "all_model_usage_json" if "all_model_usage_json" in sl_cols else "NULL"
+        for i in range(0, len(ids), 500):
+            chunk = ids[i:i + 500]
+            marks = ",".join("?" for _ in chunk)
+            for uuid, mu_json, amu_json in conn.execute(
+                    f"SELECT session_uuid, {mu}, {amu} FROM session_log "
+                    f"WHERE session_uuid IN ({marks}) ORDER BY id", chunk):
+                terms = _session_mix_input_terms(mu_json, amu_json)
+                if terms:
+                    out[uuid] = terms
+    except (sqlite3.Error, TypeError, ValueError):
+        return {}
+    return out
+
+
+def _compression_priced_rate(model, session_uuid, session_rates, fallback_rate, tier_data):
+    """Input rate for one compression row: its own model when stamped, else its
+    session's mix (unpriced share held at the plain row rate)."""
+    rate = _compression_row_rate(
+        None if str(model or "").strip().lower() in _UNSTAMPED_MODELS else model,
+        fallback_rate, tier_data)
+    if str(model or "").strip().lower() in _UNSTAMPED_MODELS and session_uuid in session_rates:
+        terms = session_rates[session_uuid]
+        priced = sum(sh for sh, _r in terms)
+        return sum(sh * r for sh, r in terms) + max(0.0, 1.0 - priced) * rate
+    return rate
+
+
 def _get_compression_summary(days=30, since=None):
     """Query compression events and return a summary dict.
 
@@ -14535,12 +14703,15 @@ def _get_compression_summary(days=30, since=None):
                 "AVG(compression_ratio) as avg_ratio, "
                 "SUM(CASE WHEN quality_preserved = 1 THEN 1 ELSE 0 END) as quality_ok, "
                 "SUM(CASE WHEN verified = 1 THEN 1 ELSE 0 END) as verified_cnt, "
-                "model "
-                "FROM compression_events WHERE timestamp >= ? "
+                "model, session_uuid "
+                "FROM " + _counted_table(conn, "compression_events") + " WHERE timestamp >= ? "
                 "AND (tier IS NULL OR tier = 'measured') "
-                "GROUP BY feature, model ORDER BY orig DESC",
+                "GROUP BY feature, model, session_uuid ORDER BY orig DESC",
                 (cutoff,),
             ).fetchall()
+            session_rates = _compression_session_rates(
+                conn, [r[8] for r in rows
+                       if str(r[7] or "").strip().lower() in _UNSTAMPED_MODELS])
         finally:
             conn.close()
 
@@ -14554,11 +14725,11 @@ def _get_compression_summary(days=30, since=None):
         tier = _load_pricing_tier()
         tier_data = PRICING_TIERS.get(tier, PRICING_TIERS["anthropic"])
 
-        for feature, cnt, orig, comp, avg_ratio, quality_ok, verified_cnt, model in rows:
+        for feature, cnt, orig, comp, avg_ratio, quality_ok, verified_cnt, model, s_uuid in rows:
             orig = orig or 0
             comp = comp or 0
             cnt = cnt or 0
-            rate = _compression_row_rate(model, fallback_rate, tier_data)
+            rate = _compression_priced_rate(model, s_uuid, session_rates, fallback_rate, tier_data)
             tokens_saved = orig - comp
             cost_saved = round(tokens_saved * rate / 1_000_000, 6)
 
@@ -14691,7 +14862,7 @@ def _get_compression_coverage(days=30):
                 "SUM(original_tokens) as orig, SUM(compressed_tokens) as comp, "
                 "AVG(compression_ratio) as avg_ratio, "
                 "SUM(CASE WHEN verified = 1 THEN 1 ELSE 0 END) as vcnt "
-                "FROM compression_events WHERE timestamp >= ? "
+                "FROM " + _counted_table(conn, "compression_events") + " WHERE timestamp >= ? "
                 "GROUP BY feature, tier",
                 (cutoff,),
             ).fetchall()
@@ -23097,7 +23268,7 @@ def _session_model_reprice(conn, cutoff, session_uuid=None, by_day=False):
         rows = conn.execute(
             "SELECT " + day_col + ", e.event_type, SUM(e.tokens_saved), SUM(e.cost_saved_usd), "
             + mu + ", " + amu + " "
-            "FROM savings_events e "
+            "FROM " + _counted_table(conn, "savings_events") + " e "
             "LEFT JOIN session_log s ON e.session_uuid = s.session_uuid "
             + where +
             "GROUP BY " + ("1, " if by_day else "") + "e.event_type, e.session_uuid",
@@ -23159,6 +23330,7 @@ _COUNTED_CE_EXCLUDED_FEATURES = (
     "quality_nudge", "loop_detection", "cohort_demoted", "fresh_session_nudge",
     "cache_drop_warning", "first_read_edit_followup",
     "delta_read",  # read_cache emits both ledgers; savings_events owns this key
+    "structure_map",  # same: logged to both ledgers, savings_events owns it
 )
 # Ledger events count from here; earlier months use transcript markers instead
 # (the Mar-Apr ledger logged 4+13 events against 73+232 physical markers).
@@ -23355,12 +23527,12 @@ def _counted_candidate_events(conn):
         "SELECT 'se:'||id, session_uuid, timestamp, "
         "  CASE WHEN event_type='tool_archive_reexpand' THEN -tokens_saved "
         "       ELSE tokens_saved END, cost_saved_usd, model "
-        "FROM savings_events "
+        "FROM " + _counted_table(conn, "savings_events") + " "
         "WHERE event_type IN (" + se_types + ") AND timestamp >= ? "
         "UNION ALL "
         "SELECT 'ce:'||id, session_uuid, timestamp, "
         "  original_tokens - compressed_tokens, NULL, model "
-        "FROM compression_events "
+        "FROM " + _counted_table(conn, "compression_events") + " "
         "WHERE (tier IS NULL OR tier = 'measured') AND verified = 1 "
         "  AND original_tokens > compressed_tokens "
         "  AND feature NOT IN (" + ce_excl + ") AND timestamp >= ?",
@@ -23435,10 +23607,19 @@ def _update_counted_cumulative(conn, max_sessions=_COUNTED_MAX_SESSIONS_PER_PASS
         # Delete only those derived duplicates; keep both source telemetry rows.
         duplicates = conn.execute(
             "DELETE FROM counted_reread WHERE event_key IN "
-            "(SELECT 'ce:'||id FROM compression_events WHERE feature='delta_read')")
+            "(SELECT 'ce:'||id FROM compression_events "
+            "WHERE feature IN ('delta_read', 'structure_map'))")
         stats["duplicate_rows_removed"] = max(0, duplicates.rowcount)
         if duplicates.rowcount:
             conn.commit()
+        # Derived rows whose source event is not a saving (see the counted
+        # views) are recomputable cache; drop them so they stop compounding.
+        excluded = _counted_reread_excluded_sql(conn)
+        if excluded:
+            gone = conn.execute("DELETE FROM counted_reread WHERE " + excluded)
+            stats["excluded_rows_removed"] = max(0, gone.rowcount)
+            if gone.rowcount:
+                conn.commit()
         _reprice_counted_rows_once(conn)
         events = _counted_candidate_events(conn)
         if not events:
@@ -23681,6 +23862,9 @@ def _counted_cumulative_summary(days=None, now=None):
                 conn.create_function("counted_event_epoch", 2, event_epoch)
                 where = " WHERE counted_event_epoch(event_ts, source) >= ? AND counted_event_epoch(event_ts, source) <= ?"
                 params = (start.timestamp(), end.timestamp())
+            excluded = _counted_reread_excluded_sql(conn)
+            if excluded:
+                where = (where + " AND " if where else " WHERE ") + "NOT " + excluded
             row = conn.execute(
                 "SELECT COUNT(*), COALESCE(SUM(tokens),0), "
                 "COALESCE(SUM(oneshot_usd),0), COALESCE(SUM(reread_tokens),0), "
@@ -23927,7 +24111,7 @@ def _get_savings_summary(days=30, since=None):
                 cutoff = (datetime.now() - timedelta(days=days)).isoformat()
             rows = conn.execute(
                 "SELECT event_type, COUNT(*) as cnt, SUM(tokens_saved) as tok, SUM(cost_saved_usd) as cost "
-                "FROM savings_events WHERE timestamp >= ? GROUP BY event_type ORDER BY tok DESC",
+                "FROM " + _counted_table(conn, "savings_events") + " WHERE timestamp >= ? GROUP BY event_type ORDER BY tok DESC",
                 (cutoff,),
             ).fetchall()
             # Model-mix repair, same connection and same cutoff so the corrected
@@ -49247,6 +49431,14 @@ _LEGACY_SAVINGS_LABELS = {
     # (10-15% of affected response tokens) since we can't measure the
     # counterfactual output the model would have produced without the nudge.
     "verbosity_steer": "Verbosity steering [est]",
+    # verbosity_steer_measured: the output reduction actually observed after a
+    # conciseness nudge, compared with the session's own pre-nudge replies.
+    "verbosity_steer_measured": "Concise output (measured)",
+    # tool_archive_refetch_block: a repeat call for an already-archived result
+    # was answered from the archive instead of re-running the tool.
+    "tool_archive_refetch_block": "Re-fetches answered from archive",
+    # keepwarm: cache rewrites avoided by keeping the prompt cache warm.
+    "keepwarm": "Cache kept warm",
 }
 
 # v5 Active Compression categories — stored in compression_events and
@@ -49292,7 +49484,23 @@ _V5_COMPRESSION_LABELS = {
     # to a one-line note or a delta. A per-command tool (no session memory)
     # cannot do this, so it is TO's own bucket, not folded into pipelines.
     "crossturn_dedup": "Cross-turn dedup",
+    "bash_compress_json": "Bash compress (JSON)",
+    "bash_compress_csv": "Bash compress (CSV)",
+    # Build and compiler output (make, cargo, gcc, tsc, ...) trimmed to the
+    # errors and the summary line.
+    "build_output_compress": "Build output compression",
+    # Codex sessions: command output compressed by the Codex hook path.
+    "codex_command_compress": "Command output (Codex)",
 }
+
+# compression_events features that are bookkeeping or shadow measurement, not
+# savings. Every feature a hook logs must be in _V5_COMPRESSION_LABELS or here
+# (enforced by tests), so a new saving can never be logged and left out of the
+# totals by accident.
+_NON_SAVINGS_COMPRESSION_FEATURES = frozenset({
+    "fresh_session_nudge", "cohort_demoted", "first_read_edit_followup",
+    "cache_drop_warning", "agent_result_skeleton", "unknown",
+})
 
 # Unified label dict used by the savings-report renderer. Legacy entries
 # are authoritative when a key ever collides (dedup rule in
@@ -49477,12 +49685,12 @@ def runway_snapshot(days=30, now=None):
                 spent_basis = _dashboard_spent_token_basis(conn, days=days)
                 consumed = spent_basis["tokens"]
                 saved = conn.execute(
-                    "SELECT COALESCE(SUM(tokens_saved),0) FROM savings_events "
+                    "SELECT COALESCE(SUM(tokens_saved),0) FROM " + _counted_table(conn, "savings_events") + " "
                     "WHERE timestamp >= ? AND event_type != 'verbosity_steer'",
                     (cutoff,)).fetchone()[0] or 0
                 saved += conn.execute(
                     "SELECT COALESCE(SUM(original_tokens-compressed_tokens),0) "
-                    "FROM compression_events WHERE timestamp >= ? "
+                    "FROM " + _counted_table(conn, "compression_events") + " WHERE timestamp >= ? "
                     "AND (tier IS NULL OR tier = 'measured')", (cutoff,)).fetchone()[0] or 0
             finally:
                 conn.close()
@@ -50222,11 +50430,11 @@ def _estimate_behavioral_savings(days=30):
         try:
             row = conn.execute(
                 "SELECT COUNT(*), COALESCE(SUM(original_tokens - compressed_tokens), 0) "
-                "FROM compression_events WHERE feature = 'loop_detection' AND timestamp >= ?",
+                "FROM " + _counted_table(conn, "compression_events") + " WHERE feature = 'loop_detection' AND timestamp >= ?",
                 (cutoff,),
             ).fetchone()
             detail_rows = conn.execute(
-                "SELECT detail FROM compression_events "
+                "SELECT detail FROM " + _counted_table(conn, "compression_events") + " "
                 "WHERE feature = 'loop_detection' AND timestamp >= ? AND detail IS NOT NULL",
                 (cutoff,),
             ).fetchall()
@@ -50291,12 +50499,12 @@ def _estimate_contamination_exit_savings(days=30):
         conn = _init_trends_db()
         try:
             fired = conn.execute(
-                "SELECT DISTINCT session_id FROM compression_events "
+                "SELECT DISTINCT session_id FROM " + _counted_table(conn, "compression_events") + " "
                 "WHERE feature='quality_nudge' AND timestamp >= ? AND session_id IS NOT NULL",
                 (cutoff_iso,),
             ).fetchall()
             heeded = conn.execute(
-                "SELECT DISTINCT session_id FROM compression_events "
+                "SELECT DISTINCT session_id FROM " + _counted_table(conn, "compression_events") + " "
                 "WHERE feature='quality_nudge' AND verified=1 AND timestamp >= ? AND session_id IS NOT NULL",
                 (cutoff_iso,),
             ).fetchall()
@@ -50369,7 +50577,7 @@ def _estimate_handover_rerun_savings(days=30):
         conn = _init_trends_db()
         try:
             restored = conn.execute(
-                "SELECT DISTINCT session_id FROM savings_events "
+                "SELECT DISTINCT session_id FROM " + _counted_table(conn, "savings_events") + " "
                 "WHERE event_type='checkpoint_restore' AND timestamp >= ? AND session_id IS NOT NULL",
                 (cutoff_dt.isoformat(),),
             ).fetchall()
@@ -50446,7 +50654,7 @@ def _estimate_retrieval_serve_savings(days=30):
         conn = _init_trends_db()
         try:
             served = conn.execute(
-                "SELECT DISTINCT session_uuid, session_id FROM savings_events "
+                "SELECT DISTINCT session_uuid, session_id FROM " + _counted_table(conn, "savings_events") + " "
                 "WHERE event_type IN ('checkpoint_restore','tool_archive') "
                 "AND timestamp >= ?",
                 (cutoff_dt.isoformat(),),
@@ -53636,7 +53844,7 @@ def _progressive_disclosure_summary(days=30):
         try:
             rows = conn.execute(
                 "SELECT event_type, COUNT(*), COALESCE(SUM(tokens_saved),0) "
-                "FROM savings_events WHERE timestamp >= ? "
+                "FROM " + _counted_table(conn, "savings_events") + " WHERE timestamp >= ? "
                 "AND event_type IN ('tool_archive','tool_archive_reexpand') GROUP BY event_type",
                 (cutoff,),
             ).fetchall()
@@ -53965,17 +54173,20 @@ def _realized_savings_buckets(conn, cutoff, session_uuid=None, by_day=False):
         params.extend([session_uuid, session_uuid])
     se_rows = conn.execute(
         "SELECT " + day_col + ", event_type, COUNT(*), SUM(tokens_saved), "
-        "SUM(cost_saved_usd) FROM savings_events " + where +
+        "SUM(cost_saved_usd) FROM " + _counted_table(conn, "savings_events") + " " + where +
         "GROUP BY 1, event_type ORDER BY 4 DESC",
         tuple(params),
     ).fetchall()
     ce_rows = conn.execute(
         "SELECT " + day_col + ", feature, COUNT(*), SUM(original_tokens), "
-        "SUM(compressed_tokens), model FROM compression_events " + where +
+        "SUM(compressed_tokens), model, session_uuid FROM " + _counted_table(conn, "compression_events") + " " + where +
         "AND (tier IS NULL OR tier = 'measured') "
-        "GROUP BY 1, feature, model",
+        "GROUP BY 1, feature, model, session_uuid",
         tuple(params),
     ).fetchall()
+    ce_session_rates = _compression_session_rates(
+        conn, [r[6] for r in ce_rows
+               if str(r[5] or "").strip().lower() in _UNSTAMPED_MODELS])
     deltas, _rt, _ut = _session_model_reprice(
         conn, cutoff, session_uuid=session_uuid, by_day=True)
 
@@ -53991,9 +54202,9 @@ def _realized_savings_buckets(conn, cutoff, session_uuid=None, by_day=False):
     fallback_rate = _estimate_compression_cost_per_mtok()
     tier_data = PRICING_TIERS.get(_load_pricing_tier(), PRICING_TIERS["anthropic"])
     ce_by_bucket = {}
-    for bucket, feature, cnt, orig, comp, model in ce_rows:
+    for bucket, feature, cnt, orig, comp, model, s_uuid in ce_rows:
         tokens_saved = (orig or 0) - (comp or 0)
-        rate = _compression_row_rate(model, fallback_rate, tier_data)
+        rate = _compression_priced_rate(model, s_uuid, ce_session_rates, fallback_rate, tier_data)
         feats = ce_by_bucket.setdefault(bucket or "", {})
         entry = feats.setdefault(feature, {"events": 0, "tokens_saved": 0, "cost_saved_usd": 0.0})
         entry["events"] += cnt or 0

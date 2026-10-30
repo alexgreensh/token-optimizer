@@ -38,10 +38,23 @@ export function activeBranch(entries: Entry[], leafId?: string | null): Entry[] 
 export function rollup(entries: Entry[], prices?: PricingLookup): Rollup {
   const models = new Map<string, ModelTotals>();
   const lastMessage = new Map<string, Entry>();
+  const messageUsage = new Map<string, Usage>();
   for (const entry of entries) {
     const m = entry.message;
     if (entry.type === "message" && m?.role === "assistant" && m.id && m.provider && m.model && m.usage) {
-      lastMessage.set(`${m.provider}\0${m.id}`, entry);
+      const key = `${m.provider}\0${m.id}`;
+      lastMessage.set(key, entry);
+      const prior = messageUsage.get(key);
+      const merged = { ...m.usage };
+      if (prior) {
+        for (const field of ['input', 'output', 'cacheRead', 'cacheWrite', 'totalTokens'] as const) {
+          merged[field] = Math.max(finite(prior[field]), finite(m.usage[field]));
+        }
+        const costs = [prior.cost?.total, m.usage.cost?.total]
+          .filter((cost): cost is number => typeof cost === 'number' && Number.isFinite(cost) && cost >= 0);
+        if (costs.length) merged.cost = { total: Math.max(...costs) };
+      }
+      messageUsage.set(key, merged);
     }
   }
   for (const entry of entries) {
@@ -51,7 +64,9 @@ export function rollup(entries: Entry[], prices?: PricingLookup): Rollup {
     if (!isAssistant && !isUsage && !isSummary) continue;
     const m = entry.message;
     if (isAssistant && m?.id && m.provider && lastMessage.get(`${m.provider}\0${m.id}`) !== entry) continue;
-    const usage = isAssistant ? m?.usage : entry.usage;
+    const usage = isAssistant
+      ? (m?.id && m.provider ? messageUsage.get(`${m.provider}\0${m.id}`) : m?.usage)
+      : entry.usage;
     const model = isAssistant ? m?.model : entry.model;
     const provider = isAssistant ? m?.provider : entry.provider;
     if (!usage) continue;

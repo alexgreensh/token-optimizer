@@ -299,6 +299,12 @@ function ratesFor(modelKey: string): ModelPricing {
     ?? DEFAULT_PRICING[PROXY_MODEL];
 }
 
+/** Return a documented rate only when the model has a known price card. */
+export function knownModelRate(modelKey: string, klass: "input" | "output"): number | null {
+  const key = claudePricingKey(modelKey) ?? pricedPrefixKey(modelKey) ?? normalizeModelName(modelKey);
+  return Object.prototype.hasOwnProperty.call(DEFAULT_PRICING, key) ? DEFAULT_PRICING[key][klass] : null;
+}
+
 /** A model mix: modelKey (or display name) -> token share. Shares sum to ~1. */
 export type ModelMix = Record<string, number>;
 

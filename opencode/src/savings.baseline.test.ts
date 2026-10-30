@@ -108,3 +108,12 @@ test("savings positive for a 95%-Opus baseline vs a 56%-Opus now", () => {
   expect(r.afterCostPerSession).toBeGreaterThan(0);
   expect(r.savingsPerSession).toBeGreaterThan(0);
 });
+
+test("provider cache reuse changes do not become optimizer savings", () => {
+  const cold = run(afterRows(40, 2_000_000, 0.56, 0.3));
+  const warm = run(afterRows(40, 2_000_000, 0.56, 0.8));
+  expect(cold.ready).toBe(true);
+  expect(warm.ready).toBe(true);
+  expect(cold.monthlySavingsUsd).toBeCloseTo(warm.monthlySavingsUsd, 8);
+  expect(warm.breakdown.some((item) => item.key === "context_rereads")).toBe(false);
+});

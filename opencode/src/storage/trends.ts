@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { knownModelRate } from "../pricing.js";
 
 const TRENDS_SCHEMA = `
 CREATE TABLE IF NOT EXISTS session_log (
@@ -37,10 +38,27 @@ CREATE TABLE IF NOT EXISTS savings_events (
 );
 `;
 
-// Sonnet input rate ($/M tokens) used as fallback when the active model is
-// unknown at savings-log time (e.g. checkpoint inject fires before the first
-// assistant message arrives). Matches Python's _log_savings_event fallback.
-const SONNET_INPUT_RATE_PER_MTOK = 3.0;
+// Keep the ledger intact; all savings readers use the same filtered view.
+const COUNTED_EVENTS_VIEW = `
+CREATE TEMP VIEW IF NOT EXISTS counted_savings_events AS
+SELECT e.* FROM main.savings_events e
+WHERE NOT (e.session_id IS NOT NULL AND (
+  e.session_id GLOB 'test-session-*' OR e.session_id GLOB 'failwire-*' OR
+  e.session_id GLOB 'f3bench-sess*' OR e.session_id GLOB 'unit-c-never*' OR
+  e.session_id GLOB 'torture-*' OR e.session_id GLOB 'sess_test*' OR
+  (e.session_id GLOB 'codex-sess-[0-9]*' AND substr(e.session_id, 12) NOT GLOB '*[^0-9]*')
+))
+AND NOT (e.event_type IN ('tool_archive', 'tool_archive_refetch_block') AND e.detail IS NOT NULL AND (
+  e.detail GLOB '*claude-in-chrome__computer*' OR e.detail GLOB '*computer_use__*' OR
+  e.detail GLOB '*[Ss]creenshot*'
+))
+AND NOT (e.tokens_saved > 0 AND e.session_id IS NOT NULL AND e.session_id != '' AND EXISTS (
+  SELECT 1 FROM main.savings_events p WHERE p.session_id = e.session_id
+  AND p.event_type = e.event_type AND p.tokens_saved = e.tokens_saved
+  AND COALESCE(p.detail, '') = COALESCE(e.detail, '')
+  AND (p.timestamp < e.timestamp OR (p.timestamp = e.timestamp AND p.id < e.id))
+  AND (julianday(e.timestamp) - julianday(p.timestamp)) * 86400.0 BETWEEN 0 AND 3
+));`;
 
 export interface SessionTrendData {
   sessionId: string;
@@ -78,6 +96,7 @@ export class TrendsStore {
       this.db.exec("PRAGMA busy_timeout=3000");
       this.db.exec(TRENDS_SCHEMA);
       this.db.exec(SAVINGS_EVENTS_SCHEMA);
+      this.db.exec(COUNTED_EVENTS_VIEW);
     }
     return this.db;
   }
@@ -86,9 +105,8 @@ export class TrendsStore {
    * Log a realized-savings event to the savings_events table.
    *
    * This is the TypeScript equivalent of Python's `_log_savings_event`.
-   * Model is not known at checkpoint-inject time, so cost_saved_usd is
-   * priced at the Sonnet input fallback rate — same behaviour as Python's
-   * resolver when the session model cannot be determined.
+   * If the model is not yet known, leave the amount unpriced until the session
+   * has a model. The reader resolves it from that session without changing history.
    *
    * Guards:
    *   - tokensSaved <= 0  → no-op (never credit zero or negative)
@@ -104,7 +122,8 @@ export class TrendsStore {
     if (tokensSaved <= 0) return;
     try {
       const db = this.connect();
-      const costSavedUsd = (tokensSaved * SONNET_INPUT_RATE_PER_MTOK) / 1_000_000;
+      const rate = knownModelRate(model ?? "", eventType === "verbosity_steer" ? "output" : "input");
+      const costSavedUsd = tokensSaved * (rate ?? 0);
       db.run(
         `INSERT INTO savings_events (timestamp, event_type, tokens_saved, cost_saved_usd, session_id, detail, model)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -215,19 +234,21 @@ export class TrendsStore {
       const cutoff = new Date(now - days * 86_400_000).toISOString();
       const rows = db
         .query(
-          `SELECT event_type, COUNT(*) as cnt,
-                  SUM(tokens_saved) as tok, SUM(cost_saved_usd) as cost
-           FROM savings_events WHERE timestamp >= ? GROUP BY event_type`,
+          `SELECT e.event_type, e.tokens_saved, e.cost_saved_usd, e.model, s.model AS session_model
+           FROM counted_savings_events e LEFT JOIN session_log s ON s.session_id = e.session_id
+           WHERE e.timestamp >= ?`,
         )
-        .all(cutoff) as Array<{ event_type: string; cnt: number; tok: number | null; cost: number | null }>;
+        .all(cutoff) as Array<{ event_type: string; tokens_saved: number; cost_saved_usd: number; model: string | null; session_model: string | null }>;
 
       const byCategory = new Map<string, { events: number; tokens: number; cost: number }>();
       for (const r of rows) {
-        byCategory.set(r.event_type, {
-          events: r.cnt,
-          tokens: r.tok ?? 0,
-          cost: r.cost ?? 0,
-        });
+        const item = byCategory.get(r.event_type) ?? { events: 0, tokens: 0, cost: 0 };
+        const unknown = !r.model || r.model.toLowerCase() === "unknown";
+        const rate = unknown ? knownModelRate(r.session_model ?? "", "input") : null;
+        item.events++;
+        item.tokens += r.tokens_saved ?? 0;
+        item.cost += unknown ? (r.tokens_saved ?? 0) * (rate ?? 0) : (r.cost_saved_usd ?? 0);
+        byCategory.set(r.event_type, item);
       }
 
       // Relocate estimated-tier categories OUT of the measured total (A1/A3/U-G
@@ -278,13 +299,17 @@ export class TrendsStore {
     try {
       const db = this.connect();
       const cutoff = new Date(now - days * 86_400_000).toISOString();
-      const row = db
+      const rows = db
         .query(
-          `SELECT SUM(cost_saved_usd) as cost
-           FROM savings_events WHERE timestamp >= ? AND event_type = 'verbosity_steer'`,
+          `SELECT e.tokens_saved, e.cost_saved_usd, e.model, s.model AS session_model
+           FROM counted_savings_events e LEFT JOIN session_log s ON s.session_id = e.session_id
+           WHERE e.timestamp >= ? AND e.event_type = 'verbosity_steer'`,
         )
-        .get(cutoff) as { cost: number | null } | null;
-      return Math.max(0, row?.cost ?? 0);
+        .all(cutoff) as Array<{ tokens_saved: number; cost_saved_usd: number; model: string | null; session_model: string | null }>;
+      return Math.max(0, rows.reduce((sum, r) => {
+        const unknown = !r.model || r.model.toLowerCase() === "unknown";
+        return sum + (unknown ? (r.tokens_saved ?? 0) * (knownModelRate(r.session_model ?? "", "output") ?? 0) : (r.cost_saved_usd ?? 0));
+      }, 0));
     } catch {
       return 0;
     }

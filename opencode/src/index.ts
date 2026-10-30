@@ -338,6 +338,7 @@ export const TokenOptimizerPlugin: Plugin = async (
             savedTokens,
             state.sessionId,
             `fill=${Math.round(fillPctPct)}% score=${Math.round(state.lastQuality.resourceHealth)} tier=${tier}`,
+            state.currentModel ?? null,
           );
         } catch { /* best-effort */ }
       }
@@ -602,6 +603,7 @@ export const TokenOptimizerPlugin: Plugin = async (
                   credited,
                   input.sessionID,
                   `restored from ${match.mode}`,
+                  state.currentModel ?? null,
                 );
               } catch {
                 // Never break the inject over savings tracking

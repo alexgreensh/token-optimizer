@@ -8,8 +8,7 @@
  *                       Depends only on frozen inputs + prices -> a STABLE baseline
  *                       that does NOT re-roll with this period's workload.
  *   NOW / session     = the SAME frozen tokens, pool redistributed at the CURRENT
- *                       cache-hit and priced at the CURRENT mix. Moves ONLY with
- *                       efficiency (model routing + caching).
+ *                       token classes and priced at the CURRENT mix. Changes reflect the model mix.
  * Per-session transformation = old_cps − now_cps. Monthly = that x the session count,
  * so volume re-enters ONLY as a multiplier — never as a confounder of the baseline.
  *
@@ -19,7 +18,7 @@
  * (pricing.ts) and price both arms from token volume directly.
  *
  * Three non-overlapping pools sum to the headline:
- *   1. Main routing + caching (billed session_log volume). NO winsorization /
+ *   1. Main model mix comparison (billed session_log volume). NO winsorization /
  *      outlier drop — heavy sessions are real volume that genuinely cost more
  *      at the baseline mix; dropping them is a pure definitional undercount.
  *   2. Subagent (sidechain) routing — Claude-only. OpenCode has no Claude-style
@@ -40,7 +39,7 @@
  * baseline mix — never fabricated Opus they never ran.
  */
 import { TrendsStore } from "./storage/trends.js";
-import { price, price_cw, inputRatePerMTok, normalizeModelName, type ModelMix } from "./pricing.js";
+import { price, price_cw, inputRatePerMTok, knownModelRate, type ModelMix } from "./pricing.js";
 
 // Constants mirror the other platforms' baseline tunables.
 const BASELINE_ONBOARDING_DAYS = 1;
@@ -79,7 +78,7 @@ function toRec(row: Record<string, unknown>): SessionRec {
   // session_log, kept distinct from fresh input.
   return {
     ts,
-    model: normalizeModelName(String(row.model ?? "unknown")),
+    model: String(row.model ?? "unknown"),
     fi: Math.max(0, num(row.tokens_input)),
     cr: Math.max(0, num(row.tokens_cache_read)),
     cw: Math.max(0, num(row.tokens_cache_write)),
@@ -276,12 +275,21 @@ export function computeRealizedSavings(
     }
   }
 
+  const notReady = (status: string): RealizedSavings => {
+    const result = NOT_READY(status);
+    result.compressionMeasuredWindowUsd = Math.max(0, measuredCompression);
+    result.compressionMeasuredWindowTokens = Math.max(0, measuredCompressionTokens);
+    result.verbosityMeasuredWindowUsd = Math.max(0, measuredVerbosity);
+    return result;
+  };
+
   const history = rows
     .map(toRec)
     .filter((r) => r.ts > 0)
+    .filter((r) => knownModelRate(r.model, "input") !== null)
     .filter((r) => r.fi >= MIN_INPUT_TOKENS && r.durationSec >= MIN_DURATION_SECONDS)
     .sort((a, b) => a.ts - b.ts);
-  if (history.length === 0) return NOT_READY("no sessions yet");
+  if (history.length === 0) return notReady("no sessions yet");
 
   const installTs = history[0].ts;
   const installDate = new Date(installTs).toISOString().slice(0, 10);
@@ -291,7 +299,7 @@ export function computeRealizedSavings(
 
   if (before.length < BASELINE_MIN_STABLE_SESSIONS) {
     const daysLeft = Math.max(0, Math.ceil((windowEnd - now) / DAY_MS));
-    const r = NOT_READY(`building baseline (${before.length}/${BASELINE_MIN_STABLE_SESSIONS} early sessions)`);
+    const r = notReady(`building baseline (${before.length}/${BASELINE_MIN_STABLE_SESSIONS} early sessions)`);
     r.installDate = installDate;
     r.baselineBuilding = {
       sessionsInWindow: before.length,
@@ -304,7 +312,7 @@ export function computeRealizedSavings(
   }
   if (now < windowEnd) {
     const daysLeft = Math.ceil((windowEnd - now) / DAY_MS);
-    const r = NOT_READY(`building baseline (${daysLeft}d of early window left)`);
+    const r = notReady(`building baseline (${daysLeft}d of early window left)`);
     r.installDate = installDate;
     r.baselineBuilding = {
       sessionsInWindow: before.length,
@@ -325,7 +333,7 @@ export function computeRealizedSavings(
   const beforeMix = modelMix(before);
 
   if (after.length < AFTER_MIN_SESSIONS) {
-    const r = NOT_READY(`building comparison (${after.length}/${AFTER_MIN_SESSIONS} recent sessions)`);
+    const r = notReady(`building comparison (${after.length}/${AFTER_MIN_SESSIONS} recent sessions)`);
     r.installDate = installDate;
     r.beforeMixLabel = mixLabel(beforeMix);
     // Baseline window is closed and frozen — daysLeft=0 here.
@@ -353,7 +361,7 @@ export function computeRealizedSavings(
   F = clampTotal(F); CR = clampTotal(CR); CW = clampTotal(CW);
   const totalIn = F + CR + CW;
   if (totalIn <= 0) {
-    const r = NOT_READY("no recent volume");
+    const r = notReady("no recent volume");
     r.installDate = installDate;
     r.beforeMixLabel = mixLabel(beforeMix);
     r.baselineBuilding = {
@@ -403,16 +411,15 @@ export function computeRealizedSavings(
   // split priced at the baseline mix + cache-write (5m, conservative) at the baseline
   // mix. Depends only on the frozen early window + prices -> stable across runs.
   const oldCps = price(tFi, tCr, tOut, beforeMix) + price_cw(tCw, beforeMix);
-  // NOW / session (actual) = the SAME frozen tokens, pool redistributed at the CURRENT
-  // pool-hit and priced at the CURRENT mix. Cache-write priced at the actual mix.
-  const curCRs = curHit * tPool;
-  const curFs = tPool - curCRs;
-  const nowCps = price(curFs, curCRs, tOut, afterMix) + price_cw(tCw, afterMix);
+  // NOW / session prices the same frozen token classes at the current mix.
+  // Hold the baseline token classes fixed. Provider cache hits are not a
+  // Token Optimizer saving, so changes in cache reuse do not enter this estimate.
+  const nowCps = price(tFi, tCr, tOut, afterMix) + price_cw(tCw, afterMix);
   if (
     !Number.isFinite(oldCps) || !Number.isFinite(nowCps) ||
     oldCps <= 0 || nowCps <= 0
   ) {
-    const r = NOT_READY("insufficient pricing data");
+    const r = notReady("insufficient pricing data");
     r.installDate = installDate;
     r.beforeMixLabel = mixLabel(beforeMix);
     r.baselineBuilding = {
@@ -431,7 +438,7 @@ export function computeRealizedSavings(
   // COMPRESSION ADD-BACK (#3): the measured removed-token dollars repriced to the
   // baseline input mix (baseline_input_rate / current_input_rate). actual = 0 for
   // this pool (the tokens were never billed), so the whole repriced value is
-  // transformation. Disjoint from the billed pool and the caching lever.
+  // transformation. Disjoint from the billed pool.
   // `measuredCompression` is already WINDOWED to `days` by getCompressionSavings
   // (cutoff = now - days*DAY), so it scales by the same 30/days as the billed arms.
   const inAfter = inputRatePerMTok(afterMix);
@@ -496,19 +503,15 @@ export function computeRealizedSavings(
   // --- Attribution breakdown: morph the counterfactual into the actual one lever
   // at a time so the UNROUNDED steps telescope to the headline. ---
   //   routing  = counterfactual − (cf footprint repriced at today's mix, incl CW)
-  //   caching  = (cf footprint at today's mix) − actual
   // Routing carries the cache-write reprice (#2). Compression is the third lever.
   // Levers are computed on the WINDOW arms then scaled by m() so they telescope to
   // the (monthly) main transformation.
   // Always decompose the main pool, even when it is net-negative, so the waterfall sums to
   // the honest net including a pool that grew (shown honestly as a "-$X" lever).
-  const vRouteS = price(tFi, tCr, tOut, afterMix) + price_cw(tCw, afterMix);
-  const sRoute = (oldCps - vRouteS) * sessionsPerMonth; // before->after mix (incl CW)
-  const sCache = (vRouteS - nowCps) * sessionsPerMonth; // remaining gap = caching
+  const sRoute = (oldCps - nowCps) * sessionsPerMonth;
 
   const breakdown: SavingsBreakdownItem[] = [
-    { key: "routing", label: "Smarter model routing (lighter mix)", monthlyUsd: sRoute },
-    { key: "context_rereads", label: "Lighter sessions (better cache reuse)", monthlyUsd: sCache },
+    { key: "routing", label: "Model mix change (including premium choices)", monthlyUsd: sRoute },
     { key: "subagent_routing", label: "Cheaper subagents (no sidechains on OpenCode)", monthlyUsd: subagentTransformation },
     { key: "context_compression", label: "Lighter context (fewer re-reads, metered)", monthlyUsd: compressionAddback },
     { key: "verbosity_steer", label: "Lean output nudges (less output, estimated)", monthlyUsd: verbosityAddback },

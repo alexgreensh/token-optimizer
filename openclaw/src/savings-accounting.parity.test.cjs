@@ -142,3 +142,33 @@ test('separate cache-write tokens are not capped at fresh input', () => {
   fs.writeFileSync(path.join(state,'session-history.json'),JSON.stringify(rows));
   assert.equal(computeRealizedSavings(dir,30,now).beforeCostPerSession,2.5);
 });
+test('eligible model shares are normalized exactly once for input and 1h writes', () => {
+  const fs=require('node:fs'),path=require('node:path');
+  const {computeRealizedSavings}=require('./savings.ts');
+  const dir=fs.mkdtempSync(path.join(process.cwd(),'.scratch-parity','normalize-'));
+  const state=path.join(dir,'token-optimizer');fs.mkdirSync(state);
+  const day=86400000,t=Date.parse('2026-01-01T00:00:00Z'),now=t+60*day;
+  const row=(id,ts,model) => ({sessionId:id,ts,model,input:1000000,output:0,cacheRead:0,cacheWrite:1000000,cacheWrite1h:1000000,cacheWrite5m:0,costUsd:0,durationSec:300});
+  const rows=[row('install',t,'opus-5-5')];
+  for(let i=0;i<35;i++) rows.push(row('before'+i,t+(2+i/2)*day,'opus-5-5'));
+  for(let i=0;i<12;i++) rows.push(row('after'+i,now-(i+1)*day,i<6?'fable':'sonnet'));
+  fs.writeFileSync(path.join(state,'session-history.json'),JSON.stringify(rows));
+  const result=computeRealizedSavings(dir,30,now);
+  assert.equal(result.ready,true);
+  assert.equal(result.beforeCostPerSession,6);
+  assert.equal(result.afterCostPerSession,3);
+  assert.equal(result.savingsPerSession,3);
+});
+test('unknown Claude generation is not priced as its family or major generation', () => {
+  const fs=require('node:fs'),path=require('node:path');
+  const {computeRealizedSavings}=require('./savings.ts');
+  const dir=fs.mkdtempSync(path.join(process.cwd(),'.scratch-parity','future-model-'));
+  const state=path.join(dir,'token-optimizer');fs.mkdirSync(state);
+  const day=86400000,t=Date.parse('2026-01-01T00:00:00Z'),now=t+60*day;
+  const row=(id,ts) => ({sessionId:id,ts,model:'claude-opus-5-99',input:100000,output:10000,cacheRead:0,cacheWrite:0,costUsd:0,durationSec:300});
+  const rows=[row('install',t)];
+  for(let i=0;i<35;i++) rows.push(row('before'+i,t+(2+i/2)*day));
+  for(let i=0;i<12;i++) rows.push(row('after'+i,now-(i+1)*day));
+  fs.writeFileSync(path.join(state,'session-history.json'),JSON.stringify(rows));
+  assert.equal(computeRealizedSavings(dir,30,now).ready,false);
+});

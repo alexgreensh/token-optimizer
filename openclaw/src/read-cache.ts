@@ -819,7 +819,13 @@ export function handleWriteAfter(event: ToolEventData): void {
 }
 
 /**
- * Clear all caches (called on compact).
+ * Forget what one agent has read in a session (called on compaction).
+ *
+ * Reads are cached per `<agentId>-<session>.json`. Only the compacting agent's
+ * file is removed, so a sibling agent in the same session keeps its own read
+ * state. The in-memory delta baselines are left alone: they are keyed by
+ * session, and a baseline is only consulted for a file that still has a read
+ * entry, so the next read of a cleared file re-seeds it.
  */
 export function clearCache(agentId: string, sessionId: string): void {
   const cp = cachePath(agentId, sessionId);

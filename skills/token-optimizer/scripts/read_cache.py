@@ -36,10 +36,13 @@ from plugin_env import is_v5_flag_enabled, resolve_snapshot_dir
 from runtime_env import project_config_value, run_origin, runtime_home
 
 try:
-    from session_store import SessionStore, cleanup_old_stores
+    from session_store import SessionStore, cleanup_old_stores, mark_context_reset
 except ImportError:
     SessionStore = None  # type: ignore[assignment,misc]
     cleanup_old_stores = None  # type: ignore[assignment]
+
+    def mark_context_reset(*_a, **_k):  # type: ignore[misc]
+        return None
 
 try:
     from credential_patterns import redact_credentials as _redact_creds
@@ -1482,10 +1485,16 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
     # model's context: forget them so this Read is judged a first read.
     try:
         if _scan_for_compaction(store, hook_input.get("transcript_path")):
-            store.clear_file_entries()
+            if hook_input.get("agent_id"):
+                # A subagent keeps its own context; only its read ledger follows
+                # the transcript's compaction marker.
+                store.clear_file_entries()
+            else:
+                store.reset_context_state()
+                mark_context_reset(session_id)
             if not quiet:
                 print(
-                    f"[Read Cache] Compaction detected; cleared file_reads for {session_id}",
+                    f"[Read Cache] Compaction detected; reset context state for {session_id}",
                     file=sys.stderr,
                 )
     except Exception:
@@ -2052,21 +2061,22 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
 
 
 def handle_clear_compacted(hook_input: dict[str, Any], quiet: bool) -> None:
-    """Clear ONLY the current session's file_reads after a compaction.
+    """Reset ONE session's "already in context" state after a /clear or compaction.
 
-    Wired to SessionStart (matcher ``compact``) via the ``--clear-compacted``
-    flag, which reads ``session_id`` from the stdin hook input. Post-compaction
-    the live session's read cache is stale: an unchanged file whose ``file_reads``
-    row survives can be judged redundant on a re-Read even though compaction
-    dropped it from context.
+    Wired to SessionStart (sources ``compact`` and ``clear``) via the
+    ``--clear-compacted`` flag, which reads ``session_id`` from the stdin hook
+    input. Both events empty the model's context while the session id, and so the
+    session store, lives on. Left alone, an unchanged file whose ``file_reads``
+    row survives is judged redundant on the next Read and served as an outline or
+    a block even though the model no longer holds it, and the same goes for
+    delta baselines, cross-turn command outputs and repeat-command streaks.
 
-    Calls ``store.clear_file_entries()`` ONLY -- never ``handle_clear``'s
-    session-scoped branch, which also unlinks the decisions telemetry log
-    (``_decisions_log_path``) and the legacy cache json. Routed through
-    compaction, that branch would delete per-session decision/shadow telemetry
-    on every compaction. ``cached_content`` is intentionally kept: the delta-read
-    path is gated on the file entry existing, so clearing only ``file_reads`` is
-    safe and preserves the delta baseline for an edited file.
+    Calls ``store.reset_context_state()`` (and stamps the re-fetch guard's reset
+    marker) for the named session ONLY: other sessions and subagent stores are not
+    touched. It never takes ``handle_clear``'s session-scoped branch, which also
+    unlinks the decisions telemetry log (``_decisions_log_path``) and the legacy
+    cache json; that would delete per-session decision/shadow telemetry on every
+    reset.
 
     Contention-safe: SessionStore connects fail-fast
     (``busy_timeout=50ms``), so under a sibling SessionStart compact-restore or
@@ -2115,7 +2125,7 @@ def handle_clear_compacted(hook_input: dict[str, Any], quiet: bool) -> None:
         # honored by _connect() for BOTH the schema init and the DELETE, so the
         # clear waits out a sibling write lock within the hook budget instead
         # of dying at the 50ms fail-fast default during _init_schema.
-        store.clear_file_entries()
+        store.reset_context_state()
     except sqlite3.OperationalError as exc:
         # LOUD failure: never a silent exit-0 no-op that resurrects the bug.
         print(
@@ -2126,9 +2136,11 @@ def handle_clear_compacted(hook_input: dict[str, Any], quiet: bool) -> None:
         return
     finally:
         store.close()
+    if not hook_input.get("agent_id"):
+        mark_context_reset(session_id)
     if not quiet:
         print(
-            f"[Read Cache] Cleared compacted session file_reads for {session_id}",
+            f"[Read Cache] Reset session context state for {session_id}",
             file=sys.stderr,
         )
 

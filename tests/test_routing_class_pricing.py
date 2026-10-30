@@ -626,3 +626,51 @@ def test_generation_price_change_alone_is_zero_in_either_direction(m, db, monkey
                               SONNET_55: _buckets(out=1_000_000, read=10_000_000)},
                       mix={"opus": 1_000_000, "sonnet": 1_000_000})
     assert newer["realized_cost_usd"] == 0.0
+
+
+# ------------------------------------------------- exact generation cards only
+
+
+@pytest.mark.parametrize("model", [
+    "claude-opus-99",
+    "claude-opus-5-99",          # opus_5 exists, opus_5_99 does not
+    "claude-opus-5-99-20260101",
+    "claude-sonnet-4-9",
+    "claude-sonnet-4-9-20260101",
+    "claude-fable-5-9",
+    "claude-mythos-9",
+    "claude-3-9-opus",           # no such legacy card
+    "claude-haiku-5-99",
+])
+def test_unknown_generation_never_borrows_a_broader_card(m, model):
+    assert m._routing_model_status(model) == "unpriced", model
+    assert m._routing_class_rates(model) is None
+
+
+@pytest.mark.parametrize("model", [
+    "claude-opus-5-5-20260301",       # dated id of a known generation
+    "claude-opus-5",                  # the Opus 5 card exists
+    "claude-opus-4-1-20250805",
+    "claude-opus-4-20250514",
+    "claude-sonnet-4-5-20250929",
+    "claude-haiku-4-5-20251001",
+    "claude-fable-5-1",
+    "claude-mythos-5-1",              # Mythos shares the Fable cards
+    "claude-3-opus-20240229",
+    "claude-3-5-haiku-20241022",
+    "claude-3-haiku-20240307",
+    "claude-3-sonnet-20240229",       # legacy Sonnet 3 / 3.5 / 3.7 aliases
+    "claude-3-5-sonnet-20241022",
+    "claude-3-7-sonnet-20250219",
+])
+def test_known_generations_including_dated_ids_are_exact(m, model):
+    assert m._routing_model_status(model) == "priced", model
+    assert m._routing_class_rates(model) is not None
+
+
+def test_unknown_minor_generation_is_reported_not_priced_as_its_major(m, db, monkeypatch):
+    monkeypatch.setattr(m, "_pretool_baseline_mix", lambda: {"opus": 1.0})
+    r = _realized(m, db, {OPUS_55: _buckets(out=1_000_000), "claude-opus-5-99": _buckets(out=1_000_000)},
+                  mix={"opus": 2_000_000})
+    assert r["unpriced_models"] == ["claude-opus-5-99"]
+    assert r["potential_tokens"] == 300_000

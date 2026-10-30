@@ -50658,10 +50658,13 @@ _ROUTING_BILLABLE_CLASSES = ("fresh_input", "cache_create_5m", "cache_create_1h"
 def _routing_card_exact(model):
     """True when `model` resolves to an exact rate card.
 
-    A Claude id names a generation (claude-opus-5-5, claude-sonnet-4-6). One whose
-    generation has no card (claude-opus-99) would otherwise inherit the bare
-    family rate; that is a stand-in, not a known price, so it is not exact. A bare
-    family label ("opus", "sonnet_legacy") is priced at its family card.
+    A Claude id names a generation (claude-opus-5-5, claude-sonnet-4-6) and is
+    exact only when that generation's own card exists. An id whose generation has
+    no card (claude-opus-99, claude-opus-5-99) would otherwise fall back to a
+    broader card, such as the Opus 5 card or the bare family rate; that is a
+    stand-in, not a known price. Sonnet 3, 3.5 and 3.7 ids are the verified
+    aliases of the legacy Sonnet card. A bare family label ("opus",
+    "sonnet_legacy") with no generation is priced at its family card.
     """
     if not isinstance(model, str) or not model:
         return False
@@ -50670,17 +50673,26 @@ def _routing_card_exact(model):
     try:
         cards = dict(PRICING_TIERS["anthropic"]["claude_models"])
         cards.update(PRICING_TIERS.get(_load_pricing_tier(), {}).get("claude_models", {}))
-        key = _claude_price_key(model, cards)
     except Exception:
         return False
-    if not key or key not in cards:
-        return False
     low = model.lower()
-    if _CLAUDE_LEGACY_ID_RE.search(low):
-        return True
-    if _CLAUDE_GENERATION_RE.search(low):
-        return key == "sonnet_legacy" or any(ch.isdigit() for ch in key)
-    return True
+    legacy = _CLAUDE_LEGACY_ID_RE.search(low)
+    if legacy:
+        major, minor, family = legacy.groups()
+        if major == "3" and family == "sonnet" and minor in (None, "5", "7"):
+            return "sonnet_legacy" in cards
+        family_major = f"{family}_{major}"
+    else:
+        generation = _CLAUDE_GENERATION_RE.search(low)
+        if not generation:
+            key = _claude_price_key(model, cards)
+            return bool(key and key in cards)
+        family, major, minor = generation.groups()
+        family = "fable" if family == "mythos" else family
+        family_major, minor = f"{family}_{major}", minor
+        return (family_major + (f"_{minor}" if minor else "")) in cards
+    key = family_major + (f"_{minor}" if minor else "")
+    return key in cards
 
 
 def _routing_model_status(model):
@@ -55905,9 +55917,15 @@ def _savings_since_install():
         days = (datetime.now() - datetime.fromisoformat(d)).days + 1
         days = max(1, min(days, 3650))
         full = _get_merged_savings(days=days)
-        # Measured = logged runtime + realized structural + realized routing.
+        # Measured = logged runtime + realized structural + realized routing
+        # (routing only when its baseline is measured).
         measured = float(full.get("total_cost_usd", 0) or 0)
-        measured += float((full.get("model_routing") or {}).get("realized_cost_usd", 0) or 0)
+        # Routing that leans on a reference-priced baseline is an estimate, not measured.
+        full_routing = full.get("model_routing") or {}
+        full_routing_usd = float(full_routing.get("realized_cost_usd", 0) or 0)
+        routing_is_estimate = full_routing.get("evidence") == "estimated"
+        if not routing_is_estimate:
+            measured += full_routing_usd
         # Estimated = genuine TO-realized counterfactuals only — the same six
         # categories the dashboard's estimated tier (estItems) sums, so the two
         # cards agree about what "estimated" contains. cache_drop and
@@ -55932,6 +55950,8 @@ def _savings_since_install():
         rs = full.get("retrieval_serve") or {}
         avoided = hf if int(hf.get("events") or 0) > 0 else rs
         estimated += float(avoided.get("cost_saved_usd", 0) or 0)
+        if routing_is_estimate:
+            estimated += full_routing_usd
         return {
             "install_date": d,
             "days": days,
@@ -56262,8 +56282,13 @@ def savings_report(days=30, as_json=False):
         r_monthly = _mo(routing_realized)
         b_share = routing.get("baseline_opus_share", 0.0) * 100
         c_share = routing.get("current_opus_share", 0.0) * 100
+        routing_label = "estimated" if routing.get("evidence") == "estimated" else "measured"
         print(f"  + model routing (realized): ~${r_monthly:.2f}{per} "
-              f"(Opus {b_share:.0f}% -> {c_share:.0f}% vs baseline) [measured]")
+              f"(Opus {b_share:.0f}% -> {c_share:.0f}% vs baseline) [{routing_label}]")
+        ref_priced = [str(f)[:1].upper() + str(f)[1:] for f in routing.get("baseline_reference_priced") or []]
+        if ref_priced:
+            print(f"  i  earlier-mix models with no usage in this period ({', '.join(ref_priced)}) are priced at "
+                  f"their newest card, so this routing figure is an estimate")
     if float(routing.get("premium_share", 0.0) or 0.0) > 0:
         names = ", ".join(str(f)[:1].upper() + str(f)[1:] for f in routing.get("premium_models") or [])
         print(f"  i  premium models you chose ({names}, {float(routing['premium_share']) * 100:.0f}% of tokens, "

@@ -415,7 +415,11 @@ export function parseSession(
 
         const modelId =
           (msg?.model as string) ?? (record.model as string) ?? "unknown";
-        const reqId = record.requestId as string | undefined;
+        // SDK and imported transcripts carry only the message id, which repeats
+        // across the streamed chunks of one reply the same way a requestId does.
+        const reqId =
+          (record.requestId as string | undefined) ||
+          (msg?.id as string | undefined);
         const key = reqId || `__noreq__${requestUsage.size}`;
         const previous = requestUsage.get(key);
         if (!previous) {

@@ -12306,6 +12306,103 @@ def _osrc_prompt_text(record):
     return ""
 
 
+def _usage_request_key(record, msg=None):
+    """Identity of the API request an assistant record belongs to.
+
+    Claude Code writes `requestId` on every record of a request. Transcripts
+    produced by the SDK or imported from a cloud session carry only the
+    Anthropic `message.id`, which is equally stable across the streamed chunks
+    of one reply. Returns None when the record has neither, so the caller can
+    keep it as its own request instead of collapsing unrelated records.
+    """
+    req_id = record.get("requestId")
+    if req_id:
+        return str(req_id)
+    if msg is None:
+        msg = record.get("message")
+    if isinstance(msg, dict):
+        mid = msg.get("id")
+        if mid:
+            return str(mid)
+    return None
+
+
+def _request_local_day(ts_s):
+    """Local calendar date of an ISO timestamp, or None when it does not parse."""
+    if not (ts_s and isinstance(ts_s, str)):
+        return None
+    try:
+        return datetime.fromisoformat(ts_s.replace("Z", "+00:00")).astimezone().strftime("%Y-%m-%d")
+    except (ValueError, TypeError, OverflowError, OSError):
+        return None
+
+
+def _empty_model_buckets():
+    return {"fresh_input": 0, "cache_read": 0, "cache_create": 0,
+            "cache_create_1h": 0, "cache_create_5m": 0, "output": 0}
+
+
+def _aggregate_request_usage(requests):
+    """Roll a {request key: usage} map up into session totals.
+
+    `requests` holds the final (streaming-MAX) usage of each API request. Every
+    per-session figure derived from usage (token totals, per-model buckets,
+    per-day buckets, API call count) comes from here, so a parse, a merge of
+    several files and a filtered view of either all agree. Returns
+    (totals, request_days).
+    """
+    totals = {
+        "total_input": 0, "total_output": 0, "total_cache_read": 0,
+        "total_cache_create": 0, "total_cache_create_1h": 0,
+        "total_cache_create_5m": 0, "api_calls": 0, "api_call_timestamps": [],
+        "model_usage": {}, "model_usage_breakdown": {}, "daily_usage": {},
+    }
+    request_days = {}
+    for key, u in requests.items():
+        totals["total_input"] += u["inp"]
+        totals["total_output"] += u["out"]
+        totals["total_cache_read"] += u["cr"]
+        totals["total_cache_create"] += u["cc"]
+        totals["total_cache_create_1h"] += u["cc_1h"]
+        totals["total_cache_create_5m"] += u["cc_5m"]
+        ts_s = u.get("ts")
+        if not u.get("advisor"):
+            # An advisor part belongs to its request: not another API call.
+            totals["api_calls"] += 1
+            if ts_s and isinstance(ts_s, str):
+                try:
+                    totals["api_call_timestamps"].append(
+                        datetime.fromisoformat(ts_s.replace("Z", "+00:00")))
+                except (ValueError, TypeError):
+                    pass
+        model = u["model"]
+        billable = u["inp"] + u["cc"] + u["out"]  # fresh + cache_create + output
+        totals["model_usage"][model] = totals["model_usage"].get(model, 0) + billable
+        bd = totals["model_usage_breakdown"].setdefault(model, _empty_model_buckets())
+        bd["fresh_input"] += u["inp"]
+        bd["cache_read"] += u["cr"]
+        bd["cache_create"] += u["cc"]
+        bd["cache_create_1h"] += u["cc_1h"]
+        bd["cache_create_5m"] += u["cc_5m"]
+        bd["output"] += u["out"]
+        # Bucket each request by the LOCAL date it ran, so a session that spans
+        # midnight bills each day for its own requests instead of dumping the
+        # whole session onto its last-active day (#200). Records without a
+        # parseable timestamp are left out here; callers fall back to the
+        # session date for the unbucketed remainder.
+        day = u["day"] if "day" in u else _request_local_day(ts_s)
+        request_days[key] = day
+        if day:
+            dbd = totals["daily_usage"].setdefault(day, {}).setdefault(model, _empty_model_buckets())
+            dbd["fresh_input"] += u["inp"]
+            dbd["cache_read"] += u["cr"]
+            dbd["cache_create"] += u["cc"]
+            dbd["cache_create_1h"] += u["cc_1h"]
+            dbd["cache_create_5m"] += u["cc_5m"]
+            dbd["output"] += u["out"]
+    return totals, request_days
+
+
 def _parse_session_jsonl(filepath, window_start=None, window_end=None):
     """Parse a single JSONL session file in one streaming pass.
 
@@ -12568,7 +12665,7 @@ def _parse_session_jsonl(filepath, window_start=None, window_end=None):
                     # 48,595 requestIds across 30d had monotonically increasing
                     # output values in local JSONL. Fix: track per-requestId
                     # MAX usage and apply it at end of file.
-                    req_id = record.get("requestId")
+                    req_id = _usage_request_key(record, msg)
                     usage = msg.get("usage", {})
                     if usage and isinstance(usage, dict):
                         # _safe_int, not raw int(): json.loads accepts the
@@ -12602,9 +12699,9 @@ def _parse_session_jsonl(filepath, window_start=None, window_end=None):
                             + inp_tok
                             + out_tok
                         )
-                        # Records without requestId must never collapse with
-                        # each other — use the map's own size as a monotonic
-                        # per-session counter.
+                        # Records with neither a requestId nor a message id must
+                        # never collapse with each other — use the map's own
+                        # size as a monotonic per-session counter.
                         key = req_id if req_id else f"__noreq__{len(request_usage_map)}"
                         # Advisor iterations bill at the advisor's own model:
                         # each is a separate entry under "<request>#advisor<n>"
@@ -12647,61 +12744,23 @@ def _parse_session_jsonl(filepath, window_start=None, window_end=None):
             _parse_session_jsonl_cache[cache_key] = None
         return None
 
-    # v5.4.9: Apply per-requestId MAX dedup. Each entry in request_usage_map
-    # holds the final cumulative usage for one API call. Summing these gives
-    # the session's true total without streaming-chunk under-counting.
-    for key, u in request_usage_map.items():
-        total_input += u["inp"]
-        total_output += u["out"]
-        total_cache_read += u["cr"]
-        total_cache_create += u["cc"]
-        total_cache_create_1h += u["cc_1h"]
-        total_cache_create_5m += u["cc_5m"]
-        ts_s = u.get("ts")
-        if not u.get("advisor"):
-            # An advisor part belongs to its request: not another API call.
-            api_calls += 1
-        if ts_s and isinstance(ts_s, str) and not u.get("advisor"):
-            try:
-                api_call_timestamps.append(datetime.fromisoformat(ts_s.replace("Z", "+00:00")))
-            except (ValueError, TypeError):
-                pass
-        model = u["model"]
-        billable = u["inp"] + u["cc"] + u["out"]  # fresh + cache_create + output
-        model_usage[model] = model_usage.get(model, 0) + billable
-        bd = model_usage_breakdown.setdefault(
-            model,
-            {"fresh_input": 0, "cache_read": 0, "cache_create": 0, "cache_create_1h": 0, "cache_create_5m": 0, "output": 0},
-        )
-        bd["fresh_input"] += u["inp"]
-        bd["cache_read"] += u["cr"]
-        bd["cache_create"] += u["cc"]
-        bd["cache_create_1h"] += u["cc_1h"]
-        bd["cache_create_5m"] += u["cc_5m"]
-        bd["output"] += u["out"]
-        # Bucket each request by the LOCAL date it ran, so a session that spans
-        # midnight bills each day for its own requests instead of dumping the
-        # whole session onto its last-active day (#200). Records without a
-        # parseable timestamp are left out here; callers fall back to the
-        # session date for the unbucketed remainder.
-        _day = None
-        if ts_s and isinstance(ts_s, str):
-            try:
-                _day = datetime.fromisoformat(ts_s.replace("Z", "+00:00")).astimezone().strftime("%Y-%m-%d")
-            except (ValueError, TypeError, OverflowError, OSError):
-                _day = None
-        request_days[key] = _day
-        if _day:
-            dbd = daily_usage.setdefault(_day, {}).setdefault(
-                model,
-                {"fresh_input": 0, "cache_read": 0, "cache_create": 0, "cache_create_1h": 0, "cache_create_5m": 0, "output": 0},
-            )
-            dbd["fresh_input"] += u["inp"]
-            dbd["cache_read"] += u["cr"]
-            dbd["cache_create"] += u["cc"]
-            dbd["cache_create_1h"] += u["cc_1h"]
-            dbd["cache_create_5m"] += u["cc_5m"]
-            dbd["output"] += u["out"]
+    # Streaming-aware dedup: each entry in request_usage_map holds the final
+    # cumulative usage for one API call. Summing these gives the session's true
+    # total without streaming-chunk under-counting.
+    for _key, _u in request_usage_map.items():
+        _u["day"] = _request_local_day(_u.get("ts"))
+    _agg, request_days = _aggregate_request_usage(request_usage_map)
+    total_input = _agg["total_input"]
+    total_output = _agg["total_output"]
+    total_cache_read = _agg["total_cache_read"]
+    total_cache_create = _agg["total_cache_create"]
+    total_cache_create_1h = _agg["total_cache_create_1h"]
+    total_cache_create_5m = _agg["total_cache_create_5m"]
+    api_calls = _agg["api_calls"]
+    api_call_timestamps = _agg["api_call_timestamps"]
+    model_usage = _agg["model_usage"]
+    model_usage_breakdown = _agg["model_usage_breakdown"]
+    daily_usage = _agg["daily_usage"]
 
     # Calculate duration
     duration_minutes = 0
@@ -12787,6 +12846,7 @@ def parse_session_turns(filepath):
     turn_index = 0
     tier = _load_pricing_tier()
     prev_call_ts = None
+    turn_by_key = {}
 
     # Bound the work like the Codex adapter's _iter_json_records (see
     # _parse_session_jsonl): skip oversized files and oversized lines.
@@ -12847,9 +12907,15 @@ def parse_session_turns(filepath):
                         if isinstance(block, dict) and block.get("type") == "tool_use":
                             tools.append(block.get("name", ""))
 
+                # One API request is one turn. Its streamed records share a
+                # request id (or message id) and each carries the cumulative
+                # usage so far, so they fold into the first turn of that request.
+                req_key = _usage_request_key(record, msg)
+                prior_turn = turn_by_key.get(req_key) if req_key else None
+
                 ts_str = record.get("timestamp")
                 gap_since_prev_seconds = None
-                if ts_str and isinstance(ts_str, str):
+                if prior_turn is None and ts_str and isinstance(ts_str, str):
                     try:
                         call_ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
                         if prev_call_ts is not None:
@@ -12860,7 +12926,7 @@ def parse_session_turns(filepath):
                 cost = _price_usage_parts(_billed_usage_parts(usage, model, tier=tier),
                                           tier=tier, per_request=True)
 
-                turns.append({
+                turn = {
                     "turn_index": turn_index,
                     "role": "assistant",
                     "input_tokens": inp_tok,
@@ -12874,12 +12940,12 @@ def parse_session_turns(filepath):
                     "gap_since_prev_seconds": gap_since_prev_seconds,
                     "tools_used": tools,
                     "cost_usd": round(cost, 6),
-                })
+                }
                 ctx_usage = _context_usage(usage)
                 if ctx_usage is not usage:
                     # Cached prefix the next turn can reuse: the final executor
                     # only, matching the live keep-warm arm (#287).
-                    turns[-1]["ctx_cache"] = (
+                    turn["ctx_cache"] = (
                         _context_token_count(ctx_usage)
                         - _safe_int(ctx_usage.get("input_tokens")))
                 resume_usage = _resume_usage(usage)
@@ -12887,10 +12953,24 @@ def parse_session_turns(filepath):
                     # Billing stays aggregate; pause warmth uses the first
                     # executor, before any cache writes inside this response.
                     resume_read = _safe_int(resume_usage.get("cache_read_input_tokens"))
-                    turns[-1]["resume_cache_read"] = resume_read
-                    turns[-1]["resume_cache_creation"] = (
+                    turn["resume_cache_read"] = resume_read
+                    turn["resume_cache_creation"] = (
                         _context_token_count(resume_usage) - resume_read
                         - _safe_int(resume_usage.get("input_tokens")))
+                if prior_turn is not None:
+                    merged_tools = prior_turn["tools_used"] + [
+                        t for t in tools if t not in prior_turn["tools_used"]]
+                    if turn["output_tokens"] >= prior_turn["output_tokens"]:
+                        # The later chunk holds the final cumulative usage.
+                        for field in ("turn_index", "timestamp", "gap_since_prev_seconds"):
+                            turn[field] = prior_turn[field]
+                        prior_turn.clear()
+                        prior_turn.update(turn)
+                    prior_turn["tools_used"] = merged_tools
+                    continue
+                turns.append(turn)
+                if req_key:
+                    turn_by_key[req_key] = turn
                 turn_index += 1
 
     except (PermissionError, OSError):
@@ -13184,6 +13264,15 @@ CREATE TABLE IF NOT EXISTS session_log_aliases (
     session_uuid TEXT,
     collected_at TEXT
 );
+
+-- Which session counts each API request. The same request can sit in more than
+-- one transcript (a resumed or forked session carries its parent's history), so
+-- one session counts it and the others leave it out. Both columns are hashes of
+-- the request id and the session id.
+CREATE TABLE IF NOT EXISTS usage_request_claims (
+    request_hash INTEGER PRIMARY KEY,
+    owner_hash INTEGER NOT NULL
+) WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS daily_stats (
     date TEXT PRIMARY KEY,
@@ -13950,6 +14039,10 @@ def _init_trends_db():
         # which side a row came from.
         if "origin" not in cols:
             conn.execute("ALTER TABLE session_log ADD COLUMN origin TEXT")
+        # Which usage-attribution version stored the row. NULL = stored before
+        # versioning; collect re-parses such rows from their transcript.
+        if "usage_parser_version" not in cols:
+            conn.execute("ALTER TABLE session_log ADD COLUMN usage_parser_version INTEGER")
         conn.commit()
     except sqlite3.Error as _e:
         _log_migration_error("session_log columns", _e)
@@ -14394,6 +14487,7 @@ def _backfill_daily_usage(conn, days=30, budget_seconds=20.0):
         return 0
     deadline = time.monotonic() + budget_seconds
     updates = []
+    live_owners = _live_usage_owners(conn)
     for jsonl_path, stored_date in rows:
         if time.monotonic() > deadline:
             break
@@ -14408,7 +14502,7 @@ def _backfill_daily_usage(conn, days=30, budget_seconds=20.0):
             # file returns, even with an old mtime that collect would skip.
             continue
         try:
-            usage = _session_daily_usage(jsonl_path)
+            usage = _session_daily_usage(jsonl_path, conn=conn, live_owners=live_owners)
         except Exception:
             usage = {}
         dated = [d for d in usage if d != UNDATED_USAGE_KEY]
@@ -24530,6 +24624,7 @@ def _migrate_streaming_dedup(conn, quiet=False):
         conn.commit()
         conn.execute("DELETE FROM session_log")
         conn.execute("DELETE FROM session_log_aliases")
+        conn.execute("DELETE FROM usage_request_claims")
         conn.execute("DELETE FROM daily_stats")
         conn.execute("DELETE FROM model_daily")
         conn.execute("DELETE FROM skill_daily")
@@ -26187,13 +26282,185 @@ def _session_merged_requests(filepath, parsed, subagent_files):
     return merged
 
 
-def _session_daily_usage(filepath, parsed=None, subagent_files=None):
+# Bump when the way usage is attributed to a session changes. Rows stored by an
+# older version are re-parsed from their transcript the next time collect runs.
+_USAGE_PARSER_VERSION = 2
+
+
+def _stable_hash63(text):
+    """Stable 63-bit integer for a string (fits a signed SQLite INTEGER)."""
+    digest = hashlib.blake2b(str(text).encode("utf-8", "replace"), digest_size=8).digest()
+    return int.from_bytes(digest, "big") >> 1
+
+
+def _request_base_key(key):
+    """The request a merged-usage key belongs to, or None when it cannot be shared
+    between files. Advisor sub-entries share their request's key; records with
+    neither a request id nor a message id are keyed by file position."""
+    key = str(key)
+    if key.startswith("__noreq__") or ":__noreq__" in key:
+        return None
+    return key.split("#advisor", 1)[0]
+
+
+def _usage_owner_id(filepath):
+    """Identity under which a session claims its requests: the session UUID, so
+    every copy of one session is one owner, else the transcript path."""
+    return _canonical_session_uuid(filepath) or str(filepath)
+
+
+def _live_usage_owners(conn):
+    """Owner hashes of every session that currently has a row (or a tracked copy)."""
+    live = set()
+    for table in ("session_log", "session_log_aliases"):
+        try:
+            for uuid, path in conn.execute(f"SELECT session_uuid, jsonl_path FROM {table}"):
+                if uuid:
+                    live.add(_stable_hash63(uuid))
+                if path:
+                    live.add(_stable_hash63(path))
+        except sqlite3.Error:
+            continue
+    return live
+
+
+def _foreign_claimed_keys(conn, owner_id, keys, live_owners):
+    """Requests among `keys` already counted in another stored session.
+
+    A request that Claude Code copied into a resumed or forked session's
+    transcript is the same API call, so only one session may count it. A claim
+    whose owner no longer has a session row is ignored, so usage is never
+    dropped on the strength of a claim nobody holds.
+    """
+    me = _stable_hash63(owner_id)
+    by_hash = {}
+    for key in keys:
+        base = _request_base_key(key)
+        if base is not None:
+            by_hash[_stable_hash63(base)] = base
+    foreign = set()
+    hashes = list(by_hash)
+    for i in range(0, len(hashes), 500):
+        batch = hashes[i:i + 500]
+        try:
+            rows = conn.execute(
+                "SELECT request_hash, owner_hash FROM usage_request_claims "
+                "WHERE request_hash IN (%s)" % ",".join("?" * len(batch)), batch).fetchall()
+        except sqlite3.Error:
+            return set()
+        for request_hash, owner_hash in rows:
+            if owner_hash != me and owner_hash in live_owners:
+                foreign.add(by_hash[request_hash])
+    return foreign
+
+
+def _claim_requests(conn, owner_id, keys):
+    """Record that this session counts these requests."""
+    me = _stable_hash63(owner_id)
+    hashes = {_stable_hash63(b) for b in (_request_base_key(k) for k in keys) if b is not None}
+    if not hashes:
+        return
+    try:
+        conn.executemany(
+            "INSERT OR REPLACE INTO usage_request_claims (request_hash, owner_hash) VALUES (?, ?)",
+            [(h, me) for h in hashes])
+    except sqlite3.Error:
+        pass
+
+
+def _parsed_without_requests(parsed, drop_keys):
+    """A copy of a parsed transcript with the given requests removed and every
+    usage-derived figure recomputed. `parsed` itself is never modified."""
+    requests = (parsed or {}).get("request_usage")
+    if not drop_keys or not requests:
+        return parsed
+    kept = {k: u for k, u in requests.items() if _request_base_key(k) not in drop_keys}
+    if len(kept) == len(requests):
+        return parsed
+    agg, _days = _aggregate_request_usage(kept)
+    full_input = agg["total_input"] + agg["total_cache_read"] + agg["total_cache_create"]
+    out = dict(parsed)
+    out.update({
+        "total_input_tokens": full_input,
+        "total_output_tokens": agg["total_output"],
+        "total_cache_read": agg["total_cache_read"],
+        "total_cache_create": agg["total_cache_create"],
+        "total_cache_create_1h": agg["total_cache_create_1h"],
+        "total_cache_create_5m": agg["total_cache_create_5m"],
+        "cache_hit_rate": (agg["total_cache_read"] / full_input) if full_input > 0 else 0.0,
+        "model_usage": agg["model_usage"],
+        "model_usage_breakdown": agg["model_usage_breakdown"],
+        "daily_usage": agg["daily_usage"],
+        "api_calls": agg["api_calls"],
+        "request_usage": kept,
+    })
+    return out
+
+
+def _parsed_without_seen_requests(parsed, seen):
+    """Drop requests already counted earlier in a multi-file pass, then add this
+    file's requests to `seen`. Files without per-request detail pass through."""
+    requests = (parsed or {}).get("request_usage")
+    if not requests:
+        return parsed
+    bases = {b for b in (_request_base_key(k) for k in requests) if b is not None}
+    result = _parsed_without_requests(parsed, bases & seen)
+    seen.update(bases)
+    return result
+
+
+def _stale_usage_row_paths(conn):
+    """Transcript paths of stored rows written before the current usage
+    attribution. Collect re-parses them from their transcript, so a row that
+    over-counted repeated requests corrects itself; a row whose transcript is
+    gone is never visited and keeps its stored numbers."""
+    try:
+        return {str(r[0]) for r in conn.execute(
+            "SELECT jsonl_path FROM session_log WHERE jsonl_path IS NOT NULL "
+            "AND (usage_parser_version IS NULL OR usage_parser_version < ?)",
+            (_USAGE_PARSER_VERSION,))}
+    except sqlite3.Error:
+        return set()
+
+
+def _stamp_usage_parser_version(conn, filepath):
+    """Mark a row as current when a re-parse has nothing to change, so it is not
+    re-parsed on every collect."""
+    try:
+        conn.execute(
+            "UPDATE session_log SET usage_parser_version = ? WHERE jsonl_path = ?",
+            (_USAGE_PARSER_VERSION, str(filepath)))
+    except sqlite3.Error:
+        pass
+
+
+def _daily_usage_from_merged(merged):
+    """Per-day, per-model token buckets of a merged request set."""
+    combined = {}
+    for u in merged.values():
+        # Requests without a usable timestamp land in UNDATED_USAGE_KEY; the
+        # rollup bills them to the session's own date instead of dropping them.
+        day = u.get("day") or UNDATED_USAGE_KEY
+        bucket = combined.setdefault(day, {}).setdefault(
+            u.get("model") or "unknown", _empty_model_buckets())
+        bucket["fresh_input"] += int(u.get("inp") or 0)
+        bucket["cache_read"] += int(u.get("cr") or 0)
+        bucket["cache_create"] += int(u.get("cc") or 0)
+        bucket["cache_create_1h"] += int(u.get("cc_1h") or 0)
+        bucket["cache_create_5m"] += int(u.get("cc_5m") or 0)
+        bucket["output"] += int(u.get("out") or 0)
+    return combined
+
+
+def _session_daily_usage(filepath, parsed=None, subagent_files=None, conn=None, live_owners=None):
     """Daily usage for a session transcript plus all of its subagent transcripts.
 
     Claude Code sometimes writes the same API request into more than one of a
     session's files (the parent and a subagent, or two subagents). Requests are
-    therefore merged by requestId across every file first, keeping the largest
-    usage seen (streaming-safe), so a shared request is billed once.
+    therefore merged by request id across every file first, keeping the largest
+    usage seen (streaming-safe), so a shared request is billed once. With a
+    database connection, requests another stored session already counts are
+    left out as well.
     """
     parsed = parsed if parsed is not None else _parse_session_jsonl(filepath)
     if subagent_files is None:
@@ -26205,23 +26472,13 @@ def _session_daily_usage(filepath, parsed=None, subagent_files=None):
         for p in [parsed] + [_parse_session_jsonl(sub_jf) for sub_jf in subagent_files]:
             _merge_daily_usage(combined, (p or {}).get("daily_usage") or {})
         return combined
-
-    combined = {}
-    for u in merged.values():
-        # Requests without a usable timestamp land in UNDATED_USAGE_KEY; the
-        # rollup bills them to the session's own date instead of dropping them.
-        day = u.get("day") or UNDATED_USAGE_KEY
-        bucket = combined.setdefault(day, {}).setdefault(
-            u.get("model") or "unknown",
-            {"fresh_input": 0, "cache_read": 0, "cache_create": 0, "cache_create_1h": 0, "cache_create_5m": 0, "output": 0},
-        )
-        bucket["fresh_input"] += int(u.get("inp") or 0)
-        bucket["cache_read"] += int(u.get("cr") or 0)
-        bucket["cache_create"] += int(u.get("cc") or 0)
-        bucket["cache_create_1h"] += int(u.get("cc_1h") or 0)
-        bucket["cache_create_5m"] += int(u.get("cc_5m") or 0)
-        bucket["output"] += int(u.get("out") or 0)
-    return combined
+    if conn is not None:
+        if live_owners is None:
+            live_owners = _live_usage_owners(conn)
+        drop = _foreign_claimed_keys(conn, _usage_owner_id(filepath), merged, live_owners)
+        if drop:
+            merged = {k: u for k, u in merged.items() if _request_base_key(k) not in drop}
+    return _daily_usage_from_merged(merged)
 
 
 def _session_rank(message_count, input_tokens, output_tokens):
@@ -26397,6 +26654,8 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
 
     conn = _init_trends_db()
     _session_log_has_origin = bool(_origin_insert_parts(conn, "session_log")[0])
+    _session_log_has_usage_version = "usage_parser_version" in {
+        r[1] for r in conn.execute("PRAGMA table_info(session_log)").fetchall()}
 
     # Capture the existing comparison before refreshing historical session rows.
     # The user's baseline must not move as collection catches up.
@@ -26423,6 +26682,7 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
         conn.execute("PRAGMA user_version = 3")
         conn.execute("DELETE FROM session_log")
         conn.execute("DELETE FROM session_log_aliases")
+        conn.execute("DELETE FROM usage_request_claims")
         conn.execute("DELETE FROM daily_stats")
         conn.execute("DELETE FROM model_daily")
         conn.execute("DELETE FROM skill_daily")
@@ -26446,8 +26706,11 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
         pass
 
     new_count = 0
+    live_owners = _live_usage_owners(conn)
+    stale_usage_rows = _stale_usage_row_paths(conn)
     for filepath, mtime, project_name in files:
-        if _is_file_collected(conn, filepath, check_mtime=True):
+        if (_is_file_collected(conn, filepath, check_mtime=True)
+                and str(filepath) not in stale_usage_rows):
             continue
 
         # Bounded per-run collection: never parse more than _COLLECT_MAX_PER_RUN new
@@ -26461,7 +26724,9 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
         # Rollups must not mutate the parser cache when only a child grows.
         parsed = copy.deepcopy(_parse_session_jsonl(filepath))
         if not parsed:
+            _stamp_usage_parser_version(conn, filepath)
             continue
+        owner_id = _usage_owner_id(filepath)
 
         # Scan subagent JSONL files for skills, agents, and model usage.
         # Single pass over subagent files to avoid duplicate glob. Includes
@@ -26508,12 +26773,23 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
             # but the stored cache_hit_rate is parent-only. Leave as-is (parent-derived)
             # since mixing subagent hit rates isn't meaningful for per-session display.
 
-        daily_usage = _session_daily_usage(filepath, parsed=parsed, subagent_files=subagent_files)
-        if subagent_files or _session_copy_files(filepath):
+        merged = _session_merged_requests(filepath, parsed, subagent_files)
+        # Requests another stored session already counts (a resumed or forked
+        # transcript repeats its parent's history) are left out of this one.
+        foreign = set()
+        if merged is not None:
+            foreign = _foreign_claimed_keys(conn, owner_id, merged, live_owners)
+            if foreign:
+                merged = {k: u for k, u in merged.items() if _request_base_key(k) not in foreign}
+                parsed = _parsed_without_requests(parsed, foreign)
+        if merged is not None:
+            daily_usage = _daily_usage_from_merged(merged)
+        else:
+            daily_usage = _session_daily_usage(filepath, parsed=parsed, subagent_files=subagent_files)
+        if subagent_files or foreign or _session_copy_files(filepath):
             # The per-file sums above count a request written into both the
             # parent and a subagent file twice; restate the stored token totals
-            # from the same requestId-merged set the cost uses.
-            merged = _session_merged_requests(filepath, parsed, subagent_files)
+            # from the same request-merged set the cost uses.
             if merged is not None:
                 parsed["total_input_tokens"] = sum(int(u.get("inp") or 0) + int(u.get("cr") or 0) + int(u.get("cc") or 0)
                                                    for u in merged.values())
@@ -26567,6 +26843,7 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
                 conn.execute(
                     "UPDATE session_log SET daily_usage_json = NULL WHERE session_uuid = ? AND jsonl_path != ?",
                     (session_uuid, str(filepath)))
+                _stamp_usage_parser_version(conn, filepath)
                 continue
         else:
             other = []
@@ -26586,11 +26863,17 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
         # exists: if the migration lost its busy wait, every insert naming a
         # missing column would fail and the whole collect would store nothing
         # (review #10). Same rule as the event writers (_origin_insert_parts).
+        o_col, o_mark, o_val, o_upd = "", "", (), ""
         if _session_log_has_origin:
-            o_col, o_mark, o_val = ", origin", ", ?", (row_origin,)
-            o_upd = ",\n               origin=COALESCE(session_log.origin, excluded.origin)"
-        else:
-            o_col, o_mark, o_val, o_upd = "", "", (), ""
+            o_col += ", origin"
+            o_mark += ", ?"
+            o_val += (row_origin,)
+            o_upd += ",\n               origin=COALESCE(session_log.origin, excluded.origin)"
+        if _session_log_has_usage_version:
+            o_col += ", usage_parser_version"
+            o_mark += ", ?"
+            o_val += (_USAGE_PARSER_VERSION,)
+            o_upd += ",\n               usage_parser_version=excluded.usage_parser_version"
         cur = conn.execute(
             """INSERT INTO session_log
                (jsonl_path, date, project, duration_minutes, input_tokens,
@@ -26680,6 +26963,10 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
         )
         if cur.rowcount != 1:
             continue
+        if merged is not None:
+            _claim_requests(conn, owner_id, merged)
+            live_owners.add(_stable_hash63(owner_id))
+            live_owners.add(_stable_hash63(str(filepath)))
         if session_uuid:
             # Retire the older copies only now that this row has landed; an
             # upsert the WHERE guard rejected must not leave the session with
@@ -27919,6 +28206,32 @@ def _collect_trends_from_jsonl(days=30):
 
     if not sessions:
         return None
+
+    # A request Claude Code copied into a forked or resumed session's transcript
+    # is one API call: the first session in this pass keeps it, later ones drop it.
+    seen_requests = set()
+    for idx, s in enumerate(sessions):
+        merged = _session_merged_requests(
+            s["jsonl_path"], s, _session_subagent_files(s["jsonl_path"]))
+        if merged is None:
+            continue
+        bases = {b for b in (_request_base_key(k) for k in merged) if b is not None}
+        repeated = bases & seen_requests
+        seen_requests.update(bases)
+        if not repeated:
+            continue
+        kept = {k: u for k, u in merged.items() if _request_base_key(k) not in repeated}
+        trimmed = dict(_parsed_without_requests(s, repeated))
+        trimmed["daily_usage_combined"] = _daily_usage_from_merged(kept)
+        all_model_usage = {}
+        for u in kept.values():
+            model_id = u.get("model") or "unknown"
+            if model_id.startswith("<"):
+                continue
+            all_model_usage[model_id] = all_model_usage.get(model_id, 0) + (
+                int(u.get("inp") or 0) + int(u.get("cc") or 0) + int(u.get("out") or 0))
+        trimmed["all_model_usage"] = all_model_usage
+        sessions[idx] = trimmed
 
     total_skills = {}
     total_subagents = {}
@@ -52445,6 +52758,7 @@ def _subagent_pool_savings(baseline_opus_share, days=30, tier=None, fresh=False,
         # Aggregate per-model billed token classes across sidechain sessions only.
         by_model = {}  # model -> {"fi","cw","cr","out"}
         n_side = 0
+        seen_requests = set()  # a request repeated in another transcript counts once
         for jf in candidates:
             # Classify BEFORE parsing. Fully parsing every main transcript just
             # to read its is_sidechain flag was the dashboard's cold-regen 45s+
@@ -52461,6 +52775,7 @@ def _subagent_pool_savings(baseline_opus_share, days=30, tier=None, fresh=False,
             if not parsed or not parsed.get("is_sidechain"):
                 continue
             n_side += 1
+            parsed = _parsed_without_seen_requests(parsed, seen_requests)
             for model, bd in (parsed.get("model_usage_breakdown") or {}).items():
                 if not model or str(model).startswith("<"):
                     continue
@@ -53135,6 +53450,7 @@ def _price_parent_activity_window(conn, start, end, tier):
             paths.append((str(path), datetime.fromtimestamp(mtime).date().isoformat()))
             known.add(str(path))
     rows = []
+    seen_requests = set()  # a request repeated in another transcript counts once
     for name, recorded_date in paths:
         path = Path(name)
         if not path.exists():
@@ -53147,6 +53463,8 @@ def _price_parent_activity_window(conn, start, end, tier):
         parsed = _parse_session_jsonl(path, window_start=start, window_end=end)
         if parsed and parsed.get("is_sidechain"):
             continue
+        if parsed:
+            parsed = _parsed_without_seen_requests(parsed, seen_requests)
         if not parsed:
             parsed = {"total_input_tokens": 0, "total_output_tokens": 0,
                       "total_cache_create_1h": 0, "total_cache_create_5m": 0,
@@ -53158,6 +53476,7 @@ def _price_parent_activity_window(conn, start, end, tier):
         for child in children:
             cp = _parse_session_jsonl(child, window_start=start, window_end=end)
             if cp:
+                cp = _parsed_without_seen_requests(cp, seen_requests)
                 inp += cp["total_input_tokens"]
                 out += cp["total_output_tokens"]
                 cw1 += cp["total_cache_create_1h"]

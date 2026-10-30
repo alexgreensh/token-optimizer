@@ -74,6 +74,11 @@ def _streamed(when, count, **kw):
     return [_chunk(when, out=base_out * (i + 1), **kw) for i in range(count)]
 
 
+def _share(inp=1000, out=500, n=1):
+    """What another session has counted of a request, as the claims table holds it."""
+    return {"n": n, "inp": inp, "out": out, "cr": 0, "cc": 0, "cc_1h": 0, "cc_5m": 0}
+
+
 def _projects(tmp_path):
     return tmp_path / "claude_home" / "projects"
 
@@ -281,7 +286,7 @@ def test_claim_held_by_a_session_without_a_row_is_ignored(tmp_path, monkeypatch)
     path = _projects(tmp_path) / "-repo" / f"{SID_B}.jsonl"
     _write(path, [_chunk(when, mid="msg_0")])
     conn = measure._init_trends_db()
-    measure._claim_requests(conn, "a-session-that-was-deleted", ["msg_0"])
+    measure._claim_requests(conn, "a-session-that-was-deleted", {"msg_0": _share()})
     conn.commit()
     conn.close()
 
@@ -394,9 +399,9 @@ def test_seen_request_filter_counts_a_repeated_request_once(tmp_path, monkeypatc
     _write(one, [_chunk(when, mid="msg_1"), _chunk(when, mid="msg_2")])
     _write(two, [_chunk(when, mid="msg_2"), _chunk(when, mid="msg_3")])
 
-    seen = set()
-    first = measure._parsed_without_seen_requests(measure._parse_session_jsonl(one), seen)
-    second = measure._parsed_without_seen_requests(measure._parse_session_jsonl(two), seen)
+    ledger = {}
+    first = measure._parsed_net_of_ledger(measure._parse_session_jsonl(one), ledger)
+    second = measure._parsed_net_of_ledger(measure._parse_session_jsonl(two), ledger)
 
     assert first["total_input_tokens"] == 2000
     assert second["total_input_tokens"] == 1000
@@ -411,7 +416,136 @@ def test_filtering_does_not_modify_the_cached_parse(tmp_path, monkeypatch):
     _write(path, [_chunk(when, mid="msg_1"), _chunk(when, mid="msg_2")])
     parsed = measure._parse_session_jsonl(path)
 
-    filtered = measure._parsed_without_requests(parsed, {"msg_1"})
+    filtered = measure._parsed_net_of_counted(parsed, {"msg_1": _share()})
 
     assert filtered["total_input_tokens"] == 1000
     assert measure._parse_session_jsonl(path)["total_input_tokens"] == 2000
+
+
+# One request, different copies: the largest usage wins -----------------------
+
+def _copies(tmp_path, out_a, out_b, a_older=True):
+    """The same reply (msg_1) in two sessions, streamed to `out_a` tokens in one
+    copy and `out_b` in the other."""
+    when = _noon()
+    now = datetime.now().timestamp()
+    older, newer = now - 7200, now - 3600
+    projects = _projects(tmp_path) / "-repo"
+    _write(projects / f"{SID_A}.jsonl", [_chunk(when, mid="msg_1", out=out_a)],
+           mtime=older if a_older else newer)
+    _write(projects / f"{SID_B}.jsonl", [_chunk(when, mid="msg_1", out=out_b)],
+           mtime=newer if a_older else older)
+    return when
+
+
+COPY_ORDERS = [(100, 1000, True), (100, 1000, False), (1000, 100, True), (1000, 100, False)]
+
+
+@pytest.mark.parametrize("out_a,out_b,a_older", COPY_ORDERS)
+def test_collect_keeps_the_largest_copy_of_a_request(tmp_path, monkeypatch, out_a, out_b, a_older):
+    measure = _load(tmp_path, monkeypatch)
+    _copies(tmp_path, out_a, out_b, a_older)
+
+    measure.collect_sessions(days=30, quiet=True)
+
+    rows = _rows(measure)
+    assert sum(r[2] for r in rows) == 1000       # output: the larger copy, once
+    assert sum(r[1] for r in rows) == 1000       # input: identical in both, once
+    assert sum(r[3] for r in rows) == 1
+    conn = measure._init_trends_db()
+    daily = conn.execute("SELECT SUM(total_input), SUM(total_output) FROM daily_stats").fetchone()
+    conn.close()
+    assert tuple(daily) == (1000, 1000)
+
+
+@pytest.mark.parametrize("out_a,out_b,a_older", COPY_ORDERS)
+def test_fallback_rollup_keeps_the_largest_copy_of_a_request(tmp_path, monkeypatch, out_a, out_b, a_older):
+    measure = _load(tmp_path, monkeypatch)
+    _isolated_home(measure, tmp_path, monkeypatch)
+    _copies(tmp_path, out_a, out_b, a_older)
+
+    trends = measure._collect_trends_from_jsonl(days=30)
+
+    assert trends["total_output_tokens"] == 1000
+    assert trends["total_input_tokens"] == 1000
+
+
+@pytest.mark.parametrize("out_a,out_b", [(100, 1000), (1000, 100)])
+def test_ledger_pass_keeps_the_largest_copy_in_either_order(tmp_path, monkeypatch, out_a, out_b):
+    measure = _load(tmp_path, monkeypatch)
+    _copies(tmp_path, out_a, out_b)
+    one = measure._parse_session_jsonl(_projects(tmp_path) / "-repo" / f"{SID_A}.jsonl")
+    two = measure._parse_session_jsonl(_projects(tmp_path) / "-repo" / f"{SID_B}.jsonl")
+
+    for first, second in ((one, two), (two, one)):
+        ledger = {}
+        a = measure._parsed_net_of_ledger(first, ledger)
+        b = measure._parsed_net_of_ledger(second, ledger)
+        assert a["total_output_tokens"] + b["total_output_tokens"] == 1000
+        assert a["total_input_tokens"] + b["total_input_tokens"] == 1000
+        assert a["api_calls"] + b["api_calls"] == 1
+
+
+def test_a_larger_fork_collected_later_adds_only_the_difference(tmp_path, monkeypatch):
+    measure = _load(tmp_path, monkeypatch)
+    when = _noon()
+    projects = _projects(tmp_path) / "-repo"
+    _write(projects / f"{SID_A}.jsonl", [_chunk(when, mid="msg_1", out=100)])
+    measure.collect_sessions(days=30, quiet=True)
+    assert sum(r[2] for r in _rows(measure)) == 100
+
+    _write(projects / f"{SID_B}.jsonl", [_chunk(when, mid="msg_1", out=1000)])
+    measure.collect_sessions(days=30, quiet=True)
+
+    rows = _rows(measure)
+    assert sum(r[2] for r in rows) == 1000
+    assert sum(r[3] for r in rows) == 1
+    # The first session's stored row is history: it is not rewritten.
+    assert dict((r[0].rsplit("/", 1)[1], r[2]) for r in rows)[f"{SID_A}.jsonl"] == 100
+
+
+def test_a_copy_that_grows_after_collect_does_not_double_count(tmp_path, monkeypatch):
+    measure = _load(tmp_path, monkeypatch)
+    when = _copies(tmp_path, 100, 1000)
+    measure.collect_sessions(days=30, quiet=True)
+    assert sum(r[2] for r in _rows(measure)) == 1000
+
+    # The shorter copy later streams to the full length and is collected again.
+    path = _projects(tmp_path) / "-repo" / f"{SID_A}.jsonl"
+    _write(path, [_chunk(when, mid="msg_1", out=1000)],
+           mtime=datetime.now().timestamp() + 60)
+    measure.collect_sessions(days=30, quiet=True)
+    assert sum(r[2] for r in _rows(measure)) == 1000
+
+    # And once more, past the full length, the total follows the largest copy.
+    _write(path, [_chunk(when, mid="msg_1", out=1500)],
+           mtime=datetime.now().timestamp() + 120)
+    measure.collect_sessions(days=30, quiet=True)
+    rows = _rows(measure)
+    assert sum(r[2] for r in rows) == 1500
+    assert sum(r[3] for r in rows) == 1
+
+
+def test_recollecting_an_unchanged_copy_changes_nothing(tmp_path, monkeypatch):
+    measure = _load(tmp_path, monkeypatch)
+    _copies(tmp_path, 100, 1000)
+    measure.collect_sessions(days=30, quiet=True)
+    before = _rows(measure)
+    conn = measure._init_trends_db()
+    conn.execute("UPDATE session_log SET collected_at = NULL")
+    conn.commit()
+    conn.close()
+
+    measure.collect_sessions(days=30, quiet=True)
+
+    assert _rows(measure) == before
+
+
+def test_net_of_counted_never_goes_below_zero(tmp_path, monkeypatch):
+    measure = _load(tmp_path, monkeypatch)
+    requests = {"msg_1": {"inp": 10, "out": 20, "cr": 0, "cc": 0, "cc_1h": 0, "cc_5m": 0,
+                          "model": "claude-opus-4-8", "day": None}}
+
+    net = measure._net_of_counted(requests, {"msg_1": _share(inp=50, out=5, n=1)})
+
+    assert (net["msg_1"]["inp"], net["msg_1"]["out"], net["msg_1"]["n"]) == (0, 15, 0)

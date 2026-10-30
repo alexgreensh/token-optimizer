@@ -14730,12 +14730,12 @@ def _compression_known_model(model):
         return False
     generation = _CLAUDE_GENERATION_RE.search(model.lower())
     legacy = _CLAUDE_LEGACY_ID_RE.search(model.lower())
-    if generation:
-        family, major, minor = generation.groups()
-    elif legacy:
+    if legacy:
         major, minor, family = legacy.groups()
         if major == "3" and family == "sonnet" and minor in (None, "5", "7"):
             return True
+    elif generation:
+        family, major, minor = generation.groups()
     else:
         return True
     family = "fable" if family == "mythos" else family

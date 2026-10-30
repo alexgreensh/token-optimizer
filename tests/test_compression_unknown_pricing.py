@@ -28,6 +28,7 @@ def test_unpriced_and_mixed_model_compression(m):
     assert m._compression_priced_rate('unknown', None, {}, 5, td) == 0
     assert m._compression_priced_rate('future-model-unknown', None, {}, 5, td) == 0
     assert m._compression_priced_rate('claude-opus-99-1', None, {}, 5, td) == 0
+    assert m._compression_priced_rate('claude-3-5-sonnet-20241022', None, {}, 5, td) == pytest.approx(m._get_model_cost('claude-3-5-sonnet-20241022', 1_000_000, 0))
     conn = sqlite3.connect(str(m.TRENDS_DB))
     uid = '11111111-2222-3333-4444-555555555555'
     models = {'claude-opus-4-6': 1, 'gpt-5.4': 1, 'future-model-unknown': 2}

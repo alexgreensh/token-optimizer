@@ -111,20 +111,27 @@ def test_zero_and_missing_inputs(measure):
     assert mod._crosscheck_agrees("12.5", 12.0) == (True, 4.0)
 
 
-def test_verdict_reads_stored_flag_and_recomputes(measure):
+def test_verdict_recomputes_ignoring_stored_flag(measure):
+    """A stored `agrees` flag is payload for JSON consumers only. Decision
+    paths must recompute from the raw figures: a stale or hand-edited flag
+    can lie in either direction."""
     mod, _ = measure
     assert mod._crosscheck_verdict(None) is True
     assert mod._crosscheck_verdict({}) is True
-    # Stored flag wins when present.
+    # Stale TRUE flag over disagreeing numbers -> disagree.
     assert mod._crosscheck_verdict(
-        {"crosscheck": {"transformation_usd": 5.0, "agrees": False}}) is False
-    # Pools without the flag (old cache shape) get the verdict recomputed.
+        {"transformation_usd": 1080.0,
+         "crosscheck": {"transformation_usd": -11216.0,
+                        "agrees": True}}) is False
+    # Stale FALSE flag over agreeing numbers -> agree.
     assert mod._crosscheck_verdict(
         {"transformation_usd": 100.0,
-         "crosscheck": {"transformation_usd": 105.0}}) is True
+         "crosscheck": {"transformation_usd": 105.0,
+                        "agrees": False}}) is True
+    # Missing primary figure cannot agree.
     assert mod._crosscheck_verdict(
-        {"transformation_usd": 100.0,
-         "crosscheck": {"transformation_usd": 500.0}}) is False
+        {"crosscheck": {"transformation_usd": 5.0,
+                        "agrees": True}}) is False
 
 
 # ------------------------------------------- 2. verdict stored on the payload

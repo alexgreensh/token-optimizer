@@ -52447,17 +52447,17 @@ def _signed_usd(value):
 
 
 def _crosscheck_verdict(pool):
-    """Read the stored cross-check verdict on a weight-pool dict, recomputing
-    it when the pool predates the stored flag (a cached or hand-built payload).
-    No cross-check means nothing to disagree with."""
+    """Recompute the cross-check verdict from the pool's raw figures.
+
+    A stored `agrees` flag is payload for JSON consumers only; a stale or
+    hand-edited flag must never overrule what the numbers say. No cross-check
+    means nothing to disagree with."""
     cross = (pool or {}).get("crosscheck") or {}
     if not cross:
         return True
-    agrees = cross.get("agrees")
-    if agrees is None:
-        agrees, _ = _crosscheck_agrees(pool.get("transformation_usd"),
-                                     cross.get("transformation_usd"))
-    return bool(agrees)
+    agrees, _ = _crosscheck_agrees(pool.get("transformation_usd"),
+                                 cross.get("transformation_usd"))
+    return agrees
 
 
 def _session_weight_pool_savings(cutoff, days=30, tier=None, activity_window=None):
@@ -52583,8 +52583,9 @@ def _session_weight_pool_savings(cutoff, days=30, tier=None, activity_window=Non
         counterfactual = before_rate * n_units
         # Cross-check on the OTHER work unit; disclosed, never summed. The two
         # units only corroborate the headline when they agree within 10% on the
-        # same side of zero -- the verdict is computed here once so every
-        # surface reads the same answer instead of assuming agreement.
+        # same side of zero. The verdict is stored for JSON consumers; Python
+        # decision paths recompute it from the raw figures (_crosscheck_verdict)
+        # rather than trust the stored flag.
         crosscheck = None
         if unit == "api_call" and b_msgs > 0 and n_msgs > 0:
             crosscheck = {"unit": "message",

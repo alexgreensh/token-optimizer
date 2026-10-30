@@ -545,3 +545,39 @@ def test_reinstall_replaces_the_old_command_without_duplicating(monkeypatch, tmp
         for g in groups:
             for h in g["hooks"]:
                 assert ci.is_shell_neutral_command(h["command"]), h["command"]
+
+
+# ---- interpreter paths holding "@" (Homebrew's python@3.14) ----------------
+
+HOMEBREW_PYTHON = "/opt/homebrew/opt/python@3.14/bin/python3.14"
+
+
+@pytest.mark.parametrize("exe", [
+    HOMEBREW_PYTHON,
+    "C:\\Users\\jo@example\\AppData\\Local\\Programs\\Python\\Python314\\python.exe",
+])
+def test_interpreter_path_with_at_sign_stays_shell_neutral(monkeypatch, tmp_path, exe):
+    ci = _load(monkeypatch)
+    monkeypatch.setattr(ci.sys, "executable", exe)
+    root = _fake_install(tmp_path)
+    monkeypatch.setattr(ci, "_repo_root", lambda: root)
+    cmd = ci._hook_command("hooks/stop_runner.py", redirect_quiet=True)
+    assert ci.is_shell_neutral_command(cmd), cmd
+    assert cmd.startswith(exe + " ")
+    assert not cmd.startswith(ci._WIN_UNQUOTED_PREFIX)
+
+
+def test_at_sign_never_leads_a_bare_interpreter_token(monkeypatch):
+    ci = _load(monkeypatch)
+    assert ci._shell_neutral_exe("@python.exe") is None
+
+
+def test_homebrew_python_on_macos_gets_a_posix_hook_not_a_windows_one(monkeypatch, tmp_path):
+    ci = _load(monkeypatch, platform="darwin")
+    monkeypatch.setattr(ci.sys, "executable", HOMEBREW_PYTHON)
+    root = _fake_install(tmp_path)
+    monkeypatch.setattr(ci, "_repo_root", lambda: root)
+    cmd = ci._hook_command("hooks/stop_runner.py", redirect_quiet=True)
+    assert "python-launcher.sh" in cmd and 'exec "$b"' in cmd
+    for windows_only in (ci._WIN_UNQUOTED_PREFIX, ">NUL", "windows-launcher"):
+        assert windows_only not in cmd

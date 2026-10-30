@@ -1,19 +1,19 @@
 """Cross-check verdict: the two work-unit methods must actually agree before
 the transformation is headlined.
 
-Defect under test: savings_report printed "Cross-check on messages: ~$X/mo
-(independent unit, agrees within ~10%)" whenever a cross-check figure existed,
-without ever comparing the two numbers. On the real ledger that rendered a
-+$1,080/mo headline beside a -$11,216/mo cross-check.
+The session-weight pool measures the transformation through two independent
+units of work (API calls and messages). The CLI used to claim the cross-check
+"agrees within ~10%" without ever comparing the figures, so a disagreeing
+pair could not stop the hero from rendering.
 
-The fix: the verdict is computed once on the session-weight pool
-(crosscheck.agrees / crosscheck.gap_pct) and every surface reads the same
-answer. When the per-API-call and per-message methods disagree by more than
-10% or on sign, the transformation is not headlined: the payload returns
-reason="methods_disagree" with monthly_savings_usd = 0 and both disputed
-figures preserved on session_weight_pool; the CLI prints a plain disagreement
-line; the dashboard renders a neutral card like net_negative; the weekly
-full-workload figure falls back to measured savings.
+The verdict is now computed once on the pool (crosscheck.agrees /
+crosscheck.gap_pct) and every surface reads the same answer. When the two
+methods disagree by more than 10% or on sign, the transformation is not
+headlined: the payload returns reason="methods_disagree" with
+monthly_savings_usd = 0 and both disputed figures preserved on
+session_weight_pool; the CLI prints a plain disagreement line; the dashboard
+renders a neutral card like net_negative; the weekly full-workload figure
+falls back to measured savings.
 
 Run: python3 -m pytest tests/test_crosscheck_verdict.py -v
 """
@@ -35,9 +35,9 @@ def _seed_divergent_units(tmp, heavy_n=200, heavy_inp=20_000_000,
 
     Heavy (anchor) month: `heavy_n` sessions x `heavy_calls` calls x `heavy_msgs`
     messages. Light (current) window: `light_n` sessions x `light_calls` calls x
-    `light_msgs` messages. Holding calls constant while messages grow 5x makes the
-    per-API-call transformation positive while the per-message one lands far away:
-    exactly the disagreement the verdict exists to catch.
+    `light_msgs` messages. Holding calls constant while messages grow 5x makes
+    the per-API-call and per-message transformations land far apart: the
+    disagreement the verdict exists to catch.
     """
     snap = Path(tmp)
     snap.mkdir(parents=True, exist_ok=True)
@@ -92,10 +92,9 @@ def test_disagrees_on_size(measure):
 
 def test_disagrees_on_sign(measure):
     mod, _ = measure
-    # The real-ledger case: +$1,080 headline vs -$11,216 cross-check.
-    agrees, gap = mod._crosscheck_agrees(1080.0, -11216.0)
+    agrees, gap = mod._crosscheck_agrees(1000.0, -9000.0)
     assert agrees is False
-    assert gap == pytest.approx(109.6)
+    assert gap == pytest.approx(111.1)
     assert mod._crosscheck_agrees(-50.0, 50.0)[0] is False
     assert mod._crosscheck_agrees(0.0, 500.0)[0] is False
 
@@ -120,8 +119,8 @@ def test_verdict_recomputes_ignoring_stored_flag(measure):
     assert mod._crosscheck_verdict({}) is True
     # Stale TRUE flag over disagreeing numbers -> disagree.
     assert mod._crosscheck_verdict(
-        {"transformation_usd": 1080.0,
-         "crosscheck": {"transformation_usd": -11216.0,
+        {"transformation_usd": 1000.0,
+         "crosscheck": {"transformation_usd": -9000.0,
                         "agrees": True}}) is False
     # Stale FALSE flag over agreeing numbers -> agree.
     assert mod._crosscheck_verdict(
@@ -225,12 +224,12 @@ def test_weekly_full_value_falls_back_when_methods_disagree(measure, monkeypatch
     mod, _ = measure
     monkeypatch.setattr(mod, "detect_runtime", lambda: "claude")
     now = datetime(2026, 9, 5, tzinfo=timezone.utc).timestamp()
-    pool = dict(transformation_usd=1080.0, actual_usd=30000.0,
-                counterfactual_usd=31080.0, now_units=10,
+    pool = dict(transformation_usd=1000.0, actual_usd=30000.0,
+                counterfactual_usd=31000.0, now_units=10,
                 anchor_month="2026-06",
                 crosscheck={"unit": "message",
-                            "transformation_usd": -11216.0,
-                            "agrees": False, "gap_pct": 109.6})
+                            "transformation_usd": -9000.0,
+                            "agrees": False, "gap_pct": 1000.0})
     monkeypatch.setattr(mod, "_session_weight_pool_savings",
                         lambda *a, **kw: pool)
     assert mod._weekly_full_savings(resets_at=now + 3 * 86400, now=now) is None
@@ -273,18 +272,18 @@ def test_cli_prints_the_real_crosscheck_figure_when_agreeing(
     mod, _ = measure
     monkeypatch.setattr(mod, "_install_date", lambda: "2026-01-01")
     ba = {
-        "monthly_savings_usd": 1080.0,
-        "actual_monthly_usd": 38756.0,
-        "counterfactual_monthly_usd": 39836.0,
+        "monthly_savings_usd": 1200.0,
+        "actual_monthly_usd": 30000.0,
+        "counterfactual_monthly_usd": 31200.0,
         "session_weight_pool": {
             "anchor_month": "2026-06", "work_unit": "api_call",
-            "now_units": 178886, "before_cost_per_unit": 0.2227,
-            "after_cost_per_unit": 0.2167,
-            "transformation_usd": 1080.0,
+            "now_units": 150000, "before_cost_per_unit": 0.22,
+            "after_cost_per_unit": 0.21,
+            "transformation_usd": 1200.0,
             "price_mix_drift_usd": 0.0,
             "crosscheck": {"unit": "message",
-                           "transformation_usd": 1040.0,
-                           "agrees": True, "gap_pct": 3.7},
+                           "transformation_usd": 1150.0,
+                           "agrees": True, "gap_pct": 4.2},
         },
         "breakdown": [], "breakdown_caveat": "",
     }
@@ -292,31 +291,30 @@ def test_cli_prints_the_real_crosscheck_figure_when_agreeing(
                         lambda days=30: _cli_summary(ba))
     mod.savings_report(days=30)
     out = capsys.readouterr().out
-    assert "YOUR TRANSFORMATION: ~$1,080/mo" in out
-    assert "Cross-check on messages: $1,040/mo" in out
+    assert "YOUR TRANSFORMATION: ~$1,200/mo" in out
+    assert "Cross-check on messages: $1,150/mo" in out
     assert "agrees" in out
     assert "does not agree" not in out
 
 
 def test_cli_never_claims_agreement_without_verdict(measure, monkeypatch,
                                                     capsys):
-    """Defect regression: a disagreeing cross-check must never print
-    'agrees within ~10%'."""
+    """A disagreeing cross-check must never print 'agrees within ~10%'."""
     mod, _ = measure
     monkeypatch.setattr(mod, "_install_date", lambda: "2026-01-01")
     ba = {
-        "monthly_savings_usd": 1080.0,
-        "actual_monthly_usd": 38756.0,
-        "counterfactual_monthly_usd": 39836.0,
+        "monthly_savings_usd": 1200.0,
+        "actual_monthly_usd": 30000.0,
+        "counterfactual_monthly_usd": 31200.0,
         "session_weight_pool": {
             "anchor_month": "2026-06", "work_unit": "api_call",
-            "now_units": 178886, "before_cost_per_unit": 0.2227,
-            "after_cost_per_unit": 0.2167,
-            "transformation_usd": 1080.0,
+            "now_units": 150000, "before_cost_per_unit": 0.22,
+            "after_cost_per_unit": 0.21,
+            "transformation_usd": 1200.0,
             "price_mix_drift_usd": 0.0,
             "crosscheck": {"unit": "message",
-                           "transformation_usd": -11216.0,
-                           "agrees": False, "gap_pct": 109.6},
+                           "transformation_usd": -8400.0,
+                           "agrees": False, "gap_pct": 114.3},
         },
         "breakdown": [], "breakdown_caveat": "",
     }
@@ -337,10 +335,10 @@ def test_cli_methods_disagree_branch_shows_both_figures(
         "reason": "methods_disagree",
         "transformation_state": "methods_disagree",
         "session_weight_pool": {
-            "work_unit": "api_call", "transformation_usd": 1080.0,
+            "work_unit": "api_call", "transformation_usd": 1200.0,
             "crosscheck": {"unit": "message",
-                           "transformation_usd": -11216.0,
-                           "agrees": False, "gap_pct": 109.6},
+                           "transformation_usd": -8400.0,
+                           "agrees": False, "gap_pct": 114.3},
         },
     }
     monkeypatch.setattr(mod, "_get_merged_savings",
@@ -348,9 +346,9 @@ def test_cli_methods_disagree_branch_shows_both_figures(
     mod.savings_report(days=30)
     out = capsys.readouterr().out
     assert "not headlined this period" in out
-    assert "$1,080" in out
-    assert "-$11,216" in out
-    assert "~$1,080/mo" not in out  # no hero claim
+    assert "$1,200" in out
+    assert "-$8,400" in out
+    assert "~$1,200/mo" not in out  # no hero claim
     assert "agrees within ~10%" not in out
 
 
@@ -366,18 +364,18 @@ def test_dashboard_methods_disagree_suppresses_the_hero():
         "reason": "methods_disagree",
         "transformation_state": "methods_disagree",
         "session_weight_pool": {
-            "work_unit": "api_call", "transformation_usd": 1080.0,
+            "work_unit": "api_call", "transformation_usd": 1200.0,
             "crosscheck": {"unit": "message",
-                           "transformation_usd": -11216.0,
-                           "agrees": False, "gap_pct": 109.6},
+                           "transformation_usd": -8400.0,
+                           "agrees": False, "gap_pct": 114.3},
         },
     }
     html = render(s)
     assert "savings-transformation" not in html, \
         "the transformation hero must not render on methods_disagree"
     assert "Two estimates disagree" in html
-    assert "$1,080" in html
-    assert "-$11,216" in html
+    assert "$1,200" in html
+    assert "-$8,400" in html
 
 
 def test_dashboard_agreeing_payload_still_shows_the_hero():

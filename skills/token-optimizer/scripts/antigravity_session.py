@@ -318,7 +318,7 @@ def normalize_session(raw: dict) -> Optional[dict]:
             "cache_create": 0,
             "output": total_output,
         }
-    model_usage = {name: parts["fresh_input"] + parts["cache_read"] + parts["output"]
+    model_usage = {name: parts["fresh_input"] + parts["cache_create"] + parts["output"]
                    for name, parts in model_usage_breakdown.items()}
     if credits is None and any(model_id_for_display_name(name) for name in model_usage):
         cost_source = "antigravity_list_price_estimate"

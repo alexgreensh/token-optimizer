@@ -50772,8 +50772,12 @@ def _compute_model_routing_savings(days=30, since=None):
     baseline mix) minus the actual current cost is real, measured savings. This is
     the rare pillar that can show a genuine realized win (e.g. Opus 94% -> 67%).
 
-    POTENTIAL: a conservative share of remaining Opus tokens routed to Sonnet,
-    priced at the rate delta -- the opportunity still on the table.
+    POTENTIAL: an assumption, not a measurement. A fixed share
+    (`routable_fraction`) of remaining Opus tokens (`potential_tokens`) is priced
+    at the Opus-to-Sonnet API rate delta (`potential_cost_usd`, an API-rate
+    equivalent). Consumers show it on its own line with the assumption stated and
+    keep it out of any concrete opportunity total, because some Opus work is
+    chosen deliberately.
 
     Rates blend each model's input + output $/MTok by the measured output fraction
     (SUM(output)/SUM(input+output) from session_log). Pricing everything at the
@@ -50788,6 +50792,7 @@ def _compute_model_routing_savings(days=30, since=None):
     # sets its own evidence="measured".
     zero = {
         "realized_cost_usd": 0.0, "potential_cost_usd": 0.0,
+        "potential_tokens": 0, "potential_tokens_monthly": 0,
         "baseline_opus_share": 0.0, "current_opus_share": 0.0,
         "baseline_source": None, "evidence": "unavailable",
     }
@@ -50848,10 +50853,19 @@ def _compute_model_routing_savings(days=30, since=None):
         opus_rate = _model_blended_rate_per_mtok("opus", out_frac)
         sonnet_rate = _model_blended_rate_per_mtok("sonnet", out_frac)
         potential_cost = max(0.0, opus_tokens * _ROUTABLE_OPUS_FRACTION * (opus_rate - sonnet_rate) / 1_000_000)
+        # Token volume the assumption applies to: the share of remaining Opus
+        # tokens that would run on a lighter model. `potential_tokens` covers the
+        # requested window (same basis as potential_cost_usd); the monthly figure
+        # scales it to 30 days.
+        potential_tokens = int(round(opus_tokens * _ROUTABLE_OPUS_FRACTION))
+        potential_tokens_monthly = int(round(potential_tokens / max(days, 1) * 30))
 
         return {
             "realized_cost_usd": round(realized_cost, 4),
             "potential_cost_usd": round(potential_cost, 4),
+            "potential_tokens": potential_tokens,
+            "potential_tokens_monthly": potential_tokens_monthly,
+            "potential_basis": "api_rate_equivalent",
             "baseline_opus_share": round(baseline_shares.get("opus", 0.0), 4),
             "current_opus_share": round(opus_share, 4),
             "baseline_source": baseline_source,
@@ -55956,10 +55970,6 @@ def savings_report(days=30, as_json=False):
             pot_monthly = _mo(pot_cost)
             print(f"    ~${pot_monthly:.2f}{per} structural: prune {potential.get('unused_skills', 0)} unused skills "
                   f"(~{potential.get('recoverable_tokens', 0):,} tokens), compounds every session.")
-        if routing_potential > 0:
-            rp_monthly = _mo(routing_potential)
-            print(f"    ~${rp_monthly:.2f}{per} routing: move {int(routing.get('routable_fraction', 0.3) * 100)}% "
-                  f"of remaining Opus ({routing.get('current_opus_share', 0.0) * 100:.0f}% of tokens) to Sonnet/Haiku.")
         if cd_tokens > 0:
             cd_tokens_monthly = int(_mo(cd_tokens))
             print(f"    ~{cd_tokens_monthly:,} tokens{per} cache drops: {cache_drop.get('drop_sessions', 0)} sessions idled "
@@ -55972,6 +55982,19 @@ def savings_report(days=30, as_json=False):
             recl_monthly = _mo(recl_cost)
             print(f"    ~${recl_monthly:.2f}{per} reclaimable: {reclaimable.get('tokens', 0):,} tokens of stale "
                   f"re-reads across {reclaimable.get('sessions', 0)} sessions — avoid re-reading or use .contextignore.")
+        concrete_items = [c for c in (pot_cost, ow_cost, recl_cost) if c > 0]
+        if len(concrete_items) > 1:
+            print(f"    = ~${_mo(sum(concrete_items)):.2f}{per} from the items above (API-rate equivalent)")
+        if routing_potential > 0:
+            # Routing is an assumption about the user's own Opus work, so it sits
+            # on its own line and is never folded into the total above.
+            frac_pct = int(round(float(routing.get("routable_fraction", 0.3) or 0.3) * 100))
+            rp_tokens = int(_mo(int(routing.get("potential_tokens", 0) or 0)))
+            tok_txt = f"~{rp_tokens:,} tokens{per}, " if rp_tokens > 0 else ""
+            print()
+            print(f"    Routing (an assumption, not a measurement): if about {frac_pct}% of your remaining "
+                  f"Opus work ({routing.get('current_opus_share', 0.0) * 100:.0f}% of tokens) ran on lighter models: "
+                  f"{tok_txt}about ${_mo(routing_potential):.2f}{per} at API rates.")
     print(f"  {'=' * 58}")
     print("  Tiers are separate: measured (billed events), estimated (your own")
     print("  cohorts), opportunity (not yet realized). They are never summed.")

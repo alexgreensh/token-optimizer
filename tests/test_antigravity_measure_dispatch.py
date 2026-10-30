@@ -409,3 +409,18 @@ def test_existing_session_reprices_only_from_available_complete_generations(monk
     _patch_sessions(monkeypatch, [])
     assert mod._collect_antigravity_sessions(days=90, quiet=True) == 0
     assert _rows(mod, snap)[0][3] == pytest.approx(expected, abs=1e-9)
+
+
+def test_cache_read_is_not_duplicated_in_routing_unsplit(monkeypatch, tmp_path):
+    mod, snap = _import_measure(monkeypatch, tmp_path)
+    _grant_consent(_patch_homes(monkeypatch, mod, tmp_path))
+    raw = _session(fresh=100, output=50, cache_read=1000)
+    raw['generations'] = [{'model_display_name': 'Gemini 3.5 Flash', 'input_tokens': 100,
+                           'output_tokens': 50, 'cache_read_tokens': 1000}]
+    _patch_sessions(monkeypatch, [raw])
+    assert mod._collect_antigravity_sessions(days=90, quiet=True) == 1
+    usage = mod._routing_usage_by_model(days=30)['gemini-3.5-flash']
+    assert usage.get('fresh_input', 0) == 100
+    assert usage.get('output', 0) == 50
+    assert usage.get('cache_read', 0) == 1000
+    assert usage.get('unsplit', 0) == 0

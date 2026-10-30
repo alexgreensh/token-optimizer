@@ -105,6 +105,23 @@ def test_savings_summary_counts_only_real_rows(m):
     assert "tool_archive_refetch_block" not in s["by_category"]
 
 
+def test_platform_exclusion_vectors_preserve_unattributed_actions(m):
+    conn = m._init_trends_db()
+    base = datetime.now() - timedelta(days=1)
+    _se(conn, "checkpoint_restore", 100, REAL_UUID, "same", base.isoformat(), 1)
+    _se(conn, "checkpoint_restore", 100, REAL_UUID, "same",
+        (base + timedelta(seconds=1)).isoformat(), 2)
+    _se(conn, "tool_archive", 100, REAL_UUID,
+        "replaced mcp__playwright__browser_take_screenshot", base.isoformat(), 1)
+    for _ in range(2):
+        _se(conn, "checkpoint_restore", 100, "", "same", base.isoformat(), 1)
+    conn.commit()
+    assert conn.execute("SELECT COUNT(*) FROM savings_events").fetchone()[0] == 5
+    view = m._counted_table(conn, "savings_events")
+    assert conn.execute(f"SELECT COUNT(*), SUM(tokens_saved) FROM {view}").fetchone() == (3, 300)
+    conn.close()
+
+
 def test_compression_summary_counts_every_harness_and_dedups_twins(m):
     _seed(m)
     c = m._get_compression_summary(days=30)

@@ -50988,6 +50988,12 @@ def _compute_model_routing_savings(days=30, since=None):
     counterfactual rate policy below), so it does not depend on which families
     or generations appear in the window.
 
+    Baseline family rates: the cards of the models the family ran on in the
+    window (observed), or the newest generation card of the tier when the family
+    has no usage (reference). The frozen baseline carries no generation, so the
+    source is reported per family and a reference-priced baseline is labelled
+    "estimated", never "measured".
+
     Models with no exact rate card are unpriced, not free (an unknown Claude
     generation does not borrow its family's price): they are left out of the
     comparison and reported as `unpriced_models`, `unpriced_tokens` and
@@ -51006,6 +51012,7 @@ def _compute_model_routing_savings(days=30, since=None):
         "premium_models": [], "premium_share": 0.0, "premium_cost_usd": 0.0,
         "unpriced_models": [], "unpriced_tokens": 0, "unpriced_share": 0.0,
         "free_models": [], "free_tokens": 0,
+        "baseline_rate_basis": {}, "baseline_reference_priced": [],
         "baseline_opus_share": 0.0, "current_opus_share": 0.0,
         "baseline_source": None, "evidence": "unavailable",
     }
@@ -51113,40 +51120,43 @@ def _compute_model_routing_savings(days=30, since=None):
         if window_billable <= 0:
             return {**zero, **_coverage_fields()}
 
-        # COUNTERFACTUAL RATE POLICY. Every family, present or absent, gets one
-        # rate per token class, used for the baseline mix:
-        #   observed  the volume-weighted blend, class by class, of the cards the
-        #             family actually ran on, so the same models cost the same
-        #             in both arms (a price change between eras cannot show up as
-        #             routing) and no single generation stands in for the family;
-        #   reference the newest generation card of the family's tier (legacy
-        #             Sonnet counts as Sonnet), used for a family with no usage.
-        # The observed blend gains weight linearly up to 1% of the window, so a
-        # family that is absent and one with a single token price alike and
-        # nothing jumps at the edge. The result does not depend on the order or
-        # grouping of the window's models.
-        _EVIDENCE_FULL = 0.01
+        # COUNTERFACTUAL RATE POLICY. The frozen baseline records shares by model
+        # family only, with no generation, so each family's rate comes from one
+        # of two disclosed sources:
+        #   observed   the family ran in this window: the volume-weighted blend,
+        #              class by class, of the cards of the models it ran on (a
+        #              class with no volume is weighted by each model's tokens).
+        #              These are the same cards the actual arm pays, so a
+        #              generation price change alone cannot create or remove a
+        #              saving, and no single generation stands in for the family.
+        #   reference  no usage in this window: the newest generation card of the
+        #              family's tier (legacy Sonnet counts as Sonnet).
+        # No thresholds or smoothing: a family flips from reference to observed
+        # when it first appears. `baseline_rate_basis` reports each baseline
+        # family's source, and a result that leans on a reference card is not
+        # labelled measured.
         fam_rate_cache = {}
+        fam_rate_basis = {}
 
         def _fam_rates(fam):
             if fam in fam_rate_cache:
                 return fam_rate_cache[fam]
-            ref = _rates(_routing_reference_model(fam))
             ms = fam_models.get(fam)
             if not ms:
-                out = ref
+                ref_model = _routing_reference_model(fam)
+                out = _rates(ref_model)
+                fam_rate_basis[fam] = f"reference:{ref_model}"
             else:
                 vol = fam_classes[fam]
                 weight = {m: sum(priced_usage[m].get(k, 0) for k in _ROUTING_CLASSES) for m in ms}
                 wsum = sum(weight.values())
-                observed = {}
+                out = {}
                 for k in _ROUTING_CLASSES:
                     if vol[k] > 0:
-                        observed[k] = sum(priced_usage[m].get(k, 0) * _rates(m)[k] for m in ms) / vol[k]
+                        out[k] = sum(priced_usage[m].get(k, 0) * _rates(m)[k] for m in ms) / vol[k]
                     else:
-                        observed[k] = sum(weight[m] * _rates(m)[k] for m in ms) / wsum if wsum > 0 else 0.0
-                lam = min(1.0, (sum(vol.values()) / pooled) / _EVIDENCE_FULL) if pooled > 0 else 1.0
-                out = observed if ref is None else {k: lam * observed[k] + (1.0 - lam) * ref[k] for k in observed}
+                        out[k] = sum(weight[m] * _rates(m)[k] for m in ms) / wsum if wsum > 0 else 0.0
+                fam_rate_basis[fam] = "observed"
             fam_rate_cache[fam] = out
             return out
 
@@ -51253,7 +51263,11 @@ def _compute_model_routing_savings(days=30, since=None):
             "current_opus_share": round(opus_share, 4),
             "baseline_source": baseline_source,
             "routable_fraction": _ROUTABLE_OPUS_FRACTION,
-            "evidence": "measured",
+            # Baseline families priced by a reference card (no usage in the window)
+            # make the baseline side an assumption, so the result is not "measured".
+            "baseline_rate_basis": {f: fam_rate_basis[f] for f in base_priced},
+            "baseline_reference_priced": sorted(f for f in base_priced if fam_rate_basis[f] != "observed"),
+            "evidence": "estimated" if any(fam_rate_basis[f] != "observed" for f in base_priced) else "measured",
         }
     except Exception:
         return zero

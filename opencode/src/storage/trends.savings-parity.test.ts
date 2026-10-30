@@ -33,3 +33,27 @@ test("counted savings excludes fixtures, media, and twins while pricing unknowns
   db.close();
   store.close();
 });
+
+test("fixture matching preserves real near matches and empty-session events", () => {
+  const dir = join(process.cwd(), "..", ".scratch-parity", `fixtures-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  mkdirSync(dir, { recursive: true });
+  const store = new TrendsStore(dir);
+  store.recordSession({ sessionId: "real", project: null, model: "sonnet", tokensInput: 1,
+    tokensOutput: 0, tokensCacheRead: 0, tokensCacheWrite: 0, costUsd: 0,
+    resourceHealth: null, sessionEfficiency: null, toolCalls: 0, compactions: 0,
+    mode: null, durationSeconds: 1 });
+  const db = new Database(join(dir, "trends.db"));
+  const insert = db.prepare(`INSERT INTO savings_events
+    (timestamp, event_type, tokens_saved, cost_saved_usd, session_id, detail, model) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+  const now = Date.now();
+  const stamp = new Date(now).toISOString();
+  for (const id of ["test-session-1", "failwire-1", "f3bench-sess1", "unit-c-never1", "torture-1", "sess_test1", "codex-sess-123"]) {
+    insert.run(stamp, "checkpoint_restore", 100, 1, id, "same", "sonnet");
+  }
+  for (const id of ["test-project", "s", "codex-sess-live", "codex-sess-1-live", "a123abc", "", ""]) {
+    insert.run(stamp, "checkpoint_restore", 100, 1, id, "same", "sonnet");
+  }
+  expect(store.getCompressionSavings(30, now).totalTokensSaved).toBe(700);
+  db.close();
+  store.close();
+});

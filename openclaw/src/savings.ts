@@ -88,10 +88,8 @@ function numClamp(value: unknown): number {
 
 /**
  * Coerce + clamp a raw record's token fields into a clean SessionRecord. Mirrors
- * the Python `_session_token_vector` clamps (fresh_input >= 0, cache_write >= 0,
- * cache_write <= input, output >= 0). cacheWrite is clamped to <= input AFTER the
- * non-negative pass; the TTL buckets are then re-apportioned within the clamped
- * cacheWrite so cw1h + cw5m can never exceed it (keeps F3's pricing split honest).
+ * non-negative token fields. OpenClaw reports fresh input and cache writes
+ * separately. TTL buckets are constrained to the cache-write total.
  */
 function sanitizeRecord(raw: {
   sessionId: unknown;
@@ -110,8 +108,7 @@ function sanitizeRecord(raw: {
   const input = numClamp(raw.input);
   const output = numClamp(raw.output);
   const cacheRead = numClamp(raw.cacheRead);
-  // cache_write clamped non-negative, then capped at input (mirrors Python cw<=inp).
-  const cacheWrite = Math.min(numClamp(raw.cacheWrite), input);
+  const cacheWrite = numClamp(raw.cacheWrite);
   let cw1h = numClamp(raw.cacheWrite1h);
   let cw5m = numClamp(raw.cacheWrite5m);
   // Keep the TTL split inside the clamped cacheWrite total (proportional scale-down).

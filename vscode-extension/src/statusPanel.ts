@@ -160,20 +160,14 @@ export class StatusPanel {
   function funnelHtml() {
     let h = '';
     h += '<h1>Token Optimizer</h1>';
-    h += '<div class="fn-hero">Save 15–20% on every session.</div>';
+    h += '<div class="fn-hero">Track the tokens you save.</div>';
     h += '<div class="fn-hero-sub">Three levels of optimization that cut token waste — while keeping output quality intact.</div>';
     h += '<div class="levels">';
     h += '<div class="level"><span class="ic">🧱</span><span><span class="lt">Structural waste</span><br><span class="ld">Bloated context, repeated file reads, and giant tool outputs — mapped and compressed. The savings survive compaction.</span></span></div>';
     h += '<div class="level"><span class="ic">⚡</span><span><span class="lt">Runtime waste</span><br><span class="ld">Right-sizes the model per turn, so routine work runs off the priciest model and you spend premium tokens only when they matter.</span></span></div>';
     h += '<div class="level"><span class="ic">🧭</span><span><span class="lt">Behavioral waste</span><br><span class="ld">A coach that nudges lighter habits, so your average session gets cheaper over time and stays there.</span></span></div>';
     h += '</div>';
-    h += '<div class="savings"><b>How much that adds up to</b> depends on how often you run:';
-    h += '<table class="tiers"><tbody>';
-    h += '<tr><td>Light<span class="tr-sub">~1 session/day</span></td><td class="tr-amt">~$150/mo</td></tr>';
-    h += '<tr><td>Medium<span class="tr-sub">~5/day</span></td><td class="tr-amt">~$600/mo</td></tr>';
-    h += '<tr><td>Power<span class="tr-sub">~15+/day</span></td><td class="tr-amt">up to ~$1,900/mo</td></tr>';
-    h += '</tbody></table>';
-    h += '<span class="fine">API-equivalent. The Power row is metered on real 30-day data ($10,585 → $8,708/mo); lighter rows scale that per-session saving by how often you run. On a Claude subscription the value is rate-limit headroom, not cash back. Your numbers vary.</span></div>';
+    h += '<div class="savings"><b>See your savings</b> in the Token Optimizer dashboard after installing the CLI plugin.</div>';
     h += '<div class="inst-label">Install the CLI plugin (30 seconds):</div>';
     h += '<div class="inst-tab">Claude Code</div>';
     h += '<pre class="cmd">/plugin marketplace add alexgreensh/token-optimizer\\n/plugin install token-optimizer@alexgreensh-token-optimizer</pre>';

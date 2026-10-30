@@ -25663,6 +25663,20 @@ def _write_antigravity_restore_context(sessions, quiet=False):
             print(f"[Token Optimizer] restore-context update skipped: {exc}")
 
 
+def _price_antigravity_session(session):
+    """Price known model buckets separately; identify incomplete rate coverage."""
+    if session.get("cost_source") != "antigravity_list_price_estimate":
+        return
+    breakdown = session.get("model_usage_breakdown") or {}
+    session["cost_usd"] = sum(
+        _get_model_cost(model, part.get("fresh_input", 0), part.get("output", 0),
+                        cache_read=part.get("cache_read", 0), per_request=bool(parts.get("requests")))
+        for model, parts in breakdown.items() for part in (parts.get("requests") or [parts])
+    )
+    if any(not _is_priced_model(model) for model in breakdown):
+        session["cost_source"] = "antigravity_list_price_partial"
+
+
 def _antigravity_summary():
     """Per-surface session summary for Antigravity plus decoder health."""
     import antigravity_state as _ags  # noqa: PLC0415
@@ -25688,12 +25702,7 @@ def _antigravity_summary():
         # line is a real dollar figure, not the normalizer's placeholder zero
         # (the normalizer never prices — KTD12; the collector does it).
         for s in normalized:
-            if s.get("cost_source") == "antigravity_list_price_estimate" and s.get("model_id"):
-                fresh = max(0, s["total_input_tokens"] - s.get("total_cache_read", 0))
-                s["cost_usd"] = _get_model_cost(
-                    s["model_id"], fresh, s["total_output_tokens"],
-                    cache_read=s.get("total_cache_read", 0),
-                )
+            _price_antigravity_session(s)
         total_in = sum(s.get("total_input_tokens", 0) for s in normalized)
         total_out = sum(s.get("total_output_tokens", 0) for s in normalized)
         total_cache = sum(s.get("total_cache_read", 0) for s in normalized)
@@ -25711,7 +25720,8 @@ def _antigravity_summary():
         if credits:
             print(f"    Antigravity credits: {credits:,.2f}")
         elif cost > 0.0:
-            print(f"    Estimated cost: ~${cost:,.2f} (Gemini list-price estimate)")
+            partial = any(s.get("cost_source") == "antigravity_list_price_partial" for s in normalized)
+            print(f"    Estimated cost: ~${cost:,.2f} (list prices" + (", known models only" if partial else "") + ")")
         else:
             print("    Cost: unavailable (no model with a known Gemini rate card)")
         print(f"    Tokens: {total_in:,} in / {total_out:,} out / {total_cache:,} cache-read")
@@ -25796,20 +25806,30 @@ def _collect_antigravity_sessions(days=90, quiet=False, rebuild=False):
 
             # R8 pricing: only the list-price-estimate path is denominated in
             # USD; credits are Antigravity's own figure and stay USD-less.
-            if parsed.get("cost_source") == "antigravity_list_price_estimate" and parsed.get("model_id"):
-                fresh = max(0, parsed["total_input_tokens"] - parsed.get("total_cache_read", 0))
-                parsed["cost_usd"] = _get_model_cost(
-                    parsed["model_id"],
-                    fresh,
-                    parsed["total_output_tokens"],
-                    cache_read=parsed.get("total_cache_read", 0),
-                )
+            _price_antigravity_session(parsed)
 
             dedup_key = parsed.get("dedup_key")
             if not dedup_key:
                 continue
             is_incomplete = 1 if parsed.get("incomplete") else 0
             if _is_file_collected(conn, dedup_key):
+                if not is_incomplete and parsed.get("generation_details_complete"):
+                    model_usage = json.dumps(parsed.get("model_usage", {}))
+                    breakdown = json.dumps(parsed.get("model_usage_breakdown", {}))
+                    cost = parsed.get("cost_usd", 0.0)
+                    source = parsed.get("cost_source")
+                    cur = conn.execute(
+                        """UPDATE session_log SET model_usage_json=?, all_model_usage_json=?,
+                                  model_usage_breakdown_json=?, cost_usd=?, cost_source=?
+                           WHERE jsonl_path=? AND (incomplete=1 OR (input_tokens=? AND output_tokens=?))
+                             AND (model_usage_json IS NOT ? OR
+                                 all_model_usage_json IS NOT ? OR model_usage_breakdown_json IS NOT ? OR
+                                 cost_usd IS NOT ? OR cost_source IS NOT ?)""",
+                        (model_usage, model_usage, breakdown, cost, source, dedup_key,
+                         parsed["total_input_tokens"], parsed["total_output_tokens"],
+                         model_usage, model_usage, breakdown, cost, source),
+                    )
+                    new_count += cur.rowcount
                 if not is_incomplete:
                     try:
                         existing = conn.execute(

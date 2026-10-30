@@ -113,3 +113,19 @@ test('premium usage is disclosed without masking cheaper-model routing', () => {
   assert.equal(result.premiumTokens,660000);
   assert.ok(result.premiumCostUsd>0);
 });
+test('mixed-model cache writes use each model and TTL rate', () => {
+  const fs=require('node:fs'),path=require('node:path');
+  const {computeRealizedSavings}=require('./savings.ts');
+  const dir=fs.mkdtempSync(path.join(process.cwd(),'.scratch-parity','ttl-'));
+  const state=path.join(dir,'token-optimizer');fs.mkdirSync(state);
+  const day=86400000,t=Date.parse('2026-01-01T00:00:00Z'),now=t+60*day;
+  const row=(id,ts) => ({sessionId:id,ts,model:'opus',input:100000,output:0,cacheRead:0,cacheWrite:100000,cacheWrite1h:50000,cacheWrite5m:50000,costUsd:0,durationSec:300,modelTokenBuckets:{opus:{input:100000,output:0,cacheRead:0,cacheWrite:50000,cacheWrite1h:50000,cacheWrite5m:0},sonnet:{input:0,output:0,cacheRead:0,cacheWrite:50000,cacheWrite1h:0,cacheWrite5m:50000}}});
+  const rows=[row('install',t)];
+  for(let i=0;i<35;i++) rows.push(row('before'+i,t+(2+i/2)*day));
+  for(let i=0;i<12;i++) rows.push(row('after'+i,now-(i+1)*day));
+  fs.writeFileSync(path.join(state,'session-history.json'),JSON.stringify(rows));
+  const result=computeRealizedSavings(dir,30,now);
+  assert.equal(result.ready,true);
+  assert.equal(result.beforeCostPerSession,1.125);
+  assert.equal(result.monthlySavingsUsd,0);
+});

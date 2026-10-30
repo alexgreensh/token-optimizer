@@ -1419,6 +1419,7 @@ function renderSavings(data: DashboardData): string {
           ${esc(s.beforeMixLabel)} &rarr; ${esc(s.afterMixLabel)}${cacheLine}${runRate ? ` &middot; ~${Math.round(s.sessionsPerMonth)} sessions/mo` : ""}
           ${s.premiumTokens ? `<br>${fmtTokens(s.premiumTokens)} premium tokens (${fmtCost(s.premiumCostUsd ?? 0)} at API rates) excluded from the model comparison.` : ""}
           ${s.baselineClassMixAvailable === false ? "<br>The saved baseline does not contain a per-class model mix." : ""}
+          ${s.baselineTtlMixAvailable === false ? "<br>The saved baseline does not contain a per-model cache-write duration mix." : ""}
         </div>
         <div style="font-size:12px;color:var(--c-text-dim);margin-top:var(--s-2)">${BILLING_CAPTION}</div>
       </div>`

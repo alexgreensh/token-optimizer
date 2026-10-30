@@ -311,6 +311,25 @@ function modelClassShares(records: SessionRecord[]): ClassShares {
   return totals;
 }
 
+type TtlShares = { oneHour: Record<string, number>; fiveMinute: Record<string, number> };
+function modelTtlShares(records: SessionRecord[]): TtlShares {
+  const shares: TtlShares = {oneHour: {}, fiveMinute: {}};
+  for (const r of records) {
+    const buckets = r.modelTokenBuckets && Object.keys(r.modelTokenBuckets).length ? r.modelTokenBuckets : {[r.model]: {input:r.input, output:r.output, cacheRead:r.cacheRead, cacheWrite:r.cacheWrite, cacheWrite1h:r.cacheWrite1h, cacheWrite5m:r.cacheWrite5m}};
+    for (const [model, b] of Object.entries(buckets)) {
+      if (!b) continue;
+      const total = numClamp(b.cacheWrite), one = Math.min(total, numClamp(b.cacheWrite1h));
+      shares.oneHour[model] = (shares.oneHour[model] ?? 0) + one;
+      shares.fiveMinute[model] = (shares.fiveMinute[model] ?? 0) + total - one;
+    }
+  }
+  for (const mix of [shares.oneHour, shares.fiveMinute]) {
+    const total = Object.values(mix).reduce((a,b) => a+b, 0);
+    if (total > 0) for (const model of Object.keys(mix)) mix[model] /= total;
+  }
+  return shares;
+}
+
 // --- Mix-weighted pricing (counterfactual primitives) -----------------------
 // Price token classes at a MODEL MIX (share-weighted blend across the priced
 // models in an era). calculateCost is per-token linear, so we blend the per-MTok
@@ -433,6 +452,7 @@ interface EraStats {
   effRate: Record<TokenClass, number>; // effective $/token observed (cost/token)
   shares: Record<string, number>; // model token shares (display label)
   classShares?: ClassShares;
+  ttlShares?: TtlShares;
 }
 
 /**
@@ -493,7 +513,7 @@ function computeEraStats(
     effRate[c] = tokSum[c] > 0 ? costSum[c] / tokSum[c] : 0;
     costPerSession += costSum[c] / n; // == Σ effRate[c]*meanTokens[c]
   }
-  return { n, costPerSession, meanTokens, effRate, shares: modelShares(records), classShares: modelClassShares(records) };
+  return { n, costPerSession, meanTokens, effRate, shares: modelShares(records), classShares: modelClassShares(records), ttlShares: modelTtlShares(records) };
 }
 
 // --- Baseline freeze --------------------------------------------------------
@@ -842,6 +862,7 @@ export interface RealizedSavings {
   premiumTokens?: number;
   premiumCostUsd?: number;
   baselineClassMixAvailable?: boolean;
+  baselineTtlMixAvailable?: boolean;
   /**
    * Structured baseline-building progress. Present when `ready === false` and the
    * not-ready reason is an insufficient early-session count or the window is still
@@ -885,6 +906,7 @@ const NOT_READY = (status: string): RealizedSavings => ({
   premiumTokens: 0,
   premiumCostUsd: 0,
   baselineClassMixAvailable: false,
+  baselineTtlMixAvailable: false,
 });
 
 /**
@@ -985,6 +1007,11 @@ export function computeRealizedSavings(
   const tOut = O / after.length;
   const write1hFraction = CW > 0 ? Math.min(1, CW1H / CW) : 0;
   const comparison = comparableMix(bs.classShares, as.classShares, beforeShares, afterShares, openclawDir);
+  const ttlComparison = (kind: keyof TtlShares) => comparableMix(
+    bs.classShares && bs.ttlShares ? {...bs.classShares, cw:bs.ttlShares[kind]} : bs.classShares,
+    as.classShares && as.ttlShares ? {...as.classShares, cw:as.ttlShares[kind]} : as.classShares,
+    beforeShares, afterShares, openclawDir);
+  const oneHour = ttlComparison("oneHour"), fiveMinute = ttlComparison("fiveMinute");
   let premiumTokens = 0, premiumCostUsd = 0;
   for (const r of after) {
     const buckets = r.modelTokenBuckets && Object.keys(r.modelTokenBuckets).length ? r.modelTokenBuckets : {[r.model]: {input:r.input,output:r.output,cacheRead:r.cacheRead,cacheWrite:r.cacheWrite,cacheWrite1h:r.cacheWrite1h,cacheWrite5m:r.cacheWrite5m}};
@@ -996,16 +1023,22 @@ export function computeRealizedSavings(
     }
   }
   const eFi = tFi * comparison.eligible.fi, eCr = tCr * comparison.eligible.cr;
-  const eCw = tCw * comparison.eligible.cw, eOut = tOut * comparison.eligible.out;
+  const eCw1h = tCw * write1hFraction * oneHour.eligible.cw;
+  const eCw5m = tCw * (1 - write1hFraction) * fiveMinute.eligible.cw;
+  const eOut = tOut * comparison.eligible.out;
   // Price the eligible current volume at the frozen baseline mix.
   // Both arms use the current cache-write TTL split.
   const oldCps =
-    priceClasses(eFi, eCr, eCw, eOut, comparison.before, beforeShares, proxy, openclawDir, write1hFraction);
+    priceClasses(eFi, eCr, 0, eOut, comparison.before, beforeShares, proxy, openclawDir) +
+    priceCacheWrite(eCw1h, eCw1h, 0, oneHour.before.cw, proxy, openclawDir) +
+    priceCacheWrite(eCw5m, 0, eCw5m, fiveMinute.before.cw, proxy, openclawDir);
   // NOW / session uses the same eligible tokens at the current mix.
   const curCRs = eCr;
   const curFs = eFi;
   const nowCps =
-    priceClasses(curFs, curCRs, eCw, eOut, comparison.after, afterShares, proxy, openclawDir, write1hFraction);
+    priceClasses(curFs, curCRs, 0, eOut, comparison.after, afterShares, proxy, openclawDir) +
+    priceCacheWrite(eCw1h, eCw1h, 0, oneHour.after.cw, proxy, openclawDir) +
+    priceCacheWrite(eCw5m, 0, eCw5m, fiveMinute.after.cw, proxy, openclawDir);
   if (
     !Number.isFinite(oldCps) || !Number.isFinite(nowCps) ||
     oldCps < 0 || nowCps < 0
@@ -1083,7 +1116,7 @@ export function computeRealizedSavings(
   // Always decompose the main pool, even when it is net-negative, so the waterfall sums to
   // the honest net including a pool that grew (shown honestly as a "-$X" lever).
   const vRouteS =
-    priceClasses(eFi, eCr, eCw, eOut, comparison.after, afterShares, proxy, openclawDir, write1hFraction);
+    nowCps;
   const sRoute = (oldCps - vRouteS) * sessionsPerMonth; // before->after mix (incl. cache-write)
   const breakdown: SavingsBreakdownItem[] = [
     { key: "routing", label: "Model mix change (excluding premium choices)", monthlyUsd: round2(sRoute) },
@@ -1138,6 +1171,7 @@ export function computeRealizedSavings(
     premiumTokens,
     premiumCostUsd: round2(premiumCostUsd),
     baselineClassMixAvailable: !!bs.classShares,
+    baselineTtlMixAvailable: !!bs.ttlShares,
   };
 }
 

@@ -1,47 +1,8 @@
 /**
- * Realized savings engine for OpenClaw — CURRENT-VOLUME COUNTERFACTUAL.
- *
- * OpenClaw port of the locked methodology that ships on Claude Code (measure.py
- * `_estimate_before_after_savings`). Claude uses Python stdlib sqlite3 (free);
- * OpenClaw is a zero-dep Node plugin (engines >=18), so we persist to JSON under
- * ~/.openclaw/token-optimizer/ exactly like v5-features.json.
- *
- * THE HEADLINE = a FROZEN per-typical-session counterfactual (a superset). We price the
- * frozen pre-TO typical session (baseline meanTokens) two ways:
- *   OLD WAY / session = baseline mix + baseline cache pattern (the typical session's own
- *                       native fresh/cache_read split). Depends only on frozen inputs +
- *                       prices, so it is a STABLE baseline that does NOT re-roll with this
- *                       period's workload.
- *   NOW / session     = the SAME frozen tokens, pool redistributed at the CURRENT cache-hit
- *                       and priced at the CURRENT mix. Moves ONLY with efficiency.
- * Per-session transformation = old_cps - now_cps. Monthly = that x the session count, so
- * volume re-enters ONLY as a multiplier — never as a confounder of the baseline. (This
- * replaces the old current-volume counterfactual whose per-session figure floated each run.)
- *
- * Three non-overlapping pools sum to the headline:
- *   1. Main routing + caching (billed session_log volume; NO winsorization/outlier
- *      drop in the headline path — deleting heavy sessions only suppresses real $).
- *   2. Subagent (sidechain) routing — Claude-only. OpenClaw has NO Claude-style
- *      sidechains, so this pool is 0 (documented gap; see headline assembly).
- *   3. Compression add-back — directly-metered tokens TO removed from context
- *      (tool_archive, structure_map, resume_lean, checkpoint_restore, delta_read),
- *      repriced at the baseline input mix. Disjoint from the billed pool.
- *   4. Verbosity-steer add-back — estimated output tokens never produced due to
- *      lean-output conciseness nudges, repriced at the baseline output mix. The main
- *      counterfactual holds output volume constant, so this is a separate lever.
- *
- * BASELINE MIX: OpenClaw users are non-Anthropic — they are ALWAYS priced at their
- * OWN measured/frozen mix. NO 95% Opus floor (never fabricate Opus they never ran).
- * The frozen baseline supplies efficiency anchors (mix shares + pool cache-hit) ONLY;
- * volume comes entirely from the current window.
- *
- * MULTI-MODEL CORRECTNESS: OpenClaw runs many models with very different per-token
- * pricing. We price each token class at a model MIX (share-weighted blend across the
- * priced models in that era), so a mix shift to lighter models is captured as the
- * routing lever rather than misattributed.
- *
- * Distinct from waste detectors: detectors emit FORWARD-LOOKING "you could save"
- * (monthlyWasteUsd). This measures BACKWARD-LOOKING "you have transformed".
+ * OpenClaw savings counterfactual and read-time event aggregation.
+ * Frozen baseline token classes are compared with the current eligible model mix.
+ * Premium usage above the baseline rate ceiling is disclosed separately.
+ * Provider cache-hit changes are not attributed to Token Optimizer.
  */
 import * as fs from "fs";
 import * as path from "path";
@@ -425,9 +386,34 @@ function priceCacheWrite(
   return cost;
 }
 
-function priceClasses(fi: number, cr: number, cw: number, out: number, shares: ClassShares | undefined, fallback: Record<string, number>, proxy: string, dir: string): number {
+function priceClasses(fi: number, cr: number, cw: number, out: number, shares: ClassShares | undefined, fallback: Record<string, number>, proxy: string, dir: string, write1hFraction = 0): number {
   const mix = (c: TokenClass) => shares && Object.keys(shares[c] ?? {}).length ? shares[c] : fallback;
-  return pricePool(fi, 0, 0, mix("fi"), proxy, dir) + pricePool(0, cr, 0, mix("cr"), proxy, dir) + pricePool(0, 0, out, mix("out"), proxy, dir) + priceCacheWrite(cw, 0, cw, mix("cw"), proxy, dir);
+  return pricePool(fi, 0, 0, mix("fi"), proxy, dir) + pricePool(0, cr, 0, mix("cr"), proxy, dir) + pricePool(0, 0, out, mix("out"), proxy, dir) + priceCacheWrite(cw, cw * write1hFraction, cw * (1 - write1hFraction), mix("cw"), proxy, dir);
+}
+
+function classRate(model: string, c: TokenClass, dir: string): number {
+  return calculateCost({input:c === "fi" ? 1 : 0, cacheRead:c === "cr" ? 1 : 0, cacheWrite:c === "cw" ? 1 : 0, output:c === "out" ? 1 : 0}, model, dir);
+}
+
+/** Exclude current models above the baseline price ceiling for each token class. */
+function comparableMix(before: ClassShares | undefined, after: ClassShares | undefined, beforeAll: Record<string, number>, afterAll: Record<string, number>, dir: string): { before: ClassShares; after: ClassShares; eligible: Record<TokenClass, number>; ceiling: Record<TokenClass, number> } {
+  const b: ClassShares = {fi:{},cr:{},cw:{},out:{}};
+  const a: ClassShares = {fi:{},cr:{},cw:{},out:{}};
+  const eligible: Record<TokenClass, number> = {fi:0,cr:0,cw:0,out:0};
+  const ceiling: Record<TokenClass, number> = {fi:0,cr:0,cw:0,out:0};
+  for (const c of CLASSES) {
+    const bm = before && Object.values(before[c] ?? {}).some(x => x > 0) ? before[c] : beforeAll;
+    const am = after && Object.values(after[c] ?? {}).some(x => x > 0) ? after[c] : afterAll;
+    ceiling[c] = Math.max(0, ...Object.entries(bm).filter(([,v]) => v > 0).map(([m]) => classRate(m,c,dir)));
+    b[c] = bm;
+    for (const [model, share] of Object.entries(am)) {
+      if (share > 0 && classRate(model,c,dir) <= ceiling[c] + 1e-15) {
+        a[c][model] = share;
+        eligible[c] += share;
+      }
+    }
+  }
+  return {before:b, after:a, eligible, ceiling};
 }
 
 /** Cost of 1M fresh-input tokens at a model mix (the "input rate" for repricing). */
@@ -853,6 +839,9 @@ export interface RealizedSavings {
   transformationPct: number;
   beforeOpus: number;
   afterOpus: number;
+  premiumTokens?: number;
+  premiumCostUsd?: number;
+  baselineClassMixAvailable?: boolean;
   /**
    * Structured baseline-building progress. Present when `ready === false` and the
    * not-ready reason is an insufficient early-session count or the window is still
@@ -893,6 +882,9 @@ const NOT_READY = (status: string): RealizedSavings => ({
   transformationPct: 0,
   beforeOpus: 0,
   afterOpus: 0,
+  premiumTokens: 0,
+  premiumCostUsd: 0,
+  baselineClassMixAvailable: false,
 });
 
 /**
@@ -961,11 +953,13 @@ export function computeRealizedSavings(
   // CURRENT window = the `after` sessions, aggregated to confirm the
   // window is non-empty. The main pool is now priced per FROZEN typical session (below),
   // so current-window VOLUME is no longer priced directly.
-  let F = 0, CR = 0, CW = 0;
+  let F = 0, CR = 0, CW = 0, CW1H = 0, O = 0;
   for (const r of after) {
     F += r.input;
     CR += r.cacheRead;
     CW += r.cacheWrite;
+    CW1H += r.cacheWrite1h;
+    O += r.output;
   }
   const totalIn = F + CR + CW;
   if (totalIn <= 0) {
@@ -975,7 +969,6 @@ export function computeRealizedSavings(
   }
 
   // Provider cache reuse is not attributed to Token Optimizer.
-  const curHit = tCacheHit(bs.meanTokens.fi, bs.meanTokens.cr);
   const observedHit = tCacheHit(F, CR);
 
   const afterWindowDays = Math.max(1, (now - afterStart) / DAY_MS);
@@ -984,31 +977,38 @@ export function computeRealizedSavings(
   const monthlyScale = 30 / Math.max(1, days);
   const m = (x: number) => x * monthlyScale;
 
-  // --- PER-TYPICAL-SESSION pricing (FROZEN baseline volume = a factual anchor) ---
-  // Both arms price the SAME frozen typical session (bs.meanTokens), so the per-session
-  // figures move ONLY with efficiency (model mix + cache reuse), NEVER with this period's
-  // workload size. Volume re-enters solely as the monthly session-count multiplier. This
-  // makes "the old way / session" a stable baseline, not a value re-derived from whatever
-  // volume fell in the current window. Mirrors measure.py _estimate_before_after_savings.
-  const tFi = bs.meanTokens.fi;
-  const tCr = bs.meanTokens.cr;
-  const tCw = bs.meanTokens.cw;
-  const tOut = bs.meanTokens.out;
-  const tPool = tFi + tCr; // frozen fresh + cache_read pool
-  // OLD WAY / session (counterfactual) = the typical session as it was pre-TO (its native
-  // fresh/cache_read split) priced at the baseline mix. Depends only on frozen inputs +
-  // prices -> stable across runs. Cache-write has no recorded TTL split -> treat as 5m.
+  // Price the current volume in both arms, using the frozen baseline mix as the
+  // counterfactual and excluding the current premium share from the comparison.
+  const tFi = F / after.length;
+  const tCr = CR / after.length;
+  const tCw = CW / after.length;
+  const tOut = O / after.length;
+  const write1hFraction = CW > 0 ? Math.min(1, CW1H / CW) : 0;
+  const comparison = comparableMix(bs.classShares, as.classShares, beforeShares, afterShares, openclawDir);
+  let premiumTokens = 0, premiumCostUsd = 0;
+  for (const r of after) {
+    const buckets = r.modelTokenBuckets && Object.keys(r.modelTokenBuckets).length ? r.modelTokenBuckets : {[r.model]: {input:r.input,output:r.output,cacheRead:r.cacheRead,cacheWrite:r.cacheWrite,cacheWrite1h:r.cacheWrite1h,cacheWrite5m:r.cacheWrite5m}};
+    for (const [model, bucket] of Object.entries(buckets)) {
+      if (!bucket) continue;
+      const values = {fi:numClamp(bucket.input),cr:numClamp(bucket.cacheRead),cw:numClamp(bucket.cacheWrite),out:numClamp(bucket.output)};
+      const costs = sessionClassCost({...r, model, input:values.fi, output:values.out, cacheRead:values.cr, cacheWrite:values.cw, cacheWrite1h:numClamp(bucket.cacheWrite1h), cacheWrite5m:numClamp(bucket.cacheWrite5m), modelTokenBuckets:undefined}, proxy, openclawDir);
+      for (const c of CLASSES) if (classRate(model,c,openclawDir) > comparison.ceiling[c] + 1e-15) { premiumTokens += values[c]; premiumCostUsd += costs[c]; }
+    }
+  }
+  const eFi = tFi * comparison.eligible.fi, eCr = tCr * comparison.eligible.cr;
+  const eCw = tCw * comparison.eligible.cw, eOut = tOut * comparison.eligible.out;
+  // Price the eligible current volume at the frozen baseline mix.
+  // Both arms use the current cache-write TTL split.
   const oldCps =
-    priceClasses(tFi, tCr, tCw, tOut, bs.classShares, beforeShares, proxy, openclawDir);
-  // NOW / session (actual) = the SAME frozen tokens, but the pool redistributed at the
-  // baseline pool-hit and priced at the CURRENT mix.
-  const curCRs = curHit * tPool;
-  const curFs = tPool - curCRs;
+    priceClasses(eFi, eCr, eCw, eOut, comparison.before, beforeShares, proxy, openclawDir, write1hFraction);
+  // NOW / session uses the same eligible tokens at the current mix.
+  const curCRs = eCr;
+  const curFs = eFi;
   const nowCps =
-    priceClasses(curFs, curCRs, tCw, tOut, as.classShares, afterShares, proxy, openclawDir);
+    priceClasses(curFs, curCRs, eCw, eOut, comparison.after, afterShares, proxy, openclawDir, write1hFraction);
   if (
     !Number.isFinite(oldCps) || !Number.isFinite(nowCps) ||
-    oldCps <= 0 || nowCps <= 0
+    oldCps < 0 || nowCps < 0
   ) {
     const r = NOT_READY("insufficient billed cost");
     r.installDate = installDate;
@@ -1083,10 +1083,10 @@ export function computeRealizedSavings(
   // Always decompose the main pool, even when it is net-negative, so the waterfall sums to
   // the honest net including a pool that grew (shown honestly as a "-$X" lever).
   const vRouteS =
-    priceClasses(tFi, tCr, tCw, tOut, as.classShares, afterShares, proxy, openclawDir);
+    priceClasses(eFi, eCr, eCw, eOut, comparison.after, afterShares, proxy, openclawDir, write1hFraction);
   const sRoute = (oldCps - vRouteS) * sessionsPerMonth; // before->after mix (incl. cache-write)
   const breakdown: SavingsBreakdownItem[] = [
-    { key: "routing", label: "Model mix change (including premium choices)", monthlyUsd: round2(sRoute) },
+    { key: "routing", label: "Model mix change (excluding premium choices)", monthlyUsd: round2(sRoute) },
     // Subagent lever omitted (OpenClaw has no sidechains; always 0).
     { key: "context_compression", label: "Lighter context (metered removals)", monthlyUsd: round2(compressionMonthly) },
     { key: "verbosity_steer", label: "Lean output nudges (less output, estimated)", monthlyUsd: round2(verbosityMonthly) },
@@ -1115,7 +1115,7 @@ export function computeRealizedSavings(
     savingsPerSession: round4(beforeCps - afterCps),
     beforeCostPerSession: round4(beforeCps),
     afterCostPerSession: round4(afterCps),
-    beforeCacheHit: round4(tPool > 0 ? tCr / tPool : 0),
+    beforeCacheHit: round4(tCacheHit(tFi, tCr)),
     afterCacheHit: round4(observedHit),
     sessionsPerMonth,
     trackedDays: Math.max(1, Math.floor(afterWindowDays)),
@@ -1135,6 +1135,9 @@ export function computeRealizedSavings(
     transformationPct: round4(transformationPct),
     beforeOpus: round4(beforeShares.opus ?? 0),
     afterOpus: round4(afterShares.opus ?? 0),
+    premiumTokens,
+    premiumCostUsd: round2(premiumCostUsd),
+    baselineClassMixAvailable: !!bs.classShares,
   };
 }
 

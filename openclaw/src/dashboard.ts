@@ -1403,7 +1403,7 @@ function renderSavings(data: DashboardData): string {
           ? `<div style="font-size:13px;color:var(--c-text-dim);margin-bottom:var(--s-2)">
           est. <strong style="color:var(--c-text-main)">${fmtCost(s.actualMonthlyUsd)}/mo</strong> now
           vs <strong style="color:var(--c-text-dim)">${fmtCost(s.counterfactualMonthlyUsd)}/mo</strong> the old way
-          &mdash; volume held constant on both sides, pure efficiency gain
+          &mdash; eligible volume held constant on both sides
         </div>`
           : `<div style="font-size:13px;color:var(--c-text-dim);margin-bottom:var(--s-2)">
           Counted directly from metered context removals (tool replacements, lean resumes, checkpoint restores).
@@ -1417,6 +1417,8 @@ function renderSavings(data: DashboardData): string {
         </div>
         <div style="color:var(--c-text-dim);font-size:13px;margin-top:var(--s-2)">
           ${esc(s.beforeMixLabel)} &rarr; ${esc(s.afterMixLabel)}${cacheLine}${runRate ? ` &middot; ~${Math.round(s.sessionsPerMonth)} sessions/mo` : ""}
+          ${s.premiumTokens ? `<br>${fmtTokens(s.premiumTokens)} premium tokens (${fmtCost(s.premiumCostUsd ?? 0)} at API rates) excluded from the model comparison.` : ""}
+          ${s.baselineClassMixAvailable === false ? "<br>The saved baseline does not contain a per-class model mix." : ""}
         </div>
         <div style="font-size:12px;color:var(--c-text-dim);margin-top:var(--s-2)">${BILLING_CAPTION}</div>
       </div>`
@@ -1471,8 +1473,8 @@ function renderSavings(data: DashboardData): string {
         </div>
         <div style="font-size:13px;color:var(--c-text-dim);margin-bottom:var(--s-2)">
           ${runRate
-            ? `This is the <em>metered slice</em> — directly counted tokens removed from context (tool replacements, lean resumes, checkpoint restores). It is smaller and exact. The transformation headline above is the superset estimate that also includes routing and caching efficiency; do not add these two together.`
-            : `This is the <em>metered slice</em> — directly counted tokens removed from context (tool replacements, lean resumes, checkpoint restores). It is the same figure shown above. The monthly run-rate estimate — which also folds in routing and caching efficiency — appears once 30 days of post-baseline history are on record.`}
+            ? `This is the <em>metered slice</em> — directly counted tokens removed from context (tool replacements, lean resumes, checkpoint restores). It is smaller and exact. The transformation headline above is the superset estimate that also includes model mix changes; do not add these two together.`
+            : `This is the <em>metered slice</em> — directly counted tokens removed from context (tool replacements, lean resumes, checkpoint restores). It is the same figure shown above. The monthly run-rate estimate — which also includes model mix changes — appears once 30 days of post-baseline history are on record.`}
         </div>
         <div style="font-size:12px;color:var(--c-text-dim);margin-top:var(--s-2)">${BILLING_CAPTION}</div>
         ${evts.totalCount > 0 ? `<div style="margin-top:var(--s-2)">

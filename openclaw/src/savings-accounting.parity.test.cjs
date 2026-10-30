@@ -96,3 +96,20 @@ test('parser retains per-model token classes in a mixed session', () => {
   assert.equal(run.modelTokenBuckets['claude-opus-5-5'].input,100);
   assert.equal(run.modelTokenBuckets.sonnet.output,40);
 });
+test('premium usage is disclosed without masking cheaper-model routing', () => {
+  const fs=require('node:fs'),path=require('node:path');
+  const {computeRealizedSavings}=require('./savings.ts');
+  const dir=fs.mkdtempSync(path.join(process.cwd(),'.scratch-parity','premium-'));
+  const state=path.join(dir,'token-optimizer');fs.mkdirSync(state);
+  const day=86400000,t=Date.parse('2026-01-01T00:00:00Z'),now=t+60*day;
+  const row=(id,ts,model) => ({sessionId:id,ts,model,input:100000,output:10000,cacheRead:0,cacheWrite:0,costUsd:0,durationSec:300});
+  const rows=[row('install',t,'opus')];
+  for(let i=0;i<35;i++) rows.push(row('before'+i,t+(2+i/2)*day,'opus'));
+  for(let i=0;i<12;i++) rows.push(row('after'+i,now-(i+1)*day,i<6?'fable':'sonnet'));
+  fs.writeFileSync(path.join(state,'session-history.json'),JSON.stringify(rows));
+  const result=computeRealizedSavings(dir,30,now);
+  assert.equal(result.ready,true);
+  assert.ok(result.monthlySavingsUsd>0);
+  assert.equal(result.premiumTokens,660000);
+  assert.ok(result.premiumCostUsd>0);
+});

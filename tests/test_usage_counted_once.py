@@ -549,3 +549,53 @@ def test_net_of_counted_never_goes_below_zero(tmp_path, monkeypatch):
     net = measure._net_of_counted(requests, {"msg_1": _share(inp=50, out=5, n=1)})
 
     assert (net["msg_1"]["inp"], net["msg_1"]["out"], net["msg_1"]["n"]) == (0, 15, 0)
+
+
+@pytest.mark.parametrize("smaller_first", [True, False])
+def test_a_partial_share_survives_recollecting_its_session_for_another_reason(
+        tmp_path, monkeypatch, smaller_first):
+    """The session holding the shorter copy of a shared request gets a new,
+    unrelated request and is collected again; the longer copy's session is
+    untouched. The shared request must still count at its largest figure."""
+    measure = _load(tmp_path, monkeypatch)
+    when = _noon()
+    projects = _projects(tmp_path) / "-repo"
+    path_a, path_b = projects / f"{SID_A}.jsonl", projects / f"{SID_B}.jsonl"
+    shorter, longer = _chunk(when, mid="msg_1", out=100), _chunk(when, mid="msg_1", out=1000)
+    first, second = ((path_a, shorter), (path_b, longer)) if smaller_first else ((path_b, longer), (path_a, shorter))
+    _write(first[0], [first[1]])
+    measure.collect_sessions(days=30, quiet=True)
+    _write(second[0], [second[1]])
+    measure.collect_sessions(days=30, quiet=True)
+    assert sum(r[2] for r in _rows(measure)) == 1000
+    by_name = lambda rows: {r[0].rsplit("/", 1)[1]: r for r in rows}   # noqa: E731
+    b_before = by_name(_rows(measure))[f"{SID_B}.jsonl"]
+
+    # Session A grows by an unrelated request; B is not touched.
+    _write(path_a, [shorter, _chunk(when + timedelta(minutes=5), mid="msg_2", out=500)],
+           mtime=datetime.now().timestamp() + 60)
+    measure.collect_sessions(days=30, quiet=True)
+    rows = _rows(measure)
+    assert sum(r[2] for r in rows) == 1500       # msg_1 at its largest, once, plus msg_2
+    assert sum(r[3] for r in rows) == 2
+    assert by_name(rows)[f"{SID_B}.jsonl"] == b_before
+
+    # Collecting again, with or without a change, is stable.
+    measure.collect_sessions(days=30, quiet=True)
+    assert _rows(measure) == rows
+    os.utime(path_a, (datetime.now().timestamp() + 120,) * 2)
+    measure.collect_sessions(days=30, quiet=True)
+    assert sum(r[2] for r in _rows(measure)) == 1500
+    assert sum(r[3] for r in _rows(measure)) == 2
+
+
+def test_a_session_keeps_its_earlier_share_when_it_is_collected_again(tmp_path, monkeypatch):
+    measure = _load(tmp_path, monkeypatch)
+    requests = {"msg_1": {"inp": 1000, "out": 100, "cr": 0, "cc": 0, "cc_1h": 0, "cc_5m": 0,
+                          "model": "claude-opus-4-8", "day": None}}
+    others = {"msg_1": _share(inp=0, out=900, n=0)}
+    earlier = {"msg_1": _share(inp=1000, out=100, n=1)}
+
+    net = measure._net_of_counted(requests, others, earlier)
+
+    assert (net["msg_1"]["inp"], net["msg_1"]["out"], net["msg_1"]["n"]) == (1000, 100, 1)

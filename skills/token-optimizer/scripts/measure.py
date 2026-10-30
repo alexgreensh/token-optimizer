@@ -26153,15 +26153,16 @@ def _empty_share():
     return share
 
 
-def _counted_by_others(conn, owner_id, keys, live_owners):
-    """What other stored sessions have already counted of the requests in `keys`.
+def _claim_state(conn, owner_id, keys, live_owners):
+    """What the stored sessions have counted of the requests in `keys`.
 
     A request Claude Code copied into a resumed or forked session's transcript
     is the same API call, and a streamed reply can be longer in one copy than
     in another. Sessions therefore share a request's largest usage between
-    them (see `_net_of_counted`). A share held by a session that no longer has
-    a row is ignored, so usage is never dropped on the strength of a claim
-    nobody holds.
+    them (see `_net_of_counted`). Returns (others, own): the summed shares of
+    the other sessions, and this session's own earlier share. A share held by a
+    session that no longer has a row is ignored, so usage is never dropped on
+    the strength of a claim nobody holds.
     """
     me = _stable_hash63(owner_id)
     by_hash = {}
@@ -26169,7 +26170,7 @@ def _counted_by_others(conn, owner_id, keys, live_owners):
         base = _request_base_key(key)
         if base is not None:
             by_hash[_stable_hash63(base)] = base
-    counted = {}
+    others, own = {}, {}
     hashes = list(by_hash)
     for i in range(0, len(hashes), 500):
         batch = hashes[i:i + 500]
@@ -26179,32 +26180,42 @@ def _counted_by_others(conn, owner_id, keys, live_owners):
                 "FROM usage_request_claims WHERE request_hash IN (%s)" % ",".join("?" * len(batch)),
                 batch).fetchall()
         except sqlite3.Error:
-            return {}
+            return {}, {}
         for request_hash, owner_hash, calls, *fields in rows:
-            if owner_hash == me or owner_hash not in live_owners:
+            if owner_hash == me:
+                target = own
+            elif owner_hash in live_owners:
+                target = others
+            else:
                 continue
-            share = counted.setdefault(by_hash[request_hash], _empty_share())
+            share = target.setdefault(by_hash[request_hash], _empty_share())
             share["n"] += int(calls or 0)
             for name, value in zip(_SHARE_FIELDS, fields):
                 share[name] += int(value or 0)
-    return counted
+    return others, own
 
 
-def _net_of_counted(requests, counted):
+def _net_of_counted(requests, counted, own=None):
     """The part of each request this session adds on top of what is already
-    counted: per field, its own figure minus the others' total, never below 0.
-    The shares of every session sum to the largest figure any copy holds,
-    whichever session is collected first or collected again later. An entry the
-    others already cover completely comes back empty (`n` 0, all fields 0)."""
+    counted: per field, its own figure minus the others' total, never below 0
+    and never above what its own transcript holds. A share this session
+    recorded earlier is kept, so collecting it again for an unrelated reason
+    cannot shrink it. The shares of every session sum to the largest figure any
+    copy holds, whichever session is collected first or collected again later.
+    An entry the others already cover completely comes back empty (`n` 0, all
+    fields 0)."""
+    own = own or {}
     net = {}
     for key, u in requests.items():
         base = _request_base_key(key)
         share = counted.get(base) if base is not None else None
         entry = dict(u)
         if share:
+            prior = own.get(base) or {}
             for name in _SHARE_FIELDS:
-                entry[name] = max(0, int(u.get(name) or 0) - share[name])
-            entry["n"] = 0 if share["n"] >= 1 else 1
+                raw = int(u.get(name) or 0)
+                entry[name] = min(raw, max(int(prior.get(name) or 0), raw - share[name]))
+            entry["n"] = max(int(prior.get("n") or 0), 0 if share["n"] >= 1 else 1)
         else:
             entry["n"] = 1
         net[key] = entry
@@ -26277,12 +26288,12 @@ def _parsed_with_requests(parsed, requests):
     return out
 
 
-def _parsed_net_of_counted(parsed, counted):
+def _parsed_net_of_counted(parsed, counted, own=None):
     """`parsed` restated without what other sessions already counted of its requests."""
     requests = (parsed or {}).get("request_usage")
     if not counted or not requests:
         return parsed
-    return _parsed_with_requests(parsed, _net_of_counted(requests, counted))
+    return _parsed_with_requests(parsed, _net_of_counted(requests, counted, own))
 
 
 def _parsed_net_of_ledger(parsed, ledger):
@@ -26367,9 +26378,9 @@ def _session_daily_usage(filepath, parsed=None, subagent_files=None, conn=None, 
     if conn is not None:
         if live_owners is None:
             live_owners = _live_usage_owners(conn)
-        counted = _counted_by_others(conn, _usage_owner_id(filepath), merged, live_owners)
+        counted, own = _claim_state(conn, _usage_owner_id(filepath), merged, live_owners)
         if counted:
-            merged = _net_of_counted(merged, counted)
+            merged = _net_of_counted(merged, counted, own)
     return _daily_usage_from_merged(merged)
 
 
@@ -26672,10 +26683,10 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
         # the difference, so the sessions together hold each request's largest usage.
         counted = {}
         if merged is not None:
-            counted = _counted_by_others(conn, owner_id, merged, live_owners)
+            counted, own_shares = _claim_state(conn, owner_id, merged, live_owners)
             if counted:
-                merged = _net_of_counted(merged, counted)
-                parsed = _parsed_net_of_counted(parsed, counted)
+                merged = _net_of_counted(merged, counted, own_shares)
+                parsed = _parsed_net_of_counted(parsed, counted, own_shares)
         if merged is not None:
             daily_usage = _daily_usage_from_merged(merged)
         else:

@@ -52417,6 +52417,49 @@ def _stable_workload_anchor(before, month):
         return None, month
 
 
+def _crosscheck_agrees(primary_usd, crosscheck_usd):
+    """Whether the two independent work-unit transformations agree.
+
+    The per-API-call and per-message methods measure the same workload through
+    two different units, so the transformation is only headline-worthy when
+    they land within 10% of each other on the same side of zero. Returns
+    (agrees, gap_pct) where gap_pct is |a-b| as a percentage of max(|a|,|b|),
+    or None when either input is missing or non-finite.
+    """
+    try:
+        a = float(primary_usd)
+        b = float(crosscheck_usd)
+    except (TypeError, ValueError):
+        return False, None
+    if not (math.isfinite(a) and math.isfinite(b)):
+        return False, None
+    denom = max(abs(a), abs(b))
+    gap = abs(a - b) / denom if denom > 0 else 0.0
+    same_sign = (a >= 0) == (b >= 0)
+    return same_sign and gap <= 0.10, round(gap * 100, 1)
+
+
+def _signed_usd(value):
+    """Format a signed dollar figure with the sign before the symbol
+    (-$1,234, not $-1,234)."""
+    v = float(value or 0.0)
+    return f"-${abs(v):,.0f}" if v < 0 else f"${v:,.0f}"
+
+
+def _crosscheck_verdict(pool):
+    """Read the stored cross-check verdict on a weight-pool dict, recomputing
+    it when the pool predates the stored flag (a cached or hand-built payload).
+    No cross-check means nothing to disagree with."""
+    cross = (pool or {}).get("crosscheck") or {}
+    if not cross:
+        return True
+    agrees = cross.get("agrees")
+    if agrees is None:
+        agrees, _ = _crosscheck_agrees(pool.get("transformation_usd"),
+                                     cross.get("transformation_usd"))
+    return bool(agrees)
+
+
 def _session_weight_pool_savings(cutoff, days=30, tier=None, activity_window=None):
     """THE volume lever: cost per UNIT OF WORK, over the whole parent population.
 
@@ -52539,7 +52582,9 @@ def _session_weight_pool_savings(cutoff, days=30, tier=None, activity_window=Non
         transformation = (before_rate - now_rate) * n_units
         counterfactual = before_rate * n_units
         # Cross-check on the OTHER work unit; disclosed, never summed. The two
-        # units are expected to agree within roughly 10% of each other.
+        # units only corroborate the headline when they agree within 10% on the
+        # same side of zero -- the verdict is computed here once so every
+        # surface reads the same answer instead of assuming agreement.
         crosscheck = None
         if unit == "api_call" and b_msgs > 0 and n_msgs > 0:
             crosscheck = {"unit": "message",
@@ -52547,6 +52592,11 @@ def _session_weight_pool_savings(cutoff, days=30, tier=None, activity_window=Non
         elif unit == "message" and b_calls > 0 and n_calls > 0:
             crosscheck = {"unit": "api_call",
                           "transformation_usd": (b_flat / b_calls - n_flat / n_calls) * n_calls}
+        if crosscheck is not None:
+            agrees, gap_pct = _crosscheck_agrees(
+                transformation, crosscheck["transformation_usd"])
+            crosscheck["agrees"] = agrees
+            crosscheck["gap_pct"] = gap_pct
         # Engine-priced variant (each era at its own recorded model mix): includes the
         # price/mix drift between eras, which is real money off the bill but is NOT
         # Token Optimizer's doing (generational repricing like Sonnet 4.6 -> Sonnet 5
@@ -52685,6 +52735,11 @@ def _weekly_full_savings(resets_at=None, now=None):
             start.isoformat(), days=7, activity_window=(start, end))
         if not pool:
             return None
+        if not _crosscheck_verdict(pool):
+            # The two work-unit methods disagree this week, so the
+            # whole-workload figure is not trustworthy enough to stand in for
+            # the metered one; the caller falls back to measured savings.
+            return None
         # Same conservative display cap as the Savings tab.
         saving = max(0.0, min(pool["transformation_usd"], pool["actual_usd"]))
         value = {"saved_usd": round(saving, 2), "start": start.isoformat(),
@@ -52721,6 +52776,8 @@ def _weight_pool_payload(pool):
     net-negative return paths so both describe the SAME arms the headline (or the
     shortfall) was built from."""
     cross = pool.get("crosscheck") or {}
+    cross_agrees, cross_gap = _crosscheck_agrees(
+        pool.get("transformation_usd"), cross.get("transformation_usd")) if cross else (True, None)
     return {
         "anchor_month": pool["anchor_month"],
         "work_unit": pool.get("work_unit"),
@@ -52740,6 +52797,8 @@ def _weight_pool_payload(pool):
         "crosscheck": ({
             "unit": cross.get("unit"),
             "transformation_usd": round(float(cross.get("transformation_usd", 0.0)), 2),
+            "agrees": cross_agrees,
+            "gap_pct": cross_gap,
         } if cross else None),
         "engine_priced_transformation_usd": round(
             float(pool.get("engine_priced_transformation_usd", 0.0)), 2),
@@ -52797,8 +52856,11 @@ def _estimate_before_after_savings(days=30, estimated_pools=None):
                `label` is presentational and may change),
              breakdown_caveat (str), evidence}.
     On an empty result, `reason` is one of "insufficient_history" / "net_negative" /
-    "no_recent_sessions" / "no_mix" / "unsupported_billing" / "estimated_billing"
-    (None when never computed). "unsupported_billing" is the GitHub Copilot case:
+    "methods_disagree" / "no_recent_sessions" / "no_mix" / "unsupported_billing" /
+    "estimated_billing" (None when never computed). "methods_disagree" is the
+    cross-check failure: the per-API-call and per-message transformations could
+    not be reconciled within 10%, so neither is headlined and both figures ride
+    on session_weight_pool for display. "unsupported_billing" is the GitHub Copilot case:
     premium-request metering has no token-dollar counterfactual, so nothing is
     rendered there. "estimated_billing" is the Antigravity case: it is
     subscription/credit metered, so only the labelled list-price estimate (R8)
@@ -53240,8 +53302,9 @@ def _estimate_before_after_savings(days=30, estimated_pools=None):
         # otherwise return transformation_state "ok" with a $0.00 headline that every
         # renderer gates off, recreating the silent empty card this branch exists to
         # eliminate ("no savings" must stay distinguishable from "the math broke").
-        if net < 0.01:
-            return {**zero, "before_sessions": bn, "after_sessions": recent_n,
+        # Both non-headlined states report the SAME real arms and real (signed) delta so the
+        # renderer can explain itself; `reason` / `transformation_state` carry which one.
+        not_headlined = {**zero, "before_sessions": bn, "after_sessions": recent_n,
                     "actual_monthly_usd": round(combined_actual, 2),
                     "counterfactual_monthly_usd": round(combined_cf, 2),
                     "main_actual_monthly_usd": round(actual_monthly, 2),
@@ -53302,14 +53365,26 @@ def _estimate_before_after_savings(days=30, estimated_pools=None):
                     "after_cache_hit": round(
                         (CR / (F + CW + CR)) if (F + CW + CR) > 0 else 0.0, 4),
                     "before_opus_label": _mix_label(before_shares),
-                    "net_shortfall_usd": round(net, 2),
-                    # When the session-weight pool drove the (negative) headline, its
-                    # arms -- not the frozen-anchor pair -- are the ones the net was
-                    # built from; surface them so the empty state explains itself.
+                    # When the session-weight pool drove the headline, its
+                    # arms -- not the frozen-anchor pair -- are the ones the net
+                    # was built from; surface them so the card explains itself.
                     "session_weight_pool": (_weight_pool_payload(weight_pool)
-                                            if weight_pool else None),
+                                            if weight_pool else None)}
+        if net < 0.01:
+            return {**not_headlined,
+                    "net_shortfall_usd": round(net, 2),
                     "transformation_state": "net_negative",
                     "reason": "net_negative"}
+        # A positive net is only headline-worthy when the two independent
+        # work-unit methods agree on it. When the per-API-call and per-message
+        # transformations are more than 10% apart (or on opposite sides of
+        # zero), neither figure is trustworthy enough to headline: the card
+        # reports both instead of picking one. Same non-headlined shape as
+        # net_negative; both disputed figures ride on session_weight_pool.
+        if weight_pool and not _crosscheck_verdict(weight_pool):
+            return {**not_headlined,
+                    "transformation_state": "methods_disagree",
+                    "reason": "methods_disagree"}
         # Combined headline = the honest net of every pool (== combined_cf - combined_actual,
         # equivalently main_delta + subagent_delta + compression + verbosity). The per-lever
         # waterfall below decomposes exactly this quantity, so the breakdown reconciles to the
@@ -55717,9 +55792,20 @@ def savings_report(days=30, as_json=False):
                       f"({'cheaper' if drift >= 0 else 'costlier'} models would have moved "
                       f"your bill without Token Optimizer).")
             cross = wp.get("crosscheck") or {}
-            if cross.get("transformation_usd"):
-                print(f"    Cross-check on messages: ~${float(cross['transformation_usd']):,.0f}/mo "
-                      f"(independent unit, agrees within ~10%).")
+            if cross.get("transformation_usd") is not None:
+                cross_usd = float(cross.get("transformation_usd") or 0.0)
+                cross_unit = "API calls" if cross.get("unit") == "api_call" else "messages"
+                gap = cross.get("gap_pct")
+                gap_txt = (f", {float(gap):.1f}% apart"
+                           if isinstance(gap, (int, float)) else "")
+                if _crosscheck_verdict(wp):
+                    print(f"    Cross-check on {cross_unit}: "
+                          f"{_signed_usd(cross_usd)}/mo "
+                          f"(independent unit, agrees within ~10%{gap_txt}).")
+                else:
+                    print(f"    Cross-check on {cross_unit}: "
+                          f"{_signed_usd(cross_usd)}/mo "
+                          f"(independent unit, does not agree{gap_txt}).")
         else:
             print(f"    Had you worked the way you did before Token Optimizer "
                   f"(~{ba.get('before_opus', 0) * 100:.0f}% Opus main work), you'd have paid "
@@ -55758,6 +55844,23 @@ def savings_report(days=30, as_json=False):
               f"${ba.get('counterfactual_monthly_usd', 0):,.0f}/mo at the baseline's cost "
               f"per request), so there is no whole-workload saving to headline. "
               f"The measured savings below are real and counted.")
+    elif ba.get("reason") == "methods_disagree":
+        # The two independent work-unit methods could not be reconciled, so the
+        # transformation is not headlined. Both figures stay visible.
+        wp = ba.get("session_weight_pool") or {}
+        cross = wp.get("crosscheck") or {}
+        main_usd = float(wp.get("transformation_usd", 0.0) or 0.0)
+        cross_usd = float(cross.get("transformation_usd", 0.0) or 0.0)
+        main_unit = ("per-API-call" if wp.get("work_unit") == "api_call"
+                     else "per-message")
+        cross_unit = ("per-API-call" if cross.get("unit") == "api_call"
+                      else "per-message")
+        print()
+        print("  YOUR TRANSFORMATION: not headlined this period")
+        print(f"    The {main_unit} and {cross_unit} methods disagree "
+              f"({_signed_usd(main_usd)}/mo vs {_signed_usd(cross_usd)}/mo), "
+              f"so neither is headlined. The measured savings below are real "
+              f"and counted.")
 
     pricing = summary.get("pricing_detail") or {}
     p_model = pricing.get("model", "sonnet")

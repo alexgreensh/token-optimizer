@@ -364,3 +364,48 @@ def test_help_lists_antigravity_commands(tmp_path):
     for cmd in ("antigravity-doctor", "antigravity-install", "antigravity-uninstall",
                 "antigravity-home", "antigravity-rollup", "antigravity-summary"):
         assert cmd in out.stdout
+
+
+def test_rollup_prices_each_generation_model_and_excludes_unknown(monkeypatch, tmp_path):
+    mod, snap = _import_measure(monkeypatch, tmp_path)
+    _grant_consent(_patch_homes(monkeypatch, mod, tmp_path))
+    raw = _session(fresh=600, output=100, cache_read=110)
+    raw['generations'] = [
+        {'model_display_name': 'Gemini 3.5 Flash', 'input_tokens': 100, 'output_tokens': 20, 'cache_read_tokens': 10},
+        {'model_display_name': 'Gemini 3.6 Flash', 'input_tokens': 200, 'output_tokens': 30, 'cache_read_tokens': 40},
+        {'model_display_name': 'Future model', 'input_tokens': 300, 'output_tokens': 50, 'cache_read_tokens': 60},
+    ]
+    _patch_sessions(monkeypatch, [raw])
+    assert mod._collect_antigravity_sessions(days=90, quiet=True) == 1
+    row = _rows(mod, snap)[0]
+    expected = (mod._get_model_cost('gemini-3.5-flash', 100, 20, cache_read=10)
+                + mod._get_model_cost('gemini-3.6-flash', 200, 30, cache_read=40))
+    assert row[2] == 'antigravity_list_price_partial'
+    assert row[3] == pytest.approx(expected, abs=1e-9)
+
+
+def test_existing_session_reprices_only_from_available_complete_generations(monkeypatch, tmp_path):
+    mod, snap = _import_measure(monkeypatch, tmp_path)
+    _grant_consent(_patch_homes(monkeypatch, mod, tmp_path))
+    raw = _session(fresh=300, output=50, cache_read=50)
+    raw['generations'] = [
+        {'model_display_name': 'Gemini 3.5 Flash', 'input_tokens': 100, 'output_tokens': 20, 'cache_read_tokens': 10},
+        {'model_display_name': 'Gemini 3.6 Flash', 'input_tokens': 200, 'output_tokens': 30, 'cache_read_tokens': 40},
+    ]
+    _patch_sessions(monkeypatch, [raw])
+    assert mod._collect_antigravity_sessions(days=90, quiet=True) == 1
+    db = snap / 'trends.db'
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE session_log SET cost_usd=99, model_usage_breakdown_json='{}' WHERE platform='antigravity'")
+    assert mod._collect_antigravity_sessions(days=90, quiet=True) == 1
+    expected = (mod._get_model_cost('gemini-3.5-flash', 100, 20, cache_read=10)
+                + mod._get_model_cost('gemini-3.6-flash', 200, 30, cache_read=40))
+    assert _rows(mod, snap)[0][3] == pytest.approx(expected, abs=1e-9)
+    assert mod._collect_antigravity_sessions(days=90, quiet=True) == 0
+    truncated = dict(raw, generations=raw['generations'][:1], input_tokens=100, output_tokens=20, cache_read_tokens=10)
+    _patch_sessions(monkeypatch, [truncated])
+    assert mod._collect_antigravity_sessions(days=90, quiet=True) == 0
+    assert _rows(mod, snap)[0][3] == pytest.approx(expected, abs=1e-9)
+    _patch_sessions(monkeypatch, [])
+    assert mod._collect_antigravity_sessions(days=90, quiet=True) == 0
+    assert _rows(mod, snap)[0][3] == pytest.approx(expected, abs=1e-9)

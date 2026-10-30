@@ -118,3 +118,15 @@ def test_model_id_mapping():
     assert model_id_for_display_name("Some Future Model") is None
     assert model_id_for_display_name("") is None
     assert model_id_for_display_name(None) is None
+
+
+def test_model_breakdown_uses_each_generation_and_preserves_unknown():
+    generations = [
+        {'model_display_name': 'Gemini 3.5 Flash', 'input_tokens': 100, 'output_tokens': 20, 'cache_read_tokens': 10},
+        {'model_display_name': 'Gemini 3.6 Flash', 'input_tokens': 200, 'output_tokens': 30, 'cache_read_tokens': 40},
+        {'model_display_name': 'Future model', 'input_tokens': 300, 'output_tokens': 50, 'cache_read_tokens': 60},
+    ]
+    s = normalize_session(_raw(generations=generations, input_tokens=600, output_tokens=100, cache_read_tokens=110))
+    assert s['model_usage_breakdown']['gemini-3.5-flash']['fresh_input'] == 100
+    assert s['model_usage_breakdown']['gemini-3.6-flash']['cache_read'] == 40
+    assert s['model_usage_breakdown']['Future model']['output'] == 50

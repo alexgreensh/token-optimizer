@@ -5,7 +5,7 @@ export type Usage = {
 };
 export type Entry = {
   id: string; parentId: string | null; type: string;
-  message?: { role?: string; provider?: string; model?: string; usage?: Usage };
+  message?: { id?: string; role?: string; provider?: string; model?: string; usage?: Usage };
   kind?: string; provider?: string; model?: string; usage?: Usage;
 };
 export type ModelTotals = {
@@ -37,12 +37,20 @@ export function activeBranch(entries: Entry[], leafId?: string | null): Entry[] 
 }
 export function rollup(entries: Entry[], prices?: PricingLookup): Rollup {
   const models = new Map<string, ModelTotals>();
+  const lastMessage = new Map<string, Entry>();
+  for (const entry of entries) {
+    const m = entry.message;
+    if (entry.type === "message" && m?.role === "assistant" && m.id && m.provider && m.model && m.usage) {
+      lastMessage.set(`${m.provider}\0${m.id}`, entry);
+    }
+  }
   for (const entry of entries) {
     const isAssistant = entry.type === "message" && entry.message?.role === "assistant";
     const isUsage = entry.type === "usage";
     const isSummary = (entry.type === "compaction" || entry.type === "branch_summary") && entry.usage !== undefined;
     if (!isAssistant && !isUsage && !isSummary) continue;
     const m = entry.message;
+    if (isAssistant && m?.id && m.provider && lastMessage.get(`${m.provider}\0${m.id}`) !== entry) continue;
     const usage = isAssistant ? m?.usage : entry.usage;
     const model = isAssistant ? m?.model : entry.model;
     const provider = isAssistant ? m?.provider : entry.provider;

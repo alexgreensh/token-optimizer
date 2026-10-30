@@ -121,9 +121,9 @@ export function buildTooltip(s: Snapshot, opts: RenderOptions): string {
   lines.push('');
 
   if (isFunnel(s)) {
-    lines.push('_Save 15–20% on every session — three levels of optimization, quality kept intact._');
+    lines.push('_Track token savings across three levels of optimization._');
     lines.push('');
-    lines.push('Scales with use: ~**$150/mo** light → up to **~$1,900/mo** power (API-equivalent, metered on real data).');
+    lines.push('See your savings in the Token Optimizer dashboard after installing the CLI plugin.');
     lines.push('');
     lines.push(`**[Install Token Optimizer →](${INSTALL_CMD})**`);
     return lines.join('\n');

@@ -4498,6 +4498,27 @@ var DB = (function() {
         '<div class="label" style="margin-bottom:var(--s-2);">At or above your baseline this period</div>' +
         '<div class="lede">Your recent sessions cost about what your frozen baseline would have — est. <strong>' + money(ba.actual_monthly_usd) + '/mo</strong> now vs <strong>' + money(ba.counterfactual_monthly_usd) + '/mo</strong> the old way. There is no net saving to headline this period, so we are not showing one. The figure below is what Token Optimizer counted directly, action by action.</div>' +
       '</div>';
+    } else if (ba.reason === 'methods_disagree') {
+      // The two independent work-unit methods (per-API-call and per-message)
+      // landed more than 10% apart, so neither figure is trustworthy enough to
+      // headline. Show both, headline nothing; the metered floor card below
+      // still reports realized savings. Same neutral-card shape as
+      // net_negative, with signed money for the cross-check figure.
+      var swp = ba.session_weight_pool || {};
+      var swpCross = swp.crosscheck || {};
+      var mainUsd = Number(swp.transformation_usd) || 0;
+      var crossUsd = Number(swpCross.transformation_usd) || 0;
+      var mainUnit = swp.work_unit === 'message' ? 'per-message' : 'per-API-call';
+      var crossUnit = swpCross.unit === 'api_call' ? 'per-API-call' : 'per-message';
+      var signedMoney = function (n) {
+        var v = Number(n) || 0;
+        return (v < 0 ? '-' : '') + money(Math.abs(v));
+      };
+      html += '<div class="card wide" style="padding:var(--s-5) var(--s-4);margin-bottom:var(--s-3);">' +
+        '<div class="label" style="margin-bottom:var(--s-2);">Two estimates disagree this period</div>' +
+        '<div class="lede">The ' + mainUnit + ' estimate is <strong>' + signedMoney(mainUsd) + '/mo</strong> and the ' + crossUnit +
+          ' estimate is <strong>' + signedMoney(crossUsd) + '/mo</strong>. They are too far apart to headline either one. The figure below is what Token Optimizer counted directly, action by action.</div>' +
+      '</div>';
     }
 
     // ---- Tokens Saved card: the full card (hero + spent-vs-saved + model-

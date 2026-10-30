@@ -300,7 +300,7 @@ function ratesFor(modelKey: string): ModelPricing {
 }
 
 /** Return a documented rate only when the model has a known price card. */
-export function knownModelRate(modelKey: string, klass: "input" | "output"): number | null {
+export function knownModelRate(modelKey: string, klass: "input" | "output" | "cacheRead" | "cacheWrite"): number | null {
   const key = claudePricingKey(modelKey) ?? pricedPrefixKey(modelKey) ?? normalizeModelName(modelKey);
   return Object.prototype.hasOwnProperty.call(DEFAULT_PRICING, key) ? DEFAULT_PRICING[key][klass] : null;
 }

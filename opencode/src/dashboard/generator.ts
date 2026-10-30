@@ -474,7 +474,8 @@ tr:hover td { background: var(--bg-hover); }
         <strong style="color:var(--text)">${fmtCost(savings.monthlySavingsUsd)} more</strong>
         &mdash; est. <strong style="color:var(--text)">${fmtCost(savings.actualMonthlyUsd)}</strong> now vs
         <strong style="color:var(--text)">${fmtCost(savings.counterfactualMonthlyUsd)}</strong> the old way.
-        The comparison holds token classes constant. Model choices, including premium models, affect the estimate.
+        The comparison holds token classes constant and excludes usage priced above your baseline model rates.
+        ${savings.aggregateBaseline ? "Earlier sessions use their recorded session model because per-message model usage was unavailable." : ""}
       </div>`
         : `<div style="font-size:13px;color:var(--text-dim);line-height:1.6;margin-bottom:var(--s-4);">
         Counted directly from metered context removals (tool archives, delta reads, structure maps).
@@ -496,7 +497,7 @@ tr:hover td { background: var(--bg-hover); }
         <div>
           <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-dim);margin-bottom:var(--s-1);">${savings.savingsPerSession >= 0 ? "Cut per session" : "Added per session"}</div>
           <div style="font-family:monospace;font-size:22px;font-weight:700;color:${savings.savingsPerSession >= 0 ? "var(--success)" : "var(--danger)"}">${savings.savingsPerSession >= 0 ? "" : "+"}${fmtCost(Math.abs(savings.savingsPerSession))}</div>
-          <div style="font-size:12px;color:var(--text-dim);margin-top:var(--s-1);">model mix, including premium choices${runRate ? ` &middot; ~${Math.round(savings.sessionsPerMonth)} sessions/mo` : ""}</div>
+          <div style="font-size:12px;color:var(--text-dim);margin-top:var(--s-1);">eligible model mix${runRate ? ` &middot; ~${Math.round(savings.sessionsPerMonth)} sessions/mo` : ""}</div>
         </div>
         ${runRate ? `<div>
           <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-dim);margin-bottom:var(--s-1);">Saved to date</div>
@@ -527,6 +528,8 @@ tr:hover td { background: var(--bg-hover); }
       </div>
     </div>
     `}
+
+    ${savings.premiumTokens > 0 ? `<div style="font-size:12px;color:var(--text-dim);margin-bottom:var(--s-4);">Premium usage excluded from the model comparison: ${fmtNum(savings.premiumTokens)} tokens (${Math.round(savings.premiumShare * 100)}% of priced tokens), ${fmtCost(savings.premiumCostUsd)} at API rates in the selected period.</div>` : ""}
 
     <!-- Selected-period savings_events: raw window sums, measured + estimated. -->
     ${(() => {

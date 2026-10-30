@@ -61,6 +61,8 @@ interface SessionRec {
   out: number; // output
   cost: number; // stored cost_usd (display / not used in counterfactual math)
   durationSec: number; // session duration in seconds (quality gate)
+  buckets: Array<{ model: string; fi: number; cr: number; cw: number; out: number }>;
+  aggregateOnly: boolean;
 }
 
 function num(v: unknown): number {
@@ -76,6 +78,20 @@ function toRec(row: Record<string, unknown>): SessionRec {
   // Clamp every class >= 0 (corrupt-row protection, like measure.py's
   // _session_token_vector clamps). cache-write is a separate billed column in
   // session_log, kept distinct from fresh input.
+  let raw: unknown = null;
+  try { raw = typeof row.model_token_buckets === "string" ? JSON.parse(row.model_token_buckets) : row.model_token_buckets; } catch { /* use the legacy aggregate */ }
+  const buckets: SessionRec["buckets"] = [];
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    for (const [model, value] of Object.entries(raw)) {
+      if (!value || typeof value !== "object") continue;
+      const b = value as Record<string, unknown>;
+      buckets.push({ model, fi: Math.max(0, num(b.input)), cr: Math.max(0, num(b.cacheRead)),
+        cw: Math.max(0, num(b.cacheWrite)), out: Math.max(0, num(b.output)) });
+    }
+  }
+  const aggregateOnly = buckets.length === 0;
+  if (aggregateOnly) buckets.push({ model: String(row.model ?? "unknown"), fi: Math.max(0, num(row.tokens_input)),
+    cr: Math.max(0, num(row.tokens_cache_read)), cw: Math.max(0, num(row.tokens_cache_write)), out: Math.max(0, num(row.tokens_output)) });
   return {
     ts,
     model: String(row.model ?? "unknown"),
@@ -85,6 +101,8 @@ function toRec(row: Record<string, unknown>): SessionRec {
     out: Math.max(0, num(row.tokens_output)),
     cost: num(row.cost_usd),
     durationSec: Math.max(0, num(row.duration_seconds)),
+    buckets,
+    aggregateOnly,
   };
 }
 
@@ -93,9 +111,12 @@ function modelMix(recs: SessionRec[]): ModelMix {
   const byModel: Record<string, number> = {};
   let total = 0;
   for (const r of recs) {
-    const t = r.fi + r.cr + r.cw + r.out;
-    byModel[r.model] = (byModel[r.model] ?? 0) + t;
-    total += t;
+    for (const b of r.buckets) {
+      if (knownModelRate(b.model, "input") === null) continue;
+      const t = b.fi + b.cr + b.cw + b.out;
+      byModel[b.model] = (byModel[b.model] ?? 0) + t;
+      total += t;
+    }
   }
   if (total <= 0) return {};
   const mix: ModelMix = {};
@@ -106,17 +127,23 @@ function modelMix(recs: SessionRec[]): ModelMix {
 type TokenClass = "fi" | "cr" | "cw" | "out";
 
 /** Each token class has its own model distribution and price. */
-function classMix(recs: SessionRec[], klass: TokenClass, fallback: ModelMix): ModelMix {
+function classMix(recs: SessionRec[], klass: TokenClass, fallback: ModelMix, ceiling = Infinity): ModelMix {
   const counts: ModelMix = {};
   let total = 0;
   for (const r of recs) {
-    counts[r.model] = (counts[r.model] ?? 0) + r[klass];
-    total += r[klass];
+    for (const b of r.buckets) {
+      const rate = knownModelRate(b.model, rateClass[klass]);
+      if (rate === null || rate > ceiling) continue;
+      counts[b.model] = (counts[b.model] ?? 0) + b[klass];
+      total += b[klass];
+    }
   }
   if (total <= 0) return fallback;
   for (const model of Object.keys(counts)) counts[model] /= total;
   return counts;
 }
+
+const rateClass = { fi: "input", cr: "cacheRead", cw: "cacheWrite", out: "output" } as const;
 
 function classPrice(fi: number, cr: number, cw: number, out: number, mixes: Record<TokenClass, ModelMix>): number {
   return price(fi, 0, 0, mixes.fi) + price(0, cr, 0, mixes.cr) +
@@ -147,6 +174,10 @@ export interface RealizedSavings {
   ready: boolean;
   status: string;
   monthlySavingsUsd: number;
+  premiumTokens: number;
+  premiumCostUsd: number;
+  premiumShare: number;
+  aggregateBaseline: boolean;
   /** Monthly $ at the user's CURRENT model mix + cache pattern ("now" arm). */
   actualMonthlyUsd: number;
   /** Monthly $ at the user's BASELINE mix + cache pattern ("the old way" arm). */
@@ -225,6 +256,10 @@ const NOT_READY = (status: string): RealizedSavings => ({
   ready: false,
   status,
   monthlySavingsUsd: 0,
+  premiumTokens: 0,
+  premiumCostUsd: 0,
+  premiumShare: 0,
+  aggregateBaseline: false,
   actualMonthlyUsd: 0,
   counterfactualMonthlyUsd: 0,
   transformationPct: 0,
@@ -306,7 +341,7 @@ export function computeRealizedSavings(
   const history = rows
     .map(toRec)
     .filter((r) => r.ts > 0)
-    .filter((r) => knownModelRate(r.model, "input") !== null)
+    .filter((r) => r.buckets.some((b) => knownModelRate(b.model, "input") !== null))
     .filter((r) => r.fi >= MIN_INPUT_TOKENS && r.durationSec >= MIN_DURATION_SECONDS)
     .sort((a, b) => a.ts - b.ts);
   if (history.length === 0) return notReady("no sessions yet");
@@ -398,9 +433,29 @@ export function computeRealizedSavings(
   const beforeClassMix = Object.fromEntries(
     (["fi", "cr", "cw", "out"] as const).map((klass) => [klass, classMix(before, klass, beforeMix)]),
   ) as Record<TokenClass, ModelMix>;
+  const ceilings = Object.fromEntries((["fi", "cr", "cw", "out"] as const).map((klass) => [klass,
+    Math.max(0, ...Object.keys(beforeClassMix[klass]).map((model) => knownModelRate(model, rateClass[klass]) ?? 0)),
+  ])) as Record<TokenClass, number>;
   const afterClassMix = Object.fromEntries(
-    (["fi", "cr", "cw", "out"] as const).map((klass) => [klass, classMix(after, klass, beforeClassMix[klass])]),
+    (["fi", "cr", "cw", "out"] as const).map((klass) => [klass, classMix(after, klass, beforeClassMix[klass], ceilings[klass])]),
   ) as Record<TokenClass, ModelMix>;
+  let premiumTokens = 0, premiumCostUsd = 0, eligibleSessions = 0, pricedTokens = 0;
+  for (const session of after) {
+    let eligible = 0, total = 0;
+    for (const b of session.buckets) {
+      for (const klass of ["fi", "cr", "cw", "out"] as const) {
+        const rate = knownModelRate(b.model, rateClass[klass]);
+        if (rate === null) continue;
+        total += b[klass];
+        if (rate > ceilings[klass]) {
+          premiumTokens += b[klass];
+          premiumCostUsd += b[klass] * rate;
+        } else eligible += b[klass];
+      }
+    }
+    if (total > 0) eligibleSessions += eligible / total;
+    pricedTokens += total;
+  }
 
   // CURRENT pool cache-hit over FRESH+CACHE_READ (cache-write excluded) — the one
   // efficiency signal the "now" arm needs from the current window.
@@ -419,7 +474,7 @@ export function computeRealizedSavings(
   const tPool = tFi + tCr; // frozen fresh + cache_read pool
 
   const afterWindowDays = Math.max(1, (now - afterStart) / DAY_MS);
-  const sessionsPerMonth = (after.length / afterWindowDays) * 30;
+  const sessionsPerMonth = (eligibleSessions / afterWindowDays) * 30;
 
   // MONTHLY SCALING: the token classes above are summed over the `days` window,
   // so every dollar figure derived from them is a WINDOW total, not a monthly one.
@@ -537,7 +592,7 @@ export function computeRealizedSavings(
   const sRoute = (oldCps - nowCps) * sessionsPerMonth;
 
   const breakdown: SavingsBreakdownItem[] = [
-    { key: "routing", label: "Model mix change (including premium choices)", monthlyUsd: sRoute },
+    { key: "routing", label: "Eligible model mix change", monthlyUsd: sRoute },
     { key: "subagent_routing", label: "Cheaper subagents (no sidechains on OpenCode)", monthlyUsd: subagentTransformation },
     { key: "context_compression", label: "Lighter context (fewer re-reads, metered)", monthlyUsd: compressionAddback },
     { key: "verbosity_steer", label: "Lean output nudges (less output, estimated)", monthlyUsd: verbosityAddback },
@@ -575,6 +630,10 @@ export function computeRealizedSavings(
     ready: true,
     status: "ok",
     monthlySavingsUsd: transformation,
+    premiumTokens,
+    premiumCostUsd,
+    premiumShare: pricedTokens > 0 ? premiumTokens / pricedTokens : 0,
+    aggregateBaseline: before.some((r) => r.aggregateOnly),
     actualMonthlyUsd: actualMonthly,
     counterfactualMonthlyUsd: combinedCf,
     transformationPct,

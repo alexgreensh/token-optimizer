@@ -131,3 +131,20 @@ test("model distributions are weighted separately for each token class", () => {
   expect(b.ready).toBe(true);
   expect(b.afterCostPerSession).toBeGreaterThan(a.afterCostPerSession);
 });
+
+test("premium usage is disclosed without masking the eligible model mix", () => {
+  const baseline = Array.from({ length: 36 }, (_, i) =>
+    row(T0 + (i === 0 ? 0 : 2 + (i - 1) / 2) * DAY, "opus-5-5", 100_000, 0, 0, 100_000));
+  const recent = Array.from({ length: 20 }, (_, i) => ({
+    ...row(NOW - (i + 1) * DAY, "sonnet", 200_000, 0, 0, 200_000),
+    model_token_buckets: JSON.stringify({
+      sonnet: { input: 100_000, output: 100_000, cacheRead: 0, cacheWrite: 0 },
+      fable: { input: 100_000, output: 100_000, cacheRead: 0, cacheWrite: 0 },
+    }),
+  }));
+  const s = computeRealizedSavings("", 30, NOW, [...baseline, ...recent]);
+  expect(s.ready).toBe(true);
+  expect(s.monthlySavingsUsd).toBeGreaterThan(0);
+  expect(s.premiumTokens).toBeGreaterThan(0);
+  expect(s.premiumCostUsd).toBeGreaterThan(0);
+});

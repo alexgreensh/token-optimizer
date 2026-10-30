@@ -57,3 +57,25 @@ test("fixture matching preserves real near matches and empty-session events", ()
   db.close();
   store.close();
 });
+
+test("unknown events use their session's per-class model mix", () => {
+  const dir = join(process.cwd(), "..", ".scratch-parity", `mix-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  mkdirSync(dir, { recursive: true });
+  const store = new TrendsStore(dir);
+  const buckets = { sonnet: { input: 100, output: 300, cacheRead: 0, cacheWrite: 0, cost: 0 },
+    "opus-5-5": { input: 300, output: 100, cacheRead: 0, cacheWrite: 0, cost: 0 } };
+  store.recordSession({ sessionId: "mixed", project: null, model: "sonnet", modelTokenBuckets: buckets,
+    tokensInput: 400, tokensOutput: 400, tokensCacheRead: 0, tokensCacheWrite: 0, costUsd: 0,
+    resourceHealth: null, sessionEfficiency: null, toolCalls: 0, compactions: 0, mode: null, durationSeconds: 1 });
+  const db = new Database(join(dir, "trends.db"));
+  const insert = db.prepare(`INSERT INTO savings_events (timestamp, event_type, tokens_saved, cost_saved_usd, session_id, detail, model) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+  const now = Date.now(), stamp = new Date(now).toISOString();
+  insert.run(stamp, "checkpoint_restore", 1_000_000, 1, "mixed", "x", "unknown");
+  insert.run(stamp, "verbosity_steer", 1_000_000, 1, "mixed", "x", "unknown");
+  const input = 1_000_000 * (knownModelRate("sonnet", "input")! / 4 + knownModelRate("opus-5-5", "input")! * 3 / 4);
+  const output = 1_000_000 * (knownModelRate("sonnet", "output")! * 3 / 4 + knownModelRate("opus-5-5", "output")! / 4);
+  expect(store.getCompressionSavings(30, now).totalCostSavedUsd).toBeCloseTo(input, 6);
+  expect(store.getVerbositySavings(30, now)).toBeCloseTo(output, 6);
+  expect(JSON.parse(String(store.getAllSessions()[0].model_token_buckets))).toEqual(buckets);
+  db.close(); store.close();
+});

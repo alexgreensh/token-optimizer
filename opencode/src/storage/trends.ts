@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { knownModelRate } from "../pricing.js";
+import type { ModelTokenBuckets } from "../usage.js";
 
 const TRENDS_SCHEMA = `
 CREATE TABLE IF NOT EXISTS session_log (
@@ -60,10 +61,27 @@ AND NOT (e.tokens_saved > 0 AND e.session_id IS NOT NULL AND e.session_id != '' 
   AND (julianday(e.timestamp) - julianday(p.timestamp)) * 86400.0 BETWEEN 0 AND 3
 ));`;
 
+function sessionRate(model: string | null, encoded: string | null, klass: "input" | "output"): number | null {
+  try {
+    const buckets = JSON.parse(encoded ?? "null") as ModelTokenBuckets | null;
+    let weighted = 0, total = 0;
+    if (buckets && typeof buckets === "object") {
+      for (const [name, bucket] of Object.entries(buckets)) {
+        const rate = knownModelRate(name, klass);
+        const tokens = Math.max(0, Number(bucket?.[klass]) || 0);
+        if (rate !== null && Number.isFinite(tokens)) { weighted += tokens * rate; total += tokens; }
+      }
+    }
+    if (total > 0) return weighted / total;
+  } catch { /* old or invalid bucket data uses the recorded session model */ }
+  return knownModelRate(model ?? "", klass);
+}
+
 export interface SessionTrendData {
   sessionId: string;
   project: string | null;
   model: string | null;
+  modelTokenBuckets?: ModelTokenBuckets;
   tokensInput: number;
   tokensOutput: number;
   tokensCacheRead: number;
@@ -96,6 +114,10 @@ export class TrendsStore {
       this.db.exec("PRAGMA busy_timeout=3000");
       this.db.exec(TRENDS_SCHEMA);
       this.db.exec(SAVINGS_EVENTS_SCHEMA);
+      const cols = this.db.query("PRAGMA table_info(session_log)").all() as Array<{ name: string }>;
+      if (!cols.some((col) => col.name === "model_token_buckets")) {
+        this.db.exec("ALTER TABLE session_log ADD COLUMN model_token_buckets TEXT");
+      }
       this.db.exec(COUNTED_EVENTS_VIEW);
     }
     return this.db;
@@ -234,17 +256,17 @@ export class TrendsStore {
       const cutoff = new Date(now - days * 86_400_000).toISOString();
       const rows = db
         .query(
-          `SELECT e.event_type, e.tokens_saved, e.cost_saved_usd, e.model, s.model AS session_model
+          `SELECT e.event_type, e.tokens_saved, e.cost_saved_usd, e.model, s.model AS session_model, s.model_token_buckets
            FROM counted_savings_events e LEFT JOIN session_log s ON s.session_id = e.session_id
            WHERE e.timestamp >= ?`,
         )
-        .all(cutoff) as Array<{ event_type: string; tokens_saved: number; cost_saved_usd: number; model: string | null; session_model: string | null }>;
+        .all(cutoff) as Array<{ event_type: string; tokens_saved: number; cost_saved_usd: number; model: string | null; session_model: string | null; model_token_buckets: string | null }>;
 
       const byCategory = new Map<string, { events: number; tokens: number; cost: number }>();
       for (const r of rows) {
         const item = byCategory.get(r.event_type) ?? { events: 0, tokens: 0, cost: 0 };
         const unknown = !r.model || r.model.toLowerCase() === "unknown";
-        const rate = unknown ? knownModelRate(r.session_model ?? "", "input") : null;
+        const rate = unknown ? sessionRate(r.session_model, r.model_token_buckets, "input") : null;
         item.events++;
         item.tokens += r.tokens_saved ?? 0;
         item.cost += unknown ? (r.tokens_saved ?? 0) * (rate ?? 0) : (r.cost_saved_usd ?? 0);
@@ -301,14 +323,14 @@ export class TrendsStore {
       const cutoff = new Date(now - days * 86_400_000).toISOString();
       const rows = db
         .query(
-          `SELECT e.tokens_saved, e.cost_saved_usd, e.model, s.model AS session_model
+          `SELECT e.tokens_saved, e.cost_saved_usd, e.model, s.model AS session_model, s.model_token_buckets
            FROM counted_savings_events e LEFT JOIN session_log s ON s.session_id = e.session_id
            WHERE e.timestamp >= ? AND e.event_type = 'verbosity_steer'`,
         )
-        .all(cutoff) as Array<{ tokens_saved: number; cost_saved_usd: number; model: string | null; session_model: string | null }>;
+        .all(cutoff) as Array<{ tokens_saved: number; cost_saved_usd: number; model: string | null; session_model: string | null; model_token_buckets: string | null }>;
       return Math.max(0, rows.reduce((sum, r) => {
         const unknown = !r.model || r.model.toLowerCase() === "unknown";
-        return sum + (unknown ? (r.tokens_saved ?? 0) * (knownModelRate(r.session_model ?? "", "output") ?? 0) : (r.cost_saved_usd ?? 0));
+        return sum + (unknown ? (r.tokens_saved ?? 0) * (sessionRate(r.session_model, r.model_token_buckets, "output") ?? 0) : (r.cost_saved_usd ?? 0));
       }, 0));
     } catch {
       return 0;
@@ -330,11 +352,12 @@ export class TrendsStore {
     // to today's date bucket and lose its original timestamp.
     db.run(
       `INSERT INTO session_log
-       (session_id, date, project, model, tokens_input, tokens_output, tokens_cache_read, tokens_cache_write,
+       (session_id, date, project, model, model_token_buckets, tokens_input, tokens_output, tokens_cache_read, tokens_cache_write,
         cost_usd, resource_health, session_efficiency, tool_calls, compactions, mode, duration_seconds, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(session_id) DO UPDATE SET
          project=excluded.project, model=excluded.model,
+         model_token_buckets=COALESCE(excluded.model_token_buckets, session_log.model_token_buckets),
          tokens_input=excluded.tokens_input, tokens_output=excluded.tokens_output,
          tokens_cache_read=excluded.tokens_cache_read, tokens_cache_write=excluded.tokens_cache_write,
          cost_usd=excluded.cost_usd, resource_health=excluded.resource_health,
@@ -346,6 +369,7 @@ export class TrendsStore {
         date,
         data.project,
         data.model,
+        data.modelTokenBuckets ? JSON.stringify(data.modelTokenBuckets) : null,
         data.tokensInput,
         data.tokensOutput,
         data.tokensCacheRead,

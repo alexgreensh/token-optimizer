@@ -61,7 +61,7 @@ AND NOT (e.tokens_saved > 0 AND e.session_id IS NOT NULL AND e.session_id != '' 
   AND (julianday(e.timestamp) - julianday(p.timestamp)) * 86400.0 BETWEEN 0 AND 3
 ));`;
 
-function sessionRate(model: string | null, encoded: string | null, klass: "input" | "output"): number | null {
+function sessionRate(model: string | null, encoded: string | null, klass: "input" | "output"): { rate: number; coverage: number } {
   try {
     const buckets = JSON.parse(encoded ?? "null") as ModelTokenBuckets | null;
     let weighted = 0, total = 0;
@@ -69,12 +69,20 @@ function sessionRate(model: string | null, encoded: string | null, klass: "input
       for (const [name, bucket] of Object.entries(buckets)) {
         const rate = knownModelRate(name, klass);
         const tokens = Math.max(0, Number(bucket?.[klass]) || 0);
-        if (rate !== null && Number.isFinite(tokens)) { weighted += tokens * rate; total += tokens; }
+        if (Number.isFinite(tokens)) { weighted += tokens * (rate ?? 0); total += tokens; }
       }
+      if (total > 0) {
+        const known = Object.entries(buckets).reduce((sum, [name, bucket]) => {
+          const tokens = Math.max(0, Number(bucket?.[klass]) || 0);
+          return sum + (Number.isFinite(tokens) && knownModelRate(name, klass) !== null ? tokens : 0);
+        }, 0);
+        return { rate: weighted / total, coverage: known / total };
+      }
+      if (Object.keys(buckets).length > 0) return { rate: 0, coverage: 0 };
     }
-    if (total > 0) return weighted / total;
   } catch { /* old or invalid bucket data uses the recorded session model */ }
-  return knownModelRate(model ?? "", klass);
+  const rate = knownModelRate(model ?? "", klass);
+  return { rate: rate ?? 0, coverage: rate === null ? 0 : 1 };
 }
 
 export interface SessionTrendData {
@@ -250,6 +258,8 @@ export class TrendsStore {
     totalTokensSaved: number;
     totalCostSavedUsd: number;
     totalEvents: number;
+    unpricedTokens: number;
+    unpricedEvents: number;
   } {
     try {
       const db = this.connect();
@@ -262,14 +272,16 @@ export class TrendsStore {
         )
         .all(cutoff) as Array<{ event_type: string; tokens_saved: number; cost_saved_usd: number; model: string | null; session_model: string | null; model_token_buckets: string | null }>;
 
-      const byCategory = new Map<string, { events: number; tokens: number; cost: number }>();
+      const byCategory = new Map<string, { events: number; tokens: number; cost: number; unpricedTokens: number; unpricedEvents: number }>();
       for (const r of rows) {
-        const item = byCategory.get(r.event_type) ?? { events: 0, tokens: 0, cost: 0 };
-        const unknown = !r.model || r.model.toLowerCase() === "unknown";
-        const rate = unknown ? sessionRate(r.session_model, r.model_token_buckets, "input") : null;
+        const item = byCategory.get(r.event_type) ?? { events: 0, tokens: 0, cost: 0, unpricedTokens: 0, unpricedEvents: 0 };
+        const unknown = !r.model || knownModelRate(r.model, "input") === null;
+        const rate = unknown ? sessionRate(r.session_model, r.model_token_buckets, "input") : { rate: 0, coverage: 1 };
         item.events++;
         item.tokens += r.tokens_saved ?? 0;
-        item.cost += unknown ? (r.tokens_saved ?? 0) * (rate ?? 0) : (r.cost_saved_usd ?? 0);
+        item.cost += unknown ? (r.tokens_saved ?? 0) * rate.rate : (r.cost_saved_usd ?? 0);
+        item.unpricedTokens += (r.tokens_saved ?? 0) * (1 - rate.coverage);
+        if (rate.coverage < 1) item.unpricedEvents++;
         byCategory.set(r.event_type, item);
       }
 
@@ -291,20 +303,24 @@ export class TrendsStore {
         if (ta) {
           ta.tokens = Math.max(0, ta.tokens - reexpand.tokens);
           ta.cost = Math.max(0, ta.cost - reexpand.cost);
+          ta.unpricedTokens = Math.max(0, ta.unpricedTokens - reexpand.unpricedTokens);
         }
       }
 
       let totalTokensSaved = 0;
       let totalCostSavedUsd = 0;
       let totalEvents = 0;
+      let unpricedTokens = 0, unpricedEvents = 0;
       for (const v of byCategory.values()) {
         totalTokensSaved += v.tokens;
         totalCostSavedUsd += v.cost;
         totalEvents += v.events;
+        unpricedTokens += v.unpricedTokens;
+        unpricedEvents += v.unpricedEvents;
       }
-      return { totalTokensSaved, totalCostSavedUsd, totalEvents };
+      return { totalTokensSaved, totalCostSavedUsd, totalEvents, unpricedTokens, unpricedEvents };
     } catch {
-      return { totalTokensSaved: 0, totalCostSavedUsd: 0, totalEvents: 0 };
+      return { totalTokensSaved: 0, totalCostSavedUsd: 0, totalEvents: 0, unpricedTokens: 0, unpricedEvents: 0 };
     }
   }
 
@@ -318,6 +334,10 @@ export class TrendsStore {
    * Best-effort: returns 0 on any error (never throws). `now` is injectable.
    */
   getVerbositySavings(days: number = 30, now: number = Date.now()): number {
+    return this.getVerbositySavingsDetail(days, now).costUsd;
+  }
+
+  getVerbositySavingsDetail(days: number = 30, now: number = Date.now()): { costUsd: number; unpricedTokens: number; unpricedEvents: number } {
     try {
       const db = this.connect();
       const cutoff = new Date(now - days * 86_400_000).toISOString();
@@ -328,12 +348,17 @@ export class TrendsStore {
            WHERE e.timestamp >= ? AND e.event_type = 'verbosity_steer'`,
         )
         .all(cutoff) as Array<{ tokens_saved: number; cost_saved_usd: number; model: string | null; session_model: string | null; model_token_buckets: string | null }>;
-      return Math.max(0, rows.reduce((sum, r) => {
-        const unknown = !r.model || r.model.toLowerCase() === "unknown";
-        return sum + (unknown ? (r.tokens_saved ?? 0) * (sessionRate(r.session_model, r.model_token_buckets, "output") ?? 0) : (r.cost_saved_usd ?? 0));
-      }, 0));
+      let costUsd = 0, unpricedTokens = 0, unpricedEvents = 0;
+      for (const r of rows) {
+        const unknown = !r.model || knownModelRate(r.model, "output") === null;
+        const rate = unknown ? sessionRate(r.session_model, r.model_token_buckets, "output") : { rate: 0, coverage: 1 };
+        costUsd += unknown ? (r.tokens_saved ?? 0) * rate.rate : (r.cost_saved_usd ?? 0);
+        unpricedTokens += (r.tokens_saved ?? 0) * (1 - rate.coverage);
+        if (rate.coverage < 1) unpricedEvents++;
+      }
+      return { costUsd: Math.max(0, costUsd), unpricedTokens, unpricedEvents };
     } catch {
-      return 0;
+      return { costUsd: 0, unpricedTokens: 0, unpricedEvents: 0 };
     }
   }
 

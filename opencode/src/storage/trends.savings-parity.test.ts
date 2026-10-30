@@ -79,3 +79,25 @@ test("unknown events use their session's per-class model mix", () => {
   expect(JSON.parse(String(store.getAllSessions()[0].model_token_buckets))).toEqual(buckets);
   db.close(); store.close();
 });
+
+test("partial and missing session model prices expose unpriced coverage", () => {
+  const dir = join(process.cwd(), "..", ".scratch-parity", `partial-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  mkdirSync(dir, { recursive: true });
+  const store = new TrendsStore(dir);
+  store.recordSession({ sessionId: "partial", project: null, model: "opus-5-5", modelTokenBuckets: {
+    "opus-5-5": { input: 100, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
+    "unpriced-model": { input: 900, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
+  }, tokensInput: 1000, tokensOutput: 0, tokensCacheRead: 0, tokensCacheWrite: 0, costUsd: 0,
+  resourceHealth: null, sessionEfficiency: null, toolCalls: 0, compactions: 0, mode: null, durationSeconds: 1 });
+  store.logSavingsEvent("checkpoint_restore", 1_000_000, "partial", "partial");
+  let result = store.getCompressionSavings();
+  expect(result.totalCostSavedUsd).toBeCloseTo(0.4, 8);
+  expect(result.unpricedTokens).toBe(900_000);
+  expect(result.unpricedEvents).toBe(1);
+  store.logSavingsEvent("checkpoint_restore", 1_000_000, "missing", "missing");
+  result = store.getCompressionSavings();
+  expect(result.totalTokensSaved).toBe(2_000_000);
+  expect(result.unpricedTokens).toBe(1_900_000);
+  expect(result.unpricedEvents).toBe(2);
+  store.close();
+});

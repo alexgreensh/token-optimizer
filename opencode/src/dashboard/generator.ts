@@ -416,6 +416,9 @@ tr:hover td { background: var(--bg-hover); }
   <div class="view" id="view-savings">
     <div class="section-title">Token Optimizer &middot; Savings</div>
 
+    ${savings.unpricedEventTokens > 0 ? `<div style="font-size:12px;color:var(--text-dim);margin-bottom:var(--s-4);">${fmtNum(savings.unpricedEventTokens)} saved tokens across ${savings.unpricedEventCount} events have no model price and are excluded from dollar totals.</div>` : ""}
+    ${savings.unpricedBaselineTokens + savings.unpricedCurrentTokens > 0 ? `<div style="font-size:12px;color:var(--text-dim);margin-bottom:var(--s-4);">Model comparison excludes ${fmtNum(savings.unpricedBaselineTokens)} unpriced baseline tokens and ${fmtNum(savings.unpricedCurrentTokens)} unpriced recent tokens.</div>` : ""}
+
     ${!savings.ready && savings.compressionMeasuredWindowUsd + savings.verbosityMeasuredWindowUsd >= 0.005 ? `
     <div data-card="action-savings" style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:var(--s-4);margin-bottom:var(--s-4);">
       <div>Action savings &middot; last ${days} days</div>

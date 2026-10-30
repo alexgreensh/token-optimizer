@@ -14,9 +14,11 @@ test("message replacements count once and retain model classes", () => {
 test("unknown explicit Claude generations have no fallback price", async () => {
   const { knownModelRate } = await import("./pricing.js");
   expect(knownModelRate("claude-opus-5-99", "input")).toBeNull();
+  expect(knownModelRate("claude-opus-99", "input")).toBeNull();
   expect(knownModelRate("anthropic/claude-opus-5-99", "output")).toBeNull();
   expect(knownModelRate("opus", "input")).toBeGreaterThan(0);
   expect(knownModelRate("claude-opus-5-5", "input")).toBeGreaterThan(0);
+  expect(knownModelRate("anthropic/claude-opus-5-5-20261001", "input")).toBeGreaterThan(0);
 });
 
 test("fresh-session estimate leaves unknown Claude generations unpriced", async () => {

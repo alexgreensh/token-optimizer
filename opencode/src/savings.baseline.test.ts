@@ -117,3 +117,17 @@ test("provider cache reuse changes do not become optimizer savings", () => {
   expect(cold.monthlySavingsUsd).toBeCloseTo(warm.monthlySavingsUsd, 8);
   expect(warm.breakdown.some((item) => item.key === "context_rereads")).toBe(false);
 });
+
+test("model distributions are weighted separately for each token class", () => {
+  const recent = (flipped: boolean) => Array.from({ length: 20 }, (_, i) => {
+    const opus = i % 2 === 0;
+    const inputHigh = opus !== flipped;
+    return row(NOW - (i + 1) * DAY, opus ? "opus-5-5" : "sonnet",
+      inputHigh ? 190_000 : 10_000, 0, 0, inputHigh ? 10_000 : 190_000);
+  });
+  const a = run(recent(false));
+  const b = run(recent(true));
+  expect(a.ready).toBe(true);
+  expect(b.ready).toBe(true);
+  expect(b.afterCostPerSession).toBeGreaterThan(a.afterCostPerSession);
+});

@@ -103,6 +103,26 @@ function modelMix(recs: SessionRec[]): ModelMix {
   return mix;
 }
 
+type TokenClass = "fi" | "cr" | "cw" | "out";
+
+/** Each token class has its own model distribution and price. */
+function classMix(recs: SessionRec[], klass: TokenClass, fallback: ModelMix): ModelMix {
+  const counts: ModelMix = {};
+  let total = 0;
+  for (const r of recs) {
+    counts[r.model] = (counts[r.model] ?? 0) + r[klass];
+    total += r[klass];
+  }
+  if (total <= 0) return fallback;
+  for (const model of Object.keys(counts)) counts[model] /= total;
+  return counts;
+}
+
+function classPrice(fi: number, cr: number, cw: number, out: number, mixes: Record<TokenClass, ModelMix>): number {
+  return price(fi, 0, 0, mixes.fi) + price(0, cr, 0, mixes.cr) +
+    price_cw(cw, mixes.cw) + price(0, 0, out, mixes.out);
+}
+
 export interface SavingsBreakdownItem {
   key: string;
   label: string;
@@ -375,6 +395,12 @@ export function computeRealizedSavings(
   }
 
   const afterMix = modelMix(after);
+  const beforeClassMix = Object.fromEntries(
+    (["fi", "cr", "cw", "out"] as const).map((klass) => [klass, classMix(before, klass, beforeMix)]),
+  ) as Record<TokenClass, ModelMix>;
+  const afterClassMix = Object.fromEntries(
+    (["fi", "cr", "cw", "out"] as const).map((klass) => [klass, classMix(after, klass, beforeClassMix[klass])]),
+  ) as Record<TokenClass, ModelMix>;
 
   // CURRENT pool cache-hit over FRESH+CACHE_READ (cache-write excluded) — the one
   // efficiency signal the "now" arm needs from the current window.
@@ -410,11 +436,11 @@ export function computeRealizedSavings(
   // OLD WAY / session (counterfactual) = the typical session's native fresh/cache_read
   // split priced at the baseline mix + cache-write (5m, conservative) at the baseline
   // mix. Depends only on the frozen early window + prices -> stable across runs.
-  const oldCps = price(tFi, tCr, tOut, beforeMix) + price_cw(tCw, beforeMix);
+  const oldCps = classPrice(tFi, tCr, tCw, tOut, beforeClassMix);
   // NOW / session prices the same frozen token classes at the current mix.
   // Hold the baseline token classes fixed. Provider cache hits are not a
   // Token Optimizer saving, so changes in cache reuse do not enter this estimate.
-  const nowCps = price(tFi, tCr, tOut, afterMix) + price_cw(tCw, afterMix);
+  const nowCps = classPrice(tFi, tCr, tCw, tOut, afterClassMix);
   if (
     !Number.isFinite(oldCps) || !Number.isFinite(nowCps) ||
     oldCps <= 0 || nowCps <= 0
@@ -441,8 +467,8 @@ export function computeRealizedSavings(
   // transformation. Disjoint from the billed pool.
   // `measuredCompression` is already WINDOWED to `days` by getCompressionSavings
   // (cutoff = now - days*DAY), so it scales by the same 30/days as the billed arms.
-  const inAfter = inputRatePerMTok(afterMix);
-  const inBefore = inputRatePerMTok(beforeMix);
+  const inAfter = inputRatePerMTok(afterClassMix.fi);
+  const inBefore = inputRatePerMTok(beforeClassMix.fi);
   const compReprice = inAfter > 0 ? inBefore / inAfter : 1;
   const compressionAddbackWindow = Math.max(0, measuredCompression * compReprice);
 
@@ -454,8 +480,8 @@ export function computeRealizedSavings(
   // baseline OUTPUT rate: the old way would have produced verbose output at the
   // baseline model mix's output rate. Actual for this pool is 0, so the whole
   // repriced value is transformation. Mirrors measure.py verbosity_addback.
-  const outAfter = price(0, 0, 1_000_000, afterMix);
-  const outBefore = price(0, 0, 1_000_000, beforeMix);
+  const outAfter = price(0, 0, 1_000_000, afterClassMix.out);
+  const outBefore = price(0, 0, 1_000_000, beforeClassMix.out);
   const vsReprice = outAfter > 0 ? outBefore / outAfter : 1;
   const verbosityAddbackWindow = Math.max(0, measuredVerbosity * vsReprice);
 

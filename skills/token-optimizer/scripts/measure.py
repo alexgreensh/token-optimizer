@@ -14724,30 +14724,36 @@ def _log_compression_event(feature, original_text="", compressed_text="",
         pass
 
 
-def _compression_row_rate(model, fallback_rate, tier_data):
-    """USD per million input tokens for one compression_events row.
+def _compression_known_model(model):
+    """Reject an unknown Claude generation even when its family has a card."""
+    if not isinstance(model, str) or not _is_priced_model(model):
+        return False
+    generation = _CLAUDE_GENERATION_RE.search(model.lower())
+    legacy = _CLAUDE_LEGACY_ID_RE.search(model.lower())
+    if generation:
+        family, major, minor = generation.groups()
+    elif legacy:
+        major, minor, family = legacy.groups()
+        if major == "3" and family == "sonnet" and minor in (None, "5", "7"):
+            return True
+    else:
+        return True
+    family = "fable" if family == "mythos" else family
+    key = f"{family}_{major}" + (f"_{minor}" if minor else "")
+    return key in PRICING_TIERS.get(_load_pricing_tier(), PRICING_TIERS["anthropic"]).get("claude_models", {})
 
-    Per-model rate from the row's stored event-time model, else the
-    current-session fallback. Shared by _get_compression_summary and the
-    status-bar buckets so both price a row identically.
-    """
-    if detect_runtime() == 'codex':
-        model_rates = _input_and_cached_read_rates(model)
-        return model_rates[0] if model_rates else 0.0
-    if model:
-        norm_m = _claude_price_key(model, tier_data["claude_models"]) or "sonnet"
-        return (
-            tier_data["claude_models"]
-            .get(norm_m, tier_data["claude_models"].get("sonnet", {}))
-            .get("input", fallback_rate)
-        )
-    return fallback_rate
+
+def _compression_row_rate(model, fallback_rate, tier_data):
+    """Input price per million tokens, or zero when no rate card is known."""
+    if not _compression_known_model(model):
+        return 0.0
+    return _get_model_cost(model, 1_000_000, 0)
 
 
 _UNSTAMPED_MODELS = frozenset({"", "unknown", "<synthetic>", "none", "null"})
 
 
-def _compression_session_rates(conn, session_uuids):
+def _compression_session_rates(conn, session_uuids, session_ids=()):
     """{session_uuid: [(share, input_rate)]} from each session's own model mix.
 
     Used for compression rows logged without a usable model stamp: the hook
@@ -14756,39 +14762,83 @@ def _compression_session_rates(conn, session_uuids):
     _session_model_reprice applies to savings_events."""
     out = {}
     ids = [u for u in set(session_uuids) if u]
-    if not ids:
+    foreign_ids = [s for s in set(session_ids) if s]
+    if not ids and not foreign_ids:
         return out
     try:
         sl_cols = {r[1] for r in conn.execute("PRAGMA table_info(session_log)").fetchall()}
-        if "session_uuid" not in sl_cols:
-            return out
         mu = "model_usage_json" if "model_usage_json" in sl_cols else "NULL"
         amu = "all_model_usage_json" if "all_model_usage_json" in sl_cols else "NULL"
-        for i in range(0, len(ids), 500):
+        breakdown = "model_usage_breakdown_json" if "model_usage_breakdown_json" in sl_cols else "NULL"
+        for i in range(0, len(ids) if "session_uuid" in sl_cols else 0, 500):
             chunk = ids[i:i + 500]
             marks = ",".join("?" for _ in chunk)
-            for uuid, mu_json, amu_json in conn.execute(
-                    f"SELECT session_uuid, {mu}, {amu} FROM session_log "
+            for uuid, detail_json, mu_json, amu_json in conn.execute(
+                    f"SELECT session_uuid, {breakdown}, {mu}, {amu} FROM session_log "
                     f"WHERE session_uuid IN ({marks}) ORDER BY id", chunk):
-                terms = _session_mix_input_terms(mu_json, amu_json)
+                terms = _compression_mix_input_terms(detail_json, mu_json, amu_json)
                 if terms:
                     out[uuid] = terms
+        prefixes = ("hermes:", "copilot:", "cursor:", "grok:",
+                    "antigravity:antigravity:", "antigravity:antigravity-cli:",
+                    "antigravity:antigravity-ide:")
+        for i in range(0, len(foreign_ids), 50):
+            paths = {prefix + sid: sid for sid in foreign_ids[i:i + 50] for prefix in prefixes}
+            marks = ",".join("?" for _ in paths)
+            matches = {}
+            for path, detail_json, mu_json, amu_json in conn.execute(
+                    f"SELECT jsonl_path, {breakdown}, {mu}, {amu} FROM session_log WHERE jsonl_path IN ({marks})", tuple(paths)):
+                matches.setdefault(paths[path], []).append((detail_json, mu_json, amu_json))
+            for sid, records in matches.items():
+                if len(records) == 1:
+                    terms = _compression_mix_input_terms(*records[0])
+                    if terms:
+                        out[("session_id", sid)] = terms
     except (sqlite3.Error, TypeError, ValueError):
         return {}
     return out
 
 
+def _compression_mix_input_terms(*blobs):
+    """Known input rates weighted by all models in one session, including unknowns."""
+    for blob in blobs:
+        try:
+            values = json.loads(blob) if blob else None
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(values, dict) or not values:
+            continue
+        weights = []
+        for name, value in values.items():
+            if isinstance(value, dict):
+                try:
+                    value = sum(float(value.get(field) or 0) for field in
+                                ("fresh_input", "cache_create", "output"))
+                except (TypeError, ValueError):
+                    continue
+            try:
+                weight = float(value)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(weight) and weight > 0:
+                weights.append((name, weight))
+        total = sum(weight for _, weight in weights)
+        if total:
+            return [(weight / total, _get_model_cost(name, 1_000_000, 0))
+                    for name, weight in weights if _compression_known_model(name)]
+    return []
+
+
+def _compression_rate_coverage(model, session_uuid, session_rates, fallback_rate, tier_data):
+    """Return the known input price and the fraction of saved tokens priced."""
+    if _compression_known_model(model):
+        return _compression_row_rate(model, fallback_rate, tier_data), 1.0
+    terms = session_rates.get(session_uuid, [])
+    return sum(sh * rate for sh, rate in terms), min(1.0, sum(sh for sh, _ in terms))
+
+
 def _compression_priced_rate(model, session_uuid, session_rates, fallback_rate, tier_data):
-    """Input rate for one compression row: its own model when stamped, else its
-    session's mix (unpriced share held at the plain row rate)."""
-    rate = _compression_row_rate(
-        None if str(model or "").strip().lower() in _UNSTAMPED_MODELS else model,
-        fallback_rate, tier_data)
-    if str(model or "").strip().lower() in _UNSTAMPED_MODELS and session_uuid in session_rates:
-        terms = session_rates[session_uuid]
-        priced = sum(sh for sh, _r in terms)
-        return sum(sh * r for sh, r in terms) + max(0.0, 1.0 - priced) * rate
-    return rate
+    return _compression_rate_coverage(model, session_uuid, session_rates, fallback_rate, tier_data)[0]
 
 
 def _get_compression_summary(days=30, since=None):
@@ -14799,11 +14849,8 @@ def _get_compression_summary(days=30, since=None):
     cutoff. When *since* is None / empty, the rolling cutoff is computed from
     *days* as before.
 
-    If compression_events rows carry a stored model (written at event-time
-    via the session join), compute cost_saved_usd from per-row token * model_rate
-    instead of multiplying the aggregate token count by the CURRENT session's
-    model rate (which is anachronistic for historical rows). Falls back to the
-    old per-call rate for rows whose model is NULL.
+    Price known model stamps or the known share of the event's own session mix.
+    Keep tokens with no known rate in the count and disclose them as unpriced.
     """
     try:
         conn = _init_trends_db()
@@ -14823,15 +14870,16 @@ def _get_compression_summary(days=30, since=None):
                 "AVG(compression_ratio) as avg_ratio, "
                 "SUM(CASE WHEN quality_preserved = 1 THEN 1 ELSE 0 END) as quality_ok, "
                 "SUM(CASE WHEN verified = 1 THEN 1 ELSE 0 END) as verified_cnt, "
-                "model, session_uuid "
+                "model, session_uuid, session_id "
                 "FROM " + _counted_table(conn, "compression_events") + " WHERE timestamp >= ? "
                 "AND (tier IS NULL OR tier = 'measured') "
-                "GROUP BY feature, model, session_uuid ORDER BY orig DESC",
+                "GROUP BY feature, model, session_uuid, session_id ORDER BY orig DESC",
                 (cutoff,),
             ).fetchall()
             session_rates = _compression_session_rates(
                 conn, [r[8] for r in rows
-                       if str(r[7] or "").strip().lower() in _UNSTAMPED_MODELS])
+                       if not _compression_known_model(r[7])],
+                [r[9] for r in rows if not _compression_known_model(r[7])])
         finally:
             conn.close()
 
@@ -14845,13 +14893,15 @@ def _get_compression_summary(days=30, since=None):
         tier = _load_pricing_tier()
         tier_data = PRICING_TIERS.get(tier, PRICING_TIERS["anthropic"])
 
-        for feature, cnt, orig, comp, avg_ratio, quality_ok, verified_cnt, model, s_uuid in rows:
+        for feature, cnt, orig, comp, avg_ratio, quality_ok, verified_cnt, model, s_uuid, sid in rows:
             orig = orig or 0
             comp = comp or 0
             cnt = cnt or 0
-            rate = _compression_priced_rate(model, s_uuid, session_rates, fallback_rate, tier_data)
+            key = s_uuid if s_uuid in session_rates else ("session_id", sid)
+            rate, priced_share = _compression_rate_coverage(model, key, session_rates, fallback_rate, tier_data)
             tokens_saved = orig - comp
             cost_saved = round(tokens_saved * rate / 1_000_000, 6)
+            unpriced_tokens = max(0, tokens_saved) * max(0.0, 1.0 - priced_share)
 
             if feature in by_feature:
                 # Merge with existing entry for this feature (multi-model rows)
@@ -14861,6 +14911,7 @@ def _get_compression_summary(days=30, since=None):
                 entry["compressed_tokens"] += comp
                 entry["tokens_saved"] += tokens_saved
                 entry["cost_saved_usd"] = round(entry["cost_saved_usd"] + cost_saved, 6)
+                entry["unpriced_tokens"] += unpriced_tokens
                 # avg_ratio and quality_pcts are approximate after merging; acceptable.
                 entry["quality_preserved_pct"] = round(
                     (entry["quality_preserved_pct"] * (entry["events"] - cnt) + 100 * (quality_ok or 0))
@@ -14875,6 +14926,7 @@ def _get_compression_summary(days=30, since=None):
                     "avg_ratio": round(avg_ratio or 0.0, 4),
                     "tokens_saved": tokens_saved,
                     "cost_saved_usd": cost_saved,
+                    "unpriced_tokens": unpriced_tokens,
                     "quality_preserved_pct": round(100 * (quality_ok or 0) / max(cnt, 1), 1),
                     "verified_pct": round(100 * (verified_cnt or 0) / max(cnt, 1), 1),
                 }
@@ -14884,12 +14936,15 @@ def _get_compression_summary(days=30, since=None):
 
         overall_ratio = round(1.0 - total_compressed / max(total_original, 1), 4)
         tokens_saved = total_original - total_compressed
+        for entry in by_feature.values():
+            entry["unpriced_tokens"] = round(entry["unpriced_tokens"])
 
         return {
             "total_events": total_events,
             "total_original_tokens": total_original,
             "total_compressed_tokens": total_compressed,
             "total_tokens_saved": tokens_saved,
+            "unpriced_tokens": sum(entry["unpriced_tokens"] for entry in by_feature.values()),
             "overall_ratio": overall_ratio,
             "by_feature": by_feature,
             "period_days": days,
@@ -54535,16 +54590,16 @@ def _merge_v5_compression(by_category, by_feature, fallback_cost_per_mtok):
         events = int(fdata.get("events", 0) or 0)
         if tokens_saved <= 0 and events <= 0:
             continue
-        # Prefer cost_saved_usd from _get_compression_summary (per-model pricing);
-        # fall back to the current-session rate for legacy NULL-model rows.
+        # A missing price does not identify a rate; keep the tokens unpriced.
         if "cost_saved_usd" in fdata and fdata["cost_saved_usd"] is not None:
             cost_saved = round(float(fdata["cost_saved_usd"]), 4)
         else:
-            cost_saved = round(tokens_saved * fallback_cost_per_mtok / 1_000_000, 4)
+            cost_saved = 0.0
         by_category[feature] = {
             "events": events,
             "tokens_saved": tokens_saved,
             "cost_saved_usd": cost_saved,
+            "unpriced_tokens": fdata.get("unpriced_tokens", max(0, tokens_saved) if fdata.get("cost_saved_usd") is None else 0),
         }
         add_tok += tokens_saved
         add_cost += cost_saved
@@ -54575,9 +54630,7 @@ def _get_merged_savings(days=30, since=None):
     total_cost = float(savings.get("total_cost_usd", 0.0) or 0.0)
     total_events = int(savings.get("total_events", 0) or 0)
 
-    # Fallback rate only used for rows that pre-date the model column (NULL model).
-    # For rows with a stored model (written at event-time via session join), the cost
-    # is already priced correctly by _get_compression_summary's per-row rate.
+    # The compression summary prices each row using its model or session mix.
     fallback_cost_per_mtok = _estimate_compression_cost_per_mtok()
 
     _add_tok, _add_cost, _add_events = _merge_v5_compression(
@@ -54636,6 +54689,7 @@ def _get_merged_savings(days=30, since=None):
         "total_tokens": total_tokens,
         "total_cost_usd": round(total_cost, 4),
         "total_events": total_events,
+        "compression_unpriced_tokens": sum(int(v.get("unpriced_tokens", 0) or 0) for v in by_category.values()),
         "by_category": by_category,
         "daily_avg_usd": round(total_cost / max(days, 1), 4),
         "period_days": days,
@@ -54836,14 +54890,15 @@ def _realized_savings_buckets(conn, cutoff, session_uuid=None, by_day=False):
     ).fetchall()
     ce_rows = conn.execute(
         "SELECT " + day_col + ", feature, COUNT(*), SUM(original_tokens), "
-        "SUM(compressed_tokens), model, session_uuid FROM " + _counted_table(conn, "compression_events") + " " + where +
+        "SUM(compressed_tokens), model, session_uuid, session_id FROM " + _counted_table(conn, "compression_events") + " " + where +
         "AND (tier IS NULL OR tier = 'measured') "
-        "GROUP BY 1, feature, model, session_uuid",
+        "GROUP BY 1, feature, model, session_uuid, session_id",
         tuple(params),
     ).fetchall()
     ce_session_rates = _compression_session_rates(
         conn, [r[6] for r in ce_rows
-               if str(r[5] or "").strip().lower() in _UNSTAMPED_MODELS])
+               if not _compression_known_model(r[5])],
+        [r[7] for r in ce_rows if not _compression_known_model(r[5])])
     deltas, _rt, _ut = _session_model_reprice(
         conn, cutoff, session_uuid=session_uuid, by_day=True)
 
@@ -54859,9 +54914,10 @@ def _realized_savings_buckets(conn, cutoff, session_uuid=None, by_day=False):
     fallback_rate = _estimate_compression_cost_per_mtok()
     tier_data = PRICING_TIERS.get(_load_pricing_tier(), PRICING_TIERS["anthropic"])
     ce_by_bucket = {}
-    for bucket, feature, cnt, orig, comp, model, s_uuid in ce_rows:
+    for bucket, feature, cnt, orig, comp, model, s_uuid, sid in ce_rows:
         tokens_saved = (orig or 0) - (comp or 0)
-        rate = _compression_priced_rate(model, s_uuid, ce_session_rates, fallback_rate, tier_data)
+        key = s_uuid if s_uuid in ce_session_rates else ("session_id", sid)
+        rate = _compression_priced_rate(model, key, ce_session_rates, fallback_rate, tier_data)
         feats = ce_by_bucket.setdefault(bucket or "", {})
         entry = feats.setdefault(feature, {"events": 0, "tokens_saved": 0, "cost_saved_usd": 0.0})
         entry["events"] += cnt or 0
@@ -56655,10 +56711,7 @@ def savings_report(days=30, as_json=False):
               f"so neither is headlined. The measured savings below are real "
               f"and counted.")
 
-    pricing = summary.get("pricing_detail") or {}
-    p_model = pricing.get("model", "sonnet")
-    p_rate = pricing.get("rate_usd_per_mtok", 3.0)
-    print(f"  Pricing: calculated at {p_model} rates (${p_rate:.2f}/MTok input)")
+    print("  Pricing: known model rates, API equivalent")
 
     struct = summary.get("structural_detail") or {}
     src = struct.get("baseline_source")
@@ -56728,6 +56781,10 @@ def savings_report(days=30, as_json=False):
     est_monthly = daily_avg * 30
 
     print(f"  {'TOTAL (measured)':<28s} {total_events:>8,} {total_tokens:>14,} {'$' + f'{total_cost:.2f}':>11s}")
+    unpriced = int(summary.get("compression_unpriced_tokens", 0) or 0)
+    if unpriced:
+        print(f"  {unpriced:,} compression tokens are counted but have no known model rate;")
+        print("  their dollar value is not included.")
     trip = _headline_tripwire(total_cost + rr_usd, total_events, days)
     if trip:
         print()

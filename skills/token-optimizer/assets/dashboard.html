@@ -4541,6 +4541,9 @@ var DB = (function() {
         '<span>Repeat reads avoided <strong>~' + money(periodValue(rereadMo)) + '</strong></span>' +
         '<span>Other estimates <strong>~' + money(periodValue(estimatedMo)) + '</strong></span></div>' +
       '<p class="note">Includes the later benefit of context removed during this period. Initial removals are counted once.</p>' +
+      (Number(s.compression_unpriced_tokens) > 0 ? '<p class="note">' +
+        Math.round(Number(s.compression_unpriced_tokens)).toLocaleString() +
+        ' compression tokens are counted without a dollar value because their model rate is unavailable.</p>' : '') +
       (!cp.available ? '<p class="note">Repeat-read coverage is unavailable here; logged actions are still included.</p>' : '') +
       fold('Breakdown and method',
         '<p>Logged actions include output trims, context reductions, setup changes and routing savings. ' +

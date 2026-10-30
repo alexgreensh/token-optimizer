@@ -13726,11 +13726,8 @@ _COUNTED_TWIN_WINDOW_SECONDS = 3.0
 # GLOB (case-sensitive, anchored). Real ids are UUIDs, short hex agent ids, or
 # harness ids such as Codex "rollout-<date>-<uuid>"; none of them match.
 _FIXTURE_SESSION_GLOBS = (
-    "test-*", "test_*", "failwire-*", "unit-c-*", "torture-*", "torture_*",
-    "f3bench-*", "codex-test-*", "codex-sess-*", "sess_test*", "fixture-*",
-)
-_FIXTURE_SESSION_EXACT = (
-    "test", "test-123", "perf_test", "regtest", "demo", "sess", "s", "c",
+    "test-session-*", "failwire-*", "unit-c-never*", "torture-*",
+    "f3bench-sess*", "sess_test*",
 )
 # Tool names whose results carry images. Matched against the archive event's
 # detail text ("replaced <tool> (...)" / "blocked re-fetch of <tool> (...)").
@@ -13746,8 +13743,9 @@ def _sql_quote(value):
 
 def _fixture_session_sql(col="session_id"):
     globs = " OR ".join(f"{col} GLOB {_sql_quote(g)}" for g in _FIXTURE_SESSION_GLOBS)
-    exact = ", ".join(_sql_quote(v) for v in _FIXTURE_SESSION_EXACT)
-    return f"({col} IS NOT NULL AND ({globs} OR {col} IN ({exact})))"
+    numeric_codex = (f"({col} GLOB 'codex-sess-[0-9]*' "
+                     f"AND substr({col}, 12) NOT GLOB '*[^0-9]*')")
+    return f"({col} IS NOT NULL AND ({globs} OR {numeric_codex}))"
 
 
 def _is_fixture_session_id(session_id):
@@ -13756,7 +13754,7 @@ def _is_fixture_session_id(session_id):
     if not session_id:
         return False
     sid = str(session_id)
-    if sid in _FIXTURE_SESSION_EXACT:
+    if re.fullmatch(r"codex-sess-[0-9]+", sid):
         return True
     return any(fnmatch.fnmatchcase(sid, g) for g in _FIXTURE_SESSION_GLOBS)
 
@@ -13808,13 +13806,13 @@ def _ensure_counted_views(conn):
             "SELECT " + se_cols + " FROM main.savings_events e "
             "WHERE NOT " + _fixture_session_sql("e.session_id") +
             f" AND NOT (e.event_type IN ({media_types}) AND e.detail IS NOT NULL AND ({media.replace('detail GLOB', 'e.detail GLOB')}))"
-            " AND NOT (e.tokens_saved > 0 AND e.session_id IS NOT NULL AND " + se_twin + ")"
+            " AND NOT (e.tokens_saved > 0 AND COALESCE(e.session_id, '') != '' AND " + se_twin + ")"
         )
         conn.execute(
             "CREATE TEMP VIEW IF NOT EXISTS counted_compression_events AS "
             "SELECT " + ce_cols + " FROM main.compression_events c "
             "WHERE NOT " + _fixture_session_sql("c.session_id") +
-            " AND NOT (c.original_tokens > c.compressed_tokens AND c.session_id IS NOT NULL AND " + ce_twin + ")"
+            " AND NOT (c.original_tokens > c.compressed_tokens AND COALESCE(c.session_id, '') != '' AND " + ce_twin + ")"
         )
         # SQLite resolves view columns lazily: a database missing a column the
         # filters use (very old installs, minimal schemas) only fails on first

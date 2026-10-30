@@ -128,7 +128,11 @@ def test_status_bar_buckets_match_the_summary(m):
 
 @pytest.mark.parametrize("sid,fixture", [
     ("test-session-abc", True), ("failwire-1", True), ("f3bench-session-0001", True),
-    ("codex-sess-1", True), ("torture_test_001", True), ("s", True),
+    ("codex-sess-1", True), ("torture-session", True), ("unit-c-never-1", True),
+    ("torture_test_001", False), ("s", False), ("demo", False),
+    ("test-project", False), ("test_real_work", False), ("unit-c-real", False),
+    ("f3bench-production", False), ("codex-sess-live", False),
+    ("codex-sess-1-live", False), ("codex-sess-", False),
     (REAL_UUID, False), (AGENT_ID, False), (CODEX_ID, False), ("unknown", False), (None, False),
 ])
 def test_fixture_ids_match_in_python_and_sql(m, sid, fixture):

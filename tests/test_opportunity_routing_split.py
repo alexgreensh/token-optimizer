@@ -321,3 +321,23 @@ def test_cli_discloses_premium_models_left_out_of_routing(measure, monkeypatch, 
     out = _cli_out(measure, monkeypatch, capsys, summary)
     assert ("premium models you chose (Fable, 6% of tokens, ~$37.42/mo at API rates) "
             "are left out of the routing comparison") in out
+
+
+def test_dashboard_discloses_unpriced_models_left_out_of_routing():
+    s = _savings()
+    s["model_routing"].update({"unpriced_models": ["acme/mystery-1"], "unpriced_tokens": 1500000, "free_models": [], "free_tokens": 0})
+    text = _text(_render(s))
+    assert ("Models without a known price (acme/mystery-1, 1,500,000 tokens) are left out of the routing "
+            "comparison, not counted as free.") in text
+
+
+def test_dashboard_has_no_unpriced_line_when_everything_is_priced():
+    assert "Models without a known price" not in _text(_render(_savings()))
+
+
+def test_cli_discloses_unpriced_models_left_out_of_routing(measure, monkeypatch, capsys):
+    summary = _cli_summary({**_ROUTING, "unpriced_models": ["acme/mystery-1"], "unpriced_tokens": 1500000,
+                            "free_models": ["vendor/m:free"], "free_tokens": 500000})
+    out = _cli_out(measure, monkeypatch, capsys, summary)
+    assert ("models without a known price (acme/mystery-1, vendor/m:free; 2,000,000 tokens) "
+            "are left out of the routing comparison, not counted as free") in out

@@ -50655,51 +50655,114 @@ _ROUTING_BILLABLE_CLASSES = ("fresh_input", "cache_create_5m", "cache_create_1h"
                              "output", "unsplit")
 
 
+def _routing_card_exact(model):
+    """True when `model` resolves to an exact rate card.
+
+    A Claude id names a generation (claude-opus-5-5, claude-sonnet-4-6). One whose
+    generation has no card (claude-opus-99) would otherwise inherit the bare
+    family rate; that is a stand-in, not a known price, so it is not exact. A bare
+    family label ("opus", "sonnet_legacy") is priced at its family card.
+    """
+    if not isinstance(model, str) or not model:
+        return False
+    if _normalize_openai_model_name(model) or _normalize_gemini_model_name(model):
+        return True
+    try:
+        cards = dict(PRICING_TIERS["anthropic"]["claude_models"])
+        cards.update(PRICING_TIERS.get(_load_pricing_tier(), {}).get("claude_models", {}))
+        key = _claude_price_key(model, cards)
+    except Exception:
+        return False
+    if not key or key not in cards:
+        return False
+    low = model.lower()
+    if _CLAUDE_LEGACY_ID_RE.search(low):
+        return True
+    if _CLAUDE_GENERATION_RE.search(low):
+        return key == "sonnet_legacy" or any(ch.isdigit() for ch in key)
+    return True
+
+
+def _routing_model_status(model):
+    """"priced" (exact rate card), "free" (a provider's explicitly free tier,
+    id suffix ":free") or "unpriced" (no rate card, price unknown)."""
+    if _routing_card_exact(model):
+        return "priced"
+    if isinstance(model, str) and model.lower().endswith(":free"):
+        return "free"
+    return "unpriced"
+
+
 def _routing_class_rates(model):
     """$/MTok per token class for one model id, from its own generation card.
 
     Probes _get_model_cost so every provider and generation card
     (Opus 5.5 $4/$20, Opus 4.1 $15/$75, Sonnet 5.5 cache reads $0.10, ...)
-    prices exactly as the rest of the product does. Unpriced models return 0.0.
+    prices exactly as the rest of the product does. Returns None unless the id has
+    an exact rate card (see _routing_model_status): an unknown model is not free
+    and a missing generation is not its family's price, so callers leave such a
+    model out of a comparison instead of pricing it at zero or at a stand-in rate.
     """
+    # Family pseudo-ids from the model-daily mix; a bare "sonnet_legacy" would
+    # otherwise resolve to the current Sonnet card.
+    probe = "claude-sonnet-4-6" if model == "sonnet_legacy" else model
+    if not _routing_card_exact(probe):
+        return None
     try:
         m = 1_000_000
         rates = {
-            "fresh_input": _get_model_cost(model, m, 0),
-            "output": _get_model_cost(model, 0, m),
-            "cache_read": _get_model_cost(model, 0, 0, m),
-            "cache_create_5m": _get_model_cost(model, 0, 0, 0, m, cache_create_1h=0, cache_create_5m=m),
-            "cache_create_1h": _get_model_cost(model, 0, 0, 0, m, cache_create_1h=m, cache_create_5m=0),
+            "fresh_input": _get_model_cost(probe, m, 0),
+            "output": _get_model_cost(probe, 0, m),
+            "cache_read": _get_model_cost(probe, 0, 0, m),
+            "cache_create_5m": _get_model_cost(probe, 0, 0, 0, m, cache_create_1h=0, cache_create_5m=m),
+            "cache_create_1h": _get_model_cost(probe, 0, 0, 0, m, cache_create_1h=m, cache_create_5m=0),
         }
     except Exception:
-        rates = {k: 0.0 for k in _ROUTING_CLASSES if k != "unsplit"}
+        return None
+    if not any(v > 0 for v in rates.values()):
+        return None
     # Rows without a class split are priced at the input rate (conservative).
     rates["unsplit"] = rates["fresh_input"]
     return rates
 
 
-_SONNET_GENERATION_KEY_RE = re.compile(r"^sonnet_(\d+)(?:_(\d+))?$")
+_GENERATION_KEY_RE = re.compile(r"^(opus|sonnet|haiku|fable)_(\d+)(?:_(\d+))?$")
 
 
-def _routing_target_model():
-    """Model id of the lighter arm routing is priced against: the newest Sonnet
-    generation card in the active rate table (legacy Sonnet cards are skipped)."""
+def _newest_generation_model(family):
+    """Model id of the newest generation card of a Claude family in the active
+    rate table, or None. Legacy Sonnet cards are not generation cards."""
     try:
         tier = _load_pricing_tier()
         cards = PRICING_TIERS.get(tier, PRICING_TIERS["anthropic"])["claude_models"]
         best = None
         for key in cards:
-            m = _SONNET_GENERATION_KEY_RE.match(key)
-            if m:
-                gen = (int(m.group(1)), int(m.group(2) or 0))
+            m = _GENERATION_KEY_RE.match(key)
+            if m and m.group(1) == family:
+                gen = (int(m.group(2)), int(m.group(3) or 0))
                 if best is None or gen > best[0]:
                     best = (gen, key)
         if best:
             major, minor = best[0]
-            return f"claude-sonnet-{major}-{minor}" if best[1].count("_") == 2 else f"claude-sonnet-{major}"
+            return f"claude-{family}-{major}-{minor}" if best[1].count("_") == 2 else f"claude-{family}-{major}"
     except Exception:
         pass
-    return "sonnet"
+    return None
+
+
+def _routing_target_model():
+    """Model id of the lighter arm routing is priced against: the newest Sonnet
+    generation card in the active rate table."""
+    return _newest_generation_model("sonnet") or "sonnet"
+
+
+def _routing_reference_model(family):
+    """The model id whose card prices a family in the baseline mix: the newest
+    generation card of its tier (legacy Sonnet is priced as Sonnet). Other labels
+    (provider models) stand for themselves."""
+    if family == "sonnet_legacy":
+        family = "sonnet"
+    return _newest_generation_model(family) or family
 
 
 def _bucket_int(value):
@@ -50912,10 +50975,24 @@ def _compute_model_routing_savings(days=30, since=None):
     Pricing is per token class, never a blended per-token rate. Fresh input is
     priced at the input rate, cache creation at the 5-minute or 1-hour write rate,
     cache reads at the cache-read rate and output at the output rate, each at the
-    model's own generation card (Opus 5.5 $4/$20, Opus 4.1 $15/$75, ...). The
-    lighter arm uses the newest Sonnet card. The class split comes from the
-    per-day, per-model usage stored with each session; tokens from rows with no
-    split are priced at the input rate and reported as `unsplit_tokens`.
+    model's own generation card (Opus 5.5 $4/$20, Opus 4.1 $15/$75, ...). A
+    family that ran on several generations is priced at the class-by-class
+    volume-weighted blend of those cards. The lighter arm uses the newest Sonnet
+    card. The class split comes from the per-day, per-model usage stored with
+    each session; tokens from rows with no split are priced at the input rate and
+    reported as `unsplit_tokens`.
+
+    Realized routing compares the remaining work's actual cost (each model's own
+    class volumes at its own card) with the same class volumes priced at the
+    baseline mix. Every baseline family has one defined rate (see the
+    counterfactual rate policy below), so it does not depend on which families
+    or generations appear in the window.
+
+    Models with no exact rate card are unpriced, not free (an unknown Claude
+    generation does not borrow its family's price): they are left out of the
+    comparison and reported as `unpriced_models`, `unpriced_tokens` and
+    `unpriced_share`. Explicitly free tiers (":free") are left out the same way
+    and reported as `free_models`.
     Labelled measured (realized) and opportunity (potential). Never raises.
     """
     # `zero` is returned only on no-data / error paths (no current mix, no
@@ -50927,6 +51004,8 @@ def _compute_model_routing_savings(days=30, since=None):
         "potential_tokens": 0, "potential_tokens_monthly": 0,
         "potential_billable_tokens": 0, "potential_by_class": {}, "unsplit_tokens": 0,
         "premium_models": [], "premium_share": 0.0, "premium_cost_usd": 0.0,
+        "unpriced_models": [], "unpriced_tokens": 0, "unpriced_share": 0.0,
+        "free_models": [], "free_tokens": 0,
         "baseline_opus_share": 0.0, "current_opus_share": 0.0,
         "baseline_source": None, "evidence": "unavailable",
     }
@@ -50974,29 +51053,6 @@ def _compute_model_routing_savings(days=30, since=None):
 
         # Mix keys from the model-daily fallback are already family buckets.
         fam_of = {m: (_normalize_model_name(m) if from_rows else m) for m in usage}
-        fam_billable = {}
-        fam_models = {}
-        fam_classes = {}
-        class_totals = {k: 0.0 for k in _ROUTING_CLASSES}
-        for m, classes in usage.items():
-            fam = fam_of[m]
-            if not fam:
-                continue
-            billable = sum(classes.get(k, 0) for k in _ROUTING_BILLABLE_CLASSES)
-            fam_billable[fam] = fam_billable.get(fam, 0) + billable
-            fam_models.setdefault(fam, {})[m] = billable
-            dst = fam_classes.setdefault(fam, {k: 0.0 for k in _ROUTING_CLASSES})
-            for k in _ROUTING_CLASSES:
-                dst[k] += classes.get(k, 0)
-                class_totals[k] += classes.get(k, 0)
-        window_billable = sum(fam_billable.values())
-        if window_billable <= 0:
-            return zero
-
-        # Every family is priced at its own generation card (the model id the user
-        # ran most in that family), so both mixes use one constant rate card and
-        # a price change never shows up as a routing win.
-        rep = {f: max(ms, key=ms.get) for f, ms in fam_models.items()}
         rates_cache = {}
 
         def _rates(model):
@@ -51004,51 +51060,153 @@ def _compute_model_routing_savings(days=30, since=None):
                 rates_cache[model] = _routing_class_rates(model)
             return rates_cache[model]
 
-        def _mix_cost(shares, totals):
-            return sum(
-                totals[k] * sum(s * _rates(rep.get(f, f))[k] for f, s in shares.items())
-                for k in _ROUTING_CLASSES
-            ) / 1_000_000
+        # Only a model with an exact rate card is compared. A model with no card
+        # is unpriced (not free) and an explicitly free tier is not credited as a
+        # saving: both keep their token counts, are reported, and stay out of
+        # every mix and cost below.
+        priced_usage = {}
+        unpriced_by_model = {}
+        free_by_model = {}
+        for m, classes in usage.items():
+            if not fam_of[m]:
+                continue
+            if _rates(m) is not None:
+                priced_usage[m] = classes
+                continue
+            tokens = sum(classes.get(k, 0) for k in _ROUTING_CLASSES)
+            bucket = free_by_model if _routing_model_status(m) == "free" else unpriced_by_model
+            bucket[m] = bucket.get(m, 0) + tokens
+
+        fam_models = {}
+        for m in priced_usage:
+            fam_models.setdefault(fam_of[m], []).append(m)
+        fam_classes = {}
+        class_totals = {k: 0.0 for k in _ROUTING_CLASSES}
+        for fam, ms in fam_models.items():
+            dst = fam_classes[fam] = {k: 0.0 for k in _ROUTING_CLASSES}
+            for m in ms:
+                for k in _ROUTING_CLASSES:
+                    dst[k] += priced_usage[m].get(k, 0)
+                    class_totals[k] += priced_usage[m].get(k, 0)
+        pooled = sum(class_totals.values())
+        window_billable = sum(
+            sum(c.get(k, 0) for k in _ROUTING_BILLABLE_CLASSES) for c in priced_usage.values()
+        )
+
+        def _unpriced_report():
+            return [mid for mid, _t in sorted(unpriced_by_model.items(), key=lambda kv: -kv[1])]
+
+        def _free_report():
+            return [mid for mid, _t in sorted(free_by_model.items(), key=lambda kv: -kv[1])]
+
+        unpriced_tokens = int(sum(unpriced_by_model.values()))
+        free_tokens = int(sum(free_by_model.values()))
+
+        def _coverage_fields():
+            total = unpriced_tokens + free_tokens + pooled
+            return {
+                "unpriced_models": _unpriced_report(), "unpriced_tokens": unpriced_tokens,
+                "unpriced_share": round(unpriced_tokens / total, 4) if total > 0 else 0.0,
+                "free_models": _free_report(), "free_tokens": free_tokens,
+            }
+
+        if window_billable <= 0:
+            return {**zero, **_coverage_fields()}
+
+        # COUNTERFACTUAL RATE POLICY. Every family, present or absent, gets one
+        # rate per token class, used for the baseline mix:
+        #   observed  the volume-weighted blend, class by class, of the cards the
+        #             family actually ran on, so the same models cost the same
+        #             in both arms (a price change between eras cannot show up as
+        #             routing) and no single generation stands in for the family;
+        #   reference the newest generation card of the family's tier (legacy
+        #             Sonnet counts as Sonnet), used for a family with no usage.
+        # The observed blend gains weight linearly up to 1% of the window, so a
+        # family that is absent and one with a single token price alike and
+        # nothing jumps at the edge. The result does not depend on the order or
+        # grouping of the window's models.
+        _EVIDENCE_FULL = 0.01
+        fam_rate_cache = {}
+
+        def _fam_rates(fam):
+            if fam in fam_rate_cache:
+                return fam_rate_cache[fam]
+            ref = _rates(_routing_reference_model(fam))
+            ms = fam_models.get(fam)
+            if not ms:
+                out = ref
+            else:
+                vol = fam_classes[fam]
+                weight = {m: sum(priced_usage[m].get(k, 0) for k in _ROUTING_CLASSES) for m in ms}
+                wsum = sum(weight.values())
+                observed = {}
+                for k in _ROUTING_CLASSES:
+                    if vol[k] > 0:
+                        observed[k] = sum(priced_usage[m].get(k, 0) * _rates(m)[k] for m in ms) / vol[k]
+                    else:
+                        observed[k] = sum(weight[m] * _rates(m)[k] for m in ms) / wsum if wsum > 0 else 0.0
+                lam = min(1.0, (sum(vol.values()) / pooled) / _EVIDENCE_FULL) if pooled > 0 else 1.0
+                out = observed if ref is None else {k: lam * observed[k] + (1.0 - lam) * ref[k] for k in observed}
+            fam_rate_cache[fam] = out
+            return out
+
+        def _renormalized(shares):
+            kept = {f: s for f, s in shares.items() if s and s > 0 and _fam_rates(f) is not None}
+            total = sum(kept.values())
+            return {f: s / total for f, s in kept.items()} if total > 0 else {}
+
+        base_priced = _renormalized(baseline_shares)
 
         # Effective $/MTok of a family under the window's own class mix.
-        pooled = sum(class_totals.values())
-
         def _family_price(f):
             if pooled <= 0:
                 return 0.0
-            r = _rates(rep.get(f, f))
+            r = _fam_rates(f)
             return sum(class_totals[k] * r[k] for k in _ROUTING_CLASSES) / pooled
 
         # Models priced above the most expensive model of the baseline are the
-        # user's own choice, not routing: they are taken out of the current mix
-        # (the rest renormalized) so the comparison measures the shift toward
-        # lighter models. Their share and cost are reported separately.
-        baseline_ceiling = max((_family_price(f) for f, s in baseline_shares.items() if s > 0), default=0.0)
-        premium = sorted(f for f, s in cur_shares.items() if s > 0 and _family_price(f) > baseline_ceiling > 0)
-        premium_share = sum(cur_shares[f] for f in premium)
+        # user's own choice, not routing: they are taken out of the comparison
+        # so it measures the shift toward lighter models. Their share and cost
+        # are reported separately. A model must be dearer than the baseline's
+        # costliest family on the window's pooled mix AND on the output card:
+        # cache-read rates alone do not rank tiers across generations (Sonnet 4.6
+        # reads cache at $0.30, Opus 5.5 at $0.20), so a lighter older model is
+        # never mistaken for a premium one.
+        ceiling_fam = max(base_priced, key=_family_price, default=None)
+        baseline_ceiling = _family_price(ceiling_fam) if ceiling_fam else 0.0
+        ceiling_output = _fam_rates(ceiling_fam)["output"] if ceiling_fam else 0.0
+        premium = sorted(
+            f for f in fam_classes
+            if _family_price(f) > baseline_ceiling > 0 and _fam_rates(f)["output"] > ceiling_output
+        )
+        premium_share = sum(cur_shares.get(f, 0.0) for f in premium)
         premium_cost = sum(
             classes.get(k, 0) * _rates(m)[k]
-            for m, classes in usage.items() if fam_of[m] in premium
+            for m, classes in priced_usage.items() if fam_of[m] in premium
             for k in _ROUTING_CLASSES
         ) / 1_000_000
 
-        # REALIZED: the remaining work, per token class, priced at the baseline mix
-        # vs the current mix. Both mixes come from the same model-daily source, so
-        # only the model shift moves the number. Never negative.
+        # REALIZED: the remaining work's actual cost (each model's own class
+        # volumes at its own card) against what the same class volumes would have
+        # cost at the baseline mix. Only the model shift moves the number.
+        # Never negative.
+        kept_models = [m for m in priced_usage if fam_of[m] not in premium]
+        kept_totals = {k: sum(priced_usage[m].get(k, 0) for m in kept_models) for k in _ROUTING_CLASSES}
         realized_cost = 0.0
-        if premium_share < 1.0:
-            kept = {f: s / (1.0 - premium_share) for f, s in cur_shares.items() if f not in premium}
-            kept_totals = {
-                k: sum(c[k] for f, c in fam_classes.items() if f not in premium) for k in _ROUTING_CLASSES
-            }
-            realized_cost = max(0.0, _mix_cost(baseline_shares, kept_totals) - _mix_cost(kept, kept_totals))
+        if base_priced and kept_models:
+            actual = sum(priced_usage[m].get(k, 0) * _rates(m)[k] for m in kept_models for k in _ROUTING_CLASSES)
+            counterfactual = sum(
+                kept_totals[k] * sum(s * _fam_rates(f)[k] for f, s in base_priced.items())
+                for k in _ROUTING_CLASSES
+            )
+            realized_cost = max(0.0, (counterfactual - actual) / 1_000_000)
 
         # POTENTIAL: a fixed share of remaining Opus work, per token class, priced
         # at each Opus model's own card minus the current Sonnet card.
         target = _routing_target_model()
         target_rates = _rates(target)
         by_class = {k: {"tokens": 0, "usd": 0.0} for k in _ROUTING_CLASSES}
-        for m, classes in usage.items():
+        for m, classes in priced_usage.items():
             if fam_of[m] != "opus":
                 continue
             m_rates = _rates(m)
@@ -51088,6 +51246,9 @@ def _compute_model_routing_savings(days=30, since=None):
             "premium_models": premium,
             "premium_share": round(premium_share, 4),
             "premium_cost_usd": round(premium_cost, 4),
+            # Models with no exact rate card (unpriced) and explicitly free tiers are
+            # left out of the comparison, never priced at zero or at a stand-in rate.
+            **_coverage_fields(),
             "baseline_opus_share": round(baseline_shares.get("opus", 0.0), 4),
             "current_opus_share": round(opus_share, 4),
             "baseline_source": baseline_source,
@@ -56094,6 +56255,12 @@ def savings_report(days=30, as_json=False):
         print(f"  i  premium models you chose ({names}, {float(routing['premium_share']) * 100:.0f}% of tokens, "
               f"~${_mo(float(routing.get('premium_cost_usd', 0.0) or 0.0)):.2f}{per} at API rates) "
               f"are left out of the routing comparison")
+    if int(routing.get("unpriced_tokens", 0) or 0) > 0 or int(routing.get("free_tokens", 0) or 0) > 0:
+        left_out = [str(x) for x in (routing.get("unpriced_models") or []) + (routing.get("free_models") or [])]
+        shown = ", ".join(left_out[:3]) + (f" and {len(left_out) - 3} more" if len(left_out) > 3 else "")
+        print(f"  i  models without a known price ({shown}; "
+              f"{int(routing.get('unpriced_tokens', 0) or 0) + int(routing.get('free_tokens', 0) or 0):,} tokens) "
+              f"are left out of the routing comparison, not counted as free")
     all_in = _mo(total_cost + routing_realized)
     if rr_usd > 0:
         all_in += _mo(rr_usd)

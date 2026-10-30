@@ -581,6 +581,18 @@ def test_compaction_clears_read_cache_and_restores_checkpoint(plugin, home, tmp_
     assert "Refactor the parser module" in ctx["context"]
 
 
+def test_session_reset_clears_read_cache_for_the_reused_id(plugin, home, tmp_path):
+    sid = "sess_reset_01"
+    _make_state_db(home, sid)
+    src = tmp_path / "keep.py"
+    src.write_text((SCRIPTS / "spawn_utils.py").read_text(encoding="utf-8"), encoding="utf-8")
+    assert _read(plugin, sid, src, "r1") is None
+    assert _read(plugin, sid, src, "r2")["action"] == "block"
+    plugin.on_session_reset(session_id=sid, platform="cli", reason="new")
+    # /new emptied the model's context: the next read is served in full.
+    assert _read(plugin, sid, src, "r3") is None
+
+
 def test_rotated_session_restores_from_the_old_session(plugin, home):
     old, new = "sess_rot_old1", "sess_rot_new1"
     _make_state_db(home, old)

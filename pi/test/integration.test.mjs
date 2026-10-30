@@ -56,6 +56,17 @@ test('read-cache recognizes unchanged file and invalidates on edit',()=>{
  handlers.tool_call({toolName:'read',input:{path}}, {...ctx,cwd:root});
  assert.equal(notices.length,n);
 });
+test('read-cache forgets earlier reads after compaction',()=>{
+ const path=join(root,'compacted.txt'); writeFileSync(path,'same');
+ const c={...ctx,cwd:root};
+ handlers.tool_result({toolCallId:'cache-c',toolName:'read',input:{path},isError:false,content:[{type:'text',text:'same'}]}, c);
+ handlers.tool_call({toolName:'read',input:{path}}, c);
+ assert.ok(notices.at(-1).msg.includes('repeated unchanged'));
+ handlers.session_compact({compactionEntry:{id:'compact-cache',parentId:'u'}}, c);
+ const n=notices.length;
+ handlers.tool_call({toolName:'read',input:{path}}, c);
+ assert.equal(notices.length,n);
+});
 test('usage branch switch excludes inactive fork and estimates only missing costs', async()=>{
  const ua={ input:10,output:2,cacheRead:0,cacheWrite:0,totalTokens:12,cost:{total:1} };
  branch=[entry('a',null,'message',{role:'assistant',provider:'anthropic',model:'opus',usage:ua}),entry('b','a','message',{role:'assistant',provider:'anthropic',model:'opus',usage:{...ua,cost:undefined}})];

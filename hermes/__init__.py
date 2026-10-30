@@ -1268,8 +1268,17 @@ def on_session_start(**kwargs: Any) -> None:
 
 
 def on_session_reset(**kwargs: Any) -> None:
-    """Session boundary (/new, gateway key swap): the new id starts clean."""
+    """Session boundary (/new, gateway key swap): the new id starts clean.
+
+    A reset can keep the same session id, so the read cache and the other
+    "already in context" records for the id are dropped here too.
+    """
     try:
+        ids = {str(kwargs.get("session_id") or ""), str(kwargs.get("new_session_id") or "")} - {""}
+        bridge = _import_bridge() if ids and _enabled("READ_CACHE") else None
+        if bridge is not None:
+            for sid in ids:
+                bridge.run_tool_hooks("clear-reads", {"session_id": sid}, timeout=_post_tool_timeout())
         _forget_session(str(kwargs.get("session_id") or kwargs.get("new_session_id") or ""))
     except Exception as exc:
         logger.debug("[token-optimizer] on_session_reset error: %s", exc)

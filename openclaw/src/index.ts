@@ -561,8 +561,9 @@ export default definePluginEntry({
         );
       }
 
-      // Clear read-cache on compaction (context is reset, cache entries are stale)
-      clearCache(context?.agentId ?? "default", session.sessionId);
+      // Clear read-cache on compaction (context is reset, cache entries are stale).
+      // The agent id defaults to "unknown", the same default the Read hook caches under.
+      clearCache(context?.agentId ?? "unknown", session.sessionId);
     });
 
     // Smart Compaction: restore after compaction

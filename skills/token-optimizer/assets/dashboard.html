@@ -4349,6 +4349,7 @@ var DB = (function() {
     }
     function fmtTok(n) {
       var v = Number(n) || 0;
+      if (v >= 1e9) return (v / 1e9).toFixed(1) + 'B';
       if (v >= 1e6) return (v / 1e6).toFixed(1) + 'M';
       if (v >= 1e3) return Math.round(v / 1e3) + 'K';
       return String(Math.round(v));
@@ -4411,8 +4412,15 @@ var DB = (function() {
     // is a provider-neutral fact, matching Claude Code's own token-denominated display.
     var recl = s.stale_reads_reclaimable || {};
     var cdTokensMo = Math.round((Number(cd.est_drops) || 0) * (Number(cd.prefix_tokens) || 0) / Math.max(days, 1) * 30);
-    var addnlMo      = mo(sp.cost_saved_usd) + mo(mr.potential_cost_usd);
-    var opportunityMo = addnlMo + mo(recl.cost_usd) + mo(ow.cost_saved_usd);
+    // The big opportunity number holds only evidence-backed items (unused skills,
+    // stale re-reads, full-file Writes). Routing rests on an assumed share of your
+    // Opus work, so it gets its own line below the number and is never added in.
+    var opportunityMo = mo(sp.cost_saved_usd) + mo(recl.cost_usd) + mo(ow.cost_saved_usd);
+    var routingPotentialMo = mo(mr.potential_cost_usd);
+    var routingTokensMo = Number(mr.potential_tokens_monthly) > 0
+      ? Number(mr.potential_tokens_monthly)
+      : mo(mr.potential_tokens);
+    var routingFracPct = Math.round((Number(mr.routable_fraction) || 0.3) * 100);
     var unusedSkills = Number(sp.unused_skills) || 0;
     var currOpus  = Math.round((Number(mr.current_opus_share) || 0) * 100);
     var ts = data.generated_at ? new Date(data.generated_at).toLocaleString() : 'unknown';
@@ -4521,6 +4529,11 @@ var DB = (function() {
           'The value belongs to the date of removal, not the date of each later read. Missing transcripts receive no repeat-read estimate.</p>' +
         '<p>Stored repeat-read values use the rates recorded when they were computed.' +
           (cp.computed_at ? ' Last counted: ' + esc(new Date(cp.computed_at).toLocaleString()) + '.' : '') + '</p>' +
+        (Number(mr.premium_share) > 0
+          ? '<p>Routing compares your current model mix with your earlier mix. Premium models you chose (' +
+            esc((mr.premium_models || []).map(function(f) { return f.charAt(0).toUpperCase() + f.slice(1); }).join(', ')) + ', ' +
+            Math.round(Number(mr.premium_share) * 100) + '% of tokens, about ' + money(mo(mr.premium_cost_usd)) + per +
+            ' at API rates) are left out, so they do not offset the shift toward lighter models.</p>' : '') +
         ((s.reprice_detail && Number(s.reprice_detail.delta_usd) !== 0)
           ? '<p>Model-rate allocation: ' + money(Number(s.reprice_detail.delta_usd)) +
             ' across ' + Number(s.reprice_detail.repriced_tokens || 0).toLocaleString() +
@@ -4566,8 +4579,11 @@ var DB = (function() {
     if ((Number(sp.cost_saved_usd) || 0) > 0 && unusedSkills > 0) {
       parts.push('Review ' + unusedSkills + ' skill' + (unusedSkills === 1 ? '' : 's') + ' not invoked in this window. Archiving what you no longer need is worth about ' + money(mo(sp.cost_saved_usd)) + per + ', automatically, from then on.');
     }
+    if ((Number(recl.cost_usd) || 0) > 0) {
+      parts.push('Avoid re-reading files that have not changed, or add them to .contextignore. ' + (Number(recl.tokens) || 0).toLocaleString() + ' tokens of stale re-reads across ' + (Number(recl.sessions) || 0).toLocaleString() + ' sessions are worth about ' + money(mo(recl.cost_usd)) + per + '.');
+    }
     if ((Number(mr.potential_cost_usd) || 0) > 0) {
-      parts.push('Let Token Optimizer route more of your routine work to lighter models. Recovers about ' + money(mo(mr.potential_cost_usd)) + per + '.');
+      parts.push('Route routine work to lighter models and keep Opus for the work that needs it. The routing line above shows the size of that assumption.');
     }
     if (cdTokensMo > 0) {
       parts.push('Resume within the hour, or batch related work before stepping away. ' + (Number(cd.drop_sessions) || 0) + ' of your sessions idled past the cache window and re-wrote the prefix — about ' + cdTokensMo.toLocaleString() + ' tokens' + per + '.');
@@ -4578,12 +4594,38 @@ var DB = (function() {
     if (parts.length > 0) {
       html += '<div class="card wide" style="padding:var(--s-5) var(--s-4);margin-bottom:var(--s-3);border:1px solid var(--c-amber);box-shadow:0 0 0 1px rgba(217,164,65,0.18), 0 0 44px rgba(217,164,65,0.12);">';
       html += '<div class="label" style="margin-bottom:var(--s-2);color:var(--c-amber);letter-spacing:0.08em;">Money on the table &middot; opportunity</div>';
-      html += '<div style="display:flex;align-items:baseline;gap:var(--s-2);flex-wrap:wrap;">' +
-          '<span style="font-family:var(--font-mono);font-weight:300;font-size:76px;line-height:0.9;color:var(--c-amber);text-shadow:0 0 30px rgba(217,164,65,0.5);letter-spacing:-0.02em;">' + money(opportunityMo) + '</span>' +
-          '<span style="font-size:23px;color:var(--c-text-dim);font-family:var(--font-mono);">' + per + ' still on the table</span>' +
-        '</div>';
-      html += '<div class="lede" style="margin-top:var(--s-2);">Potential savings if you change your setup or habits. Excluded from the totals above.</div>';
+      if (opportunityMo > 0) {
+        html += '<div style="display:flex;align-items:baseline;gap:var(--s-2);flex-wrap:wrap;">' +
+            '<span style="font-family:var(--font-mono);font-weight:300;font-size:76px;line-height:0.9;color:var(--c-amber);text-shadow:0 0 30px rgba(217,164,65,0.5);letter-spacing:-0.02em;">' + money(opportunityMo) + '</span>' +
+            '<span style="font-size:23px;color:var(--c-text-dim);font-family:var(--font-mono);">' + per + ' still on the table</span>' +
+          '</div>';
+        html += '<div class="lede" style="margin-top:var(--s-2);">Potential savings if you change your setup or habits. Excluded from the totals above.</div>';
+      } else {
+        html += '<div class="lede">Potential savings if you change your setup or habits. Excluded from the totals above.</div>';
+      }
+      if (routingPotentialMo > 0) {
+        html += '<div class="routing-assumption" style="margin-top:var(--s-3);font-family:var(--font-mono);font-size:17px;line-height:1.6;color:var(--c-text-main);max-width:820px;">' +
+          'If about ' + routingFracPct + '% of your remaining Opus work ran on lighter models: ' +
+          (routingTokensMo > 0 ? '<span style="color:var(--c-amber);">~' + fmtTok(routingTokensMo) + ' tokens' + esc(per) + '</span>, ' : '') +
+          'about <span style="color:var(--c-amber);">' + money(routingPotentialMo) + '</span> at API rates.' +
+          '</div>';
+        html += '<div class="note" style="margin-top:var(--s-1);">This is an assumption about your own work, not a measured saving, and it is not part of the number above. Some Opus work is worth keeping on Opus.</div>';
+        var classLabels = { fresh_input: 'Fresh input', cache_create_5m: 'Cache writes (5 min)', cache_create_1h: 'Cache writes (1 hour)',
+                            cache_read: 'Cache reads', output: 'Output', unsplit: 'Tokens without a class split (input rate)' };
+        var byClass = mr.potential_by_class || {};
+        var classRows = Object.keys(byClass).filter(function(k) { return classLabels[k]; })
+          .sort(function(a, b) { return (Number(byClass[b].usd) || 0) - (Number(byClass[a].usd) || 0); });
+        if (classRows.length) {
+          html += fold('How the routing figure is priced',
+            '<p>Each kind of token is priced at the rate of the model you ran, and the lighter model at the newest Sonnet rates. ' +
+              'The figure is the rate difference on about ' + routingFracPct + '% of your remaining Opus tokens.</p>' +
+            classRows.map(function(k) {
+              return '<p>' + esc(classLabels[k]) + ': ~' + fmtTok(mo(byClass[k].tokens)) + ' tokens' + esc(per) + ', about ' + money(mo(byClass[k].usd)) + ' at API rates.</p>';
+            }).join(''));
+        }
+      }
       html += '<details class="fold"><summary>Ways to save more</summary><div class="fold__body">';
+      html += '<p>' + billingCaption + '</p>';
       parts.forEach(function(p, i){
         html += '<div style="display:flex;gap:var(--s-3);align-items:flex-start;">' +
           '<div style="flex-shrink:0;width:34px;height:34px;border-radius:50%;border:1.5px solid var(--c-amber);background:rgba(217,164,65,0.08);display:flex;align-items:center;justify-content:center;font-family:var(--font-mono);font-size:16px;color:var(--c-amber);margin-top:2px;">' + (i+1) + '</div>' +

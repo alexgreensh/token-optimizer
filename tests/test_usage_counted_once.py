@@ -881,3 +881,65 @@ def test_a_transcript_left_with_no_requests_keeps_its_usage_and_claims(tmp_path,
     measure.collect_sessions(days=30, quiet=True)
 
     assert _usage_state(measure) == seeded
+
+
+@pytest.mark.parametrize("new_out", [100, 200])
+def test_a_single_session_keeps_the_recorded_attribution_when_the_figure_is_equal_or_grows(
+        tmp_path, monkeypatch, new_out):
+    measure = _load(tmp_path, monkeypatch)
+    when = _noon(2)
+    path = _projects(tmp_path) / "-repo" / f"{SID_A}.jsonl"
+    _write(path, [_chunk(when, mid="msg_1", out=100)])
+    measure.collect_sessions(days=30, quiet=True)
+    seeded = _usage_state(measure)
+    name = f"{SID_A}.jsonl"
+    assert _day_output(seeded, name, _day_of(when), OPUS) == 100
+
+    # The same request seen again, equal or longer, but stamped another day and
+    # an unnamed model.
+    _rewrite(path, [_chunk(when + timedelta(days=1), mid="msg_1", out=new_out, model="<synthetic>")], 60)
+    measure.collect_sessions(days=30, quiet=True)
+
+    state = _usage_state(measure)
+    _assert_consistent(state, new_out, 1)
+    assert _day_output(state, name, _day_of(when), OPUS) == new_out
+    assert set(state["sessions"][name]["daily"]) == {_day_of(when)}
+    assert set(state["sessions"][name]["breakdown"]) == {OPUS}
+    (claim,) = state["claims"].values()
+    assert claim["meta"] == {(OPUS, _day_of(when))}
+
+
+def test_claims_recorded_before_model_and_day_were_stored_are_kept_and_filled(tmp_path, monkeypatch):
+    measure = _load(tmp_path, monkeypatch)
+    when = _noon(2)
+    path = _projects(tmp_path) / "-repo" / f"{SID_A}.jsonl"
+    _write(path, [_chunk(when, mid="msg_1", out=100)])
+    measure.collect_sessions(days=30, quiet=True)
+    conn = measure._init_trends_db()
+    shares = conn.execute(
+        "SELECT request_hash, owner_hash, calls, inp, out, cr, cc, cc_1h, cc_5m FROM usage_request_claims"
+    ).fetchall()
+    # Put the table back in its earlier shape: counters, no model or day.
+    conn.execute("DROP TABLE usage_request_claims")
+    conn.execute(
+        "CREATE TABLE usage_request_claims (request_hash INTEGER NOT NULL, owner_hash INTEGER NOT NULL, "
+        "calls INTEGER NOT NULL DEFAULT 0, inp INTEGER NOT NULL DEFAULT 0, out INTEGER NOT NULL DEFAULT 0, "
+        "cr INTEGER NOT NULL DEFAULT 0, cc INTEGER NOT NULL DEFAULT 0, cc_1h INTEGER NOT NULL DEFAULT 0, "
+        "cc_5m INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (request_hash, owner_hash)) WITHOUT ROWID")
+    conn.executemany("INSERT INTO usage_request_claims VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", shares)
+    conn.commit()
+    conn.close()
+
+    conn = measure._init_trends_db()                      # migration
+    kept = conn.execute(
+        "SELECT request_hash, owner_hash, calls, inp, out, cr, cc, cc_1h, cc_5m, model, day "
+        "FROM usage_request_claims").fetchall()
+    conn.close()
+    assert [row[:9] for row in kept] == shares            # counters survive
+    assert [row[9:] for row in kept] == [(None, None)]
+
+    _rewrite(path, [_chunk(when, mid="msg_1", out=100)], 60)
+    measure.collect_sessions(days=30, quiet=True)         # an observation fills the metadata
+    (claim,) = _usage_state(measure)["claims"].values()
+    assert claim["meta"] == {(OPUS, _day_of(when))}
+    assert claim["out"] == 100

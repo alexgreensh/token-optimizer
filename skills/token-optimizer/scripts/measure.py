@@ -13932,14 +13932,19 @@ def _init_trends_db():
         conn.commit()
     except sqlite3.Error as _e:
         _log_migration_error("session_log columns", _e)
-    # A request-claims table without the shares (or the model and day they were
-    # billed to) cannot rebuild a session; it holds no history, so it is recreated.
+    # Shares already recorded are usage evidence: a claims table from before the
+    # model and day columns keeps its counters and gains the columns. Only a
+    # table that never held counters (nothing to keep) is recreated.
     try:
         _claim_cols = {r[1] for r in conn.execute("PRAGMA table_info(usage_request_claims)").fetchall()}
-        if _claim_cols and not {"inp", "model", "day"} <= _claim_cols:
+        if _claim_cols and "inp" not in _claim_cols:
             conn.execute("DROP TABLE usage_request_claims")
             conn.executescript(_SCHEMA)
-            conn.commit()
+        else:
+            for _col in ("model", "day"):
+                if _claim_cols and _col not in _claim_cols:
+                    conn.execute(f"ALTER TABLE usage_request_claims ADD COLUMN {_col} TEXT")
+        conn.commit()
     except sqlite3.Error as _e:
         _log_migration_error("usage_request_claims", _e)
     # Same origin column on the per-event savings tables (NULL = legacy/local).
@@ -26202,17 +26207,6 @@ def _claim_state(conn, owner_id, keys, live_owners):
     return others, own
 
 
-def _own_exceeds(requests, own):
-    """True when a session was credited for more of a request than its transcript
-    now holds (a shorter copy of a streamed reply, or a rotated file)."""
-    for key, u in requests.items():
-        base = _request_base_key(key)
-        prior = own.get(base) if (own and base is not None) else None
-        if prior and any(int(u.get(name) or 0) < prior[name] for name in _SHARE_FIELDS):
-            return True
-    return False
-
-
 def _net_of_counted(requests, counted, own=None):
     """The part of each request this session adds on top of what is already
     counted: per field, its own figure minus the others' total, never below 0.
@@ -26344,7 +26338,7 @@ def _parsed_with_requests(parsed, requests):
 def _parsed_net_of_counted(parsed, counted, own=None):
     """`parsed` restated without what other sessions already counted of its requests."""
     requests = (parsed or {}).get("request_usage")
-    if not requests or not (counted or _own_exceeds(requests, own)):
+    if not requests or not (counted or own):
         return parsed
     return _parsed_with_requests(parsed, _net_of_counted(requests, counted, own))
 
@@ -26433,7 +26427,7 @@ def _session_daily_usage(filepath, parsed=None, subagent_files=None, conn=None, 
             live_owners = _live_usage_owners(conn)
         owner_id = _usage_owner_id(filepath)
         counted, own = _claim_state(conn, owner_id, merged, live_owners)
-        if counted or _own_exceeds(merged, own):
+        if counted or own:
             merged = _net_of_counted(merged, counted, own)
         if _stable_hash63(owner_id) in live_owners:
             merged = {**merged, **_retained_requests(conn, owner_id, merged)}
@@ -26749,7 +26743,7 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
                 except sqlite3.Error:
                     pass
             counted, own_shares = _claim_state(conn, owner_id, merged, live_owners)
-            if counted or _own_exceeds(merged, own_shares):
+            if counted or own_shares:
                 merged = _net_of_counted(merged, counted, own_shares)
                 parsed = _parsed_net_of_counted(parsed, counted, own_shares)
             if retained:

@@ -160,7 +160,35 @@ function classPrice(fi: number, cr: number, cw: number, out: number, mixes: Reco
 export interface SavingsBreakdownItem {
   key: string;
   label: string;
+  /** Exact raw lever value. */
   monthlyUsd: number;
+  /** Cent-allocated display value: the displayed levers always add to the
+   * displayed headline (largest-remainder cent allocation, round once). */
+  monthlyUsdDisplay: number;
+}
+
+/**
+ * Largest-remainder cent allocation. Rounds `total` to cents once, then
+ * apportions those cents across `parts` so the returned parts always re-add to
+ * the rounded total. Signed parts are handled by flooring toward -inf before
+ * apportioning; `parts` need not already sum to `total` (any remainder surplus
+ * lands on the first part so the sum always holds).
+ */
+export function allocateCents(total: number, parts: number[]): number[] {
+  const cents = (x: number) => (Number.isFinite(x) ? x : 0) * 100;
+  const totalCents = Math.round(cents(total));
+  const out = parts.map((p) => Math.floor(cents(p)));
+  let remainder = totalCents - out.reduce((a, b) => a + b, 0);
+  const order = parts
+    .map((p, i) => [cents(p) - Math.floor(cents(p)), i] as const)
+    .sort((a, b) => b[0] - a[0] || a[1] - b[1]);
+  for (const [, i] of order) {
+    if (remainder <= 0) break;
+    out[i] += 1;
+    remainder -= 1;
+  }
+  if (remainder !== 0 && out.length > 0) out[0] += remainder;
+  return out.map((c) => c / 100);
 }
 
 /** Progress toward a frozen baseline (displayed when ready=false). */
@@ -190,6 +218,11 @@ export interface RealizedSavings {
   unpricedEventTokens: number;
   unpricedEventCount: number;
   archivePricedNetUsd: number | null;
+  /** Priced action dollars that used the input rate because no billed class was
+   * recorded — an honest floor, disclosed wherever these savings are shown.
+   * Window-scaled like compressionMeasuredUsd / raw window sum. */
+  inputRateFloorUsd: number;
+  inputRateFloorWindowUsd: number;
   /** Monthly $ at the user's CURRENT model mix + cache pattern ("now" arm). */
   actualMonthlyUsd: number;
   /** Monthly $ at the user's BASELINE mix + cache pattern ("the old way" arm). */
@@ -277,6 +310,8 @@ const NOT_READY = (status: string): RealizedSavings => ({
   unpricedEventTokens: 0,
   unpricedEventCount: 0,
   archivePricedNetUsd: null,
+  inputRateFloorUsd: 0,
+  inputRateFloorWindowUsd: 0,
   actualMonthlyUsd: 0,
   counterfactualMonthlyUsd: 0,
   transformationPct: 0,
@@ -326,6 +361,7 @@ export function computeRealizedSavings(
   let unpricedEventTokens = 0;
   let unpricedEventCount = 0;
   let archivePricedNetUsd: number | null = null;
+  let inputRateFloor = 0;
 
   if (!rowsOverride) {
     const store = new TrendsStore(dataDir);
@@ -341,6 +377,7 @@ export function computeRealizedSavings(
       unpricedEventTokens = comp.unpricedTokens;
       unpricedEventCount = comp.unpricedEvents;
       archivePricedNetUsd = comp.archivePricedNetUsd;
+      inputRateFloor = comp.inputRateFloorUsd;
       // Verbosity-steer add-back (pool #4) reads estimated savings_events.
       const verbosity = store.getVerbositySavingsDetail(days, now);
       measuredVerbosity = verbosity.costUsd;
@@ -364,6 +401,7 @@ export function computeRealizedSavings(
     result.unpricedEventTokens = unpricedEventTokens;
     result.unpricedEventCount = unpricedEventCount;
     result.archivePricedNetUsd = archivePricedNetUsd;
+    result.inputRateFloorWindowUsd = Math.max(0, inputRateFloor);
     return result;
   };
 
@@ -624,14 +662,17 @@ export function computeRealizedSavings(
   // the honest net including a pool that grew (shown honestly as a "-$X" lever).
   const sRoute = (oldCps - nowCps) * sessionsPerMonth;
 
+  // Display cents are allocated once off the signed net so the rendered levers
+  // always add to the rendered headline; monthlyUsd keeps the exact raw values.
+  const leverDisplay = allocateCents(net, [sRoute, subagentTransformation, compressionAddback, verbosityAddback]);
   const breakdown: SavingsBreakdownItem[] = [
-    { key: "routing", label: "Eligible model mix change", monthlyUsd: sRoute },
-    { key: "subagent_routing", label: "Cheaper subagents (no sidechains on OpenCode)", monthlyUsd: subagentTransformation },
-    { key: "context_compression", label: "Lighter context (fewer re-reads, metered)", monthlyUsd: compressionAddback },
-    { key: "verbosity_steer", label: "Lean output nudges (less output, estimated)", monthlyUsd: verbosityAddback },
+    { key: "routing", label: "Eligible model mix change", monthlyUsd: sRoute, monthlyUsdDisplay: leverDisplay[0] },
+    { key: "subagent_routing", label: "Cheaper subagents (no sidechains on OpenCode)", monthlyUsd: subagentTransformation, monthlyUsdDisplay: leverDisplay[1] },
+    { key: "context_compression", label: "Lighter context (fewer re-reads, metered)", monthlyUsd: compressionAddback, monthlyUsdDisplay: leverDisplay[2] },
+    { key: "verbosity_steer", label: "Lean output nudges (less output, estimated)", monthlyUsd: verbosityAddback, monthlyUsdDisplay: leverDisplay[3] },
   ]
     .filter((b) => b.key !== "subagent_routing" || b.monthlyUsd !== 0) // drop the always-0 sidechain lever
-    .sort((a, b) => Math.abs(b.monthlyUsd) - Math.abs(a.monthlyUsd));
+    .sort((a, b) => Math.abs(b.monthlyUsdDisplay) - Math.abs(a.monthlyUsdDisplay));
 
   // transformationPct: fraction of combined counterfactual spend eliminated.
   // The combined counterfactual = main cf + compression add-back + verbosity
@@ -672,6 +713,8 @@ export function computeRealizedSavings(
     unpricedEventTokens,
     unpricedEventCount,
     archivePricedNetUsd,
+    inputRateFloorUsd: m(Math.max(0, inputRateFloor)),
+    inputRateFloorWindowUsd: Math.max(0, inputRateFloor),
     actualMonthlyUsd: actualMonthly,
     counterfactualMonthlyUsd: combinedCf,
     transformationPct,

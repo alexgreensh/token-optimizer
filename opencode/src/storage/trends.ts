@@ -61,7 +61,14 @@ AND NOT (e.tokens_saved > 0 AND e.session_id IS NOT NULL AND e.session_id != '' 
   AND (julianday(e.timestamp) - julianday(p.timestamp)) * 86400.0 BETWEEN 0 AND 3
 ));`;
 
-function sessionRate(model: string | null, encoded: string | null, klass: "input" | "output"): { rate: number; coverage: number } {
+/** Billing classes a savings event's avoided tokens can be priced at. */
+export type SavingsEventClass = "input" | "output" | "cacheRead" | "cacheWrite";
+const SAVINGS_EVENT_CLASSES = new Set<string>(["input", "output", "cacheRead", "cacheWrite"]);
+function savingsEventClass(value: unknown): SavingsEventClass | undefined {
+  return typeof value === "string" && SAVINGS_EVENT_CLASSES.has(value) ? value as SavingsEventClass : undefined;
+}
+
+function sessionRate(model: string | null, encoded: string | null, klass: SavingsEventClass): { rate: number; coverage: number } {
   try {
     const buckets = JSON.parse(encoded ?? "null") as ModelTokenBuckets | null;
     let weighted = 0, total = 0;
@@ -126,6 +133,10 @@ export class TrendsStore {
       if (!cols.some((col) => col.name === "model_token_buckets")) {
         this.db.exec("ALTER TABLE session_log ADD COLUMN model_token_buckets TEXT");
       }
+      const eventCols = this.db.query("PRAGMA table_info(savings_events)").all() as Array<{ name: string }>;
+      if (!eventCols.some((col) => col.name === "token_class")) {
+        this.db.exec("ALTER TABLE savings_events ADD COLUMN token_class TEXT");
+      }
       this.db.exec(COUNTED_EVENTS_VIEW);
     }
     return this.db;
@@ -148,15 +159,20 @@ export class TrendsStore {
     sessionId: string | null,
     detail: string | null,
     model: string | null = null,
+    tokenClass?: string,
   ): void {
     if (tokensSaved <= 0) return;
     try {
       const db = this.connect();
-      const rate = knownModelRate(model ?? "", eventType === "verbosity_steer" ? "output" : "input");
+      const klass = savingsEventClass(tokenClass) ?? (eventType === "verbosity_steer" ? "output" : "input");
+      // A class the provider does not bill (zero rate) reverts to the input
+      // rate: on such a card new context is charged as fresh input.
+      let rate = knownModelRate(model ?? "", klass);
+      if (rate === 0 && klass !== "input") rate = knownModelRate(model ?? "", "input");
       const costSavedUsd = tokensSaved * (rate ?? 0);
       db.run(
-        `INSERT INTO savings_events (timestamp, event_type, tokens_saved, cost_saved_usd, session_id, detail, model)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO savings_events (timestamp, event_type, tokens_saved, cost_saved_usd, session_id, detail, model, token_class)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           new Date().toISOString(),
           eventType,
@@ -165,6 +181,7 @@ export class TrendsStore {
           sessionId ?? null,
           detail ?? null,
           model ?? null,
+          savingsEventClass(tokenClass) ?? null,
         ],
       );
     } catch {
@@ -261,30 +278,40 @@ export class TrendsStore {
     archivePricedNetUsd: number | null;
     unpricedTokens: number;
     unpricedEvents: number;
+    inputRateFloorTokens: number;
+    inputRateFloorUsd: number;
   } {
     try {
       const db = this.connect();
       const cutoff = new Date(now - days * 86_400_000).toISOString();
       const rows = db
         .query(
-          `SELECT e.event_type, e.tokens_saved, e.cost_saved_usd, e.model, s.model AS session_model, s.model_token_buckets
+          `SELECT e.event_type, e.tokens_saved, e.cost_saved_usd, e.model, e.token_class, s.model AS session_model, s.model_token_buckets
            FROM counted_savings_events e LEFT JOIN session_log s ON s.session_id = e.session_id
            WHERE e.timestamp >= ?`,
         )
-        .all(cutoff) as Array<{ event_type: string; tokens_saved: number; cost_saved_usd: number; model: string | null; session_model: string | null; model_token_buckets: string | null }>;
+        .all(cutoff) as Array<{ event_type: string; tokens_saved: number; cost_saved_usd: number; model: string | null; token_class: string | null; session_model: string | null; model_token_buckets: string | null }>;
 
-      const byCategory = new Map<string, { events: number; tokens: number; cost: number; unpricedTokens: number; unpricedEvents: number }>();
+      const byCategory = new Map<string, { events: number; tokens: number; cost: number; unpricedTokens: number; unpricedEvents: number; floorTokens: number; floorUsd: number }>();
       for (const r of rows) {
-        const item = byCategory.get(r.event_type) ?? { events: 0, tokens: 0, cost: 0, unpricedTokens: 0, unpricedEvents: 0 };
-        const unknown = !r.model || knownModelRate(r.model, "input") === null;
-        const rate = unknown ? sessionRate(r.session_model, r.model_token_buckets, "input") : { rate: 0, coverage: 1 };
+        const item = byCategory.get(r.event_type) ?? { events: 0, tokens: 0, cost: 0, unpricedTokens: 0, unpricedEvents: 0, floorTokens: 0, floorUsd: 0 };
+        // A stored billed class prices the event at that class; without one the
+        // input rate is an honest floor (disclosed via the floor totals).
+        const klass = savingsEventClass(r.token_class) ?? "input";
+        const unknown = !r.model || knownModelRate(r.model, klass) === null;
+        const rate = unknown ? sessionRate(r.session_model, r.model_token_buckets, klass) : { rate: 0, coverage: 1 };
         item.events++;
         const tokens = r.tokens_saved ?? 0;
         const cost = unknown ? tokens * rate.rate : (r.cost_saved_usd ?? 0);
+        const absCost = r.event_type === "tool_archive_reexpand" ? Math.abs(cost) : cost;
         item.tokens += r.event_type === "tool_archive_reexpand" ? Math.abs(tokens) : tokens;
-        item.cost += r.event_type === "tool_archive_reexpand" ? Math.abs(cost) : cost;
+        item.cost += absCost;
         item.unpricedTokens += Math.abs(tokens) * (1 - rate.coverage);
         if (rate.coverage < 1 && tokens !== 0) item.unpricedEvents++;
+        if (r.token_class === null || r.token_class === undefined) {
+          item.floorUsd += absCost;
+          item.floorTokens += Math.abs(tokens) * (unknown ? rate.coverage : 1);
+        }
         byCategory.set(r.event_type, item);
       }
 
@@ -316,16 +343,19 @@ export class TrendsStore {
       let totalEvents = 0;
       // Coverage is gross: uncertain credits and reversals cannot cancel.
       let unpricedTokens = reexpand?.unpricedTokens ?? 0, unpricedEvents = reexpand?.unpricedEvents ?? 0;
+      let floorTokens = reexpand?.floorTokens ?? 0, floorUsd = reexpand?.floorUsd ?? 0;
       for (const v of byCategory.values()) {
         totalTokensSaved += v.tokens;
         totalCostSavedUsd += v.cost;
         totalEvents += v.events;
         unpricedTokens += v.unpricedTokens;
         unpricedEvents += v.unpricedEvents;
+        floorTokens += v.floorTokens;
+        floorUsd += v.floorUsd;
       }
-      return { totalTokensSaved, totalCostSavedUsd, totalEvents, archivePricedNetUsd, unpricedTokens, unpricedEvents };
+      return { totalTokensSaved, totalCostSavedUsd, totalEvents, archivePricedNetUsd, unpricedTokens, unpricedEvents, inputRateFloorTokens: floorTokens, inputRateFloorUsd: floorUsd };
     } catch {
-      return { totalTokensSaved: 0, totalCostSavedUsd: 0, totalEvents: 0, archivePricedNetUsd: null, unpricedTokens: 0, unpricedEvents: 0 };
+      return { totalTokensSaved: 0, totalCostSavedUsd: 0, totalEvents: 0, archivePricedNetUsd: null, unpricedTokens: 0, unpricedEvents: 0, inputRateFloorTokens: 0, inputRateFloorUsd: 0 };
     }
   }
 
@@ -348,15 +378,16 @@ export class TrendsStore {
       const cutoff = new Date(now - days * 86_400_000).toISOString();
       const rows = db
         .query(
-          `SELECT e.tokens_saved, e.cost_saved_usd, e.model, s.model AS session_model, s.model_token_buckets
+          `SELECT e.tokens_saved, e.cost_saved_usd, e.model, e.token_class, s.model AS session_model, s.model_token_buckets
            FROM counted_savings_events e LEFT JOIN session_log s ON s.session_id = e.session_id
            WHERE e.timestamp >= ? AND e.event_type = 'verbosity_steer'`,
         )
-        .all(cutoff) as Array<{ tokens_saved: number; cost_saved_usd: number; model: string | null; session_model: string | null; model_token_buckets: string | null }>;
+        .all(cutoff) as Array<{ tokens_saved: number; cost_saved_usd: number; model: string | null; token_class: string | null; session_model: string | null; model_token_buckets: string | null }>;
       let costUsd = 0, unpricedTokens = 0, unpricedEvents = 0;
       for (const r of rows) {
-        const unknown = !r.model || knownModelRate(r.model, "output") === null;
-        const rate = unknown ? sessionRate(r.session_model, r.model_token_buckets, "output") : { rate: 0, coverage: 1 };
+        const klass = savingsEventClass(r.token_class) ?? "output";
+        const unknown = !r.model || knownModelRate(r.model, klass) === null;
+        const rate = unknown ? sessionRate(r.session_model, r.model_token_buckets, klass) : { rate: 0, coverage: 1 };
         costUsd += unknown ? (r.tokens_saved ?? 0) * rate.rate : (r.cost_saved_usd ?? 0);
         unpricedTokens += Math.abs(r.tokens_saved ?? 0) * (1 - rate.coverage);
         if (rate.coverage < 1 && r.tokens_saved !== 0) unpricedEvents++;

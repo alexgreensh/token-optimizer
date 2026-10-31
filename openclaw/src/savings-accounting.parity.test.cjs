@@ -300,7 +300,7 @@ test('legacy Claude model pricing accepts only supported generation cards and al
   }
   for (const model of ['claude-9-opus', 'anthropic/claude-3-9-sonnet-20241022', 'claude-opus-99', 'claude-opus-5-99']) {
     assert.equal(resolvePricedModel(model, dir), null);
-    assert.deepEqual(priceSavingsEvent(1000000, 'checkpoint_restore', {model}, dir), {cost: 0, unpricedTokens: 1000000});
+    assert.deepEqual(priceSavingsEvent(1000000, 'checkpoint_restore', {model}, dir), {cost: 0, unpricedTokens: 1000000, floorTokens: 0});
   }
 });
 

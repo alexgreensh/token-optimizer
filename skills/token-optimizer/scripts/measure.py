@@ -24042,7 +24042,7 @@ def _counted_mark_incomplete(conn, key, detail, proof=None):
 
 
 def _counted_store_score(conn, key, source, uuid, ts, tokens, score, mtime,
-                         proof, old=None, magnitude_basis="metered"):
+                         proof, old=None, magnitude_basis="metered", allow_unobserved=False):
     """Replace only a complete continuation of the previously observed file."""
     detail = _counted_pricing_detail(old["pricing_detail"]) if old else {}
     if old:
@@ -24059,10 +24059,16 @@ def _counted_store_score(conn, key, source, uuid, ts, tokens, score, mtime,
                           and score["reread_tokens"] == int(old["reread_tokens"] or 0))
         identity_matches = (old["source"] == source and old["session_uuid"] == uuid
                             and old["event_ts"] == ts)
-        if not continuous or not identity_matches or not score["observed"] or int(old["tokens"] or 0) != tokens:
+        previous_activity = (int(old["turns_counted"] or 0) != 0
+                             or float(old["oneshot_usd"] or 0) != 0
+                             or bool(detail.get("priced_oneshot_events"))
+                             or bool(detail.get("oneshot_unpriced_credit_tokens"))
+                             or bool(detail.get("oneshot_unpriced_debit_tokens")))
+        if (not continuous or not identity_matches or int(old["tokens"] or 0) != tokens
+                or (not score["observed"] and (not allow_unobserved or previous_activity))):
             _counted_mark_incomplete(conn, key, detail, proof)
             return False
-    if not score["observed"]:
+    if not score["observed"] and not allow_unobserved:
         return False
     detail = {key: score[key] for key in _COUNTED_COVERAGE_KEYS}
     detail.update(version=_COUNTED_PRICING_VERSION, refresh_incomplete=False,
@@ -24194,7 +24200,7 @@ def _update_counted_cumulative(conn, max_sessions=_COUNTED_MAX_SESSIONS_PER_PASS
                     turns, compacts, ev_dt, int(tok or 0), tier_data)
                 if not _counted_store_score(conn, key, key.split(":", 1)[0], uuid,
                                              ts, int(tok or 0), score, mtime, proof,
-                                             old=stored.get(key)):
+                                             old=stored.get(key), allow_unobserved=True):
                     stats["unmeasured_events"] += 1
                     continue
                 stats["rows_written"] += 1
@@ -24459,7 +24465,8 @@ def _counted_cumulative_summary(days=None, now=None):
                     "SELECT 'ce:'||id FROM main.compression_events EXCEPT "
                     "SELECT 'ce:'||id FROM counted_compression_events"))
             rows = []
-            for row in _counted_stored_rows(conn).values():
+            stored = _counted_stored_rows(conn)
+            for row in stored.values():
                 if row["event_key"] in excluded:
                     continue
                 if start is not None:
@@ -24477,12 +24484,33 @@ def _counted_cumulative_summary(days=None, now=None):
                     if not start.timestamp() <= stamp <= end.timestamp():
                         continue
                 rows.append(row)
-            totals = _counted_rollup_rows(rows)
+            missing_by_month = {}
+            for key, _uuid, ts, tokens, _cost, _model in _counted_candidate_events(conn):
+                if key in stored:
+                    continue
+                value = _counted_event_utc(ts)
+                if start is not None and (value is None or not start.timestamp() <=
+                        value.replace(tzinfo=timezone.utc).timestamp() <= end.timestamp()):
+                    continue
+                month = value.strftime("%Y-%m") if value else None
+                missing_by_month.setdefault(month, []).append(int(tokens or 0))
+
+            def add_missing(coverage, amounts):
+                coverage["unmeasured_events"] = len(amounts)
+                coverage["unmeasured_removed_tokens"] = sum(amounts)
+                coverage["unmeasured_removed_credit_tokens"] = sum(n for n in amounts if n >= 0)
+                coverage["unmeasured_removed_debit_tokens"] = sum(-n for n in amounts if n < 0)
+                return _counted_coverage_totals(coverage)
+
+            totals = add_missing(_counted_rollup_rows(rows),
+                                 [n for values in missing_by_month.values() for n in values])
             by_month = {}
             for row in rows:
                 by_month.setdefault(row["event_month"], []).append(row)
-            monthly_coverage = {m: _counted_rollup_rows(by_month[m])
-                                for m in sorted(by_month, key=lambda month: month or "")}
+            monthly_coverage = {m: add_missing(_counted_rollup_rows(by_month.get(m, [])),
+                                               missing_by_month.get(m, []))
+                                for m in sorted(by_month.keys() | missing_by_month.keys(),
+                                                key=lambda month: month or "")}
             try:
                 done = conn.execute(
                     "SELECT value FROM token_optimizer_meta WHERE key = ?",
@@ -24493,9 +24521,7 @@ def _counted_cumulative_summary(days=None, now=None):
                 done = None
         finally:
             conn.close()
-        if not rows and days is None:
-            return out
-        first_month = min((row["event_month"] for row in rows if row["event_month"]), default=None)
+        first_month = min((month for month in monthly_coverage if month), default=None)
         computed_at = max((row["computed_at"] for row in rows if row["computed_at"]), default=None)
         return {
             **totals,

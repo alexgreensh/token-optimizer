@@ -191,7 +191,7 @@ def test_class_rates_follow_the_generation_card(m):
 # ------------------------------------------------------- unsplit fallback
 
 
-def test_rows_without_a_class_split_use_the_input_rate(m, db):
+def test_rows_without_a_class_split_stay_out_of_the_routing_potential(m, db):
     db.session(totals={OPUS_55: 4_000_000})
     db.mix(opus=4_000_000)
     c = _cards(m)
@@ -199,8 +199,9 @@ def test_rows_without_a_class_split_use_the_input_rate(m, db):
     r = m._compute_model_routing_savings(days=30)
 
     assert r["unsplit_tokens"] == 4_000_000
-    assert r["potential_by_class"]["unsplit"]["tokens"] == 1_200_000
-    assert r["potential_cost_usd"] == pytest.approx(0.3 * 4 * (c["opus_5_5"]["input"] - c["sonnet_5_5"]["input"]), abs=1e-3)
+    assert "unsplit" not in r["potential_by_class"]
+    assert r["potential_cost_usd"] == 0
+    assert r["potential_unsplit_excluded_tokens"] == 4_000_000
 
 
 def test_breakdown_rows_keep_their_split_and_flag_the_rest(m, db):
@@ -214,7 +215,8 @@ def test_breakdown_rows_keep_their_split_and_flag_the_rest(m, db):
 
     assert r["unsplit_tokens"] == 2_000_000
     assert r["potential_by_class"]["output"]["tokens"] == 300_000
-    assert r["potential_by_class"]["unsplit"]["tokens"] == 600_000
+    assert "unsplit" not in r["potential_by_class"]
+    assert r["potential_unsplit_excluded_tokens"] == 2_000_000
 
 
 def test_split_rows_report_no_unsplit_tokens(m, db):
@@ -229,8 +231,9 @@ def test_no_session_rows_falls_back_to_the_model_mix(m, db):
     r = m._compute_model_routing_savings(days=30)
 
     assert r["unsplit_tokens"] == 4_000_000
-    assert r["potential_tokens"] == 1_200_000
-    assert r["potential_cost_usd"] > 0
+    assert r["potential_tokens"] == 0
+    assert r["potential_cost_usd"] == 0
+    assert r["potential_unsplit_excluded_tokens"] == 4_000_000
 
 
 # ------------------------------------------------------------ realized
@@ -248,6 +251,20 @@ def test_realized_prices_the_mix_shift_per_class(m, db, monkeypatch):
     expected = 2.0 * ((0.95 - 0.5) * out_o + (0.05 - 0.5) * out_s)
     assert r["realized_cost_usd"] == pytest.approx(expected, abs=1e-3)
     assert r["realized_cost_usd"] > 0
+
+
+def test_realized_survives_a_missing_target_rate(m, db, monkeypatch):
+    monkeypatch.setattr(m, "_pretool_baseline_mix", lambda: {"opus": 0.95, "sonnet": 0.05})
+    monkeypatch.setattr(m, "_routing_target_model", lambda: "no-such-model-1")
+    db.session(daily={db.day(): {OPUS_55: _buckets(out=1_000_000), SONNET_55: _buckets(out=1_000_000)}})
+    db.mix(opus=1_000_000, sonnet=1_000_000)
+
+    r = m._compute_model_routing_savings(days=30)
+
+    assert r["realized_cost_usd"] > 0
+    assert r["potential_cost_usd"] == 0
+    assert r["potential_by_class"] == {}
+    assert r["evidence"] == "estimated"
 
 
 def test_realized_is_never_negative(m, db, monkeypatch):

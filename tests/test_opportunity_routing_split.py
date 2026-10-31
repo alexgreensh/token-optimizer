@@ -47,10 +47,15 @@ def measure(tmp_path, monkeypatch):
 # ------------------------------------------------------------ payload fields
 
 
-def test_routing_payload_exposes_assumption_and_token_volume_without_session_rows(measure, monkeypatch):
+def test_routing_payload_exposes_assumption_and_token_volume(measure, monkeypatch):
     monkeypatch.setattr(
         measure, "_model_mix_shares",
         lambda days=30, since=None: {"shares": {"opus": 0.8, "sonnet": 0.2}, "total_tokens": 10_000_000},
+    )
+    monkeypatch.setattr(
+        measure, "_routing_usage_by_model",
+        lambda days=30, since=None: {"claude-opus-5-5": {"fresh_input": 8_000_000},
+                                     "claude-sonnet-5-5": {"fresh_input": 2_000_000}},
     )
     monkeypatch.setattr(measure, "_pretool_baseline_mix", lambda: {"opus": 0.95, "sonnet": 0.05})
     monkeypatch.setattr(measure, "_ROUTABLE_OPUS_FRACTION", 0.3)
@@ -70,6 +75,10 @@ def test_routing_payload_tokens_scale_to_a_month(measure, monkeypatch):
     monkeypatch.setattr(
         measure, "_model_mix_shares",
         lambda days=30, since=None: {"shares": {"opus": 1.0}, "total_tokens": 10_000_000},
+    )
+    monkeypatch.setattr(
+        measure, "_routing_usage_by_model",
+        lambda days=30, since=None: {"claude-opus-5-5": {"fresh_input": 10_000_000}},
     )
     monkeypatch.setattr(measure, "_pretool_baseline_mix", lambda: {"opus": 1.0})
     monkeypatch.setattr(measure, "_ROUTABLE_OPUS_FRACTION", 0.3)
@@ -448,3 +457,15 @@ def test_routing_potential_does_not_change_all_in(measure, monkeypatch, capsys):
     second = _cli_out(measure, monkeypatch, capsys, _cli_summary({**_ROUTING, "potential_cost_usd": 9000}))
     assert next(line for line in first.splitlines() if "ALL IN" in line) == next(
         line for line in second.splitlines() if "ALL IN" in line)
+
+
+def test_dashboard_and_cli_disclose_unsplit_tokens_left_out_of_routing(measure, monkeypatch, capsys):
+    extra = {"potential_unsplit_excluded_tokens": 2_000_000}
+    s = _savings()
+    s["model_routing"].update(extra)
+    text = _text(_render(s))
+    assert "(~2.0M Opus tokens/mo without a class split are left out)" in text
+    out = _cli_out(measure, monkeypatch, capsys, _cli_summary({**_ROUTING, **extra}))
+    routing_line = next(l for l in out.splitlines() if "Routing" in l)
+    assert "(~2,000,000 Opus tokens/mo without a class split are left out)" in routing_line
+    assert "priced as input" not in routing_line

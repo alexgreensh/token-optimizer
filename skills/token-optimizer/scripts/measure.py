@@ -52446,8 +52446,9 @@ def _compute_model_routing_savings(days=30, since=None):
     `premium_cost_usd` report them separately.
 
     POTENTIAL: an assumption, not a measurement. A fixed share
-    (`routable_fraction`) of Opus fresh input and output, plus usage without a
-    class split, is priced at the Opus-to-Sonnet API rate delta. Cache reads and
+    (`routable_fraction`) of Opus fresh input and output is priced at the
+    Opus-to-Sonnet API rate delta. Opus usage without a class split is left out
+    and counted in `potential_unsplit_excluded_tokens`. Cache reads and
     writes represent main-session history: switching models rebuilds that cache,
     while routine subagent work carries its own smaller context. The result is
     shown separately from concrete opportunities.
@@ -52456,7 +52457,7 @@ def _compute_model_routing_savings(days=30, since=None):
     unsplit usage by class. Input, cache write, cache read and output use their
     respective rates; unsplit usage uses the input rate and is reported as
     `unsplit_tokens`. Potential uses the model's own generation card for fresh
-    input, output and unsplit usage, and the newest Sonnet card for its target.
+    input and output, and the newest Sonnet card for its target.
     The class split comes from per-day, per-model session usage.
 
     Realized routing is a standardized family comparison: the remaining work's
@@ -52484,6 +52485,7 @@ def _compute_model_routing_savings(days=30, since=None):
         "realized_cost_usd": 0.0, "potential_cost_usd": 0.0,
         "potential_tokens": 0, "potential_tokens_monthly": 0,
         "potential_billable_tokens": 0, "potential_by_class": {}, "unsplit_tokens": 0,
+        "potential_unsplit_excluded_tokens": 0,
         "premium_models": [], "premium_share": 0.0, "premium_cost_usd": 0.0,
         "unpriced_models": [], "unpriced_tokens": 0, "unpriced_share": 0.0,
         "free_models": [], "free_tokens": 0,
@@ -52687,16 +52689,24 @@ def _compute_model_routing_savings(days=30, since=None):
         ) / 1_000_000
         realized_cost = max(0.0, standardized_baseline - standardized_actual) if base_priced and kept_models else 0.0
 
-        # POTENTIAL: a fixed share of remaining Opus work, per token class, priced
-        # at each Opus model's own card minus the current Sonnet card.
+        # POTENTIAL: a fixed share of remaining Opus fresh input and output, priced
+        # at each Opus model's own card minus the current Sonnet card. It is
+        # computed apart from the realized figure: with no target card the
+        # potential is zero and the realized routing above is unaffected. Usage
+        # without a class split cannot be told apart as input or output, so it is
+        # left out and its count is reported.
         target = _routing_target_model()
         target_rates = _rates(target)
         by_class = {k: {"tokens": 0, "usd": 0.0} for k in _ROUTING_CLASSES}
+        unsplit_excluded = 0.0
         for m, classes in priced_usage.items():
             if fam_of[m] != "opus":
                 continue
+            unsplit_excluded += classes.get("unsplit", 0)
+            if target_rates is None:
+                continue
             m_rates = _rates(m)
-            for k in ("fresh_input", "output", "unsplit"):
+            for k in ("fresh_input", "output"):
                 tok = classes.get(k, 0)
                 if tok:
                     by_class[k]["tokens"] += tok * _ROUTABLE_OPUS_FRACTION
@@ -52706,6 +52716,7 @@ def _compute_model_routing_savings(days=30, since=None):
         potential_tokens_monthly = int(round(potential_tokens / max(days, 1) * 30))
         potential_billable_tokens = int(round(sum(by_class[k]["tokens"] for k in _ROUTING_BILLABLE_CLASSES)))
         unsplit_tokens = int(round(class_totals["unsplit"]))
+        potential_unsplit_excluded = int(round(unsplit_excluded))
         opus_share = cur_shares.get("opus", 0.0)
 
         return {
@@ -52724,6 +52735,8 @@ def _compute_model_routing_savings(days=30, since=None):
             "target_model": target,
             "pricing_basis": "per_token_class_generation_card",
             "unsplit_tokens": unsplit_tokens,
+            # Opus tokens without a class split, left out of the potential above.
+            "potential_unsplit_excluded_tokens": potential_unsplit_excluded,
             # Premium models (priced above the baseline's costliest model) are the
             # user's own choice: excluded from realized routing, shown here.
             "premium_models": premium,
@@ -58283,7 +58296,9 @@ def savings_report(days=30, as_json=False):
             frac_pct = round(float(routing.get("routable_fraction", 0.2)) * 100, 2)
             frac_text = f"{frac_pct:g}"
             target = routing.get("target_model") or "Sonnet"
-            unsplit_note = " (unsplit tokens priced as input)" if "unsplit" in routing.get("potential_by_class", {}) else ""
+            unsplit_left_out = int(_mo(int(routing.get("potential_unsplit_excluded_tokens", 0) or 0)))
+            unsplit_note = (f" (~{unsplit_left_out:,} Opus tokens{per} without a class split are left out)"
+                            if unsplit_left_out > 0 else "")
             print()
             print(f"    Routing (an assumption, not a measurement): if about {frac_text}% of your "
                   f"Opus work (grunt tasks) ran on {target}: new input and output only{unsplit_note}, "

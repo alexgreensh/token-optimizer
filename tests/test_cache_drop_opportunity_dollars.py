@@ -130,3 +130,27 @@ def test_dashboard_card_items_add_up_to_the_card_number():
     assert "$42.87" in card.split("still on the table")[0]
     assert "worth about $32.63/mo in output" in card
     assert "worth about $10.24/mo" in card
+
+
+def test_dashboard_and_text_round_half_cents_the_same_way(measure, monkeypatch, capsys):
+    summary = {
+        "period_days": 30, "total_cost_usd": 10.0, "total_events": 1, "by_category": {},
+        "daily_avg_usd": 0.33,
+        "output_waste": {"cost_saved_usd": 32.625, "avoidable_writes": 870, "writes": 2903},
+        "stale_reads_reclaimable": {"cost_usd": 10.245, "tokens": 2049000, "sessions": 202},
+    }
+    monkeypatch.setattr(measure, "_get_merged_savings", lambda **kw: json.loads(json.dumps(summary)))
+    monkeypatch.setattr(measure, "_counted_cumulative_summary", lambda **kw: {"available": False})
+    monkeypatch.setattr(measure, "_savings_since_install", lambda: {"days": 90})
+    monkeypatch.setattr(measure, "_install_date", lambda: None)
+    measure.savings_report()
+    text = capsys.readouterr().out
+    assert "~$32.63/mo output" in text and "~$10.24/mo reclaimable" in text
+    s = fixture()
+    s.pop("structural_potential", None)
+    s["output_waste"] = summary["output_waste"]
+    s["stale_reads_reclaimable"] = summary["stale_reads_reclaimable"]
+    card = render(s).split("Money on the table")[1]
+    assert "$42.87" in card.split("still on the table")[0]
+    assert "worth about $32.63/mo in output" in card
+    assert "are worth about $10.24/mo" in card

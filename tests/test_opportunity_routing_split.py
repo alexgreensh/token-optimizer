@@ -238,7 +238,7 @@ def test_big_number_is_concrete_items_only():
 def test_routing_line_states_assumption_and_api_rate_dollars():
     text = _text(_render(_savings()))
     assert ("Routing (an assumption, not a measurement): if about 30% of your Opus work (grunt tasks) ran on "
-            "Sonnet: new input and output only, about $4,071 at API rates.") in text
+            "Sonnet: new input and output only, about $4,071/mo at API rates.") in text
     assert "Recovers about" not in text
 
 
@@ -266,7 +266,7 @@ def test_routing_line_uses_recorded_fraction_and_tolerates_missing_tokens():
     del s["model_routing"]["potential_tokens"]
     del s["model_routing"]["potential_tokens_monthly"]
     text = _text(_render(s))
-    assert "if about 50% of your Opus work (grunt tasks) ran on Sonnet: new input and output only, about $100 at API rates." in text
+    assert "if about 50% of your Opus work (grunt tasks) ran on Sonnet: new input and output only, about $100/mo at API rates." in text
 
 
 def test_billing_caption_is_reused_in_opportunity_card():

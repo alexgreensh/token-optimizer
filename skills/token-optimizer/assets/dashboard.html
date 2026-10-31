@@ -4458,16 +4458,18 @@ var DB = (function() {
     // Round once: each item gets its floor in cents and the missing cents go to
     // the largest remainders, so the items shown add up to the number shown.
     var oppCents = (function(values) {
-      var exact = values.map(function(v) { var n = Number(v) * 100; return isFinite(n) ? n : 0; });
-      var floors = exact.map(function(x) { return Math.floor(x + 1e-9); });
-      var total = Math.round(exact.reduce(function(a, b) { return a + b; }, 0) + 1e-9);
+      // Snap to a millionth of a cent first so float noise from the monthly
+      // scaling (32.625 becoming 32.62499...) rounds the same way as the text report.
+      var exact = values.map(function(v) { var n = Math.round(Number(v) * 1e8) / 1e6; return isFinite(n) ? n : 0; });
+      var floors = exact.map(function(x) { return Math.floor(x); });
+      var total = Math.round(Math.round(exact.reduce(function(a, b) { return a + b; }, 0) * 1e6) / 1e6);
       var left = total - floors.reduce(function(a, b) { return a + b; }, 0);
       exact.map(function(x, i) { return i; })
         .sort(function(a, b) { return (exact[b] - floors[b]) - (exact[a] - floors[a]) || a - b; })
         .slice(0, Math.max(0, Math.min(left, exact.length)))
         .forEach(function(i) { floors[i] += 1; });
-      return { structural: floors[0], reclaimable: floors[1], output: floors[2], total: total };
-    })([mo(sp.cost_saved_usd), mo(recl.cost_usd), mo(ow.cost_saved_usd)]);
+      return { structural: floors[0], output: floors[1], reclaimable: floors[2], total: total };
+    })([mo(sp.cost_saved_usd), mo(ow.cost_saved_usd), mo(recl.cost_usd)]);
     var routingPotentialMo = mo(mr.potential_cost_usd);
     var cdCostMo = mo(cd.cost_saved_usd);
     var routingTokensMo = Number(mr.potential_tokens_monthly) > 0
@@ -4717,14 +4719,14 @@ var DB = (function() {
       if (cdTokensMo > 0) {
         html += '<div class="cache-drop-opportunity" style="margin-top:var(--s-3);font-family:var(--font-mono);font-size:17px;line-height:1.6;color:var(--c-text-main);max-width:820px;">' +
           'Cache drops (an opportunity, not a measurement): ' + (Number(cd.drop_sessions) || 0) + ' sessions idled past the cache window and re-wrote ~' + fmtTok(cdTokensMo) + ' tokens' + esc(per) + ' of prefix' +
-          (cdCostMo > 0 ? ', about <span style="color:var(--c-amber);">' + money(cdCostMo) + '</span> at API rates' : '') + '.' +
+          (cdCostMo > 0 ? ', about <span style="color:var(--c-amber);">' + money(cdCostMo) + esc(per) + '</span> at API rates' : '') + '.' +
           '</div>';
         html += '<div class="note" style="margin-top:var(--s-1);">Cache write rate minus the cache read it would have cost, at the models you ran. It is not part of the number above.</div>';
       }
       if (routingPotentialMo > 0) {
         html += '<div class="routing-assumption" style="margin-top:var(--s-3);font-family:var(--font-mono);font-size:17px;line-height:1.6;color:var(--c-text-main);max-width:820px;">' +
           'Routing (an assumption, not a measurement): if about ' + routingFracPct + '% of your Opus work (grunt tasks) ran on ' + esc(routingTarget) + ': new input and output only' +
-          ((mr.potential_by_class || {}).unsplit ? ' (unsplit tokens priced as input)' : '') + ', about <span style="color:var(--c-amber);">' + money(routingPotentialMo) + '</span> at API rates.' +
+          ((mr.potential_by_class || {}).unsplit ? ' (unsplit tokens priced as input)' : '') + ', about <span style="color:var(--c-amber);">' + money(routingPotentialMo) + esc(per) + '</span> at API rates.' +
           (routingTokensMo > 0 ? ' ~' + fmtTok(routingTokensMo) + ' tokens' + esc(per) + '.' : '') +
           '</div>';
         html += '<div class="note" style="margin-top:var(--s-1);">This is an assumption about your own work, not a measured saving, and it is not part of the number above. Some Opus work is worth keeping on Opus.</div>';

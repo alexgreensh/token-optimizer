@@ -493,6 +493,33 @@ function stripProviderPrefixes(modelId: string): string {
   }
 }
 
+const CLAUDE_FAMILY_KEY = /^(fable|mythos|opus|sonnet|haiku)(?:-\d+){0,2}$/;
+
+/**
+ * Rate-card key that values a model in the routing comparison. Every Claude
+ * generation of a family is valued at that family's newest generation card, in
+ * both the baseline and the current arm, so a vendor price change between
+ * generations cannot register as a routing saving. Other models stand for
+ * themselves. The exact-card cost is reported separately as the generation gap.
+ */
+export function referenceCardKey(key: string, dir?: string): string {
+  const legacy = key === "sonnet-legacy";
+  const m = legacy ? null : CLAUDE_FAMILY_KEY.exec(key);
+  if (!legacy && !m) return key;
+  const family = legacy ? "sonnet" : m![1] === "mythos" ? "fable" : m![1];
+  const table = getPricing(dir);
+  const generation = new RegExp(`^${family}-(\\d+)(?:-(\\d+))?$`);
+  let best: { major: number; minor: number; key: string } | null = null;
+  for (const candidate of Object.keys(table)) {
+    const g = generation.exec(candidate);
+    if (!g) continue;
+    const major = Number(g[1]), minor = Number(g[2] ?? 0);
+    if (!best || major > best.major || (major === best.major && minor > best.minor)) best = { major, minor, key: candidate };
+  }
+  if (best) return best.key;
+  return Object.prototype.hasOwnProperty.call(table, family) ? family : key;
+}
+
 const ROUTE_REGION_TOKENS = new Set([
   "amazon", "us", "us-gov", "eu", "ap", "apac", "au", "ca", "cn", "global", "jp", "sa", "me", "af", "il",
 ]);

@@ -20,7 +20,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { AgentRun, WasteFinding, Severity, totalTokens, EXPENSIVE_MODELS } from "./models";
-import { calculateCost, claudePricingKey, getPricing, pricedPrefixKey } from "./pricing";
+import { calculateCost, claudePricingKey, getPricing, pricedPrefixKey, referenceCardKey } from "./pricing";
 import { resolvePricedModel } from "./event-pricing";
 import { computeSketch, sketchSimilarity, clusterBySketch } from "./jl-sketcher";
 
@@ -36,14 +36,30 @@ function spanDays(runs: AgentRun[]): number {
   return Math.max(1, (sorted[sorted.length - 1] - sorted[0]) / 86_400_000);
 }
 
-/** Model switching is a hypothetical, based only on priced new input and output. */
-function routingWhatIf(runs: AgentRun[]): { savings: number; tokens: number; fraction: number } {
+/** Next lighter Claude tier a what-if routes to, from the source model's card key. */
+function lighterTier(cardKey: string): "sonnet" | "haiku" | null {
+  if (/^opus(?:-\d+){0,2}$/.test(cardKey)) return "sonnet";
+  if (/^sonnet(?:-\d+){0,2}$/.test(cardKey) || cardKey === "sonnet-legacy") return "haiku";
+  return null;
+}
+
+/**
+ * Model switching is a hypothetical, based only on priced new input and output.
+ * Opus work is priced against the newest Sonnet card and Sonnet work against the
+ * newest Haiku card; any other model has no lighter target and adds nothing.
+ * Each token class is priced at its unit rate, so a window's aggregate token
+ * count never selects a long-context card.
+ */
+function routingWhatIf(runs: AgentRun[]): { savings: number; tokens: number; fraction: number; targets: string[] } {
   const raw = process.env.TOKEN_OPTIMIZER_ROUTABLE_OPUS_FRACTION?.trim();
   const value = raw ? Number(raw) : 0.2;
   const fraction = Number.isFinite(value) && value >= 0 && value <= 1 ? value : 0.2;
   const prices = getPricing();
+  const unitRate = (card: string, klass: "input" | "output") =>
+    calculateCost({ input: klass === "input" ? 1 : 0, output: klass === "output" ? 1 : 0, cacheRead: 0, cacheWrite: 0 }, card);
   let delta = 0;
   let tokens = 0;
+  const targets = new Set<string>();
   for (const run of runs) {
     const buckets = run.modelTokenBuckets && Object.keys(run.modelTokenBuckets).length
       ? Object.entries(run.modelTokenBuckets)
@@ -56,13 +72,22 @@ function routingWhatIf(runs: AgentRun[]): { savings: number; tokens: number; fra
       const key = recognized ? resolvePricedModel(model, "") : null;
       // Do not apply a family fallback to an unknown generation.
       if (!key) continue;
-      const io = { input: usage.input, output: usage.output, cacheRead: 0, cacheWrite: 0 };
-      delta += calculateCost(io, key) - calculateCost(io, "haiku");
-      tokens += io.input + io.output;
+      const tier = lighterTier(key);
+      if (!tier) continue;
+      const target = referenceCardKey(tier);
+      delta += usage.input * (unitRate(key, "input") - unitRate(target, "input"))
+        + usage.output * (unitRate(key, "output") - unitRate(target, "output"));
+      tokens += usage.input + usage.output;
+      targets.add(tier);
     }
   }
   const monthlyScale = fraction / spanDays(runs) * 30;
-  return { savings: Math.max(0, delta * monthlyScale), tokens: tokens * monthlyScale, fraction };
+  return { savings: Math.max(0, delta * monthlyScale), tokens: tokens * monthlyScale, fraction, targets: Array.from(targets).sort().reverse() };
+}
+
+/** "Sonnet", "Haiku" or "Sonnet/Haiku" for the lighter tiers a what-if used. */
+function targetLabel(targets: string[]): string {
+  return targets.map((t) => t[0].toUpperCase() + t.slice(1)).join("/") || "a lighter model";
 }
 
 // ---------------------------------------------------------------------------
@@ -87,7 +112,7 @@ function detectHeartbeatModelWaste(
   );
   if (expensive.length === 0) return [];
 
-  const { savings, tokens, fraction } = routingWhatIf(expensive);
+  const { savings, tokens, fraction, targets } = routingWhatIf(expensive);
 
   if (savings < 0.1) return [];
 
@@ -104,9 +129,9 @@ function detectHeartbeatModelWaste(
       description: `${expensive.length} heartbeat/cron runs using ${modelsUsed.join("/")}`,
       monthlyWasteUsd: savings,
       monthlyWasteTokens: tokens,
-      recommendation: `Routing (an assumption, not a measurement): if about ${fraction * 100}% of the priced heartbeat/cron work (grunt tasks) ran on Haiku, new input and output only: ~$${savings.toFixed(2)}/month at API rates.`,
+      recommendation: `Routing (an assumption, not a measurement): if about ${fraction * 100}% of the priced heartbeat/cron work (grunt tasks) ran on ${targetLabel(targets)}, new input and output only: ~$${savings.toFixed(2)}/month at API rates.`,
       fixSnippet:
-        `# In your agent config (config.json or cron/*.json):\n"model": "haiku"  # was: ${modelsUsed.join("/")}`,
+        `# In your agent config (config.json or cron/*.json):\n"model": "${targets[0] ?? "<lighter model>"}"  # was: ${modelsUsed.join("/")}`,
       evidence: {
         expensiveCount: expensive.length,
         modelsUsed,
@@ -728,7 +753,7 @@ function detectOverpoweredModel(
 
   if (simpleOnExpensive.length < 3) return [];
 
-  const { savings, tokens, fraction } = routingWhatIf(simpleOnExpensive);
+  const { savings, tokens, fraction, targets } = routingWhatIf(simpleOnExpensive);
   if (savings < 0.5) return [];
 
   const models = Array.from(new Set(simpleOnExpensive.map((r) => r.model)));
@@ -743,8 +768,8 @@ function detectOverpoweredModel(
     description: `${simpleOnExpensive.length} simple sessions (low output, few tools) using ${models.join("/")}`,
     monthlyWasteUsd: savings,
     monthlyWasteTokens: tokens,
-    recommendation: `Routing (an assumption, not a measurement): if about ${fraction * 100}% of the priced work in these simple sessions (grunt tasks) ran on Haiku, new input and output only: ~$${savings.toFixed(2)}/month at API rates.`,
-    fixSnippet: `# Route simple tasks to a cheaper model:\n"model": "haiku"  # for quick checks and simple edits`,
+    recommendation: `Routing (an assumption, not a measurement): if about ${fraction * 100}% of the priced work in these simple sessions (grunt tasks) ran on ${targetLabel(targets)}, new input and output only: ~$${savings.toFixed(2)}/month at API rates.`,
+    fixSnippet: `# Route simple tasks to a cheaper model:\n"model": "${targets[0] ?? "<lighter model>"}"  # for quick checks and simple edits`,
     evidence: { simpleCount: simpleOnExpensive.length, modelsUsed: models },
   }];
 }

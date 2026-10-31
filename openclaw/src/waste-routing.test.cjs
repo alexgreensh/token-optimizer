@@ -6,13 +6,19 @@ const assert = require('node:assert/strict');
 const { runAllDetectors } = require('./waste-detectors.ts');
 const make = (i, type = 'heartbeat') => ({system:'openclaw', sessionId:String(i), agentName:'a', project:'', timestamp:new Date('2026-10-01T00:00:00Z'), durationSeconds:1, tokens:{input:100000,output:1000,cacheRead:9000000,cacheWrite:9000000}, costUsd:9999, model:i === 0 ? 'opus' : 'sonnet', rawModel:i === 0 ? 'claude-opus-5-5' : 'sonnet', runType:type, outcome:'success', messageCount:3, toolsUsed:[], sourcePath:''});
 const find = (runs, type) => runAllDetectors(runs).find(f => f.wasteType === type);
+// Opus work is priced against the newest Sonnet card, Sonnet work against the newest Haiku card.
+const { getPricing } = require('./pricing.ts');
+const newest = (family) => Object.keys(getPricing()).filter(k => new RegExp(`^${family}-\\d+(-\\d+)?$`).test(k))
+  .sort((a, b) => { const [x, y] = [a, b].map(k => k.split('-').slice(1).map(Number)); return (x[0] - y[0]) || ((x[1] ?? 0) - (y[1] ?? 0)); }).pop();
+const saved = (from, to, input, output) => { const p = getPricing(); return input * (p[from].input - p[to].input) + output * (p[from].output - p[to].output); };
+const opusToSonnet = (input, output) => saved('opus-5-5', newest('sonnet'), input, output);
+const sonnetToHaiku = (input, output) => saved('sonnet', newest('haiku'), input, output);
 for (const [kind, runType] of [['heartbeat_model_waste', 'heartbeat'], ['overpowered_model', 'manual']]) {
-  test(`${kind} uses 20% fresh input and output, mixed known cards`, () => {
+  test(`${kind} uses 20% fresh input and output, each family routed one tier down`, () => {
     delete process.env.TOKEN_OPTIMIZER_ROUTABLE_OPUS_FRACTION;
     const runs = [0,1,2].map(i => make(i,runType));
     const f = find(runs,kind);
-    // Opus 5.5 $4/$20 and two Sonnet $2/$10, Haiku $1/$5 per million.
-    const expected = ((.4+.02-.105)+2*(.2+.01-.105))*.2*30;
+    const expected = (opusToSonnet(100000, 1000) + 2 * sonnetToHaiku(100000, 1000)) * .2 * 30;
     assert.ok(f); assert.ok(Math.abs(f.monthlyWasteUsd-expected)<1e-9, `${f.monthlyWasteUsd} != ${expected}`);
     assert.equal(f.monthlyWasteTokens, 3*101000*.2*30);
     assert.match(f.recommendation, /20%/); assert.match(f.recommendation, /assumption/i); assert.match(f.recommendation, /input and output/i);
@@ -23,8 +29,9 @@ for (const [kind, runType] of [['heartbeat_model_waste', 'heartbeat'], ['overpow
     process.env.TOKEN_OPTIMIZER_ROUTABLE_OPUS_FRACTION='0.4';
     const f = find([0,1,2].map(i=>make(i,runType)),kind);
     assert.match(f.recommendation, /40%/);
-    assert.ok(Math.abs(f.monthlyWasteUsd - 6.3) < 1e-9);
-    assert.equal(f.monthlyWasteTokens, 3636000);
+    assert.match(f.recommendation, /Sonnet\/Haiku/);
+    assert.ok(Math.abs(f.monthlyWasteUsd - (opusToSonnet(100000, 1000) + 2 * sonnetToHaiku(100000, 1000)) * .4 * 30) < 1e-9);
+    assert.equal(f.monthlyWasteTokens, 3 * 101000 * .4 * 30);
     delete process.env.TOKEN_OPTIMIZER_ROUTABLE_OPUS_FRACTION;
   });
 }
@@ -35,8 +42,8 @@ test('mixed model buckets use generation cards and omit unknown models', () => {
     'claude-opus-99-99': {input:1e9,output:1e9,cacheRead:0,cacheWrite:0,cacheWrite1h:0,cacheWrite5m:0}
   };
   const f = find(runs,'heartbeat_model_waste');
-  assert.ok(Math.abs(f.monthlyWasteUsd-3.15)<1e-9);
-  assert.equal(f.monthlyWasteTokens, 1818000);
+  assert.ok(Math.abs(f.monthlyWasteUsd-(opusToSonnet(100000, 1000) + 2 * sonnetToHaiku(100000, 1000))*.2*30)<1e-9);
+  assert.equal(f.monthlyWasteTokens, 3*101000*.2*30);
 });
 
 test('monthly token and dollar estimates scale consistently for 15 and 30 days', () => {
@@ -64,8 +71,8 @@ test('custom card resolution and pricing share the same cached table', () => {
   try {
     assert.equal(pricing.getPricing(''), table);
     assert.equal(resolvePricedModel('custom-card',''), 'custom-card');
+    // A card with no lighter Claude tier has no routing target, so it adds nothing.
     const runs = [0,1,2].map(i => ({...make(i), rawModel:'custom-card'}));
-    const f = find(runs,'heartbeat_model_waste');
-    assert.ok(Math.abs(f.monthlyWasteUsd - (3*(.8+.04-.105)*.2*30)) < 1e-9);
+    assert.equal(find(runs,'heartbeat_model_waste'), undefined);
   } finally { delete table['custom-card']; }
 });

@@ -8,7 +8,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { countedEvents } from "./counted-events";
 import { scanAllSessions } from "./session-parser";
-import { calculateCost, normalizeModelName, getPricing } from "./pricing";
+import { calculateCost, normalizeModelName, getPricing, referenceCardKey } from "./pricing";
 import { resolvePricedModel, loadSavingsSessions, priceSavingsEvent, savingsEventClass } from "./event-pricing";
 import type { AgentRun } from "./models";
 
@@ -332,33 +332,6 @@ function modelTtlShares(records: SessionRecord[]): TtlShares {
 // Price token classes at a MODEL MIX (share-weighted blend across the priced
 // models in an era). calculateCost is per-token linear, so we blend the per-MTok
 // rates by share and apply once. Unpriced models have no rate card.
-
-const CLAUDE_FAMILY_KEY = /^(fable|mythos|opus|sonnet|haiku)(?:-\d+){0,2}$/;
-
-/**
- * Rate-card key that values a model in the routing comparison. Every Claude
- * generation of a family is valued at that family's newest generation card, in
- * both the baseline and the current arm, so a vendor price change between
- * generations cannot register as a routing saving. Other models stand for
- * themselves. The exact-card cost is reported separately as the generation gap.
- */
-function referenceCardKey(key: string, dir: string): string {
-  const legacy = key === "sonnet-legacy";
-  const m = legacy ? null : CLAUDE_FAMILY_KEY.exec(key);
-  if (!legacy && !m) return key;
-  const family = legacy ? "sonnet" : m![1] === "mythos" ? "fable" : m![1];
-  const table = getPricing(dir);
-  const generation = new RegExp(`^${family}-(\\d+)(?:-(\\d+))?$`);
-  let best: { major: number; minor: number; key: string } | null = null;
-  for (const candidate of Object.keys(table)) {
-    const g = generation.exec(candidate);
-    if (!g) continue;
-    const major = Number(g[1]), minor = Number(g[2] ?? 0);
-    if (!best || major > best.major || (major === best.major && minor > best.minor)) best = { major, minor, key: candidate };
-  }
-  if (best) return best.key;
-  return Object.prototype.hasOwnProperty.call(table, family) ? family : key;
-}
 
 /** Resolve a share map into priced [model, share] pairs. */
 function pricedShares(

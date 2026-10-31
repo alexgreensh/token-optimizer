@@ -210,6 +210,39 @@ def test_turns_fold_streamed_chunks_into_one_turn(tmp_path, monkeypatch):
     assert [t["turn_index"] for t in turns] == [0, 1]
 
 
+@pytest.mark.parametrize("reverse", [False, True])
+def test_turn_partial_stream_matches_session_usage_and_price(tmp_path, monkeypatch, reverse):
+    measure = _load(tmp_path, monkeypatch)
+    when = _noon()
+    first = _chunk(when, req="partial")
+    first["message"]["usage"] = {"input_tokens": 1000, "output_tokens": 100,
+        "cache_read_input_tokens": 4000, "cache_creation_input_tokens": 600,
+        "cache_creation": {"ephemeral_1h_input_tokens": 200}}
+    first["message"]["content"] = [{"type": "tool_use", "name": "Read"}]
+    second = _chunk(when + timedelta(seconds=1), req="partial")
+    second["message"]["usage"] = {"output_tokens": 200,
+        "cache_creation": {"ephemeral_5m_input_tokens": 300}}
+    small = _chunk(when + timedelta(seconds=2), req="partial", inp=1, out=1)
+    records = ([second, first] if reverse else [first, second]) + [small]
+    records += [_chunk(when + timedelta(minutes=1)), _chunk(when + timedelta(minutes=2))]
+    path = _projects(tmp_path) / "-repo" / f"{SID_A}.jsonl"
+    _write(path, records)
+
+    turns = measure.parse_session_turns(str(path))
+    session = measure._parse_session_jsonl(path)
+    turn = turns[0]
+    assert len(turns) == 3
+    assert [turn[k] for k in ("input_tokens", "output_tokens", "cache_read",
+                              "cache_creation", "cache_creation_1h", "cache_creation_5m")] == [1000, 200, 4000, 600, 200, 300]
+    req = session["request_usage"]["partial"]
+    assert [req[k] for k in ("inp", "out", "cr", "cc", "cc_1h", "cc_5m")] == [1000, 200, 4000, 600, 200, 300]
+    assert turn["cost_usd"] == round(measure._price_usage_parts(
+        [(req["model"], req)], tier=measure._load_pricing_tier(), per_request=True), 6)
+    assert turn["tools_used"] == ["Read"]
+    assert turn["timestamp"] == records[0]["timestamp"]
+    assert turns[1]["gap_since_prev_seconds"] == (59 if reverse else 60)
+
+
 # (d) the same message in two session files ------------------------------------
 
 def _fork_fixture(tmp_path):

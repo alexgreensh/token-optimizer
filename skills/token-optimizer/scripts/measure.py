@@ -12858,6 +12858,7 @@ def parse_session_turns(filepath):
     tier = _load_pricing_tier()
     prev_call_ts = None
     turn_by_key = {}
+    parts_by_key = {}
 
     # Bound the work like the Codex adapter's _iter_json_records (see
     # _parse_session_jsonl): skip oversized files and oversized lines.
@@ -12934,8 +12935,8 @@ def parse_session_turns(filepath):
                         prev_call_ts = call_ts
                     except (ValueError, TypeError):
                         pass
-                cost = _price_usage_parts(_billed_usage_parts(usage, model, tier=tier),
-                                          tier=tier, per_request=True)
+                parts = _billed_usage_parts(usage, model, tier=tier)
+                cost = _price_usage_parts(parts, tier=tier, per_request=True)
 
                 turn = {
                     "turn_index": turn_index,
@@ -12969,19 +12970,35 @@ def parse_session_turns(filepath):
                         _context_token_count(resume_usage) - resume_read
                         - _safe_int(resume_usage.get("input_tokens")))
                 if prior_turn is not None:
-                    merged_tools = prior_turn["tools_used"] + [
+                    latest_context = turn["output_tokens"] >= prior_turn["output_tokens"]
+                    for field in ("input_tokens", "output_tokens", "cache_read",
+                                  "cache_creation", "cache_creation_1h", "cache_creation_5m"):
+                        prior_turn[field] = max(prior_turn[field], turn[field])
+                    prior_turn["tools_used"] += [
                         t for t in tools if t not in prior_turn["tools_used"]]
-                    if turn["output_tokens"] >= prior_turn["output_tokens"]:
-                        # The later chunk holds the final cumulative usage.
-                        for field in ("turn_index", "timestamp", "gap_since_prev_seconds"):
-                            turn[field] = prior_turn[field]
-                        prior_turn.clear()
-                        prior_turn.update(turn)
-                    prior_turn["tools_used"] = merged_tools
+                    if model and model != "unknown":
+                        prior_turn["model"] = model
+                    for field in ("ctx_cache", "resume_cache_read", "resume_cache_creation"):
+                        if field in turn and (latest_context or field not in prior_turn):
+                            prior_turn[field] = turn[field]
+                    merged_parts = parts_by_key[req_key]
+                    for index, (part_model, buckets) in enumerate(parts):
+                        if index == len(merged_parts):
+                            merged_parts.append((part_model, dict(buckets)))
+                        else:
+                            old_model, old_buckets = merged_parts[index]
+                            for field in _USAGE_BUCKET_KEYS:
+                                old_buckets[field] = max(old_buckets[field], buckets[field])
+                            if part_model and part_model != "unknown":
+                                old_model = part_model
+                            merged_parts[index] = (old_model, old_buckets)
+                    prior_turn["cost_usd"] = round(_price_usage_parts(
+                        merged_parts, tier=tier, per_request=True), 6)
                     continue
                 turns.append(turn)
                 if req_key:
                     turn_by_key[req_key] = turn
+                    parts_by_key[req_key] = parts
                 turn_index += 1
 
     except (PermissionError, OSError):

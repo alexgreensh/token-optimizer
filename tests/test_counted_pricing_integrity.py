@@ -2,7 +2,7 @@
 import json
 import os
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -412,3 +412,113 @@ def test_window_missing_trajectory_is_explicit_and_weekly_note_survives(m, tmp_p
     assert weekly["unmeasured_events"] == int(unavailable)
     assert weekly["reread_pricing_complete"] is (not unavailable)
     assert bool(weekly["reread_pricing_note"]) is unavailable
+
+
+@pytest.mark.parametrize("source", ["missing", "unreadable", "empty", "observed_no_later_calls", "no_candidates"])
+def test_cached_cohort_reports_missing_and_observed_zero(m, tmp_path, monkeypatch, source):
+    db = _db(m, tmp_path, monkeypatch)
+    path, start = _transcript(m, tmp_path, monkeypatch, n_turns=1)
+    if source != "no_candidates":
+        _add_event(db, "tool_archive", 1_000_000, _local_iso(start + timedelta(seconds=30)), cost=5)
+    if source == "missing":
+        monkeypatch.setattr(m, "_counted_session_path", lambda *args: None)
+    elif source == "unreadable":
+        monkeypatch.setattr(m, "_counted_walk_transcript", lambda *args: ([], [], []))
+    elif source == "empty":
+        path.write_text("")
+    with sqlite3.connect(db) as conn:
+        m._update_counted_cumulative(conn)
+        source_count = conn.execute("SELECT COUNT(*) FROM savings_events").fetchone()[0]
+        cache_count = conn.execute("SELECT COUNT(*) FROM counted_reread").fetchone()[0]
+    monkeypatch.setattr(m, "_counted_walk_transcript", lambda *a, **k: pytest.fail("report walked transcript"))
+    missing = source in ("missing", "unreadable", "empty")
+    assert cache_count == int(source == "observed_no_later_calls")
+    assert source_count == int(source != "no_candidates")
+    for days in (30, None):
+        result = m._counted_cumulative_summary(days=days)
+        assert result["available"]
+        assert result.get("unmeasured_events", 0) == int(missing)
+        assert result.get("unmeasured_removed_credit_tokens", 0) == (1_000_000 if missing else 0)
+        assert result["reread_usd"] == result["reread_tokens"] == 0
+        assert result["reread_pricing_complete"] is (not missing)
+        assert bool(result["reread_pricing_note"]) is missing
+        action = m._action_savings_components({"total_cost_usd": 5}, result)
+        assert action["reread_pricing_complete"] is (not missing)
+        assert bool(action["reread_pricing_note"]) is missing
+
+
+def test_cached_cohort_preserves_priced_subtotal_and_signed_missing_filters(m, tmp_path, monkeypatch):
+    db = _db(m, tmp_path, monkeypatch)
+    _, start = _transcript(m, tmp_path, monkeypatch, n_turns=3, model="claude-opus-5-5")
+    _add_event(db, "tool_archive", 1000, _local_iso(start - timedelta(seconds=30)))
+    with sqlite3.connect(db) as conn:
+        assert m._update_counted_cumulative(conn)["rows_written"] == 1
+    stamp = _local_iso(start + timedelta(minutes=4))
+    _add_event(db, "tool_archive", 1000000, stamp, sid="real-missing", cost=5)
+    _add_event(db, "tool_archive_reexpand", 1000000, stamp, sid="real-debit")
+    _add_event(db, "tool_archive", 1000000, stamp, sid="test-session-fixture")
+    _add_event(db, "tool_archive", 1000000, _local_iso(start - timedelta(days=45)), sid="real-old")
+    with sqlite3.connect(db) as conn:
+        conn.execute("INSERT INTO savings_events(timestamp,event_type,tokens_saved,session_id,detail) VALUES(?, 'tool_archive', 1000000, 'real-media', 'replaced mcp__claude-in-chrome__computer')", (stamp,))
+        conn.execute("INSERT INTO savings_events(timestamp,event_type,tokens_saved,session_id,session_uuid,cost_saved_usd) SELECT timestamp,event_type,tokens_saved,session_id,session_uuid,cost_saved_usd FROM savings_events WHERE session_id='real-missing'")
+        before = conn.execute("SELECT COUNT(*) FROM savings_events").fetchone()[0]
+    monkeypatch.setattr(m, "_counted_walk_transcript", lambda *a, **k: pytest.fail("report walked transcript"))
+    recent = m._counted_cumulative_summary(days=30)
+    lifetime = m._counted_cumulative_summary()
+    assert recent["unmeasured_events"] == 2
+    assert recent["unmeasured_removed_credit_tokens"] == recent["unmeasured_removed_debit_tokens"] == 1000000
+    assert recent["reread_usd"] > 0 and not recent["reread_pricing_complete"]
+    assert lifetime["unmeasured_events"] == 3
+    action = m._action_savings_components({"total_cost_usd": 5}, recent)
+    assert action["reread_usd"] == recent["reread_usd"] and not action["reread_pricing_complete"]
+    html = render({"period_days": 30, "total_cost_usd": 5, "counted_period": recent,
+                   "counted_cumulative": lifetime, "action_savings": action})
+    assert "removal events lack usable transcript evidence" in html
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM savings_events").fetchone()[0] == before
+
+
+def test_missing_cohort_uses_utc_removal_boundaries(m, tmp_path, monkeypatch):
+    db = _db(m, tmp_path, monkeypatch)
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    start = now - timedelta(days=30)
+    for i, stamp in enumerate((start, start - timedelta(seconds=1), now,
+                               now + timedelta(seconds=1), start.astimezone(timezone(timedelta(hours=3))))):
+        _add_event(db, "tool_archive", 100 + i, stamp.isoformat(), sid=f"missing-{i}")
+    result = m._counted_cumulative_summary(days=30, now=now)
+    assert result["unmeasured_events"] == 3
+    assert result["unmeasured_removed_credit_tokens"] == 100 + 102 + 104
+
+
+def test_observed_zero_updates_when_transcript_grows(m, tmp_path, monkeypatch):
+    db = _db(m, tmp_path, monkeypatch)
+    path, start = _transcript(m, tmp_path, monkeypatch, n_turns=1, model="claude-opus-5-5")
+    _add_event(db, "tool_archive", 1000, _local_iso(start + timedelta(seconds=30)))
+    with sqlite3.connect(db) as conn:
+        assert m._update_counted_cumulative(conn)["rows_written"] == 1
+        entry = {"type": "assistant", "timestamp": (start + timedelta(minutes=1)).isoformat() + "Z",
+                 "requestId": "new", "message": {"model": "claude-opus-5-5", "usage": {"input_tokens": 1}}}
+        with path.open("a") as stream:
+            stream.write(json.dumps(entry) + "\n")
+        assert m._update_counted_cumulative(conn)["rows_written"] == 1
+    result = m._counted_cumulative_summary(days=30)
+    assert result["oneshot_usd"] > 0 and result["pricing_complete"]
+
+
+def test_missing_cohort_note_reaches_cli_and_dashboard_payload(m, tmp_path, monkeypatch, capsys):
+    db = _db(m, tmp_path, monkeypatch)
+    _add_event(db, "tool_archive", 1_000_000, _local_iso(_utc_now() - timedelta(hours=1)), cost=5)
+    monkeypatch.setattr(m, "_counted_session_path", lambda *args: None)
+    with sqlite3.connect(db) as conn:
+        m._update_counted_cumulative(conn)
+    monkeypatch.setattr(m, "_get_merged_savings", lambda **kw: {"period_days": 30, "total_cost_usd": 5})
+    monkeypatch.setattr(m, "_savings_since_install", lambda: {"days": 90})
+    monkeypatch.setattr(m, "_install_date", lambda: None)
+    m.savings_report()
+    assert "removal events lack usable transcript evidence" in capsys.readouterr().out
+    m.savings_report(as_json=True)
+    cli = json.loads(capsys.readouterr().out)
+    dashboard = m._dashboard_savings_data()
+    assert cli["action_savings"] == dashboard["action_savings"]
+    assert not cli["action_savings"]["reread_pricing_complete"]
+    assert "removal events lack usable transcript evidence" in render(dashboard)

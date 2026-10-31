@@ -267,10 +267,10 @@ def test_summary_sums_and_never_walks(m, tmp_path, monkeypatch):
     assert s["removed_tokens"] == 100_000
 
 
-def test_summary_unavailable_on_empty_ledger(m, tmp_path, monkeypatch):
+def test_summary_empty_ledger_is_complete_zero(m, tmp_path, monkeypatch):
     _db(m, tmp_path, monkeypatch)
     s = m._counted_cumulative_summary()
-    assert s == {"available": False}
+    assert s["available"] and s["pricing_complete"] and s["total_usd"] == 0
 
 
 # ---------------------------------------------------------------------------

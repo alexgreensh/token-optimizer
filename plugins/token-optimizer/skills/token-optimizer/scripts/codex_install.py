@@ -83,9 +83,11 @@ def _cmd_quote(token: str) -> str:
     return quoted if quoted.startswith('"') else f'"{quoted}"'
 
 
-# Characters a Windows path may carry and still parse the same in cmd.exe,
-# Windows PowerShell 5.1 and PowerShell 7 when written as a bare first token.
-_SHELL_NEUTRAL_EXE_RE = re.compile(r"^[A-Za-z0-9_.:\\/+~-]+$")
+# Characters a path may carry and still parse the same in cmd.exe, Windows
+# PowerShell 5.1 and PowerShell 7 when written as a bare first token. ``@`` is
+# literal inside a token (user names and package dirs such as ``python@3.14``
+# carry it) but starts a splat in PowerShell, so it never leads the token.
+_SHELL_NEUTRAL_EXE_RE = re.compile(r"^[A-Za-z0-9_.:\\/+~-][A-Za-z0-9_.:\\/+~@-]*$")
 
 
 def _short_path(path: str) -> str | None:

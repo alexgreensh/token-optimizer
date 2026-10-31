@@ -292,18 +292,36 @@ def normalize_session(raw: dict) -> Optional[dict]:
     not_fully_idle = bool(raw.get("not_fully_idle"))
     end_reason = "killed" if killed else ("not_fully_idle" if not_fully_idle else "")
 
-    # Per-model usage: single model id for the whole conversation (highest
-    # volume was resolved upstream in antigravity_state.model_display_name).
-    billable = total_input + total_output
-    model_usage = {model: billable} if model not in ("", _UNKNOWN_MODEL) else {}
     model_usage_breakdown = {}
-    if model_usage:
+    complete_generations = all(isinstance(g, dict) and all(k in g for k in (
+        "input_tokens", "output_tokens", "cache_read_tokens", "model_display_name")) for g in generations)
+    complete_generations = bool(generations) and complete_generations and not _safe_int(raw.get("undecodable_rows")) and all(
+        sum(max(0, _safe_int(g.get(k))) for g in generations) == total
+        for k, total in (("input_tokens", input_tokens), ("output_tokens", output_tokens),
+                         ("cache_read_tokens", cache_read))
+    )
+    if complete_generations:
+        for g in generations:
+            name = str(g.get("model_display_name") or _UNKNOWN_MODEL)
+            key = model_id_for_display_name(name) or name
+            parts = model_usage_breakdown.setdefault(key, {"fresh_input": 0, "cache_read": 0, "cache_create": 0, "output": 0, "requests": []})
+            request = {"fresh_input": max(0, _safe_int(g.get("input_tokens"))),
+                       "cache_read": max(0, _safe_int(g.get("cache_read_tokens"))),
+                       "output": max(0, _safe_int(g.get("output_tokens")))}
+            for field, value in request.items():
+                parts[field] += value
+            parts["requests"].append(request)
+    elif model not in ("", _UNKNOWN_MODEL):
         model_usage_breakdown[model] = {
             "fresh_input": total_input - total_cache_read,
             "cache_read": total_cache_read,
             "cache_create": 0,
             "output": total_output,
         }
+    model_usage = {name: parts["fresh_input"] + parts["cache_create"] + parts["output"]
+                   for name, parts in model_usage_breakdown.items()}
+    if credits is None and any(model_id_for_display_name(name) for name in model_usage):
+        cost_source = "antigravity_list_price_estimate"
 
     session = _base_canonical(str(conversation_id))
     session.update(
@@ -326,6 +344,7 @@ def normalize_session(raw: dict) -> Optional[dict]:
             "model_id": model_id,
             "model_usage": model_usage,
             "model_usage_breakdown": model_usage_breakdown,
+            "generation_details_complete": complete_generations,
             "message_count": user_inputs,
             "api_calls": len(generations),
             "tool_calls": {"total": tool_calls},

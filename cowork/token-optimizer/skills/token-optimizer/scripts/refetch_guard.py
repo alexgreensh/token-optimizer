@@ -40,6 +40,7 @@ try:
     )
     from recovery_output import is_recovery_tool
     from session_store import _sanitize_session_id as sanitize_sid
+    from session_store import context_reset_at
 except Exception:
     # If our own modules can't load, never block a tool call.
     print(_NEUTRAL)
@@ -116,16 +117,20 @@ def _entry_is_renderable(archive_dir: Path, tool_use_id: str) -> bool:
         return False
 
 
-def _within_window(timestamp, now: float) -> bool:
+def _within_window(timestamp, now: float, reset_at: float = 0.0) -> bool:
     """True when an archive entry's ISO timestamp is inside the guard window.
 
     An unparseable or missing timestamp counts as OUTSIDE the window: the guard
-    only ever denies on proof, so doubt means allow. Never raises.
+    only ever denies on proof, so doubt means allow. A result archived before the
+    session's last /clear or compaction is outside the window too: the model no
+    longer holds it, so re-running the call is not a loop. Never raises.
     """
     try:
         from datetime import datetime
         ts = datetime.fromisoformat(str(timestamp)).timestamp()
     except Exception:
+        return False
+    if ts <= reset_at:
         return False
     return 0 <= now - ts <= _guard_window_seconds()
 
@@ -159,11 +164,12 @@ def _lookup_archived(session_id: str, tool_name: str, fingerprint: str):
         if not manifest.is_file() or manifest.is_symlink():
             return None, 0
         now = time.time()
+        reset_at = context_reset_at(session_id)
         for entry in reversed(_read_manifest_tail(manifest)):  # newest first
             if entry.get("tool_name") == tool_name and entry.get(ARGS_HASH_KEY) == fingerprint:
                 # Newest match is too old: every older one is too, and an old
                 # identical call is a deliberate re-check of live data, not a loop.
-                if not _within_window(entry.get("timestamp"), now):
+                if not _within_window(entry.get("timestamp"), now, reset_at):
                     return None, 0
                 tool_use_id = entry.get("tool_use_id")
                 if tool_use_id and _entry_is_renderable(archive_dir, tool_use_id):

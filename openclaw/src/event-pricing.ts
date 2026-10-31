@@ -7,8 +7,17 @@ export function resolvePricedModel(model: string, openclawDir: string): string |
   const own = (key: string) => Object.prototype.hasOwnProperty.call(pricing, key);
   if (own(model)) return model;
   const id = model.toLowerCase();
-  const legacy = /claude-\d(?:[-.]\d)?-(?:opus|sonnet|haiku)(?![a-z])/.test(id);
-  const generation = legacy ? null : /(?:^|[^a-z])(fable|mythos|opus|sonnet|haiku)[-._]?(\d+)(?:[-._](\d{1,2})(?!\d))?/.exec(id);
+  const legacy = /(?:^|[/:.])claude-(\d+)(?:[-.](\d+))?-(opus|sonnet|haiku)(?=$|[-_:])/.exec(id);
+  if (legacy) {
+    const [, major, minor, family] = legacy;
+    const exact = `${family}-${major}${minor ? `-${minor}` : ""}`;
+    if (own(exact)) return exact;
+    if (family === "sonnet" && major === "3" && (!minor || minor === "5" || minor === "7") && own("sonnet-legacy")) {
+      return "sonnet-legacy";
+    }
+    return null;
+  }
+  const generation = /(?:^|[^a-z])(fable|mythos|opus|sonnet|haiku)[-._]?(\d+)(?:[-._](\d{1,2})(?!\d))?/.exec(id);
   if (generation) {
     const [, family, major, minor] = generation;
     const exact = `${family}-${major}${minor ? `-${minor}` : ""}`;

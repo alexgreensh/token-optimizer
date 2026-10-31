@@ -279,3 +279,27 @@ test('an unobserved current class is omitted from both comparison arms', () => {
   assert.equal(result.beforeCostPerSession,0.5);
   assert.equal(result.afterCostPerSession,0.2);
 });
+test('legacy Claude model pricing accepts only supported generation cards and aliases', () => {
+  const path = require('node:path');
+  const {resolvePricedModel,priceSavingsEvent} = require('./event-pricing.ts');
+  const dir = path.join(process.cwd(), '.scratch-parity', 'legacy-pricing');
+  const known = [
+    ['claude-3-sonnet-20240229', 'sonnet-legacy', 3],
+    ['anthropic/claude-3-5-sonnet-20241022', 'sonnet-legacy', 3],
+    ['anthropic/claude-3-7-sonnet-20250219', 'sonnet-legacy', 3],
+    ['anthropic.claude-3-5-sonnet-20241022-v2:0', 'sonnet-legacy', 3],
+    ['claude-3-opus-20240229', 'opus-3', 15],
+    ['anthropic/claude-3-5-haiku-20241022', 'haiku-3-5', 0.8],
+    ['anthropic/claude-opus-5-5-20261001', 'opus-5-5', 4],
+  ];
+  for (const [model, key, cost] of known) {
+    assert.equal(resolvePricedModel(model, dir), key);
+    const result = priceSavingsEvent(1000000, 'checkpoint_restore', {model}, dir);
+    assert.ok(Math.abs(result.cost - cost) < 1e-10, model);
+    assert.equal(result.unpricedTokens, 0);
+  }
+  for (const model of ['claude-9-opus', 'anthropic/claude-3-9-sonnet-20241022', 'claude-opus-99', 'claude-opus-5-99']) {
+    assert.equal(resolvePricedModel(model, dir), null);
+    assert.deepEqual(priceSavingsEvent(1000000, 'checkpoint_restore', {model}, dir), {cost: 0, unpricedTokens: 1000000});
+  }
+});

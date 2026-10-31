@@ -300,7 +300,8 @@ def test_lifecycle_cell(tmp_path, monkeypatch, state_name, command):
     cur_home.mkdir()
     base_home.mkdir()
     baseline_dir = tmp_path / 'baseline-src'
-    shutil.copytree(FIXTURE, baseline_dir)
+    from _devin_baseline import copy_baseline
+    copy_baseline(FIXTURE, baseline_dir)
 
     # Current-adapter cell home.
     if state_name.startswith('old_'):

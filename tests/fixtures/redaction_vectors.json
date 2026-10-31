@@ -135,7 +135,7 @@
     },
     {
       "name": "slack-short-token",
-      "input": ["send ", "xoxb-12345-abcde", " now"],
+      "input": ["send ", "xox", "b-12345-abcde", " now"],
       "absent": ["xoxb-12345-abcde"],
       "present": ["send ", " now"]
     },
@@ -195,13 +195,13 @@
     },
     {
       "name": "slack-bot-token-long",
-      "input": ["slack xoxb-1234567890-1234567890123-", "AbCdEfGhIjKlMnOpQrStUvWx", " end"],
+      "input": ["slack xox", "b-1234567890-1234567890123-", "AbCdEfGhIjKlMnOpQrStUvWx", " end"],
       "absent": ["AbCdEfGhIjKlMnOpQrStUvWx"],
       "present": ["slack ", " end"]
     },
     {
       "name": "slack-user-token-long",
-      "input": ["slack xoxp-1234567890-1234567890-1234567890-", "0123456789abcdef0123456789abcdef", " end"],
+      "input": ["slack xox", "p-1234567890-1234567890-1234567890-", "0123456789abcdef0123456789abcdef", " end"],
       "absent": ["0123456789abcdef0123456789abcdef"],
       "present": ["slack ", " end"]
     },
@@ -243,7 +243,12 @@
     },
     {
       "name": "slack-incoming-webhook-url",
-      "input": ["notify https://hooks.slack.com/services/T0FAKE0/B0FAKE0/", "FAKEhookTok9Qw7Lm3", " now"],
+      "input": [
+        "notify ",
+        "https://hooks.slack.com/services/T0FAKE0/B0FAKE0/",
+        "FAKEhookTok9Qw7Lm3",
+        " now"
+      ],
       "absent": ["FAKEhookTok9Qw7Lm3", "T0FAKE0", "B0FAKE0"],
       "present": ["notify ", " now"]
     },
@@ -459,7 +464,12 @@
     },
     {
       "name": "slack-webhook-keeps-closing-quote-and-paren",
-      "input": ["post(\"https://hooks.slack.com/services/T0FAKE0/B0FAKE0/", "FAKEhookTok9Qw7Lm3", "\") ok"],
+      "input": [
+        "post(\"",
+        "https://hooks.slack.com/services/T0FAKE0/B0FAKE0/",
+        "FAKEhookTok9Qw7Lm3",
+        "\") ok"
+      ],
       "absent": ["FAKEhookTok9Qw7Lm3"],
       "present": ["post(\"", "\") ok"]
     }

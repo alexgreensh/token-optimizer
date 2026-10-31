@@ -92,11 +92,13 @@ def test_invalid_home_override(tmp_path,monkeypatch,name):
     with pytest.raises(OSError):s.home()
 
 def test_genuine_devin_cli_discovery(tmp_path,monkeypatch):
-    """Opt-in integration receipt; never starts a model/session."""
-    import os,subprocess
+    """Run the real CLI only with explicit opt-in; never starts a model/session."""
+    import os,shutil,subprocess
     import devin_install as d
-    binary=os.environ.get('DEVIN_TEST_BINARY')
-    if not binary:pytest.skip('DEVIN_TEST_BINARY required for real discovery')
+    if os.environ.get('DEVIN_TEST_BINARY', '').strip().lower() not in {'1', 'true', 'yes', 'on'}:
+        pytest.skip('set DEVIN_TEST_BINARY=true to opt in to real CLI discovery')
+    binary=shutil.which('devin')
+    if not binary:pytest.skip('devin CLI on PATH required for real discovery')
     monkeypatch.setenv('HOME',str(tmp_path));d.install()
     env=dict(os.environ);env.pop('XDG_CONFIG_HOME',None)
     listed=subprocess.run([binary,'skills','list'],env=env,capture_output=True,text=True,check=True)
@@ -105,6 +107,37 @@ def test_genuine_devin_cli_discovery(tmp_path,monkeypatch):
     assert 'Triggers: user' in shown.stdout
     assert 'Triggers: user, model' not in shown.stdout
     assert str(d.skill_dir()) in shown.stdout
+
+
+@pytest.mark.parametrize('value', [None, '', 'false', '0', '/unsafe/devin'])
+def test_real_cli_requires_explicit_boolean_opt_in(tmp_path, monkeypatch, value):
+    import devin_install as d, shutil, subprocess
+    calls = []
+    if value is None: monkeypatch.delenv('DEVIN_TEST_BINARY', raising=False)
+    else: monkeypatch.setenv('DEVIN_TEST_BINARY', value)
+    monkeypatch.setattr(shutil, 'which', lambda name: calls.append(('which', name)) or '/fake/devin')
+    monkeypatch.setattr(d, 'install', lambda: calls.append(('install',)))
+    monkeypatch.setattr(subprocess, 'run', lambda *args, **kwargs: calls.append(('run',)))
+    with pytest.raises(pytest.skip.Exception): test_genuine_devin_cli_discovery(tmp_path, monkeypatch)
+    assert calls == []
+
+@pytest.mark.parametrize('value', ['1', 'true', 'YES', 'on'])
+def test_real_cli_opt_in_uses_only_fixed_binary(tmp_path, monkeypatch, value):
+    import devin_install as d, shutil, subprocess
+    from types import SimpleNamespace
+    calls = []
+    monkeypatch.setenv('DEVIN_TEST_BINARY', value)
+    monkeypatch.setattr(shutil, 'which', lambda name: calls.append(('which', name)) or '/fake/devin')
+    monkeypatch.setattr(d, 'install', lambda: calls.append(('install',)))
+    def run(argv, **kwargs):
+        calls.append(('run', argv, kwargs['env'].copy()))
+        text = '/token-optimizer-output [user]' if argv[-1] == 'list' else 'Triggers: user ' + str(d.skill_dir())
+        return SimpleNamespace(stdout=text)
+    monkeypatch.setattr(subprocess, 'run', run)
+    test_genuine_devin_cli_discovery(tmp_path, monkeypatch)
+    assert calls[0] == ('which', 'devin') and calls[1] == ('install',)
+    assert [call[1][0] for call in calls[2:]] == ['/fake/devin', '/fake/devin']
+    assert all(call[2]['HOME'] == str(tmp_path) and 'XDG_CONFIG_HOME' not in call[2] for call in calls[2:])
 
 
 @pytest.mark.parametrize('kind', ['XDG_CONFIG_HOME', 'TOKEN_OPTIMIZER_DEVIN_HOME'])

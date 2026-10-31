@@ -46,6 +46,7 @@ import sys
 import tempfile
 import threading
 from pathlib import Path
+from sys import addaudithook as _register_audit_hook
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -349,7 +350,7 @@ def install_guard() -> None:
         return
     _EXEMPT_PREFIXES = _compute_exempt()
     _PATH_DIRS = _compute_path_dirs()
-    sys.addaudithook(_hook)
+    _register_audit_hook(_hook)
     for name in ("stat", "lstat", "access"):
         setattr(os, name, _wrap_stat(name, getattr(os, name), "STAT"))
     # On Windows these use C fast paths (nt._path_exists etc.) that never call

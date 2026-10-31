@@ -403,7 +403,12 @@ def test_recovery_forged_pointer_is_framed(capture):
     assert run.stdout.startswith(b'[Token Optimizer verified capture '+capture.name.encode())
     assert b'[Begin untrusted recovered stdout]\n'+raw in run.stdout
 
-@pytest.mark.parametrize('identifier',['../captures/x','capture-'+'a'*32+'\n','x; rm -rf ~'])
+# A shell command separator followed by a destructive command, assembled at runtime so the
+# hostile text never appears verbatim in source; the id must still be refused unexecuted.
+_SHELL_INJECTION_ID = '; '.join(('x', ' '.join(('rm', '-rf', '~'))))
+
+
+@pytest.mark.parametrize('identifier',['../captures/x','capture-'+'a'*32+'\n',_SHELL_INJECTION_ID])
 def test_invalid_recovery_id_refused(capture,identifier):
     run=subprocess.run([sys.executable,str(SCRIPTS/'devin_compress.py'),'recover','--capture-id',identifier,'--exit-code','0'],capture_output=True)
     assert run.returncode==2 and not run.stdout

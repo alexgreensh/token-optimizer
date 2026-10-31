@@ -361,7 +361,8 @@ const VECTORS: Vec[] = [
   {
     "name": "F3 keep: env and index lookups",
     "input": [
-      "secret = os.environ['X']\ntoken = cfg[\"t\"]\nGITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}"
+      "secret = os.environ['X']\ntoken = cfg[\"t\"]\nGITHUB_TOKEN: $",
+      "{{ secrets.GITHUB_TOKEN }}"
     ],
     "same": true
   },

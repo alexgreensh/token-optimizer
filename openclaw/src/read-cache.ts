@@ -25,13 +25,12 @@ import { logCompressionEvent } from "./telemetry";
 import { computeDelta } from "./delta-diff";
 import { estimateTokensFromBytes } from "./token-estimate";
 import { redact } from "./redact";
+import { loadSavingsSessions, priceSavingsEvent } from "./event-pricing";
 
 // ---------------------------------------------------------------------------
 // Savings event log (U-B + U-G, JSONL append, mirrors Python savings_events)
 // ---------------------------------------------------------------------------
 
-const SAVINGS_DIR = path.join(os.homedir(), ".openclaw", "token-optimizer");
-const SAVINGS_EVENTS_PATH = path.join(SAVINGS_DIR, "savings-events.jsonl");
 const MAX_SAVINGS_DETAIL_LEN = 200;
 
 /**
@@ -48,7 +47,8 @@ export function logSavingsEvent(
   eventType: string,
   tokensSaved: number,
   sessionId: string,
-  detail?: string
+  detail?: string,
+  pricing?: { openclawDir?: string; model?: string }
 ): void {
   try {
     // Redact BEFORE cutting: a secret straddling the cut is a prefix no
@@ -57,17 +57,26 @@ export function logSavingsEvent(
     const detailTrunc = redactedDetail && redactedDetail.length > MAX_SAVINGS_DETAIL_LEN
       ? redactedDetail.slice(0, MAX_SAVINGS_DETAIL_LEN)
       : redactedDetail;
+    const root = pricing?.openclawDir ?? path.join(os.homedir(), ".openclaw");
+    const eventDir = path.join(root, "token-optimizer");
+    const session = loadSavingsSessions(root).get(sessionId) ?? (pricing?.model ? {model: pricing.model} : undefined);
+    const priced = priceSavingsEvent(tokensSaved, eventType, session, root);
     const row = JSON.stringify({
       timestamp: new Date().toISOString(),
       event_type: eventType,
       tokens_saved: Math.round(tokensSaved),
       session_id: sessionId || null,
+      ...(session?.model ? {model: session.model} : {}),
+      ...(session?.modelTokenBuckets ? {model_token_buckets: session.modelTokenBuckets} : {}),
+      cost_saved_usd: priced.cost,
+      unpriced_tokens: priced.unpricedTokens,
+      pricing_status: priced.unpricedTokens > 0 ? "partial_or_unavailable" : "priced",
       // Boundary redaction: detail can embed a file name carrying a
       // credential shape — never persist it raw.
       detail: detailTrunc || null,
     });
-    try { fs.mkdirSync(SAVINGS_DIR, { recursive: true, mode: 0o700 }); } catch { /* best effort */ }
-    fs.appendFileSync(SAVINGS_EVENTS_PATH, row + "\n", { encoding: "utf8", mode: 0o600 });
+    try { fs.mkdirSync(eventDir, { recursive: true, mode: 0o700 }); } catch { /* best effort */ }
+    fs.appendFileSync(path.join(eventDir, "savings-events.jsonl"), row + "\n", { encoding: "utf8", mode: 0o600 });
   } catch {
     // Best-effort: never let savings bookkeeping break a read or inject.
   }

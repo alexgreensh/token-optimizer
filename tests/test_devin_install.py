@@ -92,11 +92,16 @@ def test_invalid_home_override(tmp_path,monkeypatch,name):
     with pytest.raises(OSError):s.home()
 
 def test_genuine_devin_cli_discovery(tmp_path,monkeypatch):
-    """Opt-in integration receipt; never starts a model/session."""
-    import os,subprocess
+    """Opt-in integration receipt; never starts a model/session.
+
+    The CLI's name is fixed ('devin'), so PATH lookup is the discovery
+    mechanism: the test opts in whenever a real devin binary is installed, and
+    the executable passed to subprocess is always the resolved path of that
+    fixed name, never a value read from the environment."""
+    import os,shutil,subprocess
     import devin_install as d
-    binary=os.environ.get('DEVIN_TEST_BINARY')
-    if not binary:pytest.skip('DEVIN_TEST_BINARY required for real discovery')
+    binary=shutil.which('devin')
+    if not binary:pytest.skip('devin CLI on PATH required for real discovery')
     monkeypatch.setenv('HOME',str(tmp_path));d.install()
     env=dict(os.environ);env.pop('XDG_CONFIG_HOME',None)
     listed=subprocess.run([binary,'skills','list'],env=env,capture_output=True,text=True,check=True)

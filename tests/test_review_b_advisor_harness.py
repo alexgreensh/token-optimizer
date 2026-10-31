@@ -315,26 +315,32 @@ def test_codex_topic_prefers_user_message_event(m):
 # --------------------------------------------------------------- finding 1
 
 _TS_RUNNER = r"""
-const fs = require('fs'), path = require('path'), Module = require('module');
+const fs = require('fs'), path = require('path');
 const ts = require(path.join(process.argv[1], 'node_modules', 'typescript'));
 const src = fs.readFileSync(path.join(process.argv[1], 'src', 'jsonlTail.ts'), 'utf8');
 const js = ts.transpileModule(src, {compilerOptions: {module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020}}).outputText;
-const mod = new Module('jsonlTail'); mod.paths = module.paths; mod._compile(js, 'jsonlTail.js');
-process.stdout.write(JSON.stringify(mod.exports.parseLatestUsage(fs.readFileSync(0, 'utf8'))));
+const dir = fs.mkdtempSync(path.join(process.argv[2], 'ts-'));
+try {
+  fs.writeFileSync(path.join(dir, 'jsonlTail.js'), js);
+  const mod = require(path.join(dir, 'jsonlTail.js'));
+  process.stdout.write(JSON.stringify(mod.parseLatestUsage(fs.readFileSync(0, 'utf8'))));
+} finally {
+  fs.rmSync(dir, {recursive: true, force: true});
+}
 """
 
 
 @pytest.mark.skipif(shutil.which("node") is None
                     or not (REPO / "vscode-extension" / "node_modules" / "typescript").is_dir(),
                     reason="needs node and vscode-extension dev dependencies")
-def test_vscode_tail_reads_executor_context_on_advisor_turns():
+def test_vscode_tail_reads_executor_context_on_advisor_turns(tmp_path):
     usage = {"input_tokens": 200, "cache_creation_input_tokens": 180_827,
              "cache_read_input_tokens": 800_000,
              "iterations": [_exec(cr=400_000, cc=89_776),
                             {"type": "advisor_message", "input_tokens": 494_410},
                             _exec(cr=400_000, cc=91_051)]}
     line = json.dumps({"type": "assistant", "message": {"model": EXECUTOR, "usage": usage}})
-    out = subprocess.run(["node", "-e", _TS_RUNNER, str(REPO / "vscode-extension")],
+    out = subprocess.run(["node", "-e", _TS_RUNNER, str(REPO / "vscode-extension"), str(tmp_path)],
                          input=line + "\n", capture_output=True, text=True, timeout=60)
     assert out.returncode == 0, out.stderr
     assert json.loads(out.stdout)["tokens"] == 491_151

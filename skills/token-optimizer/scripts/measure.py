@@ -14815,6 +14815,9 @@ def _compression_known_model(model):
     """Reject an unknown Claude generation even when its family has a card."""
     if not isinstance(model, str) or not _is_priced_model(model):
         return False
+    value = _strip_provider_prefixes(model)
+    if value.startswith(("gpt-", "gemini-")):
+        return _foreign_savings_card_exact(model)
     generation = _CLAUDE_GENERATION_RE.search(model.lower())
     legacy = _CLAUDE_LEGACY_ID_RE.search(model.lower())
     if legacy:
@@ -14834,7 +14837,7 @@ def _compression_row_rate(model, fallback_rate, tier_data):
     """Input price per million tokens, or zero when no rate card is known."""
     if not _compression_known_model(model):
         return 0.0
-    return _get_model_cost(model, 1_000_000, 0)
+    return _get_model_cost(model, 1, 0) * 1_000_000
 
 
 _UNSTAMPED_MODELS = frozenset({"", "unknown", "<synthetic>", "none", "null"})
@@ -14911,7 +14914,7 @@ def _compression_mix_input_terms(*blobs):
                 weights.append((name, weight))
         total = sum(weight for _, weight in weights)
         if total:
-            return [(weight / total, _get_model_cost(name, 1_000_000, 0))
+            return [(weight / total, _get_model_cost(name, 1, 0) * 1_000_000)
                     for name, weight in weights if _compression_known_model(name)]
     return []
 
@@ -51913,6 +51916,15 @@ _ROUTING_BILLABLE_CLASSES = ("fresh_input", "cache_create_5m", "cache_create_1h"
                              "output", "unsplit")
 
 
+def _foreign_savings_card_exact(model):
+    """Accept rate-card IDs and dated snapshots, without arbitrary suffixes."""
+    value = re.sub(r"[\s_]+", "-", _strip_provider_prefixes(model))
+    base = re.sub(r"-\d{4}-\d{2}-\d{2}$", "", value)
+    if base == "gpt-5.6":
+        return True
+    return base in OPENAI_MODEL_PRICING or base in GEMINI_MODEL_PRICING
+
+
 def _routing_card_exact(model):
     """True when `model` resolves to an exact rate card.
 
@@ -51927,7 +51939,7 @@ def _routing_card_exact(model):
     if not isinstance(model, str) or not model:
         return False
     if _normalize_openai_model_name(model) or _normalize_gemini_model_name(model):
-        return True
+        return _foreign_savings_card_exact(model)
     try:
         cards = dict(PRICING_TIERS["anthropic"]["claude_models"])
         cards.update(PRICING_TIERS.get(_load_pricing_tier(), {}).get("claude_models", {}))
@@ -51979,7 +51991,7 @@ def _routing_class_rates(model):
     if not _routing_card_exact(probe):
         return None
     try:
-        m = 1_000_000
+        m = 1
         rates = {
             "fresh_input": _get_model_cost(probe, m, 0),
             "output": _get_model_cost(probe, 0, m),
@@ -51987,6 +51999,7 @@ def _routing_class_rates(model):
             "cache_create_5m": _get_model_cost(probe, 0, 0, 0, m, cache_create_1h=0, cache_create_5m=m),
             "cache_create_1h": _get_model_cost(probe, 0, 0, 0, m, cache_create_1h=m, cache_create_5m=0),
         }
+        rates = {key: value * 1_000_000 for key, value in rates.items()}
     except Exception:
         return None
     if not any(v > 0 for v in rates.values()):

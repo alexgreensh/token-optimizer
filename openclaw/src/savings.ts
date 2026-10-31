@@ -218,6 +218,13 @@ function priceKey(model: string, proxy: string, openclawDir: string): string {
   return key ?? model;
 }
 
+// Aggregate volume does not establish request length, so use base rates.
+function aggregateCost(tokens: {input:number; output:number; cacheRead:number; cacheWrite:number}, model: string, dir: string, split?: {cacheWrite1hTokens?:number; cacheWrite5mTokens?:number}): number {
+  const scale = Math.max(1, tokens.input + tokens.cacheRead + tokens.cacheWrite, tokens.output);
+  return scale * calculateCost({input:tokens.input/scale, output:tokens.output/scale, cacheRead:tokens.cacheRead/scale, cacheWrite:tokens.cacheWrite/scale}, model, dir,
+    split ? {cacheWrite1hTokens:(split.cacheWrite1hTokens ?? 0)/scale, cacheWrite5mTokens:(split.cacheWrite5mTokens ?? 0)/scale} : undefined);
+}
+
 /**
  * Per-class cost of ONE session, priced at its own model.
  * Returned per class so the waterfall can use real per-class effective rates.
@@ -245,15 +252,15 @@ function sessionClassCost(
     cacheWrite5mTokens?: number;
   };
   return {
-    fi: calculateCost({ input: t.fi, output: 0, cacheRead: 0, cacheWrite: 0 }, model, openclawDir),
-    cr: calculateCost({ input: 0, output: 0, cacheRead: t.cr, cacheWrite: 0 }, model, openclawDir),
-    cw: calculateCost(
+    fi: aggregateCost({ input: t.fi, output: 0, cacheRead: 0, cacheWrite: 0 }, model, openclawDir),
+    cr: aggregateCost({ input: 0, output: 0, cacheRead: t.cr, cacheWrite: 0 }, model, openclawDir),
+    cw: aggregateCost(
       { input: 0, output: 0, cacheRead: 0, cacheWrite: t.cw },
       model,
       openclawDir,
       { cacheWrite1hTokens: r.cacheWrite1h, cacheWrite5mTokens: r.cacheWrite5m }
     ),
-    out: calculateCost({ input: 0, output: t.out, cacheRead: 0, cacheWrite: 0 }, model, openclawDir),
+    out: aggregateCost({ input: 0, output: t.out, cacheRead: 0, cacheWrite: 0 }, model, openclawDir),
   };
 }
 
@@ -361,7 +368,7 @@ function pricePool(
   for (const [model, s] of items) {
     cost +=
       (s / tot) *
-      calculateCost({ input: fi, output: out, cacheRead: cr, cacheWrite: 0 }, model, openclawDir);
+      aggregateCost({ input: fi, output: out, cacheRead: cr, cacheWrite: 0 }, model, openclawDir);
   }
   return cost;
 }
@@ -386,7 +393,7 @@ function priceCacheWrite(
   for (const [model, s] of items) {
     cost +=
       (s / tot) *
-      calculateCost(
+      aggregateCost(
         { input: 0, output: 0, cacheRead: 0, cacheWrite: cw },
         model,
         openclawDir,
@@ -875,6 +882,8 @@ export interface RealizedSavings {
   afterOpus: number;
   premiumTokens?: number;
   premiumCostUsd?: number;
+  /** Recent tokens excluded because their model has no known price. */
+  unpricedTokens?: number;
   baselineClassMixAvailable?: boolean;
   baselineTtlMixAvailable?: boolean;
   /**
@@ -938,10 +947,31 @@ export function computeRealizedSavings(
   } catch {
     fresh = [];
   }
-  const history = mergeAndPersistHistory(openclawDir, fresh)
-    .filter((r) => r.input >= MIN_INPUT_TOKENS && r.durationSec >= MIN_DURATION_SECONDS && resolvePricedModel(r.model, openclawDir) !== null &&
-      (!r.modelTokenBuckets || Object.keys(r.modelTokenBuckets).every((model) => resolvePricedModel(model, openclawDir) !== null)));
-  if (history.length === 0) return NOT_READY("no sessions yet");
+  const rawHistory = mergeAndPersistHistory(openclawDir, fresh);
+  const excluded = new Map<string, number>();
+  const history = rawHistory.flatMap((r) => {
+    if (r.input < MIN_INPUT_TOKENS || r.durationSec < MIN_DURATION_SECONDS) return [];
+    if (!r.modelTokenBuckets || !Object.keys(r.modelTokenBuckets).length) {
+      if (resolvePricedModel(r.model, openclawDir) !== null) return [r];
+      excluded.set(r.sessionId, r.input + r.output + r.cacheRead + r.cacheWrite);
+      return [];
+    }
+    const known = Object.fromEntries(Object.entries(r.modelTokenBuckets).filter(([model, b]) => {
+      if (resolvePricedModel(model, openclawDir) !== null) return true;
+      excluded.set(r.sessionId, (excluded.get(r.sessionId) ?? 0) + numClamp(b.input) + numClamp(b.output) + numClamp(b.cacheRead) + numClamp(b.cacheWrite));
+      return false;
+    }));
+    const entries = Object.entries(known);
+    if (!entries.length) return [];
+    const sum = (field: "input" | "output" | "cacheRead" | "cacheWrite" | "cacheWrite1h" | "cacheWrite5m") => entries.reduce((n, [, b]) => n + numClamp(b[field]), 0);
+    return [{...r, model: resolvePricedModel(r.model, openclawDir) !== null ? r.model : entries[0][0], modelTokenBuckets: known,
+      input:sum("input"), output:sum("output"), cacheRead:sum("cacheRead"), cacheWrite:sum("cacheWrite"), cacheWrite1h:sum("cacheWrite1h"), cacheWrite5m:sum("cacheWrite5m")}];
+  });
+  if (history.length === 0) {
+    const result = NOT_READY("no priced sessions yet");
+    result.unpricedTokens = rawHistory.filter((r) => r.ts >= now - days * DAY_MS).reduce((n, r) => n + (excluded.get(r.sessionId) ?? 0), 0);
+    return result;
+  }
 
   // Preserve the stored baseline metadata for existing installs.
   const globalProxy = dominantPricedModel(history, openclawDir);
@@ -950,6 +980,7 @@ export function computeRealizedSavings(
   if (!baseline) {
     const r = NOT_READY(reason);
     r.installDate = installDate;
+    r.unpricedTokens = rawHistory.filter((row) => row.ts >= now - days * DAY_MS).reduce((n, row) => n + (excluded.get(row.sessionId) ?? 0), 0);
     if (baselineBuilding) r.baselineBuilding = baselineBuilding;
     return r;
   }
@@ -958,9 +989,11 @@ export function computeRealizedSavings(
   // baseline window (cohort separation: never compare the user to themselves).
   const afterStart = Math.max(baseline.windowEnd, now - days * DAY_MS);
   const after = history.filter((r) => r.ts >= afterStart);
+  const unpricedTokens = rawHistory.filter((r) => r.ts >= afterStart).reduce((n, r) => n + (excluded.get(r.sessionId) ?? 0), 0);
   if (after.length < AFTER_MIN_SESSIONS) {
     const r = NOT_READY(`building comparison (${after.length}/${AFTER_MIN_SESSIONS} recent sessions)`);
     r.installDate = installDate;
+    r.unpricedTokens = unpricedTokens;
     r.beforeCostPerSession = baseline.stats.costPerSession;
     r.beforeMixLabel = mixLabel(baseline.stats.shares);
     return r;
@@ -1196,6 +1229,7 @@ export function computeRealizedSavings(
     afterOpus: round4(afterShares.opus ?? 0),
     premiumTokens,
     premiumCostUsd: round2(premiumCostUsd),
+    unpricedTokens,
     baselineClassMixAvailable: !!bs.classShares,
     baselineTtlMixAvailable: !!bs.ttlShares,
   };

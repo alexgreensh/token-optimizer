@@ -1,5 +1,5 @@
 const fs = require('node:fs');
-const ts = require(process.env.W8Q_TYPESCRIPT_PATH || 'typescript');
+const ts = require(process.env.TEST_TYPESCRIPT_PATH || 'typescript');
 require.extensions['.ts'] = (module, filename) => module._compile(ts.transpileModule(fs.readFileSync(filename, 'utf8'), {compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText, filename);
 const { test } = require('node:test');
 const assert = require('node:assert/strict');

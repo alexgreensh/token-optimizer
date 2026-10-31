@@ -1,12 +1,17 @@
 import * as fs from "fs";
 import * as path from "path";
-import { normalizeModelName, getPricing, claudePricingKey, pricedPrefixKey, loadPricingTier, tierMultiplier } from "./pricing";
+import { getPricing, loadPricingTier, tierMultiplier } from "./pricing";
 
 export function resolvePricedModel(model: string, openclawDir: string): string | null {
   const pricing = getPricing(openclawDir);
   const own = (key: string) => Object.prototype.hasOwnProperty.call(pricing, key);
   if (own(model)) return model;
   const id = model.toLowerCase();
+  const bare = id.replace(/^(?:anthropic|openai|google|deepseek|vertex)\//, "");
+  const dated = bare.replace(/-(?:\d{8}|\d{4}-\d{2}-\d{2})$/, "");
+  if (own(dated)) return dated;
+  if (!/(?:^|[/:.])claude-/.test(id) && !/^(?:fable|mythos|opus|sonnet|haiku)[-._]?\d/.test(id)) return null;
+  if (!/^(?:(?:anthropic\/|anthropic\.)?claude-)?(?:\d+(?:[-.]\d+)?-(?:opus|sonnet|haiku)|(?:fable|mythos|opus|sonnet|haiku)[-._]?\d+(?:[-._]\d+)?)(?:-\d{8}(?:-v\d+:\d+)?)?$/.test(id)) return null;
   const legacy = /(?:^|[/:.])claude-(\d+)(?:[-.](\d+))?-(opus|sonnet|haiku)(?=$|[-_:])/.exec(id);
   if (legacy) {
     const [, major, minor, family] = legacy;
@@ -28,8 +33,7 @@ export function resolvePricedModel(model: string, openclawDir: string): string |
     }
     return null;
   }
-  const key = claudePricingKey(model, pricing) ?? pricedPrefixKey(model, pricing) ?? normalizeModelName(model);
-  return key && own(key) ? key : null;
+  return null;
 }
 
 

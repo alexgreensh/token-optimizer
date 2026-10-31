@@ -43,12 +43,12 @@ def test_unpriced_and_mixed_model_compression(m):
     conn.commit(); conn.close()
     summary = m._get_compression_summary(days=30)
     parts = summary['by_feature']
-    expect = (m._get_model_cost('claude-opus-4-6', 1_000_000, 0) + m._get_model_cost('gpt-5.4', 1_000_000, 0)) / 4
+    expect = (m._get_model_cost('claude-opus-4-6', 1_000_000, 0) + m._get_model_cost('gpt-5.4', 1, 0) * 1_000_000) / 4
     assert parts['bash_compress_git']['cost_saved_usd'] == pytest.approx(expect, abs=1e-6)
     assert parts['bash_compress_git']['unpriced_tokens'] == 500_000
     assert parts['bash_compress_pipeline']['cost_saved_usd'] == 0
     assert parts['bash_compress_pipeline']['unpriced_tokens'] == 1_000_000
-    assert parts['bash_compress_ls']['cost_saved_usd'] == pytest.approx(m._get_model_cost('gpt-5.4', 1_000_000, 0), abs=1e-6)
+    assert parts['bash_compress_ls']['cost_saved_usd'] == pytest.approx(m._get_model_cost('gpt-5.4', 1, 0) * 1_000_000, abs=1e-6)
     assert summary['total_tokens_saved'] == 3_000_000
     assert summary['unpriced_tokens'] == 1_500_000
     bucket = m._realized_savings_buckets(m._init_trends_db(), (datetime.now()-timedelta(days=30)).isoformat())['']

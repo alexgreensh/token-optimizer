@@ -673,3 +673,21 @@ def test_unknown_minor_generation_is_reported_not_priced_as_its_major(m, db, mon
                   mix={"opus": 2_000_000})
     assert r["unpriced_models"] == ["claude-opus-5-99"]
     assert r["potential_tokens"] == 300_000
+
+@pytest.mark.parametrize('model', ['gpt-5.4', 'gemini-2.5-pro'])
+def test_aggregate_rate_cards_do_not_trigger_long_prompt_surcharge(m, model):
+    base = m._get_model_cost(model, 1, 0) * 1_000_000
+    assert m._routing_class_rates(model)['fresh_input'] == pytest.approx(base)
+    assert m._compression_row_rate(model, 0, {}) == pytest.approx(base)
+    assert m._compression_mix_input_terms(json.dumps({model: 1}))[0][1] == pytest.approx(base)
+    assert m._get_model_cost(model, 1_000_000, 0) > base
+
+@pytest.mark.parametrize('model', ['gpt-5.4-unlisted-variant', 'gpt-5.6-unlisted-variant', 'gemini-2.5-pro-unlisted-variant'])
+def test_foreign_unknown_variants_are_not_priced(m, model):
+    assert not m._routing_card_exact(model)
+    assert not m._compression_known_model(model)
+
+@pytest.mark.parametrize('model', ['openai/gpt-5.4-2026-03-05', 'google/gemini-2.5-pro', 'gpt-5.6'])
+def test_foreign_documented_aliases_remain_priced(m, model):
+    assert m._routing_card_exact(model)
+    assert m._compression_known_model(model)

@@ -2,7 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const Module = require('node:module');
-const ts = require(process.env.W8Q_TYPESCRIPT_PATH || 'typescript');
+const ts = require(process.env.TEST_TYPESCRIPT_PATH || 'typescript');
 require.extensions['.ts'] = (module, filename) => module._compile(ts.transpileModule(fs.readFileSync(filename,'utf8'), {compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText, filename);
 const { runAllDetectors } = require('./waste-detectors.ts');
 const runs = [0,1,2].map(i => ({system:'openclaw',sessionId:String(i),agentName:'a',project:'',timestamp:new Date('2026-10-01T00:00:00Z'),durationSeconds:1,tokens:{input:100000,output:1000,cacheRead:500000,cacheWrite:100000},costUsd:50,model:'opus',rawModel:'claude-opus-5-5',runType:'heartbeat',outcome:'success',messageCount:3,toolsUsed:[],sourcePath:''}));

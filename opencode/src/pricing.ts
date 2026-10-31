@@ -326,9 +326,15 @@ function ratesFor(modelKey: string): ModelPricing {
 
 /** Return a documented rate only when the model has a known price card. */
 export function knownModelRate(modelKey: string, klass: "input" | "output" | "cacheRead" | "cacheWrite"): number | null {
+  const id = modelKey.toLowerCase();
+  const bare = id.replace(/^(?:anthropic|openai|google|deepseek|vertex)\//, "");
+  const dated = bare.replace(/-(?:\d{8}|\d{4}-\d{2}-\d{2})$/, "");
+  if (Object.prototype.hasOwnProperty.call(DEFAULT_PRICING, dated)) return DEFAULT_PRICING[dated][klass];
+  if (!/^(?:(?:anthropic\/|anthropic\.)?claude-)?(?:\d+(?:[-.]\d+)?-(?:opus|sonnet|haiku)|(?:fable|mythos|opus|sonnet|haiku)[-._]?\d+(?:[-._]\d+)?)(?:-\d{8}(?:-v\d+:\d+)?)?$/.test(id)) return null;
   const explicit = explicitClaudeRateKey(modelKey);
   if (explicit === null) return null;
-  const key = explicit ?? claudePricingKey(modelKey) ?? pricedPrefixKey(modelKey) ?? normalizeModelName(modelKey);
+  const key = explicit ?? claudePricingKey(modelKey);
+  if (!key) return null;
   return Object.prototype.hasOwnProperty.call(DEFAULT_PRICING, key) ? DEFAULT_PRICING[key][klass] : null;
 }
 

@@ -14691,11 +14691,18 @@ def _log_savings_event(event_type, tokens_saved, session_id=None, detail=None, m
         # aggregation layer not to use the stored model for reprice attribution.
         tier = _load_pricing_tier()
         tier_data = PRICING_TIERS.get(tier, PRICING_TIERS["anthropic"])
+        # Output-class events (a measured verbosity reduction) avoid output tokens,
+        # so they are priced at the output rate rather than the input rate.
+        output_class = _EVENT_RATE_CLASS.get(event_type) == "output"
         if detect_runtime() == 'codex':
             normalized = model or _resolve_session_model(session_id)
             rates = _input_and_cached_read_rates(normalized)
             if cost_per_mtok is None:
-                cost_per_mtok = rates[0] if rates else None
+                if output_class:
+                    out_rate = _get_model_cost(normalized, 0, 1) * 1e6 if rates else 0.0
+                    cost_per_mtok = out_rate or None
+                else:
+                    cost_per_mtok = rates[0] if rates else None
         elif model:
             normalized = _claude_price_key(model, tier_data["claude_models"]) or "sonnet"
         else:
@@ -14703,7 +14710,8 @@ def _log_savings_event(event_type, tokens_saved, session_id=None, detail=None, m
         if detect_runtime() != 'codex':
             rates = tier_data["claude_models"].get(normalized, tier_data["claude_models"].get("sonnet", {}))
             if cost_per_mtok is None:
-                cost_per_mtok = rates.get("input", 3.0)
+                cost_per_mtok = (rates.get("output", 15.0) if output_class
+                                 else rates.get("input", 3.0))
         cost_saved = tokens_saved * cost_per_mtok / 1e6 if cost_per_mtok is not None else None
 
         conn = _init_trends_db()
@@ -23415,9 +23423,18 @@ def _cache_coverage_gaps(runtime):
     ]
 
 
-def _session_mix_input_terms(*model_usage_blobs):
-    """[(share, input_usd_per_mtok)] for the PRICED models in ONE session's own
-    token-weighted model usage, or None when nothing usable is present.
+_CLAUDE_FAMILY_RX = re.compile(r"fable|mythos|opus|sonnet|haiku")
+
+
+def _session_mix_class_terms(rate_class, *model_usage_blobs):
+    """[(share, usd_per_mtok)] for the PRICED Claude models in ONE session's own
+    token-weighted model usage, at one token class, or None when nothing usable is
+    present.
+
+    *rate_class* is a key of _routing_class_rates ("fresh_input", "output", ...).
+    Each model id is priced at its own generation card (Opus 5.5 is not the Opus
+    family rate); an id without an exact card, and any non-Claude id, contributes
+    no term.
 
     Shares are taken over the session's TOTAL recorded tokens, so an unpriced
     share (a local or third-party model with no rate card) is neither dropped nor
@@ -23441,27 +23458,27 @@ def _session_mix_input_terms(*model_usage_blobs):
             break
     if not raw:
         return None
-    tier_data = PRICING_TIERS.get(_load_pricing_tier(), PRICING_TIERS["anthropic"])
-    models = tier_data.get("claude_models", {})
     total = 0.0
-    buckets = {}
+    weights = {}
     for key, val in raw.items():
         try:
             val = float(val)
         except (TypeError, ValueError):
             continue
-        if val <= 0:
+        if val <= 0 or not isinstance(key, str) or key.startswith("<"):
             continue
-        name = _normalize_model_name(key) or ""
-        buckets[name] = buckets.get(name, 0.0) + val
+        weights[key] = weights.get(key, 0.0) + val
         total += val
     if total <= 0:
         return None
     terms = []
-    for name, val in buckets.items():
-        rates = models.get(name)
-        if rates and rates.get("input"):
-            terms.append((val / total, float(rates["input"])))
+    for key, val in weights.items():
+        if not _CLAUDE_FAMILY_RX.search(key.lower()):
+            continue
+        rates = _routing_class_rates(key)
+        rate = (rates or {}).get(rate_class)
+        if rate:
+            terms.append((val / total, float(rate)))
     return terms or None
 
 
@@ -23471,6 +23488,11 @@ def _session_mix_input_terms(*model_usage_blobs):
 # estimated-tier and never reaches the counted headline, so the reprice leaves
 # its rows exactly as logged.
 _REPRICE_SKIP_EVENT_TYPES = frozenset({"resume_lean"})
+
+# Token class each event type's avoided tokens belong to. The default is fresh
+# input. A measured verbosity reduction is output tokens (counted from the
+# turns' output usage), so it is priced at the output rate.
+_EVENT_RATE_CLASS = {"verbosity_steer_measured": "output", "verbosity_steer": "output"}
 
 # One statement per (source, has model_usage_json, has all_model_usage_json, by_day,
 # session-scoped). Grouping on column 1 is a no-op when it is the constant NULL.
@@ -23560,7 +23582,8 @@ def _session_model_reprice(conn, cutoff, session_uuid=None, by_day=False):
         if tok <= 0:
             # Zero-token markers (nudges) and debit rows carry no rate to correct.
             continue
-        terms = _session_mix_input_terms(mu_json, amu_json)
+        terms = _session_mix_class_terms(
+            _EVENT_RATE_CLASS.get(event_type, "fresh_input"), mu_json, amu_json)
         if not terms:
             unmeasured_tokens += tok
             continue
@@ -50642,13 +50665,42 @@ _MIN_OVERAGE_USD_SHOWN = 10.0
 
 _RUNWAY_SAVED_SQL = _counted_sql(
     "savings_events",
-    "SELECT COALESCE(SUM(tokens_saved),0) FROM {table} "
-    "WHERE timestamp >= ? AND event_type != 'verbosity_steer'")
+    "SELECT event_type, COALESCE(SUM(tokens_saved),0) FROM {table} "
+    "WHERE timestamp >= ? AND event_type != 'verbosity_steer' GROUP BY event_type")
 _RUNWAY_COMPRESSED_SQL = _counted_sql(
     "compression_events",
-    "SELECT COALESCE(SUM(original_tokens-compressed_tokens),0) "
+    "SELECT feature, COALESCE(SUM(original_tokens-compressed_tokens),0) "
     "FROM {table} WHERE timestamp >= ? "
-    "AND (tier IS NULL OR tier = 'measured')")
+    "AND (tier IS NULL OR tier = 'measured') GROUP BY feature")
+
+
+def _runway_saved_tokens(conn, cutoff):
+    """Tokens never sent since *cutoff*, netted like the savings totals.
+
+    Archive re-expansions are subtracted from the archive credit (never below
+    zero) and are not savings of their own. A compression feature that
+    savings_events also logs (delta_read, structure_map) is counted once, from
+    savings_events. Only features the savings report counts are included.
+    """
+    by_event = {
+        event_type: int(tokens or 0)
+        for event_type, tokens in conn.execute(
+            _RUNWAY_SAVED_SQL[_counted_table(conn, "savings_events")], (cutoff,))}
+    reexpanded = by_event.pop("tool_archive_reexpand", 0)
+    if "tool_archive" in by_event:
+        by_event["tool_archive"] = max(0, by_event["tool_archive"] - reexpanded)
+    saved = sum(by_event.values())
+    table = _counted_table(conn, "compression_events")
+    if "feature" not in {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}:
+        # An install old enough to log no feature name cannot be split by owner.
+        return saved + int(conn.execute(
+            "SELECT COALESCE(SUM(original_tokens-compressed_tokens),0) FROM " + table
+            + " WHERE timestamp >= ? AND (tier IS NULL OR tier = 'measured')",
+            (cutoff,)).fetchone()[0] or 0)
+    for feature, tokens in conn.execute(_RUNWAY_COMPRESSED_SQL[table], (cutoff,)):
+        if feature in _V5_COMPRESSION_CATEGORIES and feature not in by_event:
+            saved += int(tokens or 0)
+    return saved
 
 
 def runway_snapshot(days=30, now=None):
@@ -50714,12 +50766,7 @@ def runway_snapshot(days=30, now=None):
                 cutoff = (datetime.now() - timedelta(days=days)).isoformat()
                 spent_basis = _dashboard_spent_token_basis(conn, days=days)
                 consumed = spent_basis["tokens"]
-                saved = conn.execute(
-                    _RUNWAY_SAVED_SQL[_counted_table(conn, "savings_events")],
-                    (cutoff,)).fetchone()[0] or 0
-                saved += conn.execute(
-                    _RUNWAY_COMPRESSED_SQL[_counted_table(conn, "compression_events")],
-                    (cutoff,)).fetchone()[0] or 0
+                saved = _runway_saved_tokens(conn, cutoff)
             finally:
                 conn.close()
         except Exception:

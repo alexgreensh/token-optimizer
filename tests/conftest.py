@@ -357,7 +357,7 @@ def _restore_runtime_env():
 
 @pytest.fixture(autouse=True)
 def _cwd_outside_real_home(monkeypatch):
-    """Run every test from a directory that is not under the developer's real home.
+    """Keep default project discovery inside the test sandbox.
 
     Product code discovers project files by walking up from the working
     directory (``measure_components`` reads ``<ancestor>/CLAUDE.md`` and
@@ -377,8 +377,9 @@ def _cwd_outside_real_home(monkeypatch):
         return
     real_home = _home_guard.REAL_HOME
     if cwd == real_home or cwd.startswith(real_home + os.sep):
-        workdir = sandbox / "cwd"
-        workdir.mkdir(exist_ok=True)
+        # Project discovery checks three ancestors, all of which must be fake.
+        workdir = sandbox / "cwd" / "project" / "work"
+        workdir.mkdir(parents=True, exist_ok=True)
         monkeypatch.chdir(workdir)
 
 

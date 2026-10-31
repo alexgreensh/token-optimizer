@@ -333,17 +333,47 @@ function modelTtlShares(records: SessionRecord[]): TtlShares {
 // models in an era). calculateCost is per-token linear, so we blend the per-MTok
 // rates by share and apply once. Unpriced models have no rate card.
 
+const CLAUDE_FAMILY_KEY = /^(fable|mythos|opus|sonnet|haiku)(?:-\d+){0,2}$/;
+
+/**
+ * Rate-card key that values a model in the routing comparison. Every Claude
+ * generation of a family is valued at that family's newest generation card, in
+ * both the baseline and the current arm, so a vendor price change between
+ * generations cannot register as a routing saving. Other models stand for
+ * themselves. The exact-card cost is reported separately as the generation gap.
+ */
+function referenceCardKey(key: string, dir: string): string {
+  const legacy = key === "sonnet-legacy";
+  const m = legacy ? null : CLAUDE_FAMILY_KEY.exec(key);
+  if (!legacy && !m) return key;
+  const family = legacy ? "sonnet" : m![1] === "mythos" ? "fable" : m![1];
+  const table = getPricing(dir);
+  const generation = new RegExp(`^${family}-(\\d+)(?:-(\\d+))?$`);
+  let best: { major: number; minor: number; key: string } | null = null;
+  for (const candidate of Object.keys(table)) {
+    const g = generation.exec(candidate);
+    if (!g) continue;
+    const major = Number(g[1]), minor = Number(g[2] ?? 0);
+    if (!best || major > best.major || (major === best.major && minor > best.minor)) best = { major, minor, key: candidate };
+  }
+  if (best) return best.key;
+  return Object.prototype.hasOwnProperty.call(table, family) ? family : key;
+}
+
 /** Resolve a share map into priced [model, share] pairs. */
 function pricedShares(
   shares: Record<string, number>,
   proxy: string,
-  openclawDir: string
+  openclawDir: string,
+  exact = false
 ): Array<[string, number]> {
   const blended: Record<string, number> = {};
   for (const [m, s] of Object.entries(shares)) {
     if (!s || s <= 0) continue;
-    const model = resolvePricedModel(m, openclawDir);
-    if (model) blended[model] = (blended[model] ?? 0) + s;
+    const resolved = resolvePricedModel(m, openclawDir);
+    if (!resolved) continue;
+    const model = exact ? resolved : referenceCardKey(resolved, openclawDir);
+    blended[model] = (blended[model] ?? 0) + s;
   }
   const items = Object.entries(blended).filter(([, s]) => s > 0) as Array<[string, number]>;
   if (items.length === 0) return [];
@@ -360,9 +390,10 @@ function pricePool(
   out: number,
   shares: Record<string, number>,
   proxy: string,
-  openclawDir: string
+  openclawDir: string,
+  exact = false
 ): number {
-  const items = pricedShares(shares, proxy, openclawDir);
+  const items = pricedShares(shares, proxy, openclawDir, exact);
   const tot = items.reduce((a, [, s]) => a + s, 0);
   let cost = 0;
   for (const [model, s] of items) {
@@ -385,9 +416,10 @@ function priceCacheWrite(
   cw5m: number,
   shares: Record<string, number>,
   proxy: string,
-  openclawDir: string
+  openclawDir: string,
+  exact = false
 ): number {
-  const items = pricedShares(shares, proxy, openclawDir);
+  const items = pricedShares(shares, proxy, openclawDir, exact);
   const tot = items.reduce((a, [, s]) => a + s, 0);
   let cost = 0;
   for (const [model, s] of items) {
@@ -403,13 +435,16 @@ function priceCacheWrite(
   return cost;
 }
 
-function priceClasses(fi: number, cr: number, cw: number, out: number, shares: ClassShares | undefined, fallback: Record<string, number>, proxy: string, dir: string, write1hFraction = 0): number {
+function priceClasses(fi: number, cr: number, cw: number, out: number, shares: ClassShares | undefined, fallback: Record<string, number>, proxy: string, dir: string, write1hFraction = 0, exact = false): number {
   const mix = (c: TokenClass) => shares && Object.keys(shares[c] ?? {}).length ? shares[c] : fallback;
-  return pricePool(fi, 0, 0, mix("fi"), proxy, dir) + pricePool(0, cr, 0, mix("cr"), proxy, dir) + pricePool(0, 0, out, mix("out"), proxy, dir) + priceCacheWrite(cw, cw * write1hFraction, cw * (1 - write1hFraction), mix("cw"), proxy, dir);
+  return pricePool(fi, 0, 0, mix("fi"), proxy, dir, exact) + pricePool(0, cr, 0, mix("cr"), proxy, dir, exact) + pricePool(0, 0, out, mix("out"), proxy, dir, exact) + priceCacheWrite(cw, cw * write1hFraction, cw * (1 - write1hFraction), mix("cw"), proxy, dir, exact);
 }
 
+/** Per-token rate of one class at the model's reference card (see referenceCardKey). */
 function classRate(model: string, c: TokenClass, dir: string): number {
-  return calculateCost({input:c === "fi" ? 1 : 0, cacheRead:c === "cr" ? 1 : 0, cacheWrite:c === "cw" ? 1 : 0, output:c === "out" ? 1 : 0}, model, dir);
+  const resolved = resolvePricedModel(model, dir);
+  const card = resolved ? referenceCardKey(resolved, dir) : model;
+  return calculateCost({input:c === "fi" ? 1 : 0, cacheRead:c === "cr" ? 1 : 0, cacheWrite:c === "cw" ? 1 : 0, output:c === "out" ? 1 : 0}, card, dir);
 }
 
 /** Exclude current models above the baseline price ceiling for each token class. */
@@ -418,9 +453,11 @@ function comparableMix(before: ClassShares | undefined, after: ClassShares | und
   const a: ClassShares = {fi:{},cr:{},cw:{},out:{}};
   const eligible: Record<TokenClass, number> = {fi:0,cr:0,cw:0,out:0};
   const ceiling: Record<TokenClass, number> = {fi:0,cr:0,cw:0,out:0};
+  const priced = (mix: Record<string, number>) =>
+    Object.fromEntries(Object.entries(mix).filter(([model]) => resolvePricedModel(model, dir) !== null));
   for (const c of CLASSES) {
-    const bm = before ? (before[c] ?? {}) : beforeAll;
-    const am = after ? (after[c] ?? {}) : afterAll;
+    const bm = priced(before ? (before[c] ?? {}) : beforeAll);
+    const am = priced(after ? (after[c] ?? {}) : afterAll);
     ceiling[c] = Math.max(0, ...Object.entries(bm).filter(([,v]) => v > 0).map(([m]) => classRate(m,c,dir)));
     b[c] = bm;
     for (const [model, share] of Object.entries(am)) {
@@ -924,6 +961,17 @@ export interface RealizedSavings {
   premiumCostUsd?: number;
   /** Recent tokens excluded because their model has no known price. */
   unpricedTokens?: number;
+  /**
+   * Monthly gap between the exact generation-card cost of the current eligible
+   * work and its reference-card value (the price both routing arms use). It is
+   * a vendor price or generation difference, never routing, and is not part of
+   * the savings total. Negative when the exact cards are cheaper.
+   */
+  generationPriceDeltaUsd?: number;
+  /** Share of a frozen baseline's tokens whose model has no rate card; dropped from the comparison. */
+  baselineUnpricedShare?: number;
+  /** Models behind baselineUnpricedShare. */
+  baselineUnpricedModels?: string[];
   baselineClassMixAvailable?: boolean;
   baselineTtlMixAvailable?: boolean;
   /**
@@ -1040,11 +1088,22 @@ export function computeRealizedSavings(
   }
 
   const bs = baseline.stats;
-  if (Object.keys(bs.shares).some((model) => !resolvePricedModel(model, openclawDir))) {
+  // A frozen baseline written before unpriced sessions were filtered out can
+  // carry shares of models with no rate card. Those shares are dropped, the
+  // priced shares renormalized, and the dropped share is disclosed.
+  const baselineUnpriced = Object.entries(bs.shares).filter(([model, share]) => share > 0 && !resolvePricedModel(model, openclawDir));
+  const baselineUnpricedShare = baselineUnpriced.reduce((n, [, share]) => n + share, 0);
+  const baselinePricedShares: Record<string, number> = {};
+  for (const [model, share] of Object.entries(bs.shares)) if (share > 0 && resolvePricedModel(model, openclawDir)) baselinePricedShares[model] = share;
+  const baselinePricedTotal = Object.values(baselinePricedShares).reduce((n, v) => n + v, 0);
+  if (Object.keys(bs.shares).length > 0 && baselinePricedTotal <= 0) {
     const r = NOT_READY("baseline includes unpriced models");
     r.installDate = installDate;
+    r.baselineUnpricedShare = round4(baselineUnpricedShare);
+    r.baselineUnpricedModels = baselineUnpriced.map(([model]) => model);
     return r;
   }
+  for (const model of Object.keys(baselinePricedShares)) baselinePricedShares[model] /= baselinePricedTotal;
   // Preserve the proxy field in existing frozen baselines.
   const proxy = baseline.proxy;
   // The "after" era's mix shares are needed for the ACTUAL arm. computeEraStats
@@ -1056,7 +1115,7 @@ export function computeRealizedSavings(
   // floor (never fabricate Opus they never ran). before_shares = baseline mix;
   // if the baseline mix is empty, fall back to the actual mix (routing lever -> 0).
   const beforeShares =
-    Object.keys(bs.shares).length > 0 ? bs.shares : as.shares;
+    Object.keys(baselinePricedShares).length > 0 ? baselinePricedShares : as.shares;
   const afterShares = as.shares;
 
   // CURRENT window = the `after` sessions, aggregated to confirm the
@@ -1138,6 +1197,12 @@ export function computeRealizedSavings(
     priceClasses(curFs, curCRs, 0, eOut, comparison.after, afterShares, proxy, openclawDir) +
     priceCacheWrite(eCw1h, eCw1h, 0, oneHour.after.cw, proxy, openclawDir) +
     priceCacheWrite(eCw5m, 0, eCw5m, fiveMinute.after.cw, proxy, openclawDir);
+  // The same eligible tokens at each model's exact generation card. The gap to
+  // the reference-card value is price/generation change, reported apart from routing.
+  const nowCpsExact =
+    priceClasses(curFs, curCRs, 0, eOut, comparison.after, afterShares, proxy, openclawDir, 0, true) +
+    priceCacheWrite(eCw1h, eCw1h, 0, oneHour.after.cw, proxy, openclawDir, true) +
+    priceCacheWrite(eCw5m, 0, eCw5m, fiveMinute.after.cw, proxy, openclawDir, true);
   if (
     !Number.isFinite(oldCps) || !Number.isFinite(nowCps) ||
     oldCps < 0 || nowCps < 0
@@ -1273,6 +1338,9 @@ export function computeRealizedSavings(
     premiumTokens,
     premiumCostUsd: round2(premiumCostUsd),
     unpricedTokens,
+    generationPriceDeltaUsd: round2((nowCpsExact - nowCps) * sessionsPerMonth),
+    baselineUnpricedShare: round4(baselineUnpricedShare),
+    baselineUnpricedModels: baselineUnpriced.map(([model]) => model),
     baselineClassMixAvailable: !!bs.classShares,
     baselineTtlMixAvailable: !!bs.ttlShares,
   };

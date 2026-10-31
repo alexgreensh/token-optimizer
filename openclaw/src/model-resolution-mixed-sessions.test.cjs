@@ -1,6 +1,6 @@
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs'), path = require('node:path');
+const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
 const ts = require(process.env.TEST_TYPESCRIPT_PATH || 'typescript');
 require.extensions['.ts'] = (module, filename) => module._compile(ts.transpileModule(fs.readFileSync(filename, 'utf8'), {compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText, filename);
 const {resolvePricedModel} = require('./event-pricing.ts');
@@ -10,7 +10,7 @@ test('savings prices only evidenced foreign cards and dated aliases', () => {
   for (const model of ['openai/gpt-5.4-2026-03-05','google/gemini-2.5-pro','deepseek-v3','local']) assert.notEqual(resolvePricedModel(model,''),null,model);
 });
 test('mixed unknown tokens preserve known routing and frozen baseline', () => {
-  const dir=fs.mkdtempSync(path.join(process.cwd(),'.scratch-w9/native/mixed-'));
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'to-native-mixed-'));
   const state=path.join(dir,'token-optimizer'); fs.mkdirSync(state);
   const day=86400000,t=Date.parse('2026-01-01T00:00:00Z'),now=t+60*day;
   const row=(id,ts,model)=>({sessionId:id,ts,model,input:100000,output:10000,cacheRead:0,cacheWrite:0,costUsd:0,durationSec:300});
@@ -26,7 +26,7 @@ test('mixed unknown tokens preserve known routing and frozen baseline', () => {
   assert.equal(mixed.unpricedTokens,12); assert.equal(fs.readFileSync(path.join(state,'baseline-state.json'),'utf8'),baseline);
 });
 test('aggregate sessions use base cards without treating the total as one long request', () => {
-  const dir=fs.mkdtempSync(path.join(process.cwd(),'.scratch-w9/native/tier-'));
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'to-native-tier-'));
   const state=path.join(dir,'token-optimizer'); fs.mkdirSync(state);
   const day=86400000,t=Date.parse('2026-01-01T00:00:00Z'),now=t+60*day;
   const row=(id,ts)=>({sessionId:id,ts,model:'gpt-5.4',input:1000000,output:0,cacheRead:0,cacheWrite:0,costUsd:0,durationSec:300});

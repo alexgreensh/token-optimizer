@@ -23438,24 +23438,20 @@ def _cache_coverage_gaps(runtime):
     ]
 
 
-_CLAUDE_FAMILY_RX = re.compile(r"fable|mythos|opus|sonnet|haiku")
-
-
 def _session_mix_class_terms(rate_class, *model_usage_blobs):
-    """[(share, usd_per_mtok)] for the PRICED Claude models in ONE session's own
-    token-weighted model usage, at one token class, or None when nothing usable is
-    present.
+    """(terms, unpriced_share) for ONE session's own token-weighted model usage at
+    one token class, or None when no usable usage is present.
 
-    *rate_class* is a key of _routing_class_rates ("fresh_input", "output", ...).
-    Each model id is priced at its own generation card (Opus 5.5 is not the Opus
-    family rate); an id without an exact card, and any non-Claude id, contributes
-    no term.
+    *terms* is [(share, usd_per_mtok)] for every model id with an exact rate card
+    (any provider); *unpriced_share* is the share of the session's recorded tokens
+    held by ids with no exact card. *rate_class* is a key of _routing_class_rates
+    ("fresh_input", "output", "cache_create_1h", ...). Each id is priced at its
+    own generation card (Opus 5.5 is not the Opus family rate); an id without an
+    exact card contributes no term and is never borrowed from a family.
 
-    Shares are taken over the session's TOTAL recorded tokens, so an unpriced
-    share (a local or third-party model with no rate card) is neither dropped nor
-    renormalized away -- it contributes no term, and the caller holds that slice
-    at the event-time rate. Same denominator rule as _cost_per_session: a tiny
-    priced sliver can never be inflated to stand for the whole mix.
+    Shares are taken over the session's TOTAL recorded tokens, so a priced sliver
+    is never inflated to stand for the whole mix. The caller prices the unpriced
+    share at zero and discloses it.
 
     Blobs are tried in order (model_usage_json, then all_model_usage_json); the
     first that parses to a non-empty dict wins. Never raises.
@@ -23487,14 +23483,14 @@ def _session_mix_class_terms(rate_class, *model_usage_blobs):
     if total <= 0:
         return None
     terms = []
+    priced = 0.0
     for key, val in weights.items():
-        if not _CLAUDE_FAMILY_RX.search(key.lower()):
-            continue
         rates = _routing_class_rates(key)
         rate = (rates or {}).get(rate_class)
         if rate:
             terms.append((val / total, float(rate)))
-    return terms or None
+            priced += val
+    return terms, max(0.0, 1.0 - priced / total)
 
 
 # Event classes whose stored cost is NOT an input-class rate and must never be
@@ -23507,7 +23503,10 @@ _REPRICE_SKIP_EVENT_TYPES = frozenset({"resume_lean"})
 # Token class each event type's avoided tokens belong to. The default is fresh
 # input. A measured verbosity reduction is output tokens (counted from the
 # turns' output usage), so it is priced at the output rate.
-_EVENT_RATE_CLASS = {"verbosity_steer_measured": "output", "verbosity_steer": "output"}
+# A keep-warm saving is the avoided 1h cache write of the prefix, so it follows the
+# session model's 1h cache-write rate.
+_EVENT_RATE_CLASS = {"verbosity_steer_measured": "output", "verbosity_steer": "output",
+                     "keepwarm": "cache_create_1h"}
 
 # One statement per (source, has model_usage_json, has all_model_usage_json, by_day,
 # session-scoped). Grouping on column 1 is a no-op when it is the constant NULL.
@@ -23525,11 +23524,13 @@ _REPRICE_SQL = _sql_variants(
 )
 
 
-def _session_model_reprice(conn, cutoff, session_uuid=None, by_day=False):
+def _session_model_reprice(conn, cutoff, session_uuid=None, by_day=False, unpriced_out=None):
     """Per-event_type USD correction from repricing savings_events at each event's
     OWN session model mix. Returns (deltas_by_event_type, repriced_tokens,
     unmeasured_tokens). With *session_uuid* only that session's rows count; with
-    *by_day* the deltas are keyed (local YYYY-MM-DD, event_type).
+    *by_day* the deltas are keyed (local YYYY-MM-DD, event_type). When
+    *unpriced_out* is a dict, ``unpriced_out["tokens"]`` accumulates the saved
+    tokens that belong to models with no exact rate card.
 
     THE DEFECT THIS REPAIRS. _log_savings_event stamps every row with
     _resolve_session_model(), which falls back to "sonnet" whenever the session
@@ -23556,6 +23557,11 @@ def _session_model_reprice(conn, cutoff, session_uuid=None, by_day=False):
     labelled "estimated" wherever it surfaces (see _window_overage_usd), and rows
     that cannot be joined to a session are NOT MEASURED: they keep their
     event-time price and are counted separately rather than guessed at.
+
+    UNPRICED MODELS. The share of a session's tokens that ran on a model with no
+    exact rate card (a local or third-party model, a generation without a card) is
+    priced at zero, not at the Sonnet stand-in the event writer stamped. Those
+    tokens are reported through *unpriced_out*. Stored rows are never changed.
 
     Degrades to ({}, 0, 0) on any schema or query problem. An older DB without
     session_uuid / model_usage_json simply does not get the repair; a schema error
@@ -23597,15 +23603,18 @@ def _session_model_reprice(conn, cutoff, session_uuid=None, by_day=False):
         if tok <= 0:
             # Zero-token markers (nudges) and debit rows carry no rate to correct.
             continue
-        terms = _session_mix_class_terms(
+        mix = _session_mix_class_terms(
             _EVENT_RATE_CLASS.get(event_type, "fresh_input"), mu_json, amu_json)
-        if not terms:
+        if mix is None:
             unmeasured_tokens += tok
             continue
-        event_rate = float(cost or 0.0) * 1_000_000.0 / tok
-        # Only the PRICED share moves. The unpriced remainder keeps the event-time
-        # rate, so a fully-unpriced session yields a zero delta by construction.
-        delta = sum(sh * (rate - event_rate) for sh, rate in terms) * tok / 1_000_000.0
+        terms, unpriced_share = mix
+        # The priced share is charged at each model's own card; the unpriced share
+        # is charged nothing. The delta moves the stored cost to that total.
+        new_cost = sum(sh * rate for sh, rate in terms) * tok / 1_000_000.0
+        delta = new_cost - float(cost or 0.0)
+        if unpriced_out is not None and unpriced_share > 0:
+            unpriced_out["tokens"] = unpriced_out.get("tokens", 0) + tok * unpriced_share
         if delta:
             key = (day, event_type) if by_day else event_type
             deltas[key] = deltas.get(key, 0.0) + delta
@@ -24143,8 +24152,35 @@ def _counted_mark_incomplete(conn, key, detail, proof=None):
                  (json.dumps(detail), key))
 
 
+def _counted_legacy_append_continuous(old, turns, compacts, ev_dt, tokens, tier_data):
+    """True when a row stored without a file digest was computed from the
+    earlier part of this transcript, which has since only been appended to.
+
+    The turns written up to the row's recorded transcript mtime must rescore to
+    exactly the observed counts the row holds, and the transcript must hold
+    turns after that point. A replaced or truncated file fails the first test;
+    one with nothing new fails the second and stays on the unchanged-file rule.
+    """
+    try:
+        old_mtime = old["transcript_mtime"]
+        if old_mtime is None:
+            return False
+        cutoff = datetime.fromtimestamp(float(old_mtime), timezone.utc).replace(tzinfo=None)
+        prefix = [turn for turn in turns if turn[0] <= cutoff]
+        if not prefix or len(prefix) >= len(turns):
+            return False
+        prefix_score = _counted_score_detail(
+            prefix, [c for c in compacts if c <= cutoff], ev_dt, tokens, tier_data)
+        return (prefix_score["observed"]
+                and prefix_score["turns_counted"] == int(old["turns_counted"] or 0)
+                and prefix_score["reread_tokens"] == int(old["reread_tokens"] or 0))
+    except (TypeError, ValueError, OverflowError, OSError):
+        return False
+
+
 def _counted_store_score(conn, key, source, uuid, ts, tokens, score, mtime,
-                         proof, old=None, magnitude_basis="metered", allow_unobserved=False):
+                         proof, old=None, magnitude_basis="metered", allow_unobserved=False,
+                         append_check=None, identity_verified=False):
     """Replace only a complete continuation of the previously observed file."""
     detail = _counted_pricing_detail(old["pricing_detail"]) if old else {}
     if old:
@@ -24153,12 +24189,17 @@ def _counted_store_score(conn, key, source, uuid, ts, tokens, score, mtime,
             continuous = proof["prefixes"].get(size) == detail.get("file_sha256")
         else:
             # Without an old digest, only the recorded unchanged file and
-            # identical observed counts can anchor a legacy reprice. Changed
-            # sources and old markers without mtimes remain quarantined.
-            continuous = (old["transcript_mtime"] is not None
-                          and old["transcript_mtime"] == mtime
-                          and score["turns_counted"] == int(old["turns_counted"] or 0)
-                          and score["reread_tokens"] == int(old["reread_tokens"] or 0))
+            # identical observed counts can anchor a legacy reprice, or an
+            # append-only continuation the caller can show (append_check). A
+            # marker row with no recorded mtime is anchored by the caller's
+            # exact identity recomputation (identity_verified) instead.
+            same_counts = (score["turns_counted"] == int(old["turns_counted"] or 0)
+                           and score["reread_tokens"] == int(old["reread_tokens"] or 0))
+            if old["transcript_mtime"] is None:
+                continuous = identity_verified and same_counts
+            else:
+                continuous = ((old["transcript_mtime"] == mtime and same_counts)
+                              or bool(append_check and append_check(old)))
         identity_matches = (old["source"] == source and old["session_uuid"] == uuid
                             and old["event_ts"] == ts)
         previous_activity = (int(old["turns_counted"] or 0) != 0
@@ -24303,7 +24344,10 @@ def _update_counted_cumulative(conn, max_sessions=_COUNTED_MAX_SESSIONS_PER_PASS
                     turns, compacts, ev_dt, int(tok or 0), tier_data)
                 if not _counted_store_score(conn, key, key.split(":", 1)[0], uuid,
                                              ts, int(tok or 0), score, mtime, proof,
-                                             old=stored.get(key), allow_unobserved=True):
+                                             old=stored.get(key), allow_unobserved=True,
+                                             append_check=lambda old, _ev=ev_dt, _tok=int(tok or 0): (
+                                                 _counted_legacy_append_continuous(
+                                                     old, turns, compacts, _ev, _tok, tier_data))):
                     stats["unmeasured_events"] += 1
                     continue
                 stats["rows_written"] += 1
@@ -24426,8 +24470,10 @@ def _counted_marker_backfill(conn, max_files=_COUNTED_MARKER_FILES_PER_PASS,
                 if size is not None:
                     continuous = proof["prefixes"].get(size) == detail.get("file_sha256")
                 else:
-                    continuous = (old["transcript_mtime"] is not None
-                                  and old["transcript_mtime"] == path.stat().st_mtime)
+                    # A row stored without an mtime is judged by the identity
+                    # recomputation below alone; a recorded mtime must match.
+                    continuous = (old["transcript_mtime"] is None
+                                  or old["transcript_mtime"] == path.stat().st_mtime)
                     try:
                         index = int(old["event_key"].rsplit(":", 1)[1])
                         marker_dt, marker_tokens = markers[index]
@@ -24458,7 +24504,8 @@ def _counted_marker_backfill(conn, max_files=_COUNTED_MARKER_FILES_PER_PASS,
                 key = f"mk:{sid}:{i}"
                 if _counted_store_score(conn, key, "mk", sid, ev_dt.isoformat(), tok,
                                         score, path.stat().st_mtime, proof, old=stored.get(key),
-                                        magnitude_basis="sized_marker" if m_tok else "estimated_marker"):
+                                        magnitude_basis="sized_marker" if m_tok else "estimated_marker",
+                                        identity_verified=True):
                     stats["rows_written"] += 1
         if paths and last == paths[-1]:
             conn.execute("INSERT OR REPLACE INTO token_optimizer_meta (key, value) "
@@ -24914,8 +24961,9 @@ def _get_savings_summary(days=30, since=None):
             # Model-mix repair, same connection and same cutoff so the corrected
             # rows are exactly the rows summed above. Self-degrading; see
             # _session_model_reprice.
+            unpriced_reprice = {}
             reprice_deltas, repriced_tokens, unmeasured_tokens = _session_model_reprice(
-                conn, cutoff)
+                conn, cutoff, unpriced_out=unpriced_reprice)
         finally:
             conn.close()
 
@@ -24962,6 +25010,9 @@ def _get_savings_summary(days=30, since=None):
                 # NOT MEASURED: no joinable session row, so no mix to price
                 # against. These keep their event-time price; nothing is invented.
                 "unmeasured_tokens": int(unmeasured_tokens),
+                # Saved tokens that ran on models with no exact rate card: counted
+                # as tokens, priced at zero.
+                "unpriced_tokens": int(round(unpriced_reprice.get("tokens", 0))),
                 "delta_usd": round(sum(reprice_deltas.values()), 4),
                 "basis": "session_log.model_usage_json token-weighted mix",
             },
@@ -50809,18 +50860,29 @@ _RUNWAY_COMPRESSED_SQL = _counted_sql(
     "AND (tier IS NULL OR tier = 'measured') GROUP BY feature")
 
 
-def _runway_saved_tokens(conn, cutoff):
-    """Tokens never sent since *cutoff*, netted like the savings totals.
+# Events the savings report moves out of its measured total (one-time setup
+# trim, capped MCP output, followed hints, cold resumes). The runway figure is
+# the measured floor, so it leaves them out too.
+_RUNWAY_ESTIMATED_EVENT_TYPES = frozenset(
+    {"setup_optimization", "mcp_cap", "hint_followed", "resume_lean"})
 
-    Archive re-expansions are subtracted from the archive credit (never below
-    zero) and are not savings of their own. A compression feature that
-    savings_events also logs (delta_read, structure_map) is counted once, from
-    savings_events. Only features the savings report counts are included.
+
+def _runway_saved_tokens(conn, cutoff):
+    """Measured tokens never sent since *cutoff*, netted like the savings totals.
+
+    This is the counted floor behind the window card's "measured token floor":
+    the same events the savings report keeps in its measured total, so the
+    estimated tiers (setup trim, MCP cap, followed hints, lean resumes,
+    verbosity steering) are left out. Archive re-expansions are subtracted from
+    the archive credit (never below zero) and are not savings of their own. A
+    compression feature that savings_events also logs (delta_read,
+    structure_map) is counted once, from savings_events.
     """
     by_event = {
         event_type: int(tokens or 0)
         for event_type, tokens in conn.execute(
-            _RUNWAY_SAVED_SQL[_counted_table(conn, "savings_events")], (cutoff,))}
+            _RUNWAY_SAVED_SQL[_counted_table(conn, "savings_events")], (cutoff,))
+        if event_type not in _RUNWAY_ESTIMATED_EVENT_TYPES}
     reexpanded = by_event.pop("tool_archive_reexpand", 0)
     if "tool_archive" in by_event:
         by_event["tool_archive"] = max(0, by_event["tool_archive"] - reexpanded)
@@ -50851,8 +50913,9 @@ def runway_snapshot(days=30, now=None):
     API spend.
 
     TWO INDEPENDENT LEVERS, MULTIPLIED:
-      context : tokens never sent at all (archive, skeletons, lean resumes).
-                Directly metered from savings_events + compression_events.
+      context : tokens never sent at all (archive, skeletons, blocked reads).
+                Directly metered from savings_events + compression_events;
+                estimated tiers are not included.
       routing : a lighter model mix burns less of the window per token.
                 Derived from THIS user's own baseline vs current mix -- never a
                 constant. A user who never left Opus correctly sees ~1.0x.
@@ -52433,8 +52496,9 @@ def _compute_model_routing_savings(days=30, since=None):
     `premium_cost_usd` report them separately.
 
     POTENTIAL: an assumption, not a measurement. A fixed share
-    (`routable_fraction`) of Opus fresh input and output, plus usage without a
-    class split, is priced at the Opus-to-Sonnet API rate delta. Cache reads and
+    (`routable_fraction`) of Opus fresh input and output is priced at the
+    Opus-to-Sonnet API rate delta. Opus usage without a class split is left out
+    and counted in `potential_unsplit_excluded_tokens`. Cache reads and
     writes represent main-session history: switching models rebuilds that cache,
     while routine subagent work carries its own smaller context. The result is
     shown separately from concrete opportunities.
@@ -52443,7 +52507,7 @@ def _compute_model_routing_savings(days=30, since=None):
     unsplit usage by class. Input, cache write, cache read and output use their
     respective rates; unsplit usage uses the input rate and is reported as
     `unsplit_tokens`. Potential uses the model's own generation card for fresh
-    input, output and unsplit usage, and the newest Sonnet card for its target.
+    input and output, and the newest Sonnet card for its target.
     The class split comes from per-day, per-model session usage.
 
     Realized routing is a standardized family comparison: the remaining work's
@@ -52471,6 +52535,7 @@ def _compute_model_routing_savings(days=30, since=None):
         "realized_cost_usd": 0.0, "potential_cost_usd": 0.0,
         "potential_tokens": 0, "potential_tokens_monthly": 0,
         "potential_billable_tokens": 0, "potential_by_class": {}, "unsplit_tokens": 0,
+        "potential_unsplit_excluded_tokens": 0,
         "premium_models": [], "premium_share": 0.0, "premium_cost_usd": 0.0,
         "unpriced_models": [], "unpriced_tokens": 0, "unpriced_share": 0.0,
         "free_models": [], "free_tokens": 0,
@@ -52674,16 +52739,24 @@ def _compute_model_routing_savings(days=30, since=None):
         ) / 1_000_000
         realized_cost = max(0.0, standardized_baseline - standardized_actual) if base_priced and kept_models else 0.0
 
-        # POTENTIAL: a fixed share of remaining Opus work, per token class, priced
-        # at each Opus model's own card minus the current Sonnet card.
+        # POTENTIAL: a fixed share of remaining Opus fresh input and output, priced
+        # at each Opus model's own card minus the current Sonnet card. It is
+        # computed apart from the realized figure: with no target card the
+        # potential is zero and the realized routing above is unaffected. Usage
+        # without a class split cannot be told apart as input or output, so it is
+        # left out and its count is reported.
         target = _routing_target_model()
         target_rates = _rates(target)
         by_class = {k: {"tokens": 0, "usd": 0.0} for k in _ROUTING_CLASSES}
+        unsplit_excluded = 0.0
         for m, classes in priced_usage.items():
             if fam_of[m] != "opus":
                 continue
+            unsplit_excluded += classes.get("unsplit", 0)
+            if target_rates is None:
+                continue
             m_rates = _rates(m)
-            for k in ("fresh_input", "output", "unsplit"):
+            for k in ("fresh_input", "output"):
                 tok = classes.get(k, 0)
                 if tok:
                     by_class[k]["tokens"] += tok * _ROUTABLE_OPUS_FRACTION
@@ -52693,6 +52766,7 @@ def _compute_model_routing_savings(days=30, since=None):
         potential_tokens_monthly = int(round(potential_tokens / max(days, 1) * 30))
         potential_billable_tokens = int(round(sum(by_class[k]["tokens"] for k in _ROUTING_BILLABLE_CLASSES)))
         unsplit_tokens = int(round(class_totals["unsplit"]))
+        potential_unsplit_excluded = int(round(unsplit_excluded))
         opus_share = cur_shares.get("opus", 0.0)
 
         return {
@@ -52711,6 +52785,8 @@ def _compute_model_routing_savings(days=30, since=None):
             "target_model": target,
             "pricing_basis": "per_token_class_generation_card",
             "unsplit_tokens": unsplit_tokens,
+            # Opus tokens without a class split, left out of the potential above.
+            "potential_unsplit_excluded_tokens": potential_unsplit_excluded,
             # Premium models (priced above the baseline's costliest model) are the
             # user's own choice: excluded from realized routing, shown here.
             "premium_models": premium,
@@ -52900,6 +52976,10 @@ def _estimate_cache_drop_savings(days=30):
             read_rate += weight * float(card["cache_read"]) / total_weight
         if priced_weight:
             unpriced_share = round(1 - priced_weight / total_weight, 4)
+        elif weights:
+            # Every recorded model lacks an exact card: nothing is priced, so the
+            # opportunity is zero and the whole share is reported as unpriced.
+            unpriced_share = 1.0
         else:
             read_rate, write_rate, _ = _mix_cache_rates(days)
             rate_basis = "model_mix"
@@ -58061,6 +58141,10 @@ def savings_report(days=30, as_json=False):
                  if unpriced_credit or unpriced_debit else "")
         print(f"  {unpriced:,} compression tokens are counted but have no known model rate{split};")
         print("  their dollar value is not included.")
+    unpriced_logged = int((summary.get("reprice_detail") or {}).get("unpriced_tokens", 0) or 0)
+    if unpriced_logged:
+        print(f"  {unpriced_logged:,} logged tokens ran on models with no known rate; "
+              "their dollar value is not included.")
     oneshot = summary.get("oneshot_pricing") or {}
     if oneshot.get("removal_events"):
         print("  Initial removals above are priced at the input rate, a minimum.")
@@ -58262,7 +58346,9 @@ def savings_report(days=30, as_json=False):
             frac_pct = round(float(routing.get("routable_fraction", 0.2)) * 100, 2)
             frac_text = f"{frac_pct:g}"
             target = routing.get("target_model") or "Sonnet"
-            unsplit_note = " (unsplit tokens priced as input)" if "unsplit" in routing.get("potential_by_class", {}) else ""
+            unsplit_left_out = int(_mo(int(routing.get("potential_unsplit_excluded_tokens", 0) or 0)))
+            unsplit_note = (f" (~{unsplit_left_out:,} Opus tokens{per} without a class split are left out)"
+                            if unsplit_left_out > 0 else "")
             print()
             print(f"    Routing (an assumption, not a measurement): if about {frac_text}% of your "
                   f"Opus work (grunt tasks) ran on {target}: new input and output only{unsplit_note}, "
@@ -60132,6 +60218,52 @@ def _verbosity_measured_savings(baseline_avg, post_nudge_outputs):
     return int(delta * len(outs))
 
 
+def _transcript_request_outputs(filepath):
+    """Output tokens of each API request in a transcript, in request order.
+
+    Claude Code writes several assistant lines per request while it streams,
+    each carrying the cumulative output so far, so the request's output is the
+    MAX over its lines (the same fold ``_parse_session_jsonl`` applies). Lines
+    with neither a requestId nor a message id stay separate requests. Returns
+    ``[(positive_lines_before, output_tokens), ...]`` for requests with output
+    above zero, where ``positive_lines_before`` counts the output-bearing
+    assistant lines that precede the request's first one (used to place a
+    boundary recorded in lines by an older nudge).
+    """
+    order = []
+    by_key = {}
+    seen_lines = 0
+    for line in Path(filepath).read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(entry, dict) or entry.get("type") != "assistant":
+            continue
+        msg = entry.get("message")
+        if not isinstance(msg, dict):
+            continue
+        usage = msg.get("usage", {})
+        out = _safe_int(usage.get("output_tokens", 0)) if isinstance(usage, dict) else 0
+        if out <= 0:
+            continue
+        key = _usage_request_key(entry, msg)
+        if key is None:
+            key = f"__noreq__{len(order)}"
+        slot = by_key.get(key)
+        if slot is None:
+            slot = [seen_lines, out]
+            by_key[key] = slot
+            order.append(slot)
+        else:
+            slot[1] = max(slot[1], out)
+        seen_lines += 1
+    return [(before, out) for before, out in order]
+
+
 def _calibrate_prior_verbosity_nudges(session_id, filepath):
     """Book the MEASURED saving of a prior verbosity nudge (U5, R5, D1).
 
@@ -60199,24 +60331,15 @@ def _calibrate_prior_verbosity_nudges(session_id, filepath):
         pre_turns = int(m_turns.group(1))
         pre_avg = int(m_avg.group(1))
 
-        # Collect assistant output_tokens in transcript order.
-        outputs = []
-        for line in Path(filepath).read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entry = json.loads(line)
-            except (json.JSONDecodeError, ValueError):
-                continue
-            if not isinstance(entry, dict):
-                continue
-            if entry.get("type") == "assistant" and "message" in entry:
-                out = _safe_int(entry["message"].get("usage", {}).get("output_tokens", 0))
-                if out > 0:
-                    outputs.append(out)
-
-        post_outputs = outputs[pre_turns:]
+        # Output per API request in transcript order. A nudge that recorded
+        # its boundary in requests ("unit=req") indexes the request list; an
+        # older one recorded transcript lines, so the boundary is placed by
+        # line position and only whole requests after it are counted.
+        requests = _transcript_request_outputs(filepath)
+        if "unit=req" in src_detail:
+            post_outputs = [out for _, out in requests[pre_turns:]]
+        else:
+            post_outputs = [out for before, out in requests if before >= pre_turns]
         if not post_outputs:
             # No post-nudge turns yet: nothing to measure. Leave the nudge
             # uncalibrated so a later turn settles it.
@@ -60419,23 +60542,8 @@ def run_verbosity_steer(transcript_path=None, quiet=True, session_id=None):
             _pre_nudge_turns = 0
             try:
                 if filepath and filepath.exists():
-                    _turn_outputs = []
-                    for _line in filepath.read_text(encoding="utf-8").splitlines():
-                        _line = _line.strip()
-                        if not _line:
-                            continue
-                        try:
-                            _entry = json.loads(_line)
-                        except (json.JSONDecodeError, ValueError):
-                            continue
-                        if not isinstance(_entry, dict):
-                            continue
-                        if _entry.get("type") == "assistant" and "message" in _entry:
-                            _msg = _entry["message"]
-                            _usage = _msg.get("usage", {})
-                            _out = _safe_int(_usage.get("output_tokens", 0))
-                            if _out > 0:
-                                _turn_outputs.append(_out)
+                    _turn_outputs = [
+                        _o for _, _o in _transcript_request_outputs(filepath)]
                     if _turn_outputs:
                         _pre_nudge_avg_output = round(sum(_turn_outputs) / len(_turn_outputs))
                         _pre_nudge_turns = len(_turn_outputs)
@@ -60444,7 +60552,8 @@ def run_verbosity_steer(transcript_path=None, quiet=True, session_id=None):
 
             _tier_label = 'strong' if fill_pct >= 75 else 'gentle'
             _detail = (f"fill={fill_pct:.0f}% score={score:.0f} tier={_tier_label}"
-                       f" pre_avg_out={_pre_nudge_avg_output} pre_turns={_pre_nudge_turns}")
+                       f" pre_avg_out={_pre_nudge_avg_output} pre_turns={_pre_nudge_turns}"
+                       f" unit=req")
             _log_savings_event(
                 "verbosity_steer",
                 0,

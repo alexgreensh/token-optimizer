@@ -636,7 +636,7 @@ export function calculateCost(
   let split1h = Math.max(0, cacheWriteSplit?.cacheWrite1hTokens ?? 0);
   let split5m = Math.max(0, cacheWriteSplit?.cacheWrite5mTokens ?? 0);
   if (split1h || split5m) {
-    // F3: a TTL split that exceeds the total cacheWrite (inconsistent upstream
+    // a TTL split that exceeds the total cacheWrite (inconsistent upstream
     // parse / hand-edited history) would over-price — e.g. cw1h=50k on a 30k total
     // bills 50k tokens, a 67% overcharge. Scale the buckets down proportionally so
     // split1h + split5m never exceeds tokens.cacheWrite (mirrors measure.py's

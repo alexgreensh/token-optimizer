@@ -71,7 +71,7 @@ interface SessionRecord {
 }
 
 /**
- * Strict numeric coercion at the data boundary (F1/F2). Token fields arrive from
+ * Strict numeric coercion at the data boundary. Token fields arrive from
  * scanned AgentRuns OR persisted JSON, where a string ("999999999"), NaN, or a
  * negative is possible (hand-edited history, corrupt upstream parse). Without this,
  * `+=` concatenates a string into a giant numeric string that detonates the headline
@@ -170,7 +170,7 @@ function mergeAndPersistHistory(
     >;
     for (const r of stored) {
       if (!r || !r.sessionId) continue;
-      // F1/F2: persisted JSON can carry string/NaN/negative token fields (hand-edited
+      // persisted JSON can carry string/NaN/negative token fields (hand-edited
       // or corrupt history). Re-sanitize at this boundary so no bad value ever reaches
       // the headline `+=` aggregation.
       const ts = typeof r.ts === "number" && Number.isFinite(r.ts) ? r.ts : 0;
@@ -701,7 +701,7 @@ export function readSavingsEventsByCategory(
     { count: number; tokensSaved: number; costSavedUsd: number; floorTokens: number; floorUsd: number }
   >();
 
-  // F4: compute the lookback cutoff (ms epoch). Rows older than the cutoff are
+  // compute the lookback cutoff (ms epoch). Rows older than the cutoff are
   // skipped so the windowed sum matches the `days` lookback the caller scales by.
   const cutoff =
     window && window.days > 0
@@ -1207,7 +1207,7 @@ export function computeRealizedSavings(
   // DISJOINT from the billed pool (already removed before billing). Reprice the
   // measured $ to the baseline input mix; actual for this pool is 0, so the whole
   // repriced value is transformation. Clamp >= 0.
-  // F4: window the compression events to the SAME `days` lookback as the billed
+  // window the compression events to the SAME `days` lookback as the billed
   // volume (mirrors Python `_get_savings_summary(days=days)`), so a stale event
   // outside the window is not summed and then monthly-scaled.
   const compMeasured = measuredCompressionUsd(openclawDir, { days, now });

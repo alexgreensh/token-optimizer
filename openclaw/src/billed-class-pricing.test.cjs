@@ -1,6 +1,6 @@
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs'), path = require('node:path');
+const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
 const ts = require(process.env.TEST_TYPESCRIPT_PATH || 'typescript');
 require.extensions['.ts'] = (module, filename) => module._compile(ts.transpileModule(fs.readFileSync(filename, 'utf8'), {compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText, filename);
 const {priceSavingsEvent} = require('./event-pricing.ts');
@@ -24,7 +24,7 @@ test('event pricing honors a stored billed class at the exact generation', () =>
 
 test('writer stores the billed class and the reader reprices it', () => {
   const {logSavingsEvent} = require('./read-cache.ts');
-  const dir = fs.mkdtempSync(path.join(process.cwd(), '.scratch-native', 'events-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'to-native-events-'));
   const state = path.join(dir, 'token-optimizer'); fs.mkdirSync(state);
   fs.writeFileSync(path.join(state, 'session-history.json'), JSON.stringify([{sessionId:'s',model:'sonnet'}]));
   logSavingsEvent('resume_lean', 1e6, 's', 'lean resume', {openclawDir:dir, tokenClass:'cacheWrite'});
@@ -43,7 +43,7 @@ test('writer stores the billed class and the reader reprices it', () => {
 });
 
 test('class-less priced savings disclose the input-rate floor', () => {
-  const dir = fs.mkdtempSync(path.join(process.cwd(), '.scratch-native', 'floor-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'to-native-floor-'));
   const state = path.join(dir, 'token-optimizer'); fs.mkdirSync(state);
   fs.writeFileSync(path.join(state, 'session-history.json'), JSON.stringify([{sessionId:'s',model:'sonnet'}]));
   const rows = [
@@ -76,7 +76,7 @@ test('largest-remainder cent allocation keeps signed and clamped sums', () => {
 });
 
 test('displayed levers add to the displayed headline while raw values stay exact', () => {
-  const dir = fs.mkdtempSync(path.join(process.cwd(), '.scratch-native', 'cents-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'to-native-cents-'));
   const state = path.join(dir, 'token-optimizer'); fs.mkdirSync(state);
   const day = 86400000, t = Date.parse('2026-01-01T00:00:00Z'), now = t + 60 * day;
   const row = (id, ts, model, mult) => ({sessionId:id, ts, model, input:100000*mult, output:10000*mult, cacheRead:0, cacheWrite:0, costUsd:0, durationSec:300});
@@ -95,7 +95,7 @@ test('displayed levers add to the displayed headline while raw values stay exact
 
 test('lean resume credits the avoided reload at the cache-write class', () => {
   const oldHome = process.env.HOME;
-  const dir = fs.mkdtempSync(path.join(process.cwd(), '.scratch-native', 'lean-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'to-native-lean-'));
   process.env.HOME = dir;
   const {logResumeLeanSavings} = require('./continuity.ts');
   process.env.HOME = oldHome;

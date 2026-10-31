@@ -1,3 +1,4 @@
+import { tmpdir } from "node:os";
 import { expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
@@ -5,7 +6,7 @@ import { TrendsStore } from "./trends.js";
 import { generateDashboard } from "../dashboard/generator.js";
 
 function scenario(credit: string | null, debit: string | null, debitFirst = false) {
-  const dir = mkdtempSync(join(process.cwd(), "..", ".scratch-parity", "debit-"));
+  const dir = mkdtempSync(join(tmpdir(), "to-parity-debit-"));
   const store = new TrendsStore(dir);
   const addCredit = () => { if (credit) store.logSavingsEvent("tool_archive", 1e6, "real-credit", "credit", credit); };
   const addDebit = () => { if (debit) store.logSavingsEvent("tool_archive_reexpand", 1e6, "real-debit", "debit", debit); };
@@ -45,7 +46,7 @@ test("unknown credits and debits never cancel while known zero is priced", () =>
 
 test("signed reversals keep gross coverage while fixtures, media and twins stay excluded", async () => {
   const { Database } = await import("bun:sqlite");
-  const dir = mkdtempSync(join(process.cwd(), "..", ".scratch-parity", "signed-debit-"));
+  const dir = mkdtempSync(join(tmpdir(), "to-parity-signed-debit-"));
   const store = new TrendsStore(dir);
   store.logSavingsEvent("tool_archive", 1e6, "real", "credit", "unknown-future");
   store.logSavingsEvent("tool_archive", 1e6, "real", "credit", "unknown-future");

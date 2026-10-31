@@ -112,6 +112,17 @@ export interface RealizedSavings {
     premiumCostUsd?: number;
     /** Recent tokens excluded because their model has no known price. */
     unpricedTokens?: number;
+    /**
+     * Monthly gap between the exact generation-card cost of the current eligible
+     * work and its reference-card value (the price both routing arms use). It is
+     * a vendor price or generation difference, never routing, and is not part of
+     * the savings total. Negative when the exact cards are cheaper.
+     */
+    generationPriceDeltaUsd?: number;
+    /** Share of a frozen baseline's tokens whose model has no rate card; dropped from the comparison. */
+    baselineUnpricedShare?: number;
+    /** Models behind baselineUnpricedShare. */
+    baselineUnpricedModels?: string[];
     baselineClassMixAvailable?: boolean;
     baselineTtlMixAvailable?: boolean;
     /**

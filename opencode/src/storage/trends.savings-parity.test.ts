@@ -1,3 +1,4 @@
+import { tmpdir } from "node:os";
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
@@ -6,7 +7,7 @@ import { TrendsStore } from "./trends.js";
 import { knownModelRate } from "../pricing.js";
 
 test("counted savings excludes fixtures, media, and twins while pricing unknowns from their own session", () => {
-  const dir = join(process.cwd(), "..", ".scratch-parity", `ledger-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const dir = join(tmpdir(), `to-parity-ledger-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   mkdirSync(dir, { recursive: true });
   const store = new TrendsStore(dir);
   store.recordSession({ sessionId: "real", project: null, model: "opus-5-5", tokensInput: 1,
@@ -35,7 +36,7 @@ test("counted savings excludes fixtures, media, and twins while pricing unknowns
 });
 
 test("fixture matching preserves real near matches and empty-session events", () => {
-  const dir = join(process.cwd(), "..", ".scratch-parity", `fixtures-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const dir = join(tmpdir(), `to-parity-fixtures-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   mkdirSync(dir, { recursive: true });
   const store = new TrendsStore(dir);
   store.recordSession({ sessionId: "real", project: null, model: "sonnet", tokensInput: 1,
@@ -59,7 +60,7 @@ test("fixture matching preserves real near matches and empty-session events", ()
 });
 
 test("unknown events use their session's per-class model mix", () => {
-  const dir = join(process.cwd(), "..", ".scratch-parity", `mix-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const dir = join(tmpdir(), `to-parity-mix-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   mkdirSync(dir, { recursive: true });
   const store = new TrendsStore(dir);
   const buckets = { sonnet: { input: 100, output: 300, cacheRead: 0, cacheWrite: 0, cost: 0 },
@@ -81,7 +82,7 @@ test("unknown events use their session's per-class model mix", () => {
 });
 
 test("partial and missing session model prices expose unpriced coverage", () => {
-  const dir = join(process.cwd(), "..", ".scratch-parity", `partial-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const dir = join(tmpdir(), `to-parity-partial-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   mkdirSync(dir, { recursive: true });
   const store = new TrendsStore(dir);
   store.recordSession({ sessionId: "partial", project: null, model: "opus-5-5", modelTokenBuckets: {
@@ -103,7 +104,7 @@ test("partial and missing session model prices expose unpriced coverage", () => 
 });
 
 test("platform exclusion vectors preserve unattributed actions", () => {
-  const dir = join(process.cwd(), "..", ".scratch-parity", `vector-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const dir = join(tmpdir(), `to-parity-vector-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   mkdirSync(dir, { recursive: true });
   const store = new TrendsStore(dir);
   store.recordSession({ sessionId: "real", project: null, model: "sonnet", tokensInput: 1, tokensOutput: 0,
@@ -125,7 +126,7 @@ test("platform exclusion vectors preserve unattributed actions", () => {
 });
 
 test("an unknown legacy model remains unpriced in the event reader", () => {
-  const dir = join(process.cwd(), "..", ".scratch-parity", `legacy-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const dir = join(tmpdir(), `to-parity-legacy-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   mkdirSync(dir, { recursive: true });
   const store = new TrendsStore(dir);
   store.recordSession({ sessionId: "legacy", project: null, model: "claude-3-9-sonnet", tokensInput: 100,

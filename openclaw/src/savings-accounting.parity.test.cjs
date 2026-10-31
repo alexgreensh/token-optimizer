@@ -1,4 +1,5 @@
 const { test } = require('node:test');
+const os = require('node:os');
 const assert = require('node:assert/strict');
 const { countedEvents } = require('./counted-events.ts');
 
@@ -13,9 +14,9 @@ test('compression twins require a session and matching sizes and pattern', () =>
   assert.equal(countedEvents(rows,'compression').length,4);
 });
 test('savings ledger applies exclusions before reporting categories', () => {
-  const fs = require('node:fs'), path = require('node:path');
+  const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
   const {readSavingsEventsByCategory} = require('./savings.ts');
-  const dir = fs.mkdtempSync(path.join(process.cwd(), '.scratch-parity', 'ledger-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'to-parity-ledger-'));
   fs.mkdirSync(path.join(dir, 'token-optimizer'));
   const base = {timestamp:'2026-10-01T00:00:00Z',session_id:'real',event_type:'resume_lean',tokens_saved:100,cost_saved_usd:1,detail:'x'};
   const rows = [base,{...base,timestamp:'2026-10-01T00:00:02Z'},{...base,session_id:'test-session-1'},{...base,session_id:'real2',tier:'opportunity'},{...base,session_id:'a123',tokens_saved:50}];
@@ -27,7 +28,7 @@ test('savings ledger applies exclusions before reporting categories', () => {
 test('cache-hit changes alone are not credited as savings', () => {
   const fs = require('node:fs'), path = require('node:path');
   const {computeRealizedSavings} = require('./savings.ts');
-  const dir = fs.mkdtempSync(path.join(process.cwd(), '.scratch-parity', 'history-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'to-parity-history-'));
   const state = path.join(dir, 'token-optimizer'); fs.mkdirSync(state);
   const day=86400000, t=Date.parse('2026-01-01T00:00:00Z'), now=t+60*day;
   const row=(id,ts,read) => ({sessionId:id,ts,model:'opus',input:100000,output:10000,cacheRead:read,cacheWrite:0,cacheWrite1h:0,cacheWrite5m:0,costUsd:1,durationSec:300});
@@ -43,7 +44,7 @@ test('cache-hit changes alone are not credited as savings', () => {
 test('unpriced sessions do not produce proxy-priced savings', () => {
   const fs = require('node:fs'), path = require('node:path');
   const {computeRealizedSavings} = require('./savings.ts');
-  const dir = fs.mkdtempSync(path.join(process.cwd(), '.scratch-parity', 'unknown-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'to-parity-unknown-'));
   const state=path.join(dir,'token-optimizer');fs.mkdirSync(state);
   const day=86400000, t=Date.parse('2026-01-01T00:00:00Z'), now=t+60*day;
   const row=(i,ts) => ({sessionId:String(i),ts,model:'unpriced-model-xyz',input:100000,output:1,cacheRead:0,cacheWrite:0,costUsd:0,durationSec:300});
@@ -56,7 +57,7 @@ test('unpriced sessions do not produce proxy-priced savings', () => {
 test('baseline prices known generation at its own card', () => {
   const fs = require('node:fs'), path = require('node:path');
   const {computeRealizedSavings} = require('./savings.ts');
-  const dir = fs.mkdtempSync(path.join(process.cwd(), '.scratch-parity', 'generation-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'to-parity-generation-'));
   const state = path.join(dir, 'token-optimizer'); fs.mkdirSync(state);
   const day=86400000,t=Date.parse('2026-01-01T00:00:00Z'),now=t+60*day;
   const row=(id,ts) => ({sessionId:id,ts,model:'claude-opus-5-5',input:100000,output:10000,cacheRead:0,cacheWrite:0,costUsd:0,durationSec:300});
@@ -71,7 +72,7 @@ test('baseline prices known generation at its own card', () => {
 test('mixed-model sessions price each token class at its actual generation', () => {
   const fs = require('node:fs'), path = require('node:path');
   const {computeRealizedSavings} = require('./savings.ts');
-  const dir = fs.mkdtempSync(path.join(process.cwd(), '.scratch-parity', 'classes-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'to-parity-classes-'));
   const state = path.join(dir, 'token-optimizer'); fs.mkdirSync(state);
   const day=86400000,t=Date.parse('2026-01-01T00:00:00Z'),now=t+60*day;
   const zero={cacheRead:0,cacheWrite:0,cacheWrite1h:0,cacheWrite5m:0};
@@ -88,7 +89,7 @@ test('mixed-model sessions price each token class at its actual generation', () 
 test('parser retains per-model token classes in a mixed session', () => {
   const fs=require('node:fs'),path=require('node:path');
   const {parseSession}=require('./session-parser.ts');
-  const dir=fs.mkdtempSync(path.join(process.cwd(),'.scratch-parity','parser-'));
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(), 'to-parity-parser-'));
   const file=path.join(dir,'s.jsonl');
   const rows=[{type:'assistant',timestamp:'2026-01-01T00:00:00Z',requestId:'a',message:{model:'claude-opus-5-5',usage:{inputTokens:100,outputTokens:20}}},{type:'assistant',timestamp:'2026-01-01T00:02:00Z',requestId:'b',message:{model:'sonnet',usage:{inputTokens:30,outputTokens:40}}}];
   fs.writeFileSync(file,rows.map(JSON.stringify).join('\n'));
@@ -99,7 +100,7 @@ test('parser retains per-model token classes in a mixed session', () => {
 test('premium usage is disclosed without masking cheaper-model routing', () => {
   const fs=require('node:fs'),path=require('node:path');
   const {computeRealizedSavings}=require('./savings.ts');
-  const dir=fs.mkdtempSync(path.join(process.cwd(),'.scratch-parity','premium-'));
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(), 'to-parity-premium-'));
   const state=path.join(dir,'token-optimizer');fs.mkdirSync(state);
   const day=86400000,t=Date.parse('2026-01-01T00:00:00Z'),now=t+60*day;
   const row=(id,ts,model) => ({sessionId:id,ts,model,input:100000,output:10000,cacheRead:0,cacheWrite:0,costUsd:0,durationSec:300});
@@ -116,7 +117,7 @@ test('premium usage is disclosed without masking cheaper-model routing', () => {
 test('mixed-model cache writes use each model and TTL rate', () => {
   const fs=require('node:fs'),path=require('node:path');
   const {computeRealizedSavings}=require('./savings.ts');
-  const dir=fs.mkdtempSync(path.join(process.cwd(),'.scratch-parity','ttl-'));
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(), 'to-parity-ttl-'));
   const state=path.join(dir,'token-optimizer');fs.mkdirSync(state);
   const day=86400000,t=Date.parse('2026-01-01T00:00:00Z'),now=t+60*day;
   const row=(id,ts) => ({sessionId:id,ts,model:'opus',input:100000,output:0,cacheRead:0,cacheWrite:100000,cacheWrite1h:50000,cacheWrite5m:50000,costUsd:0,durationSec:300,modelTokenBuckets:{opus:{input:100000,output:0,cacheRead:0,cacheWrite:50000,cacheWrite1h:50000,cacheWrite5m:0},sonnet:{input:0,output:0,cacheRead:0,cacheWrite:50000,cacheWrite1h:0,cacheWrite5m:50000}}});
@@ -133,7 +134,7 @@ test('mixed-model cache writes use each model and TTL rate', () => {
 test('separate cache-write tokens are not capped at fresh input', () => {
   const fs=require('node:fs'),path=require('node:path');
   const {computeRealizedSavings}=require('./savings.ts');
-  const dir=fs.mkdtempSync(path.join(process.cwd(),'.scratch-parity','writes-'));
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(), 'to-parity-writes-'));
   const state=path.join(dir,'token-optimizer');fs.mkdirSync(state);
   const day=86400000,t=Date.parse('2026-01-01T00:00:00Z'),now=t+60*day;
   const row=(id,ts) => ({sessionId:id,ts,model:'opus',input:100000,output:0,cacheRead:0,cacheWrite:200000,cacheWrite1h:200000,cacheWrite5m:0,costUsd:0,durationSec:300});
@@ -146,7 +147,7 @@ test('separate cache-write tokens are not capped at fresh input', () => {
 test('eligible model shares are normalized exactly once for input and 1h writes', () => {
   const fs=require('node:fs'),path=require('node:path');
   const {computeRealizedSavings}=require('./savings.ts');
-  const dir=fs.mkdtempSync(path.join(process.cwd(),'.scratch-parity','normalize-'));
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(), 'to-parity-normalize-'));
   const state=path.join(dir,'token-optimizer');fs.mkdirSync(state);
   const day=86400000,t=Date.parse('2026-01-01T00:00:00Z'),now=t+60*day;
   const row=(id,ts,model) => ({sessionId:id,ts,model,input:1000000,output:0,cacheRead:0,cacheWrite:1000000,cacheWrite1h:1000000,cacheWrite5m:0,costUsd:0,durationSec:300});
@@ -163,7 +164,7 @@ test('eligible model shares are normalized exactly once for input and 1h writes'
 test('unknown Claude generation is not priced as its family or major generation', () => {
   const fs=require('node:fs'),path=require('node:path');
   const {computeRealizedSavings}=require('./savings.ts');
-  const dir=fs.mkdtempSync(path.join(process.cwd(),'.scratch-parity','future-model-'));
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(), 'to-parity-future-model-'));
   const state=path.join(dir,'token-optimizer');fs.mkdirSync(state);
   const day=86400000,t=Date.parse('2026-01-01T00:00:00Z'),now=t+60*day;
   const row=(id,ts) => ({sessionId:id,ts,model:'claude-opus-5-99',input:100000,output:10000,cacheRead:0,cacheWrite:0,costUsd:0,durationSec:300});
@@ -183,7 +184,7 @@ test('screenshot tools and differently priced duplicate events follow core ident
 test('frozen before cost per session is unchanged by current session volume', () => {
   const fs=require('node:fs'),path=require('node:path');
   const {computeRealizedSavings}=require('./savings.ts');
-  const dir=fs.mkdtempSync(path.join(process.cwd(),'.scratch-parity','frozen-'));
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(), 'to-parity-frozen-'));
   const state=path.join(dir,'token-optimizer');fs.mkdirSync(state);
   const day=86400000,t=Date.parse('2026-01-01T00:00:00Z'),now=t+60*day;
   const row=(id,ts,model,n=1)=>({sessionId:id,ts,model,input:100000*n,output:10000*n,cacheRead:0,cacheWrite:0,costUsd:0,durationSec:300});
@@ -200,7 +201,7 @@ test('frozen before cost per session is unchanged by current session volume', ()
 });
 test('native writer and historical rows use their session pricing and report missing coverage', () => {
   const fs=require('node:fs'),path=require('node:path');
-  const dir=fs.mkdtempSync(path.join(process.cwd(),'.scratch-parity','events-'));
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(), 'to-parity-events-'));
   const oldHome=process.env.HOME; process.env.HOME=dir;
   const {logSavingsEvent}=require('./read-cache.ts');
   process.env.HOME=oldHome;
@@ -224,7 +225,7 @@ test('native writer and historical rows use their session pricing and report mis
 test('premium additions do not dilute eligible routing or change its frozen footprint', () => {
   const fs=require('node:fs'),path=require('node:path');
   const {computeRealizedSavings}=require('./savings.ts');
-  const dir=fs.mkdtempSync(path.join(process.cwd(),'.scratch-parity','premium-equal-'));
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(), 'to-parity-premium-equal-'));
   const state=path.join(dir,'token-optimizer');fs.mkdirSync(state);
   const day=86400000,t=Date.parse('2026-01-01T00:00:00Z'),now=t+60*day;
   const row=(id,ts,model)=>({sessionId:id,ts,model,input:100000,output:10000,cacheRead:0,cacheWrite:0,costUsd:0,durationSec:300});
@@ -249,7 +250,7 @@ test('premium additions do not dilute eligible routing or change its frozen foot
 test('premium-only sessions do not increase eligible routing session count', () => {
   const fs=require('node:fs'),path=require('node:path');
   const {computeRealizedSavings}=require('./savings.ts');
-  const dir=fs.mkdtempSync(path.join(process.cwd(),'.scratch-parity','premium-only-'));
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(), 'to-parity-premium-only-'));
   const state=path.join(dir,'token-optimizer');fs.mkdirSync(state);
   const day=86400000,t=Date.parse('2026-01-01T00:00:00Z'),now=t+60*day;
   const row=(id,ts,model)=>({sessionId:id,ts,model,input:100000,output:10000,cacheRead:0,cacheWrite:0,costUsd:0,durationSec:300});
@@ -267,7 +268,7 @@ test('premium-only sessions do not increase eligible routing session count', () 
 test('an unobserved current class is omitted from both comparison arms', () => {
   const fs=require('node:fs'),path=require('node:path');
   const {computeRealizedSavings}=require('./savings.ts');
-  const dir=fs.mkdtempSync(path.join(process.cwd(),'.scratch-parity','missing-class-'));
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(), 'to-parity-missing-class-'));
   const state=path.join(dir,'token-optimizer');fs.mkdirSync(state);
   const day=86400000,t=Date.parse('2026-01-01T00:00:00Z'),now=t+60*day;
   const row=(id,ts,model,output)=>({sessionId:id,ts,model,input:100000,output,cacheRead:0,cacheWrite:0,costUsd:0,durationSec:300});
@@ -283,7 +284,7 @@ test('an unobserved current class is omitted from both comparison arms', () => {
 test('legacy Claude model pricing accepts only supported generation cards and aliases', () => {
   const path = require('node:path');
   const {resolvePricedModel,priceSavingsEvent} = require('./event-pricing.ts');
-  const dir = path.join(process.cwd(), '.scratch-parity', 'legacy-pricing');
+  const dir = path.join(os.tmpdir(), 'to-parity-legacy-pricing');
   const known = [
     ['claude-3-sonnet-20240229', 'sonnet-legacy', 3],
     ['anthropic/claude-3-5-sonnet-20241022', 'sonnet-legacy', 3],
@@ -310,7 +311,7 @@ test('archive coverage retains unknown credits and signed reversals', () => {
   const {logSavingsEvent}=require('./read-cache.ts');
   const {readSavingsEventsByCategory,measuredSavingsFromSummary}=require('./savings.ts');
   function scenario(credit,debit,amount=1e6,debitFirst=false) {
-    const dir=fs.mkdtempSync(path.join(process.cwd(),'.scratch-parity','debit-'));
+    const dir=fs.mkdtempSync(path.join(os.tmpdir(), 'to-parity-debit-'));
     const a=()=>credit && logSavingsEvent('tool_archive',1e6,'credit','credit',{openclawDir:dir,model:credit});
     const b=()=>debit && logSavingsEvent('tool_archive_reexpand',amount,'debit','debit',{openclawDir:dir,model:debit});
     if(debitFirst){b();a();}else{a();b();}
@@ -329,7 +330,7 @@ test('archive coverage retains unknown credits and signed reversals', () => {
   assert.equal(scenario(null,'unknown-future').unpricedTokens,1e6);
   assert.equal(scenario('local','local').unpricedEvents,0);
   assert.equal(measuredSavingsFromSummary(scenario('opus','sonnet')),3);
-  const dir=fs.mkdtempSync(path.join(process.cwd(),'.scratch-parity','mixed-debit-'));
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(), 'to-parity-mixed-debit-'));
   logSavingsEvent('tool_archive',1e6,'credit','credit',{openclawDir:dir,model:'opus'});
   logSavingsEvent('tool_archive_reexpand',1e6,'debit1','debit',{openclawDir:dir,model:'sonnet'});
   logSavingsEvent('tool_archive_reexpand',-1e6,'debit2','debit',{openclawDir:dir,model:'sonnet'});

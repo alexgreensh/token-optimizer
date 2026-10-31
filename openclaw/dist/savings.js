@@ -90,7 +90,7 @@ function storageDir(openclawDir) {
     return dir;
 }
 /**
- * Strict numeric coercion at the data boundary (F1/F2). Token fields arrive from
+ * Strict numeric coercion at the data boundary. Token fields arrive from
  * scanned AgentRuns OR persisted JSON, where a string ("999999999"), NaN, or a
  * negative is possible (hand-edited history, corrupt upstream parse). Without this,
  * `+=` concatenates a string into a giant numeric string that detonates the headline
@@ -169,7 +169,7 @@ function mergeAndPersistHistory(openclawDir, fresh) {
         for (const r of stored) {
             if (!r || !r.sessionId)
                 continue;
-            // F1/F2: persisted JSON can carry string/NaN/negative token fields (hand-edited
+            // persisted JSON can carry string/NaN/negative token fields (hand-edited
             // or corrupt history). Re-sanitize at this boundary so no bad value ever reaches
             // the headline `+=` aggregation.
             const ts = typeof r.ts === "number" && Number.isFinite(r.ts) ? r.ts : 0;
@@ -328,14 +328,16 @@ function modelTtlShares(records) {
 // models in an era). calculateCost is per-token linear, so we blend the per-MTok
 // rates by share and apply once. Unpriced models have no rate card.
 /** Resolve a share map into priced [model, share] pairs. */
-function pricedShares(shares, proxy, openclawDir) {
+function pricedShares(shares, proxy, openclawDir, exact = false) {
     const blended = {};
     for (const [m, s] of Object.entries(shares)) {
         if (!s || s <= 0)
             continue;
-        const model = (0, event_pricing_1.resolvePricedModel)(m, openclawDir);
-        if (model)
-            blended[model] = (blended[model] ?? 0) + s;
+        const resolved = (0, event_pricing_1.resolvePricedModel)(m, openclawDir);
+        if (!resolved)
+            continue;
+        const model = exact ? resolved : (0, pricing_1.referenceCardKey)(resolved, openclawDir);
+        blended[model] = (blended[model] ?? 0) + s;
     }
     const items = Object.entries(blended).filter(([, s]) => s > 0);
     if (items.length === 0)
@@ -346,8 +348,8 @@ function pricedShares(shares, proxy, openclawDir) {
  * Price the fresh + cache_read pool and output at a model mix (NO cache-write).
  * Share-weighted blend over the era's priced models.
  */
-function pricePool(fi, cr, out, shares, proxy, openclawDir) {
-    const items = pricedShares(shares, proxy, openclawDir);
+function pricePool(fi, cr, out, shares, proxy, openclawDir, exact = false) {
+    const items = pricedShares(shares, proxy, openclawDir, exact);
     const tot = items.reduce((a, [, s]) => a + s, 0);
     let cost = 0;
     for (const [model, s] of items) {
@@ -363,8 +365,8 @@ function pricePool(fi, cr, out, shares, proxy, openclawDir) {
  * rate, so it is priced at each arm's OWN mix (baseline mix in the counterfactual,
  * actual mix in actual) — exactly like fresh/cache_read/output.
  */
-function priceCacheWrite(cw, cw1h, cw5m, shares, proxy, openclawDir) {
-    const items = pricedShares(shares, proxy, openclawDir);
+function priceCacheWrite(cw, cw1h, cw5m, shares, proxy, openclawDir, exact = false) {
+    const items = pricedShares(shares, proxy, openclawDir, exact);
     const tot = items.reduce((a, [, s]) => a + s, 0);
     let cost = 0;
     for (const [model, s] of items) {
@@ -374,12 +376,15 @@ function priceCacheWrite(cw, cw1h, cw5m, shares, proxy, openclawDir) {
     }
     return cost;
 }
-function priceClasses(fi, cr, cw, out, shares, fallback, proxy, dir, write1hFraction = 0) {
+function priceClasses(fi, cr, cw, out, shares, fallback, proxy, dir, write1hFraction = 0, exact = false) {
     const mix = (c) => shares && Object.keys(shares[c] ?? {}).length ? shares[c] : fallback;
-    return pricePool(fi, 0, 0, mix("fi"), proxy, dir) + pricePool(0, cr, 0, mix("cr"), proxy, dir) + pricePool(0, 0, out, mix("out"), proxy, dir) + priceCacheWrite(cw, cw * write1hFraction, cw * (1 - write1hFraction), mix("cw"), proxy, dir);
+    return pricePool(fi, 0, 0, mix("fi"), proxy, dir, exact) + pricePool(0, cr, 0, mix("cr"), proxy, dir, exact) + pricePool(0, 0, out, mix("out"), proxy, dir, exact) + priceCacheWrite(cw, cw * write1hFraction, cw * (1 - write1hFraction), mix("cw"), proxy, dir, exact);
 }
+/** Per-token rate of one class at the model's reference card (see referenceCardKey). */
 function classRate(model, c, dir) {
-    return (0, pricing_1.calculateCost)({ input: c === "fi" ? 1 : 0, cacheRead: c === "cr" ? 1 : 0, cacheWrite: c === "cw" ? 1 : 0, output: c === "out" ? 1 : 0 }, model, dir);
+    const resolved = (0, event_pricing_1.resolvePricedModel)(model, dir);
+    const card = resolved ? (0, pricing_1.referenceCardKey)(resolved, dir) : model;
+    return (0, pricing_1.calculateCost)({ input: c === "fi" ? 1 : 0, cacheRead: c === "cr" ? 1 : 0, cacheWrite: c === "cw" ? 1 : 0, output: c === "out" ? 1 : 0 }, card, dir);
 }
 /** Exclude current models above the baseline price ceiling for each token class. */
 function comparableMix(before, after, beforeAll, afterAll, dir) {
@@ -387,9 +392,10 @@ function comparableMix(before, after, beforeAll, afterAll, dir) {
     const a = { fi: {}, cr: {}, cw: {}, out: {} };
     const eligible = { fi: 0, cr: 0, cw: 0, out: 0 };
     const ceiling = { fi: 0, cr: 0, cw: 0, out: 0 };
+    const priced = (mix) => Object.fromEntries(Object.entries(mix).filter(([model]) => (0, event_pricing_1.resolvePricedModel)(model, dir) !== null));
     for (const c of CLASSES) {
-        const bm = before ? (before[c] ?? {}) : beforeAll;
-        const am = after ? (after[c] ?? {}) : afterAll;
+        const bm = priced(before ? (before[c] ?? {}) : beforeAll);
+        const am = priced(after ? (after[c] ?? {}) : afterAll);
         ceiling[c] = Math.max(0, ...Object.entries(bm).filter(([, v]) => v > 0).map(([m]) => classRate(m, c, dir)));
         b[c] = bm;
         for (const [model, share] of Object.entries(am)) {
@@ -566,9 +572,9 @@ function readSavingsEventsByCategory(openclawDir, window) {
     const filePath = path.join(dir, "savings-events.jsonl");
     const root = openclawDir ?? path.join(process.env.HOME ?? process.env.USERPROFILE ?? "", ".openclaw");
     const sessionEvidence = (0, event_pricing_1.loadSavingsSessions)(root);
-    let unpricedTokens = 0, unpricedEvents = 0, floorTokens = 0, floorUsd = 0;
+    let unpricedTokens = 0, unpricedEvents = 0;
     const byType = new Map();
-    // F4: compute the lookback cutoff (ms epoch). Rows older than the cutoff are
+    // compute the lookback cutoff (ms epoch). Rows older than the cutoff are
     // skipped so the windowed sum matches the `days` lookback the caller scales by.
     const cutoff = window && window.days > 0
         ? (window.now ?? Date.now()) - window.days * DAY_MS
@@ -613,12 +619,12 @@ function readSavingsEventsByCategory(openclawDir, window) {
                 unpricedEvents++;
             // Input-rate floor: priced tokens whose billed class was never recorded.
             // Output-class events are evidenced by type and never counted here.
+            const entry = byType.get(et) ?? { count: 0, tokensSaved: 0, costSavedUsd: 0, floorTokens: 0, floorUsd: 0 };
             const noClass = storedClass === undefined && et !== "verbosity_steer" && et !== "verbosity_steer_measured";
             if (noClass) {
-                floorUsd += et === "tool_archive_reexpand" ? Math.abs(cost) : cost;
-                floorTokens += storedCost ? Math.abs(tokens) - uncovered : inferred.floorTokens;
+                entry.floorUsd += et === "tool_archive_reexpand" ? Math.abs(cost) : cost;
+                entry.floorTokens += storedCost ? Math.abs(tokens) - uncovered : inferred.floorTokens;
             }
-            const entry = byType.get(et) ?? { count: 0, tokensSaved: 0, costSavedUsd: 0 };
             entry.count++;
             entry.tokensSaved += et === "tool_archive_reexpand" ? Math.abs(tokens) : tokens;
             entry.costSavedUsd += et === "tool_archive_reexpand" ? Math.abs(cost) : cost;
@@ -645,6 +651,22 @@ function readSavingsEventsByCategory(openclawDir, window) {
     const totalCostSavedUsd = otherCategories.reduce((s, c) => s + c.costSavedUsd, 0)
         + Math.max(0, archivePricedNetUsd ?? 0);
     const totalCount = categories.reduce((s, c) => s + c.count, 0);
+    // Input-rate floor: the part of the NET counted one-shot amount that has no class
+    // evidence. Archive credits are netted against re-expansions, estimated tiers are
+    // not counted, and no category's floor exceeds what it counts.
+    let floorTokens = 0, floorUsd = 0;
+    for (const [et, entry] of byType) {
+        if (et === "tool_archive" || et === "tool_archive_reexpand" || ESTIMATED_TIER_CATEGORIES.has(et))
+            continue;
+        floorUsd += Math.min(Math.max(0, entry.costSavedUsd), Math.max(0, entry.floorUsd));
+        floorTokens += Math.min(Math.max(0, entry.tokensSaved), Math.max(0, entry.floorTokens));
+    }
+    if (archive) {
+        const netCost = Math.max(0, archivePricedNetUsd ?? 0);
+        const netTokens = Math.max(0, archive.tokensSaved - (reexpand?.tokensSaved ?? 0));
+        floorUsd += Math.min(netCost, Math.max(0, archive.floorUsd - (reexpand?.floorUsd ?? 0)));
+        floorTokens += Math.min(netTokens, Math.max(0, archive.floorTokens - (reexpand?.floorTokens ?? 0)));
+    }
     return { categories, totalTokensSaved, totalCostSavedUsd, totalCount, unpricedTokens, unpricedEvents, archivePricedNetUsd, inputRateFloorTokens: floorTokens, inputRateFloorUsd: floorUsd };
 }
 /**
@@ -828,11 +850,25 @@ function computeRealizedSavings(openclawDir, days = 30, now = Date.now()) {
         return r;
     }
     const bs = baseline.stats;
-    if (Object.keys(bs.shares).some((model) => !(0, event_pricing_1.resolvePricedModel)(model, openclawDir))) {
+    // A frozen baseline written before unpriced sessions were filtered out can
+    // carry shares of models with no rate card. Those shares are dropped, the
+    // priced shares renormalized, and the dropped share is disclosed.
+    const baselineUnpriced = Object.entries(bs.shares).filter(([model, share]) => share > 0 && !(0, event_pricing_1.resolvePricedModel)(model, openclawDir));
+    const baselineUnpricedShare = baselineUnpriced.reduce((n, [, share]) => n + share, 0);
+    const baselinePricedShares = {};
+    for (const [model, share] of Object.entries(bs.shares))
+        if (share > 0 && (0, event_pricing_1.resolvePricedModel)(model, openclawDir))
+            baselinePricedShares[model] = share;
+    const baselinePricedTotal = Object.values(baselinePricedShares).reduce((n, v) => n + v, 0);
+    if (Object.keys(bs.shares).length > 0 && baselinePricedTotal <= 0) {
         const r = NOT_READY("baseline includes unpriced models");
         r.installDate = installDate;
+        r.baselineUnpricedShare = round4(baselineUnpricedShare);
+        r.baselineUnpricedModels = baselineUnpriced.map(([model]) => model);
         return r;
     }
+    for (const model of Object.keys(baselinePricedShares))
+        baselinePricedShares[model] /= baselinePricedTotal;
     // Preserve the proxy field in existing frozen baselines.
     const proxy = baseline.proxy;
     // The "after" era's mix shares are needed for the ACTUAL arm. computeEraStats
@@ -842,7 +878,7 @@ function computeRealizedSavings(openclawDir, days = 30, now = Date.now()) {
     // OpenClaw is non-Anthropic -> ALWAYS the user's OWN measured mix. NO 95% Opus
     // floor (never fabricate Opus they never ran). before_shares = baseline mix;
     // if the baseline mix is empty, fall back to the actual mix (routing lever -> 0).
-    const beforeShares = Object.keys(bs.shares).length > 0 ? bs.shares : as.shares;
+    const beforeShares = Object.keys(baselinePricedShares).length > 0 ? baselinePricedShares : as.shares;
     const afterShares = as.shares;
     // CURRENT window = the `after` sessions, aggregated to confirm the
     // window is non-empty. The main pool is now priced per FROZEN typical session (below),
@@ -921,6 +957,11 @@ function computeRealizedSavings(openclawDir, days = 30, now = Date.now()) {
     const nowCps = priceClasses(curFs, curCRs, 0, eOut, comparison.after, afterShares, proxy, openclawDir) +
         priceCacheWrite(eCw1h, eCw1h, 0, oneHour.after.cw, proxy, openclawDir) +
         priceCacheWrite(eCw5m, 0, eCw5m, fiveMinute.after.cw, proxy, openclawDir);
+    // The same eligible tokens at each model's exact generation card. The gap to
+    // the reference-card value is price/generation change, reported apart from routing.
+    const nowCpsExact = priceClasses(curFs, curCRs, 0, eOut, comparison.after, afterShares, proxy, openclawDir, 0, true) +
+        priceCacheWrite(eCw1h, eCw1h, 0, oneHour.after.cw, proxy, openclawDir, true) +
+        priceCacheWrite(eCw5m, 0, eCw5m, fiveMinute.after.cw, proxy, openclawDir, true);
     if (!Number.isFinite(oldCps) || !Number.isFinite(nowCps) ||
         oldCps < 0 || nowCps < 0) {
         const r = NOT_READY("insufficient billed cost");
@@ -934,7 +975,7 @@ function computeRealizedSavings(openclawDir, days = 30, now = Date.now()) {
     // DISJOINT from the billed pool (already removed before billing). Reprice the
     // measured $ to the baseline input mix; actual for this pool is 0, so the whole
     // repriced value is transformation. Clamp >= 0.
-    // F4: window the compression events to the SAME `days` lookback as the billed
+    // window the compression events to the SAME `days` lookback as the billed
     // volume (mirrors Python `_get_savings_summary(days=days)`), so a stale event
     // outside the window is not summed and then monthly-scaled.
     const compMeasured = measuredCompressionUsd(openclawDir, { days, now });
@@ -1042,6 +1083,9 @@ function computeRealizedSavings(openclawDir, days = 30, now = Date.now()) {
         premiumTokens,
         premiumCostUsd: round2(premiumCostUsd),
         unpricedTokens,
+        generationPriceDeltaUsd: round2((nowCpsExact - nowCps) * sessionsPerMonth),
+        baselineUnpricedShare: round4(baselineUnpricedShare),
+        baselineUnpricedModels: baselineUnpriced.map(([model]) => model),
         baselineClassMixAvailable: !!bs.classShares,
         baselineTtlMixAvailable: !!bs.ttlShares,
     };

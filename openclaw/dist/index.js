@@ -140,6 +140,12 @@ function boundedMapSet(map, key, value) {
  * produce the same key, but successive compactions produce distinct keys.
  */
 const _compactionCounter = new Map();
+/**
+ * Read-cache working set (tokens) that the last compaction of a session removed.
+ * Captured just before the cache is cleared, because the restore runs after
+ * the clear and would otherwise see an empty cache.
+ */
+const _clearedWorkingSet = new Map();
 function nextCompactionSeq(sessionKey) {
     const seq = (_compactionCounter.get(sessionKey) ?? 0) + 1;
     boundedMapSet(_compactionCounter, sessionKey, seq);
@@ -415,7 +421,19 @@ exports.default = definePluginEntry({
             }
             // Clear read-cache on compaction (context is reset, cache entries are stale).
             // The agent id defaults to "unknown", the same default the Read hook caches under.
-            (0, read_cache_1.clearCache)(context?.agentId ?? "unknown", session.sessionId);
+            // The working set the clear removes is remembered for the restore credit: the
+            // active tokens before the clear less those still cached by other agents.
+            const agentKey = context?.agentId ?? "unknown";
+            let cleared = 0;
+            try {
+                const activeBefore = (0, read_cache_1.getActiveReadTokens)(agentKey, session.sessionId);
+                (0, read_cache_1.clearCache)(agentKey, session.sessionId);
+                cleared = Math.max(0, activeBefore - (0, read_cache_1.getActiveReadTokens)(agentKey, session.sessionId));
+            }
+            catch {
+                (0, read_cache_1.clearCache)(agentKey, session.sessionId);
+            }
+            boundedMapSet(_clearedWorkingSet, session.sessionId, cleared);
         });
         // Smart Compaction: restore after compaction
         safeOn(api, "after_compaction", async (...args) => {
@@ -464,7 +482,8 @@ exports.default = definePluginEntry({
                 // credited = min(200 000, max(floor, active)).
                 try {
                     const floorTokens = (0, token_estimate_1.estimateTokensFromBytes)(Buffer.byteLength(checkpoint, "utf-8"));
-                    const activeTokens = (0, read_cache_1.getActiveReadTokens)(context.agentId ?? "default", sessionId);
+                    const activeTokens = _clearedWorkingSet.get(sessionId) ?? (0, read_cache_1.getActiveReadTokens)(context.agentId ?? "unknown", sessionId);
+                    _clearedWorkingSet.delete(sessionId);
                     const credited = Math.min(200_000, Math.max(floorTokens, activeTokens));
                     if (credited > 0) {
                         (0, read_cache_1.logSavingsEvent)("checkpoint_restore", credited, sessionId, "queued after compact");

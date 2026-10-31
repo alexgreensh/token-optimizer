@@ -45,11 +45,13 @@ function resolvePricedModel(model, openclawDir) {
     const own = (key) => Object.prototype.hasOwnProperty.call(pricing, key);
     if (own(model))
         return model;
-    const id = model.toLowerCase();
-    const bare = id.replace(/^(?:anthropic|openai|google|deepseek|vertex)\//, "");
+    const bare = (0, pricing_1.stripRoutePrefixes)(model);
     const dated = bare.replace(/-(?:\d{8}|\d{4}-\d{2}-\d{2})$/, "");
     if (own(dated))
         return dated;
+    // Claude ids also lose the route's version tag, context marker, mode suffix
+    // and snapshot marker; the generation that remains must have its own card.
+    const id = (0, pricing_1.stripClaudeRouteDecorations)(model);
     if (!/(?:^|[/:.])claude-/.test(id) && !/^(?:fable|mythos|opus|sonnet|haiku)[-._]?\d/.test(id))
         return null;
     if (!/^(?:(?:anthropic\/|anthropic\.)?claude-)?(?:\d+(?:[-.]\d+)?-(?:opus|sonnet|haiku)|(?:fable|mythos|opus|sonnet|haiku)[-._]?\d+(?:[-._]\d+)?)(?:-\d{8}(?:-v\d+:\d+)?)?$/.test(id))

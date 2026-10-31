@@ -24124,6 +24124,8 @@ def _dashboard_savings_data(days=30, include_billing_mode=False, fail_open=False
         savings_data["counted_period"] = _counted_cumulative_summary(days=days)
     except Exception:
         savings_data["counted_period"] = {"available": False}
+    savings_data["action_savings"] = _action_savings_components(
+        savings_data, savings_data["counted_period"])
     if include_billing_mode:
         try:
             savings_data["billing_mode"] = keepwarm_billing_mode()
@@ -54627,6 +54629,49 @@ def _merge_v5_compression(by_category, by_feature, fallback_cost_per_mtok):
     return add_tok, add_cost, add_events
 
 
+def _action_savings_components(summary, reread=None):
+    """Sum action savings for one period without changing the measured ledger.
+
+    Repeat reads add only their later benefit, never initial removals again.
+    Observed hints replace the retrieval estimate as soon as a hint fires.
+    Opportunity and the separate whole-workload comparison are not additive.
+    """
+    estimates = {
+        key: float((summary.get(key) or {}).get("cost_saved_usd", 0) or 0)
+        for key in (
+            "behavioral_estimate", "uncaptured_runtime", "mcp_cap_estimated",
+            "contamination_exit", "handover_rerun", "resume_lean_estimated",
+            "verbosity_steer",
+        )
+    }
+    hints = summary.get("hint_followed") or {}
+    avoided_source = "hint_followed" if int(hints.get("events") or 0) > 0 else "retrieval_serve"
+    estimates[avoided_source] = float(
+        (summary.get(avoided_source) or {}).get("cost_saved_usd", 0) or 0)
+    logged = float(summary.get("total_cost_usd", 0) or 0)
+    routing_data = summary.get("model_routing") or {}
+    routing = float(routing_data.get("realized_cost_usd", 0) or 0)
+    routing_measured = routing if routing_data.get("evidence", "measured") == "measured" else 0.0
+    reread_available = bool((reread or {}).get("available"))
+    repeat_reads = float(reread.get("reread_usd", 0) or 0) if reread_available else 0.0
+    estimated = sum(estimates.values())
+    net_total = logged + routing + repeat_reads + estimated
+    return {
+        "logged_usd": logged,
+        "routing_usd": routing,
+        "routing_measured_usd": routing_measured,
+        "routing_estimated_usd": routing - routing_measured,
+        "reread_usd": repeat_reads,
+        "reread_available": reread_available,
+        "estimates_usd": estimates,
+        "estimated_usd": estimated,
+        "avoided_search_source": avoided_source,
+        "net_total_usd": net_total,
+        "total_usd": max(0.0, net_total),
+        "total_clamped": net_total < 0,
+    }
+
+
 def _get_merged_savings(days=30, since=None):
     """Merge savings_events and compression_events into one unified savings view.
 
@@ -56598,7 +56643,15 @@ def savings_report(days=30, as_json=False):
     savings_events; v5 categories authoritative in compression_events.
     """
     summary = _get_merged_savings(days=days)
-    summary["reread_avoided"] = _reread_savings_for_window(days)
+    # Use the same stored removal cohort as the dashboard. Its counted benefit
+    # survives transcript rotation and never needs another transcript walk.
+    try:
+        summary["counted_period"] = _counted_cumulative_summary(days=days)
+    except Exception:
+        summary["counted_period"] = {"available": False}
+    summary["reread_avoided"] = summary["counted_period"]
+    summary["action_savings"] = _action_savings_components(
+        summary, summary["reread_avoided"])
 
     if as_json:
         print(json.dumps(summary, indent=2))
@@ -56796,7 +56849,7 @@ def savings_report(days=30, as_json=False):
     # avoided re-reads are the "modeled" tier, the same one the dashboard's
     # Savings tab shows as repeat reads avoided.
     rr = summary.get("reread_avoided") or {}
-    rr_usd = float(rr.get("reread_usd", 0.0) or 0.0)
+    rr_usd = summary["action_savings"]["reread_usd"]
     daily_avg = summary.get("daily_avg_usd", 0.0)
     est_monthly = daily_avg * 30
 
@@ -56831,19 +56884,19 @@ def savings_report(days=30, as_json=False):
         print(f"  i  premium models you chose ({names}, {float(routing['premium_share']) * 100:.0f}% of tokens, "
               f"~${_mo(float(routing.get('premium_cost_usd', 0.0) or 0.0)):.2f}{per} at API rates) "
               f"are left out of the routing comparison")
-    all_in = _mo(total_cost + routing_realized)
-    if rr_usd > 0:
-        all_in += _mo(rr_usd)
+    all_in = _mo(summary["action_savings"]["total_usd"])
+    if rr_usd != 0:
         print(f"  + repeat reads avoided: ~${_mo(rr_usd):.2f}{per} "
               f"({int(rr.get('reread_tokens', 0) or 0):,} tokens of removed context not re-read "
               f"before the next compaction) [modeled]")
+    elif not summary["action_savings"]["reread_available"]:
+        print("  i  repeat reads avoided: unavailable (counted ledger unavailable)")
 
     # Estimated tier — uncaptured runtime (sub-agent compression not attributed).
     uncaptured = summary.get("uncaptured_runtime") or {}
     unc_cost = float(uncaptured.get("cost_saved_usd", 0.0) or 0.0)
     if unc_cost > 0:
         unc_monthly = _mo(unc_cost)
-        all_in += unc_monthly
         print(f"  + est. uncaptured runtime: ~${unc_monthly:.2f}{per} "
               f"(sub-agent compression, {uncaptured.get('subagent_dispatches', 0):,} dispatches) [estimated]")
 
@@ -56852,7 +56905,6 @@ def savings_report(days=30, as_json=False):
     beh_cost = float(behavioral.get("cost_saved_usd", 0.0) or 0.0)
     if beh_cost > 0:
         beh_monthly = _mo(beh_cost)
-        all_in += beh_monthly
         print(f"  + est. behavioral (loops prevented): ~${beh_monthly:.2f}{per} "
               f"({behavioral.get('loop_events', 0)} loops caught, repeated ~{behavioral.get('prevented_iterations', 0)}x "
               f"before catch; avoided continuation estimated at one more span) [estimated]")
@@ -56866,7 +56918,6 @@ def savings_report(days=30, as_json=False):
     mce_cost = float(mcp_cap_est.get("cost_saved_usd", 0.0) or 0.0)
     if mce_cost > 0:
         mce_monthly = _mo(mce_cost)
-        all_in += mce_monthly
         print(f"  + est. MCP output cap: ~${mce_monthly:.2f}{per} "
               f"({mcp_cap_est.get('events', 0)} capped MCP results) [estimated]")
 
@@ -56876,7 +56927,6 @@ def savings_report(days=30, as_json=False):
     rle_cost = float(rl_est.get("cost_saved_usd", 0.0) or 0.0)
     if rle_cost > 0:
         rle_monthly = _mo(rle_cost)
-        all_in += rle_monthly
         print(f"  + est. lean resumes: ~${rle_monthly:.2f}{per} "
               f"({rl_est.get('events', 0)} cold-resume reloads avoided) [estimated]")
 
@@ -56884,7 +56934,6 @@ def savings_report(days=30, as_json=False):
     ce = summary.get("contamination_exit") or {}
     if float(ce.get("cost_saved_usd", 0.0) or 0.0) > 0:
         ce_monthly = _mo(ce["cost_saved_usd"])
-        all_in += ce_monthly
         print(f"  + est. avoided rework (heeded nudges): ~${ce_monthly:.2f}{per} "
               f"({ce.get('heeded_sessions', 0)} heeded vs {ce.get('ignored_sessions', 0)} ignored, "
               f"~{ce.get('delta_tokens_per_session', 0):,} tok/session less rework, "
@@ -56894,12 +56943,34 @@ def savings_report(days=30, as_json=False):
     hr = summary.get("handover_rerun") or {}
     if float(hr.get("cost_saved_usd", 0.0) or 0.0) > 0:
         hr_monthly = _mo(hr["cost_saved_usd"])
-        all_in += hr_monthly
         print(f"  + est. avoided rework (continuity handover): ~${hr_monthly:.2f}{per} "
               f"({hr.get('restored_sessions', 0)} restored vs {hr.get('baseline_sessions', 0)} baseline, "
               f"confidence: {hr.get('confidence', '?')}) [estimated]")
 
+    avoided_source = summary["action_savings"]["avoided_search_source"]
+    avoided = summary.get(avoided_source) or {}
+    avoided_cost = summary["action_savings"]["estimates_usd"][avoided_source]
+    if avoided_cost > 0:
+        if avoided_source == "hint_followed":
+            detail = f"{avoided.get('events', 0)} hints used"
+            label = "hints"
+        else:
+            detail = f"{avoided.get('served_sessions', 0)} served sessions"
+            label = "retrieval"
+        print(f"  + est. avoided search ({label}): ~${_mo(avoided_cost):.2f}{per} "
+              f"({detail}) [estimated]")
+
+    verbosity = summary.get("verbosity_steer") or {}
+    verbosity_cost = summary["action_savings"]["estimates_usd"]["verbosity_steer"]
+    if verbosity_cost > 0:
+        print(f"  + est. concise output nudges: ~${_mo(verbosity_cost):.2f}{per} "
+              f"({verbosity.get('events', 0)} nudges) [estimated]")
+
     print(f"  = ALL IN: ~${all_in:.2f}{per} (measured + modeled + estimated)")
+    if summary["action_savings"]["total_clamped"]:
+        net_total = _mo(summary["action_savings"]["net_total_usd"])
+        print(f"  i  signed adjustments give a net total of ~${net_total:.2f}{per}; "
+              "the headline has a $0 floor")
 
     # Informational (not summed): one-time first-trim + progressive disclosure.
     one_time = summary.get("one_time_setup") or {}

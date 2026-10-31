@@ -254,4 +254,12 @@ function writeEvents(events) {
     (0, bun_test_1.expect)(summary.totalCount).toBe(1);
     (0, bun_test_1.expect)(summary.totalTokensSaved).toBe(800);
 });
+(0, bun_test_1.test)("unpriced archive actions disclose their signed priced subtotal", () => {
+    const html = (0, dashboard_js_1.generateDashboardHtml)({ ...baseData, savingsEvents: {
+            categories: [], totalTokensSaved: 0, totalCostSavedUsd: 0, totalCount: 2,
+            unpricedTokens: 1000000, unpricedEvents: 1, archivePricedNetUsd: -2,
+        } });
+    (0, bun_test_1.expect)(html).toContain("action credits or reversals have no model price");
+    (0, bun_test_1.expect)(html).toContain("Priced archive subtotal: -$2.00");
+});
 //# sourceMappingURL=dashboard.parity.test.js.map

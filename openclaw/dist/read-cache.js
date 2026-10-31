@@ -94,7 +94,8 @@ function logSavingsEvent(eventType, tokensSaved, sessionId, detail, pricing) {
         const root = pricing?.openclawDir ?? path.join(os.homedir(), ".openclaw");
         const eventDir = path.join(root, "token-optimizer");
         const session = (0, event_pricing_1.loadSavingsSessions)(root).get(sessionId) ?? (pricing?.model ? { model: pricing.model } : undefined);
-        const priced = (0, event_pricing_1.priceSavingsEvent)(tokensSaved, eventType, session, root);
+        const tokenClass = (0, event_pricing_1.savingsEventClass)(pricing?.tokenClass);
+        const priced = (0, event_pricing_1.priceSavingsEvent)(tokensSaved, eventType, session, root, tokenClass);
         const row = JSON.stringify({
             timestamp: new Date().toISOString(),
             event_type: eventType,
@@ -102,6 +103,7 @@ function logSavingsEvent(eventType, tokensSaved, sessionId, detail, pricing) {
             session_id: sessionId || null,
             ...(session?.model ? { model: session.model } : {}),
             ...(session?.modelTokenBuckets ? { model_token_buckets: session.modelTokenBuckets } : {}),
+            ...(tokenClass ? { token_class: tokenClass } : {}),
             cost_saved_usd: priced.cost,
             unpriced_tokens: priced.unpricedTokens,
             pricing_status: priced.unpricedTokens > 0 ? "partial_or_unavailable" : "priced",

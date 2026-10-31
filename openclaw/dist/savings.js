@@ -36,6 +36,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.savingsCategoryLabel = savingsCategoryLabel;
 exports.readSavingsEventsByCategory = readSavingsEventsByCategory;
 exports.measuredSavingsFromSummary = measuredSavingsFromSummary;
+exports.allocateCents = allocateCents;
 exports.computeRealizedSavings = computeRealizedSavings;
 /**
  * OpenClaw savings counterfactual and read-time event aggregation.
@@ -217,6 +218,11 @@ function priceKey(model, proxy, openclawDir) {
     const key = (0, event_pricing_1.resolvePricedModel)(model, openclawDir);
     return key ?? model;
 }
+// Aggregate volume does not establish request length, so use base rates.
+function aggregateCost(tokens, model, dir, split) {
+    const scale = Math.max(1, tokens.input + tokens.cacheRead + tokens.cacheWrite, tokens.output);
+    return scale * (0, pricing_1.calculateCost)({ input: tokens.input / scale, output: tokens.output / scale, cacheRead: tokens.cacheRead / scale, cacheWrite: tokens.cacheWrite / scale }, model, dir, split ? { cacheWrite1hTokens: (split.cacheWrite1hTokens ?? 0) / scale, cacheWrite5mTokens: (split.cacheWrite5mTokens ?? 0) / scale } : undefined);
+}
 /**
  * Per-class cost of ONE session, priced at its own model.
  * Returned per class so the waterfall can use real per-class effective rates.
@@ -239,10 +245,10 @@ function sessionClassCost(r, proxy, openclawDir) {
     // so per-class costs sum to the full session cost).
     const split = { cacheWrite1hTokens: r.cacheWrite1h, cacheWrite5m: r.cacheWrite5m };
     return {
-        fi: (0, pricing_1.calculateCost)({ input: t.fi, output: 0, cacheRead: 0, cacheWrite: 0 }, model, openclawDir),
-        cr: (0, pricing_1.calculateCost)({ input: 0, output: 0, cacheRead: t.cr, cacheWrite: 0 }, model, openclawDir),
-        cw: (0, pricing_1.calculateCost)({ input: 0, output: 0, cacheRead: 0, cacheWrite: t.cw }, model, openclawDir, { cacheWrite1hTokens: r.cacheWrite1h, cacheWrite5mTokens: r.cacheWrite5m }),
-        out: (0, pricing_1.calculateCost)({ input: 0, output: t.out, cacheRead: 0, cacheWrite: 0 }, model, openclawDir),
+        fi: aggregateCost({ input: t.fi, output: 0, cacheRead: 0, cacheWrite: 0 }, model, openclawDir),
+        cr: aggregateCost({ input: 0, output: 0, cacheRead: t.cr, cacheWrite: 0 }, model, openclawDir),
+        cw: aggregateCost({ input: 0, output: 0, cacheRead: 0, cacheWrite: t.cw }, model, openclawDir, { cacheWrite1hTokens: r.cacheWrite1h, cacheWrite5mTokens: r.cacheWrite5m }),
+        out: aggregateCost({ input: 0, output: t.out, cacheRead: 0, cacheWrite: 0 }, model, openclawDir),
     };
 }
 function modelShares(records) {
@@ -347,7 +353,7 @@ function pricePool(fi, cr, out, shares, proxy, openclawDir) {
     for (const [model, s] of items) {
         cost +=
             (s / tot) *
-                (0, pricing_1.calculateCost)({ input: fi, output: out, cacheRead: cr, cacheWrite: 0 }, model, openclawDir);
+                aggregateCost({ input: fi, output: out, cacheRead: cr, cacheWrite: 0 }, model, openclawDir);
     }
     return cost;
 }
@@ -364,7 +370,7 @@ function priceCacheWrite(cw, cw1h, cw5m, shares, proxy, openclawDir) {
     for (const [model, s] of items) {
         cost +=
             (s / tot) *
-                (0, pricing_1.calculateCost)({ input: 0, output: 0, cacheRead: 0, cacheWrite: cw }, model, openclawDir, { cacheWrite1hTokens: cw1h, cacheWrite5mTokens: cw5m });
+                aggregateCost({ input: 0, output: 0, cacheRead: 0, cacheWrite: cw }, model, openclawDir, { cacheWrite1hTokens: cw1h, cacheWrite5mTokens: cw5m });
     }
     return cost;
 }
@@ -560,7 +566,7 @@ function readSavingsEventsByCategory(openclawDir, window) {
     const filePath = path.join(dir, "savings-events.jsonl");
     const root = openclawDir ?? path.join(process.env.HOME ?? process.env.USERPROFILE ?? "", ".openclaw");
     const sessionEvidence = (0, event_pricing_1.loadSavingsSessions)(root);
-    let unpricedTokens = 0, unpricedEvents = 0;
+    let unpricedTokens = 0, unpricedEvents = 0, floorTokens = 0, floorUsd = 0;
     const byType = new Map();
     // F4: compute the lookback cutoff (ms epoch). Rows older than the cutoff are
     // skipped so the windowed sum matches the `days` lookback the caller scales by.
@@ -595,15 +601,23 @@ function readSavingsEventsByCategory(openclawDir, window) {
             const session = typeof row.session_id === "string" ? sessionEvidence.get(row.session_id) : undefined;
             const storedBuckets = row.model_token_buckets && typeof row.model_token_buckets === "object" ? row.model_token_buckets : undefined;
             const evidence = storedBuckets ? { model: typeof row.model === "string" ? row.model : undefined, modelTokenBuckets: storedBuckets } : session ?? (typeof row.model === "string" ? { model: row.model } : undefined);
-            const inferred = (0, event_pricing_1.priceSavingsEvent)(tokens, et, evidence, root);
+            const storedClass = (0, event_pricing_1.savingsEventClass)(row.token_class);
+            const inferred = (0, event_pricing_1.priceSavingsEvent)(tokens, et, evidence, root, storedClass);
             const canReprice = row.pricing_status === "partial_or_unavailable" && Math.abs(row.unpriced_tokens) === Math.abs(tokens) && row.cost_saved_usd === 0 && !!evidence;
-            const cost = typeof row.cost_saved_usd === "number" && Number.isFinite(row.cost_saved_usd) && !canReprice
-                ? row.cost_saved_usd : inferred.cost;
+            const storedCost = typeof row.cost_saved_usd === "number" && Number.isFinite(row.cost_saved_usd) && !canReprice;
+            const cost = storedCost ? row.cost_saved_usd : inferred.cost;
             const uncovered = canReprice ? inferred.unpricedTokens : typeof row.unpriced_tokens === "number" && Number.isFinite(row.unpriced_tokens)
                 ? Math.abs(row.unpriced_tokens) : (typeof row.cost_saved_usd === "number" && (row.cost_saved_usd !== 0 || row.pricing_status === "priced") ? 0 : inferred.unpricedTokens);
             unpricedTokens += uncovered;
             if (uncovered > 0)
                 unpricedEvents++;
+            // Input-rate floor: priced tokens whose billed class was never recorded.
+            // Output-class events are evidenced by type and never counted here.
+            const noClass = storedClass === undefined && et !== "verbosity_steer" && et !== "verbosity_steer_measured";
+            if (noClass) {
+                floorUsd += et === "tool_archive_reexpand" ? Math.abs(cost) : cost;
+                floorTokens += storedCost ? Math.abs(tokens) - uncovered : inferred.floorTokens;
+            }
             const entry = byType.get(et) ?? { count: 0, tokensSaved: 0, costSavedUsd: 0 };
             entry.count++;
             entry.tokensSaved += et === "tool_archive_reexpand" ? Math.abs(tokens) : tokens;
@@ -631,7 +645,7 @@ function readSavingsEventsByCategory(openclawDir, window) {
     const totalCostSavedUsd = otherCategories.reduce((s, c) => s + c.costSavedUsd, 0)
         + Math.max(0, archivePricedNetUsd ?? 0);
     const totalCount = categories.reduce((s, c) => s + c.count, 0);
-    return { categories, totalTokensSaved, totalCostSavedUsd, totalCount, unpricedTokens, unpricedEvents, archivePricedNetUsd };
+    return { categories, totalTokensSaved, totalCostSavedUsd, totalCount, unpricedTokens, unpricedEvents, archivePricedNetUsd, inputRateFloorTokens: floorTokens, inputRateFloorUsd: floorUsd };
 }
 /**
  * Sum the MEASURED compression / volume-reduction savings (cost_saved_usd) over
@@ -686,6 +700,31 @@ function estimatedVerbosityUsd(openclawDir, window) {
     }
     return Math.max(0, total);
 }
+/**
+ * Largest-remainder cent allocation. Rounds `total` to cents once, then
+ * apportions those cents across `parts` so the returned parts always re-add to
+ * the rounded total. Signed parts are handled by flooring toward -inf before
+ * apportioning; `parts` need not already sum to `total` (any remainder surplus
+ * lands on the first part so the sum always holds).
+ */
+function allocateCents(total, parts) {
+    const cents = (x) => (Number.isFinite(x) ? x : 0) * 100;
+    const totalCents = Math.round(cents(total));
+    const out = parts.map((p) => Math.floor(cents(p)));
+    let remainder = totalCents - out.reduce((a, b) => a + b, 0);
+    const order = parts
+        .map((p, i) => [cents(p) - Math.floor(cents(p)), i])
+        .sort((a, b) => b[0] - a[0] || a[1] - b[1]);
+    for (const [, i] of order) {
+        if (remainder <= 0)
+            break;
+        out[i] += 1;
+        remainder -= 1;
+    }
+    if (remainder !== 0 && out.length > 0)
+        out[0] += remainder;
+    return out.map((c) => c / 100);
+}
 function mixLabel(shares) {
     const top = Object.entries(shares).sort((a, b) => b[1] - a[1])[0];
     return top ? `${Math.round(top[1] * 100)}% ${top[0]}` : "n/a";
@@ -734,11 +773,35 @@ function computeRealizedSavings(openclawDir, days = 30, now = Date.now()) {
     catch {
         fresh = [];
     }
-    const history = mergeAndPersistHistory(openclawDir, fresh)
-        .filter((r) => r.input >= MIN_INPUT_TOKENS && r.durationSec >= MIN_DURATION_SECONDS && (0, event_pricing_1.resolvePricedModel)(r.model, openclawDir) !== null &&
-        (!r.modelTokenBuckets || Object.keys(r.modelTokenBuckets).every((model) => (0, event_pricing_1.resolvePricedModel)(model, openclawDir) !== null)));
-    if (history.length === 0)
-        return NOT_READY("no sessions yet");
+    const rawHistory = mergeAndPersistHistory(openclawDir, fresh);
+    const excluded = new Map();
+    const history = rawHistory.flatMap((r) => {
+        if (r.input < MIN_INPUT_TOKENS || r.durationSec < MIN_DURATION_SECONDS)
+            return [];
+        if (!r.modelTokenBuckets || !Object.keys(r.modelTokenBuckets).length) {
+            if ((0, event_pricing_1.resolvePricedModel)(r.model, openclawDir) !== null)
+                return [r];
+            excluded.set(r.sessionId, r.input + r.output + r.cacheRead + r.cacheWrite);
+            return [];
+        }
+        const known = Object.fromEntries(Object.entries(r.modelTokenBuckets).filter(([model, b]) => {
+            if ((0, event_pricing_1.resolvePricedModel)(model, openclawDir) !== null)
+                return true;
+            excluded.set(r.sessionId, (excluded.get(r.sessionId) ?? 0) + numClamp(b.input) + numClamp(b.output) + numClamp(b.cacheRead) + numClamp(b.cacheWrite));
+            return false;
+        }));
+        const entries = Object.entries(known);
+        if (!entries.length)
+            return [];
+        const sum = (field) => entries.reduce((n, [, b]) => n + numClamp(b[field]), 0);
+        return [{ ...r, model: (0, event_pricing_1.resolvePricedModel)(r.model, openclawDir) !== null ? r.model : entries[0][0], modelTokenBuckets: known,
+                input: sum("input"), output: sum("output"), cacheRead: sum("cacheRead"), cacheWrite: sum("cacheWrite"), cacheWrite1h: sum("cacheWrite1h"), cacheWrite5m: sum("cacheWrite5m") }];
+    });
+    if (history.length === 0) {
+        const result = NOT_READY("no priced sessions yet");
+        result.unpricedTokens = rawHistory.filter((r) => r.ts >= now - days * DAY_MS).reduce((n, r) => n + (excluded.get(r.sessionId) ?? 0), 0);
+        return result;
+    }
     // Preserve the stored baseline metadata for existing installs.
     const globalProxy = dominantPricedModel(history, openclawDir);
     const { baseline, reason, baselineBuilding } = getOrComputeBaseline(openclawDir, history, now, globalProxy);
@@ -746,6 +809,7 @@ function computeRealizedSavings(openclawDir, days = 30, now = Date.now()) {
     if (!baseline) {
         const r = NOT_READY(reason);
         r.installDate = installDate;
+        r.unpricedTokens = rawHistory.filter((row) => row.ts >= now - days * DAY_MS).reduce((n, row) => n + (excluded.get(row.sessionId) ?? 0), 0);
         if (baselineBuilding)
             r.baselineBuilding = baselineBuilding;
         return r;
@@ -754,9 +818,11 @@ function computeRealizedSavings(openclawDir, days = 30, now = Date.now()) {
     // baseline window (cohort separation: never compare the user to themselves).
     const afterStart = Math.max(baseline.windowEnd, now - days * DAY_MS);
     const after = history.filter((r) => r.ts >= afterStart);
+    const unpricedTokens = rawHistory.filter((r) => r.ts >= afterStart).reduce((n, r) => n + (excluded.get(r.sessionId) ?? 0), 0);
     if (after.length < AFTER_MIN_SESSIONS) {
         const r = NOT_READY(`building comparison (${after.length}/${AFTER_MIN_SESSIONS} recent sessions)`);
         r.installDate = installDate;
+        r.unpricedTokens = unpricedTokens;
         r.beforeCostPerSession = baseline.stats.costPerSession;
         r.beforeMixLabel = mixLabel(baseline.stats.shares);
         return r;
@@ -923,11 +989,14 @@ function computeRealizedSavings(openclawDir, days = 30, now = Date.now()) {
     // the honest net including a pool that grew (shown honestly as a "-$X" lever).
     const vRouteS = nowCps;
     const sRoute = (oldCps - vRouteS) * sessionsPerMonth; // before->after mix (incl. cache-write)
+    // Display cents are allocated once off the signed net so the rendered levers
+    // always add to the rendered headline; monthlyUsd keeps the exact raw values.
+    const leverDisplay = allocateCents(net, [sRoute, compressionMonthly, verbosityMonthly]);
     const breakdown = [
-        { key: "routing", label: "Model mix change (excluding premium choices)", monthlyUsd: round2(sRoute) },
+        { key: "routing", label: "Model mix change (excluding premium choices)", monthlyUsd: sRoute, monthlyUsdDisplay: leverDisplay[0] },
         // Subagent lever omitted (OpenClaw has no sidechains; always 0).
-        { key: "context_compression", label: "Lighter context (metered removals)", monthlyUsd: round2(compressionMonthly) },
-        { key: "verbosity_steer", label: "Lean output nudges (less output, estimated)", monthlyUsd: round2(verbosityMonthly) },
+        { key: "context_compression", label: "Lighter context (metered removals)", monthlyUsd: compressionMonthly, monthlyUsdDisplay: leverDisplay[1] },
+        { key: "verbosity_steer", label: "Lean output nudges (less output, estimated)", monthlyUsd: verbosityMonthly, monthlyUsdDisplay: leverDisplay[2] },
     ];
     // Cumulative: apply the per-session transformation rate across every
     // post-baseline session (transformation per current session * total sessions).
@@ -972,6 +1041,7 @@ function computeRealizedSavings(openclawDir, days = 30, now = Date.now()) {
         afterOpus: round4(afterShares.opus ?? 0),
         premiumTokens,
         premiumCostUsd: round2(premiumCostUsd),
+        unpricedTokens,
         baselineClassMixAvailable: !!bs.classShares,
         baselineTtlMixAvailable: !!bs.ttlShares,
     };

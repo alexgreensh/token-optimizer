@@ -1205,7 +1205,7 @@ function renderSavings(data) {
       <div style="font-size:12px;color:var(--c-text-dim);margin-top:var(--s-2)">First tracked session: ${esc(bb.firstDate)} &middot; early window: ${bb.earlyWindowDays} days</div>
     </div>`;
     };
-    const pricingCoverage = data.savingsEvents.unpricedEvents ? `<div class="daily-hint">${fmtTokens(data.savingsEvents.unpricedTokens ?? 0)} tokens across ${data.savingsEvents.unpricedEvents} action credits or reversals have no model price. Action dollar amounts exclude unpriced contributions.${data.savingsEvents.archivePricedNetUsd != null ? ` Priced archive subtotal: ${data.savingsEvents.archivePricedNetUsd < 0 ? "-" : ""}${fmtCost(Math.abs(data.savingsEvents.archivePricedNetUsd))}.` : ""}</div>` : "";
+    const pricingCoverage = (data.savingsEvents.unpricedEvents ? `<div class="daily-hint">${fmtTokens(data.savingsEvents.unpricedTokens ?? 0)} tokens across ${data.savingsEvents.unpricedEvents} action credits or reversals have no model price. Action dollar amounts exclude unpriced contributions.${data.savingsEvents.archivePricedNetUsd != null ? ` Priced archive subtotal: ${data.savingsEvents.archivePricedNetUsd < 0 ? "-" : ""}${fmtCost(Math.abs(data.savingsEvents.archivePricedNetUsd))}.` : ""}</div>` : "") + (s?.unpricedTokens ? `<div class="daily-hint">${fmtTokens(s.unpricedTokens)} recent tokens have no model price and are excluded from the model comparison.</div>` : "") + (data.savingsEvents.inputRateFloorUsd ? `<div class="daily-hint">${fmtCost(Math.abs(data.savingsEvents.inputRateFloorUsd))} of counted action savings is priced at the input rate, a minimum &mdash; the billed token class was not recorded for those events.</div>` : "");
     // --- Early exit: no savings data at all ---
     if (!s || (!s.ready && s.cumulativeSavedUsd === 0 && s.monthlySavingsUsd === 0)) {
         const progressCard = s?.baselineBuilding ? buildingProgress(s.baselineBuilding) : "";
@@ -1310,10 +1310,10 @@ function renderSavings(data) {
         ? `<div class="card">
         <div class="card-header"><span>Where the savings come from</span></div>
         ${s.breakdown
-            .filter((b) => Math.abs(b.monthlyUsd) >= 0.005)
+            .filter((b) => Math.abs(b.monthlyUsdDisplay) >= 0.005)
             .map((b) => `<div class="bar-row">
             <span class="bar-row-label">${esc(b.label)}</span>
-            <span style="font-family:var(--font-mono);color:${b.monthlyUsd >= 0 ? "var(--c-accent-cyan)" : "var(--c-danger)"}">${b.monthlyUsd >= 0 ? "" : "+"}${fmtCost(Math.abs(b.monthlyUsd))}/mo</span>
+            <span style="font-family:var(--font-mono);color:${b.monthlyUsdDisplay >= 0 ? "var(--c-accent-cyan)" : "var(--c-danger)"}">${b.monthlyUsdDisplay >= 0 ? "" : "+"}${fmtCost(Math.abs(b.monthlyUsdDisplay))}/mo</span>
           </div>`)
             .join("")}
       </div>`

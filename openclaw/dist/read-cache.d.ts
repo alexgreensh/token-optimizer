@@ -29,6 +29,7 @@
 export declare function logSavingsEvent(eventType: string, tokensSaved: number, sessionId: string, detail?: string, pricing?: {
     openclawDir?: string;
     model?: string;
+    tokenClass?: string;
 }): void;
 /**
  * Sum tokensEst for files read at least MIN_COUNT times this session,

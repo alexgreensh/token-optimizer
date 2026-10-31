@@ -164,4 +164,31 @@ const OPENCLAW_LINES = [
     (0, bun_test_1.expect)(card.input).not.toBe(prices_generated_1.GENERATED_PRICING["opus"].input);
     (0, bun_test_1.expect)(run.costUsd).toBeCloseTo(expected, 9);
 });
+(0, bun_test_1.test)("streamed chunks that carry only a message id count as one request", () => {
+    const chunk = (outputTokens) => ({
+        type: "assistant",
+        timestamp: "2026-08-01T10:00:05.000Z",
+        message: {
+            id: "msg_abc",
+            role: "assistant",
+            model: "claude-opus-4-8",
+            content: [{ type: "text", text: "Working on it now." }],
+            usage: { input_tokens: 1000, output_tokens: outputTokens },
+        },
+    });
+    const p = writeSession("sdk.jsonl", [
+        {
+            type: "user",
+            timestamp: "2026-08-01T10:00:01.000Z",
+            message: { role: "user", content: "Refactor the auth module for me please" },
+        },
+        chunk(100),
+        chunk(250),
+        chunk(400),
+    ]);
+    const run = (0, session_parser_1.parseSession)(p, "agent-a", dir);
+    (0, bun_test_1.expect)(run).not.toBeNull();
+    (0, bun_test_1.expect)(run.tokens.input).toBe(1000);
+    (0, bun_test_1.expect)(run.tokens.output).toBe(400);
+});
 //# sourceMappingURL=session-parser.test.js.map

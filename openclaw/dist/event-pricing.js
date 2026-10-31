@@ -34,6 +34,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.resolvePricedModel = resolvePricedModel;
+exports.savingsEventClass = savingsEventClass;
 exports.loadSavingsSessions = loadSavingsSessions;
 exports.priceSavingsEvent = priceSavingsEvent;
 const fs = __importStar(require("fs"));
@@ -45,6 +46,14 @@ function resolvePricedModel(model, openclawDir) {
     if (own(model))
         return model;
     const id = model.toLowerCase();
+    const bare = id.replace(/^(?:anthropic|openai|google|deepseek|vertex)\//, "");
+    const dated = bare.replace(/-(?:\d{8}|\d{4}-\d{2}-\d{2})$/, "");
+    if (own(dated))
+        return dated;
+    if (!/(?:^|[/:.])claude-/.test(id) && !/^(?:fable|mythos|opus|sonnet|haiku)[-._]?\d/.test(id))
+        return null;
+    if (!/^(?:(?:anthropic\/|anthropic\.)?claude-)?(?:\d+(?:[-.]\d+)?-(?:opus|sonnet|haiku)|(?:fable|mythos|opus|sonnet|haiku)[-._]?\d+(?:[-._]\d+)?)(?:-\d{8}(?:-v\d+:\d+)?)?$/.test(id))
+        return null;
     const legacy = /(?:^|[/:.])claude-(\d+)(?:[-.](\d+))?-(opus|sonnet|haiku)(?=$|[-_:])/.exec(id);
     if (legacy) {
         const [, major, minor, family] = legacy;
@@ -69,8 +78,11 @@ function resolvePricedModel(model, openclawDir) {
         }
         return null;
     }
-    const key = (0, pricing_1.claudePricingKey)(model, pricing) ?? (0, pricing_1.pricedPrefixKey)(model, pricing) ?? (0, pricing_1.normalizeModelName)(model);
-    return key && own(key) ? key : null;
+    return null;
+}
+const SAVINGS_EVENT_CLASSES = new Set(["input", "output", "cacheRead", "cacheWrite", "cacheWrite1h"]);
+function savingsEventClass(value) {
+    return typeof value === "string" && SAVINGS_EVENT_CLASSES.has(value) ? value : undefined;
 }
 function loadSavingsSessions(openclawDir) {
     const out = new Map();
@@ -84,12 +96,16 @@ function loadSavingsSessions(openclawDir) {
     catch { /* session history not available */ }
     return out;
 }
-function priceSavingsEvent(tokens, eventType, session, openclawDir) {
+function priceSavingsEvent(tokens, eventType, session, openclawDir, tokenClass) {
     const amount = Number.isFinite(tokens) ? Math.abs(tokens) : 0;
     const sign = tokens < 0 ? -1 : 1;
     if (!session)
-        return { cost: 0, unpricedTokens: amount };
-    const output = eventType === "verbosity_steer" || eventType === "verbosity_steer_measured";
+        return { cost: 0, unpricedTokens: amount, floorTokens: 0 };
+    const output = tokenClass === undefined ? (eventType === "verbosity_steer" || eventType === "verbosity_steer_measured") : false;
+    // With no stored billed class, a non-output event is priced at the input
+    // rate: an honest floor, disclosed to the caller via floorTokens.
+    const klass = tokenClass ?? (output ? "output" : "input");
+    const floor = tokenClass === undefined && !output;
     const buckets = session.modelTokenBuckets;
     const weights = [];
     if (buckets && typeof buckets === "object") {
@@ -97,7 +113,10 @@ function priceSavingsEvent(tokens, eventType, session, openclawDir) {
             if (!bucket || typeof bucket !== "object")
                 continue;
             const numeric = (v) => typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 0;
-            const weight = output ? numeric(bucket.output) : numeric(bucket.input) + numeric(bucket.cacheRead) + numeric(bucket.cacheWrite);
+            const weight = klass === "output" ? numeric(bucket.output)
+                : klass === "cacheRead" ? numeric(bucket.cacheRead)
+                    : klass === "cacheWrite" || klass === "cacheWrite1h" ? numeric(bucket.cacheWrite)
+                        : numeric(bucket.input) + numeric(bucket.cacheRead) + numeric(bucket.cacheWrite);
             if (weight > 0)
                 weights.push([model, weight]);
         }
@@ -106,8 +125,8 @@ function priceSavingsEvent(tokens, eventType, session, openclawDir) {
         weights.push([session.model, 1]);
     const total = weights.reduce((sum, [, weight]) => sum + weight, 0);
     if (!total)
-        return { cost: 0, unpricedTokens: amount };
-    let cost = 0, unpricedTokens = 0;
+        return { cost: 0, unpricedTokens: amount, floorTokens: 0 };
+    let cost = 0, unpricedTokens = 0, floorTokens = 0;
     for (const [model, weight] of weights) {
         const part = amount * weight / total;
         const key = resolvePricedModel(model, openclawDir);
@@ -116,8 +135,16 @@ function priceSavingsEvent(tokens, eventType, session, openclawDir) {
             continue;
         }
         const card = (0, pricing_1.getPricing)(openclawDir)[key];
-        cost += part * (output ? card.output : card.input) * (0, pricing_1.tierMultiplier)((0, pricing_1.loadPricingTier)(openclawDir), key);
+        // A class the provider does not bill (missing or zero rate) reverts to the
+        // fresh-input rate: on such a card new context is charged as input.
+        const classRate = klass === "input" ? card.input
+            : klass === "cacheWrite1h" ? (card.cacheWrite1h ?? card.cacheWrite)
+                : card[klass];
+        const rate = classRate || card.input;
+        cost += part * rate * (0, pricing_1.tierMultiplier)((0, pricing_1.loadPricingTier)(openclawDir), key);
+        if (floor)
+            floorTokens += part;
     }
-    return { cost: cost * sign, unpricedTokens };
+    return { cost: cost * sign, unpricedTokens, floorTokens };
 }
 //# sourceMappingURL=event-pricing.js.map

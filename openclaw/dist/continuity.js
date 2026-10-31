@@ -1225,6 +1225,9 @@ function resumeLeanAlreadyCredited(targetSessionDirName, windowMs = 6 * 3600 * 1
  * avoided = checkpoint raw bytes / 3.3 (proxy for cache-create tokens — OpenClaw
  *   has no session_log cache_create_1h_tokens / cache_create_5m_tokens equivalent).
  * saved = max(0, avoided - lean_tokens).
+ * The avoided quantity is the cold-resume cache rewrite, so the event carries
+ * the cacheWrite billed class (5-minute write tier: the lower write rate, since
+ * no TTL split evidence exists) rather than the generic input-rate floor.
  * Idempotent per target session within ~6h. Best-effort: never breaks injection.
  * Mirrors Python _log_resume_lean_savings.
  */
@@ -1245,7 +1248,7 @@ function logResumeLeanSavings(targetEntry, leanBlock, logSavingsEventFn) {
         const saved = Math.max(0, avoided - leanTokens);
         if (saved <= 0)
             return;
-        logSavingsEventFn("resume_lean", saved, targetEntry.sessionDirName, "lean resume vs cold --resume rewrite");
+        logSavingsEventFn("resume_lean", saved, targetEntry.sessionDirName, "lean resume vs cold --resume rewrite", { tokenClass: "cacheWrite" });
     }
     catch {
         // Best-effort: never break injection

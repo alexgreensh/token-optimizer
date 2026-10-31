@@ -368,10 +368,22 @@ def test_dashboard_estimated_routing_is_not_folded_into_logged_actions():
     text = _text(_render(_routing_realized("estimated", baseline_reference_priced=["opus"])))
     assert _logged(text) == 10.0
     assert re.search(r"model routing: \$50", text)
-    assert ("Earlier-mix models with no usage in this period (Opus) are priced at their newest card, "
-            "so the routing figure is listed under estimates.") in text
+    assert ("Routing compares your earlier and current mix on one price list, the newest card of each family "
+            "(Opus), because your earlier mix records no model generations. "
+            "The figure is listed under estimates.") in text
     # The total still counts it once: logged 10 + estimated 50.
     assert re.search(r"logged \+ estimated", text)
+
+
+def test_dashboard_discloses_generation_price_gap_apart_from_routing():
+    text = _text(_render(_routing_realized(
+        "estimated", baseline_reference_priced=["opus"], generation_price_delta_usd=55.0)))
+    assert re.search(r"At the exact cards you ran, the same work cost about \$55(\.0)? more than on that price list\. "
+                     r"That gap is model generation pricing, not routing\.", text)
+    cheaper = _text(_render(_routing_realized(
+        "estimated", baseline_reference_priced=["opus"], generation_price_delta_usd=-55.0)))
+    assert re.search(r"cost about \$55(\.0)? less than on that price list", cheaper)
+    assert "model generation pricing" not in _text(_render(_routing_realized("estimated", baseline_reference_priced=["opus"])))
 
 
 def test_cli_measured_routing_label(measure, monkeypatch, capsys):
@@ -386,9 +398,16 @@ def test_cli_reference_priced_routing_is_labelled_estimated_and_disclosed(measur
                    _cli_summary({"evidence": "estimated", "baseline_reference_priced": ["opus"]}))
     line = next(l for l in out.splitlines() if "model routing (realized)" in l)
     assert line.endswith("[estimated]")
-    assert ("earlier-mix models with no usage in this period (Opus) are priced at their newest card, "
-            "so this routing figure is an estimate") in out
+    assert ("routing compares your earlier and current mix on one price list, the newest card of each family "
+            "(Opus), because your earlier mix records no model generations, so this figure is an estimate") in out
     assert "ALL IN" in out
+
+
+def test_cli_discloses_generation_price_gap_apart_from_routing(measure, monkeypatch, capsys):
+    out = _cli_out(measure, monkeypatch, capsys, _cli_summary(
+        {"evidence": "estimated", "baseline_reference_priced": ["opus"], "generation_price_delta_usd": 55.0}))
+    assert ("at the exact cards you ran, the same work cost ~$55.00/mo more than on that price list; "
+            "that gap is model generation pricing, not routing") in out
 
 
 def test_since_install_moves_estimated_routing_to_the_estimated_side(measure, monkeypatch):

@@ -449,43 +449,65 @@ def test_generation_order_does_not_change_realized(m, db, monkeypatch):
     db.conn.execute("DELETE FROM session_log"); db.conn.execute("DELETE FROM model_daily"); db.conn.commit()
     b = _realized(m, db, usage_b)["realized_cost_usd"]
 
+    # Standardized: every family at its newest card, so Opus 4.1 counts as Opus 5.5.
     c = _cards(m)
-    opus_out = (c["opus_4_1"]["output"] + c["opus_5_5"]["output"]) / 2
-    expected = 4 * (0.95 * opus_out + 0.05 * c["sonnet_5_5"]["output"]) \
-        - (c["opus_4_1"]["output"] + c["opus_5_5"]["output"] + 2 * c["sonnet_5_5"]["output"])
+    o, s = c["opus_5_5"]["output"], c["sonnet_5_5"]["output"]
+    expected = 4 * (0.95 * o + 0.05 * s) - (2 * o + 2 * s)
     assert a == b
     assert a == pytest.approx(expected, abs=1e-3)
 
 
-def test_absent_baseline_family_is_priced_at_its_reference_card_and_disclosed(m, db, monkeypatch):
+def _reset(db):
+    db.conn.execute("DELETE FROM session_log"); db.conn.execute("DELETE FROM model_daily"); db.conn.commit()
+
+
+def test_routing_is_valued_on_one_reference_schedule_and_disclosed(m, db, monkeypatch):
     monkeypatch.setattr(m, "_pretool_baseline_mix", lambda: {"opus": 0.95, "sonnet": 0.05})
     r = _realized(m, db, {SONNET_55: _buckets(out=1_000_000)})
     c = _cards(m)
     assert r["realized_cost_usd"] == pytest.approx(
         0.95 * c["opus_5_5"]["output"] + 0.05 * c["sonnet_5_5"]["output"] - c["sonnet_5_5"]["output"], abs=1e-3)
-    assert r["baseline_rate_basis"] == {"opus": "reference:claude-opus-5-5", "sonnet": "observed"}
-    assert r["baseline_reference_priced"] == ["opus"]
+    assert r["realized_basis"] == "standardized_reference_card"
+    assert r["baseline_rate_basis"] == {"opus": "reference:claude-opus-5-5", "sonnet": "reference:claude-sonnet-5-5"}
+    assert r["baseline_reference_priced"] == ["opus", "sonnet"]
     assert r["evidence"] == "estimated"
 
 
-def test_reference_card_matches_a_window_that_ran_the_same_generation(m, db, monkeypatch):
+@pytest.mark.parametrize("model", [OPUS_55, OPUS_41, "claude-opus-4-8"])
+def test_one_token_of_any_generation_changes_routing_only_by_its_own_contribution(m, db, monkeypatch, model):
     monkeypatch.setattr(m, "_pretool_baseline_mix", lambda: {"opus": 0.95, "sonnet": 0.05})
     absent = _realized(m, db, {SONNET_55: _buckets(out=1_000_000)})["realized_cost_usd"]
-    db.conn.execute("DELETE FROM session_log"); db.conn.execute("DELETE FROM model_daily"); db.conn.commit()
-    r = _realized(m, db, {SONNET_55: _buckets(out=1_000_000), OPUS_55: _buckets(out=1)})
-    assert r["realized_cost_usd"] == pytest.approx(absent, abs=1e-3)
-    assert r["baseline_rate_basis"] == {"opus": "observed", "sonnet": "observed"}
-    assert r["evidence"] == "measured"
+    _reset(db)
+    r = _realized(m, db, {SONNET_55: _buckets(out=1_000_000), model: _buckets(out=1)})
+    # The token is valued at the Opus reference card whatever generation it ran on.
+    assert r["realized_cost_usd"] == pytest.approx(absent, abs=1e-4)
+    assert r["baseline_rate_basis"]["opus"] == "reference:claude-opus-5-5"
 
 
-def test_observed_family_uses_the_cards_it_ran_on_not_the_reference(m, db, monkeypatch):
+def test_equal_volumes_with_only_generation_ids_changed_give_identical_routing(m, db, monkeypatch):
     monkeypatch.setattr(m, "_pretool_baseline_mix", lambda: {"opus": 0.95, "sonnet": 0.05})
-    r = _realized(m, db, {SONNET_55: _buckets(out=1_000_000), OPUS_41: _buckets(out=1)})
+    volumes = dict(read=7_000_000, cc=2_000_000, cc_5m=2_000_000, out=1_000_000)
+    results = []
+    for opus, sonnet in ((OPUS_55, SONNET_55), (OPUS_41, "claude-sonnet-4-6"), ("claude-opus-4-8", "claude-sonnet-4-5")):
+        _reset(db)
+        r = _realized(m, db, {opus: _buckets(**volumes), sonnet: _buckets(**volumes)},
+                      mix={"opus": 10_000_000, "sonnet": 10_000_000} if sonnet == SONNET_55 else
+                          {"opus": 10_000_000, "sonnet_legacy": 10_000_000})
+        results.append(r["realized_cost_usd"])
+    assert results[1] == pytest.approx(results[0], abs=1e-6)
+    assert results[2] == pytest.approx(results[0], abs=1e-6)
+
+
+def test_actual_generation_cost_is_reported_apart_from_routing(m, db, monkeypatch):
+    monkeypatch.setattr(m, "_pretool_baseline_mix", lambda: {"opus": 0.95, "sonnet": 0.05})
+    r = _realized(m, db, {OPUS_41: _buckets(out=1_000_000), SONNET_55: _buckets(out=1_000_000)})
     c = _cards(m)
+    assert r["actual_cost_usd"] == pytest.approx(c["opus_4_1"]["output"] + c["sonnet_5_5"]["output"], abs=1e-3)
+    assert r["standardized_actual_cost_usd"] == pytest.approx(c["opus_5_5"]["output"] + c["sonnet_5_5"]["output"], abs=1e-3)
+    assert r["generation_price_delta_usd"] == pytest.approx(c["opus_4_1"]["output"] - c["opus_5_5"]["output"], abs=1e-3)
+    # Realized routing is the standardized difference only.
     assert r["realized_cost_usd"] == pytest.approx(
-        1_000_001 / 1e6 * (0.95 * c["opus_4_1"]["output"] + 0.05 * c["sonnet_5_5"]["output"]) - c["sonnet_5_5"]["output"]
-        - c["opus_4_1"]["output"] / 1e6, abs=1e-3)
-    assert r["baseline_rate_basis"]["opus"] == "observed"
+        r["standardized_baseline_cost_usd"] - r["standardized_actual_cost_usd"], abs=1e-3)
 
 
 def test_near_tied_generations_price_continuously(m, db, monkeypatch):

@@ -94,7 +94,7 @@ def test_unpriced_coverage_flows_into_savings_report(m, monkeypatch, capsys):
     summary = {'total_tokens': 1000, 'total_events': 1, 'total_cost_usd': 0,
                'compression_unpriced_tokens': 1000, 'by_category': categories}
     monkeypatch.setattr(m, '_get_merged_savings', lambda **kwargs: dict(summary))
-    monkeypatch.setattr(m, '_reread_savings_for_window', lambda days: {})
+    monkeypatch.setattr(m, '_counted_cumulative_summary', lambda days: {'available': False})
     monkeypatch.setattr(m, '_install_date', lambda: None)
     m.savings_report(days=30)
     assert '1,000 compression tokens are counted but have no known model rate' in capsys.readouterr().out

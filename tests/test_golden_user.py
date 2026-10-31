@@ -166,6 +166,9 @@ def test_cli_report_shows_every_tier_and_an_all_in_total(golden, capsys):
     """Same tiers as the dashboard's Savings tab: measured, modeled (repeat
     reads avoided), estimated, and one all-in figure that adds them up."""
     measure = golden["measure"]
+    # The collector persists rereads; reports only read that counted cohort.
+    with sqlite3.connect(str(measure.TRENDS_DB)) as conn:
+        measure._update_counted_cumulative(conn, quiet=True)
     measure.savings_report(days=30)
     out = capsys.readouterr().out
     total_line = next(line for line in out.splitlines() if "TOTAL (measured)" in line)

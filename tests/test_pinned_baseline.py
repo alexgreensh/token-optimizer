@@ -81,7 +81,7 @@ def test_pre_install_anchor_without_surviving_transcripts_stops_trying(tmp_path,
 
 def test_savings_report_counts_avoided_re_reads(tmp_path, monkeypatch, capsys):
     measure = _load(tmp_path, monkeypatch)
-    monkeypatch.setattr(measure, "_reread_savings_for_window",
+    monkeypatch.setattr(measure, "_counted_cumulative_summary",
                         lambda days: {"available": True, "reread_tokens": 1_000_000, "reread_usd": 12.5})
     measure.savings_report(days=30)
     out = capsys.readouterr().out

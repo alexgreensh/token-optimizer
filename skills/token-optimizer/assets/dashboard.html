@@ -4406,6 +4406,15 @@ var DB = (function() {
     var estimatedMo = estItems.reduce(function(a, b){ return a + b.amt; }, 0);
     // What you're getting = measured + estimated (both real value; estimated shown split-out, never hidden).
     var gettingMo = measuredMo + rereadMo + estimatedMo;
+    // New payloads share the CLI's complete action total. Older saved dashboards
+    // retain the component calculation above until their next regeneration.
+    var actionSavings = s.action_savings;
+    if (actionSavings) {
+      measuredMo = mo(actionSavings.logged_usd) + mo(actionSavings.routing_measured_usd);
+      rereadMo = mo(actionSavings.reread_usd);
+      estimatedMo = mo(actionSavings.estimated_usd) + mo(actionSavings.routing_estimated_usd);
+      gettingMo = mo(actionSavings.total_usd);
+    }
     // Opportunity = realizable if you act; never realized, never summed into "getting".
     // output-waste is $ here; cache-drop is shown separately in TOKENS (re-written prefix) —
     // its $ is Anthropic-specific (OpenAI/OpenCode cache writes are free), but the token count
@@ -4538,9 +4547,12 @@ var DB = (function() {
       '<div class="label">Action savings &middot; ' + periodLabel + '</div>' +
       '<div class="savings-amount">' + money(periodValue(heroAmt)) + '<span class="savings-unit"> logged + estimated</span></div>' +
       '<div class="savings-split"><span>Logged actions <strong>' + money(periodValue(measuredMo)) + '</strong></span>' +
-        '<span>Repeat reads avoided <strong>~' + money(periodValue(rereadMo)) + '</strong></span>' +
+        '<span>Repeat reads avoided <strong>' +
+          (actionSavings && actionSavings.reread_available === false ? 'Unavailable' : '~' + money(periodValue(rereadMo))) + '</strong></span>' +
         '<span>Other estimates <strong>~' + money(periodValue(estimatedMo)) + '</strong></span></div>' +
       '<p class="note">Includes the later benefit of context removed during this period. Initial removals are counted once.</p>' +
+      (actionSavings && actionSavings.total_clamped ? '<p class="note">Signed adjustments give a net total of ' +
+        money(actionSavings.net_total_usd) + '; the headline has a $0 floor.</p>' : '') +
       (Number(s.compression_unpriced_tokens) > 0 ? '<p class="note">' +
         Math.round(Number(s.compression_unpriced_tokens)).toLocaleString() +
         ' compression tokens are counted without a dollar value because their model rate is unavailable.</p>' : '') +

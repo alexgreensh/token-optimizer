@@ -189,6 +189,7 @@ export interface RealizedSavings {
   unpricedCurrentTokens: number;
   unpricedEventTokens: number;
   unpricedEventCount: number;
+  archivePricedNetUsd: number | null;
   /** Monthly $ at the user's CURRENT model mix + cache pattern ("now" arm). */
   actualMonthlyUsd: number;
   /** Monthly $ at the user's BASELINE mix + cache pattern ("the old way" arm). */
@@ -275,6 +276,7 @@ const NOT_READY = (status: string): RealizedSavings => ({
   unpricedCurrentTokens: 0,
   unpricedEventTokens: 0,
   unpricedEventCount: 0,
+  archivePricedNetUsd: null,
   actualMonthlyUsd: 0,
   counterfactualMonthlyUsd: 0,
   transformationPct: 0,
@@ -323,6 +325,7 @@ export function computeRealizedSavings(
   let measuredVerbosity = 0;
   let unpricedEventTokens = 0;
   let unpricedEventCount = 0;
+  let archivePricedNetUsd: number | null = null;
 
   if (!rowsOverride) {
     const store = new TrendsStore(dataDir);
@@ -337,6 +340,7 @@ export function computeRealizedSavings(
       measuredCompressionTokens = comp.totalTokensSaved;
       unpricedEventTokens = comp.unpricedTokens;
       unpricedEventCount = comp.unpricedEvents;
+      archivePricedNetUsd = comp.archivePricedNetUsd;
       // Verbosity-steer add-back (pool #4) reads estimated savings_events.
       const verbosity = store.getVerbositySavingsDetail(days, now);
       measuredVerbosity = verbosity.costUsd;
@@ -359,6 +363,7 @@ export function computeRealizedSavings(
     result.verbosityMeasuredWindowUsd = Math.max(0, measuredVerbosity);
     result.unpricedEventTokens = unpricedEventTokens;
     result.unpricedEventCount = unpricedEventCount;
+    result.archivePricedNetUsd = archivePricedNetUsd;
     return result;
   };
 
@@ -666,6 +671,7 @@ export function computeRealizedSavings(
     unpricedCurrentTokens,
     unpricedEventTokens,
     unpricedEventCount,
+    archivePricedNetUsd,
     actualMonthlyUsd: actualMonthly,
     counterfactualMonthlyUsd: combinedCf,
     transformationPct,

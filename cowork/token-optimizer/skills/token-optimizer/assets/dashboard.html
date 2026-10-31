@@ -4313,6 +4313,7 @@ var DB = (function() {
     var days = Number(s.period_days) || 30;
     var mr  = s.model_routing       || {};
     var cd  = s.cache_drop          || {};
+    var op  = s.oneshot_pricing     || {};
     var ow  = s.output_waste        || {};
     var beh = s.behavioral_estimate || {};
     var sd  = s.structural_detail   || {};
@@ -4398,15 +4399,15 @@ var DB = (function() {
     // Estimated = genuine TO-realized counterfactuals grounded in YOUR behavior; each carries a sample size.
     // (Pillars + estimated reconcile to gettingMo: mcp_cap folds into runtime.)
     var estItems = [
-      { label: 'model routing',                  amt: routingEstimated ? mo(mr.realized_cost_usd) : 0, n: (mr.baseline_reference_priced || []).length, unit: 'model families on one newest-card price list' },
-      { label: 'loops prevented',                amt: mo(beh.cost_saved_usd), n: Number(beh.loop_events) || 0,        unit: 'events' },
-      { label: 'sub-agent runtime',              amt: mo(unc.cost_saved_usd), n: Number(unc.subagent_dispatches) || 0, unit: 'dispatches' },
-      { label: 'MCP output cap',                 amt: mo(mce.cost_saved_usd), n: Number(mce.events) || 0,             unit: 'capped results' },
-      { label: 'avoided rework (heeded nudges)', amt: mo(ce.cost_saved_usd),  n: Number(ce.heeded_sessions) || 0,     unit: 'heeded', conf: ce.confidence },
-      { label: 'continuity handover',            amt: mo(hr.cost_saved_usd),  n: Number(hr.restored_sessions) || 0,    unit: 'restored', conf: hr.confidence },
-      { label: 'avoided search (hints)',         amt: avoidedSearchMo,        n: avoidedSearchN,                       unit: avoidedSearchUnit, conf: hfHasData ? 'observed' : rs.confidence },
-      { label: 'lean resumes (cold reload avoided)', amt: mo(rle.cost_saved_usd), n: Number(rle.events) || 0,           unit: 'resumes' },
-      { label: 'concise output nudges', amt: mo(vs.cost_saved_usd), n: Number(vs.events) || 0, unit: 'nudges' }
+      { key: 'routing_estimated', label: 'model routing',                  amt: routingEstimated ? mo(mr.realized_cost_usd) : 0, n: (mr.baseline_reference_priced || []).length, unit: 'model families on one newest-card price list' },
+      { key: 'behavioral_estimate', label: 'loops prevented',                amt: mo(beh.cost_saved_usd), n: Number(beh.loop_events) || 0,        unit: 'events' },
+      { key: 'uncaptured_runtime', label: 'sub-agent runtime',              amt: mo(unc.cost_saved_usd), n: Number(unc.subagent_dispatches) || 0, unit: 'dispatches' },
+      { key: 'mcp_cap_estimated', label: 'MCP output cap',                 amt: mo(mce.cost_saved_usd), n: Number(mce.events) || 0,             unit: 'capped results' },
+      { key: 'contamination_exit', label: 'avoided rework (heeded nudges)', amt: mo(ce.cost_saved_usd),  n: Number(ce.heeded_sessions) || 0,     unit: 'heeded', conf: ce.confidence },
+      { key: 'handover_rerun', label: 'continuity handover',            amt: mo(hr.cost_saved_usd),  n: Number(hr.restored_sessions) || 0,    unit: 'restored', conf: hr.confidence },
+      { key: 'avoided_search', label: 'avoided search (hints)',         amt: avoidedSearchMo,        n: avoidedSearchN,                       unit: avoidedSearchUnit, conf: hfHasData ? 'observed' : rs.confidence },
+      { key: 'resume_lean_estimated', label: 'lean resumes (cold reload avoided)', amt: mo(rle.cost_saved_usd), n: Number(rle.events) || 0,           unit: 'resumes' },
+      { key: 'verbosity_steer', label: 'concise output nudges', amt: mo(vs.cost_saved_usd), n: Number(vs.events) || 0, unit: 'nudges' }
     ].filter(function(it){ return it.amt > 0 || it.conf; });
     var estimatedMo = estItems.reduce(function(a, b){ return a + b.amt; }, 0);
     // What you're getting = measured + estimated (both real value; estimated shown split-out, never hidden).
@@ -4420,6 +4421,30 @@ var DB = (function() {
       estimatedMo = mo(actionSavings.estimated_usd) + mo(actionSavings.routing_estimated_usd);
       gettingMo = mo(actionSavings.total_usd);
     }
+    // Whole-cent display values from the payload: the parts shown on the card
+    // add up to the total shown, with the exact amounts kept in the payload.
+    var exactCents = null;
+    var dispCents = actionSavings && actionSavings.display;
+    if (dispCents && dispCents.components_cents && dispCents.estimates_cents) {
+      var dc = dispCents.components_cents, de = dispCents.estimates_cents;
+      var estSumCents = Object.keys(de).reduce(function(a, k) { return a + de[k]; }, 0);
+      exactCents = {
+        total: dispCents.total_cents,
+        logged: dc.logged + dc.routing_measured,
+        reread: dc.reread,
+        other: estSumCents + dc.routing_estimated,
+        est: de,
+        routingEstimated: dc.routing_estimated,
+        avoidedKey: actionSavings.avoided_search_source
+      };
+    }
+    function moneyCents(c) {
+      return (c < 0 ? '-$' : '$') + (Math.abs(c) / 100).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    }
+    function estCents(item) {
+      var key = item.key === 'avoided_search' ? exactCents.avoidedKey : item.key;
+      return key === 'routing_estimated' ? exactCents.routingEstimated : exactCents.est[key];
+    }
     // Opportunity = realizable if you act; never realized, never summed into "getting".
     // output-waste is $ here; cache-drop is shown separately in TOKENS (re-written prefix) —
     // its $ is Anthropic-specific (OpenAI/OpenCode cache writes are free), but the token count
@@ -4431,6 +4456,7 @@ var DB = (function() {
     // Opus work, so it gets its own line below the number and is never added in.
     var opportunityMo = mo(sp.cost_saved_usd) + mo(recl.cost_usd) + mo(ow.cost_saved_usd);
     var routingPotentialMo = mo(mr.potential_cost_usd);
+    var cdCostMo = mo(cd.cost_saved_usd);
     var routingTokensMo = Number(mr.potential_tokens_monthly) > 0
       ? Number(mr.potential_tokens_monthly)
       : mo(mr.potential_tokens);
@@ -4551,20 +4577,30 @@ var DB = (function() {
     var heroAmt = gettingMo;
     html += '<div class="card savings-actions" style="flex:2;min-width:min(100%,320px);padding:var(--s-4);">' +
       '<div class="label">Action savings &middot; ' + periodLabel + '</div>' +
-      '<div class="savings-amount">' + money(periodValue(heroAmt)) + '<span class="savings-unit"> logged + estimated</span></div>' +
-      '<div class="savings-split"><span>Logged actions <strong>' + money(periodValue(measuredMo)) + '</strong></span>' +
+      '<div class="savings-amount">' + (exactCents ? moneyCents(exactCents.total) : money(periodValue(heroAmt))) + '<span class="savings-unit"> logged + estimated</span></div>' +
+      '<div class="savings-split"><span>Logged actions <strong>' + (exactCents ? moneyCents(exactCents.logged) : money(periodValue(measuredMo))) + '</strong></span>' +
         '<span>Repeat reads avoided <strong>' +
           (actionSavings && actionSavings.reread_available === false ? 'Unavailable' :
             ((actionSavings && actionSavings.reread_prices_available === false) || cp.reread_prices_available === false ?
-              'Unpriced' : '~' + money(periodValue(rereadMo)))) + '</strong></span>' +
-        '<span>Other estimates <strong>~' + money(periodValue(estimatedMo)) + '</strong></span></div>' +
+              'Unpriced' : '~' + (exactCents ? moneyCents(exactCents.reread) : money(periodValue(rereadMo))))) + '</strong></span>' +
+        '<span>Other estimates <strong>~' + (exactCents ? moneyCents(exactCents.other) : money(periodValue(estimatedMo))) + '</strong></span></div>' +
       '<p class="note">Includes the later benefit of context removed during this period. Initial removals are counted once.</p>' +
       (cp.reread_pricing_note ? '<p class="note">' + esc(cp.reread_pricing_note) + '</p>' : '') +
       (actionSavings && actionSavings.total_clamped ? '<p class="note">Signed adjustments give a net total of ' +
         money(actionSavings.net_total_usd) + '; the headline has a $0 floor.</p>' : '') +
       (Number(s.compression_unpriced_tokens) > 0 ? '<p class="note">' +
         Math.round(Number(s.compression_unpriced_tokens)).toLocaleString() +
-        ' compression tokens are counted without a dollar value because their model rate is unavailable.</p>' : '') +
+        ' compression tokens are counted without a dollar value because their model rate is unavailable' +
+        ((Number(s.compression_unpriced_credit_tokens) > 0 || Number(s.compression_unpriced_debit_tokens) > 0)
+          ? ' (' + Math.round(Number(s.compression_unpriced_credit_tokens) || 0).toLocaleString() + ' credits, ' +
+            Math.round(Number(s.compression_unpriced_debit_tokens) || 0).toLocaleString() + ' debits)' : '') +
+        '.</p>' : '') +
+      (op.removal_events > 0 ? '<p class="note">Initial removals above are priced at the input rate, a minimum.' +
+        (Number(op.class_premium_usd) >= 0.005
+          ? ' The next call billed new context at a cache-write rate for ' +
+            Math.round(Number(op.class_events) || 0).toLocaleString() + ' removals: about ' +
+            money(Number(op.class_premium_usd)) + ' more, not in the total.' : '') +
+        '</p>' : '') +
       (!cp.available ? '<p class="note">Repeat-read coverage is unavailable here; logged actions are still included.</p>' : '') +
       fold('Breakdown and method',
         '<p>Logged actions include output trims, context reductions, setup changes and, when your earlier model mix is priced from your own usage, routing savings. ' +
@@ -4600,7 +4636,8 @@ var DB = (function() {
           '<span>Runtime <strong>' + money(periodValue(runtimeMo + rereadMo)) + '</strong></span>' +
           '<span>Habits <strong>' + money(periodValue(behavMo)) + '</strong></span></div>' +
         (estItems.length ? '<p>Other estimates:</p>' + estItems.map(function(it) {
-          return '<p>' + esc(it.label) + ': <strong>' + money(periodValue(it.amt)) + '</strong> (' +
+          var shown = exactCents && estCents(it) != null ? moneyCents(estCents(it)) : money(periodValue(it.amt));
+          return '<p>' + esc(it.label) + ': <strong>' + shown + '</strong> (' +
             it.n.toLocaleString() + ' ' + esc(it.unit) + (it.conf ? ', ' + esc(String(it.conf)) : '') + ').</p>';
         }).join('') : '') +
         '<p>' + billingCaption + '</p>') +
@@ -4647,7 +4684,7 @@ var DB = (function() {
       parts.push('Route routine work to lighter models and keep Opus for the work that needs it. The routing line above shows the size of that assumption.');
     }
     if (cdTokensMo > 0) {
-      parts.push('Resume within the hour, or batch related work before stepping away. ' + (Number(cd.drop_sessions) || 0) + ' of your sessions idled past the cache window and re-wrote the prefix — about ' + cdTokensMo.toLocaleString() + ' tokens' + per + '.');
+      parts.push('Resume within the hour, or batch related work before stepping away. ' + (Number(cd.drop_sessions) || 0) + ' of your sessions idled past the cache window and re-wrote the prefix — about ' + cdTokensMo.toLocaleString() + ' tokens' + per + (cdCostMo > 0 ? ', worth about ' + money(cdCostMo) + per + ' at API rates' : '') + '.');
     }
     if ((Number(ow.cost_saved_usd) || 0) > 0) {
       parts.push('Favor targeted Edits over full-file Writes. About ' + (Number(ow.avoidable_writes) || 0) + ' of your Writes could have been Edits, worth about ' + money(mo(ow.cost_saved_usd)) + per + ' in output.');
@@ -4663,6 +4700,13 @@ var DB = (function() {
         html += '<div class="lede" style="margin-top:var(--s-2);">Potential savings if you change your setup or habits. Excluded from the totals above.</div>';
       } else {
         html += '<div class="lede">Potential savings if you change your setup or habits. Excluded from the totals above.</div>';
+      }
+      if (cdTokensMo > 0) {
+        html += '<div class="cache-drop-opportunity" style="margin-top:var(--s-3);font-family:var(--font-mono);font-size:17px;line-height:1.6;color:var(--c-text-main);max-width:820px;">' +
+          'Cache drops (an opportunity, not a measurement): ' + (Number(cd.drop_sessions) || 0) + ' sessions idled past the cache window and re-wrote ~' + fmtTok(cdTokensMo) + ' tokens' + esc(per) + ' of prefix' +
+          (cdCostMo > 0 ? ', about <span style="color:var(--c-amber);">' + money(cdCostMo) + '</span> at API rates' : '') + '.' +
+          '</div>';
+        html += '<div class="note" style="margin-top:var(--s-1);">Cache write rate minus the cache read it would have cost, at the models you ran. It is not part of the number above.</div>';
       }
       if (routingPotentialMo > 0) {
         html += '<div class="routing-assumption" style="margin-top:var(--s-3);font-family:var(--font-mono);font-size:17px;line-height:1.6;color:var(--c-text-main);max-width:820px;">' +

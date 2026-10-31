@@ -99,3 +99,34 @@ def test_dashboard_card_shows_dollars_and_keeps_it_out_of_the_number():
     assert "Cache drops (an opportunity, not a measurement)" in card
     assert "$133" in card.split("cache-drop-opportunity")[1].split("</div>")[0]
     assert "still on the table" in card and "$20.0" in card.split("still on the table")[0]
+
+
+def test_opportunity_items_add_up_to_their_printed_sum(measure, monkeypatch, capsys):
+    summary = {
+        "period_days": 30, "total_cost_usd": 10.0, "total_events": 1, "by_category": {},
+        "daily_avg_usd": 0.33,
+        "output_waste": {"cost_saved_usd": 32.625, "avoidable_writes": 1, "writes": 2},
+        "stale_reads_reclaimable": {"cost_usd": 10.2449, "tokens": 1000, "sessions": 1},
+    }
+    monkeypatch.setattr(measure, "_get_merged_savings", lambda **kw: json.loads(json.dumps(summary)))
+    monkeypatch.setattr(measure, "_counted_cumulative_summary", lambda **kw: {"available": False})
+    monkeypatch.setattr(measure, "_savings_since_install", lambda: {"days": 90})
+    monkeypatch.setattr(measure, "_install_date", lambda: None)
+    measure.savings_report()
+    out = capsys.readouterr().out
+    block = out.split("COULD SAVE")[1].split("from the items above")[0]
+    parts = [float(x) for x in re.findall(r"~\$([0-9.]+)/mo (?:output|reclaimable)", block)]
+    total = float(re.search(r"= ~\$([0-9.]+)/mo$", block.rstrip()).group(1))
+    assert len(parts) == 2 and total == pytest.approx(42.87)
+    assert sum(parts) == pytest.approx(total)
+
+
+def test_dashboard_card_items_add_up_to_the_card_number():
+    s = fixture()
+    s.pop("structural_potential", None)
+    s["output_waste"] = {"cost_saved_usd": 32.625, "avoidable_writes": 1, "writes": 2}
+    s["stale_reads_reclaimable"] = {"cost_usd": 10.2449, "tokens": 1000, "sessions": 1}
+    card = render(s).split("Money on the table")[1]
+    assert "$42.87" in card.split("still on the table")[0]
+    assert "worth about $32.63/mo in output" in card
+    assert "worth about $10.24/mo" in card

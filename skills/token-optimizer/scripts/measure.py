@@ -58228,21 +58228,21 @@ def savings_report(days=30, as_json=False):
         print()
         print(f"  {'-' * 58}")
         print("  COULD SAVE (opportunity — act to realize, not counted above):")
+        # Round once so the printed items add up to the printed sum.
+        concrete_items = [c for c in (pot_cost, ow_cost, recl_cost) if c > 0]
+        item_cents, items_total_cents = _allocate_cents([_mo(c) for c in concrete_items])
+        item_text = iter(_format_cents(c) for c in item_cents)
         if pot_cost > 0:
-            pot_monthly = _mo(pot_cost)
-            print(f"    ~${pot_monthly:.2f}{per} structural: prune {potential.get('unused_skills', 0)} unused skills "
+            print(f"    ~${next(item_text)}{per} structural: prune {potential.get('unused_skills', 0)} unused skills "
                   f"(~{potential.get('recoverable_tokens', 0):,} tokens), compounds every session.")
         if ow_cost > 0:
-            ow_monthly = _mo(ow_cost)
-            print(f"    ~${ow_monthly:.2f}{per} output: {output_waste.get('avoidable_writes', 0)} of "
+            print(f"    ~${next(item_text)}{per} output: {output_waste.get('avoidable_writes', 0)} of "
                   f"{output_waste.get('writes', 0)} full-file Writes could be targeted Edits.")
         if recl_cost > 0:
-            recl_monthly = _mo(recl_cost)
-            print(f"    ~${recl_monthly:.2f}{per} reclaimable: {reclaimable.get('tokens', 0):,} tokens of stale "
+            print(f"    ~${next(item_text)}{per} reclaimable: {reclaimable.get('tokens', 0):,} tokens of stale "
                   f"re-reads across {reclaimable.get('sessions', 0)} sessions — avoid re-reading or use .contextignore.")
-        concrete_items = [c for c in (pot_cost, ow_cost, recl_cost) if c > 0]
         if len(concrete_items) > 1:
-            print(f"    = ~${_mo(sum(concrete_items)):.2f}{per} from the items above (API-rate equivalent)")
+            print(f"    = ~${_format_cents(items_total_cents)}{per} from the items above (API-rate equivalent)")
         if cd_tokens > 0:
             # Cache drops are an opportunity valued at API rates; like routing
             # they sit on their own line and are never folded into the total above.

@@ -230,7 +230,7 @@ def _big_number(html):
 def test_big_number_is_concrete_items_only():
     html = _render(_savings())
     # 20 + 15 + 8 = $43; the $4,071 routing guess must not be in it.
-    assert _big_number(html) == "$43.0"
+    assert _big_number(html) == "$43.00"
     assert "$4,114" not in html and "$4,071" not in _big_number(html)
     assert "still on the table" in html
 
@@ -256,7 +256,7 @@ def test_no_routing_potential_means_no_routing_line():
     s = _savings()
     s["model_routing"] = {"realized_cost_usd": 0.0}
     html = _render(s)
-    assert _big_number(html) == "$43.0"
+    assert _big_number(html) == "$43.00"
     assert "remaining Opus work" not in html
 
 

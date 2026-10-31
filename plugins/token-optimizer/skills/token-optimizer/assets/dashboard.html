@@ -4455,6 +4455,19 @@ var DB = (function() {
     // stale re-reads, full-file Writes). Routing rests on an assumed share of your
     // Opus work, so it gets its own line below the number and is never added in.
     var opportunityMo = mo(sp.cost_saved_usd) + mo(recl.cost_usd) + mo(ow.cost_saved_usd);
+    // Round once: each item gets its floor in cents and the missing cents go to
+    // the largest remainders, so the items shown add up to the number shown.
+    var oppCents = (function(values) {
+      var exact = values.map(function(v) { var n = Number(v) * 100; return isFinite(n) ? n : 0; });
+      var floors = exact.map(function(x) { return Math.floor(x + 1e-9); });
+      var total = Math.round(exact.reduce(function(a, b) { return a + b; }, 0) + 1e-9);
+      var left = total - floors.reduce(function(a, b) { return a + b; }, 0);
+      exact.map(function(x, i) { return i; })
+        .sort(function(a, b) { return (exact[b] - floors[b]) - (exact[a] - floors[a]) || a - b; })
+        .slice(0, Math.max(0, Math.min(left, exact.length)))
+        .forEach(function(i) { floors[i] += 1; });
+      return { structural: floors[0], reclaimable: floors[1], output: floors[2], total: total };
+    })([mo(sp.cost_saved_usd), mo(recl.cost_usd), mo(ow.cost_saved_usd)]);
     var routingPotentialMo = mo(mr.potential_cost_usd);
     var cdCostMo = mo(cd.cost_saved_usd);
     var routingTokensMo = Number(mr.potential_tokens_monthly) > 0
@@ -4675,10 +4688,10 @@ var DB = (function() {
     // ---- SAVE MORE: suggestions, promoted right under the hero ----
     var parts = [];
     if ((Number(sp.cost_saved_usd) || 0) > 0 && unusedSkills > 0) {
-      parts.push('Review ' + unusedSkills + ' skill' + (unusedSkills === 1 ? '' : 's') + ' not invoked in this window. Archiving what you no longer need is worth about ' + money(mo(sp.cost_saved_usd)) + per + ', automatically, from then on.');
+      parts.push('Review ' + unusedSkills + ' skill' + (unusedSkills === 1 ? '' : 's') + ' not invoked in this window. Archiving what you no longer need is worth about ' + moneyCents(oppCents.structural) + per + ', automatically, from then on.');
     }
     if ((Number(recl.cost_usd) || 0) > 0) {
-      parts.push('Avoid re-reading files that have not changed, or add them to .contextignore. ' + (Number(recl.tokens) || 0).toLocaleString() + ' tokens of stale re-reads across ' + (Number(recl.sessions) || 0).toLocaleString() + ' sessions are worth about ' + money(mo(recl.cost_usd)) + per + '.');
+      parts.push('Avoid re-reading files that have not changed, or add them to .contextignore. ' + (Number(recl.tokens) || 0).toLocaleString() + ' tokens of stale re-reads across ' + (Number(recl.sessions) || 0).toLocaleString() + ' sessions are worth about ' + moneyCents(oppCents.reclaimable) + per + '.');
     }
     if ((Number(mr.potential_cost_usd) || 0) > 0) {
       parts.push('Route routine work to lighter models and keep Opus for the work that needs it. The routing line above shows the size of that assumption.');
@@ -4687,14 +4700,14 @@ var DB = (function() {
       parts.push('Resume within the hour, or batch related work before stepping away. ' + (Number(cd.drop_sessions) || 0) + ' of your sessions idled past the cache window and re-wrote the prefix — about ' + cdTokensMo.toLocaleString() + ' tokens' + per + (cdCostMo > 0 ? ', worth about ' + money(cdCostMo) + per + ' at API rates' : '') + '.');
     }
     if ((Number(ow.cost_saved_usd) || 0) > 0) {
-      parts.push('Favor targeted Edits over full-file Writes. About ' + (Number(ow.avoidable_writes) || 0) + ' of your Writes could have been Edits, worth about ' + money(mo(ow.cost_saved_usd)) + per + ' in output.');
+      parts.push('Favor targeted Edits over full-file Writes. About ' + (Number(ow.avoidable_writes) || 0) + ' of your Writes could have been Edits, worth about ' + moneyCents(oppCents.output) + per + ' in output.');
     }
     if (parts.length > 0) {
       html += '<div class="card wide" style="padding:var(--s-5) var(--s-4);margin-bottom:var(--s-3);border:1px solid var(--c-amber);box-shadow:0 0 0 1px rgba(217,164,65,0.18), 0 0 44px rgba(217,164,65,0.12);">';
       html += '<div class="label" style="margin-bottom:var(--s-2);color:var(--c-amber);letter-spacing:0.08em;">Money on the table &middot; opportunity</div>';
       if (opportunityMo > 0) {
         html += '<div style="display:flex;align-items:baseline;gap:var(--s-2);flex-wrap:wrap;">' +
-            '<span style="font-family:var(--font-mono);font-weight:300;font-size:76px;line-height:0.9;color:var(--c-amber);text-shadow:0 0 30px rgba(217,164,65,0.5);letter-spacing:-0.02em;">' + money(opportunityMo) + '</span>' +
+            '<span style="font-family:var(--font-mono);font-weight:300;font-size:76px;line-height:0.9;color:var(--c-amber);text-shadow:0 0 30px rgba(217,164,65,0.5);letter-spacing:-0.02em;">' + moneyCents(oppCents.total) + '</span>' +
             '<span style="font-size:23px;color:var(--c-text-dim);font-family:var(--font-mono);">' + per + ' still on the table</span>' +
           '</div>';
         html += '<div class="lede" style="margin-top:var(--s-2);">Potential savings if you change your setup or habits. Excluded from the totals above.</div>';

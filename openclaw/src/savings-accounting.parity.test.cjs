@@ -303,3 +303,34 @@ test('legacy Claude model pricing accepts only supported generation cards and al
     assert.deepEqual(priceSavingsEvent(1000000, 'checkpoint_restore', {model}, dir), {cost: 0, unpricedTokens: 1000000});
   }
 });
+
+test('archive coverage retains unknown credits and signed reversals', () => {
+  const fs=require('node:fs'), path=require('node:path');
+  const {logSavingsEvent}=require('./read-cache.ts');
+  const {readSavingsEventsByCategory,measuredSavingsFromSummary}=require('./savings.ts');
+  function scenario(credit,debit,amount=1e6,debitFirst=false) {
+    const dir=fs.mkdtempSync(path.join(process.cwd(),'.scratch-parity','debit-'));
+    const a=()=>credit && logSavingsEvent('tool_archive',1e6,'credit','credit',{openclawDir:dir,model:credit});
+    const b=()=>debit && logSavingsEvent('tool_archive_reexpand',amount,'debit','debit',{openclawDir:dir,model:debit});
+    if(debitFirst){b();a();}else{a();b();}
+    return readSavingsEventsByCategory(dir);
+  }
+  for(const order of [false,true]) {
+    const x=scenario('opus','unknown-future',1e6,order);
+    assert.equal(x.unpricedTokens,1e6);assert.equal(x.unpricedEvents,1);
+    assert.equal(x.archivePricedNetUsd,5);assert.equal(x.totalCostSavedUsd,5);assert.equal(x.totalTokensSaved,0);assert.equal(measuredSavingsFromSummary(x),5);
+  }
+  const both=scenario('unknown-future','unknown-future');
+  assert.equal(both.unpricedTokens,2e6);assert.equal(both.unpricedEvents,2);
+  const inverse=scenario('unknown-future','sonnet',-1e6);
+  assert.equal(inverse.unpricedTokens,1e6);assert.equal(inverse.archivePricedNetUsd,-2);
+  assert.equal(measuredSavingsFromSummary(inverse),0);
+  assert.equal(scenario(null,'unknown-future').unpricedTokens,1e6);
+  assert.equal(scenario('local','local').unpricedEvents,0);
+  assert.equal(measuredSavingsFromSummary(scenario('opus','sonnet')),3);
+  const dir=fs.mkdtempSync(path.join(process.cwd(),'.scratch-parity','mixed-debit-'));
+  logSavingsEvent('tool_archive',1e6,'credit','credit',{openclawDir:dir,model:'opus'});
+  logSavingsEvent('tool_archive_reexpand',1e6,'debit1','debit',{openclawDir:dir,model:'sonnet'});
+  logSavingsEvent('tool_archive_reexpand',-1e6,'debit2','debit',{openclawDir:dir,model:'sonnet'});
+  assert.equal(readSavingsEventsByCategory(dir).archivePricedNetUsd,1);
+});

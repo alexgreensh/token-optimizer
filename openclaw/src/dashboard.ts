@@ -786,7 +786,7 @@ function renderTokensSavedCard(data: DashboardData): string {
     if (reexpand) {
       byType.delete("tool_archive_reexpand");
       const ta = byType.get("tool_archive");
-      if (ta) byType.set("tool_archive", Math.max(0, ta - reexpand));
+      if (ta) byType.set("tool_archive", Math.max(0, ta - Math.abs(reexpand)));
     }
     for (const v of byType.values()) savingsEventsTokens += v;
   } catch {
@@ -1348,7 +1348,7 @@ function renderSavings(data: DashboardData): string {
     </div>`;
   };
 
-  const pricingCoverage = data.savingsEvents.unpricedEvents ? `<div class="daily-hint">${fmtTokens(data.savingsEvents.unpricedTokens ?? 0)} saved tokens across ${data.savingsEvents.unpricedEvents} events have no available model pricing.</div>` : "";
+  const pricingCoverage = data.savingsEvents.unpricedEvents ? `<div class="daily-hint">${fmtTokens(data.savingsEvents.unpricedTokens ?? 0)} tokens across ${data.savingsEvents.unpricedEvents} action credits or reversals have no model price. Action dollar amounts exclude unpriced events.${data.savingsEvents.archivePricedNetUsd != null ? ` Priced archive subtotal: ${data.savingsEvents.archivePricedNetUsd < 0 ? "-" : ""}${fmtCost(Math.abs(data.savingsEvents.archivePricedNetUsd))}.` : ""}</div>` : "";
 
   // --- Early exit: no savings data at all ---
   if (!s || (!s.ready && s.cumulativeSavedUsd === 0 && s.monthlySavingsUsd === 0)) {

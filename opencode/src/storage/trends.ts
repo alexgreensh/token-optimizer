@@ -258,6 +258,7 @@ export class TrendsStore {
     totalTokensSaved: number;
     totalCostSavedUsd: number;
     totalEvents: number;
+    archivePricedNetUsd: number | null;
     unpricedTokens: number;
     unpricedEvents: number;
   } {
@@ -278,10 +279,12 @@ export class TrendsStore {
         const unknown = !r.model || knownModelRate(r.model, "input") === null;
         const rate = unknown ? sessionRate(r.session_model, r.model_token_buckets, "input") : { rate: 0, coverage: 1 };
         item.events++;
-        item.tokens += r.tokens_saved ?? 0;
-        item.cost += unknown ? (r.tokens_saved ?? 0) * rate.rate : (r.cost_saved_usd ?? 0);
-        item.unpricedTokens += (r.tokens_saved ?? 0) * (1 - rate.coverage);
-        if (rate.coverage < 1) item.unpricedEvents++;
+        const tokens = r.tokens_saved ?? 0;
+        const cost = unknown ? tokens * rate.rate : (r.cost_saved_usd ?? 0);
+        item.tokens += r.event_type === "tool_archive_reexpand" ? Math.abs(tokens) : tokens;
+        item.cost += r.event_type === "tool_archive_reexpand" ? Math.abs(cost) : cost;
+        item.unpricedTokens += Math.abs(tokens) * (1 - rate.coverage);
+        if (rate.coverage < 1 && tokens !== 0) item.unpricedEvents++;
         byCategory.set(r.event_type, item);
       }
 
@@ -297,20 +300,22 @@ export class TrendsStore {
       // B6: net tool_archive re-expansions against tool_archive (re-popped
       // results didn't stay collapsed), floored at 0. The debit is not its own line.
       const reexpand = byCategory.get("tool_archive_reexpand");
+      const archive = byCategory.get("tool_archive");
+      const archivePricedNetUsd = archive || reexpand ? (archive?.cost ?? 0) - (reexpand?.cost ?? 0) : null;
       if (reexpand) {
         byCategory.delete("tool_archive_reexpand");
         const ta = byCategory.get("tool_archive");
         if (ta) {
           ta.tokens = Math.max(0, ta.tokens - reexpand.tokens);
           ta.cost = Math.max(0, ta.cost - reexpand.cost);
-          ta.unpricedTokens = Math.max(0, ta.unpricedTokens - reexpand.unpricedTokens);
         }
       }
 
       let totalTokensSaved = 0;
       let totalCostSavedUsd = 0;
       let totalEvents = 0;
-      let unpricedTokens = 0, unpricedEvents = 0;
+      // Coverage is gross: uncertain credits and reversals cannot cancel.
+      let unpricedTokens = reexpand?.unpricedTokens ?? 0, unpricedEvents = reexpand?.unpricedEvents ?? 0;
       for (const v of byCategory.values()) {
         totalTokensSaved += v.tokens;
         totalCostSavedUsd += v.cost;
@@ -318,9 +323,9 @@ export class TrendsStore {
         unpricedTokens += v.unpricedTokens;
         unpricedEvents += v.unpricedEvents;
       }
-      return { totalTokensSaved, totalCostSavedUsd, totalEvents, unpricedTokens, unpricedEvents };
+      return { totalTokensSaved, totalCostSavedUsd, totalEvents, archivePricedNetUsd, unpricedTokens, unpricedEvents };
     } catch {
-      return { totalTokensSaved: 0, totalCostSavedUsd: 0, totalEvents: 0, unpricedTokens: 0, unpricedEvents: 0 };
+      return { totalTokensSaved: 0, totalCostSavedUsd: 0, totalEvents: 0, archivePricedNetUsd: null, unpricedTokens: 0, unpricedEvents: 0 };
     }
   }
 
@@ -353,8 +358,8 @@ export class TrendsStore {
         const unknown = !r.model || knownModelRate(r.model, "output") === null;
         const rate = unknown ? sessionRate(r.session_model, r.model_token_buckets, "output") : { rate: 0, coverage: 1 };
         costUsd += unknown ? (r.tokens_saved ?? 0) * rate.rate : (r.cost_saved_usd ?? 0);
-        unpricedTokens += (r.tokens_saved ?? 0) * (1 - rate.coverage);
-        if (rate.coverage < 1) unpricedEvents++;
+        unpricedTokens += Math.abs(r.tokens_saved ?? 0) * (1 - rate.coverage);
+        if (rate.coverage < 1 && r.tokens_saved !== 0) unpricedEvents++;
       }
       return { costUsd: Math.max(0, costUsd), unpricedTokens, unpricedEvents };
     } catch {

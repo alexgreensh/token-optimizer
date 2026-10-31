@@ -637,6 +637,7 @@ export interface SavingsEventsSummary {
   totalCount: number;
   unpricedTokens?: number;
   unpricedEvents?: number;
+  archivePricedNetUsd?: number | null;
 }
 
 /**
@@ -712,17 +713,17 @@ export function readSavingsEventsByCategory(
       const storedBuckets = row.model_token_buckets && typeof row.model_token_buckets === "object" ? row.model_token_buckets as Record<string, {input?: number; output?: number; cacheRead?: number; cacheWrite?: number}> : undefined;
       const evidence = storedBuckets ? {model: typeof row.model === "string" ? row.model : undefined, modelTokenBuckets: storedBuckets} : session ?? (typeof row.model === "string" ? {model: row.model} : undefined);
       const inferred = priceSavingsEvent(tokens, et, evidence, root);
-      const canReprice = row.pricing_status === "partial_or_unavailable" && row.unpriced_tokens === tokens && row.cost_saved_usd === 0 && !!evidence;
+      const canReprice = row.pricing_status === "partial_or_unavailable" && Math.abs(row.unpriced_tokens as number) === Math.abs(tokens) && row.cost_saved_usd === 0 && !!evidence;
       const cost = typeof row.cost_saved_usd === "number" && Number.isFinite(row.cost_saved_usd) && !canReprice
         ? row.cost_saved_usd : inferred.cost;
       const uncovered = canReprice ? inferred.unpricedTokens : typeof row.unpriced_tokens === "number" && Number.isFinite(row.unpriced_tokens)
-        ? Math.max(0, row.unpriced_tokens) : (typeof row.cost_saved_usd === "number" ? 0 : inferred.unpricedTokens);
+        ? Math.abs(row.unpriced_tokens) : (typeof row.cost_saved_usd === "number" && (row.cost_saved_usd !== 0 || row.pricing_status === "priced") ? 0 : inferred.unpricedTokens);
       unpricedTokens += uncovered;
       if (uncovered > 0) unpricedEvents++;
       const entry = byType.get(et) ?? { count: 0, tokensSaved: 0, costSavedUsd: 0 };
       entry.count++;
-      entry.tokensSaved += tokens;
-      entry.costSavedUsd += cost;
+      entry.tokensSaved += et === "tool_archive_reexpand" ? Math.abs(tokens) : tokens;
+      entry.costSavedUsd += et === "tool_archive_reexpand" ? Math.abs(cost) : cost;
       byType.set(et, entry);
     }
   } catch {
@@ -739,11 +740,15 @@ export function readSavingsEventsByCategory(
     }))
     .sort((a, b) => b.tokensSaved - a.tokensSaved);
 
-  const totalTokensSaved = categories.reduce((s, c) => s + c.tokensSaved, 0);
-  const totalCostSavedUsd = categories.reduce((s, c) => s + c.costSavedUsd, 0);
+  const archive = byType.get("tool_archive"), reexpand = byType.get("tool_archive_reexpand");
+  const archivePricedNetUsd = archive || reexpand ? (archive?.costSavedUsd ?? 0) - (reexpand?.costSavedUsd ?? 0) : null;
+  const otherCategories = categories.filter(c => c.eventType !== "tool_archive" && c.eventType !== "tool_archive_reexpand");
+  const totalTokensSaved = otherCategories.reduce((s, c) => s + c.tokensSaved, 0)
+    + Math.max(0, (archive?.tokensSaved ?? 0) - (reexpand?.tokensSaved ?? 0));
+  const totalCostSavedUsd = otherCategories.reduce((s, c) => s + c.costSavedUsd, 0)
+    + Math.max(0, archivePricedNetUsd ?? 0);
   const totalCount = categories.reduce((s, c) => s + c.count, 0);
-
-  return { categories, totalTokensSaved, totalCostSavedUsd, totalCount, unpricedTokens, unpricedEvents };
+  return { categories, totalTokensSaved, totalCostSavedUsd, totalCount, unpricedTokens, unpricedEvents, archivePricedNetUsd };
 }
 
 /**
@@ -776,7 +781,7 @@ export function measuredSavingsFromSummary(summary: SavingsEventsSummary): numbe
     byType.delete("tool_archive_reexpand");
     const ta = byType.get("tool_archive");
     if (ta) {
-      byType.set("tool_archive", Math.max(0, ta - reexpand));
+      byType.set("tool_archive", Math.max(0, ta - Math.abs(reexpand)));
     }
   }
   let total = 0;

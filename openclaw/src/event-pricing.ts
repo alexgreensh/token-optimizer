@@ -44,7 +44,8 @@ export function loadSavingsSessions(openclawDir: string): Map<string, SessionEvi
 }
 
 export function priceSavingsEvent(tokens: number, eventType: string, session: SessionEvidence | undefined, openclawDir: string): {cost: number; unpricedTokens: number} {
-  const amount = Number.isFinite(tokens) ? Math.max(0, tokens) : 0;
+  const amount = Number.isFinite(tokens) ? Math.abs(tokens) : 0;
+  const sign = tokens < 0 ? -1 : 1;
   if (!session) return {cost: 0, unpricedTokens: amount};
   const output = eventType === "verbosity_steer" || eventType === "verbosity_steer_measured";
   const buckets = session.modelTokenBuckets;
@@ -68,5 +69,5 @@ export function priceSavingsEvent(tokens: number, eventType: string, session: Se
     const card = getPricing(openclawDir)[key];
     cost += part * (output ? card.output : card.input) * tierMultiplier(loadPricingTier(openclawDir), key);
   }
-  return {cost, unpricedTokens};
+  return {cost: cost * sign, unpricedTokens};
 }

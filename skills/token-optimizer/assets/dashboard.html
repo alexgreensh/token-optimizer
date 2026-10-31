@@ -4223,6 +4223,7 @@ var DB = (function() {
         rwEfficiencyHeadline +
         '<div style="margin-top:var(--s-2);font-size:15px;color:var(--c-text-dim);line-height:1.5;text-wrap:pretty;">' + rwEfficiencyDetail + '</div>' +
         rwTokenFloorDetail +
+        (rw.counted_pricing && rw.counted_pricing.reread_pricing_note ? '<p class="note">' + esc(rw.counted_pricing.reread_pricing_note) + '</p>' : '') +
         // Stands alone. An earlier revision opened with "before you hit your usage
         // limits.", a continuation of the headline that reads as a truncated
         // fragment once it wraps to its own line, and the limit panels below
@@ -4555,6 +4556,7 @@ var DB = (function() {
           (actionSavings && actionSavings.reread_available === false ? 'Unavailable' : '~' + money(periodValue(rereadMo))) + '</strong></span>' +
         '<span>Other estimates <strong>~' + money(periodValue(estimatedMo)) + '</strong></span></div>' +
       '<p class="note">Includes the later benefit of context removed during this period. Initial removals are counted once.</p>' +
+      (cp.reread_pricing_note ? '<p class="note">' + esc(cp.reread_pricing_note) + '</p>' : '') +
       (actionSavings && actionSavings.total_clamped ? '<p class="note">Signed adjustments give a net total of ' +
         money(actionSavings.net_total_usd) + '; the headline has a $0 floor.</p>' : '') +
       (Number(s.compression_unpriced_tokens) > 0 ? '<p class="note">' +
@@ -4566,8 +4568,8 @@ var DB = (function() {
           'Prices may be allocated from each session’s recorded model mix.</p>' +
         '<p>Repeat reads use recorded later turns up to each session’s next compaction. ' +
           'This assumes the removed context would otherwise have stayed until that compaction. ' +
-          'The value belongs to the date of removal, not the date of each later read. Missing transcripts receive no repeat-read estimate.</p>' +
-        '<p>Stored repeat-read values use the rates recorded when they were computed.' +
+          'The value belongs to the date of removal, not the date of each later read. Missing transcripts add no new repeat-read estimate; previously verified history is retained.</p>' +
+        '<p>Stored repeat-read values include only verified per-turn rates. Unpriced contributions retain their token counts.' +
           (cp.computed_at ? ' Last counted: ' + esc(new Date(cp.computed_at).toLocaleString()) + '.' : '') + '</p>' +
         (Number(mr.premium_share) > 0
           ? '<p>Routing compares your current model mix with your earlier mix. Premium models you chose (' +
@@ -4601,11 +4603,13 @@ var DB = (function() {
         '<p>' + billingCaption + '</p>') +
       '</div>';
     var cc = s.counted_cumulative || {};
-    if (Number(cc.total_usd) > 0) {
+    if (Number(cc.total_usd) > 0 || (cc.available && Number(cc.events) > 0)) {
       html += '<div class="card savings-history" style="flex:1;min-width:min(100%,260px);padding:var(--s-4);">' +
         '<div class="label">Context savings &middot; all time</div>' +
-        '<div class="savings-amount">' + money(cc.total_usd) + '</div>' +
+        '<div class="savings-amount">' + (cc.prices_available === false ? 'Unpriced' : money(Math.max(0, Number(cc.total_usd) || 0))) + '</div>' +
         '<p class="note">Initial removals + modeled repeat reads.</p>' +
+        (cc.pricing_note ? '<p class="note">' + esc(cc.pricing_note) + '</p>' : '') +
+        (Number(cc.total_usd) < 0 ? '<p class="note">Signed net: ' + money(cc.total_usd) + '. Savings headline is floored at zero.</p>' : '') +
         (cp.available ? '<p class="note"><strong>' + money(cp.total_usd) + '</strong> from removals in the last ' + days + ' days.</p>' : '') +
         '<p class="note">Overlaps with action savings. Excludes routing, setup and other estimates.</p>' +
         fold('History and coverage',

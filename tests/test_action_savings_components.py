@@ -8,6 +8,7 @@ import pytest
 
 from test_savings_card_young_install import measure
 from test_savings_render import render
+from test_counted_cumulative import _verified_pricing
 
 
 def snapshot(hint_events=2, hint_cost=32):
@@ -127,8 +128,9 @@ def test_rotated_transcript_preserves_stored_action_rereads(measure, monkeypatch
             (str(missing), stamp[:10], sid))
         conn.execute(
             "INSERT INTO counted_reread(event_key,source,session_uuid,event_ts,event_month,"
-            "tokens,oneshot_usd,reread_tokens,reread_usd,computed_at) "
-            "VALUES('se:1','se',?,?,?,1000,99,2000,23,?)", (sid, stamp, stamp[:7], stamp))
+            "tokens,oneshot_usd,reread_tokens,reread_usd,computed_at,pricing_detail) "
+            "VALUES('se:1','se',?,?,?,1000,99,2000,23,?,?)", (sid, stamp, stamp[:7], stamp,
+                _verified_pricing(measure)))
         assert conn.execute("SELECT reread_usd FROM counted_reread").fetchone() == (23,)
     assert not missing.exists()
     assert measure._reread_savings_for_window(30)["reread_usd"] == 0

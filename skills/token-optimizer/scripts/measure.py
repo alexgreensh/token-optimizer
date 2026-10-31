@@ -13222,7 +13222,8 @@ CREATE TABLE IF NOT EXISTS counted_reread (
     reread_usd REAL DEFAULT 0.0,
     turns_counted INTEGER DEFAULT 0,
     transcript_mtime REAL,
-    computed_at TEXT
+    computed_at TEXT,
+    pricing_detail TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_counted_reread_session ON counted_reread (session_uuid);
 
@@ -23576,7 +23577,7 @@ def _counted_walk_transcript(path, collect_markers=False):
     """One pass over a transcript for the counted-cumulative engine.
 
     Returns (turns, compacts, markers):
-      turns   = [(utc-naive datetime, raw model id)] -- parent API calls, deduped
+      turns   = [(utc-naive datetime, raw model id, full prompt tokens)] -- parent API calls, deduped
                 on requestId/message.id (Claude Code writes one assistant line
                 per content block, all sharing the same usage);
       compacts= [utc-naive datetime] of real compact_boundary system lines;
@@ -23585,7 +23586,7 @@ def _counted_walk_transcript(path, collect_markers=False):
     Never raises; returns ([], [], []) on unreadable files.
     """
     turns, compacts, markers = [], [], []
-    seen = set()
+    seen = {}
     last_ts = None
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as f:
@@ -23624,17 +23625,31 @@ def _counted_walk_transcript(path, collect_markers=False):
                 if not isinstance(msg, dict) or not msg.get("usage"):
                     continue
                 rid = _usage_request_key(d, msg)
-                if rid is not None:
-                    if rid in seen:
-                        continue
-                    seen.add(rid)
                 if dt is None:
                     continue
                 # Raw model id: re-reads are priced by generation card
                 # (Opus 5.5 and Fable 5.1 read cache far cheaper than their family).
                 raw_model = msg.get("model")
+                usage = msg["usage"]
+                prompt_parts = {k: usage[k] for k in (
+                    "input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens") if k in usage}
+                if rid is not None and rid in seen:
+                    index, previous_parts = seen[rid]
+                    for key, value in previous_parts.items():
+                        current = prompt_parts.get(key)
+                        if isinstance(value, int) and (not isinstance(current, int) or value > current):
+                            prompt_parts[key] = value
+                prompt_tokens = (sum(prompt_parts.values()) if "input_tokens" in prompt_parts
+                                 and all(isinstance(v, int) and v >= 0 for v in prompt_parts.values()) else None)
+                if rid is not None and rid in seen:
+                    previous = turns[index]
+                    turns[index] = (previous[0], previous[1] or raw_model, prompt_tokens)
+                    seen[rid] = (index, prompt_parts)
+                    continue
+                if rid is not None:
+                    seen[rid] = (len(turns), prompt_parts)
                 turns.append((dt, raw_model if isinstance(raw_model, str)
-                              and not raw_model.startswith("<") else None))
+                              and not raw_model.startswith("<") else None, prompt_tokens))
     except (OSError, PermissionError):
         return [], [], []
     turns.sort(key=lambda x: x[0])
@@ -23642,39 +23657,127 @@ def _counted_walk_transcript(path, collect_markers=False):
     return turns, compacts, markers
 
 
-def _counted_score_event(turns, compacts, ev_dt, tokens, tier_data):
-    """(oneshot_usd, reread_tokens, reread_usd, turns_counted) for one removal.
-
-    Re-reads start at the SECOND call after the event (the first call is the
-    one-shot: the removal's tokens never got sent at the input rate) and stop
-    at the next real compact_boundary -- after compaction the content is gone
-    in both arms. `tokens` may be negative (tool_archive_reexpand debits)."""
-    import bisect as _bisect
+def _counted_exact_card(model, tier_data, prompt_tokens=None):
+    """Resolve a supported id or dated/provider alias, never a nearby family."""
+    if not isinstance(model, str) or not model:
+        return None
+    value = _strip_provider_prefixes(model)
+    # Provider deployment suffixes do not change the underlying model card.
+    value = re.sub(r"(?:-v\d+:\d+|@\d{8})$", "", value)
+    value = re.sub(r"-(?:\d{8}|\d{4}-\d{2}-\d{2})$", "", value)
+    def select(table, long_table, key, threshold):
+        if key in long_table:
+            if prompt_tokens is None:
+                return None
+            if prompt_tokens > threshold:
+                return long_table[key]
+        return table[key]
+    for table, long_table, threshold in (
+            (OPENAI_MODEL_PRICING, OPENAI_LONG_CONTEXT_PRICING, OPENAI_LONG_CONTEXT_INPUT_THRESHOLD),
+            (GEMINI_MODEL_PRICING, GEMINI_LONG_CONTEXT_PRICING, GEMINI_LONG_CONTEXT_INPUT_THRESHOLD)):
+        native = "gpt-5.6-sol" if value == "gpt-5.6" else value
+        if native in table:
+            return select(table, long_table, native, threshold)
     models = tier_data.get("claude_models", {})
+    value = value.removeprefix("claude-")
+    if value == "mythos":
+        value = "fable"
+    key = value.replace("-", "_").replace(".", "_")
+    if key.startswith("mythos_"):
+        key = "fable_" + key[len("mythos_"):]
+    if key in models:
+        return select(models, tier_data.get("claude_models_lc", {}), key, ANTHROPIC_LONG_CONTEXT_INPUT_THRESHOLD)
+    legacy = re.fullmatch(r"(\d+)(?:[-.](\d+))?-(opus|sonnet|haiku)", value)
+    if legacy:
+        major, minor, family = legacy.groups()
+        key = f"{family}_{major}" + (f"_{minor}" if minor else "")
+        if key in models:
+            return select(models, tier_data.get("claude_models_lc", {}), key, ANTHROPIC_LONG_CONTEXT_INPUT_THRESHOLD)
+        if major == "3" and family == "sonnet" and minor in (None, "5", "7"):
+            return models.get("sonnet_legacy")
+    return None
 
-    def _rate(model, kind, default):
-        key = _claude_price_key(model, models) if model else None
-        r = models.get(key or "") or models.get("sonnet") or {}
-        return float(r.get(kind, default))
 
-    times = [t[0] for t in turns]
-    k = _bisect.bisect_right(times, ev_dt)
-    if k >= len(turns):
-        return 0.0, 0, 0.0, 0
-    end = len(turns)
-    for c in compacts:
-        if c > ev_dt:
-            end = _bisect.bisect_left(times, c)
-            break
-    oneshot_usd = tokens * _rate(turns[k][1], "input", 3.0) / 1e6
-    reread_tokens = 0
-    reread_usd = 0.0
-    n = 0
-    for j in range(k + 1, max(k + 1, end)):
-        reread_tokens += tokens
-        reread_usd += tokens * _rate(turns[j][1], "cache_read", 0.3) / 1e6
-        n += 1
-    return oneshot_usd, reread_tokens, reread_usd, n
+_COUNTED_COVERAGE_KEYS = (
+    "oneshot_unpriced_credit_tokens", "oneshot_unpriced_debit_tokens",
+    "reread_unpriced_credit_tokens", "reread_unpriced_debit_tokens",
+    "priced_oneshot_events", "priced_reread_turns",
+)
+
+
+def _counted_coverage_totals(out):
+    """Absolute coverage prevents an unknown credit and debit cancelling."""
+    for kind in ("oneshot", "reread"):
+        out[kind + "_unpriced_tokens"] = sum(
+            out.get(kind + "_unpriced_" + sign + "_tokens", 0)
+            for sign in ("credit", "debit"))
+    out["pricing_complete"] = not (
+        out["oneshot_unpriced_tokens"] or out["reread_unpriced_tokens"]
+        or out.get("legacy_unverified_events", 0))
+    out["reread_pricing_complete"] = not (
+        out["reread_unpriced_tokens"] or out.get("legacy_unverified_events", 0))
+    out["prices_available"] = bool(out.get("priced_oneshot_events")
+                                   or out.get("priced_reread_turns")
+                                   or not out.get("events", 1))
+    out["pricing_note"] = _counted_pricing_note(out)
+    out["reread_pricing_note"] = _counted_pricing_note(out, reread_only=True)
+    return out
+
+
+def _counted_pricing_note(out, reread_only=False):
+    """Public coverage explanation shared by payloads and their consumers."""
+    parts = []
+    for kind, label in (("oneshot", "initial-removal"), ("reread", "repeat-read")):
+        if reread_only and kind == "oneshot":
+            continue
+        credit = int(out.get(kind + "_unpriced_credit_tokens", 0))
+        debit = int(out.get(kind + "_unpriced_debit_tokens", 0))
+        if credit or debit:
+            parts.append(f"{credit + debit:,} {label} tokens unpriced "
+                         f"({credit:,} credits, {debit:,} debits)")
+    legacy = int(out.get("legacy_unverified_events", 0))
+    if legacy:
+        parts.append(f"{legacy:,} historical events have unverifiable prices")
+    text = "Priced subtotal only: " + "; ".join(parts) + ". The complete net dollar value is unavailable." if parts else ""
+    incomplete = int(out.get("refresh_incomplete_events", 0))
+    if incomplete:
+        text += f" Stored evidence retained for {incomplete:,} incomplete transcript refreshes."
+    return text.strip()
+
+
+def _counted_score_detail(turns, compacts, ev_dt, tokens, tier_data):
+    """Price each observed turn independently and retain unknown token classes."""
+    import bisect as _bisect
+    import math
+    out = dict.fromkeys(_COUNTED_COVERAGE_KEYS, 0)
+    out.update(oneshot_usd=0.0, reread_tokens=0, reread_usd=0.0,
+               turns_counted=0, observed=False)
+    times = [turn[0] for turn in turns]
+    first = _bisect.bisect_right(times, ev_dt)
+    boundary = next((c for c in compacts if c > ev_dt), None)
+    end = _bisect.bisect_left(times, boundary) if boundary else len(turns)
+    for i in range(first, end):
+        out["observed"] = True
+        kind = "oneshot" if i == first else "reread"
+        card = _counted_exact_card(turns[i][1], tier_data,
+                                   turns[i][2] if len(turns[i]) > 2 else None)
+        rate = (card or {}).get("input" if kind == "oneshot" else "cache_read")
+        if kind == "reread":
+            out["reread_tokens"] += tokens
+            out["turns_counted"] += 1
+        if isinstance(rate, (int, float)) and math.isfinite(rate) and rate >= 0:
+            out[kind + "_usd"] += tokens * rate / 1e6
+            out["priced_oneshot_events" if kind == "oneshot" else "priced_reread_turns"] += 1
+        else:
+            sign = "credit" if tokens >= 0 else "debit"
+            out[kind + "_unpriced_" + sign + "_tokens"] += abs(tokens)
+    return _counted_coverage_totals(out)
+
+
+def _counted_score_event(turns, compacts, ev_dt, tokens, tier_data):
+    """Compatibility tuple: one-shot dollars, reread tokens/dollars and turns."""
+    out = _counted_score_detail(turns, compacts, ev_dt, tokens, tier_data)
+    return tuple(out[k] for k in ("oneshot_usd", "reread_tokens", "reread_usd", "turns_counted"))
 
 
 def _counted_window_summary(conn, window_start, window_end):
@@ -23695,6 +23798,7 @@ def _counted_window_summary(conn, window_start, window_end):
         tier_data = PRICING_TIERS.get(_load_pricing_tier(), PRICING_TIERS["anthropic"])
         oneshot = reread_usd = 0.0
         reread_tokens = removed_tokens = events = 0
+        coverage = dict.fromkeys(_COUNTED_COVERAGE_KEYS, 0)
         for _key, session_uuid, ts, tokens, _logged_cost, _model in _counted_candidate_events(conn):
             ev_dt = _counted_event_utc(ts)
             if ev_dt is None or ev_dt < start or ev_dt > end:
@@ -23705,16 +23809,19 @@ def _counted_window_summary(conn, window_start, window_end):
             turns, compacts, _ = _counted_walk_transcript(path)
             turns = [turn for turn in turns if start <= turn[0] <= end]
             compacts = [compact for compact in compacts if start <= compact <= end]
-            one, rr_tok, rr_usd, _n = _counted_score_event(
+            score = _counted_score_detail(
                 turns, compacts, ev_dt, int(tokens or 0), tier_data)
-            if one == 0.0 and rr_usd == 0.0:
+            if not score["observed"]:
                 continue
-            oneshot += one
-            reread_tokens += rr_tok
-            reread_usd += rr_usd
+            oneshot += score["oneshot_usd"]
+            reread_tokens += score["reread_tokens"]
+            reread_usd += score["reread_usd"]
+            for key in coverage:
+                coverage[key] += score[key]
             removed_tokens += int(tokens or 0)
             events += 1
-        return {
+        return _counted_coverage_totals({
+            **coverage,
             "available": True,
             "events": events,
             "removed_tokens": removed_tokens,
@@ -23725,7 +23832,7 @@ def _counted_window_summary(conn, window_start, window_end):
             "method": "removals x deduped turns to next real compaction, "
                       "scoped to this window; per-turn cache-read rates; "
                       "transcript-backed events only",
-        }
+        })
     except (AttributeError, OSError, sqlite3.Error, TypeError, ValueError):
         return out
 
@@ -23778,22 +23885,36 @@ def _counted_session_path(conn, session_uuid):
     return None
 
 
-# Bump when the re-read pricing rule changes. Stored rows keep showing their old
-# value until the normal pass re-walks them, so the dashboard never dips to $0.
-# 2: re-reads priced at each turn's exact model card (Opus 5.5, Fable 5.1).
-_COUNTED_PRICING_VERSION = "2"
+# Eligibility is per row. A global migration flag never certifies old prices.
+_COUNTED_PRICING_VERSION = "3"
 _COUNTED_META_PRICING = "counted_pricing_version"
+
+
+def _counted_pricing_detail(raw):
+    try:
+        value = json.loads(raw or "{}")
+        return value if isinstance(value, dict) else {}
+    except (TypeError, ValueError):
+        return {}
+
+
+def _ensure_counted_pricing_schema(conn):
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(counted_reread)")}
+    if "pricing_detail" not in cols:
+        conn.execute("ALTER TABLE counted_reread ADD COLUMN pricing_detail TEXT")
 
 
 def _reprice_counted_rows_once(conn):
     try:
+        _ensure_counted_pricing_schema(conn)
         conn.execute("CREATE TABLE IF NOT EXISTS token_optimizer_meta "
                      "(key TEXT PRIMARY KEY, value TEXT)")
         row = conn.execute("SELECT value FROM token_optimizer_meta WHERE key = ?",
                            (_COUNTED_META_PRICING,)).fetchone()
         if row and row[0] == _COUNTED_PRICING_VERSION:
             return False
-        conn.execute("UPDATE counted_reread SET transcript_mtime = NULL")
+        # Keep mtimes and historical amounts as provenance. Readers quarantine
+        # every row without the current per-row pricing version immediately.
         conn.execute("DELETE FROM token_optimizer_meta WHERE key IN (?, ?)",
                      (_COUNTED_META_MARKER_DONE, _COUNTED_META_MARKER_CURSOR))
         conn.execute("INSERT OR REPLACE INTO token_optimizer_meta (key, value) VALUES (?, ?)",
@@ -23802,6 +23923,79 @@ def _reprice_counted_rows_once(conn):
         return True
     except sqlite3.Error:
         return False
+
+
+def _counted_file_proof(path, prefix_sizes=()):
+    """Hash an observed file and old prefixes without retaining transcript text."""
+    import hashlib
+    before = path.stat()
+    digest = hashlib.sha256()
+    offset, prefixes = 0, {}
+    with path.open("rb") as stream:
+        for stop in sorted({int(n) for n in prefix_sizes if 0 < int(n) <= before.st_size}
+                           | {before.st_size}):
+            while offset < stop:
+                chunk = stream.read(min(1024 * 1024, stop - offset))
+                if not chunk:
+                    raise OSError("transcript changed while reading")
+                digest.update(chunk)
+                offset += len(chunk)
+            prefixes[stop] = digest.hexdigest()
+    after = path.stat()
+    if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+        raise OSError("transcript changed while reading")
+    return {"file_size": offset, "file_sha256": digest.hexdigest(),
+            "prefixes": prefixes, "mtime_ns": after.st_mtime_ns}
+
+
+def _counted_mark_incomplete(conn, key, detail, proof=None):
+    detail = dict(detail, refresh_incomplete=True, attempted_version=_COUNTED_PRICING_VERSION,
+                  attempted_source=([proof["mtime_ns"], proof["file_size"]] if proof else None))
+    conn.execute("UPDATE counted_reread SET pricing_detail=? WHERE event_key=?",
+                 (json.dumps(detail), key))
+
+
+def _counted_store_score(conn, key, source, uuid, ts, tokens, score, mtime,
+                         proof, old=None, magnitude_basis="metered"):
+    """Replace only a complete continuation of the previously observed file."""
+    detail = _counted_pricing_detail(old["pricing_detail"]) if old else {}
+    if old:
+        size = detail.get("file_size")
+        if size is not None:
+            continuous = proof["prefixes"].get(size) == detail.get("file_sha256")
+        else:
+            # Without an old digest, only the recorded unchanged file and
+            # identical observed counts can anchor a legacy reprice. Changed
+            # sources and old markers without mtimes remain quarantined.
+            continuous = (old["transcript_mtime"] is not None
+                          and old["transcript_mtime"] == mtime
+                          and score["turns_counted"] == int(old["turns_counted"] or 0)
+                          and score["reread_tokens"] == int(old["reread_tokens"] or 0))
+        identity_matches = (old["source"] == source and old["session_uuid"] == uuid
+                            and old["event_ts"] == ts)
+        if not continuous or not identity_matches or not score["observed"] or int(old["tokens"] or 0) != tokens:
+            _counted_mark_incomplete(conn, key, detail, proof)
+            return False
+    if not score["observed"]:
+        return False
+    detail = {key: score[key] for key in _COUNTED_COVERAGE_KEYS}
+    detail.update(version=_COUNTED_PRICING_VERSION, refresh_incomplete=False,
+                  magnitude_basis=magnitude_basis, file_size=proof["file_size"],
+                  file_sha256=proof["file_sha256"])
+    conn.execute(
+        "INSERT OR REPLACE INTO counted_reread (event_key,source,session_uuid,event_ts,"
+        "event_month,tokens,oneshot_usd,reread_tokens,reread_usd,turns_counted,"
+        "transcript_mtime,computed_at,pricing_detail) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (key, source, uuid, ts, str(ts)[:7], tokens, round(score["oneshot_usd"], 6),
+         score["reread_tokens"], round(score["reread_usd"], 6), score["turns_counted"],
+         mtime, datetime.now().isoformat(), json.dumps(detail)))
+    return True
+
+
+def _counted_stored_rows(conn):
+    cursor = conn.execute("SELECT * FROM counted_reread")
+    names = [c[0] for c in cursor.description]
+    return {row[0]: dict(zip(names, row)) for row in cursor}
 
 
 def _update_counted_cumulative(conn, max_sessions=_COUNTED_MAX_SESSIONS_PER_PASS,
@@ -23839,13 +24033,11 @@ def _update_counted_cumulative(conn, max_sessions=_COUNTED_MAX_SESSIONS_PER_PASS
         events = _counted_candidate_events(conn)
         if not events:
             return stats
-        stored = {r[0]: r[1] for r in conn.execute(
-            "SELECT event_key, transcript_mtime FROM counted_reread")}
+        stored = _counted_stored_rows(conn)
         by_sess = {}
         for key, uuid, ts, tok, cost, model in events:
             by_sess.setdefault(uuid, []).append((key, ts, tok, cost, model))
         tier_data = PRICING_TIERS.get(_load_pricing_tier(), PRICING_TIERS["anthropic"])
-        now_iso = datetime.now().isoformat()
 
         # Unjoinable events (no session uuid) have no transcript to price. Keep
         # them out of the counted ledger rather than inventing a one-shot value.
@@ -23857,18 +24049,27 @@ def _update_counted_cumulative(conn, max_sessions=_COUNTED_MAX_SESSIONS_PER_PASS
         for uuid, evs in by_sess.items():
             path = _counted_session_path(conn, uuid)
             if path is None:
-                # No transcript means no counted reread evidence. Leave the
-                # event unmeasured; the full backfill purges any old fallback row.
+                for key, *_ in evs:
+                    if key in stored:
+                        _counted_mark_incomplete(conn, key, _counted_pricing_detail(stored[key].get("pricing_detail")))
                 stats["unmeasured_events"] += len(evs)
                 continue
             try:
                 mtime = path.stat().st_mtime
+                source_stamp = [path.stat().st_mtime_ns, path.stat().st_size]
             except OSError:
                 continue
-            fresh = all(
-                key in stored and stored[key] is not None
-                and stored[key] >= mtime - 1.0
-                for key, _ts, _tok, _cost, _model in evs)
+            def fresh_event(key):
+                if key not in stored:
+                    return False
+                detail = _counted_pricing_detail(stored[key].get("pricing_detail"))
+                if detail.get("refresh_incomplete"):
+                    return (detail.get("attempted_version") == _COUNTED_PRICING_VERSION
+                            and detail.get("attempted_source") == source_stamp)
+                return (stored[key]["transcript_mtime"] == mtime
+                        and detail.get("file_size") == source_stamp[1]
+                        and detail.get("version") == _COUNTED_PRICING_VERSION)
+            fresh = all(fresh_event(key) for key, *_ in evs)
             if not fresh:
                 todo.append((mtime, uuid, path, evs))
         stats["pending_sessions"] = len(todo)
@@ -23877,29 +24078,40 @@ def _update_counted_cumulative(conn, max_sessions=_COUNTED_MAX_SESSIONS_PER_PASS
         for mtime, uuid, path, evs in todo[:max_sessions]:
             if deadline_seconds is not None and time.monotonic() - started > deadline_seconds:
                 break
-            turns, compacts, _ = _counted_walk_transcript(path)
+            proof = None
+            try:
+                proof = _counted_file_proof(path, [
+                    _counted_pricing_detail(stored[key].get("pricing_detail")).get("file_size", 0)
+                    for key, *_ in evs if key in stored])
+                turns, compacts, _ = _counted_walk_transcript(path)
+                if path.stat().st_mtime_ns != proof["mtime_ns"] or path.stat().st_size != proof["file_size"]:
+                    raise OSError("transcript changed while scoring")
+            except OSError:
+                if proof is None:
+                    try:
+                        stat = path.stat()
+                        proof = {"mtime_ns": stat.st_mtime_ns, "file_size": stat.st_size}
+                    except OSError:
+                        pass
+                for key, *_ in evs:
+                    if key in stored:
+                        _counted_mark_incomplete(conn, key, _counted_pricing_detail(stored[key].get("pricing_detail")), proof)
+                stats["pending_sessions"] -= 1
+                continue
             for key, ts, tok, cost, model in evs:
                 ev_dt = _counted_event_utc(ts)
                 if ev_dt is None or not turns:
-                    # A transcriptless or unscoreable event is not a counted
-                    # result. Do not fall back to a one-shot estimate.
-                    conn.execute("DELETE FROM counted_reread WHERE event_key = ?", (key,))
+                    if key in stored:
+                        _counted_mark_incomplete(conn, key, _counted_pricing_detail(stored[key].get("pricing_detail")), proof)
                     stats["unmeasured_events"] += 1
                     continue
-                oneshot, rr_tok, rr_usd, n = _counted_score_event(
+                score = _counted_score_detail(
                     turns, compacts, ev_dt, int(tok or 0), tier_data)
-                if not n and oneshot == 0.0:
-                    conn.execute("DELETE FROM counted_reread WHERE event_key = ?", (key,))
+                if not _counted_store_score(conn, key, key.split(":", 1)[0], uuid,
+                                             ts, int(tok or 0), score, mtime, proof,
+                                             old=stored.get(key)):
                     stats["unmeasured_events"] += 1
                     continue
-                conn.execute(
-                    "INSERT OR REPLACE INTO counted_reread (event_key, source, "
-                    "session_uuid, event_ts, event_month, tokens, oneshot_usd, "
-                    "reread_tokens, reread_usd, turns_counted, transcript_mtime, "
-                    "computed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (key, key.split(":", 1)[0], uuid, ts, str(ts)[:7],
-                     int(tok or 0), round(oneshot, 6), int(rr_tok),
-                     round(rr_usd, 6), n, mtime, now_iso))
                 stats["rows_written"] += 1
             stats["sessions_walked"] += 1
             stats["pending_sessions"] -= 1
@@ -23920,17 +24132,50 @@ def _counted_marker_backfill(conn, max_files=_COUNTED_MARKER_FILES_PER_PASS,
     """One-time representation of the pre-ledger era (before
     _COUNTED_LEDGER_ERA_START) from the transcripts' own "Full result archived"
     markers -- the Mar-Apr ledger logged 17 events against 305 physical markers.
-    Cursor-resumable over collect passes; a done-flag ends it forever. The files
-    are historical (never rewritten), so one pass per file is final. Fail-open."""
+    Cursor-resumable over collect passes. Completed passes retry changed source
+    evidence; unavailable history retains its coverage and refresh status."""
     stats = {"files_scanned": 0, "rows_written": 0, "done": False}
     try:
+        _reprice_counted_rows_once(conn)
+        stored = _counted_stored_rows(conn)
+        pending_markers = [r for r in stored.values() if r["source"] == "mk"
+                           and (_counted_pricing_detail(r.get("pricing_detail")).get("version") != _COUNTED_PRICING_VERSION
+                                or _counted_pricing_detail(r.get("pricing_detail")).get("refresh_incomplete"))]
+        retry_markers = []
+        old_by_session = {}
+        for old in stored.values():
+            if old["source"] == "mk":
+                old_by_session.setdefault(old["session_uuid"], []).append(old)
+        for old in (r for r in stored.values() if r["source"] == "mk"):
+            detail = _counted_pricing_detail(old.get("pricing_detail"))
+            path = _counted_session_path(conn, old["session_uuid"])
+            try:
+                stat = path.stat() if path else None
+            except OSError:
+                stat = None
+            if stat is None:
+                _counted_mark_incomplete(conn, old["event_key"], detail)
+            elif (detail.get("version") == _COUNTED_PRICING_VERSION
+                  and not detail.get("refresh_incomplete")
+                  and old["transcript_mtime"] == stat.st_mtime
+                  and detail.get("file_size") == stat.st_size):
+                continue
+            elif (detail.get("attempted_version") != _COUNTED_PRICING_VERSION
+                  or detail.get("attempted_source") != [stat.st_mtime_ns, stat.st_size]):
+                retry_markers.append(old)
+        stats["quarantined_or_incomplete_rows"] = len(pending_markers)
+        stats["retryable_rows"] = len(retry_markers)
         conn.execute("CREATE TABLE IF NOT EXISTS token_optimizer_meta "
                      "(key TEXT PRIMARY KEY, value TEXT)")
         row = conn.execute("SELECT value FROM token_optimizer_meta WHERE key = ?",
                            (_COUNTED_META_MARKER_DONE,)).fetchone()
-        if row and row[0] == "1":
+        if row and row[0] == "1" and not retry_markers:
+            conn.commit()
             stats["done"] = True
             return stats
+        if row and row[0] == "1":
+            conn.execute("DELETE FROM token_optimizer_meta WHERE key IN (?, ?)",
+                         (_COUNTED_META_MARKER_DONE, _COUNTED_META_MARKER_CURSOR))
         row = conn.execute("SELECT value FROM token_optimizer_meta WHERE key = ?",
                            (_COUNTED_META_MARKER_CURSOR,)).fetchone()
         cursor = row[0] if row else ""
@@ -23942,7 +24187,6 @@ def _counted_marker_backfill(conn, max_files=_COUNTED_MARKER_FILES_PER_PASS,
             _COUNTED_LEDGER_ERA_START).astimezone(timezone.utc).timestamp()
         started = time.monotonic()
         tier_data = PRICING_TIERS.get(_load_pricing_tier(), PRICING_TIERS["anthropic"])
-        now_iso = datetime.now().isoformat()
         processed_any = False
         last = cursor
         for sp in paths:
@@ -23956,12 +24200,57 @@ def _counted_marker_backfill(conn, max_files=_COUNTED_MARKER_FILES_PER_PASS,
             stats["files_scanned"] += 1
             processed_any = True
             try:
-                if Path(sp).stat().st_mtime >= era_epoch:
+                path = Path(sp)
+                sid = path.stem
+                old_rows = old_by_session.get(sid, [])
+                if path.stat().st_mtime >= era_epoch and not old_rows:
                     continue
+                proof = _counted_file_proof(path, [
+                    _counted_pricing_detail(r.get("pricing_detail")).get("file_size", 0) for r in old_rows])
             except OSError:
+                try:
+                    stat = path.stat()
+                    attempted = {"mtime_ns": stat.st_mtime_ns, "file_size": stat.st_size}
+                except OSError:
+                    attempted = None
+                for old in old_rows:
+                    _counted_mark_incomplete(conn, old["event_key"], _counted_pricing_detail(old.get("pricing_detail")), attempted)
                 continue
             turns, compacts, markers = _counted_walk_transcript(sp, collect_markers=True)
-            if not turns or not markers:
+            if (not turns or not markers or path.stat().st_mtime_ns != proof["mtime_ns"]
+                    or path.stat().st_size != proof["file_size"]):
+                for old in old_rows:
+                    _counted_mark_incomplete(conn, old["event_key"], _counted_pricing_detail(old.get("pricing_detail")), proof)
+                continue
+            # Marker keys use an index. A replacement can move an old marker
+            # to a new index, so require continuity for the entire session
+            # before admitting any new keys, not just for existing rows.
+            continuous_session = True
+            for old in old_rows:
+                detail = _counted_pricing_detail(old.get("pricing_detail"))
+                size = detail.get("file_size")
+                if size is not None:
+                    continuous = proof["prefixes"].get(size) == detail.get("file_sha256")
+                else:
+                    continuous = (old["transcript_mtime"] is not None
+                                  and old["transcript_mtime"] == path.stat().st_mtime)
+                    try:
+                        index = int(old["event_key"].rsplit(":", 1)[1])
+                        marker_dt, marker_tokens = markers[index]
+                        marker_dt = marker_dt or turns[0][0]
+                        marker_tokens = int(marker_tokens or _COUNTED_MARKER_MEDIAN_TOKENS)
+                        previous = _counted_score_detail(turns, compacts, marker_dt, marker_tokens, tier_data)
+                        continuous = (continuous and old["event_ts"] == marker_dt.isoformat()
+                                      and old["tokens"] == marker_tokens and previous["observed"]
+                                      and old["reread_tokens"] == previous["reread_tokens"]
+                                      and old["turns_counted"] == previous["turns_counted"])
+                    except (ValueError, IndexError, TypeError):
+                        continuous = False
+                if not continuous:
+                    continuous_session = False
+            if not continuous_session:
+                for old in old_rows:
+                    _counted_mark_incomplete(conn, old["event_key"], _counted_pricing_detail(old.get("pricing_detail")), proof)
                 continue
             first_month = turns[0][0].strftime("%Y-%m")
             if first_month >= _COUNTED_LEDGER_ERA_START[:7]:
@@ -23970,24 +24259,21 @@ def _counted_marker_backfill(conn, max_files=_COUNTED_MARKER_FILES_PER_PASS,
             for i, (m_dt, m_tok) in enumerate(markers):
                 tok = int(m_tok or _COUNTED_MARKER_MEDIAN_TOKENS)
                 ev_dt = m_dt or turns[0][0]
-                oneshot, rr_tok, rr_usd, n = _counted_score_event(
+                score = _counted_score_detail(
                     turns, compacts, ev_dt, tok, tier_data)
-                conn.execute(
-                    "INSERT OR REPLACE INTO counted_reread (event_key, source, "
-                    "session_uuid, event_ts, event_month, tokens, oneshot_usd, "
-                    "reread_tokens, reread_usd, turns_counted, transcript_mtime, "
-                    "computed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (f"mk:{sid}:{i}", "mk", sid, ev_dt.isoformat(),
-                     ev_dt.strftime("%Y-%m"), tok, round(oneshot, 6),
-                     int(rr_tok), round(rr_usd, 6), n, None, now_iso))
-                stats["rows_written"] += 1
-        exhausted = (not processed_any) or (last >= (paths[-1] if paths else ""))
+                key = f"mk:{sid}:{i}"
+                if _counted_store_score(conn, key, "mk", sid, ev_dt.isoformat(), tok,
+                                        score, path.stat().st_mtime, proof, old=stored.get(key),
+                                        magnitude_basis="sized_marker" if m_tok else "estimated_marker"):
+                    stats["rows_written"] += 1
         if paths and last == paths[-1]:
             conn.execute("INSERT OR REPLACE INTO token_optimizer_meta (key, value) "
                          "VALUES (?, '1')", (_COUNTED_META_MARKER_DONE,))
+            stats["done"] = True
         elif not paths:
             conn.execute("INSERT OR REPLACE INTO token_optimizer_meta (key, value) "
                          "VALUES (?, '1')", (_COUNTED_META_MARKER_DONE,))
+            stats["done"] = True
         else:
             conn.execute("INSERT OR REPLACE INTO token_optimizer_meta (key, value) "
                          "VALUES (?, ?)", (_COUNTED_META_MARKER_CURSOR, last))
@@ -24001,30 +24287,12 @@ def _counted_marker_backfill(conn, max_files=_COUNTED_MARKER_FILES_PER_PASS,
 
 
 def _purge_counted_without_transcripts(conn):
-    """Remove never-verified fallback rows, preserving evidence already counted.
-
-    Transcript rotation must not erase stored savings. A recorded mtime proves
-    the row was computed from a real transcript, even if that file is now gone.
-    """
-    try:
-        rows = conn.execute(
-            "SELECT rowid, session_uuid FROM counted_reread "
-            "WHERE transcript_mtime IS NULL AND COALESCE(source, '') <> 'mk'"
-        ).fetchall()
-    except sqlite3.Error:
-        return 0
-    removed = 0
-    for rowid, session_uuid in rows:
-        if not session_uuid or _counted_session_path(conn, session_uuid) is None:
-            cur = conn.execute("DELETE FROM counted_reread WHERE rowid = ?", (rowid,))
-            removed += max(0, cur.rowcount)
-    if removed:
-        conn.commit()
-    return removed
+    """Compatibility no-op: quarantine unverifiable prices without erasing history."""
+    return 0
 
 
 def _counted_backfill_all(conn, quiet=True):
-    """Drain counted ledgers, marker history, and remove transcriptless estimates."""
+    """Finish refresh attempts; unverifiable history stays quarantined."""
     stats = _update_counted_cumulative(
         conn, max_sessions=10**9, deadline_seconds=None, quiet=quiet)
     marker_total = {"files_scanned": 0, "rows_written": 0, "done": False}
@@ -24040,14 +24308,50 @@ def _counted_backfill_all(conn, quiet=True):
                   "marker_rows_written": marker_total["rows_written"],
                   "marker_backfill_done": marker_total["done"],
                   "rows_removed_no_transcript": _purge_counted_without_transcripts(conn)})
+    stats["pricing_coverage"] = _counted_rollup_rows(_counted_stored_rows(conn).values())
     return stats
+
+
+def _counted_rollup_rows(rows):
+    """Only per-row verified prices are eligible; retain all stored token evidence."""
+    out = dict.fromkeys(_COUNTED_COVERAGE_KEYS, 0)
+    out.update(events=0, removed_tokens=0, reread_tokens=0, oneshot_usd=0.0,
+               reread_usd=0.0, legacy_unverified_events=0, unverified_history_events=0,
+               estimated_magnitude_events=0, refresh_incomplete_events=0)
+    for row in rows:
+        out["events"] += 1
+        tokens, rereads = int(row["tokens"] or 0), int(row["reread_tokens"] or 0)
+        out["removed_tokens"] += tokens
+        out["reread_tokens"] += rereads
+        detail = _counted_pricing_detail(row.get("pricing_detail"))
+        current = (detail.get("version") == _COUNTED_PRICING_VERSION
+                   and all(isinstance(detail.get(k), int) and detail[k] >= 0 for k in _COUNTED_COVERAGE_KEYS))
+        if current:
+            out["oneshot_usd"] += float(row["oneshot_usd"] or 0)
+            out["reread_usd"] += float(row["reread_usd"] or 0)
+            for key in _COUNTED_COVERAGE_KEYS:
+                out[key] += detail[key]
+        else:
+            out["legacy_unverified_events"] += 1
+            for kind, amount in (("oneshot", tokens), ("reread", rereads)):
+                out[kind + "_unpriced_" + ("credit" if amount >= 0 else "debit") + "_tokens"] += abs(amount)
+        if not current and row["transcript_mtime"] is None and row["source"] != "mk":
+            out["unverified_history_events"] += 1
+        if (detail.get("magnitude_basis") == "estimated_marker"
+                or (row["source"] == "mk" and not current)):
+            out["estimated_magnitude_events"] += 1
+        out["refresh_incomplete_events"] += bool(detail.get("refresh_incomplete"))
+    out["oneshot_usd"] = round(out["oneshot_usd"], 6)
+    out["reread_usd"] = round(out["reread_usd"], 6)
+    out["total_usd"] = round(out["oneshot_usd"] + out["reread_usd"], 6)
+    return _counted_coverage_totals(out)
 
 
 def _counted_cumulative_summary(days=None, now=None):
     """Cheap SELECT-only rollup of counted_reread for the Counted-to-date card.
 
     NEVER walks transcripts (the collect pass owns that); a dashboard regen
-    pays aggregate queries only. With days, select removals made in that period;
+    reads stored rows only. With days, select removals made in that period;
     their later rereads stay attributed to the removal (not to the reread date).
     This is an event cohort, not a claim of dollars accrued inside an exact window.
     Fail-open to {"available": False}."""
@@ -24057,38 +24361,42 @@ def _counted_cumulative_summary(days=None, now=None):
     if not TRENDS_DB.exists():
         return out
     try:
-        where, params = "", ()
         end = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         start = end - timedelta(days=max(1, int(days))) if days is not None else None
         conn = _init_trends_db()
         try:
-            if start is not None:
-                def event_epoch(ts, source):
-                    # Pre-ledger marker timestamps were stored as UTC-naive;
-                    # hook events are local-naive, or explicitly offset-aware.
-                    if source == "mk":
+            excluded = set()
+            if _ensure_counted_views(conn):
+                excluded.update(r[0] for r in conn.execute(
+                    "SELECT 'se:'||id FROM main.savings_events EXCEPT "
+                    "SELECT 'se:'||id FROM counted_savings_events"))
+                excluded.update(r[0] for r in conn.execute(
+                    "SELECT 'ce:'||id FROM main.compression_events EXCEPT "
+                    "SELECT 'ce:'||id FROM counted_compression_events"))
+            rows = []
+            for row in _counted_stored_rows(conn).values():
+                if row["event_key"] in excluded:
+                    continue
+                if start is not None:
+                    if row["source"] == "mk":
                         try:
-                            value = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
-                            return (value if value.tzinfo else value.replace(tzinfo=timezone.utc)).timestamp()
+                            value = datetime.fromisoformat(str(row["event_ts"]).replace("Z", "+00:00"))
+                            stamp = (value if value.tzinfo else value.replace(tzinfo=timezone.utc)).timestamp()
                         except (ValueError, TypeError, OSError):
-                            return None
-                    value = _counted_event_utc(ts)
-                    return value.replace(tzinfo=timezone.utc).timestamp() if value else None
-                conn.create_function("counted_event_epoch", 2, event_epoch)
-                where = " WHERE counted_event_epoch(event_ts, source) >= ? AND counted_event_epoch(event_ts, source) <= ?"
-                params = (start.timestamp(), end.timestamp())
-            excluded = _counted_reread_excluded_sql(conn)
-            if excluded:
-                where = (where + " AND " if where else " WHERE ") + "NOT " + excluded
-            row = conn.execute(
-                "SELECT COUNT(*), COALESCE(SUM(tokens),0), "
-                "COALESCE(SUM(oneshot_usd),0), COALESCE(SUM(reread_tokens),0), "
-                "COALESCE(SUM(reread_usd),0), MIN(event_month), MAX(computed_at) "
-                "FROM counted_reread" + where, params).fetchone()
-            months = conn.execute(
-                "SELECT event_month, ROUND(COALESCE(SUM(oneshot_usd),0) + "
-                "COALESCE(SUM(reread_usd),0), 2) FROM counted_reread "
-                + where + " GROUP BY event_month ORDER BY event_month", params).fetchall()
+                            continue
+                    else:
+                        value = _counted_event_utc(row["event_ts"])
+                        if value is None:
+                            continue
+                        stamp = value.replace(tzinfo=timezone.utc).timestamp()
+                    if not start.timestamp() <= stamp <= end.timestamp():
+                        continue
+                rows.append(row)
+            totals = _counted_rollup_rows(rows)
+            by_month = {}
+            for row in rows:
+                by_month.setdefault(row["event_month"], []).append(row)
+            monthly_coverage = {m: _counted_rollup_rows(group) for m, group in by_month.items()}
             try:
                 done = conn.execute(
                     "SELECT value FROM token_optimizer_meta WHERE key = ?",
@@ -24099,31 +24407,28 @@ def _counted_cumulative_summary(days=None, now=None):
                 done = None
         finally:
             conn.close()
-        n, tok, oneshot, rr_tok, rr_usd, first_month, computed_at = row
-        if not n and days is None:
+        if not rows and days is None:
             return out
+        first_month = min((row["event_month"] for row in rows if row["event_month"]), default=None)
+        computed_at = max((row["computed_at"] for row in rows if row["computed_at"]), default=None)
         return {
+            **totals,
             "available": True,
-            "events": int(n),
             "attribution": "removal_time",
             "period_start": start.isoformat() if start else None,
             "period_end": end.isoformat(),
-            "removed_tokens": int(tok),
-            "oneshot_usd": round(float(oneshot), 2),
-            "reread_tokens": int(rr_tok),
-            "reread_usd": round(float(rr_usd), 2),
-            "total_usd": round(float(oneshot) + float(rr_usd), 2),
             "window_start": (first_month + "-01") if first_month else None,
-            "months": {m: v for m, v in months},
+            "months": {m: round(v["total_usd"], 2) for m, v in monthly_coverage.items()},
+            "monthly_coverage": monthly_coverage,
             "marker_backfill_done": bool(done and done[0] == "1"),
             "computed_at": computed_at,
             # Same construction as the estimated tiers: the method is counted,
             # the one modeling choice (trajectory held fixed) is disclosed on
             # the card.
             "method": "removals x deduped turns to next real compaction, "
-                      "per-turn cache-read rates; metered-magnitude removals "
-                      "only -- resume_lean, estimated-magnitude events "
-                      "(mcp_cap, hint_followed) and unapplied work excluded",
+                      "exact known per-turn cache-read rates; unpriced credits/debits "
+                      "and unverifiable historical prices reported separately; "
+                      "older unsized markers retain estimated magnitudes",
         }
     except (sqlite3.Error, OSError, TypeError, ValueError):
         return out
@@ -50331,6 +50636,7 @@ def runway_snapshot(days=30, now=None):
         # without inventing a proration. Those windows carry no dollar line (None)
         # and show only their headroom bars.
         _overage_cache = {}
+        _overage_pricing = {}
 
         def _window_overage_usd(span_h, resets_at=None):
             """(usd, tier) of API-credit overage avoided over this window's span,
@@ -50399,6 +50705,11 @@ def runway_snapshot(days=30, now=None):
                         else:
                             start_utc = end_utc - timedelta(days=wdays)
                         counted = _counted_window_summary(conn, start_utc, end_utc)
+                        _overage_pricing[cache_key] = {
+                            "reread_pricing_complete": counted.get("reread_pricing_complete", True),
+                            "reread_unpriced_tokens": counted.get("reread_unpriced_tokens", 0),
+                            "reread_pricing_note": counted.get("reread_pricing_note", ""),
+                        }
                     finally:
                         conn.close()
                     if counted.get("available"):
@@ -50553,6 +50864,7 @@ def runway_snapshot(days=30, now=None):
             "saved_usd_context": round(saved_context_usd, 2),
             "saved_usd_routing": round(saved_routing_usd, 2),
             "saved_usd_tier": saved_usd_tier,
+            "counted_pricing": _overage_pricing.get(_wk_cache_key, {}),
             "weekly_full_value": weekly_full,
             "window_savings_basis": (
                 "full workload, exact subscription week" if weekly_full else
@@ -55041,6 +55353,9 @@ def _action_savings_components(summary, reread=None):
         "routing_estimated_usd": routing - routing_measured,
         "reread_usd": repeat_reads,
         "reread_available": reread_available,
+        "reread_pricing_complete": bool((reread or {}).get("reread_pricing_complete", reread_available)),
+        "reread_unpriced_tokens": int((reread or {}).get("reread_unpriced_tokens", 0) or 0),
+        "reread_pricing_note": (reread or {}).get("reread_pricing_note", ""),
         "estimates_usd": estimates,
         "estimated_usd": estimated,
         "avoided_search_source": avoided_source,
@@ -57294,6 +57609,8 @@ def savings_report(days=30, as_json=False):
               f"before the next compaction) [modeled]")
     elif not summary["action_savings"]["reread_available"]:
         print("  i  repeat reads avoided: unavailable (counted ledger unavailable)")
+    if rr.get("reread_pricing_note"):
+        print("  i  " + rr["reread_pricing_note"])
 
     # Estimated tier — uncaptured runtime (sub-agent compression not attributed).
     uncaptured = summary.get("uncaptured_runtime") or {}
@@ -57370,6 +57687,8 @@ def savings_report(days=30, as_json=False):
               f"({verbosity.get('events', 0)} nudges) [estimated]")
 
     print(f"  = ALL IN: ~${all_in:.2f}{per} (measured + modeled + estimated)")
+    if summary["action_savings"].get("reread_pricing_complete") is False:
+        print("  i  ALL IN is a priced subtotal; unpriced repeat-read credits and debits are not included.")
     if summary["action_savings"]["total_clamped"]:
         net_total = _mo(summary["action_savings"]["net_total_usd"])
         print(f"  i  signed adjustments give a net total of ~${net_total:.2f}{per}; "

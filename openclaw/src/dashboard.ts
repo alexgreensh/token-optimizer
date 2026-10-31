@@ -1348,7 +1348,7 @@ function renderSavings(data: DashboardData): string {
     </div>`;
   };
 
-  const pricingCoverage = data.savingsEvents.unpricedEvents ? `<div class="daily-hint">${fmtTokens(data.savingsEvents.unpricedTokens ?? 0)} tokens across ${data.savingsEvents.unpricedEvents} action credits or reversals have no model price. Action dollar amounts exclude unpriced events.${data.savingsEvents.archivePricedNetUsd != null ? ` Priced archive subtotal: ${data.savingsEvents.archivePricedNetUsd < 0 ? "-" : ""}${fmtCost(Math.abs(data.savingsEvents.archivePricedNetUsd))}.` : ""}</div>` : "";
+  const pricingCoverage = data.savingsEvents.unpricedEvents ? `<div class="daily-hint">${fmtTokens(data.savingsEvents.unpricedTokens ?? 0)} tokens across ${data.savingsEvents.unpricedEvents} action credits or reversals have no model price. Action dollar amounts exclude unpriced contributions.${data.savingsEvents.archivePricedNetUsd != null ? ` Priced archive subtotal: ${data.savingsEvents.archivePricedNetUsd < 0 ? "-" : ""}${fmtCost(Math.abs(data.savingsEvents.archivePricedNetUsd))}.` : ""}</div>` : "";
 
   // --- Early exit: no savings data at all ---
   if (!s || (!s.ready && s.cumulativeSavedUsd === 0 && s.monthlySavingsUsd === 0)) {

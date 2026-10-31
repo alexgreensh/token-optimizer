@@ -131,7 +131,9 @@ def test_rereads_run_from_second_post_event_turn_to_session_end(m, tmp_path, mon
     conn.close()
     opus = _rates(m)["opus"]
     assert row[0] == 100_000
-    assert row[1] == pytest.approx(100_000 * opus["input"] / 1e6, rel=1e-9)
+    # The first call after the event wrote 10 cache tokens (no TTL split), so the
+    # removed tokens are priced at the 5-minute cache-write rate, not the input rate.
+    assert row[1] == pytest.approx(100_000 * opus["cache_write"] / 1e6, rel=1e-9)
     assert row[4] == 4
     assert row[2] == 400_000
     assert row[3] == pytest.approx(400_000 * opus["cache_read"] / 1e6, rel=1e-9)

@@ -23674,9 +23674,11 @@ def _counted_walk_transcript(path, collect_markers=False):
     """One pass over a transcript for the counted-cumulative engine.
 
     Returns (turns, compacts, markers):
-      turns   = [(utc-naive datetime, raw model id, full prompt tokens)] -- parent API calls, deduped
-                on requestId/message.id (Claude Code writes one assistant line
-                per content block, all sharing the same usage);
+      turns   = [(utc-naive datetime, raw model id, full prompt tokens,
+                  (cache write tokens, 1h part, 5m part, cache read tokens) or None)]
+                -- parent API calls, deduped on requestId/message.id (Claude Code
+                writes one assistant line per content block, all sharing the
+                same usage);
       compacts= [utc-naive datetime] of real compact_boundary system lines;
       markers = [(utc-naive datetime-or-None, tokens-or-None)] for
                 "Full result archived" injections (collect_markers only).
@@ -23742,6 +23744,7 @@ def _counted_walk_transcript(path, collect_markers=False):
                         if isinstance(value, int) and (not isinstance(current, int) or value > current):
                             prompt_parts[key] = value
                 prompt_tokens = None
+                cache_class = None
                 if ("input_tokens" in prompt_parts
                         and all(isinstance(v, int) and v >= 0 for v in prompt_parts.values())):
                     # Flat and TTL fields describe overlapping cache writes.
@@ -23750,15 +23753,18 @@ def _counted_walk_transcript(path, collect_markers=False):
                                    prompt_parts.get("ephemeral_1h_input_tokens", 0)
                                    + prompt_parts.get("ephemeral_5m_input_tokens", 0))
                     prompt_tokens = _context_token_count(dict(prompt_parts, cache_creation_input_tokens=creation))
+                    cache_class = (creation, prompt_parts.get("ephemeral_1h_input_tokens", 0),
+                                   prompt_parts.get("ephemeral_5m_input_tokens", 0),
+                                   prompt_parts.get("cache_read_input_tokens", 0))
                 if rid is not None and rid in seen:
                     previous = turns[index]
-                    turns[index] = (previous[0], previous[1] or raw_model, prompt_tokens)
+                    turns[index] = (previous[0], previous[1] or raw_model, prompt_tokens, cache_class)
                     seen[rid] = (index, prompt_parts)
                     continue
                 if rid is not None:
                     seen[rid] = (len(turns), prompt_parts)
                 turns.append((dt, raw_model if isinstance(raw_model, str)
-                              and not raw_model.startswith("<") else None, prompt_tokens))
+                              and not raw_model.startswith("<") else None, prompt_tokens, cache_class))
     except (OSError, PermissionError):
         return [], [], []
     turns.sort(key=lambda x: x[0])
@@ -23811,6 +23817,9 @@ _COUNTED_COVERAGE_KEYS = (
     "oneshot_unpriced_credit_tokens", "oneshot_unpriced_debit_tokens",
     "reread_unpriced_credit_tokens", "reread_unpriced_debit_tokens",
     "priced_oneshot_events", "priced_reread_turns",
+    # Removals priced at the cache-write class the next call used, and removals
+    # priced at the input rate as a minimum (events, and tokens in absolute value).
+    "oneshot_class_events", "oneshot_floor_events", "oneshot_floor_tokens",
 )
 
 
@@ -23836,6 +23845,11 @@ def _counted_coverage_totals(out):
                                            or out["reread_pricing_complete"])
     out["pricing_note"] = _counted_pricing_note(out)
     out["reread_pricing_note"] = _counted_pricing_note(out, reread_only=True)
+    floor_events = int(out.get("oneshot_floor_events", 0))
+    out["oneshot_floor_note"] = (
+        f"{floor_events:,} initial removals ({int(out.get('oneshot_floor_tokens', 0)):,} tokens) are "
+        "priced at the input rate, a minimum: the next call shows no cache-write class for them."
+        if floor_events else "")
     return out
 
 
@@ -23867,13 +23881,42 @@ def _counted_pricing_note(out, reread_only=False):
     return text.strip()
 
 
+def _counted_oneshot_rate(card, cache_class):
+    """(rate, basis) for the first call after a removal, or (None, None).
+
+    Context that was never removed would have reached that call as new tokens.
+    Basis "class": the call wrote to the cache, so the removed tokens are priced
+    at the write class it used (1h share at the 1h write rate, the rest at the
+    5m rate). Basis "exact": the call used no cache at all, or the card has no
+    cache-write premium, so the input rate is the price. Basis "floor": the call
+    gives no write evidence (a cache hit with no write, or no usage record), so
+    the input rate is a minimum.
+    """
+    import math
+    rate = (card or {}).get("input")
+    if not isinstance(rate, (int, float)) or not math.isfinite(rate) or rate < 0:
+        return None, None
+    write = card.get("cache_write")
+    if not isinstance(write, (int, float)) or not math.isfinite(write) or write <= rate:
+        return rate, "exact"
+    if cache_class:
+        written, one_hour, _five_minute, read = cache_class
+        if written > 0:
+            write_1h = card.get("cache_write_1h", write)
+            share = min(1.0, max(0.0, one_hour / written))
+            return share * write_1h + (1.0 - share) * write, "class"
+        if written == 0 and read == 0:
+            return rate, "exact"
+    return rate, "floor"
+
+
 def _counted_score_detail(turns, compacts, ev_dt, tokens, tier_data):
     """Price each observed turn independently and retain unknown token classes."""
     import bisect as _bisect
     import math
     out = dict.fromkeys(_COUNTED_COVERAGE_KEYS, 0)
-    out.update(oneshot_usd=0.0, reread_tokens=0, reread_usd=0.0,
-               turns_counted=0, observed=False)
+    out.update(oneshot_usd=0.0, oneshot_class_premium_usd=0.0, reread_tokens=0,
+               reread_usd=0.0, turns_counted=0, observed=False)
     times = [turn[0] for turn in turns]
     first = _bisect.bisect_right(times, ev_dt)
     boundary = next((c for c in compacts if c > ev_dt), None)
@@ -23883,13 +23926,23 @@ def _counted_score_detail(turns, compacts, ev_dt, tokens, tier_data):
         kind = "oneshot" if i == first else "reread"
         card = _counted_exact_card(turns[i][1], tier_data,
                                    turns[i][2] if len(turns[i]) > 2 else None)
-        rate = (card or {}).get("input" if kind == "oneshot" else "cache_read")
-        if kind == "reread":
+        basis = None
+        if kind == "oneshot":
+            cache_class = turns[i][3] if len(turns[i]) > 3 else None
+            rate, basis = _counted_oneshot_rate(card, cache_class)
+        else:
+            rate = (card or {}).get("cache_read")
             out["reread_tokens"] += tokens
             out["turns_counted"] += 1
         if isinstance(rate, (int, float)) and math.isfinite(rate) and rate >= 0:
             out[kind + "_usd"] += tokens * rate / 1e6
             out["priced_oneshot_events" if kind == "oneshot" else "priced_reread_turns"] += 1
+            if basis == "class":
+                out["oneshot_class_events"] += 1
+                out["oneshot_class_premium_usd"] += tokens * (rate - card["input"]) / 1e6
+            elif basis == "floor":
+                out["oneshot_floor_events"] += 1
+                out["oneshot_floor_tokens"] += abs(tokens)
         else:
             sign = "credit" if tokens >= 0 else "debit"
             out[kind + "_unpriced_" + sign + "_tokens"] += abs(tokens)
@@ -23918,7 +23971,7 @@ def _counted_window_summary(conn, window_start, window_end):
         if end < start:
             return out
         tier_data = PRICING_TIERS.get(_load_pricing_tier(), PRICING_TIERS["anthropic"])
-        oneshot = reread_usd = 0.0
+        oneshot = reread_usd = class_premium = 0.0
         reread_tokens = removed_tokens = events = 0
         coverage = dict.fromkeys(_COUNTED_COVERAGE_KEYS, 0)
         missing = dict(unmeasured_events=0, unmeasured_removed_tokens=0,
@@ -23942,6 +23995,7 @@ def _counted_window_summary(conn, window_start, window_end):
             if not score["observed"]:
                 continue
             oneshot += score["oneshot_usd"]
+            class_premium += score["oneshot_class_premium_usd"]
             reread_tokens += score["reread_tokens"]
             reread_usd += score["reread_usd"]
             for key in coverage:
@@ -23955,6 +24009,7 @@ def _counted_window_summary(conn, window_start, window_end):
             "events": events,
             "removed_tokens": removed_tokens,
             "oneshot_usd": round(oneshot, 6),
+            "oneshot_class_premium_usd": round(class_premium, 6),
             "reread_tokens": reread_tokens,
             "reread_usd": round(reread_usd, 6),
             "total_usd": round(oneshot + reread_usd, 6),
@@ -24015,7 +24070,7 @@ def _counted_session_path(conn, session_uuid):
 
 
 # Eligibility is per row. A global migration flag never certifies old prices.
-_COUNTED_PRICING_VERSION = "3"
+_COUNTED_PRICING_VERSION = "4"
 _COUNTED_META_PRICING = "counted_pricing_version"
 
 
@@ -24114,7 +24169,8 @@ def _counted_store_score(conn, key, source, uuid, ts, tokens, score, mtime,
     if not score["observed"] and not allow_unobserved:
         return False
     detail = {key: score[key] for key in _COUNTED_COVERAGE_KEYS}
-    detail.update(version=_COUNTED_PRICING_VERSION, refresh_incomplete=False,
+    detail.update(oneshot_class_premium_usd=round(score["oneshot_class_premium_usd"], 6),
+                  version=_COUNTED_PRICING_VERSION, refresh_incomplete=False,
                   magnitude_basis=magnitude_basis, file_size=proof["file_size"],
                   file_sha256=proof["file_sha256"])
     conn.execute(
@@ -24450,7 +24506,7 @@ def _counted_rollup_rows(rows):
     """Only per-row verified prices are eligible; retain all stored token evidence."""
     out = dict.fromkeys(_COUNTED_COVERAGE_KEYS, 0)
     out.update(events=0, removed_tokens=0, reread_tokens=0, oneshot_usd=0.0,
-               reread_usd=0.0, legacy_unverified_events=0, unverified_history_events=0,
+               oneshot_class_premium_usd=0.0, reread_usd=0.0, legacy_unverified_events=0, unverified_history_events=0,
                estimated_magnitude_events=0, refresh_incomplete_events=0)
     for row in rows:
         out["events"] += 1
@@ -24463,6 +24519,7 @@ def _counted_rollup_rows(rows):
         if current:
             out["oneshot_usd"] += float(row["oneshot_usd"] or 0)
             out["reread_usd"] += float(row["reread_usd"] or 0)
+            out["oneshot_class_premium_usd"] += float(detail.get("oneshot_class_premium_usd") or 0)
             for key in _COUNTED_COVERAGE_KEYS:
                 out[key] += detail[key]
         else:
@@ -24476,6 +24533,7 @@ def _counted_rollup_rows(rows):
             out["estimated_magnitude_events"] += 1
         out["refresh_incomplete_events"] += bool(detail.get("refresh_incomplete"))
     out["oneshot_usd"] = round(out["oneshot_usd"], 6)
+    out["oneshot_class_premium_usd"] = round(out["oneshot_class_premium_usd"], 6)
     out["reread_usd"] = round(out["reread_usd"], 6)
     out["total_usd"] = round(out["oneshot_usd"] + out["reread_usd"], 6)
     return _counted_coverage_totals(out)
@@ -24624,6 +24682,7 @@ def _dashboard_savings_data(days=30, include_billing_mode=False, fail_open=False
         savings_data["counted_period"] = _counted_cumulative_summary(days=days)
     except Exception:
         savings_data["counted_period"] = {"available": False}
+    _apply_counted_oneshot_pricing(savings_data, savings_data["counted_period"])
     savings_data["action_savings"] = _action_savings_components(
         savings_data, savings_data["counted_period"])
     if include_billing_mode:
@@ -55495,6 +55554,38 @@ def _progressive_disclosure_summary(days=30):
     return out
 
 
+def _logged_oneshot_pricing(by_category):
+    """Disclosure for the logged context removals in *by_category*.
+
+    A removal is logged when the hook fires, before the next call shows how the
+    provider billed the context it displaced, so every logged removal is priced
+    at the input rate: a minimum. Counts only categories that remove context.
+    """
+    events = tokens = 0
+    for key, entry in by_category.items():
+        removes_context = ((key in _COUNTED_SE_EVENT_TYPES and key != "tool_archive_reexpand")
+                           or (key in _V5_COMPRESSION_CATEGORIES
+                               and key not in _COUNTED_CE_EXCLUDED_FEATURES))
+        saved = int(entry.get("tokens_saved", 0) or 0)
+        if removes_context and saved > 0:
+            events += int(entry.get("events", 0) or 0)
+            tokens += saved
+    return {"basis": "input_rate_minimum", "removal_events": events, "removal_tokens": tokens}
+
+
+def _apply_counted_oneshot_pricing(summary, counted):
+    """Add what the counted ledger knows about billed classes to the disclosure."""
+    pricing = dict(summary.get("oneshot_pricing") or {})
+    if pricing:
+        counted = counted or {}
+        pricing.update(
+            class_events=int(counted.get("oneshot_class_events", 0) or 0),
+            class_premium_usd=round(float(counted.get("oneshot_class_premium_usd", 0.0) or 0.0), 4),
+            floor_events=int(counted.get("oneshot_floor_events", 0) or 0),
+            floor_tokens=int(counted.get("oneshot_floor_tokens", 0) or 0))
+        summary["oneshot_pricing"] = pricing
+
+
 def _merge_v5_compression(by_category, by_feature, fallback_cost_per_mtok):
     """Merge realized v5 compression_events features into *by_category* in place.
 
@@ -55664,6 +55755,7 @@ def _get_merged_savings(days=30, since=None):
         "total_cost_usd": round(total_cost, 4),
         "total_events": total_events,
         "compression_unpriced_tokens": sum(int(v.get("unpriced_tokens", 0) or 0) for v in by_category.values()),
+        "oneshot_pricing": _logged_oneshot_pricing(by_category),
         "compression_unpriced_credit_tokens": sum(int(v.get("unpriced_credit_tokens", 0) or 0) for v in by_category.values()),
         "compression_unpriced_debit_tokens": sum(int(v.get("unpriced_debit_tokens", 0) or 0) for v in by_category.values()),
         "by_category": by_category,
@@ -57579,6 +57671,7 @@ def savings_report(days=30, as_json=False):
     except Exception:
         summary["counted_period"] = {"available": False}
     summary["reread_avoided"] = summary["counted_period"]
+    _apply_counted_oneshot_pricing(summary, summary["counted_period"])
     summary["action_savings"] = _action_savings_components(
         summary, summary["reread_avoided"])
 
@@ -57791,6 +57884,14 @@ def savings_report(days=30, as_json=False):
                  if unpriced_credit or unpriced_debit else "")
         print(f"  {unpriced:,} compression tokens are counted but have no known model rate{split};")
         print("  their dollar value is not included.")
+    oneshot = summary.get("oneshot_pricing") or {}
+    if oneshot.get("removal_events"):
+        print("  Initial removals above are priced at the input rate, a minimum.")
+        premium = float(oneshot.get("class_premium_usd", 0.0) or 0.0)
+        if premium >= 0.005:
+            print(f"  The next call billed new context at a cache-write rate for "
+                  f"{int(oneshot.get('class_events', 0)):,} removals: about ${premium:.2f} more, "
+                  f"not in the total.")
     trip = _headline_tripwire(total_cost + rr_usd, total_events, days)
     if trip:
         print()

@@ -156,8 +156,10 @@ def test_prompt_class_includes_streamed_ttl_split_cache_writes(m, tmp_path, monk
     path.write_text("\n".join(json.dumps(line) for line in lines) + "\n")
     turns, compacts, _ = m._counted_walk_transcript(path)
     assert len(turns) == 1 and turns[0][2] == 100_001
+    # The long-prompt card applies (100,001 prompt tokens). The call wrote 60% of its
+    # cache at the 1h rate ($1.00) and 40% at the 5m rate ($0.625).
     assert m._counted_score_event(turns, compacts, start - timedelta(seconds=1), 1_000_000,
-                                  m.PRICING_TIERS["anthropic"])[0] == 0.5
+                                  m.PRICING_TIERS["anthropic"])[0] == pytest.approx(0.85)
 
 
 def test_prompt_class_merges_flat_and_split_creation_without_overlap(m, tmp_path, monkeypatch):
@@ -527,3 +529,121 @@ def test_missing_cohort_note_reaches_cli_and_dashboard_payload(m, tmp_path, monk
     assert cli["action_savings"] == dashboard["action_savings"]
     assert not cli["action_savings"]["reread_pricing_complete"]
     assert "removal events lack usable transcript evidence" in render(dashboard)
+
+
+# --- initial removals: billed-class evidence and the input-rate floor -----------------
+
+def _evidence(creation, one_hour=0, five_minute=0, read=0):
+    return (creation, one_hour, five_minute, read)
+
+
+def _first_call_score(m, model, evidence, tokens=1_000_000):
+    start = _utc_now()
+    turn = (start, model, 1000) if evidence is False else (start, model, 1000, evidence)
+    return m._counted_score_detail([turn], [], start - timedelta(seconds=1), tokens,
+                                   m.PRICING_TIERS["anthropic"])
+
+
+def test_walker_keeps_the_first_call_cache_write_split(m, tmp_path, monkeypatch):
+    path, _ = _transcript(m, tmp_path, monkeypatch, n_turns=1, model="claude-opus-5-5")
+    lines = [json.loads(line) for line in path.read_text().splitlines()]
+    lines[0]["message"]["usage"] = {"input_tokens": 2, "cache_read_input_tokens": 1000,
+                                    "cache_creation": {"ephemeral_1h_input_tokens": 60,
+                                                       "ephemeral_5m_input_tokens": 40}}
+    path.write_text("\n".join(json.dumps(line) for line in lines) + "\n")
+    turns, _, _ = m._counted_walk_transcript(path)
+    assert turns[0][3] == (100, 60, 40, 1000)
+
+
+def test_removal_is_priced_at_the_cache_write_class_the_next_call_used(m):
+    card = m.PRICING_TIERS["anthropic"]["claude_models"]["opus_5_5"]
+    hour = _first_call_score(m, "claude-opus-5-5", _evidence(500, one_hour=500))
+    five = _first_call_score(m, "claude-opus-5-5", _evidence(500, five_minute=500))
+    half = _first_call_score(m, "claude-opus-5-5", _evidence(500, one_hour=250, five_minute=250))
+    assert hour["oneshot_usd"] == pytest.approx(card["cache_write_1h"])
+    assert five["oneshot_usd"] == pytest.approx(card["cache_write"])
+    assert half["oneshot_usd"] == pytest.approx((card["cache_write"] + card["cache_write_1h"]) / 2)
+    assert hour["oneshot_class_events"] == 1 and hour["oneshot_floor_events"] == 0
+    assert hour["oneshot_class_premium_usd"] == pytest.approx(card["cache_write_1h"] - card["input"])
+
+
+def test_unsplit_cache_write_uses_the_five_minute_rate(m):
+    card = m.PRICING_TIERS["anthropic"]["claude_models"]["opus_5_5"]
+    score = _first_call_score(m, "claude-opus-5-5", _evidence(500))
+    assert score["oneshot_usd"] == pytest.approx(card["cache_write"])
+
+
+def test_call_without_any_caching_bills_new_context_as_plain_input(m):
+    card = m.PRICING_TIERS["anthropic"]["claude_models"]["opus_5_5"]
+    score = _first_call_score(m, "claude-opus-5-5", _evidence(0))
+    assert score["oneshot_usd"] == pytest.approx(card["input"])
+    assert score["oneshot_floor_events"] == 0 and score["oneshot_class_events"] == 0
+
+
+def test_cache_hit_without_a_write_is_an_input_rate_floor(m):
+    card = m.PRICING_TIERS["anthropic"]["claude_models"]["opus_5_5"]
+    score = _first_call_score(m, "claude-opus-5-5", _evidence(0, read=900))
+    assert score["oneshot_usd"] == pytest.approx(card["input"])
+    assert (score["oneshot_floor_events"], score["oneshot_floor_tokens"]) == (1, 1_000_000)
+
+
+def test_removal_without_usage_evidence_is_an_input_rate_floor_for_both_signs(m):
+    card = m.PRICING_TIERS["anthropic"]["claude_models"]["opus_5_5"]
+    credit = _first_call_score(m, "claude-opus-5-5", False)
+    debit = _first_call_score(m, "claude-opus-5-5", False, tokens=-1_000_000)
+    assert credit["oneshot_usd"] == pytest.approx(card["input"])
+    assert debit["oneshot_usd"] == pytest.approx(-card["input"])
+    assert debit["oneshot_floor_events"] == 1 and debit["oneshot_floor_tokens"] == 1_000_000
+
+
+def test_card_without_a_cache_write_price_needs_no_floor_flag(m):
+    score = _first_call_score(m, "gpt-5.4", False)
+    assert score["oneshot_usd"] == pytest.approx(m.OPENAI_MODEL_PRICING["gpt-5.4"]["input"])
+    assert score["oneshot_floor_events"] == 0
+
+
+def test_stored_rows_carry_class_and_floor_coverage(m, tmp_path, monkeypatch):
+    db = _db(m, tmp_path, monkeypatch)
+    path, start = _transcript(m, tmp_path, monkeypatch, n_turns=3, model="claude-opus-5-5")
+    _add_event(db, "tool_archive", 1_000_000, _local_iso(start - timedelta(seconds=30)))
+    with sqlite3.connect(db) as conn:
+        assert m._update_counted_cumulative(conn)["rows_written"] == 1
+        summary = m._counted_cumulative_summary()
+    card = m.PRICING_TIERS["anthropic"]["claude_models"]["opus_5_5"]
+    # the fixture's calls wrote 10 cache tokens with no TTL split: the five-minute write class
+    assert summary["oneshot_class_events"] == 1
+    assert summary["oneshot_usd"] == pytest.approx(card["cache_write"])
+    assert summary["oneshot_class_premium_usd"] == pytest.approx(card["cache_write"] - card["input"])
+    assert summary["oneshot_floor_events"] == 0
+
+
+def test_savings_report_discloses_the_input_rate_minimum(m, monkeypatch, capsys):
+    summary = {"total_tokens": 3000, "total_events": 3, "total_cost_usd": 0.012,
+               "by_category": {"tool_archive": {"events": 3, "tokens_saved": 3000, "cost_saved_usd": 0.012}},
+               "oneshot_pricing": {"basis": "input_rate_minimum", "removal_events": 3, "removal_tokens": 3000}}
+    monkeypatch.setattr(m, "_get_merged_savings", lambda **kwargs: dict(summary))
+    monkeypatch.setattr(m, "_counted_cumulative_summary", lambda days: {
+        "available": True, "oneshot_class_events": 2, "oneshot_class_premium_usd": 0.5,
+        "oneshot_floor_events": 1, "oneshot_floor_tokens": 1000})
+    monkeypatch.setattr(m, "_install_date", lambda: None)
+    m.savings_report(days=30)
+    out = capsys.readouterr().out
+    assert "priced at the input rate, a minimum" in out
+    m.savings_report(days=30, as_json=True)
+    pricing = json.loads(capsys.readouterr().out)["oneshot_pricing"]
+    assert pricing["basis"] == "input_rate_minimum"
+    assert pricing["class_premium_usd"] == pytest.approx(0.5)
+    assert pricing["floor_events"] == 1
+
+
+def test_merged_summary_marks_logged_removals_as_input_rate_minimum(m, monkeypatch):
+    monkeypatch.setattr(m, "_get_savings_summary", lambda **kw: {
+        "by_category": {"tool_archive": {"events": 2, "tokens_saved": 500, "cost_saved_usd": 0.01},
+                        "mcp_cap": {"events": 9, "tokens_saved": 9000, "cost_saved_usd": 0.1}},
+        "total_tokens": 9500, "total_cost_usd": 0.11, "total_events": 11})
+    monkeypatch.setattr(m, "_get_compression_summary", lambda **kw: {"by_feature": {
+        "bash_compress_git": {"events": 1, "tokens_saved": 700, "cost_saved_usd": 0.002}}})
+    merged = m._get_merged_savings(days=30)
+    assert merged["oneshot_pricing"]["basis"] == "input_rate_minimum"
+    assert merged["oneshot_pricing"]["removal_events"] == 3
+    assert merged["oneshot_pricing"]["removal_tokens"] == 1200

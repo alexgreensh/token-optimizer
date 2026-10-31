@@ -24143,8 +24143,35 @@ def _counted_mark_incomplete(conn, key, detail, proof=None):
                  (json.dumps(detail), key))
 
 
+def _counted_legacy_append_continuous(old, turns, compacts, ev_dt, tokens, tier_data):
+    """True when a row stored without a file digest was computed from the
+    earlier part of this transcript, which has since only been appended to.
+
+    The turns written up to the row's recorded transcript mtime must rescore to
+    exactly the observed counts the row holds, and the transcript must hold
+    turns after that point. A replaced or truncated file fails the first test;
+    one with nothing new fails the second and stays on the unchanged-file rule.
+    """
+    try:
+        old_mtime = old["transcript_mtime"]
+        if old_mtime is None:
+            return False
+        cutoff = datetime.fromtimestamp(float(old_mtime), timezone.utc).replace(tzinfo=None)
+        prefix = [turn for turn in turns if turn[0] <= cutoff]
+        if not prefix or len(prefix) >= len(turns):
+            return False
+        prefix_score = _counted_score_detail(
+            prefix, [c for c in compacts if c <= cutoff], ev_dt, tokens, tier_data)
+        return (prefix_score["observed"]
+                and prefix_score["turns_counted"] == int(old["turns_counted"] or 0)
+                and prefix_score["reread_tokens"] == int(old["reread_tokens"] or 0))
+    except (TypeError, ValueError, OverflowError, OSError):
+        return False
+
+
 def _counted_store_score(conn, key, source, uuid, ts, tokens, score, mtime,
-                         proof, old=None, magnitude_basis="metered", allow_unobserved=False):
+                         proof, old=None, magnitude_basis="metered", allow_unobserved=False,
+                         append_check=None, identity_verified=False):
     """Replace only a complete continuation of the previously observed file."""
     detail = _counted_pricing_detail(old["pricing_detail"]) if old else {}
     if old:
@@ -24153,12 +24180,17 @@ def _counted_store_score(conn, key, source, uuid, ts, tokens, score, mtime,
             continuous = proof["prefixes"].get(size) == detail.get("file_sha256")
         else:
             # Without an old digest, only the recorded unchanged file and
-            # identical observed counts can anchor a legacy reprice. Changed
-            # sources and old markers without mtimes remain quarantined.
-            continuous = (old["transcript_mtime"] is not None
-                          and old["transcript_mtime"] == mtime
-                          and score["turns_counted"] == int(old["turns_counted"] or 0)
-                          and score["reread_tokens"] == int(old["reread_tokens"] or 0))
+            # identical observed counts can anchor a legacy reprice, or an
+            # append-only continuation the caller can show (append_check). A
+            # marker row with no recorded mtime is anchored by the caller's
+            # exact identity recomputation (identity_verified) instead.
+            same_counts = (score["turns_counted"] == int(old["turns_counted"] or 0)
+                           and score["reread_tokens"] == int(old["reread_tokens"] or 0))
+            if old["transcript_mtime"] is None:
+                continuous = identity_verified and same_counts
+            else:
+                continuous = ((old["transcript_mtime"] == mtime and same_counts)
+                              or bool(append_check and append_check(old)))
         identity_matches = (old["source"] == source and old["session_uuid"] == uuid
                             and old["event_ts"] == ts)
         previous_activity = (int(old["turns_counted"] or 0) != 0
@@ -24303,7 +24335,10 @@ def _update_counted_cumulative(conn, max_sessions=_COUNTED_MAX_SESSIONS_PER_PASS
                     turns, compacts, ev_dt, int(tok or 0), tier_data)
                 if not _counted_store_score(conn, key, key.split(":", 1)[0], uuid,
                                              ts, int(tok or 0), score, mtime, proof,
-                                             old=stored.get(key), allow_unobserved=True):
+                                             old=stored.get(key), allow_unobserved=True,
+                                             append_check=lambda old, _ev=ev_dt, _tok=int(tok or 0): (
+                                                 _counted_legacy_append_continuous(
+                                                     old, turns, compacts, _ev, _tok, tier_data))):
                     stats["unmeasured_events"] += 1
                     continue
                 stats["rows_written"] += 1
@@ -24426,8 +24461,10 @@ def _counted_marker_backfill(conn, max_files=_COUNTED_MARKER_FILES_PER_PASS,
                 if size is not None:
                     continuous = proof["prefixes"].get(size) == detail.get("file_sha256")
                 else:
-                    continuous = (old["transcript_mtime"] is not None
-                                  and old["transcript_mtime"] == path.stat().st_mtime)
+                    # A row stored without an mtime is judged by the identity
+                    # recomputation below alone; a recorded mtime must match.
+                    continuous = (old["transcript_mtime"] is None
+                                  or old["transcript_mtime"] == path.stat().st_mtime)
                     try:
                         index = int(old["event_key"].rsplit(":", 1)[1])
                         marker_dt, marker_tokens = markers[index]
@@ -24458,7 +24495,8 @@ def _counted_marker_backfill(conn, max_files=_COUNTED_MARKER_FILES_PER_PASS,
                 key = f"mk:{sid}:{i}"
                 if _counted_store_score(conn, key, "mk", sid, ev_dt.isoformat(), tok,
                                         score, path.stat().st_mtime, proof, old=stored.get(key),
-                                        magnitude_basis="sized_marker" if m_tok else "estimated_marker"):
+                                        magnitude_basis="sized_marker" if m_tok else "estimated_marker",
+                                        identity_verified=True):
                     stats["rows_written"] += 1
         if paths and last == paths[-1]:
             conn.execute("INSERT OR REPLACE INTO token_optimizer_meta (key, value) "

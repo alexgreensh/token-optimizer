@@ -14508,6 +14508,8 @@ def _backfill_session_metrics(conn, days=30, limit=50):
         q_score = None
         q_grade = None
         parsed = _parse_session_jsonl(jsonl_path) if jsonl_path and os.path.exists(jsonl_path) else None
+        if not parsed:
+            continue
         if parsed:
             ttl_1h = int(parsed.get("total_cache_create_1h", 0) or 0)
             ttl_5m = int(parsed.get("total_cache_create_5m", 0) or 0)

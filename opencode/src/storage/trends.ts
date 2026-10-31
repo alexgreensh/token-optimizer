@@ -335,6 +335,10 @@ export class TrendsStore {
         if (ta) {
           ta.tokens = Math.max(0, ta.tokens - reexpand.tokens);
           ta.cost = Math.max(0, ta.cost - reexpand.cost);
+          // The input-rate floor is the part of the NET counted amount that has no
+          // class evidence: archive floor less re-expansion floor, never above it.
+          ta.floorUsd = Math.min(ta.cost, Math.max(0, ta.floorUsd - reexpand.floorUsd));
+          ta.floorTokens = Math.min(ta.tokens, Math.max(0, ta.floorTokens - reexpand.floorTokens));
         }
       }
 
@@ -343,7 +347,7 @@ export class TrendsStore {
       let totalEvents = 0;
       // Coverage is gross: uncertain credits and reversals cannot cancel.
       let unpricedTokens = reexpand?.unpricedTokens ?? 0, unpricedEvents = reexpand?.unpricedEvents ?? 0;
-      let floorTokens = reexpand?.floorTokens ?? 0, floorUsd = reexpand?.floorUsd ?? 0;
+      let floorTokens = 0, floorUsd = 0;
       for (const v of byCategory.values()) {
         totalTokensSaved += v.tokens;
         totalCostSavedUsd += v.cost;

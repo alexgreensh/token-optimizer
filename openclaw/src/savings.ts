@@ -694,11 +694,11 @@ export function readSavingsEventsByCategory(
 
   const root = openclawDir ?? path.join(process.env.HOME ?? process.env.USERPROFILE ?? "", ".openclaw");
   const sessionEvidence = loadSavingsSessions(root);
-  let unpricedTokens = 0, unpricedEvents = 0, floorTokens = 0, floorUsd = 0;
+  let unpricedTokens = 0, unpricedEvents = 0;
 
   const byType = new Map<
     string,
-    { count: number; tokensSaved: number; costSavedUsd: number }
+    { count: number; tokensSaved: number; costSavedUsd: number; floorTokens: number; floorUsd: number }
   >();
 
   // F4: compute the lookback cutoff (ms epoch). Rows older than the cutoff are
@@ -744,12 +744,12 @@ export function readSavingsEventsByCategory(
       if (uncovered > 0) unpricedEvents++;
       // Input-rate floor: priced tokens whose billed class was never recorded.
       // Output-class events are evidenced by type and never counted here.
+      const entry = byType.get(et) ?? { count: 0, tokensSaved: 0, costSavedUsd: 0, floorTokens: 0, floorUsd: 0 };
       const noClass = storedClass === undefined && et !== "verbosity_steer" && et !== "verbosity_steer_measured";
       if (noClass) {
-        floorUsd += et === "tool_archive_reexpand" ? Math.abs(cost) : cost;
-        floorTokens += storedCost ? Math.abs(tokens) - uncovered : inferred.floorTokens;
+        entry.floorUsd += et === "tool_archive_reexpand" ? Math.abs(cost) : cost;
+        entry.floorTokens += storedCost ? Math.abs(tokens) - uncovered : inferred.floorTokens;
       }
-      const entry = byType.get(et) ?? { count: 0, tokensSaved: 0, costSavedUsd: 0 };
       entry.count++;
       entry.tokensSaved += et === "tool_archive_reexpand" ? Math.abs(tokens) : tokens;
       entry.costSavedUsd += et === "tool_archive_reexpand" ? Math.abs(cost) : cost;
@@ -777,6 +777,21 @@ export function readSavingsEventsByCategory(
   const totalCostSavedUsd = otherCategories.reduce((s, c) => s + c.costSavedUsd, 0)
     + Math.max(0, archivePricedNetUsd ?? 0);
   const totalCount = categories.reduce((s, c) => s + c.count, 0);
+  // Input-rate floor: the part of the NET counted one-shot amount that has no class
+  // evidence. Archive credits are netted against re-expansions, estimated tiers are
+  // not counted, and no category's floor exceeds what it counts.
+  let floorTokens = 0, floorUsd = 0;
+  for (const [et, entry] of byType) {
+    if (et === "tool_archive" || et === "tool_archive_reexpand" || ESTIMATED_TIER_CATEGORIES.has(et)) continue;
+    floorUsd += Math.min(Math.max(0, entry.costSavedUsd), Math.max(0, entry.floorUsd));
+    floorTokens += Math.min(Math.max(0, entry.tokensSaved), Math.max(0, entry.floorTokens));
+  }
+  if (archive) {
+    const netCost = Math.max(0, archivePricedNetUsd ?? 0);
+    const netTokens = Math.max(0, archive.tokensSaved - (reexpand?.tokensSaved ?? 0));
+    floorUsd += Math.min(netCost, Math.max(0, archive.floorUsd - (reexpand?.floorUsd ?? 0)));
+    floorTokens += Math.min(netTokens, Math.max(0, archive.floorTokens - (reexpand?.floorTokens ?? 0)));
+  }
   return { categories, totalTokensSaved, totalCostSavedUsd, totalCount, unpricedTokens, unpricedEvents, archivePricedNetUsd, inputRateFloorTokens: floorTokens, inputRateFloorUsd: floorUsd };
 }
 

@@ -14968,7 +14968,11 @@ def _get_compression_summary(days=30, since=None):
                 "AVG(compression_ratio) as avg_ratio, "
                 "SUM(CASE WHEN quality_preserved = 1 THEN 1 ELSE 0 END) as quality_ok, "
                 "SUM(CASE WHEN verified = 1 THEN 1 ELSE 0 END) as verified_cnt, "
-                "model, session_uuid, session_id "
+                "model, session_uuid, session_id, "
+                "SUM(CASE WHEN original_tokens > compressed_tokens "
+                "    THEN original_tokens - compressed_tokens ELSE 0 END) as gross_credit, "
+                "SUM(CASE WHEN compressed_tokens > original_tokens "
+                "    THEN compressed_tokens - original_tokens ELSE 0 END) as gross_debit "
                 "FROM " + _counted_table(conn, "compression_events") + " WHERE timestamp >= ? "
                 "AND (tier IS NULL OR tier = 'measured') "
                 "GROUP BY feature, model, session_uuid, session_id ORDER BY orig DESC",
@@ -14991,7 +14995,8 @@ def _get_compression_summary(days=30, since=None):
         tier = _load_pricing_tier()
         tier_data = PRICING_TIERS.get(tier, PRICING_TIERS["anthropic"])
 
-        for feature, cnt, orig, comp, avg_ratio, quality_ok, verified_cnt, model, s_uuid, sid in rows:
+        for (feature, cnt, orig, comp, avg_ratio, quality_ok, verified_cnt, model, s_uuid, sid,
+             gross_credit, gross_debit) in rows:
             orig = orig or 0
             comp = comp or 0
             cnt = cnt or 0
@@ -14999,7 +15004,11 @@ def _get_compression_summary(days=30, since=None):
             rate, priced_share = _compression_rate_coverage(model, key, session_rates, fallback_rate, tier_data)
             tokens_saved = orig - comp
             cost_saved = round(tokens_saved * rate / 1_000_000, 6)
-            unpriced_tokens = max(0, tokens_saved) * max(0.0, 1.0 - priced_share)
+            # Gross credits and debits are kept apart (summed per event in SQL), so
+            # an unknown-model expansion is disclosed rather than netted away.
+            uncovered = max(0.0, 1.0 - priced_share)
+            unpriced_credit = (gross_credit or 0) * uncovered
+            unpriced_debit = (gross_debit or 0) * uncovered
 
             if feature in by_feature:
                 # Merge with existing entry for this feature (multi-model rows)
@@ -15009,7 +15018,8 @@ def _get_compression_summary(days=30, since=None):
                 entry["compressed_tokens"] += comp
                 entry["tokens_saved"] += tokens_saved
                 entry["cost_saved_usd"] = round(entry["cost_saved_usd"] + cost_saved, 6)
-                entry["unpriced_tokens"] += unpriced_tokens
+                entry["unpriced_credit_tokens"] += unpriced_credit
+                entry["unpriced_debit_tokens"] += unpriced_debit
                 # avg_ratio and quality_pcts are approximate after merging; acceptable.
                 entry["quality_preserved_pct"] = round(
                     (entry["quality_preserved_pct"] * (entry["events"] - cnt) + 100 * (quality_ok or 0))
@@ -15024,7 +15034,8 @@ def _get_compression_summary(days=30, since=None):
                     "avg_ratio": round(avg_ratio or 0.0, 4),
                     "tokens_saved": tokens_saved,
                     "cost_saved_usd": cost_saved,
-                    "unpriced_tokens": unpriced_tokens,
+                    "unpriced_credit_tokens": unpriced_credit,
+                    "unpriced_debit_tokens": unpriced_debit,
                     "quality_preserved_pct": round(100 * (quality_ok or 0) / max(cnt, 1), 1),
                     "verified_pct": round(100 * (verified_cnt or 0) / max(cnt, 1), 1),
                 }
@@ -15035,7 +15046,9 @@ def _get_compression_summary(days=30, since=None):
         overall_ratio = round(1.0 - total_compressed / max(total_original, 1), 4)
         tokens_saved = total_original - total_compressed
         for entry in by_feature.values():
-            entry["unpriced_tokens"] = round(entry["unpriced_tokens"])
+            entry["unpriced_credit_tokens"] = round(entry["unpriced_credit_tokens"])
+            entry["unpriced_debit_tokens"] = round(entry["unpriced_debit_tokens"])
+            entry["unpriced_tokens"] = entry["unpriced_credit_tokens"] + entry["unpriced_debit_tokens"]
 
         return {
             "total_events": total_events,
@@ -15043,6 +15056,8 @@ def _get_compression_summary(days=30, since=None):
             "total_compressed_tokens": total_compressed,
             "total_tokens_saved": tokens_saved,
             "unpriced_tokens": sum(entry["unpriced_tokens"] for entry in by_feature.values()),
+            "unpriced_credit_tokens": sum(e["unpriced_credit_tokens"] for e in by_feature.values()),
+            "unpriced_debit_tokens": sum(e["unpriced_debit_tokens"] for e in by_feature.values()),
             "overall_ratio": overall_ratio,
             "by_feature": by_feature,
             "period_days": days,
@@ -55502,11 +55517,16 @@ def _merge_v5_compression(by_category, by_feature, fallback_cost_per_mtok):
             cost_saved = round(float(fdata["cost_saved_usd"]), 4)
         else:
             cost_saved = 0.0
+        unpriced_default = fdata.get("cost_saved_usd") is None
+        unpriced_credit = fdata.get("unpriced_credit_tokens", max(0, tokens_saved) if unpriced_default else 0)
+        unpriced_debit = fdata.get("unpriced_debit_tokens", max(0, -tokens_saved) if unpriced_default else 0)
         by_category[feature] = {
             "events": events,
             "tokens_saved": tokens_saved,
             "cost_saved_usd": cost_saved,
-            "unpriced_tokens": fdata.get("unpriced_tokens", max(0, tokens_saved) if fdata.get("cost_saved_usd") is None else 0),
+            "unpriced_tokens": fdata.get("unpriced_tokens", unpriced_credit + unpriced_debit),
+            "unpriced_credit_tokens": unpriced_credit,
+            "unpriced_debit_tokens": unpriced_debit,
         }
         add_tok += tokens_saved
         add_cost += cost_saved
@@ -55644,6 +55664,8 @@ def _get_merged_savings(days=30, since=None):
         "total_cost_usd": round(total_cost, 4),
         "total_events": total_events,
         "compression_unpriced_tokens": sum(int(v.get("unpriced_tokens", 0) or 0) for v in by_category.values()),
+        "compression_unpriced_credit_tokens": sum(int(v.get("unpriced_credit_tokens", 0) or 0) for v in by_category.values()),
+        "compression_unpriced_debit_tokens": sum(int(v.get("unpriced_debit_tokens", 0) or 0) for v in by_category.values()),
         "by_category": by_category,
         "daily_avg_usd": round(total_cost / max(days, 1), 4),
         "period_days": days,
@@ -57763,7 +57785,11 @@ def savings_report(days=30, as_json=False):
     print(f"  {'TOTAL (measured)':<28s} {total_events:>8,} {total_tokens:>14,} {'$' + f'{total_cost:.2f}':>11s}")
     unpriced = int(summary.get("compression_unpriced_tokens", 0) or 0)
     if unpriced:
-        print(f"  {unpriced:,} compression tokens are counted but have no known model rate;")
+        unpriced_credit = int(summary.get("compression_unpriced_credit_tokens", 0) or 0)
+        unpriced_debit = int(summary.get("compression_unpriced_debit_tokens", 0) or 0)
+        split = (f" ({unpriced_credit:,} credits, {unpriced_debit:,} debits)"
+                 if unpriced_credit or unpriced_debit else "")
+        print(f"  {unpriced:,} compression tokens are counted but have no known model rate{split};")
         print("  their dollar value is not included.")
     trip = _headline_tripwire(total_cost + rr_usd, total_events, days)
     if trip:

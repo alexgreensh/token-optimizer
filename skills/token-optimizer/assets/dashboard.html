@@ -4610,6 +4610,9 @@ var DB = (function() {
           ? ' (' + Math.round(Number(s.compression_unpriced_credit_tokens) || 0).toLocaleString() + ' credits, ' +
             Math.round(Number(s.compression_unpriced_debit_tokens) || 0).toLocaleString() + ' debits)' : '') +
         '.</p>' : '') +
+      (s.reprice_detail && Number(s.reprice_detail.unpriced_tokens) > 0 ? '<p class="note">' +
+        Math.round(Number(s.reprice_detail.unpriced_tokens)).toLocaleString() +
+        ' logged tokens ran on models with no known rate; their dollar value is not included.</p>' : '') +
       (op.removal_events > 0 ? '<p class="note">Initial removals above are priced at the input rate, a minimum.' +
         (Number(op.class_premium_usd) >= 0.005
           ? ' The next call billed new context at a cache-write rate for ' +

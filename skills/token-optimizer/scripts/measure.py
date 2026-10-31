@@ -23438,24 +23438,20 @@ def _cache_coverage_gaps(runtime):
     ]
 
 
-_CLAUDE_FAMILY_RX = re.compile(r"fable|mythos|opus|sonnet|haiku")
-
-
 def _session_mix_class_terms(rate_class, *model_usage_blobs):
-    """[(share, usd_per_mtok)] for the PRICED Claude models in ONE session's own
-    token-weighted model usage, at one token class, or None when nothing usable is
-    present.
+    """(terms, unpriced_share) for ONE session's own token-weighted model usage at
+    one token class, or None when no usable usage is present.
 
-    *rate_class* is a key of _routing_class_rates ("fresh_input", "output", ...).
-    Each model id is priced at its own generation card (Opus 5.5 is not the Opus
-    family rate); an id without an exact card, and any non-Claude id, contributes
-    no term.
+    *terms* is [(share, usd_per_mtok)] for every model id with an exact rate card
+    (any provider); *unpriced_share* is the share of the session's recorded tokens
+    held by ids with no exact card. *rate_class* is a key of _routing_class_rates
+    ("fresh_input", "output", "cache_create_1h", ...). Each id is priced at its
+    own generation card (Opus 5.5 is not the Opus family rate); an id without an
+    exact card contributes no term and is never borrowed from a family.
 
-    Shares are taken over the session's TOTAL recorded tokens, so an unpriced
-    share (a local or third-party model with no rate card) is neither dropped nor
-    renormalized away -- it contributes no term, and the caller holds that slice
-    at the event-time rate. Same denominator rule as _cost_per_session: a tiny
-    priced sliver can never be inflated to stand for the whole mix.
+    Shares are taken over the session's TOTAL recorded tokens, so a priced sliver
+    is never inflated to stand for the whole mix. The caller prices the unpriced
+    share at zero and discloses it.
 
     Blobs are tried in order (model_usage_json, then all_model_usage_json); the
     first that parses to a non-empty dict wins. Never raises.
@@ -23487,14 +23483,14 @@ def _session_mix_class_terms(rate_class, *model_usage_blobs):
     if total <= 0:
         return None
     terms = []
+    priced = 0.0
     for key, val in weights.items():
-        if not _CLAUDE_FAMILY_RX.search(key.lower()):
-            continue
         rates = _routing_class_rates(key)
         rate = (rates or {}).get(rate_class)
         if rate:
             terms.append((val / total, float(rate)))
-    return terms or None
+            priced += val
+    return terms, max(0.0, 1.0 - priced / total)
 
 
 # Event classes whose stored cost is NOT an input-class rate and must never be
@@ -23507,7 +23503,10 @@ _REPRICE_SKIP_EVENT_TYPES = frozenset({"resume_lean"})
 # Token class each event type's avoided tokens belong to. The default is fresh
 # input. A measured verbosity reduction is output tokens (counted from the
 # turns' output usage), so it is priced at the output rate.
-_EVENT_RATE_CLASS = {"verbosity_steer_measured": "output", "verbosity_steer": "output"}
+# A keep-warm saving is the avoided 1h cache write of the prefix, so it follows the
+# session model's 1h cache-write rate.
+_EVENT_RATE_CLASS = {"verbosity_steer_measured": "output", "verbosity_steer": "output",
+                     "keepwarm": "cache_create_1h"}
 
 # One statement per (source, has model_usage_json, has all_model_usage_json, by_day,
 # session-scoped). Grouping on column 1 is a no-op when it is the constant NULL.
@@ -23525,11 +23524,13 @@ _REPRICE_SQL = _sql_variants(
 )
 
 
-def _session_model_reprice(conn, cutoff, session_uuid=None, by_day=False):
+def _session_model_reprice(conn, cutoff, session_uuid=None, by_day=False, unpriced_out=None):
     """Per-event_type USD correction from repricing savings_events at each event's
     OWN session model mix. Returns (deltas_by_event_type, repriced_tokens,
     unmeasured_tokens). With *session_uuid* only that session's rows count; with
-    *by_day* the deltas are keyed (local YYYY-MM-DD, event_type).
+    *by_day* the deltas are keyed (local YYYY-MM-DD, event_type). When
+    *unpriced_out* is a dict, ``unpriced_out["tokens"]`` accumulates the saved
+    tokens that belong to models with no exact rate card.
 
     THE DEFECT THIS REPAIRS. _log_savings_event stamps every row with
     _resolve_session_model(), which falls back to "sonnet" whenever the session
@@ -23556,6 +23557,11 @@ def _session_model_reprice(conn, cutoff, session_uuid=None, by_day=False):
     labelled "estimated" wherever it surfaces (see _window_overage_usd), and rows
     that cannot be joined to a session are NOT MEASURED: they keep their
     event-time price and are counted separately rather than guessed at.
+
+    UNPRICED MODELS. The share of a session's tokens that ran on a model with no
+    exact rate card (a local or third-party model, a generation without a card) is
+    priced at zero, not at the Sonnet stand-in the event writer stamped. Those
+    tokens are reported through *unpriced_out*. Stored rows are never changed.
 
     Degrades to ({}, 0, 0) on any schema or query problem. An older DB without
     session_uuid / model_usage_json simply does not get the repair; a schema error
@@ -23597,15 +23603,18 @@ def _session_model_reprice(conn, cutoff, session_uuid=None, by_day=False):
         if tok <= 0:
             # Zero-token markers (nudges) and debit rows carry no rate to correct.
             continue
-        terms = _session_mix_class_terms(
+        mix = _session_mix_class_terms(
             _EVENT_RATE_CLASS.get(event_type, "fresh_input"), mu_json, amu_json)
-        if not terms:
+        if mix is None:
             unmeasured_tokens += tok
             continue
-        event_rate = float(cost or 0.0) * 1_000_000.0 / tok
-        # Only the PRICED share moves. The unpriced remainder keeps the event-time
-        # rate, so a fully-unpriced session yields a zero delta by construction.
-        delta = sum(sh * (rate - event_rate) for sh, rate in terms) * tok / 1_000_000.0
+        terms, unpriced_share = mix
+        # The priced share is charged at each model's own card; the unpriced share
+        # is charged nothing. The delta moves the stored cost to that total.
+        new_cost = sum(sh * rate for sh, rate in terms) * tok / 1_000_000.0
+        delta = new_cost - float(cost or 0.0)
+        if unpriced_out is not None and unpriced_share > 0:
+            unpriced_out["tokens"] = unpriced_out.get("tokens", 0) + tok * unpriced_share
         if delta:
             key = (day, event_type) if by_day else event_type
             deltas[key] = deltas.get(key, 0.0) + delta
@@ -24914,8 +24923,9 @@ def _get_savings_summary(days=30, since=None):
             # Model-mix repair, same connection and same cutoff so the corrected
             # rows are exactly the rows summed above. Self-degrading; see
             # _session_model_reprice.
+            unpriced_reprice = {}
             reprice_deltas, repriced_tokens, unmeasured_tokens = _session_model_reprice(
-                conn, cutoff)
+                conn, cutoff, unpriced_out=unpriced_reprice)
         finally:
             conn.close()
 
@@ -24962,6 +24972,9 @@ def _get_savings_summary(days=30, since=None):
                 # NOT MEASURED: no joinable session row, so no mix to price
                 # against. These keep their event-time price; nothing is invented.
                 "unmeasured_tokens": int(unmeasured_tokens),
+                # Saved tokens that ran on models with no exact rate card: counted
+                # as tokens, priced at zero.
+                "unpriced_tokens": int(round(unpriced_reprice.get("tokens", 0))),
                 "delta_usd": round(sum(reprice_deltas.values()), 4),
                 "basis": "session_log.model_usage_json token-weighted mix",
             },
@@ -58061,6 +58074,10 @@ def savings_report(days=30, as_json=False):
                  if unpriced_credit or unpriced_debit else "")
         print(f"  {unpriced:,} compression tokens are counted but have no known model rate{split};")
         print("  their dollar value is not included.")
+    unpriced_logged = int((summary.get("reprice_detail") or {}).get("unpriced_tokens", 0) or 0)
+    if unpriced_logged:
+        print(f"  {unpriced_logged:,} logged tokens ran on models with no known rate; "
+              "their dollar value is not included.")
     oneshot = summary.get("oneshot_pricing") or {}
     if oneshot.get("removal_events"):
         print("  Initial removals above are priced at the input rate, a minimum.")

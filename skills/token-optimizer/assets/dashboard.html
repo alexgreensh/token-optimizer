@@ -4398,15 +4398,15 @@ var DB = (function() {
     // Estimated = genuine TO-realized counterfactuals grounded in YOUR behavior; each carries a sample size.
     // (Pillars + estimated reconcile to gettingMo: mcp_cap folds into runtime.)
     var estItems = [
-      { label: 'model routing',                  amt: routingEstimated ? mo(mr.realized_cost_usd) : 0, n: (mr.baseline_reference_priced || []).length, unit: 'model families on one newest-card price list' },
-      { label: 'loops prevented',                amt: mo(beh.cost_saved_usd), n: Number(beh.loop_events) || 0,        unit: 'events' },
-      { label: 'sub-agent runtime',              amt: mo(unc.cost_saved_usd), n: Number(unc.subagent_dispatches) || 0, unit: 'dispatches' },
-      { label: 'MCP output cap',                 amt: mo(mce.cost_saved_usd), n: Number(mce.events) || 0,             unit: 'capped results' },
-      { label: 'avoided rework (heeded nudges)', amt: mo(ce.cost_saved_usd),  n: Number(ce.heeded_sessions) || 0,     unit: 'heeded', conf: ce.confidence },
-      { label: 'continuity handover',            amt: mo(hr.cost_saved_usd),  n: Number(hr.restored_sessions) || 0,    unit: 'restored', conf: hr.confidence },
-      { label: 'avoided search (hints)',         amt: avoidedSearchMo,        n: avoidedSearchN,                       unit: avoidedSearchUnit, conf: hfHasData ? 'observed' : rs.confidence },
-      { label: 'lean resumes (cold reload avoided)', amt: mo(rle.cost_saved_usd), n: Number(rle.events) || 0,           unit: 'resumes' },
-      { label: 'concise output nudges', amt: mo(vs.cost_saved_usd), n: Number(vs.events) || 0, unit: 'nudges' }
+      { key: 'routing_estimated', label: 'model routing',                  amt: routingEstimated ? mo(mr.realized_cost_usd) : 0, n: (mr.baseline_reference_priced || []).length, unit: 'model families on one newest-card price list' },
+      { key: 'behavioral_estimate', label: 'loops prevented',                amt: mo(beh.cost_saved_usd), n: Number(beh.loop_events) || 0,        unit: 'events' },
+      { key: 'uncaptured_runtime', label: 'sub-agent runtime',              amt: mo(unc.cost_saved_usd), n: Number(unc.subagent_dispatches) || 0, unit: 'dispatches' },
+      { key: 'mcp_cap_estimated', label: 'MCP output cap',                 amt: mo(mce.cost_saved_usd), n: Number(mce.events) || 0,             unit: 'capped results' },
+      { key: 'contamination_exit', label: 'avoided rework (heeded nudges)', amt: mo(ce.cost_saved_usd),  n: Number(ce.heeded_sessions) || 0,     unit: 'heeded', conf: ce.confidence },
+      { key: 'handover_rerun', label: 'continuity handover',            amt: mo(hr.cost_saved_usd),  n: Number(hr.restored_sessions) || 0,    unit: 'restored', conf: hr.confidence },
+      { key: 'avoided_search', label: 'avoided search (hints)',         amt: avoidedSearchMo,        n: avoidedSearchN,                       unit: avoidedSearchUnit, conf: hfHasData ? 'observed' : rs.confidence },
+      { key: 'resume_lean_estimated', label: 'lean resumes (cold reload avoided)', amt: mo(rle.cost_saved_usd), n: Number(rle.events) || 0,           unit: 'resumes' },
+      { key: 'verbosity_steer', label: 'concise output nudges', amt: mo(vs.cost_saved_usd), n: Number(vs.events) || 0, unit: 'nudges' }
     ].filter(function(it){ return it.amt > 0 || it.conf; });
     var estimatedMo = estItems.reduce(function(a, b){ return a + b.amt; }, 0);
     // What you're getting = measured + estimated (both real value; estimated shown split-out, never hidden).
@@ -4419,6 +4419,30 @@ var DB = (function() {
       rereadMo = mo(actionSavings.reread_usd);
       estimatedMo = mo(actionSavings.estimated_usd) + mo(actionSavings.routing_estimated_usd);
       gettingMo = mo(actionSavings.total_usd);
+    }
+    // Whole-cent display values from the payload: the parts shown on the card
+    // add up to the total shown, with the exact amounts kept in the payload.
+    var exactCents = null;
+    var dispCents = actionSavings && actionSavings.display;
+    if (dispCents && dispCents.components_cents && dispCents.estimates_cents) {
+      var dc = dispCents.components_cents, de = dispCents.estimates_cents;
+      var estSumCents = Object.keys(de).reduce(function(a, k) { return a + de[k]; }, 0);
+      exactCents = {
+        total: dispCents.total_cents,
+        logged: dc.logged + dc.routing_measured,
+        reread: dc.reread,
+        other: estSumCents + dc.routing_estimated,
+        est: de,
+        routingEstimated: dc.routing_estimated,
+        avoidedKey: actionSavings.avoided_search_source
+      };
+    }
+    function moneyCents(c) {
+      return (c < 0 ? '-$' : '$') + (Math.abs(c) / 100).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    }
+    function estCents(item) {
+      var key = item.key === 'avoided_search' ? exactCents.avoidedKey : item.key;
+      return key === 'routing_estimated' ? exactCents.routingEstimated : exactCents.est[key];
     }
     // Opportunity = realizable if you act; never realized, never summed into "getting".
     // output-waste is $ here; cache-drop is shown separately in TOKENS (re-written prefix) —
@@ -4551,13 +4575,13 @@ var DB = (function() {
     var heroAmt = gettingMo;
     html += '<div class="card savings-actions" style="flex:2;min-width:min(100%,320px);padding:var(--s-4);">' +
       '<div class="label">Action savings &middot; ' + periodLabel + '</div>' +
-      '<div class="savings-amount">' + money(periodValue(heroAmt)) + '<span class="savings-unit"> logged + estimated</span></div>' +
-      '<div class="savings-split"><span>Logged actions <strong>' + money(periodValue(measuredMo)) + '</strong></span>' +
+      '<div class="savings-amount">' + (exactCents ? moneyCents(exactCents.total) : money(periodValue(heroAmt))) + '<span class="savings-unit"> logged + estimated</span></div>' +
+      '<div class="savings-split"><span>Logged actions <strong>' + (exactCents ? moneyCents(exactCents.logged) : money(periodValue(measuredMo))) + '</strong></span>' +
         '<span>Repeat reads avoided <strong>' +
           (actionSavings && actionSavings.reread_available === false ? 'Unavailable' :
             ((actionSavings && actionSavings.reread_prices_available === false) || cp.reread_prices_available === false ?
-              'Unpriced' : '~' + money(periodValue(rereadMo)))) + '</strong></span>' +
-        '<span>Other estimates <strong>~' + money(periodValue(estimatedMo)) + '</strong></span></div>' +
+              'Unpriced' : '~' + (exactCents ? moneyCents(exactCents.reread) : money(periodValue(rereadMo))))) + '</strong></span>' +
+        '<span>Other estimates <strong>~' + (exactCents ? moneyCents(exactCents.other) : money(periodValue(estimatedMo))) + '</strong></span></div>' +
       '<p class="note">Includes the later benefit of context removed during this period. Initial removals are counted once.</p>' +
       (cp.reread_pricing_note ? '<p class="note">' + esc(cp.reread_pricing_note) + '</p>' : '') +
       (actionSavings && actionSavings.total_clamped ? '<p class="note">Signed adjustments give a net total of ' +
@@ -4600,7 +4624,8 @@ var DB = (function() {
           '<span>Runtime <strong>' + money(periodValue(runtimeMo + rereadMo)) + '</strong></span>' +
           '<span>Habits <strong>' + money(periodValue(behavMo)) + '</strong></span></div>' +
         (estItems.length ? '<p>Other estimates:</p>' + estItems.map(function(it) {
-          return '<p>' + esc(it.label) + ': <strong>' + money(periodValue(it.amt)) + '</strong> (' +
+          var shown = exactCents && estCents(it) != null ? moneyCents(estCents(it)) : money(periodValue(it.amt));
+          return '<p>' + esc(it.label) + ': <strong>' + shown + '</strong> (' +
             it.n.toLocaleString() + ' ' + esc(it.unit) + (it.conf ? ', ' + esc(String(it.conf)) : '') + ').</p>';
         }).join('') : '') +
         '<p>' + billingCaption + '</p>') +

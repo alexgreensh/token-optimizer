@@ -52913,6 +52913,10 @@ def _estimate_cache_drop_savings(days=30):
             read_rate += weight * float(card["cache_read"]) / total_weight
         if priced_weight:
             unpriced_share = round(1 - priced_weight / total_weight, 4)
+        elif weights:
+            # Every recorded model lacks an exact card: nothing is priced, so the
+            # opportunity is zero and the whole share is reported as unpriced.
+            unpriced_share = 1.0
         else:
             read_rate, write_rate, _ = _mix_cache_rates(days)
             rate_basis = "model_mix"

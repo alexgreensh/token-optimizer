@@ -65,6 +65,15 @@ def test_unknown_generation_adds_nothing_and_is_disclosed(m, tmp_path, monkeypat
     assert out["unpriced_share"] == 0.25
 
 
+def test_all_unknown_models_price_nothing_and_report_full_unpriced_share(m, tmp_path, monkeypatch):
+    out = _estimate(m, tmp_path, monkeypatch,
+                    [{"glm-4.6": _parts(900)}, {"claude-opus-5-99": _parts(100)}])
+    assert out["cost_saved_usd"] == 0
+    assert out["unpriced_share"] == 1.0
+    assert out["by_class"]["cache_write_5m"]["usd"] == 0
+    assert out["rate_basis"] == "session_models"
+
+
 def test_text_shows_dollars_on_its_own_line_outside_the_subtotal(measure, monkeypatch, capsys):
     summary = {
         "period_days": 30, "total_cost_usd": 10.0, "total_events": 1, "by_category": {},

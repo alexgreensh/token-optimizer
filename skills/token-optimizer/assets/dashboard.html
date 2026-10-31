@@ -4313,6 +4313,7 @@ var DB = (function() {
     var days = Number(s.period_days) || 30;
     var mr  = s.model_routing       || {};
     var cd  = s.cache_drop          || {};
+    var op  = s.oneshot_pricing     || {};
     var ow  = s.output_waste        || {};
     var beh = s.behavioral_estimate || {};
     var sd  = s.structural_detail   || {};
@@ -4589,7 +4590,17 @@ var DB = (function() {
         money(actionSavings.net_total_usd) + '; the headline has a $0 floor.</p>' : '') +
       (Number(s.compression_unpriced_tokens) > 0 ? '<p class="note">' +
         Math.round(Number(s.compression_unpriced_tokens)).toLocaleString() +
-        ' compression tokens are counted without a dollar value because their model rate is unavailable.</p>' : '') +
+        ' compression tokens are counted without a dollar value because their model rate is unavailable' +
+        ((Number(s.compression_unpriced_credit_tokens) > 0 || Number(s.compression_unpriced_debit_tokens) > 0)
+          ? ' (' + Math.round(Number(s.compression_unpriced_credit_tokens) || 0).toLocaleString() + ' credits, ' +
+            Math.round(Number(s.compression_unpriced_debit_tokens) || 0).toLocaleString() + ' debits)' : '') +
+        '.</p>' : '') +
+      (op.removal_events > 0 ? '<p class="note">Initial removals above are priced at the input rate, a minimum.' +
+        (Number(op.class_premium_usd) >= 0.005
+          ? ' The next call billed new context at a cache-write rate for ' +
+            Math.round(Number(op.class_events) || 0).toLocaleString() + ' removals: about ' +
+            money(Number(op.class_premium_usd)) + ' more, not in the total.' : '') +
+        '</p>' : '') +
       (!cp.available ? '<p class="note">Repeat-read coverage is unavailable here; logged actions are still included.</p>' : '') +
       fold('Breakdown and method',
         '<p>Logged actions include output trims, context reductions, setup changes and, when your earlier model mix is priced from your own usage, routing savings. ' +

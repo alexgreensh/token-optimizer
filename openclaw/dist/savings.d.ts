@@ -11,6 +11,9 @@ export interface SavingsEventsSummary {
     totalTokensSaved: number;
     totalCostSavedUsd: number;
     totalCount: number;
+    unpricedTokens?: number;
+    unpricedEvents?: number;
+    archivePricedNetUsd?: number | null;
 }
 /**
  * Optional lookback window for savings-events reads. Mirrors Python
@@ -30,6 +33,7 @@ export interface SavingsEventsWindow {
  * is given, only events whose `timestamp` is within `now - days` are counted.
  */
 export declare function readSavingsEventsByCategory(openclawDir?: string, window?: SavingsEventsWindow): SavingsEventsSummary;
+export declare function measuredSavingsFromSummary(summary: SavingsEventsSummary): number;
 export interface SavingsBreakdownItem {
     key: string;
     label: string;
@@ -88,6 +92,10 @@ export interface RealizedSavings {
     transformationPct: number;
     beforeOpus: number;
     afterOpus: number;
+    premiumTokens?: number;
+    premiumCostUsd?: number;
+    baselineClassMixAvailable?: boolean;
+    baselineTtlMixAvailable?: boolean;
     /**
      * Structured baseline-building progress. Present when `ready === false` and the
      * not-ready reason is an insufficient early-session count or the window is still

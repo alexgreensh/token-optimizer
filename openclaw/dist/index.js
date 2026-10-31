@@ -413,8 +413,9 @@ exports.default = definePluginEntry({
             if (filepath) {
                 api.logger.info(`[token-optimizer] Checkpoint saved: ${filepath}`);
             }
-            // Clear read-cache on compaction (context is reset, cache entries are stale)
-            (0, read_cache_1.clearCache)(context?.agentId ?? "default", session.sessionId);
+            // Clear read-cache on compaction (context is reset, cache entries are stale).
+            // The agent id defaults to "unknown", the same default the Read hook caches under.
+            (0, read_cache_1.clearCache)(context?.agentId ?? "unknown", session.sessionId);
         });
         // Smart Compaction: restore after compaction
         safeOn(api, "after_compaction", async (...args) => {
@@ -538,7 +539,7 @@ exports.default = definePluginEntry({
                         if (nudgeMsg) {
                             boundedSetAdd(_freshNudgeFiredSessions, sessionId);
                             const { savedTokens } = (0, quality_1.freshSessionSavingsEstimate)(nudgeSnapshot.fillPct, nudgeSnapshot.model, nudgeSnapshot.contextWindow);
-                            (0, read_cache_1.logSavingsEvent)("fresh_session_nudge", savedTokens, sessionId, `score=${nudgeSnapshot.qualityScore} fill_pct=${nudgeSnapshot.fillPct.toFixed(1)}`);
+                            (0, read_cache_1.logSavingsEvent)("fresh_session_nudge", savedTokens, sessionId, `score=${nudgeSnapshot.qualityScore} fill_pct=${nudgeSnapshot.fillPct.toFixed(1)}`, { openclawDir, model: nudgeSnapshot.model });
                             (0, telemetry_1.logCompressionEvent)({
                                 feature: "fresh_session_nudge", sessionId,
                                 detail: `score=${nudgeSnapshot.qualityScore} fill_pct=${nudgeSnapshot.fillPct.toFixed(1)} est_saved=${savedTokens}`,

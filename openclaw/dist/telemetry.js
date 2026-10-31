@@ -51,6 +51,7 @@ const os = __importStar(require("os"));
 const path = __importStar(require("path"));
 const token_estimate_1 = require("./token-estimate");
 const redact_1 = require("./redact");
+const counted_events_1 = require("./counted-events");
 const HOME = process.env.HOME ?? process.env.USERPROFILE ?? os.homedir();
 const TELEMETRY_DIR = path.join(HOME, ".openclaw", "token-optimizer");
 const TELEMETRY_PATH = path.join(TELEMETRY_DIR, "compression-events.jsonl");
@@ -143,16 +144,16 @@ function readRecentEvents(days) {
             const event = parseLine(trimmed);
             if (!event)
                 continue;
-            const ts = Date.parse(event.timestamp);
-            if (Number.isNaN(ts) || ts < cutoff)
-                continue;
             out.push(event);
         }
     }
     catch {
         // Silent: a corrupt telemetry file returns whatever parsed so far.
     }
-    return out;
+    return (0, counted_events_1.countedEvents)(out, "compression").filter((event) => {
+        const ts = Date.parse(event.timestamp);
+        return Number.isFinite(ts) && ts >= cutoff;
+    });
 }
 /** Summary equivalent of Python's `_get_compression_summary`. */
 function getCompressionSummary(days = 30) {

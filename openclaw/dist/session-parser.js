@@ -321,6 +321,7 @@ function parseSession(filePath, agentName, openclawDir) {
     let messageCount = 0;
     const requestUsage = new Map();
     const modelUsage = new Map();
+    const modelTokenBuckets = Object.create(null);
     const toolsUsed = new Set();
     let firstTs = null;
     let lastTs = null;
@@ -399,7 +400,10 @@ function parseSession(filePath, agentName, openclawDir) {
                     usage.cache_creation_input_tokens ??
                     (cacheWrite1h + cacheWrite5m));
                 const modelId = msg?.model ?? record.model ?? "unknown";
-                const reqId = record.requestId;
+                // SDK and imported transcripts carry only the message id, which repeats
+                // across the streamed chunks of one reply the same way a requestId does.
+                const reqId = record.requestId ||
+                    msg?.id;
                 const key = reqId || `__noreq__${requestUsage.size}`;
                 const previous = requestUsage.get(key);
                 if (!previous) {
@@ -442,6 +446,9 @@ function parseSession(filePath, agentName, openclawDir) {
     if (messageCount === 0)
         return null;
     for (const usage of requestUsage.values()) {
+        const bucket = modelTokenBuckets[usage.model] ??= { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, cacheWrite5m: 0 };
+        for (const key of ["input", "output", "cacheRead", "cacheWrite", "cacheWrite1h", "cacheWrite5m"])
+            bucket[key] += usage[key];
         totalInput += usage.input;
         totalOutput += usage.output;
         totalCacheRead += usage.cacheRead;
@@ -513,6 +520,8 @@ function parseSession(filePath, agentName, openclawDir) {
         tokens,
         costUsd,
         model,
+        rawModel: dominantModelRaw,
+        modelTokenBuckets,
         runType: "manual",
         outcome,
         messageCount,

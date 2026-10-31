@@ -58027,9 +58027,14 @@ def savings_report(days=30, as_json=False):
                   for key, label in _SAVINGS_CATEGORY_LABELS.items() if key not in _RELOCATED]
     table_rows += [(key, cat_data) for key, cat_data in by_cat.items()
                    if key not in _SAVINGS_CATEGORY_LABELS]
+    # When the table covers the same span as the monthly line, its total is the
+    # logged share of ALL IN, so both lines print the same cents.
+    table_total = summary.get("total_cost_usd", 0.0)
+    if _mo(1.0) == 1.0 and not summary["action_savings"]["total_clamped"]:
+        table_total = _cents["logged"] / 100
     row_cents, table_total_cents = _allocate_cents(
         [cat_data.get("cost_saved_usd", 0.0) for _label, cat_data in table_rows],
-        total=summary.get("total_cost_usd", 0.0))
+        total=table_total)
     for (label, cat_data), cents in zip(table_rows, row_cents):
         events = cat_data.get("events", 0)
         tokens = cat_data.get("tokens_saved", 0)

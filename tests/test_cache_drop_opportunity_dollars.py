@@ -154,3 +154,22 @@ def test_dashboard_and_text_round_half_cents_the_same_way(measure, monkeypatch, 
     assert "$42.87" in card.split("still on the table")[0]
     assert "worth about $32.63/mo in output" in card
     assert "are worth about $10.24/mo" in card
+
+
+def test_measured_table_total_matches_the_monthly_logged_line(measure, monkeypatch, capsys):
+    summary = {
+        "period_days": 30, "total_cost_usd": 79.094, "total_events": 2, "daily_avg_usd": 2.64,
+        "by_category": {"checkpoint_restore": {"events": 1, "tokens_saved": 10, "cost_saved_usd": 0.6496},
+                        "verbosity_steer_measured": {"events": 1, "tokens_saved": 10, "cost_saved_usd": 78.4444}},
+        "model_routing": {"realized_cost_usd": 393.973, "evidence": "estimated"},
+        "uncaptured_runtime": {"cost_saved_usd": 6.703, "evidence": "estimated"},
+    }
+    monkeypatch.setattr(measure, "_get_merged_savings", lambda **kw: json.loads(json.dumps(summary)))
+    monkeypatch.setattr(measure, "_counted_cumulative_summary", lambda **kw: {"available": False})
+    monkeypatch.setattr(measure, "_savings_since_install", lambda: {"days": 90})
+    monkeypatch.setattr(measure, "_install_date", lambda: None)
+    measure.savings_report()
+    out = capsys.readouterr().out
+    table = re.search(r"TOTAL \(measured\)\s+\S+\s+\S+\s+\$([0-9.]+)", out).group(1)
+    monthly = re.search(r"Estimated monthly: \$([0-9.]+)", out).group(1)
+    assert table == monthly

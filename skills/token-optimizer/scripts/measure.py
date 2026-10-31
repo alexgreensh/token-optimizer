@@ -1826,9 +1826,16 @@ def _price_aliases(table):
     return cached[0]
 
 
+# A dated or numbered snapshot of a priced id: -2026-01-01, -20260101, -0613,
+# -001 or @20260101. Anything else after a card id is a different model.
+_PRICE_SNAPSHOT_RE = re.compile(r"(?:-\d{4}-\d{2}-\d{2}|-\d{8}|-\d{3,4}|@\d{8})")
+
+
 def _match_price_alias(value, table):
-    """Longest priced id that `value` equals or extends with "-...", memoized
-    per alias set so repeated model ids resolve with one dict lookup."""
+    """Longest priced id that `value` equals or that `value` is a snapshot of
+    (the id plus a date or number suffix). A different variant (-mini, -lite,
+    -image, a later generation) has its own price and never matches a shorter
+    card. Memoized per alias set so repeated model ids resolve with one lookup."""
     aliases = _price_aliases(table)
     memo = _PRICE_MATCH_MEMO.get(id(table))
     if memo is None or memo[0] is not aliases:
@@ -1836,7 +1843,9 @@ def _match_price_alias(value, table):
         _PRICE_MATCH_MEMO[id(table)] = memo
     hit = memo[1].get(value, _MISSING)
     if hit is _MISSING:
-        hit = next((a for a in aliases if value == a or value.startswith(a + "-")), None)
+        hit = next((a for a in aliases
+                    if value == a or (value.startswith(a)
+                                      and _PRICE_SNAPSHOT_RE.fullmatch(value, len(a)))), None)
         if len(memo[1]) < 4096:
             memo[1][value] = hit
     return hit
@@ -1849,8 +1858,8 @@ def _normalize_openai_model_name(model):
     value = re.sub(r"[\s_]+", "-", _strip_provider_prefixes(model))
     if not value or value in {"codex", "openai", "unknown"}:
         return None
-    if value == "gpt-5.6":
-        return "gpt-5.6-sol"  # bare alias: OpenAI's docs name Sol the default 5.6
+    if value in ("gpt-5.6", "gpt-5.6-sol-pro"):
+        return "gpt-5.6-sol"  # bare alias: OpenAI's docs name Sol the default 5.6; "Sol Pro" is its marketing name
     # Every priced id is an alias, longest first so "gpt-5.4-mini" wins over
     # "gpt-5.4" and dated snapshots ("gpt-5.4-2026-03-05") map to their base.
     alias = _match_price_alias(value, OPENAI_MODEL_PRICING)
@@ -1858,7 +1867,7 @@ def _normalize_openai_model_name(model):
         return "gpt-5.6-sol"  # dated bare-5.6 ids follow the same Sol default
     if alias:
         return alias
-    if value == "gpt-5.6" or value.startswith("gpt-5.6-"):
+    if re.fullmatch(r"gpt-5\.6(?:" + _PRICE_SNAPSHOT_RE.pattern + ")", value):
         return "gpt-5.6-sol"
     return None
 
@@ -1877,7 +1886,13 @@ def _normalize_gemini_model_name(model):
             _GEMINI_DEPRECATION_WARNED.add(value)
             print(f"[Token Optimizer] WARNING: {value} was deprecated June 1, 2026. Migrate to gemini-2.5-flash or gemini-3.5-flash.", file=sys.stderr)
         return None
-    return _match_price_alias(value, GEMINI_MODEL_PRICING)
+    hit = _match_price_alias(value, GEMINI_MODEL_PRICING)
+    if hit:
+        return hit
+    # A preview build of a priced model ("-preview", "-preview-05-20",
+    # "-preview-09-2025") is the same model; any other variant is not.
+    base = re.sub(r"-preview(?:-\d{2}-\d{2,4})?$", "", value)
+    return _match_price_alias(base, GEMINI_MODEL_PRICING) if base != value else None
 
 
 # Process-local cache for _resolve_session_model to avoid re-reading JSONL
@@ -23511,17 +23526,33 @@ _EVENT_RATE_CLASS = {"verbosity_steer_measured": "output", "verbosity_steer": "o
 # One statement per (source, has model_usage_json, has all_model_usage_json, by_day,
 # session-scoped). Grouping on column 1 is a no-op when it is the constant NULL.
 _REPRICE_SQL = _sql_variants(
-    "SELECT {day}, e.event_type, SUM(e.tokens_saved), SUM(e.cost_saved_usd), {mu}, {amu} "
+    "SELECT {day}, e.event_type, SUM(e.tokens_saved), SUM(e.cost_saved_usd), {mu}, {amu}, {mdl} "
     "FROM {table} e "
     "LEFT JOIN session_log s ON e.session_uuid = s.session_uuid "
     "WHERE e.timestamp >= ? {scope}"
-    "GROUP BY 1, e.event_type, e.session_uuid",
+    "GROUP BY 1, e.event_type, e.session_uuid, 7",
     table={"counted_savings_events": "counted_savings_events", "savings_events": "savings_events"},
     mu={True: "s.model_usage_json", False: "NULL"},
     amu={True: "s.all_model_usage_json", False: "NULL"},
     day={True: "substr(e.timestamp, 1, 10)", False: "NULL"},
     scope={True: "AND (e.session_uuid = ? OR (e.session_uuid IS NULL AND e.session_id = ?)) ", False: ""},
+    mdl={True: "e.model", False: "NULL"},
 )
+
+
+def _stored_model_is_unpriced(model):
+    """True when a savings row records a model id that has no exact rate card.
+    Rate-card keys and bare family labels ("opus", "sonnet_4_5") are known; a row
+    with no model, or a known one, is not unpriced."""
+    if not isinstance(model, str) or not model.strip():
+        return False
+    if _routing_card_exact(model):
+        return False
+    try:
+        cards = PRICING_TIERS.get(_load_pricing_tier(), PRICING_TIERS["anthropic"])["claude_models"]
+    except Exception:
+        cards = {}
+    return model not in cards
 
 
 def _session_model_reprice(conn, cutoff, session_uuid=None, by_day=False, unpriced_out=None):
@@ -23589,11 +23620,12 @@ def _session_model_reprice(conn, cutoff, session_uuid=None, by_day=False, unpric
             "all_model_usage_json" in sl_cols,
             bool(by_day),
             session_uuid is not None,
+            "model" in se_cols,
         )]
         rows = conn.execute(reprice_sql, tuple(params)).fetchall()
     except (sqlite3.Error, TypeError, ValueError):
         return {}, 0, 0
-    for day, event_type, tok, cost, mu_json, amu_json in rows:
+    for day, event_type, tok, cost, mu_json, amu_json, row_model in rows:
         if event_type in _REPRICE_SKIP_EVENT_TYPES:
             continue  # non-input-rate class; keep the event-time price verbatim
         try:
@@ -23605,6 +23637,15 @@ def _session_model_reprice(conn, cutoff, session_uuid=None, by_day=False, unpric
             continue
         mix = _session_mix_class_terms(
             _EVENT_RATE_CLASS.get(event_type, "fresh_input"), mu_json, amu_json)
+        if mix is None and _stored_model_is_unpriced(row_model):
+            # No session match, but the row itself names a model with no rate
+            # card: its dollars are priced at zero and the tokens disclosed.
+            key = (day, event_type) if by_day else event_type
+            if cost:
+                deltas[key] = deltas.get(key, 0.0) - float(cost)
+            if unpriced_out is not None:
+                unpriced_out["tokens"] = unpriced_out.get("tokens", 0) + tok
+            continue
         if mix is None:
             unmeasured_tokens += tok
             continue

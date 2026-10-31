@@ -58,6 +58,27 @@ _KNOWN_PROVIDER_PREFIXES = {
 # Model normalization
 # ---------------------------------------------------------------------------
 
+_GEMINI_ALIASES = (
+    "gemini-3.1-pro-preview",
+    "gemini-3.1-flash-lite",
+    "gemini-3.5-flash",
+    "gemini-3.1-pro",
+    "gemini-3-flash",
+    "gemini-3-pro",
+    "gemini-2.5-flash-lite",
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
+)
+
+# A dated or numbered snapshot of a priced id: -2026-01-01, -20260101, -0613,
+# -001 or @20260101. Any other suffix names a different model.
+_SNAPSHOT_RE = re.compile(r"(?:-\d{4}-\d{2}-\d{2}|-\d{8}|-\d{3,4}|@\d{8})")
+
+
+def _is_card_or_snapshot(model: str, alias: str) -> bool:
+    return model == alias or (model.startswith(alias) and _SNAPSHOT_RE.fullmatch(model, len(alias)) is not None)
+
+
 def normalize_model_name(model_id: str) -> str | None:
     """Collapse model IDs like 'claude-sonnet-4-6' into 'sonnet'.
 
@@ -109,23 +130,19 @@ def normalize_model_name(model_id: str) -> str | None:
         "o4-mini",
         "o3",
     ):
-        if m == alias or m.startswith(alias + "-"):
+        if _is_card_or_snapshot(m, alias):
             return alias
-    if m == "gpt-5.6" or m.startswith("gpt-5.6-"):
+    if m in ("gpt-5.6", "gpt-5.6-sol-pro") or _is_card_or_snapshot(m, "gpt-5.6"):
         return "gpt-5.6-sol"
-    for alias in (
-        "gemini-3.1-pro-preview",
-        "gemini-3.1-flash-lite",
-        "gemini-3.5-flash",
-        "gemini-3.1-pro",
-        "gemini-3-flash",
-        "gemini-3-pro",
-        "gemini-2.5-flash-lite",
-        "gemini-2.5-flash",
-        "gemini-2.5-pro",
-    ):
-        if m == alias or m.startswith(alias + "-"):
+    for alias in _GEMINI_ALIASES:
+        if _is_card_or_snapshot(m, alias):
             return alias
+    # A preview build of a priced Gemini model is the same model.
+    base = re.sub(r"-preview(?:-\d{2}-\d{2,4})?$", "", m)
+    if base != m and base.startswith("gemini-"):
+        for alias in _GEMINI_ALIASES:
+            if _is_card_or_snapshot(base, alias):
+                return alias
     return m
 
 

@@ -65,3 +65,25 @@ def test_runway_tokens_match_the_savings_report_measured_total(measure, tmp_path
         probe, (datetime.now() - timedelta(days=30)).isoformat())
     probe.close()
     assert runway == measured == 1_000
+
+
+def test_estimated_multiplier_keeps_estimated_tiers_while_floor_stays_measured(measure, tmp_path, monkeypatch):
+    conn = _db(measure, tmp_path)
+    _event(conn, "tool_archive", 10_000)
+    _event(conn, "resume_lean", 30_000)
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(measure, "TRENDS_DB", tmp_path / "t.db")
+    monkeypatch.setattr(measure, "_init_trends_db", lambda: sqlite3.connect(tmp_path / "t.db"))
+    monkeypatch.setattr(measure, "_dashboard_spent_token_basis",
+                        lambda conn, days=30: {"tokens": 1_000_000, "basis": "test", "complete": True})
+    monkeypatch.setattr(measure, "_input_rate_mix_ratio", lambda days=30: 1.0)
+    monkeypatch.setattr(measure, "_keepwarm_read_meters", lambda now=None: {
+        "available": False, "stale": True, "age_s": None, "ts": None,
+        "five_hour_pct": None, "seven_day_pct": None, "seven_day_resets_at": None})
+    result = measure.runway_snapshot()
+    # 4% more work per token from 40k of 1M avoided: the card still shows.
+    assert result is not None
+    assert result["context_multiplier"] == pytest.approx(1.04)
+    assert result["tokens_saved"] == 10_000
+    assert result["context_tokens_saved"] == 40_000

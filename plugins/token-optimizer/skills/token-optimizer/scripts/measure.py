@@ -50908,7 +50908,7 @@ _RUNWAY_ESTIMATED_EVENT_TYPES = frozenset(
     {"setup_optimization", "mcp_cap", "hint_followed", "resume_lean"})
 
 
-def _runway_saved_tokens(conn, cutoff):
+def _runway_saved_tokens(conn, cutoff, include_estimated=False):
     """Measured tokens never sent since *cutoff*, netted like the savings totals.
 
     This is the counted floor behind the window card's "measured token floor":
@@ -50917,13 +50917,15 @@ def _runway_saved_tokens(conn, cutoff):
     verbosity steering) are left out. Archive re-expansions are subtracted from
     the archive credit (never below zero) and are not savings of their own. A
     compression feature that savings_events also logs (delta_read,
-    structure_map) is counted once, from savings_events.
+    structure_map) is counted once, from savings_events. With
+    ``include_estimated`` the estimated tiers are kept, for the context
+    multiplier, which the card labels as an estimate.
     """
     by_event = {
         event_type: int(tokens or 0)
         for event_type, tokens in conn.execute(
             _RUNWAY_SAVED_SQL[_counted_table(conn, "savings_events")], (cutoff,))
-        if event_type not in _RUNWAY_ESTIMATED_EVENT_TYPES}
+        if include_estimated or event_type not in _RUNWAY_ESTIMATED_EVENT_TYPES}
     reexpanded = by_event.pop("tool_archive_reexpand", 0)
     if "tool_archive" in by_event:
         by_event["tool_archive"] = max(0, by_event["tool_archive"] - reexpanded)
@@ -50997,7 +50999,7 @@ def runway_snapshot(days=30, now=None):
             resets_at=meters.get("seven_day_resets_at"), now=now)
 
         # --- context lever: measured, never estimated ---
-        consumed = saved = 0
+        consumed = saved = context_saved = 0
         spent_basis = None
         try:
             conn = _init_trends_db()
@@ -51006,13 +51008,16 @@ def runway_snapshot(days=30, now=None):
                 spent_basis = _dashboard_spent_token_basis(conn, days=days)
                 consumed = spent_basis["tokens"]
                 saved = _runway_saved_tokens(conn, cutoff)
+                # The multiplier is an estimate (the card says so), so it keeps
+                # the estimated tiers; the measured floor line uses `saved`.
+                context_saved = _runway_saved_tokens(conn, cutoff, include_estimated=True)
             finally:
                 conn.close()
         except Exception:
             return None
         if consumed <= 0 and not weekly_full:
             return None
-        context_mult = (consumed + saved) / consumed if consumed > 0 else 1.0
+        context_mult = (consumed + context_saved) / consumed if consumed > 0 else 1.0
 
         # --- routing lever: this user's own shift, priced by input rates ---
         routing_mult = _input_rate_mix_ratio(days=days)
@@ -51270,6 +51275,7 @@ def runway_snapshot(days=30, now=None):
             "tokens_consumed_basis": spent_basis["basis"] if spent_basis else None,
             "tokens_consumed_basis_complete": bool(spent_basis and spent_basis["complete"]),
             "tokens_saved": int(saved),
+            "context_tokens_saved": int(context_saved),
             "windows": windows,
             # USD spine: metered context $ + estimated routing $ over the WEEKLY
             # (7d) ledger -- the same span the weekly card shows. Exposed at the top

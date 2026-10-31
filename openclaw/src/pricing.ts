@@ -493,6 +493,58 @@ function stripProviderPrefixes(modelId: string): string {
   }
 }
 
+const ROUTE_REGION_TOKENS = new Set([
+  "amazon", "us", "us-gov", "eu", "ap", "apac", "au", "ca", "cn", "global", "jp", "sa", "me", "af", "il",
+]);
+
+/**
+ * Drop the routing wrapper around a model id: gateway or provider path
+ * segments ("openrouter/anthropic/", "github-copilot/", "amazon-bedrock/"),
+ * dotted region and provider chains ("us.anthropic.", "global.anthropic."), and
+ * a colon-separated provider tag. Dots inside a version ("claude-3.5-sonnet",
+ * "gpt-4.1") are never cut.
+ */
+export function stripRoutePrefixes(modelId: string): string {
+  let value = modelId.trim().toLowerCase();
+  while (true) {
+    for (;;) {
+      const dot = value.indexOf(".");
+      if (dot <= 0) break;
+      const token = value.slice(0, dot);
+      if (!KNOWN_PROVIDER_PREFIXES.has(token) && !ROUTE_REGION_TOKENS.has(token)) break;
+      value = value.slice(dot + 1);
+    }
+    const slash = value.indexOf("/");
+    const colon = value.indexOf(":");
+    if (slash === -1 && colon === -1) return value;
+    const useSlash = slash !== -1 && (colon === -1 || slash < colon);
+    const idx = useSlash ? slash : colon;
+    const rest = value.slice(idx + 1);
+    if (!rest || !/[a-z]/.test(rest)) return value;
+    if (useSlash || KNOWN_PROVIDER_PREFIXES.has(value.slice(0, idx))) { value = rest; continue; }
+    return value;
+  }
+}
+
+/**
+ * A Claude model id without the decorations a route adds around it: the
+ * provider and region prefix, a bedrock "-v1:0" version tag, a "[1m]" context
+ * marker, a "-thinking" mode suffix, a "-latest" alias and a vertex "@date" snapshot. What is left
+ * names the generation, which must still have its own rate card.
+ */
+export function stripClaudeRouteDecorations(modelId: string): string {
+  let value = stripRoutePrefixes(modelId);
+  for (;;) {
+    const next = value
+      .replace(/\[\d+[mk]\]$/, "")
+      .replace(/-(?:thinking|latest)$/, "")
+      .replace(/@(?:\d{8}|latest)$/, "")
+      .replace(/-v\d+:\d+$/, "");
+    if (next === value) return value;
+    value = next;
+  }
+}
+
 /**
  * Estimate cost delta if a different model was used.
  * Returns savings in USD and percentage.

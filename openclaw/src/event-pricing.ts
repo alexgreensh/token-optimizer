@@ -1,15 +1,17 @@
 import * as fs from "fs";
 import * as path from "path";
-import { getPricing, loadPricingTier, tierMultiplier } from "./pricing";
+import { getPricing, loadPricingTier, tierMultiplier, stripRoutePrefixes, stripClaudeRouteDecorations } from "./pricing";
 
 export function resolvePricedModel(model: string, openclawDir: string): string | null {
   const pricing = getPricing(openclawDir);
   const own = (key: string) => Object.prototype.hasOwnProperty.call(pricing, key);
   if (own(model)) return model;
-  const id = model.toLowerCase();
-  const bare = id.replace(/^(?:anthropic|openai|google|deepseek|vertex)\//, "");
+  const bare = stripRoutePrefixes(model);
   const dated = bare.replace(/-(?:\d{8}|\d{4}-\d{2}-\d{2})$/, "");
   if (own(dated)) return dated;
+  // Claude ids also lose the route's version tag, context marker, mode suffix
+  // and snapshot marker; the generation that remains must have its own card.
+  const id = stripClaudeRouteDecorations(model);
   if (!/(?:^|[/:.])claude-/.test(id) && !/^(?:fable|mythos|opus|sonnet|haiku)[-._]?\d/.test(id)) return null;
   if (!/^(?:(?:anthropic\/|anthropic\.)?claude-)?(?:\d+(?:[-.]\d+)?-(?:opus|sonnet|haiku)|(?:fable|mythos|opus|sonnet|haiku)[-._]?\d+(?:[-._]\d+)?)(?:-\d{8}(?:-v\d+:\d+)?)?$/.test(id)) return null;
   const legacy = /(?:^|[/:.])claude-(\d+)(?:[-.](\d+))?-(opus|sonnet|haiku)(?=$|[-_:])/.exec(id);

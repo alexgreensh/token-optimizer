@@ -1,5 +1,9 @@
 # Changelog
 
+## [5.13.61] - 2026-10-31
+
+- Up-to-date model prices: gpt-6-rosalind.
+
 ## [5.13.60] - 2026-10-28
 
 - Hermes: with `gateway.multiplex_profiles` (and cron on non-default profiles), each profile's sessions now land in that profile's own dashboard. Checkpoints, saved tool output and the read cache follow the profile too. Re-run `hermes-install` in each profile, then restart Hermes (plugin 0.2.1). Thanks @stusims (#291).

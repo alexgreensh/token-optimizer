@@ -23823,6 +23823,10 @@ def _counted_pricing_note(out, reread_only=False):
                      f"({credit:,} known removed tokens, {debit:,} re-expanded tokens); "
                      "their repeat-read counts are unavailable")
     text = "Priced subtotal only: " + "; ".join(parts) + ". The complete net dollar value is unavailable." if parts else ""
+    mix_tokens = int(out.get("reread_session_mix_priced_tokens", 0))
+    if mix_tokens:
+        text += (f" {mix_tokens:,} repeat-read tokens are priced at the cache-read rate of the "
+                 "models each session recorded, because their per-turn evidence is unavailable.")
     incomplete = int(out.get("refresh_incomplete_events", 0))
     if incomplete:
         text += f" Stored evidence retained for {incomplete:,} incomplete transcript refreshes."
@@ -24404,16 +24408,58 @@ def _counted_backfill_all(conn, quiet=True):
                   "marker_rows_written": marker_total["rows_written"],
                   "marker_backfill_done": marker_total["done"],
                   "rows_removed_no_transcript": _purge_counted_without_transcripts(conn)})
-    stats["pricing_coverage"] = _counted_rollup_rows(_counted_stored_rows(conn).values())
+    stats["pricing_coverage"] = _counted_rollup_rows(_counted_stored_rows(conn).values(), conn)
     return stats
 
 
-def _counted_rollup_rows(rows):
-    """Only per-row verified prices are eligible; retain all stored token evidence."""
+def _counted_session_cache_mix(conn, session_uuid, tier_data, memo):
+    """[(cache_read_tokens, usd_per_mtok or None)] for one stored session.
+
+    Weights come from the session's recorded per-model cache-read tokens. A
+    model without an exact rate card, or whose card depends on the size of each
+    request, has no rate here and its share stays unpriced. None when the
+    session has no usable per-model record."""
+    if session_uuid in memo:
+        return memo[session_uuid]
+    mix = None
+    try:
+        row = conn.execute(
+            "SELECT model_usage_breakdown_json FROM session_log "
+            "WHERE session_uuid = ? ORDER BY id DESC LIMIT 1", (session_uuid,)).fetchone()
+        breakdown = json.loads(row[0]) if row and row[0] else None
+    except (sqlite3.Error, TypeError, ValueError):
+        breakdown = None
+    if isinstance(breakdown, dict):
+        terms = []
+        for model, parts in breakdown.items():
+            weight = parts.get("cache_read") if isinstance(parts, dict) else None
+            if not isinstance(weight, int) or isinstance(weight, bool) or weight <= 0:
+                continue
+            card = _counted_exact_card(model, tier_data)
+            rate = (card or {}).get("cache_read")
+            if not (isinstance(rate, (int, float)) and math.isfinite(rate) and rate >= 0):
+                rate = None
+            terms.append((weight, rate))
+        if any(rate is not None for _, rate in terms):
+            mix = terms
+    memo[session_uuid] = mix
+    return mix
+
+
+def _counted_rollup_rows(rows, conn=None):
+    """Only per-row verified prices are eligible; retain all stored token evidence.
+
+    A stored row without a current per-turn price keeps its signed repeat-read
+    token count. With `conn`, that count is priced at the cache-read rate of the
+    models its session recorded (token-weighted, exact cards only) and reported
+    separately from per-turn prices; any share without a rate stays unpriced."""
     out = dict.fromkeys(_COUNTED_COVERAGE_KEYS, 0)
     out.update(events=0, removed_tokens=0, reread_tokens=0, oneshot_usd=0.0,
                reread_usd=0.0, legacy_unverified_events=0, unverified_history_events=0,
-               estimated_magnitude_events=0, refresh_incomplete_events=0)
+               estimated_magnitude_events=0, refresh_incomplete_events=0,
+               reread_session_mix_priced_tokens=0, session_mix_priced_events=0)
+    tier_data = PRICING_TIERS.get(_load_pricing_tier(), PRICING_TIERS["anthropic"])
+    mix_memo = {}
     for row in rows:
         out["events"] += 1
         tokens, rereads = int(row["tokens"] or 0), int(row["reread_tokens"] or 0)
@@ -24429,7 +24475,21 @@ def _counted_rollup_rows(rows):
                 out[key] += detail[key]
         else:
             out["legacy_unverified_events"] += 1
+            mix = (_counted_session_cache_mix(conn, row.get("session_uuid"), tier_data, mix_memo)
+                   if conn is not None and rereads else None)
             for kind, amount in (("oneshot", tokens), ("reread", rereads)):
+                if kind == "reread" and mix:
+                    total_weight = sum(weight for weight, _ in mix)
+                    rated = [(weight, rate) for weight, rate in mix if rate is not None]
+                    rated_weight = sum(weight for weight, _ in rated)
+                    priced = round(abs(amount) * rated_weight / total_weight)
+                    out["reread_usd"] += (math.copysign(1, amount) * abs(amount)
+                                          * sum(weight * rate for weight, rate in rated)
+                                          / total_weight / 1e6)
+                    out["reread_session_mix_priced_tokens"] += priced
+                    out["session_mix_priced_events"] += 1
+                    out["priced_reread_turns"] += max(1, int(row.get("turns_counted") or 0))
+                    amount = int(math.copysign(abs(amount) - priced, amount))
                 out[kind + "_unpriced_" + ("credit" if amount >= 0 else "debit") + "_tokens"] += abs(amount)
         if not current and row["transcript_mtime"] is None and row["source"] != "mk":
             out["unverified_history_events"] += 1
@@ -24507,12 +24567,12 @@ def _counted_cumulative_summary(days=None, now=None):
                 coverage["unmeasured_removed_debit_tokens"] = sum(-n for n in amounts if n < 0)
                 return _counted_coverage_totals(coverage)
 
-            totals = add_missing(_counted_rollup_rows(rows),
+            totals = add_missing(_counted_rollup_rows(rows, conn),
                                  [n for values in missing_by_month.values() for n in values])
             by_month = {}
             for row in rows:
                 by_month.setdefault(row["event_month"], []).append(row)
-            monthly_coverage = {m: add_missing(_counted_rollup_rows(by_month.get(m, [])),
+            monthly_coverage = {m: add_missing(_counted_rollup_rows(by_month.get(m, []), conn),
                                                missing_by_month.get(m, []))
                                 for m in sorted(by_month.keys() | missing_by_month.keys(),
                                                 key=lambda month: month or "")}

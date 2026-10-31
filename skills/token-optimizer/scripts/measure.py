@@ -12342,6 +12342,13 @@ def _empty_model_buckets():
             "cache_create_1h": 0, "cache_create_5m": 0, "output": 0}
 
 
+def _net_request_is_empty(u):
+    """True for a request entry that adds nothing to a session: another session
+    already counted the call and every token of it."""
+    return (not u.get("n", 1)
+            and not any(int(u.get(f) or 0) for f in ("inp", "out", "cr", "cc", "cc_1h", "cc_5m")))
+
+
 def _aggregate_request_usage(requests):
     """Roll a {request key: usage} map up into session totals.
 
@@ -12359,6 +12366,8 @@ def _aggregate_request_usage(requests):
     }
     request_days = {}
     for key, u in requests.items():
+        if _net_request_is_empty(u):
+            continue
         totals["total_input"] += u["inp"]
         totals["total_output"] += u["out"]
         totals["total_cache_read"] += u["cr"]
@@ -12366,8 +12375,9 @@ def _aggregate_request_usage(requests):
         totals["total_cache_create_1h"] += u["cc_1h"]
         totals["total_cache_create_5m"] += u["cc_5m"]
         ts_s = u.get("ts")
-        if not u.get("advisor"):
+        if not u.get("advisor") and u.get("n", 1):
             # An advisor part belongs to its request: not another API call.
+            # `n` is 0 when another session already counted the call itself.
             totals["api_calls"] += 1
             if ts_s and isinstance(ts_s, str):
                 try:
@@ -13265,14 +13275,28 @@ CREATE TABLE IF NOT EXISTS session_log_aliases (
     collected_at TEXT
 );
 
--- Which session counts each API request. The same request can sit in more than
--- one transcript (a resumed or forked session carries its parent's history), so
--- one session counts it and the others leave it out. Both columns are hashes of
--- the request id and the session id.
+-- What each session has counted of each API request. The same request can sit
+-- in more than one transcript (a resumed or forked session carries its parent's
+-- history, and a copy may hold a longer streamed reply than another), so the
+-- sessions together count the largest figure seen for it, once. The hashes are
+-- of the request id and the session id; the rest is that session's share, with
+-- the model and day it was billed to so the share survives its transcript
+-- losing the record.
 CREATE TABLE IF NOT EXISTS usage_request_claims (
-    request_hash INTEGER PRIMARY KEY,
-    owner_hash INTEGER NOT NULL
+    request_hash INTEGER NOT NULL,
+    owner_hash INTEGER NOT NULL,
+    calls INTEGER NOT NULL DEFAULT 0,
+    inp INTEGER NOT NULL DEFAULT 0,
+    out INTEGER NOT NULL DEFAULT 0,
+    cr INTEGER NOT NULL DEFAULT 0,
+    cc INTEGER NOT NULL DEFAULT 0,
+    cc_1h INTEGER NOT NULL DEFAULT 0,
+    cc_5m INTEGER NOT NULL DEFAULT 0,
+    model TEXT,
+    day TEXT,
+    PRIMARY KEY (request_hash, owner_hash)
 ) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS idx_usage_request_claims_owner ON usage_request_claims(owner_hash);
 
 CREATE TABLE IF NOT EXISTS daily_stats (
     date TEXT PRIMARY KEY,
@@ -14046,6 +14070,21 @@ def _init_trends_db():
         conn.commit()
     except sqlite3.Error as _e:
         _log_migration_error("session_log columns", _e)
+    # Shares already recorded are usage evidence: a claims table from before the
+    # model and day columns keeps its counters and gains the columns. Only a
+    # table that never held counters (nothing to keep) is recreated.
+    try:
+        _claim_cols = {r[1] for r in conn.execute("PRAGMA table_info(usage_request_claims)").fetchall()}
+        if _claim_cols and "inp" not in _claim_cols:
+            conn.execute("DROP TABLE usage_request_claims")
+            conn.executescript(_SCHEMA)
+        else:
+            for _col in ("model", "day"):
+                if _claim_cols and _col not in _claim_cols:
+                    conn.execute(f"ALTER TABLE usage_request_claims ADD COLUMN {_col} TEXT")
+        conn.commit()
+    except sqlite3.Error as _e:
+        _log_migration_error("usage_request_claims", _e)
     # Same origin column on the per-event savings tables (NULL = legacy/local).
     for _origin_table in ("savings_events", "compression_events"):
         try:
@@ -26371,13 +26410,14 @@ def _stable_hash63(text):
 
 
 def _request_base_key(key):
-    """The request a merged-usage key belongs to, or None when it cannot be shared
-    between files. Advisor sub-entries share their request's key; records with
-    neither a request id nor a message id are keyed by file position."""
+    """The identity under which a request's usage is shared between sessions, or
+    None when it cannot be shared. Records with neither a request id nor a
+    message id are keyed by file position, so they never match another file.
+    An advisor part ("<request>#advisorN") is its own entry with its own usage."""
     key = str(key)
     if key.startswith("__noreq__") or ":__noreq__" in key:
         return None
-    return key.split("#advisor", 1)[0]
+    return key
 
 
 def _usage_owner_id(filepath):
@@ -26401,13 +26441,25 @@ def _live_usage_owners(conn):
     return live
 
 
-def _foreign_claimed_keys(conn, owner_id, keys, live_owners):
-    """Requests among `keys` already counted in another stored session.
+_SHARE_FIELDS = ("inp", "out", "cr", "cc", "cc_1h", "cc_5m")
 
-    A request that Claude Code copied into a resumed or forked session's
-    transcript is the same API call, so only one session may count it. A claim
-    whose owner no longer has a session row is ignored, so usage is never
-    dropped on the strength of a claim nobody holds.
+
+def _empty_share():
+    share = dict.fromkeys(_SHARE_FIELDS, 0)
+    share["n"] = 0
+    return share
+
+
+def _claim_state(conn, owner_id, keys, live_owners):
+    """What the stored sessions have counted of the requests in `keys`.
+
+    A request Claude Code copied into a resumed or forked session's transcript
+    is the same API call, and a streamed reply can be longer in one copy than
+    in another. Sessions therefore share a request's largest usage between
+    them (see `_net_of_counted`). Returns (others, own): the summed shares of
+    the other sessions, and this session's own earlier share. A share held by a
+    session that no longer has a row is ignored, so usage is never dropped on
+    the strength of a claim nobody holds.
     """
     me = _stable_hash63(owner_id)
     by_hash = {}
@@ -26415,46 +26467,142 @@ def _foreign_claimed_keys(conn, owner_id, keys, live_owners):
         base = _request_base_key(key)
         if base is not None:
             by_hash[_stable_hash63(base)] = base
-    foreign = set()
+    others, own = {}, {}
     hashes = list(by_hash)
     for i in range(0, len(hashes), 500):
         batch = hashes[i:i + 500]
         try:
             rows = conn.execute(
-                "SELECT request_hash, owner_hash FROM usage_request_claims "
-                "WHERE request_hash IN (%s)" % ",".join("?" * len(batch)), batch).fetchall()
+                "SELECT request_hash, owner_hash, calls, inp, out, cr, cc, cc_1h, cc_5m, model, day "
+                "FROM usage_request_claims WHERE request_hash IN (%s)" % ",".join("?" * len(batch)),
+                batch).fetchall()
         except sqlite3.Error:
-            return set()
-        for request_hash, owner_hash in rows:
-            if owner_hash != me and owner_hash in live_owners:
-                foreign.add(by_hash[request_hash])
-    return foreign
+            return {}, {}
+        for request_hash, owner_hash, calls, *fields in rows:
+            if owner_hash == me:
+                target = own
+            elif owner_hash in live_owners:
+                target = others
+            else:
+                continue
+            share = target.setdefault(by_hash[request_hash], _empty_share())
+            share["n"] += int(calls or 0)
+            for name, value in zip(_SHARE_FIELDS, fields[:len(_SHARE_FIELDS)]):
+                share[name] += int(value or 0)
+            if target is own:
+                share["model"], share["day"] = fields[len(_SHARE_FIELDS)], fields[len(_SHARE_FIELDS) + 1]
+    return others, own
 
 
-def _claim_requests(conn, owner_id, keys):
-    """Record that this session counts these requests."""
+def _net_of_counted(requests, counted, own=None):
+    """The part of each request this session adds on top of what is already
+    counted: per field, its own figure minus the others' total, never below 0.
+    A share this session recorded earlier is kept, so collecting it again
+    cannot shrink it, whether the transcript is collected for an unrelated
+    reason or has lost part of the reply. The shares of every session sum to
+    the largest figure any copy holds, whichever session is collected first or
+    collected again later. An entry the others already cover completely comes
+    back empty (`n` 0, all fields 0)."""
+    own = own or {}
+    net = {}
+    for key, u in requests.items():
+        base = _request_base_key(key)
+        share = counted.get(base) if base is not None else None
+        prior = own.get(base) if base is not None else None
+        entry = dict(u)
+        if share or prior:
+            prior = prior or {}
+            for name in _SHARE_FIELDS:
+                raw = int(u.get(name) or 0)
+                entry[name] = max(int(prior.get(name) or 0), raw - (share[name] if share else 0), 0)
+            entry["n"] = max(int(prior.get("n") or 0), 0 if (share and share["n"] >= 1) else 1)
+            if prior:
+                # What was recorded about the request (its day and model) stands;
+                # a later observation only fills what was missing.
+                entry["day"] = prior.get("day") or u.get("day")
+                recorded = prior.get("model")
+                entry["model"] = (recorded if recorded and recorded != "unknown"
+                                  and not str(recorded).startswith("<")
+                                  else (u.get("model") or recorded))
+        else:
+            entry["n"] = 1
+        net[key] = entry
+    return net
+
+
+def _retained_requests(conn, owner_id, keys):
+    """The session's recorded shares of requests its transcripts no longer hold.
+
+    Transcripts rotate and copies get removed. What a session was already
+    credited for stays in its totals; the requests still in the files are
+    counted next to it. Shares come back as request entries (keyed so they are
+    never treated as shareable) carrying the model and day they were billed to.
+    """
+    present = {_stable_hash63(b) for b in (_request_base_key(k) for k in keys) if b is not None}
+    try:
+        rows = conn.execute(
+            "SELECT request_hash, calls, inp, out, cr, cc, cc_1h, cc_5m, model, day "
+            "FROM usage_request_claims WHERE owner_hash = ?", (_stable_hash63(owner_id),)).fetchall()
+    except sqlite3.Error:
+        return {}
+    kept = {}
+    for request_hash, calls, *fields, model, day in rows:
+        if request_hash in present or not (calls or any(fields)):
+            continue
+        entry = dict(zip(_SHARE_FIELDS, (int(v or 0) for v in fields)))
+        entry.update(n=int(calls or 0), model=model or "unknown", day=day)
+        kept[f"__noreq__kept:{request_hash}"] = entry
+    return kept
+
+
+def _claim_requests(conn, owner_id, net_requests):
+    """Record this session's share of each request (as returned by `_net_of_counted`)."""
     me = _stable_hash63(owner_id)
-    hashes = {_stable_hash63(b) for b in (_request_base_key(k) for k in keys) if b is not None}
-    if not hashes:
+    rows = {}
+    for key, u in net_requests.items():
+        base = _request_base_key(key)
+        if base is None:
+            continue
+        calls = 0 if u.get("advisor") else int(u.get("n", 1) or 0)
+        rows[_stable_hash63(base)] = (
+            _stable_hash63(base), me, calls,
+            *(int(u.get(name) or 0) for name in _SHARE_FIELDS), u.get("model"), u.get("day"))
+    if not rows:
         return
     try:
         conn.executemany(
-            "INSERT OR REPLACE INTO usage_request_claims (request_hash, owner_hash) VALUES (?, ?)",
-            [(h, me) for h in hashes])
+            "INSERT OR REPLACE INTO usage_request_claims "
+            "(request_hash, owner_hash, calls, inp, out, cr, cc, cc_1h, cc_5m, model, day) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", list(rows.values()))
     except sqlite3.Error:
         pass
 
 
-def _parsed_without_requests(parsed, drop_keys):
-    """A copy of a parsed transcript with the given requests removed and every
-    usage-derived figure recomputed. `parsed` itself is never modified."""
-    requests = (parsed or {}).get("request_usage")
-    if not drop_keys or not requests:
-        return parsed
-    kept = {k: u for k, u in requests.items() if _request_base_key(k) not in drop_keys}
-    if len(kept) == len(requests):
-        return parsed
-    agg, _days = _aggregate_request_usage(kept)
+def _net_and_record(requests, ledger):
+    """In-memory form of the claims for a pass over several transcripts: returns
+    the net usage of `requests` against `ledger`, plus the shares counted before
+    this call (empty when nothing overlapped), and adds the net to the ledger."""
+    counted = {}
+    for key in requests:
+        base = _request_base_key(key)
+        if base is not None and base in ledger:
+            counted[base] = dict(ledger[base])
+    net = _net_of_counted(requests, counted)
+    for key, u in net.items():
+        base = _request_base_key(key)
+        if base is None:
+            continue
+        share = ledger.setdefault(base, _empty_share())
+        share["n"] += int(u.get("n", 1) or 0)
+        for name in _SHARE_FIELDS:
+            share[name] += int(u.get(name) or 0)
+    return net, counted
+
+
+def _parsed_with_requests(parsed, requests):
+    """A copy of a parsed transcript restated from the given per-request usage,
+    every usage-derived figure recomputed. `parsed` itself is never modified."""
+    agg, _days = _aggregate_request_usage(requests)
     full_input = agg["total_input"] + agg["total_cache_read"] + agg["total_cache_create"]
     out = dict(parsed)
     out.update({
@@ -26469,21 +26617,31 @@ def _parsed_without_requests(parsed, drop_keys):
         "model_usage_breakdown": agg["model_usage_breakdown"],
         "daily_usage": agg["daily_usage"],
         "api_calls": agg["api_calls"],
-        "request_usage": kept,
+        "request_usage": requests,
     })
     return out
 
 
-def _parsed_without_seen_requests(parsed, seen):
-    """Drop requests already counted earlier in a multi-file pass, then add this
-    file's requests to `seen`. Files without per-request detail pass through."""
+def _parsed_net_of_counted(parsed, counted, own=None):
+    """`parsed` restated without what other sessions already counted of its requests."""
+    requests = (parsed or {}).get("request_usage")
+    if not requests or not (counted or own):
+        return parsed
+    return _parsed_with_requests(parsed, _net_of_counted(requests, counted, own))
+
+
+def _parsed_net_of_ledger(parsed, ledger):
+    """`parsed` net of the requests earlier transcripts in a multi-file pass
+    already counted; this file's requests are then added to `ledger`. Files
+    without per-request detail pass through. The pass-wide total is the largest
+    usage of each request, whatever the order of the files."""
     requests = (parsed or {}).get("request_usage")
     if not requests:
         return parsed
-    bases = {b for b in (_request_base_key(k) for k in requests) if b is not None}
-    result = _parsed_without_requests(parsed, bases & seen)
-    seen.update(bases)
-    return result
+    net, counted = _net_and_record(requests, ledger)
+    if not counted:
+        return parsed
+    return _parsed_with_requests(parsed, net)
 
 
 def _stale_usage_row_paths(conn):
@@ -26515,6 +26673,8 @@ def _daily_usage_from_merged(merged):
     """Per-day, per-model token buckets of a merged request set."""
     combined = {}
     for u in merged.values():
+        if _net_request_is_empty(u):
+            continue
         # Requests without a usable timestamp land in UNDATED_USAGE_KEY; the
         # rollup bills them to the session's own date instead of dropping them.
         day = u.get("day") or UNDATED_USAGE_KEY
@@ -26536,8 +26696,8 @@ def _session_daily_usage(filepath, parsed=None, subagent_files=None, conn=None, 
     session's files (the parent and a subagent, or two subagents). Requests are
     therefore merged by request id across every file first, keeping the largest
     usage seen (streaming-safe), so a shared request is billed once. With a
-    database connection, requests another stored session already counts are
-    left out as well.
+    database connection, what another stored session already counts of a request
+    is left out as well.
     """
     parsed = parsed if parsed is not None else _parse_session_jsonl(filepath)
     if subagent_files is None:
@@ -26552,9 +26712,12 @@ def _session_daily_usage(filepath, parsed=None, subagent_files=None, conn=None, 
     if conn is not None:
         if live_owners is None:
             live_owners = _live_usage_owners(conn)
-        drop = _foreign_claimed_keys(conn, _usage_owner_id(filepath), merged, live_owners)
-        if drop:
-            merged = {k: u for k, u in merged.items() if _request_base_key(k) not in drop}
+        owner_id = _usage_owner_id(filepath)
+        counted, own = _claim_state(conn, owner_id, merged, live_owners)
+        if counted or own:
+            merged = _net_of_counted(merged, counted, own)
+        if _stable_hash63(owner_id) in live_owners:
+            merged = {**merged, **_retained_requests(conn, owner_id, merged)}
     return _daily_usage_from_merged(merged)
 
 
@@ -26851,19 +27014,34 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
             # since mixing subagent hit rates isn't meaningful for per-session display.
 
         merged = _session_merged_requests(filepath, parsed, subagent_files)
-        # Requests another stored session already counts (a resumed or forked
-        # transcript repeats its parent's history) are left out of this one.
-        foreign = set()
+        # What another stored session already counts of a request (a resumed or
+        # forked transcript repeats its parent's history, and a copy can hold a
+        # longer streamed reply) is left out of this one; this session adds only
+        # the difference, so the sessions together hold each request's largest usage.
+        counted, retained, own_shares = {}, {}, {}
         if merged is not None:
-            foreign = _foreign_claimed_keys(conn, owner_id, merged, live_owners)
-            if foreign:
-                merged = {k: u for k, u in merged.items() if _request_base_key(k) not in foreign}
-                parsed = _parsed_without_requests(parsed, foreign)
+            if _stable_hash63(owner_id) in live_owners:
+                retained = _retained_requests(conn, owner_id, merged)
+            else:
+                # Shares recorded by a session that has no row any more are not history.
+                try:
+                    conn.execute("DELETE FROM usage_request_claims WHERE owner_hash = ?",
+                                 (_stable_hash63(owner_id),))
+                except sqlite3.Error:
+                    pass
+            counted, own_shares = _claim_state(conn, owner_id, merged, live_owners)
+            if counted or own_shares:
+                merged = _net_of_counted(merged, counted, own_shares)
+                parsed = _parsed_net_of_counted(parsed, counted, own_shares)
+            if retained:
+                merged = {**merged, **retained}
+                parsed = _parsed_with_requests(
+                    parsed, {**(parsed.get("request_usage") or {}), **retained})
         if merged is not None:
             daily_usage = _daily_usage_from_merged(merged)
         else:
             daily_usage = _session_daily_usage(filepath, parsed=parsed, subagent_files=subagent_files)
-        if subagent_files or foreign or _session_copy_files(filepath):
+        if subagent_files or counted or retained or own_shares or _session_copy_files(filepath):
             # The per-file sums above count a request written into both the
             # parent and a subagent file twice; restate the stored token totals
             # from the same request-merged set the cost uses.
@@ -26875,6 +27053,8 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
                 parsed["total_cache_create_5m"] = sum(int(u.get("cc_5m") or 0) for u in merged.values())
                 all_model_usage = {}
                 for u in merged.values():
+                    if _net_request_is_empty(u):
+                        continue
                     model_id = u.get("model") or "unknown"
                     if model_id.startswith("<"):
                         continue
@@ -28285,23 +28465,23 @@ def _collect_trends_from_jsonl(days=30):
         return None
 
     # A request Claude Code copied into a forked or resumed session's transcript
-    # is one API call: the first session in this pass keeps it, later ones drop it.
-    seen_requests = set()
+    # is one API call, and one copy can hold a longer streamed reply than
+    # another: the sessions of this pass together count each request's largest usage.
+    ledger = {}
     for idx, s in enumerate(sessions):
         merged = _session_merged_requests(
             s["jsonl_path"], s, _session_subagent_files(s["jsonl_path"]))
         if merged is None:
             continue
-        bases = {b for b in (_request_base_key(k) for k in merged) if b is not None}
-        repeated = bases & seen_requests
-        seen_requests.update(bases)
-        if not repeated:
+        net, counted = _net_and_record(merged, ledger)
+        if not counted:
             continue
-        kept = {k: u for k, u in merged.items() if _request_base_key(k) not in repeated}
-        trimmed = dict(_parsed_without_requests(s, repeated))
-        trimmed["daily_usage_combined"] = _daily_usage_from_merged(kept)
+        trimmed = dict(_parsed_net_of_counted(s, counted))
+        trimmed["daily_usage_combined"] = _daily_usage_from_merged(net)
         all_model_usage = {}
-        for u in kept.values():
+        for u in net.values():
+            if _net_request_is_empty(u):
+                continue
             model_id = u.get("model") or "unknown"
             if model_id.startswith("<"):
                 continue
@@ -53032,7 +53212,7 @@ def _subagent_pool_savings(baseline_opus_share, days=30, tier=None, fresh=False,
         # Aggregate per-model billed token classes across sidechain sessions only.
         by_model = {}  # model -> {"fi","cw","cr","out"}
         n_side = 0
-        seen_requests = set()  # a request repeated in another transcript counts once
+        request_ledger = {}  # a request repeated in another transcript counts once (largest usage)
         for jf in candidates:
             # Classify BEFORE parsing. Fully parsing every main transcript just
             # to read its is_sidechain flag was the dashboard's cold-regen 45s+
@@ -53049,7 +53229,7 @@ def _subagent_pool_savings(baseline_opus_share, days=30, tier=None, fresh=False,
             if not parsed or not parsed.get("is_sidechain"):
                 continue
             n_side += 1
-            parsed = _parsed_without_seen_requests(parsed, seen_requests)
+            parsed = _parsed_net_of_ledger(parsed, request_ledger)
             for model, bd in (parsed.get("model_usage_breakdown") or {}).items():
                 if not model or str(model).startswith("<"):
                     continue
@@ -53724,7 +53904,7 @@ def _price_parent_activity_window(conn, start, end, tier):
             paths.append((str(path), datetime.fromtimestamp(mtime).date().isoformat()))
             known.add(str(path))
     rows = []
-    seen_requests = set()  # a request repeated in another transcript counts once
+    request_ledger = {}  # a request repeated in another transcript counts once (largest usage)
     for name, recorded_date in paths:
         path = Path(name)
         if not path.exists():
@@ -53738,7 +53918,7 @@ def _price_parent_activity_window(conn, start, end, tier):
         if parsed and parsed.get("is_sidechain"):
             continue
         if parsed:
-            parsed = _parsed_without_seen_requests(parsed, seen_requests)
+            parsed = _parsed_net_of_ledger(parsed, request_ledger)
         if not parsed:
             parsed = {"total_input_tokens": 0, "total_output_tokens": 0,
                       "total_cache_create_1h": 0, "total_cache_create_5m": 0,
@@ -53750,7 +53930,7 @@ def _price_parent_activity_window(conn, start, end, tier):
         for child in children:
             cp = _parse_session_jsonl(child, window_start=start, window_end=end)
             if cp:
-                cp = _parsed_without_seen_requests(cp, seen_requests)
+                cp = _parsed_net_of_ledger(cp, request_ledger)
                 inp += cp["total_input_tokens"]
                 out += cp["total_output_tokens"]
                 cw1 += cp["total_cache_create_1h"]

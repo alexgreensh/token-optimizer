@@ -152,3 +152,38 @@ def test_summary_discloses_unpriced_session_tokens(m, monkeypatch, tmp_path):
     # Row on disk is untouched.
     row = sqlite3.connect(str(db)).execute("SELECT cost_saved_usd FROM savings_events").fetchone()
     assert row[0] == 3.0
+
+
+def _unjoined(rows):
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(
+        "CREATE TABLE savings_events(id INTEGER PRIMARY KEY, timestamp TEXT, event_type TEXT,"
+        " tokens_saved INTEGER, cost_saved_usd REAL, session_id TEXT, detail TEXT, model TEXT,"
+        " session_uuid TEXT);"
+        "CREATE TABLE session_log(session_uuid TEXT, model_usage_json TEXT, all_model_usage_json TEXT);")
+    ts = (datetime.now() - timedelta(hours=1)).isoformat()
+    for model, tokens, cost in rows:
+        conn.execute(
+            "INSERT INTO savings_events(timestamp,event_type,tokens_saved,cost_saved_usd,session_uuid,model)"
+            " VALUES(?,?,?,?,'ghost',?)", (ts, "tool_archive", tokens, cost, model))
+    return conn
+
+
+def test_unjoined_row_naming_an_unpriced_model_is_priced_at_zero_and_disclosed(m):
+    conn = _unjoined([("gpt-9-unknown", 1_000_000, 3.0)])
+    out = {}
+    deltas, repriced, unmeasured = m._session_model_reprice(conn, CUTOFF, unpriced_out=out)
+    assert deltas["tool_archive"] == pytest.approx(-3.0)
+    assert out["tokens"] == 1_000_000
+    assert (repriced, unmeasured) == (0, 0)
+    assert conn.execute("SELECT cost_saved_usd FROM savings_events").fetchone()[0] == 3.0
+
+
+@pytest.mark.parametrize("model", ["opus", "opus_5_5", "sonnet", "claude-opus-5-5", "gpt-5.4", None, ""])
+def test_unjoined_row_with_a_known_or_missing_model_keeps_its_stored_price(m, model):
+    conn = _unjoined([(model, 1_000_000, 3.0)])
+    out = {}
+    deltas, repriced, unmeasured = m._session_model_reprice(conn, CUTOFF, unpriced_out=out)
+    assert deltas == {}
+    assert out == {}
+    assert unmeasured == 1_000_000

@@ -419,13 +419,20 @@ tr:hover td { background: var(--bg-hover); }
     ${savings.unpricedEventTokens > 0 ? `<div style="font-size:12px;color:var(--text-dim);margin-bottom:var(--s-4);">${fmtNum(savings.unpricedEventTokens)} tokens across ${savings.unpricedEventCount} action credits or reversals have no model price. Action dollar amounts exclude unpriced contributions.${savings.archivePricedNetUsd !== null ? ` Priced archive subtotal: ${savings.archivePricedNetUsd < 0 ? "-" : ""}${fmtCost(Math.abs(savings.archivePricedNetUsd))}.` : ""}</div>` : ""}
     ${savings.unpricedBaselineTokens + savings.unpricedCurrentTokens > 0 ? `<div style="font-size:12px;color:var(--text-dim);margin-bottom:var(--s-4);">Model comparison excludes ${fmtNum(savings.unpricedBaselineTokens)} unpriced baseline tokens and ${fmtNum(savings.unpricedCurrentTokens)} unpriced recent tokens.</div>` : ""}
 
-    ${!savings.ready && savings.compressionMeasuredWindowUsd + savings.verbosityMeasuredWindowUsd >= 0.005 ? `
+    ${(() => {
+      // Cents are allocated once so the shown parts add to the shown total.
+      const logged = Math.max(0, savings.compressionMeasuredWindowUsd);
+      const other = Math.max(0, savings.verbosityMeasuredWindowUsd);
+      if (savings.ready || logged + other < 0.005) return "";
+      const [loggedDisplay, otherDisplay] = allocateCents(logged + other, [logged, other]);
+      return `
     <div data-card="action-savings" style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:var(--s-4);margin-bottom:var(--s-4);">
       <div>Action savings &middot; last ${days} days</div>
-      <strong>${fmtCost(savings.compressionMeasuredWindowUsd + savings.verbosityMeasuredWindowUsd)}</strong>
-      <div>Logged actions ${fmtCost(savings.compressionMeasuredWindowUsd)} &middot; Other estimates ${fmtCost(savings.verbosityMeasuredWindowUsd)}</div>
+      <strong>${fmtCost(Math.round((loggedDisplay + otherDisplay) * 100) / 100)}</strong>
+      <div>Logged actions ${fmtCost(loggedDisplay)} &middot; Other estimates ${fmtCost(otherDisplay)}</div>
       <div>Repeat reads avoided: unavailable.${savings.inputRateFloorWindowUsd > 0 ? ` ${fmtCost(savings.inputRateFloorWindowUsd)} of logged actions is priced at the input rate, a minimum.` : ""} ${BILLING_CAPTION}</div>
-    </div>` : ""}
+    </div>`;
+    })()}
     ${!savings.ready ? (() => {
       // New-user view: render baseline-building progress card instead of a dead end.
       const bb = savings.baselineBuilding;

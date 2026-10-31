@@ -12858,6 +12858,7 @@ def parse_session_turns(filepath):
     tier = _load_pricing_tier()
     prev_call_ts = None
     turn_by_key = {}
+    parts_by_key = {}
 
     # Bound the work like the Codex adapter's _iter_json_records (see
     # _parse_session_jsonl): skip oversized files and oversized lines.
@@ -12934,8 +12935,8 @@ def parse_session_turns(filepath):
                         prev_call_ts = call_ts
                     except (ValueError, TypeError):
                         pass
-                cost = _price_usage_parts(_billed_usage_parts(usage, model, tier=tier),
-                                          tier=tier, per_request=True)
+                parts = _billed_usage_parts(usage, model, tier=tier)
+                cost = _price_usage_parts(parts, tier=tier, per_request=True)
 
                 turn = {
                     "turn_index": turn_index,
@@ -12969,19 +12970,35 @@ def parse_session_turns(filepath):
                         _context_token_count(resume_usage) - resume_read
                         - _safe_int(resume_usage.get("input_tokens")))
                 if prior_turn is not None:
-                    merged_tools = prior_turn["tools_used"] + [
+                    latest_context = turn["output_tokens"] >= prior_turn["output_tokens"]
+                    for field in ("input_tokens", "output_tokens", "cache_read",
+                                  "cache_creation", "cache_creation_1h", "cache_creation_5m"):
+                        prior_turn[field] = max(prior_turn[field], turn[field])
+                    prior_turn["tools_used"] += [
                         t for t in tools if t not in prior_turn["tools_used"]]
-                    if turn["output_tokens"] >= prior_turn["output_tokens"]:
-                        # The later chunk holds the final cumulative usage.
-                        for field in ("turn_index", "timestamp", "gap_since_prev_seconds"):
-                            turn[field] = prior_turn[field]
-                        prior_turn.clear()
-                        prior_turn.update(turn)
-                    prior_turn["tools_used"] = merged_tools
+                    if model and model != "unknown":
+                        prior_turn["model"] = model
+                    for field in ("ctx_cache", "resume_cache_read", "resume_cache_creation"):
+                        if field in turn and (latest_context or field not in prior_turn):
+                            prior_turn[field] = turn[field]
+                    merged_parts = parts_by_key[req_key]
+                    for index, (part_model, buckets) in enumerate(parts):
+                        if index == len(merged_parts):
+                            merged_parts.append((part_model, dict(buckets)))
+                        else:
+                            old_model, old_buckets = merged_parts[index]
+                            for field in _USAGE_BUCKET_KEYS:
+                                old_buckets[field] = max(old_buckets[field], buckets[field])
+                            if part_model and part_model != "unknown":
+                                old_model = part_model
+                            merged_parts[index] = (old_model, old_buckets)
+                    prior_turn["cost_usd"] = round(_price_usage_parts(
+                        merged_parts, tier=tier, per_request=True), 6)
                     continue
                 turns.append(turn)
                 if req_key:
                     turn_by_key[req_key] = turn
+                    parts_by_key[req_key] = parts
                 turn_index += 1
 
     except (PermissionError, OSError):
@@ -23769,7 +23786,7 @@ def _counted_coverage_totals(out):
         out["reread_unpriced_tokens"] or missing_evidence)
     out["prices_available"] = bool(out.get("priced_oneshot_events")
                                    or out.get("priced_reread_turns")
-                                   or (not out.get("events", 1) and not missing_evidence))
+                                   or out["pricing_complete"])
     out["oneshot_prices_available"] = bool(out.get("priced_oneshot_events")
                                             or out["oneshot_pricing_complete"])
     out["reread_prices_available"] = bool(out.get("priced_reread_turns")
@@ -24025,7 +24042,7 @@ def _counted_mark_incomplete(conn, key, detail, proof=None):
 
 
 def _counted_store_score(conn, key, source, uuid, ts, tokens, score, mtime,
-                         proof, old=None, magnitude_basis="metered"):
+                         proof, old=None, magnitude_basis="metered", allow_unobserved=False):
     """Replace only a complete continuation of the previously observed file."""
     detail = _counted_pricing_detail(old["pricing_detail"]) if old else {}
     if old:
@@ -24042,10 +24059,16 @@ def _counted_store_score(conn, key, source, uuid, ts, tokens, score, mtime,
                           and score["reread_tokens"] == int(old["reread_tokens"] or 0))
         identity_matches = (old["source"] == source and old["session_uuid"] == uuid
                             and old["event_ts"] == ts)
-        if not continuous or not identity_matches or not score["observed"] or int(old["tokens"] or 0) != tokens:
+        previous_activity = (int(old["turns_counted"] or 0) != 0
+                             or float(old["oneshot_usd"] or 0) != 0
+                             or bool(detail.get("priced_oneshot_events"))
+                             or bool(detail.get("oneshot_unpriced_credit_tokens"))
+                             or bool(detail.get("oneshot_unpriced_debit_tokens")))
+        if (not continuous or not identity_matches or int(old["tokens"] or 0) != tokens
+                or (not score["observed"] and (not allow_unobserved or previous_activity))):
             _counted_mark_incomplete(conn, key, detail, proof)
             return False
-    if not score["observed"]:
+    if not score["observed"] and not allow_unobserved:
         return False
     detail = {key: score[key] for key in _COUNTED_COVERAGE_KEYS}
     detail.update(version=_COUNTED_PRICING_VERSION, refresh_incomplete=False,
@@ -24177,7 +24200,7 @@ def _update_counted_cumulative(conn, max_sessions=_COUNTED_MAX_SESSIONS_PER_PASS
                     turns, compacts, ev_dt, int(tok or 0), tier_data)
                 if not _counted_store_score(conn, key, key.split(":", 1)[0], uuid,
                                              ts, int(tok or 0), score, mtime, proof,
-                                             old=stored.get(key)):
+                                             old=stored.get(key), allow_unobserved=True):
                     stats["unmeasured_events"] += 1
                     continue
                 stats["rows_written"] += 1
@@ -24442,7 +24465,8 @@ def _counted_cumulative_summary(days=None, now=None):
                     "SELECT 'ce:'||id FROM main.compression_events EXCEPT "
                     "SELECT 'ce:'||id FROM counted_compression_events"))
             rows = []
-            for row in _counted_stored_rows(conn).values():
+            stored = _counted_stored_rows(conn)
+            for row in stored.values():
                 if row["event_key"] in excluded:
                     continue
                 if start is not None:
@@ -24460,12 +24484,33 @@ def _counted_cumulative_summary(days=None, now=None):
                     if not start.timestamp() <= stamp <= end.timestamp():
                         continue
                 rows.append(row)
-            totals = _counted_rollup_rows(rows)
+            missing_by_month = {}
+            for key, _uuid, ts, tokens, _cost, _model in _counted_candidate_events(conn):
+                if key in stored:
+                    continue
+                value = _counted_event_utc(ts)
+                if start is not None and (value is None or not start.timestamp() <=
+                        value.replace(tzinfo=timezone.utc).timestamp() <= end.timestamp()):
+                    continue
+                month = value.strftime("%Y-%m") if value else None
+                missing_by_month.setdefault(month, []).append(int(tokens or 0))
+
+            def add_missing(coverage, amounts):
+                coverage["unmeasured_events"] = len(amounts)
+                coverage["unmeasured_removed_tokens"] = sum(amounts)
+                coverage["unmeasured_removed_credit_tokens"] = sum(n for n in amounts if n >= 0)
+                coverage["unmeasured_removed_debit_tokens"] = sum(-n for n in amounts if n < 0)
+                return _counted_coverage_totals(coverage)
+
+            totals = add_missing(_counted_rollup_rows(rows),
+                                 [n for values in missing_by_month.values() for n in values])
             by_month = {}
             for row in rows:
                 by_month.setdefault(row["event_month"], []).append(row)
-            monthly_coverage = {m: _counted_rollup_rows(by_month[m])
-                                for m in sorted(by_month, key=lambda month: month or "")}
+            monthly_coverage = {m: add_missing(_counted_rollup_rows(by_month.get(m, [])),
+                                               missing_by_month.get(m, []))
+                                for m in sorted(by_month.keys() | missing_by_month.keys(),
+                                                key=lambda month: month or "")}
             try:
                 done = conn.execute(
                     "SELECT value FROM token_optimizer_meta WHERE key = ?",
@@ -24476,9 +24521,7 @@ def _counted_cumulative_summary(days=None, now=None):
                 done = None
         finally:
             conn.close()
-        if not rows and days is None:
-            return out
-        first_month = min((row["event_month"] for row in rows if row["event_month"]), default=None)
+        first_month = min((month for month in monthly_coverage if month), default=None)
         computed_at = max((row["computed_at"] for row in rows if row["computed_at"]), default=None)
         return {
             **totals,

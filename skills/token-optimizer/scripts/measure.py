@@ -50847,18 +50847,29 @@ _RUNWAY_COMPRESSED_SQL = _counted_sql(
     "AND (tier IS NULL OR tier = 'measured') GROUP BY feature")
 
 
-def _runway_saved_tokens(conn, cutoff):
-    """Tokens never sent since *cutoff*, netted like the savings totals.
+# Events the savings report moves out of its measured total (one-time setup
+# trim, capped MCP output, followed hints, cold resumes). The runway figure is
+# the measured floor, so it leaves them out too.
+_RUNWAY_ESTIMATED_EVENT_TYPES = frozenset(
+    {"setup_optimization", "mcp_cap", "hint_followed", "resume_lean"})
 
-    Archive re-expansions are subtracted from the archive credit (never below
-    zero) and are not savings of their own. A compression feature that
-    savings_events also logs (delta_read, structure_map) is counted once, from
-    savings_events. Only features the savings report counts are included.
+
+def _runway_saved_tokens(conn, cutoff):
+    """Measured tokens never sent since *cutoff*, netted like the savings totals.
+
+    This is the counted floor behind the window card's "measured token floor":
+    the same events the savings report keeps in its measured total, so the
+    estimated tiers (setup trim, MCP cap, followed hints, lean resumes,
+    verbosity steering) are left out. Archive re-expansions are subtracted from
+    the archive credit (never below zero) and are not savings of their own. A
+    compression feature that savings_events also logs (delta_read,
+    structure_map) is counted once, from savings_events.
     """
     by_event = {
         event_type: int(tokens or 0)
         for event_type, tokens in conn.execute(
-            _RUNWAY_SAVED_SQL[_counted_table(conn, "savings_events")], (cutoff,))}
+            _RUNWAY_SAVED_SQL[_counted_table(conn, "savings_events")], (cutoff,))
+        if event_type not in _RUNWAY_ESTIMATED_EVENT_TYPES}
     reexpanded = by_event.pop("tool_archive_reexpand", 0)
     if "tool_archive" in by_event:
         by_event["tool_archive"] = max(0, by_event["tool_archive"] - reexpanded)
@@ -50889,8 +50900,9 @@ def runway_snapshot(days=30, now=None):
     API spend.
 
     TWO INDEPENDENT LEVERS, MULTIPLIED:
-      context : tokens never sent at all (archive, skeletons, lean resumes).
-                Directly metered from savings_events + compression_events.
+      context : tokens never sent at all (archive, skeletons, blocked reads).
+                Directly metered from savings_events + compression_events;
+                estimated tiers are not included.
       routing : a lighter model mix burns less of the window per token.
                 Derived from THIS user's own baseline vs current mix -- never a
                 constant. A user who never left Opus correctly sees ~1.0x.

@@ -24143,8 +24143,35 @@ def _counted_mark_incomplete(conn, key, detail, proof=None):
                  (json.dumps(detail), key))
 
 
+def _counted_legacy_append_continuous(old, turns, compacts, ev_dt, tokens, tier_data):
+    """True when a row stored without a file digest was computed from the
+    earlier part of this transcript, which has since only been appended to.
+
+    The turns written up to the row's recorded transcript mtime must rescore to
+    exactly the observed counts the row holds, and the transcript must hold
+    turns after that point. A replaced or truncated file fails the first test;
+    one with nothing new fails the second and stays on the unchanged-file rule.
+    """
+    try:
+        old_mtime = old["transcript_mtime"]
+        if old_mtime is None:
+            return False
+        cutoff = datetime.fromtimestamp(float(old_mtime), timezone.utc).replace(tzinfo=None)
+        prefix = [turn for turn in turns if turn[0] <= cutoff]
+        if not prefix or len(prefix) >= len(turns):
+            return False
+        prefix_score = _counted_score_detail(
+            prefix, [c for c in compacts if c <= cutoff], ev_dt, tokens, tier_data)
+        return (prefix_score["observed"]
+                and prefix_score["turns_counted"] == int(old["turns_counted"] or 0)
+                and prefix_score["reread_tokens"] == int(old["reread_tokens"] or 0))
+    except (TypeError, ValueError, OverflowError, OSError):
+        return False
+
+
 def _counted_store_score(conn, key, source, uuid, ts, tokens, score, mtime,
-                         proof, old=None, magnitude_basis="metered", allow_unobserved=False):
+                         proof, old=None, magnitude_basis="metered", allow_unobserved=False,
+                         append_check=None, identity_verified=False):
     """Replace only a complete continuation of the previously observed file."""
     detail = _counted_pricing_detail(old["pricing_detail"]) if old else {}
     if old:
@@ -24153,12 +24180,17 @@ def _counted_store_score(conn, key, source, uuid, ts, tokens, score, mtime,
             continuous = proof["prefixes"].get(size) == detail.get("file_sha256")
         else:
             # Without an old digest, only the recorded unchanged file and
-            # identical observed counts can anchor a legacy reprice. Changed
-            # sources and old markers without mtimes remain quarantined.
-            continuous = (old["transcript_mtime"] is not None
-                          and old["transcript_mtime"] == mtime
-                          and score["turns_counted"] == int(old["turns_counted"] or 0)
-                          and score["reread_tokens"] == int(old["reread_tokens"] or 0))
+            # identical observed counts can anchor a legacy reprice, or an
+            # append-only continuation the caller can show (append_check). A
+            # marker row with no recorded mtime is anchored by the caller's
+            # exact identity recomputation (identity_verified) instead.
+            same_counts = (score["turns_counted"] == int(old["turns_counted"] or 0)
+                           and score["reread_tokens"] == int(old["reread_tokens"] or 0))
+            if old["transcript_mtime"] is None:
+                continuous = identity_verified and same_counts
+            else:
+                continuous = ((old["transcript_mtime"] == mtime and same_counts)
+                              or bool(append_check and append_check(old)))
         identity_matches = (old["source"] == source and old["session_uuid"] == uuid
                             and old["event_ts"] == ts)
         previous_activity = (int(old["turns_counted"] or 0) != 0
@@ -24303,7 +24335,10 @@ def _update_counted_cumulative(conn, max_sessions=_COUNTED_MAX_SESSIONS_PER_PASS
                     turns, compacts, ev_dt, int(tok or 0), tier_data)
                 if not _counted_store_score(conn, key, key.split(":", 1)[0], uuid,
                                              ts, int(tok or 0), score, mtime, proof,
-                                             old=stored.get(key), allow_unobserved=True):
+                                             old=stored.get(key), allow_unobserved=True,
+                                             append_check=lambda old, _ev=ev_dt, _tok=int(tok or 0): (
+                                                 _counted_legacy_append_continuous(
+                                                     old, turns, compacts, _ev, _tok, tier_data))):
                     stats["unmeasured_events"] += 1
                     continue
                 stats["rows_written"] += 1
@@ -24426,8 +24461,10 @@ def _counted_marker_backfill(conn, max_files=_COUNTED_MARKER_FILES_PER_PASS,
                 if size is not None:
                     continuous = proof["prefixes"].get(size) == detail.get("file_sha256")
                 else:
-                    continuous = (old["transcript_mtime"] is not None
-                                  and old["transcript_mtime"] == path.stat().st_mtime)
+                    # A row stored without an mtime is judged by the identity
+                    # recomputation below alone; a recorded mtime must match.
+                    continuous = (old["transcript_mtime"] is None
+                                  or old["transcript_mtime"] == path.stat().st_mtime)
                     try:
                         index = int(old["event_key"].rsplit(":", 1)[1])
                         marker_dt, marker_tokens = markers[index]
@@ -24458,7 +24495,8 @@ def _counted_marker_backfill(conn, max_files=_COUNTED_MARKER_FILES_PER_PASS,
                 key = f"mk:{sid}:{i}"
                 if _counted_store_score(conn, key, "mk", sid, ev_dt.isoformat(), tok,
                                         score, path.stat().st_mtime, proof, old=stored.get(key),
-                                        magnitude_basis="sized_marker" if m_tok else "estimated_marker"):
+                                        magnitude_basis="sized_marker" if m_tok else "estimated_marker",
+                                        identity_verified=True):
                     stats["rows_written"] += 1
         if paths and last == paths[-1]:
             conn.execute("INSERT OR REPLACE INTO token_optimizer_meta (key, value) "
@@ -50809,18 +50847,29 @@ _RUNWAY_COMPRESSED_SQL = _counted_sql(
     "AND (tier IS NULL OR tier = 'measured') GROUP BY feature")
 
 
-def _runway_saved_tokens(conn, cutoff):
-    """Tokens never sent since *cutoff*, netted like the savings totals.
+# Events the savings report moves out of its measured total (one-time setup
+# trim, capped MCP output, followed hints, cold resumes). The runway figure is
+# the measured floor, so it leaves them out too.
+_RUNWAY_ESTIMATED_EVENT_TYPES = frozenset(
+    {"setup_optimization", "mcp_cap", "hint_followed", "resume_lean"})
 
-    Archive re-expansions are subtracted from the archive credit (never below
-    zero) and are not savings of their own. A compression feature that
-    savings_events also logs (delta_read, structure_map) is counted once, from
-    savings_events. Only features the savings report counts are included.
+
+def _runway_saved_tokens(conn, cutoff):
+    """Measured tokens never sent since *cutoff*, netted like the savings totals.
+
+    This is the counted floor behind the window card's "measured token floor":
+    the same events the savings report keeps in its measured total, so the
+    estimated tiers (setup trim, MCP cap, followed hints, lean resumes,
+    verbosity steering) are left out. Archive re-expansions are subtracted from
+    the archive credit (never below zero) and are not savings of their own. A
+    compression feature that savings_events also logs (delta_read,
+    structure_map) is counted once, from savings_events.
     """
     by_event = {
         event_type: int(tokens or 0)
         for event_type, tokens in conn.execute(
-            _RUNWAY_SAVED_SQL[_counted_table(conn, "savings_events")], (cutoff,))}
+            _RUNWAY_SAVED_SQL[_counted_table(conn, "savings_events")], (cutoff,))
+        if event_type not in _RUNWAY_ESTIMATED_EVENT_TYPES}
     reexpanded = by_event.pop("tool_archive_reexpand", 0)
     if "tool_archive" in by_event:
         by_event["tool_archive"] = max(0, by_event["tool_archive"] - reexpanded)
@@ -50851,8 +50900,9 @@ def runway_snapshot(days=30, now=None):
     API spend.
 
     TWO INDEPENDENT LEVERS, MULTIPLIED:
-      context : tokens never sent at all (archive, skeletons, lean resumes).
-                Directly metered from savings_events + compression_events.
+      context : tokens never sent at all (archive, skeletons, blocked reads).
+                Directly metered from savings_events + compression_events;
+                estimated tiers are not included.
       routing : a lighter model mix burns less of the window per token.
                 Derived from THIS user's own baseline vs current mix -- never a
                 constant. A user who never left Opus correctly sees ~1.0x.
@@ -60132,6 +60182,52 @@ def _verbosity_measured_savings(baseline_avg, post_nudge_outputs):
     return int(delta * len(outs))
 
 
+def _transcript_request_outputs(filepath):
+    """Output tokens of each API request in a transcript, in request order.
+
+    Claude Code writes several assistant lines per request while it streams,
+    each carrying the cumulative output so far, so the request's output is the
+    MAX over its lines (the same fold ``_parse_session_jsonl`` applies). Lines
+    with neither a requestId nor a message id stay separate requests. Returns
+    ``[(positive_lines_before, output_tokens), ...]`` for requests with output
+    above zero, where ``positive_lines_before`` counts the output-bearing
+    assistant lines that precede the request's first one (used to place a
+    boundary recorded in lines by an older nudge).
+    """
+    order = []
+    by_key = {}
+    seen_lines = 0
+    for line in Path(filepath).read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(entry, dict) or entry.get("type") != "assistant":
+            continue
+        msg = entry.get("message")
+        if not isinstance(msg, dict):
+            continue
+        usage = msg.get("usage", {})
+        out = _safe_int(usage.get("output_tokens", 0)) if isinstance(usage, dict) else 0
+        if out <= 0:
+            continue
+        key = _usage_request_key(entry, msg)
+        if key is None:
+            key = f"__noreq__{len(order)}"
+        slot = by_key.get(key)
+        if slot is None:
+            slot = [seen_lines, out]
+            by_key[key] = slot
+            order.append(slot)
+        else:
+            slot[1] = max(slot[1], out)
+        seen_lines += 1
+    return [(before, out) for before, out in order]
+
+
 def _calibrate_prior_verbosity_nudges(session_id, filepath):
     """Book the MEASURED saving of a prior verbosity nudge (U5, R5, D1).
 
@@ -60199,24 +60295,15 @@ def _calibrate_prior_verbosity_nudges(session_id, filepath):
         pre_turns = int(m_turns.group(1))
         pre_avg = int(m_avg.group(1))
 
-        # Collect assistant output_tokens in transcript order.
-        outputs = []
-        for line in Path(filepath).read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entry = json.loads(line)
-            except (json.JSONDecodeError, ValueError):
-                continue
-            if not isinstance(entry, dict):
-                continue
-            if entry.get("type") == "assistant" and "message" in entry:
-                out = _safe_int(entry["message"].get("usage", {}).get("output_tokens", 0))
-                if out > 0:
-                    outputs.append(out)
-
-        post_outputs = outputs[pre_turns:]
+        # Output per API request in transcript order. A nudge that recorded
+        # its boundary in requests ("unit=req") indexes the request list; an
+        # older one recorded transcript lines, so the boundary is placed by
+        # line position and only whole requests after it are counted.
+        requests = _transcript_request_outputs(filepath)
+        if "unit=req" in src_detail:
+            post_outputs = [out for _, out in requests[pre_turns:]]
+        else:
+            post_outputs = [out for before, out in requests if before >= pre_turns]
         if not post_outputs:
             # No post-nudge turns yet: nothing to measure. Leave the nudge
             # uncalibrated so a later turn settles it.
@@ -60419,23 +60506,8 @@ def run_verbosity_steer(transcript_path=None, quiet=True, session_id=None):
             _pre_nudge_turns = 0
             try:
                 if filepath and filepath.exists():
-                    _turn_outputs = []
-                    for _line in filepath.read_text(encoding="utf-8").splitlines():
-                        _line = _line.strip()
-                        if not _line:
-                            continue
-                        try:
-                            _entry = json.loads(_line)
-                        except (json.JSONDecodeError, ValueError):
-                            continue
-                        if not isinstance(_entry, dict):
-                            continue
-                        if _entry.get("type") == "assistant" and "message" in _entry:
-                            _msg = _entry["message"]
-                            _usage = _msg.get("usage", {})
-                            _out = _safe_int(_usage.get("output_tokens", 0))
-                            if _out > 0:
-                                _turn_outputs.append(_out)
+                    _turn_outputs = [
+                        _o for _, _o in _transcript_request_outputs(filepath)]
                     if _turn_outputs:
                         _pre_nudge_avg_output = round(sum(_turn_outputs) / len(_turn_outputs))
                         _pre_nudge_turns = len(_turn_outputs)
@@ -60444,7 +60516,8 @@ def run_verbosity_steer(transcript_path=None, quiet=True, session_id=None):
 
             _tier_label = 'strong' if fill_pct >= 75 else 'gentle'
             _detail = (f"fill={fill_pct:.0f}% score={score:.0f} tier={_tier_label}"
-                       f" pre_avg_out={_pre_nudge_avg_output} pre_turns={_pre_nudge_turns}")
+                       f" pre_avg_out={_pre_nudge_avg_output} pre_turns={_pre_nudge_turns}"
+                       f" unit=req")
             _log_savings_event(
                 "verbosity_steer",
                 0,

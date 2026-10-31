@@ -1,6 +1,8 @@
 import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { knownModelRate } from "../pricing.js";
+import type { ModelTokenBuckets } from "../usage.js";
 
 const TRENDS_SCHEMA = `
 CREATE TABLE IF NOT EXISTS session_log (
@@ -37,15 +39,57 @@ CREATE TABLE IF NOT EXISTS savings_events (
 );
 `;
 
-// Sonnet input rate ($/M tokens) used as fallback when the active model is
-// unknown at savings-log time (e.g. checkpoint inject fires before the first
-// assistant message arrives). Matches Python's _log_savings_event fallback.
-const SONNET_INPUT_RATE_PER_MTOK = 3.0;
+// Keep the ledger intact; all savings readers use the same filtered view.
+const COUNTED_EVENTS_VIEW = `
+CREATE TEMP VIEW IF NOT EXISTS counted_savings_events AS
+SELECT e.* FROM main.savings_events e
+WHERE NOT (e.session_id IS NOT NULL AND (
+  e.session_id GLOB 'test-session-*' OR e.session_id GLOB 'failwire-*' OR
+  e.session_id GLOB 'f3bench-sess*' OR e.session_id GLOB 'unit-c-never*' OR
+  e.session_id GLOB 'torture-*' OR e.session_id GLOB 'sess_test*' OR
+  (e.session_id GLOB 'codex-sess-[0-9]*' AND substr(e.session_id, 12) NOT GLOB '*[^0-9]*')
+))
+AND NOT (e.event_type IN ('tool_archive', 'tool_archive_refetch_block') AND e.detail IS NOT NULL AND (
+  e.detail GLOB '*claude-in-chrome__computer*' OR e.detail GLOB '*computer_use__*' OR
+  e.detail GLOB '*[Ss]creenshot*'
+))
+AND NOT (e.tokens_saved > 0 AND e.session_id IS NOT NULL AND e.session_id != '' AND EXISTS (
+  SELECT 1 FROM main.savings_events p WHERE p.session_id = e.session_id
+  AND p.event_type = e.event_type AND p.tokens_saved = e.tokens_saved
+  AND COALESCE(p.detail, '') = COALESCE(e.detail, '')
+  AND (p.timestamp < e.timestamp OR (p.timestamp = e.timestamp AND p.id < e.id))
+  AND (julianday(e.timestamp) - julianday(p.timestamp)) * 86400.0 BETWEEN 0 AND 3
+));`;
+
+function sessionRate(model: string | null, encoded: string | null, klass: "input" | "output"): { rate: number; coverage: number } {
+  try {
+    const buckets = JSON.parse(encoded ?? "null") as ModelTokenBuckets | null;
+    let weighted = 0, total = 0;
+    if (buckets && typeof buckets === "object") {
+      for (const [name, bucket] of Object.entries(buckets)) {
+        const rate = knownModelRate(name, klass);
+        const tokens = Math.max(0, Number(bucket?.[klass]) || 0);
+        if (Number.isFinite(tokens)) { weighted += tokens * (rate ?? 0); total += tokens; }
+      }
+      if (total > 0) {
+        const known = Object.entries(buckets).reduce((sum, [name, bucket]) => {
+          const tokens = Math.max(0, Number(bucket?.[klass]) || 0);
+          return sum + (Number.isFinite(tokens) && knownModelRate(name, klass) !== null ? tokens : 0);
+        }, 0);
+        return { rate: weighted / total, coverage: known / total };
+      }
+      if (Object.keys(buckets).length > 0) return { rate: 0, coverage: 0 };
+    }
+  } catch { /* old or invalid bucket data uses the recorded session model */ }
+  const rate = knownModelRate(model ?? "", klass);
+  return { rate: rate ?? 0, coverage: rate === null ? 0 : 1 };
+}
 
 export interface SessionTrendData {
   sessionId: string;
   project: string | null;
   model: string | null;
+  modelTokenBuckets?: ModelTokenBuckets;
   tokensInput: number;
   tokensOutput: number;
   tokensCacheRead: number;
@@ -78,6 +122,11 @@ export class TrendsStore {
       this.db.exec("PRAGMA busy_timeout=3000");
       this.db.exec(TRENDS_SCHEMA);
       this.db.exec(SAVINGS_EVENTS_SCHEMA);
+      const cols = this.db.query("PRAGMA table_info(session_log)").all() as Array<{ name: string }>;
+      if (!cols.some((col) => col.name === "model_token_buckets")) {
+        this.db.exec("ALTER TABLE session_log ADD COLUMN model_token_buckets TEXT");
+      }
+      this.db.exec(COUNTED_EVENTS_VIEW);
     }
     return this.db;
   }
@@ -86,9 +135,8 @@ export class TrendsStore {
    * Log a realized-savings event to the savings_events table.
    *
    * This is the TypeScript equivalent of Python's `_log_savings_event`.
-   * Model is not known at checkpoint-inject time, so cost_saved_usd is
-   * priced at the Sonnet input fallback rate — same behaviour as Python's
-   * resolver when the session model cannot be determined.
+   * If the model is not yet known, leave the amount unpriced until the session
+   * has a model. The reader resolves it from that session without changing history.
    *
    * Guards:
    *   - tokensSaved <= 0  → no-op (never credit zero or negative)
@@ -104,7 +152,8 @@ export class TrendsStore {
     if (tokensSaved <= 0) return;
     try {
       const db = this.connect();
-      const costSavedUsd = (tokensSaved * SONNET_INPUT_RATE_PER_MTOK) / 1_000_000;
+      const rate = knownModelRate(model ?? "", eventType === "verbosity_steer" ? "output" : "input");
+      const costSavedUsd = tokensSaved * (rate ?? 0);
       db.run(
         `INSERT INTO savings_events (timestamp, event_type, tokens_saved, cost_saved_usd, session_id, detail, model)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -209,25 +258,31 @@ export class TrendsStore {
     totalTokensSaved: number;
     totalCostSavedUsd: number;
     totalEvents: number;
+    unpricedTokens: number;
+    unpricedEvents: number;
   } {
     try {
       const db = this.connect();
       const cutoff = new Date(now - days * 86_400_000).toISOString();
       const rows = db
         .query(
-          `SELECT event_type, COUNT(*) as cnt,
-                  SUM(tokens_saved) as tok, SUM(cost_saved_usd) as cost
-           FROM savings_events WHERE timestamp >= ? GROUP BY event_type`,
+          `SELECT e.event_type, e.tokens_saved, e.cost_saved_usd, e.model, s.model AS session_model, s.model_token_buckets
+           FROM counted_savings_events e LEFT JOIN session_log s ON s.session_id = e.session_id
+           WHERE e.timestamp >= ?`,
         )
-        .all(cutoff) as Array<{ event_type: string; cnt: number; tok: number | null; cost: number | null }>;
+        .all(cutoff) as Array<{ event_type: string; tokens_saved: number; cost_saved_usd: number; model: string | null; session_model: string | null; model_token_buckets: string | null }>;
 
-      const byCategory = new Map<string, { events: number; tokens: number; cost: number }>();
+      const byCategory = new Map<string, { events: number; tokens: number; cost: number; unpricedTokens: number; unpricedEvents: number }>();
       for (const r of rows) {
-        byCategory.set(r.event_type, {
-          events: r.cnt,
-          tokens: r.tok ?? 0,
-          cost: r.cost ?? 0,
-        });
+        const item = byCategory.get(r.event_type) ?? { events: 0, tokens: 0, cost: 0, unpricedTokens: 0, unpricedEvents: 0 };
+        const unknown = !r.model || knownModelRate(r.model, "input") === null;
+        const rate = unknown ? sessionRate(r.session_model, r.model_token_buckets, "input") : { rate: 0, coverage: 1 };
+        item.events++;
+        item.tokens += r.tokens_saved ?? 0;
+        item.cost += unknown ? (r.tokens_saved ?? 0) * rate.rate : (r.cost_saved_usd ?? 0);
+        item.unpricedTokens += (r.tokens_saved ?? 0) * (1 - rate.coverage);
+        if (rate.coverage < 1) item.unpricedEvents++;
+        byCategory.set(r.event_type, item);
       }
 
       // Relocate estimated-tier categories OUT of the measured total (A1/A3/U-G
@@ -248,20 +303,24 @@ export class TrendsStore {
         if (ta) {
           ta.tokens = Math.max(0, ta.tokens - reexpand.tokens);
           ta.cost = Math.max(0, ta.cost - reexpand.cost);
+          ta.unpricedTokens = Math.max(0, ta.unpricedTokens - reexpand.unpricedTokens);
         }
       }
 
       let totalTokensSaved = 0;
       let totalCostSavedUsd = 0;
       let totalEvents = 0;
+      let unpricedTokens = 0, unpricedEvents = 0;
       for (const v of byCategory.values()) {
         totalTokensSaved += v.tokens;
         totalCostSavedUsd += v.cost;
         totalEvents += v.events;
+        unpricedTokens += v.unpricedTokens;
+        unpricedEvents += v.unpricedEvents;
       }
-      return { totalTokensSaved, totalCostSavedUsd, totalEvents };
+      return { totalTokensSaved, totalCostSavedUsd, totalEvents, unpricedTokens, unpricedEvents };
     } catch {
-      return { totalTokensSaved: 0, totalCostSavedUsd: 0, totalEvents: 0 };
+      return { totalTokensSaved: 0, totalCostSavedUsd: 0, totalEvents: 0, unpricedTokens: 0, unpricedEvents: 0 };
     }
   }
 
@@ -275,18 +334,31 @@ export class TrendsStore {
    * Best-effort: returns 0 on any error (never throws). `now` is injectable.
    */
   getVerbositySavings(days: number = 30, now: number = Date.now()): number {
+    return this.getVerbositySavingsDetail(days, now).costUsd;
+  }
+
+  getVerbositySavingsDetail(days: number = 30, now: number = Date.now()): { costUsd: number; unpricedTokens: number; unpricedEvents: number } {
     try {
       const db = this.connect();
       const cutoff = new Date(now - days * 86_400_000).toISOString();
-      const row = db
+      const rows = db
         .query(
-          `SELECT SUM(cost_saved_usd) as cost
-           FROM savings_events WHERE timestamp >= ? AND event_type = 'verbosity_steer'`,
+          `SELECT e.tokens_saved, e.cost_saved_usd, e.model, s.model AS session_model, s.model_token_buckets
+           FROM counted_savings_events e LEFT JOIN session_log s ON s.session_id = e.session_id
+           WHERE e.timestamp >= ? AND e.event_type = 'verbosity_steer'`,
         )
-        .get(cutoff) as { cost: number | null } | null;
-      return Math.max(0, row?.cost ?? 0);
+        .all(cutoff) as Array<{ tokens_saved: number; cost_saved_usd: number; model: string | null; session_model: string | null; model_token_buckets: string | null }>;
+      let costUsd = 0, unpricedTokens = 0, unpricedEvents = 0;
+      for (const r of rows) {
+        const unknown = !r.model || knownModelRate(r.model, "output") === null;
+        const rate = unknown ? sessionRate(r.session_model, r.model_token_buckets, "output") : { rate: 0, coverage: 1 };
+        costUsd += unknown ? (r.tokens_saved ?? 0) * rate.rate : (r.cost_saved_usd ?? 0);
+        unpricedTokens += (r.tokens_saved ?? 0) * (1 - rate.coverage);
+        if (rate.coverage < 1) unpricedEvents++;
+      }
+      return { costUsd: Math.max(0, costUsd), unpricedTokens, unpricedEvents };
     } catch {
-      return 0;
+      return { costUsd: 0, unpricedTokens: 0, unpricedEvents: 0 };
     }
   }
 
@@ -305,11 +377,12 @@ export class TrendsStore {
     // to today's date bucket and lose its original timestamp.
     db.run(
       `INSERT INTO session_log
-       (session_id, date, project, model, tokens_input, tokens_output, tokens_cache_read, tokens_cache_write,
+       (session_id, date, project, model, model_token_buckets, tokens_input, tokens_output, tokens_cache_read, tokens_cache_write,
         cost_usd, resource_health, session_efficiency, tool_calls, compactions, mode, duration_seconds, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(session_id) DO UPDATE SET
          project=excluded.project, model=excluded.model,
+         model_token_buckets=COALESCE(excluded.model_token_buckets, session_log.model_token_buckets),
          tokens_input=excluded.tokens_input, tokens_output=excluded.tokens_output,
          tokens_cache_read=excluded.tokens_cache_read, tokens_cache_write=excluded.tokens_cache_write,
          cost_usd=excluded.cost_usd, resource_health=excluded.resource_health,
@@ -321,6 +394,7 @@ export class TrendsStore {
         date,
         data.project,
         data.model,
+        data.modelTokenBuckets ? JSON.stringify(data.modelTokenBuckets) : null,
         data.tokensInput,
         data.tokensOutput,
         data.tokensCacheRead,

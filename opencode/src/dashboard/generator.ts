@@ -416,6 +416,16 @@ tr:hover td { background: var(--bg-hover); }
   <div class="view" id="view-savings">
     <div class="section-title">Token Optimizer &middot; Savings</div>
 
+    ${savings.unpricedEventTokens > 0 ? `<div style="font-size:12px;color:var(--text-dim);margin-bottom:var(--s-4);">${fmtNum(savings.unpricedEventTokens)} saved tokens across ${savings.unpricedEventCount} events have no model price and are excluded from dollar totals.</div>` : ""}
+    ${savings.unpricedBaselineTokens + savings.unpricedCurrentTokens > 0 ? `<div style="font-size:12px;color:var(--text-dim);margin-bottom:var(--s-4);">Model comparison excludes ${fmtNum(savings.unpricedBaselineTokens)} unpriced baseline tokens and ${fmtNum(savings.unpricedCurrentTokens)} unpriced recent tokens.</div>` : ""}
+
+    ${!savings.ready && savings.compressionMeasuredWindowUsd + savings.verbosityMeasuredWindowUsd >= 0.005 ? `
+    <div data-card="action-savings" style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:var(--s-4);margin-bottom:var(--s-4);">
+      <div>Action savings &middot; last ${days} days</div>
+      <strong>${fmtCost(savings.compressionMeasuredWindowUsd + savings.verbosityMeasuredWindowUsd)}</strong>
+      <div>Logged actions ${fmtCost(savings.compressionMeasuredWindowUsd)} &middot; Other estimates ${fmtCost(savings.verbosityMeasuredWindowUsd)}</div>
+      <div>Repeat reads avoided: unavailable. ${BILLING_CAPTION}</div>
+    </div>` : ""}
     ${!savings.ready ? (() => {
       // New-user view: render baseline-building progress card instead of a dead end.
       const bb = savings.baselineBuilding;
@@ -467,7 +477,8 @@ tr:hover td { background: var(--bg-hover); }
         <strong style="color:var(--text)">${fmtCost(savings.monthlySavingsUsd)} more</strong>
         &mdash; est. <strong style="color:var(--text)">${fmtCost(savings.actualMonthlyUsd)}</strong> now vs
         <strong style="color:var(--text)">${fmtCost(savings.counterfactualMonthlyUsd)}</strong> the old way.
-        Your volume is held constant on both sides, so this is pure efficiency, not workload growth.
+        The comparison holds token classes constant and excludes usage priced above your baseline model rates.
+        ${savings.aggregateBaseline ? "Earlier sessions use their recorded session model because per-message model usage was unavailable." : ""}
       </div>`
         : `<div style="font-size:13px;color:var(--text-dim);line-height:1.6;margin-bottom:var(--s-4);">
         Counted directly from metered context removals (tool archives, delta reads, structure maps).
@@ -479,17 +490,17 @@ tr:hover td { background: var(--bg-hover); }
         <div>
           <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-dim);margin-bottom:var(--s-1);">The old way</div>
           <div style="font-family:monospace;font-size:22px;font-weight:700;color:var(--text)">${fmtCost(savings.beforeCostPerSession)}<span style="font-size:12px;color:var(--text-dim)">/session</span></div>
-          <div style="font-size:12px;color:var(--text-dim);margin-top:var(--s-1)">${esc(savings.beforeMixLabel)}${Math.round(savings.beforeCacheHit * 100) !== Math.round(savings.afterCacheHit * 100) ? ` &middot; ${Math.round(savings.beforeCacheHit * 100)}% cache reuse` : ""}</div>
+          <div style="font-size:12px;color:var(--text-dim);margin-top:var(--s-1)">${esc(savings.beforeMixLabel)}</div>
         </div>
         <div>
           <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-dim);margin-bottom:var(--s-1);">Now</div>
           <div style="font-family:monospace;font-size:22px;font-weight:700;color:var(--success)">${fmtCost(savings.afterCostPerSession)}<span style="font-size:12px;color:var(--text-dim)">/session</span></div>
-          <div style="font-size:12px;color:var(--text-dim);margin-top:var(--s-1)">${esc(savings.afterMixLabel)}${Math.round(savings.beforeCacheHit * 100) !== Math.round(savings.afterCacheHit * 100) ? ` &middot; ${Math.round(savings.afterCacheHit * 100)}% cache reuse` : ""}</div>
+          <div style="font-size:12px;color:var(--text-dim);margin-top:var(--s-1)">${esc(savings.afterMixLabel)}</div>
         </div>
         <div>
           <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-dim);margin-bottom:var(--s-1);">${savings.savingsPerSession >= 0 ? "Cut per session" : "Added per session"}</div>
           <div style="font-family:monospace;font-size:22px;font-weight:700;color:${savings.savingsPerSession >= 0 ? "var(--success)" : "var(--danger)"}">${savings.savingsPerSession >= 0 ? "" : "+"}${fmtCost(Math.abs(savings.savingsPerSession))}</div>
-          <div style="font-size:12px;color:var(--text-dim);margin-top:var(--s-1);">main-work routing &amp; caching${runRate ? ` &middot; ~${Math.round(savings.sessionsPerMonth)} sessions/mo` : ""}</div>
+          <div style="font-size:12px;color:var(--text-dim);margin-top:var(--s-1);">eligible model mix${runRate ? ` &middot; ~${Math.round(savings.sessionsPerMonth)} sessions/mo` : ""}</div>
         </div>
         ${runRate ? `<div>
           <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-dim);margin-bottom:var(--s-1);">Saved to date</div>
@@ -520,6 +531,8 @@ tr:hover td { background: var(--bg-hover); }
       </div>
     </div>
     `}
+
+    ${savings.premiumTokens > 0 ? `<div style="font-size:12px;color:var(--text-dim);margin-bottom:var(--s-4);">Premium usage excluded from the model comparison: ${fmtNum(savings.premiumTokens)} tokens (${Math.round(savings.premiumShare * 100)}% of priced tokens), ${fmtCost(savings.premiumCostUsd)} at API rates in the selected period.</div>` : ""}
 
     <!-- Selected-period savings_events: raw window sums, measured + estimated. -->
     ${(() => {

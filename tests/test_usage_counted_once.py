@@ -154,6 +154,32 @@ def test_records_without_any_id_each_count(tmp_path, monkeypatch):
     assert parsed["total_input_tokens"] == 3000
 
 
+def test_counted_walk_keeps_every_turn_that_has_no_id(tmp_path, monkeypatch):
+    measure = _load(tmp_path, monkeypatch)
+    when = _noon()
+    path = _projects(tmp_path) / "-repo" / f"{SID_A}.jsonl"
+    _write(path, [_chunk(when + timedelta(minutes=i)) for i in range(3)])
+
+    turns, _, _ = measure._counted_walk_transcript(path)
+
+    assert len(turns) == 3
+
+
+def test_counted_walk_folds_streamed_chunks_and_keeps_id_less_turns(tmp_path, monkeypatch):
+    measure = _load(tmp_path, monkeypatch)
+    when = _noon()
+    path = _projects(tmp_path) / "-repo" / f"{SID_A}.jsonl"
+    _write(path, _streamed(when, 3, req="req_1")
+           + _streamed(when + timedelta(minutes=1), 2, mid="msg_2")
+           + [_chunk(when + timedelta(minutes=2)), _chunk(when + timedelta(minutes=3))]
+           + [_chunk(when + timedelta(minutes=4), req="req_1", mid="msg_x")])
+
+    turns, _, _ = measure._counted_walk_transcript(path)
+
+    # req_1 (3 chunks + a late repeat), msg_2 (2 chunks) and two id-less records
+    assert len(turns) == 4
+
+
 def test_reported_basis_still_sums_every_record(tmp_path, monkeypatch):
     """The /stats-compatible basis is the raw per-record sum by design."""
     measure = _load(tmp_path, monkeypatch)

@@ -23370,10 +23370,11 @@ def _counted_walk_transcript(path, collect_markers=False):
                 msg = d.get("message") or {}
                 if not isinstance(msg, dict) or not msg.get("usage"):
                     continue
-                rid = d.get("requestId") or msg.get("id")
-                if rid in seen:
-                    continue
-                seen.add(rid)
+                rid = _usage_request_key(d, msg)
+                if rid is not None:
+                    if rid in seen:
+                        continue
+                    seen.add(rid)
                 if dt is None:
                     continue
                 # Raw model id: re-reads are priced by generation card

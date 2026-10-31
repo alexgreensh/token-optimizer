@@ -25,7 +25,7 @@ import { logCompressionEvent } from "./telemetry";
 import { computeDelta } from "./delta-diff";
 import { estimateTokensFromBytes } from "./token-estimate";
 import { redact } from "./redact";
-import { loadSavingsSessions, priceSavingsEvent } from "./event-pricing";
+import { loadSavingsSessions, priceSavingsEvent, savingsEventClass } from "./event-pricing";
 
 // ---------------------------------------------------------------------------
 // Savings event log (U-B + U-G, JSONL append, mirrors Python savings_events)
@@ -48,7 +48,7 @@ export function logSavingsEvent(
   tokensSaved: number,
   sessionId: string,
   detail?: string,
-  pricing?: { openclawDir?: string; model?: string }
+  pricing?: { openclawDir?: string; model?: string; tokenClass?: string }
 ): void {
   try {
     // Redact BEFORE cutting: a secret straddling the cut is a prefix no
@@ -60,7 +60,8 @@ export function logSavingsEvent(
     const root = pricing?.openclawDir ?? path.join(os.homedir(), ".openclaw");
     const eventDir = path.join(root, "token-optimizer");
     const session = loadSavingsSessions(root).get(sessionId) ?? (pricing?.model ? {model: pricing.model} : undefined);
-    const priced = priceSavingsEvent(tokensSaved, eventType, session, root);
+    const tokenClass = savingsEventClass(pricing?.tokenClass);
+    const priced = priceSavingsEvent(tokensSaved, eventType, session, root, tokenClass);
     const row = JSON.stringify({
       timestamp: new Date().toISOString(),
       event_type: eventType,
@@ -68,6 +69,7 @@ export function logSavingsEvent(
       session_id: sessionId || null,
       ...(session?.model ? {model: session.model} : {}),
       ...(session?.modelTokenBuckets ? {model_token_buckets: session.modelTokenBuckets} : {}),
+      ...(tokenClass ? {token_class: tokenClass} : {}),
       cost_saved_usd: priced.cost,
       unpriced_tokens: priced.unpricedTokens,
       pricing_status: priced.unpricedTokens > 0 ? "partial_or_unavailable" : "priced",

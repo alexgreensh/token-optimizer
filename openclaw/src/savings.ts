@@ -9,7 +9,7 @@ import * as path from "path";
 import { countedEvents } from "./counted-events";
 import { scanAllSessions } from "./session-parser";
 import { calculateCost, normalizeModelName, getPricing } from "./pricing";
-import { resolvePricedModel, loadSavingsSessions, priceSavingsEvent } from "./event-pricing";
+import { resolvePricedModel, loadSavingsSessions, priceSavingsEvent, savingsEventClass } from "./event-pricing";
 import type { AgentRun } from "./models";
 
 // --- Constants (mirror measure.py baseline tunables) ------------------------
@@ -645,6 +645,10 @@ export interface SavingsEventsSummary {
   unpricedTokens?: number;
   unpricedEvents?: number;
   archivePricedNetUsd?: number | null;
+  /** Priced tokens/dollars that used the input rate because no billed class was
+   * recorded — an honest floor, disclosed wherever these savings are shown. */
+  inputRateFloorTokens?: number;
+  inputRateFloorUsd?: number;
 }
 
 /**
@@ -680,7 +684,7 @@ export function readSavingsEventsByCategory(
 
   const root = openclawDir ?? path.join(process.env.HOME ?? process.env.USERPROFILE ?? "", ".openclaw");
   const sessionEvidence = loadSavingsSessions(root);
-  let unpricedTokens = 0, unpricedEvents = 0;
+  let unpricedTokens = 0, unpricedEvents = 0, floorTokens = 0, floorUsd = 0;
 
   const byType = new Map<
     string,
@@ -719,14 +723,22 @@ export function readSavingsEventsByCategory(
       const session = typeof row.session_id === "string" ? sessionEvidence.get(row.session_id) : undefined;
       const storedBuckets = row.model_token_buckets && typeof row.model_token_buckets === "object" ? row.model_token_buckets as Record<string, {input?: number; output?: number; cacheRead?: number; cacheWrite?: number}> : undefined;
       const evidence = storedBuckets ? {model: typeof row.model === "string" ? row.model : undefined, modelTokenBuckets: storedBuckets} : session ?? (typeof row.model === "string" ? {model: row.model} : undefined);
-      const inferred = priceSavingsEvent(tokens, et, evidence, root);
+      const storedClass = savingsEventClass(row.token_class);
+      const inferred = priceSavingsEvent(tokens, et, evidence, root, storedClass);
       const canReprice = row.pricing_status === "partial_or_unavailable" && Math.abs(row.unpriced_tokens as number) === Math.abs(tokens) && row.cost_saved_usd === 0 && !!evidence;
-      const cost = typeof row.cost_saved_usd === "number" && Number.isFinite(row.cost_saved_usd) && !canReprice
-        ? row.cost_saved_usd : inferred.cost;
+      const storedCost = typeof row.cost_saved_usd === "number" && Number.isFinite(row.cost_saved_usd) && !canReprice;
+      const cost = storedCost ? (row.cost_saved_usd as number) : inferred.cost;
       const uncovered = canReprice ? inferred.unpricedTokens : typeof row.unpriced_tokens === "number" && Number.isFinite(row.unpriced_tokens)
         ? Math.abs(row.unpriced_tokens) : (typeof row.cost_saved_usd === "number" && (row.cost_saved_usd !== 0 || row.pricing_status === "priced") ? 0 : inferred.unpricedTokens);
       unpricedTokens += uncovered;
       if (uncovered > 0) unpricedEvents++;
+      // Input-rate floor: priced tokens whose billed class was never recorded.
+      // Output-class events are evidenced by type and never counted here.
+      const noClass = storedClass === undefined && et !== "verbosity_steer" && et !== "verbosity_steer_measured";
+      if (noClass) {
+        floorUsd += et === "tool_archive_reexpand" ? Math.abs(cost) : cost;
+        floorTokens += storedCost ? Math.abs(tokens) - uncovered : inferred.floorTokens;
+      }
       const entry = byType.get(et) ?? { count: 0, tokensSaved: 0, costSavedUsd: 0 };
       entry.count++;
       entry.tokensSaved += et === "tool_archive_reexpand" ? Math.abs(tokens) : tokens;
@@ -755,7 +767,7 @@ export function readSavingsEventsByCategory(
   const totalCostSavedUsd = otherCategories.reduce((s, c) => s + c.costSavedUsd, 0)
     + Math.max(0, archivePricedNetUsd ?? 0);
   const totalCount = categories.reduce((s, c) => s + c.count, 0);
-  return { categories, totalTokensSaved, totalCostSavedUsd, totalCount, unpricedTokens, unpricedEvents, archivePricedNetUsd };
+  return { categories, totalTokensSaved, totalCostSavedUsd, totalCount, unpricedTokens, unpricedEvents, archivePricedNetUsd, inputRateFloorTokens: floorTokens, inputRateFloorUsd: floorUsd };
 }
 
 /**
@@ -822,7 +834,35 @@ function estimatedVerbosityUsd(
 export interface SavingsBreakdownItem {
   key: string;
   label: string;
+  /** Exact raw lever value. */
   monthlyUsd: number;
+  /** Cent-allocated display value: the displayed levers always add to the
+   * displayed headline (largest-remainder cent allocation, round once). */
+  monthlyUsdDisplay: number;
+}
+
+/**
+ * Largest-remainder cent allocation. Rounds `total` to cents once, then
+ * apportions those cents across `parts` so the returned parts always re-add to
+ * the rounded total. Signed parts are handled by flooring toward -inf before
+ * apportioning; `parts` need not already sum to `total` (any remainder surplus
+ * lands on the first part so the sum always holds).
+ */
+export function allocateCents(total: number, parts: number[]): number[] {
+  const cents = (x: number) => (Number.isFinite(x) ? x : 0) * 100;
+  const totalCents = Math.round(cents(total));
+  const out = parts.map((p) => Math.floor(cents(p)));
+  let remainder = totalCents - out.reduce((a, b) => a + b, 0);
+  const order = parts
+    .map((p, i) => [cents(p) - Math.floor(cents(p)), i] as const)
+    .sort((a, b) => b[0] - a[0] || a[1] - b[1]);
+  for (const [, i] of order) {
+    if (remainder <= 0) break;
+    out[i] += 1;
+    remainder -= 1;
+  }
+  if (remainder !== 0 && out.length > 0) out[0] += remainder;
+  return out.map((c) => c / 100);
 }
 
 /** Structured baseline-building progress (mirrors measure.py `_baseline_progress`). */
@@ -1177,11 +1217,14 @@ export function computeRealizedSavings(
   const vRouteS =
     nowCps;
   const sRoute = (oldCps - vRouteS) * sessionsPerMonth; // before->after mix (incl. cache-write)
+  // Display cents are allocated once off the signed net so the rendered levers
+  // always add to the rendered headline; monthlyUsd keeps the exact raw values.
+  const leverDisplay = allocateCents(net, [sRoute, compressionMonthly, verbosityMonthly]);
   const breakdown: SavingsBreakdownItem[] = [
-    { key: "routing", label: "Model mix change (excluding premium choices)", monthlyUsd: round2(sRoute) },
+    { key: "routing", label: "Model mix change (excluding premium choices)", monthlyUsd: sRoute, monthlyUsdDisplay: leverDisplay[0] },
     // Subagent lever omitted (OpenClaw has no sidechains; always 0).
-    { key: "context_compression", label: "Lighter context (metered removals)", monthlyUsd: round2(compressionMonthly) },
-    { key: "verbosity_steer", label: "Lean output nudges (less output, estimated)", monthlyUsd: round2(verbosityMonthly) },
+    { key: "context_compression", label: "Lighter context (metered removals)", monthlyUsd: compressionMonthly, monthlyUsdDisplay: leverDisplay[1] },
+    { key: "verbosity_steer", label: "Lean output nudges (less output, estimated)", monthlyUsd: verbosityMonthly, monthlyUsdDisplay: leverDisplay[2] },
   ];
 
   // Cumulative: apply the per-session transformation rate across every

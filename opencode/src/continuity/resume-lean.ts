@@ -769,6 +769,10 @@ export function logResumeLeanSavings(
       saved,
       targetSessionId,
       "lean resume vs cold session rewrite",
+      null,
+      // The avoided quantity is the cold-resume cache rewrite: billed class
+      // evidence -> price at the cache-write rate, not the input-rate floor.
+      "cacheWrite",
     );
   } catch {
     // Best-effort: never crash the caller over savings tracking

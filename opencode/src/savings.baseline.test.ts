@@ -178,3 +178,19 @@ test("premium usage added to identical eligible work does not reduce savings", (
   expect(b.monthlySavingsUsd).toBeCloseTo(a.monthlySavingsUsd, 8);
   expect(b.sessionsPerMonth).toBe(a.sessionsPerMonth);
 });
+
+test("premium-only sessions do not dilute cumulative savings", () => {
+  const baseline = Array.from({ length: 36 }, (_, i) =>
+    row(T0 + (i === 0 ? 0 : 2 + (i - 1) / 2) * DAY, "opus-5-5", 100_000, 0, 0, 100_000));
+  const oldEligible = Array.from({ length: 20 }, (_, i) => row(NOW - (60 + i) * DAY, "sonnet-5-5", 100_000, 0, 0, 100_000));
+  const currentEligible = Array.from({ length: 20 }, (_, i) => row(NOW - (i + 1) * DAY, "sonnet-5-5", 100_000, 0, 0, 100_000));
+  const currentPremium = Array.from({ length: 10 }, (_, i) => row(NOW - (i + 1) * DAY, "fable-5-1", 100_000, 0, 0, 100_000));
+  const oldPremium = Array.from({ length: 10 }, (_, i) => row(NOW - (90 + i) * DAY, "fable-5-1", 100_000, 0, 0, 100_000));
+  const base = computeRealizedSavings("", 30, NOW, [...baseline, ...oldEligible, ...currentEligible]);
+  const current = computeRealizedSavings("", 30, NOW, [...baseline, ...oldEligible, ...currentEligible, ...currentPremium]);
+  const historical = computeRealizedSavings("", 30, NOW, [...baseline, ...oldEligible, ...currentEligible, ...oldPremium]);
+  expect(base.monthlySavingsUsd).toBeCloseTo(24, 8);
+  expect(base.cumulativeSavedUsd).toBeCloseTo(48, 8);
+  expect(current.cumulativeSavedUsd).toBeCloseTo(base.cumulativeSavedUsd, 8);
+  expect(historical.cumulativeSavedUsd).toBeCloseTo(base.cumulativeSavedUsd, 8);
+});

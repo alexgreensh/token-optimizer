@@ -136,7 +136,7 @@ const CLAUDE_GENERATION_RE = /(fable|mythos|opus|sonnet|haiku)[-._]?(\d+)(?:[-._
 const CLAUDE_LEGACY_ID_RE = /claude-(\d)(?:[-.](\d))?-(opus|sonnet|haiku)(?![a-z])/;
 
 /**
- * Rate-card key for a Claude generation ("opus-5-5", then "opus-5"). Labels and
+ * Rate-card key for a Claude generation (such as "opus-5-5"). Labels and
  * savings mixes stay on the family key ("opus"); only pricing needs the
  * generation, because generations are priced differently (Opus 5.5 $4/$20,
  * Opus 4.1 $15/$75, Fable 5.1 cache reads $0.25). Cards come from the
@@ -148,8 +148,8 @@ export function claudePricingKey(modelId: string, table: Record<string, ModelPri
   const legacy = CLAUDE_LEGACY_ID_RE.exec(id);
   if (legacy) {
     const [, lMajor, lMinor, lFamily] = legacy;
-    const keys = lMinor ? [`${lFamily}-${lMajor}-${lMinor}`, `${lFamily}-${lMajor}`] : [`${lFamily}-${lMajor}`];
-    if (lFamily === "sonnet") keys.push("sonnet-legacy");
+    const keys = [`${lFamily}-${lMajor}${lMinor ? `-${lMinor}` : ""}`];
+    if (lFamily === "sonnet" && lMajor === "3" && (!lMinor || lMinor === "5" || lMinor === "7")) keys.push("sonnet-legacy");
     for (const key of keys) if (Object.prototype.hasOwnProperty.call(table, key)) return key;
     return null;
   }
@@ -158,10 +158,11 @@ export function claudePricingKey(modelId: string, table: Record<string, ModelPri
   const [, family, major, minor] = g;
   const families = family === "mythos" ? [family, "fable"] : [family];
   for (const fam of families) {
-    const keys = minor ? [`${fam}-${major}-${minor}`, `${fam}-${major}`] : [`${fam}-${major}`];
+    const keys = [`${fam}-${major}${minor ? `-${minor}` : ""}`];
+    if (fam === "sonnet" && major === "3" && (!minor || minor === "5" || minor === "7")) keys.push("sonnet-legacy");
     for (const key of keys) if (Object.prototype.hasOwnProperty.call(table, key)) return key;
   }
-  return family === "mythos" && Object.prototype.hasOwnProperty.call(table, "fable") ? "fable" : null;
+  return null;
 }
 
 /** Undefined means an unversioned alias; null means an unknown explicit version. */
@@ -171,12 +172,13 @@ function explicitClaudeRateKey(modelId: string): string | null | undefined {
   if (legacy) {
     const [, major, minor, family] = legacy;
     const key = `${family}-${major}${minor ? `-${minor}` : ""}`;
-    if (family === "sonnet" && major === "3" && minor === "5") return "sonnet-legacy";
+    if (family === "sonnet" && major === "3" && (!minor || minor === "5" || minor === "7")) return "sonnet-legacy";
     return Object.prototype.hasOwnProperty.call(DEFAULT_PRICING, key) ? key : null;
   }
   const generation = CLAUDE_GENERATION_RE.exec(id);
   if (!generation) return undefined;
   const [, family, major, minor] = generation;
+  if (family === "sonnet" && major === "3" && (!minor || minor === "5" || minor === "7")) return "sonnet-legacy";
   const key = `${family === "mythos" ? "fable" : family}-${major}${minor ? `-${minor}` : ""}`;
   return Object.prototype.hasOwnProperty.call(DEFAULT_PRICING, key) ? key : null;
 }

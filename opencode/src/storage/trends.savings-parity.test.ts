@@ -123,3 +123,19 @@ test("platform exclusion vectors preserve unattributed actions", () => {
   expect((db.query("SELECT COUNT(*) AS n FROM savings_events").get() as { n: number }).n).toBe(5);
   db.close(); store.close();
 });
+
+test("an unknown legacy model remains unpriced in the event reader", () => {
+  const dir = join(process.cwd(), "..", ".scratch-parity", `legacy-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  mkdirSync(dir, { recursive: true });
+  const store = new TrendsStore(dir);
+  store.recordSession({ sessionId: "legacy", project: null, model: "claude-3-9-sonnet", tokensInput: 100,
+    tokensOutput: 0, tokensCacheRead: 0, tokensCacheWrite: 0, costUsd: 0, resourceHealth: null,
+    sessionEfficiency: null, toolCalls: 0, compactions: 0, mode: null, durationSeconds: 1 });
+  store.logSavingsEvent("checkpoint_restore", 1_000_000, "legacy", "legacy generation", "claude-3-9-sonnet");
+  const result = store.getCompressionSavings();
+  expect(result.totalTokensSaved).toBe(1_000_000);
+  expect(result.totalCostSavedUsd).toBe(0);
+  expect(result.unpricedTokens).toBe(1_000_000);
+  expect(result.unpricedEvents).toBe(1);
+  store.close();
+});

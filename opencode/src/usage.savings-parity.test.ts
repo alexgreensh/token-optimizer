@@ -27,3 +27,15 @@ test("fresh-session estimate leaves unknown Claude generations unpriced", async 
   expect(modelInputRatePer1M("claude-opus-5-99")).toBe(0);
   expect(knownModelRate("claude-3-5-sonnet-20241022", "input")).toBeGreaterThan(0);
 });
+
+test("unknown legacy Claude generations never inherit the Sonnet legacy rate", async () => {
+  const { claudePricingKey, knownModelRate } = await import("./pricing.js");
+  for (const id of ["claude-3-9-sonnet", "anthropic/claude-3-9-sonnet-20241022", "claude-sonnet-3-9", "claude-9-opus"]) {
+    expect(claudePricingKey(id)).toBeNull();
+    expect(knownModelRate(id, "input")).toBeNull();
+  }
+  for (const id of ["claude-3-sonnet-20240229", "claude-3-5-sonnet-20241022", "claude-3-7-sonnet-20250219", "anthropic/claude-3-7-sonnet-20250219", "claude-sonnet-3-7"]) {
+    expect(claudePricingKey(id)).toBe("sonnet-legacy");
+    expect(knownModelRate(id, "input")).toBeGreaterThan(0);
+  }
+});

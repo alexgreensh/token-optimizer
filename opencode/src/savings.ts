@@ -145,6 +145,13 @@ function classMix(recs: SessionRec[], klass: TokenClass, fallback: ModelMix, cei
 
 const rateClass = { fi: "input", cr: "cacheRead", cw: "cacheWrite", out: "output" } as const;
 
+function hasEligibleUsage(session: SessionRec, ceilings: Record<TokenClass, number>): boolean {
+  return session.buckets.some((bucket) => (["fi", "cr", "cw", "out"] as const).some((klass) => {
+    const rate = knownModelRate(bucket.model, rateClass[klass]);
+    return bucket[klass] > 0 && rate !== null && rate <= ceilings[klass];
+  }));
+}
+
 function classPrice(fi: number, cr: number, cw: number, out: number, mixes: Record<TokenClass, ModelMix>): number {
   return price(fi, 0, 0, mixes.fi) + price(0, cr, 0, mixes.cr) +
     price_cw(cw, mixes.cw) + price(0, 0, out, mixes.out);
@@ -460,7 +467,7 @@ export function computeRealizedSavings(
     subtotal + (["fi", "cr", "cw", "out"] as const).reduce((sum, klass) =>
       sum + (knownModelRate(b.model, rateClass[klass]) === null ? b[klass] : 0), 0), 0), 0);
   for (const session of after) {
-    let eligible = 0, total = 0;
+    let total = 0;
     for (const b of session.buckets) {
       for (const klass of ["fi", "cr", "cw", "out"] as const) {
         const rate = knownModelRate(b.model, rateClass[klass]);
@@ -469,10 +476,10 @@ export function computeRealizedSavings(
         if (rate > ceilings[klass]) {
           premiumTokens += b[klass];
           premiumCostUsd += b[klass] * rate;
-        } else eligible += b[klass];
+        }
       }
     }
-    if (eligible > 0) eligibleSessions++;
+    if (hasEligibleUsage(session, ceilings)) eligibleSessions++;
     pricedTokens += total;
   }
 
@@ -592,16 +599,14 @@ export function computeRealizedSavings(
   // Per-session keys (dashboard reads them) = the FROZEN typical-session anchors
   // directly. before_* = "the old way" (stable across runs); after_* = "now" (moves
   // only with efficiency). recentN drives the cumulative figure below.
-  const recentN = after.length;
+  const recentN = eligibleSessions;
   const beforeCps = oldCps;
   const afterCps = nowCps;
 
-  // Cumulative: per-session transformation across every post-baseline session.
-  // Uses the full transformation (all 4 pools: main + subagent + compression +
-  // verbosity) divided by current session count, times all post-baseline sessions.
-  // Matches OpenClaw's approach.
-  const allAfter = history.filter((r) => r.ts >= windowEnd);
-  const perSessionTransformation = transformation / Math.max(1, recentN);
+  // Cumulative is an extrapolation of the current transformation, including
+  // its event add-backs, across comparable sessions with eligible model usage.
+  const allAfter = history.filter((r) => r.ts >= windowEnd && hasEligibleUsage(r, ceilings));
+  const perSessionTransformation = recentN > 0 ? transformation / recentN : 0;
   const cumulative = perSessionTransformation * allAfter.length;
 
   // --- Attribution breakdown: morph the counterfactual into the actual one lever

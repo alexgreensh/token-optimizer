@@ -23667,16 +23667,21 @@ def _counted_walk_transcript(path, collect_markers=False):
                 # Raw model id: re-reads are priced by generation card
                 # (Opus 5.5 and Fable 5.1 read cache far cheaper than their family).
                 raw_model = msg.get("model")
-                usage = msg["usage"]
+                usage = msg["usage"] if isinstance(msg["usage"], dict) else {}
                 prompt_parts = {k: usage[k] for k in (
                     "input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens") if k in usage}
+                nested = usage.get("cache_creation")
+                nested = nested if isinstance(nested, dict) else {}
+                for key in ("ephemeral_1h_input_tokens", "ephemeral_5m_input_tokens"):
+                    if key in nested or key in usage:
+                        prompt_parts[key] = nested.get(key) or usage.get(key, 0)
                 if rid is not None and rid in seen:
                     index, previous_parts = seen[rid]
                     for key, value in previous_parts.items():
                         current = prompt_parts.get(key)
                         if isinstance(value, int) and (not isinstance(current, int) or value > current):
                             prompt_parts[key] = value
-                prompt_tokens = (sum(prompt_parts.values()) if "input_tokens" in prompt_parts
+                prompt_tokens = (_context_token_count(prompt_parts) if "input_tokens" in prompt_parts
                                  and all(isinstance(v, int) and v >= 0 for v in prompt_parts.values()) else None)
                 if rid is not None and rid in seen:
                     previous = turns[index]
@@ -23756,6 +23761,8 @@ def _counted_coverage_totals(out):
     out["prices_available"] = bool(out.get("priced_oneshot_events")
                                    or out.get("priced_reread_turns")
                                    or not out.get("events", 1))
+    out["reread_prices_available"] = bool(out.get("priced_reread_turns")
+                                           or out["reread_pricing_complete"])
     out["pricing_note"] = _counted_pricing_note(out)
     out["reread_pricing_note"] = _counted_pricing_note(out, reread_only=True)
     return out
@@ -24432,7 +24439,8 @@ def _counted_cumulative_summary(days=None, now=None):
             by_month = {}
             for row in rows:
                 by_month.setdefault(row["event_month"], []).append(row)
-            monthly_coverage = {m: _counted_rollup_rows(group) for m, group in by_month.items()}
+            monthly_coverage = {m: _counted_rollup_rows(by_month[m])
+                                for m in sorted(by_month, key=lambda month: month or "")}
             try:
                 done = conn.execute(
                     "SELECT value FROM token_optimizer_meta WHERE key = ?",
@@ -55414,6 +55422,7 @@ def _action_savings_components(summary, reread=None):
         "routing_estimated_usd": routing - routing_measured,
         "reread_usd": repeat_reads,
         "reread_available": reread_available,
+        "reread_prices_available": bool((reread or {}).get("reread_prices_available", reread_available)),
         "reread_pricing_complete": bool((reread or {}).get("reread_pricing_complete", reread_available)),
         "reread_unpriced_tokens": int((reread or {}).get("reread_unpriced_tokens", 0) or 0),
         "reread_pricing_note": (reread or {}).get("reread_pricing_note", ""),

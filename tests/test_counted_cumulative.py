@@ -334,7 +334,7 @@ def test_period_rollup_reconciles_to_lifetime_without_rewalking(m, tmp_path, mon
     dbp = _db(m, tmp_path, monkeypatch)
     now = datetime.now(timezone.utc)
     with sqlite3.connect(str(dbp)) as conn:
-        for key, age, one, rereads in [('old', 40, 2, 20), ('new', 2, 3, 30), ('debit', 1, -1, -10)]:
+        for key, age, one, rereads in [('new', 2, 3, 30), ('old', 40, 2, 20), ('debit', 1, -1, -10)]:
             ts = (now - timedelta(days=age)).isoformat()
             conn.execute('INSERT INTO counted_reread(event_key,event_ts,event_month,tokens,oneshot_usd,reread_usd,pricing_detail) VALUES(?,?,?,?,?,?,?)',
                          (key, ts, ts[:7], 100, one, rereads, _verified_pricing(m)))
@@ -346,6 +346,7 @@ def test_period_rollup_reconciles_to_lifetime_without_rewalking(m, tmp_path, mon
     assert recent['reread_usd'] == 20
     assert recent['total_usd'] == 22
     assert lifetime['total_usd'] == 44
+    assert list(lifetime['months']) == sorted(lifetime['months'])
     assert recent['attribution'] == 'removal_time'
 
 

@@ -137,6 +137,29 @@ def test_walker_retains_full_prompt_class(m, tmp_path, monkeypatch):
     assert turns[0][2] == 1012
 
 
+def test_malformed_prompt_usage_stays_unpriced_without_losing_turn(m, tmp_path, monkeypatch):
+    path, start = _transcript(m, tmp_path, monkeypatch, n_turns=1, model="claude-haiku-5-5")
+    line = json.loads(path.read_text().splitlines()[0])
+    line["message"]["usage"] = ["partial"]
+    path.write_text(json.dumps(line) + "\n")
+    turns, compacts, _ = m._counted_walk_transcript(path)
+    assert len(turns) == 1 and turns[0][2] is None
+    score = m._counted_score_detail(turns, compacts, start - timedelta(seconds=1), 1000, m.PRICING_TIERS["anthropic"])
+    assert score["oneshot_unpriced_tokens"] == 1000
+
+
+def test_prompt_class_includes_streamed_ttl_split_cache_writes(m, tmp_path, monkeypatch):
+    path, start = _transcript(m, tmp_path, monkeypatch, n_turns=1, model="claude-haiku-5-5")
+    lines = [json.loads(line) for line in path.read_text().splitlines()]
+    lines[0]["message"]["usage"] = {"input_tokens": 1, "cache_creation": {"ephemeral_1h_input_tokens": 60_000}}
+    lines[1]["message"]["usage"] = {"cache_creation": {"ephemeral_5m_input_tokens": 40_000}}
+    path.write_text("\n".join(json.dumps(line) for line in lines) + "\n")
+    turns, compacts, _ = m._counted_walk_transcript(path)
+    assert len(turns) == 1 and turns[0][2] == 100_001
+    assert m._counted_score_event(turns, compacts, start - timedelta(seconds=1), 1_000_000,
+                                  m.PRICING_TIERS["anthropic"])[0] == 0.5
+
+
 def test_streamed_prompt_size_crosses_threshold_without_duplicating_turn(m, tmp_path, monkeypatch):
     path, start = _transcript(m, tmp_path, monkeypatch, n_turns=2, model="claude-haiku-5-5")
     lines = [json.loads(line) for line in path.read_text().splitlines()]
@@ -290,3 +313,31 @@ def test_unknown_prices_disclosed_in_cli_json_and_dashboard(m, tmp_path, monkeyp
     html = render(dashboard)
     assert "unpriced" in html.lower()
     assert "Context savings" in html
+
+
+@pytest.mark.parametrize("known_zero", [False, True])
+def test_unpriced_reread_label_is_distinct_from_verified_zero(m, monkeypatch, known_zero):
+    monkeypatch.setitem(m.OPENAI_MODEL_PRICING, "gpt-test-zero", {"input": 0, "cache_read": 0})
+    start = _utc_now()
+    model = "gpt-test-zero" if known_zero else None
+    counted = m._counted_score_detail([(start, model), (start + timedelta(minutes=1), model)],
+        [], start - timedelta(seconds=1), 1000, m.PRICING_TIERS["anthropic"])
+    counted["available"] = True
+    summary = {"period_days": 30, "total_cost_usd": 2, "counted_period": counted}
+    summary["action_savings"] = m._action_savings_components(summary, counted)
+    html = render(summary)
+    assert ("Repeat reads avoided <strong>~$0" if known_zero else
+            "Repeat reads avoided <strong>Unpriced") in html
+
+
+def test_weekly_plan_payload_carries_partial_reread_coverage(m, tmp_path, monkeypatch):
+    from test_runway_resume_lean_addback import _wire
+    _db(m, tmp_path, monkeypatch)
+    _wire(m, monkeypatch, resume_lean_usd=0)
+    monkeypatch.setattr(m, "_counted_window_summary", lambda *args: {
+        "available": True, "reread_usd": 0, "reread_pricing_complete": False,
+        "reread_unpriced_tokens": 1000, "reread_pricing_note": "Repeat-read tokens unpriced."})
+    result = m.runway_snapshot()
+    assert result["counted_pricing"] == {
+        "reread_pricing_complete": False, "reread_unpriced_tokens": 1000,
+        "reread_pricing_note": "Repeat-read tokens unpriced."}

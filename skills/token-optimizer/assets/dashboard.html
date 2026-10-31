@@ -4553,7 +4553,9 @@ var DB = (function() {
       '<div class="savings-amount">' + money(periodValue(heroAmt)) + '<span class="savings-unit"> logged + estimated</span></div>' +
       '<div class="savings-split"><span>Logged actions <strong>' + money(periodValue(measuredMo)) + '</strong></span>' +
         '<span>Repeat reads avoided <strong>' +
-          (actionSavings && actionSavings.reread_available === false ? 'Unavailable' : '~' + money(periodValue(rereadMo))) + '</strong></span>' +
+          (actionSavings && actionSavings.reread_available === false ? 'Unavailable' :
+            ((actionSavings && actionSavings.reread_prices_available === false) || cp.reread_prices_available === false ?
+              'Unpriced' : '~' + money(periodValue(rereadMo)))) + '</strong></span>' +
         '<span>Other estimates <strong>~' + money(periodValue(estimatedMo)) + '</strong></span></div>' +
       '<p class="note">Includes the later benefit of context removed during this period. Initial removals are counted once.</p>' +
       (cp.reread_pricing_note ? '<p class="note">' + esc(cp.reread_pricing_note) + '</p>' : '') +

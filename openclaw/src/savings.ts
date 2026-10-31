@@ -8,7 +8,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { countedEvents } from "./counted-events";
 import { scanAllSessions } from "./session-parser";
-import { calculateCost, normalizeModelName, getPricing } from "./pricing";
+import { calculateCost, normalizeModelName, getPricing, referenceCardKey } from "./pricing";
 import { resolvePricedModel, loadSavingsSessions, priceSavingsEvent, savingsEventClass } from "./event-pricing";
 import type { AgentRun } from "./models";
 
@@ -337,13 +337,16 @@ function modelTtlShares(records: SessionRecord[]): TtlShares {
 function pricedShares(
   shares: Record<string, number>,
   proxy: string,
-  openclawDir: string
+  openclawDir: string,
+  exact = false
 ): Array<[string, number]> {
   const blended: Record<string, number> = {};
   for (const [m, s] of Object.entries(shares)) {
     if (!s || s <= 0) continue;
-    const model = resolvePricedModel(m, openclawDir);
-    if (model) blended[model] = (blended[model] ?? 0) + s;
+    const resolved = resolvePricedModel(m, openclawDir);
+    if (!resolved) continue;
+    const model = exact ? resolved : referenceCardKey(resolved, openclawDir);
+    blended[model] = (blended[model] ?? 0) + s;
   }
   const items = Object.entries(blended).filter(([, s]) => s > 0) as Array<[string, number]>;
   if (items.length === 0) return [];
@@ -360,9 +363,10 @@ function pricePool(
   out: number,
   shares: Record<string, number>,
   proxy: string,
-  openclawDir: string
+  openclawDir: string,
+  exact = false
 ): number {
-  const items = pricedShares(shares, proxy, openclawDir);
+  const items = pricedShares(shares, proxy, openclawDir, exact);
   const tot = items.reduce((a, [, s]) => a + s, 0);
   let cost = 0;
   for (const [model, s] of items) {
@@ -385,9 +389,10 @@ function priceCacheWrite(
   cw5m: number,
   shares: Record<string, number>,
   proxy: string,
-  openclawDir: string
+  openclawDir: string,
+  exact = false
 ): number {
-  const items = pricedShares(shares, proxy, openclawDir);
+  const items = pricedShares(shares, proxy, openclawDir, exact);
   const tot = items.reduce((a, [, s]) => a + s, 0);
   let cost = 0;
   for (const [model, s] of items) {
@@ -403,13 +408,16 @@ function priceCacheWrite(
   return cost;
 }
 
-function priceClasses(fi: number, cr: number, cw: number, out: number, shares: ClassShares | undefined, fallback: Record<string, number>, proxy: string, dir: string, write1hFraction = 0): number {
+function priceClasses(fi: number, cr: number, cw: number, out: number, shares: ClassShares | undefined, fallback: Record<string, number>, proxy: string, dir: string, write1hFraction = 0, exact = false): number {
   const mix = (c: TokenClass) => shares && Object.keys(shares[c] ?? {}).length ? shares[c] : fallback;
-  return pricePool(fi, 0, 0, mix("fi"), proxy, dir) + pricePool(0, cr, 0, mix("cr"), proxy, dir) + pricePool(0, 0, out, mix("out"), proxy, dir) + priceCacheWrite(cw, cw * write1hFraction, cw * (1 - write1hFraction), mix("cw"), proxy, dir);
+  return pricePool(fi, 0, 0, mix("fi"), proxy, dir, exact) + pricePool(0, cr, 0, mix("cr"), proxy, dir, exact) + pricePool(0, 0, out, mix("out"), proxy, dir, exact) + priceCacheWrite(cw, cw * write1hFraction, cw * (1 - write1hFraction), mix("cw"), proxy, dir, exact);
 }
 
+/** Per-token rate of one class at the model's reference card (see referenceCardKey). */
 function classRate(model: string, c: TokenClass, dir: string): number {
-  return calculateCost({input:c === "fi" ? 1 : 0, cacheRead:c === "cr" ? 1 : 0, cacheWrite:c === "cw" ? 1 : 0, output:c === "out" ? 1 : 0}, model, dir);
+  const resolved = resolvePricedModel(model, dir);
+  const card = resolved ? referenceCardKey(resolved, dir) : model;
+  return calculateCost({input:c === "fi" ? 1 : 0, cacheRead:c === "cr" ? 1 : 0, cacheWrite:c === "cw" ? 1 : 0, output:c === "out" ? 1 : 0}, card, dir);
 }
 
 /** Exclude current models above the baseline price ceiling for each token class. */
@@ -418,9 +426,11 @@ function comparableMix(before: ClassShares | undefined, after: ClassShares | und
   const a: ClassShares = {fi:{},cr:{},cw:{},out:{}};
   const eligible: Record<TokenClass, number> = {fi:0,cr:0,cw:0,out:0};
   const ceiling: Record<TokenClass, number> = {fi:0,cr:0,cw:0,out:0};
+  const priced = (mix: Record<string, number>) =>
+    Object.fromEntries(Object.entries(mix).filter(([model]) => resolvePricedModel(model, dir) !== null));
   for (const c of CLASSES) {
-    const bm = before ? (before[c] ?? {}) : beforeAll;
-    const am = after ? (after[c] ?? {}) : afterAll;
+    const bm = priced(before ? (before[c] ?? {}) : beforeAll);
+    const am = priced(after ? (after[c] ?? {}) : afterAll);
     ceiling[c] = Math.max(0, ...Object.entries(bm).filter(([,v]) => v > 0).map(([m]) => classRate(m,c,dir)));
     b[c] = bm;
     for (const [model, share] of Object.entries(am)) {
@@ -684,11 +694,11 @@ export function readSavingsEventsByCategory(
 
   const root = openclawDir ?? path.join(process.env.HOME ?? process.env.USERPROFILE ?? "", ".openclaw");
   const sessionEvidence = loadSavingsSessions(root);
-  let unpricedTokens = 0, unpricedEvents = 0, floorTokens = 0, floorUsd = 0;
+  let unpricedTokens = 0, unpricedEvents = 0;
 
   const byType = new Map<
     string,
-    { count: number; tokensSaved: number; costSavedUsd: number }
+    { count: number; tokensSaved: number; costSavedUsd: number; floorTokens: number; floorUsd: number }
   >();
 
   // F4: compute the lookback cutoff (ms epoch). Rows older than the cutoff are
@@ -734,12 +744,12 @@ export function readSavingsEventsByCategory(
       if (uncovered > 0) unpricedEvents++;
       // Input-rate floor: priced tokens whose billed class was never recorded.
       // Output-class events are evidenced by type and never counted here.
+      const entry = byType.get(et) ?? { count: 0, tokensSaved: 0, costSavedUsd: 0, floorTokens: 0, floorUsd: 0 };
       const noClass = storedClass === undefined && et !== "verbosity_steer" && et !== "verbosity_steer_measured";
       if (noClass) {
-        floorUsd += et === "tool_archive_reexpand" ? Math.abs(cost) : cost;
-        floorTokens += storedCost ? Math.abs(tokens) - uncovered : inferred.floorTokens;
+        entry.floorUsd += et === "tool_archive_reexpand" ? Math.abs(cost) : cost;
+        entry.floorTokens += storedCost ? Math.abs(tokens) - uncovered : inferred.floorTokens;
       }
-      const entry = byType.get(et) ?? { count: 0, tokensSaved: 0, costSavedUsd: 0 };
       entry.count++;
       entry.tokensSaved += et === "tool_archive_reexpand" ? Math.abs(tokens) : tokens;
       entry.costSavedUsd += et === "tool_archive_reexpand" ? Math.abs(cost) : cost;
@@ -767,6 +777,21 @@ export function readSavingsEventsByCategory(
   const totalCostSavedUsd = otherCategories.reduce((s, c) => s + c.costSavedUsd, 0)
     + Math.max(0, archivePricedNetUsd ?? 0);
   const totalCount = categories.reduce((s, c) => s + c.count, 0);
+  // Input-rate floor: the part of the NET counted one-shot amount that has no class
+  // evidence. Archive credits are netted against re-expansions, estimated tiers are
+  // not counted, and no category's floor exceeds what it counts.
+  let floorTokens = 0, floorUsd = 0;
+  for (const [et, entry] of byType) {
+    if (et === "tool_archive" || et === "tool_archive_reexpand" || ESTIMATED_TIER_CATEGORIES.has(et)) continue;
+    floorUsd += Math.min(Math.max(0, entry.costSavedUsd), Math.max(0, entry.floorUsd));
+    floorTokens += Math.min(Math.max(0, entry.tokensSaved), Math.max(0, entry.floorTokens));
+  }
+  if (archive) {
+    const netCost = Math.max(0, archivePricedNetUsd ?? 0);
+    const netTokens = Math.max(0, archive.tokensSaved - (reexpand?.tokensSaved ?? 0));
+    floorUsd += Math.min(netCost, Math.max(0, archive.floorUsd - (reexpand?.floorUsd ?? 0)));
+    floorTokens += Math.min(netTokens, Math.max(0, archive.floorTokens - (reexpand?.floorTokens ?? 0)));
+  }
   return { categories, totalTokensSaved, totalCostSavedUsd, totalCount, unpricedTokens, unpricedEvents, archivePricedNetUsd, inputRateFloorTokens: floorTokens, inputRateFloorUsd: floorUsd };
 }
 
@@ -924,6 +949,17 @@ export interface RealizedSavings {
   premiumCostUsd?: number;
   /** Recent tokens excluded because their model has no known price. */
   unpricedTokens?: number;
+  /**
+   * Monthly gap between the exact generation-card cost of the current eligible
+   * work and its reference-card value (the price both routing arms use). It is
+   * a vendor price or generation difference, never routing, and is not part of
+   * the savings total. Negative when the exact cards are cheaper.
+   */
+  generationPriceDeltaUsd?: number;
+  /** Share of a frozen baseline's tokens whose model has no rate card; dropped from the comparison. */
+  baselineUnpricedShare?: number;
+  /** Models behind baselineUnpricedShare. */
+  baselineUnpricedModels?: string[];
   baselineClassMixAvailable?: boolean;
   baselineTtlMixAvailable?: boolean;
   /**
@@ -1040,11 +1076,22 @@ export function computeRealizedSavings(
   }
 
   const bs = baseline.stats;
-  if (Object.keys(bs.shares).some((model) => !resolvePricedModel(model, openclawDir))) {
+  // A frozen baseline written before unpriced sessions were filtered out can
+  // carry shares of models with no rate card. Those shares are dropped, the
+  // priced shares renormalized, and the dropped share is disclosed.
+  const baselineUnpriced = Object.entries(bs.shares).filter(([model, share]) => share > 0 && !resolvePricedModel(model, openclawDir));
+  const baselineUnpricedShare = baselineUnpriced.reduce((n, [, share]) => n + share, 0);
+  const baselinePricedShares: Record<string, number> = {};
+  for (const [model, share] of Object.entries(bs.shares)) if (share > 0 && resolvePricedModel(model, openclawDir)) baselinePricedShares[model] = share;
+  const baselinePricedTotal = Object.values(baselinePricedShares).reduce((n, v) => n + v, 0);
+  if (Object.keys(bs.shares).length > 0 && baselinePricedTotal <= 0) {
     const r = NOT_READY("baseline includes unpriced models");
     r.installDate = installDate;
+    r.baselineUnpricedShare = round4(baselineUnpricedShare);
+    r.baselineUnpricedModels = baselineUnpriced.map(([model]) => model);
     return r;
   }
+  for (const model of Object.keys(baselinePricedShares)) baselinePricedShares[model] /= baselinePricedTotal;
   // Preserve the proxy field in existing frozen baselines.
   const proxy = baseline.proxy;
   // The "after" era's mix shares are needed for the ACTUAL arm. computeEraStats
@@ -1056,7 +1103,7 @@ export function computeRealizedSavings(
   // floor (never fabricate Opus they never ran). before_shares = baseline mix;
   // if the baseline mix is empty, fall back to the actual mix (routing lever -> 0).
   const beforeShares =
-    Object.keys(bs.shares).length > 0 ? bs.shares : as.shares;
+    Object.keys(baselinePricedShares).length > 0 ? baselinePricedShares : as.shares;
   const afterShares = as.shares;
 
   // CURRENT window = the `after` sessions, aggregated to confirm the
@@ -1138,6 +1185,12 @@ export function computeRealizedSavings(
     priceClasses(curFs, curCRs, 0, eOut, comparison.after, afterShares, proxy, openclawDir) +
     priceCacheWrite(eCw1h, eCw1h, 0, oneHour.after.cw, proxy, openclawDir) +
     priceCacheWrite(eCw5m, 0, eCw5m, fiveMinute.after.cw, proxy, openclawDir);
+  // The same eligible tokens at each model's exact generation card. The gap to
+  // the reference-card value is price/generation change, reported apart from routing.
+  const nowCpsExact =
+    priceClasses(curFs, curCRs, 0, eOut, comparison.after, afterShares, proxy, openclawDir, 0, true) +
+    priceCacheWrite(eCw1h, eCw1h, 0, oneHour.after.cw, proxy, openclawDir, true) +
+    priceCacheWrite(eCw5m, 0, eCw5m, fiveMinute.after.cw, proxy, openclawDir, true);
   if (
     !Number.isFinite(oldCps) || !Number.isFinite(nowCps) ||
     oldCps < 0 || nowCps < 0
@@ -1273,6 +1326,9 @@ export function computeRealizedSavings(
     premiumTokens,
     premiumCostUsd: round2(premiumCostUsd),
     unpricedTokens,
+    generationPriceDeltaUsd: round2((nowCpsExact - nowCps) * sessionsPerMonth),
+    baselineUnpricedShare: round4(baselineUnpricedShare),
+    baselineUnpricedModels: baselineUnpriced.map(([model]) => model),
     baselineClassMixAvailable: !!bs.classShares,
     baselineTtlMixAvailable: !!bs.ttlShares,
   };

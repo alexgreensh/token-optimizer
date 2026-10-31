@@ -126,7 +126,8 @@ test('mixed-model cache writes use each model and TTL rate', () => {
   fs.writeFileSync(path.join(state,'session-history.json'),JSON.stringify(rows));
   const result=computeRealizedSavings(dir,30,now);
   assert.equal(result.ready,true);
-  assert.equal(result.beforeCostPerSession,1.125);
+  // A bare family id is valued at the family's newest generation card (Opus 5.5 / Sonnet 5.5).
+  assert.equal(result.beforeCostPerSession,0.925);
   assert.equal(result.monthlySavingsUsd,0);
 });
 test('separate cache-write tokens are not capped at fresh input', () => {
@@ -140,7 +141,7 @@ test('separate cache-write tokens are not capped at fresh input', () => {
   for(let i=0;i<35;i++) rows.push(row('before'+i,t+(2+i/2)*day));
   for(let i=0;i<12;i++) rows.push(row('after'+i,now-(i+1)*day));
   fs.writeFileSync(path.join(state,'session-history.json'),JSON.stringify(rows));
-  assert.equal(computeRealizedSavings(dir,30,now).beforeCostPerSession,2.5);
+  assert.equal(computeRealizedSavings(dir,30,now).beforeCostPerSession,2);
 });
 test('eligible model shares are normalized exactly once for input and 1h writes', () => {
   const fs=require('node:fs'),path=require('node:path');
@@ -276,7 +277,7 @@ test('an unobserved current class is omitted from both comparison arms', () => {
   fs.writeFileSync(path.join(state,'session-history.json'),JSON.stringify(rows));
   const result=computeRealizedSavings(dir,30,now);
   assert.equal(result.ready,true);
-  assert.equal(result.beforeCostPerSession,0.5);
+  assert.equal(result.beforeCostPerSession,0.4);
   assert.equal(result.afterCostPerSession,0.2);
 });
 test('legacy Claude model pricing accepts only supported generation cards and aliases', () => {

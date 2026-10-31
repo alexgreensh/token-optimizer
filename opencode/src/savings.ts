@@ -39,7 +39,7 @@
  * baseline mix — never fabricated Opus they never ran.
  */
 import { TrendsStore } from "./storage/trends.js";
-import { price, price_cw, inputRatePerMTok, knownModelRate, type ModelMix } from "./pricing.js";
+import { price, price_cw, inputRatePerMTok, knownModelRate, referenceModelRate, type ModelMix } from "./pricing.js";
 
 // Constants mirror the other platforms' baseline tunables.
 const BASELINE_ONBOARDING_DAYS = 1;
@@ -132,7 +132,7 @@ function classMix(recs: SessionRec[], klass: TokenClass, fallback: ModelMix, cei
   let total = 0;
   for (const r of recs) {
     for (const b of r.buckets) {
-      const rate = knownModelRate(b.model, rateClass[klass]);
+      const rate = referenceModelRate(b.model, rateClass[klass]);
       if (rate === null || rate > ceiling) continue;
       counts[b.model] = (counts[b.model] ?? 0) + b[klass];
       total += b[klass];
@@ -147,14 +147,20 @@ const rateClass = { fi: "input", cr: "cacheRead", cw: "cacheWrite", out: "output
 
 function hasEligibleUsage(session: SessionRec, ceilings: Record<TokenClass, number>): boolean {
   return session.buckets.some((bucket) => (["fi", "cr", "cw", "out"] as const).some((klass) => {
-    const rate = knownModelRate(bucket.model, rateClass[klass]);
+    const rate = referenceModelRate(bucket.model, rateClass[klass]);
     return bucket[klass] > 0 && rate !== null && rate <= ceilings[klass];
   }));
 }
 
-function classPrice(fi: number, cr: number, cw: number, out: number, mixes: Record<TokenClass, ModelMix>): number {
-  return price(fi, 0, 0, mixes.fi) + price(0, cr, 0, mixes.cr) +
-    price_cw(cw, mixes.cw) + price(0, 0, out, mixes.out);
+/**
+ * Price the token classes at per-class model mixes. By default every Claude
+ * model is valued at its family's reference card (the routing comparison);
+ * `exact` values each at its own generation card.
+ */
+function classPrice(fi: number, cr: number, cw: number, out: number, mixes: Record<TokenClass, ModelMix>, exact = false): number {
+  const reference = !exact;
+  return price(fi, 0, 0, mixes.fi, reference) + price(0, cr, 0, mixes.cr, reference) +
+    price_cw(cw, mixes.cw, undefined, undefined, reference) + price(0, 0, out, mixes.out, reference);
 }
 
 export interface SavingsBreakdownItem {
@@ -223,6 +229,13 @@ export interface RealizedSavings {
    * Window-scaled like compressionMeasuredUsd / raw window sum. */
   inputRateFloorUsd: number;
   inputRateFloorWindowUsd: number;
+  /**
+   * Monthly gap between the exact generation-card cost of the current eligible
+   * work and its reference-card value (the price both routing arms use). It is
+   * a vendor price or generation difference, never routing, and is not part of
+   * the savings total. Negative when the exact cards are cheaper.
+   */
+  generationPriceDeltaUsd: number;
   /** Monthly $ at the user's CURRENT model mix + cache pattern ("now" arm). */
   actualMonthlyUsd: number;
   /** Monthly $ at the user's BASELINE mix + cache pattern ("the old way" arm). */
@@ -312,6 +325,7 @@ const NOT_READY = (status: string): RealizedSavings => ({
   archivePricedNetUsd: null,
   inputRateFloorUsd: 0,
   inputRateFloorWindowUsd: 0,
+  generationPriceDeltaUsd: 0,
   actualMonthlyUsd: 0,
   counterfactualMonthlyUsd: 0,
   transformationPct: 0,
@@ -500,7 +514,7 @@ export function computeRealizedSavings(
     (["fi", "cr", "cw", "out"] as const).map((klass) => [klass, classMix(before, klass, beforeMix)]),
   ) as Record<TokenClass, ModelMix>;
   const ceilings = Object.fromEntries((["fi", "cr", "cw", "out"] as const).map((klass) => [klass,
-    Math.max(0, ...Object.keys(beforeClassMix[klass]).map((model) => knownModelRate(model, rateClass[klass]) ?? 0)),
+    Math.max(0, ...Object.keys(beforeClassMix[klass]).map((model) => referenceModelRate(model, rateClass[klass]) ?? 0)),
   ])) as Record<TokenClass, number>;
   const afterClassMix = Object.fromEntries(
     (["fi", "cr", "cw", "out"] as const).map((klass) => [klass, classMix(after, klass, beforeClassMix[klass], ceilings[klass])]),
@@ -516,7 +530,7 @@ export function computeRealizedSavings(
         const rate = knownModelRate(b.model, rateClass[klass]);
         if (rate === null) { unpricedCurrentTokens += b[klass]; continue; }
         total += b[klass];
-        if (rate > ceilings[klass]) {
+        if ((referenceModelRate(b.model, rateClass[klass]) ?? rate) > ceilings[klass]) {
           premiumTokens += b[klass];
           premiumCostUsd += b[klass] * rate;
         }
@@ -567,6 +581,9 @@ export function computeRealizedSavings(
   // Hold the baseline token classes fixed. Provider cache hits are not a
   // Token Optimizer saving, so changes in cache reuse do not enter this estimate.
   const nowCps = classPrice(tFi, tCr, tCw, tOut, afterClassMix);
+  // The same eligible work at each model's exact generation card. The gap to the
+  // reference-card value is price/generation change, reported apart from routing.
+  const nowCpsExact = classPrice(tFi, tCr, tCw, tOut, afterClassMix, true);
   if (
     !Number.isFinite(oldCps) || !Number.isFinite(nowCps) ||
     oldCps <= 0 || nowCps <= 0
@@ -595,8 +612,8 @@ export function computeRealizedSavings(
   // transformation. Disjoint from the billed pool.
   // `measuredCompression` is already WINDOWED to `days` by getCompressionSavings
   // (cutoff = now - days*DAY), so it scales by the same 30/days as the billed arms.
-  const inAfter = inputRatePerMTok(afterClassMix.fi);
-  const inBefore = inputRatePerMTok(beforeClassMix.fi);
+  const inAfter = inputRatePerMTok(afterClassMix.fi, true);
+  const inBefore = inputRatePerMTok(beforeClassMix.fi, true);
   const compReprice = inAfter > 0 ? inBefore / inAfter : 1;
   const compressionAddbackWindow = Math.max(0, measuredCompression * compReprice);
 
@@ -608,8 +625,8 @@ export function computeRealizedSavings(
   // baseline OUTPUT rate: the old way would have produced verbose output at the
   // baseline model mix's output rate. Actual for this pool is 0, so the whole
   // repriced value is transformation. Mirrors measure.py verbosity_addback.
-  const outAfter = price(0, 0, 1_000_000, afterClassMix.out);
-  const outBefore = price(0, 0, 1_000_000, beforeClassMix.out);
+  const outAfter = price(0, 0, 1_000_000, afterClassMix.out, true);
+  const outBefore = price(0, 0, 1_000_000, beforeClassMix.out, true);
   const vsReprice = outAfter > 0 ? outBefore / outAfter : 1;
   const verbosityAddbackWindow = Math.max(0, measuredVerbosity * vsReprice);
 
@@ -715,6 +732,7 @@ export function computeRealizedSavings(
     archivePricedNetUsd,
     inputRateFloorUsd: m(Math.max(0, inputRateFloor)),
     inputRateFloorWindowUsd: Math.max(0, inputRateFloor),
+    generationPriceDeltaUsd: (nowCpsExact - nowCps) * sessionsPerMonth,
     actualMonthlyUsd: actualMonthly,
     counterfactualMonthlyUsd: combinedCf,
     transformationPct,

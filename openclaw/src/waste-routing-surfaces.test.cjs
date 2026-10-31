@@ -46,6 +46,6 @@ test('actual dashboard renders both complete routing assumption labels', () => {
   const html = dashboard.generateDashboardHtml(data);
   for (const finding of routing) {
     assert.ok(html.includes(finding.recommendation), finding.wasteType);
-    assert.match(finding.recommendation,/20%.*Haiku.*input and output.*API rates/);
+    assert.match(finding.recommendation,/20%.*Sonnet.*input and output.*API rates/);
   }
 });

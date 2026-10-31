@@ -53,6 +53,8 @@ _GEMINI_CARD_IDS = (
     "gemini-2.5-flash-lite",
 )
 
+_GEMINI_SNAPSHOT_SUFFIX = re.compile(r"\d{3}|\d{8}|\d{4}-\d{2}-\d{2}")
+
 
 def _safe_int(value: Any, default: int = 0) -> int:
     try:
@@ -82,8 +84,12 @@ def model_id_for_display_name(name: str) -> Optional[str]:
     if not s:
         return None
     if s.startswith("gemini-"):
+        # A card id, optionally followed by a numeric snapshot suffix (-001,
+        # -20260101, -2026-01-01). Any other variant (an unlisted -lite, -image
+        # or -live model) has no card of its own and is left unpriced.
         for card_id in _GEMINI_CARD_IDS:
-            if s == card_id or s.startswith(card_id + "-"):
+            if s == card_id or (s.startswith(card_id + "-")
+                                and _GEMINI_SNAPSHOT_SUFFIX.fullmatch(s[len(card_id) + 1:])):
                 return card_id
         return None
     if "claude" in s or "sonnet" in s or "opus" in s or "haiku" in s:

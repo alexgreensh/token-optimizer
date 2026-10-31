@@ -4610,6 +4610,9 @@ var DB = (function() {
           ? ' (' + Math.round(Number(s.compression_unpriced_credit_tokens) || 0).toLocaleString() + ' credits, ' +
             Math.round(Number(s.compression_unpriced_debit_tokens) || 0).toLocaleString() + ' debits)' : '') +
         '.</p>' : '') +
+      (s.reprice_detail && Number(s.reprice_detail.unpriced_tokens) > 0 ? '<p class="note">' +
+        Math.round(Number(s.reprice_detail.unpriced_tokens)).toLocaleString() +
+        ' logged tokens ran on models with no known rate; their dollar value is not included.</p>' : '') +
       (op.removal_events > 0 ? '<p class="note">Initial removals above are priced at the input rate, a minimum.' +
         (Number(op.class_premium_usd) >= 0.005
           ? ' The next call billed new context at a cache-write rate for ' +
@@ -4726,12 +4729,12 @@ var DB = (function() {
       if (routingPotentialMo > 0) {
         html += '<div class="routing-assumption" style="margin-top:var(--s-3);font-family:var(--font-mono);font-size:17px;line-height:1.6;color:var(--c-text-main);max-width:820px;">' +
           'Routing (an assumption, not a measurement): if about ' + routingFracPct + '% of your Opus work (grunt tasks) ran on ' + esc(routingTarget) + ': new input and output only' +
-          ((mr.potential_by_class || {}).unsplit ? ' (unsplit tokens priced as input)' : '') + ', about <span style="color:var(--c-amber);">' + money(routingPotentialMo) + esc(per) + '</span> at API rates.' +
+          (mo(mr.potential_unsplit_excluded_tokens) > 0 ? ' (~' + fmtTok(mo(mr.potential_unsplit_excluded_tokens)) + ' Opus tokens' + esc(per) + ' without a class split are left out)' : '') + ', about <span style="color:var(--c-amber);">' + money(routingPotentialMo) + esc(per) + '</span> at API rates.' +
           (routingTokensMo > 0 ? ' ~' + fmtTok(routingTokensMo) + ' tokens' + esc(per) + '.' : '') +
           '</div>';
         html += '<div class="note" style="margin-top:var(--s-1);">This is an assumption about your own work, not a measured saving, and it is not part of the number above. Some Opus work is worth keeping on Opus.</div>';
         var classLabels = { fresh_input: 'Fresh input', cache_create_5m: 'Cache writes (5 min)', cache_create_1h: 'Cache writes (1 hour)',
-                            cache_read: 'Cache reads', output: 'Output', unsplit: 'Tokens without a class split (input rate)' };
+                            cache_read: 'Cache reads', output: 'Output' };
         var byClass = mr.potential_by_class || {};
         var classRows = Object.keys(byClass).filter(function(k) { return classLabels[k]; })
           .sort(function(a, b) { return (Number(byClass[b].usd) || 0) - (Number(byClass[a].usd) || 0); });

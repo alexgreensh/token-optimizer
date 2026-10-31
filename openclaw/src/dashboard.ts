@@ -1065,6 +1065,7 @@ function renderWasteCardCompact(f: WasteFinding): string {
       ${f.monthlyWasteUsd > 0 ? `<span class="waste-savings">${fmtCost(f.monthlyWasteUsd)}/mo</span>` : ""}
     </div>
     <div style="font-size:14px;margin-top:4px">${esc(f.description)}</div>
+    ${f.wasteType === "heartbeat_model_waste" || f.wasteType === "overpowered_model" ? `<div style="font-size:12px">${esc(f.recommendation)}</div>` : ""}
   </div>`;
 }
 
@@ -1323,7 +1324,7 @@ function renderSavings(data: DashboardData): string {
   const opportunityPanel = opportunities.length
     ? `<div class="savings-opportunity-panel">
         <div style="font-size:11px;font-weight:600;color:var(--c-warning)">Opportunities &middot; API-rate estimates</div>
-        ${opportunities.map((f) => `<div style="margin-top:8px">${esc(f.description)}: ${fmtCost(f.monthlyWasteUsd)}/mo${f.wasteType === "heartbeat_model_waste" ? ` if the detected heartbeat and cron runs use Haiku (${fmtTokens(f.monthlyWasteTokens)} tokens in detected runs)` : ""}</div>`).join("")}
+        ${opportunities.map((f) => `<div style="margin-top:8px">${esc(f.description)}: ${f.wasteType === "heartbeat_model_waste" || f.wasteType === "overpowered_model" ? esc(f.recommendation) : `${fmtCost(f.monthlyWasteUsd)}/mo`}</div>`).join("")}
         <div style="font-size:13px;color:var(--c-text-dim);margin-top:8px">Findings can overlap. See the Waste tab for details.</div>
       </div>`
     : "";

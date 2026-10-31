@@ -20,7 +20,8 @@
 import * as fs from "fs";
 import * as path from "path";
 import { AgentRun, WasteFinding, Severity, totalTokens, EXPENSIVE_MODELS } from "./models";
-import { calculateCost } from "./pricing";
+import { calculateCost, claudePricingKey, getPricing, pricedPrefixKey } from "./pricing";
+import { resolvePricedModel } from "./event-pricing";
 import { computeSketch, sketchSimilarity, clusterBySketch } from "./jl-sketcher";
 
 type DetectorFn = (
@@ -35,13 +36,42 @@ function spanDays(runs: AgentRun[]): number {
   return Math.max(1, (sorted[sorted.length - 1] - sorted[0]) / 86_400_000);
 }
 
+/** Model switching is a hypothetical, based only on priced new input and output. */
+function routingWhatIf(runs: AgentRun[]): { savings: number; tokens: number; fraction: number } {
+  const raw = process.env.TOKEN_OPTIMIZER_ROUTABLE_OPUS_FRACTION?.trim();
+  const value = raw ? Number(raw) : 0.2;
+  const fraction = Number.isFinite(value) && value >= 0 && value <= 1 ? value : 0.2;
+  const prices = getPricing();
+  let delta = 0;
+  let tokens = 0;
+  for (const run of runs) {
+    const buckets = run.modelTokenBuckets && Object.keys(run.modelTokenBuckets).length
+      ? Object.entries(run.modelTokenBuckets)
+      : [[run.rawModel || run.model, run.tokens] as const];
+    for (const [model, usage] of buckets) {
+      const bare = model.toLowerCase().split(/[/:]/).pop() || "";
+      const recognized = Object.prototype.hasOwnProperty.call(prices, model)
+        || Object.prototype.hasOwnProperty.call(prices, bare)
+        || claudePricingKey(model, prices) || pricedPrefixKey(model, prices);
+      const key = recognized ? resolvePricedModel(model, "") : null;
+      // Do not apply a family fallback to an unknown generation.
+      if (!key) continue;
+      const io = { input: usage.input, output: usage.output, cacheRead: 0, cacheWrite: 0 };
+      delta += calculateCost(io, key) - calculateCost(io, "haiku");
+      tokens += io.input + io.output;
+    }
+  }
+  const monthlyScale = fraction / spanDays(runs) * 30;
+  return { savings: Math.max(0, delta * monthlyScale), tokens: tokens * monthlyScale, fraction };
+}
+
 // ---------------------------------------------------------------------------
 // Tier 1: Config + heartbeat pattern analysis
 // ---------------------------------------------------------------------------
 
 /**
  * Detect expensive models (opus/sonnet) used for heartbeat/cron runs.
- * These should almost always be on haiku.
+ * Estimate a conservative hypothetical route to Haiku.
  */
 function detectHeartbeatModelWaste(
   runs: AgentRun[],
@@ -57,17 +87,7 @@ function detectHeartbeatModelWaste(
   );
   if (expensive.length === 0) return [];
 
-  const totalCost = expensive.reduce((sum, r) => sum + r.costUsd, 0);
-  const daysSpanned = spanDays(expensive);
-  const monthlyCost = (totalCost / daysSpanned) * 30;
-
-  // Calculate savings if switched to haiku
-  let haikuCost = 0;
-  for (const r of expensive) {
-    haikuCost += calculateCost(r.tokens, "haiku");
-  }
-  const haikuMonthly = (haikuCost / daysSpanned) * 30;
-  const savings = monthlyCost - haikuMonthly;
+  const { savings, tokens, fraction } = routingWhatIf(expensive);
 
   if (savings < 0.1) return [];
 
@@ -81,13 +101,10 @@ function detectHeartbeatModelWaste(
       tier: 1,
       severity: savings > 5.0 ? "high" : "medium",
       confidence: 0.9,
-      description: `${expensive.length} heartbeat/cron runs using ${modelsUsed.join("/")} instead of Haiku`,
+      description: `${expensive.length} heartbeat/cron runs using ${modelsUsed.join("/")}`,
       monthlyWasteUsd: savings,
-      monthlyWasteTokens: expensive.reduce(
-        (sum, r) => sum + totalTokens(r.tokens),
-        0
-      ),
-      recommendation: `Route heartbeat/cron tasks to Haiku. Saves ~$${savings.toFixed(2)}/month.`,
+      monthlyWasteTokens: tokens,
+      recommendation: `Routing (an assumption, not a measurement): if about ${fraction * 100}% of the priced heartbeat/cron work (grunt tasks) ran on Haiku, new input and output only: ~$${savings.toFixed(2)}/month at API rates.`,
       fixSnippet:
         `# In your agent config (config.json or cron/*.json):\n"model": "haiku"  # was: ${modelsUsed.join("/")}`,
       evidence: {
@@ -711,13 +728,7 @@ function detectOverpoweredModel(
 
   if (simpleOnExpensive.length < 3) return [];
 
-  const totalCost = simpleOnExpensive.reduce((s, r) => s + r.costUsd, 0);
-  let haikuCost = 0;
-  for (const r of simpleOnExpensive) {
-    haikuCost += calculateCost(r.tokens, "haiku");
-  }
-  const days = spanDays(simpleOnExpensive);
-  const savings = ((totalCost - haikuCost) / days) * 30;
+  const { savings, tokens, fraction } = routingWhatIf(simpleOnExpensive);
   if (savings < 0.5) return [];
 
   const models = Array.from(new Set(simpleOnExpensive.map((r) => r.model)));
@@ -731,8 +742,8 @@ function detectOverpoweredModel(
     confidence: 0.6,
     description: `${simpleOnExpensive.length} simple sessions (low output, few tools) using ${models.join("/")}`,
     monthlyWasteUsd: savings,
-    monthlyWasteTokens: simpleOnExpensive.reduce((s, r) => s + totalTokens(r.tokens), 0),
-    recommendation: `Route simple tasks to Haiku. Saves ~$${savings.toFixed(2)}/month.`,
+    monthlyWasteTokens: tokens,
+    recommendation: `Routing (an assumption, not a measurement): if about ${fraction * 100}% of the priced work in these simple sessions (grunt tasks) ran on Haiku, new input and output only: ~$${savings.toFixed(2)}/month at API rates.`,
     fixSnippet: `# Route simple tasks to a cheaper model:\n"model": "haiku"  # for quick checks and simple edits`,
     evidence: { simpleCount: simpleOnExpensive.length, modelsUsed: models },
   }];

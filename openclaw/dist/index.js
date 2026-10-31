@@ -170,7 +170,7 @@ function audit(days = 30) {
     const findings = (0, waste_detectors_1.runAllDetectors)(runs, config);
     const totalCost = runs.reduce((sum, r) => sum + r.costUsd, 0);
     const totalTok = runs.reduce((sum, r) => sum + (0, models_1.totalTokens)(r.tokens), 0);
-    const monthlySavings = findings.reduce((sum, f) => sum + f.monthlyWasteUsd, 0);
+    const monthlySavings = findings.reduce((sum, f) => sum + (f.wasteType === "heartbeat_model_waste" || f.wasteType === "overpowered_model" ? 0 : f.monthlyWasteUsd), 0);
     const agents = Array.from(new Set(runs.map((r) => r.agentName)));
     return {
         scannedAt: new Date(),
@@ -224,7 +224,7 @@ function generateDashboard(days = 30) {
     const findings = (0, waste_detectors_1.runAllDetectors)(runs, config);
     const totalCost = runs.reduce((sum, r) => sum + r.costUsd, 0);
     const totalTok = runs.reduce((sum, r) => sum + (0, models_1.totalTokens)(r.tokens), 0);
-    const monthlySavings = findings.reduce((sum, f) => sum + f.monthlyWasteUsd, 0);
+    const monthlySavings = findings.reduce((sum, f) => sum + (f.wasteType === "heartbeat_model_waste" || f.wasteType === "overpowered_model" ? 0 : f.monthlyWasteUsd), 0);
     const agents = Array.from(new Set(runs.map((r) => r.agentName)));
     const report = {
         scannedAt: new Date(),

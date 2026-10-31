@@ -250,7 +250,7 @@ export function audit(days: number = 30): AuditReport | null {
   const totalCost = runs.reduce((sum, r) => sum + r.costUsd, 0);
   const totalTok = runs.reduce((sum, r) => sum + totalTokens(r.tokens), 0);
   const monthlySavings = findings.reduce(
-    (sum, f) => sum + f.monthlyWasteUsd,
+    (sum, f) => sum + (f.wasteType === "heartbeat_model_waste" || f.wasteType === "overpowered_model" ? 0 : f.monthlyWasteUsd),
     0
   );
   const agents = Array.from(new Set(runs.map((r) => r.agentName)));
@@ -331,7 +331,7 @@ export function generateDashboard(days: number = 30): string | null {
 
   const totalCost = runs.reduce((sum, r) => sum + r.costUsd, 0);
   const totalTok = runs.reduce((sum, r) => sum + totalTokens(r.tokens), 0);
-  const monthlySavings = findings.reduce((sum, f) => sum + f.monthlyWasteUsd, 0);
+  const monthlySavings = findings.reduce((sum, f) => sum + (f.wasteType === "heartbeat_model_waste" || f.wasteType === "overpowered_model" ? 0 : f.monthlyWasteUsd), 0);
   const agents = Array.from(new Set(runs.map((r) => r.agentName)));
 
   const report: AuditReport = {

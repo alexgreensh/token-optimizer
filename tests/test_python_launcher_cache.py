@@ -130,10 +130,7 @@ _setup_interpreter_cache
 _is_msys_platform || exit 2
 _path_contains_windowsapps /c/Users/a/WiNdOwSaPpS/python3 || exit 3
 '''
-    env = os.environ.copy()
-    env["HOME"] = str(tmp_path)
-    env.pop("XDG_CACHE_HOME", None)
-    env.pop("TOKEN_OPTIMIZER_PY_CACHE", None)
+    env = {"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"}
     result = subprocess.run(["/bin/bash", "-c", script], env=env, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert not result.stderr
@@ -214,10 +211,7 @@ printf '%s\n' "$_PY_CACHE_FILE"
         (roots[0], str(cand_b.parent)),
         (roots[1], str(cand_a.parent)),
     ]:
-        env = os.environ.copy()
-        env.update(HOME=str(tmp_path), PATH=f"{path}:/usr/bin:/bin")
-        env.pop("XDG_CACHE_HOME", None)
-        env.pop("TOKEN_OPTIMIZER_PY_CACHE", None)
+        env = {"HOME": str(tmp_path), "PATH": f"{path}:/usr/bin:/bin"}
         result = subprocess.run(["/bin/bash", "-c", script, str(root / "python-launcher.sh")], env=env, capture_output=True, text=True)
         assert result.returncode == 0, result.stderr
         keys.append(result.stdout.strip())

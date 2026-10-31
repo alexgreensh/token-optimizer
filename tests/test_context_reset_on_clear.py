@@ -33,6 +33,15 @@ REFETCH_GUARD = SCRIPTS / "refetch_guard.py"
 SESSIONSTART_RUNNER = REPO / "hooks" / "sessionstart_runner.py"
 
 SESSION = "11111111-2222-3333-4444-555555555555"
+
+# In-context tables a clear must empty, each with its own fixed count query.
+_CLEARED_TABLE_COUNTS = {
+    "file_reads": "SELECT COUNT(*) FROM file_reads",
+    "cached_content": "SELECT COUNT(*) FROM cached_content",
+    "command_outputs": "SELECT COUNT(*) FROM command_outputs",
+    "command_run_streaks": "SELECT COUNT(*) FROM command_run_streaks",
+    "hint_serves": "SELECT COUNT(*) FROM hint_serves",
+}
 OTHER_SESSION = "99999999-2222-3333-4444-555555555555"
 
 
@@ -180,9 +189,8 @@ def test_reset_drops_every_in_context_record_and_keeps_session_records(tmp_path)
 
     db = sqlite3.connect(str(tmp_path / "snap" / "session-store" / f"{SESSION}.db"))
     try:
-        for table in ("file_reads", "cached_content", "command_outputs",
-                      "command_run_streaks", "hint_serves"):
-            assert db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0, table
+        for table, count_sql in _CLEARED_TABLE_COUNTS.items():
+            assert db.execute(count_sql).fetchone()[0] == 0, table
         keys = {r[0] for r in db.execute("SELECT key FROM session_meta")}
         assert "shadow_fr:/p/a.md" not in keys and "active_fr:/p/a.md" not in keys
         assert {"compact_scan_cursor", "session_decisions"} <= keys

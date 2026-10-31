@@ -155,8 +155,8 @@ def test_status_bar_buckets_match_the_summary(m):
 def test_fixture_ids_match_in_python_and_sql(m, sid, fixture):
     assert m._is_fixture_session_id(sid) is fixture
     conn = sqlite3.connect(":memory:")
-    got = conn.execute("SELECT " + m._fixture_session_sql("x") + " FROM (SELECT ? AS x)",
-                       (sid,)).fetchone()[0]
+    query = f"SELECT {m._fixture_session_sql('x')} FROM (SELECT ? AS x)"
+    got = conn.execute(query, (sid,)).fetchone()[0]
     assert bool(got) is fixture
 
 

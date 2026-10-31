@@ -264,11 +264,15 @@ def test_stored_re_read_rows_are_repriced_after_a_pricing_fix(golden):
     pending = measure._update_counted_cumulative(conn, max_sessions=0, deadline_seconds=None)
     assert pending["rows_written"] == 0 and pending["pending_sessions"] == 1
     unpriced = measure._counted_cumulative_summary()
-    assert unpriced["reread_usd"] == 0
-    assert unpriced["reread_unpriced_tokens"] == unpriced["reread_tokens"] == 300_000
+    # The stored dollars are discarded; the observed repeat-read count is priced
+    # at the cache-read rate of the models the session recorded.
+    assert unpriced["reread_usd"] == pytest.approx(REREAD_USD, rel=1e-6)
+    assert unpriced["reread_session_mix_priced_tokens"] == unpriced["reread_tokens"] == 300_000
+    assert unpriced["reread_unpriced_tokens"] == 0
     assert unpriced["legacy_unverified_events"] == 1
+    assert unpriced["oneshot_unpriced_tokens"] > 0
     assert unpriced["reread_pricing_complete"] is False
-    assert measure._action_savings_components({}, unpriced)["total_usd"] == 0
+    assert measure._action_savings_components({}, unpriced)["total_usd"] == pytest.approx(REREAD_USD)
     assert conn.execute(history_sql).fetchall() == history
 
     refreshed = measure._update_counted_cumulative(conn, max_sessions=50, deadline_seconds=None)

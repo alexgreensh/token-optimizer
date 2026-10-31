@@ -23875,6 +23875,10 @@ def _counted_pricing_note(out, reread_only=False):
                      f"({credit:,} known removed tokens, {debit:,} re-expanded tokens); "
                      "their repeat-read counts are unavailable")
     text = "Priced subtotal only: " + "; ".join(parts) + ". The complete net dollar value is unavailable." if parts else ""
+    mix_tokens = int(out.get("reread_session_mix_priced_tokens", 0))
+    if mix_tokens:
+        text += (f" {mix_tokens:,} repeat-read tokens are priced at the cache-read rate of the "
+                 "models each session recorded, because their per-turn evidence is unavailable.")
     incomplete = int(out.get("refresh_incomplete_events", 0))
     if incomplete:
         text += f" Stored evidence retained for {incomplete:,} incomplete transcript refreshes."
@@ -24498,16 +24502,59 @@ def _counted_backfill_all(conn, quiet=True):
                   "marker_rows_written": marker_total["rows_written"],
                   "marker_backfill_done": marker_total["done"],
                   "rows_removed_no_transcript": _purge_counted_without_transcripts(conn)})
-    stats["pricing_coverage"] = _counted_rollup_rows(_counted_stored_rows(conn).values())
+    stats["pricing_coverage"] = _counted_rollup_rows(_counted_stored_rows(conn).values(), conn)
     return stats
 
 
-def _counted_rollup_rows(rows):
-    """Only per-row verified prices are eligible; retain all stored token evidence."""
+def _counted_session_cache_mix(conn, session_uuid, tier_data, memo):
+    """[(cache_read_tokens, usd_per_mtok or None)] for one stored session.
+
+    Weights come from the session's recorded per-model cache-read tokens. A
+    model without an exact rate card, or whose card depends on the size of each
+    request, has no rate here and its share stays unpriced. None when the
+    session has no usable per-model record."""
+    if session_uuid in memo:
+        return memo[session_uuid]
+    mix = None
+    try:
+        row = conn.execute(
+            "SELECT model_usage_breakdown_json FROM session_log "
+            "WHERE session_uuid = ? ORDER BY id DESC LIMIT 1", (session_uuid,)).fetchone()
+        breakdown = json.loads(row[0]) if row and row[0] else None
+    except (sqlite3.Error, TypeError, ValueError):
+        breakdown = None
+    if isinstance(breakdown, dict):
+        terms = []
+        for model, parts in breakdown.items():
+            weight = parts.get("cache_read") if isinstance(parts, dict) else None
+            if not isinstance(weight, int) or isinstance(weight, bool) or weight <= 0:
+                continue
+            card = _counted_exact_card(model, tier_data)
+            rate = (card or {}).get("cache_read")
+            if not (isinstance(rate, (int, float)) and math.isfinite(rate) and rate >= 0):
+                rate = None
+            terms.append((weight, rate))
+        if any(rate is not None for _, rate in terms):
+            mix = terms
+    memo[session_uuid] = mix
+    return mix
+
+
+def _counted_rollup_rows(rows, conn=None):
+    """Only per-row verified prices are eligible; retain all stored token evidence.
+
+    A stored row without a current per-turn price keeps its signed repeat-read
+    token count. With `conn`, that count is priced at the cache-read rate of the
+    models its session recorded (token-weighted, exact cards only) and reported
+    separately from per-turn prices; any share without a rate stays unpriced."""
     out = dict.fromkeys(_COUNTED_COVERAGE_KEYS, 0)
     out.update(events=0, removed_tokens=0, reread_tokens=0, oneshot_usd=0.0,
-               oneshot_class_premium_usd=0.0, reread_usd=0.0, legacy_unverified_events=0, unverified_history_events=0,
-               estimated_magnitude_events=0, refresh_incomplete_events=0)
+               oneshot_class_premium_usd=0.0, reread_usd=0.0, legacy_unverified_events=0,
+               unverified_history_events=0, estimated_magnitude_events=0,
+               refresh_incomplete_events=0, reread_session_mix_priced_tokens=0,
+               session_mix_priced_events=0)
+    tier_data = PRICING_TIERS.get(_load_pricing_tier(), PRICING_TIERS["anthropic"])
+    mix_memo = {}
     for row in rows:
         out["events"] += 1
         tokens, rereads = int(row["tokens"] or 0), int(row["reread_tokens"] or 0)
@@ -24524,7 +24571,21 @@ def _counted_rollup_rows(rows):
                 out[key] += detail[key]
         else:
             out["legacy_unverified_events"] += 1
+            mix = (_counted_session_cache_mix(conn, row.get("session_uuid"), tier_data, mix_memo)
+                   if conn is not None and rereads else None)
             for kind, amount in (("oneshot", tokens), ("reread", rereads)):
+                if kind == "reread" and mix:
+                    total_weight = sum(weight for weight, _ in mix)
+                    rated = [(weight, rate) for weight, rate in mix if rate is not None]
+                    rated_weight = sum(weight for weight, _ in rated)
+                    priced = round(abs(amount) * rated_weight / total_weight)
+                    out["reread_usd"] += (math.copysign(1, amount) * abs(amount)
+                                          * sum(weight * rate for weight, rate in rated)
+                                          / total_weight / 1e6)
+                    out["reread_session_mix_priced_tokens"] += priced
+                    out["session_mix_priced_events"] += 1
+                    out["priced_reread_turns"] += max(1, int(row.get("turns_counted") or 0))
+                    amount = int(math.copysign(abs(amount) - priced, amount))
                 out[kind + "_unpriced_" + ("credit" if amount >= 0 else "debit") + "_tokens"] += abs(amount)
         if not current and row["transcript_mtime"] is None and row["source"] != "mk":
             out["unverified_history_events"] += 1
@@ -24603,12 +24664,12 @@ def _counted_cumulative_summary(days=None, now=None):
                 coverage["unmeasured_removed_debit_tokens"] = sum(-n for n in amounts if n < 0)
                 return _counted_coverage_totals(coverage)
 
-            totals = add_missing(_counted_rollup_rows(rows),
+            totals = add_missing(_counted_rollup_rows(rows, conn),
                                  [n for values in missing_by_month.values() for n in values])
             by_month = {}
             for row in rows:
                 by_month.setdefault(row["event_month"], []).append(row)
-            monthly_coverage = {m: add_missing(_counted_rollup_rows(by_month.get(m, [])),
+            monthly_coverage = {m: add_missing(_counted_rollup_rows(by_month.get(m, []), conn),
                                                missing_by_month.get(m, []))
                                 for m in sorted(by_month.keys() | missing_by_month.keys(),
                                                 key=lambda month: month or "")}
@@ -52768,12 +52829,17 @@ def _estimate_cache_drop_savings(days=30):
     When a session goes quiet longer than the cache TTL, the cached prefix
     expires and the next turn pays a full cache-WRITE again instead of a cheap
     cache-read. Sessions whose max call gap exceeds the TTL almost certainly ate
-    at least one such reload. We estimate the avoidable cost as
-    (drops x per_session_prefix x 5m-write rate) -- the behavioral opportunity
-    Token Optimizer coaches away (compact before a break, or use the 1h cache).
-    Labelled estimated/opportunity. Never raises.
+    at least one such reload. The avoidable cost is the re-written prefix at the
+    5-minute cache-write rate minus the cache-read rate it would have cost with
+    the cache alive, priced per exact model generation from the models those
+    sessions recorded (cache-write tokens as the weight). A model without an exact
+    rate card adds nothing and is reported as `unpriced_share`; sessions with no
+    per-model record use the window's model mix. This is the behavioral
+    opportunity Token Optimizer coaches away (compact before a break, or use the
+    1h cache). Labelled estimated/opportunity. Never raises.
 
-    Returns {drop_sessions, est_drops, prefix_tokens, cost_saved_usd, evidence}.
+    Returns {drop_sessions, est_drops, prefix_tokens, cost_saved_usd, by_class,
+    rate_basis, unpriced_share, evidence}.
     OPPORTUNITY tier: counts drops that ALREADY happened (TO does not yet prevent
     them); the cost is reclaimable by compacting before breaks / using the 1h cache,
     not a realized saving. Never summed into the realized total.
@@ -52788,13 +52854,16 @@ def _estimate_cache_drop_savings(days=30):
         try:
             # Quality filter removed (audit 2026-08-29): a short automation
             # session that had a cache drop is still a real cache drop.
+            drop_where = ("FROM session_log "
+                          "WHERE date >= ? AND max_call_gap_seconds > ? "
+                          "AND input_tokens IS NOT NULL "
+                          "AND COALESCE(is_sidechain, 0) = 0")
             drop_sessions = conn.execute(
-                "SELECT COUNT(*) FROM session_log "
-                "WHERE date >= ? AND max_call_gap_seconds > ? "
-                "AND input_tokens IS NOT NULL "
-                "AND COALESCE(is_sidechain, 0) = 0",
-                (cutoff, _CACHE_DROP_GAP_SECONDS),
+                "SELECT COUNT(*) " + drop_where, (cutoff, _CACHE_DROP_GAP_SECONDS),
             ).fetchone()[0] or 0
+            breakdowns = [r[0] for r in conn.execute(
+                "SELECT model_usage_breakdown_json " + drop_where,
+                (cutoff, _CACHE_DROP_GAP_SECONDS))] if drop_sessions > 0 else []
         finally:
             conn.close()
         if drop_sessions <= 0:
@@ -52804,15 +52873,50 @@ def _estimate_cache_drop_savings(days=30):
         prefix = _per_session_prefix_tokens(fallback=_current_overhead_tokens() or 0)
         if prefix <= 1:
             return {**zero, "drop_sessions": int(drop_sessions)}
-        _, write_5m_rate, _ = _active_model_cache_rates()
         # Conservative: one avoidable reload per qualifying session.
         est_drops = int(drop_sessions)
-        cost = est_drops * prefix * write_5m_rate / 1_000_000
+        tier_data = PRICING_TIERS.get(_load_pricing_tier(), PRICING_TIERS["anthropic"])
+        weights = {}
+        for blob in breakdowns:
+            try:
+                recorded = json.loads(blob) if blob else None
+            except (TypeError, ValueError):
+                continue
+            for model, parts in (recorded.items() if isinstance(recorded, dict) else ()):
+                written = parts.get("cache_create") if isinstance(parts, dict) else None
+                if isinstance(written, int) and not isinstance(written, bool) and written > 0:
+                    weights[model] = weights.get(model, 0) + written
+        total_weight = sum(weights.values())
+        write_rate = read_rate = 0.0
+        unpriced_share = 0.0
+        rate_basis = "session_models"
+        priced_weight = 0
+        for model, weight in weights.items():
+            card = _counted_exact_card(model, tier_data) or {}
+            if card.get("cache_write") is None or card.get("cache_read") is None:
+                continue
+            priced_weight += weight
+            write_rate += weight * float(card["cache_write"]) / total_weight
+            read_rate += weight * float(card["cache_read"]) / total_weight
+        if priced_weight:
+            unpriced_share = round(1 - priced_weight / total_weight, 4)
+        else:
+            read_rate, write_rate, _ = _mix_cache_rates(days)
+            rate_basis = "model_mix"
+        tokens = est_drops * int(prefix)
+        written_usd = tokens * write_rate / 1_000_000
+        read_usd = tokens * read_rate / 1_000_000
         return {
             "drop_sessions": int(drop_sessions),
             "est_drops": est_drops,
             "prefix_tokens": int(prefix),
-            "cost_saved_usd": round(cost, 4),
+            "cost_saved_usd": round(written_usd - read_usd, 4),
+            "by_class": {
+                "cache_write_5m": {"tokens": tokens, "usd": round(written_usd, 4)},
+                "cache_read_instead": {"tokens": tokens, "usd": round(-read_usd, 4)},
+            },
+            "rate_basis": rate_basis,
+            "unpriced_share": unpriced_share,
             "evidence": "opportunity",
         }
     except Exception:
@@ -55625,6 +55729,65 @@ def _merge_v5_compression(by_category, by_feature, fallback_cost_per_mtok):
     return add_tok, add_cost, add_events
 
 
+def _allocate_cents(amounts, total=None):
+    """(cents per amount, cents of the total), summing exactly.
+
+    The total is the exact sum (or `total`) rounded half up to a cent. Each
+    amount gets its floor in cents and the cents still missing go to the
+    largest fractional remainders, so printed parts always add up to the
+    printed total. Amounts that cannot be reconciled (a `total` further from
+    the parts than one cent each) fall back to plain rounding."""
+    from decimal import Decimal, ROUND_FLOOR, ROUND_HALF_UP
+
+    def cents(value):
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return Decimal(0)
+        return Decimal(repr(number)) * 100 if math.isfinite(number) else Decimal(0)
+
+    exact = [cents(a) for a in amounts]
+    target = int((cents(total) if total is not None else sum(exact, Decimal(0)))
+                 .quantize(Decimal(1), rounding=ROUND_HALF_UP))
+    floors = [int(x.to_integral_value(ROUND_FLOOR)) for x in exact]
+    leftover = target - sum(floors)
+    if not 0 <= leftover <= len(exact):
+        return [int(x.quantize(Decimal(1), rounding=ROUND_HALF_UP)) for x in exact], target
+    order = sorted(range(len(exact)), key=lambda i: (exact[i] - floors[i], -i), reverse=True)
+    for i in order[:leftover]:
+        floors[i] += 1
+    return floors, target
+
+
+def _format_cents(cents):
+    """'1234.56' style text for a whole number of cents."""
+    sign = "-" if cents < 0 else ""
+    return f"{sign}{abs(cents) // 100}.{abs(cents) % 100:02d}"
+
+
+def _action_savings_display(logged, routing_measured, routing_estimated, repeat_reads,
+                            estimates, total_clamped=False):
+    """Whole-cent display values for the action-savings components.
+
+    Raw component values stay exact elsewhere in the payload. Every displayed
+    part below adds up to `total_usd`, which is the cents of the exact total."""
+    names = ["logged", "routing_measured", "routing_estimated", "reread"] + [
+        "estimate:" + key for key in estimates]
+    values = [logged, routing_measured, routing_estimated, repeat_reads, *estimates.values()]
+    parts, total_cents = _allocate_cents(values)
+    if total_clamped:
+        total_cents = 0
+    by_name = dict(zip(names, parts))
+    return {
+        "total_cents": total_cents,
+        "total_usd": total_cents / 100,
+        "components_cents": {k: v for k, v in by_name.items() if not k.startswith("estimate:")},
+        "components_usd": {k: v / 100 for k, v in by_name.items() if not k.startswith("estimate:")},
+        "estimates_cents": {k[len("estimate:"):]: v for k, v in by_name.items() if k.startswith("estimate:")},
+        "estimates_usd": {k[len("estimate:"):]: v / 100 for k, v in by_name.items() if k.startswith("estimate:")},
+    }
+
+
 def _action_savings_components(summary, reread=None):
     """Sum action savings for one period without changing the measured ledger.
 
@@ -55669,6 +55832,9 @@ def _action_savings_components(summary, reread=None):
         "net_total_usd": net_total,
         "total_usd": max(0.0, net_total),
         "total_clamped": net_total < 0,
+        "display": _action_savings_display(
+            logged, routing_measured, routing - routing_measured, repeat_reads,
+            estimates, total_clamped=net_total < 0),
     }
 
 
@@ -57701,6 +57867,18 @@ def savings_report(days=30, as_json=False):
     def _mo(c):
         return c / max(days, 1) * 30 if run_rate else c
 
+    # Every dollar line below is a whole-cent share of the same total, so the
+    # printed parts add up to the printed ALL IN.
+    _act = summary["action_savings"]
+    _shown = _action_savings_display(
+        _mo(_act["logged_usd"]), _mo(_act["routing_measured_usd"]),
+        _mo(_act["routing_estimated_usd"]), _mo(_act["reread_usd"]),
+        {k: _mo(v) for k, v in _act["estimates_usd"].items()},
+        total_clamped=_act["total_clamped"])
+    _cents = _shown["components_cents"]
+    _est_cents = _shown["estimates_cents"]
+    _money = _format_cents
+
     print("\n  Token Optimizer Savings Report")
     print(f"  {'=' * 58}")
     print(f"  Period: Last {days} days ({start} to {end})")
@@ -57844,23 +58022,18 @@ def savings_report(days=30, as_json=False):
     # verbosity_steer_measured below.
     _RELOCATED = {"setup_optimization", "mcp_cap", "verbosity_steer", "resume_lean"}
 
-    # Show all known measured categories (even if zero)
-    for key, label in _SAVINGS_CATEGORY_LABELS.items():
-        if key in _RELOCATED:
-            continue
-        cat_data = by_cat.get(key, {})
+    # Known measured categories (even if zero), then any unknown ones in the data.
+    table_rows = [(label, by_cat.get(key, {}))
+                  for key, label in _SAVINGS_CATEGORY_LABELS.items() if key not in _RELOCATED]
+    table_rows += [(key, cat_data) for key, cat_data in by_cat.items()
+                   if key not in _SAVINGS_CATEGORY_LABELS]
+    row_cents, table_total_cents = _allocate_cents(
+        [cat_data.get("cost_saved_usd", 0.0) for _label, cat_data in table_rows],
+        total=summary.get("total_cost_usd", 0.0))
+    for (label, cat_data), cents in zip(table_rows, row_cents):
         events = cat_data.get("events", 0)
         tokens = cat_data.get("tokens_saved", 0)
-        cost = cat_data.get("cost_saved_usd", 0.0)
-        print(f"  {label:<28s} {events:>8,} {tokens:>14,} {'$' + f'{cost:.2f}':>11s}")
-
-    # Show any unknown categories that appeared in the data
-    for key, cat_data in by_cat.items():
-        if key not in _SAVINGS_CATEGORY_LABELS:
-            events = cat_data.get("events", 0)
-            tokens = cat_data.get("tokens_saved", 0)
-            cost = cat_data.get("cost_saved_usd", 0.0)
-            print(f"  {key:<28s} {events:>8,} {tokens:>14,} {'$' + f'{cost:.2f}':>11s}")
+        print(f"  {label:<28s} {events:>8,} {tokens:>14,} {'$' + _money(cents):>11s}")
 
     print(f"  {'-' * 25}  {'-' * 8}  {'-' * 14}  {'-' * 11}")
 
@@ -57873,9 +58046,8 @@ def savings_report(days=30, as_json=False):
     rr = summary.get("reread_avoided") or {}
     rr_usd = summary["action_savings"]["reread_usd"]
     daily_avg = summary.get("daily_avg_usd", 0.0)
-    est_monthly = daily_avg * 30
 
-    print(f"  {'TOTAL (measured)':<28s} {total_events:>8,} {total_tokens:>14,} {'$' + f'{total_cost:.2f}':>11s}")
+    print(f"  {'TOTAL (measured)':<28s} {total_events:>8,} {total_tokens:>14,} {'$' + _money(table_total_cents):>11s}")
     unpriced = int(summary.get("compression_unpriced_tokens", 0) or 0)
     if unpriced:
         unpriced_credit = int(summary.get("compression_unpriced_credit_tokens", 0) or 0)
@@ -57900,19 +58072,19 @@ def savings_report(days=30, as_json=False):
     print()
     print(f"  Daily average: ${daily_avg:.2f} saved (measured)")
     if run_rate:
-        print(f"  Estimated monthly: ${est_monthly:.2f} (measured)")
+        print(f"  Estimated monthly: ${_money(_cents['logged'])} (measured)")
     else:
-        print(f"  Total so far ({tracked} day{'' if tracked == 1 else 's'} tracked): ${total_cost:.2f} (measured)")
+        print(f"  Total so far ({tracked} day{'' if tracked == 1 else 's'} tracked): ${_money(_cents['logged'])} (measured)")
 
     # Realized tier — model routing you already did (mix shift vs install baseline).
     routing = summary.get("model_routing") or {}
     routing_realized = float(routing.get("realized_cost_usd", 0.0) or 0.0)
     if routing_realized > 0:
-        r_monthly = _mo(routing_realized)
+        r_monthly = _money(_cents["routing_measured"] + _cents["routing_estimated"])
         b_share = routing.get("baseline_opus_share", 0.0) * 100
         c_share = routing.get("current_opus_share", 0.0) * 100
         routing_label = "estimated" if routing.get("evidence") == "estimated" else "measured"
-        print(f"  + model routing (realized): ~${r_monthly:.2f}{per} "
+        print(f"  + model routing (realized): ~${r_monthly}{per} "
               f"(Opus {b_share:.0f}% -> {c_share:.0f}% vs baseline) [{routing_label}]")
         ref_priced = [str(f)[:1].upper() + str(f)[1:] for f in routing.get("baseline_reference_priced") or []]
         if ref_priced:
@@ -57935,9 +58107,9 @@ def savings_report(days=30, as_json=False):
         print(f"  i  models without a known price ({shown}; "
               f"{int(routing.get('unpriced_tokens', 0) or 0) + int(routing.get('free_tokens', 0) or 0):,} tokens) "
               f"are left out of the routing comparison, not counted as free")
-    all_in = _mo(summary["action_savings"]["total_usd"])
+    all_in = _money(_shown["total_cents"])
     if rr_usd != 0:
-        print(f"  + repeat reads avoided: ~${_mo(rr_usd):.2f}{per} "
+        print(f"  + repeat reads avoided: ~${_money(_cents['reread'])}{per} "
               f"({int(rr.get('reread_tokens', 0) or 0):,} tokens of removed context not re-read "
               f"before the next compaction) [modeled]")
     elif not summary["action_savings"]["reread_available"]:
@@ -57949,16 +58121,16 @@ def savings_report(days=30, as_json=False):
     uncaptured = summary.get("uncaptured_runtime") or {}
     unc_cost = float(uncaptured.get("cost_saved_usd", 0.0) or 0.0)
     if unc_cost > 0:
-        unc_monthly = _mo(unc_cost)
-        print(f"  + est. uncaptured runtime: ~${unc_monthly:.2f}{per} "
+        unc_monthly = _money(_est_cents["uncaptured_runtime"])
+        print(f"  + est. uncaptured runtime: ~${unc_monthly}{per} "
               f"(sub-agent compression, {uncaptured.get('subagent_dispatches', 0):,} dispatches) [estimated]")
 
     # Estimated tier — behavioral coaching (loops prevented, etc.) that never bills.
     behavioral = summary.get("behavioral_estimate") or {}
     beh_cost = float(behavioral.get("cost_saved_usd", 0.0) or 0.0)
     if beh_cost > 0:
-        beh_monthly = _mo(beh_cost)
-        print(f"  + est. behavioral (loops prevented): ~${beh_monthly:.2f}{per} "
+        beh_monthly = _money(_est_cents["behavioral_estimate"])
+        print(f"  + est. behavioral (loops prevented): ~${beh_monthly}{per} "
               f"({behavioral.get('loop_events', 0)} loops caught, repeated ~{behavioral.get('prevented_iterations', 0)}x "
               f"before catch; avoided continuation estimated at one more span) [estimated]")
 
@@ -57970,8 +58142,8 @@ def savings_report(days=30, as_json=False):
     mcp_cap_est = summary.get("mcp_cap_estimated") or {}
     mce_cost = float(mcp_cap_est.get("cost_saved_usd", 0.0) or 0.0)
     if mce_cost > 0:
-        mce_monthly = _mo(mce_cost)
-        print(f"  + est. MCP output cap: ~${mce_monthly:.2f}{per} "
+        mce_monthly = _money(_est_cents["mcp_cap_estimated"])
+        print(f"  + est. MCP output cap: ~${mce_monthly}{per} "
               f"({mcp_cap_est.get('events', 0)} capped MCP results) [estimated]")
 
     # Estimated tier — lean resumes (cold `--resume` reload avoided; the trigger
@@ -57979,15 +58151,15 @@ def savings_report(days=30, as_json=False):
     rl_est = summary.get("resume_lean_estimated") or {}
     rle_cost = float(rl_est.get("cost_saved_usd", 0.0) or 0.0)
     if rle_cost > 0:
-        rle_monthly = _mo(rle_cost)
-        print(f"  + est. lean resumes: ~${rle_monthly:.2f}{per} "
+        rle_monthly = _money(_est_cents["resume_lean_estimated"])
+        print(f"  + est. lean resumes: ~${rle_monthly}{per} "
               f"({rl_est.get('events', 0)} cold-resume reloads avoided) [estimated]")
 
     # Estimated tier — FLAGSHIP: contamination-exit avoided rework (cohort).
     ce = summary.get("contamination_exit") or {}
     if float(ce.get("cost_saved_usd", 0.0) or 0.0) > 0:
-        ce_monthly = _mo(ce["cost_saved_usd"])
-        print(f"  + est. avoided rework (heeded nudges): ~${ce_monthly:.2f}{per} "
+        ce_monthly = _money(_est_cents["contamination_exit"])
+        print(f"  + est. avoided rework (heeded nudges): ~${ce_monthly}{per} "
               f"({ce.get('heeded_sessions', 0)} heeded vs {ce.get('ignored_sessions', 0)} ignored, "
               f"~{ce.get('delta_tokens_per_session', 0):,} tok/session less rework, "
               f"confidence: {ce.get('confidence', '?')}) [estimated]")
@@ -57995,8 +58167,8 @@ def savings_report(days=30, as_json=False):
     # Estimated tier — handover/continuity avoided rework (cohort).
     hr = summary.get("handover_rerun") or {}
     if float(hr.get("cost_saved_usd", 0.0) or 0.0) > 0:
-        hr_monthly = _mo(hr["cost_saved_usd"])
-        print(f"  + est. avoided rework (continuity handover): ~${hr_monthly:.2f}{per} "
+        hr_monthly = _money(_est_cents["handover_rerun"])
+        print(f"  + est. avoided rework (continuity handover): ~${hr_monthly}{per} "
               f"({hr.get('restored_sessions', 0)} restored vs {hr.get('baseline_sessions', 0)} baseline, "
               f"confidence: {hr.get('confidence', '?')}) [estimated]")
 
@@ -58010,16 +58182,16 @@ def savings_report(days=30, as_json=False):
         else:
             detail = f"{avoided.get('served_sessions', 0)} served sessions"
             label = "retrieval"
-        print(f"  + est. avoided search ({label}): ~${_mo(avoided_cost):.2f}{per} "
+        print(f"  + est. avoided search ({label}): ~${_money(_est_cents[avoided_source])}{per} "
               f"({detail}) [estimated]")
 
     verbosity = summary.get("verbosity_steer") or {}
     verbosity_cost = summary["action_savings"]["estimates_usd"]["verbosity_steer"]
     if verbosity_cost > 0:
-        print(f"  + est. concise output nudges: ~${_mo(verbosity_cost):.2f}{per} "
+        print(f"  + est. concise output nudges: ~${_money(_est_cents['verbosity_steer'])}{per} "
               f"({verbosity.get('events', 0)} nudges) [estimated]")
 
-    print(f"  = ALL IN: ~${all_in:.2f}{per} (measured + modeled + estimated)")
+    print(f"  = ALL IN: ~${all_in}{per} (measured + modeled + estimated)")
     if summary["action_savings"].get("reread_pricing_complete") is False:
         print("  i  ALL IN is a priced subtotal; unpriced repeat-read credits and debits are not included.")
     if summary["action_savings"]["total_clamped"]:
@@ -58045,11 +58217,11 @@ def savings_report(days=30, as_json=False):
     reclaimable = summary.get("stale_reads_reclaimable") or {}
     recl_cost = float(reclaimable.get("cost_usd", 0.0) or 0.0)
     cache_drop = summary.get("cache_drop") or {}
-    # cache-drop is shown in TOKENS (re-written prefix), not dollars: the $ cost is
-    # Anthropic-specific (OpenAI/OpenCode cache writes are free/unbilled), but the
-    # re-written token count is a provider-neutral fact. Matches Claude Code's own
-    # token-denominated cost display.
+    # cache-drop shows the re-written prefix in tokens (a provider-neutral fact)
+    # and, as an opportunity outside every total, its dollar value at the rates
+    # of the models that ran (cache write minus the cache read it would have been).
     cd_tokens = int(cache_drop.get("est_drops", 0) or 0) * int(cache_drop.get("prefix_tokens", 0) or 0)
+    cd_cost = float(cache_drop.get("cost_saved_usd", 0.0) or 0.0)
     output_waste = summary.get("output_waste") or {}
     ow_cost = float(output_waste.get("cost_saved_usd", 0.0) or 0.0)
     if pot_cost > 0 or routing_potential > 0 or recl_cost > 0 or cd_tokens > 0 or ow_cost > 0:
@@ -58060,10 +58232,6 @@ def savings_report(days=30, as_json=False):
             pot_monthly = _mo(pot_cost)
             print(f"    ~${pot_monthly:.2f}{per} structural: prune {potential.get('unused_skills', 0)} unused skills "
                   f"(~{potential.get('recoverable_tokens', 0):,} tokens), compounds every session.")
-        if cd_tokens > 0:
-            cd_tokens_monthly = int(_mo(cd_tokens))
-            print(f"    ~{cd_tokens_monthly:,} tokens{per} cache drops: {cache_drop.get('drop_sessions', 0)} sessions idled "
-                  f"past the cache window and re-wrote the prefix — compact before breaks or use the 1h cache.")
         if ow_cost > 0:
             ow_monthly = _mo(ow_cost)
             print(f"    ~${ow_monthly:.2f}{per} output: {output_waste.get('avoidable_writes', 0)} of "
@@ -58075,6 +58243,14 @@ def savings_report(days=30, as_json=False):
         concrete_items = [c for c in (pot_cost, ow_cost, recl_cost) if c > 0]
         if len(concrete_items) > 1:
             print(f"    = ~${_mo(sum(concrete_items)):.2f}{per} from the items above (API-rate equivalent)")
+        if cd_tokens > 0:
+            # Cache drops are an opportunity valued at API rates; like routing
+            # they sit on their own line and are never folded into the total above.
+            cd_dollars = f", about ${_mo(cd_cost):.2f}{per} at API rates" if cd_cost > 0 else ""
+            print()
+            print(f"    Cache drops (an opportunity, not a measurement): {cache_drop.get('drop_sessions', 0)} sessions idled "
+                  f"past the cache window and re-wrote ~{int(_mo(cd_tokens)):,} tokens{per} of prefix{cd_dollars}. "
+                  f"Compact before breaks or use the 1h cache.")
         if routing_potential > 0:
             # Routing is an assumption about the user's own Opus work, so it sits
             # on its own line and is never folded into the total above.

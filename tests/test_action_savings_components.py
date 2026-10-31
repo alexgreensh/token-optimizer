@@ -87,7 +87,7 @@ def test_same_snapshot_cli_json_dashboard(
     assert payload["total_cost_usd"] == dashboard["total_cost_usd"] == 100
     assert dashboard["counted_cumulative"] == counted
     actions = render(dashboard).split('savings-actions')[1].split('savings-history')[0]
-    amount = f"{expected}" if expected else "0.00"
+    amount = f"{expected:.2f}"
     assert f'"savings-amount">${amount}<' in actions
     assert f'Other estimates <strong>~${estimated}' in actions
     if expected == 0:
@@ -159,7 +159,7 @@ def test_unavailable_rereads_are_explicit_on_both_surfaces(measure, monkeypatch,
     assert dashboard["action_savings"]["reread_available"] is False
     actions = render(dashboard).split('savings-actions')[1].split('savings-history')[0]
     assert 'Repeat reads avoided <strong>Unavailable' in actions
-    assert '"savings-amount">$362<' in actions
+    assert '"savings-amount">$362.00<' in actions
 
 
 def test_dashboard_prefers_server_computed_components():
@@ -190,6 +190,6 @@ def test_routing_evidence_changes_tier_without_changing_total(measure, evidence,
     assert components["total_usd"] == 385
     source["action_savings"] = components
     actions = render(source).split('savings-actions')[1].split('savings-history')[0]
-    assert '"savings-amount">$385<' in actions
+    assert '"savings-amount">$385.00<' in actions
     assert f'Logged actions <strong>${100 + measured}' in actions
     assert f'Other estimates <strong>~${255 + estimated}' in actions

@@ -212,6 +212,13 @@ function boundedMapSet<V>(map: Map<string, V>, key: string, value: V): void {
  */
 const _compactionCounter = new Map<string, number>();
 
+/**
+ * Read-cache working set (tokens) that the last compaction of a session removed.
+ * Captured just before the cache is cleared, because the restore runs after
+ * the clear and would otherwise see an empty cache.
+ */
+const _clearedWorkingSet = new Map<string, number>();
+
 function nextCompactionSeq(sessionKey: string): number {
   const seq = (_compactionCounter.get(sessionKey) ?? 0) + 1;
   boundedMapSet(_compactionCounter, sessionKey, seq);
@@ -563,7 +570,18 @@ export default definePluginEntry({
 
       // Clear read-cache on compaction (context is reset, cache entries are stale).
       // The agent id defaults to "unknown", the same default the Read hook caches under.
-      clearCache(context?.agentId ?? "unknown", session.sessionId);
+      // The working set the clear removes is remembered for the restore credit: the
+      // active tokens before the clear less those still cached by other agents.
+      const agentKey = context?.agentId ?? "unknown";
+      let cleared = 0;
+      try {
+        const activeBefore = getActiveReadTokens(agentKey, session.sessionId);
+        clearCache(agentKey, session.sessionId);
+        cleared = Math.max(0, activeBefore - getActiveReadTokens(agentKey, session.sessionId));
+      } catch {
+        clearCache(agentKey, session.sessionId);
+      }
+      boundedMapSet(_clearedWorkingSet, session.sessionId, cleared);
     });
 
     // Smart Compaction: restore after compaction
@@ -630,7 +648,8 @@ export default definePluginEntry({
         // credited = min(200 000, max(floor, active)).
         try {
           const floorTokens = estimateTokensFromBytes(Buffer.byteLength(checkpoint, "utf-8"));
-          const activeTokens = getActiveReadTokens(context.agentId ?? "default", sessionId);
+          const activeTokens = _clearedWorkingSet.get(sessionId) ?? getActiveReadTokens(context.agentId ?? "unknown", sessionId);
+          _clearedWorkingSet.delete(sessionId);
           const credited = Math.min(200_000, Math.max(floorTokens, activeTokens));
           if (credited > 0) {
             logSavingsEvent("checkpoint_restore", credited, sessionId, "queued after compact");

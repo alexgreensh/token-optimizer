@@ -266,7 +266,8 @@ def test_upgrade_clean_229_install(tmp_path, monkeypatch):
     baseline=tmp_path/'baseline'
     # The shipped baseline bytes are stored as a fixture so the upgrade path
     # does not depend on clone depth or object history.
-    shutil.copytree(fixture,baseline)
+    from _devin_baseline import copy_baseline
+    copy_baseline(fixture,baseline)
     run=subprocess.run([sys.executable,str(baseline/'skills/token-optimizer/scripts/devin_install.py'),'install'],env=dict(os.environ),capture_output=True,timeout=20)
     assert run.returncode==0,run.stderr
     d.install()

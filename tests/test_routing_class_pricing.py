@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """Model routing is priced per token class at each model's own generation card.
 
-Cache creation, cache reads, fresh input and output each bill at their own rate,
-so a window dominated by cache writes cannot be priced near the output rate.
-Rows that never stored a class split fall back to the input rate and are
-reported as `unsplit_tokens`.
+Realized routing prices each token class separately. Potential routing covers
+fresh input and output, or unsplit usage priced at the input rate.
 """
 
 from __future__ import annotations
@@ -101,57 +99,36 @@ def _buckets(fresh=0, read=0, cc=0, cc_1h=0, cc_5m=0, out=0):
 # ------------------------------------------------------------ class pricing
 
 
-def test_each_class_is_priced_at_its_own_rate(m, db):
+def test_potential_excludes_all_cache_classes(m, db):
     db.session(daily={db.day(): {OPUS_55: _buckets(
-        fresh=1_000_000, read=10_000_000, cc=4_000_000, cc_1h=1_000_000, cc_5m=3_000_000, out=2_000_000)}})
+        fresh=1_000_000, read=10_000_000, cc=4_000_000,
+        cc_1h=1_000_000, cc_5m=3_000_000, out=2_000_000)}})
     db.mix(opus=7_000_000)
     c = _cards(m)
-    o, s = c["opus_5_5"], c[m._routing_target_model().replace("claude-", "").replace("-", "_")]
-
+    o, target = c["opus_5_5"], c["sonnet_5_5"]
     r = m._compute_model_routing_savings(days=30)
-
-    expected = 0.3 * (
-        1 * (o["input"] - s["input"])
-        + 10 * (o["cache_read"] - s["cache_read"])
-        + 3 * (o["cache_write"] - s["cache_write"])
-        + 1 * (o["cache_write_1h"] - s["cache_write_1h"])
-        + 2 * (o["output"] - s["output"])
-    )
-    assert r["potential_cost_usd"] == pytest.approx(expected, abs=1e-3)
-    by = r["potential_by_class"]
-    assert set(by) == {"fresh_input", "cache_create_5m", "cache_create_1h", "cache_read", "output"}
-    assert by["cache_create_5m"]["tokens"] == 900_000
-    assert by["cache_create_5m"]["usd"] == pytest.approx(0.3 * 3 * (o["cache_write"] - s["cache_write"]), abs=1e-3)
-    assert by["cache_read"]["tokens"] == 3_000_000
-    assert by["output"]["usd"] == pytest.approx(0.3 * 2 * (o["output"] - s["output"]), abs=1e-3)
-    assert sum(v["usd"] for v in by.values()) == pytest.approx(r["potential_cost_usd"], abs=1e-3)
-    assert r["pricing_basis"] == "per_token_class_generation_card"
+    assert r["potential_cost_usd"] == pytest.approx(
+        0.3 * ((o["input"] - target["input"]) + 2 * (o["output"] - target["output"])), abs=1e-3)
+    assert r["potential_tokens"] == 900_000
+    assert r["potential_billable_tokens"] == 900_000
+    assert set(r["potential_by_class"]) == {"fresh_input", "output"}
+    assert r["potential_token_classes"] == ["fresh_input", "output"]
 
 
-def test_cache_writes_are_not_priced_near_the_output_rate(m, db):
-    db.session(daily={db.day(): {OPUS_55: _buckets(cc=10_000_000, cc_5m=10_000_000, out=100_000)}})
-    db.mix(opus=10_100_000)
-    c = _cards(m)
-    o, s = c["opus_5_5"], c["sonnet_5_5"]
-
+def test_cache_only_has_no_potential_but_realized_is_unchanged(m, db, monkeypatch):
+    monkeypatch.setattr(m, "_pretool_baseline_mix", lambda: {"opus": 0.95, "sonnet": 0.05})
+    db.session(daily={db.day(): {
+        OPUS_55: _buckets(read=10_000_000, cc=4_000_000, cc_5m=4_000_000),
+        SONNET_55: _buckets(read=10_000_000, cc=4_000_000, cc_5m=4_000_000),
+    }})
+    db.mix(opus=14_000_000, sonnet=14_000_000)
     r = m._compute_model_routing_savings(days=30)
-
-    write_delta = o["cache_write"] - s["cache_write"]
-    out_delta = o["output"] - s["output"]
-    assert r["potential_by_class"]["cache_create_5m"]["usd"] == pytest.approx(0.3 * 10 * write_delta, abs=1e-3)
-    per_mtok = r["potential_cost_usd"] / (r["potential_billable_tokens"] / 1e6)
-    assert per_mtok < out_delta, "a cache-write-heavy window must price below the output-rate delta"
-
-
-def test_potential_tokens_cover_every_priced_class(m, db):
-    db.session(daily={db.day(): {OPUS_55: _buckets(fresh=100, read=1_000_000, cc=200, cc_5m=200, out=300)}})
-    db.mix(opus=600)
-
-    r = m._compute_model_routing_savings(days=30)
-
-    assert r["potential_tokens"] == pytest.approx(0.3 * 1_000_600, abs=1)
-    assert r["potential_billable_tokens"] == pytest.approx(0.3 * 600, abs=1)
-    assert r["potential_token_classes"] == ["fresh_input", "cache_create_5m", "cache_read", "output"]
+    monkeypatch.setattr(m, "_ROUTABLE_OPUS_FRACTION", 0.7)
+    override = m._compute_model_routing_savings(days=30)
+    assert r["potential_cost_usd"] == override["potential_cost_usd"] == 0
+    assert r["potential_tokens"] == override["potential_tokens"] == 0
+    assert r["realized_cost_usd"] > 0
+    assert r["realized_cost_usd"] == override["realized_cost_usd"]
 
 
 def test_monthly_tokens_scale_the_window(m, db):

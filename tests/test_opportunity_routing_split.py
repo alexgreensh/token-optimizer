@@ -4,7 +4,7 @@
 Model-routing potential rests on an assumed share of remaining Opus work
 (`routable_fraction`), so it must never be folded into the concrete opportunity
 total (unused skills, stale re-reads, full-file Writes). It is shown separately
-with the assumption stated, tokens first, and dollars labelled as API-rate.
+with the assumption stated and dollars labelled as API-rate.
 
 The dashboard is rendered by executing the shipped renderSavings() in Node with
 a stub DOM; the CLI is rendered by calling savings_report().
@@ -134,11 +134,10 @@ def test_cli_routing_is_its_own_line_with_assumption(measure, monkeypatch, capsy
     block = out[out.index("COULD SAVE"):]
 
     routing_line = next(l for l in block.splitlines() if "Routing" in l)
-    assert "if about 30% of your remaining Opus work" in routing_line
-    assert "40% of tokens" in routing_line
-    assert "ran on lighter models" in routing_line
-    # Tokens come first, dollars are labelled as API rates.
-    assert routing_line.index("900,000,000 tokens/mo") < routing_line.index("$4000.00/mo")
+    assert "if about 30% of your Opus work (grunt tasks)" in routing_line
+    assert "ran on" in routing_line and "new input and output only" in routing_line
+    # Dollars are labelled as API rates.
+    assert "$4000.00/mo" in routing_line
     assert "at API rates" in routing_line
 
     # The concrete total sums only the concrete items, never routing.
@@ -236,10 +235,10 @@ def test_big_number_is_concrete_items_only():
     assert "still on the table" in html
 
 
-def test_routing_line_states_assumption_tokens_first_then_api_rate_dollars():
+def test_routing_line_states_assumption_and_api_rate_dollars():
     text = _text(_render(_savings()))
-    assert ("If about 30% of your remaining Opus work ran on lighter models: "
-            "~900.0M tokens/mo, about $4,071 at API rates.") in text
+    assert ("Routing (an assumption, not a measurement): if about 30% of your Opus work (grunt tasks) ran on "
+            "Sonnet: new input and output only, about $4,071 at API rates.") in text
     assert "Recovers about" not in text
 
 
@@ -250,7 +249,7 @@ def test_routing_only_shows_card_without_big_number():
     assert "Money on the table" in html
     assert _big_number(html) is None
     assert "still on the table" not in html
-    assert "If about 30% of your remaining Opus work ran on lighter models" in _text(html)
+    assert "if about 30% of your Opus work (grunt tasks) ran on Sonnet" in _text(html)
 
 
 def test_no_routing_potential_means_no_routing_line():
@@ -267,7 +266,7 @@ def test_routing_line_uses_recorded_fraction_and_tolerates_missing_tokens():
     del s["model_routing"]["potential_tokens"]
     del s["model_routing"]["potential_tokens_monthly"]
     text = _text(_render(s))
-    assert "If about 50% of your remaining Opus work ran on lighter models: about $100 at API rates." in text
+    assert "if about 50% of your Opus work (grunt tasks) ran on Sonnet: new input and output only, about $100 at API rates." in text
 
 
 def test_billing_caption_is_reused_in_opportunity_card():
@@ -423,3 +422,29 @@ def test_since_install_moves_estimated_routing_to_the_estimated_side(measure, mo
     assert meas["measured_usd"] == 60.0 and meas["estimated_usd"] == 0.0
     assert est["measured_usd"] == 10.0 and est["estimated_usd"] == 50.0
     assert est["total_usd"] == 60.0
+
+
+def test_default_routable_fraction_is_twenty_percent(measure):
+    assert measure._ROUTABLE_OPUS_FRACTION == 0.2
+
+
+def test_environment_override_is_used_and_shown(measure, monkeypatch, capsys):
+    monkeypatch.setenv("TOKEN_OPTIMIZER_ROUTABLE_OPUS_FRACTION", "0.425")
+    spec = importlib.util.spec_from_file_location("measure", SCRIPTS / "measure.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert mod._ROUTABLE_OPUS_FRACTION == 0.425
+    summary = _cli_summary({**_ROUTING, "routable_fraction": mod._ROUTABLE_OPUS_FRACTION,
+                            "target_model": "claude-sonnet-5-5"})
+    out = _cli_out(mod, monkeypatch, capsys, summary)
+    assert "42.5% of your Opus work (grunt tasks) ran on claude-sonnet-5-5" in out
+    s = _savings()
+    s["model_routing"].update({"routable_fraction": 0.425, "target_model": "claude-sonnet-5-5"})
+    assert "42.5% of your Opus work (grunt tasks) ran on claude-sonnet-5-5" in _text(_render(s))
+
+
+def test_routing_potential_does_not_change_all_in(measure, monkeypatch, capsys):
+    first = _cli_out(measure, monkeypatch, capsys, _cli_summary({**_ROUTING, "potential_cost_usd": 5}))
+    second = _cli_out(measure, monkeypatch, capsys, _cli_summary({**_ROUTING, "potential_cost_usd": 9000}))
+    assert next(line for line in first.splitlines() if "ALL IN" in line) == next(
+        line for line in second.splitlines() if "ALL IN" in line)

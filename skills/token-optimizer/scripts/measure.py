@@ -23786,7 +23786,7 @@ def _counted_coverage_totals(out):
         out["reread_unpriced_tokens"] or missing_evidence)
     out["prices_available"] = bool(out.get("priced_oneshot_events")
                                    or out.get("priced_reread_turns")
-                                   or (not out.get("events", 1) and not missing_evidence))
+                                   or out["pricing_complete"])
     out["oneshot_prices_available"] = bool(out.get("priced_oneshot_events")
                                             or out["oneshot_pricing_complete"])
     out["reread_prices_available"] = bool(out.get("priced_reread_turns")

@@ -442,6 +442,11 @@ def test_cached_cohort_reports_missing_and_observed_zero(m, tmp_path, monkeypatc
         assert result["reread_usd"] == result["reread_tokens"] == 0
         assert result["reread_pricing_complete"] is (not missing)
         assert bool(result["reread_pricing_note"]) is missing
+        assert result["prices_available"] is (not missing)
+        if source == "observed_no_later_calls":
+            history = render({"period_days": 30, "counted_period": result,
+                              "counted_cumulative": result}).split('savings-history')[1]
+            assert "Unpriced" not in history
         action = m._action_savings_components({"total_cost_usd": 5}, result)
         assert action["reread_pricing_complete"] is (not missing)
         assert bool(action["reread_pricing_note"]) is missing

@@ -433,6 +433,12 @@
    "cache_read": 0.01,
    "cache_write": 0.125
   },
+  "gpt-6-rosalind": {
+   "input": 15.0,
+   "output": 75.0,
+   "cache_read": 1.5,
+   "cache_write": 18.75
+  },
   "gpt-6-sol": {
    "input": 2.0,
    "output": 10.0,
@@ -544,6 +550,12 @@
    "output": 0.75,
    "cache_read": 0.02,
    "cache_write": 0.25
+  },
+  "gpt-6-rosalind": {
+   "input": 30.0,
+   "output": 112.5,
+   "cache_read": 3.0,
+   "cache_write": 37.5
   },
   "gpt-6-sol": {
    "input": 4.0,
@@ -703,5 +715,5 @@
    "cache_read": 0.4
   }
  },
- "generated_at": "2026-10-27T06:50:43Z"
+ "generated_at": "2026-10-31T06:30:03Z"
 }

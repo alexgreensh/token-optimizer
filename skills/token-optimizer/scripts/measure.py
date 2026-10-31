@@ -52707,12 +52707,17 @@ def _estimate_cache_drop_savings(days=30):
     When a session goes quiet longer than the cache TTL, the cached prefix
     expires and the next turn pays a full cache-WRITE again instead of a cheap
     cache-read. Sessions whose max call gap exceeds the TTL almost certainly ate
-    at least one such reload. We estimate the avoidable cost as
-    (drops x per_session_prefix x 5m-write rate) -- the behavioral opportunity
-    Token Optimizer coaches away (compact before a break, or use the 1h cache).
-    Labelled estimated/opportunity. Never raises.
+    at least one such reload. The avoidable cost is the re-written prefix at the
+    5-minute cache-write rate minus the cache-read rate it would have cost with
+    the cache alive, priced per exact model generation from the models those
+    sessions recorded (cache-write tokens as the weight). A model without an exact
+    rate card adds nothing and is reported as `unpriced_share`; sessions with no
+    per-model record use the window's model mix. This is the behavioral
+    opportunity Token Optimizer coaches away (compact before a break, or use the
+    1h cache). Labelled estimated/opportunity. Never raises.
 
-    Returns {drop_sessions, est_drops, prefix_tokens, cost_saved_usd, evidence}.
+    Returns {drop_sessions, est_drops, prefix_tokens, cost_saved_usd, by_class,
+    rate_basis, unpriced_share, evidence}.
     OPPORTUNITY tier: counts drops that ALREADY happened (TO does not yet prevent
     them); the cost is reclaimable by compacting before breaks / using the 1h cache,
     not a realized saving. Never summed into the realized total.
@@ -52727,13 +52732,16 @@ def _estimate_cache_drop_savings(days=30):
         try:
             # Quality filter removed (audit 2026-08-29): a short automation
             # session that had a cache drop is still a real cache drop.
+            drop_where = ("FROM session_log "
+                          "WHERE date >= ? AND max_call_gap_seconds > ? "
+                          "AND input_tokens IS NOT NULL "
+                          "AND COALESCE(is_sidechain, 0) = 0")
             drop_sessions = conn.execute(
-                "SELECT COUNT(*) FROM session_log "
-                "WHERE date >= ? AND max_call_gap_seconds > ? "
-                "AND input_tokens IS NOT NULL "
-                "AND COALESCE(is_sidechain, 0) = 0",
-                (cutoff, _CACHE_DROP_GAP_SECONDS),
+                "SELECT COUNT(*) " + drop_where, (cutoff, _CACHE_DROP_GAP_SECONDS),
             ).fetchone()[0] or 0
+            breakdowns = [r[0] for r in conn.execute(
+                "SELECT model_usage_breakdown_json " + drop_where,
+                (cutoff, _CACHE_DROP_GAP_SECONDS))] if drop_sessions > 0 else []
         finally:
             conn.close()
         if drop_sessions <= 0:
@@ -52743,15 +52751,50 @@ def _estimate_cache_drop_savings(days=30):
         prefix = _per_session_prefix_tokens(fallback=_current_overhead_tokens() or 0)
         if prefix <= 1:
             return {**zero, "drop_sessions": int(drop_sessions)}
-        _, write_5m_rate, _ = _active_model_cache_rates()
         # Conservative: one avoidable reload per qualifying session.
         est_drops = int(drop_sessions)
-        cost = est_drops * prefix * write_5m_rate / 1_000_000
+        tier_data = PRICING_TIERS.get(_load_pricing_tier(), PRICING_TIERS["anthropic"])
+        weights = {}
+        for blob in breakdowns:
+            try:
+                recorded = json.loads(blob) if blob else None
+            except (TypeError, ValueError):
+                continue
+            for model, parts in (recorded.items() if isinstance(recorded, dict) else ()):
+                written = parts.get("cache_create") if isinstance(parts, dict) else None
+                if isinstance(written, int) and not isinstance(written, bool) and written > 0:
+                    weights[model] = weights.get(model, 0) + written
+        total_weight = sum(weights.values())
+        write_rate = read_rate = 0.0
+        unpriced_share = 0.0
+        rate_basis = "session_models"
+        priced_weight = 0
+        for model, weight in weights.items():
+            card = _counted_exact_card(model, tier_data) or {}
+            if card.get("cache_write") is None or card.get("cache_read") is None:
+                continue
+            priced_weight += weight
+            write_rate += weight * float(card["cache_write"]) / total_weight
+            read_rate += weight * float(card["cache_read"]) / total_weight
+        if priced_weight:
+            unpriced_share = round(1 - priced_weight / total_weight, 4)
+        else:
+            read_rate, write_rate, _ = _mix_cache_rates(days)
+            rate_basis = "model_mix"
+        tokens = est_drops * int(prefix)
+        written_usd = tokens * write_rate / 1_000_000
+        read_usd = tokens * read_rate / 1_000_000
         return {
             "drop_sessions": int(drop_sessions),
             "est_drops": est_drops,
             "prefix_tokens": int(prefix),
-            "cost_saved_usd": round(cost, 4),
+            "cost_saved_usd": round(written_usd - read_usd, 4),
+            "by_class": {
+                "cache_write_5m": {"tokens": tokens, "usd": round(written_usd, 4)},
+                "cache_read_instead": {"tokens": tokens, "usd": round(-read_usd, 4)},
+            },
+            "rate_basis": rate_basis,
+            "unpriced_share": unpriced_share,
             "evidence": "opportunity",
         }
     except Exception:
@@ -57999,11 +58042,11 @@ def savings_report(days=30, as_json=False):
     reclaimable = summary.get("stale_reads_reclaimable") or {}
     recl_cost = float(reclaimable.get("cost_usd", 0.0) or 0.0)
     cache_drop = summary.get("cache_drop") or {}
-    # cache-drop is shown in TOKENS (re-written prefix), not dollars: the $ cost is
-    # Anthropic-specific (OpenAI/OpenCode cache writes are free/unbilled), but the
-    # re-written token count is a provider-neutral fact. Matches Claude Code's own
-    # token-denominated cost display.
+    # cache-drop shows the re-written prefix in tokens (a provider-neutral fact)
+    # and, as an opportunity outside every total, its dollar value at the rates
+    # of the models that ran (cache write minus the cache read it would have been).
     cd_tokens = int(cache_drop.get("est_drops", 0) or 0) * int(cache_drop.get("prefix_tokens", 0) or 0)
+    cd_cost = float(cache_drop.get("cost_saved_usd", 0.0) or 0.0)
     output_waste = summary.get("output_waste") or {}
     ow_cost = float(output_waste.get("cost_saved_usd", 0.0) or 0.0)
     if pot_cost > 0 or routing_potential > 0 or recl_cost > 0 or cd_tokens > 0 or ow_cost > 0:
@@ -58014,10 +58057,6 @@ def savings_report(days=30, as_json=False):
             pot_monthly = _mo(pot_cost)
             print(f"    ~${pot_monthly:.2f}{per} structural: prune {potential.get('unused_skills', 0)} unused skills "
                   f"(~{potential.get('recoverable_tokens', 0):,} tokens), compounds every session.")
-        if cd_tokens > 0:
-            cd_tokens_monthly = int(_mo(cd_tokens))
-            print(f"    ~{cd_tokens_monthly:,} tokens{per} cache drops: {cache_drop.get('drop_sessions', 0)} sessions idled "
-                  f"past the cache window and re-wrote the prefix — compact before breaks or use the 1h cache.")
         if ow_cost > 0:
             ow_monthly = _mo(ow_cost)
             print(f"    ~${ow_monthly:.2f}{per} output: {output_waste.get('avoidable_writes', 0)} of "
@@ -58029,6 +58068,14 @@ def savings_report(days=30, as_json=False):
         concrete_items = [c for c in (pot_cost, ow_cost, recl_cost) if c > 0]
         if len(concrete_items) > 1:
             print(f"    = ~${_mo(sum(concrete_items)):.2f}{per} from the items above (API-rate equivalent)")
+        if cd_tokens > 0:
+            # Cache drops are an opportunity valued at API rates; like routing
+            # they sit on their own line and are never folded into the total above.
+            cd_dollars = f", about ${_mo(cd_cost):.2f}{per} at API rates" if cd_cost > 0 else ""
+            print()
+            print(f"    Cache drops (an opportunity, not a measurement): {cache_drop.get('drop_sessions', 0)} sessions idled "
+                  f"past the cache window and re-wrote ~{int(_mo(cd_tokens)):,} tokens{per} of prefix{cd_dollars}. "
+                  f"Compact before breaks or use the 1h cache.")
         if routing_potential > 0:
             # Routing is an assumption about the user's own Opus work, so it sits
             # on its own line and is never folded into the total above.

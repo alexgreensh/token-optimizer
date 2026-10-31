@@ -4455,6 +4455,7 @@ var DB = (function() {
     // Opus work, so it gets its own line below the number and is never added in.
     var opportunityMo = mo(sp.cost_saved_usd) + mo(recl.cost_usd) + mo(ow.cost_saved_usd);
     var routingPotentialMo = mo(mr.potential_cost_usd);
+    var cdCostMo = mo(cd.cost_saved_usd);
     var routingTokensMo = Number(mr.potential_tokens_monthly) > 0
       ? Number(mr.potential_tokens_monthly)
       : mo(mr.potential_tokens);
@@ -4672,7 +4673,7 @@ var DB = (function() {
       parts.push('Route routine work to lighter models and keep Opus for the work that needs it. The routing line above shows the size of that assumption.');
     }
     if (cdTokensMo > 0) {
-      parts.push('Resume within the hour, or batch related work before stepping away. ' + (Number(cd.drop_sessions) || 0) + ' of your sessions idled past the cache window and re-wrote the prefix — about ' + cdTokensMo.toLocaleString() + ' tokens' + per + '.');
+      parts.push('Resume within the hour, or batch related work before stepping away. ' + (Number(cd.drop_sessions) || 0) + ' of your sessions idled past the cache window and re-wrote the prefix — about ' + cdTokensMo.toLocaleString() + ' tokens' + per + (cdCostMo > 0 ? ', worth about ' + money(cdCostMo) + per + ' at API rates' : '') + '.');
     }
     if ((Number(ow.cost_saved_usd) || 0) > 0) {
       parts.push('Favor targeted Edits over full-file Writes. About ' + (Number(ow.avoidable_writes) || 0) + ' of your Writes could have been Edits, worth about ' + money(mo(ow.cost_saved_usd)) + per + ' in output.');
@@ -4688,6 +4689,13 @@ var DB = (function() {
         html += '<div class="lede" style="margin-top:var(--s-2);">Potential savings if you change your setup or habits. Excluded from the totals above.</div>';
       } else {
         html += '<div class="lede">Potential savings if you change your setup or habits. Excluded from the totals above.</div>';
+      }
+      if (cdTokensMo > 0) {
+        html += '<div class="cache-drop-opportunity" style="margin-top:var(--s-3);font-family:var(--font-mono);font-size:17px;line-height:1.6;color:var(--c-text-main);max-width:820px;">' +
+          'Cache drops (an opportunity, not a measurement): ' + (Number(cd.drop_sessions) || 0) + ' sessions idled past the cache window and re-wrote ~' + fmtTok(cdTokensMo) + ' tokens' + esc(per) + ' of prefix' +
+          (cdCostMo > 0 ? ', about <span style="color:var(--c-amber);">' + money(cdCostMo) + '</span> at API rates' : '') + '.' +
+          '</div>';
+        html += '<div class="note" style="margin-top:var(--s-1);">Cache write rate minus the cache read it would have cost, at the models you ran. It is not part of the number above.</div>';
       }
       if (routingPotentialMo > 0) {
         html += '<div class="routing-assumption" style="margin-top:var(--s-3);font-family:var(--font-mono);font-size:17px;line-height:1.6;color:var(--c-text-main);max-width:820px;">' +

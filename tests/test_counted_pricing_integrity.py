@@ -160,6 +160,17 @@ def test_prompt_class_includes_streamed_ttl_split_cache_writes(m, tmp_path, monk
                                   m.PRICING_TIERS["anthropic"])[0] == 0.5
 
 
+def test_prompt_class_merges_flat_and_split_creation_without_overlap(m, tmp_path, monkeypatch):
+    path, _ = _transcript(m, tmp_path, monkeypatch, n_turns=1, model="claude-haiku-5-5")
+    lines = [json.loads(line) for line in path.read_text().splitlines()]
+    lines[0]["message"]["usage"] = {"input_tokens": 1, "cache_creation_input_tokens": 60_000}
+    lines[1]["message"]["usage"] = {"cache_creation": {"ephemeral_1h_input_tokens": 60_000,
+                                                             "ephemeral_5m_input_tokens": 40_000}}
+    path.write_text("\n".join(json.dumps(line) for line in lines) + "\n")
+    turns, _, _ = m._counted_walk_transcript(path)
+    assert len(turns) == 1 and turns[0][2] == 100_001
+
+
 def test_streamed_prompt_size_crosses_threshold_without_duplicating_turn(m, tmp_path, monkeypatch):
     path, start = _transcript(m, tmp_path, monkeypatch, n_turns=2, model="claude-haiku-5-5")
     lines = [json.loads(line) for line in path.read_text().splitlines()]
@@ -340,4 +351,64 @@ def test_weekly_plan_payload_carries_partial_reread_coverage(m, tmp_path, monkey
     result = m.runway_snapshot()
     assert result["counted_pricing"] == {
         "reread_pricing_complete": False, "reread_unpriced_tokens": 1000,
-        "reread_pricing_note": "Repeat-read tokens unpriced."}
+        "reread_pricing_note": "Repeat-read tokens unpriced.",
+        "unmeasured_events": 0, "unmeasured_removed_tokens": 0}
+
+
+@pytest.mark.parametrize("kind", ["unknown", "known_zero", "mixed"])
+def test_history_amount_labels_use_component_price_availability(m, monkeypatch, kind):
+    monkeypatch.setitem(m.OPENAI_MODEL_PRICING, "gpt-test-zero", {"input": 0, "cache_read": 0})
+    start = _utc_now()
+    models = {"unknown": [None, None], "known_zero": ["gpt-test-zero"] * 2,
+              "mixed": [None, "claude-opus-5-5"]}[kind]
+    counted = m._counted_score_detail([(start + timedelta(minutes=i), model) for i, model in enumerate(models)],
+        [], start - timedelta(seconds=1), 1_000_000, m.PRICING_TIERS["anthropic"])
+    counted.update(available=True, events=1, total_usd=counted["oneshot_usd"] + counted["reread_usd"])
+    summary = {"period_days": 30, "counted_period": counted, "counted_cumulative": counted,
+               "action_savings": m._action_savings_components({}, counted)}
+    history = render(summary).split('savings-history')[1]
+    if kind == "unknown":
+        assert '<strong>Unpriced</strong> from removals in the last 30 days' in history
+        assert 'Unpriced initial removals + Unpriced modeled repeat reads.' in history
+        assert '$0' not in history
+    elif kind == "known_zero":
+        assert '<strong>$0.00</strong> from removals in the last 30 days' in history
+        assert '$0.00 initial removals + $0.00 modeled repeat reads.' in history
+        assert 'Unpriced' not in history
+    else:
+        assert f'Unpriced initial removals + ${counted["reread_usd"]:.2f} modeled repeat reads.' in history
+        assert 'Priced subtotal only:' in history
+
+
+@pytest.mark.parametrize("source", ["missing", "unreadable", "empty", "observed_no_later_calls", "no_candidates"])
+def test_window_missing_trajectory_is_explicit_and_weekly_note_survives(m, tmp_path, monkeypatch, source):
+    from test_runway_resume_lean_addback import _wire
+    db = _db(m, tmp_path, monkeypatch)
+    path, start = _transcript(m, tmp_path, monkeypatch, n_turns=1)
+    window_helper = m._counted_window_summary
+    _wire(m, monkeypatch, resume_lean_usd=0)
+    monkeypatch.setattr(m, "_counted_window_summary", window_helper)
+    _add_event(db, "tool_archive", 1_000_000, _local_iso(start + timedelta(seconds=30)))
+    if source == "missing":
+        monkeypatch.setattr(m, "_counted_session_path", lambda *args: None)
+    elif source == "unreadable":
+        monkeypatch.setattr(m, "_counted_walk_transcript", lambda *args: ([], [], []))
+    elif source == "empty":
+        path.write_text("")
+    elif source == "no_candidates":
+        monkeypatch.setattr(m, "_counted_candidate_events", lambda *args: [])
+    unavailable = source in ("missing", "unreadable", "empty")
+    with sqlite3.connect(db) as conn:
+        result = window_helper(conn, start - timedelta(minutes=1), start + timedelta(minutes=1))
+    assert result["unmeasured_events"] == int(unavailable)
+    assert result["unmeasured_removed_tokens"] == (1_000_000 if unavailable else 0)
+    assert result["reread_tokens"] == result["reread_unpriced_tokens"] == result["total_usd"] == 0
+    assert result["pricing_complete"] is (not unavailable)
+    assert result["reread_pricing_complete"] is (not unavailable)
+    assert bool(result["reread_pricing_note"]) is unavailable
+    snapshot = m.runway_snapshot()
+    assert snapshot["saved_usd_context"] == 18.78
+    weekly = snapshot["counted_pricing"]
+    assert weekly["unmeasured_events"] == int(unavailable)
+    assert weekly["reread_pricing_complete"] is (not unavailable)
+    assert bool(weekly["reread_pricing_note"]) is unavailable

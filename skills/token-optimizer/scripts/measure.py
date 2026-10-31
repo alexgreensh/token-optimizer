@@ -23681,8 +23681,15 @@ def _counted_walk_transcript(path, collect_markers=False):
                         current = prompt_parts.get(key)
                         if isinstance(value, int) and (not isinstance(current, int) or value > current):
                             prompt_parts[key] = value
-                prompt_tokens = (_context_token_count(prompt_parts) if "input_tokens" in prompt_parts
-                                 and all(isinstance(v, int) and v >= 0 for v in prompt_parts.values()) else None)
+                prompt_tokens = None
+                if ("input_tokens" in prompt_parts
+                        and all(isinstance(v, int) and v >= 0 for v in prompt_parts.values())):
+                    # Flat and TTL fields describe overlapping cache writes.
+                    # Partial chunks can fill either form; never add both.
+                    creation = max(prompt_parts.get("cache_creation_input_tokens", 0),
+                                   prompt_parts.get("ephemeral_1h_input_tokens", 0)
+                                   + prompt_parts.get("ephemeral_5m_input_tokens", 0))
+                    prompt_tokens = _context_token_count(dict(prompt_parts, cache_creation_input_tokens=creation))
                 if rid is not None and rid in seen:
                     previous = turns[index]
                     turns[index] = (previous[0], previous[1] or raw_model, prompt_tokens)
@@ -23753,14 +23760,18 @@ def _counted_coverage_totals(out):
         out[kind + "_unpriced_tokens"] = sum(
             out.get(kind + "_unpriced_" + sign + "_tokens", 0)
             for sign in ("credit", "debit"))
+    missing_evidence = bool(out.get("legacy_unverified_events", 0) or out.get("unmeasured_events", 0))
+    out["oneshot_pricing_complete"] = not (out["oneshot_unpriced_tokens"] or missing_evidence)
     out["pricing_complete"] = not (
         out["oneshot_unpriced_tokens"] or out["reread_unpriced_tokens"]
-        or out.get("legacy_unverified_events", 0))
+        or missing_evidence)
     out["reread_pricing_complete"] = not (
-        out["reread_unpriced_tokens"] or out.get("legacy_unverified_events", 0))
+        out["reread_unpriced_tokens"] or missing_evidence)
     out["prices_available"] = bool(out.get("priced_oneshot_events")
                                    or out.get("priced_reread_turns")
-                                   or not out.get("events", 1))
+                                   or (not out.get("events", 1) and not missing_evidence))
+    out["oneshot_prices_available"] = bool(out.get("priced_oneshot_events")
+                                            or out["oneshot_pricing_complete"])
     out["reread_prices_available"] = bool(out.get("priced_reread_turns")
                                            or out["reread_pricing_complete"])
     out["pricing_note"] = _counted_pricing_note(out)
@@ -23782,6 +23793,13 @@ def _counted_pricing_note(out, reread_only=False):
     legacy = int(out.get("legacy_unverified_events", 0))
     if legacy:
         parts.append(f"{legacy:,} historical events have unverifiable prices")
+    unmeasured = int(out.get("unmeasured_events", 0))
+    if unmeasured:
+        credit = int(out.get("unmeasured_removed_credit_tokens", 0))
+        debit = int(out.get("unmeasured_removed_debit_tokens", 0))
+        parts.append(f"{unmeasured:,} removal events lack usable transcript evidence "
+                     f"({credit:,} known removed tokens, {debit:,} re-expanded tokens); "
+                     "their repeat-read counts are unavailable")
     text = "Priced subtotal only: " + "; ".join(parts) + ". The complete net dollar value is unavailable." if parts else ""
     incomplete = int(out.get("refresh_incomplete_events", 0))
     if incomplete:
@@ -23843,14 +23861,20 @@ def _counted_window_summary(conn, window_start, window_end):
         oneshot = reread_usd = 0.0
         reread_tokens = removed_tokens = events = 0
         coverage = dict.fromkeys(_COUNTED_COVERAGE_KEYS, 0)
+        missing = dict(unmeasured_events=0, unmeasured_removed_tokens=0,
+                       unmeasured_removed_credit_tokens=0, unmeasured_removed_debit_tokens=0)
         for _key, session_uuid, ts, tokens, _logged_cost, _model in _counted_candidate_events(conn):
             ev_dt = _counted_event_utc(ts)
             if ev_dt is None or ev_dt < start or ev_dt > end:
                 continue
             path = _counted_session_path(conn, session_uuid)
-            if path is None:
+            turns, compacts, _ = _counted_walk_transcript(path) if path is not None else ([], [], [])
+            if not turns:
+                missing["unmeasured_events"] += 1
+                missing["unmeasured_removed_tokens"] += int(tokens or 0)
+                sign = "credit" if int(tokens or 0) >= 0 else "debit"
+                missing["unmeasured_removed_" + sign + "_tokens"] += abs(int(tokens or 0))
                 continue
-            turns, compacts, _ = _counted_walk_transcript(path)
             turns = [turn for turn in turns if start <= turn[0] <= end]
             compacts = [compact for compact in compacts if start <= compact <= end]
             score = _counted_score_detail(
@@ -23866,6 +23890,7 @@ def _counted_window_summary(conn, window_start, window_end):
             events += 1
         return _counted_coverage_totals({
             **coverage,
+            **missing,
             "available": True,
             "events": events,
             "removed_tokens": removed_tokens,
@@ -50762,6 +50787,8 @@ def runway_snapshot(days=30, now=None):
                             "reread_pricing_complete": counted.get("reread_pricing_complete", True),
                             "reread_unpriced_tokens": counted.get("reread_unpriced_tokens", 0),
                             "reread_pricing_note": counted.get("reread_pricing_note", ""),
+                            "unmeasured_events": counted.get("unmeasured_events", 0),
+                            "unmeasured_removed_tokens": counted.get("unmeasured_removed_tokens", 0),
                         }
                     finally:
                         conn.close()

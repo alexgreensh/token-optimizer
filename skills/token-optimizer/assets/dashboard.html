@@ -4612,10 +4612,11 @@ var DB = (function() {
         '<p class="note">Initial removals + modeled repeat reads.</p>' +
         (cc.pricing_note ? '<p class="note">' + esc(cc.pricing_note) + '</p>' : '') +
         (Number(cc.total_usd) < 0 ? '<p class="note">Signed net: ' + money(cc.total_usd) + '. Savings headline is floored at zero.</p>' : '') +
-        (cp.available ? '<p class="note"><strong>' + money(cp.total_usd) + '</strong> from removals in the last ' + days + ' days.</p>' : '') +
+        (cp.available ? '<p class="note"><strong>' + (cp.prices_available === false ? 'Unpriced' : money(cp.total_usd)) + '</strong> from removals in the last ' + days + ' days.</p>' : '') +
         '<p class="note">Overlaps with action savings. Excludes routing, setup and other estimates.</p>' +
         fold('History and coverage',
-          '<p>' + money(cc.oneshot_usd) + ' initial removals + ' + money(cc.reread_usd) + ' modeled repeat reads.</p>' +
+          '<p>' + (cc.oneshot_prices_available === false ? 'Unpriced' : money(cc.oneshot_usd)) + ' initial removals + ' +
+            (cc.reread_prices_available === false ? 'Unpriced' : money(cc.reread_usd)) + ' modeled repeat reads.</p>' +
           '<p>Stored history since ' + esc(prettyDate(cc.window_start)) + '. ' +
             'Same removal-date method as the period total. Historical entries remain after their source transcripts rotate.</p>' +
           '<p>Repeat reads assume the removed context would otherwise have stayed until the session’s next compaction. ' +

@@ -60132,6 +60132,52 @@ def _verbosity_measured_savings(baseline_avg, post_nudge_outputs):
     return int(delta * len(outs))
 
 
+def _transcript_request_outputs(filepath):
+    """Output tokens of each API request in a transcript, in request order.
+
+    Claude Code writes several assistant lines per request while it streams,
+    each carrying the cumulative output so far, so the request's output is the
+    MAX over its lines (the same fold ``_parse_session_jsonl`` applies). Lines
+    with neither a requestId nor a message id stay separate requests. Returns
+    ``[(positive_lines_before, output_tokens), ...]`` for requests with output
+    above zero, where ``positive_lines_before`` counts the output-bearing
+    assistant lines that precede the request's first one (used to place a
+    boundary recorded in lines by an older nudge).
+    """
+    order = []
+    by_key = {}
+    seen_lines = 0
+    for line in Path(filepath).read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(entry, dict) or entry.get("type") != "assistant":
+            continue
+        msg = entry.get("message")
+        if not isinstance(msg, dict):
+            continue
+        usage = msg.get("usage", {})
+        out = _safe_int(usage.get("output_tokens", 0)) if isinstance(usage, dict) else 0
+        if out <= 0:
+            continue
+        key = _usage_request_key(entry, msg)
+        if key is None:
+            key = f"__noreq__{len(order)}"
+        slot = by_key.get(key)
+        if slot is None:
+            slot = [seen_lines, out]
+            by_key[key] = slot
+            order.append(slot)
+        else:
+            slot[1] = max(slot[1], out)
+        seen_lines += 1
+    return [(before, out) for before, out in order]
+
+
 def _calibrate_prior_verbosity_nudges(session_id, filepath):
     """Book the MEASURED saving of a prior verbosity nudge (U5, R5, D1).
 
@@ -60199,24 +60245,15 @@ def _calibrate_prior_verbosity_nudges(session_id, filepath):
         pre_turns = int(m_turns.group(1))
         pre_avg = int(m_avg.group(1))
 
-        # Collect assistant output_tokens in transcript order.
-        outputs = []
-        for line in Path(filepath).read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entry = json.loads(line)
-            except (json.JSONDecodeError, ValueError):
-                continue
-            if not isinstance(entry, dict):
-                continue
-            if entry.get("type") == "assistant" and "message" in entry:
-                out = _safe_int(entry["message"].get("usage", {}).get("output_tokens", 0))
-                if out > 0:
-                    outputs.append(out)
-
-        post_outputs = outputs[pre_turns:]
+        # Output per API request in transcript order. A nudge that recorded
+        # its boundary in requests ("unit=req") indexes the request list; an
+        # older one recorded transcript lines, so the boundary is placed by
+        # line position and only whole requests after it are counted.
+        requests = _transcript_request_outputs(filepath)
+        if "unit=req" in src_detail:
+            post_outputs = [out for _, out in requests[pre_turns:]]
+        else:
+            post_outputs = [out for before, out in requests if before >= pre_turns]
         if not post_outputs:
             # No post-nudge turns yet: nothing to measure. Leave the nudge
             # uncalibrated so a later turn settles it.
@@ -60419,23 +60456,8 @@ def run_verbosity_steer(transcript_path=None, quiet=True, session_id=None):
             _pre_nudge_turns = 0
             try:
                 if filepath and filepath.exists():
-                    _turn_outputs = []
-                    for _line in filepath.read_text(encoding="utf-8").splitlines():
-                        _line = _line.strip()
-                        if not _line:
-                            continue
-                        try:
-                            _entry = json.loads(_line)
-                        except (json.JSONDecodeError, ValueError):
-                            continue
-                        if not isinstance(_entry, dict):
-                            continue
-                        if _entry.get("type") == "assistant" and "message" in _entry:
-                            _msg = _entry["message"]
-                            _usage = _msg.get("usage", {})
-                            _out = _safe_int(_usage.get("output_tokens", 0))
-                            if _out > 0:
-                                _turn_outputs.append(_out)
+                    _turn_outputs = [
+                        _o for _, _o in _transcript_request_outputs(filepath)]
                     if _turn_outputs:
                         _pre_nudge_avg_output = round(sum(_turn_outputs) / len(_turn_outputs))
                         _pre_nudge_turns = len(_turn_outputs)
@@ -60444,7 +60466,8 @@ def run_verbosity_steer(transcript_path=None, quiet=True, session_id=None):
 
             _tier_label = 'strong' if fill_pct >= 75 else 'gentle'
             _detail = (f"fill={fill_pct:.0f}% score={score:.0f} tier={_tier_label}"
-                       f" pre_avg_out={_pre_nudge_avg_output} pre_turns={_pre_nudge_turns}")
+                       f" pre_avg_out={_pre_nudge_avg_output} pre_turns={_pre_nudge_turns}"
+                       f" unit=req")
             _log_savings_event(
                 "verbosity_steer",
                 0,

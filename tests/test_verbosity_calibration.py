@@ -177,3 +177,76 @@ def test_no_assumed_constant_remains_in_source():
         "the assumed output-reduction constant must be removed from the nudge path")
     assert "_avg_response_tokens = 800" not in src, (
         "the assumed 800-token response figure must be removed from the nudge path")
+
+
+# --- Streamed lines fold to one output per API request ---
+
+def _stream_lines(req, outs):
+    return [json.dumps({"type": "assistant", "requestId": req,
+                        "message": {"id": "msg-" + req,
+                                    "usage": {"output_tokens": o}}})
+            for o in outs]
+
+
+def test_streamed_lines_fold_to_one_output_per_request(m, tmp_path):
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text("\n".join(
+        _stream_lines("a", [5, 1000]) + _stream_lines("b", [5, 5, 600])) + "\n",
+        encoding="utf-8")
+    reqs = m._transcript_request_outputs(transcript)
+    assert [o for _, o in reqs] == [1000, 600]
+
+
+def test_measured_saving_counts_requests_not_streamed_lines(m, monkeypatch, tmp_path):
+    """Pre: two 1000-token replies (2 lines each). Post: two 600-token replies
+    (4 lines each). True saving is 2 x (1000 - 600) = 800, whatever the line
+    counts are."""
+    pre = _stream_lines("a", [5, 1000]) + _stream_lines("b", [5, 1000])
+    post = (_stream_lines("c", [5, 5, 5, 600]) + _stream_lines("d", [5, 5, 5, 600]))
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text("\n".join(pre) + "\n", encoding="utf-8")
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_path = cache_dir / f"quality-cache-{LIVE_SID}.json"
+    cache_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(m, "_quality_cache_path_for", lambda fp=None: cache_path)
+    cache = {"fill_pct": 47, "score": 73, "session_efficiency": 60,
+             "nudge_count": 0, "last_nudge_time": 0}
+    monkeypatch.setattr(m, "_read_quality_cache", lambda cp: dict(cache))
+
+    # The real nudge writer records the pre-nudge baseline from the transcript.
+    assert m.run_verbosity_steer(transcript_path=str(transcript), quiet=True,
+                                 session_id=LIVE_SID)
+    transcript.write_text("\n".join(pre + post) + "\n", encoding="utf-8")
+    m.run_verbosity_steer(transcript_path=str(transcript), quiet=True,
+                          session_id=LIVE_SID)
+
+    conn = m._init_trends_db()
+    try:
+        rows = conn.execute(
+            "SELECT tokens_saved, detail FROM savings_events "
+            "WHERE event_type='verbosity_steer_measured' AND session_id=?",
+            (LIVE_SID,)).fetchall()
+        nudge = conn.execute(
+            "SELECT detail FROM savings_events WHERE event_type='verbosity_steer' "
+            "AND session_id=?", (LIVE_SID,)).fetchone()[0]
+    finally:
+        conn.close()
+    assert "pre_avg_out=1000" in nudge and "pre_turns=2" in nudge
+    assert [r[0] for r in rows] == [800]
+    assert "post_turns=2" in rows[0][1]
+
+
+def test_older_nudge_with_line_boundary_counts_only_whole_requests_after_it(m, tmp_path):
+    """A nudge recorded before the request unit existed stored a line count.
+    Requests that start after that line boundary are post-nudge; each is
+    counted once at its largest output."""
+    m._log_savings_event(
+        "verbosity_steer", 0, session_id=LIVE_SID,
+        detail="fill=80% score=70 tier=strong pre_avg_out=1000 pre_turns=4")
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text("\n".join(
+        _stream_lines("a", [5, 1000]) + _stream_lines("b", [5, 1000])
+        + _stream_lines("c", [5, 5, 600])) + "\n", encoding="utf-8")
+    assert m._calibrate_prior_verbosity_nudges(LIVE_SID, str(transcript)) == 400

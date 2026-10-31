@@ -13279,7 +13279,9 @@ CREATE TABLE IF NOT EXISTS session_log_aliases (
 -- in more than one transcript (a resumed or forked session carries its parent's
 -- history, and a copy may hold a longer streamed reply than another), so the
 -- sessions together count the largest figure seen for it, once. The hashes are
--- of the request id and the session id; the rest is that session's share.
+-- of the request id and the session id; the rest is that session's share, with
+-- the model and day it was billed to so the share survives its transcript
+-- losing the record.
 CREATE TABLE IF NOT EXISTS usage_request_claims (
     request_hash INTEGER NOT NULL,
     owner_hash INTEGER NOT NULL,
@@ -13290,8 +13292,11 @@ CREATE TABLE IF NOT EXISTS usage_request_claims (
     cc INTEGER NOT NULL DEFAULT 0,
     cc_1h INTEGER NOT NULL DEFAULT 0,
     cc_5m INTEGER NOT NULL DEFAULT 0,
+    model TEXT,
+    day TEXT,
     PRIMARY KEY (request_hash, owner_hash)
 ) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS idx_usage_request_claims_owner ON usage_request_claims(owner_hash);
 
 CREATE TABLE IF NOT EXISTS daily_stats (
     date TEXT PRIMARY KEY,
@@ -13927,11 +13932,11 @@ def _init_trends_db():
         conn.commit()
     except sqlite3.Error as _e:
         _log_migration_error("session_log columns", _e)
-    # A request-claims table that records only who counted a request cannot say
-    # how much was counted; it holds no history, so it is rebuilt with the shares.
+    # A request-claims table without the shares (or the model and day they were
+    # billed to) cannot rebuild a session; it holds no history, so it is recreated.
     try:
         _claim_cols = {r[1] for r in conn.execute("PRAGMA table_info(usage_request_claims)").fetchall()}
-        if _claim_cols and "inp" not in _claim_cols:
+        if _claim_cols and not {"inp", "model", "day"} <= _claim_cols:
             conn.execute("DROP TABLE usage_request_claims")
             conn.executescript(_SCHEMA)
             conn.commit()
@@ -26176,7 +26181,7 @@ def _claim_state(conn, owner_id, keys, live_owners):
         batch = hashes[i:i + 500]
         try:
             rows = conn.execute(
-                "SELECT request_hash, owner_hash, calls, inp, out, cr, cc, cc_1h, cc_5m "
+                "SELECT request_hash, owner_hash, calls, inp, out, cr, cc, cc_1h, cc_5m, model, day "
                 "FROM usage_request_claims WHERE request_hash IN (%s)" % ",".join("?" * len(batch)),
                 batch).fetchall()
         except sqlite3.Error:
@@ -26190,36 +26195,83 @@ def _claim_state(conn, owner_id, keys, live_owners):
                 continue
             share = target.setdefault(by_hash[request_hash], _empty_share())
             share["n"] += int(calls or 0)
-            for name, value in zip(_SHARE_FIELDS, fields):
+            for name, value in zip(_SHARE_FIELDS, fields[:len(_SHARE_FIELDS)]):
                 share[name] += int(value or 0)
+            if target is own:
+                share["model"], share["day"] = fields[len(_SHARE_FIELDS)], fields[len(_SHARE_FIELDS) + 1]
     return others, own
+
+
+def _own_exceeds(requests, own):
+    """True when a session was credited for more of a request than its transcript
+    now holds (a shorter copy of a streamed reply, or a rotated file)."""
+    for key, u in requests.items():
+        base = _request_base_key(key)
+        prior = own.get(base) if (own and base is not None) else None
+        if prior and any(int(u.get(name) or 0) < prior[name] for name in _SHARE_FIELDS):
+            return True
+    return False
 
 
 def _net_of_counted(requests, counted, own=None):
     """The part of each request this session adds on top of what is already
-    counted: per field, its own figure minus the others' total, never below 0
-    and never above what its own transcript holds. A share this session
-    recorded earlier is kept, so collecting it again for an unrelated reason
-    cannot shrink it. The shares of every session sum to the largest figure any
-    copy holds, whichever session is collected first or collected again later.
-    An entry the others already cover completely comes back empty (`n` 0, all
-    fields 0)."""
+    counted: per field, its own figure minus the others' total, never below 0.
+    A share this session recorded earlier is kept, so collecting it again
+    cannot shrink it, whether the transcript is collected for an unrelated
+    reason or has lost part of the reply. The shares of every session sum to
+    the largest figure any copy holds, whichever session is collected first or
+    collected again later. An entry the others already cover completely comes
+    back empty (`n` 0, all fields 0)."""
     own = own or {}
     net = {}
     for key, u in requests.items():
         base = _request_base_key(key)
         share = counted.get(base) if base is not None else None
+        prior = own.get(base) if base is not None else None
         entry = dict(u)
-        if share:
-            prior = own.get(base) or {}
+        if share or prior:
+            prior = prior or {}
             for name in _SHARE_FIELDS:
                 raw = int(u.get(name) or 0)
-                entry[name] = min(raw, max(int(prior.get(name) or 0), raw - share[name]))
-            entry["n"] = max(int(prior.get("n") or 0), 0 if share["n"] >= 1 else 1)
+                entry[name] = max(int(prior.get(name) or 0), raw - (share[name] if share else 0), 0)
+            entry["n"] = max(int(prior.get("n") or 0), 0 if (share and share["n"] >= 1) else 1)
+            if prior:
+                # What was recorded about the request (its day and model) stands;
+                # a later observation only fills what was missing.
+                entry["day"] = prior.get("day") or u.get("day")
+                recorded = prior.get("model")
+                entry["model"] = (recorded if recorded and recorded != "unknown"
+                                  and not str(recorded).startswith("<")
+                                  else (u.get("model") or recorded))
         else:
             entry["n"] = 1
         net[key] = entry
     return net
+
+
+def _retained_requests(conn, owner_id, keys):
+    """The session's recorded shares of requests its transcripts no longer hold.
+
+    Transcripts rotate and copies get removed. What a session was already
+    credited for stays in its totals; the requests still in the files are
+    counted next to it. Shares come back as request entries (keyed so they are
+    never treated as shareable) carrying the model and day they were billed to.
+    """
+    present = {_stable_hash63(b) for b in (_request_base_key(k) for k in keys) if b is not None}
+    try:
+        rows = conn.execute(
+            "SELECT request_hash, calls, inp, out, cr, cc, cc_1h, cc_5m, model, day "
+            "FROM usage_request_claims WHERE owner_hash = ?", (_stable_hash63(owner_id),)).fetchall()
+    except sqlite3.Error:
+        return {}
+    kept = {}
+    for request_hash, calls, *fields, model, day in rows:
+        if request_hash in present or not (calls or any(fields)):
+            continue
+        entry = dict(zip(_SHARE_FIELDS, (int(v or 0) for v in fields)))
+        entry.update(n=int(calls or 0), model=model or "unknown", day=day)
+        kept[f"__noreq__kept:{request_hash}"] = entry
+    return kept
 
 
 def _claim_requests(conn, owner_id, net_requests):
@@ -26230,16 +26282,17 @@ def _claim_requests(conn, owner_id, net_requests):
         base = _request_base_key(key)
         if base is None:
             continue
+        calls = 0 if u.get("advisor") else int(u.get("n", 1) or 0)
         rows[_stable_hash63(base)] = (
-            _stable_hash63(base), me, int(u.get("n", 1) or 0),
-            *(int(u.get(name) or 0) for name in _SHARE_FIELDS))
+            _stable_hash63(base), me, calls,
+            *(int(u.get(name) or 0) for name in _SHARE_FIELDS), u.get("model"), u.get("day"))
     if not rows:
         return
     try:
         conn.executemany(
             "INSERT OR REPLACE INTO usage_request_claims "
-            "(request_hash, owner_hash, calls, inp, out, cr, cc, cc_1h, cc_5m) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", list(rows.values()))
+            "(request_hash, owner_hash, calls, inp, out, cr, cc, cc_1h, cc_5m, model, day) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", list(rows.values()))
     except sqlite3.Error:
         pass
 
@@ -26291,7 +26344,7 @@ def _parsed_with_requests(parsed, requests):
 def _parsed_net_of_counted(parsed, counted, own=None):
     """`parsed` restated without what other sessions already counted of its requests."""
     requests = (parsed or {}).get("request_usage")
-    if not counted or not requests:
+    if not requests or not (counted or _own_exceeds(requests, own)):
         return parsed
     return _parsed_with_requests(parsed, _net_of_counted(requests, counted, own))
 
@@ -26378,9 +26431,12 @@ def _session_daily_usage(filepath, parsed=None, subagent_files=None, conn=None, 
     if conn is not None:
         if live_owners is None:
             live_owners = _live_usage_owners(conn)
-        counted, own = _claim_state(conn, _usage_owner_id(filepath), merged, live_owners)
-        if counted:
+        owner_id = _usage_owner_id(filepath)
+        counted, own = _claim_state(conn, owner_id, merged, live_owners)
+        if counted or _own_exceeds(merged, own):
             merged = _net_of_counted(merged, counted, own)
+        if _stable_hash63(owner_id) in live_owners:
+            merged = {**merged, **_retained_requests(conn, owner_id, merged)}
     return _daily_usage_from_merged(merged)
 
 
@@ -26681,17 +26737,30 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
         # forked transcript repeats its parent's history, and a copy can hold a
         # longer streamed reply) is left out of this one; this session adds only
         # the difference, so the sessions together hold each request's largest usage.
-        counted = {}
+        counted, retained, own_shares = {}, {}, {}
         if merged is not None:
+            if _stable_hash63(owner_id) in live_owners:
+                retained = _retained_requests(conn, owner_id, merged)
+            else:
+                # Shares recorded by a session that has no row any more are not history.
+                try:
+                    conn.execute("DELETE FROM usage_request_claims WHERE owner_hash = ?",
+                                 (_stable_hash63(owner_id),))
+                except sqlite3.Error:
+                    pass
             counted, own_shares = _claim_state(conn, owner_id, merged, live_owners)
-            if counted:
+            if counted or _own_exceeds(merged, own_shares):
                 merged = _net_of_counted(merged, counted, own_shares)
                 parsed = _parsed_net_of_counted(parsed, counted, own_shares)
+            if retained:
+                merged = {**merged, **retained}
+                parsed = _parsed_with_requests(
+                    parsed, {**(parsed.get("request_usage") or {}), **retained})
         if merged is not None:
             daily_usage = _daily_usage_from_merged(merged)
         else:
             daily_usage = _session_daily_usage(filepath, parsed=parsed, subagent_files=subagent_files)
-        if subagent_files or counted or _session_copy_files(filepath):
+        if subagent_files or counted or retained or own_shares or _session_copy_files(filepath):
             # The per-file sums above count a request written into both the
             # parent and a subagent file twice; restate the stored token totals
             # from the same request-merged set the cost uses.

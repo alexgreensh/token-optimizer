@@ -98,10 +98,8 @@ MUTATIONS = [
     ("re-Read after compaction is soft-blocked as already in context (5.13.50)",
      [PARITY + "::test_reread_after_compaction_is_not_soft_blocked"],
      READ_CACHE,
-     [("        if _scan_for_compaction(store, hook_input.get(\"transcript_path\")):\n"
-       "            store.clear_file_entries()\n",
-       "        if _scan_for_compaction(store, hook_input.get(\"transcript_path\")):\n"
-       "            pass\n")]),
+     [("        if _scan_for_compaction(store, hook_input.get(\"transcript_path\")):\n",
+       "        if False:\n")]),
     ("a tool result quoting compact_boundary clears the read cache (5.13.50)",
      [PARITY + "::test_reread_after_compaction_is_not_soft_blocked"],
      READ_CACHE,

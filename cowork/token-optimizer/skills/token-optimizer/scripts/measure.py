@@ -52151,7 +52151,7 @@ def _earliest_model_mix(lookback_days=14):
 
 # Share of remaining Opus tokens assumed routable to a cheaper model (grunt
 # work: data gathering, search, simple edits). Conservative + configurable.
-_ROUTABLE_OPUS_FRACTION = _float_env("TOKEN_OPTIMIZER_ROUTABLE_OPUS_FRACTION", 0.3)
+_ROUTABLE_OPUS_FRACTION = _float_env("TOKEN_OPTIMIZER_ROUTABLE_OPUS_FRACTION", 0.2)
 
 
 # Explicit pre-Token-Optimizer Opus share, when the user knows their baseline
@@ -52236,21 +52236,18 @@ def _compute_model_routing_savings(days=30, since=None):
     `premium_cost_usd` report them separately.
 
     POTENTIAL: an assumption, not a measurement. A fixed share
-    (`routable_fraction`) of remaining Opus tokens (`potential_tokens`) is priced
-    at the Opus-to-Sonnet API rate delta (`potential_cost_usd`, an API-rate
-    equivalent). Consumers show it on its own line with the assumption stated and
-    keep it out of any concrete opportunity total, because some Opus work is
-    chosen deliberately.
+    (`routable_fraction`) of Opus fresh input and output, plus usage without a
+    class split, is priced at the Opus-to-Sonnet API rate delta. Cache reads and
+    writes represent main-session history: switching models rebuilds that cache,
+    while routine subagent work carries its own smaller context. The result is
+    shown separately from concrete opportunities.
 
-    Pricing is per token class, never a blended per-token rate. Fresh input is
-    priced at the input rate, cache creation at the 5-minute or 1-hour write rate,
-    cache reads at the cache-read rate and output at the output rate, each at the
-    model's own generation card (Opus 5.5 $4/$20, Opus 4.1 $15/$75, ...). A
-    family that ran on several generations is priced at the class-by-class
-    volume-weighted blend of those cards. The lighter arm uses the newest Sonnet
-    card. The class split comes from the per-day, per-model usage stored with
-    each session; tokens from rows with no split are priced at the input rate and
-    reported as `unsplit_tokens`.
+    Realized routing prices fresh input, cache creation, cache reads, output and
+    unsplit usage by class. Input, cache write, cache read and output use their
+    respective rates; unsplit usage uses the input rate and is reported as
+    `unsplit_tokens`. Potential uses the model's own generation card for fresh
+    input, output and unsplit usage, and the newest Sonnet card for its target.
+    The class split comes from per-day, per-model session usage.
 
     Realized routing is a standardized family comparison: the remaining work's
     class volumes per current family, and the same class volumes spread over the
@@ -52489,7 +52486,7 @@ def _compute_model_routing_savings(days=30, since=None):
             if fam_of[m] != "opus":
                 continue
             m_rates = _rates(m)
-            for k in _ROUTING_CLASSES:
+            for k in ("fresh_input", "output", "unsplit"):
                 tok = classes.get(k, 0)
                 if tok:
                     by_class[k]["tokens"] += tok * _ROUTABLE_OPUS_FRACTION
@@ -52504,10 +52501,7 @@ def _compute_model_routing_savings(days=30, since=None):
         return {
             "realized_cost_usd": round(realized_cost, 4),
             "potential_cost_usd": round(potential_cost, 4),
-            # Routable tokens: the routable share of Opus tokens in every class the
-            # dollar figure prices (fresh input, cache creation, cache reads,
-            # output, and unsplit). potential_billable_tokens leaves out cache
-            # reads, which dwarf the other classes.
+            # Routable tokens cover fresh input, output, and usage without a class split.
             "potential_tokens": potential_tokens,
             "potential_tokens_monthly": potential_tokens_monthly,
             "potential_billable_tokens": potential_billable_tokens,
@@ -57895,13 +57889,14 @@ def savings_report(days=30, as_json=False):
         if routing_potential > 0:
             # Routing is an assumption about the user's own Opus work, so it sits
             # on its own line and is never folded into the total above.
-            frac_pct = int(round(float(routing.get("routable_fraction", 0.3) or 0.3) * 100))
-            rp_tokens = int(_mo(int(routing.get("potential_tokens", 0) or 0)))
-            tok_txt = f"~{rp_tokens:,} tokens{per}, " if rp_tokens > 0 else ""
+            frac_pct = round(float(routing.get("routable_fraction", 0.2)) * 100, 2)
+            frac_text = f"{frac_pct:g}"
+            target = routing.get("target_model") or "Sonnet"
+            unsplit_note = " (unsplit tokens priced as input)" if "unsplit" in routing.get("potential_by_class", {}) else ""
             print()
-            print(f"    Routing (an assumption, not a measurement): if about {frac_pct}% of your remaining "
-                  f"Opus work ({routing.get('current_opus_share', 0.0) * 100:.0f}% of tokens) ran on lighter models: "
-                  f"{tok_txt}about ${_mo(routing_potential):.2f}{per} at API rates.")
+            print(f"    Routing (an assumption, not a measurement): if about {frac_text}% of your "
+                  f"Opus work (grunt tasks) ran on {target}: new input and output only{unsplit_note}, "
+                  f"about ${_mo(routing_potential):.2f}{per} at API rates.")
     print(f"  {'=' * 58}")
     print("  Tiers are separate: measured (billed events), estimated (your own")
     print("  cohorts), opportunity (not yet realized). They are never summed.")

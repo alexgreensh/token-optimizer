@@ -4705,7 +4705,35 @@ var DB = (function() {
         '<p>' + billingCaption + '</p>') +
       '</div>';
     var cc = s.counted_cumulative || {};
-    if (Number(cc.total_usd) > 0 || (cc.available && Number(cc.events) > 0)) {
+    var sia = (si && si.all_in) || null;
+    if (sia && Number(sia.total_usd) > 0) {
+      var siaParts = sia.components_usd || {};
+      var siaRouting = (Number(siaParts.routing_measured) || 0) + (Number(siaParts.routing_estimated) || 0);
+      var siaPending = sia.routing_pending || sia.remeasuring;
+      var siaLeft = Math.max(Number(sia.routing_pending_sessions) || 0, Number(sia.remeasuring_sessions) || 0);
+      html += '<div class="card savings-history" style="flex:1;min-width:min(100%,260px);padding:var(--s-4);">' +
+        '<div class="label">Saved since ' + esc(prettyDate(si.install_date)) + '</div>' +
+        '<div class="savings-amount">' + money(sia.total_usd) +
+          (siaPending ? ' <span class="remeasuring-tag" style="font-size:0.45em;color:var(--c-text-dim);">so far</span>' : '') + '</div>' +
+        (siaPending ? '<p class="plain-line remeasuring">Re-measuring older history (' + siaLeft.toLocaleString() +
+          ' session' + (siaLeft === 1 ? '' : 's') + ' left). This total will grow when they finish.</p>' : '') +
+        '<p class="plain-line">Same four parts as the monthly total, added up since install.</p>' +
+        fold('Breakdown and history',
+          '<p>Model routing: <strong>' + money(siaRouting) + '</strong> (estimated).</p>' +
+          '<p>Repeat reads avoided: <strong>' + money(siaParts.reread) + '</strong> (modeled).</p>' +
+          '<p>Logged actions: <strong>' + money(siaParts.logged) + '</strong>.</p>' +
+          '<p>Other estimates: <strong>' + money(sia.estimated_usd) + '</strong>.</p>' +
+          ((Number(cc.total_usd) > 0 || cc.available) ?
+            '<p>Context trimming on its own (initial removals + repeat reads): ' +
+              (cc.prices_available === false ? 'Unpriced' : money(Math.max(0, Number(cc.total_usd) || 0))) + '.</p>' : '') +
+          countedList([
+            cc.pricing_note ? esc(cc.pricing_note) : '',
+            cc.media_note ? esc(cc.media_note) : ''
+          ]) +
+          '<p>Tracked over ' + Number(si.days || 0).toLocaleString() + ' days. Historical entries remain after their source transcripts rotate.</p>' +
+          '<p>' + billingCaption + '</p>') +
+        '</div>';
+    } else if (Number(cc.total_usd) > 0 || (cc.available && Number(cc.events) > 0)) {
       html += '<div class="card savings-history" style="flex:1;min-width:min(100%,260px);padding:var(--s-4);">' +
         '<div class="label">Context savings &middot; all time</div>' +
         '<div class="savings-amount">' + (cc.prices_available === false ? 'Unpriced' : money(Math.max(0, Number(cc.total_usd) || 0))) +

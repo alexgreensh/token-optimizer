@@ -13877,11 +13877,17 @@ _FIXTURE_SESSION_GLOBS = (
     "f3bench-sess*", "sess_test*",
 )
 # Tool names whose results carry images. Matched against the archive event's
-# detail text ("replaced <tool> (...)" / "blocked re-fetch of <tool> (...)").
+# detail text ("replaced <tool> (...)" / "blocked re-fetch of <tool> (...)" /
+# "<tool_use_id> (<tool>)" on a re-expansion).
 _MEDIA_TOOL_GLOBS = (
     "*claude-in-chrome__computer*", "*computer_use__*", "*[Ss]creenshot*",
 )
-_MEDIA_ARCHIVE_EVENT_TYPES = ("tool_archive", "tool_archive_refetch_block")
+_MEDIA_ARCHIVE_EVENT_TYPES = ("tool_archive", "tool_archive_refetch_block", "tool_archive_reexpand")
+# Older re-expansion rows carry only the tool_use_id. One is paired with the
+# archive row it reverses: same session, archived up to an hour before, and the
+# re-expansion is the archived size plus the pointer stub (a few hundred tokens).
+_REEXPAND_PAIR_WINDOW_SECONDS = 3600
+_REEXPAND_PAIR_STUB_TOKENS = 1200
 
 
 def _sql_quote(value):
@@ -13936,10 +13942,28 @@ def _counted_twin_sql(alias, table, kind_col, same):
     )
 
 
+def _media_reexpand_pair_sql(alias):
+    """A re-expansion whose paired archive row is a media result. Its archive
+    credit is left out as media, so its debit is left out too."""
+    media = " OR ".join(f"a.detail GLOB {_sql_quote(g)}" for g in _MEDIA_TOOL_GLOBS)
+    win = _REEXPAND_PAIR_WINDOW_SECONDS
+    return (
+        f"EXISTS (SELECT 1 FROM main.savings_events a WHERE a.session_id = {alias}.session_id "
+        f"AND a.event_type = 'tool_archive' AND a.detail IS NOT NULL AND ({media}) "
+        f"AND a.timestamp <= {alias}.timestamp "
+        f"AND a.timestamp >= strftime('%Y-%m-%dT%H:%M:%S', julianday({alias}.timestamp) - {win}.0 / 86400.0) "
+        f"AND {alias}.tokens_saved - a.tokens_saved BETWEEN 0 AND {_REEXPAND_PAIR_STUB_TOKENS} "
+        f"AND NOT EXISTS (SELECT 1 FROM main.savings_events b WHERE b.session_id = {alias}.session_id "
+        f"AND b.event_type = 'tool_archive' AND b.timestamp <= {alias}.timestamp AND b.timestamp > a.timestamp "
+        f"AND {alias}.tokens_saved - b.tokens_saved BETWEEN 0 AND {_REEXPAND_PAIR_STUB_TOKENS}))"
+    )
+
+
 def _counted_view_statements():
     """The two CREATE TEMP VIEW statements, composed once from the fixed rules above."""
     media = " OR ".join(f"e.detail GLOB {_sql_quote(g)}" for g in _MEDIA_TOOL_GLOBS)
     media_types = ", ".join(_sql_quote(t) for t in _MEDIA_ARCHIVE_EVENT_TYPES)
+    media_pair = _media_reexpand_pair_sql("e")
     se_twin = _counted_twin_sql(
         "e", "savings_events", "event_type",
         "p.tokens_saved = e.tokens_saved AND COALESCE(p.detail, '') = COALESCE(e.detail, '')")
@@ -13952,6 +13976,7 @@ def _counted_view_statements():
         "SELECT e.* FROM main.savings_events e "
         f"WHERE NOT {_fixture_session_sql('e.session_id')}"
         f" AND NOT (e.event_type IN ({media_types}) AND e.detail IS NOT NULL AND ({media}))"
+        f" AND NOT (e.event_type = 'tool_archive_reexpand' AND COALESCE(e.session_id, '') != '' AND {media_pair})"
         f" AND NOT (e.tokens_saved > 0 AND COALESCE(e.session_id, '') != '' AND {se_twin})",
         "CREATE TEMP VIEW IF NOT EXISTS counted_compression_events AS "
         "SELECT c.* FROM main.compression_events c "
@@ -27916,12 +27941,25 @@ def _spawn_upgrade_drain():
         return False
 
 
-def _run_upgrade_drain(days=90, quiet=True):
+def _upgrade_drain_days():
+    """Days the one-time drain re-reads: all history since install, so routing
+    and the since-install total cover every month. At least the usual 90-day
+    collect window; ten years when no install date is known."""
+    try:
+        d = _install_date()
+        if d:
+            return max(90, min(3650, (datetime.now() - datetime.fromisoformat(d)).days + 2))
+    except Exception:
+        pass
+    return 3650
+
+
+def _run_upgrade_drain(days=None, quiet=True):
     """Body of `measure.py upgrade-drain`: one uncapped collect (usage re-parse,
     per-day usage, counted ledger and markers), then release the lock."""
     os.environ["TOKEN_OPTIMIZER_UPGRADE_DRAIN"] = "1"
     try:
-        return collect_sessions(days=days, quiet=quiet)
+        return collect_sessions(days=days or _upgrade_drain_days(), quiet=quiet)
     finally:
         _upgrade_drain_release_lock()
 
@@ -28331,7 +28369,8 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
     daily_truncated = False
     try:
         _daily_started = time.monotonic()
-        _backfill_daily_usage(conn, days=min(days, 90), budget_seconds=budgets["daily_seconds"])
+        _backfill_daily_usage(conn, days=days if drain == "full" else min(days, 90),
+                              budget_seconds=budgets["daily_seconds"])
         daily_truncated = time.monotonic() - _daily_started >= budgets["daily_seconds"]
     except Exception:
         pass
@@ -42410,7 +42449,7 @@ def _codex_backfill_tool_archive(filepath=None, session_id=None, max_outputs=20)
     return archived
 
 
-def _log_reexpand_debit(session_id, tool_use_id, response_text):
+def _log_reexpand_debit(session_id, tool_use_id, response_text, tool_name=""):
     """Record a tool_archive re-expansion as a debit (B6 integrity).
 
     An archived tool result that gets re-popped into context did not stay
@@ -42431,14 +42470,18 @@ def _log_reexpand_debit(session_id, tool_use_id, response_text):
                 # Dedup: skip if this exact item was already debited.
                 row = conn.execute(
                     "SELECT 1 FROM savings_events WHERE event_type='tool_archive_reexpand' "
-                    "AND detail = ? LIMIT 1",
-                    (tool_use_id,),
+                    "AND (detail = ? OR substr(detail, 1, ?) = ?) LIMIT 1",
+                    (tool_use_id, len(tool_use_id) + 2, tool_use_id + " ("),
                 ).fetchone()
             finally:
                 conn.close()
             if row:
                 return
-        _log_savings_event("tool_archive_reexpand", tokens, session_id=sid, detail=tool_use_id)
+        # The tool name lets the counted views treat a media re-expansion the
+        # same way as its media archive row.
+        name = re.sub(r"[^A-Za-z0-9_.:-]", "", str(tool_name or ""))[:120]
+        detail = f"{tool_use_id} ({name})" if name else tool_use_id
+        _log_savings_event("tool_archive_reexpand", tokens, session_id=sid, detail=detail)
     except Exception:
         pass
 
@@ -42613,7 +42656,7 @@ def expand_archived(tool_use_id=None, session_id=None, list_all=False):
                 # stay collapsed, so reverse its tool_archive credit. Log the
                 # re-popped tokens as a debit (netted in _get_savings_summary),
                 # deduped per item so a second expand never double-debits.
-                _log_reexpand_debit(sd.name, tool_use_id, response)
+                _log_reexpand_debit(sd.name, tool_use_id, response, data.get("tool_name") or "")
                 # No added newline: expand returns the stored text as stored.
                 sys.stdout.write(response)
                 sys.stdout.flush()
@@ -51227,6 +51270,32 @@ def _estimate_compression_cost_per_mtok(model=None):
         return 3.0
 
 
+def _window_input_rate_per_mtok(days=30):
+    """Fresh-input USD per million tokens, weighted by each model's share of
+    usage over the window. Estimates use it so their price follows the whole
+    window's workload, not whichever model the latest session ran. Unpriced
+    models are left out of the weighting. Falls back to the session-model rate
+    when no model in the window has a price. Never raises."""
+    try:
+        if detect_runtime() == "codex":
+            return _estimate_compression_cost_per_mtok()
+        tier_data = PRICING_TIERS.get(_load_pricing_tier(), PRICING_TIERS.get("anthropic", {}))
+        models = tier_data.get("claude_models", {})
+        weighted, priced_share = 0.0, 0.0
+        for model, share in (_model_mix_shares(days=days).get("shares") or {}).items():
+            key = _claude_price_key(model, models)
+            rate = (models.get(key) or {}).get("input") if key else None
+            if rate is None or not share:
+                continue
+            weighted += float(share) * float(rate)
+            priced_share += float(share)
+        if priced_share > 0:
+            return weighted / priced_share
+    except Exception:
+        pass
+    return _estimate_compression_cost_per_mtok()
+
+
 def _resolve_structural_baseline(days=30):
     """Return the pristine prefix-overhead baseline for structural savings, or None.
 
@@ -52121,7 +52190,7 @@ def _estimate_uncaptured_runtime(days=30, compression=None, savings=None):
         est_tokens = int(subagent_dispatches * per_session * attribution)
         if est_tokens <= 0:
             return zero
-        cost_per_mtok = _estimate_compression_cost_per_mtok()
+        cost_per_mtok = _window_input_rate_per_mtok(days=days)
         return {
             "tokens_saved": est_tokens,
             "cost_saved_usd": round(est_tokens * cost_per_mtok / 1_000_000, 4),
@@ -52206,7 +52275,7 @@ def _estimate_behavioral_savings(days=30):
         avg_count = (sum(counts) / len(counts)) if counts else 0.0
         # Conservative continuation factor: one more equivalent looping span.
         est_tokens = int(loop_tokens_saved * _BEHAVIORAL_CONTINUATION_FACTOR)
-        cost_per_mtok = _estimate_compression_cost_per_mtok()
+        cost_per_mtok = _window_input_rate_per_mtok(days=days)
         return {
             "tokens_saved": est_tokens,
             "cost_saved_usd": round(est_tokens * cost_per_mtok / 1_000_000, 4),
@@ -52296,7 +52365,7 @@ def _estimate_contamination_exit_savings(days=30):
         est_tokens = int(delta * n_heeded)
         smaller = min(n_heeded, n_ignored)
         confidence = "high" if smaller >= 15 else "medium" if smaller >= 5 else "low"
-        cost_per_mtok = _estimate_compression_cost_per_mtok()
+        cost_per_mtok = _window_input_rate_per_mtok(days=days)
         return {
             "tokens_saved": est_tokens,
             "cost_saved_usd": round(est_tokens * cost_per_mtok / 1_000_000, 4),
@@ -52369,7 +52438,7 @@ def _estimate_handover_rerun_savings(days=30):
         est_tokens = int(delta * n_restored)
         smaller = min(n_restored, n_baseline)
         confidence = "high" if smaller >= 15 else "medium" if smaller >= 5 else "low"
-        cost_per_mtok = _estimate_compression_cost_per_mtok()
+        cost_per_mtok = _window_input_rate_per_mtok(days=days)
         return {
             "tokens_saved": est_tokens,
             "cost_saved_usd": round(est_tokens * cost_per_mtok / 1_000_000, 4),
@@ -52466,7 +52535,7 @@ def _estimate_retrieval_serve_savings(days=30):
         est_tokens = int(avoided * n_served * _AVG_EXPLORATORY_READ_TOKENS)
         smaller = min(n_served, n_baseline)
         confidence = "high" if smaller >= 15 else "medium" if smaller >= 5 else "low"
-        cost_per_mtok = _estimate_compression_cost_per_mtok()
+        cost_per_mtok = _window_input_rate_per_mtok(days=days)
         return {
             "tokens_saved": est_tokens,
             "cost_saved_usd": round(est_tokens * cost_per_mtok / 1_000_000, 4),
@@ -56233,7 +56302,7 @@ def _estimate_stale_reads_reclaimable(days=30):
         sessions = int(row[1] or 0)
         if tokens <= 0:
             return zero
-        rate = _estimate_compression_cost_per_mtok()
+        rate = _window_input_rate_per_mtok(days=days)
         return {
             "tokens": tokens,
             "cost_usd": round(tokens * rate / 1_000_000, 4),
@@ -58317,12 +58386,32 @@ def _savings_since_install():
         estimated += float(avoided.get("cost_saved_usd", 0) or 0)
         if routing_is_estimate:
             estimated += full_routing_usd
+        # The all-in since install uses the monthly headline's own recipe
+        # (logged + routing + repeat reads + estimates) over the install window,
+        # so the two figures always mean the same thing.
+        all_in = None
+        try:
+            counted = _counted_cumulative_summary(days=days)
+            _apply_counted_oneshot_pricing(full, counted)
+            components = _action_savings_components(full, counted)
+            all_in = {
+                "total_usd": components["display"]["total_usd"],
+                "components_usd": components["display"]["components_usd"],
+                "estimated_usd": round(sum(components["display"]["estimates_usd"].values()), 2),
+                "routing_pending": full_routing.get("evidence") == "pending",
+                "routing_pending_sessions": int(full_routing.get("pending_sessions") or 0),
+                "remeasuring": bool(counted.get("remeasuring")),
+                "remeasuring_sessions": int(counted.get("remeasuring_sessions") or 0),
+            }
+        except Exception:
+            all_in = None
         return {
             "install_date": d,
             "days": days,
             "measured_usd": round(measured, 2),
             "estimated_usd": round(estimated, 2),
             "total_usd": round(measured + estimated, 2),
+            "all_in": all_in,
             # measured_usd is no longer a pure event-time meter once the
             # model-mix repair has moved a rate (see _session_model_reprice), so
             # the card that renders it must stop calling itself "Measured".
@@ -58840,6 +58929,15 @@ def savings_report(days=30, as_json=False):
         net_total = _mo(summary["action_savings"]["net_total_usd"])
         print(f"  i  signed adjustments give a net total of ~${net_total:.2f}{per}; "
               "the headline has a $0 floor")
+    try:
+        since = _savings_since_install()
+    except Exception:
+        since = None
+    since_all_in = (since or {}).get("all_in") or {}
+    if float(since_all_in.get("total_usd") or 0) > 0:
+        so_far = " so far" if since_all_in.get("routing_pending") or since_all_in.get("remeasuring") else ""
+        print(f"  = SINCE INSTALL ({since['install_date']}, {since['days']} days): "
+              f"~${since_all_in['total_usd']:,.2f}{so_far} (same four parts, added up)")
 
     # Informational (not summed): one-time first-trim + progressive disclosure.
     one_time = summary.get("one_time_setup") or {}

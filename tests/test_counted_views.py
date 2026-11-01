@@ -250,3 +250,66 @@ def test_every_logged_feature_is_totalled_or_marked_bookkeeping(m):
     known = set(m._V5_COMPRESSION_LABELS) | set(m._NON_SAVINGS_COMPRESSION_FEATURES)
     missing = sorted(f for f in feats if f not in known and f not in m._LEGACY_SAVINGS_LABELS)
     assert missing == [], f"logged but never totalled: {missing}"
+
+
+def _counted_se_ids(m):
+    conn = m._init_trends_db()
+    try:
+        assert m._ensure_counted_views(conn)
+        return {r[0]: r[1] for r in conn.execute(
+            "SELECT id, detail FROM counted_savings_events WHERE event_type='tool_archive_reexpand'")}
+    finally:
+        conn.close()
+
+
+def test_screenshot_reexpansion_is_left_out_with_its_archive(m):
+    """An archived screenshot is not text savings, so re-expanding it is not a
+    text debit either. Older rows carry only the tool_use_id and pair with
+    their archive row by session, time and size; text re-expansions still count."""
+    conn = sqlite3.connect(str(m.TRENDS_DB))
+    base = datetime.now() - timedelta(days=1)
+    _se(conn, "tool_archive", 76185, REAL_UUID,
+        "replaced mcp__claude-in-chrome__computer (253,279 chars -> 1,869 chars)", ts=_ts(20, base))
+    _se(conn, "tool_archive_reexpand", 76752, REAL_UUID, "toolu_01Shot", ts=_ts(10, base))
+    _se(conn, "tool_archive", 9000, REAL_UUID,
+        "replaced mcp__github__search (30,000 chars -> 1,869 chars)", ts=_ts(8, base))
+    _se(conn, "tool_archive_reexpand", 9567, REAL_UUID, "toolu_01Text", ts=_ts(5, base))
+    _se(conn, "tool_archive_reexpand", 40000, REAL_UUID,
+        "toolu_01New (mcp__claude-in-chrome__computer)", ts=_ts(1, base))
+    conn.commit()
+    conn.close()
+    kept = set(_counted_se_ids(m).values())
+    assert kept == {"toolu_01Text"}
+
+
+def test_screenshot_pairing_uses_the_nearest_archive(m):
+    """A text archive written after the screenshot is the one being re-expanded."""
+    conn = sqlite3.connect(str(m.TRENDS_DB))
+    base = datetime.now() - timedelta(days=1)
+    _se(conn, "tool_archive", 9000, REAL_UUID,
+        "replaced mcp__claude-in-chrome__computer (30,000 chars -> 1,869 chars)", ts=_ts(30, base))
+    _se(conn, "tool_archive", 9100, REAL_UUID,
+        "replaced Read (30,300 chars -> 1,869 chars)", ts=_ts(20, base))
+    _se(conn, "tool_archive_reexpand", 9600, REAL_UUID, "toolu_01Read", ts=_ts(10, base))
+    conn.commit()
+    conn.close()
+    assert set(_counted_se_ids(m).values()) == {"toolu_01Read"}
+
+
+def test_reexpand_debit_records_the_tool_and_debits_once(m):
+    m._log_reexpand_debit(REAL_UUID, "toolu_01Shot", "x" * 4000, "mcp__claude-in-chrome__computer")
+    m._log_reexpand_debit(REAL_UUID, "toolu_01Shot", "x" * 4000, "mcp__claude-in-chrome__computer")
+    m._log_reexpand_debit(REAL_UUID, "toolu_01Old", "x" * 4000)
+    conn = sqlite3.connect(str(m.TRENDS_DB))
+    conn.execute(
+        "INSERT INTO savings_events (timestamp, event_type, tokens_saved, cost_saved_usd, session_id, detail) "
+        "VALUES (?, 'tool_archive_reexpand', 10, 0, ?, 'toolu_01Legacy')", (_ts(), REAL_UUID))
+    conn.commit()
+    conn.close()
+    m._log_reexpand_debit(REAL_UUID, "toolu_01Legacy", "x" * 4000, "Read")
+    conn = sqlite3.connect(str(m.TRENDS_DB))
+    rows = sorted(r[0] for r in conn.execute(
+        "SELECT detail FROM savings_events WHERE event_type='tool_archive_reexpand'"))
+    conn.close()
+    assert rows == ["toolu_01Legacy", "toolu_01Old", "toolu_01Shot (mcp__claude-in-chrome__computer)"]
+    assert set(_counted_se_ids(m).values()) == {"toolu_01Old", "toolu_01Legacy"}

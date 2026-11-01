@@ -513,7 +513,7 @@ def _run_hook(argv, source: str, home: Path) -> subprocess.CompletedProcess:
         pytest.skip("Git Bash (the Windows hook runtime) unavailable; WSL bash is not the hook shell")
     return subprocess.run(
         [bash, str(LAUNCHER), str(RUN_PY), *argv],
-        input=payload, text=True, capture_output=True, env=env, timeout=180,
+        input=payload, text=True, capture_output=True, env=env, cwd=REPO, timeout=180,
     )
 
 

@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+from test_counted_cumulative import _verified_pricing
 
 
 SCRIPTS = Path(__file__).resolve().parent.parent / "skills" / "token-optimizer" / "scripts"
@@ -61,8 +62,9 @@ def test_dashboard_counted_payload_reconciles_to_full_table(measure, tmp_path, m
     db = tmp_path / "trends.db"
     conn = _schema_db(measure, db)
     conn.execute(
-        "INSERT INTO counted_reread(event_key, source, event_month, oneshot_usd, reread_usd) "
-        "VALUES ('e:1', 'se', '2026-08', 111.21, 870.25)"
+        "INSERT INTO counted_reread(event_key, source, event_month, oneshot_usd, reread_usd, pricing_detail) "
+        "VALUES ('e:1', 'se', '2026-08', 111.21, 870.25, ?)",
+        (_verified_pricing(measure),)
     )
     conn.commit()
     conn.close()

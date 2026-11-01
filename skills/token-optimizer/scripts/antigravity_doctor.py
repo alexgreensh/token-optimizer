@@ -33,6 +33,7 @@ from pathlib import Path
 _SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_SCRIPT_DIR))
 
+import adapter_hook_command  # noqa: E402
 from runtime_env import antigravity_home, measure_cli as _measure_cli, with_measure_cli as _hint  # noqa: E402
 
 DAEMON_PORT = 24847
@@ -196,6 +197,17 @@ def _plugin_checks() -> list:
             expected = {"PreInvocation", "PreToolUse", "Stop"}
             if not expected <= set(events):
                 raise ValueError(f"missing events: {sorted(expected - set(events))}")
+            # Every hook must call the bridge inside this plugin dir. Installs
+            # before 5.13.63 named a temporary staging dir that no longer exists.
+            bridge = str(pdir / "antigravity_hook_bridge.py")
+            spellings = adapter_hook_command.path_spellings(bridge)
+            for name in sorted(expected):
+                entries = group.get(name) or []
+                handlers = [h for e in entries if isinstance(e, dict)
+                            for h in (e.get("hooks") if isinstance(e.get("hooks"), list) else [e])]
+                cmds = [h.get("command", "") for h in handlers if isinstance(h, dict)]
+                if not any(isinstance(c, str) and any(s in c for s in spellings) for c in cmds):
+                    raise ValueError(f"{name} hook does not call {bridge}")
             checks.append(
                 _check(
                     "ok", "plugin hooks", f"{hooks_path} (events: {', '.join(events)})"

@@ -166,6 +166,9 @@ def test_cli_report_shows_every_tier_and_an_all_in_total(golden, capsys):
     """Same tiers as the dashboard's Savings tab: measured, modeled (repeat
     reads avoided), estimated, and one all-in figure that adds them up."""
     measure = golden["measure"]
+    # The collector persists rereads; reports only read that counted cohort.
+    with sqlite3.connect(str(measure.TRENDS_DB)) as conn:
+        measure._update_counted_cumulative(conn, quiet=True)
     measure.savings_report(days=30)
     out = capsys.readouterr().out
     total_line = next(line for line in out.splitlines() if "TOTAL (measured)" in line)
@@ -242,14 +245,50 @@ def test_dashboard_savings_cards_carry_the_known_numbers(golden):
 
 
 def test_stored_re_read_rows_are_repriced_after_a_pricing_fix(golden):
-    """A pricing fix must reach rows computed before it, without a gap."""
+    """Legacy prices refresh without losing the observed token history."""
     measure = golden["measure"]
     conn = measure._init_trends_db()
     measure._update_counted_cumulative(conn, max_sessions=50, deadline_seconds=None)
-    conn.execute("UPDATE counted_reread SET reread_usd = reread_usd * 4")  # the old family price
+    history_sql = ("SELECT event_key,source,session_uuid,event_ts,event_month,tokens,"
+                   "reread_tokens,turns_counted,transcript_mtime FROM counted_reread ORDER BY event_key")
+    history = conn.execute(history_sql).fetchall()
+    assert len(history) == 1
+    ledgers = {table: conn.execute(f"SELECT * FROM {table} ORDER BY id").fetchall()
+               for table in ("savings_events", "compression_events")}
+    # Legacy rows predate per-row price evidence but retain observed token counts.
+    changed = conn.execute("UPDATE counted_reread SET reread_usd = reread_usd * 4, pricing_detail = NULL")
+    assert changed.rowcount == len(history)
     conn.execute("DELETE FROM token_optimizer_meta WHERE key = ?", (measure._COUNTED_META_PRICING,))
     conn.commit()
-    measure._update_counted_cumulative(conn, max_sessions=50, deadline_seconds=None)
+    assert conn.execute("SELECT SUM(reread_usd) FROM counted_reread").fetchone()[0] == pytest.approx(4 * REREAD_USD)
+    pending = measure._update_counted_cumulative(conn, max_sessions=0, deadline_seconds=None)
+    assert pending["rows_written"] == 0 and pending["pending_sessions"] == 1
+    unpriced = measure._counted_cumulative_summary()
+    # The stored dollars are discarded; the observed repeat-read count is priced
+    # at the cache-read rate of the models the session recorded.
+    assert unpriced["reread_usd"] == pytest.approx(REREAD_USD, rel=1e-6)
+    assert unpriced["reread_session_mix_priced_tokens"] == unpriced["reread_tokens"] == 300_000
+    assert unpriced["reread_unpriced_tokens"] == 0
+    assert unpriced["legacy_unverified_events"] == 1
+    # The initial removal keeps the input-rate floor of the session's models, disclosed.
+    assert unpriced["oneshot_floor_events"] == 1 and unpriced["oneshot_floor_tokens"] > 0
+    assert unpriced["oneshot_unpriced_tokens"] == 0
+    assert unpriced["reread_pricing_complete"] is False
+    assert measure._action_savings_components({}, unpriced)["total_usd"] == pytest.approx(REREAD_USD)
+    assert conn.execute(history_sql).fetchall() == history
+
+    refreshed = measure._update_counted_cumulative(conn, max_sessions=50, deadline_seconds=None)
+    assert refreshed["rows_written"] == 1 and refreshed["pending_sessions"] == 0
     total = conn.execute("SELECT SUM(reread_usd) FROM counted_reread").fetchone()[0]
-    conn.close()
     assert total == pytest.approx(REREAD_USD, rel=1e-6)
+    priced = measure._counted_cumulative_summary()
+    assert priced["reread_usd"] == pytest.approx(REREAD_USD, rel=1e-6)
+    assert priced["reread_tokens"] == 300_000
+    assert priced["legacy_unverified_events"] == priced["reread_unpriced_tokens"] == 0
+    assert priced["reread_pricing_complete"] is True
+    assert measure._action_savings_components({}, priced)["total_usd"] == pytest.approx(REREAD_USD)
+    assert measure._update_counted_cumulative(conn, max_sessions=50, deadline_seconds=None)["rows_written"] == 0
+    assert conn.execute(history_sql).fetchall() == history
+    for table, rows in ledgers.items():
+        assert conn.execute(f"SELECT * FROM {table} ORDER BY id").fetchall() == rows
+    conn.close()

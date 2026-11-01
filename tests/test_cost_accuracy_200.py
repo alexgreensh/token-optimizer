@@ -37,7 +37,9 @@ def _load(tmp_path, monkeypatch):
     # monkeypatch restores the original module objects afterwards, so later
     # tests that hold a reference to runtime_env keep patching the live one.
     for name in ("measure", "runtime_env", "plugin_env"):
-        monkeypatch.delitem(sys.modules, name, raising=False)
+        # setitem first so teardown also removes a module that was absent here.
+        monkeypatch.setitem(sys.modules, name, sys.modules.get(name))
+        monkeypatch.delitem(sys.modules, name)
     monkeypatch.syspath_prepend(str(SCRIPTS))
     return importlib.import_module("measure")
 

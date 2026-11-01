@@ -136,7 +136,7 @@ const CLAUDE_GENERATION_RE = /(fable|mythos|opus|sonnet|haiku)[-._]?(\d+)(?:[-._
 const CLAUDE_LEGACY_ID_RE = /claude-(\d)(?:[-.](\d))?-(opus|sonnet|haiku)(?![a-z])/;
 
 /**
- * Rate-card key for a Claude generation ("opus-5-5", then "opus-5"). Labels and
+ * Rate-card key for a Claude generation (such as "opus-5-5"). Labels and
  * savings mixes stay on the family key ("opus"); only pricing needs the
  * generation, because generations are priced differently (Opus 5.5 $4/$20,
  * Opus 4.1 $15/$75, Fable 5.1 cache reads $0.25). Cards come from the
@@ -148,8 +148,8 @@ export function claudePricingKey(modelId: string, table: Record<string, ModelPri
   const legacy = CLAUDE_LEGACY_ID_RE.exec(id);
   if (legacy) {
     const [, lMajor, lMinor, lFamily] = legacy;
-    const keys = lMinor ? [`${lFamily}-${lMajor}-${lMinor}`, `${lFamily}-${lMajor}`] : [`${lFamily}-${lMajor}`];
-    if (lFamily === "sonnet") keys.push("sonnet-legacy");
+    const keys = [`${lFamily}-${lMajor}${lMinor ? `-${lMinor}` : ""}`];
+    if (lFamily === "sonnet" && lMajor === "3" && (!lMinor || lMinor === "5" || lMinor === "7")) keys.push("sonnet-legacy");
     for (const key of keys) if (Object.prototype.hasOwnProperty.call(table, key)) return key;
     return null;
   }
@@ -158,10 +158,33 @@ export function claudePricingKey(modelId: string, table: Record<string, ModelPri
   const [, family, major, minor] = g;
   const families = family === "mythos" ? [family, "fable"] : [family];
   for (const fam of families) {
-    const keys = minor ? [`${fam}-${major}-${minor}`, `${fam}-${major}`] : [`${fam}-${major}`];
+    const keys = [`${fam}-${major}${minor ? `-${minor}` : ""}`];
+    if (fam === "sonnet" && major === "3" && (!minor || minor === "5" || minor === "7")) keys.push("sonnet-legacy");
     for (const key of keys) if (Object.prototype.hasOwnProperty.call(table, key)) return key;
   }
-  return family === "mythos" && Object.prototype.hasOwnProperty.call(table, "fable") ? "fable" : null;
+  return null;
+}
+
+/** Undefined means an unversioned alias; null means an unknown explicit version. */
+function explicitClaudeRateKey(modelId: string): string | null | undefined {
+  const id = modelId.toLowerCase();
+  const legacy = CLAUDE_LEGACY_ID_RE.exec(id);
+  if (legacy) {
+    const [, major, minor, family] = legacy;
+    const key = `${family}-${major}${minor ? `-${minor}` : ""}`;
+    if (family === "sonnet" && major === "3" && (!minor || minor === "5" || minor === "7")) return "sonnet-legacy";
+    return Object.prototype.hasOwnProperty.call(DEFAULT_PRICING, key) ? key : null;
+  }
+  const generation = CLAUDE_GENERATION_RE.exec(id);
+  if (!generation) return undefined;
+  const [, family, major, minor] = generation;
+  if (family === "sonnet" && major === "3" && (!minor || minor === "5" || minor === "7")) return "sonnet-legacy";
+  const key = `${family === "mythos" ? "fable" : family}-${major}${minor ? `-${minor}` : ""}`;
+  return Object.prototype.hasOwnProperty.call(DEFAULT_PRICING, key) ? key : null;
+}
+
+export function isUnpricedClaudeVersion(modelId: string): boolean {
+  return explicitClaudeRateKey(modelId) === null;
 }
 
 /**
@@ -292,11 +315,123 @@ export function normalizeModelName(modelId: string): string {
 }
 
 
-/** Resolve the rate card for a model key, proxying unpriced models. */
-function ratesFor(modelKey: string): ModelPricing {
-  const key = claudePricingKey(modelKey) ?? pricedPrefixKey(modelKey) ?? normalizeModelName(modelKey);
-  return (Object.prototype.hasOwnProperty.call(DEFAULT_PRICING, key) ? DEFAULT_PRICING[key] : undefined)
-    ?? DEFAULT_PRICING[PROXY_MODEL];
+const ROUTE_REGION_TOKENS = new Set([
+  "amazon", "us", "us-gov", "eu", "ap", "apac", "au", "ca", "cn", "global", "jp", "sa", "me", "af", "il",
+]);
+
+/**
+ * Drop the routing wrapper around a model id: gateway or provider path
+ * segments ("openrouter/anthropic/", "github-copilot/", "amazon-bedrock/"),
+ * dotted region and provider chains ("us.anthropic.", "global.anthropic."), and
+ * a colon-separated provider tag. Dots inside a version ("claude-3.5-sonnet",
+ * "gpt-4.1") are never cut.
+ */
+function stripRoutePrefixes(modelId: string): string {
+  let value = modelId.trim().toLowerCase();
+  while (true) {
+    for (;;) {
+      const dot = value.indexOf(".");
+      if (dot <= 0) break;
+      const token = value.slice(0, dot);
+      if (!KNOWN_PROVIDER_PREFIXES.has(token) && !ROUTE_REGION_TOKENS.has(token)) break;
+      value = value.slice(dot + 1);
+    }
+    const slash = value.indexOf("/");
+    const colon = value.indexOf(":");
+    if (slash === -1 && colon === -1) return value;
+    const useSlash = slash !== -1 && (colon === -1 || slash < colon);
+    const idx = useSlash ? slash : colon;
+    const rest = value.slice(idx + 1);
+    if (!rest || !/[a-z]/.test(rest)) return value;
+    if (useSlash || KNOWN_PROVIDER_PREFIXES.has(value.slice(0, idx))) { value = rest; continue; }
+    return value;
+  }
+}
+
+/**
+ * A Claude model id without the decorations a route adds around it: the
+ * provider and region prefix, a bedrock "-v1:0" version tag, a "[1m]" context
+ * marker, a "-thinking" mode suffix, a "-latest" alias and a vertex "@date" snapshot. What is left
+ * names the generation, which must still have its own rate card.
+ */
+export function stripClaudeRouteDecorations(modelId: string): string {
+  let value = stripRoutePrefixes(modelId);
+  for (;;) {
+    const next = value
+      .replace(/\[\d+[mk]\]$/, "")
+      .replace(/-(?:thinking|latest)$/, "")
+      .replace(/@(?:\d{8}|latest)$/, "")
+      .replace(/-v\d+:\d+$/, "");
+    if (next === value) return value;
+    value = next;
+  }
+}
+
+/** Rate-card key for a model, or the proxy card key when it has none. Null for an unknown explicit Claude version. */
+function resolvedCardKey(modelKey: string): string | null {
+  const explicit = explicitClaudeRateKey(modelKey);
+  if (explicit === null) return null;
+  const key = explicit ?? claudePricingKey(modelKey) ?? pricedPrefixKey(modelKey) ?? normalizeModelName(modelKey);
+  return Object.prototype.hasOwnProperty.call(DEFAULT_PRICING, key) ? key : PROXY_MODEL;
+}
+
+const CLAUDE_FAMILY_KEY = /^(fable|mythos|opus|sonnet|haiku)(?:-\d+){0,2}$/;
+
+/**
+ * Rate-card key that values a model in the routing comparison. Every Claude
+ * generation of a family is valued at that family's newest generation card, in
+ * both the baseline and the current arm, so a vendor price change between
+ * generations cannot register as a routing saving. Other models stand for
+ * themselves. The exact-card cost is reported separately as the generation gap.
+ */
+export function referenceCardKey(key: string): string {
+  const legacy = key === "sonnet-legacy";
+  const m = legacy ? null : CLAUDE_FAMILY_KEY.exec(key);
+  if (!legacy && !m) return key;
+  const family = legacy ? "sonnet" : m![1] === "mythos" ? "fable" : m![1];
+  const generation = new RegExp(`^${family}-(\\d+)(?:-(\\d+))?$`);
+  let best: { major: number; minor: number; key: string } | null = null;
+  for (const candidate of Object.keys(DEFAULT_PRICING)) {
+    const g = generation.exec(candidate);
+    if (!g) continue;
+    const major = Number(g[1]), minor = Number(g[2] ?? 0);
+    if (!best || major > best.major || (major === best.major && minor > best.minor)) best = { major, minor, key: candidate };
+  }
+  if (best) return best.key;
+  return Object.prototype.hasOwnProperty.call(DEFAULT_PRICING, family) ? family : key;
+}
+
+/** Resolve the rate card for a model key, proxying unpriced models. `reference` values a Claude model at its family's reference card. */
+function ratesFor(modelKey: string, reference = false): ModelPricing {
+  const key = resolvedCardKey(modelKey);
+  if (key === null) return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  return DEFAULT_PRICING[reference && key !== PROXY_MODEL ? referenceCardKey(key) : key];
+}
+
+/** Rate-card key for a model that has a documented card, or null. */
+function knownCardKey(modelKey: string): string | null {
+  const id = stripRoutePrefixes(modelKey);
+  const dated = id.replace(/-(?:\d{8}|\d{4}-\d{2}-\d{2})$/, "");
+  if (Object.prototype.hasOwnProperty.call(DEFAULT_PRICING, dated)) return dated;
+  const claudeId = stripClaudeRouteDecorations(modelKey);
+  if (!/^(?:claude-)?(?:\d+(?:[-.]\d+)?-(?:opus|sonnet|haiku)|(?:fable|mythos|opus|sonnet|haiku)[-._]?\d+(?:[-._]\d+)?)(?:-\d{8})?$/.test(claudeId)) return null;
+  const explicit = explicitClaudeRateKey(claudeId);
+  if (explicit === null) return null;
+  const key = explicit ?? claudePricingKey(claudeId);
+  if (!key) return null;
+  return Object.prototype.hasOwnProperty.call(DEFAULT_PRICING, key) ? key : null;
+}
+
+/** Return a documented rate only when the model has a known price card. */
+export function knownModelRate(modelKey: string, klass: "input" | "output" | "cacheRead" | "cacheWrite"): number | null {
+  const key = knownCardKey(modelKey);
+  return key === null ? null : DEFAULT_PRICING[key][klass];
+}
+
+/** Documented rate at the model's reference card (see referenceCardKey), or null when the model has no card. */
+export function referenceModelRate(modelKey: string, klass: "input" | "output" | "cacheRead" | "cacheWrite"): number | null {
+  const key = knownCardKey(modelKey);
+  return key === null ? null : DEFAULT_PRICING[referenceCardKey(key)][klass];
 }
 
 /** A model mix: modelKey (or display name) -> token share. Shares sum to ~1. */
@@ -307,18 +442,18 @@ export type ModelMix = Record<string, number>;
  * a model mix. Each model's rate is weighted by its share; unpriced models use
  * the proxy. Empty mix -> proxy model's rate.
  */
-function blendedRate(mix: ModelMix, klass: "input" | "output" | "cacheRead"): number {
+function blendedRate(mix: ModelMix, klass: "input" | "output" | "cacheRead", reference = false): number {
   const items = Object.entries(mix).filter(([, s]) => s && s > 0);
   if (items.length === 0) return DEFAULT_PRICING[PROXY_MODEL][klass];
   const tot = items.reduce((s, [, v]) => s + v, 0);
   if (tot <= 0) return DEFAULT_PRICING[PROXY_MODEL][klass];
   let acc = 0;
-  for (const [model, share] of items) acc += share * ratesFor(model)[klass];
+  for (const [model, share] of items) acc += share * ratesFor(model, reference)[klass];
   return acc / tot;
 }
 
 /** Blended 5m + 1h cache-write rate over a mix (TTL-aware, like price_cw). */
-function blendedCacheWriteRate(mix: ModelMix, cw5mShare: number, cw1hShare: number): number {
+function blendedCacheWriteRate(mix: ModelMix, cw5mShare: number, cw1hShare: number, reference = false): number {
   // cw5mShare/cw1hShare are the fraction of cache-write tokens at each TTL.
   const items = Object.entries(mix).filter(([, s]) => s && s > 0);
   const score = (r: ModelPricing) => cw5mShare * r.cacheWrite + cw1hShare * (r.cacheWrite1h ?? r.cacheWrite);
@@ -326,20 +461,21 @@ function blendedCacheWriteRate(mix: ModelMix, cw5mShare: number, cw1hShare: numb
   const tot = items.reduce((s, [, v]) => s + v, 0);
   if (tot <= 0) return score(DEFAULT_PRICING[PROXY_MODEL]);
   let acc = 0;
-  for (const [model, share] of items) acc += share * score(ratesFor(model));
+  for (const [model, share] of items) acc += share * score(ratesFor(model, reference));
   return acc / tot;
 }
 
 /**
  * Price the fresh+cache_read POOL and OUTPUT at a model mix (NO cache-write).
  * Linear in tokens, so aggregate window totals price the whole window directly.
- * Mirrors measure.py's `price(fi, cr, out, shares)`.
+ * Mirrors measure.py's `price(fi, cr, out, shares)`. `reference` values each
+ * Claude model at its family's reference card instead of its exact generation.
  */
-export function price(F: number, CR: number, O: number, mix: ModelMix): number {
+export function price(F: number, CR: number, O: number, mix: ModelMix, reference = false): number {
   return (
-    F * blendedRate(mix, "input") +
-    CR * blendedRate(mix, "cacheRead") +
-    O * blendedRate(mix, "output")
+    F * blendedRate(mix, "input", reference) +
+    CR * blendedRate(mix, "cacheRead", reference) +
+    O * blendedRate(mix, "output", reference)
   );
 }
 
@@ -350,13 +486,13 @@ export function price(F: number, CR: number, O: number, mix: ModelMix): number {
  * OpenCode's session_log has no 5m/1h split, so all writes are treated as 5m
  * (conservative) unless cw1h is supplied.
  */
-export function price_cw(CW: number, mix: ModelMix, CW_5m?: number, CW_1h?: number): number {
+export function price_cw(CW: number, mix: ModelMix, CW_5m?: number, CW_1h?: number, reference = false): number {
   if (CW <= 0) return 0;
   const cw1h = CW_1h ?? 0;
   const cw5m = CW_5m ?? CW - cw1h;
   const cw5mShare = CW > 0 ? cw5m / CW : 1;
   const cw1hShare = CW > 0 ? cw1h / CW : 0;
-  return CW * blendedCacheWriteRate(mix, cw5mShare, cw1hShare);
+  return CW * blendedCacheWriteRate(mix, cw5mShare, cw1hShare, reference);
 }
 
 /**
@@ -364,6 +500,6 @@ export function price_cw(CW: number, mix: ModelMix, CW_5m?: number, CW_1h?: numb
  * add-back: baseline_input_rate / current_input_rate. Mirrors measure.py's
  * `price(1_000_000, 0, 0, shares)`.
  */
-export function inputRatePerMTok(mix: ModelMix): number {
-  return price(1_000_000, 0, 0, mix);
+export function inputRatePerMTok(mix: ModelMix, reference = false): number {
+  return price(1_000_000, 0, 0, mix, reference);
 }

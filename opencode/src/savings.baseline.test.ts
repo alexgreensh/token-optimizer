@@ -108,3 +108,89 @@ test("savings positive for a 95%-Opus baseline vs a 56%-Opus now", () => {
   expect(r.afterCostPerSession).toBeGreaterThan(0);
   expect(r.savingsPerSession).toBeGreaterThan(0);
 });
+
+test("provider cache reuse changes do not become optimizer savings", () => {
+  const cold = run(afterRows(40, 2_000_000, 0.56, 0.3));
+  const warm = run(afterRows(40, 2_000_000, 0.56, 0.8));
+  expect(cold.ready).toBe(true);
+  expect(warm.ready).toBe(true);
+  expect(cold.monthlySavingsUsd).toBeCloseTo(warm.monthlySavingsUsd, 8);
+  expect(warm.breakdown.some((item) => item.key === "context_rereads")).toBe(false);
+});
+
+test("model distributions are weighted separately for each token class", () => {
+  const recent = (flipped: boolean) => Array.from({ length: 20 }, (_, i) => {
+    const opus = i % 2 === 0;
+    const inputHigh = opus !== flipped;
+    return row(NOW - (i + 1) * DAY, opus ? "opus-5-5" : "sonnet",
+      inputHigh ? 190_000 : 10_000, 0, 0, inputHigh ? 10_000 : 190_000);
+  });
+  const a = run(recent(false));
+  const b = run(recent(true));
+  expect(a.ready).toBe(true);
+  expect(b.ready).toBe(true);
+  expect(b.afterCostPerSession).toBeGreaterThan(a.afterCostPerSession);
+});
+
+test("premium usage is disclosed without masking the eligible model mix", () => {
+  const baseline = Array.from({ length: 36 }, (_, i) =>
+    row(T0 + (i === 0 ? 0 : 2 + (i - 1) / 2) * DAY, "opus-5-5", 100_000, 0, 0, 100_000));
+  const recent = Array.from({ length: 20 }, (_, i) => ({
+    ...row(NOW - (i + 1) * DAY, "sonnet", 200_000, 0, 0, 200_000),
+    model_token_buckets: JSON.stringify({
+      sonnet: { input: 100_000, output: 100_000, cacheRead: 0, cacheWrite: 0 },
+      fable: { input: 100_000, output: 100_000, cacheRead: 0, cacheWrite: 0 },
+    }),
+  }));
+  const s = computeRealizedSavings("", 30, NOW, [...baseline, ...recent]);
+  expect(s.ready).toBe(true);
+  expect(s.monthlySavingsUsd).toBeGreaterThan(0);
+  expect(s.premiumTokens).toBeGreaterThan(0);
+  expect(s.premiumCostUsd).toBeGreaterThan(0);
+});
+
+test("unknown baseline tokens do not inflate priced savings", () => {
+  const original = beforeRows();
+  const mixed = original.map((r) => ({ ...r, tokens_input: r.tokens_input * 10, tokens_output: r.tokens_output * 10,
+    model_token_buckets: JSON.stringify({
+      [r.model]: { input: r.tokens_input, output: r.tokens_output, cacheRead: r.tokens_cache_read, cacheWrite: r.tokens_cache_write },
+      "unpriced-model": { input: r.tokens_input * 9, output: r.tokens_output * 9, cacheRead: 0, cacheWrite: 0 },
+    }) }));
+  const recent = afterRows(40, 2_000_000, 0.5);
+  const a = computeRealizedSavings("", 30, NOW, [...original, ...recent]);
+  const b = computeRealizedSavings("", 30, NOW, [...mixed, ...recent]);
+  expect(b.beforeCostPerSession).toBeCloseTo(a.beforeCostPerSession, 8);
+  expect(b.monthlySavingsUsd).toBeCloseTo(a.monthlySavingsUsd, 8);
+  expect(b.unpricedBaselineTokens).toBeGreaterThan(0);
+});
+
+test("premium usage added to identical eligible work does not reduce savings", () => {
+  const baseline = Array.from({ length: 36 }, (_, i) =>
+    row(T0 + (i === 0 ? 0 : 2 + (i - 1) / 2) * DAY, "opus-5-5", 100_000, 0, 0, 100_000));
+  const recent = (premium: boolean) => Array.from({ length: 20 }, (_, i) => ({
+    ...row(NOW - (i + 1) * DAY, "sonnet", premium ? 200_000 : 100_000, 0, 0, premium ? 200_000 : 100_000),
+    model_token_buckets: JSON.stringify({ sonnet: { input: 100_000, output: 100_000, cacheRead: 0, cacheWrite: 0 },
+      ...(premium ? { fable: { input: 100_000, output: 100_000, cacheRead: 0, cacheWrite: 0 } } : {}) }),
+  }));
+  const a = computeRealizedSavings("", 30, NOW, [...baseline, ...recent(false)]);
+  const b = computeRealizedSavings("", 30, NOW, [...baseline, ...recent(true)]);
+  expect(a.monthlySavingsUsd).toBeGreaterThan(0);
+  expect(b.monthlySavingsUsd).toBeCloseTo(a.monthlySavingsUsd, 8);
+  expect(b.sessionsPerMonth).toBe(a.sessionsPerMonth);
+});
+
+test("premium-only sessions do not dilute cumulative savings", () => {
+  const baseline = Array.from({ length: 36 }, (_, i) =>
+    row(T0 + (i === 0 ? 0 : 2 + (i - 1) / 2) * DAY, "opus-5-5", 100_000, 0, 0, 100_000));
+  const oldEligible = Array.from({ length: 20 }, (_, i) => row(NOW - (60 + i) * DAY, "sonnet-5-5", 100_000, 0, 0, 100_000));
+  const currentEligible = Array.from({ length: 20 }, (_, i) => row(NOW - (i + 1) * DAY, "sonnet-5-5", 100_000, 0, 0, 100_000));
+  const currentPremium = Array.from({ length: 10 }, (_, i) => row(NOW - (i + 1) * DAY, "fable-5-1", 100_000, 0, 0, 100_000));
+  const oldPremium = Array.from({ length: 10 }, (_, i) => row(NOW - (90 + i) * DAY, "fable-5-1", 100_000, 0, 0, 100_000));
+  const base = computeRealizedSavings("", 30, NOW, [...baseline, ...oldEligible, ...currentEligible]);
+  const current = computeRealizedSavings("", 30, NOW, [...baseline, ...oldEligible, ...currentEligible, ...currentPremium]);
+  const historical = computeRealizedSavings("", 30, NOW, [...baseline, ...oldEligible, ...currentEligible, ...oldPremium]);
+  expect(base.monthlySavingsUsd).toBeCloseTo(24, 8);
+  expect(base.cumulativeSavedUsd).toBeCloseTo(48, 8);
+  expect(current.cumulativeSavedUsd).toBeCloseTo(base.cumulativeSavedUsd, 8);
+  expect(historical.cumulativeSavedUsd).toBeCloseTo(base.cumulativeSavedUsd, 8);
+});

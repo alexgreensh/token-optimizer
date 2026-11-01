@@ -89,3 +89,21 @@ def test_no_stale_fixed_percent_compact_advice_in_fleet():
     demo = (REPO / "skills" / "token-optimizer" / "assets" / "fleet-demo.html").read_text(encoding="utf-8")
     assert "Use /compact at 50-70%" not in text
     assert "Use /compact at 50-70%" not in demo
+
+
+def test_streamed_chunks_with_only_a_message_id_count_once(tmp_path):
+    def chunk(out):
+        return {"type": "assistant", "timestamp": "2026-08-01T10:00:05.000Z",
+                "message": {"id": "msg_abc", "model": "claude-opus-4-8",
+                            "content": [{"type": "text", "text": "ok"}],
+                            "usage": {"input_tokens": 1000, "output_tokens": out}}}
+
+    path = tmp_path / "sdk.jsonl"
+    path.write_text("\n".join(json.dumps(r) for r in [
+        {"type": "user", "timestamp": "2026-08-01T10:00:01.000Z", "message": {"content": "hi"}},
+        chunk(100), chunk(250), chunk(400)]) + "\n", encoding="utf-8")
+
+    run = fleet.ClaudeCodeAdapter()._parse_session(path, "-repo")
+
+    assert run.tokens.input == 1000
+    assert run.tokens.output == 400

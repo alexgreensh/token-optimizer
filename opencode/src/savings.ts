@@ -8,8 +8,7 @@
  *                       Depends only on frozen inputs + prices -> a STABLE baseline
  *                       that does NOT re-roll with this period's workload.
  *   NOW / session     = the SAME frozen tokens, pool redistributed at the CURRENT
- *                       cache-hit and priced at the CURRENT mix. Moves ONLY with
- *                       efficiency (model routing + caching).
+ *                       token classes and priced at the CURRENT mix. Changes reflect the model mix.
  * Per-session transformation = old_cps − now_cps. Monthly = that x the session count,
  * so volume re-enters ONLY as a multiplier — never as a confounder of the baseline.
  *
@@ -19,7 +18,7 @@
  * (pricing.ts) and price both arms from token volume directly.
  *
  * Three non-overlapping pools sum to the headline:
- *   1. Main routing + caching (billed session_log volume). NO winsorization /
+ *   1. Main model mix comparison (billed session_log volume). NO winsorization /
  *      outlier drop — heavy sessions are real volume that genuinely cost more
  *      at the baseline mix; dropping them is a pure definitional undercount.
  *   2. Subagent (sidechain) routing — Claude-only. OpenCode has no Claude-style
@@ -40,7 +39,7 @@
  * baseline mix — never fabricated Opus they never ran.
  */
 import { TrendsStore } from "./storage/trends.js";
-import { price, price_cw, inputRatePerMTok, normalizeModelName, type ModelMix } from "./pricing.js";
+import { price, price_cw, inputRatePerMTok, knownModelRate, referenceModelRate, type ModelMix } from "./pricing.js";
 
 // Constants mirror the other platforms' baseline tunables.
 const BASELINE_ONBOARDING_DAYS = 1;
@@ -62,6 +61,8 @@ interface SessionRec {
   out: number; // output
   cost: number; // stored cost_usd (display / not used in counterfactual math)
   durationSec: number; // session duration in seconds (quality gate)
+  buckets: Array<{ model: string; fi: number; cr: number; cw: number; out: number }>;
+  aggregateOnly: boolean;
 }
 
 function num(v: unknown): number {
@@ -77,15 +78,31 @@ function toRec(row: Record<string, unknown>): SessionRec {
   // Clamp every class >= 0 (corrupt-row protection, like measure.py's
   // _session_token_vector clamps). cache-write is a separate billed column in
   // session_log, kept distinct from fresh input.
+  let raw: unknown = null;
+  try { raw = typeof row.model_token_buckets === "string" ? JSON.parse(row.model_token_buckets) : row.model_token_buckets; } catch { /* use the legacy aggregate */ }
+  const buckets: SessionRec["buckets"] = [];
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    for (const [model, value] of Object.entries(raw)) {
+      if (!value || typeof value !== "object") continue;
+      const b = value as Record<string, unknown>;
+      buckets.push({ model, fi: Math.max(0, num(b.input)), cr: Math.max(0, num(b.cacheRead)),
+        cw: Math.max(0, num(b.cacheWrite)), out: Math.max(0, num(b.output)) });
+    }
+  }
+  const aggregateOnly = buckets.length === 0;
+  if (aggregateOnly) buckets.push({ model: String(row.model ?? "unknown"), fi: Math.max(0, num(row.tokens_input)),
+    cr: Math.max(0, num(row.tokens_cache_read)), cw: Math.max(0, num(row.tokens_cache_write)), out: Math.max(0, num(row.tokens_output)) });
   return {
     ts,
-    model: normalizeModelName(String(row.model ?? "unknown")),
+    model: String(row.model ?? "unknown"),
     fi: Math.max(0, num(row.tokens_input)),
     cr: Math.max(0, num(row.tokens_cache_read)),
     cw: Math.max(0, num(row.tokens_cache_write)),
     out: Math.max(0, num(row.tokens_output)),
     cost: num(row.cost_usd),
     durationSec: Math.max(0, num(row.duration_seconds)),
+    buckets,
+    aggregateOnly,
   };
 }
 
@@ -94,9 +111,12 @@ function modelMix(recs: SessionRec[]): ModelMix {
   const byModel: Record<string, number> = {};
   let total = 0;
   for (const r of recs) {
-    const t = r.fi + r.cr + r.cw + r.out;
-    byModel[r.model] = (byModel[r.model] ?? 0) + t;
-    total += t;
+    for (const b of r.buckets) {
+      if (knownModelRate(b.model, "input") === null) continue;
+      const t = b.fi + b.cr + b.cw + b.out;
+      byModel[b.model] = (byModel[b.model] ?? 0) + t;
+      total += t;
+    }
   }
   if (total <= 0) return {};
   const mix: ModelMix = {};
@@ -104,10 +124,77 @@ function modelMix(recs: SessionRec[]): ModelMix {
   return mix;
 }
 
+type TokenClass = "fi" | "cr" | "cw" | "out";
+
+/** Each token class has its own model distribution and price. */
+function classMix(recs: SessionRec[], klass: TokenClass, fallback: ModelMix, ceiling = Infinity): ModelMix {
+  const counts: ModelMix = {};
+  let total = 0;
+  for (const r of recs) {
+    for (const b of r.buckets) {
+      const rate = referenceModelRate(b.model, rateClass[klass]);
+      if (rate === null || rate > ceiling) continue;
+      counts[b.model] = (counts[b.model] ?? 0) + b[klass];
+      total += b[klass];
+    }
+  }
+  if (total <= 0) return fallback;
+  for (const model of Object.keys(counts)) counts[model] /= total;
+  return counts;
+}
+
+const rateClass = { fi: "input", cr: "cacheRead", cw: "cacheWrite", out: "output" } as const;
+
+function hasEligibleUsage(session: SessionRec, ceilings: Record<TokenClass, number>): boolean {
+  return session.buckets.some((bucket) => (["fi", "cr", "cw", "out"] as const).some((klass) => {
+    const rate = referenceModelRate(bucket.model, rateClass[klass]);
+    return bucket[klass] > 0 && rate !== null && rate <= ceilings[klass];
+  }));
+}
+
+/**
+ * Price the token classes at per-class model mixes. By default every Claude
+ * model is valued at its family's reference card (the routing comparison);
+ * `exact` values each at its own generation card.
+ */
+function classPrice(fi: number, cr: number, cw: number, out: number, mixes: Record<TokenClass, ModelMix>, exact = false): number {
+  const reference = !exact;
+  return price(fi, 0, 0, mixes.fi, reference) + price(0, cr, 0, mixes.cr, reference) +
+    price_cw(cw, mixes.cw, undefined, undefined, reference) + price(0, 0, out, mixes.out, reference);
+}
+
 export interface SavingsBreakdownItem {
   key: string;
   label: string;
+  /** Exact raw lever value. */
   monthlyUsd: number;
+  /** Cent-allocated display value: the displayed levers always add to the
+   * displayed headline (largest-remainder cent allocation, round once). */
+  monthlyUsdDisplay: number;
+}
+
+/**
+ * Largest-remainder cent allocation. Rounds `total` to cents once, then
+ * apportions those cents across `parts` so the returned parts always re-add to
+ * the rounded total. Signed parts are handled by flooring toward -inf before
+ * apportioning; `parts` need not already sum to `total` (any remainder surplus
+ * lands on the first part so the sum always holds).
+ */
+export function allocateCents(total: number, parts: number[]): number[] {
+  const cents = (x: number) => (Number.isFinite(x) ? x : 0) * 100;
+  const totalCents = Math.round(cents(total));
+  const out = parts.map((p) => Math.floor(cents(p)));
+  let remainder = totalCents - out.reduce((a, b) => a + b, 0);
+  const order = parts
+    .map((p, i) => [cents(p) - Math.floor(cents(p)), i] as const)
+    .sort((a, b) => b[0] - a[0] || a[1] - b[1]);
+  for (const [, i] of order) {
+    if (remainder <= 0) break;
+    out[i] += 1;
+    remainder -= 1;
+  }
+  if (remainder !== 0 && out.length > 0) out[0] += remainder;
+  return out.map((c) => c / 100);
 }
 
 /** Progress toward a frozen baseline (displayed when ready=false). */
@@ -128,6 +215,27 @@ export interface RealizedSavings {
   ready: boolean;
   status: string;
   monthlySavingsUsd: number;
+  premiumTokens: number;
+  premiumCostUsd: number;
+  premiumShare: number;
+  aggregateBaseline: boolean;
+  unpricedBaselineTokens: number;
+  unpricedCurrentTokens: number;
+  unpricedEventTokens: number;
+  unpricedEventCount: number;
+  archivePricedNetUsd: number | null;
+  /** Priced action dollars that used the input rate because no billed class was
+   * recorded — an honest floor, disclosed wherever these savings are shown.
+   * Window-scaled like compressionMeasuredUsd / raw window sum. */
+  inputRateFloorUsd: number;
+  inputRateFloorWindowUsd: number;
+  /**
+   * Monthly gap between the exact generation-card cost of the current eligible
+   * work and its reference-card value (the price both routing arms use). It is
+   * a vendor price or generation difference, never routing, and is not part of
+   * the savings total. Negative when the exact cards are cheaper.
+   */
+  generationPriceDeltaUsd: number;
   /** Monthly $ at the user's CURRENT model mix + cache pattern ("now" arm). */
   actualMonthlyUsd: number;
   /** Monthly $ at the user's BASELINE mix + cache pattern ("the old way" arm). */
@@ -206,6 +314,18 @@ const NOT_READY = (status: string): RealizedSavings => ({
   ready: false,
   status,
   monthlySavingsUsd: 0,
+  premiumTokens: 0,
+  premiumCostUsd: 0,
+  premiumShare: 0,
+  aggregateBaseline: false,
+  unpricedBaselineTokens: 0,
+  unpricedCurrentTokens: 0,
+  unpricedEventTokens: 0,
+  unpricedEventCount: 0,
+  archivePricedNetUsd: null,
+  inputRateFloorUsd: 0,
+  inputRateFloorWindowUsd: 0,
+  generationPriceDeltaUsd: 0,
   actualMonthlyUsd: 0,
   counterfactualMonthlyUsd: 0,
   transformationPct: 0,
@@ -252,6 +372,10 @@ export function computeRealizedSavings(
   let measuredCompression = compressionOverride ?? 0;
   let measuredCompressionTokens = compressionTokensOverride ?? 0;
   let measuredVerbosity = 0;
+  let unpricedEventTokens = 0;
+  let unpricedEventCount = 0;
+  let archivePricedNetUsd: number | null = null;
+  let inputRateFloor = 0;
 
   if (!rowsOverride) {
     const store = new TrendsStore(dataDir);
@@ -264,8 +388,15 @@ export function computeRealizedSavings(
       const comp = store.getCompressionSavings(days, now);
       measuredCompression = comp.totalCostSavedUsd;
       measuredCompressionTokens = comp.totalTokensSaved;
+      unpricedEventTokens = comp.unpricedTokens;
+      unpricedEventCount = comp.unpricedEvents;
+      archivePricedNetUsd = comp.archivePricedNetUsd;
+      inputRateFloor = comp.inputRateFloorUsd;
       // Verbosity-steer add-back (pool #4) reads estimated savings_events.
-      measuredVerbosity = store.getVerbositySavings(days, now);
+      const verbosity = store.getVerbositySavingsDetail(days, now);
+      measuredVerbosity = verbosity.costUsd;
+      unpricedEventTokens += verbosity.unpricedTokens;
+      unpricedEventCount += verbosity.unpricedEvents;
     } catch {
       rows = [];
       measuredCompression = 0;
@@ -276,12 +407,24 @@ export function computeRealizedSavings(
     }
   }
 
+  const notReady = (status: string): RealizedSavings => {
+    const result = NOT_READY(status);
+    result.compressionMeasuredWindowUsd = Math.max(0, measuredCompression);
+    result.compressionMeasuredWindowTokens = Math.max(0, measuredCompressionTokens);
+    result.verbosityMeasuredWindowUsd = Math.max(0, measuredVerbosity);
+    result.unpricedEventTokens = unpricedEventTokens;
+    result.unpricedEventCount = unpricedEventCount;
+    result.archivePricedNetUsd = archivePricedNetUsd;
+    result.inputRateFloorWindowUsd = Math.max(0, inputRateFloor);
+    return result;
+  };
+
   const history = rows
     .map(toRec)
     .filter((r) => r.ts > 0)
     .filter((r) => r.fi >= MIN_INPUT_TOKENS && r.durationSec >= MIN_DURATION_SECONDS)
     .sort((a, b) => a.ts - b.ts);
-  if (history.length === 0) return NOT_READY("no sessions yet");
+  if (history.length === 0) return notReady("no sessions yet");
 
   const installTs = history[0].ts;
   const installDate = new Date(installTs).toISOString().slice(0, 10);
@@ -291,7 +434,7 @@ export function computeRealizedSavings(
 
   if (before.length < BASELINE_MIN_STABLE_SESSIONS) {
     const daysLeft = Math.max(0, Math.ceil((windowEnd - now) / DAY_MS));
-    const r = NOT_READY(`building baseline (${before.length}/${BASELINE_MIN_STABLE_SESSIONS} early sessions)`);
+    const r = notReady(`building baseline (${before.length}/${BASELINE_MIN_STABLE_SESSIONS} early sessions)`);
     r.installDate = installDate;
     r.baselineBuilding = {
       sessionsInWindow: before.length,
@@ -304,7 +447,7 @@ export function computeRealizedSavings(
   }
   if (now < windowEnd) {
     const daysLeft = Math.ceil((windowEnd - now) / DAY_MS);
-    const r = NOT_READY(`building baseline (${daysLeft}d of early window left)`);
+    const r = notReady(`building baseline (${daysLeft}d of early window left)`);
     r.installDate = installDate;
     r.baselineBuilding = {
       sessionsInWindow: before.length,
@@ -325,7 +468,7 @@ export function computeRealizedSavings(
   const beforeMix = modelMix(before);
 
   if (after.length < AFTER_MIN_SESSIONS) {
-    const r = NOT_READY(`building comparison (${after.length}/${AFTER_MIN_SESSIONS} recent sessions)`);
+    const r = notReady(`building comparison (${after.length}/${AFTER_MIN_SESSIONS} recent sessions)`);
     r.installDate = installDate;
     r.beforeMixLabel = mixLabel(beforeMix);
     // Baseline window is closed and frozen — daysLeft=0 here.
@@ -353,7 +496,7 @@ export function computeRealizedSavings(
   F = clampTotal(F); CR = clampTotal(CR); CW = clampTotal(CW);
   const totalIn = F + CR + CW;
   if (totalIn <= 0) {
-    const r = NOT_READY("no recent volume");
+    const r = notReady("no recent volume");
     r.installDate = installDate;
     r.beforeMixLabel = mixLabel(beforeMix);
     r.baselineBuilding = {
@@ -367,6 +510,35 @@ export function computeRealizedSavings(
   }
 
   const afterMix = modelMix(after);
+  const beforeClassMix = Object.fromEntries(
+    (["fi", "cr", "cw", "out"] as const).map((klass) => [klass, classMix(before, klass, beforeMix)]),
+  ) as Record<TokenClass, ModelMix>;
+  const ceilings = Object.fromEntries((["fi", "cr", "cw", "out"] as const).map((klass) => [klass,
+    Math.max(0, ...Object.keys(beforeClassMix[klass]).map((model) => referenceModelRate(model, rateClass[klass]) ?? 0)),
+  ])) as Record<TokenClass, number>;
+  const afterClassMix = Object.fromEntries(
+    (["fi", "cr", "cw", "out"] as const).map((klass) => [klass, classMix(after, klass, beforeClassMix[klass], ceilings[klass])]),
+  ) as Record<TokenClass, ModelMix>;
+  let premiumTokens = 0, premiumCostUsd = 0, eligibleSessions = 0, pricedTokens = 0, unpricedCurrentTokens = 0;
+  const unpricedBaselineTokens = before.reduce((total, session) => total + session.buckets.reduce((subtotal, b) =>
+    subtotal + (["fi", "cr", "cw", "out"] as const).reduce((sum, klass) =>
+      sum + (knownModelRate(b.model, rateClass[klass]) === null ? b[klass] : 0), 0), 0), 0);
+  for (const session of after) {
+    let total = 0;
+    for (const b of session.buckets) {
+      for (const klass of ["fi", "cr", "cw", "out"] as const) {
+        const rate = knownModelRate(b.model, rateClass[klass]);
+        if (rate === null) { unpricedCurrentTokens += b[klass]; continue; }
+        total += b[klass];
+        if ((referenceModelRate(b.model, rateClass[klass]) ?? rate) > ceilings[klass]) {
+          premiumTokens += b[klass];
+          premiumCostUsd += b[klass] * rate;
+        }
+      }
+    }
+    if (hasEligibleUsage(session, ceilings)) eligibleSessions++;
+    pricedTokens += total;
+  }
 
   // CURRENT pool cache-hit over FRESH+CACHE_READ (cache-write excluded) — the one
   // efficiency signal the "now" arm needs from the current window.
@@ -378,14 +550,16 @@ export function computeRealizedSavings(
   // session, so per-session figures move ONLY with efficiency, never with the current
   // period's workload volume. Mirrors measure.py _estimate_before_after_savings.
   const nBefore = Math.max(1, before.length);
-  const tFi = before.reduce((s, r) => s + r.fi, 0) / nBefore;
-  const tCr = before.reduce((s, r) => s + r.cr, 0) / nBefore;
-  const tCw = before.reduce((s, r) => s + r.cw, 0) / nBefore;
-  const tOut = before.reduce((s, r) => s + r.out, 0) / nBefore;
+  const pricedBaseline = (klass: TokenClass) => before.reduce((total, session) => total + session.buckets.reduce(
+    (sum, b) => sum + (knownModelRate(b.model, rateClass[klass]) !== null ? b[klass] : 0), 0), 0) / nBefore;
+  const tFi = pricedBaseline("fi");
+  const tCr = pricedBaseline("cr");
+  const tCw = pricedBaseline("cw");
+  const tOut = pricedBaseline("out");
   const tPool = tFi + tCr; // frozen fresh + cache_read pool
 
   const afterWindowDays = Math.max(1, (now - afterStart) / DAY_MS);
-  const sessionsPerMonth = (after.length / afterWindowDays) * 30;
+  const sessionsPerMonth = (eligibleSessions / afterWindowDays) * 30;
 
   // MONTHLY SCALING: the token classes above are summed over the `days` window,
   // so every dollar figure derived from them is a WINDOW total, not a monthly one.
@@ -402,17 +576,21 @@ export function computeRealizedSavings(
   // OLD WAY / session (counterfactual) = the typical session's native fresh/cache_read
   // split priced at the baseline mix + cache-write (5m, conservative) at the baseline
   // mix. Depends only on the frozen early window + prices -> stable across runs.
-  const oldCps = price(tFi, tCr, tOut, beforeMix) + price_cw(tCw, beforeMix);
-  // NOW / session (actual) = the SAME frozen tokens, pool redistributed at the CURRENT
-  // pool-hit and priced at the CURRENT mix. Cache-write priced at the actual mix.
-  const curCRs = curHit * tPool;
-  const curFs = tPool - curCRs;
-  const nowCps = price(curFs, curCRs, tOut, afterMix) + price_cw(tCw, afterMix);
+  const oldCps = classPrice(tFi, tCr, tCw, tOut, beforeClassMix);
+  // NOW / session prices the same frozen token classes at the current mix.
+  // Hold the baseline token classes fixed. Provider cache hits are not a
+  // Token Optimizer saving, so changes in cache reuse do not enter this estimate.
+  const nowCps = classPrice(tFi, tCr, tCw, tOut, afterClassMix);
+  // The same eligible work at each model's exact generation card. The gap to the
+  // reference-card value is price/generation change, reported apart from routing.
+  const nowCpsExact = classPrice(tFi, tCr, tCw, tOut, afterClassMix, true);
   if (
     !Number.isFinite(oldCps) || !Number.isFinite(nowCps) ||
     oldCps <= 0 || nowCps <= 0
   ) {
-    const r = NOT_READY("insufficient pricing data");
+    const r = notReady("insufficient pricing data");
+    r.unpricedBaselineTokens = unpricedBaselineTokens;
+    r.unpricedCurrentTokens = unpricedCurrentTokens;
     r.installDate = installDate;
     r.beforeMixLabel = mixLabel(beforeMix);
     r.baselineBuilding = {
@@ -431,11 +609,11 @@ export function computeRealizedSavings(
   // COMPRESSION ADD-BACK (#3): the measured removed-token dollars repriced to the
   // baseline input mix (baseline_input_rate / current_input_rate). actual = 0 for
   // this pool (the tokens were never billed), so the whole repriced value is
-  // transformation. Disjoint from the billed pool and the caching lever.
+  // transformation. Disjoint from the billed pool.
   // `measuredCompression` is already WINDOWED to `days` by getCompressionSavings
   // (cutoff = now - days*DAY), so it scales by the same 30/days as the billed arms.
-  const inAfter = inputRatePerMTok(afterMix);
-  const inBefore = inputRatePerMTok(beforeMix);
+  const inAfter = inputRatePerMTok(afterClassMix.fi, true);
+  const inBefore = inputRatePerMTok(beforeClassMix.fi, true);
   const compReprice = inAfter > 0 ? inBefore / inAfter : 1;
   const compressionAddbackWindow = Math.max(0, measuredCompression * compReprice);
 
@@ -447,8 +625,8 @@ export function computeRealizedSavings(
   // baseline OUTPUT rate: the old way would have produced verbose output at the
   // baseline model mix's output rate. Actual for this pool is 0, so the whole
   // repriced value is transformation. Mirrors measure.py verbosity_addback.
-  const outAfter = price(0, 0, 1_000_000, afterMix);
-  const outBefore = price(0, 0, 1_000_000, beforeMix);
+  const outAfter = price(0, 0, 1_000_000, afterClassMix.out, true);
+  const outBefore = price(0, 0, 1_000_000, beforeClassMix.out, true);
   const vsReprice = outAfter > 0 ? outBefore / outAfter : 1;
   const verbosityAddbackWindow = Math.max(0, measuredVerbosity * vsReprice);
 
@@ -481,40 +659,37 @@ export function computeRealizedSavings(
   // Per-session keys (dashboard reads them) = the FROZEN typical-session anchors
   // directly. before_* = "the old way" (stable across runs); after_* = "now" (moves
   // only with efficiency). recentN drives the cumulative figure below.
-  const recentN = after.length;
+  const recentN = eligibleSessions;
   const beforeCps = oldCps;
   const afterCps = nowCps;
 
-  // Cumulative: per-session transformation across every post-baseline session.
-  // Uses the full transformation (all 4 pools: main + subagent + compression +
-  // verbosity) divided by current session count, times all post-baseline sessions.
-  // Matches OpenClaw's approach.
-  const allAfter = history.filter((r) => r.ts >= windowEnd);
-  const perSessionTransformation = transformation / Math.max(1, recentN);
+  // Cumulative is an extrapolation of the current transformation, including
+  // its event add-backs, across comparable sessions with eligible model usage.
+  const allAfter = history.filter((r) => r.ts >= windowEnd && hasEligibleUsage(r, ceilings));
+  const perSessionTransformation = recentN > 0 ? transformation / recentN : 0;
   const cumulative = perSessionTransformation * allAfter.length;
 
   // --- Attribution breakdown: morph the counterfactual into the actual one lever
   // at a time so the UNROUNDED steps telescope to the headline. ---
   //   routing  = counterfactual − (cf footprint repriced at today's mix, incl CW)
-  //   caching  = (cf footprint at today's mix) − actual
   // Routing carries the cache-write reprice (#2). Compression is the third lever.
   // Levers are computed on the WINDOW arms then scaled by m() so they telescope to
   // the (monthly) main transformation.
   // Always decompose the main pool, even when it is net-negative, so the waterfall sums to
   // the honest net including a pool that grew (shown honestly as a "-$X" lever).
-  const vRouteS = price(tFi, tCr, tOut, afterMix) + price_cw(tCw, afterMix);
-  const sRoute = (oldCps - vRouteS) * sessionsPerMonth; // before->after mix (incl CW)
-  const sCache = (vRouteS - nowCps) * sessionsPerMonth; // remaining gap = caching
+  const sRoute = (oldCps - nowCps) * sessionsPerMonth;
 
+  // Display cents are allocated once off the signed net so the rendered levers
+  // always add to the rendered headline; monthlyUsd keeps the exact raw values.
+  const leverDisplay = allocateCents(net, [sRoute, subagentTransformation, compressionAddback, verbosityAddback]);
   const breakdown: SavingsBreakdownItem[] = [
-    { key: "routing", label: "Smarter model routing (lighter mix)", monthlyUsd: sRoute },
-    { key: "context_rereads", label: "Lighter sessions (better cache reuse)", monthlyUsd: sCache },
-    { key: "subagent_routing", label: "Cheaper subagents (no sidechains on OpenCode)", monthlyUsd: subagentTransformation },
-    { key: "context_compression", label: "Lighter context (fewer re-reads, metered)", monthlyUsd: compressionAddback },
-    { key: "verbosity_steer", label: "Lean output nudges (less output, estimated)", monthlyUsd: verbosityAddback },
+    { key: "routing", label: "Eligible model mix change", monthlyUsd: sRoute, monthlyUsdDisplay: leverDisplay[0] },
+    { key: "subagent_routing", label: "Cheaper subagents (no sidechains on OpenCode)", monthlyUsd: subagentTransformation, monthlyUsdDisplay: leverDisplay[1] },
+    { key: "context_compression", label: "Lighter context (fewer re-reads, metered)", monthlyUsd: compressionAddback, monthlyUsdDisplay: leverDisplay[2] },
+    { key: "verbosity_steer", label: "Lean output nudges (less output, estimated)", monthlyUsd: verbosityAddback, monthlyUsdDisplay: leverDisplay[3] },
   ]
     .filter((b) => b.key !== "subagent_routing" || b.monthlyUsd !== 0) // drop the always-0 sidechain lever
-    .sort((a, b) => Math.abs(b.monthlyUsd) - Math.abs(a.monthlyUsd));
+    .sort((a, b) => Math.abs(b.monthlyUsdDisplay) - Math.abs(a.monthlyUsdDisplay));
 
   // transformationPct: fraction of combined counterfactual spend eliminated.
   // The combined counterfactual = main cf + compression add-back + verbosity
@@ -546,6 +721,18 @@ export function computeRealizedSavings(
     ready: true,
     status: "ok",
     monthlySavingsUsd: transformation,
+    premiumTokens,
+    premiumCostUsd,
+    premiumShare: pricedTokens > 0 ? premiumTokens / pricedTokens : 0,
+    aggregateBaseline: before.some((r) => r.aggregateOnly),
+    unpricedBaselineTokens,
+    unpricedCurrentTokens,
+    unpricedEventTokens,
+    unpricedEventCount,
+    archivePricedNetUsd,
+    inputRateFloorUsd: m(Math.max(0, inputRateFloor)),
+    inputRateFloorWindowUsd: Math.max(0, inputRateFloor),
+    generationPriceDeltaUsd: (nowCpsExact - nowCps) * sessionsPerMonth,
     actualMonthlyUsd: actualMonthly,
     counterfactualMonthlyUsd: combinedCf,
     transformationPct,

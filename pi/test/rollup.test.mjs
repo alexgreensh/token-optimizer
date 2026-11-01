@@ -50,3 +50,26 @@ test('JSONL rejects duplicate IDs and stray roots do not contaminate chosen bran
  assert.equal(r.invalidLines,1);
  assert.deepEqual(r.models.map(x=>x.model),['opus','sonnet']);
 });
+
+test('repeated provider message ids count once using cumulative usage; absent ids stay distinct',()=>{
+ const first=msg('a',null,'opus',1); first.message.id='provider-message';
+ const last=msg('b','a','opus',2); last.message.id='provider-message'; last.message.usage.input=20;
+ const anonymous=msg('c','b','opus',3);
+ const m=rollup([first,last,anonymous]).models[0];
+ assert.equal(m.calls,2);
+ assert.equal(m.input,30);
+ assert.equal(m.nativeCost,5);
+});
+
+test('an older duplicate cannot replace larger cumulative usage',()=>{
+ const complete=msg('a',null,'opus',2); complete.message.id='provider-message';
+ complete.message.usage.output=1000;
+ const partial=msg('b','a','opus',1); partial.message.id='provider-message';
+ partial.message.usage.output=100;
+ for (const rows of [[complete,partial],[partial,complete]]) {
+  const m=rollup(rows).models[0];
+  assert.equal(m.calls,1);
+  assert.equal(m.output,1000);
+  assert.equal(m.nativeCost,2);
+ }
+});

@@ -265,7 +265,7 @@ These ten rows are the ones where Token Optimizer is the only 🟢 in the row: w
 
 |  | Token Optimizer | Headroom | RTK | Boost | context-mode | `/context` |
 |---|---|---|---|---|---|---|
-| Session continuity | 🟢 Progressive checkpoints before compaction + restore after, cross-session hints, cold-resume, tool-output digest; measured ~3.9M tokens / ~$19 recovered in a 30-day snapshot (checkpoint restores + lean resumes) | 🔴 | 🔴 | — | 🟡 Session guide only | 🔴 |
+| Session continuity | 🟢 Progressive checkpoints before compaction + restore after, cross-session hints, cold-resume, tool-output digest | 🔴 | 🔴 | — | 🟡 Session guide only | 🔴 |
 | Structural waste audit | 🟢 Deep per-component (CLAUDE.md, skills, MCP, memory) | 🔴 | 🔴 | 🔴 | 🔴 | 🟡 Summary only |
 | CLAUDE.md and MEMORY.md health | 🟢 8 auditors + attention-curve scoring | 🔴 | 🔴 | 🔴 | 🔴 | 🔴 |
 | Model routing and behavioral coaching | 🟢 12 detectors, subagent cost breakdown, anti-patterns | 🔴 | 🔴 | — | 🔴 | 🟡 Basic suggestions |
@@ -311,21 +311,22 @@ Per-turn token breakdowns, cost across four pricing tiers, cache analysis with T
 
 ## What It Saves
 
-Six levers, all automatic: tool-output compression, cross-turn dedup, delta-read, structure-map skeletons, checkpoint-restore, and model routing. What they save is tracked in three tiers.
+**About $597.72 in all-in API-rate-equivalent value, a priced subtotal for the 30-day snapshot ending 2026-11-01.** The components keep their evidence labels:
 
-**Three tiers, labelled by how each is known** (one real month, the author's last 30 days, all six levers on):
+- **Logged actions: $78.59.** Metered token changes across 4,945 events, valued at API rates.
+- **Model routing: $422.88.** Estimated comparison using a frozen pre-tool mix and fixed reference model cards.
+- **Repeat reads avoided: $60.69.** Modeled from observed turns until the next real compaction, using known per-turn rates.
+- **Other estimates: $35.56.** All eight estimate categories are listed in the [methodology](BENCHMARK.md), including zero-valued categories.
 
-- **Logged actions (\~$126)**, metered. Every saving logged as it happened: a result archived, a repeat read skipped, a lean resume, a loop cut short. 2,733 events with before and after token counts.
-- **Repeat reads avoided (\~$1,124)**, estimated. Content Token Optimizer removed would have been re-read on every later turn until the session's next real compaction, modelled per turn at that turn's cache-read rate and capped at the real compaction event.
-- **Other estimates (\~$146)**, estimated. Lean session resumes, compressed sub-agent context, MCP output caps, loops prevented.
+**Pricing is incomplete.** Unpriced repeat-read credits and debits are excluded; the complete net dollar value is unavailable. The four components add up to the total.
 
-About **\~$1,396** in API-equivalent value for the month, and **59.6M tokens never sent to the model**, roughly 28% of the workload (150.8M spent, about 210.4M without Token Optimizer). Tokens are the primary figure; dollars depend on which models you run. Metered and estimated are never dressed up as one number. [See the full methodology →](BENCHMARK.md)
+The same snapshot's token card shows **24.80M tokens saved** (9,831,072 metered + 14,966,284 estimated), about **8% of spent + saved**: 286.22M spent + 24.80M saved = 311.02M. Its scope is logged tokens plus MCP caps, hint-served reads, verbosity nudges and lean resumes. Modeled repeat-read tokens and routing are outside that token-card total; the dollar subtotal has the broader scope above.
 
 <p align="center">
-  <img src="skills/token-optimizer/assets/real-savings.svg" alt="30-day savings report: about $1,396 in API-equivalent value and 59.6M tokens never sent, split into $126 logged actions (metered), $1,124 repeat reads avoided (estimated) and $146 other estimates" width="900">
+  <img src="skills/token-optimizer/assets/real-savings.svg" alt="Snapshot 2026-11-01: $597.72 priced API-rate-equivalent subtotal with incomplete pricing; 24.80M tokens saved, about 8% of spent plus saved. Logged actions $78.59, estimated routing $422.88, modeled rereads $60.69, other estimates $35.56." width="900">
 </p>
 
-Based on 1,698 sessions over the last 30 days (snapshot 2026-09-14). Your number is your own: the dashboard computes the same report from your own sessions. [See the methodology →](BENCHMARK.md)
+Based on 1,644 main work sessions and 3 delegated sessions. Your dashboard computes the report from your own history; results differ. [Full methodology →](BENCHMARK.md)
 
 <p align="center">
   <img src="skills/token-optimizer/assets/user-profiles.svg" alt="What happens inside a 1M session" width="800">

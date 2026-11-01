@@ -111,6 +111,22 @@ def test_quality_dict_carries_score_grade_band():
     assert s["quality_band"] is not None
 
 
+def test_flash_lite_is_not_priced_as_flash():
+    assert model_id_for_display_name("Gemini 2.5 Flash-Lite") == "gemini-2.5-flash-lite"
+    assert model_id_for_display_name("Gemini 2.5 Flash Lite (Low)") == "gemini-2.5-flash-lite"
+    assert model_id_for_display_name("Gemini 3.1 Flash Lite") == "gemini-3.1-flash-lite"
+    assert model_id_for_display_name("gemini-2.5-flash-lite-001") == "gemini-2.5-flash-lite"
+
+
+def test_unknown_gemini_variants_do_not_borrow_a_family_card():
+    assert model_id_for_display_name("Gemini 3.5 Flash Lite") is None
+    assert model_id_for_display_name("Gemini 2.5 Flash Image") is None
+    assert model_id_for_display_name("Gemini 3.5 Flash Live") is None
+    assert model_id_for_display_name("Gemini 3.1 Pro Ultra") is None
+    assert model_id_for_display_name("gemini-2.5-flash-20260101") == "gemini-2.5-flash"
+    assert model_id_for_display_name("gemini-2.5-flash-001") == "gemini-2.5-flash"
+
+
 def test_model_id_mapping():
     assert model_id_for_display_name("Gemini 3.5 Flash (Medium)") == "gemini-3.5-flash"
     assert model_id_for_display_name("Gemini 3.6 Flash") == "gemini-3.6-flash"
@@ -118,3 +134,15 @@ def test_model_id_mapping():
     assert model_id_for_display_name("Some Future Model") is None
     assert model_id_for_display_name("") is None
     assert model_id_for_display_name(None) is None
+
+
+def test_model_breakdown_uses_each_generation_and_preserves_unknown():
+    generations = [
+        {'model_display_name': 'Gemini 3.5 Flash', 'input_tokens': 100, 'output_tokens': 20, 'cache_read_tokens': 10},
+        {'model_display_name': 'Gemini 3.6 Flash', 'input_tokens': 200, 'output_tokens': 30, 'cache_read_tokens': 40},
+        {'model_display_name': 'Future model', 'input_tokens': 300, 'output_tokens': 50, 'cache_read_tokens': 60},
+    ]
+    s = normalize_session(_raw(generations=generations, input_tokens=600, output_tokens=100, cache_read_tokens=110))
+    assert s['model_usage_breakdown']['gemini-3.5-flash']['fresh_input'] == 100
+    assert s['model_usage_breakdown']['gemini-3.6-flash']['cache_read'] == 40
+    assert s['model_usage_breakdown']['Future model']['output'] == 50

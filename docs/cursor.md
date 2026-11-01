@@ -47,13 +47,7 @@ removed on uninstall.
 
 ### Windows
 
-Install from **WSL or a POSIX shell** — the installer refuses native Windows
-(`os.name == "nt"`). The persisted hook `command` is POSIX-shell quoted and
-`cmd.exe` would not parse it, so the adapter intentionally fails rather than
-silently writing a no-op hook. Native-Windows Cursor hooks are deferred. The
-matching cells stay red in the
-[capability matrix](https://alexgreensh.github.io/token-optimizer/reference/capability-matrix/)
-until a Windows quoting path is verified, not assumed.
+On native Windows the installer writes hook commands that PowerShell and cmd.exe both run (a bare interpreter path and double-quoted arguments, the same form the Codex hooks use). A folder name holding `$`, a backtick, `%` or `!` goes through its short 8.3 name; if there is none, the installer says what to move. Use `python`, not `python3`, in the commands below.
 
 ## No capability map — hooks are observed, not version-gated
 
@@ -91,7 +85,6 @@ closed** (emits nothing) on any uncertainty.
 | Gap | Why | Tracking |
 |---|---|---|
 | Per-session cost | Cursor exposes no billing figure to hooks or state files; there is no number to pass through, so cost-source is `cursor_no_cost_data` and no savings headline is shown rather than a wrong one | marked red in the capability matrix |
-| Native Windows hooks | persisted `command` is POSIX-shell quoted; `cmd.exe` would not parse it | deferred, not silently broken |
 | Compaction steering | Cursor compacts server-side/model-side; `preCompact` is observational (we record its numbers), not an injection point | — |
 | Database parity surfaces | Cursor moves token fields across `state.vscdb` releases; the reader maps the known shapes and falls back instead of guessing | read-only, never writes |
 

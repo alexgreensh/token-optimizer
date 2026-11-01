@@ -1,6 +1,6 @@
 # Token Optimizer for Hermes
 
-**Beta (v0.2.1).** The Token Optimizer feature set for [NousResearch Hermes](https://github.com/NousResearch/hermes-agent): smaller terminal and tool output, cheaper re-reads, loop warnings, checkpoints that survive compaction, prior-session hints, cost and quality tracking, and the shared dashboard.
+**Beta (v0.2.2).** The Token Optimizer feature set for [NousResearch Hermes](https://github.com/NousResearch/hermes-agent): smaller terminal and tool output, cheaper re-reads, loop warnings, checkpoints that survive compaction, prior-session hints, cost and quality tracking, and the shared dashboard.
 
 Native Python plugin. Reads Hermes's own `~/.hermes/state.db` read-only. Model-agnostic. No telemetry, no network calls, no Python dependencies.
 

@@ -575,6 +575,31 @@ class SessionStore:
         conn.execute("DELETE FROM file_reads")
         conn.commit()
 
+    def reset_context_state(self) -> None:
+        """Forget everything that records what the model currently holds.
+
+        A /clear or a compaction empties the model's context while the session
+        id (and so this store) lives on. Every record that later lets a hook say
+        "you already have this" must go with it: the read ledger, the delta-read
+        baselines, the cross-turn command outputs, the repeat-command streaks, the
+        served-hint ledger and the first-read skeleton markers. Nothing here is a
+        recovery source: the tool-output archive, activity log, compaction
+        cursor and decision notes stay, because they describe the session, not
+        the context window. One transaction, so a lock failure leaves the old
+        state intact rather than half-cleared.
+        """
+        conn = self._connect()
+        with conn:
+            conn.execute("DELETE FROM file_reads")
+            conn.execute("DELETE FROM cached_content")
+            conn.execute("DELETE FROM command_outputs")
+            conn.execute("DELETE FROM command_run_streaks")
+            conn.execute("DELETE FROM hint_serves")
+            conn.execute(
+                "DELETE FROM session_meta WHERE key GLOB 'shadow_fr:*' "
+                "OR key GLOB 'active_fr:*'"
+            )
+
     # ----- cached_content -----
 
     def get_cached_content(self, file_path: str) -> Optional[dict[str, Any]]:
@@ -958,6 +983,45 @@ class SessionStore:
             (min_tokens, limit),
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def _context_reset_marker(session_id: str, snapshot_dir: Optional[Path] = None) -> Optional[Path]:
+    # An id the archive would not accept maps to no marker, so a malformed id
+    # can never fork a stray directory.
+    if not session_id or not re.match(r"^[a-zA-Z0-9_-]+\Z", session_id):
+        return None
+    base = snapshot_dir or resolve_snapshot_dir()
+    return base / "tool-archive" / session_id / "context_reset_at"
+
+
+def mark_context_reset(session_id: str, snapshot_dir: Optional[Path] = None) -> None:
+    """Record that this session's context was emptied now (/clear or compaction).
+
+    The re-fetch guard reads this to stop treating archived MCP results from
+    before the reset as data the model still holds. A plain timestamp file, not a
+    database row, because the guard runs on every MCP call and stays free of
+    SQLite. Best-effort: a failed write only means the guard keeps its old
+    behaviour.
+    """
+    try:
+        marker = _context_reset_marker(session_id, snapshot_dir)
+        if marker is None:
+            return
+        marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        marker.write_text(repr(time.time()), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def context_reset_at(session_id: str, snapshot_dir: Optional[Path] = None) -> float:
+    """Epoch seconds of the session's last context reset, or 0.0 if none."""
+    try:
+        marker = _context_reset_marker(session_id, snapshot_dir)
+        if marker is None:
+            return 0.0
+        return float(marker.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return 0.0
 
 
 def cleanup_old_stores(max_age_hours: int = CLEANUP_AGE_HOURS) -> int:

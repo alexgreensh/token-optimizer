@@ -26,7 +26,11 @@
  * hint_followed) are the same strings the Python dashboard uses, enabling
  * consistent cross-platform labelling if they are ever merged.
  */
-export declare function logSavingsEvent(eventType: string, tokensSaved: number, sessionId: string, detail?: string): void;
+export declare function logSavingsEvent(eventType: string, tokensSaved: number, sessionId: string, detail?: string, pricing?: {
+    openclawDir?: string;
+    model?: string;
+    tokenClass?: string;
+}): void;
 /**
  * Sum tokensEst for files read at least MIN_COUNT times this session,
  * capped at 200 000 tokens and limited to 25 most-recently-accessed entries.
@@ -93,7 +97,13 @@ export declare function handleReadBefore(event: ToolEventData): {
  */
 export declare function handleWriteAfter(event: ToolEventData): void;
 /**
- * Clear all caches (called on compact).
+ * Forget what one agent has read in a session (called on compaction).
+ *
+ * Reads are cached per `<agentId>-<session>.json`. Only the compacting agent's
+ * file is removed, so a sibling agent in the same session keeps its own read
+ * state. The in-memory delta baselines are left alone: they are keyed by
+ * session, and a baseline is only consulted for a file that still has a read
+ * entry, so the next read of a cleared file re-seeds it.
  */
 export declare function clearCache(agentId: string, sessionId: string): void;
 //# sourceMappingURL=read-cache.d.ts.map

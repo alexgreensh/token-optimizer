@@ -33,7 +33,7 @@ function savings(overrides) {
         cumulativeSavedUsd: 999,
         installDate: "2026-07-31",
         breakdown: [
-            { key: "routing", label: "Smarter model routing (incl. cache-write)", monthlyUsd: 1760 },
+            { key: "routing", label: "Smarter model routing (incl. cache-write)", monthlyUsd: 1760, monthlyUsdDisplay: 1760 },
         ],
         counterfactualMonthlyUsd: 2000,
         actualMonthlyUsd: 240,

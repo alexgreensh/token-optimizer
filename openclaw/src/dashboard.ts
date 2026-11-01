@@ -11,7 +11,7 @@ import { AgentRun, WasteFinding, AuditReport, totalTokens, billableTokens, Sever
 import { QualityReport, contextWindowForModel, scoreSessionQuality, scoreToGrade } from "./quality";
 import { ContextAudit, SkillDetail, McpServer, ManageData } from "./context-audit";
 import type { RealizedSavings, SavingsEventsSummary, SavingsEventsWindow } from "./savings";
-import { readSavingsEventsByCategory } from "./savings";
+import { measuredSavingsFromSummary, readSavingsEventsByCategory } from "./savings";
 import { loadPricingTier, PRICING_TIER_LABELS, getPricing, normalizeModelName } from "./pricing";
 import { CoachData } from "./coach";
 
@@ -26,13 +26,13 @@ import { CoachData } from "./coach";
  * manifest is absent (skill-only install, test sandbox), falls back to the
  * compiled-in constant so the label is never blank.
  */
-const CORE_VERSION_FALLBACK = "5.13.62";
+const CORE_VERSION_FALLBACK = "5.13.63";
 
 /**
  * OpenClaw adapter version. Source of truth is `openclaw/package.json`; the
  * fallback covers test sandboxes where the manifest is not reachable.
  */
-const ADAPTER_VERSION_FALLBACK = "2.4.24";
+const ADAPTER_VERSION_FALLBACK = "2.4.25";
 
 function readManifestVersion(manifestPath: string, fallback: string): string {
   try {
@@ -778,14 +778,15 @@ function renderTokensSavedCard(data: DashboardData): string {
     const byType = new Map<string, number>();
     for (const cat of windowed.categories) {
       if (cat.eventType === "setup_optimization" || cat.eventType === "mcp_cap" ||
-          cat.eventType === "hint_followed" || cat.eventType === "verbosity_steer") continue;
+          cat.eventType === "hint_followed" || cat.eventType === "verbosity_steer" ||
+          cat.eventType === "fresh_session_nudge") continue;
       byType.set(cat.eventType, cat.tokensSaved);
     }
     const reexpand = byType.get("tool_archive_reexpand");
     if (reexpand) {
       byType.delete("tool_archive_reexpand");
       const ta = byType.get("tool_archive");
-      if (ta) byType.set("tool_archive", Math.max(0, ta - reexpand));
+      if (ta) byType.set("tool_archive", Math.max(0, ta - Math.abs(reexpand)));
     }
     for (const v of byType.values()) savingsEventsTokens += v;
   } catch {
@@ -1064,6 +1065,7 @@ function renderWasteCardCompact(f: WasteFinding): string {
       ${f.monthlyWasteUsd > 0 ? `<span class="waste-savings">${fmtCost(f.monthlyWasteUsd)}/mo</span>` : ""}
     </div>
     <div style="font-size:14px;margin-top:4px">${esc(f.description)}</div>
+    ${f.wasteType === "heartbeat_model_waste" || f.wasteType === "overpowered_model" ? `<div style="font-size:12px">${esc(f.recommendation)}</div>` : ""}
   </div>`;
 }
 
@@ -1317,21 +1319,13 @@ function renderSavings(data: DashboardData): string {
       <p>Current-volume counterfactual: what your sessions would have cost at your old model mix vs. what they actually cost now. ${measuringLine}.</p>
     </div>`;
 
-  // --- Opportunity panel (Item 4) — sum waste-detector realizable totals ---
-  // data.waste is already in scope (same DashboardData). Sum monthlyWasteUsd
-  // across all findings; rendered below the hero as an amber "Save more" panel.
-  const opportunityMonthlyUsd = data.waste.reduce((sum, f) => sum + (f.monthlyWasteUsd ?? 0), 0);
-
-  const opportunityPanel = opportunityMonthlyUsd > 0
+  // Findings can overlap, so show each estimate on its own.
+  const opportunities = data.waste.filter((f) => f.monthlyWasteUsd > 0);
+  const opportunityPanel = opportunities.length
     ? `<div class="savings-opportunity-panel">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--s-2)">
-          <div>
-            <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.1em;color:var(--c-warning);margin-bottom:4px">Money on the table &middot; opportunity</div>
-            <div style="font-size:13px;color:var(--c-text-dim)">${data.waste.length} waste pattern${data.waste.length !== 1 ? "s" : ""} detected — additional realizable savings</div>
-          </div>
-          <div style="font-family:var(--font-mono);font-size:32px;color:var(--c-warning);text-shadow:0 0 12px rgba(245,158,11,0.4)">${fmtCost(opportunityMonthlyUsd)}<span style="font-size:15px;opacity:0.7">/mo</span></div>
-        </div>
-        <div style="font-size:13px;color:var(--c-text-dim)">Run <code style="background:rgba(255,255,255,0.06);padding:1px 6px;border-radius:3px">/token-optimizer</code> or check the Waste tab to claim these savings.</div>
+        <div style="font-size:11px;font-weight:600;color:var(--c-warning)">Opportunities &middot; API-rate estimates</div>
+        ${opportunities.map((f) => `<div style="margin-top:8px">${esc(f.description)}: ${f.wasteType === "heartbeat_model_waste" || f.wasteType === "overpowered_model" ? esc(f.recommendation) : `${fmtCost(f.monthlyWasteUsd)}/mo`}</div>`).join("")}
+        <div style="font-size:13px;color:var(--c-text-dim);margin-top:8px">Findings can overlap. See the Waste tab for details.</div>
       </div>`
     : "";
 
@@ -1355,13 +1349,19 @@ function renderSavings(data: DashboardData): string {
     </div>`;
   };
 
+  const pricingCoverage = (data.savingsEvents.unpricedEvents ? `<div class="daily-hint">${fmtTokens(data.savingsEvents.unpricedTokens ?? 0)} tokens across ${data.savingsEvents.unpricedEvents} action credits or reversals have no model price. Action dollar amounts exclude unpriced contributions.${data.savingsEvents.archivePricedNetUsd != null ? ` Priced archive subtotal: ${data.savingsEvents.archivePricedNetUsd < 0 ? "-" : ""}${fmtCost(Math.abs(data.savingsEvents.archivePricedNetUsd))}.` : ""}</div>` : "") + (s?.unpricedTokens ? `<div class="daily-hint">${fmtTokens(s.unpricedTokens)} recent tokens have no model price and are excluded from the model comparison.</div>` : "") + (s?.baselineUnpricedShare ? `<div class="daily-hint">${Math.round(s.baselineUnpricedShare * 100)}% of the starting baseline ran on models with no price (${(s.baselineUnpricedModels ?? []).join(", ")}). They are left out of the comparison and the rest is rescaled.</div>` : "") + (s?.generationPriceDeltaUsd ? `<div class="daily-hint">Price changes between model generations are not counted as savings: the same work costs ${s.generationPriceDeltaUsd < 0 ? "-" : ""}${fmtCost(Math.abs(s.generationPriceDeltaUsd))}/mo ${s.generationPriceDeltaUsd < 0 ? "less" : "more"} at the current generation prices than at the reference prices used for the comparison.</div>` : "") + (data.savingsEvents.inputRateFloorUsd ? `<div class="daily-hint">${fmtCost(Math.abs(data.savingsEvents.inputRateFloorUsd))} of counted action savings is priced at the input rate, a minimum &mdash; the billed token class was not recorded for those events.</div>` : "");
+
   // --- Early exit: no savings data at all ---
   if (!s || (!s.ready && s.cumulativeSavedUsd === 0 && s.monthlySavingsUsd === 0)) {
     const progressCard = s?.baselineBuilding ? buildingProgress(s.baselineBuilding) : "";
     const status = s?.status ?? "no sessions yet";
+    const measured = measuredSavingsFromSummary(data.savingsEvents);
+    const measuredCard = measured > 0 ? `<div class="card"><div class="card-header"><span>Counted savings</span></div><div class="daily-stat-val">${fmtCost(measured)}</div><div class="daily-hint">API-rate value for the selected period.</div></div>` : "";
     return `<div class="view" id="view-savings">
       ${header}
       ${opportunityPanel}
+      ${pricingCoverage}
+      ${measuredCard}
       ${progressCard || `<div class="card">
         <div class="empty-state">
           Realized savings need a baseline of your early usage to compare against.<br>
@@ -1411,7 +1411,7 @@ function renderSavings(data: DashboardData): string {
           ? `<div style="font-size:13px;color:var(--c-text-dim);margin-bottom:var(--s-2)">
           est. <strong style="color:var(--c-text-main)">${fmtCost(s.actualMonthlyUsd)}/mo</strong> now
           vs <strong style="color:var(--c-text-dim)">${fmtCost(s.counterfactualMonthlyUsd)}/mo</strong> the old way
-          &mdash; volume held constant on both sides, pure efficiency gain
+          &mdash; eligible volume held constant on both sides
         </div>`
           : `<div style="font-size:13px;color:var(--c-text-dim);margin-bottom:var(--s-2)">
           Counted directly from metered context removals (tool replacements, lean resumes, checkpoint restores).
@@ -1425,6 +1425,9 @@ function renderSavings(data: DashboardData): string {
         </div>
         <div style="color:var(--c-text-dim);font-size:13px;margin-top:var(--s-2)">
           ${esc(s.beforeMixLabel)} &rarr; ${esc(s.afterMixLabel)}${cacheLine}${runRate ? ` &middot; ~${Math.round(s.sessionsPerMonth)} sessions/mo` : ""}
+          ${s.premiumTokens ? `<br>${fmtTokens(s.premiumTokens)} premium tokens (${fmtCost(s.premiumCostUsd ?? 0)} at API rates) excluded from the model comparison.` : ""}
+          ${s.baselineClassMixAvailable === false ? "<br>The saved baseline does not contain a per-class model mix." : ""}
+          ${s.baselineTtlMixAvailable === false ? "<br>The saved baseline does not contain a per-model cache-write duration mix." : ""}
         </div>
         <div style="font-size:12px;color:var(--c-text-dim);margin-top:var(--s-2)">${BILLING_CAPTION}</div>
       </div>`
@@ -1457,10 +1460,10 @@ function renderSavings(data: DashboardData): string {
     ? `<div class="card">
         <div class="card-header"><span>Where the savings come from</span></div>
         ${s.breakdown
-          .filter((b) => Math.abs(b.monthlyUsd) >= 0.005)
+          .filter((b) => Math.abs(b.monthlyUsdDisplay) >= 0.005)
           .map((b) => `<div class="bar-row">
             <span class="bar-row-label">${esc(b.label)}</span>
-            <span style="font-family:var(--font-mono);color:${b.monthlyUsd >= 0 ? "var(--c-accent-cyan)" : "var(--c-danger)"}">${b.monthlyUsd >= 0 ? "" : "+"}${fmtCost(Math.abs(b.monthlyUsd))}/mo</span>
+            <span style="font-family:var(--font-mono);color:${b.monthlyUsdDisplay >= 0 ? "var(--c-accent-cyan)" : "var(--c-danger)"}">${b.monthlyUsdDisplay >= 0 ? "" : "+"}${fmtCost(Math.abs(b.monthlyUsdDisplay))}/mo</span>
           </div>`)
           .join("")}
       </div>`
@@ -1479,8 +1482,8 @@ function renderSavings(data: DashboardData): string {
         </div>
         <div style="font-size:13px;color:var(--c-text-dim);margin-bottom:var(--s-2)">
           ${runRate
-            ? `This is the <em>metered slice</em> — directly counted tokens removed from context (tool replacements, lean resumes, checkpoint restores). It is smaller and exact. The transformation headline above is the superset estimate that also includes routing and caching efficiency; do not add these two together.`
-            : `This is the <em>metered slice</em> — directly counted tokens removed from context (tool replacements, lean resumes, checkpoint restores). It is the same figure shown above. The monthly run-rate estimate — which also folds in routing and caching efficiency — appears once 30 days of post-baseline history are on record.`}
+            ? `This is the <em>metered slice</em>: directly counted tokens removed from context (tool replacements, lean resumes, checkpoint restores). It is smaller and exact. The transformation headline above is the superset estimate that also includes model mix changes; do not add these two together.`
+            : `This is the <em>metered slice</em>: directly counted tokens removed from context (tool replacements, lean resumes, checkpoint restores). It is the same figure shown above. The monthly run-rate estimate — which also includes model mix changes — appears once 30 days of post-baseline history are on record.`}
         </div>
         <div style="font-size:12px;color:var(--c-text-dim);margin-top:var(--s-2)">${BILLING_CAPTION}</div>
         ${evts.totalCount > 0 ? `<div style="margin-top:var(--s-2)">
@@ -1521,6 +1524,7 @@ function renderSavings(data: DashboardData): string {
     ${cumulative}
     ${levers}
     ${measuredFloor}
+    ${pricingCoverage}
   </div>`;
 }
 

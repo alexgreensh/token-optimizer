@@ -19,14 +19,15 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import shlex
 import stat as _stat
 import sys
 from pathlib import Path
 
 import pytest
 
-# antigravity_install refuses native Windows by design (the persisted hook
-# command is POSIX-shell quoted); install/uninstall/doctor paths are POSIX-only.
+# These tests assert POSIX file modes and the POSIX command form; the Windows
+# form is covered by test_antigravity_native_windows.py.
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="install paths are POSIX-only on this adapter")
 
 REPO = Path(__file__).resolve().parent.parent
@@ -94,6 +95,22 @@ def test_install_writes_payload_hooks_plugin_and_consent(ai, tmp_path):
     consent = json.loads((ai.data_dir(home) / "config.json").read_text())
     assert consent[ai.CONSENT_KEY] is True
     assert result["dry_run"] is False
+
+
+def test_installed_hooks_call_the_installed_bridge(ai, tmp_path):
+    """Regression: hooks.json named the staging dir, which the install then
+    renamed away, so no hook could ever find its bridge."""
+    import json
+    ai.install(home=tmp_path)
+    pdir = ai.plugin_dir(tmp_path)
+    group = json.loads((pdir / "hooks.json").read_text(encoding="utf-8"))["token-optimizer"]
+    cmds = [h["command"] for h in group["PreInvocation"] + group["Stop"]]
+    cmds += [h["command"] for g in group["PreToolUse"] for h in g["hooks"]]
+    bridge = pdir / "antigravity_hook_bridge.py"
+    assert bridge.is_file()
+    for cmd in cmds:
+        assert ".stage." not in cmd
+        assert shlex.split(cmd)[-2] == str(bridge)
 
 
 def test_dry_run_writes_nothing_but_reports_plugin_dir(ai, tmp_path):

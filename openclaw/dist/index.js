@@ -140,6 +140,12 @@ function boundedMapSet(map, key, value) {
  * produce the same key, but successive compactions produce distinct keys.
  */
 const _compactionCounter = new Map();
+/**
+ * Read-cache working set (tokens) that the last compaction of a session removed.
+ * Captured just before the cache is cleared, because the restore runs after
+ * the clear and would otherwise see an empty cache.
+ */
+const _clearedWorkingSet = new Map();
 function nextCompactionSeq(sessionKey) {
     const seq = (_compactionCounter.get(sessionKey) ?? 0) + 1;
     boundedMapSet(_compactionCounter, sessionKey, seq);
@@ -170,7 +176,7 @@ function audit(days = 30) {
     const findings = (0, waste_detectors_1.runAllDetectors)(runs, config);
     const totalCost = runs.reduce((sum, r) => sum + r.costUsd, 0);
     const totalTok = runs.reduce((sum, r) => sum + (0, models_1.totalTokens)(r.tokens), 0);
-    const monthlySavings = findings.reduce((sum, f) => sum + f.monthlyWasteUsd, 0);
+    const monthlySavings = findings.reduce((sum, f) => sum + (f.wasteType === "heartbeat_model_waste" || f.wasteType === "overpowered_model" ? 0 : f.monthlyWasteUsd), 0);
     const agents = Array.from(new Set(runs.map((r) => r.agentName)));
     return {
         scannedAt: new Date(),
@@ -224,7 +230,7 @@ function generateDashboard(days = 30) {
     const findings = (0, waste_detectors_1.runAllDetectors)(runs, config);
     const totalCost = runs.reduce((sum, r) => sum + r.costUsd, 0);
     const totalTok = runs.reduce((sum, r) => sum + (0, models_1.totalTokens)(r.tokens), 0);
-    const monthlySavings = findings.reduce((sum, f) => sum + f.monthlyWasteUsd, 0);
+    const monthlySavings = findings.reduce((sum, f) => sum + (f.wasteType === "heartbeat_model_waste" || f.wasteType === "overpowered_model" ? 0 : f.monthlyWasteUsd), 0);
     const agents = Array.from(new Set(runs.map((r) => r.agentName)));
     const report = {
         scannedAt: new Date(),
@@ -413,8 +419,21 @@ exports.default = definePluginEntry({
             if (filepath) {
                 api.logger.info(`[token-optimizer] Checkpoint saved: ${filepath}`);
             }
-            // Clear read-cache on compaction (context is reset, cache entries are stale)
-            (0, read_cache_1.clearCache)(context?.agentId ?? "default", session.sessionId);
+            // Clear read-cache on compaction (context is reset, cache entries are stale).
+            // The agent id defaults to "unknown", the same default the Read hook caches under.
+            // The working set the clear removes is remembered for the restore credit: the
+            // active tokens before the clear less those still cached by other agents.
+            const agentKey = context?.agentId ?? "unknown";
+            let cleared = 0;
+            try {
+                const activeBefore = (0, read_cache_1.getActiveReadTokens)(agentKey, session.sessionId);
+                (0, read_cache_1.clearCache)(agentKey, session.sessionId);
+                cleared = Math.max(0, activeBefore - (0, read_cache_1.getActiveReadTokens)(agentKey, session.sessionId));
+            }
+            catch {
+                (0, read_cache_1.clearCache)(agentKey, session.sessionId);
+            }
+            boundedMapSet(_clearedWorkingSet, session.sessionId, cleared);
         });
         // Smart Compaction: restore after compaction
         safeOn(api, "after_compaction", async (...args) => {
@@ -463,7 +482,8 @@ exports.default = definePluginEntry({
                 // credited = min(200 000, max(floor, active)).
                 try {
                     const floorTokens = (0, token_estimate_1.estimateTokensFromBytes)(Buffer.byteLength(checkpoint, "utf-8"));
-                    const activeTokens = (0, read_cache_1.getActiveReadTokens)(context.agentId ?? "default", sessionId);
+                    const activeTokens = _clearedWorkingSet.get(sessionId) ?? (0, read_cache_1.getActiveReadTokens)(context.agentId ?? "unknown", sessionId);
+                    _clearedWorkingSet.delete(sessionId);
                     const credited = Math.min(200_000, Math.max(floorTokens, activeTokens));
                     if (credited > 0) {
                         (0, read_cache_1.logSavingsEvent)("checkpoint_restore", credited, sessionId, "queued after compact");
@@ -538,7 +558,7 @@ exports.default = definePluginEntry({
                         if (nudgeMsg) {
                             boundedSetAdd(_freshNudgeFiredSessions, sessionId);
                             const { savedTokens } = (0, quality_1.freshSessionSavingsEstimate)(nudgeSnapshot.fillPct, nudgeSnapshot.model, nudgeSnapshot.contextWindow);
-                            (0, read_cache_1.logSavingsEvent)("fresh_session_nudge", savedTokens, sessionId, `score=${nudgeSnapshot.qualityScore} fill_pct=${nudgeSnapshot.fillPct.toFixed(1)}`);
+                            (0, read_cache_1.logSavingsEvent)("fresh_session_nudge", savedTokens, sessionId, `score=${nudgeSnapshot.qualityScore} fill_pct=${nudgeSnapshot.fillPct.toFixed(1)}`, { openclawDir, model: nudgeSnapshot.model });
                             (0, telemetry_1.logCompressionEvent)({
                                 feature: "fresh_session_nudge", sessionId,
                                 detail: `score=${nudgeSnapshot.qualityScore} fill_pct=${nudgeSnapshot.fillPct.toFixed(1)} est_saved=${savedTokens}`,

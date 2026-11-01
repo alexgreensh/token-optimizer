@@ -979,7 +979,10 @@ class ClaudeCodeAdapter(BaseAdapter):
                     )
                     cc = usage.get("cache_creation_input_tokens", 0) or (cc_1h + cc_5m)
                     model_id = msg.get("model", "unknown")
-                    req_id = record.get("requestId")
+                    # SDK and imported transcripts carry only the message id, which
+                    # repeats across the streamed chunks of one reply the same way.
+                    req_id = record.get("requestId") or (
+                        msg.get("id") if isinstance(msg, dict) else None)
                     current = {
                         "input": inp_tok,
                         "output": out_tok,

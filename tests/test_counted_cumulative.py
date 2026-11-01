@@ -105,6 +105,13 @@ def _rates(m):
     return m.PRICING_TIERS[m._load_pricing_tier()]["claude_models"]
 
 
+def _verified_pricing(m):
+    """Explicit current cache metadata for rollup-only fixtures."""
+    return json.dumps(dict.fromkeys(m._COUNTED_COVERAGE_KEYS, 0) | {
+        "version": m._COUNTED_PRICING_VERSION, "priced_oneshot_events": 1,
+        "priced_reread_turns": 1})
+
+
 # ---------------------------------------------------------------------------
 # 1. THE COUNT: deduped turns to the next REAL compaction, per-turn cache-read
 # ---------------------------------------------------------------------------
@@ -124,7 +131,9 @@ def test_rereads_run_from_second_post_event_turn_to_session_end(m, tmp_path, mon
     conn.close()
     opus = _rates(m)["opus"]
     assert row[0] == 100_000
-    assert row[1] == pytest.approx(100_000 * opus["input"] / 1e6, rel=1e-9)
+    # The first call after the event wrote 10 cache tokens (no TTL split), so the
+    # removed tokens are priced at the 5-minute cache-write rate, not the input rate.
+    assert row[1] == pytest.approx(100_000 * opus["cache_write"] / 1e6, rel=1e-9)
     assert row[4] == 4
     assert row[2] == 400_000
     assert row[3] == pytest.approx(400_000 * opus["cache_read"] / 1e6, rel=1e-9)
@@ -260,10 +269,10 @@ def test_summary_sums_and_never_walks(m, tmp_path, monkeypatch):
     assert s["removed_tokens"] == 100_000
 
 
-def test_summary_unavailable_on_empty_ledger(m, tmp_path, monkeypatch):
+def test_summary_empty_ledger_is_complete_zero(m, tmp_path, monkeypatch):
     _db(m, tmp_path, monkeypatch)
     s = m._counted_cumulative_summary()
-    assert s == {"available": False}
+    assert s["available"] and s["pricing_complete"] and s["total_usd"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -327,10 +336,10 @@ def test_period_rollup_reconciles_to_lifetime_without_rewalking(m, tmp_path, mon
     dbp = _db(m, tmp_path, monkeypatch)
     now = datetime.now(timezone.utc)
     with sqlite3.connect(str(dbp)) as conn:
-        for key, age, one, rereads in [('old', 40, 2, 20), ('new', 2, 3, 30), ('debit', 1, -1, -10)]:
+        for key, age, one, rereads in [('new', 2, 3, 30), ('old', 40, 2, 20), ('debit', 1, -1, -10)]:
             ts = (now - timedelta(days=age)).isoformat()
-            conn.execute('INSERT INTO counted_reread(event_key,event_ts,event_month,tokens,oneshot_usd,reread_usd) VALUES(?,?,?,?,?,?)',
-                         (key, ts, ts[:7], 100, one, rereads))
+            conn.execute('INSERT INTO counted_reread(event_key,event_ts,event_month,tokens,oneshot_usd,reread_usd,pricing_detail) VALUES(?,?,?,?,?,?,?)',
+                         (key, ts, ts[:7], 100, one, rereads, _verified_pricing(m)))
     monkeypatch.setattr(m, '_counted_walk_transcript', lambda *a, **k: pytest.fail('rollup must not parse transcripts'))
     recent = m._counted_cumulative_summary(days=30, now=now)
     lifetime = m._counted_cumulative_summary()
@@ -339,6 +348,7 @@ def test_period_rollup_reconciles_to_lifetime_without_rewalking(m, tmp_path, mon
     assert recent['reread_usd'] == 20
     assert recent['total_usd'] == 22
     assert lifetime['total_usd'] == 44
+    assert list(lifetime['months']) == sorted(lifetime['months'])
     assert recent['attribution'] == 'removal_time'
 
 
@@ -351,8 +361,8 @@ def test_period_boundaries_offsets_and_future_events(m, tmp_path, monkeypatch):
              start.astimezone(timezone(timedelta(hours=3))).isoformat(), 'invalid']
     with sqlite3.connect(str(dbp)) as conn:
         for i, ts in enumerate(times):
-            conn.execute('INSERT INTO counted_reread(event_key,event_ts,event_month,oneshot_usd,reread_usd) VALUES(?,?,?,?,?)',
-                         (str(i), ts, ts[:7], 1, 10))
+            conn.execute('INSERT INTO counted_reread(event_key,event_ts,event_month,oneshot_usd,reread_usd,pricing_detail) VALUES(?,?,?,?,?,?)',
+                         (str(i), ts, ts[:7], 1, 10, _verified_pricing(m)))
     recent = m._counted_cumulative_summary(days=30, now=now)
     assert recent['events'] == 3
     assert recent['total_usd'] == 33
@@ -399,8 +409,11 @@ def test_transcript_rotation_preserves_previously_verified_history(m, tmp_path, 
         conn.executemany('INSERT INTO counted_reread(event_key,session_uuid,oneshot_usd,reread_usd,transcript_mtime) VALUES(?,?,?,?,?)',
                          [('verified', SID, 5, 50, 1234.0), ('never_verified', SID, 9, 90, None)])
         conn.commit()
-        assert m._purge_counted_without_transcripts(conn) == 1
-        assert conn.execute('SELECT event_key,oneshot_usd,reread_usd FROM counted_reread').fetchall() == [('verified', 5, 50)]
+        assert m._purge_counted_without_transcripts(conn) == 0
+        assert conn.execute('SELECT event_key,oneshot_usd,reread_usd FROM counted_reread').fetchall() == [('verified', 5, 50), ('never_verified', 9, 90)]
+    summary = m._counted_cumulative_summary()
+    assert summary['legacy_unverified_events'] == 2
+    assert summary['total_usd'] == 0
 
 
 def test_transcript_rotation_preserves_marker_backfill_history(m, tmp_path, monkeypatch):

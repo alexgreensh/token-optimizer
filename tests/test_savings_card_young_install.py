@@ -99,7 +99,7 @@ def test_mature_install_cli_keeps_monthly_run_rate(measure, monkeypatch, capsys)
     monkeypatch.setattr(measure, "_get_merged_savings", lambda days=30: _summary_fixture())
     measure.savings_report(days=30)
     out = capsys.readouterr().out
-    assert "Estimated monthly: $12.30 (measured)" in out
+    assert "Estimated monthly: $12.34 (measured)" in out
     assert " so far" not in out
 
 

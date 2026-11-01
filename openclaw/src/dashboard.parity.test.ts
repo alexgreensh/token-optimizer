@@ -252,3 +252,12 @@ test("windowed read with days=0 behaves as lifetime (no cutoff applied)", () => 
   expect(summary.totalCount).toBe(1);
   expect(summary.totalTokensSaved).toBe(800);
 });
+
+test("unpriced archive actions disclose their signed priced subtotal", () => {
+  const html = generateDashboardHtml({ ...baseData, savingsEvents: {
+    categories: [], totalTokensSaved: 0, totalCostSavedUsd: 0, totalCount: 2,
+    unpricedTokens: 1000000, unpricedEvents: 1, archivePricedNetUsd: -2,
+  }});
+  expect(html).toContain("action credits or reversals have no model price");
+  expect(html).toContain("Priced archive subtotal: -$2.00");
+});

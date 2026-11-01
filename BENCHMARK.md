@@ -1,93 +1,113 @@
 # Token Optimizer: Benchmark Report
 
-This report shows what Token Optimizer saved, how every number was measured, and how you reproduce each one on your own data. The figures are one user's **last 30 days** (2026-08-15 to 2026-09-14, snapshot 2026-09-14); yours will differ, and every tool to regenerate them ships in the repo.
+This observational report uses one **30-day snapshot ending 2026-11-01** (2026-10-02 to 2026-11-01), generated on 2026-11-01. It reports an all-in **priced subtotal of about $597.72** and **24.80M tokens saved**. Pricing is incomplete: unpriced repeat-read credits and debits are excluded, and the complete net dollar value is unavailable. Your results will differ.
 
-> This is the **real-world** report — actual usage over 30 days, all six levers on. Two controlled experiments sit beside it and are never added to it: the **Terminal-Bench floor** (the full 81-task Terminal-Bench 2 suite, plugin on vs off, multi-trial with confidence intervals) and the **controlled A/B** that isolates each compression mechanism ([`CONTROLLED-A-B-BENCHMARK.md`](./CONTROLLED-A-B-BENCHMARK.md)). Three different lenses, not competing numbers. The docs site carries all three: [token-optimizer.dev/reference/benchmarks](https://token-optimizer.dev/reference/benchmarks/).
+Every figure here follows the rules in [the savings methodology](docs/METHODOLOGY.md).
 
----
+The independent **Terminal-Bench floor** (the full 81-task Terminal-Bench 2 suite, plugin on versus off, multiple trials with confidence intervals) and [controlled A/B](CONTROLLED-A-B-BENCHMARK.md) remain separate studies. Their results are not added to this snapshot. [All three reports](https://token-optimizer.dev/reference/benchmarks/).
 
-## What it saved (30 days)
+## All-in value, with evidence labels
 
-Three tiers, labelled by how each is known. One is **directly metered** (every event logged as it happened). The other two are **estimates**, modelled from what happened and shown separately.
+| Component | API-rate-equivalent value | Evidence |
+|---|---:|---|
+| Logged actions | **$78.59** | Metered token changes, valued at API rates; 4,945 events. |
+| Model routing | **$422.88** | Estimated reference-card comparison; all of this component is estimated. |
+| Repeat reads avoided | **$60.69** | Modeled from observed turns and known per-turn rates; priced contributions only. |
+| Other estimates | **$35.56** | Eight selected estimate categories, listed below. |
+| **All-in priced subtotal** | **≈ $597.72** | **Pricing is incomplete; the full net dollar value is unavailable.** |
 
-| Tier | 30 days | How it is known |
-|---|---|---|
-| 🟢 **Logged actions** | **$126** | Metered. Each saving logged as it happened, with before and after token counts. 2,733 events. |
-| 🔵 **Repeat reads avoided** | **$1,124** | Estimated. Removed content that would have been re-read on every later turn until the session's next real compaction. |
-| 🔵 **Other estimates** | **$146** | Estimated. Lean session resumes, compressed sub-agent context, MCP output caps, loops prevented. |
-| **Total** | **≈ $1,396** | API-equivalent value for the month. |
+The four components add up to the subtotal to the cent. Unpriced repeat-read credits and debits are excluded, so this subtotal is not a lower bound. It is an API-rate equivalent, not a subscription refund.
 
-In tokens, for the same month: **59.6M never sent to the model**, about **28%** of the workload. The month cost 150.8M tokens (fresh input plus de-duplicated output); the same work without Token Optimizer would have cost about 210.4M. The saving splits into 25.4M metered and 34.2M estimated. Tokens are the primary figure; dollars depend on which models you run and are shown second for that reason.
+## The same snapshot's token card
 
----
+| Token-card component | Tokens | Share of spent + saved |
+|---|---:|---:|
+| Spent, provider-stats-compatible | 286,218,848 | 92.03% |
+| Saved, metered | 9,831,072 | 3.16% |
+| Saved, estimated | 14,966,284 | 4.81% |
+| **Spent + saved** | **311,016,204** | **100%** |
 
-## How we measured everything
+Percentage shares are rounded to two decimals and add up to 100%.
 
-Each number above comes from a specific, reproducible method. Here is each one.
+The token card reports **24,797,356 saved tokens (24.80M)**, or **7.97%**, displayed as **8%** on the dashboard. The formula is `saved / (spent + saved)`, not `saved / spent`.
 
-<details>
-<summary>Logged actions, $126, metered event by event</summary>
+Its estimated slice is 14,946,284 lean-resume tokens, 15,000 MCP-cap tokens, 5,000 hint-served tokens and 0 verbosity-nudge tokens. Modeled reread tokens and routing are outside this token-card total. The dollar subtotal includes their priced contributions and the other estimates below; the two headlines have different scopes.
 
-Every time Token Optimizer shrinks, evicts, or blocks an output, it writes a savings event with the real before/after token counts. Dollars are repriced to each session's own model mix. Over the last 30 days: **2,733 events, 25.43M tokens removed, $126.00**.
+## Logged actions
 
-| Mechanism | Events | Tokens removed | Saved |
-|---|---|---|---|
-| Tool-output archive | 1,113 | 18.80M | $100.09 |
-| Archive re-fetch blocked | 103 | 2.38M | $12.71 |
-| Lean-output nudge (measured) | 291 | 1.21M | $6.42 |
-| Bash output compression (pipelines, git, generic) | 883 | 2.73M | $5.83 |
-| Loop detection | 124 | 0.12M | $0.35 |
-| Checkpoint restores | 113 | 0.08M | $0.34 |
-| Cross-turn dedup | 23 | 0.11M | $0.21 |
-| Structure maps (re-reads) | 4 | 9.5K | $0.05 |
-| Delta reads | 5 | −0.5K | −$0.00 |
-| Quality nudges | 74 | 0 | $0.00 |
-| **Total** | **2,733** | **25.43M** | **$126.00** |
+| Mechanism | Events | Tokens | Priced value |
+|---|---:|---:|---:|
+| Observed post-nudge output change | 632 | 2,642,602 | $51.9323 |
+| Tool-output archive | 399 | 58,004 | $0.0000 |
+| Checkpoint restores | 208 | 166,371 | $0.6481 |
+| Structure maps | 1 | 5,939 | $0.0238 |
+| Quality nudges | 56 | 694,535 | $1.3891 |
+| Bash pipeline compression | 3,408 | 5,959,931 | $23.5916 |
+| Git output compression | 38 | 204,071 | $0.7056 |
+| Loop detection | 98 | 70,807 | $0.2862 |
+| Build output compression | 104 | 28,709 | $0.0061 |
+| Cross-turn dedup | 1 | 103 | $0.0004 |
+| **Total** | **4,945** | **9,831,072** | **$78.5832** |
 
-Delta reads ran at a small net loss this month (five diffs longer than the file). Reported as measured, not hidden.
+These are recorded token changes, not proof of causal attribution. In particular, a post-nudge output change is an observed before/after comparison. Dollar cells contain the recorded priced amount; a zero dollar cell does not establish a free or known-zero-rate event. The four-decimal category values add up to the total.
 
-The lean-output nudge is metered within each session: every nudge records the pre-nudge average output tokens, then the actual post-nudge output is measured against it as `max(0, pre-nudge average − post-nudge average) × post-nudge turns`. Never an estimate, never negative, never booked before post-nudge turns exist.
+## Model routing
 
-Reproduce: `python3 scripts/measure.py savings --json` (your numbers will differ; this is one 30-day window)
+The **$422.88 routing component is entirely estimated**. It compares the frozen pre-tool model mix with current usage using fixed generation reference cards and token classes. It does not treat a change in a model's published price as a routing saving, and it does not establish that the optimizer caused every model choice. Unpriced token classes do not acquire a fallback family price. Routing is included once in the all-in subtotal.
 
-</details>
+## Modeled repeat reads and pricing coverage
 
-<details>
-<summary>Repeat reads avoided, $1,124, an estimate capped at real compaction events</summary>
+| Removal-cohort measure | Value |
+|---|---:|
+| Stored removal events | 4,351 |
+| Net tokens removed at the time | 6,390,734 |
+| Stored modeled reread tokens, signed | 314,291,407 |
+| Priced reread contribution | $60.692931 |
+| Unpriced reread credits | 2,193,970 tokens |
+| Unpriced reread debits | 156,846 tokens |
+| Historical events with unverifiable prices | 304 |
+| Eligible events with unmeasured trajectories | 103 |
+| Known removal credits in unmeasured events | 27,178 tokens |
+| Known removal debits in unmeasured events | 0 tokens |
 
-When Token Optimizer removes content from context, that content would otherwise have been re-sent on every later turn of the session. Each removal is multiplied by the de-duplicated number of turns until that session's **next real compaction event**, priced at the per-turn cache-read rate the session actually paid, and stops at the compaction. Only metered-magnitude removals count; lean resumes and other estimated-magnitude events are excluded so nothing is counted twice.
+The absolute unpriced coverage is **2,350,816 tokens**; credits and debits do not cancel that uncertainty. The 304 incomplete historical refreshes are retained, not deleted or treated as priced zero. Only known contributions enter the subtotal.
 
-| Measure | 30 days |
-|---|---|
-| Removals counted | 2,153 |
-| Tokens removed at the time | 20.5M |
-| Re-read tokens avoided on later turns | 1.99B |
-| Value at each turn's cache-read rate | $1,124.13 |
+The 103 events with unmeasured trajectories have known removal amounts, but their reread counts and dollar values are unavailable. Those removal tokens are not added to the unpriced reread count or valued as zero.
 
-Reproduce: `python3 scripts/measure.py dashboard` (the "counted repeat reads" card)
+Rereads start at the second post-removal call and stop at the next real compaction, with the observed trajectory held fixed. Known model and prompt-class cards price each turn. The first call's one-shot removal value is not added again to logged actions. This is a removal cohort: its boundaries are **2026-10-02 09:58:31 UTC to 2026-11-01 09:58:31 UTC**, and later rereads remain attributed to their removal date. It is not a claim that every reread occurred inside that exact time window.
 
-</details>
+## Other estimates, all eight categories
 
-<details>
-<summary>Other estimates, $146, each listed</summary>
+| Estimate | Recorded volume | Estimated tokens | Value |
+|---|---:|---:|---:|
+| Lean session resumes | 64 resumes | 14,946,284 | $27.9481 |
+| Sub-agent runtime compression | 1,568 dispatches | 1,370,052 | $6.7618 |
+| Loops prevented | 98 events | 70,807 | $0.3495 |
+| MCP output caps | 3 caps | 15,000 | $0.0600 |
+| Contamination exit | 1 heeded session | 0 | $0.0000 |
+| Handover reruns avoided | 72 restored sessions | 87,394 | $0.4313 |
+| Hint-served reads | 1 hint used | 5,000 | $0.0100 |
+| Verbosity nudges | 1,042 nudges | 0 | $0.0000 |
+| **Total** | | | **$35.5607** |
 
-| Source | Volume | Tokens | Saved |
-|---|---|---|---|
-| Lean session resumes (cold reload avoided) | 156 resumes | 31.85M | $105.16 |
-| Sub-agent runtime compression | 846 dispatches | 5.60M | $27.99 |
-| MCP output cap | 466 capped results | 2.33M | $11.72 |
-| Loops prevented (continuations not run) | 131 events | 0.13M | $0.67 |
-| Hint-served reads | 2 hints used | 10K | $0.05 |
-| **Total** | | | **$145.60** |
+All eight selected categories are included, including the two zero-valued estimates. Hint-served reads are selected because a hint event exists; the alternative retrieval-serve estimate is not added. These token columns are not summed into the token-card headline, which includes only its four named estimate pools.
 
-Reproduce: `python3 scripts/measure.py savings --json` (the `*_estimated`, `uncaptured_runtime` and `behavioral_estimate` blocks)
+## Scope and measurement
 
-</details>
+The snapshot contains **1,644 main work sessions and 3 delegated sessions**, 1,647 in total, from Claude Code. The token card's provider-stats-compatible spent denominator is fresh input plus reported streamed assistant output from top-level sessions, without streaming deduplication. Request-deduplicated usage is a different metric. Some action token counts use text-length proxies; dollars are API-rate equivalents, not subscription cash savings.
+
+Measured token changes, modeled rereads and estimated routing/behavior remain distinguishable within the all-in subtotal. Missing prices stay unpriced. New verified history survives transcript rotation; unverifiable legacy prices stay quarantined while their stored token evidence remains available.
+
+Pricing uses recognized model and token-class cards. Premium modes or service modifiers absent from recorded usage are not reconstructed, so these figures are not a complete bill reconciliation. Sub-agent estimates also depend on the runtime's available telemetry; this Claude Code snapshot does not establish equivalent coverage on other platforms.
+
+Shared read-time filters exclude test fixtures, media-only archive events and duplicate-install telemetry from counted views. Source ledger rows remain intact. Opportunity estimates, setup projections and whole-workload transformation estimates are not added to this action subtotal.
+
+## Separate compression checks
 
 <details>
 <summary>Compression safety, the 87-fixture suite</summary>
 
-Before trusting compression on real output, we validate it never removes what the model needs. The suite holds **87 fixtures across 22 categories, all passing**. Each fixture defines raw output, a must-preserve list, a must-not-contain list (catches hallucination), and a minimum ratio. It passes only when all three hold.
+Before trusting compression on real output, we validate it never removes what the model needs. The suite holds **87 fixtures across 22 categories**. Each fixture defines raw output, a must-preserve list, a must-not-contain list (catches hallucination), and a minimum ratio. It passes only when all three hold.
 
 | Category | # | What's tested |
 |---|---|---|
@@ -114,123 +134,33 @@ Before trusting compression on real output, we validate it never removes what th
 | npm_install | 1 | npm ci and install |
 | test | 1 | generic test output |
 
-The security, error and tee-on-failure groups are the load-bearing guardrails. Compression never costs you a credential, an error message, or the output of a failed command. In long sessions (more than 50 messages) the prompt-cache hit rate is slightly higher with archives on (0.969) than off (0.958), because archive-to-stub keeps the cached prefix stable.
+The security, error and tee-on-failure groups are the load-bearing guardrails. Compression never costs you a credential, an error message, or the output of a failed command.
 
-Reproduce: `python3 scripts/benchmark.py`
-
-</details>
-
-<details>
-<summary>Trust tiers, why we never sum estimates with metered dollars as one number</summary>
-
-- **Measured**: directly metered, each saving logged as it happened with before and after token counts.
-- **Estimated**: modelled from what happened (repeat reads avoided, lean resumes, sub-agent context), shown separately and labelled every time.
-- **Opportunity**: realizable if you act on a recommendation, never folded into a headline.
-
-Prompt-cache reads are never claimed as standalone savings, because the cache is free infrastructure. Where an estimate uses cache-read rates, it is priced at the rate the turn actually paid and stops at the session's next real compaction.
+Reproduce from the repository checkout: `python3 skills/token-optimizer/scripts/benchmark.py`
 
 </details>
 
-<details>
-<summary>What is excluded</summary>
+## Skeleton and quality methods
 
-The benchmark harness writes its own test-fixture events into the same local ledger. In this window that was 766 events (7.2M tokens, $14.47) tagged `f3bench-session-0001` and `test-session-*`, recorded between 2026-08-31 and 2026-09-06. They are excluded from every figure in this report.
+Large code files can be served as a recoverable skeleton only after a cohort meets its history gates: edit-within-five-turns below 15%, at least 20 reads and at least five sessions. A live tripwire demotes an active cohort when its edit rate exceeds 15%. Markdown stays measure-only by policy. The requested file is served in full; related-file skeletons use an archived original and fail open when archiving fails. Current cohort statistics are available from `measure.py cohorts status --json`; they are not included in this savings total.
 
-</details>
+Session quality uses context fill, stale reads, bloated results, compaction depth, decision density, agent efficiency and waste signals. Signals vary by platform. This snapshot does not supply a grade histogram or a new historical skeleton-corpus valuation, so neither is presented as a current result.
 
----
-
-## How to measure your own
-
-Every figure above regenerates against your own session history. Results will differ, and that is the point.
+## Reproduce on your own data
 
 ```bash
-# Your headline plus the three tiers (the dashboard)
-python3 scripts/measure.py dashboard
+# From the repository checkout: dashboard and action components
+python3 skills/token-optimizer/scripts/measure.py dashboard
+python3 skills/token-optimizer/scripts/measure.py savings
+python3 skills/token-optimizer/scripts/measure.py savings --json
 
-# The savings ledger behind the tiers
-python3 scripts/measure.py savings
-python3 scripts/measure.py savings --json
+# Compression events and cohort state
+python3 skills/token-optimizer/scripts/measure.py compression-stats --days 30 --json
+python3 skills/token-optimizer/scripts/measure.py cohorts status --json
 
-# Just the live compression numbers
-python3 scripts/measure.py compression-stats
-python3 scripts/measure.py compression-stats --days 7 --json
-
-# The 87-fixture compression suite (deterministic)
-python3 scripts/benchmark.py
-python3 scripts/benchmark.py --json
-
-# First-read skeleton analysis (historical corpus)
-python3 scripts/compression_backfill.py
-
-# Cohort status and tripwire state
-python3 scripts/measure.py cohorts status --json
+# Separate deterministic compression fixtures
+python3 skills/token-optimizer/scripts/benchmark.py
+python3 skills/token-optimizer/scripts/benchmark.py --json
 ```
 
----
-
-## Corpus (last 30 days, snapshot 2026-09-14)
-
-| | |
-|---|---|
-| Sessions | **1,698** main sessions, plus 104 sub-agent sidechains |
-| Quality-scored sessions, all-time | **5,210** (ledger begins 2026-05-30) |
-| Logged savings events | **2,733** (30 days) |
-| Tokens removed, metered | **25.43M** (30 days) |
-| First-reads analyzed | **49,886** across 9,801 sessions (historical skeleton corpus) |
-| Compression fixtures | **87** across 22 categories, all passing |
-| Avg prompt-cache hit rate | **67.2%** |
-
-Production figures come from Claude Code CLI sessions (the author's primary platform). Quality scoring and savings tracking run on all supported platforms; signal counts vary by platform (3 to 7).
-
----
-
-## More detail
-
-<details>
-<summary>First-read skeletons (code only, all four code cohorts currently tripwired)</summary>
-
-Large **code** files read for the first time and unlikely to be edited soon can be served as a skeleton, with the full original archived and recoverable via `expand`, a ranged Read, or a direct Edit. A file type is only promoted to active serving after proof from real history: edit-within-5-turns under 15%, across 20 or more reads in 5 or more sessions.
-
-Measured across the historical first-read corpus (9,801 sessions, 49,886 first reads):
-
-| Language | Size | First reads | Edit rate (history) | Skeleton ratio | Would save |
-|---|---|---|---|---|---|
-| python | 16-64KB | 1,167 | 0.9% | 96.0% | 9.7M |
-| python | 64-256KB | 66 | 1.5% | 98.5% | 1.5M |
-| typescript | 16-64KB | 522 | 0.6% | 97.7% | 4.5M |
-| markdown | 16-64KB | 2,962 | 2.2% | 97.4% | 24.5M (measure-only by policy) |
-
-A live tripwire watches every active cohort; if its real edit-after-skeleton rate crosses 15%, it auto-demotes to measure-only and logs a `cohort_demoted` event. As of this snapshot the tripwire has demoted all four code cohorts: live edit-after-skeleton rates of 16.0% (Python 16-64KB), 16.7% (Python 64-256KB), 50.0% (TypeScript 16-64KB) and 40.0% (TypeScript 64-256KB). The history backfill still rates them promotion-ready on all-time edit rates, which is exactly the disagreement the tripwire exists to catch: live behaviour wins. Markdown stays measure-only by policy, because a headings-only skeleton drops load-bearing prose. The first-read **retarget** that shipped in v2 serves the file you opened in full and moves the compression budget to skeletons of the related files around it. The full original is always archived first (fail-open: if archiving fails, the full file is served unchanged).
-
-</details>
-
-<details>
-<summary>Session quality grades (1,698 sessions, 30 days)</summary>
-
-Every session is scored on 7 signals (context-fill degradation, stale reads, bloated results, compaction depth, decision density, agent efficiency, absolute waste) and graded S through F.
-
-| Grade | Sessions | |
-|---|---|---|
-| S | 714 | Exceptional |
-| A | 210 | Good |
-| B | 463 | Normal |
-| C | 77 | Degraded, coaching suggested |
-| D | 162 | Poor, heavy bloat or retries |
-| F | 72 | Failing, near-total waste |
-
-All 5,210 sessions are graded all-time on the same scale, so grades compare across hosts.
-
-</details>
-
-<details>
-<summary>Token counting and known measurement gaps</summary>
-
-Token counts use a `bytes / 4` BPE proxy (about 15% error versus actual Claude tokenization), applied consistently so ratios hold. The Terminal-Bench and controlled A/B reports count real billed tokens from session transcripts instead.
-
-- **Opus fast-mode is under-counted by about 50%.** Fast mode (2x rate) is not exposed in session logs, so fast-mode sessions are priced at the standard rate until the transcript exposes it.
-- **Older Fable 5 sessions recorded $0.** Trend views compute Fable cost at query time, so trend figures are authoritative even where an older stored per-session value reads $0.
-- **Cache-health waste is an opportunity-tier heuristic.** Run `cache-report --verbose` to trace any figure to the sessions behind it.
-- **Sub-agent savings are a platform gap outside Claude Code.** OpenClaw and OpenCode have no Claude-style sidechain transcripts, so that pool reads zero there rather than being estimated.
-
-</details>
+The dashboard and CLI report your own window and coverage. Keep the evidence labels and unavailable-price notes when sharing the figures.

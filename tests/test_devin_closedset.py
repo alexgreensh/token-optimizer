@@ -266,7 +266,8 @@ def test_upgrade_clean_229_install(tmp_path, monkeypatch):
     baseline=tmp_path/'baseline'
     # The shipped baseline bytes are stored as a fixture so the upgrade path
     # does not depend on clone depth or object history.
-    shutil.copytree(fixture,baseline)
+    from _devin_baseline import copy_baseline
+    copy_baseline(fixture,baseline)
     run=subprocess.run([sys.executable,str(baseline/'skills/token-optimizer/scripts/devin_install.py'),'install'],env=dict(os.environ),capture_output=True,timeout=20)
     assert run.returncode==0,run.stderr
     d.install()
@@ -909,7 +910,7 @@ def test_v13_supported_examples_require_startup_isolation():
         content='\n'.join(visible)
         # Invocation advice is closed by class, not a growing modal-word list.
         neutral = {
-            '`prepare`, `seal` and `recover` use their required source commitments and capture/consent checks, but do not verify the entire compression closure; filtering and doctor readiness do.',
+            '`prepare`, `seal` and `recover` use their required source commitments and capture/consent checks, but stop short of verifying the entire compression closure; filtering and doctor readiness verify it.',
             'Run the installed filter explicitly:',  # Followed by a checked -I code example.
         }
         verb = r'\b(?:run|running|runs|invoke|invoked|invoking|invokes|launch|launched|launching|launches|execute|executed|executing|executes|call|called|calling|use|used|using|uses|start|started|starting|starts)\b'

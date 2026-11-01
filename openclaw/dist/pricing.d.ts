@@ -53,6 +53,29 @@ export declare function resetPricingCache(): void;
  */
 export declare function normalizeModelName(modelId: string): string | null;
 /**
+ * Rate-card key that values a model in the routing comparison. Every Claude
+ * generation of a family is valued at that family's newest generation card, in
+ * both the baseline and the current arm, so a vendor price change between
+ * generations cannot register as a routing saving. Other models stand for
+ * themselves. The exact-card cost is reported separately as the generation gap.
+ */
+export declare function referenceCardKey(key: string, dir?: string): string;
+/**
+ * Drop the routing wrapper around a model id: gateway or provider path
+ * segments ("openrouter/anthropic/", "github-copilot/", "amazon-bedrock/"),
+ * dotted region and provider chains ("us.anthropic.", "global.anthropic."), and
+ * a colon-separated provider tag. Dots inside a version ("claude-3.5-sonnet",
+ * "gpt-4.1") are never cut.
+ */
+export declare function stripRoutePrefixes(modelId: string): string;
+/**
+ * A Claude model id without the decorations a route adds around it: the
+ * provider and region prefix, a bedrock "-v1:0" version tag, a "[1m]" context
+ * marker, a "-thinking" mode suffix, a "-latest" alias and a vertex "@date" snapshot. What is left
+ * names the generation, which must still have its own rate card.
+ */
+export declare function stripClaudeRouteDecorations(modelId: string): string;
+/**
  * Estimate cost delta if a different model was used.
  * Returns savings in USD and percentage.
  */

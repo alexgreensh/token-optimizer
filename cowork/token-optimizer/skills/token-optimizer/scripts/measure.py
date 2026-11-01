@@ -73,6 +73,7 @@ import hashlib
 import heapq
 import hmac
 import io
+import itertools
 import json
 import math
 import os
@@ -1825,9 +1826,16 @@ def _price_aliases(table):
     return cached[0]
 
 
+# A dated or numbered snapshot of a priced id: -2026-01-01, -20260101, -0613,
+# -001 or @20260101. Anything else after a card id is a different model.
+_PRICE_SNAPSHOT_RE = re.compile(r"(?:-\d{4}-\d{2}-\d{2}|-\d{8}|-\d{3,4}|@\d{8})")
+
+
 def _match_price_alias(value, table):
-    """Longest priced id that `value` equals or extends with "-...", memoized
-    per alias set so repeated model ids resolve with one dict lookup."""
+    """Longest priced id that `value` equals or that `value` is a snapshot of
+    (the id plus a date or number suffix). A different variant (-mini, -lite,
+    -image, a later generation) has its own price and never matches a shorter
+    card. Memoized per alias set so repeated model ids resolve with one lookup."""
     aliases = _price_aliases(table)
     memo = _PRICE_MATCH_MEMO.get(id(table))
     if memo is None or memo[0] is not aliases:
@@ -1835,7 +1843,9 @@ def _match_price_alias(value, table):
         _PRICE_MATCH_MEMO[id(table)] = memo
     hit = memo[1].get(value, _MISSING)
     if hit is _MISSING:
-        hit = next((a for a in aliases if value == a or value.startswith(a + "-")), None)
+        hit = next((a for a in aliases
+                    if value == a or (value.startswith(a)
+                                      and _PRICE_SNAPSHOT_RE.fullmatch(value, len(a)))), None)
         if len(memo[1]) < 4096:
             memo[1][value] = hit
     return hit
@@ -1848,8 +1858,8 @@ def _normalize_openai_model_name(model):
     value = re.sub(r"[\s_]+", "-", _strip_provider_prefixes(model))
     if not value or value in {"codex", "openai", "unknown"}:
         return None
-    if value == "gpt-5.6":
-        return "gpt-5.6-sol"  # bare alias: OpenAI's docs name Sol the default 5.6
+    if value in ("gpt-5.6", "gpt-5.6-sol-pro"):
+        return "gpt-5.6-sol"  # bare alias: OpenAI's docs name Sol the default 5.6; "Sol Pro" is its marketing name
     # Every priced id is an alias, longest first so "gpt-5.4-mini" wins over
     # "gpt-5.4" and dated snapshots ("gpt-5.4-2026-03-05") map to their base.
     alias = _match_price_alias(value, OPENAI_MODEL_PRICING)
@@ -1857,7 +1867,7 @@ def _normalize_openai_model_name(model):
         return "gpt-5.6-sol"  # dated bare-5.6 ids follow the same Sol default
     if alias:
         return alias
-    if value == "gpt-5.6" or value.startswith("gpt-5.6-"):
+    if re.fullmatch(r"gpt-5\.6(?:" + _PRICE_SNAPSHOT_RE.pattern + ")", value):
         return "gpt-5.6-sol"
     return None
 
@@ -1876,7 +1886,13 @@ def _normalize_gemini_model_name(model):
             _GEMINI_DEPRECATION_WARNED.add(value)
             print(f"[Token Optimizer] WARNING: {value} was deprecated June 1, 2026. Migrate to gemini-2.5-flash or gemini-3.5-flash.", file=sys.stderr)
         return None
-    return _match_price_alias(value, GEMINI_MODEL_PRICING)
+    hit = _match_price_alias(value, GEMINI_MODEL_PRICING)
+    if hit:
+        return hit
+    # A preview build of a priced model ("-preview", "-preview-05-20",
+    # "-preview-09-2025") is the same model; any other variant is not.
+    base = re.sub(r"-preview(?:-\d{2}-\d{2,4})?$", "", value)
+    return _match_price_alias(base, GEMINI_MODEL_PRICING) if base != value else None
 
 
 # Process-local cache for _resolve_session_model to avoid re-reading JSONL
@@ -3816,6 +3832,166 @@ def _measure_cursor_components():
     }
 
 
+_HERMES_SKILL_SCAN_CAP = 5000
+
+
+def _hermes_config(home: Path) -> dict:
+    """Parse <hermes home>/config.yaml (or config.yml). Returns {} when absent
+    or unreadable. Uses PyYAML when installed (Hermes itself depends on it);
+    otherwise reads only the two blocks the dashboard needs (mcp_servers and
+    skills.disabled) with a small indentation parser."""
+    path = home / "config.yaml"
+    if not path.is_file():
+        path = home / "config.yml"
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > 2_000_000:
+            return {}
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {}
+    try:
+        import yaml  # type: ignore[import]  # noqa: PLC0415
+
+        data = yaml.safe_load(text)
+        return data if isinstance(data, dict) else {}
+    except ImportError:
+        pass
+    except Exception:
+        return {}
+    return _hermes_config_fallback(text)
+
+
+def _hermes_config_fallback(text: str) -> dict:
+    """Minimal reader for `mcp_servers:` (server names plus scalar keys) and
+    `skills: disabled:` (a block or flow list). Not a YAML parser."""
+    def scalar(raw: str):
+        raw = raw.split(" #", 1)[0].strip().strip('"').strip("'")
+        low = raw.lower()
+        if low in ("true", "yes", "on"):
+            return True
+        if low in ("false", "no", "off"):
+            return False
+        return raw
+
+    out: dict = {}
+    section = None
+    server = None
+    server_indent = None
+    in_disabled = False
+    for line in text.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        body = line.strip()
+        if indent == 0:
+            section = body.split(":", 1)[0].strip() if body.endswith(":") or ":" in body else None
+            server, server_indent, in_disabled = None, None, False
+            if section == "mcp_servers":
+                out.setdefault("mcp_servers", {})
+            continue
+        if section == "mcp_servers":
+            if server_indent is None or indent <= server_indent:
+                if body.endswith(":") and not body.startswith("-"):
+                    server_indent = indent
+                    server = body[:-1].strip().strip('"').strip("'")
+                    out["mcp_servers"][server] = {}
+                continue
+            if server is not None and ":" in body and not body.startswith("-"):
+                key, value = body.split(":", 1)
+                if value.strip():
+                    out["mcp_servers"][server][key.strip()] = scalar(value)
+        elif section == "skills":
+            if body.startswith("disabled:"):
+                rest = body[len("disabled:"):].strip()
+                skills = out.setdefault("skills", {}).setdefault("disabled", [])
+                if rest.startswith("[") and rest.endswith("]"):
+                    skills.extend(s for s in (scalar(x) for x in rest[1:-1].split(",")) if s)
+                    in_disabled = False
+                else:
+                    in_disabled = True
+                continue
+            if in_disabled and body.startswith("- "):
+                out["skills"]["disabled"].append(scalar(body[2:]))
+            elif not body.startswith("- "):
+                in_disabled = False
+    return out
+
+
+def _hermes_skill_inventory(home: Path, cfg: dict | None = None) -> dict[str, list[dict]]:
+    """Skills under <hermes home>/skills/<category>/<name>/SKILL.md.
+
+    Hermes puts each available skill's name and description in the system
+    prompt and loads the body only on use, so `tokens` is that index entry.
+    Skills moved to skills/.archive/ are archived; names in config
+    `skills.disabled` are disabled. Other dot-folders (.hub) are skipped.
+    """
+    cfg = _hermes_config(home) if cfg is None else cfg
+    disabled_names = set()
+    skills_cfg = cfg.get("skills") if isinstance(cfg, dict) else None
+    if isinstance(skills_cfg, dict) and isinstance(skills_cfg.get("disabled"), list):
+        disabled_names = {str(n) for n in skills_cfg["disabled"]}
+    root = home / "skills"
+    out: dict[str, list[dict]] = {"active": [], "archived": [], "disabled": []}
+    if not root.is_dir() or root.is_symlink():
+        return out
+    seen = 0
+    for path in sorted(root.rglob("SKILL.md")):
+        seen += 1
+        if seen > _HERMES_SKILL_SCAN_CAP:
+            break
+        try:
+            rel = path.relative_to(root)
+        except ValueError:
+            continue
+        if path.is_symlink():
+            continue
+        hidden = [part for part in rel.parts[:-1] if part.startswith(".")]
+        if hidden and hidden[0] != ".archive":
+            continue
+        meta = _parse_skill_frontmatter(path)
+        name = meta.get("name") or path.parent.name
+        category = rel.parts[-3] if len(rel.parts) >= 3 and not hidden else ""
+        item = {
+            "name": name,
+            "skill_name": name,
+            "description": meta.get("description", ""),
+            "category": category,
+            "tokens": meta.get("tokens", 0),
+            "source": "hermes",
+            "path": _display_path(str(path)),
+        }
+        if hidden:
+            out["archived"].append(item)
+        elif name in disabled_names or path.parent.name in disabled_names:
+            out["disabled"].append(item)
+        else:
+            out["active"].append(item)
+    for items in out.values():
+        items.sort(key=lambda item: (item["category"], item["name"]))
+    return out
+
+
+def _hermes_mcp_inventory(cfg: dict) -> list[dict]:
+    """MCP servers from the `mcp_servers:` block of Hermes config.yaml.
+    `enabled: false` means Hermes skips the server entirely."""
+    servers = cfg.get("mcp_servers") if isinstance(cfg, dict) else None
+    if not isinstance(servers, dict):
+        return []
+    items = []
+    for name, server in servers.items():
+        if not isinstance(server, dict):
+            server = {}
+        enabled = server.get("enabled", True) is not False
+        items.append({
+            "name": str(name),
+            "command": str(server.get("url") or server.get("command") or ""),
+            "transport": "http" if server.get("url") else "stdio",
+            "tokens": TOKENS_PER_DEFERRED_TOOL if enabled else 0,
+            "enabled": enabled,
+        })
+    return sorted(items, key=lambda item: item["name"])
+
+
 def _measure_hermes_components():
     """Measure Hermes-relevant startup/config components without reading Claude config.
 
@@ -3854,18 +4030,62 @@ def _measure_hermes_components():
             except OSError:
                 continue
 
+    # Plugin code runs inside the Hermes process; it is never sent to the
+    # model, so it adds no context tokens. Its size is kept for reference.
     components["hermes_plugin"] = {
         "path": str(plugin_dir),
         "exists": plugin_dir.is_dir(),
-        "tokens": plugin_tokens,
+        "tokens": 0,
+        "code_tokens": plugin_tokens,
         "files": plugin_files,
-        "note": "Token Optimizer plugin under ~/.hermes/plugins/token-optimizer/.",
+        "note": "Token Optimizer plugin code; runs in the Hermes process, not in the model context.",
     }
 
-    # Hermes has no CLAUDE.md / skills / MCP / settings.json startup overhead
-    # in the Claude Code sense. core_system is intentionally 0 because Hermes
-    # base instructions are not exposed for measurement — the dashboard's
-    # "fixed overhead" row renders without scanning ~/.claude.
+    # Files Hermes injects into the system prompt at session start: SOUL.md
+    # (agent identity) and the memories snapshot (MEMORY.md + USER.md).
+    def _file_component(paths, note):
+        tokens = lines = 0
+        files = []
+        for f in paths:
+            try:
+                if f.is_symlink() or not f.is_file():
+                    continue
+                tok = estimate_tokens_from_file(f)
+                tokens += tok
+                lines += len(f.read_text(encoding="utf-8", errors="replace").splitlines())
+                files.append({"path": str(f), "tokens": tok})
+            except OSError:
+                continue
+        return {"exists": bool(files), "tokens": tokens, "lines": lines, "files": files, "note": note}
+
+    components["hermes_soul"] = _file_component(
+        [home / "SOUL.md"], "Agent identity, loaded into every session.")
+    components["hermes_memory"] = _file_component(
+        [home / "memories" / "MEMORY.md", home / "memories" / "USER.md"],
+        "Memory snapshot (MEMORY.md + USER.md), loaded into every session.")
+
+    cfg = _hermes_config(home)
+    inventory = _hermes_skill_inventory(home, cfg)
+    components["skills"] = {
+        "count": len(inventory["active"]),
+        "tokens": sum(item["tokens"] for item in inventory["active"]),
+        "archived_count": len(inventory["archived"]),
+        "disabled_count": len(inventory["disabled"]),
+        "note": "Name and description of each skill, listed in the system prompt; bodies load on use.",
+    }
+    mcp = _hermes_mcp_inventory(cfg)
+    enabled_mcp = [item for item in mcp if item["enabled"]]
+    components["mcp_tools"] = {
+        "server_count": len(enabled_mcp),
+        "disabled_count": len(mcp) - len(enabled_mcp),
+        "tool_count_estimate": "?",
+        "tokens": sum(item["tokens"] for item in enabled_mcp),
+        "note": "Configured servers; tool schemas are listed on demand by Hermes tool search.",
+    }
+
+    # core_system is 0 because Hermes base instructions are not exposed for
+    # measurement; the dashboard's "fixed overhead" row renders without
+    # scanning ~/.claude.
     components["core_system"] = {
         "tokens": 0,
         "note": "Hermes base instructions are not exposed for measurement; no ~/.claude scan.",
@@ -7998,15 +8218,19 @@ def _collect_management_data(components=None, trends=None):
             "v5_features": _get_v5_feature_status(),
         }
 
-    # Hermes: Hermes has no Claude-style skills/MCP/settings.json
-    # management surface. Return a minimal hermes-mode dict so the Manage tab
-    # renders without scanning CLAUDE_DIR/_backups, settings.json, or
-    # claude_desktop_config.json.
+    # Hermes: list its own skills (~/.hermes/skills) and MCP servers
+    # (config.yaml mcp_servers) read-only, without scanning CLAUDE_DIR,
+    # settings.json or claude_desktop_config.json.
     if detect_runtime() == "hermes":
+        hermes_cfg = _hermes_config(runtime_home())
+        hermes_skills = _hermes_skill_inventory(runtime_home(), hermes_cfg)
+        hermes_mcp = _hermes_mcp_inventory(hermes_cfg)
         return {
             "mode": "hermes",
-            "skills": {"active": [], "archived": []},
-            "mcp_servers": {"active": [], "disabled": [], "cloud": []},
+            "read_only": True,
+            "skills": hermes_skills,
+            "mcp_servers": {"active": [i for i in hermes_mcp if i["enabled"]],
+                            "disabled": [i for i in hermes_mcp if not i["enabled"]], "cloud": []},
             "plugins": [],
             "v5_features": _get_v5_feature_status(),
         }
@@ -8705,6 +8929,10 @@ def generate_standalone_dashboard(days=30, quiet=False, force=False):
     # CLAUDE.md health summary for dashboard card (from already-computed components)
     claude_md_health = None
     try:
+        if detect_runtime() not in ("claude", "codex"):
+            # Only Claude Code and Codex have an instruction-file chain this
+            # card describes; other runtimes would show a "CLAUDE.md" card.
+            raise LookupError
         instruction_tokens = 0
         context_window = components.get("context_window") or detect_context_window()[0]
         for key in components:
@@ -12306,6 +12534,113 @@ def _osrc_prompt_text(record):
     return ""
 
 
+def _usage_request_key(record, msg=None):
+    """Identity of the API request an assistant record belongs to.
+
+    Claude Code writes `requestId` on every record of a request. Transcripts
+    produced by the SDK or imported from a cloud session carry only the
+    Anthropic `message.id`, which is equally stable across the streamed chunks
+    of one reply. Returns None when the record has neither, so the caller can
+    keep it as its own request instead of collapsing unrelated records.
+    """
+    req_id = record.get("requestId")
+    if req_id:
+        return str(req_id)
+    if msg is None:
+        msg = record.get("message")
+    if isinstance(msg, dict):
+        mid = msg.get("id")
+        if mid:
+            return str(mid)
+    return None
+
+
+def _request_local_day(ts_s):
+    """Local calendar date of an ISO timestamp, or None when it does not parse."""
+    if not (ts_s and isinstance(ts_s, str)):
+        return None
+    try:
+        return datetime.fromisoformat(ts_s.replace("Z", "+00:00")).astimezone().strftime("%Y-%m-%d")
+    except (ValueError, TypeError, OverflowError, OSError):
+        return None
+
+
+def _empty_model_buckets():
+    return {"fresh_input": 0, "cache_read": 0, "cache_create": 0,
+            "cache_create_1h": 0, "cache_create_5m": 0, "output": 0}
+
+
+def _net_request_is_empty(u):
+    """True for a request entry that adds nothing to a session: another session
+    already counted the call and every token of it."""
+    return (not u.get("n", 1)
+            and not any(int(u.get(f) or 0) for f in ("inp", "out", "cr", "cc", "cc_1h", "cc_5m")))
+
+
+def _aggregate_request_usage(requests):
+    """Roll a {request key: usage} map up into session totals.
+
+    `requests` holds the final (streaming-MAX) usage of each API request. Every
+    per-session figure derived from usage (token totals, per-model buckets,
+    per-day buckets, API call count) comes from here, so a parse, a merge of
+    several files and a filtered view of either all agree. Returns
+    (totals, request_days).
+    """
+    totals = {
+        "total_input": 0, "total_output": 0, "total_cache_read": 0,
+        "total_cache_create": 0, "total_cache_create_1h": 0,
+        "total_cache_create_5m": 0, "api_calls": 0, "api_call_timestamps": [],
+        "model_usage": {}, "model_usage_breakdown": {}, "daily_usage": {},
+    }
+    request_days = {}
+    for key, u in requests.items():
+        if _net_request_is_empty(u):
+            continue
+        totals["total_input"] += u["inp"]
+        totals["total_output"] += u["out"]
+        totals["total_cache_read"] += u["cr"]
+        totals["total_cache_create"] += u["cc"]
+        totals["total_cache_create_1h"] += u["cc_1h"]
+        totals["total_cache_create_5m"] += u["cc_5m"]
+        ts_s = u.get("ts")
+        if not u.get("advisor") and u.get("n", 1):
+            # An advisor part belongs to its request: not another API call.
+            # `n` is 0 when another session already counted the call itself.
+            totals["api_calls"] += 1
+            if ts_s and isinstance(ts_s, str):
+                try:
+                    totals["api_call_timestamps"].append(
+                        datetime.fromisoformat(ts_s.replace("Z", "+00:00")))
+                except (ValueError, TypeError):
+                    pass
+        model = u["model"]
+        billable = u["inp"] + u["cc"] + u["out"]  # fresh + cache_create + output
+        totals["model_usage"][model] = totals["model_usage"].get(model, 0) + billable
+        bd = totals["model_usage_breakdown"].setdefault(model, _empty_model_buckets())
+        bd["fresh_input"] += u["inp"]
+        bd["cache_read"] += u["cr"]
+        bd["cache_create"] += u["cc"]
+        bd["cache_create_1h"] += u["cc_1h"]
+        bd["cache_create_5m"] += u["cc_5m"]
+        bd["output"] += u["out"]
+        # Bucket each request by the LOCAL date it ran, so a session that spans
+        # midnight bills each day for its own requests instead of dumping the
+        # whole session onto its last-active day (#200). Records without a
+        # parseable timestamp are left out here; callers fall back to the
+        # session date for the unbucketed remainder.
+        day = u["day"] if "day" in u else _request_local_day(ts_s)
+        request_days[key] = day
+        if day:
+            dbd = totals["daily_usage"].setdefault(day, {}).setdefault(model, _empty_model_buckets())
+            dbd["fresh_input"] += u["inp"]
+            dbd["cache_read"] += u["cr"]
+            dbd["cache_create"] += u["cc"]
+            dbd["cache_create_1h"] += u["cc_1h"]
+            dbd["cache_create_5m"] += u["cc_5m"]
+            dbd["output"] += u["out"]
+    return totals, request_days
+
+
 def _parse_session_jsonl(filepath, window_start=None, window_end=None):
     """Parse a single JSONL session file in one streaming pass.
 
@@ -12568,7 +12903,7 @@ def _parse_session_jsonl(filepath, window_start=None, window_end=None):
                     # 48,595 requestIds across 30d had monotonically increasing
                     # output values in local JSONL. Fix: track per-requestId
                     # MAX usage and apply it at end of file.
-                    req_id = record.get("requestId")
+                    req_id = _usage_request_key(record, msg)
                     usage = msg.get("usage", {})
                     if usage and isinstance(usage, dict):
                         # _safe_int, not raw int(): json.loads accepts the
@@ -12602,9 +12937,9 @@ def _parse_session_jsonl(filepath, window_start=None, window_end=None):
                             + inp_tok
                             + out_tok
                         )
-                        # Records without requestId must never collapse with
-                        # each other — use the map's own size as a monotonic
-                        # per-session counter.
+                        # Records with neither a requestId nor a message id must
+                        # never collapse with each other — use the map's own
+                        # size as a monotonic per-session counter.
                         key = req_id if req_id else f"__noreq__{len(request_usage_map)}"
                         # Advisor iterations bill at the advisor's own model:
                         # each is a separate entry under "<request>#advisor<n>"
@@ -12647,61 +12982,23 @@ def _parse_session_jsonl(filepath, window_start=None, window_end=None):
             _parse_session_jsonl_cache[cache_key] = None
         return None
 
-    # v5.4.9: Apply per-requestId MAX dedup. Each entry in request_usage_map
-    # holds the final cumulative usage for one API call. Summing these gives
-    # the session's true total without streaming-chunk under-counting.
-    for key, u in request_usage_map.items():
-        total_input += u["inp"]
-        total_output += u["out"]
-        total_cache_read += u["cr"]
-        total_cache_create += u["cc"]
-        total_cache_create_1h += u["cc_1h"]
-        total_cache_create_5m += u["cc_5m"]
-        ts_s = u.get("ts")
-        if not u.get("advisor"):
-            # An advisor part belongs to its request: not another API call.
-            api_calls += 1
-        if ts_s and isinstance(ts_s, str) and not u.get("advisor"):
-            try:
-                api_call_timestamps.append(datetime.fromisoformat(ts_s.replace("Z", "+00:00")))
-            except (ValueError, TypeError):
-                pass
-        model = u["model"]
-        billable = u["inp"] + u["cc"] + u["out"]  # fresh + cache_create + output
-        model_usage[model] = model_usage.get(model, 0) + billable
-        bd = model_usage_breakdown.setdefault(
-            model,
-            {"fresh_input": 0, "cache_read": 0, "cache_create": 0, "cache_create_1h": 0, "cache_create_5m": 0, "output": 0},
-        )
-        bd["fresh_input"] += u["inp"]
-        bd["cache_read"] += u["cr"]
-        bd["cache_create"] += u["cc"]
-        bd["cache_create_1h"] += u["cc_1h"]
-        bd["cache_create_5m"] += u["cc_5m"]
-        bd["output"] += u["out"]
-        # Bucket each request by the LOCAL date it ran, so a session that spans
-        # midnight bills each day for its own requests instead of dumping the
-        # whole session onto its last-active day (#200). Records without a
-        # parseable timestamp are left out here; callers fall back to the
-        # session date for the unbucketed remainder.
-        _day = None
-        if ts_s and isinstance(ts_s, str):
-            try:
-                _day = datetime.fromisoformat(ts_s.replace("Z", "+00:00")).astimezone().strftime("%Y-%m-%d")
-            except (ValueError, TypeError, OverflowError, OSError):
-                _day = None
-        request_days[key] = _day
-        if _day:
-            dbd = daily_usage.setdefault(_day, {}).setdefault(
-                model,
-                {"fresh_input": 0, "cache_read": 0, "cache_create": 0, "cache_create_1h": 0, "cache_create_5m": 0, "output": 0},
-            )
-            dbd["fresh_input"] += u["inp"]
-            dbd["cache_read"] += u["cr"]
-            dbd["cache_create"] += u["cc"]
-            dbd["cache_create_1h"] += u["cc_1h"]
-            dbd["cache_create_5m"] += u["cc_5m"]
-            dbd["output"] += u["out"]
+    # Streaming-aware dedup: each entry in request_usage_map holds the final
+    # cumulative usage for one API call. Summing these gives the session's true
+    # total without streaming-chunk under-counting.
+    for _key, _u in request_usage_map.items():
+        _u["day"] = _request_local_day(_u.get("ts"))
+    _agg, request_days = _aggregate_request_usage(request_usage_map)
+    total_input = _agg["total_input"]
+    total_output = _agg["total_output"]
+    total_cache_read = _agg["total_cache_read"]
+    total_cache_create = _agg["total_cache_create"]
+    total_cache_create_1h = _agg["total_cache_create_1h"]
+    total_cache_create_5m = _agg["total_cache_create_5m"]
+    api_calls = _agg["api_calls"]
+    api_call_timestamps = _agg["api_call_timestamps"]
+    model_usage = _agg["model_usage"]
+    model_usage_breakdown = _agg["model_usage_breakdown"]
+    daily_usage = _agg["daily_usage"]
 
     # Calculate duration
     duration_minutes = 0
@@ -12787,6 +13084,8 @@ def parse_session_turns(filepath):
     turn_index = 0
     tier = _load_pricing_tier()
     prev_call_ts = None
+    turn_by_key = {}
+    parts_by_key = {}
 
     # Bound the work like the Codex adapter's _iter_json_records (see
     # _parse_session_jsonl): skip oversized files and oversized lines.
@@ -12847,9 +13146,15 @@ def parse_session_turns(filepath):
                         if isinstance(block, dict) and block.get("type") == "tool_use":
                             tools.append(block.get("name", ""))
 
+                # One API request is one turn. Its streamed records share a
+                # request id (or message id) and each carries the cumulative
+                # usage so far, so they fold into the first turn of that request.
+                req_key = _usage_request_key(record, msg)
+                prior_turn = turn_by_key.get(req_key) if req_key else None
+
                 ts_str = record.get("timestamp")
                 gap_since_prev_seconds = None
-                if ts_str and isinstance(ts_str, str):
+                if prior_turn is None and ts_str and isinstance(ts_str, str):
                     try:
                         call_ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
                         if prev_call_ts is not None:
@@ -12857,10 +13162,10 @@ def parse_session_turns(filepath):
                         prev_call_ts = call_ts
                     except (ValueError, TypeError):
                         pass
-                cost = _price_usage_parts(_billed_usage_parts(usage, model, tier=tier),
-                                          tier=tier, per_request=True)
+                parts = _billed_usage_parts(usage, model, tier=tier)
+                cost = _price_usage_parts(parts, tier=tier, per_request=True)
 
-                turns.append({
+                turn = {
                     "turn_index": turn_index,
                     "role": "assistant",
                     "input_tokens": inp_tok,
@@ -12874,12 +13179,12 @@ def parse_session_turns(filepath):
                     "gap_since_prev_seconds": gap_since_prev_seconds,
                     "tools_used": tools,
                     "cost_usd": round(cost, 6),
-                })
+                }
                 ctx_usage = _context_usage(usage)
                 if ctx_usage is not usage:
                     # Cached prefix the next turn can reuse: the final executor
                     # only, matching the live keep-warm arm (#287).
-                    turns[-1]["ctx_cache"] = (
+                    turn["ctx_cache"] = (
                         _context_token_count(ctx_usage)
                         - _safe_int(ctx_usage.get("input_tokens")))
                 resume_usage = _resume_usage(usage)
@@ -12887,10 +13192,40 @@ def parse_session_turns(filepath):
                     # Billing stays aggregate; pause warmth uses the first
                     # executor, before any cache writes inside this response.
                     resume_read = _safe_int(resume_usage.get("cache_read_input_tokens"))
-                    turns[-1]["resume_cache_read"] = resume_read
-                    turns[-1]["resume_cache_creation"] = (
+                    turn["resume_cache_read"] = resume_read
+                    turn["resume_cache_creation"] = (
                         _context_token_count(resume_usage) - resume_read
                         - _safe_int(resume_usage.get("input_tokens")))
+                if prior_turn is not None:
+                    latest_context = turn["output_tokens"] >= prior_turn["output_tokens"]
+                    for field in ("input_tokens", "output_tokens", "cache_read",
+                                  "cache_creation", "cache_creation_1h", "cache_creation_5m"):
+                        prior_turn[field] = max(prior_turn[field], turn[field])
+                    prior_turn["tools_used"] += [
+                        t for t in tools if t not in prior_turn["tools_used"]]
+                    if model and model != "unknown":
+                        prior_turn["model"] = model
+                    for field in ("ctx_cache", "resume_cache_read", "resume_cache_creation"):
+                        if field in turn and (latest_context or field not in prior_turn):
+                            prior_turn[field] = turn[field]
+                    merged_parts = parts_by_key[req_key]
+                    for index, (part_model, buckets) in enumerate(parts):
+                        if index == len(merged_parts):
+                            merged_parts.append((part_model, dict(buckets)))
+                        else:
+                            old_model, old_buckets = merged_parts[index]
+                            for field in _USAGE_BUCKET_KEYS:
+                                old_buckets[field] = max(old_buckets[field], buckets[field])
+                            if part_model and part_model != "unknown":
+                                old_model = part_model
+                            merged_parts[index] = (old_model, old_buckets)
+                    prior_turn["cost_usd"] = round(_price_usage_parts(
+                        merged_parts, tier=tier, per_request=True), 6)
+                    continue
+                turns.append(turn)
+                if req_key:
+                    turn_by_key[req_key] = turn
+                    parts_by_key[req_key] = parts
                 turn_index += 1
 
     except (PermissionError, OSError):
@@ -13132,7 +13467,8 @@ CREATE TABLE IF NOT EXISTS counted_reread (
     reread_usd REAL DEFAULT 0.0,
     turns_counted INTEGER DEFAULT 0,
     transcript_mtime REAL,
-    computed_at TEXT
+    computed_at TEXT,
+    pricing_detail TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_counted_reread_session ON counted_reread (session_uuid);
 
@@ -13184,6 +13520,29 @@ CREATE TABLE IF NOT EXISTS session_log_aliases (
     session_uuid TEXT,
     collected_at TEXT
 );
+
+-- What each session has counted of each API request. The same request can sit
+-- in more than one transcript (a resumed or forked session carries its parent's
+-- history, and a copy may hold a longer streamed reply than another), so the
+-- sessions together count the largest figure seen for it, once. The hashes are
+-- of the request id and the session id; the rest is that session's share, with
+-- the model and day it was billed to so the share survives its transcript
+-- losing the record.
+CREATE TABLE IF NOT EXISTS usage_request_claims (
+    request_hash INTEGER NOT NULL,
+    owner_hash INTEGER NOT NULL,
+    calls INTEGER NOT NULL DEFAULT 0,
+    inp INTEGER NOT NULL DEFAULT 0,
+    out INTEGER NOT NULL DEFAULT 0,
+    cr INTEGER NOT NULL DEFAULT 0,
+    cc INTEGER NOT NULL DEFAULT 0,
+    cc_1h INTEGER NOT NULL DEFAULT 0,
+    cc_5m INTEGER NOT NULL DEFAULT 0,
+    model TEXT,
+    day TEXT,
+    PRIMARY KEY (request_hash, owner_hash)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS idx_usage_request_claims_owner ON usage_request_claims(owner_hash);
 
 CREATE TABLE IF NOT EXISTS daily_stats (
     date TEXT PRIMARY KEY,
@@ -13711,6 +14070,214 @@ def _claude_projects_like_patterns() -> tuple:
 _PLATFORM_PATH_SQL = "REPLACE(jsonl_path, '\\', '/')"
 
 
+# Counted views: the single place that decides which ledger rows count as
+# savings. Every savings total reads these views instead of the raw tables, so
+# the CLI report, dashboard, status bar and weekly card always agree. Rows are
+# never deleted or rewritten; the views only leave out rows that are not
+# savings:
+#   - media results (screenshots and other image-bearing tool results). Images
+#     bill by pixels, not by base64 length, so archiving one saved nothing.
+#   - fixture sessions written by test suites and benchmarks.
+#   - twin rows: two installs firing on one call write the same row within a
+#     few seconds; only the first one counts.
+_COUNTED_TWIN_WINDOW_SECONDS = 3.0
+# Session ids that only test suites and benchmark harnesses use. Matched with
+# GLOB (case-sensitive, anchored). Real ids are UUIDs, short hex agent ids, or
+# harness ids such as Codex "rollout-<date>-<uuid>"; none of them match.
+_FIXTURE_SESSION_GLOBS = (
+    "test-session-*", "failwire-*", "unit-c-never*", "torture-*",
+    "f3bench-sess*", "sess_test*",
+)
+# Tool names whose results carry images. Matched against the archive event's
+# detail text ("replaced <tool> (...)" / "blocked re-fetch of <tool> (...)" /
+# "<tool_use_id> (<tool>)" on a re-expansion).
+_MEDIA_TOOL_GLOBS = (
+    "*claude-in-chrome__computer*", "*computer_use__*", "*[Ss]creenshot*",
+)
+_MEDIA_ARCHIVE_EVENT_TYPES = ("tool_archive", "tool_archive_refetch_block", "tool_archive_reexpand")
+# Older re-expansion rows carry only the tool_use_id. One is paired with the
+# archive row it reverses: same session, archived up to an hour before, and the
+# re-expansion is the archived size plus the pointer stub (a few hundred tokens).
+_REEXPAND_PAIR_WINDOW_SECONDS = 3600
+_REEXPAND_PAIR_STUB_TOKENS = 1200
+
+
+def _sql_quote(value):
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _fixture_session_sql(col="session_id"):
+    globs = " OR ".join(f"{col} GLOB {_sql_quote(g)}" for g in _FIXTURE_SESSION_GLOBS)
+    numeric_codex = (f"({col} GLOB 'codex-sess-[0-9]*' "
+                     f"AND substr({col}, 12) NOT GLOB '*[^0-9]*')")
+    return f"({col} IS NOT NULL AND ({globs} OR {numeric_codex}))"
+
+
+def _is_fixture_session_id(session_id):
+    """Python mirror of _fixture_session_sql, for callers outside SQL."""
+    import fnmatch
+    if not session_id:
+        return False
+    sid = str(session_id)
+    if re.fullmatch(r"codex-sess-[0-9]+", sid):
+        return True
+    return any(fnmatch.fnmatchcase(sid, g) for g in _FIXTURE_SESSION_GLOBS)
+
+
+def _sql_variants(template, **fragments):
+    """Every statement *template* can become, built once at import.
+
+    Each keyword names a ``{field}`` in the template and maps a key to one of the
+    author's own fixed SQL fragments. The result is keyed by one key per field (in
+    keyword order), so a call site selects a prebuilt statement and never assembles
+    SQL text at runtime."""
+    names = tuple(fragments)
+    return {
+        keys: template.format(**{n: fragments[n][k] for n, k in zip(names, keys)})
+        for keys in itertools.product(*fragments.values())
+    }
+
+
+def _counted_twin_sql(alias, table, kind_col, same):
+    """Twin check: an earlier row of the same shape in the same session within
+    the window. Correlated EXISTS (not a window function) so a query with a
+    timestamp filter only looks at the rows it reads; the lookup is served by
+    the (session_id, kind, timestamp) indexes created in _init_trends_db."""
+    win = _COUNTED_TWIN_WINDOW_SECONDS
+    return (
+        f"EXISTS (SELECT 1 FROM main.{table} p WHERE p.session_id = {alias}.session_id "
+        f"AND p.{kind_col} = {alias}.{kind_col} AND {same} "
+        f"AND p.timestamp <= {alias}.timestamp "
+        f"AND p.timestamp >= strftime('%Y-%m-%dT%H:%M:%S', julianday({alias}.timestamp) - {win + 1.0} / 86400.0) "
+        f"AND (p.timestamp < {alias}.timestamp OR p.id < {alias}.id) "
+        f"AND (julianday({alias}.timestamp) - julianday(p.timestamp)) * 86400.0 <= {win})"
+    )
+
+
+def _media_reexpand_pair_sql(alias):
+    """A re-expansion whose paired archive row is a media result. Its archive
+    credit is left out as media, so its debit is left out too."""
+    media = " OR ".join(f"a.detail GLOB {_sql_quote(g)}" for g in _MEDIA_TOOL_GLOBS)
+    win = _REEXPAND_PAIR_WINDOW_SECONDS
+    return (
+        f"EXISTS (SELECT 1 FROM main.savings_events a WHERE a.session_id = {alias}.session_id "
+        f"AND a.event_type = 'tool_archive' AND a.detail IS NOT NULL AND ({media}) "
+        f"AND a.timestamp <= {alias}.timestamp "
+        f"AND a.timestamp >= strftime('%Y-%m-%dT%H:%M:%S', julianday({alias}.timestamp) - {win}.0 / 86400.0) "
+        f"AND {alias}.tokens_saved - a.tokens_saved BETWEEN 0 AND {_REEXPAND_PAIR_STUB_TOKENS} "
+        f"AND NOT EXISTS (SELECT 1 FROM main.savings_events b WHERE b.session_id = {alias}.session_id "
+        f"AND b.event_type = 'tool_archive' AND b.timestamp <= {alias}.timestamp AND b.timestamp > a.timestamp "
+        f"AND {alias}.tokens_saved - b.tokens_saved BETWEEN 0 AND {_REEXPAND_PAIR_STUB_TOKENS}))"
+    )
+
+
+def _counted_view_statements():
+    """The two CREATE TEMP VIEW statements, composed once from the fixed rules above."""
+    media = " OR ".join(f"e.detail GLOB {_sql_quote(g)}" for g in _MEDIA_TOOL_GLOBS)
+    media_types = ", ".join(_sql_quote(t) for t in _MEDIA_ARCHIVE_EVENT_TYPES)
+    media_pair = _media_reexpand_pair_sql("e")
+    se_twin = _counted_twin_sql(
+        "e", "savings_events", "event_type",
+        "p.tokens_saved = e.tokens_saved AND COALESCE(p.detail, '') = COALESCE(e.detail, '')")
+    ce_twin = _counted_twin_sql(
+        "c", "compression_events", "feature",
+        "p.original_tokens = c.original_tokens AND p.compressed_tokens = c.compressed_tokens "
+        "AND COALESCE(p.command_pattern, '') = COALESCE(c.command_pattern, '')")
+    return (
+        "CREATE TEMP VIEW IF NOT EXISTS counted_savings_events AS "
+        "SELECT e.* FROM main.savings_events e "
+        f"WHERE NOT {_fixture_session_sql('e.session_id')}"
+        f" AND NOT (e.event_type IN ({media_types}) AND e.detail IS NOT NULL AND ({media}))"
+        f" AND NOT (e.event_type = 'tool_archive_reexpand' AND COALESCE(e.session_id, '') != '' AND {media_pair})"
+        f" AND NOT (e.tokens_saved > 0 AND COALESCE(e.session_id, '') != '' AND {se_twin})",
+        "CREATE TEMP VIEW IF NOT EXISTS counted_compression_events AS "
+        "SELECT c.* FROM main.compression_events c "
+        f"WHERE NOT {_fixture_session_sql('c.session_id')}"
+        f" AND NOT (c.original_tokens > c.compressed_tokens AND COALESCE(c.session_id, '') != '' AND {ce_twin})",
+    )
+
+
+_COUNTED_VIEW_SQL = _counted_view_statements()
+
+
+def _counted_media_candidate_statement():
+    """Media archive events that pass every other counted-view rule."""
+    media = " OR ".join(f"e.detail GLOB {_sql_quote(g)}" for g in _MEDIA_TOOL_GLOBS)
+    se_twin = _counted_twin_sql(
+        "e", "savings_events", "event_type",
+        "p.tokens_saved = e.tokens_saved AND COALESCE(p.detail, '') = COALESCE(e.detail, '')")
+    return (
+        "SELECT 'md:'||e.id, e.session_uuid, e.timestamp, 0, NULL, e.model "
+        "FROM main.savings_events e WHERE e.event_type = 'tool_archive' AND e.timestamp >= ? "
+        f"AND e.detail IS NOT NULL AND ({media}) "
+        f"AND NOT {_fixture_session_sql('e.session_id')} "
+        f"AND NOT (e.tokens_saved > 0 AND COALESCE(e.session_id, '') != '' AND {se_twin})"
+    )
+
+
+_COUNTED_MEDIA_CANDIDATE_SQL = _counted_media_candidate_statement()
+
+
+def _ensure_counted_views(conn):
+    """Create the per-connection counted views (idempotent, TEMP, read-only).
+
+    counted_savings_events and counted_compression_events have the same
+    columns as the tables they read. Safe to call on any trends.db connection;
+    returns False (and callers fall back to the raw table) only if the tables
+    are missing or the SQLite build lacks window functions."""
+    try:
+        have = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_temp_master WHERE type='view'").fetchall()}
+        if {"counted_savings_events", "counted_compression_events"} <= have:
+            return True
+        for statement in _COUNTED_VIEW_SQL:
+            conn.execute(statement)
+        # SQLite resolves view columns lazily: a database missing a column the
+        # filters use (very old installs, minimal schemas) only fails on first
+        # read. Probe now and fall back to the raw tables instead.
+        conn.execute("SELECT 1 FROM counted_savings_events LIMIT 0").fetchall()
+        conn.execute("SELECT 1 FROM counted_compression_events LIMIT 0").fetchall()
+        return True
+    except sqlite3.Error:
+        for drop in ("DROP VIEW IF EXISTS temp.counted_savings_events",
+                     "DROP VIEW IF EXISTS temp.counted_compression_events"):
+            try:
+                conn.execute(drop)
+            except sqlite3.Error:
+                pass
+        return False
+
+
+# counted_reread rows whose source event the counted views leave out.
+_COUNTED_REREAD_EXCLUDED_SQL = (
+    "(event_key IN (SELECT 'se:'||id FROM main.savings_events "
+    "EXCEPT SELECT 'se:'||id FROM counted_savings_events) OR "
+    "event_key IN (SELECT 'ce:'||id FROM main.compression_events "
+    "EXCEPT SELECT 'ce:'||id FROM counted_compression_events))"
+)
+_COUNTED_REREAD_PURGE_EXCLUDED_SQL = (
+    f"DELETE FROM counted_reread WHERE {_COUNTED_REREAD_EXCLUDED_SQL}"
+)
+
+# The only names _counted_table can return: the counted view, then the raw table.
+_COUNTED_SOURCES = {
+    "savings_events": ("counted_savings_events", "savings_events"),
+    "compression_events": ("counted_compression_events", "compression_events"),
+}
+
+
+def _counted_table(conn, table):
+    """Name of the counted view for *table*, or the raw table if views fail."""
+    return _COUNTED_SOURCES[table][0] if _ensure_counted_views(conn) else table
+
+
+def _counted_sql(table, template):
+    """Statement for every source _counted_table(conn, table) can return, keyed by
+    that name. The template's ``{table}`` field is the only thing that varies."""
+    variants = _sql_variants(template, table={name: name for name in _COUNTED_SOURCES[table]})
+    return {name: sql for (name,), sql in variants.items()}
+
+
 def _init_trends_db():
     """Initialize the trends SQLite DB. Returns a connection.
     
@@ -13812,9 +14379,28 @@ def _init_trends_db():
         # which side a row came from.
         if "origin" not in cols:
             conn.execute("ALTER TABLE session_log ADD COLUMN origin TEXT")
+        # Which usage-attribution version stored the row. NULL = stored before
+        # versioning; collect re-parses such rows from their transcript.
+        if "usage_parser_version" not in cols:
+            conn.execute("ALTER TABLE session_log ADD COLUMN usage_parser_version INTEGER")
         conn.commit()
     except sqlite3.Error as _e:
         _log_migration_error("session_log columns", _e)
+    # Shares already recorded are usage evidence: a claims table from before the
+    # model and day columns keeps its counters and gains the columns. Only a
+    # table that never held counters (nothing to keep) is recreated.
+    try:
+        _claim_cols = {r[1] for r in conn.execute("PRAGMA table_info(usage_request_claims)").fetchall()}
+        if _claim_cols and "inp" not in _claim_cols:
+            conn.execute("DROP TABLE usage_request_claims")
+            conn.executescript(_SCHEMA)
+        else:
+            for _col in ("model", "day"):
+                if _claim_cols and _col not in _claim_cols:
+                    conn.execute(f"ALTER TABLE usage_request_claims ADD COLUMN {_col} TEXT")
+        conn.commit()
+    except sqlite3.Error as _e:
+        _log_migration_error("usage_request_claims", _e)
     # Same origin column on the per-event savings tables (NULL = legacy/local).
     for _origin_table in ("savings_events", "compression_events"):
         try:
@@ -14055,6 +14641,15 @@ def _init_trends_db():
             "CREATE INDEX IF NOT EXISTS idx_compression_events_feature_tier "
             "ON compression_events (feature, tier)"
         )
+        # Serves the counted views' same-session twin lookup.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_compression_events_session_feature_ts "
+            "ON compression_events (session_id, feature, timestamp)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_savings_events_session_type_ts "
+            "ON savings_events (session_id, event_type, timestamp)"
+        )
         conn.commit()
     except sqlite3.Error as _e:
         _log_migration_error("compression_events columns", _e)
@@ -14183,6 +14778,8 @@ def _backfill_session_metrics(conn, days=30, limit=50):
         q_score = None
         q_grade = None
         parsed = _parse_session_jsonl(jsonl_path) if jsonl_path and os.path.exists(jsonl_path) else None
+        if not parsed:
+            continue
         if parsed:
             ttl_1h = int(parsed.get("total_cache_create_1h", 0) or 0)
             ttl_5m = int(parsed.get("total_cache_create_5m", 0) or 0)
@@ -14247,6 +14844,7 @@ def _backfill_daily_usage(conn, days=30, budget_seconds=20.0):
         return 0
     deadline = time.monotonic() + budget_seconds
     updates = []
+    live_owners = _live_usage_owners(conn)
     for jsonl_path, stored_date in rows:
         if time.monotonic() > deadline:
             break
@@ -14261,7 +14859,7 @@ def _backfill_daily_usage(conn, days=30, budget_seconds=20.0):
             # file returns, even with an old mtime that collect would skip.
             continue
         try:
-            usage = _session_daily_usage(jsonl_path)
+            usage = _session_daily_usage(jsonl_path, conn=conn, live_owners=live_owners)
         except Exception:
             usage = {}
         dated = [d for d in usage if d != UNDATED_USAGE_KEY]
@@ -14363,11 +14961,18 @@ def _log_savings_event(event_type, tokens_saved, session_id=None, detail=None, m
         # aggregation layer not to use the stored model for reprice attribution.
         tier = _load_pricing_tier()
         tier_data = PRICING_TIERS.get(tier, PRICING_TIERS["anthropic"])
+        # Output-class events (a measured verbosity reduction) avoid output tokens,
+        # so they are priced at the output rate rather than the input rate.
+        output_class = _EVENT_RATE_CLASS.get(event_type) == "output"
         if detect_runtime() == 'codex':
             normalized = model or _resolve_session_model(session_id)
             rates = _input_and_cached_read_rates(normalized)
             if cost_per_mtok is None:
-                cost_per_mtok = rates[0] if rates else None
+                if output_class:
+                    out_rate = _get_model_cost(normalized, 0, 1) * 1e6 if rates else 0.0
+                    cost_per_mtok = out_rate or None
+                else:
+                    cost_per_mtok = rates[0] if rates else None
         elif model:
             normalized = _claude_price_key(model, tier_data["claude_models"]) or "sonnet"
         else:
@@ -14375,7 +14980,8 @@ def _log_savings_event(event_type, tokens_saved, session_id=None, detail=None, m
         if detect_runtime() != 'codex':
             rates = tier_data["claude_models"].get(normalized, tier_data["claude_models"].get("sonnet", {}))
             if cost_per_mtok is None:
-                cost_per_mtok = rates.get("input", 3.0)
+                cost_per_mtok = (rates.get("output", 15.0) if output_class
+                                 else rates.get("input", 3.0))
         cost_saved = tokens_saved * cost_per_mtok / 1e6 if cost_per_mtok is not None else None
 
         conn = _init_trends_db()
@@ -14483,24 +15089,124 @@ def _log_compression_event(feature, original_text="", compressed_text="",
         pass
 
 
-def _compression_row_rate(model, fallback_rate, tier_data):
-    """USD per million input tokens for one compression_events row.
+def _compression_known_model(model):
+    """Reject an unknown Claude generation even when its family has a card."""
+    if not isinstance(model, str) or not _is_priced_model(model):
+        return False
+    value = _strip_provider_prefixes(model)
+    if value.startswith(("gpt-", "gemini-")):
+        return _foreign_savings_card_exact(model)
+    generation = _CLAUDE_GENERATION_RE.search(model.lower())
+    legacy = _CLAUDE_LEGACY_ID_RE.search(model.lower())
+    if legacy:
+        major, minor, family = legacy.groups()
+        if major == "3" and family == "sonnet" and minor in (None, "5", "7"):
+            return True
+    elif generation:
+        family, major, minor = generation.groups()
+    else:
+        return True
+    family = "fable" if family == "mythos" else family
+    key = f"{family}_{major}" + (f"_{minor}" if minor else "")
+    return key in PRICING_TIERS.get(_load_pricing_tier(), PRICING_TIERS["anthropic"]).get("claude_models", {})
 
-    Per-model rate from the row's stored event-time model, else the
-    current-session fallback. Shared by _get_compression_summary and the
-    status-bar buckets so both price a row identically.
-    """
-    if detect_runtime() == 'codex':
-        model_rates = _input_and_cached_read_rates(model)
-        return model_rates[0] if model_rates else 0.0
-    if model:
-        norm_m = _claude_price_key(model, tier_data["claude_models"]) or "sonnet"
-        return (
-            tier_data["claude_models"]
-            .get(norm_m, tier_data["claude_models"].get("sonnet", {}))
-            .get("input", fallback_rate)
-        )
-    return fallback_rate
+
+def _compression_row_rate(model, fallback_rate, tier_data):
+    """Input price per million tokens, or zero when no rate card is known."""
+    if not _compression_known_model(model):
+        return 0.0
+    return _get_model_cost(model, 1, 0) * 1_000_000
+
+
+_UNSTAMPED_MODELS = frozenset({"", "unknown", "<synthetic>", "none", "null"})
+
+
+def _compression_session_rates(conn, session_uuids, session_ids=()):
+    """{session_uuid: [(share, input_rate)]} from each session's own model mix.
+
+    Used for compression rows logged without a usable model stamp: the hook
+    often cannot read the live transcript, so it writes "unknown". Each row is
+    priced at ITS OWN session's mix (never a window average), the same rule
+    _session_model_reprice applies to savings_events."""
+    out = {}
+    ids = [u for u in set(session_uuids) if u]
+    foreign_ids = [s for s in set(session_ids) if s]
+    if not ids and not foreign_ids:
+        return out
+    try:
+        sl_cols = {r[1] for r in conn.execute("PRAGMA table_info(session_log)").fetchall()}
+        mu = "model_usage_json" if "model_usage_json" in sl_cols else "NULL"
+        amu = "all_model_usage_json" if "all_model_usage_json" in sl_cols else "NULL"
+        breakdown = "model_usage_breakdown_json" if "model_usage_breakdown_json" in sl_cols else "NULL"
+        for i in range(0, len(ids) if "session_uuid" in sl_cols else 0, 500):
+            chunk = ids[i:i + 500]
+            marks = ",".join("?" for _ in chunk)
+            for uuid, detail_json, mu_json, amu_json in conn.execute(
+                    f"SELECT session_uuid, {breakdown}, {mu}, {amu} FROM session_log "
+                    f"WHERE session_uuid IN ({marks}) ORDER BY id", chunk):
+                terms = _compression_mix_input_terms(detail_json, mu_json, amu_json)
+                if terms:
+                    out[uuid] = terms
+        prefixes = ("hermes:", "copilot:", "cursor:", "grok:",
+                    "antigravity:antigravity:", "antigravity:antigravity-cli:",
+                    "antigravity:antigravity-ide:")
+        for i in range(0, len(foreign_ids), 50):
+            paths = {prefix + sid: sid for sid in foreign_ids[i:i + 50] for prefix in prefixes}
+            marks = ",".join("?" for _ in paths)
+            matches = {}
+            for path, detail_json, mu_json, amu_json in conn.execute(
+                    f"SELECT jsonl_path, {breakdown}, {mu}, {amu} FROM session_log WHERE jsonl_path IN ({marks})", tuple(paths)):
+                matches.setdefault(paths[path], []).append((detail_json, mu_json, amu_json))
+            for sid, records in matches.items():
+                if len(records) == 1:
+                    terms = _compression_mix_input_terms(*records[0])
+                    if terms:
+                        out[("session_id", sid)] = terms
+    except (sqlite3.Error, TypeError, ValueError):
+        return {}
+    return out
+
+
+def _compression_mix_input_terms(*blobs):
+    """Known input rates weighted by all models in one session, including unknowns."""
+    for blob in blobs:
+        try:
+            values = json.loads(blob) if blob else None
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(values, dict) or not values:
+            continue
+        weights = []
+        for name, value in values.items():
+            if isinstance(value, dict):
+                try:
+                    value = sum(float(value.get(field) or 0) for field in
+                                ("fresh_input", "cache_create", "output"))
+                except (TypeError, ValueError):
+                    continue
+            try:
+                weight = float(value)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(weight) and weight > 0:
+                weights.append((name, weight))
+        total = sum(weight for _, weight in weights)
+        if total:
+            return [(weight / total, _get_model_cost(name, 1, 0) * 1_000_000)
+                    for name, weight in weights if _compression_known_model(name)]
+    return []
+
+
+def _compression_rate_coverage(model, session_uuid, session_rates, fallback_rate, tier_data):
+    """Return the known input price and the fraction of saved tokens priced."""
+    if _compression_known_model(model):
+        return _compression_row_rate(model, fallback_rate, tier_data), 1.0
+    terms = session_rates.get(session_uuid, [])
+    return sum(sh * rate for sh, rate in terms), min(1.0, sum(sh for sh, _ in terms))
+
+
+def _compression_priced_rate(model, session_uuid, session_rates, fallback_rate, tier_data):
+    return _compression_rate_coverage(model, session_uuid, session_rates, fallback_rate, tier_data)[0]
 
 
 def _get_compression_summary(days=30, since=None):
@@ -14511,11 +15217,8 @@ def _get_compression_summary(days=30, since=None):
     cutoff. When *since* is None / empty, the rolling cutoff is computed from
     *days* as before.
 
-    If compression_events rows carry a stored model (written at event-time
-    via the session join), compute cost_saved_usd from per-row token * model_rate
-    instead of multiplying the aggregate token count by the CURRENT session's
-    model rate (which is anachronistic for historical rows). Falls back to the
-    old per-call rate for rows whose model is NULL.
+    Price known model stamps or the known share of the event's own session mix.
+    Keep tokens with no known rate in the count and disclose them as unpriced.
     """
     try:
         conn = _init_trends_db()
@@ -14535,12 +15238,20 @@ def _get_compression_summary(days=30, since=None):
                 "AVG(compression_ratio) as avg_ratio, "
                 "SUM(CASE WHEN quality_preserved = 1 THEN 1 ELSE 0 END) as quality_ok, "
                 "SUM(CASE WHEN verified = 1 THEN 1 ELSE 0 END) as verified_cnt, "
-                "model "
-                "FROM compression_events WHERE timestamp >= ? "
+                "model, session_uuid, session_id, "
+                "SUM(CASE WHEN original_tokens > compressed_tokens "
+                "    THEN original_tokens - compressed_tokens ELSE 0 END) as gross_credit, "
+                "SUM(CASE WHEN compressed_tokens > original_tokens "
+                "    THEN compressed_tokens - original_tokens ELSE 0 END) as gross_debit "
+                "FROM " + _counted_table(conn, "compression_events") + " WHERE timestamp >= ? "
                 "AND (tier IS NULL OR tier = 'measured') "
-                "GROUP BY feature, model ORDER BY orig DESC",
+                "GROUP BY feature, model, session_uuid, session_id ORDER BY orig DESC",
                 (cutoff,),
             ).fetchall()
+            session_rates = _compression_session_rates(
+                conn, [r[8] for r in rows
+                       if not _compression_known_model(r[7])],
+                [r[9] for r in rows if not _compression_known_model(r[7])])
         finally:
             conn.close()
 
@@ -14554,13 +15265,20 @@ def _get_compression_summary(days=30, since=None):
         tier = _load_pricing_tier()
         tier_data = PRICING_TIERS.get(tier, PRICING_TIERS["anthropic"])
 
-        for feature, cnt, orig, comp, avg_ratio, quality_ok, verified_cnt, model in rows:
+        for (feature, cnt, orig, comp, avg_ratio, quality_ok, verified_cnt, model, s_uuid, sid,
+             gross_credit, gross_debit) in rows:
             orig = orig or 0
             comp = comp or 0
             cnt = cnt or 0
-            rate = _compression_row_rate(model, fallback_rate, tier_data)
+            key = s_uuid if s_uuid in session_rates else ("session_id", sid)
+            rate, priced_share = _compression_rate_coverage(model, key, session_rates, fallback_rate, tier_data)
             tokens_saved = orig - comp
             cost_saved = round(tokens_saved * rate / 1_000_000, 6)
+            # Gross credits and debits are kept apart (summed per event in SQL), so
+            # an unknown-model expansion is disclosed rather than netted away.
+            uncovered = max(0.0, 1.0 - priced_share)
+            unpriced_credit = (gross_credit or 0) * uncovered
+            unpriced_debit = (gross_debit or 0) * uncovered
 
             if feature in by_feature:
                 # Merge with existing entry for this feature (multi-model rows)
@@ -14570,6 +15288,8 @@ def _get_compression_summary(days=30, since=None):
                 entry["compressed_tokens"] += comp
                 entry["tokens_saved"] += tokens_saved
                 entry["cost_saved_usd"] = round(entry["cost_saved_usd"] + cost_saved, 6)
+                entry["unpriced_credit_tokens"] += unpriced_credit
+                entry["unpriced_debit_tokens"] += unpriced_debit
                 # avg_ratio and quality_pcts are approximate after merging; acceptable.
                 entry["quality_preserved_pct"] = round(
                     (entry["quality_preserved_pct"] * (entry["events"] - cnt) + 100 * (quality_ok or 0))
@@ -14584,6 +15304,8 @@ def _get_compression_summary(days=30, since=None):
                     "avg_ratio": round(avg_ratio or 0.0, 4),
                     "tokens_saved": tokens_saved,
                     "cost_saved_usd": cost_saved,
+                    "unpriced_credit_tokens": unpriced_credit,
+                    "unpriced_debit_tokens": unpriced_debit,
                     "quality_preserved_pct": round(100 * (quality_ok or 0) / max(cnt, 1), 1),
                     "verified_pct": round(100 * (verified_cnt or 0) / max(cnt, 1), 1),
                 }
@@ -14593,12 +15315,19 @@ def _get_compression_summary(days=30, since=None):
 
         overall_ratio = round(1.0 - total_compressed / max(total_original, 1), 4)
         tokens_saved = total_original - total_compressed
+        for entry in by_feature.values():
+            entry["unpriced_credit_tokens"] = round(entry["unpriced_credit_tokens"])
+            entry["unpriced_debit_tokens"] = round(entry["unpriced_debit_tokens"])
+            entry["unpriced_tokens"] = entry["unpriced_credit_tokens"] + entry["unpriced_debit_tokens"]
 
         return {
             "total_events": total_events,
             "total_original_tokens": total_original,
             "total_compressed_tokens": total_compressed,
             "total_tokens_saved": tokens_saved,
+            "unpriced_tokens": sum(entry["unpriced_tokens"] for entry in by_feature.values()),
+            "unpriced_credit_tokens": sum(e["unpriced_credit_tokens"] for e in by_feature.values()),
+            "unpriced_debit_tokens": sum(e["unpriced_debit_tokens"] for e in by_feature.values()),
             "overall_ratio": overall_ratio,
             "by_feature": by_feature,
             "period_days": days,
@@ -14691,7 +15420,7 @@ def _get_compression_coverage(days=30):
                 "SUM(original_tokens) as orig, SUM(compressed_tokens) as comp, "
                 "AVG(compression_ratio) as avg_ratio, "
                 "SUM(CASE WHEN verified = 1 THEN 1 ELSE 0 END) as vcnt "
-                "FROM compression_events WHERE timestamp >= ? "
+                "FROM " + _counted_table(conn, "compression_events") + " WHERE timestamp >= ? "
                 "GROUP BY feature, tier",
                 (cutoff,),
             ).fetchall()
@@ -22979,15 +23708,20 @@ def _cache_coverage_gaps(runtime):
     ]
 
 
-def _session_mix_input_terms(*model_usage_blobs):
-    """[(share, input_usd_per_mtok)] for the PRICED models in ONE session's own
-    token-weighted model usage, or None when nothing usable is present.
+def _session_mix_class_terms(rate_class, *model_usage_blobs):
+    """(terms, unpriced_share) for ONE session's own token-weighted model usage at
+    one token class, or None when no usable usage is present.
 
-    Shares are taken over the session's TOTAL recorded tokens, so an unpriced
-    share (a local or third-party model with no rate card) is neither dropped nor
-    renormalized away -- it contributes no term, and the caller holds that slice
-    at the event-time rate. Same denominator rule as _cost_per_session: a tiny
-    priced sliver can never be inflated to stand for the whole mix.
+    *terms* is [(share, usd_per_mtok)] for every model id with an exact rate card
+    (any provider); *unpriced_share* is the share of the session's recorded tokens
+    held by ids with no exact card. *rate_class* is a key of _routing_class_rates
+    ("fresh_input", "output", "cache_create_1h", ...). Each id is priced at its
+    own generation card (Opus 5.5 is not the Opus family rate); an id without an
+    exact card contributes no term and is never borrowed from a family.
+
+    Shares are taken over the session's TOTAL recorded tokens, so a priced sliver
+    is never inflated to stand for the whole mix. The caller prices the unpriced
+    share at zero and discloses it.
 
     Blobs are tried in order (model_usage_json, then all_model_usage_json); the
     first that parses to a non-empty dict wins. Never raises.
@@ -23005,28 +23739,28 @@ def _session_mix_input_terms(*model_usage_blobs):
             break
     if not raw:
         return None
-    tier_data = PRICING_TIERS.get(_load_pricing_tier(), PRICING_TIERS["anthropic"])
-    models = tier_data.get("claude_models", {})
     total = 0.0
-    buckets = {}
+    weights = {}
     for key, val in raw.items():
         try:
             val = float(val)
         except (TypeError, ValueError):
             continue
-        if val <= 0:
+        if val <= 0 or not isinstance(key, str) or key.startswith("<"):
             continue
-        name = _normalize_model_name(key) or ""
-        buckets[name] = buckets.get(name, 0.0) + val
+        weights[key] = weights.get(key, 0.0) + val
         total += val
     if total <= 0:
         return None
     terms = []
-    for name, val in buckets.items():
-        rates = models.get(name)
-        if rates and rates.get("input"):
-            terms.append((val / total, float(rates["input"])))
-    return terms or None
+    priced = 0.0
+    for key, val in weights.items():
+        rates = _routing_class_rates(key)
+        rate = (rates or {}).get(rate_class)
+        if rate:
+            terms.append((val / total, float(rate)))
+            priced += val
+    return terms, max(0.0, 1.0 - priced / total)
 
 
 # Event classes whose stored cost is NOT an input-class rate and must never be
@@ -23036,12 +23770,53 @@ def _session_mix_input_terms(*model_usage_blobs):
 # its rows exactly as logged.
 _REPRICE_SKIP_EVENT_TYPES = frozenset({"resume_lean"})
 
+# Token class each event type's avoided tokens belong to. The default is fresh
+# input. A measured verbosity reduction is output tokens (counted from the
+# turns' output usage), so it is priced at the output rate.
+# A keep-warm saving is the avoided 1h cache write of the prefix, so it follows the
+# session model's 1h cache-write rate.
+_EVENT_RATE_CLASS = {"verbosity_steer_measured": "output", "verbosity_steer": "output",
+                     "keepwarm": "cache_create_1h"}
 
-def _session_model_reprice(conn, cutoff, session_uuid=None, by_day=False):
+# One statement per (source, has model_usage_json, has all_model_usage_json, by_day,
+# session-scoped). Grouping on column 1 is a no-op when it is the constant NULL.
+_REPRICE_SQL = _sql_variants(
+    "SELECT {day}, e.event_type, SUM(e.tokens_saved), SUM(e.cost_saved_usd), {mu}, {amu}, {mdl} "
+    "FROM {table} e "
+    "LEFT JOIN session_log s ON e.session_uuid = s.session_uuid "
+    "WHERE e.timestamp >= ? {scope}"
+    "GROUP BY 1, e.event_type, e.session_uuid, 7",
+    table={"counted_savings_events": "counted_savings_events", "savings_events": "savings_events"},
+    mu={True: "s.model_usage_json", False: "NULL"},
+    amu={True: "s.all_model_usage_json", False: "NULL"},
+    day={True: "substr(e.timestamp, 1, 10)", False: "NULL"},
+    scope={True: "AND (e.session_uuid = ? OR (e.session_uuid IS NULL AND e.session_id = ?)) ", False: ""},
+    mdl={True: "e.model", False: "NULL"},
+)
+
+
+def _stored_model_is_unpriced(model):
+    """True when a savings row records a model id that has no exact rate card.
+    Rate-card keys and bare family labels ("opus", "sonnet_4_5") are known; a row
+    with no model, or a known one, is not unpriced."""
+    if not isinstance(model, str) or not model.strip():
+        return False
+    if _routing_card_exact(model):
+        return False
+    try:
+        cards = PRICING_TIERS.get(_load_pricing_tier(), PRICING_TIERS["anthropic"])["claude_models"]
+    except Exception:
+        cards = {}
+    return model not in cards
+
+
+def _session_model_reprice(conn, cutoff, session_uuid=None, by_day=False, unpriced_out=None):
     """Per-event_type USD correction from repricing savings_events at each event's
     OWN session model mix. Returns (deltas_by_event_type, repriced_tokens,
     unmeasured_tokens). With *session_uuid* only that session's rows count; with
-    *by_day* the deltas are keyed (local YYYY-MM-DD, event_type).
+    *by_day* the deltas are keyed (local YYYY-MM-DD, event_type). When
+    *unpriced_out* is a dict, ``unpriced_out["tokens"]`` accumulates the saved
+    tokens that belong to models with no exact rate card.
 
     THE DEFECT THIS REPAIRS. _log_savings_event stamps every row with
     _resolve_session_model(), which falls back to "sonnet" whenever the session
@@ -23069,6 +23844,11 @@ def _session_model_reprice(conn, cutoff, session_uuid=None, by_day=False):
     that cannot be joined to a session are NOT MEASURED: they keep their
     event-time price and are counted separately rather than guessed at.
 
+    UNPRICED MODELS. The share of a session's tokens that ran on a model with no
+    exact rate card (a local or third-party model, a generation without a card) is
+    priced at zero, not at the Sonnet stand-in the event writer stamped. Those
+    tokens are reported through *unpriced_out*. Stored rows are never changed.
+
     Degrades to ({}, 0, 0) on any schema or query problem. An older DB without
     session_uuid / model_usage_json simply does not get the repair; a schema error
     must never be allowed to reach the caller's blanket handler and zero out the
@@ -23081,31 +23861,26 @@ def _session_model_reprice(conn, cutoff, session_uuid=None, by_day=False):
         sl_cols = {r[1] for r in conn.execute("PRAGMA table_info(session_log)").fetchall()}
         if "session_uuid" not in se_cols or "session_uuid" not in sl_cols:
             return {}, 0, 0
-        mu = "s.model_usage_json" if "model_usage_json" in sl_cols else "NULL"
-        amu = "s.all_model_usage_json" if "all_model_usage_json" in sl_cols else "NULL"
         # by_day / session_uuid serve the status-bar buckets. The delta is linear
         # in (tokens, cost) per session, so splitting by local day sums back to
         # exactly the window delta.
-        day_col = "substr(e.timestamp, 1, 10)" if by_day else "NULL"
-        where = "WHERE e.timestamp >= ? "
         params = [cutoff]
         if session_uuid is not None:
             # Same rows as the savings buckets (non-UUID ids live in session_id).
             # Those rows have no session_uuid to join, so they stay unmeasured here.
-            where += "AND (e.session_uuid = ? OR (e.session_uuid IS NULL AND e.session_id = ?)) "
             params.extend([session_uuid, session_uuid])
-        rows = conn.execute(
-            "SELECT " + day_col + ", e.event_type, SUM(e.tokens_saved), SUM(e.cost_saved_usd), "
-            + mu + ", " + amu + " "
-            "FROM savings_events e "
-            "LEFT JOIN session_log s ON e.session_uuid = s.session_uuid "
-            + where +
-            "GROUP BY " + ("1, " if by_day else "") + "e.event_type, e.session_uuid",
-            tuple(params),
-        ).fetchall()
+        reprice_sql = _REPRICE_SQL[(
+            _counted_table(conn, "savings_events"),
+            "model_usage_json" in sl_cols,
+            "all_model_usage_json" in sl_cols,
+            bool(by_day),
+            session_uuid is not None,
+            "model" in se_cols,
+        )]
+        rows = conn.execute(reprice_sql, tuple(params)).fetchall()
     except (sqlite3.Error, TypeError, ValueError):
         return {}, 0, 0
-    for day, event_type, tok, cost, mu_json, amu_json in rows:
+    for day, event_type, tok, cost, mu_json, amu_json, row_model in rows:
         if event_type in _REPRICE_SKIP_EVENT_TYPES:
             continue  # non-input-rate class; keep the event-time price verbatim
         try:
@@ -23115,14 +23890,27 @@ def _session_model_reprice(conn, cutoff, session_uuid=None, by_day=False):
         if tok <= 0:
             # Zero-token markers (nudges) and debit rows carry no rate to correct.
             continue
-        terms = _session_mix_input_terms(mu_json, amu_json)
-        if not terms:
+        mix = _session_mix_class_terms(
+            _EVENT_RATE_CLASS.get(event_type, "fresh_input"), mu_json, amu_json)
+        if mix is None and _stored_model_is_unpriced(row_model):
+            # No session match, but the row itself names a model with no rate
+            # card: its dollars are priced at zero and the tokens disclosed.
+            key = (day, event_type) if by_day else event_type
+            if cost:
+                deltas[key] = deltas.get(key, 0.0) - float(cost)
+            if unpriced_out is not None:
+                unpriced_out["tokens"] = unpriced_out.get("tokens", 0) + tok
+            continue
+        if mix is None:
             unmeasured_tokens += tok
             continue
-        event_rate = float(cost or 0.0) * 1_000_000.0 / tok
-        # Only the PRICED share moves. The unpriced remainder keeps the event-time
-        # rate, so a fully-unpriced session yields a zero delta by construction.
-        delta = sum(sh * (rate - event_rate) for sh, rate in terms) * tok / 1_000_000.0
+        terms, unpriced_share = mix
+        # The priced share is charged at each model's own card; the unpriced share
+        # is charged nothing. The delta moves the stored cost to that total.
+        new_cost = sum(sh * rate for sh, rate in terms) * tok / 1_000_000.0
+        delta = new_cost - float(cost or 0.0)
+        if unpriced_out is not None and unpriced_share > 0:
+            unpriced_out["tokens"] = unpriced_out.get("tokens", 0) + tok * unpriced_share
         if delta:
             key = (day, event_type) if by_day else event_type
             deltas[key] = deltas.get(key, 0.0) + delta
@@ -23159,6 +23947,7 @@ _COUNTED_CE_EXCLUDED_FEATURES = (
     "quality_nudge", "loop_detection", "cohort_demoted", "fresh_session_nudge",
     "cache_drop_warning", "first_read_edit_followup",
     "delta_read",  # read_cache emits both ledgers; savings_events owns this key
+    "structure_map",  # same: logged to both ledgers, savings_events owns it
 )
 # Ledger events count from here; earlier months use transcript markers instead
 # (the Mar-Apr ledger logged 4+13 events against 73+232 physical markers).
@@ -23190,16 +23979,18 @@ def _counted_walk_transcript(path, collect_markers=False):
     """One pass over a transcript for the counted-cumulative engine.
 
     Returns (turns, compacts, markers):
-      turns   = [(utc-naive datetime, raw model id)] -- parent API calls, deduped
-                on requestId/message.id (Claude Code writes one assistant line
-                per content block, all sharing the same usage);
+      turns   = [(utc-naive datetime, raw model id, full prompt tokens,
+                  (cache write tokens, 1h part, 5m part, cache read tokens) or None)]
+                -- parent API calls, deduped on requestId/message.id (Claude Code
+                writes one assistant line per content block, all sharing the
+                same usage);
       compacts= [utc-naive datetime] of real compact_boundary system lines;
       markers = [(utc-naive datetime-or-None, tokens-or-None)] for
                 "Full result archived" injections (collect_markers only).
     Never raises; returns ([], [], []) on unreadable files.
     """
     turns, compacts, markers = [], [], []
-    seen = set()
+    seen = {}
     last_ts = None
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as f:
@@ -23237,17 +24028,48 @@ def _counted_walk_transcript(path, collect_markers=False):
                 msg = d.get("message") or {}
                 if not isinstance(msg, dict) or not msg.get("usage"):
                     continue
-                rid = d.get("requestId") or msg.get("id")
-                if rid in seen:
-                    continue
-                seen.add(rid)
+                rid = _usage_request_key(d, msg)
                 if dt is None:
                     continue
                 # Raw model id: re-reads are priced by generation card
                 # (Opus 5.5 and Fable 5.1 read cache far cheaper than their family).
                 raw_model = msg.get("model")
+                usage = msg["usage"] if isinstance(msg["usage"], dict) else {}
+                prompt_parts = {k: usage[k] for k in (
+                    "input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens") if k in usage}
+                nested = usage.get("cache_creation")
+                nested = nested if isinstance(nested, dict) else {}
+                for key in ("ephemeral_1h_input_tokens", "ephemeral_5m_input_tokens"):
+                    if key in nested or key in usage:
+                        prompt_parts[key] = nested.get(key) or usage.get(key, 0)
+                if rid is not None and rid in seen:
+                    index, previous_parts = seen[rid]
+                    for key, value in previous_parts.items():
+                        current = prompt_parts.get(key)
+                        if isinstance(value, int) and (not isinstance(current, int) or value > current):
+                            prompt_parts[key] = value
+                prompt_tokens = None
+                cache_class = None
+                if ("input_tokens" in prompt_parts
+                        and all(isinstance(v, int) and v >= 0 for v in prompt_parts.values())):
+                    # Flat and TTL fields describe overlapping cache writes.
+                    # Partial chunks can fill either form; never add both.
+                    creation = max(prompt_parts.get("cache_creation_input_tokens", 0),
+                                   prompt_parts.get("ephemeral_1h_input_tokens", 0)
+                                   + prompt_parts.get("ephemeral_5m_input_tokens", 0))
+                    prompt_tokens = _context_token_count(dict(prompt_parts, cache_creation_input_tokens=creation))
+                    cache_class = (creation, prompt_parts.get("ephemeral_1h_input_tokens", 0),
+                                   prompt_parts.get("ephemeral_5m_input_tokens", 0),
+                                   prompt_parts.get("cache_read_input_tokens", 0))
+                if rid is not None and rid in seen:
+                    previous = turns[index]
+                    turns[index] = (previous[0], previous[1] or raw_model, prompt_tokens, cache_class)
+                    seen[rid] = (index, prompt_parts)
+                    continue
+                if rid is not None:
+                    seen[rid] = (len(turns), prompt_parts)
                 turns.append((dt, raw_model if isinstance(raw_model, str)
-                              and not raw_model.startswith("<") else None))
+                              and not raw_model.startswith("<") else None, prompt_tokens, cache_class))
     except (OSError, PermissionError):
         return [], [], []
     turns.sort(key=lambda x: x[0])
@@ -23255,39 +24077,306 @@ def _counted_walk_transcript(path, collect_markers=False):
     return turns, compacts, markers
 
 
-def _counted_score_event(turns, compacts, ev_dt, tokens, tier_data):
-    """(oneshot_usd, reread_tokens, reread_usd, turns_counted) for one removal.
+_COUNTED_MEDIA_BLOCK_TYPES = ("image", "document", "audio", "video")
+_COUNTED_MEDIA_DIMS_RX = re.compile(r"\b(\d{2,5})x(\d{2,5})\b")
+_COUNTED_MEDIA_TOOL_RX = re.compile(r"^replaced (\S+) \(")
+# Seconds between an archive event and the tool result it replaced.
+_COUNTED_MEDIA_MATCH_SECONDS = 10.0
 
-    Re-reads start at the SECOND call after the event (the first call is the
-    one-shot: the removal's tokens never got sent at the input rate) and stop
-    at the next real compact_boundary -- after compaction the content is gone
-    in both arms. `tokens` may be negative (tool_archive_reexpand debits)."""
-    import bisect as _bisect
+
+def _claude_image_tokens(width, height):
+    """Image input tokens on Claude: about width*height/750, after the API
+    scales the image so its long edge is at most 1568 px and its area at most
+    about 1.15 megapixels. Some newer models accept larger images at more
+    tokens; the standard limits give the smaller count, a minimum."""
+    try:
+        w, h = float(width), float(height)
+    except (TypeError, ValueError):
+        return 0
+    if w <= 0 or h <= 0:
+        return 0
+    scale = min(1.0, 1568.0 / max(w, h), math.sqrt(1_150_000.0 / (w * h)))
+    return int((w * scale) * (h * scale) / 750)
+
+
+def _counted_media_results(path):
+    """Media tool results in a transcript, oldest first.
+
+    Returns [(utc-naive datetime, tool name, still holds a media block,
+    text chars, (width, height) or None, holds an archive marker)] for tool
+    results of the tools _MEDIA_TOOL_GLOBS names. Never raises."""
+    import fnmatch
+    names, results = {}, []
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if '"tool_use"' not in line and '"tool_result"' not in line:
+                    continue
+                try:
+                    d = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                msg = d.get("message") if isinstance(d, dict) else None
+                content = msg.get("content") if isinstance(msg, dict) else None
+                if not isinstance(content, list):
+                    continue
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    if block.get("type") == "tool_use":
+                        name = str(block.get("name") or "")
+                        if any(fnmatch.fnmatchcase(name, g) for g in _MEDIA_TOOL_GLOBS):
+                            names[block.get("id")] = name
+                        continue
+                    if block.get("type") != "tool_result" or block.get("tool_use_id") not in names:
+                        continue
+                    try:
+                        dt = datetime.strptime(str(d.get("timestamp"))[:19], "%Y-%m-%dT%H:%M:%S")
+                    except (ValueError, TypeError):
+                        continue
+                    body = block.get("content")
+                    parts = body if isinstance(body, list) else [body]
+                    has_media, text = False, []
+                    for part in parts:
+                        if isinstance(part, str):
+                            text.append(part)
+                        elif isinstance(part, dict):
+                            if part.get("type") in _COUNTED_MEDIA_BLOCK_TYPES:
+                                has_media = True
+                            elif isinstance(part.get("text"), str):
+                                text.append(part["text"])
+                    joined = "".join(text)
+                    dims = _COUNTED_MEDIA_DIMS_RX.search(joined)
+                    results.append((dt, names[block.get("tool_use_id")], has_media, len(joined),
+                                    (int(dims.group(1)), int(dims.group(2))) if dims else None,
+                                    "Full result archived" in joined))
+    except (OSError, PermissionError):
+        return []
+    results.sort(key=lambda r: r[0])
+    return results
+
+
+def _counted_media_net_tokens(results, used, ev_dt, detail):
+    """(net tokens, basis) a media archive removed from context.
+
+    The event is matched to the nearest unused result of the same tool within
+    _COUNTED_MEDIA_MATCH_SECONDS. It counts only when that result no longer
+    holds the media block and carries the archive marker: the saving is the
+    image's token cost (_claude_image_tokens on the size the result text
+    states) minus the text left in its place, taken at 2 characters per token
+    because the marker keeps base64-like text, which tokenizes densely. Any
+    other case (image still in context, no size stated, no match) is 0."""
+    match = _COUNTED_MEDIA_TOOL_RX.match(str(detail or ""))
+    tool = match.group(1) if match else None
+    best = None
+    for index, result in enumerate(results):
+        if index in used or (tool and result[1] != tool):
+            continue
+        gap = abs((result[0] - ev_dt).total_seconds())
+        if gap <= _COUNTED_MEDIA_MATCH_SECONDS and (best is None or gap < best[0]):
+            best = (gap, index)
+    if best is None:
+        return 0, "media_unmatched"
+    used.add(best[1])
+    _dt, _tool, has_media, text_chars, dims, archived = results[best[1]]
+    if has_media or not archived:
+        return 0, "media_kept_in_context"
+    if dims is None:
+        return 0, "media_size_unknown"
+    net = _claude_image_tokens(*dims) - (text_chars + 1) // 2
+    return (net, "media_image_net") if net > 0 else (0, "media_image_net")
+
+
+def _counted_exact_card(model, tier_data, prompt_tokens=None):
+    """Resolve a supported id or dated/provider alias, never a nearby family."""
+    if not isinstance(model, str) or not model:
+        return None
+    value = _strip_provider_prefixes(model)
+    # Provider deployment suffixes do not change the underlying model card.
+    value = re.sub(r"(?:-v\d+:\d+|@\d{8})$", "", value)
+    value = re.sub(r"-(?:\d{8}|\d{4}-\d{2}-\d{2})$", "", value)
+    def select(table, long_table, key, threshold):
+        if key in long_table:
+            if prompt_tokens is None:
+                return None
+            if prompt_tokens > threshold:
+                return long_table[key]
+        return table[key]
+    for table, long_table, threshold in (
+            (OPENAI_MODEL_PRICING, OPENAI_LONG_CONTEXT_PRICING, OPENAI_LONG_CONTEXT_INPUT_THRESHOLD),
+            (GEMINI_MODEL_PRICING, GEMINI_LONG_CONTEXT_PRICING, GEMINI_LONG_CONTEXT_INPUT_THRESHOLD)):
+        native = "gpt-5.6-sol" if value == "gpt-5.6" else value
+        if native in table:
+            return select(table, long_table, native, threshold)
     models = tier_data.get("claude_models", {})
+    value = value.removeprefix("claude-")
+    if value == "mythos":
+        value = "fable"
+    key = value.replace("-", "_").replace(".", "_")
+    if key.startswith("mythos_"):
+        key = "fable_" + key[len("mythos_"):]
+    if key in models:
+        return select(models, tier_data.get("claude_models_lc", {}), key, ANTHROPIC_LONG_CONTEXT_INPUT_THRESHOLD)
+    legacy = re.fullmatch(r"(\d+)(?:[-.](\d+))?-(opus|sonnet|haiku)", value)
+    if legacy:
+        major, minor, family = legacy.groups()
+        key = f"{family}_{major}" + (f"_{minor}" if minor else "")
+        if key in models:
+            return select(models, tier_data.get("claude_models_lc", {}), key, ANTHROPIC_LONG_CONTEXT_INPUT_THRESHOLD)
+        if major == "3" and family == "sonnet" and minor in (None, "5", "7"):
+            return models.get("sonnet_legacy")
+    return None
 
-    def _rate(model, kind, default):
-        key = _claude_price_key(model, models) if model else None
-        r = models.get(key or "") or models.get("sonnet") or {}
-        return float(r.get(kind, default))
 
-    times = [t[0] for t in turns]
-    k = _bisect.bisect_right(times, ev_dt)
-    if k >= len(turns):
-        return 0.0, 0, 0.0, 0
-    end = len(turns)
-    for c in compacts:
-        if c > ev_dt:
-            end = _bisect.bisect_left(times, c)
-            break
-    oneshot_usd = tokens * _rate(turns[k][1], "input", 3.0) / 1e6
-    reread_tokens = 0
-    reread_usd = 0.0
-    n = 0
-    for j in range(k + 1, max(k + 1, end)):
-        reread_tokens += tokens
-        reread_usd += tokens * _rate(turns[j][1], "cache_read", 0.3) / 1e6
-        n += 1
-    return oneshot_usd, reread_tokens, reread_usd, n
+_COUNTED_COVERAGE_KEYS = (
+    "oneshot_unpriced_credit_tokens", "oneshot_unpriced_debit_tokens",
+    "reread_unpriced_credit_tokens", "reread_unpriced_debit_tokens",
+    "priced_oneshot_events", "priced_reread_turns",
+    # Removals priced at the cache-write class the next call used, and removals
+    # priced at the input rate as a minimum (events, and tokens in absolute value).
+    "oneshot_class_events", "oneshot_floor_events", "oneshot_floor_tokens",
+)
+
+
+def _counted_coverage_totals(out):
+    """Absolute coverage prevents an unknown credit and debit cancelling."""
+    for kind in ("oneshot", "reread"):
+        out[kind + "_unpriced_tokens"] = sum(
+            out.get(kind + "_unpriced_" + sign + "_tokens", 0)
+            for sign in ("credit", "debit"))
+    missing_evidence = bool(out.get("legacy_unverified_events", 0) or out.get("unmeasured_events", 0))
+    out["oneshot_pricing_complete"] = not (out["oneshot_unpriced_tokens"] or missing_evidence)
+    out["pricing_complete"] = not (
+        out["oneshot_unpriced_tokens"] or out["reread_unpriced_tokens"]
+        or missing_evidence)
+    out["reread_pricing_complete"] = not (
+        out["reread_unpriced_tokens"] or missing_evidence)
+    out["prices_available"] = bool(out.get("priced_oneshot_events")
+                                   or out.get("priced_reread_turns")
+                                   or out["pricing_complete"])
+    out["oneshot_prices_available"] = bool(out.get("priced_oneshot_events")
+                                            or out["oneshot_pricing_complete"])
+    out["reread_prices_available"] = bool(out.get("priced_reread_turns")
+                                           or out["reread_pricing_complete"])
+    out["pricing_note"] = _counted_pricing_note(out)
+    out["reread_pricing_note"] = _counted_pricing_note(out, reread_only=True)
+    floor_events = int(out.get("oneshot_floor_events", 0))
+    out["oneshot_floor_note"] = (
+        f"{floor_events:,} initial removals ({int(out.get('oneshot_floor_tokens', 0)):,} tokens) are "
+        "priced at the input rate, a minimum: their billed token class is not on record."
+        if floor_events else "")
+    return out
+
+
+def _counted_pricing_note(out, reread_only=False):
+    """Public coverage explanation shared by payloads and their consumers."""
+    parts = []
+    for kind, label in (("oneshot", "initial-removal"), ("reread", "repeat-read")):
+        if reread_only and kind == "oneshot":
+            continue
+        credit = int(out.get(kind + "_unpriced_credit_tokens", 0))
+        debit = int(out.get(kind + "_unpriced_debit_tokens", 0))
+        if credit or debit:
+            parts.append(f"{credit + debit:,} {label} tokens unpriced "
+                         f"({credit:,} credits, {debit:,} debits)")
+    legacy = int(out.get("legacy_unverified_events", 0))
+    if legacy:
+        parts.append(f"{legacy:,} historical events have unverifiable prices")
+    unmeasured = int(out.get("unmeasured_events", 0))
+    if unmeasured:
+        credit = int(out.get("unmeasured_removed_credit_tokens", 0))
+        debit = int(out.get("unmeasured_removed_debit_tokens", 0))
+        parts.append(f"{unmeasured:,} removal events lack usable transcript evidence "
+                     f"({credit:,} known removed tokens, {debit:,} re-expanded tokens); "
+                     "their repeat-read counts are unavailable")
+    text = "Priced subtotal only: " + "; ".join(parts) + ". The complete net dollar value is unavailable." if parts else ""
+    mix_tokens = int(out.get("reread_session_mix_priced_tokens", 0))
+    if mix_tokens:
+        text += (f" {mix_tokens:,} repeat-read tokens are priced at the cache-read rate of the "
+                 "models each session recorded, because their per-turn evidence is unavailable.")
+    incomplete = int(out.get("refresh_incomplete_events", 0))
+    if incomplete:
+        text += f" Stored evidence retained for {incomplete:,} incomplete transcript refreshes."
+    return text.strip()
+
+
+def _counted_oneshot_rate(card, cache_class):
+    """(rate, basis) for the first call after a removal, or (None, None).
+
+    Context that was never removed would have reached that call as new tokens.
+    Basis "class": the call wrote to the cache, so the removed tokens are priced
+    at the write class it used (1h share at the 1h write rate, the rest at the
+    5m rate). Basis "exact": the call used no cache at all, or the card has no
+    cache-write premium, so the input rate is the price. Basis "floor": the call
+    gives no write evidence (a cache hit with no write, or no usage record), so
+    the input rate is a minimum.
+    """
+    import math
+    rate = (card or {}).get("input")
+    if not isinstance(rate, (int, float)) or not math.isfinite(rate) or rate < 0:
+        return None, None
+    write = card.get("cache_write")
+    if not isinstance(write, (int, float)) or not math.isfinite(write) or write <= rate:
+        return rate, "exact"
+    if cache_class:
+        written, one_hour, _five_minute, read = cache_class
+        if written > 0:
+            write_1h = card.get("cache_write_1h", write)
+            share = min(1.0, max(0.0, one_hour / written))
+            return share * write_1h + (1.0 - share) * write, "class"
+        if written == 0 and read == 0:
+            return rate, "exact"
+    return rate, "floor"
+
+
+def _counted_score_detail(turns, compacts, ev_dt, tokens, tier_data, oneshot_floor_only=False):
+    """Price each observed turn independently and retain unknown token classes.
+
+    With oneshot_floor_only the initial removal is priced at the input rate (a
+    minimum) even when the next call's cache-write class is on record."""
+    import bisect as _bisect
+    import math
+    out = dict.fromkeys(_COUNTED_COVERAGE_KEYS, 0)
+    out.update(oneshot_usd=0.0, oneshot_class_premium_usd=0.0, reread_tokens=0,
+               reread_usd=0.0, turns_counted=0, observed=False)
+    times = [turn[0] for turn in turns]
+    first = _bisect.bisect_right(times, ev_dt)
+    boundary = next((c for c in compacts if c > ev_dt), None)
+    end = _bisect.bisect_left(times, boundary) if boundary else len(turns)
+    for i in range(first, end):
+        out["observed"] = True
+        kind = "oneshot" if i == first else "reread"
+        card = _counted_exact_card(turns[i][1], tier_data,
+                                   turns[i][2] if len(turns[i]) > 2 else None)
+        basis = None
+        if kind == "oneshot":
+            cache_class = turns[i][3] if len(turns[i]) > 3 else None
+            rate, basis = _counted_oneshot_rate(card, cache_class)
+            if oneshot_floor_only and basis == "class":
+                rate, basis = card["input"], "floor"
+        else:
+            rate = (card or {}).get("cache_read")
+            out["reread_tokens"] += tokens
+            out["turns_counted"] += 1
+        if isinstance(rate, (int, float)) and math.isfinite(rate) and rate >= 0:
+            out[kind + "_usd"] += tokens * rate / 1e6
+            out["priced_oneshot_events" if kind == "oneshot" else "priced_reread_turns"] += 1
+            if basis == "class":
+                out["oneshot_class_events"] += 1
+                out["oneshot_class_premium_usd"] += tokens * (rate - card["input"]) / 1e6
+            elif basis == "floor":
+                out["oneshot_floor_events"] += 1
+                out["oneshot_floor_tokens"] += abs(tokens)
+        else:
+            sign = "credit" if tokens >= 0 else "debit"
+            out[kind + "_unpriced_" + sign + "_tokens"] += abs(tokens)
+    return _counted_coverage_totals(out)
+
+
+def _counted_score_event(turns, compacts, ev_dt, tokens, tier_data):
+    """Compatibility tuple: one-shot dollars, reread tokens/dollars and turns."""
+    out = _counted_score_detail(turns, compacts, ev_dt, tokens, tier_data)
+    return tuple(out[k] for k in ("oneshot_usd", "reread_tokens", "reread_usd", "turns_counted"))
 
 
 def _counted_window_summary(conn, window_start, window_end):
@@ -23306,39 +24395,52 @@ def _counted_window_summary(conn, window_start, window_end):
         if end < start:
             return out
         tier_data = PRICING_TIERS.get(_load_pricing_tier(), PRICING_TIERS["anthropic"])
-        oneshot = reread_usd = 0.0
+        oneshot = reread_usd = class_premium = 0.0
         reread_tokens = removed_tokens = events = 0
+        coverage = dict.fromkeys(_COUNTED_COVERAGE_KEYS, 0)
+        missing = dict(unmeasured_events=0, unmeasured_removed_tokens=0,
+                       unmeasured_removed_credit_tokens=0, unmeasured_removed_debit_tokens=0)
         for _key, session_uuid, ts, tokens, _logged_cost, _model in _counted_candidate_events(conn):
             ev_dt = _counted_event_utc(ts)
             if ev_dt is None or ev_dt < start or ev_dt > end:
                 continue
             path = _counted_session_path(conn, session_uuid)
-            if path is None:
+            turns, compacts, _ = _counted_walk_transcript(path) if path is not None else ([], [], [])
+            if not turns:
+                missing["unmeasured_events"] += 1
+                missing["unmeasured_removed_tokens"] += int(tokens or 0)
+                sign = "credit" if int(tokens or 0) >= 0 else "debit"
+                missing["unmeasured_removed_" + sign + "_tokens"] += abs(int(tokens or 0))
                 continue
-            turns, compacts, _ = _counted_walk_transcript(path)
             turns = [turn for turn in turns if start <= turn[0] <= end]
             compacts = [compact for compact in compacts if start <= compact <= end]
-            one, rr_tok, rr_usd, _n = _counted_score_event(
+            score = _counted_score_detail(
                 turns, compacts, ev_dt, int(tokens or 0), tier_data)
-            if one == 0.0 and rr_usd == 0.0:
+            if not score["observed"]:
                 continue
-            oneshot += one
-            reread_tokens += rr_tok
-            reread_usd += rr_usd
+            oneshot += score["oneshot_usd"]
+            class_premium += score["oneshot_class_premium_usd"]
+            reread_tokens += score["reread_tokens"]
+            reread_usd += score["reread_usd"]
+            for key in coverage:
+                coverage[key] += score[key]
             removed_tokens += int(tokens or 0)
             events += 1
-        return {
+        return _counted_coverage_totals({
+            **coverage,
+            **missing,
             "available": True,
             "events": events,
             "removed_tokens": removed_tokens,
             "oneshot_usd": round(oneshot, 6),
+            "oneshot_class_premium_usd": round(class_premium, 6),
             "reread_tokens": reread_tokens,
             "reread_usd": round(reread_usd, 6),
             "total_usd": round(oneshot + reread_usd, 6),
             "method": "removals x deduped turns to next real compaction, "
                       "scoped to this window; per-turn cache-read rates; "
                       "transcript-backed events only",
-        }
+        })
     except (AttributeError, OSError, sqlite3.Error, TypeError, ValueError):
         return out
 
@@ -23355,18 +24457,28 @@ def _counted_candidate_events(conn):
         "SELECT 'se:'||id, session_uuid, timestamp, "
         "  CASE WHEN event_type='tool_archive_reexpand' THEN -tokens_saved "
         "       ELSE tokens_saved END, cost_saved_usd, model "
-        "FROM savings_events "
+        "FROM " + _counted_table(conn, "savings_events") + " "
         "WHERE event_type IN (" + se_types + ") AND timestamp >= ? "
         "UNION ALL "
         "SELECT 'ce:'||id, session_uuid, timestamp, "
         "  original_tokens - compressed_tokens, NULL, model "
-        "FROM compression_events "
+        "FROM " + _counted_table(conn, "compression_events") + " "
         "WHERE (tier IS NULL OR tier = 'measured') AND verified = 1 "
         "  AND original_tokens > compressed_tokens "
         "  AND feature NOT IN (" + ce_excl + ") AND timestamp >= ?",
         (*_COUNTED_SE_EVENT_TYPES, _COUNTED_LEDGER_ERA_START,
          *_COUNTED_CE_EXCLUDED_FEATURES, _COUNTED_LEDGER_ERA_START),
     ).fetchall()
+    # Media archives (screenshots and other image results) are left out of the
+    # counted views because their logged size is base64 length. They count
+    # here under their own key with a size of 0: the collect pass sets the real
+    # size from the transcript (see _counted_media_net_tokens). Only when the
+    # counted views exist, since the raw-table fallback already includes them.
+    if _counted_table(conn, "savings_events") == "counted_savings_events":
+        try:
+            rows += conn.execute(_COUNTED_MEDIA_CANDIDATE_SQL, (_COUNTED_LEDGER_ERA_START,)).fetchall()
+        except sqlite3.Error:
+            pass
     return rows
 
 
@@ -23391,22 +24503,36 @@ def _counted_session_path(conn, session_uuid):
     return None
 
 
-# Bump when the re-read pricing rule changes. Stored rows keep showing their old
-# value until the normal pass re-walks them, so the dashboard never dips to $0.
-# 2: re-reads priced at each turn's exact model card (Opus 5.5, Fable 5.1).
-_COUNTED_PRICING_VERSION = "2"
+# Eligibility is per row. A global migration flag never certifies old prices.
+_COUNTED_PRICING_VERSION = "4"
 _COUNTED_META_PRICING = "counted_pricing_version"
+
+
+def _counted_pricing_detail(raw):
+    try:
+        value = json.loads(raw or "{}")
+        return value if isinstance(value, dict) else {}
+    except (TypeError, ValueError):
+        return {}
+
+
+def _ensure_counted_pricing_schema(conn):
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(counted_reread)")}
+    if "pricing_detail" not in cols:
+        conn.execute("ALTER TABLE counted_reread ADD COLUMN pricing_detail TEXT")
 
 
 def _reprice_counted_rows_once(conn):
     try:
+        _ensure_counted_pricing_schema(conn)
         conn.execute("CREATE TABLE IF NOT EXISTS token_optimizer_meta "
                      "(key TEXT PRIMARY KEY, value TEXT)")
         row = conn.execute("SELECT value FROM token_optimizer_meta WHERE key = ?",
                            (_COUNTED_META_PRICING,)).fetchone()
         if row and row[0] == _COUNTED_PRICING_VERSION:
             return False
-        conn.execute("UPDATE counted_reread SET transcript_mtime = NULL")
+        # Keep mtimes and historical amounts as provenance. Readers quarantine
+        # every row without the current per-row pricing version immediately.
         conn.execute("DELETE FROM token_optimizer_meta WHERE key IN (?, ?)",
                      (_COUNTED_META_MARKER_DONE, _COUNTED_META_MARKER_CURSOR))
         conn.execute("INSERT OR REPLACE INTO token_optimizer_meta (key, value) VALUES (?, ?)",
@@ -23415,6 +24541,118 @@ def _reprice_counted_rows_once(conn):
         return True
     except sqlite3.Error:
         return False
+
+
+def _counted_file_proof(path, prefix_sizes=()):
+    """Hash an observed file and old prefixes without retaining transcript text."""
+    import hashlib
+    before = path.stat()
+    digest = hashlib.sha256()
+    offset, prefixes = 0, {}
+    with path.open("rb") as stream:
+        for stop in sorted({int(n) for n in prefix_sizes if 0 < int(n) <= before.st_size}
+                           | {before.st_size}):
+            while offset < stop:
+                chunk = stream.read(min(1024 * 1024, stop - offset))
+                if not chunk:
+                    raise OSError("transcript changed while reading")
+                digest.update(chunk)
+                offset += len(chunk)
+            prefixes[stop] = digest.hexdigest()
+    after = path.stat()
+    if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+        raise OSError("transcript changed while reading")
+    return {"file_size": offset, "file_sha256": digest.hexdigest(),
+            "prefixes": prefixes, "mtime_ns": after.st_mtime_ns}
+
+
+def _counted_mark_incomplete(conn, key, detail, proof=None):
+    detail = dict(detail, refresh_incomplete=True, attempted_version=_COUNTED_PRICING_VERSION,
+                  attempted_source=([proof["mtime_ns"], proof["file_size"]] if proof else None))
+    conn.execute("UPDATE counted_reread SET pricing_detail=? WHERE event_key=?",
+                 (json.dumps(detail), key))
+
+
+def _counted_legacy_append_continuous(old, turns, compacts, ev_dt, tokens, tier_data):
+    """True when a row stored without a file digest was computed from the
+    earlier part of this transcript, which has since only been appended to.
+
+    The turns written up to the row's recorded transcript mtime must rescore to
+    exactly the observed counts the row holds, and the transcript must hold
+    turns after that point. A replaced or truncated file fails the first test;
+    one with nothing new fails the second and stays on the unchanged-file rule.
+    """
+    try:
+        old_mtime = old["transcript_mtime"]
+        if old_mtime is None:
+            return False
+        cutoff = datetime.fromtimestamp(float(old_mtime), timezone.utc).replace(tzinfo=None)
+        prefix = [turn for turn in turns if turn[0] <= cutoff]
+        if not prefix or len(prefix) >= len(turns):
+            return False
+        prefix_score = _counted_score_detail(
+            prefix, [c for c in compacts if c <= cutoff], ev_dt, tokens, tier_data)
+        return (prefix_score["observed"]
+                and prefix_score["turns_counted"] == int(old["turns_counted"] or 0)
+                and prefix_score["reread_tokens"] == int(old["reread_tokens"] or 0))
+    except (TypeError, ValueError, OverflowError, OSError):
+        return False
+
+
+def _counted_store_score(conn, key, source, uuid, ts, tokens, score, mtime,
+                         proof, old=None, magnitude_basis="metered", allow_unobserved=False,
+                         append_check=None, identity_verified=False):
+    """Replace only a complete continuation of the previously observed file."""
+    detail = _counted_pricing_detail(old["pricing_detail"]) if old else {}
+    if old:
+        size = detail.get("file_size")
+        if size is not None:
+            continuous = proof["prefixes"].get(size) == detail.get("file_sha256")
+        else:
+            # Without an old digest, only the recorded unchanged file and
+            # identical observed counts can anchor a legacy reprice, or an
+            # append-only continuation the caller can show (append_check). A
+            # marker row with no recorded mtime is anchored by the caller's
+            # exact identity recomputation (identity_verified) instead.
+            same_counts = (score["turns_counted"] == int(old["turns_counted"] or 0)
+                           and score["reread_tokens"] == int(old["reread_tokens"] or 0))
+            if old["transcript_mtime"] is None:
+                continuous = identity_verified and same_counts
+            else:
+                continuous = ((old["transcript_mtime"] == mtime and same_counts)
+                              or bool(append_check and append_check(old)))
+        identity_matches = (old["source"] == source and old["session_uuid"] == uuid
+                            and old["event_ts"] == ts)
+        previous_activity = (int(old["turns_counted"] or 0) != 0
+                             or float(old["oneshot_usd"] or 0) != 0
+                             or bool(detail.get("priced_oneshot_events"))
+                             or bool(detail.get("oneshot_unpriced_credit_tokens"))
+                             or bool(detail.get("oneshot_unpriced_debit_tokens")))
+        if (not continuous or not identity_matches or int(old["tokens"] or 0) != tokens
+                or (not score["observed"] and (not allow_unobserved or previous_activity))):
+            _counted_mark_incomplete(conn, key, detail, proof)
+            return False
+    if not score["observed"] and not allow_unobserved:
+        return False
+    detail = {key: score[key] for key in _COUNTED_COVERAGE_KEYS}
+    detail.update(oneshot_class_premium_usd=round(score["oneshot_class_premium_usd"], 6),
+                  version=_COUNTED_PRICING_VERSION, refresh_incomplete=False,
+                  magnitude_basis=magnitude_basis, file_size=proof["file_size"],
+                  file_sha256=proof["file_sha256"])
+    conn.execute(
+        "INSERT OR REPLACE INTO counted_reread (event_key,source,session_uuid,event_ts,"
+        "event_month,tokens,oneshot_usd,reread_tokens,reread_usd,turns_counted,"
+        "transcript_mtime,computed_at,pricing_detail) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (key, source, uuid, ts, str(ts)[:7], tokens, round(score["oneshot_usd"], 6),
+         score["reread_tokens"], round(score["reread_usd"], 6), score["turns_counted"],
+         mtime, datetime.now().isoformat(), json.dumps(detail)))
+    return True
+
+
+def _counted_stored_rows(conn):
+    cursor = conn.execute("SELECT * FROM counted_reread")
+    names = [c[0] for c in cursor.description]
+    return {row[0]: dict(zip(names, row)) for row in cursor}
 
 
 def _update_counted_cumulative(conn, max_sessions=_COUNTED_MAX_SESSIONS_PER_PASS,
@@ -23435,21 +24673,27 @@ def _update_counted_cumulative(conn, max_sessions=_COUNTED_MAX_SESSIONS_PER_PASS
         # Delete only those derived duplicates; keep both source telemetry rows.
         duplicates = conn.execute(
             "DELETE FROM counted_reread WHERE event_key IN "
-            "(SELECT 'ce:'||id FROM compression_events WHERE feature='delta_read')")
+            "(SELECT 'ce:'||id FROM compression_events "
+            "WHERE feature IN ('delta_read', 'structure_map'))")
         stats["duplicate_rows_removed"] = max(0, duplicates.rowcount)
         if duplicates.rowcount:
             conn.commit()
+        # Derived rows whose source event is not a saving (see the counted
+        # views) are recomputable cache; drop them so they stop compounding.
+        if _ensure_counted_views(conn):
+            gone = conn.execute(_COUNTED_REREAD_PURGE_EXCLUDED_SQL)
+            stats["excluded_rows_removed"] = max(0, gone.rowcount)
+            if gone.rowcount:
+                conn.commit()
         _reprice_counted_rows_once(conn)
         events = _counted_candidate_events(conn)
         if not events:
             return stats
-        stored = {r[0]: r[1] for r in conn.execute(
-            "SELECT event_key, transcript_mtime FROM counted_reread")}
+        stored = _counted_stored_rows(conn)
         by_sess = {}
         for key, uuid, ts, tok, cost, model in events:
             by_sess.setdefault(uuid, []).append((key, ts, tok, cost, model))
         tier_data = PRICING_TIERS.get(_load_pricing_tier(), PRICING_TIERS["anthropic"])
-        now_iso = datetime.now().isoformat()
 
         # Unjoinable events (no session uuid) have no transcript to price. Keep
         # them out of the counted ledger rather than inventing a one-shot value.
@@ -23461,18 +24705,27 @@ def _update_counted_cumulative(conn, max_sessions=_COUNTED_MAX_SESSIONS_PER_PASS
         for uuid, evs in by_sess.items():
             path = _counted_session_path(conn, uuid)
             if path is None:
-                # No transcript means no counted reread evidence. Leave the
-                # event unmeasured; the full backfill purges any old fallback row.
+                for key, *_ in evs:
+                    if key in stored:
+                        _counted_mark_incomplete(conn, key, _counted_pricing_detail(stored[key].get("pricing_detail")))
                 stats["unmeasured_events"] += len(evs)
                 continue
             try:
                 mtime = path.stat().st_mtime
+                source_stamp = [path.stat().st_mtime_ns, path.stat().st_size]
             except OSError:
                 continue
-            fresh = all(
-                key in stored and stored[key] is not None
-                and stored[key] >= mtime - 1.0
-                for key, _ts, _tok, _cost, _model in evs)
+            def fresh_event(key):
+                if key not in stored:
+                    return False
+                detail = _counted_pricing_detail(stored[key].get("pricing_detail"))
+                if detail.get("refresh_incomplete"):
+                    return (detail.get("attempted_version") == _COUNTED_PRICING_VERSION
+                            and detail.get("attempted_source") == source_stamp)
+                return (stored[key]["transcript_mtime"] == mtime
+                        and detail.get("file_size") == source_stamp[1]
+                        and detail.get("version") == _COUNTED_PRICING_VERSION)
+            fresh = all(fresh_event(key) for key, *_ in evs)
             if not fresh:
                 todo.append((mtime, uuid, path, evs))
         stats["pending_sessions"] = len(todo)
@@ -23481,32 +24734,64 @@ def _update_counted_cumulative(conn, max_sessions=_COUNTED_MAX_SESSIONS_PER_PASS
         for mtime, uuid, path, evs in todo[:max_sessions]:
             if deadline_seconds is not None and time.monotonic() - started > deadline_seconds:
                 break
-            turns, compacts, _ = _counted_walk_transcript(path)
-            for key, ts, tok, cost, model in evs:
+            proof = None
+            try:
+                proof = _counted_file_proof(path, [
+                    _counted_pricing_detail(stored[key].get("pricing_detail")).get("file_size", 0)
+                    for key, *_ in evs if key in stored])
+                turns, compacts, _ = _counted_walk_transcript(path)
+                if path.stat().st_mtime_ns != proof["mtime_ns"] or path.stat().st_size != proof["file_size"]:
+                    raise OSError("transcript changed while scoring")
+            except OSError:
+                if proof is None:
+                    try:
+                        stat = path.stat()
+                        proof = {"mtime_ns": stat.st_mtime_ns, "file_size": stat.st_size}
+                    except OSError:
+                        pass
+                for key, *_ in evs:
+                    if key in stored:
+                        _counted_mark_incomplete(conn, key, _counted_pricing_detail(stored[key].get("pricing_detail")), proof)
+                stats["pending_sessions"] -= 1
+                continue
+            media_results, media_used, media_details = None, set(), {}
+            if any(key.startswith("md:") for key, *_ in evs):
+                media_results = _counted_media_results(path)
+                ids = [int(key[3:]) for key, *_ in evs if key.startswith("md:")]
+                for chunk in range(0, len(ids), 500):
+                    part = ids[chunk:chunk + 500]
+                    media_details.update(conn.execute(
+                        "SELECT id, detail FROM savings_events WHERE id IN (%s)"
+                        % ",".join("?" * len(part)), part).fetchall())
+            for key, ts, tok, cost, model in sorted(evs, key=lambda e: str(e[1])):
                 ev_dt = _counted_event_utc(ts)
                 if ev_dt is None or not turns:
-                    # A transcriptless or unscoreable event is not a counted
-                    # result. Do not fall back to a one-shot estimate.
-                    conn.execute("DELETE FROM counted_reread WHERE event_key = ?", (key,))
+                    if key in stored:
+                        _counted_mark_incomplete(conn, key, _counted_pricing_detail(stored[key].get("pricing_detail")), proof)
                     stats["unmeasured_events"] += 1
                     continue
-                oneshot, rr_tok, rr_usd, n = _counted_score_event(
-                    turns, compacts, ev_dt, int(tok or 0), tier_data)
-                if not n and oneshot == 0.0:
-                    conn.execute("DELETE FROM counted_reread WHERE event_key = ?", (key,))
+                basis = "metered"
+                if key.startswith("md:"):
+                    tok, basis = _counted_media_net_tokens(
+                        media_results, media_used, ev_dt, media_details.get(int(key[3:])))
+                score = _counted_score_detail(
+                    turns, compacts, ev_dt, int(tok or 0), tier_data,
+                    oneshot_floor_only=key.startswith("md:"))
+                if not _counted_store_score(conn, key, key.split(":", 1)[0], uuid,
+                                             ts, int(tok or 0), score, mtime, proof,
+                                             old=stored.get(key), allow_unobserved=True,
+                                             magnitude_basis=basis,
+                                             append_check=lambda old, _ev=ev_dt, _tok=int(tok or 0): (
+                                                 _counted_legacy_append_continuous(
+                                                     old, turns, compacts, _ev, _tok, tier_data))):
                     stats["unmeasured_events"] += 1
                     continue
-                conn.execute(
-                    "INSERT OR REPLACE INTO counted_reread (event_key, source, "
-                    "session_uuid, event_ts, event_month, tokens, oneshot_usd, "
-                    "reread_tokens, reread_usd, turns_counted, transcript_mtime, "
-                    "computed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (key, key.split(":", 1)[0], uuid, ts, str(ts)[:7],
-                     int(tok or 0), round(oneshot, 6), int(rr_tok),
-                     round(rr_usd, 6), n, mtime, now_iso))
                 stats["rows_written"] += 1
             stats["sessions_walked"] += 1
             stats["pending_sessions"] -= 1
+            # Commit each session so a long drain never holds the write lock
+            # that a concurrent hook collect is waiting on.
+            conn.commit()
         conn.commit()
         if not quiet and stats["rows_written"]:
             print(f"[Token Optimizer] counted-cumulative: walked "
@@ -23524,17 +24809,50 @@ def _counted_marker_backfill(conn, max_files=_COUNTED_MARKER_FILES_PER_PASS,
     """One-time representation of the pre-ledger era (before
     _COUNTED_LEDGER_ERA_START) from the transcripts' own "Full result archived"
     markers -- the Mar-Apr ledger logged 17 events against 305 physical markers.
-    Cursor-resumable over collect passes; a done-flag ends it forever. The files
-    are historical (never rewritten), so one pass per file is final. Fail-open."""
+    Cursor-resumable over collect passes. Completed passes retry changed source
+    evidence; unavailable history retains its coverage and refresh status."""
     stats = {"files_scanned": 0, "rows_written": 0, "done": False}
     try:
+        _reprice_counted_rows_once(conn)
+        stored = _counted_stored_rows(conn)
+        pending_markers = [r for r in stored.values() if r["source"] == "mk"
+                           and (_counted_pricing_detail(r.get("pricing_detail")).get("version") != _COUNTED_PRICING_VERSION
+                                or _counted_pricing_detail(r.get("pricing_detail")).get("refresh_incomplete"))]
+        retry_markers = []
+        old_by_session = {}
+        for old in stored.values():
+            if old["source"] == "mk":
+                old_by_session.setdefault(old["session_uuid"], []).append(old)
+        for old in (r for r in stored.values() if r["source"] == "mk"):
+            detail = _counted_pricing_detail(old.get("pricing_detail"))
+            path = _counted_session_path(conn, old["session_uuid"])
+            try:
+                stat = path.stat() if path else None
+            except OSError:
+                stat = None
+            if stat is None:
+                _counted_mark_incomplete(conn, old["event_key"], detail)
+            elif (detail.get("version") == _COUNTED_PRICING_VERSION
+                  and not detail.get("refresh_incomplete")
+                  and old["transcript_mtime"] == stat.st_mtime
+                  and detail.get("file_size") == stat.st_size):
+                continue
+            elif (detail.get("attempted_version") != _COUNTED_PRICING_VERSION
+                  or detail.get("attempted_source") != [stat.st_mtime_ns, stat.st_size]):
+                retry_markers.append(old)
+        stats["quarantined_or_incomplete_rows"] = len(pending_markers)
+        stats["retryable_rows"] = len(retry_markers)
         conn.execute("CREATE TABLE IF NOT EXISTS token_optimizer_meta "
                      "(key TEXT PRIMARY KEY, value TEXT)")
         row = conn.execute("SELECT value FROM token_optimizer_meta WHERE key = ?",
                            (_COUNTED_META_MARKER_DONE,)).fetchone()
-        if row and row[0] == "1":
+        if row and row[0] == "1" and not retry_markers:
+            conn.commit()
             stats["done"] = True
             return stats
+        if row and row[0] == "1":
+            conn.execute("DELETE FROM token_optimizer_meta WHERE key IN (?, ?)",
+                         (_COUNTED_META_MARKER_DONE, _COUNTED_META_MARKER_CURSOR))
         row = conn.execute("SELECT value FROM token_optimizer_meta WHERE key = ?",
                            (_COUNTED_META_MARKER_CURSOR,)).fetchone()
         cursor = row[0] if row else ""
@@ -23546,7 +24864,6 @@ def _counted_marker_backfill(conn, max_files=_COUNTED_MARKER_FILES_PER_PASS,
             _COUNTED_LEDGER_ERA_START).astimezone(timezone.utc).timestamp()
         started = time.monotonic()
         tier_data = PRICING_TIERS.get(_load_pricing_tier(), PRICING_TIERS["anthropic"])
-        now_iso = datetime.now().isoformat()
         processed_any = False
         last = cursor
         for sp in paths:
@@ -23560,12 +24877,59 @@ def _counted_marker_backfill(conn, max_files=_COUNTED_MARKER_FILES_PER_PASS,
             stats["files_scanned"] += 1
             processed_any = True
             try:
-                if Path(sp).stat().st_mtime >= era_epoch:
+                path = Path(sp)
+                sid = path.stem
+                old_rows = old_by_session.get(sid, [])
+                if path.stat().st_mtime >= era_epoch and not old_rows:
                     continue
+                proof = _counted_file_proof(path, [
+                    _counted_pricing_detail(r.get("pricing_detail")).get("file_size", 0) for r in old_rows])
             except OSError:
+                try:
+                    stat = path.stat()
+                    attempted = {"mtime_ns": stat.st_mtime_ns, "file_size": stat.st_size}
+                except OSError:
+                    attempted = None
+                for old in old_rows:
+                    _counted_mark_incomplete(conn, old["event_key"], _counted_pricing_detail(old.get("pricing_detail")), attempted)
                 continue
             turns, compacts, markers = _counted_walk_transcript(sp, collect_markers=True)
-            if not turns or not markers:
+            if (not turns or not markers or path.stat().st_mtime_ns != proof["mtime_ns"]
+                    or path.stat().st_size != proof["file_size"]):
+                for old in old_rows:
+                    _counted_mark_incomplete(conn, old["event_key"], _counted_pricing_detail(old.get("pricing_detail")), proof)
+                continue
+            # Marker keys use an index. A replacement can move an old marker
+            # to a new index, so require continuity for the entire session
+            # before admitting any new keys, not just for existing rows.
+            continuous_session = True
+            for old in old_rows:
+                detail = _counted_pricing_detail(old.get("pricing_detail"))
+                size = detail.get("file_size")
+                if size is not None:
+                    continuous = proof["prefixes"].get(size) == detail.get("file_sha256")
+                else:
+                    # A row stored without an mtime is judged by the identity
+                    # recomputation below alone; a recorded mtime must match.
+                    continuous = (old["transcript_mtime"] is None
+                                  or old["transcript_mtime"] == path.stat().st_mtime)
+                    try:
+                        index = int(old["event_key"].rsplit(":", 1)[1])
+                        marker_dt, marker_tokens = markers[index]
+                        marker_dt = marker_dt or turns[0][0]
+                        marker_tokens = int(marker_tokens or _COUNTED_MARKER_MEDIAN_TOKENS)
+                        previous = _counted_score_detail(turns, compacts, marker_dt, marker_tokens, tier_data)
+                        continuous = (continuous and old["event_ts"] == marker_dt.isoformat()
+                                      and old["tokens"] == marker_tokens and previous["observed"]
+                                      and old["reread_tokens"] == previous["reread_tokens"]
+                                      and old["turns_counted"] == previous["turns_counted"])
+                    except (ValueError, IndexError, TypeError):
+                        continuous = False
+                if not continuous:
+                    continuous_session = False
+            if not continuous_session:
+                for old in old_rows:
+                    _counted_mark_incomplete(conn, old["event_key"], _counted_pricing_detail(old.get("pricing_detail")), proof)
                 continue
             first_month = turns[0][0].strftime("%Y-%m")
             if first_month >= _COUNTED_LEDGER_ERA_START[:7]:
@@ -23574,24 +24938,22 @@ def _counted_marker_backfill(conn, max_files=_COUNTED_MARKER_FILES_PER_PASS,
             for i, (m_dt, m_tok) in enumerate(markers):
                 tok = int(m_tok or _COUNTED_MARKER_MEDIAN_TOKENS)
                 ev_dt = m_dt or turns[0][0]
-                oneshot, rr_tok, rr_usd, n = _counted_score_event(
+                score = _counted_score_detail(
                     turns, compacts, ev_dt, tok, tier_data)
-                conn.execute(
-                    "INSERT OR REPLACE INTO counted_reread (event_key, source, "
-                    "session_uuid, event_ts, event_month, tokens, oneshot_usd, "
-                    "reread_tokens, reread_usd, turns_counted, transcript_mtime, "
-                    "computed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (f"mk:{sid}:{i}", "mk", sid, ev_dt.isoformat(),
-                     ev_dt.strftime("%Y-%m"), tok, round(oneshot, 6),
-                     int(rr_tok), round(rr_usd, 6), n, None, now_iso))
-                stats["rows_written"] += 1
-        exhausted = (not processed_any) or (last >= (paths[-1] if paths else ""))
+                key = f"mk:{sid}:{i}"
+                if _counted_store_score(conn, key, "mk", sid, ev_dt.isoformat(), tok,
+                                        score, path.stat().st_mtime, proof, old=stored.get(key),
+                                        magnitude_basis="sized_marker" if m_tok else "estimated_marker",
+                                        identity_verified=True):
+                    stats["rows_written"] += 1
         if paths and last == paths[-1]:
             conn.execute("INSERT OR REPLACE INTO token_optimizer_meta (key, value) "
                          "VALUES (?, '1')", (_COUNTED_META_MARKER_DONE,))
+            stats["done"] = True
         elif not paths:
             conn.execute("INSERT OR REPLACE INTO token_optimizer_meta (key, value) "
                          "VALUES (?, '1')", (_COUNTED_META_MARKER_DONE,))
+            stats["done"] = True
         else:
             conn.execute("INSERT OR REPLACE INTO token_optimizer_meta (key, value) "
                          "VALUES (?, ?)", (_COUNTED_META_MARKER_CURSOR, last))
@@ -23605,30 +24967,12 @@ def _counted_marker_backfill(conn, max_files=_COUNTED_MARKER_FILES_PER_PASS,
 
 
 def _purge_counted_without_transcripts(conn):
-    """Remove never-verified fallback rows, preserving evidence already counted.
-
-    Transcript rotation must not erase stored savings. A recorded mtime proves
-    the row was computed from a real transcript, even if that file is now gone.
-    """
-    try:
-        rows = conn.execute(
-            "SELECT rowid, session_uuid FROM counted_reread "
-            "WHERE transcript_mtime IS NULL AND COALESCE(source, '') <> 'mk'"
-        ).fetchall()
-    except sqlite3.Error:
-        return 0
-    removed = 0
-    for rowid, session_uuid in rows:
-        if not session_uuid or _counted_session_path(conn, session_uuid) is None:
-            cur = conn.execute("DELETE FROM counted_reread WHERE rowid = ?", (rowid,))
-            removed += max(0, cur.rowcount)
-    if removed:
-        conn.commit()
-    return removed
+    """Compatibility no-op: quarantine unverifiable prices without erasing history."""
+    return 0
 
 
 def _counted_backfill_all(conn, quiet=True):
-    """Drain counted ledgers, marker history, and remove transcriptless estimates."""
+    """Finish refresh attempts; unverifiable history stays quarantined."""
     stats = _update_counted_cumulative(
         conn, max_sessions=10**9, deadline_seconds=None, quiet=quiet)
     marker_total = {"files_scanned": 0, "rows_written": 0, "done": False}
@@ -23644,14 +24988,137 @@ def _counted_backfill_all(conn, quiet=True):
                   "marker_rows_written": marker_total["rows_written"],
                   "marker_backfill_done": marker_total["done"],
                   "rows_removed_no_transcript": _purge_counted_without_transcripts(conn)})
+    stats["pricing_coverage"] = _counted_rollup_rows(_counted_stored_rows(conn).values(), conn)
     return stats
+
+
+def _counted_session_cache_mix(conn, session_uuid, tier_data, memo, rate_key="cache_read"):
+    """[(cache_read_tokens, usd_per_mtok or None)] for one stored session.
+
+    `rate_key` picks the card rate (cache_read by default, input for the
+    initial-removal floor); weights are the same either way.
+
+    Weights come from the session's recorded per-model cache-read tokens. A
+    model without an exact rate card, or whose card depends on the size of each
+    request, has no rate here and its share stays unpriced. None when the
+    session has no usable per-model record."""
+    memo_key = (session_uuid, rate_key)
+    if memo_key in memo:
+        return memo[memo_key]
+    mix = None
+    try:
+        row = conn.execute(
+            "SELECT model_usage_breakdown_json FROM session_log "
+            "WHERE session_uuid = ? ORDER BY id DESC LIMIT 1", (session_uuid,)).fetchone()
+        breakdown = json.loads(row[0]) if row and row[0] else None
+    except (sqlite3.Error, TypeError, ValueError):
+        breakdown = None
+    if isinstance(breakdown, dict):
+        terms = []
+        for model, parts in breakdown.items():
+            weight = parts.get("cache_read") if isinstance(parts, dict) else None
+            if not isinstance(weight, int) or isinstance(weight, bool) or weight <= 0:
+                continue
+            card = _counted_exact_card(model, tier_data)
+            rate = (card or {}).get(rate_key)
+            if not (isinstance(rate, (int, float)) and math.isfinite(rate) and rate >= 0):
+                rate = None
+            terms.append((weight, rate))
+        if any(rate is not None for _, rate in terms):
+            mix = terms
+    memo[memo_key] = mix
+    return mix
+
+
+def _counted_rollup_rows(rows, conn=None):
+    """Only per-row verified prices are eligible; retain all stored token evidence.
+
+    A stored row without a current per-turn price keeps its signed repeat-read
+    token count. With `conn`, that count is priced at the cache-read rate of the
+    models its session recorded (token-weighted, exact cards only) and reported
+    separately from per-turn prices; its initial removal is priced at the same
+    models' input rate, the disclosed floor used when the billed class is not
+    known. Any share without a rate stays unpriced."""
+    out = dict.fromkeys(_COUNTED_COVERAGE_KEYS, 0)
+    out.update(events=0, removed_tokens=0, reread_tokens=0, oneshot_usd=0.0,
+               oneshot_class_premium_usd=0.0, reread_usd=0.0, legacy_unverified_events=0,
+               unverified_history_events=0, estimated_magnitude_events=0,
+               refresh_incomplete_events=0, reread_session_mix_priced_tokens=0,
+               session_mix_priced_events=0)
+    tier_data = PRICING_TIERS.get(_load_pricing_tier(), PRICING_TIERS["anthropic"])
+    mix_memo = {}
+    for row in rows:
+        out["events"] += 1
+        tokens, rereads = int(row["tokens"] or 0), int(row["reread_tokens"] or 0)
+        out["removed_tokens"] += tokens
+        out["reread_tokens"] += rereads
+        detail = _counted_pricing_detail(row.get("pricing_detail"))
+        current = (detail.get("version") == _COUNTED_PRICING_VERSION
+                   and all(isinstance(detail.get(k), int) and detail[k] >= 0 for k in _COUNTED_COVERAGE_KEYS))
+        if current:
+            out["oneshot_usd"] += float(row["oneshot_usd"] or 0)
+            out["reread_usd"] += float(row["reread_usd"] or 0)
+            out["oneshot_class_premium_usd"] += float(detail.get("oneshot_class_premium_usd") or 0)
+            for key in _COUNTED_COVERAGE_KEYS:
+                out[key] += detail[key]
+        else:
+            out["legacy_unverified_events"] += 1
+            mix = (_counted_session_cache_mix(conn, row.get("session_uuid"), tier_data, mix_memo)
+                   if conn is not None and rereads else None)
+            input_mix = (_counted_session_cache_mix(conn, row.get("session_uuid"), tier_data,
+                                                    mix_memo, rate_key="input")
+                         if conn is not None and tokens else None)
+            for kind, amount in (("oneshot", tokens), ("reread", rereads)):
+                if kind == "oneshot" and input_mix:
+                    total_weight = sum(weight for weight, _ in input_mix)
+                    rated = [(weight, rate) for weight, rate in input_mix if rate is not None]
+                    rated_weight = sum(weight for weight, _ in rated)
+                    priced = round(abs(amount) * rated_weight / total_weight)
+                    out["oneshot_usd"] += (math.copysign(1, amount) * abs(amount)
+                                           * sum(weight * rate for weight, rate in rated)
+                                           / total_weight / 1e6)
+                    out["oneshot_floor_events"] += 1
+                    out["oneshot_floor_tokens"] += priced
+                    amount = int(math.copysign(abs(amount) - priced, amount))
+                if kind == "reread" and mix:
+                    total_weight = sum(weight for weight, _ in mix)
+                    rated = [(weight, rate) for weight, rate in mix if rate is not None]
+                    rated_weight = sum(weight for weight, _ in rated)
+                    priced = round(abs(amount) * rated_weight / total_weight)
+                    out["reread_usd"] += (math.copysign(1, amount) * abs(amount)
+                                          * sum(weight * rate for weight, rate in rated)
+                                          / total_weight / 1e6)
+                    out["reread_session_mix_priced_tokens"] += priced
+                    out["session_mix_priced_events"] += 1
+                    out["priced_reread_turns"] += max(1, int(row.get("turns_counted") or 0))
+                    amount = int(math.copysign(abs(amount) - priced, amount))
+                out[kind + "_unpriced_" + ("credit" if amount >= 0 else "debit") + "_tokens"] += abs(amount)
+        if not current and row["transcript_mtime"] is None and row["source"] != "mk":
+            out["unverified_history_events"] += 1
+        if (detail.get("magnitude_basis") == "estimated_marker"
+                or (row["source"] == "mk" and not current)):
+            out["estimated_magnitude_events"] += 1
+        out["refresh_incomplete_events"] += bool(detail.get("refresh_incomplete"))
+    out["oneshot_usd"] = round(out["oneshot_usd"], 6)
+    out["oneshot_class_premium_usd"] = round(out["oneshot_class_premium_usd"], 6)
+    out["reread_usd"] = round(out["reread_usd"], 6)
+    out["total_usd"] = round(out["oneshot_usd"] + out["reread_usd"], 6)
+    return _counted_coverage_totals(out)
+
+
+def _counted_row_awaits_rescore(row):
+    """True for a stored row priced under an older version that no pass has
+    yet attempted to re-score under the current one."""
+    detail = _counted_pricing_detail(row.get("pricing_detail"))
+    return (detail.get("version") != _COUNTED_PRICING_VERSION
+            and detail.get("attempted_version") != _COUNTED_PRICING_VERSION)
 
 
 def _counted_cumulative_summary(days=None, now=None):
     """Cheap SELECT-only rollup of counted_reread for the Counted-to-date card.
 
     NEVER walks transcripts (the collect pass owns that); a dashboard regen
-    pays aggregate queries only. With days, select removals made in that period;
+    reads stored rows only. With days, select removals made in that period;
     their later rereads stay attributed to the removal (not to the reread date).
     This is an event cohort, not a claim of dollars accrued inside an exact window.
     Fail-open to {"available": False}."""
@@ -23661,35 +25128,86 @@ def _counted_cumulative_summary(days=None, now=None):
     if not TRENDS_DB.exists():
         return out
     try:
-        where, params = "", ()
         end = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         start = end - timedelta(days=max(1, int(days))) if days is not None else None
         conn = _init_trends_db()
         try:
-            if start is not None:
-                def event_epoch(ts, source):
-                    # Pre-ledger marker timestamps were stored as UTC-naive;
-                    # hook events are local-naive, or explicitly offset-aware.
-                    if source == "mk":
+            excluded = set()
+            if _ensure_counted_views(conn):
+                excluded.update(r[0] for r in conn.execute(
+                    "SELECT 'se:'||id FROM main.savings_events EXCEPT "
+                    "SELECT 'se:'||id FROM counted_savings_events"))
+                excluded.update(r[0] for r in conn.execute(
+                    "SELECT 'ce:'||id FROM main.compression_events EXCEPT "
+                    "SELECT 'ce:'||id FROM counted_compression_events"))
+            rows = []
+            stored = _counted_stored_rows(conn)
+            for row in stored.values():
+                if row["event_key"] in excluded:
+                    continue
+                if start is not None:
+                    if row["source"] == "mk":
                         try:
-                            value = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
-                            return (value if value.tzinfo else value.replace(tzinfo=timezone.utc)).timestamp()
+                            value = datetime.fromisoformat(str(row["event_ts"]).replace("Z", "+00:00"))
+                            stamp = (value if value.tzinfo else value.replace(tzinfo=timezone.utc)).timestamp()
                         except (ValueError, TypeError, OSError):
-                            return None
-                    value = _counted_event_utc(ts)
-                    return value.replace(tzinfo=timezone.utc).timestamp() if value else None
-                conn.create_function("counted_event_epoch", 2, event_epoch)
-                where = " WHERE counted_event_epoch(event_ts, source) >= ? AND counted_event_epoch(event_ts, source) <= ?"
-                params = (start.timestamp(), end.timestamp())
-            row = conn.execute(
-                "SELECT COUNT(*), COALESCE(SUM(tokens),0), "
-                "COALESCE(SUM(oneshot_usd),0), COALESCE(SUM(reread_tokens),0), "
-                "COALESCE(SUM(reread_usd),0), MIN(event_month), MAX(computed_at) "
-                "FROM counted_reread" + where, params).fetchone()
-            months = conn.execute(
-                "SELECT event_month, ROUND(COALESCE(SUM(oneshot_usd),0) + "
-                "COALESCE(SUM(reread_usd),0), 2) FROM counted_reread "
-                + where + " GROUP BY event_month ORDER BY event_month", params).fetchall()
+                            continue
+                    else:
+                        value = _counted_event_utc(row["event_ts"])
+                        if value is None:
+                            continue
+                        stamp = value.replace(tzinfo=timezone.utc).timestamp()
+                    if not start.timestamp() <= stamp <= end.timestamp():
+                        continue
+                rows.append(row)
+            missing_by_month = {}
+            for key, _uuid, ts, tokens, _cost, _model in _counted_candidate_events(conn):
+                # A media archive without a row has no measured size yet; it
+                # adds nothing until the collect pass sizes it from its transcript.
+                if key in stored or key.startswith("md:"):
+                    continue
+                value = _counted_event_utc(ts)
+                if start is not None and (value is None or not start.timestamp() <=
+                        value.replace(tzinfo=timezone.utc).timestamp() <= end.timestamp()):
+                    continue
+                month = value.strftime("%Y-%m") if value else None
+                missing_by_month.setdefault(month, []).append(int(tokens or 0))
+
+            def add_missing(coverage, amounts):
+                coverage["unmeasured_events"] = len(amounts)
+                coverage["unmeasured_removed_tokens"] = sum(amounts)
+                coverage["unmeasured_removed_credit_tokens"] = sum(n for n in amounts if n >= 0)
+                coverage["unmeasured_removed_debit_tokens"] = sum(-n for n in amounts if n < 0)
+                return _counted_coverage_totals(coverage)
+
+            totals = add_missing(_counted_rollup_rows(rows, conn),
+                                 [n for values in missing_by_month.values() for n in values])
+            # Rows stored under an older pricing version that the collect pass
+            # has not yet tried to re-score. Their price in the subtotal is
+            # provisional, so the card reports re-measurement instead of a final
+            # figure. Rows with no session can never be re-scored and are left
+            # to the coverage notes.
+            awaiting = [row for row in rows if row.get("session_uuid")
+                        and _counted_row_awaits_rescore(row)]
+            remeasuring_sessions = len({row["session_uuid"] for row in awaiting})
+            media_rows = [row for row in rows if row["source"] == "md"]
+            media_priced = [row for row in media_rows if int(row["tokens"] or 0) > 0]
+            media_note = ""
+            if media_rows:
+                media_note = (
+                    f"{len(media_priced):,} of {len(media_rows):,} screenshot and image archives "
+                    "removed their image from context; each is valued at the image's token cost "
+                    "(width x height / 750) minus the text left in its place, with the initial "
+                    "removal at the input rate. The other "
+                    f"{len(media_rows) - len(media_priced):,} left the image in context or stated "
+                    "no image size, so they count $0.")
+            by_month = {}
+            for row in rows:
+                by_month.setdefault(row["event_month"], []).append(row)
+            monthly_coverage = {m: add_missing(_counted_rollup_rows(by_month.get(m, []), conn),
+                                               missing_by_month.get(m, []))
+                                for m in sorted(by_month.keys() | missing_by_month.keys(),
+                                                key=lambda month: month or "")}
             try:
                 done = conn.execute(
                     "SELECT value FROM token_optimizer_meta WHERE key = ?",
@@ -23700,31 +25218,33 @@ def _counted_cumulative_summary(days=None, now=None):
                 done = None
         finally:
             conn.close()
-        n, tok, oneshot, rr_tok, rr_usd, first_month, computed_at = row
-        if not n and days is None:
-            return out
+        first_month = min((month for month in monthly_coverage if month), default=None)
+        computed_at = max((row["computed_at"] for row in rows if row["computed_at"]), default=None)
         return {
+            **totals,
             "available": True,
-            "events": int(n),
             "attribution": "removal_time",
             "period_start": start.isoformat() if start else None,
             "period_end": end.isoformat(),
-            "removed_tokens": int(tok),
-            "oneshot_usd": round(float(oneshot), 2),
-            "reread_tokens": int(rr_tok),
-            "reread_usd": round(float(rr_usd), 2),
-            "total_usd": round(float(oneshot) + float(rr_usd), 2),
             "window_start": (first_month + "-01") if first_month else None,
-            "months": {m: v for m, v in months},
+            "months": {m: round(v["total_usd"], 2) for m, v in monthly_coverage.items()},
+            "monthly_coverage": monthly_coverage,
             "marker_backfill_done": bool(done and done[0] == "1"),
             "computed_at": computed_at,
+            "remeasuring": remeasuring_sessions > 0,
+            "remeasuring_sessions": remeasuring_sessions,
+            "remeasuring_events": len(awaiting),
+            "media_archive_events": len(media_rows),
+            "media_priced_events": len(media_priced),
+            "media_removed_tokens": sum(int(row["tokens"] or 0) for row in media_priced),
+            "media_note": media_note,
             # Same construction as the estimated tiers: the method is counted,
             # the one modeling choice (trajectory held fixed) is disclosed on
             # the card.
             "method": "removals x deduped turns to next real compaction, "
-                      "per-turn cache-read rates; metered-magnitude removals "
-                      "only -- resume_lean, estimated-magnitude events "
-                      "(mcp_cap, hint_followed) and unapplied work excluded",
+                      "exact known per-turn cache-read rates; unpriced credits/debits "
+                      "and unverifiable historical prices reported separately; "
+                      "older unsized markers retain estimated magnitudes",
         }
     except (sqlite3.Error, OSError, TypeError, ValueError):
         return out
@@ -23765,6 +25285,9 @@ def _dashboard_savings_data(days=30, include_billing_mode=False, fail_open=False
         savings_data["counted_period"] = _counted_cumulative_summary(days=days)
     except Exception:
         savings_data["counted_period"] = {"available": False}
+    _apply_counted_oneshot_pricing(savings_data, savings_data["counted_period"])
+    savings_data["action_savings"] = _action_savings_components(
+        savings_data, savings_data["counted_period"])
     if include_billing_mode:
         try:
             savings_data["billing_mode"] = keepwarm_billing_mode()
@@ -23927,14 +25450,15 @@ def _get_savings_summary(days=30, since=None):
                 cutoff = (datetime.now() - timedelta(days=days)).isoformat()
             rows = conn.execute(
                 "SELECT event_type, COUNT(*) as cnt, SUM(tokens_saved) as tok, SUM(cost_saved_usd) as cost "
-                "FROM savings_events WHERE timestamp >= ? GROUP BY event_type ORDER BY tok DESC",
+                "FROM " + _counted_table(conn, "savings_events") + " WHERE timestamp >= ? GROUP BY event_type ORDER BY tok DESC",
                 (cutoff,),
             ).fetchall()
             # Model-mix repair, same connection and same cutoff so the corrected
             # rows are exactly the rows summed above. Self-degrading; see
             # _session_model_reprice.
+            unpriced_reprice = {}
             reprice_deltas, repriced_tokens, unmeasured_tokens = _session_model_reprice(
-                conn, cutoff)
+                conn, cutoff, unpriced_out=unpriced_reprice)
         finally:
             conn.close()
 
@@ -23981,6 +25505,9 @@ def _get_savings_summary(days=30, since=None):
                 # NOT MEASURED: no joinable session row, so no mix to price
                 # against. These keep their event-time price; nothing is invented.
                 "unmeasured_tokens": int(unmeasured_tokens),
+                # Saved tokens that ran on models with no exact rate card: counted
+                # as tokens, priced at zero.
+                "unpriced_tokens": int(round(unpriced_reprice.get("tokens", 0))),
                 "delta_usd": round(sum(reprice_deltas.values()), 4),
                 "basis": "session_log.model_usage_json token-weighted mix",
             },
@@ -24320,6 +25847,7 @@ def _migrate_streaming_dedup(conn, quiet=False):
         conn.commit()
         conn.execute("DELETE FROM session_log")
         conn.execute("DELETE FROM session_log_aliases")
+        conn.execute("DELETE FROM usage_request_claims")
         conn.execute("DELETE FROM daily_stats")
         conn.execute("DELETE FROM model_daily")
         conn.execute("DELETE FROM skill_daily")
@@ -25663,6 +27191,20 @@ def _write_antigravity_restore_context(sessions, quiet=False):
             print(f"[Token Optimizer] restore-context update skipped: {exc}")
 
 
+def _price_antigravity_session(session):
+    """Price known model buckets separately; identify incomplete rate coverage."""
+    if session.get("cost_source") != "antigravity_list_price_estimate":
+        return
+    breakdown = session.get("model_usage_breakdown") or {}
+    session["cost_usd"] = sum(
+        _get_model_cost(model, part.get("fresh_input", 0), part.get("output", 0),
+                        cache_read=part.get("cache_read", 0), per_request=bool(parts.get("requests")))
+        for model, parts in breakdown.items() for part in (parts.get("requests") or [parts])
+    )
+    if any(not _is_priced_model(model) for model in breakdown):
+        session["cost_source"] = "antigravity_list_price_partial"
+
+
 def _antigravity_summary():
     """Per-surface session summary for Antigravity plus decoder health."""
     import antigravity_state as _ags  # noqa: PLC0415
@@ -25688,12 +27230,7 @@ def _antigravity_summary():
         # line is a real dollar figure, not the normalizer's placeholder zero
         # (the normalizer never prices — KTD12; the collector does it).
         for s in normalized:
-            if s.get("cost_source") == "antigravity_list_price_estimate" and s.get("model_id"):
-                fresh = max(0, s["total_input_tokens"] - s.get("total_cache_read", 0))
-                s["cost_usd"] = _get_model_cost(
-                    s["model_id"], fresh, s["total_output_tokens"],
-                    cache_read=s.get("total_cache_read", 0),
-                )
+            _price_antigravity_session(s)
         total_in = sum(s.get("total_input_tokens", 0) for s in normalized)
         total_out = sum(s.get("total_output_tokens", 0) for s in normalized)
         total_cache = sum(s.get("total_cache_read", 0) for s in normalized)
@@ -25711,7 +27248,8 @@ def _antigravity_summary():
         if credits:
             print(f"    Antigravity credits: {credits:,.2f}")
         elif cost > 0.0:
-            print(f"    Estimated cost: ~${cost:,.2f} (Gemini list-price estimate)")
+            partial = any(s.get("cost_source") == "antigravity_list_price_partial" for s in normalized)
+            print(f"    Estimated cost: ~${cost:,.2f} (list prices" + (", known models only" if partial else "") + ")")
         else:
             print("    Cost: unavailable (no model with a known Gemini rate card)")
         print(f"    Tokens: {total_in:,} in / {total_out:,} out / {total_cache:,} cache-read")
@@ -25796,20 +27334,30 @@ def _collect_antigravity_sessions(days=90, quiet=False, rebuild=False):
 
             # R8 pricing: only the list-price-estimate path is denominated in
             # USD; credits are Antigravity's own figure and stay USD-less.
-            if parsed.get("cost_source") == "antigravity_list_price_estimate" and parsed.get("model_id"):
-                fresh = max(0, parsed["total_input_tokens"] - parsed.get("total_cache_read", 0))
-                parsed["cost_usd"] = _get_model_cost(
-                    parsed["model_id"],
-                    fresh,
-                    parsed["total_output_tokens"],
-                    cache_read=parsed.get("total_cache_read", 0),
-                )
+            _price_antigravity_session(parsed)
 
             dedup_key = parsed.get("dedup_key")
             if not dedup_key:
                 continue
             is_incomplete = 1 if parsed.get("incomplete") else 0
             if _is_file_collected(conn, dedup_key):
+                if not is_incomplete and parsed.get("generation_details_complete"):
+                    model_usage = json.dumps(parsed.get("model_usage", {}))
+                    breakdown = json.dumps(parsed.get("model_usage_breakdown", {}))
+                    cost = parsed.get("cost_usd", 0.0)
+                    source = parsed.get("cost_source")
+                    cur = conn.execute(
+                        """UPDATE session_log SET model_usage_json=?, all_model_usage_json=?,
+                                  model_usage_breakdown_json=?, cost_usd=?, cost_source=?
+                           WHERE jsonl_path=? AND (incomplete=1 OR (input_tokens=? AND output_tokens=?))
+                             AND (model_usage_json IS NOT ? OR
+                                 all_model_usage_json IS NOT ? OR model_usage_breakdown_json IS NOT ? OR
+                                 cost_usd IS NOT ? OR cost_source IS NOT ?)""",
+                        (model_usage, model_usage, breakdown, cost, source, dedup_key,
+                         parsed["total_input_tokens"], parsed["total_output_tokens"],
+                         model_usage, model_usage, breakdown, cost, source),
+                    )
+                    new_count += cur.rowcount
                 if not is_incomplete:
                     try:
                         existing = conn.execute(
@@ -25977,13 +27525,306 @@ def _session_merged_requests(filepath, parsed, subagent_files):
     return merged
 
 
-def _session_daily_usage(filepath, parsed=None, subagent_files=None):
+# Bump when the way usage is attributed to a session changes. Rows stored by an
+# older version are re-parsed from their transcript the next time collect runs.
+_USAGE_PARSER_VERSION = 2
+
+
+def _stable_hash63(text):
+    """Stable 63-bit integer for a string (fits a signed SQLite INTEGER)."""
+    digest = hashlib.blake2b(str(text).encode("utf-8", "replace"), digest_size=8).digest()
+    return int.from_bytes(digest, "big") >> 1
+
+
+def _request_base_key(key):
+    """The identity under which a request's usage is shared between sessions, or
+    None when it cannot be shared. Records with neither a request id nor a
+    message id are keyed by file position, so they never match another file.
+    An advisor part ("<request>#advisorN") is its own entry with its own usage."""
+    key = str(key)
+    if key.startswith("__noreq__") or ":__noreq__" in key:
+        return None
+    return key
+
+
+def _usage_owner_id(filepath):
+    """Identity under which a session claims its requests: the session UUID, so
+    every copy of one session is one owner, else the transcript path."""
+    return _canonical_session_uuid(filepath) or str(filepath)
+
+
+def _live_usage_owners(conn):
+    """Owner hashes of every session that currently has a row (or a tracked copy)."""
+    live = set()
+    for table in ("session_log", "session_log_aliases"):
+        try:
+            for uuid, path in conn.execute(f"SELECT session_uuid, jsonl_path FROM {table}"):
+                if uuid:
+                    live.add(_stable_hash63(uuid))
+                if path:
+                    live.add(_stable_hash63(path))
+        except sqlite3.Error:
+            continue
+    return live
+
+
+_SHARE_FIELDS = ("inp", "out", "cr", "cc", "cc_1h", "cc_5m")
+
+
+def _empty_share():
+    share = dict.fromkeys(_SHARE_FIELDS, 0)
+    share["n"] = 0
+    return share
+
+
+def _claim_state(conn, owner_id, keys, live_owners):
+    """What the stored sessions have counted of the requests in `keys`.
+
+    A request Claude Code copied into a resumed or forked session's transcript
+    is the same API call, and a streamed reply can be longer in one copy than
+    in another. Sessions therefore share a request's largest usage between
+    them (see `_net_of_counted`). Returns (others, own): the summed shares of
+    the other sessions, and this session's own earlier share. A share held by a
+    session that no longer has a row is ignored, so usage is never dropped on
+    the strength of a claim nobody holds.
+    """
+    me = _stable_hash63(owner_id)
+    by_hash = {}
+    for key in keys:
+        base = _request_base_key(key)
+        if base is not None:
+            by_hash[_stable_hash63(base)] = base
+    others, own = {}, {}
+    hashes = list(by_hash)
+    for i in range(0, len(hashes), 500):
+        batch = hashes[i:i + 500]
+        try:
+            rows = conn.execute(
+                "SELECT request_hash, owner_hash, calls, inp, out, cr, cc, cc_1h, cc_5m, model, day "
+                "FROM usage_request_claims WHERE request_hash IN (%s)" % ",".join("?" * len(batch)),
+                batch).fetchall()
+        except sqlite3.Error:
+            return {}, {}
+        for request_hash, owner_hash, calls, *fields in rows:
+            if owner_hash == me:
+                target = own
+            elif owner_hash in live_owners:
+                target = others
+            else:
+                continue
+            share = target.setdefault(by_hash[request_hash], _empty_share())
+            share["n"] += int(calls or 0)
+            for name, value in zip(_SHARE_FIELDS, fields[:len(_SHARE_FIELDS)]):
+                share[name] += int(value or 0)
+            if target is own:
+                share["model"], share["day"] = fields[len(_SHARE_FIELDS)], fields[len(_SHARE_FIELDS) + 1]
+    return others, own
+
+
+def _net_of_counted(requests, counted, own=None):
+    """The part of each request this session adds on top of what is already
+    counted: per field, its own figure minus the others' total, never below 0.
+    A share this session recorded earlier is kept, so collecting it again
+    cannot shrink it, whether the transcript is collected for an unrelated
+    reason or has lost part of the reply. The shares of every session sum to
+    the largest figure any copy holds, whichever session is collected first or
+    collected again later. An entry the others already cover completely comes
+    back empty (`n` 0, all fields 0)."""
+    own = own or {}
+    net = {}
+    for key, u in requests.items():
+        base = _request_base_key(key)
+        share = counted.get(base) if base is not None else None
+        prior = own.get(base) if base is not None else None
+        entry = dict(u)
+        if share or prior:
+            prior = prior or {}
+            for name in _SHARE_FIELDS:
+                raw = int(u.get(name) or 0)
+                entry[name] = max(int(prior.get(name) or 0), raw - (share[name] if share else 0), 0)
+            entry["n"] = max(int(prior.get("n") or 0), 0 if (share and share["n"] >= 1) else 1)
+            if prior:
+                # What was recorded about the request (its day and model) stands;
+                # a later observation only fills what was missing.
+                entry["day"] = prior.get("day") or u.get("day")
+                recorded = prior.get("model")
+                entry["model"] = (recorded if recorded and recorded != "unknown"
+                                  and not str(recorded).startswith("<")
+                                  else (u.get("model") or recorded))
+        else:
+            entry["n"] = 1
+        net[key] = entry
+    return net
+
+
+def _retained_requests(conn, owner_id, keys):
+    """The session's recorded shares of requests its transcripts no longer hold.
+
+    Transcripts rotate and copies get removed. What a session was already
+    credited for stays in its totals; the requests still in the files are
+    counted next to it. Shares come back as request entries (keyed so they are
+    never treated as shareable) carrying the model and day they were billed to.
+    """
+    present = {_stable_hash63(b) for b in (_request_base_key(k) for k in keys) if b is not None}
+    try:
+        rows = conn.execute(
+            "SELECT request_hash, calls, inp, out, cr, cc, cc_1h, cc_5m, model, day "
+            "FROM usage_request_claims WHERE owner_hash = ?", (_stable_hash63(owner_id),)).fetchall()
+    except sqlite3.Error:
+        return {}
+    kept = {}
+    for request_hash, calls, *fields, model, day in rows:
+        if request_hash in present or not (calls or any(fields)):
+            continue
+        entry = dict(zip(_SHARE_FIELDS, (int(v or 0) for v in fields)))
+        entry.update(n=int(calls or 0), model=model or "unknown", day=day)
+        kept[f"__noreq__kept:{request_hash}"] = entry
+    return kept
+
+
+def _claim_requests(conn, owner_id, net_requests):
+    """Record this session's share of each request (as returned by `_net_of_counted`)."""
+    me = _stable_hash63(owner_id)
+    rows = {}
+    for key, u in net_requests.items():
+        base = _request_base_key(key)
+        if base is None:
+            continue
+        calls = 0 if u.get("advisor") else int(u.get("n", 1) or 0)
+        rows[_stable_hash63(base)] = (
+            _stable_hash63(base), me, calls,
+            *(int(u.get(name) or 0) for name in _SHARE_FIELDS), u.get("model"), u.get("day"))
+    if not rows:
+        return
+    try:
+        conn.executemany(
+            "INSERT OR REPLACE INTO usage_request_claims "
+            "(request_hash, owner_hash, calls, inp, out, cr, cc, cc_1h, cc_5m, model, day) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", list(rows.values()))
+    except sqlite3.Error:
+        pass
+
+
+def _net_and_record(requests, ledger):
+    """In-memory form of the claims for a pass over several transcripts: returns
+    the net usage of `requests` against `ledger`, plus the shares counted before
+    this call (empty when nothing overlapped), and adds the net to the ledger."""
+    counted = {}
+    for key in requests:
+        base = _request_base_key(key)
+        if base is not None and base in ledger:
+            counted[base] = dict(ledger[base])
+    net = _net_of_counted(requests, counted)
+    for key, u in net.items():
+        base = _request_base_key(key)
+        if base is None:
+            continue
+        share = ledger.setdefault(base, _empty_share())
+        share["n"] += int(u.get("n", 1) or 0)
+        for name in _SHARE_FIELDS:
+            share[name] += int(u.get(name) or 0)
+    return net, counted
+
+
+def _parsed_with_requests(parsed, requests):
+    """A copy of a parsed transcript restated from the given per-request usage,
+    every usage-derived figure recomputed. `parsed` itself is never modified."""
+    agg, _days = _aggregate_request_usage(requests)
+    full_input = agg["total_input"] + agg["total_cache_read"] + agg["total_cache_create"]
+    out = dict(parsed)
+    out.update({
+        "total_input_tokens": full_input,
+        "total_output_tokens": agg["total_output"],
+        "total_cache_read": agg["total_cache_read"],
+        "total_cache_create": agg["total_cache_create"],
+        "total_cache_create_1h": agg["total_cache_create_1h"],
+        "total_cache_create_5m": agg["total_cache_create_5m"],
+        "cache_hit_rate": (agg["total_cache_read"] / full_input) if full_input > 0 else 0.0,
+        "model_usage": agg["model_usage"],
+        "model_usage_breakdown": agg["model_usage_breakdown"],
+        "daily_usage": agg["daily_usage"],
+        "api_calls": agg["api_calls"],
+        "request_usage": requests,
+    })
+    return out
+
+
+def _parsed_net_of_counted(parsed, counted, own=None):
+    """`parsed` restated without what other sessions already counted of its requests."""
+    requests = (parsed or {}).get("request_usage")
+    if not requests or not (counted or own):
+        return parsed
+    return _parsed_with_requests(parsed, _net_of_counted(requests, counted, own))
+
+
+def _parsed_net_of_ledger(parsed, ledger):
+    """`parsed` net of the requests earlier transcripts in a multi-file pass
+    already counted; this file's requests are then added to `ledger`. Files
+    without per-request detail pass through. The pass-wide total is the largest
+    usage of each request, whatever the order of the files."""
+    requests = (parsed or {}).get("request_usage")
+    if not requests:
+        return parsed
+    net, counted = _net_and_record(requests, ledger)
+    if not counted:
+        return parsed
+    return _parsed_with_requests(parsed, net)
+
+
+def _stale_usage_row_paths(conn):
+    """Transcript paths of stored rows written before the current usage
+    attribution. Collect re-parses them from their transcript, so a row that
+    over-counted repeated requests corrects itself; a row whose transcript is
+    gone is never visited and keeps its stored numbers."""
+    try:
+        return {str(r[0]) for r in conn.execute(
+            "SELECT jsonl_path FROM session_log WHERE jsonl_path IS NOT NULL "
+            "AND (usage_parser_version IS NULL OR usage_parser_version < ?)",
+            (_USAGE_PARSER_VERSION,))}
+    except sqlite3.Error:
+        return set()
+
+
+def _stamp_usage_parser_version(conn, filepath):
+    """Mark a row as current when a re-parse has nothing to change, so it is not
+    re-parsed on every collect."""
+    try:
+        conn.execute(
+            "UPDATE session_log SET usage_parser_version = ? WHERE jsonl_path = ?",
+            (_USAGE_PARSER_VERSION, str(filepath)))
+    except sqlite3.Error:
+        pass
+
+
+def _daily_usage_from_merged(merged):
+    """Per-day, per-model token buckets of a merged request set."""
+    combined = {}
+    for u in merged.values():
+        if _net_request_is_empty(u):
+            continue
+        # Requests without a usable timestamp land in UNDATED_USAGE_KEY; the
+        # rollup bills them to the session's own date instead of dropping them.
+        day = u.get("day") or UNDATED_USAGE_KEY
+        bucket = combined.setdefault(day, {}).setdefault(
+            u.get("model") or "unknown", _empty_model_buckets())
+        bucket["fresh_input"] += int(u.get("inp") or 0)
+        bucket["cache_read"] += int(u.get("cr") or 0)
+        bucket["cache_create"] += int(u.get("cc") or 0)
+        bucket["cache_create_1h"] += int(u.get("cc_1h") or 0)
+        bucket["cache_create_5m"] += int(u.get("cc_5m") or 0)
+        bucket["output"] += int(u.get("out") or 0)
+    return combined
+
+
+def _session_daily_usage(filepath, parsed=None, subagent_files=None, conn=None, live_owners=None):
     """Daily usage for a session transcript plus all of its subagent transcripts.
 
     Claude Code sometimes writes the same API request into more than one of a
     session's files (the parent and a subagent, or two subagents). Requests are
-    therefore merged by requestId across every file first, keeping the largest
-    usage seen (streaming-safe), so a shared request is billed once.
+    therefore merged by request id across every file first, keeping the largest
+    usage seen (streaming-safe), so a shared request is billed once. With a
+    database connection, what another stored session already counts of a request
+    is left out as well.
     """
     parsed = parsed if parsed is not None else _parse_session_jsonl(filepath)
     if subagent_files is None:
@@ -25995,23 +27836,16 @@ def _session_daily_usage(filepath, parsed=None, subagent_files=None):
         for p in [parsed] + [_parse_session_jsonl(sub_jf) for sub_jf in subagent_files]:
             _merge_daily_usage(combined, (p or {}).get("daily_usage") or {})
         return combined
-
-    combined = {}
-    for u in merged.values():
-        # Requests without a usable timestamp land in UNDATED_USAGE_KEY; the
-        # rollup bills them to the session's own date instead of dropping them.
-        day = u.get("day") or UNDATED_USAGE_KEY
-        bucket = combined.setdefault(day, {}).setdefault(
-            u.get("model") or "unknown",
-            {"fresh_input": 0, "cache_read": 0, "cache_create": 0, "cache_create_1h": 0, "cache_create_5m": 0, "output": 0},
-        )
-        bucket["fresh_input"] += int(u.get("inp") or 0)
-        bucket["cache_read"] += int(u.get("cr") or 0)
-        bucket["cache_create"] += int(u.get("cc") or 0)
-        bucket["cache_create_1h"] += int(u.get("cc_1h") or 0)
-        bucket["cache_create_5m"] += int(u.get("cc_5m") or 0)
-        bucket["output"] += int(u.get("out") or 0)
-    return combined
+    if conn is not None:
+        if live_owners is None:
+            live_owners = _live_usage_owners(conn)
+        owner_id = _usage_owner_id(filepath)
+        counted, own = _claim_state(conn, owner_id, merged, live_owners)
+        if counted or own:
+            merged = _net_of_counted(merged, counted, own)
+        if _stable_hash63(owner_id) in live_owners:
+            merged = {**merged, **_retained_requests(conn, owner_id, merged)}
+    return _daily_usage_from_merged(merged)
 
 
 def _session_rank(message_count, input_tokens, output_tokens):
@@ -26163,6 +27997,185 @@ def _dedupe_session_rows(conn):
     return len(losers)
 
 
+# Per-pass budgets for collect_sessions, by drain mode:
+#   None     hook path: the per-pass caps every flush has always used.
+#   "inline" a user-run collect (dashboard skill, terminal): no session-count
+#            caps, each stage stopped by a wall-clock budget instead.
+#   "full"   the detached upgrade drain: no caps at all, commits often so
+#            hook collects running at the same time are never locked out.
+_COLLECT_DRAIN_BUDGETS = {
+    None: {"count_capped": True, "parse_seconds": None, "commit_batch": None,
+           "daily_seconds": 10.0, "counted_sessions": _COUNTED_MAX_SESSIONS_PER_PASS,
+           "counted_seconds": _COUNTED_PASS_DEADLINE_SECONDS},
+    "inline": {"count_capped": False, "parse_seconds": 15.0, "commit_batch": 20,
+               "daily_seconds": 15.0, "counted_sessions": 10**9, "counted_seconds": 30.0},
+    "full": {"count_capped": False, "parse_seconds": None, "commit_batch": 20,
+             "daily_seconds": 3600.0, "counted_sessions": 10**9, "counted_seconds": None},
+}
+_UPGRADE_DRAIN_META = "upgrade_drain_done"
+_UPGRADE_DRAIN_ATTEMPTS_META = "upgrade_drain_attempts"
+_UPGRADE_DRAIN_MAX_ATTEMPTS = 3
+_UPGRADE_DRAIN_LOCK_NAME = "upgrade-drain.lock"
+# A drain re-parses the whole history once; a lock older than this belongs to
+# a child that died, so the next pass may start another.
+_UPGRADE_DRAIN_LOCK_STALE_SECONDS = 1800
+
+
+def _collect_drain_mode():
+    """"full" inside the detached upgrade drain, "inline" for a user-run
+    collect, None on the hook path (and under pytest, where a test opts in by
+    patching this function)."""
+    if os.environ.get("TOKEN_OPTIMIZER_UPGRADE_DRAIN", "").strip() == "1":
+        return "full"
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return None
+    try:
+        return None if _running_under_hook() else "inline"
+    except Exception:
+        return None
+
+
+def _upgrade_drain_key():
+    """One drain per counted-pricing version and usage-parser version."""
+    return f"counted{_COUNTED_PRICING_VERSION}-usage{_USAGE_PARSER_VERSION}"
+
+
+def _upgrade_meta_get(conn, key):
+    try:
+        conn.execute("CREATE TABLE IF NOT EXISTS token_optimizer_meta "
+                     "(key TEXT PRIMARY KEY, value TEXT)")
+        row = conn.execute("SELECT value FROM token_optimizer_meta WHERE key = ?", (key,)).fetchone()
+        return row[0] if row else None
+    except sqlite3.Error:
+        return None
+
+
+def _upgrade_meta_set(conn, key, value):
+    try:
+        conn.execute("CREATE TABLE IF NOT EXISTS token_optimizer_meta "
+                     "(key TEXT PRIMARY KEY, value TEXT)")
+        conn.execute("INSERT OR REPLACE INTO token_optimizer_meta (key, value) VALUES (?, ?)",
+                     (key, str(value)))
+        conn.commit()
+    except sqlite3.Error:
+        pass
+
+
+def _upgrade_drain_mark_done(conn):
+    _upgrade_meta_set(conn, _UPGRADE_DRAIN_META, _upgrade_drain_key())
+
+
+def _upgrade_drain_after_pass(conn, backlog):
+    """After a bounded collect pass: once per version, hand any re-scoring
+    backlog to a detached drain. A pass with no backlog records the version as
+    drained. Returns True when a drain child was started. Never raises."""
+    try:
+        key = _upgrade_drain_key()
+        if _upgrade_meta_get(conn, _UPGRADE_DRAIN_META) == key:
+            return False
+        if not backlog:
+            _upgrade_drain_mark_done(conn)
+            return False
+        # Under pytest the child would run against the real ~/.claude.
+        if os.environ.get("PYTEST_CURRENT_TEST") and not os.environ.get(
+                "TOKEN_OPTIMIZER_TEST_ALLOW_DRAIN_SPAWN"):
+            return False
+        raw = _upgrade_meta_get(conn, _UPGRADE_DRAIN_ATTEMPTS_META) or ""
+        attempts = int(raw.split(":", 1)[1]) if raw.startswith(key + ":") else 0
+        if attempts >= _UPGRADE_DRAIN_MAX_ATTEMPTS:
+            return False
+        if not _upgrade_drain_claim_lock():
+            return False
+        if _spawn_upgrade_drain():
+            _upgrade_meta_set(conn, _UPGRADE_DRAIN_ATTEMPTS_META, f"{key}:{attempts + 1}")
+            return True
+        _upgrade_drain_release_lock()
+        return False
+    except Exception:
+        return False
+
+
+def _upgrade_drain_claim_lock():
+    """Claim the drain lock file (O_EXCL); reclaim one left by a dead child."""
+    marker = SNAPSHOT_DIR / _UPGRADE_DRAIN_LOCK_NAME
+    try:
+        SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            fd = os.open(str(marker), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            if time.time() - marker.stat().st_mtime <= _UPGRADE_DRAIN_LOCK_STALE_SECONDS:
+                return False
+            os.unlink(str(marker))
+            fd = os.open(str(marker), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(fd, "w") as handle:
+            handle.write(str(os.getpid()))
+        return True
+    except OSError:
+        return False
+
+
+def _upgrade_drain_release_lock():
+    try:
+        (SNAPSHOT_DIR / _UPGRADE_DRAIN_LOCK_NAME).unlink()
+    except OSError:
+        pass
+
+
+def _spawn_upgrade_drain():
+    """Start `measure.py upgrade-drain` fully detached (POSIX new session,
+    Windows DETACHED_PROCESS with no console window). Never raises."""
+    try:
+        env = dict(os.environ)
+        env["TOKEN_OPTIMIZER_UPGRADE_DRAIN"] = "1"
+        env["TOKEN_OPTIMIZER_INTERACTIVE"] = "1"
+        env.pop("TOKEN_OPTIMIZER_HOOK", None)
+        popen_kw = {} if os.name == "nt" else {"start_new_session": True}
+        child = subprocess.Popen(
+            [sys.executable, os.path.abspath(__file__), "upgrade-drain", "--quiet"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            env=env,
+            creationflags=(getattr(subprocess, "DETACHED_PROCESS", 0) | _NO_WINDOW),
+            **popen_kw,
+        )
+        try:
+            (SNAPSHOT_DIR / _UPGRADE_DRAIN_LOCK_NAME).write_text(str(child.pid))
+        except OSError:
+            pass
+        return True
+    except Exception as exc:
+        try:
+            _log_spawn_failure("upgrade drain spawn failed: %s: %s" % (type(exc).__name__, exc))
+        except Exception:
+            pass
+        return False
+
+
+def _upgrade_drain_days():
+    """Days the one-time drain re-reads: all history since install, so routing
+    and the since-install total cover every month. At least the usual 90-day
+    collect window; ten years when no install date is known."""
+    try:
+        d = _install_date()
+        if d:
+            return max(90, min(3650, (datetime.now() - datetime.fromisoformat(d)).days + 2))
+    except Exception:
+        pass
+    return 3650
+
+
+def _run_upgrade_drain(days=None, quiet=True):
+    """Body of `measure.py upgrade-drain`: one uncapped collect (usage re-parse,
+    per-day usage, counted ledger and markers), then release the lock."""
+    os.environ["TOKEN_OPTIMIZER_UPGRADE_DRAIN"] = "1"
+    try:
+        return collect_sessions(days=days or _upgrade_drain_days(), quiet=quiet)
+    finally:
+        _upgrade_drain_release_lock()
+
+
 def collect_sessions(days=90, quiet=False, rebuild=False):
     """Parse new JSONL files and insert into SQLite. Zero token cost.
 
@@ -26187,6 +28200,8 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
 
     conn = _init_trends_db()
     _session_log_has_origin = bool(_origin_insert_parts(conn, "session_log")[0])
+    _session_log_has_usage_version = "usage_parser_version" in {
+        r[1] for r in conn.execute("PRAGMA table_info(session_log)").fetchall()}
 
     # Capture the existing comparison before refreshing historical session rows.
     # The user's baseline must not move as collection catches up.
@@ -26213,6 +28228,7 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
         conn.execute("PRAGMA user_version = 3")
         conn.execute("DELETE FROM session_log")
         conn.execute("DELETE FROM session_log_aliases")
+        conn.execute("DELETE FROM usage_request_claims")
         conn.execute("DELETE FROM daily_stats")
         conn.execute("DELETE FROM model_daily")
         conn.execute("DELETE FROM skill_daily")
@@ -26236,22 +28252,40 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
         pass
 
     new_count = 0
+    live_owners = _live_usage_owners(conn)
+    stale_usage_rows = _stale_usage_row_paths(conn)
+    drain = _collect_drain_mode()
+    budgets = _COLLECT_DRAIN_BUDGETS.get(drain, _COLLECT_DRAIN_BUDGETS[None])
+    parse_deadline = (time.monotonic() + budgets["parse_seconds"]
+                      if budgets["parse_seconds"] is not None else None)
+    commit_batch = budgets["commit_batch"] or _COLLECT_COMMIT_BATCH
+    parse_truncated = False
     for filepath, mtime, project_name in files:
-        if _is_file_collected(conn, filepath, check_mtime=True):
+        if (_is_file_collected(conn, filepath, check_mtime=True)
+                and str(filepath) not in stale_usage_rows):
             continue
 
         # Bounded per-run collection: never parse more than _COLLECT_MAX_PER_RUN new
         # sessions in one flush. `files` is newest-first, so recent sessions are always
         # collected and any large backlog drains over subsequent flushes rather than
         # blocking turn-end. (rebuild re-collects everything, so it opts out.)
-        if _COLLECT_MAX_PER_RUN and not rebuild and new_count >= _COLLECT_MAX_PER_RUN:
+        # A drain run (see _collect_drain_mode) has no count cap; an inline drain
+        # stops at its wall-clock budget instead.
+        if (budgets["count_capped"] and _COLLECT_MAX_PER_RUN and not rebuild
+                and new_count >= _COLLECT_MAX_PER_RUN):
+            parse_truncated = True
+            break
+        if parse_deadline is not None and not rebuild and time.monotonic() > parse_deadline:
+            parse_truncated = True
             break
 
         collection_started = datetime.now().isoformat()
         # Rollups must not mutate the parser cache when only a child grows.
         parsed = copy.deepcopy(_parse_session_jsonl(filepath))
         if not parsed:
+            _stamp_usage_parser_version(conn, filepath)
             continue
+        owner_id = _usage_owner_id(filepath)
 
         # Scan subagent JSONL files for skills, agents, and model usage.
         # Single pass over subagent files to avoid duplicate glob. Includes
@@ -26298,12 +28332,38 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
             # but the stored cache_hit_rate is parent-only. Leave as-is (parent-derived)
             # since mixing subagent hit rates isn't meaningful for per-session display.
 
-        daily_usage = _session_daily_usage(filepath, parsed=parsed, subagent_files=subagent_files)
-        if subagent_files or _session_copy_files(filepath):
+        merged = _session_merged_requests(filepath, parsed, subagent_files)
+        # What another stored session already counts of a request (a resumed or
+        # forked transcript repeats its parent's history, and a copy can hold a
+        # longer streamed reply) is left out of this one; this session adds only
+        # the difference, so the sessions together hold each request's largest usage.
+        counted, retained, own_shares = {}, {}, {}
+        if merged is not None:
+            if _stable_hash63(owner_id) in live_owners:
+                retained = _retained_requests(conn, owner_id, merged)
+            else:
+                # Shares recorded by a session that has no row any more are not history.
+                try:
+                    conn.execute("DELETE FROM usage_request_claims WHERE owner_hash = ?",
+                                 (_stable_hash63(owner_id),))
+                except sqlite3.Error:
+                    pass
+            counted, own_shares = _claim_state(conn, owner_id, merged, live_owners)
+            if counted or own_shares:
+                merged = _net_of_counted(merged, counted, own_shares)
+                parsed = _parsed_net_of_counted(parsed, counted, own_shares)
+            if retained:
+                merged = {**merged, **retained}
+                parsed = _parsed_with_requests(
+                    parsed, {**(parsed.get("request_usage") or {}), **retained})
+        if merged is not None:
+            daily_usage = _daily_usage_from_merged(merged)
+        else:
+            daily_usage = _session_daily_usage(filepath, parsed=parsed, subagent_files=subagent_files)
+        if subagent_files or counted or retained or own_shares or _session_copy_files(filepath):
             # The per-file sums above count a request written into both the
             # parent and a subagent file twice; restate the stored token totals
-            # from the same requestId-merged set the cost uses.
-            merged = _session_merged_requests(filepath, parsed, subagent_files)
+            # from the same request-merged set the cost uses.
             if merged is not None:
                 parsed["total_input_tokens"] = sum(int(u.get("inp") or 0) + int(u.get("cr") or 0) + int(u.get("cc") or 0)
                                                    for u in merged.values())
@@ -26312,6 +28372,8 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
                 parsed["total_cache_create_5m"] = sum(int(u.get("cc_5m") or 0) for u in merged.values())
                 all_model_usage = {}
                 for u in merged.values():
+                    if _net_request_is_empty(u):
+                        continue
                     model_id = u.get("model") or "unknown"
                     if model_id.startswith("<"):
                         continue
@@ -26357,6 +28419,7 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
                 conn.execute(
                     "UPDATE session_log SET daily_usage_json = NULL WHERE session_uuid = ? AND jsonl_path != ?",
                     (session_uuid, str(filepath)))
+                _stamp_usage_parser_version(conn, filepath)
                 continue
         else:
             other = []
@@ -26376,11 +28439,17 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
         # exists: if the migration lost its busy wait, every insert naming a
         # missing column would fail and the whole collect would store nothing
         # (review #10). Same rule as the event writers (_origin_insert_parts).
+        o_col, o_mark, o_val, o_upd = "", "", (), ""
         if _session_log_has_origin:
-            o_col, o_mark, o_val = ", origin", ", ?", (row_origin,)
-            o_upd = ",\n               origin=COALESCE(session_log.origin, excluded.origin)"
-        else:
-            o_col, o_mark, o_val, o_upd = "", "", (), ""
+            o_col += ", origin"
+            o_mark += ", ?"
+            o_val += (row_origin,)
+            o_upd += ",\n               origin=COALESCE(session_log.origin, excluded.origin)"
+        if _session_log_has_usage_version:
+            o_col += ", usage_parser_version"
+            o_mark += ", ?"
+            o_val += (_USAGE_PARSER_VERSION,)
+            o_upd += ",\n               usage_parser_version=excluded.usage_parser_version"
         cur = conn.execute(
             """INSERT INTO session_log
                (jsonl_path, date, project, duration_minutes, input_tokens,
@@ -26470,6 +28539,10 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
         )
         if cur.rowcount != 1:
             continue
+        if merged is not None:
+            _claim_requests(conn, owner_id, merged)
+            live_owners.add(_stable_hash63(owner_id))
+            live_owners.add(_stable_hash63(str(filepath)))
         if session_uuid:
             # Retire the older copies only now that this row has landed; an
             # upsert the WHERE guard rejected must not leave the session with
@@ -26490,7 +28563,7 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
         # mid-parse) persists what it already collected instead of rolling back the
         # whole transaction. _is_file_collected skips banked files on the next run, so
         # the backfill converges over a few cycles rather than looping forever.
-        if new_count % _COLLECT_COMMIT_BATCH == 0:
+        if new_count % commit_batch == 0:
             try:
                 conn.commit()
             except sqlite3.Error:
@@ -26505,8 +28578,12 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
         _backfill_session_metrics(conn, days=days, limit=50)
     except Exception:
         pass
+    daily_truncated = False
     try:
-        _backfill_daily_usage(conn, days=min(days, 90), budget_seconds=10.0)
+        _daily_started = time.monotonic()
+        _backfill_daily_usage(conn, days=days if drain == "full" else min(days, 90),
+                              budget_seconds=budgets["daily_seconds"])
+        daily_truncated = time.monotonic() - _daily_started >= budgets["daily_seconds"]
     except Exception:
         pass
     try:
@@ -26518,9 +28595,28 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
     # collect pass (never at dashboard-regen time). Both helpers carry their
     # own per-pass caps + soft deadline and are fail-open, so a slow transcript
     # can never hold the flush; the backlog converges over passes.
+    counted_pending = 0
     try:
-        _update_counted_cumulative(conn, quiet=quiet)
-        _counted_marker_backfill(conn, quiet=quiet)
+        if drain == "full":
+            counted_pending = int(_counted_backfill_all(conn, quiet=quiet).get("pending_sessions", 0) or 0)
+        else:
+            counted_pending = int(_update_counted_cumulative(
+                conn, max_sessions=budgets["counted_sessions"],
+                deadline_seconds=budgets["counted_seconds"],
+                quiet=quiet).get("pending_sessions", 0) or 0)
+            if drain == "inline":
+                _counted_marker_backfill(conn, max_files=None,
+                                         deadline_seconds=budgets["counted_seconds"], quiet=quiet)
+            else:
+                _counted_marker_backfill(conn, quiet=quiet)
+    except Exception:
+        pass
+    try:
+        if drain == "full":
+            _upgrade_drain_mark_done(conn)
+        elif not rebuild:
+            _upgrade_drain_after_pass(
+                conn, backlog=bool(parse_truncated or daily_truncated or counted_pending))
     except Exception:
         pass
 
@@ -27709,6 +29805,32 @@ def _collect_trends_from_jsonl(days=30):
 
     if not sessions:
         return None
+
+    # A request Claude Code copied into a forked or resumed session's transcript
+    # is one API call, and one copy can hold a longer streamed reply than
+    # another: the sessions of this pass together count each request's largest usage.
+    ledger = {}
+    for idx, s in enumerate(sessions):
+        merged = _session_merged_requests(
+            s["jsonl_path"], s, _session_subagent_files(s["jsonl_path"]))
+        if merged is None:
+            continue
+        net, counted = _net_and_record(merged, ledger)
+        if not counted:
+            continue
+        trimmed = dict(_parsed_net_of_counted(s, counted))
+        trimmed["daily_usage_combined"] = _daily_usage_from_merged(net)
+        all_model_usage = {}
+        for u in net.values():
+            if _net_request_is_empty(u):
+                continue
+            model_id = u.get("model") or "unknown"
+            if model_id.startswith("<"):
+                continue
+            all_model_usage[model_id] = all_model_usage.get(model_id, 0) + (
+                int(u.get("inp") or 0) + int(u.get("cc") or 0) + int(u.get("out") or 0))
+        trimmed["all_model_usage"] = all_model_usage
+        sessions[idx] = trimmed
 
     total_skills = {}
     total_subagents = {}
@@ -40539,7 +42661,7 @@ def _codex_backfill_tool_archive(filepath=None, session_id=None, max_outputs=20)
     return archived
 
 
-def _log_reexpand_debit(session_id, tool_use_id, response_text):
+def _log_reexpand_debit(session_id, tool_use_id, response_text, tool_name=""):
     """Record a tool_archive re-expansion as a debit (B6 integrity).
 
     An archived tool result that gets re-popped into context did not stay
@@ -40560,14 +42682,18 @@ def _log_reexpand_debit(session_id, tool_use_id, response_text):
                 # Dedup: skip if this exact item was already debited.
                 row = conn.execute(
                     "SELECT 1 FROM savings_events WHERE event_type='tool_archive_reexpand' "
-                    "AND detail = ? LIMIT 1",
-                    (tool_use_id,),
+                    "AND (detail = ? OR substr(detail, 1, ?) = ?) LIMIT 1",
+                    (tool_use_id, len(tool_use_id) + 2, tool_use_id + " ("),
                 ).fetchone()
             finally:
                 conn.close()
             if row:
                 return
-        _log_savings_event("tool_archive_reexpand", tokens, session_id=sid, detail=tool_use_id)
+        # The tool name lets the counted views treat a media re-expansion the
+        # same way as its media archive row.
+        name = re.sub(r"[^A-Za-z0-9_.:-]", "", str(tool_name or ""))[:120]
+        detail = f"{tool_use_id} ({name})" if name else tool_use_id
+        _log_savings_event("tool_archive_reexpand", tokens, session_id=sid, detail=detail)
     except Exception:
         pass
 
@@ -40742,7 +42868,7 @@ def expand_archived(tool_use_id=None, session_id=None, list_all=False):
                 # stay collapsed, so reverse its tool_archive credit. Log the
                 # re-popped tokens as a debit (netted in _get_savings_summary),
                 # deduped per item so a second expand never double-debits.
-                _log_reexpand_debit(sd.name, tool_use_id, response)
+                _log_reexpand_debit(sd.name, tool_use_id, response, data.get("tool_name") or "")
                 # No added newline: expand returns the stored text as stored.
                 sys.stdout.write(response)
                 sys.stdout.flush()
@@ -49247,6 +51373,14 @@ _LEGACY_SAVINGS_LABELS = {
     # (10-15% of affected response tokens) since we can't measure the
     # counterfactual output the model would have produced without the nudge.
     "verbosity_steer": "Verbosity steering [est]",
+    # verbosity_steer_measured: the output reduction actually observed after a
+    # conciseness nudge, compared with the session's own pre-nudge replies.
+    "verbosity_steer_measured": "Concise output (measured)",
+    # tool_archive_refetch_block: a repeat call for an already-archived result
+    # was answered from the archive instead of re-running the tool.
+    "tool_archive_refetch_block": "Re-fetches answered from archive",
+    # keepwarm: cache rewrites avoided by keeping the prompt cache warm.
+    "keepwarm": "Cache kept warm",
 }
 
 # v5 Active Compression categories — stored in compression_events and
@@ -49292,7 +51426,23 @@ _V5_COMPRESSION_LABELS = {
     # to a one-line note or a delta. A per-command tool (no session memory)
     # cannot do this, so it is TO's own bucket, not folded into pipelines.
     "crossturn_dedup": "Cross-turn dedup",
+    "bash_compress_json": "Bash compress (JSON)",
+    "bash_compress_csv": "Bash compress (CSV)",
+    # Build and compiler output (make, cargo, gcc, tsc, ...) trimmed to the
+    # errors and the summary line.
+    "build_output_compress": "Build output compression",
+    # Codex sessions: command output compressed by the Codex hook path.
+    "codex_command_compress": "Command output (Codex)",
 }
+
+# compression_events features that are bookkeeping or shadow measurement, not
+# savings. Every feature a hook logs must be in _V5_COMPRESSION_LABELS or here
+# (enforced by tests), so a new saving can never be logged and left out of the
+# totals by accident.
+_NON_SAVINGS_COMPRESSION_FEATURES = frozenset({
+    "fresh_session_nudge", "cohort_demoted", "first_read_edit_followup",
+    "cache_drop_warning", "agent_result_skeleton", "unknown",
+})
 
 # Unified label dict used by the savings-report renderer. Legacy entries
 # are authoritative when a key ever collides (dedup rule in
@@ -49330,6 +51480,32 @@ def _estimate_compression_cost_per_mtok(model=None):
         return float(rates.get("input", 3.0))
     except Exception:
         return 3.0
+
+
+def _window_input_rate_per_mtok(days=30):
+    """Fresh-input USD per million tokens, weighted by each model's share of
+    usage over the window. Estimates use it so their price follows the whole
+    window's workload, not whichever model the latest session ran. Unpriced
+    models are left out of the weighting. Falls back to the session-model rate
+    when no model in the window has a price. Never raises."""
+    try:
+        if detect_runtime() == "codex":
+            return _estimate_compression_cost_per_mtok()
+        tier_data = PRICING_TIERS.get(_load_pricing_tier(), PRICING_TIERS.get("anthropic", {}))
+        models = tier_data.get("claude_models", {})
+        weighted, priced_share = 0.0, 0.0
+        for model, share in (_model_mix_shares(days=days).get("shares") or {}).items():
+            key = _claude_price_key(model, models)
+            rate = (models.get(key) or {}).get("input") if key else None
+            if rate is None or not share:
+                continue
+            weighted += float(share) * float(rate)
+            priced_share += float(share)
+        if priced_share > 0:
+            return weighted / priced_share
+    except Exception:
+        pass
+    return _estimate_compression_cost_per_mtok()
 
 
 def _resolve_structural_baseline(days=30):
@@ -49413,6 +51589,61 @@ def _input_rate_mix_ratio(days=30):
 _MIN_OVERAGE_USD_SHOWN = 10.0
 
 
+_RUNWAY_SAVED_SQL = _counted_sql(
+    "savings_events",
+    "SELECT event_type, COALESCE(SUM(tokens_saved),0) FROM {table} "
+    "WHERE timestamp >= ? AND event_type != 'verbosity_steer' GROUP BY event_type")
+_RUNWAY_COMPRESSED_TOTAL_SQL = _counted_sql(
+    "compression_events",
+    "SELECT COALESCE(SUM(original_tokens-compressed_tokens),0) "
+    "FROM {table} WHERE timestamp >= ? AND (tier IS NULL OR tier = 'measured')")
+_RUNWAY_COMPRESSED_SQL = _counted_sql(
+    "compression_events",
+    "SELECT feature, COALESCE(SUM(original_tokens-compressed_tokens),0) "
+    "FROM {table} WHERE timestamp >= ? "
+    "AND (tier IS NULL OR tier = 'measured') GROUP BY feature")
+
+
+# Events the savings report moves out of its measured total (one-time setup
+# trim, capped MCP output, followed hints, cold resumes). The runway figure is
+# the measured floor, so it leaves them out too.
+_RUNWAY_ESTIMATED_EVENT_TYPES = frozenset(
+    {"setup_optimization", "mcp_cap", "hint_followed", "resume_lean"})
+
+
+def _runway_saved_tokens(conn, cutoff, include_estimated=False):
+    """Measured tokens never sent since *cutoff*, netted like the savings totals.
+
+    This is the counted floor behind the window card's "measured token floor":
+    the same events the savings report keeps in its measured total, so the
+    estimated tiers (setup trim, MCP cap, followed hints, lean resumes,
+    verbosity steering) are left out. Archive re-expansions are subtracted from
+    the archive credit (never below zero) and are not savings of their own. A
+    compression feature that savings_events also logs (delta_read,
+    structure_map) is counted once, from savings_events. With
+    ``include_estimated`` the estimated tiers are kept, for the context
+    multiplier, which the card labels as an estimate.
+    """
+    by_event = {
+        event_type: int(tokens or 0)
+        for event_type, tokens in conn.execute(
+            _RUNWAY_SAVED_SQL[_counted_table(conn, "savings_events")], (cutoff,))
+        if include_estimated or event_type not in _RUNWAY_ESTIMATED_EVENT_TYPES}
+    reexpanded = by_event.pop("tool_archive_reexpand", 0)
+    if "tool_archive" in by_event:
+        by_event["tool_archive"] = max(0, by_event["tool_archive"] - reexpanded)
+    saved = sum(by_event.values())
+    table = _counted_table(conn, "compression_events")
+    if "feature" not in {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}:
+        # An install old enough to log no feature name cannot be split by owner.
+        return saved + int(conn.execute(
+            _RUNWAY_COMPRESSED_TOTAL_SQL[table], (cutoff,)).fetchone()[0] or 0)
+    for feature, tokens in conn.execute(_RUNWAY_COMPRESSED_SQL[table], (cutoff,)):
+        if feature in _V5_COMPRESSION_CATEGORIES and feature not in by_event:
+            saved += int(tokens or 0)
+    return saved
+
+
 def runway_snapshot(days=30, now=None):
     """Subscription runway: how much of your rate-limit window Token Optimizer
     hands back, and what the same windows would read without it.
@@ -49426,8 +51657,9 @@ def runway_snapshot(days=30, now=None):
     API spend.
 
     TWO INDEPENDENT LEVERS, MULTIPLIED:
-      context : tokens never sent at all (archive, skeletons, lean resumes).
-                Directly metered from savings_events + compression_events.
+      context : tokens never sent at all (archive, skeletons, blocked reads).
+                Directly metered from savings_events + compression_events;
+                estimated tiers are not included.
       routing : a lighter model mix burns less of the window per token.
                 Derived from THIS user's own baseline vs current mix -- never a
                 constant. A user who never left Opus correctly sees ~1.0x.
@@ -49468,7 +51700,7 @@ def runway_snapshot(days=30, now=None):
             resets_at=meters.get("seven_day_resets_at"), now=now)
 
         # --- context lever: measured, never estimated ---
-        consumed = saved = 0
+        consumed = saved = context_saved = 0
         spent_basis = None
         try:
             conn = _init_trends_db()
@@ -49476,21 +51708,17 @@ def runway_snapshot(days=30, now=None):
                 cutoff = (datetime.now() - timedelta(days=days)).isoformat()
                 spent_basis = _dashboard_spent_token_basis(conn, days=days)
                 consumed = spent_basis["tokens"]
-                saved = conn.execute(
-                    "SELECT COALESCE(SUM(tokens_saved),0) FROM savings_events "
-                    "WHERE timestamp >= ? AND event_type != 'verbosity_steer'",
-                    (cutoff,)).fetchone()[0] or 0
-                saved += conn.execute(
-                    "SELECT COALESCE(SUM(original_tokens-compressed_tokens),0) "
-                    "FROM compression_events WHERE timestamp >= ? "
-                    "AND (tier IS NULL OR tier = 'measured')", (cutoff,)).fetchone()[0] or 0
+                saved = _runway_saved_tokens(conn, cutoff)
+                # The multiplier is an estimate (the card says so), so it keeps
+                # the estimated tiers; the measured floor line uses `saved`.
+                context_saved = _runway_saved_tokens(conn, cutoff, include_estimated=True)
             finally:
                 conn.close()
         except Exception:
             return None
         if consumed <= 0 and not weekly_full:
             return None
-        context_mult = (consumed + saved) / consumed if consumed > 0 else 1.0
+        context_mult = (consumed + context_saved) / consumed if consumed > 0 else 1.0
 
         # --- routing lever: this user's own shift, priced by input rates ---
         routing_mult = _input_rate_mix_ratio(days=days)
@@ -49526,6 +51754,7 @@ def runway_snapshot(days=30, now=None):
         # without inventing a proration. Those windows carry no dollar line (None)
         # and show only their headroom bars.
         _overage_cache = {}
+        _overage_pricing = {}
 
         def _window_overage_usd(span_h, resets_at=None):
             """(usd, tier) of API-credit overage avoided over this window's span,
@@ -49594,6 +51823,13 @@ def runway_snapshot(days=30, now=None):
                         else:
                             start_utc = end_utc - timedelta(days=wdays)
                         counted = _counted_window_summary(conn, start_utc, end_utc)
+                        _overage_pricing[cache_key] = {
+                            "reread_pricing_complete": counted.get("reread_pricing_complete", True),
+                            "reread_unpriced_tokens": counted.get("reread_unpriced_tokens", 0),
+                            "reread_pricing_note": counted.get("reread_pricing_note", ""),
+                            "unmeasured_events": counted.get("unmeasured_events", 0),
+                            "unmeasured_removed_tokens": counted.get("unmeasured_removed_tokens", 0),
+                        }
                     finally:
                         conn.close()
                     if counted.get("available"):
@@ -49740,6 +51976,7 @@ def runway_snapshot(days=30, now=None):
             "tokens_consumed_basis": spent_basis["basis"] if spent_basis else None,
             "tokens_consumed_basis_complete": bool(spent_basis and spent_basis["complete"]),
             "tokens_saved": int(saved),
+            "context_tokens_saved": int(context_saved),
             "windows": windows,
             # USD spine: metered context $ + estimated routing $ over the WEEKLY
             # (7d) ledger -- the same span the weekly card shows. Exposed at the top
@@ -49748,6 +51985,7 @@ def runway_snapshot(days=30, now=None):
             "saved_usd_context": round(saved_context_usd, 2),
             "saved_usd_routing": round(saved_routing_usd, 2),
             "saved_usd_tier": saved_usd_tier,
+            "counted_pricing": _overage_pricing.get(_wk_cache_key, {}),
             "weekly_full_value": weekly_full,
             "window_savings_basis": (
                 "full workload, exact subscription week" if weekly_full else
@@ -50164,7 +52402,7 @@ def _estimate_uncaptured_runtime(days=30, compression=None, savings=None):
         est_tokens = int(subagent_dispatches * per_session * attribution)
         if est_tokens <= 0:
             return zero
-        cost_per_mtok = _estimate_compression_cost_per_mtok()
+        cost_per_mtok = _window_input_rate_per_mtok(days=days)
         return {
             "tokens_saved": est_tokens,
             "cost_saved_usd": round(est_tokens * cost_per_mtok / 1_000_000, 4),
@@ -50182,6 +52420,16 @@ _BEHAVIORAL_PREVENTED_LOOP_ITERATIONS = _int_env("TOKEN_OPTIMIZER_PREVENTED_LOOP
 # avoided continuation is a counterfactual, so we floor it at one more equivalent
 # looping span (1.0x the measured looped volume) rather than guessing iterations.
 _BEHAVIORAL_CONTINUATION_FACTOR = _float_env("TOKEN_OPTIMIZER_LOOP_CONTINUATION_FACTOR", 1.0)
+
+
+_LOOP_TOTALS_SQL = _counted_sql(
+    "compression_events",
+    "SELECT COUNT(*), COALESCE(SUM(original_tokens - compressed_tokens), 0) "
+    "FROM {table} WHERE feature = 'loop_detection' AND timestamp >= ?")
+_LOOP_DETAILS_SQL = _counted_sql(
+    "compression_events",
+    "SELECT detail FROM {table} "
+    "WHERE feature = 'loop_detection' AND timestamp >= ? AND detail IS NOT NULL")
 
 
 def _estimate_behavioral_savings(days=30):
@@ -50220,16 +52468,9 @@ def _estimate_behavioral_savings(days=30):
         cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
         conn = _init_trends_db()
         try:
-            row = conn.execute(
-                "SELECT COUNT(*), COALESCE(SUM(original_tokens - compressed_tokens), 0) "
-                "FROM compression_events WHERE feature = 'loop_detection' AND timestamp >= ?",
-                (cutoff,),
-            ).fetchone()
-            detail_rows = conn.execute(
-                "SELECT detail FROM compression_events "
-                "WHERE feature = 'loop_detection' AND timestamp >= ? AND detail IS NOT NULL",
-                (cutoff,),
-            ).fetchall()
+            source = _counted_table(conn, "compression_events")
+            row = conn.execute(_LOOP_TOTALS_SQL[source], (cutoff,)).fetchone()
+            detail_rows = conn.execute(_LOOP_DETAILS_SQL[source], (cutoff,)).fetchall()
         finally:
             conn.close()
         loop_events = int(row[0] or 0)
@@ -50246,7 +52487,7 @@ def _estimate_behavioral_savings(days=30):
         avg_count = (sum(counts) / len(counts)) if counts else 0.0
         # Conservative continuation factor: one more equivalent looping span.
         est_tokens = int(loop_tokens_saved * _BEHAVIORAL_CONTINUATION_FACTOR)
-        cost_per_mtok = _estimate_compression_cost_per_mtok()
+        cost_per_mtok = _window_input_rate_per_mtok(days=days)
         return {
             "tokens_saved": est_tokens,
             "cost_saved_usd": round(est_tokens * cost_per_mtok / 1_000_000, 4),
@@ -50264,6 +52505,16 @@ _CONTAMINATION_COHORT_MIN = _int_env("TOKEN_OPTIMIZER_COHORT_MIN", 3)
 # avoided-search estimate stays grounded and can never run away.
 _AVG_EXPLORATORY_READ_TOKENS = _int_env("TOKEN_OPTIMIZER_AVG_READ_TOKENS", 2500)
 _RETRIEVAL_AVOIDED_READS_CAP = _int_env("TOKEN_OPTIMIZER_AVOIDED_READS_CAP", 8)
+
+
+_NUDGE_FIRED_SQL = _counted_sql(
+    "compression_events",
+    "SELECT DISTINCT session_id FROM {table} "
+    "WHERE feature='quality_nudge' AND timestamp >= ? AND session_id IS NOT NULL")
+_NUDGE_HEEDED_SQL = _counted_sql(
+    "compression_events",
+    "SELECT DISTINCT session_id FROM {table} "
+    "WHERE feature='quality_nudge' AND verified=1 AND timestamp >= ? AND session_id IS NOT NULL")
 
 
 def _estimate_contamination_exit_savings(days=30):
@@ -50290,16 +52541,9 @@ def _estimate_contamination_exit_savings(days=30):
         cutoff_date = cutoff_dt.strftime("%Y-%m-%d")
         conn = _init_trends_db()
         try:
-            fired = conn.execute(
-                "SELECT DISTINCT session_id FROM compression_events "
-                "WHERE feature='quality_nudge' AND timestamp >= ? AND session_id IS NOT NULL",
-                (cutoff_iso,),
-            ).fetchall()
-            heeded = conn.execute(
-                "SELECT DISTINCT session_id FROM compression_events "
-                "WHERE feature='quality_nudge' AND verified=1 AND timestamp >= ? AND session_id IS NOT NULL",
-                (cutoff_iso,),
-            ).fetchall()
+            source = _counted_table(conn, "compression_events")
+            fired = conn.execute(_NUDGE_FIRED_SQL[source], (cutoff_iso,)).fetchall()
+            heeded = conn.execute(_NUDGE_HEEDED_SQL[source], (cutoff_iso,)).fetchall()
             sl = conn.execute(
                 "SELECT jsonl_path, COALESCE(stale_waste_tokens,0) FROM session_log WHERE date >= ?",
                 (cutoff_date,),
@@ -50333,7 +52577,7 @@ def _estimate_contamination_exit_savings(days=30):
         est_tokens = int(delta * n_heeded)
         smaller = min(n_heeded, n_ignored)
         confidence = "high" if smaller >= 15 else "medium" if smaller >= 5 else "low"
-        cost_per_mtok = _estimate_compression_cost_per_mtok()
+        cost_per_mtok = _window_input_rate_per_mtok(days=days)
         return {
             "tokens_saved": est_tokens,
             "cost_saved_usd": round(est_tokens * cost_per_mtok / 1_000_000, 4),
@@ -50345,6 +52589,12 @@ def _estimate_contamination_exit_savings(days=30):
         }
     except Exception:
         return zero
+
+
+_CHECKPOINT_RESTORED_SQL = _counted_sql(
+    "savings_events",
+    "SELECT DISTINCT session_id FROM {table} "
+    "WHERE event_type='checkpoint_restore' AND timestamp >= ? AND session_id IS NOT NULL")
 
 
 def _estimate_handover_rerun_savings(days=30):
@@ -50369,8 +52619,7 @@ def _estimate_handover_rerun_savings(days=30):
         conn = _init_trends_db()
         try:
             restored = conn.execute(
-                "SELECT DISTINCT session_id FROM savings_events "
-                "WHERE event_type='checkpoint_restore' AND timestamp >= ? AND session_id IS NOT NULL",
+                _CHECKPOINT_RESTORED_SQL[_counted_table(conn, "savings_events")],
                 (cutoff_dt.isoformat(),),
             ).fetchall()
             sl = conn.execute(
@@ -50401,7 +52650,7 @@ def _estimate_handover_rerun_savings(days=30):
         est_tokens = int(delta * n_restored)
         smaller = min(n_restored, n_baseline)
         confidence = "high" if smaller >= 15 else "medium" if smaller >= 5 else "low"
-        cost_per_mtok = _estimate_compression_cost_per_mtok()
+        cost_per_mtok = _window_input_rate_per_mtok(days=days)
         return {
             "tokens_saved": est_tokens,
             "cost_saved_usd": round(est_tokens * cost_per_mtok / 1_000_000, 4),
@@ -50413,6 +52662,13 @@ def _estimate_handover_rerun_savings(days=30):
         }
     except Exception:
         return zero
+
+
+_RETRIEVAL_SERVED_SQL = _counted_sql(
+    "savings_events",
+    "SELECT DISTINCT session_uuid, session_id FROM {table} "
+    "WHERE event_type IN ('checkpoint_restore','tool_archive') "
+    "AND timestamp >= ?")
 
 
 def _estimate_retrieval_serve_savings(days=30):
@@ -50446,9 +52702,7 @@ def _estimate_retrieval_serve_savings(days=30):
         conn = _init_trends_db()
         try:
             served = conn.execute(
-                "SELECT DISTINCT session_uuid, session_id FROM savings_events "
-                "WHERE event_type IN ('checkpoint_restore','tool_archive') "
-                "AND timestamp >= ?",
+                _RETRIEVAL_SERVED_SQL[_counted_table(conn, "savings_events")],
                 (cutoff_dt.isoformat(),),
             ).fetchall()
             sl = conn.execute(
@@ -50493,7 +52747,7 @@ def _estimate_retrieval_serve_savings(days=30):
         est_tokens = int(avoided * n_served * _AVG_EXPLORATORY_READ_TOKENS)
         smaller = min(n_served, n_baseline)
         confidence = "high" if smaller >= 15 else "medium" if smaller >= 5 else "low"
-        cost_per_mtok = _estimate_compression_cost_per_mtok()
+        cost_per_mtok = _window_input_rate_per_mtok(days=days)
         return {
             "tokens_saved": est_tokens,
             "cost_saved_usd": round(est_tokens * cost_per_mtok / 1_000_000, 4),
@@ -50644,18 +52898,267 @@ def _session_output_fraction(days=30):
         return 0.0
 
 
-def _model_blended_rate_per_mtok(model, output_fraction):
-    """Per-MTok rate blending input + output by the measured output fraction.
+# Token classes routing is priced by. cache_read is billed at the cache-read rate,
+# cache_create at the 5-minute or 1-hour write rate, and "unsplit" holds tokens
+# from rows that never stored a class split (priced at the input rate).
+_ROUTING_CLASSES = ("fresh_input", "cache_create_5m", "cache_create_1h",
+                    "cache_read", "output", "unsplit")
+# Classes that make up `potential_tokens`: the tokens a model bills as new work.
+# Cache reads are counted separately because they dwarf every other class.
+_ROUTING_BILLABLE_CLASSES = ("fresh_input", "cache_create_5m", "cache_create_1h",
+                             "output", "unsplit")
 
-    rate = input_rate*(1-out_frac) + output_rate*out_frac. Captures the dominant
-    routing understatement (output is up to 5x input). Cache-class tokens stay
-    priced at the input rate (conservative). Returns 0.0 for unpriced models.
+
+def _foreign_savings_card_exact(model):
+    """Accept rate-card IDs and dated snapshots, without arbitrary suffixes."""
+    value = re.sub(r"[\s_]+", "-", _strip_provider_prefixes(model))
+    base = re.sub(r"-\d{4}-\d{2}-\d{2}$", "", value)
+    if base == "gpt-5.6":
+        return True
+    return base in OPENAI_MODEL_PRICING or base in GEMINI_MODEL_PRICING
+
+
+def _routing_card_exact(model):
+    """True when `model` resolves to an exact rate card.
+
+    A Claude id names a generation (claude-opus-5-5, claude-sonnet-4-6) and is
+    exact only when that generation's own card exists. An id whose generation has
+    no card (claude-opus-99, claude-opus-5-99) would otherwise fall back to a
+    broader card, such as the Opus 5 card or the bare family rate; that is a
+    stand-in, not a known price. Sonnet 3, 3.5 and 3.7 ids are the verified
+    aliases of the legacy Sonnet card. A bare family label ("opus",
+    "sonnet_legacy") with no generation is priced at its family card.
     """
+    if not isinstance(model, str) or not model:
+        return False
+    if _normalize_openai_model_name(model) or _normalize_gemini_model_name(model):
+        return _foreign_savings_card_exact(model)
     try:
-        f = max(0.0, min(1.0, float(output_fraction)))
-        return _model_rate_per_mtok(model) * (1.0 - f) + _model_output_rate_per_mtok(model) * f
+        cards = dict(PRICING_TIERS["anthropic"]["claude_models"])
+        cards.update(PRICING_TIERS.get(_load_pricing_tier(), {}).get("claude_models", {}))
     except Exception:
-        return 0.0
+        return False
+    low = model.lower()
+    legacy = _CLAUDE_LEGACY_ID_RE.search(low)
+    if legacy:
+        major, minor, family = legacy.groups()
+        if major == "3" and family == "sonnet" and minor in (None, "5", "7"):
+            return "sonnet_legacy" in cards
+        family_major = f"{family}_{major}"
+    else:
+        generation = _CLAUDE_GENERATION_RE.search(low)
+        if not generation:
+            key = _claude_price_key(model, cards)
+            return bool(key and key in cards)
+        family, major, minor = generation.groups()
+        family = "fable" if family == "mythos" else family
+        family_major, minor = f"{family}_{major}", minor
+        return (family_major + (f"_{minor}" if minor else "")) in cards
+    key = family_major + (f"_{minor}" if minor else "")
+    return key in cards
+
+
+def _routing_model_status(model):
+    """"priced" (exact rate card), "free" (a provider's explicitly free tier,
+    id suffix ":free") or "unpriced" (no rate card, price unknown)."""
+    if _routing_card_exact(model):
+        return "priced"
+    if isinstance(model, str) and model.lower().endswith(":free"):
+        return "free"
+    return "unpriced"
+
+
+def _routing_class_rates(model):
+    """$/MTok per token class for one model id, from its own generation card.
+
+    Probes _get_model_cost so every provider and generation card
+    (Opus 5.5 $4/$20, Opus 4.1 $15/$75, Sonnet 5.5 cache reads $0.10, ...)
+    prices exactly as the rest of the product does. Returns None unless the id has
+    an exact rate card (see _routing_model_status): an unknown model is not free
+    and a missing generation is not its family's price, so callers leave such a
+    model out of a comparison instead of pricing it at zero or at a stand-in rate.
+    """
+    # Family pseudo-ids from the model-daily mix; a bare "sonnet_legacy" would
+    # otherwise resolve to the current Sonnet card.
+    probe = "claude-sonnet-4-6" if model == "sonnet_legacy" else model
+    if not _routing_card_exact(probe):
+        return None
+    try:
+        m = 1
+        rates = {
+            "fresh_input": _get_model_cost(probe, m, 0),
+            "output": _get_model_cost(probe, 0, m),
+            "cache_read": _get_model_cost(probe, 0, 0, m),
+            "cache_create_5m": _get_model_cost(probe, 0, 0, 0, m, cache_create_1h=0, cache_create_5m=m),
+            "cache_create_1h": _get_model_cost(probe, 0, 0, 0, m, cache_create_1h=m, cache_create_5m=0),
+        }
+        rates = {key: value * 1_000_000 for key, value in rates.items()}
+    except Exception:
+        return None
+    if not any(v > 0 for v in rates.values()):
+        return None
+    # Rows without a class split are priced at the input rate (conservative).
+    rates["unsplit"] = rates["fresh_input"]
+    return rates
+
+
+_GENERATION_KEY_RE = re.compile(r"^(opus|sonnet|haiku|fable)_(\d+)(?:_(\d+))?$")
+
+
+def _newest_generation_model(family):
+    """Model id of the newest generation card of a Claude family in the active
+    rate table, or None. Legacy Sonnet cards are not generation cards."""
+    try:
+        tier = _load_pricing_tier()
+        cards = PRICING_TIERS.get(tier, PRICING_TIERS["anthropic"])["claude_models"]
+        best = None
+        for key in cards:
+            m = _GENERATION_KEY_RE.match(key)
+            if m and m.group(1) == family:
+                gen = (int(m.group(2)), int(m.group(3) or 0))
+                if best is None or gen > best[0]:
+                    best = (gen, key)
+        if best:
+            major, minor = best[0]
+            return f"claude-{family}-{major}-{minor}" if best[1].count("_") == 2 else f"claude-{family}-{major}"
+    except Exception:
+        pass
+    return None
+
+
+def _routing_target_model():
+    """Model id of the lighter arm routing is priced against: the newest Sonnet
+    generation card in the active rate table."""
+    return _newest_generation_model("sonnet") or "sonnet"
+
+
+def _routing_reference_model(family):
+    """The model id whose card values a family in the standardized routing
+    comparison, in both arms: the newest generation card of its tier (legacy
+    Sonnet is valued as Sonnet). Other labels (provider models) stand for
+    themselves."""
+    if family == "sonnet_legacy":
+        family = "sonnet"
+    return _newest_generation_model(family) or family
+
+
+def _bucket_int(value):
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _add_routing_buckets(dst, parts):
+    """Add one per-model usage bucket ({fresh_input, cache_read, cache_create,
+    cache_create_1h, cache_create_5m, output}) into class totals. Cache writes
+    without a TTL split are priced at the 5-minute rate, as _get_model_cost does."""
+    cc = _bucket_int(parts.get("cache_create"))
+    h1 = _bucket_int(parts.get("cache_create_1h"))
+    m5 = _bucket_int(parts.get("cache_create_5m"))
+    m5 += max(0, cc - h1 - m5)
+    dst["fresh_input"] = dst.get("fresh_input", 0) + _bucket_int(parts.get("fresh_input"))
+    dst["cache_read"] = dst.get("cache_read", 0) + _bucket_int(parts.get("cache_read"))
+    dst["output"] = dst.get("output", 0) + _bucket_int(parts.get("output"))
+    dst["cache_create_1h"] = dst.get("cache_create_1h", 0) + h1
+    dst["cache_create_5m"] = dst.get("cache_create_5m", 0) + m5
+
+
+def _routing_pending_sessions(days=30, since=None):
+    """Window sessions whose usage collect has not finished re-reading.
+
+    A row counts when its transcript is still on disk and either its per-day
+    usage is missing (the daily-usage backfill rebuilds it) or, for a Claude
+    Code transcript under the projects folder that collect walks, it was parsed
+    by an older usage parser (collect re-parses it). A row whose transcript is
+    gone keeps its stored numbers and never counts. Never raises; 0 on error."""
+    try:
+        if not TRENDS_DB.exists():
+            return 0
+        cutoff = str(since)[:10] if since else (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        conn = _init_trends_db()
+        try:
+            has_version = "usage_parser_version" in {
+                r[1] for r in conn.execute("PRAGMA table_info(session_log)").fetchall()}
+            rows = conn.execute(
+                "SELECT jsonl_path, daily_usage_json IS NULL, "
+                + ("usage_parser_version" if has_version else "NULL")
+                + " FROM session_log WHERE date >= ? AND jsonl_path LIKE '%.jsonl'",
+                (cutoff,)).fetchall()
+        finally:
+            conn.close()
+        projects = os.path.normcase(os.path.abspath(str(CLAUDE_DIR / "projects"))) + os.sep
+        walked = not _use_codex_session_adapter()
+        pending = 0
+        for path, daily_missing, version in rows:
+            stale = (has_version and walked
+                     and (version is None or int(version) < _USAGE_PARSER_VERSION)
+                     and os.path.normcase(os.path.abspath(path)).startswith(projects))
+            if (daily_missing or stale) and os.path.exists(path):
+                pending += 1
+        return pending
+    except (sqlite3.Error, OSError, TypeError, ValueError):
+        return 0
+
+
+def _routing_usage_by_model(days=30, since=None):
+    """Token usage per model id and token class over the window.
+
+    Returns {model_id: {class: tokens}} (classes in _ROUTING_CLASSES). Source per
+    session row, best first:
+      1. daily_usage_json: per-day, per-model class buckets (parent + subagents),
+         cut to the window by day.
+      2. model_usage_breakdown_json: per-model class buckets for the session; any
+         tokens in all_model_usage_json beyond those buckets (subagent work) go
+         to "unsplit".
+      3. all_model_usage_json / model_usage_json: token totals with no class
+         split, all "unsplit".
+    Never raises; empty when there is no data.
+    """
+    out = {}
+    try:
+        if not TRENDS_DB.exists():
+            return out
+        cutoff = str(since)[:10] if since else (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        conn = _init_trends_db()
+        try:
+            rows = conn.execute(
+                "SELECT date, daily_usage_json, model_usage_breakdown_json, "
+                "all_model_usage_json, model_usage_json FROM session_log WHERE date >= ?",
+                (cutoff,),
+            ).fetchall()
+        finally:
+            conn.close()
+        for row_date, du_raw, mb_raw, amu_raw, mu_raw in rows:
+            du = _safe_json_dict(du_raw)
+            if du:
+                undated_day = _undated_bill_day(du, row_date)
+                for day, models in du.items():
+                    day = undated_day if day == UNDATED_USAGE_KEY else day
+                    if not isinstance(models, dict) or str(day) < cutoff:
+                        continue
+                    for model, parts in models.items():
+                        if isinstance(parts, dict) and _normalize_model_name(model):
+                            _add_routing_buckets(out.setdefault(model, {}), parts)
+                continue
+            totals = _safe_json_dict(amu_raw) or _safe_json_dict(mu_raw)
+            mb = _safe_json_dict(mb_raw)
+            for model, parts in mb.items():
+                if isinstance(parts, dict) and _normalize_model_name(model):
+                    dst = out.setdefault(model, {})
+                    before = sum(dst.get(k, 0) for k in _ROUTING_BILLABLE_CLASSES)
+                    _add_routing_buckets(dst, parts)
+                    split = sum(dst.get(k, 0) for k in _ROUTING_BILLABLE_CLASSES) - before
+                    extra = _bucket_int(totals.get(model)) - split
+                    if extra > 0:
+                        dst["unsplit"] = dst.get("unsplit", 0) + extra
+            for model, tokens in totals.items():
+                if model not in mb and _normalize_model_name(model):
+                    dst = out.setdefault(model, {})
+                    dst["unsplit"] = dst.get("unsplit", 0) + _bucket_int(tokens)
+    except (sqlite3.Error, OSError):
+        return {}
+    return out
 
 
 def _earliest_model_mix(lookback_days=14):
@@ -50693,7 +53196,7 @@ def _earliest_model_mix(lookback_days=14):
 
 # Share of remaining Opus tokens assumed routable to a cheaper model (grunt
 # work: data gathering, search, simple edits). Conservative + configurable.
-_ROUTABLE_OPUS_FRACTION = _float_env("TOKEN_OPTIMIZER_ROUTABLE_OPUS_FRACTION", 0.3)
+_ROUTABLE_OPUS_FRACTION = _float_env("TOKEN_OPTIMIZER_ROUTABLE_OPUS_FRACTION", 0.2)
 
 
 # Explicit pre-Token-Optimizer Opus share, when the user knows their baseline
@@ -50768,19 +53271,46 @@ def _compute_model_routing_savings(days=30, since=None):
 
     REALIZED: compare current model mix against the install-era baseline (snapshot
     model_mix, else the earliest model_daily window). If the user moved tokens off
-    expensive models, the counterfactual cost (current volume priced at the
-    baseline mix) minus the actual current cost is real, measured savings. This is
-    the rare pillar that can show a genuine realized win (e.g. Opus 94% -> 67%).
+    expensive models, the counterfactual cost (current volume spread over the
+    baseline mix) minus the current cost, both on one standardized price
+    schedule, is the estimated saving. This is the pillar that can show a
+    realized win (e.g. Opus 94% -> 67%).
+    Models priced above the baseline's costliest model (a premium model the user
+    chose) are left out of the comparison and the rest renormalized, so they do not
+    cancel a real shift toward lighter models; `premium_share` and
+    `premium_cost_usd` report them separately.
 
-    POTENTIAL: a conservative share of remaining Opus tokens routed to Sonnet,
-    priced at the rate delta -- the opportunity still on the table.
+    POTENTIAL: an assumption, not a measurement. A fixed share
+    (`routable_fraction`) of Opus fresh input and output is priced at the
+    Opus-to-Sonnet API rate delta. Opus usage without a class split is left out
+    and counted in `potential_unsplit_excluded_tokens`. Cache reads and
+    writes represent main-session history: switching models rebuilds that cache,
+    while routine subagent work carries its own smaller context. The result is
+    shown separately from concrete opportunities.
 
-    Rates blend each model's input + output $/MTok by the measured output fraction
-    (SUM(output)/SUM(input+output) from session_log). Pricing everything at the
-    input rate alone understated routing savings 1.5-2x because output is up to 5x
-    input ($25 vs $5/MTok on Opus). Cache-class tokens stay input-priced
-    (conservative). The blend is grounded in the user's own token mix, not a
-    multiplier. Labelled measured (realized) and opportunity (potential). Never raises.
+    Realized routing prices fresh input, cache creation, cache reads, output and
+    unsplit usage by class. Input, cache write, cache read and output use their
+    respective rates; unsplit usage uses the input rate and is reported as
+    `unsplit_tokens`. Potential uses the model's own generation card for fresh
+    input and output, and the newest Sonnet card for its target.
+    The class split comes from per-day, per-model session usage.
+
+    Realized routing is a standardized family comparison: the remaining work's
+    class volumes per current family, and the same class volumes spread over the
+    baseline family shares, are valued on one fixed schedule (the newest card of
+    each family's tier) chosen independently of the window's volumes. A
+    generation change inside a family therefore cannot create routing credit.
+    The exact-card cost of the same work and its gap to the standardized value
+    are reported separately (`actual_cost_usd`, `generation_price_delta_usd`).
+    The schedule is assumed because the frozen baseline records no generations,
+    so the result is labelled "estimated".
+
+    Models with no exact rate card are unpriced, not free (an unknown Claude
+    generation does not borrow its family's price): they are left out of the
+    comparison and reported as `unpriced_models`, `unpriced_tokens` and
+    `unpriced_share`. Explicitly free tiers (":free") are left out the same way
+    and reported as `free_models`.
+    Labelled estimated (realized) and opportunity (potential). Never raises.
     """
     # `zero` is returned only on no-data / error paths (no current mix, no
     # baseline, or an exception). Label it "unavailable" so a $0 here reads as
@@ -50788,6 +53318,15 @@ def _compute_model_routing_savings(days=30, since=None):
     # sets its own evidence="measured".
     zero = {
         "realized_cost_usd": 0.0, "potential_cost_usd": 0.0,
+        "potential_tokens": 0, "potential_tokens_monthly": 0,
+        "potential_billable_tokens": 0, "potential_by_class": {}, "unsplit_tokens": 0,
+        "potential_unsplit_excluded_tokens": 0,
+        "premium_models": [], "premium_share": 0.0, "premium_cost_usd": 0.0,
+        "unpriced_models": [], "unpriced_tokens": 0, "unpriced_share": 0.0,
+        "free_models": [], "free_tokens": 0,
+        "baseline_rate_basis": {}, "baseline_reference_priced": [],
+        "standardized_baseline_cost_usd": 0.0, "standardized_actual_cost_usd": 0.0,
+        "actual_cost_usd": 0.0, "generation_price_delta_usd": 0.0,
         "baseline_opus_share": 0.0, "current_opus_share": 0.0,
         "baseline_source": None, "evidence": "unavailable",
     }
@@ -50825,38 +53364,249 @@ def _compute_model_routing_savings(days=30, since=None):
         if not baseline_shares:
             return zero
 
-        # Blend input + output rates by the user's measured output fraction so the
-        # output-token delta (the bulk of the routing win) is not priced away.
-        out_frac = _session_output_fraction(days=days)
+        # While collect is still re-reading window sessions (an older usage
+        # parser, or per-day usage not yet rebuilt), their per-class usage is
+        # incomplete and the figure would move pass to pass. Report the count
+        # instead of a number.
+        pending = _routing_pending_sessions(days=days, since=since)
+        if pending:
+            return {**zero, "evidence": "pending", "pending_sessions": pending,
+                    "baseline_source": baseline_source}
 
-        # Cost of the current token volume under each mix (per-MTok blended rates).
-        def _blended_rate(shares):
-            return sum(share * _model_blended_rate_per_mtok(model, out_frac) for model, share in shares.items())
+        # Rows of per-model, per-class usage. When the DB holds none (adapters
+        # that only record model totals), the model-daily mix stands in as
+        # unsplit tokens priced at the input rate.
+        usage = _routing_usage_by_model(days=days, since=since)
+        from_rows = bool(usage)
+        if not from_rows:
+            usage = {m: {"unsplit": share * cur_total} for m, share in cur_shares.items()}
 
-        baseline_rate = _blended_rate(baseline_shares)
-        current_rate = _blended_rate(cur_shares)
-        # cur_total (model_daily.total_tokens) is already BILLABLE tokens only
-        # (fresh_input + cache_create + output; cache-reads excluded — see
-        # model_usage in _parse_session_jsonl). Pricing the full billable volume at
-        # the per-model rate delta is correct; if anything it slightly UNDER-states,
-        # since output and cache-writes cost more than the plain input rate used here.
-        realized_cost = max(0.0, (baseline_rate - current_rate) * cur_total / 1_000_000)
+        # Mix keys from the model-daily fallback are already family buckets.
+        fam_of = {m: (_normalize_model_name(m) if from_rows else m) for m in usage}
+        rates_cache = {}
 
-        # Potential: route a conservative share of remaining Opus to Sonnet.
+        def _rates(model):
+            if model not in rates_cache:
+                rates_cache[model] = _routing_class_rates(model)
+            return rates_cache[model]
+
+        # Only a model with an exact rate card is compared. A model with no card
+        # is unpriced (not free) and an explicitly free tier is not credited as a
+        # saving: both keep their token counts, are reported, and stay out of
+        # every mix and cost below.
+        priced_usage = {}
+        unpriced_by_model = {}
+        free_by_model = {}
+        for m, classes in usage.items():
+            if not fam_of[m]:
+                continue
+            if _rates(m) is not None:
+                priced_usage[m] = classes
+                continue
+            tokens = sum(classes.get(k, 0) for k in _ROUTING_CLASSES)
+            bucket = free_by_model if _routing_model_status(m) == "free" else unpriced_by_model
+            bucket[m] = bucket.get(m, 0) + tokens
+
+        fam_models = {}
+        for m in priced_usage:
+            fam_models.setdefault(fam_of[m], []).append(m)
+        fam_classes = {}
+        class_totals = {k: 0.0 for k in _ROUTING_CLASSES}
+        for fam, ms in fam_models.items():
+            dst = fam_classes[fam] = {k: 0.0 for k in _ROUTING_CLASSES}
+            for m in ms:
+                for k in _ROUTING_CLASSES:
+                    dst[k] += priced_usage[m].get(k, 0)
+                    class_totals[k] += priced_usage[m].get(k, 0)
+        pooled = sum(class_totals.values())
+        window_billable = sum(
+            sum(c.get(k, 0) for k in _ROUTING_BILLABLE_CLASSES) for c in priced_usage.values()
+        )
+
+        def _unpriced_report():
+            return [mid for mid, _t in sorted(unpriced_by_model.items(), key=lambda kv: -kv[1])]
+
+        def _free_report():
+            return [mid for mid, _t in sorted(free_by_model.items(), key=lambda kv: -kv[1])]
+
+        unpriced_tokens = int(sum(unpriced_by_model.values()))
+        free_tokens = int(sum(free_by_model.values()))
+
+        def _coverage_fields():
+            total = unpriced_tokens + free_tokens + pooled
+            return {
+                "unpriced_models": _unpriced_report(), "unpriced_tokens": unpriced_tokens,
+                "unpriced_share": round(unpriced_tokens / total, 4) if total > 0 else 0.0,
+                "free_models": _free_report(), "free_tokens": free_tokens,
+            }
+
+        if window_billable <= 0:
+            return {**zero, **_coverage_fields()}
+
+        # STANDARDIZED ROUTING VALUATION. Realized routing measures a shift of work
+        # between model families, so both arms are valued on one fixed price
+        # schedule: one rate per family and token class, chosen without looking at
+        # how much of that family ran in the window. The frozen baseline records
+        # shares by family only (no generation), so the schedule is a documented
+        # reference-card scenario: each family at the newest generation card of
+        # its tier (legacy Sonnet counts as Sonnet; a provider model stands for
+        # itself). It is the same for present and absent families, so one token of
+        # any generation changes the result only by that token's own contribution,
+        # and a generation change within a family cannot become routing credit.
+        # What the work actually cost at the exact cards used is reported
+        # separately (`actual_cost_usd`, `generation_price_delta_usd`). Because the
+        # scenario is assumed, the result is labelled estimated. A baseline that
+        # recorded generations would replace the reference card in
+        # `_fixed_family_rates` for the families it covers.
+        fam_rate_cache = {}
+        fam_rate_basis = {}
+
+        def _fixed_family_rates(fam):
+            if fam in fam_rate_cache:
+                return fam_rate_cache[fam]
+            ref_model = _routing_reference_model(fam)
+            out = _rates(ref_model)
+            if out is None and fam_models.get(fam):
+                # No reference card for a family that did run: its lowest-sorted
+                # model id stands in, so the choice never depends on input order.
+                ref_model = sorted(fam_models[fam])[0]
+                out = _rates(ref_model)
+            if out is not None:
+                fam_rate_basis[fam] = f"reference:{ref_model}"
+            fam_rate_cache[fam] = out
+            return out
+
+        def _renormalized(shares):
+            kept = {f: s for f, s in shares.items() if s and s > 0 and _fixed_family_rates(f) is not None}
+            total = sum(kept.values())
+            return {f: s / total for f, s in kept.items()} if total > 0 else {}
+
+        base_priced = _renormalized(baseline_shares)
+
+        # Effective $/MTok of a family under the window's own class mix.
+        def _family_price(f):
+            if pooled <= 0:
+                return 0.0
+            r = _fixed_family_rates(f)
+            return sum(class_totals[k] * r[k] for k in _ROUTING_CLASSES) / pooled
+
+        # Models priced above the most expensive model of the baseline are the
+        # user's own choice, not routing: they are taken out of the comparison
+        # so it measures the shift toward lighter models. Their share and cost
+        # are reported separately. A model must be dearer than the baseline's
+        # costliest family on the window's pooled mix AND on the output card:
+        # cache-read rates alone do not rank tiers across generations (Sonnet 4.6
+        # reads cache at $0.30, Opus 5.5 at $0.20), so a lighter older model is
+        # never mistaken for a premium one.
+        ceiling_fam = max(base_priced, key=_family_price, default=None)
+        baseline_ceiling = _family_price(ceiling_fam) if ceiling_fam else 0.0
+        ceiling_output = _fixed_family_rates(ceiling_fam)["output"] if ceiling_fam else 0.0
+        premium = sorted(
+            f for f in fam_classes
+            if _family_price(f) > baseline_ceiling > 0 and _fixed_family_rates(f)["output"] > ceiling_output
+        )
+        premium_share = sum(cur_shares.get(f, 0.0) for f in premium)
+        premium_cost = sum(
+            classes.get(k, 0) * _rates(m)[k]
+            for m, classes in priced_usage.items() if fam_of[m] in premium
+            for k in _ROUTING_CLASSES
+        ) / 1_000_000
+
+        # REALIZED: the remaining work's class volumes, per current family, valued
+        # on the standardized schedule, against the same total class volumes spread
+        # over the baseline family shares on that same schedule. Only the shift
+        # between families moves the number. Never negative. Premium and unpriced
+        # models are outside both arms.
+        kept_models = [m for m in priced_usage if fam_of[m] not in premium]
+        kept_totals = {k: sum(priced_usage[m].get(k, 0) for m in kept_models) for k in _ROUTING_CLASSES}
+        standardized_actual = sum(
+            priced_usage[m].get(k, 0) * _fixed_family_rates(fam_of[m])[k]
+            for m in kept_models for k in _ROUTING_CLASSES
+        ) / 1_000_000
+        standardized_baseline = sum(
+            kept_totals[k] * sum(s * _fixed_family_rates(f)[k] for f, s in base_priced.items())
+            for k in _ROUTING_CLASSES
+        ) / 1_000_000 if base_priced else 0.0
+        # Exact-card API-equivalent cost of the same work (each model's own card).
+        actual_cost = sum(
+            priced_usage[m].get(k, 0) * _rates(m)[k] for m in kept_models for k in _ROUTING_CLASSES
+        ) / 1_000_000
+        realized_cost = max(0.0, standardized_baseline - standardized_actual) if base_priced and kept_models else 0.0
+
+        # POTENTIAL: a fixed share of remaining Opus fresh input and output, priced
+        # at each Opus model's own card minus the current Sonnet card. It is
+        # computed apart from the realized figure: with no target card the
+        # potential is zero and the realized routing above is unaffected. Usage
+        # without a class split cannot be told apart as input or output, so it is
+        # left out and its count is reported.
+        target = _routing_target_model()
+        target_rates = _rates(target)
+        by_class = {k: {"tokens": 0, "usd": 0.0} for k in _ROUTING_CLASSES}
+        unsplit_excluded = 0.0
+        for m, classes in priced_usage.items():
+            if fam_of[m] != "opus":
+                continue
+            unsplit_excluded += classes.get("unsplit", 0)
+            if target_rates is None:
+                continue
+            m_rates = _rates(m)
+            for k in ("fresh_input", "output"):
+                tok = classes.get(k, 0)
+                if tok:
+                    by_class[k]["tokens"] += tok * _ROUTABLE_OPUS_FRACTION
+                    by_class[k]["usd"] += tok * _ROUTABLE_OPUS_FRACTION * (m_rates[k] - target_rates[k]) / 1_000_000
+        potential_cost = max(0.0, sum(v["usd"] for v in by_class.values()))
+        potential_tokens = int(round(sum(v["tokens"] for v in by_class.values())))
+        potential_tokens_monthly = int(round(potential_tokens / max(days, 1) * 30))
+        potential_billable_tokens = int(round(sum(by_class[k]["tokens"] for k in _ROUTING_BILLABLE_CLASSES)))
+        unsplit_tokens = int(round(class_totals["unsplit"]))
+        potential_unsplit_excluded = int(round(unsplit_excluded))
         opus_share = cur_shares.get("opus", 0.0)
-        opus_tokens = opus_share * cur_total
-        opus_rate = _model_blended_rate_per_mtok("opus", out_frac)
-        sonnet_rate = _model_blended_rate_per_mtok("sonnet", out_frac)
-        potential_cost = max(0.0, opus_tokens * _ROUTABLE_OPUS_FRACTION * (opus_rate - sonnet_rate) / 1_000_000)
 
         return {
             "realized_cost_usd": round(realized_cost, 4),
             "potential_cost_usd": round(potential_cost, 4),
+            # Routable tokens cover fresh input, output, and usage without a class split.
+            "potential_tokens": potential_tokens,
+            "potential_tokens_monthly": potential_tokens_monthly,
+            "potential_billable_tokens": potential_billable_tokens,
+            "potential_token_classes": [k for k in _ROUTING_CLASSES if by_class[k]["tokens"]],
+            "potential_by_class": {
+                k: {"tokens": int(round(v["tokens"])), "usd": round(v["usd"], 4)}
+                for k, v in by_class.items() if v["tokens"] or v["usd"]
+            },
+            "potential_basis": "api_rate_equivalent",
+            "target_model": target,
+            "pricing_basis": "per_token_class_generation_card",
+            "unsplit_tokens": unsplit_tokens,
+            # Opus tokens without a class split, left out of the potential above.
+            "potential_unsplit_excluded_tokens": potential_unsplit_excluded,
+            # Premium models (priced above the baseline's costliest model) are the
+            # user's own choice: excluded from realized routing, shown here.
+            "premium_models": premium,
+            "premium_share": round(premium_share, 4),
+            "premium_cost_usd": round(premium_cost, 4),
+            # Models with no exact rate card (unpriced) and explicitly free tiers are
+            # left out of the comparison, never priced at zero or at a stand-in rate.
+            **_coverage_fields(),
             "baseline_opus_share": round(baseline_shares.get("opus", 0.0), 4),
             "current_opus_share": round(opus_share, 4),
             "baseline_source": baseline_source,
             "routable_fraction": _ROUTABLE_OPUS_FRACTION,
-            "evidence": "measured",
+            # Realized routing is a standardized comparison on a fixed price
+            # schedule (newest card per family) in both arms, because the baseline
+            # records no generations. That schedule is an assumption, so the
+            # result is an estimate. The exact-card cost of the same work and its
+            # gap to the standardized valuation are reported apart: the gap is
+            # price/generation, never routing.
+            "realized_basis": "standardized_reference_card",
+            "baseline_rate_basis": {f: fam_rate_basis[f] for f in sorted(set(base_priced) | set(fam_classes)) if f in fam_rate_basis},
+            "baseline_reference_priced": sorted(base_priced),
+            "standardized_baseline_cost_usd": round(standardized_baseline, 4),
+            "standardized_actual_cost_usd": round(standardized_actual, 4),
+            "actual_cost_usd": round(actual_cost, 4),
+            "generation_price_delta_usd": round(actual_cost - standardized_actual, 4),
+            "evidence": "estimated",
         }
     except Exception:
         return zero
@@ -50949,12 +53699,17 @@ def _estimate_cache_drop_savings(days=30):
     When a session goes quiet longer than the cache TTL, the cached prefix
     expires and the next turn pays a full cache-WRITE again instead of a cheap
     cache-read. Sessions whose max call gap exceeds the TTL almost certainly ate
-    at least one such reload. We estimate the avoidable cost as
-    (drops x per_session_prefix x 5m-write rate) -- the behavioral opportunity
-    Token Optimizer coaches away (compact before a break, or use the 1h cache).
-    Labelled estimated/opportunity. Never raises.
+    at least one such reload. The avoidable cost is the re-written prefix at the
+    5-minute cache-write rate minus the cache-read rate it would have cost with
+    the cache alive, priced per exact model generation from the models those
+    sessions recorded (cache-write tokens as the weight). A model without an exact
+    rate card adds nothing and is reported as `unpriced_share`; sessions with no
+    per-model record use the window's model mix. This is the behavioral
+    opportunity Token Optimizer coaches away (compact before a break, or use the
+    1h cache). Labelled estimated/opportunity. Never raises.
 
-    Returns {drop_sessions, est_drops, prefix_tokens, cost_saved_usd, evidence}.
+    Returns {drop_sessions, est_drops, prefix_tokens, cost_saved_usd, by_class,
+    rate_basis, unpriced_share, evidence}.
     OPPORTUNITY tier: counts drops that ALREADY happened (TO does not yet prevent
     them); the cost is reclaimable by compacting before breaks / using the 1h cache,
     not a realized saving. Never summed into the realized total.
@@ -50969,13 +53724,16 @@ def _estimate_cache_drop_savings(days=30):
         try:
             # Quality filter removed (audit 2026-08-29): a short automation
             # session that had a cache drop is still a real cache drop.
+            drop_where = ("FROM session_log "
+                          "WHERE date >= ? AND max_call_gap_seconds > ? "
+                          "AND input_tokens IS NOT NULL "
+                          "AND COALESCE(is_sidechain, 0) = 0")
             drop_sessions = conn.execute(
-                "SELECT COUNT(*) FROM session_log "
-                "WHERE date >= ? AND max_call_gap_seconds > ? "
-                "AND input_tokens IS NOT NULL "
-                "AND COALESCE(is_sidechain, 0) = 0",
-                (cutoff, _CACHE_DROP_GAP_SECONDS),
+                "SELECT COUNT(*) " + drop_where, (cutoff, _CACHE_DROP_GAP_SECONDS),
             ).fetchone()[0] or 0
+            breakdowns = [r[0] for r in conn.execute(
+                "SELECT model_usage_breakdown_json " + drop_where,
+                (cutoff, _CACHE_DROP_GAP_SECONDS))] if drop_sessions > 0 else []
         finally:
             conn.close()
         if drop_sessions <= 0:
@@ -50985,15 +53743,54 @@ def _estimate_cache_drop_savings(days=30):
         prefix = _per_session_prefix_tokens(fallback=_current_overhead_tokens() or 0)
         if prefix <= 1:
             return {**zero, "drop_sessions": int(drop_sessions)}
-        _, write_5m_rate, _ = _active_model_cache_rates()
         # Conservative: one avoidable reload per qualifying session.
         est_drops = int(drop_sessions)
-        cost = est_drops * prefix * write_5m_rate / 1_000_000
+        tier_data = PRICING_TIERS.get(_load_pricing_tier(), PRICING_TIERS["anthropic"])
+        weights = {}
+        for blob in breakdowns:
+            try:
+                recorded = json.loads(blob) if blob else None
+            except (TypeError, ValueError):
+                continue
+            for model, parts in (recorded.items() if isinstance(recorded, dict) else ()):
+                written = parts.get("cache_create") if isinstance(parts, dict) else None
+                if isinstance(written, int) and not isinstance(written, bool) and written > 0:
+                    weights[model] = weights.get(model, 0) + written
+        total_weight = sum(weights.values())
+        write_rate = read_rate = 0.0
+        unpriced_share = 0.0
+        rate_basis = "session_models"
+        priced_weight = 0
+        for model, weight in weights.items():
+            card = _counted_exact_card(model, tier_data) or {}
+            if card.get("cache_write") is None or card.get("cache_read") is None:
+                continue
+            priced_weight += weight
+            write_rate += weight * float(card["cache_write"]) / total_weight
+            read_rate += weight * float(card["cache_read"]) / total_weight
+        if priced_weight:
+            unpriced_share = round(1 - priced_weight / total_weight, 4)
+        elif weights:
+            # Every recorded model lacks an exact card: nothing is priced, so the
+            # opportunity is zero and the whole share is reported as unpriced.
+            unpriced_share = 1.0
+        else:
+            read_rate, write_rate, _ = _mix_cache_rates(days)
+            rate_basis = "model_mix"
+        tokens = est_drops * int(prefix)
+        written_usd = tokens * write_rate / 1_000_000
+        read_usd = tokens * read_rate / 1_000_000
         return {
             "drop_sessions": int(drop_sessions),
             "est_drops": est_drops,
             "prefix_tokens": int(prefix),
-            "cost_saved_usd": round(cost, 4),
+            "cost_saved_usd": round(written_usd - read_usd, 4),
+            "by_class": {
+                "cache_write_5m": {"tokens": tokens, "usd": round(written_usd, 4)},
+                "cache_read_instead": {"tokens": tokens, "usd": round(-read_usd, 4)},
+            },
+            "rate_basis": rate_basis,
+            "unpriced_share": unpriced_share,
             "evidence": "opportunity",
         }
     except Exception:
@@ -51975,6 +54772,7 @@ def _subagent_pool_savings(baseline_opus_share, days=30, tier=None, fresh=False,
         # Aggregate per-model billed token classes across sidechain sessions only.
         by_model = {}  # model -> {"fi","cw","cr","out"}
         n_side = 0
+        request_ledger = {}  # a request repeated in another transcript counts once (largest usage)
         for jf in candidates:
             # Classify BEFORE parsing. Fully parsing every main transcript just
             # to read its is_sidechain flag was the dashboard's cold-regen 45s+
@@ -51991,6 +54789,7 @@ def _subagent_pool_savings(baseline_opus_share, days=30, tier=None, fresh=False,
             if not parsed or not parsed.get("is_sidechain"):
                 continue
             n_side += 1
+            parsed = _parsed_net_of_ledger(parsed, request_ledger)
             for model, bd in (parsed.get("model_usage_breakdown") or {}).items():
                 if not model or str(model).startswith("<"):
                     continue
@@ -52417,6 +55216,69 @@ def _stable_workload_anchor(before, month):
         return None, month
 
 
+_TRANSFORMATION_FLAT_BAND = 0.05
+
+
+def _crosscheck_flat(weight_pool, counterfactual_usd):
+    """True when both work-unit transformations sit within 5% of spend.
+
+    Figures that close to zero are inside the noise of how work is counted,
+    so the honest reading is "no measurable change", not a disagreement."""
+    try:
+        cf = float(counterfactual_usd)
+        a = float(weight_pool.get("transformation_usd"))
+        b = float((weight_pool.get("crosscheck") or {}).get("transformation_usd"))
+    except (TypeError, ValueError, AttributeError):
+        return False
+    if not all(math.isfinite(x) for x in (cf, a, b)) or cf <= 0:
+        return False
+    band = _TRANSFORMATION_FLAT_BAND * cf
+    return abs(a) <= band and abs(b) <= band
+
+
+def _crosscheck_agrees(primary_usd, crosscheck_usd):
+    """Whether the two independent work-unit transformations agree.
+
+    The per-API-call and per-message methods measure the same workload through
+    two different units, so the transformation is only headline-worthy when
+    they land within 10% of each other on the same side of zero. Returns
+    (agrees, gap_pct) where gap_pct is |a-b| as a percentage of max(|a|,|b|),
+    or None when either input is missing or non-finite.
+    """
+    try:
+        a = float(primary_usd)
+        b = float(crosscheck_usd)
+    except (TypeError, ValueError):
+        return False, None
+    if not (math.isfinite(a) and math.isfinite(b)):
+        return False, None
+    denom = max(abs(a), abs(b))
+    gap = abs(a - b) / denom if denom > 0 else 0.0
+    same_sign = (a >= 0) == (b >= 0)
+    return same_sign and gap <= 0.10, round(gap * 100, 1)
+
+
+def _signed_usd(value):
+    """Format a signed dollar figure with the sign before the symbol
+    (-$1,234, not $-1,234)."""
+    v = float(value or 0.0)
+    return f"-${abs(v):,.0f}" if v < 0 else f"${v:,.0f}"
+
+
+def _crosscheck_verdict(pool):
+    """Recompute the cross-check verdict from the pool's raw figures.
+
+    A stored `agrees` flag is payload for JSON consumers only; a stale or
+    hand-edited flag must never overrule what the numbers say. No cross-check
+    means nothing to disagree with."""
+    cross = (pool or {}).get("crosscheck") or {}
+    if not cross:
+        return True
+    agrees, _ = _crosscheck_agrees(pool.get("transformation_usd"),
+                                 cross.get("transformation_usd"))
+    return agrees
+
+
 def _session_weight_pool_savings(cutoff, days=30, tier=None, activity_window=None):
     """THE volume lever: cost per UNIT OF WORK, over the whole parent population.
 
@@ -52539,7 +55401,10 @@ def _session_weight_pool_savings(cutoff, days=30, tier=None, activity_window=Non
         transformation = (before_rate - now_rate) * n_units
         counterfactual = before_rate * n_units
         # Cross-check on the OTHER work unit; disclosed, never summed. The two
-        # units are expected to agree within roughly 10% of each other.
+        # units only corroborate the headline when they agree within 10% on the
+        # same side of zero. The verdict is stored for JSON consumers; Python
+        # decision paths recompute it from the raw figures (_crosscheck_verdict)
+        # rather than trust the stored flag.
         crosscheck = None
         if unit == "api_call" and b_msgs > 0 and n_msgs > 0:
             crosscheck = {"unit": "message",
@@ -52547,6 +55412,11 @@ def _session_weight_pool_savings(cutoff, days=30, tier=None, activity_window=Non
         elif unit == "message" and b_calls > 0 and n_calls > 0:
             crosscheck = {"unit": "api_call",
                           "transformation_usd": (b_flat / b_calls - n_flat / n_calls) * n_calls}
+        if crosscheck is not None:
+            agrees, gap_pct = _crosscheck_agrees(
+                transformation, crosscheck["transformation_usd"])
+            crosscheck["agrees"] = agrees
+            crosscheck["gap_pct"] = gap_pct
         # Engine-priced variant (each era at its own recorded model mix): includes the
         # price/mix drift between eras, which is real money off the bill but is NOT
         # Token Optimizer's doing (generational repricing like Sonnet 4.6 -> Sonnet 5
@@ -52614,6 +55484,7 @@ def _price_parent_activity_window(conn, start, end, tier):
             paths.append((str(path), datetime.fromtimestamp(mtime).date().isoformat()))
             known.add(str(path))
     rows = []
+    request_ledger = {}  # a request repeated in another transcript counts once (largest usage)
     for name, recorded_date in paths:
         path = Path(name)
         if not path.exists():
@@ -52626,6 +55497,8 @@ def _price_parent_activity_window(conn, start, end, tier):
         parsed = _parse_session_jsonl(path, window_start=start, window_end=end)
         if parsed and parsed.get("is_sidechain"):
             continue
+        if parsed:
+            parsed = _parsed_net_of_ledger(parsed, request_ledger)
         if not parsed:
             parsed = {"total_input_tokens": 0, "total_output_tokens": 0,
                       "total_cache_create_1h": 0, "total_cache_create_5m": 0,
@@ -52637,6 +55510,7 @@ def _price_parent_activity_window(conn, start, end, tier):
         for child in children:
             cp = _parse_session_jsonl(child, window_start=start, window_end=end)
             if cp:
+                cp = _parsed_net_of_ledger(cp, request_ledger)
                 inp += cp["total_input_tokens"]
                 out += cp["total_output_tokens"]
                 cw1 += cp["total_cache_create_1h"]
@@ -52685,6 +55559,11 @@ def _weekly_full_savings(resets_at=None, now=None):
             start.isoformat(), days=7, activity_window=(start, end))
         if not pool:
             return None
+        if not _crosscheck_verdict(pool):
+            # The two work-unit methods disagree this week, so the
+            # whole-workload figure is not trustworthy enough to stand in for
+            # the metered one; the caller falls back to measured savings.
+            return None
         # Same conservative display cap as the Savings tab.
         saving = max(0.0, min(pool["transformation_usd"], pool["actual_usd"]))
         value = {"saved_usd": round(saving, 2), "start": start.isoformat(),
@@ -52721,6 +55600,8 @@ def _weight_pool_payload(pool):
     net-negative return paths so both describe the SAME arms the headline (or the
     shortfall) was built from."""
     cross = pool.get("crosscheck") or {}
+    cross_agrees, cross_gap = _crosscheck_agrees(
+        pool.get("transformation_usd"), cross.get("transformation_usd")) if cross else (True, None)
     return {
         "anchor_month": pool["anchor_month"],
         "work_unit": pool.get("work_unit"),
@@ -52740,6 +55621,8 @@ def _weight_pool_payload(pool):
         "crosscheck": ({
             "unit": cross.get("unit"),
             "transformation_usd": round(float(cross.get("transformation_usd", 0.0)), 2),
+            "agrees": cross_agrees,
+            "gap_pct": cross_gap,
         } if cross else None),
         "engine_priced_transformation_usd": round(
             float(pool.get("engine_priced_transformation_usd", 0.0)), 2),
@@ -52797,8 +55680,11 @@ def _estimate_before_after_savings(days=30, estimated_pools=None):
                `label` is presentational and may change),
              breakdown_caveat (str), evidence}.
     On an empty result, `reason` is one of "insufficient_history" / "net_negative" /
-    "no_recent_sessions" / "no_mix" / "unsupported_billing" / "estimated_billing"
-    (None when never computed). "unsupported_billing" is the GitHub Copilot case:
+    "methods_disagree" / "no_recent_sessions" / "no_mix" / "unsupported_billing" /
+    "estimated_billing" (None when never computed). "methods_disagree" is the
+    cross-check failure: the per-API-call and per-message transformations could
+    not be reconciled within 10%, so neither is headlined and both figures ride
+    on session_weight_pool for display. "unsupported_billing" is the GitHub Copilot case:
     premium-request metering has no token-dollar counterfactual, so nothing is
     rendered there. "estimated_billing" is the Antigravity case: it is
     subscription/credit metered, so only the labelled list-price estimate (R8)
@@ -53240,8 +56126,9 @@ def _estimate_before_after_savings(days=30, estimated_pools=None):
         # otherwise return transformation_state "ok" with a $0.00 headline that every
         # renderer gates off, recreating the silent empty card this branch exists to
         # eliminate ("no savings" must stay distinguishable from "the math broke").
-        if net < 0.01:
-            return {**zero, "before_sessions": bn, "after_sessions": recent_n,
+        # Both non-headlined states report the SAME real arms and real (signed) delta so the
+        # renderer can explain itself; `reason` / `transformation_state` carry which one.
+        not_headlined = {**zero, "before_sessions": bn, "after_sessions": recent_n,
                     "actual_monthly_usd": round(combined_actual, 2),
                     "counterfactual_monthly_usd": round(combined_cf, 2),
                     "main_actual_monthly_usd": round(actual_monthly, 2),
@@ -53302,14 +56189,33 @@ def _estimate_before_after_savings(days=30, estimated_pools=None):
                     "after_cache_hit": round(
                         (CR / (F + CW + CR)) if (F + CW + CR) > 0 else 0.0, 4),
                     "before_opus_label": _mix_label(before_shares),
-                    "net_shortfall_usd": round(net, 2),
-                    # When the session-weight pool drove the (negative) headline, its
-                    # arms -- not the frozen-anchor pair -- are the ones the net was
-                    # built from; surface them so the empty state explains itself.
+                    # When the session-weight pool drove the headline, its
+                    # arms -- not the frozen-anchor pair -- are the ones the net
+                    # was built from; surface them so the card explains itself.
                     "session_weight_pool": (_weight_pool_payload(weight_pool)
-                                            if weight_pool else None),
+                                            if weight_pool else None)}
+        if net < 0.01:
+            return {**not_headlined,
+                    "net_shortfall_usd": round(net, 2),
                     "transformation_state": "net_negative",
                     "reason": "net_negative"}
+        # A positive net is only headline-worthy when the two independent
+        # work-unit methods agree on it. When the per-API-call and per-message
+        # transformations are more than 10% apart (or on opposite sides of
+        # zero), neither figure is trustworthy enough to headline: the card
+        # reports both instead of picking one. Same non-headlined shape as
+        # net_negative; both disputed figures ride on session_weight_pool.
+        # Both work-unit methods inside a small band of spend means cost per
+        # unit of work did not measurably change: say "flat" rather than show
+        # two near-zero figures as a disagreement.
+        if weight_pool and _crosscheck_flat(weight_pool, combined_cf):
+            return {**not_headlined,
+                    "transformation_state": "flat",
+                    "reason": "flat"}
+        if weight_pool and not _crosscheck_verdict(weight_pool):
+            return {**not_headlined,
+                    "transformation_state": "methods_disagree",
+                    "reason": "methods_disagree"}
         # Combined headline = the honest net of every pool (== combined_cf - combined_actual,
         # equivalently main_delta + subagent_delta + compression + verbosity). The per-lever
         # waterfall below decomposes exactly this quantity, so the breakdown reconciles to the
@@ -53608,7 +56514,7 @@ def _estimate_stale_reads_reclaimable(days=30):
         sessions = int(row[1] or 0)
         if tokens <= 0:
             return zero
-        rate = _estimate_compression_cost_per_mtok()
+        rate = _window_input_rate_per_mtok(days=days)
         return {
             "tokens": tokens,
             "cost_usd": round(tokens * rate / 1_000_000, 4),
@@ -53636,7 +56542,7 @@ def _progressive_disclosure_summary(days=30):
         try:
             rows = conn.execute(
                 "SELECT event_type, COUNT(*), COALESCE(SUM(tokens_saved),0) "
-                "FROM savings_events WHERE timestamp >= ? "
+                "FROM " + _counted_table(conn, "savings_events") + " WHERE timestamp >= ? "
                 "AND event_type IN ('tool_archive','tool_archive_reexpand') GROUP BY event_type",
                 (cutoff,),
             ).fetchall()
@@ -53651,6 +56557,38 @@ def _progressive_disclosure_summary(days=30):
     except (sqlite3.Error, OSError):
         pass
     return out
+
+
+def _logged_oneshot_pricing(by_category):
+    """Disclosure for the logged context removals in *by_category*.
+
+    A removal is logged when the hook fires, before the next call shows how the
+    provider billed the context it displaced, so every logged removal is priced
+    at the input rate: a minimum. Counts only categories that remove context.
+    """
+    events = tokens = 0
+    for key, entry in by_category.items():
+        removes_context = ((key in _COUNTED_SE_EVENT_TYPES and key != "tool_archive_reexpand")
+                           or (key in _V5_COMPRESSION_CATEGORIES
+                               and key not in _COUNTED_CE_EXCLUDED_FEATURES))
+        saved = int(entry.get("tokens_saved", 0) or 0)
+        if removes_context and saved > 0:
+            events += int(entry.get("events", 0) or 0)
+            tokens += saved
+    return {"basis": "input_rate_minimum", "removal_events": events, "removal_tokens": tokens}
+
+
+def _apply_counted_oneshot_pricing(summary, counted):
+    """Add what the counted ledger knows about billed classes to the disclosure."""
+    pricing = dict(summary.get("oneshot_pricing") or {})
+    if pricing:
+        counted = counted or {}
+        pricing.update(
+            class_events=int(counted.get("oneshot_class_events", 0) or 0),
+            class_premium_usd=round(float(counted.get("oneshot_class_premium_usd", 0.0) or 0.0), 4),
+            floor_events=int(counted.get("oneshot_floor_events", 0) or 0),
+            floor_tokens=int(counted.get("oneshot_floor_tokens", 0) or 0))
+        summary["oneshot_pricing"] = pricing
 
 
 def _merge_v5_compression(by_category, by_feature, fallback_cost_per_mtok):
@@ -53670,21 +56608,135 @@ def _merge_v5_compression(by_category, by_feature, fallback_cost_per_mtok):
         events = int(fdata.get("events", 0) or 0)
         if tokens_saved <= 0 and events <= 0:
             continue
-        # Prefer cost_saved_usd from _get_compression_summary (per-model pricing);
-        # fall back to the current-session rate for legacy NULL-model rows.
+        # A missing price does not identify a rate; keep the tokens unpriced.
         if "cost_saved_usd" in fdata and fdata["cost_saved_usd"] is not None:
             cost_saved = round(float(fdata["cost_saved_usd"]), 4)
         else:
-            cost_saved = round(tokens_saved * fallback_cost_per_mtok / 1_000_000, 4)
+            cost_saved = 0.0
+        unpriced_default = fdata.get("cost_saved_usd") is None
+        unpriced_credit = fdata.get("unpriced_credit_tokens", max(0, tokens_saved) if unpriced_default else 0)
+        unpriced_debit = fdata.get("unpriced_debit_tokens", max(0, -tokens_saved) if unpriced_default else 0)
         by_category[feature] = {
             "events": events,
             "tokens_saved": tokens_saved,
             "cost_saved_usd": cost_saved,
+            "unpriced_tokens": fdata.get("unpriced_tokens", unpriced_credit + unpriced_debit),
+            "unpriced_credit_tokens": unpriced_credit,
+            "unpriced_debit_tokens": unpriced_debit,
         }
         add_tok += tokens_saved
         add_cost += cost_saved
         add_events += events
     return add_tok, add_cost, add_events
+
+
+def _allocate_cents(amounts, total=None):
+    """(cents per amount, cents of the total), summing exactly.
+
+    The total is the exact sum (or `total`) rounded half up to a cent. Each
+    amount gets its floor in cents and the cents still missing go to the
+    largest fractional remainders, so printed parts always add up to the
+    printed total. Amounts that cannot be reconciled (a `total` further from
+    the parts than one cent each) fall back to plain rounding."""
+    from decimal import Decimal, ROUND_FLOOR, ROUND_HALF_UP
+
+    def cents(value):
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return Decimal(0)
+        return Decimal(repr(number)) * 100 if math.isfinite(number) else Decimal(0)
+
+    exact = [cents(a) for a in amounts]
+    target = int((cents(total) if total is not None else sum(exact, Decimal(0)))
+                 .quantize(Decimal(1), rounding=ROUND_HALF_UP))
+    floors = [int(x.to_integral_value(ROUND_FLOOR)) for x in exact]
+    leftover = target - sum(floors)
+    if not 0 <= leftover <= len(exact):
+        return [int(x.quantize(Decimal(1), rounding=ROUND_HALF_UP)) for x in exact], target
+    order = sorted(range(len(exact)), key=lambda i: (exact[i] - floors[i], -i), reverse=True)
+    for i in order[:leftover]:
+        floors[i] += 1
+    return floors, target
+
+
+def _format_cents(cents):
+    """'1234.56' style text for a whole number of cents."""
+    sign = "-" if cents < 0 else ""
+    return f"{sign}{abs(cents) // 100}.{abs(cents) % 100:02d}"
+
+
+def _action_savings_display(logged, routing_measured, routing_estimated, repeat_reads,
+                            estimates, total_clamped=False):
+    """Whole-cent display values for the action-savings components.
+
+    Raw component values stay exact elsewhere in the payload. Every displayed
+    part below adds up to `total_usd`, which is the cents of the exact total."""
+    names = ["logged", "routing_measured", "routing_estimated", "reread"] + [
+        "estimate:" + key for key in estimates]
+    values = [logged, routing_measured, routing_estimated, repeat_reads, *estimates.values()]
+    parts, total_cents = _allocate_cents(values)
+    if total_clamped:
+        total_cents = 0
+    by_name = dict(zip(names, parts))
+    return {
+        "total_cents": total_cents,
+        "total_usd": total_cents / 100,
+        "components_cents": {k: v for k, v in by_name.items() if not k.startswith("estimate:")},
+        "components_usd": {k: v / 100 for k, v in by_name.items() if not k.startswith("estimate:")},
+        "estimates_cents": {k[len("estimate:"):]: v for k, v in by_name.items() if k.startswith("estimate:")},
+        "estimates_usd": {k[len("estimate:"):]: v / 100 for k, v in by_name.items() if k.startswith("estimate:")},
+    }
+
+
+def _action_savings_components(summary, reread=None):
+    """Sum action savings for one period without changing the measured ledger.
+
+    Repeat reads add only their later benefit, never initial removals again.
+    Observed hints replace the retrieval estimate as soon as a hint fires.
+    Opportunity and the separate whole-workload comparison are not additive.
+    """
+    estimates = {
+        key: float((summary.get(key) or {}).get("cost_saved_usd", 0) or 0)
+        for key in (
+            "behavioral_estimate", "uncaptured_runtime", "mcp_cap_estimated",
+            "contamination_exit", "handover_rerun", "resume_lean_estimated",
+            "verbosity_steer",
+        )
+    }
+    hints = summary.get("hint_followed") or {}
+    avoided_source = "hint_followed" if int(hints.get("events") or 0) > 0 else "retrieval_serve"
+    estimates[avoided_source] = float(
+        (summary.get(avoided_source) or {}).get("cost_saved_usd", 0) or 0)
+    logged = float(summary.get("total_cost_usd", 0) or 0)
+    routing_data = summary.get("model_routing") or {}
+    routing = float(routing_data.get("realized_cost_usd", 0) or 0)
+    routing_measured = routing if routing_data.get("evidence", "measured") == "measured" else 0.0
+    reread_available = bool((reread or {}).get("available"))
+    repeat_reads = float(reread.get("reread_usd", 0) or 0) if reread_available else 0.0
+    estimated = sum(estimates.values())
+    net_total = logged + routing + repeat_reads + estimated
+    return {
+        "logged_usd": logged,
+        "routing_usd": routing,
+        "routing_measured_usd": routing_measured,
+        "routing_estimated_usd": routing - routing_measured,
+        "reread_usd": repeat_reads,
+        "reread_available": reread_available,
+        "reread_prices_available": bool((reread or {}).get("reread_prices_available", reread_available)),
+        "reread_pricing_complete": bool((reread or {}).get("reread_pricing_complete", reread_available)),
+        "reread_unpriced_tokens": int((reread or {}).get("reread_unpriced_tokens", 0) or 0),
+        "reread_pricing_note": (reread or {}).get("reread_pricing_note", ""),
+        "estimates_usd": estimates,
+        "estimated_usd": estimated,
+        "avoided_search_source": avoided_source,
+        "net_total_usd": net_total,
+        "total_usd": max(0.0, net_total),
+        "total_clamped": net_total < 0,
+        "display": _action_savings_display(
+            logged, routing_measured, routing - routing_measured, repeat_reads,
+            estimates, total_clamped=net_total < 0),
+    }
 
 
 def _get_merged_savings(days=30, since=None):
@@ -53710,9 +56762,7 @@ def _get_merged_savings(days=30, since=None):
     total_cost = float(savings.get("total_cost_usd", 0.0) or 0.0)
     total_events = int(savings.get("total_events", 0) or 0)
 
-    # Fallback rate only used for rows that pre-date the model column (NULL model).
-    # For rows with a stored model (written at event-time via session join), the cost
-    # is already priced correctly by _get_compression_summary's per-row rate.
+    # The compression summary prices each row using its model or session mix.
     fallback_cost_per_mtok = _estimate_compression_cost_per_mtok()
 
     _add_tok, _add_cost, _add_events = _merge_v5_compression(
@@ -53771,6 +56821,10 @@ def _get_merged_savings(days=30, since=None):
         "total_tokens": total_tokens,
         "total_cost_usd": round(total_cost, 4),
         "total_events": total_events,
+        "compression_unpriced_tokens": sum(int(v.get("unpriced_tokens", 0) or 0) for v in by_category.values()),
+        "oneshot_pricing": _logged_oneshot_pricing(by_category),
+        "compression_unpriced_credit_tokens": sum(int(v.get("unpriced_credit_tokens", 0) or 0) for v in by_category.values()),
+        "compression_unpriced_debit_tokens": sum(int(v.get("unpriced_debit_tokens", 0) or 0) for v in by_category.values()),
         "by_category": by_category,
         "daily_avg_usd": round(total_cost / max(days, 1), 4),
         "period_days": days,
@@ -53947,6 +57001,26 @@ def _status_bar_lock_path(session_id):
     return _status_bar_dir() / f"{_status_bar_key(session_id)}.refresh.lock"
 
 
+_BUCKET_DAY_SQL = {True: "substr(timestamp, 1, 10)", False: "''"}
+_BUCKET_SESSION_SQL = {
+    True: "AND (session_uuid = ? OR (session_uuid IS NULL AND session_id = ?)) ", False: ""}
+_BUCKET_SAVINGS_SQL = _sql_variants(
+    "SELECT {day}, event_type, COUNT(*), SUM(tokens_saved), "
+    "SUM(cost_saved_usd) FROM {table} WHERE timestamp >= ? {scope}"
+    "GROUP BY 1, event_type ORDER BY 4 DESC",
+    table={"counted_savings_events": "counted_savings_events", "savings_events": "savings_events"},
+    day=_BUCKET_DAY_SQL, scope=_BUCKET_SESSION_SQL)
+_BUCKET_COMPRESSION_SQL = _sql_variants(
+    "SELECT {day}, feature, COUNT(*), SUM(original_tokens), "
+    "SUM(compressed_tokens), model, session_uuid, session_id FROM {table} "
+    "WHERE timestamp >= ? {scope}"
+    "AND (tier IS NULL OR tier = 'measured') "
+    "GROUP BY 1, feature, model, session_uuid, session_id",
+    table={"counted_compression_events": "counted_compression_events",
+           "compression_events": "compression_events"},
+    day=_BUCKET_DAY_SQL, scope=_BUCKET_SESSION_SQL)
+
+
 def _realized_savings_buckets(conn, cutoff, session_uuid=None, by_day=False):
     """Realized savings per bucket, netted exactly like the window headline.
 
@@ -53956,26 +57030,20 @@ def _realized_savings_buckets(conn, cutoff, session_uuid=None, by_day=False):
     {"tokens": int, "usd": float, "events": int}. Raises sqlite3.Error so the
     caller can tell a busy or broken DB from an empty one.
     """
-    day_col = "substr(timestamp, 1, 10)" if by_day else "''"
-    where = "WHERE timestamp >= ? "
     params = [cutoff]
     if session_uuid is not None:
         # Other runtimes' ids are not UUIDs: their rows keep the id in session_id.
-        where += "AND (session_uuid = ? OR (session_uuid IS NULL AND session_id = ?)) "
         params.extend([session_uuid, session_uuid])
-    se_rows = conn.execute(
-        "SELECT " + day_col + ", event_type, COUNT(*), SUM(tokens_saved), "
-        "SUM(cost_saved_usd) FROM savings_events " + where +
-        "GROUP BY 1, event_type ORDER BY 4 DESC",
-        tuple(params),
-    ).fetchall()
-    ce_rows = conn.execute(
-        "SELECT " + day_col + ", feature, COUNT(*), SUM(original_tokens), "
-        "SUM(compressed_tokens), model FROM compression_events " + where +
-        "AND (tier IS NULL OR tier = 'measured') "
-        "GROUP BY 1, feature, model",
-        tuple(params),
-    ).fetchall()
+    se_sql = _BUCKET_SAVINGS_SQL[
+        _counted_table(conn, "savings_events"), bool(by_day), session_uuid is not None]
+    ce_sql = _BUCKET_COMPRESSION_SQL[
+        _counted_table(conn, "compression_events"), bool(by_day), session_uuid is not None]
+    se_rows = conn.execute(se_sql, tuple(params)).fetchall()
+    ce_rows = conn.execute(ce_sql, tuple(params)).fetchall()
+    ce_session_rates = _compression_session_rates(
+        conn, [r[6] for r in ce_rows
+               if not _compression_known_model(r[5])],
+        [r[7] for r in ce_rows if not _compression_known_model(r[5])])
     deltas, _rt, _ut = _session_model_reprice(
         conn, cutoff, session_uuid=session_uuid, by_day=True)
 
@@ -53991,9 +57059,10 @@ def _realized_savings_buckets(conn, cutoff, session_uuid=None, by_day=False):
     fallback_rate = _estimate_compression_cost_per_mtok()
     tier_data = PRICING_TIERS.get(_load_pricing_tier(), PRICING_TIERS["anthropic"])
     ce_by_bucket = {}
-    for bucket, feature, cnt, orig, comp, model in ce_rows:
+    for bucket, feature, cnt, orig, comp, model, s_uuid, sid in ce_rows:
         tokens_saved = (orig or 0) - (comp or 0)
-        rate = _compression_row_rate(model, fallback_rate, tier_data)
+        key = s_uuid if s_uuid in ce_session_rates else ("session_id", sid)
+        rate = _compression_priced_rate(model, key, ce_session_rates, fallback_rate, tier_data)
         feats = ce_by_bucket.setdefault(bucket or "", {})
         entry = feats.setdefault(feature, {"events": 0, "tokens_saved": 0, "cost_saved_usd": 0.0})
         entry["events"] += cnt or 0
@@ -55494,9 +58563,15 @@ def _savings_since_install():
         days = (datetime.now() - datetime.fromisoformat(d)).days + 1
         days = max(1, min(days, 3650))
         full = _get_merged_savings(days=days)
-        # Measured = logged runtime + realized structural + realized routing.
+        # Measured = logged runtime + realized structural + realized routing
+        # (routing only when its baseline is measured).
         measured = float(full.get("total_cost_usd", 0) or 0)
-        measured += float((full.get("model_routing") or {}).get("realized_cost_usd", 0) or 0)
+        # Routing that leans on a reference-priced baseline is an estimate, not measured.
+        full_routing = full.get("model_routing") or {}
+        full_routing_usd = float(full_routing.get("realized_cost_usd", 0) or 0)
+        routing_is_estimate = full_routing.get("evidence") == "estimated"
+        if not routing_is_estimate:
+            measured += full_routing_usd
         # Estimated = genuine TO-realized counterfactuals only — the same six
         # categories the dashboard's estimated tier (estItems) sums, so the two
         # cards agree about what "estimated" contains. cache_drop and
@@ -55521,12 +58596,34 @@ def _savings_since_install():
         rs = full.get("retrieval_serve") or {}
         avoided = hf if int(hf.get("events") or 0) > 0 else rs
         estimated += float(avoided.get("cost_saved_usd", 0) or 0)
+        if routing_is_estimate:
+            estimated += full_routing_usd
+        # The all-in since install uses the monthly headline's own recipe
+        # (logged + routing + repeat reads + estimates) over the install window,
+        # so the two figures always mean the same thing.
+        all_in = None
+        try:
+            counted = _counted_cumulative_summary(days=days)
+            _apply_counted_oneshot_pricing(full, counted)
+            components = _action_savings_components(full, counted)
+            all_in = {
+                "total_usd": components["display"]["total_usd"],
+                "components_usd": components["display"]["components_usd"],
+                "estimated_usd": round(sum(components["display"]["estimates_usd"].values()), 2),
+                "routing_pending": full_routing.get("evidence") == "pending",
+                "routing_pending_sessions": int(full_routing.get("pending_sessions") or 0),
+                "remeasuring": bool(counted.get("remeasuring")),
+                "remeasuring_sessions": int(counted.get("remeasuring_sessions") or 0),
+            }
+        except Exception:
+            all_in = None
         return {
             "install_date": d,
             "days": days,
             "measured_usd": round(measured, 2),
             "estimated_usd": round(estimated, 2),
             "total_usd": round(measured + estimated, 2),
+            "all_in": all_in,
             # measured_usd is no longer a pure event-time meter once the
             # model-mix repair has moved a rate (see _session_model_reprice), so
             # the card that renders it must stop calling itself "Measured".
@@ -55654,7 +58751,16 @@ def savings_report(days=30, as_json=False):
     savings_events; v5 categories authoritative in compression_events.
     """
     summary = _get_merged_savings(days=days)
-    summary["reread_avoided"] = _reread_savings_for_window(days)
+    # Use the same stored removal cohort as the dashboard. Its counted benefit
+    # survives transcript rotation and never needs another transcript walk.
+    try:
+        summary["counted_period"] = _counted_cumulative_summary(days=days)
+    except Exception:
+        summary["counted_period"] = {"available": False}
+    summary["reread_avoided"] = summary["counted_period"]
+    _apply_counted_oneshot_pricing(summary, summary["counted_period"])
+    summary["action_savings"] = _action_savings_components(
+        summary, summary["reread_avoided"])
 
     if as_json:
         print(json.dumps(summary, indent=2))
@@ -55681,6 +58787,18 @@ def savings_report(days=30, as_json=False):
 
     def _mo(c):
         return c / max(days, 1) * 30 if run_rate else c
+
+    # Every dollar line below is a whole-cent share of the same total, so the
+    # printed parts add up to the printed ALL IN.
+    _act = summary["action_savings"]
+    _shown = _action_savings_display(
+        _mo(_act["logged_usd"]), _mo(_act["routing_measured_usd"]),
+        _mo(_act["routing_estimated_usd"]), _mo(_act["reread_usd"]),
+        {k: _mo(v) for k, v in _act["estimates_usd"].items()},
+        total_clamped=_act["total_clamped"])
+    _cents = _shown["components_cents"]
+    _est_cents = _shown["estimates_cents"]
+    _money = _format_cents
 
     print("\n  Token Optimizer Savings Report")
     print(f"  {'=' * 58}")
@@ -55717,9 +58835,20 @@ def savings_report(days=30, as_json=False):
                       f"({'cheaper' if drift >= 0 else 'costlier'} models would have moved "
                       f"your bill without Token Optimizer).")
             cross = wp.get("crosscheck") or {}
-            if cross.get("transformation_usd"):
-                print(f"    Cross-check on messages: ~${float(cross['transformation_usd']):,.0f}/mo "
-                      f"(independent unit, agrees within ~10%).")
+            if cross.get("transformation_usd") is not None:
+                cross_usd = float(cross.get("transformation_usd") or 0.0)
+                cross_unit = "API calls" if cross.get("unit") == "api_call" else "messages"
+                gap = cross.get("gap_pct")
+                gap_txt = (f", {float(gap):.1f}% apart"
+                           if isinstance(gap, (int, float)) else "")
+                if _crosscheck_verdict(wp):
+                    print(f"    Cross-check on {cross_unit}: "
+                          f"{_signed_usd(cross_usd)}/mo "
+                          f"(independent unit, agrees within ~10%{gap_txt}).")
+                else:
+                    print(f"    Cross-check on {cross_unit}: "
+                          f"{_signed_usd(cross_usd)}/mo "
+                          f"(independent unit, does not agree{gap_txt}).")
         else:
             print(f"    Had you worked the way you did before Token Optimizer "
                   f"(~{ba.get('before_opus', 0) * 100:.0f}% Opus main work), you'd have paid "
@@ -55758,11 +58887,32 @@ def savings_report(days=30, as_json=False):
               f"${ba.get('counterfactual_monthly_usd', 0):,.0f}/mo at the baseline's cost "
               f"per request), so there is no whole-workload saving to headline. "
               f"The measured savings below are real and counted.")
+    elif ba.get("reason") == "flat":
+        print()
+        print("  YOUR TRANSFORMATION: no measurable change this period")
+        print(f"    Cost per unit of work is about the same as before install "
+              f"(est. ${ba.get('actual_monthly_usd', 0):,.0f}/mo now vs "
+              f"${ba.get('counterfactual_monthly_usd', 0):,.0f}/mo the old way). "
+              f"The savings below are counted action by action.")
+    elif ba.get("reason") == "methods_disagree":
+        # The two independent work-unit methods could not be reconciled, so the
+        # transformation is not headlined. Both figures stay visible.
+        wp = ba.get("session_weight_pool") or {}
+        cross = wp.get("crosscheck") or {}
+        main_usd = float(wp.get("transformation_usd", 0.0) or 0.0)
+        cross_usd = float(cross.get("transformation_usd", 0.0) or 0.0)
+        main_unit = ("per-API-call" if wp.get("work_unit") == "api_call"
+                     else "per-message")
+        cross_unit = ("per-API-call" if cross.get("unit") == "api_call"
+                      else "per-message")
+        print()
+        print("  YOUR TRANSFORMATION: not headlined this period")
+        print(f"    The {main_unit} and {cross_unit} methods disagree "
+              f"({_signed_usd(main_usd)}/mo vs {_signed_usd(cross_usd)}/mo), "
+              f"so neither is headlined. The measured savings below are real "
+              f"and counted.")
 
-    pricing = summary.get("pricing_detail") or {}
-    p_model = pricing.get("model", "sonnet")
-    p_rate = pricing.get("rate_usd_per_mtok", 3.0)
-    print(f"  Pricing: calculated at {p_model} rates (${p_rate:.2f}/MTok input)")
+    print("  Pricing: known model rates, API equivalent")
 
     struct = summary.get("structural_detail") or {}
     src = struct.get("baseline_source")
@@ -55800,23 +58950,23 @@ def savings_report(days=30, as_json=False):
     # verbosity_steer_measured below.
     _RELOCATED = {"setup_optimization", "mcp_cap", "verbosity_steer", "resume_lean"}
 
-    # Show all known measured categories (even if zero)
-    for key, label in _SAVINGS_CATEGORY_LABELS.items():
-        if key in _RELOCATED:
-            continue
-        cat_data = by_cat.get(key, {})
+    # Known measured categories (even if zero), then any unknown ones in the data.
+    table_rows = [(label, by_cat.get(key, {}))
+                  for key, label in _SAVINGS_CATEGORY_LABELS.items() if key not in _RELOCATED]
+    table_rows += [(key, cat_data) for key, cat_data in by_cat.items()
+                   if key not in _SAVINGS_CATEGORY_LABELS]
+    # When the table covers the same span as the monthly line, its total is the
+    # logged share of ALL IN, so both lines print the same cents.
+    table_total = summary.get("total_cost_usd", 0.0)
+    if _mo(1.0) == 1.0 and not summary["action_savings"]["total_clamped"]:
+        table_total = _cents["logged"] / 100
+    row_cents, table_total_cents = _allocate_cents(
+        [cat_data.get("cost_saved_usd", 0.0) for _label, cat_data in table_rows],
+        total=table_total)
+    for (label, cat_data), cents in zip(table_rows, row_cents):
         events = cat_data.get("events", 0)
         tokens = cat_data.get("tokens_saved", 0)
-        cost = cat_data.get("cost_saved_usd", 0.0)
-        print(f"  {label:<28s} {events:>8,} {tokens:>14,} {'$' + f'{cost:.2f}':>11s}")
-
-    # Show any unknown categories that appeared in the data
-    for key, cat_data in by_cat.items():
-        if key not in _SAVINGS_CATEGORY_LABELS:
-            events = cat_data.get("events", 0)
-            tokens = cat_data.get("tokens_saved", 0)
-            cost = cat_data.get("cost_saved_usd", 0.0)
-            print(f"  {key:<28s} {events:>8,} {tokens:>14,} {'$' + f'{cost:.2f}':>11s}")
+        print(f"  {label:<28s} {events:>8,} {tokens:>14,} {'$' + _money(cents):>11s}")
 
     print(f"  {'-' * 25}  {'-' * 8}  {'-' * 14}  {'-' * 11}")
 
@@ -55827,11 +58977,30 @@ def savings_report(days=30, as_json=False):
     # avoided re-reads are the "modeled" tier, the same one the dashboard's
     # Savings tab shows as repeat reads avoided.
     rr = summary.get("reread_avoided") or {}
-    rr_usd = float(rr.get("reread_usd", 0.0) or 0.0)
+    rr_usd = summary["action_savings"]["reread_usd"]
     daily_avg = summary.get("daily_avg_usd", 0.0)
-    est_monthly = daily_avg * 30
 
-    print(f"  {'TOTAL (measured)':<28s} {total_events:>8,} {total_tokens:>14,} {'$' + f'{total_cost:.2f}':>11s}")
+    print(f"  {'TOTAL (measured)':<28s} {total_events:>8,} {total_tokens:>14,} {'$' + _money(table_total_cents):>11s}")
+    unpriced = int(summary.get("compression_unpriced_tokens", 0) or 0)
+    if unpriced:
+        unpriced_credit = int(summary.get("compression_unpriced_credit_tokens", 0) or 0)
+        unpriced_debit = int(summary.get("compression_unpriced_debit_tokens", 0) or 0)
+        split = (f" ({unpriced_credit:,} credits, {unpriced_debit:,} debits)"
+                 if unpriced_credit or unpriced_debit else "")
+        print(f"  {unpriced:,} compression tokens are counted but have no known model rate{split};")
+        print("  their dollar value is not included.")
+    unpriced_logged = int((summary.get("reprice_detail") or {}).get("unpriced_tokens", 0) or 0)
+    if unpriced_logged:
+        print(f"  {unpriced_logged:,} logged tokens ran on models with no known rate; "
+              "their dollar value is not included.")
+    oneshot = summary.get("oneshot_pricing") or {}
+    if oneshot.get("removal_events"):
+        print("  Initial removals above are priced at the input rate, a minimum.")
+        premium = float(oneshot.get("class_premium_usd", 0.0) or 0.0)
+        if premium >= 0.005:
+            print(f"  The next call billed new context at a cache-write rate for "
+                  f"{int(oneshot.get('class_events', 0)):,} removals: about ${premium:.2f} more, "
+                  f"not in the total.")
     trip = _headline_tripwire(total_cost + rr_usd, total_events, days)
     if trip:
         print()
@@ -55840,42 +59009,69 @@ def savings_report(days=30, as_json=False):
     print()
     print(f"  Daily average: ${daily_avg:.2f} saved (measured)")
     if run_rate:
-        print(f"  Estimated monthly: ${est_monthly:.2f} (measured)")
+        print(f"  Estimated monthly: ${_money(_cents['logged'])} (measured)")
     else:
-        print(f"  Total so far ({tracked} day{'' if tracked == 1 else 's'} tracked): ${total_cost:.2f} (measured)")
+        print(f"  Total so far ({tracked} day{'' if tracked == 1 else 's'} tracked): ${_money(_cents['logged'])} (measured)")
 
     # Realized tier — model routing you already did (mix shift vs install baseline).
     routing = summary.get("model_routing") or {}
     routing_realized = float(routing.get("realized_cost_usd", 0.0) or 0.0)
+    routing_pending = int(routing.get("pending_sessions", 0) or 0) if routing.get("evidence") == "pending" else 0
+    if routing_pending:
+        print(f"  + model routing (realized): re-measuring ({routing_pending:,} "
+              f"session{'' if routing_pending == 1 else 's'} left), not in ALL IN yet")
     if routing_realized > 0:
-        r_monthly = _mo(routing_realized)
+        r_monthly = _money(_cents["routing_measured"] + _cents["routing_estimated"])
         b_share = routing.get("baseline_opus_share", 0.0) * 100
         c_share = routing.get("current_opus_share", 0.0) * 100
-        print(f"  + model routing (realized): ~${r_monthly:.2f}{per} "
-              f"(Opus {b_share:.0f}% -> {c_share:.0f}% vs baseline) [measured]")
-    all_in = _mo(total_cost + routing_realized)
-    if rr_usd > 0:
-        all_in += _mo(rr_usd)
-        print(f"  + repeat reads avoided: ~${_mo(rr_usd):.2f}{per} "
+        routing_label = "estimated" if routing.get("evidence") == "estimated" else "measured"
+        print(f"  + model routing (realized): ~${r_monthly}{per} "
+              f"(Opus {b_share:.0f}% -> {c_share:.0f}% vs baseline) [{routing_label}]")
+        ref_priced = [str(f)[:1].upper() + str(f)[1:] for f in routing.get("baseline_reference_priced") or []]
+        if ref_priced:
+            print(f"  i  routing compares your earlier and current mix on one price list, the newest card of each "
+                  f"family ({', '.join(ref_priced)}), because your earlier mix records no model generations, "
+                  f"so this figure is an estimate")
+        gen_delta = float(routing.get("generation_price_delta_usd", 0.0) or 0.0)
+        if abs(_mo(gen_delta)) >= 0.01:
+            print(f"  i  at the exact cards you ran, the same work cost ~${abs(_mo(gen_delta)):.2f}{per} "
+                  f"{'more' if gen_delta > 0 else 'less'} than on that price list; "
+                  f"that gap is model generation pricing, not routing")
+    if float(routing.get("premium_share", 0.0) or 0.0) > 0:
+        names = ", ".join(str(f)[:1].upper() + str(f)[1:] for f in routing.get("premium_models") or [])
+        print(f"  i  premium models you chose ({names}, {float(routing['premium_share']) * 100:.0f}% of tokens, "
+              f"~${_mo(float(routing.get('premium_cost_usd', 0.0) or 0.0)):.2f}{per} at API rates) "
+              f"are left out of the routing comparison")
+    if int(routing.get("unpriced_tokens", 0) or 0) > 0 or int(routing.get("free_tokens", 0) or 0) > 0:
+        left_out = [str(x) for x in (routing.get("unpriced_models") or []) + (routing.get("free_models") or [])]
+        shown = ", ".join(left_out[:3]) + (f" and {len(left_out) - 3} more" if len(left_out) > 3 else "")
+        print(f"  i  models without a known price ({shown}; "
+              f"{int(routing.get('unpriced_tokens', 0) or 0) + int(routing.get('free_tokens', 0) or 0):,} tokens) "
+              f"are left out of the routing comparison, not counted as free")
+    all_in = _money(_shown["total_cents"])
+    if rr_usd != 0:
+        print(f"  + repeat reads avoided: ~${_money(_cents['reread'])}{per} "
               f"({int(rr.get('reread_tokens', 0) or 0):,} tokens of removed context not re-read "
               f"before the next compaction) [modeled]")
+    elif not summary["action_savings"]["reread_available"]:
+        print("  i  repeat reads avoided: unavailable (counted ledger unavailable)")
+    if rr.get("reread_pricing_note"):
+        print("  i  " + rr["reread_pricing_note"])
 
     # Estimated tier — uncaptured runtime (sub-agent compression not attributed).
     uncaptured = summary.get("uncaptured_runtime") or {}
     unc_cost = float(uncaptured.get("cost_saved_usd", 0.0) or 0.0)
     if unc_cost > 0:
-        unc_monthly = _mo(unc_cost)
-        all_in += unc_monthly
-        print(f"  + est. uncaptured runtime: ~${unc_monthly:.2f}{per} "
+        unc_monthly = _money(_est_cents["uncaptured_runtime"])
+        print(f"  + est. uncaptured runtime: ~${unc_monthly}{per} "
               f"(sub-agent compression, {uncaptured.get('subagent_dispatches', 0):,} dispatches) [estimated]")
 
     # Estimated tier — behavioral coaching (loops prevented, etc.) that never bills.
     behavioral = summary.get("behavioral_estimate") or {}
     beh_cost = float(behavioral.get("cost_saved_usd", 0.0) or 0.0)
     if beh_cost > 0:
-        beh_monthly = _mo(beh_cost)
-        all_in += beh_monthly
-        print(f"  + est. behavioral (loops prevented): ~${beh_monthly:.2f}{per} "
+        beh_monthly = _money(_est_cents["behavioral_estimate"])
+        print(f"  + est. behavioral (loops prevented): ~${beh_monthly}{per} "
               f"({behavioral.get('loop_events', 0)} loops caught, repeated ~{behavioral.get('prevented_iterations', 0)}x "
               f"before catch; avoided continuation estimated at one more span) [estimated]")
 
@@ -55887,9 +59083,8 @@ def savings_report(days=30, as_json=False):
     mcp_cap_est = summary.get("mcp_cap_estimated") or {}
     mce_cost = float(mcp_cap_est.get("cost_saved_usd", 0.0) or 0.0)
     if mce_cost > 0:
-        mce_monthly = _mo(mce_cost)
-        all_in += mce_monthly
-        print(f"  + est. MCP output cap: ~${mce_monthly:.2f}{per} "
+        mce_monthly = _money(_est_cents["mcp_cap_estimated"])
+        print(f"  + est. MCP output cap: ~${mce_monthly}{per} "
               f"({mcp_cap_est.get('events', 0)} capped MCP results) [estimated]")
 
     # Estimated tier — lean resumes (cold `--resume` reload avoided; the trigger
@@ -55897,17 +59092,15 @@ def savings_report(days=30, as_json=False):
     rl_est = summary.get("resume_lean_estimated") or {}
     rle_cost = float(rl_est.get("cost_saved_usd", 0.0) or 0.0)
     if rle_cost > 0:
-        rle_monthly = _mo(rle_cost)
-        all_in += rle_monthly
-        print(f"  + est. lean resumes: ~${rle_monthly:.2f}{per} "
+        rle_monthly = _money(_est_cents["resume_lean_estimated"])
+        print(f"  + est. lean resumes: ~${rle_monthly}{per} "
               f"({rl_est.get('events', 0)} cold-resume reloads avoided) [estimated]")
 
     # Estimated tier — FLAGSHIP: contamination-exit avoided rework (cohort).
     ce = summary.get("contamination_exit") or {}
     if float(ce.get("cost_saved_usd", 0.0) or 0.0) > 0:
-        ce_monthly = _mo(ce["cost_saved_usd"])
-        all_in += ce_monthly
-        print(f"  + est. avoided rework (heeded nudges): ~${ce_monthly:.2f}{per} "
+        ce_monthly = _money(_est_cents["contamination_exit"])
+        print(f"  + est. avoided rework (heeded nudges): ~${ce_monthly}{per} "
               f"({ce.get('heeded_sessions', 0)} heeded vs {ce.get('ignored_sessions', 0)} ignored, "
               f"~{ce.get('delta_tokens_per_session', 0):,} tok/session less rework, "
               f"confidence: {ce.get('confidence', '?')}) [estimated]")
@@ -55915,13 +59108,48 @@ def savings_report(days=30, as_json=False):
     # Estimated tier — handover/continuity avoided rework (cohort).
     hr = summary.get("handover_rerun") or {}
     if float(hr.get("cost_saved_usd", 0.0) or 0.0) > 0:
-        hr_monthly = _mo(hr["cost_saved_usd"])
-        all_in += hr_monthly
-        print(f"  + est. avoided rework (continuity handover): ~${hr_monthly:.2f}{per} "
+        hr_monthly = _money(_est_cents["handover_rerun"])
+        print(f"  + est. avoided rework (continuity handover): ~${hr_monthly}{per} "
               f"({hr.get('restored_sessions', 0)} restored vs {hr.get('baseline_sessions', 0)} baseline, "
               f"confidence: {hr.get('confidence', '?')}) [estimated]")
 
-    print(f"  = ALL IN: ~${all_in:.2f}{per} (measured + modeled + estimated)")
+    avoided_source = summary["action_savings"]["avoided_search_source"]
+    avoided = summary.get(avoided_source) or {}
+    avoided_cost = summary["action_savings"]["estimates_usd"][avoided_source]
+    if avoided_cost > 0:
+        if avoided_source == "hint_followed":
+            detail = f"{avoided.get('events', 0)} hints used"
+            label = "hints"
+        else:
+            detail = f"{avoided.get('served_sessions', 0)} served sessions"
+            label = "retrieval"
+        print(f"  + est. avoided search ({label}): ~${_money(_est_cents[avoided_source])}{per} "
+              f"({detail}) [estimated]")
+
+    verbosity = summary.get("verbosity_steer") or {}
+    verbosity_cost = summary["action_savings"]["estimates_usd"]["verbosity_steer"]
+    if verbosity_cost > 0:
+        print(f"  + est. concise output nudges: ~${_money(_est_cents['verbosity_steer'])}{per} "
+              f"({verbosity.get('events', 0)} nudges) [estimated]")
+
+    print(f"  = ALL IN: ~${all_in}{per} (measured + modeled + estimated)")
+    if routing_pending:
+        print("  i  ALL IN leaves out model routing until its re-measurement finishes.")
+    if summary["action_savings"].get("reread_pricing_complete") is False:
+        print("  i  ALL IN is a priced subtotal; unpriced repeat-read credits and debits are not included.")
+    if summary["action_savings"]["total_clamped"]:
+        net_total = _mo(summary["action_savings"]["net_total_usd"])
+        print(f"  i  signed adjustments give a net total of ~${net_total:.2f}{per}; "
+              "the headline has a $0 floor")
+    try:
+        since = _savings_since_install()
+    except Exception:
+        since = None
+    since_all_in = (since or {}).get("all_in") or {}
+    if float(since_all_in.get("total_usd") or 0) > 0:
+        so_far = " so far" if since_all_in.get("routing_pending") or since_all_in.get("remeasuring") else ""
+        print(f"  = SINCE INSTALL ({since['install_date']}, {since['days']} days): "
+              f"~${since_all_in['total_usd']:,.2f}{so_far} (same four parts, added up)")
 
     # Informational (not summed): one-time first-trim + progressive disclosure.
     one_time = summary.get("one_time_setup") or {}
@@ -55941,37 +59169,53 @@ def savings_report(days=30, as_json=False):
     reclaimable = summary.get("stale_reads_reclaimable") or {}
     recl_cost = float(reclaimable.get("cost_usd", 0.0) or 0.0)
     cache_drop = summary.get("cache_drop") or {}
-    # cache-drop is shown in TOKENS (re-written prefix), not dollars: the $ cost is
-    # Anthropic-specific (OpenAI/OpenCode cache writes are free/unbilled), but the
-    # re-written token count is a provider-neutral fact. Matches Claude Code's own
-    # token-denominated cost display.
+    # cache-drop shows the re-written prefix in tokens (a provider-neutral fact)
+    # and, as an opportunity outside every total, its dollar value at the rates
+    # of the models that ran (cache write minus the cache read it would have been).
     cd_tokens = int(cache_drop.get("est_drops", 0) or 0) * int(cache_drop.get("prefix_tokens", 0) or 0)
+    cd_cost = float(cache_drop.get("cost_saved_usd", 0.0) or 0.0)
     output_waste = summary.get("output_waste") or {}
     ow_cost = float(output_waste.get("cost_saved_usd", 0.0) or 0.0)
     if pot_cost > 0 or routing_potential > 0 or recl_cost > 0 or cd_tokens > 0 or ow_cost > 0:
         print()
         print(f"  {'-' * 58}")
         print("  COULD SAVE (opportunity — act to realize, not counted above):")
+        # Round once so the printed items add up to the printed sum.
+        concrete_items = [c for c in (pot_cost, ow_cost, recl_cost) if c > 0]
+        item_cents, items_total_cents = _allocate_cents([_mo(c) for c in concrete_items])
+        item_text = iter(_format_cents(c) for c in item_cents)
         if pot_cost > 0:
-            pot_monthly = _mo(pot_cost)
-            print(f"    ~${pot_monthly:.2f}{per} structural: prune {potential.get('unused_skills', 0)} unused skills "
+            print(f"    ~${next(item_text)}{per} structural: prune {potential.get('unused_skills', 0)} unused skills "
                   f"(~{potential.get('recoverable_tokens', 0):,} tokens), compounds every session.")
-        if routing_potential > 0:
-            rp_monthly = _mo(routing_potential)
-            print(f"    ~${rp_monthly:.2f}{per} routing: move {int(routing.get('routable_fraction', 0.3) * 100)}% "
-                  f"of remaining Opus ({routing.get('current_opus_share', 0.0) * 100:.0f}% of tokens) to Sonnet/Haiku.")
-        if cd_tokens > 0:
-            cd_tokens_monthly = int(_mo(cd_tokens))
-            print(f"    ~{cd_tokens_monthly:,} tokens{per} cache drops: {cache_drop.get('drop_sessions', 0)} sessions idled "
-                  f"past the cache window and re-wrote the prefix — compact before breaks or use the 1h cache.")
         if ow_cost > 0:
-            ow_monthly = _mo(ow_cost)
-            print(f"    ~${ow_monthly:.2f}{per} output: {output_waste.get('avoidable_writes', 0)} of "
+            print(f"    ~${next(item_text)}{per} output: {output_waste.get('avoidable_writes', 0)} of "
                   f"{output_waste.get('writes', 0)} full-file Writes could be targeted Edits.")
         if recl_cost > 0:
-            recl_monthly = _mo(recl_cost)
-            print(f"    ~${recl_monthly:.2f}{per} reclaimable: {reclaimable.get('tokens', 0):,} tokens of stale "
+            print(f"    ~${next(item_text)}{per} reclaimable: {reclaimable.get('tokens', 0):,} tokens of stale "
                   f"re-reads across {reclaimable.get('sessions', 0)} sessions — avoid re-reading or use .contextignore.")
+        if len(concrete_items) > 1:
+            print(f"    = ~${_format_cents(items_total_cents)}{per} from the items above (API-rate equivalent)")
+        if cd_tokens > 0:
+            # Cache drops are an opportunity valued at API rates; like routing
+            # they sit on their own line and are never folded into the total above.
+            cd_dollars = f", about ${_mo(cd_cost):.2f}{per} at API rates" if cd_cost > 0 else ""
+            print()
+            print(f"    Cache drops (an opportunity, not a measurement): {cache_drop.get('drop_sessions', 0)} sessions idled "
+                  f"past the cache window and re-wrote ~{int(_mo(cd_tokens)):,} tokens{per} of prefix{cd_dollars}. "
+                  f"Compact before breaks or use the 1h cache.")
+        if routing_potential > 0:
+            # Routing is an assumption about the user's own Opus work, so it sits
+            # on its own line and is never folded into the total above.
+            frac_pct = round(float(routing.get("routable_fraction", 0.2)) * 100, 2)
+            frac_text = f"{frac_pct:g}"
+            target = routing.get("target_model") or "Sonnet"
+            unsplit_left_out = int(_mo(int(routing.get("potential_unsplit_excluded_tokens", 0) or 0)))
+            unsplit_note = (f" (~{unsplit_left_out:,} Opus tokens{per} without a class split are left out)"
+                            if unsplit_left_out > 0 else "")
+            print()
+            print(f"    Routing (an assumption, not a measurement): if about {frac_text}% of your "
+                  f"Opus work (grunt tasks) ran on {target}: new input and output only{unsplit_note}, "
+                  f"about ${_mo(routing_potential):.2f}{per} at API rates.")
     print(f"  {'=' * 58}")
     print("  Tiers are separate: measured (billed events), estimated (your own")
     print("  cohorts), opportunity (not yet realized). They are never summed.")
@@ -57837,6 +61081,52 @@ def _verbosity_measured_savings(baseline_avg, post_nudge_outputs):
     return int(delta * len(outs))
 
 
+def _transcript_request_outputs(filepath):
+    """Output tokens of each API request in a transcript, in request order.
+
+    Claude Code writes several assistant lines per request while it streams,
+    each carrying the cumulative output so far, so the request's output is the
+    MAX over its lines (the same fold ``_parse_session_jsonl`` applies). Lines
+    with neither a requestId nor a message id stay separate requests. Returns
+    ``[(positive_lines_before, output_tokens), ...]`` for requests with output
+    above zero, where ``positive_lines_before`` counts the output-bearing
+    assistant lines that precede the request's first one (used to place a
+    boundary recorded in lines by an older nudge).
+    """
+    order = []
+    by_key = {}
+    seen_lines = 0
+    for line in Path(filepath).read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(entry, dict) or entry.get("type") != "assistant":
+            continue
+        msg = entry.get("message")
+        if not isinstance(msg, dict):
+            continue
+        usage = msg.get("usage", {})
+        out = _safe_int(usage.get("output_tokens", 0)) if isinstance(usage, dict) else 0
+        if out <= 0:
+            continue
+        key = _usage_request_key(entry, msg)
+        if key is None:
+            key = f"__noreq__{len(order)}"
+        slot = by_key.get(key)
+        if slot is None:
+            slot = [seen_lines, out]
+            by_key[key] = slot
+            order.append(slot)
+        else:
+            slot[1] = max(slot[1], out)
+        seen_lines += 1
+    return [(before, out) for before, out in order]
+
+
 def _calibrate_prior_verbosity_nudges(session_id, filepath):
     """Book the MEASURED saving of a prior verbosity nudge (U5, R5, D1).
 
@@ -57904,24 +61194,15 @@ def _calibrate_prior_verbosity_nudges(session_id, filepath):
         pre_turns = int(m_turns.group(1))
         pre_avg = int(m_avg.group(1))
 
-        # Collect assistant output_tokens in transcript order.
-        outputs = []
-        for line in Path(filepath).read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entry = json.loads(line)
-            except (json.JSONDecodeError, ValueError):
-                continue
-            if not isinstance(entry, dict):
-                continue
-            if entry.get("type") == "assistant" and "message" in entry:
-                out = _safe_int(entry["message"].get("usage", {}).get("output_tokens", 0))
-                if out > 0:
-                    outputs.append(out)
-
-        post_outputs = outputs[pre_turns:]
+        # Output per API request in transcript order. A nudge that recorded
+        # its boundary in requests ("unit=req") indexes the request list; an
+        # older one recorded transcript lines, so the boundary is placed by
+        # line position and only whole requests after it are counted.
+        requests = _transcript_request_outputs(filepath)
+        if "unit=req" in src_detail:
+            post_outputs = [out for _, out in requests[pre_turns:]]
+        else:
+            post_outputs = [out for before, out in requests if before >= pre_turns]
         if not post_outputs:
             # No post-nudge turns yet: nothing to measure. Leave the nudge
             # uncalibrated so a later turn settles it.
@@ -58124,23 +61405,8 @@ def run_verbosity_steer(transcript_path=None, quiet=True, session_id=None):
             _pre_nudge_turns = 0
             try:
                 if filepath and filepath.exists():
-                    _turn_outputs = []
-                    for _line in filepath.read_text(encoding="utf-8").splitlines():
-                        _line = _line.strip()
-                        if not _line:
-                            continue
-                        try:
-                            _entry = json.loads(_line)
-                        except (json.JSONDecodeError, ValueError):
-                            continue
-                        if not isinstance(_entry, dict):
-                            continue
-                        if _entry.get("type") == "assistant" and "message" in _entry:
-                            _msg = _entry["message"]
-                            _usage = _msg.get("usage", {})
-                            _out = _safe_int(_usage.get("output_tokens", 0))
-                            if _out > 0:
-                                _turn_outputs.append(_out)
+                    _turn_outputs = [
+                        _o for _, _o in _transcript_request_outputs(filepath)]
                     if _turn_outputs:
                         _pre_nudge_avg_output = round(sum(_turn_outputs) / len(_turn_outputs))
                         _pre_nudge_turns = len(_turn_outputs)
@@ -58149,7 +61415,8 @@ def run_verbosity_steer(transcript_path=None, quiet=True, session_id=None):
 
             _tier_label = 'strong' if fill_pct >= 75 else 'gentle'
             _detail = (f"fill={fill_pct:.0f}% score={score:.0f} tier={_tier_label}"
-                       f" pre_avg_out={_pre_nudge_avg_output} pre_turns={_pre_nudge_turns}")
+                       f" pre_avg_out={_pre_nudge_avg_output} pre_turns={_pre_nudge_turns}"
+                       f" unit=req")
             _log_savings_event(
                 "verbosity_steer",
                 0,
@@ -59996,6 +63263,10 @@ if __name__ == "__main__":
             print(f"[Error] Unknown v5 subcommand '{sub}'")
             print("  Usage: measure.py v5 [status|enable|disable|welcome|info] [feature]")
             sys.exit(1)
+    elif args[0] == "upgrade-drain":
+        # Detached child started once per version by a collect pass that left
+        # a re-scoring backlog; also safe to run by hand.
+        _run_upgrade_drain(quiet="--quiet" in args)
     elif args[0] == "counted-backfill":
         # Interactively (re)build the full counted-cumulative ledger
         # with no per-pass caps (the collect pass converges incrementally; this

@@ -466,6 +466,10 @@ def main(argv=None) -> int:
     except Exception:
         pass
 
+    # Pinned here as well as in the hook command: the Windows command cannot
+    # carry an env prefix, and the bridge must never process-scan to guess.
+    os.environ.setdefault("TOKEN_OPTIMIZER_RUNTIME", "antigravity")
+
     event = ""
     if argv:
         event = argv[0]

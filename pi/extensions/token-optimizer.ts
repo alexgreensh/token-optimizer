@@ -46,6 +46,9 @@ export default function tokenOptimizer(pi: ExtensionAPI): void {
     }
   });
   pi.on("session_compact", (event, ctx) => {
+    // Compaction empties the model's context: earlier reads and calls no longer count as seen.
+    readCache.clear();
+    calls = [];
     if (!readSettings().enabled || !readSettings().continuity) return;
     const leaf = event.compactionEntry.parentId;
     if (!leaf) return;

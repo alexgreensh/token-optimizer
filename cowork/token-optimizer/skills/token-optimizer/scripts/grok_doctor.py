@@ -30,7 +30,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shlex
 import shutil
 import subprocess
 import sys
@@ -40,6 +39,7 @@ from pathlib import Path
 _SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_SCRIPT_DIR))
 
+import adapter_hook_command  # noqa: E402
 from runtime_env import grok_home, measure_cli as _measure_cli, with_measure_cli as _hint  # noqa: E402
 from py_trust import py_path_is_trusted  # noqa: E402
 
@@ -383,10 +383,11 @@ def _installed_commands() -> dict:
     # Identity, not substring: only entries whose bridge token is a bridge we
     # own qualify, so a corrupted entry pointing at /tmp/evil/grok_hook_bridge.py
     # is never replayed by --probe.
-    ours = {
-        str(grok_home() / "token-optimizer" / "plugin" / "grok_hook_bridge.py"),
-        str(_SCRIPT_DIR / "grok_hook_bridge.py"),
-    }
+    ours = set().union(*(
+        adapter_hook_command.path_spellings(str(p)) for p in (
+            grok_home() / "token-optimizer" / "plugin" / "grok_hook_bridge.py",
+            _SCRIPT_DIR / "grok_hook_bridge.py",
+        )))
     out = {}
     by_event = {event: [c for e, c in _iter_commands(config) if e == event]
                 for event in _WIRED_EVENTS}
@@ -400,27 +401,14 @@ def _installed_commands() -> dict:
 
 
 def _parse_hook_command(command: str) -> list | None:
-    """Parse a persisted hook command into argv, or None if malformed.
+    """Parse a persisted hook command into ``[python, bridge, event]``, or None.
 
-    The installer writes exactly ``TOKEN_OPTIMIZER_RUNTIME=grok <abs-py>
-    <abs-bridge> <Event>``. Anything else is rejected rather than executed:
-    the hooks file is user-writable, and --probe must never become an injection
-    vector for a corrupted or malicious entry.
+    Only the exact shape the installer writes is accepted (see
+    adapter_hook_command): runtime pin on POSIX, absolute python and bridge, a
+    wired event. Anything else is rejected rather than executed, so --probe
+    never becomes an injection vector for a corrupted or foreign entry.
     """
-    try:
-        tokens = shlex.split(command, posix=(os.name != "nt"))
-    except ValueError:
-        return None
-    if len(tokens) != 4:
-        return None
-    runtime, py, bridge, event = tokens
-    if runtime != "TOKEN_OPTIMIZER_RUNTIME=grok":
-        return None
-    if not os.path.isabs(py) or not os.path.isabs(bridge):
-        return None
-    if event not in _WIRED_EVENTS:
-        return None
-    return tokens[1:]
+    return adapter_hook_command.parse(command, runtime="grok", events=_WIRED_EVENTS)
 
 
 def _run_probe_command(command: str, payload: dict, probe_home: Path) -> dict:

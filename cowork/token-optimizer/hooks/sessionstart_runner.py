@@ -8,7 +8,7 @@ runpy(measure.py)`` and repeated the interpreter and module startup work:
   1. ``measure.py ensure-health --once-mark``                       (timeout 15, async)
   2. ``measure.py quality-cache --force --quiet --once-mark``       (timeout 20)
   3. ``measure.py compact-restore --compact``       [matcher compact] (timeout 20)
-  4. ``read_cache.py --clear-compacted --quiet``    [matcher compact] (timeout 10)
+  4. ``read_cache.py --clear-compacted --quiet``    [source compact|clear] (timeout 10)
   5. ``measure.py compact-restore --new-session-only --once-mark``  (timeout 20)
 
 This runner is invoked ONCE per session start, imports ``measure.py`` ONCE, and
@@ -195,6 +195,20 @@ def _is_compact_start(hook_input: dict) -> bool:
         return True
     source = str(hook_input.get("source") or "").strip().lower()
     return source == "compact"
+
+
+def _is_context_reset_start(hook_input: dict) -> bool:
+    """True when this SessionStart follows a /clear or a compaction.
+
+    Both empty the model's context while the session id lives on, so the
+    "already in context" records must be dropped. Only ``compact`` also restores
+    state (``_is_compact_start``); ``clear`` is a deliberate fresh start and
+    restores nothing.
+    """
+    if _is_compact_start(hook_input):
+        return True
+    source = str(hook_input.get("source") or "").strip().lower()
+    return source == "clear"
 
 
 def _run_safely(name: str, fn, *args, **kwargs) -> None:
@@ -438,11 +452,11 @@ def _sub_compact_restore_compact(hook_input: dict, sink: list) -> None:
 
 
 def _sub_clear_compacted(hook_input: dict) -> None:
-    """``read_cache.py --clear-compacted --quiet`` (entry 4, matcher ``compact``).
+    """``read_cache.py --clear-compacted --quiet`` (entry 4, source ``compact`` or ``clear``).
 
     Mirrors read_cache.main()'s --clear-compacted branch: bail loudly (stderr)
     when the stdin payload is empty, else call handle_clear_compacted(payload,
-    quiet=True). read_cache is imported lazily so a non-compact SessionStart --
+    quiet=True). read_cache is imported lazily so a plain startup or resume --
     the overwhelming majority -- never pays for the import.
 
     Emits nothing on stdout by design (all its output, success and failure, goes
@@ -546,6 +560,7 @@ def _check_consent() -> bool:
 def main() -> int:
     hook_input = _read_hook_input()
     is_compact = _is_compact_start(hook_input)
+    is_context_reset = _is_context_reset_start(hook_input)
 
     # Consent gate. Pre-consolidation, run.py's exempt_commands check matched
     # the literal "ensure-health" arg on hooks.json entry 1, so THAT entry ran
@@ -600,7 +615,7 @@ def main() -> int:
     # matcher:"compact" subcommands only count on a compact start, so a normal
     # start gives its three subcommands a third of the budget each instead of a
     # fifth. Dispatch order matches the hooks.json entry order exactly.
-    pending = 5 if is_compact else 3
+    pending = 3 + (1 if is_context_reset else 0) + (1 if is_compact else 0)
     _runner_budget(8, subcommand_count_hint=pending)
 
     _capture("ensure-health", _sub_ensure_health, hook_input)
@@ -608,6 +623,7 @@ def main() -> int:
     if is_compact:
         _capture("compact-restore --compact", _sub_compact_restore_compact,
                  hook_input, _wrapped)
+    if is_context_reset:
         _capture("read_cache --clear-compacted", _sub_clear_compacted, hook_input)
     _capture("compact-restore --new-session-only", _sub_compact_restore_new_session,
              hook_input, _wrapped)

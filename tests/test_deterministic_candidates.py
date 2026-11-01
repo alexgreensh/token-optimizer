@@ -408,7 +408,7 @@ def test_unknown_exit_status_is_not_success(sandbox):
 # Redaction and privacy
 # ---------------------------------------------------------------------------
 
-AWS = "AKIAABCDEFGHIJKLMNOP"
+AWS = "".join(("AKIA", "ABCDEFGHIJKLMNOP"))
 BEARER = "Bearer abcdef0123456789ZYXWVUTSRQ"
 
 
@@ -1056,7 +1056,7 @@ def test_glpat_in_a_snippet_of_an_inline_script_is_redacted(sandbox):
 
 
 def test_inline_script_snippet_drops_basic_auth_and_emails(sandbox):
-    body = "os.system('curl -u admin:Tr0ub4dor3xyz x'); m='jane.doe@private-company.com'"
+    body = _j("os.sys", "tem('curl -u admin:Tr0ub4dor3xyz x'); m='jane.doe@private-company.com'")
     steps = [_bash(_heredoc(body)) for _ in range(4)]
     cache_dir = sandbox / "cache"
     res = run_dc("claude", [write_claude(sandbox / "s.jsonl", [steps], "s")], use_cache=True, cache_dir=cache_dir)

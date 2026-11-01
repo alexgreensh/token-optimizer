@@ -356,6 +356,34 @@ def _restore_runtime_env():
 
 
 @pytest.fixture(autouse=True)
+def _cwd_outside_real_home(monkeypatch):
+    """Keep default project discovery inside the test sandbox.
+
+    Product code discovers project files by walking up from the working
+    directory (``measure_components`` reads ``<ancestor>/CLAUDE.md`` and
+    ``<ancestor>/.claude/CLAUDE.md`` for the cwd's parents). A checkout under
+    the real home, as on a developer machine, puts the real ``~/.claude/CLAUDE.md``
+    on that walk even though the test's HOME is the sandbox, so the test reads
+    real user data and its result depends on that machine. CI checkouts sit
+    outside any home with a CLAUDE.md, which hid it. A test that needs another
+    cwd calls ``monkeypatch.chdir`` itself.
+    """
+    sandbox = _home_guard.SANDBOX
+    if sandbox is None:
+        return
+    try:
+        cwd = os.path.realpath(os.getcwd())
+    except OSError:
+        return
+    real_home = _home_guard.REAL_HOME
+    if cwd == real_home or cwd.startswith(real_home + os.sep):
+        # Project discovery checks three ancestors, all of which must be fake.
+        workdir = sandbox / "cwd" / "project" / "work"
+        workdir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.chdir(workdir)
+
+
+@pytest.fixture(autouse=True)
 def _real_home_guard(request):
     """Fail any test that touches the developer's REAL home directory.
 

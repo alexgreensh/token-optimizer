@@ -160,16 +160,22 @@ def test_fleet_shared_claude_dir_default_unchanged(homes):
 # ------------------------------------------------- vscode-extension/src/paths.ts
 
 _TS_RUNNER = r"""
-const fs = require('fs'), path = require('path'), Module = require('module');
+const fs = require('fs'), path = require('path');
 const ts = require(path.join(process.argv[1], 'node_modules', 'typescript'));
 const src = fs.readFileSync(path.join(process.argv[1], 'src', 'paths.ts'), 'utf8');
 const js = ts.transpileModule(src, {compilerOptions: {module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020}}).outputText;
-const mod = new Module('paths'); mod.paths = module.paths; mod._compile(js, 'paths.js');
 const home = process.argv[2];
-const p = mod.exports.resolvePathsForRuntime('copilot', home);
-const auto = mod.exports.resolvePathsForRuntime('auto', home);
-process.stdout.write(JSON.stringify({cacheDir: p.cacheDir, sessionStateDir: p.sessionStateDir,
-  autoCacheDir: auto.cacheDir, installed: mod.exports.detectPluginInstalled(home)}));
+const dir = fs.mkdtempSync(path.join(process.argv[3], 'ts-'));
+try {
+  fs.writeFileSync(path.join(dir, 'paths.js'), js);
+  const mod = require(path.join(dir, 'paths.js'));
+  const p = mod.resolvePathsForRuntime('copilot', home);
+  const auto = mod.resolvePathsForRuntime('auto', home);
+  process.stdout.write(JSON.stringify({cacheDir: p.cacheDir, sessionStateDir: p.sessionStateDir,
+    autoCacheDir: auto.cacheDir, installed: mod.detectPluginInstalled(home)}));
+} finally {
+  fs.rmSync(dir, {recursive: true, force: true});
+}
 """
 
 _needs_ts = pytest.mark.skipif(
@@ -180,7 +186,7 @@ _needs_ts = pytest.mark.skipif(
 def _run_ts(home: Path, extra_env: dict) -> dict:
     env = {k: v for k, v in os.environ.items() if k not in _STRIP}
     env.update(HOME=str(home), USERPROFILE=str(home), **extra_env)
-    out = subprocess.run(["node", "-e", _TS_RUNNER, str(VSCODE), str(home)], env=env,
+    out = subprocess.run(["node", "-e", _TS_RUNNER, str(VSCODE), str(home), str(home.parent)], env=env,
                          capture_output=True, text=True, timeout=60)
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout)

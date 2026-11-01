@@ -2,9 +2,7 @@
 
 All hook installers persist an absolute interpreter path into a command the
 host agent runs on every tool call. The gate (ownership, writability, null
-bytes, Windows semantics) must be identical across adapters, and the
-antigravity installer must refuse native Windows rather than persist a hook
-command cmd.exe cannot parse.
+bytes, Windows semantics) must be identical across adapters.
 """
 
 from __future__ import annotations
@@ -100,25 +98,6 @@ def test_trust_gate_rejects_foreign_group_writable_dir(adapters, module, tmp_pat
 
     monkeypatch.setattr(py_trust.os, "stat", fake_stat)
     assert mod._py_path_is_trusted(str(f)) is False
-
-
-def test_antigravity_install_refuses_native_windows(adapters, monkeypatch):
-    """On nt, install must raise before writing anything, mirroring the other
-    adapters: hooks that can never fire must never be registered."""
-    mod = adapters["antigravity_install"]
-    monkeypatch.setattr(mod.os, "name", "nt")
-    with pytest.raises(RuntimeError) as exc_info:
-        mod.install(dry_run=False, home=None)
-    assert "Windows" in str(exc_info.value)
-
-
-def test_antigravity_windows_refusal_is_module_constant_consistent(adapters):
-    """The refusal must live in install() itself (not a wrapper), so a caller
-    importing install() directly still gets the gate."""
-    import inspect
-    mod = adapters["antigravity_install"]
-    src = inspect.getsource(mod.install)
-    assert 'os.name == "nt"' in src
 
 
 @pytest.mark.parametrize("module", ADAPTER_MODULES)

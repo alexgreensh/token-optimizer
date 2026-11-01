@@ -178,10 +178,15 @@ export declare function buildResumeLeanBlock(entry: CheckpointEntry, content: st
  * avoided = checkpoint raw bytes / 3.3 (proxy for cache-create tokens — OpenClaw
  *   has no session_log cache_create_1h_tokens / cache_create_5m_tokens equivalent).
  * saved = max(0, avoided - lean_tokens).
+ * The avoided quantity is the cold-resume cache rewrite, so the event carries
+ * the cacheWrite billed class (5-minute write tier: the lower write rate, since
+ * no TTL split evidence exists) rather than the generic input-rate floor.
  * Idempotent per target session within ~6h. Best-effort: never breaks injection.
  * Mirrors Python _log_resume_lean_savings.
  */
-export declare function logResumeLeanSavings(targetEntry: CheckpointEntry, leanBlock: string, logSavingsEventFn: (eventType: string, tokensSaved: number, sessionId: string, detail?: string) => void): void;
+export declare function logResumeLeanSavings(targetEntry: CheckpointEntry, leanBlock: string, logSavingsEventFn: (eventType: string, tokensSaved: number, sessionId: string, detail?: string, pricing?: {
+    tokenClass?: string;
+}) => void): void;
 /**
  * Find the best same-project checkpoint to inject when the user signals
  * resume intent.
@@ -212,5 +217,7 @@ export declare function findResumeLeanCheckpoint(promptText: string, currentSess
  * `logSavingsEventFn` is injected (not imported directly here) so the module
  * stays free of circular imports and tests can stub it out.
  */
-export declare function tryBuildResumeLeanHint(promptText: string, currentSessionId: string, cwd: string, logSavingsEventFn: (eventType: string, tokensSaved: number, sessionId: string, detail?: string) => void, maxAgeDays?: number): string | null;
+export declare function tryBuildResumeLeanHint(promptText: string, currentSessionId: string, cwd: string, logSavingsEventFn: (eventType: string, tokensSaved: number, sessionId: string, detail?: string, pricing?: {
+    tokenClass?: string;
+}) => void, maxAgeDays?: number): string | null;
 //# sourceMappingURL=continuity.d.ts.map

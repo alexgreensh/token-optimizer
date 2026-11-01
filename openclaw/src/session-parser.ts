@@ -314,6 +314,7 @@ export function parseSession(
   let messageCount = 0;
   const requestUsage = new Map<string, UsageBucket>();
   const modelUsage: Map<string, number> = new Map();
+  const modelTokenBuckets: NonNullable<AgentRun["modelTokenBuckets"]> = Object.create(null);
   const toolsUsed: Set<string> = new Set();
   let firstTs: Date | null = null;
   let lastTs: Date | null = null;
@@ -415,7 +416,11 @@ export function parseSession(
 
         const modelId =
           (msg?.model as string) ?? (record.model as string) ?? "unknown";
-        const reqId = record.requestId as string | undefined;
+        // SDK and imported transcripts carry only the message id, which repeats
+        // across the streamed chunks of one reply the same way a requestId does.
+        const reqId =
+          (record.requestId as string | undefined) ||
+          (msg?.id as string | undefined);
         const key = reqId || `__noreq__${requestUsage.size}`;
         const previous = requestUsage.get(key);
         if (!previous) {
@@ -459,6 +464,8 @@ export function parseSession(
   if (messageCount === 0) return null;
 
   for (const usage of requestUsage.values()) {
+    const bucket = modelTokenBuckets[usage.model] ??= {input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, cacheWrite5m: 0};
+    for (const key of ["input", "output", "cacheRead", "cacheWrite", "cacheWrite1h", "cacheWrite5m"] as const) bucket[key] += usage[key];
     totalInput += usage.input;
     totalOutput += usage.output;
     totalCacheRead += usage.cacheRead;
@@ -542,6 +549,8 @@ export function parseSession(
     tokens,
     costUsd,
     model,
+    rawModel: dominantModelRaw,
+    modelTokenBuckets,
     runType: "manual",
     outcome,
     messageCount,

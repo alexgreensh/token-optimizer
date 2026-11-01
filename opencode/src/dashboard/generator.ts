@@ -3,7 +3,7 @@ import { join, dirname } from "node:path";
 import { randomBytes } from "node:crypto";
 import { TrendsStore } from "../storage/trends.js";
 import { scoreToGrade, scoreToBand } from "../util/grade.js";
-import { computeRealizedSavings } from "../savings.js";
+import { computeRealizedSavings, allocateCents } from "../savings.js";
 
 // Version labels — persistent across all dashboard views (parity with the
 // canonical Python dashboard's brand-meta nav label). The CORE version tracks
@@ -12,8 +12,8 @@ import { computeRealizedSavings } from "../savings.js";
 // release (source of truth: opencode/package.json `version`). They are
 // intentionally independent: the adapter ships at its own cadence and is NOT
 // required to match the core number.
-const CORE_VERSION = "5.13.62";
-const ADAPTER_VERSION = "1.2.0";
+const CORE_VERSION = "5.13.63";
+const ADAPTER_VERSION = "1.2.1";
 
 export interface DashboardOptions {
   dataDir: string;
@@ -416,6 +416,23 @@ tr:hover td { background: var(--bg-hover); }
   <div class="view" id="view-savings">
     <div class="section-title">Token Optimizer &middot; Savings</div>
 
+    ${savings.unpricedEventTokens > 0 ? `<div style="font-size:12px;color:var(--text-dim);margin-bottom:var(--s-4);">${fmtNum(savings.unpricedEventTokens)} tokens across ${savings.unpricedEventCount} action credits or reversals have no model price. Action dollar amounts exclude unpriced contributions.${savings.archivePricedNetUsd !== null ? ` Priced archive subtotal: ${savings.archivePricedNetUsd < 0 ? "-" : ""}${fmtCost(Math.abs(savings.archivePricedNetUsd))}.` : ""}</div>` : ""}
+    ${savings.unpricedBaselineTokens + savings.unpricedCurrentTokens > 0 ? `<div style="font-size:12px;color:var(--text-dim);margin-bottom:var(--s-4);">Model comparison excludes ${fmtNum(savings.unpricedBaselineTokens)} unpriced baseline tokens and ${fmtNum(savings.unpricedCurrentTokens)} unpriced recent tokens.</div>` : ""}
+
+    ${(() => {
+      // Cents are allocated once so the shown parts add to the shown total.
+      const logged = Math.max(0, savings.compressionMeasuredWindowUsd);
+      const other = Math.max(0, savings.verbosityMeasuredWindowUsd);
+      if (savings.ready || logged + other < 0.005) return "";
+      const [loggedDisplay, otherDisplay] = allocateCents(logged + other, [logged, other]);
+      return `
+    <div data-card="action-savings" style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:var(--s-4);margin-bottom:var(--s-4);">
+      <div>Action savings &middot; last ${days} days</div>
+      <strong>${fmtCost(Math.round((loggedDisplay + otherDisplay) * 100) / 100)}</strong>
+      <div>Logged actions ${fmtCost(loggedDisplay)} &middot; Other estimates ${fmtCost(otherDisplay)}</div>
+      <div>Repeat reads avoided: unavailable.${savings.inputRateFloorWindowUsd > 0 ? ` ${fmtCost(savings.inputRateFloorWindowUsd)} of logged actions is priced at the input rate, a minimum.` : ""} ${BILLING_CAPTION}</div>
+    </div>`;
+    })()}
     ${!savings.ready ? (() => {
       // New-user view: render baseline-building progress card instead of a dead end.
       const bb = savings.baselineBuilding;
@@ -467,7 +484,8 @@ tr:hover td { background: var(--bg-hover); }
         <strong style="color:var(--text)">${fmtCost(savings.monthlySavingsUsd)} more</strong>
         &mdash; est. <strong style="color:var(--text)">${fmtCost(savings.actualMonthlyUsd)}</strong> now vs
         <strong style="color:var(--text)">${fmtCost(savings.counterfactualMonthlyUsd)}</strong> the old way.
-        Your volume is held constant on both sides, so this is pure efficiency, not workload growth.
+        The comparison holds token classes constant and excludes usage priced above your baseline model rates.
+        ${savings.aggregateBaseline ? "Earlier sessions use their recorded session model because per-message model usage was unavailable." : ""}
       </div>`
         : `<div style="font-size:13px;color:var(--text-dim);line-height:1.6;margin-bottom:var(--s-4);">
         Counted directly from metered context removals (tool archives, delta reads, structure maps).
@@ -479,17 +497,17 @@ tr:hover td { background: var(--bg-hover); }
         <div>
           <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-dim);margin-bottom:var(--s-1);">The old way</div>
           <div style="font-family:monospace;font-size:22px;font-weight:700;color:var(--text)">${fmtCost(savings.beforeCostPerSession)}<span style="font-size:12px;color:var(--text-dim)">/session</span></div>
-          <div style="font-size:12px;color:var(--text-dim);margin-top:var(--s-1)">${esc(savings.beforeMixLabel)}${Math.round(savings.beforeCacheHit * 100) !== Math.round(savings.afterCacheHit * 100) ? ` &middot; ${Math.round(savings.beforeCacheHit * 100)}% cache reuse` : ""}</div>
+          <div style="font-size:12px;color:var(--text-dim);margin-top:var(--s-1)">${esc(savings.beforeMixLabel)}</div>
         </div>
         <div>
           <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-dim);margin-bottom:var(--s-1);">Now</div>
           <div style="font-family:monospace;font-size:22px;font-weight:700;color:var(--success)">${fmtCost(savings.afterCostPerSession)}<span style="font-size:12px;color:var(--text-dim)">/session</span></div>
-          <div style="font-size:12px;color:var(--text-dim);margin-top:var(--s-1)">${esc(savings.afterMixLabel)}${Math.round(savings.beforeCacheHit * 100) !== Math.round(savings.afterCacheHit * 100) ? ` &middot; ${Math.round(savings.afterCacheHit * 100)}% cache reuse` : ""}</div>
+          <div style="font-size:12px;color:var(--text-dim);margin-top:var(--s-1)">${esc(savings.afterMixLabel)}</div>
         </div>
         <div>
           <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-dim);margin-bottom:var(--s-1);">${savings.savingsPerSession >= 0 ? "Cut per session" : "Added per session"}</div>
           <div style="font-family:monospace;font-size:22px;font-weight:700;color:${savings.savingsPerSession >= 0 ? "var(--success)" : "var(--danger)"}">${savings.savingsPerSession >= 0 ? "" : "+"}${fmtCost(Math.abs(savings.savingsPerSession))}</div>
-          <div style="font-size:12px;color:var(--text-dim);margin-top:var(--s-1);">main-work routing &amp; caching${runRate ? ` &middot; ~${Math.round(savings.sessionsPerMonth)} sessions/mo` : ""}</div>
+          <div style="font-size:12px;color:var(--text-dim);margin-top:var(--s-1);">eligible model mix${runRate ? ` &middot; ~${Math.round(savings.sessionsPerMonth)} sessions/mo` : ""}</div>
         </div>
         ${runRate ? `<div>
           <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-dim);margin-bottom:var(--s-1);">Saved to date</div>
@@ -502,9 +520,9 @@ tr:hover td { background: var(--bg-hover); }
       <table>
         <thead><tr><th>Lever</th><th>Est. $/month</th></tr></thead>
         <tbody>
-          ${savings.breakdown.filter((b) => Math.abs(b.monthlyUsd) >= 0.005).map((b) => `<tr>
+          ${savings.breakdown.filter((b) => Math.abs(b.monthlyUsdDisplay) >= 0.005).map((b) => `<tr>
             <td>${esc(b.label)}</td>
-            <td style="font-family:monospace;color:${b.monthlyUsd >= 0 ? "var(--success)" : "var(--danger)"}">${b.monthlyUsd >= 0 ? "" : "+"}${fmtCost(Math.abs(b.monthlyUsd))}/mo</td>
+            <td style="font-family:monospace;color:${b.monthlyUsdDisplay >= 0 ? "var(--success)" : "var(--danger)"}">${b.monthlyUsdDisplay >= 0 ? "" : "+"}${fmtCost(Math.abs(b.monthlyUsdDisplay))}/mo</td>
           </tr>`).join("")}
         </tbody>
       </table>` : ""}
@@ -521,11 +539,15 @@ tr:hover td { background: var(--bg-hover); }
     </div>
     `}
 
+    ${savings.premiumTokens > 0 ? `<div style="font-size:12px;color:var(--text-dim);margin-bottom:var(--s-4);">Premium usage excluded from the model comparison: ${fmtNum(savings.premiumTokens)} tokens (${Math.round(savings.premiumShare * 100)}% of priced tokens), ${fmtCost(savings.premiumCostUsd)} at API rates in the selected period.</div>` : ""}
+
     <!-- Selected-period savings_events: raw window sums, measured + estimated. -->
     ${(() => {
       const measuredWindow = Math.max(0, savings.compressionMeasuredWindowUsd);
       const estimatedWindow = Math.max(0, savings.verbosityMeasuredWindowUsd);
       const actionTotal = measuredWindow + estimatedWindow;
+      // Display cents are allocated once so the shown parts add to the shown total.
+      const [measuredDisplay, estimatedDisplay] = allocateCents(actionTotal, [measuredWindow, estimatedWindow]);
       // Fail-open: render only when there is a real period total. A $0 card
       // when no savings_events exist reads as "TO saved you nothing", which
       // is misleading on a mature install with zero compression events.
@@ -539,14 +561,15 @@ tr:hover td { background: var(--bg-hover); }
         <span style="font-size:14px;color:var(--text-dim);font-family:monospace;">logged + estimated</span>
       </div>
       <div style="display:flex;gap:var(--s-6);flex-wrap:wrap;font-size:13px;color:var(--text-dim);margin-bottom:var(--s-3);">
-        <span>Logged actions <strong style="color:var(--text)">${fmtCost(measuredWindow)}</strong></span>
+        <span>Logged actions <strong style="color:var(--text)">${fmtCost(measuredDisplay)}</strong></span>
         <span>Repeat reads avoided <strong style="color:var(--text-dim)">unavailable</strong></span>
-        <span>Other estimates <strong style="color:var(--text)">~${fmtCost(estimatedWindow)}</strong></span>
+        <span>Other estimates <strong style="color:var(--text)">~${fmtCost(estimatedDisplay)}</strong></span>
       </div>
       <div style="font-size:12px;color:var(--text-dim);line-height:1.6;">
         Context removals logged during this period (tool archives, delta reads, structure maps), counted once at removal time.
         Repeat-read coverage is unavailable on OpenCode; logged actions are still included.
         ${estimatedWindow > 0 ? "Other estimates are lean-output nudges (trigger observed, magnitude estimated)." : ""}
+        ${savings.inputRateFloorWindowUsd > 0 ? `${fmtCost(savings.inputRateFloorWindowUsd)} of logged actions is priced at the input rate, a minimum &mdash; the billed token class was not recorded for those events.` : ""}
       </div>
       <div style="font-size:12px;color:var(--text-dim);margin-top:var(--s-2);">${BILLING_CAPTION}</div>
     </div>`;
@@ -569,6 +592,7 @@ tr:hover td { background: var(--bg-hover); }
       </div>
       <div style="font-size:12px;color:var(--text-dim);margin-top:var(--s-2);line-height:1.6;">
         Tokens TO removed from your context (tool archives, delta reads, structure maps), as metered, before the baseline-mix reprice.
+        ${(runRate ? savings.inputRateFloorUsd : savings.inputRateFloorWindowUsd) > 0 ? `${fmtCost(runRate ? savings.inputRateFloorUsd : savings.inputRateFloorWindowUsd)} of that is priced at the input rate, a minimum &mdash; the billed token class was not recorded for those events.` : ""}
         ${runRate
           ? `This is the proven, event-by-event floor &mdash; a subset of the transformation estimate above, not added to it.`
           : `This is the proven, event-by-event floor &mdash; the same figure shown above. The monthly run-rate estimate appears once 30 days of post-baseline history are on record.`}

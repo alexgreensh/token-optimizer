@@ -146,3 +146,31 @@ test("a generation priced unlike its family (Opus 5.5) is billed at its own card
   expect(card.input).not.toBe(GENERATED_PRICING["opus"].input);
   expect(run!.costUsd).toBeCloseTo(expected, 9);
 });
+
+test("streamed chunks that carry only a message id count as one request", () => {
+  const chunk = (outputTokens: number) => ({
+    type: "assistant",
+    timestamp: "2026-08-01T10:00:05.000Z",
+    message: {
+      id: "msg_abc",
+      role: "assistant",
+      model: "claude-opus-4-8",
+      content: [{ type: "text", text: "Working on it now." }],
+      usage: { input_tokens: 1000, output_tokens: outputTokens },
+    },
+  });
+  const p = writeSession("sdk.jsonl", [
+    {
+      type: "user",
+      timestamp: "2026-08-01T10:00:01.000Z",
+      message: { role: "user", content: "Refactor the auth module for me please" },
+    },
+    chunk(100),
+    chunk(250),
+    chunk(400),
+  ]);
+  const run = parseSession(p, "agent-a", dir);
+  expect(run).not.toBeNull();
+  expect(run!.tokens.input).toBe(1000);
+  expect(run!.tokens.output).toBe(400);
+});

@@ -83,6 +83,11 @@ def plugin(home):
     module = _load_plugin()
     # Deterministic host timeout: no Hermes config is importable here.
     module._hook_timeout_cache["value"] = 30.0
+    # These tests check what the hooks decide, not how fast: a loaded CI
+    # runner can take over 3 s to start the child process, and the hook then
+    # fails open. Timing has its own tests below.
+    module._PRE_TOOL_TIMEOUT_S = 12.0
+    module._POST_TOOL_TIMEOUT_S = 15.0
     yield module
     sys.modules.pop("to_hermes_parity_plugin", None)
 
@@ -251,7 +256,7 @@ def test_plugin_registers_every_declared_hook(plugin):
 
 def test_manifest_version_bumped_for_new_features():
     text = (HERMES_PAYLOAD / "plugin.yaml").read_text(encoding="utf-8")
-    assert re.search(r'^version:\s*"0\.2\.1"\s*$', text, re.MULTILINE)
+    assert re.search(r'^version:\s*"0\.2\.2"\s*$', text, re.MULTILINE)
 
 
 def test_register_survives_a_host_that_rejects_one_hook(plugin):
@@ -579,6 +584,18 @@ def test_compaction_clears_read_cache_and_restores_checkpoint(plugin, home, tmp_
                                  conversation_history=[], model="claude-sonnet-4-5", platform="cli")
     assert ctx and "Post-compact recovery" in ctx["context"]
     assert "Refactor the parser module" in ctx["context"]
+
+
+def test_session_reset_clears_read_cache_for_the_reused_id(plugin, home, tmp_path):
+    sid = "sess_reset_01"
+    _make_state_db(home, sid)
+    src = tmp_path / "keep.py"
+    src.write_text((SCRIPTS / "spawn_utils.py").read_text(encoding="utf-8"), encoding="utf-8")
+    assert _read(plugin, sid, src, "r1") is None
+    assert _read(plugin, sid, src, "r2")["action"] == "block"
+    plugin.on_session_reset(session_id=sid, platform="cli", reason="new")
+    # /new emptied the model's context: the next read is served in full.
+    assert _read(plugin, sid, src, "r3") is None
 
 
 def test_rotated_session_restores_from_the_old_session(plugin, home):

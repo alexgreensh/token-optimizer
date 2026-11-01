@@ -26,7 +26,6 @@ import argparse
 import json
 import os
 import stat as _stat
-import shlex
 import shutil
 import sys
 from pathlib import Path
@@ -34,6 +33,7 @@ from pathlib import Path
 _SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_SCRIPT_DIR))
 
+import adapter_hook_command  # noqa: E402
 from py_trust import py_path_is_trusted, py_trust_reason  # noqa: E402
 from runtime_env import antigravity_home, measure_cli as _measure_cli, with_measure_cli as _hint  # noqa: E402
 
@@ -132,16 +132,16 @@ def _hooks_config(bridge_path: Path) -> dict:
     docs): a JSON object keyed by hook NAME; PreToolUse uses a matcher group,
     PreInvocation/Stop are flat handler lists."""
     py = _resolve_safe_python()
-    py_q = shlex.quote(py)
-    bridge_q = shlex.quote(str(bridge_path))
 
     def cmd(event: str, timeout: int) -> dict:
         return {
             "type": "command",
             # -E -s: ignore PYTHONPATH + user site so an inherited env cannot
-            # hijack payload imports (R16). TOKEN_OPTIMIZER_RUNTIME is pinned so
-            # the bridge never process-scans on the hot path.
-            "command": f"TOKEN_OPTIMIZER_RUNTIME=antigravity {py_q} -E -s {bridge_q} {event}",
+            # hijack payload imports (R16). The runtime is pinned (env prefix on
+            # POSIX, set by the bridge itself on Windows) so the bridge never
+            # process-scans on the hot path.
+            "command": adapter_hook_command.build(
+                py, str(bridge_path), event, runtime="antigravity", python_flags=("-E", "-s")),
             "timeout": timeout,
         }
 
@@ -192,16 +192,6 @@ def _write_consent(home: Path) -> None:
 
 def install(*, dry_run: bool = False, home: Path | None = None) -> dict:
     """Install the adapter. Returns a summary dict of actions taken."""
-    # Windows refusal (deferred quoting: cmd.exe would not parse shlex.quote,
-    # and the env-prefix form of the persisted hook command is POSIX-only).
-    # Refuse loudly rather than register hooks that can never fire.
-    if os.name == "nt":
-        raise RuntimeError(
-            "Antigravity install on native Windows is not supported yet: the "
-            "persisted hook command is POSIX-shell quoted and cmd.exe would "
-            "not parse it. Install from a POSIX shell or WSL."
-        )
-
     root = home if home is not None else antigravity_home()
     actions = {
         "copied": [],
@@ -270,9 +260,10 @@ def install(*, dry_run: bool = False, home: Path | None = None) -> dict:
                 )
 
                 # Write hooks.json, then plugin.json LAST so a partial payload
-                # never registers hooks (R1/U5).
+                # never registers hooks (R1/U5). The commands name the FINAL
+                # plugin dir: the staging dir is renamed away below.
                 (staging / "hooks.json").write_text(
-                    json.dumps(_hooks_config(staging / "antigravity_hook_bridge.py"), indent=2)
+                    json.dumps(_hooks_config(pdir / "antigravity_hook_bridge.py"), indent=2)
                     + "\n",
                     encoding="utf-8",
                 )

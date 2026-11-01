@@ -12,7 +12,6 @@ Cursor support is in beta. Hooks are observed at runtime rather than version-gat
 - Cursor, either the IDE or the `agent` CLI.
 - Python 3.x on your PATH.
 - For the fresh clone path: `git`.
-- A POSIX shell (WSL or Git Bash). Native Windows is refused.
 
 ## Install
 
@@ -48,7 +47,7 @@ bash ~/.claude/token-optimizer/install.sh --cursor
 The install is idempotent. It read-merges user-level hooks into `~/.cursor/hooks.json` (Cursor has one shared hooks file, so foreign entries are preserved verbatim) and copies the adapter to `~/.cursor/token-optimizer/plugin/`. It never writes repo-level hooks.
 
 <Aside type="caution" title="Windows">
-Install from WSL or a POSIX shell. The installer refuses native Windows: the persisted `command` is POSIX-shell quoted and `cmd.exe` would not parse it, so the adapter fails rather than silently writing a no-op hook.
+On native Windows the installer writes hook commands that PowerShell and cmd.exe both run (a bare interpreter path and double-quoted arguments, the same form the Codex hooks use). A folder name holding `$`, a backtick, `%` or `!` goes through its short 8.3 name; if there is none, the installer says what to move.
 </Aside>
 
 ## Verify

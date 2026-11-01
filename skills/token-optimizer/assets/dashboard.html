@@ -2398,10 +2398,41 @@ function codexMemCardHtml(mr, fn) { return '<div class="card"><div class="card-h
         '<div style="text-align:center;padding:0 0 var(--s-3);font-size:12px;color:var(--c-text-dim);">Measured from Codex state; no file structure audit</div>' +
         '</div>'; }
 function memCountSuffix(mr) { return mr && mr.scan_partial ? '+' : ''; }
+function hermesComponentDetails(c) {
+  function fileSub(x, missing) {
+    return (x && x.exists) ? (x.lines || 0) + ' lines loaded every session' : missing;
+  }
+  var sk = c.skills || {}, mcp = c.mcp_tools || {};
+  return [
+    { key: 'hermes_soul', name: 'SOUL.md', tokens: c.hermes_soul ? c.hermes_soul.tokens : 0,
+      sub: fileSub(c.hermes_soul, 'No SOUL.md in your Hermes home'),
+      what: 'Hermes loads SOUL.md from its home folder into every session as the agent identity.',
+      top: [], issues: [], related: [] },
+    { key: 'hermes_memory', name: 'Memory', tokens: c.hermes_memory ? c.hermes_memory.tokens : 0,
+      sub: fileSub(c.hermes_memory, 'No MEMORY.md or USER.md yet'),
+      what: 'MEMORY.md and USER.md from memories/ are added to the system prompt as a snapshot when a session starts.',
+      top: [], issues: [], related: [] },
+    { key: 'skills', name: 'Skills', tokens: sk.tokens || 0,
+      sub: (sk.count || 0) + ' skills listed' + (sk.archived_count ? ', ' + sk.archived_count + ' archived' : '') +
+        (sk.disabled_count ? ', ' + sk.disabled_count + ' disabled' : ''),
+      what: 'Hermes lists each skill name and description in the system prompt and loads the full skill only when it is used. Short descriptions keep the list small.',
+      top: [], issues: [], related: [] },
+    { key: 'mcp_tools', name: 'MCP Servers', tokens: mcp.tokens || 0,
+      sub: (mcp.server_count || 0) + ' servers enabled' + (mcp.disabled_count ? ', ' + mcp.disabled_count + ' disabled' : ''),
+      what: 'Servers from mcp_servers in config.yaml. With tool search on (the Hermes default), their tools are listed briefly and full schemas load on demand.',
+      top: [], issues: [], related: [] },
+    { key: 'core_system', name: 'Core System', tokens: c.core_system ? c.core_system.tokens : 0,
+      sub: 'Not exposed for measurement',
+      what: "Hermes's built-in instructions and tools. Hermes does not expose their size, so it is not counted here.",
+      top: [], issues: [], related: [] }
+  ];
+}
+
 function getComponentDetails(data) {
   var c = data.snapshot.components;
   var cd = data.snapshot.component_details || {};
   var isCodex = data.runtime === 'codex';
+  if (data.runtime === 'hermes') return hermesComponentDetails(c);
 
   var ct = 0;
   for (var k in c) {
@@ -2513,6 +2544,8 @@ function getComponentDetails(data) {
       sub: 'Fixed overhead, not optimizable',
       what: isCodex
         ? "Codex's built-in instructions and tool definitions. This is fixed by the runtime and cannot be reduced by project configuration."
+        : data.runtime && data.runtime !== 'claude'
+        ? (data.runtime_label || 'The runtime') + "'s built-in instructions and tool definitions. Fixed by the runtime; not reducible through configuration."
         : "Claude Code's built-in system prompt, tool definitions, safety instructions, and MCP protocol overhead. This is fixed by Anthropic and cannot be reduced by user configuration changes.",
       top: [], issues: [], related: []
     }
@@ -3021,6 +3054,7 @@ var DB = (function() {
     // Generate bar chart from components
     var c = data.snapshot.components;
     var isCodexOverview = data.runtime === 'codex';
+    var isHermesOverview = data.runtime === 'hermes';
     var vals = [];
     var ct = 0; for (var k in c) {
       if (!c[k] || !c[k].tokens) continue;
@@ -3051,6 +3085,13 @@ var DB = (function() {
     barLabels.push('MCP Tools');
     barLabels.push('Core System');
     var memoryExists = c.memory_md && c.memory_md.exists !== false;
+    if (isHermesOverview) {
+      // Hermes: SOUL.md, memory snapshot, skills index, MCP servers, core.
+      var hc = hermesComponentDetails(c);
+      vals = hc.map(function(x) { return x.tokens || 0; });
+      barLabels = hc.map(function(x) { return x.name; });
+      memoryExists = !!(c.hermes_memory && c.hermes_memory.exists);
+    }
     var barsHtml = vals.map(function(v, i) {
       var w = logBar(v);
       var fixedClass = i === vals.length - 1 ? ' fixed' : '';
@@ -3066,7 +3107,7 @@ var DB = (function() {
     document.getElementById('sat-desc').textContent =
       isCodexOverview
         ? 'Bars show % of the logged Codex context window each component uses. Core System is fixed by Codex. AGENTS.md, memories, skills/plugins, MCP, and hooks are yours to tune.'
-        : 'Bars show % of context window each component uses. Core System is fixed by Claude Code. Everything else is yours to trim.';
+        : 'Bars show % of context window each component uses. Core System is fixed by ' + (data.runtime_label || 'Claude Code') + '. Everything else is yours to trim.';
     var caveatEl = document.getElementById('sat-caveat');
     if (!caveatEl) {
       caveatEl = document.createElement('div');
@@ -4285,7 +4326,7 @@ var DB = (function() {
           // report. Keep the button (it rebuilds savings/the rest), just stop
           // implying it refreshes the window.
           var staleNote = stale
-            ? ' It updates only while Claude Code is running; Regenerate will not refresh it.'
+            ? ' It updates only while ' + esc(data.runtime_label || 'Claude Code') + ' is running; Regenerate will not refresh it.'
             : '';
           return '<div style="margin-top:var(--s-3);font-size:13px;color:' + col + ';">' +
             (stale ? '⚠ ' : '') + 'Window reading as of ' + esc(whenStr) + ' (' + ageStr + ').' + staleNote +
@@ -4985,10 +5026,10 @@ var DB = (function() {
         '<div><div style="font-size:12px;color:var(--c-text-dim);">Affected sessions</div>' +
           '<div style="font-family:var(--font-mono);font-size:20px;">' + (Number(ch.affected_sessions) || 0) + '<span style="font-size:13px;color:var(--c-text-dim);"> / ' + (Number(ch.scanned_sessions) || 0) + '</span></div></div>' +
         (Number(ch.would_be_savings_1h_usd) > 0 ?
-          '<div><div style="font-size:12px;color:var(--c-text-dim);" title="API/SDK sessions only: a 1-hour cache_control would avoid the repeat writes. Does not apply to Claude Code, which already holds a 1h cache.">Recoverable via 1h cache (API/SDK)</div>' +
+          '<div><div style="font-size:12px;color:var(--c-text-dim);" title="' + ((!data.runtime || data.runtime === 'claude') ? 'API/SDK sessions only: a 1-hour cache_control would avoid the repeat writes. Does not apply to Claude Code, which already holds a 1h cache.' : 'Where the provider offers a 1-hour cache, using it would avoid these repeat writes.') + '">Recoverable via 1h cache (API/SDK)</div>' +
             '<div style="font-family:var(--font-mono);font-size:20px;color:var(--c-text-dim);">$' + (Number(ch.would_be_savings_1h_usd) || 0).toFixed(2) + '</div></div>' : '') +
         (Number(ch.avoidable_behavioral_usd) > 0 ?
-          '<div><div style="font-size:12px;color:var(--c-text-dim);" title="Claude Code already holds a 1-hour cache. This is avoidable only behaviorally — by resuming within the hour or batching related work. No setting extends it.">Avoidable by resuming in-hour</div>' +
+          '<div><div style="font-size:12px;color:var(--c-text-dim);" title="' + ((!data.runtime || data.runtime === 'claude') ? 'Claude Code already holds a 1-hour cache. This is avoidable only behaviorally — by resuming within the hour or batching related work. No setting extends it.' : 'Avoidable by resuming before the cache expires or batching related work.') + '">Avoidable by resuming in-hour</div>' +
             '<div style="font-family:var(--font-mono);font-size:20px;color:var(--c-text-dim);">$' + (Number(ch.avoidable_behavioral_usd) || 0).toFixed(2) + '</div></div>' : '') +
       '</div>';
       if (Number(ch.no_cache_economics_sessions) > 0) {
@@ -5895,6 +5936,8 @@ var DB = (function() {
       '<p id="manage-mode-desc">' +
         (isCodex
           ? 'Codex setup uses real local logs plus project hooks. Balanced hooks are on by default; noisy per-tool hooks stay opt-in so Desktop users are not spammed.'
+          : m && m.read_only
+          ? 'Your ' + esc(data.runtime_label || 'runtime') + ' skills and MCP servers, read from its own files. Token Optimizer feature toggles are below.'
           : window.__TOKEN_API_LIVE
           ? '<span style="color:var(--c-accent-cyan);font-weight:600;">Live mode</span> — toggles apply instantly to settings. <strong>Restart ' + (isCodex ? 'Codex' : 'Claude') + '</strong> to activate changes.'
           : tcliHtml('Open in serve mode for live toggles: <code style="background:var(--c-bg);padding:2px 5px;border-radius:4px;">python3 measure.py dashboard --serve</code>')) +
@@ -6084,8 +6127,45 @@ var DB = (function() {
       html += '</div></div></div>';
     }
 
+    // --- READ-ONLY INVENTORY (Hermes) ---
+    // Listed only: the toggles below manage Claude Code folders, so they must
+    // never act on another runtime's skills or servers.
+    if (!isCodex && m.read_only) {
+      var roLabel = data.runtime_label || 'This runtime';
+      var roRow = function(name, desc, meta) {
+        return '<div class="hook-row" style="padding:8px var(--s-3);">' +
+          '<div class="hook-info">' +
+          '<div class="hook-label" style="font-size:14px;font-family:var(--font-mono);">' + esc(name) + '</div>' +
+          (desc ? '<div class="hook-desc">' + esc(desc) + '</div>' : '') +
+          '<div style="font-size:11px;color:var(--c-text-dim);margin-top:2px;">' + esc(meta) + '</div>' +
+          '</div></div>';
+      };
+      var roList = function(title, items, label, empty, rowFn) {
+        var out = '<div class="card wide"><div class="card-header"><span>' + esc(title) + ' (' + items.length + ')</span>' +
+          (label ? '<span class="label">' + esc(label) + '</span>' : '') + '</div>';
+        if (items.length === 0) return out + '<div class="empty-state" style="font-size:13px;">' + esc(empty) + '</div></div>';
+        return out + '<div style="max-height:500px;overflow-y:auto;">' + items.map(rowFn).join('') + '</div></div>';
+      };
+      var roSkills = (m.skills && m.skills.active) || [];
+      var roSkillTokens = roSkills.reduce(function(s, sk) { return s + (sk.tokens || 0); }, 0);
+      var skillRow = function(sk) {
+        return roRow(sk.name, sk.description || '', (sk.category ? sk.category + ' · ' : '') + (sk.tokens || 0) + ' tokens in the skill list');
+      };
+      html += roList('Skills', roSkills, fn(roSkillTokens) + ' tokens/session', 'No skills found in your ' + roLabel + ' skills folder.', skillRow);
+      var roArchived = ((m.skills && m.skills.archived) || []).concat((m.skills && m.skills.disabled) || []);
+      if (roArchived.length) html += roList('Archived or disabled skills', roArchived, 'not in the skill list', '', function(sk) {
+        return roRow(sk.name, sk.description || '', sk.path || '');
+      });
+      var roMcp = ((m.mcp_servers && m.mcp_servers.active) || []).concat((m.mcp_servers && m.mcp_servers.disabled) || []);
+      html += roList('MCP servers', roMcp, '', 'No mcp_servers in your ' + roLabel + ' config.yaml.', function(srv) {
+        return roRow(srv.name, '', (srv.enabled ? '' : 'disabled · ') + srv.transport + (srv.command ? ' · ' + srv.command : ''));
+      });
+      html += '<p style="font-size:13px;color:var(--c-text-dim);padding:0 var(--s-3);">Read from ' + esc(roLabel) +
+        '\'s own skills folder and config.yaml. Change them in ' + esc(roLabel) + '; this list updates on the next refresh.</p>';
+    }
+
     // --- SKILLS SECTION ---
-    if (!isCodex) {
+    if (!isCodex && !m.read_only) {
     var activeSkills = (m.skills && m.skills.active) || [];
     var archivedSkills = (m.skills && m.skills.archived) || [];
     var totalTokens = activeSkills.reduce(function(s, sk) { return s + (sk.tokens || 100); }, 0);

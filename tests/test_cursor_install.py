@@ -23,13 +23,12 @@ sys.path.insert(0, str(SCRIPTS))
 import cursor_install as ci  # noqa: E402
 import cursor_hook_bridge as bridge_mod  # noqa: E402
 
-# The installer refuses native Windows by design (the persisted hook command is
-# POSIX-shell quoted). Install/uninstall paths therefore can't run on win32;
-# the refusal itself is covered by test_windows_install_refuses, which runs
-# everywhere.
+# These tests assert POSIX file modes and POSIX-quoted commands. The Windows
+# command form is covered by test_windows_install_writes_shell_neutral_commands
+# (runs everywhere) and tests/test_adapter_hook_command.py.
 needs_posix = pytest.mark.skipif(
     os.name == "nt",
-    reason="cursor_install refuses native Windows by design; install/uninstall paths are POSIX-only",
+    reason="asserts POSIX file modes and the POSIX command form",
 )
 
 
@@ -145,11 +144,25 @@ def test_dry_run_writes_nothing(home):
     assert ci._plugin_dir(home).exists() is False
 
 
-def test_windows_install_refuses(monkeypatch, home):
+def test_windows_install_writes_shell_neutral_commands(monkeypatch, home):
+    """#296 class: native Windows installs instead of refusing, and every
+    command is one PowerShell and cmd.exe both parse (no VAR=value prefix,
+    bare interpreter, double-quoted bridge)."""
     home.mkdir()
     monkeypatch.setattr(ci.os, "name", "nt")
-    with pytest.raises(RuntimeError, match="Windows"):
-        ci.install(home=home)
+    ci.install(home=home)
+    config = json.loads(ci._host_hooks_path(home).read_text(encoding="utf-8"))
+    commands = [e["command"] for entries in config["hooks"].values() for e in entries]
+    assert commands
+    bridge = str(_bridge_path(home))
+    for cmd in commands:
+        assert "TOKEN_OPTIMIZER_RUNTIME=" not in cmd
+        assert not cmd.startswith(('"', "'", "&"))
+        assert f'"{bridge}"' in cmd
+    # Re-install replaces our entries instead of adding a second set.
+    ci.install(home=home)
+    again = json.loads(ci._host_hooks_path(home).read_text(encoding="utf-8"))
+    assert sum(len(v) for v in again["hooks"].values()) == len(commands)
 
 
 def test_is_ours_matches_bridge_path(home):

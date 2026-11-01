@@ -19,8 +19,8 @@ from pathlib import Path
 
 import pytest
 
-# antigravity_install refuses native Windows by design (the persisted hook
-# command is POSIX-shell quoted); install/uninstall/doctor paths are POSIX-only.
+# These tests assert POSIX file modes and the POSIX command form; the Windows
+# form is covered by test_antigravity_native_windows.py.
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="install paths are POSIX-only on this adapter")
 
 REPO = Path(__file__).resolve().parent.parent
@@ -152,6 +152,20 @@ def test_complete_install_all_ok(doctor, monkeypatch, tmp_path):
     assert by_name["agy binary"]["status"] == "ok"
     assert by_name["consent record"]["status"] == "ok"
     assert by_name["dashboard daemon"]["status"] == "ok"
+
+
+def test_hooks_pointing_at_a_vanished_staging_dir_fail(doctor, tmp_path):
+    """Installs before 5.13.63 named the temporary staging dir in hooks.json;
+    the doctor must say the hooks cannot fire and how to fix it."""
+    _install(doctor, tmp_path)
+    hooks = tmp_path / "config" / "plugins" / "token-optimizer" / "hooks.json"
+    text = hooks.read_text(encoding="utf-8").replace(
+        "/token-optimizer/antigravity_hook_bridge.py",
+        "/.token-optimizer.stage.abc123/antigravity_hook_bridge.py")
+    hooks.write_text(text, encoding="utf-8")
+    by_name = {c["name"]: c for c in doctor.run_checks()}
+    assert by_name["plugin hooks"]["status"] == "fail"
+    assert "antigravity-install" in by_name["plugin hooks"]["hint"]
 
 
 # --------------------------------------------------------------------------- #

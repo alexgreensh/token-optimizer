@@ -9,7 +9,7 @@ import { Aside } from '@astrojs/starlight/components';
 The Cursor adapter is in beta. Hooks are observed at runtime rather than version-gated, and the doctor proves which events fire on your build. Native-Windows hooks and per-session cost are red cells.
 </Aside>
 
-Token Optimizer supports Cursor through an adapter that reads Cursor's own stored token fields, scores session quality, restores per-workspace continuity, and compresses Bash output. It is honest about the two things Cursor does not hand a companion: a billing figure and native Windows hook quoting.
+Token Optimizer supports Cursor through an adapter that reads Cursor's own stored token fields, scores session quality, restores per-workspace continuity, and compresses Bash output. It is honest about what Cursor does not hand a companion, such as a billing figure.
 
 ## Supported surfaces
 
@@ -55,7 +55,6 @@ Some Cursor internals are never exposed to a companion.
 | Gap | Reason |
 |---|---|
 | Per-session cost | no billing figure on hooks or in state files |
-| Native Windows hooks | persisted `command` is POSIX-shell quoted; `cmd.exe` would not parse it |
 | Compaction steering | `preCompact` is observational, not an injection point |
 | Status line quality bar | no terminal hook surface for a status line |
 
@@ -72,7 +71,7 @@ cd ~/.claude/skills/token-optimizer/scripts
 TOKEN_OPTIMIZER_RUNTIME=cursor python3 measure.py cursor-summary
 ```
 
-On Windows use `python`, not `python3` (and install from WSL or a POSIX shell).
+On Windows use `python`, not `python3`.
 
 ## Doctor command
 

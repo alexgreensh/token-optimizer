@@ -9,8 +9,9 @@ Wires Token Optimizer into Grok Build's hooks system:
    (Grok scans ``~/.grok/hooks/*.json`` as a DIRECTORY of files — unlike
    Cursor's single shared hooks.json — so TO owns its file outright and never
    merges with, or clobbers, another tool's hooks).
-3. Refuses on native Windows (``os.name == "nt"``): the persisted ``command``
-   string is POSIX-shell quoted and cmd.exe would not parse it.
+3. Writes a hook command each platform's shell parses: POSIX-quoted on
+   macOS/Linux, a form PowerShell and cmd.exe both run on native Windows
+   (see adapter_hook_command).
 
 The hooks JSON format is Grok's documented shape (10-hooks.md "The Hook JSON
 Format"): ``{"hooks": {<Event>: [{matcher?, hooks: [{type, command, timeout}]}]}}``.
@@ -28,7 +29,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shlex
 import shutil
 import sys
 from contextlib import contextmanager
@@ -37,6 +37,7 @@ from pathlib import Path
 _SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_SCRIPT_DIR))
 
+import adapter_hook_command  # noqa: E402
 from py_trust import py_path_is_trusted, py_trust_reason  # noqa: E402
 from runtime_env import grok_home, measure_cli as _measure_cli, with_measure_cli as _hint  # noqa: E402
 
@@ -134,17 +135,16 @@ def _resolve_safe_python() -> str:
 def _hook_entries(bridge_path: Path) -> dict:
     """The hook entries TO writes to $GROK_HOME/hooks/token-optimizer.json.
 
-    Format is Grok's documented 10-hooks.md shape. ``command`` is assumed to run
-    through a POSIX shell, so the two paths are shlex-quoted and the runtime is
-    pinned so the bridge never process-scans on the hot path.
+    Format is Grok's documented 10-hooks.md shape. ``command`` runs through the
+    platform shell (see adapter_hook_command); the runtime is pinned so the
+    bridge never process-scans on the hot path.
     """
-    py_q = shlex.quote(_resolve_safe_python())
-    bridge_q = shlex.quote(str(bridge_path))
+    py = _resolve_safe_python()
 
     def handler(event: str, timeout: int) -> dict:
         return {
             "type": "command",
-            "command": f"TOKEN_OPTIMIZER_RUNTIME=grok {py_q} {bridge_q} {event}",
+            "command": adapter_hook_command.build(py, str(bridge_path), event, runtime="grok"),
             "timeout": timeout,
         }
 
@@ -274,13 +274,6 @@ def _copy_no_follow(src: Path, dest: Path) -> None:
 
 def install(*, dry_run: bool = False, home: Path | None = None) -> dict:
     """Install the adapter. Returns a summary dict of actions taken."""
-    if os.name == "nt":
-        raise RuntimeError(
-            "Grok install on native Windows is not supported yet: the persisted "
-            "hook command is POSIX-shell quoted and cmd.exe would not parse it. "
-            "Install from a POSIX shell or WSL."
-        )
-
     root = home if home is not None else grok_home()
     actions = {"copied": [], "hook_file": None, "skipped": [], "dry_run": dry_run}
     plugin_dir = _plugin_dir(root)

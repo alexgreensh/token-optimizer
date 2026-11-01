@@ -7,6 +7,10 @@
 - Usage counted once. A request that streams or replays across sessions is counted a single time, so token totals and costs match what you used.
 - A realistic "money on the table" card. The model-routing "what if" assumes about 20% of Opus work could move to a cheaper model, looks only at new input and output, and sits outside your total. When two ways of estimating disagree, the dashboard says so instead of showing a headline number.
 - Full files after /clear. After /clear or compaction, the first Read returns the full file again (#295).
+- Antigravity, Cursor and Grok install on native Windows. Hook commands now use a form PowerShell and cmd.exe both run, instead of the installer refusing (#296).
+- Antigravity: hooks fire again. Since 5.13.5 the installer pointed them at a temporary folder that no longer existed. Re-run `antigravity-install` once; `antigravity-doctor` now flags the old setup.
+- Hermes dashboard shows your real setup: skills from `~/.hermes/skills/`, MCP servers from `config.yaml`, plus SOUL.md and memory, and no longer counts Token Optimizer's own plugin code as context (#298).
+- Hermes dashboard labels name Hermes instead of Claude Code, and the CLAUDE.md health card no longer appears there (#297).
 - Same rules everywhere: Claude Code, Codex, Cowork, OpenClaw (2.4.25), OpenCode (1.2.1), Hermes (plugin 0.2.2), Pi and the VS Code companion (0.1.18). How every number is measured: `docs/METHODOLOGY.md`.
 
 ## [5.13.62] - 2026-11-01

@@ -9,9 +9,9 @@ Wires Token Optimizer into Cursor's shared user hooks file:
    tools are preserved verbatim; only entries whose ``command`` points at our
    bridge path are replaced. Cursor has one shared hooks.json (no per-plugin
    file like Copilot), so clobbering it would destroy other people's hooks.
-3. Refuses on native Windows (``os.name == "nt"``): the persisted ``command``
-   string is POSIX-shell quoted and cmd.exe would not parse it. Windows work is
-   deferred rather than silently writing a no-op hook.
+3. Writes a hook command each platform's shell parses: POSIX-quoted on
+   macOS/Linux, a form PowerShell and cmd.exe both run on native Windows
+   (see adapter_hook_command).
 
 Idempotent: re-running refreshes the payload and replaces only OUR entries.
 Uninstall removes only OUR entries and the payload dir; session data stays.
@@ -26,7 +26,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shlex
 import shutil
 import stat as _stat
 import sys
@@ -36,6 +35,7 @@ from pathlib import Path
 _SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_SCRIPT_DIR))
 
+import adapter_hook_command  # noqa: E402
 from py_trust import py_path_is_trusted, py_trust_reason  # noqa: E402
 from runtime_env import cursor_home, measure_cli as _measure_cli, with_measure_cli as _hint  # noqa: E402
 
@@ -145,16 +145,15 @@ def _hook_entries(bridge_path: Path) -> dict:
     """The hook entries TO appends to ~/.cursor/hooks.json.
 
     Cursor's per-hook schema is ``{command, type, matcher?, timeout,
-    failClosed?, loop_limit?}`` (verified 2026-09-01). ``command`` is assumed to
-    run through a POSIX shell, so the two paths are shlex-quoted and the runtime
-    is pinned so the bridge never process-scans on the hot path.
+    failClosed?, loop_limit?}`` (verified 2026-09-01). ``command`` runs through
+    the platform shell (see adapter_hook_command); the runtime is pinned so the
+    bridge never process-scans on the hot path.
     """
-    py_q = shlex.quote(_resolve_safe_python())
-    bridge_q = shlex.quote(str(bridge_path))
+    py = _resolve_safe_python()
 
     def entry(event: str, *, matcher: str | None = None) -> dict:
         e = {
-            "command": f"TOKEN_OPTIMIZER_RUNTIME=cursor {py_q} {bridge_q} {event}",
+            "command": adapter_hook_command.build(py, str(bridge_path), event, runtime="cursor"),
             "type": "command",
             "timeout": HOOK_TIMEOUT_SEC,
         }
@@ -178,7 +177,8 @@ def _is_ours(entry, bridge_path: Path) -> bool:
     if not isinstance(entry, dict):
         return False
     cmd = entry.get("command")
-    return isinstance(cmd, str) and str(bridge_path) in cmd
+    return isinstance(cmd, str) and any(
+        spelling in cmd for spelling in adapter_hook_command.path_spellings(str(bridge_path)))
 
 
 def _read_hooks(path: Path) -> dict:
@@ -271,14 +271,6 @@ def _copy_no_follow(src: Path, dest: Path) -> None:
 
 def install(*, dry_run: bool = False, home: Path = None) -> dict:
     """Install the adapter. Returns a summary dict of actions taken."""
-    # Windows refusal (deferred quoting: cmd.exe would not parse shlex.quote).
-    if os.name == "nt":
-        raise RuntimeError(
-            "Cursor install on native Windows is not supported yet: the persisted "
-            "hook command is POSIX-shell quoted and cmd.exe would not parse it. "
-            "Install from a POSIX shell or WSL."
-        )
-
     root = home if home is not None else cursor_home()
     actions = {"copied": [], "hook_file": None, "skipped": [], "dry_run": dry_run}
     plugin_dir = _plugin_dir(root)

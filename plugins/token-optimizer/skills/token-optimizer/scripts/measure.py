@@ -3832,6 +3832,166 @@ def _measure_cursor_components():
     }
 
 
+_HERMES_SKILL_SCAN_CAP = 5000
+
+
+def _hermes_config(home: Path) -> dict:
+    """Parse <hermes home>/config.yaml (or config.yml). Returns {} when absent
+    or unreadable. Uses PyYAML when installed (Hermes itself depends on it);
+    otherwise reads only the two blocks the dashboard needs (mcp_servers and
+    skills.disabled) with a small indentation parser."""
+    path = home / "config.yaml"
+    if not path.is_file():
+        path = home / "config.yml"
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > 2_000_000:
+            return {}
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {}
+    try:
+        import yaml  # type: ignore[import]  # noqa: PLC0415
+
+        data = yaml.safe_load(text)
+        return data if isinstance(data, dict) else {}
+    except ImportError:
+        pass
+    except Exception:
+        return {}
+    return _hermes_config_fallback(text)
+
+
+def _hermes_config_fallback(text: str) -> dict:
+    """Minimal reader for `mcp_servers:` (server names plus scalar keys) and
+    `skills: disabled:` (a block or flow list). Not a YAML parser."""
+    def scalar(raw: str):
+        raw = raw.split(" #", 1)[0].strip().strip('"').strip("'")
+        low = raw.lower()
+        if low in ("true", "yes", "on"):
+            return True
+        if low in ("false", "no", "off"):
+            return False
+        return raw
+
+    out: dict = {}
+    section = None
+    server = None
+    server_indent = None
+    in_disabled = False
+    for line in text.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        body = line.strip()
+        if indent == 0:
+            section = body.split(":", 1)[0].strip() if body.endswith(":") or ":" in body else None
+            server, server_indent, in_disabled = None, None, False
+            if section == "mcp_servers":
+                out.setdefault("mcp_servers", {})
+            continue
+        if section == "mcp_servers":
+            if server_indent is None or indent <= server_indent:
+                if body.endswith(":") and not body.startswith("-"):
+                    server_indent = indent
+                    server = body[:-1].strip().strip('"').strip("'")
+                    out["mcp_servers"][server] = {}
+                continue
+            if server is not None and ":" in body and not body.startswith("-"):
+                key, value = body.split(":", 1)
+                if value.strip():
+                    out["mcp_servers"][server][key.strip()] = scalar(value)
+        elif section == "skills":
+            if body.startswith("disabled:"):
+                rest = body[len("disabled:"):].strip()
+                skills = out.setdefault("skills", {}).setdefault("disabled", [])
+                if rest.startswith("[") and rest.endswith("]"):
+                    skills.extend(s for s in (scalar(x) for x in rest[1:-1].split(",")) if s)
+                    in_disabled = False
+                else:
+                    in_disabled = True
+                continue
+            if in_disabled and body.startswith("- "):
+                out["skills"]["disabled"].append(scalar(body[2:]))
+            elif not body.startswith("- "):
+                in_disabled = False
+    return out
+
+
+def _hermes_skill_inventory(home: Path, cfg: dict | None = None) -> dict[str, list[dict]]:
+    """Skills under <hermes home>/skills/<category>/<name>/SKILL.md.
+
+    Hermes puts each available skill's name and description in the system
+    prompt and loads the body only on use, so `tokens` is that index entry.
+    Skills moved to skills/.archive/ are archived; names in config
+    `skills.disabled` are disabled. Other dot-folders (.hub) are skipped.
+    """
+    cfg = _hermes_config(home) if cfg is None else cfg
+    disabled_names = set()
+    skills_cfg = cfg.get("skills") if isinstance(cfg, dict) else None
+    if isinstance(skills_cfg, dict) and isinstance(skills_cfg.get("disabled"), list):
+        disabled_names = {str(n) for n in skills_cfg["disabled"]}
+    root = home / "skills"
+    out: dict[str, list[dict]] = {"active": [], "archived": [], "disabled": []}
+    if not root.is_dir() or root.is_symlink():
+        return out
+    seen = 0
+    for path in sorted(root.rglob("SKILL.md")):
+        seen += 1
+        if seen > _HERMES_SKILL_SCAN_CAP:
+            break
+        try:
+            rel = path.relative_to(root)
+        except ValueError:
+            continue
+        if path.is_symlink():
+            continue
+        hidden = [part for part in rel.parts[:-1] if part.startswith(".")]
+        if hidden and hidden[0] != ".archive":
+            continue
+        meta = _parse_skill_frontmatter(path)
+        name = meta.get("name") or path.parent.name
+        category = rel.parts[-3] if len(rel.parts) >= 3 and not hidden else ""
+        item = {
+            "name": name,
+            "skill_name": name,
+            "description": meta.get("description", ""),
+            "category": category,
+            "tokens": meta.get("tokens", 0),
+            "source": "hermes",
+            "path": _display_path(str(path)),
+        }
+        if hidden:
+            out["archived"].append(item)
+        elif name in disabled_names or path.parent.name in disabled_names:
+            out["disabled"].append(item)
+        else:
+            out["active"].append(item)
+    for items in out.values():
+        items.sort(key=lambda item: (item["category"], item["name"]))
+    return out
+
+
+def _hermes_mcp_inventory(cfg: dict) -> list[dict]:
+    """MCP servers from the `mcp_servers:` block of Hermes config.yaml.
+    `enabled: false` means Hermes skips the server entirely."""
+    servers = cfg.get("mcp_servers") if isinstance(cfg, dict) else None
+    if not isinstance(servers, dict):
+        return []
+    items = []
+    for name, server in servers.items():
+        if not isinstance(server, dict):
+            server = {}
+        enabled = server.get("enabled", True) is not False
+        items.append({
+            "name": str(name),
+            "command": str(server.get("url") or server.get("command") or ""),
+            "transport": "http" if server.get("url") else "stdio",
+            "tokens": TOKENS_PER_DEFERRED_TOOL if enabled else 0,
+            "enabled": enabled,
+        })
+    return sorted(items, key=lambda item: item["name"])
+
+
 def _measure_hermes_components():
     """Measure Hermes-relevant startup/config components without reading Claude config.
 
@@ -3870,18 +4030,62 @@ def _measure_hermes_components():
             except OSError:
                 continue
 
+    # Plugin code runs inside the Hermes process; it is never sent to the
+    # model, so it adds no context tokens. Its size is kept for reference.
     components["hermes_plugin"] = {
         "path": str(plugin_dir),
         "exists": plugin_dir.is_dir(),
-        "tokens": plugin_tokens,
+        "tokens": 0,
+        "code_tokens": plugin_tokens,
         "files": plugin_files,
-        "note": "Token Optimizer plugin under ~/.hermes/plugins/token-optimizer/.",
+        "note": "Token Optimizer plugin code; runs in the Hermes process, not in the model context.",
     }
 
-    # Hermes has no CLAUDE.md / skills / MCP / settings.json startup overhead
-    # in the Claude Code sense. core_system is intentionally 0 because Hermes
-    # base instructions are not exposed for measurement — the dashboard's
-    # "fixed overhead" row renders without scanning ~/.claude.
+    # Files Hermes injects into the system prompt at session start: SOUL.md
+    # (agent identity) and the memories snapshot (MEMORY.md + USER.md).
+    def _file_component(paths, note):
+        tokens = lines = 0
+        files = []
+        for f in paths:
+            try:
+                if f.is_symlink() or not f.is_file():
+                    continue
+                tok = estimate_tokens_from_file(f)
+                tokens += tok
+                lines += len(f.read_text(encoding="utf-8", errors="replace").splitlines())
+                files.append({"path": str(f), "tokens": tok})
+            except OSError:
+                continue
+        return {"exists": bool(files), "tokens": tokens, "lines": lines, "files": files, "note": note}
+
+    components["hermes_soul"] = _file_component(
+        [home / "SOUL.md"], "Agent identity, loaded into every session.")
+    components["hermes_memory"] = _file_component(
+        [home / "memories" / "MEMORY.md", home / "memories" / "USER.md"],
+        "Memory snapshot (MEMORY.md + USER.md), loaded into every session.")
+
+    cfg = _hermes_config(home)
+    inventory = _hermes_skill_inventory(home, cfg)
+    components["skills"] = {
+        "count": len(inventory["active"]),
+        "tokens": sum(item["tokens"] for item in inventory["active"]),
+        "archived_count": len(inventory["archived"]),
+        "disabled_count": len(inventory["disabled"]),
+        "note": "Name and description of each skill, listed in the system prompt; bodies load on use.",
+    }
+    mcp = _hermes_mcp_inventory(cfg)
+    enabled_mcp = [item for item in mcp if item["enabled"]]
+    components["mcp_tools"] = {
+        "server_count": len(enabled_mcp),
+        "disabled_count": len(mcp) - len(enabled_mcp),
+        "tool_count_estimate": "?",
+        "tokens": sum(item["tokens"] for item in enabled_mcp),
+        "note": "Configured servers; tool schemas are listed on demand by Hermes tool search.",
+    }
+
+    # core_system is 0 because Hermes base instructions are not exposed for
+    # measurement; the dashboard's "fixed overhead" row renders without
+    # scanning ~/.claude.
     components["core_system"] = {
         "tokens": 0,
         "note": "Hermes base instructions are not exposed for measurement; no ~/.claude scan.",
@@ -8014,15 +8218,19 @@ def _collect_management_data(components=None, trends=None):
             "v5_features": _get_v5_feature_status(),
         }
 
-    # Hermes: Hermes has no Claude-style skills/MCP/settings.json
-    # management surface. Return a minimal hermes-mode dict so the Manage tab
-    # renders without scanning CLAUDE_DIR/_backups, settings.json, or
-    # claude_desktop_config.json.
+    # Hermes: list its own skills (~/.hermes/skills) and MCP servers
+    # (config.yaml mcp_servers) read-only, without scanning CLAUDE_DIR,
+    # settings.json or claude_desktop_config.json.
     if detect_runtime() == "hermes":
+        hermes_cfg = _hermes_config(runtime_home())
+        hermes_skills = _hermes_skill_inventory(runtime_home(), hermes_cfg)
+        hermes_mcp = _hermes_mcp_inventory(hermes_cfg)
         return {
             "mode": "hermes",
-            "skills": {"active": [], "archived": []},
-            "mcp_servers": {"active": [], "disabled": [], "cloud": []},
+            "read_only": True,
+            "skills": hermes_skills,
+            "mcp_servers": {"active": [i for i in hermes_mcp if i["enabled"]],
+                            "disabled": [i for i in hermes_mcp if not i["enabled"]], "cloud": []},
             "plugins": [],
             "v5_features": _get_v5_feature_status(),
         }
@@ -8721,6 +8929,10 @@ def generate_standalone_dashboard(days=30, quiet=False, force=False):
     # CLAUDE.md health summary for dashboard card (from already-computed components)
     claude_md_health = None
     try:
+        if detect_runtime() not in ("claude", "codex"):
+            # Only Claude Code and Codex have an instruction-file chain this
+            # card describes; other runtimes would show a "CLAUDE.md" card.
+            raise LookupError
         instruction_tokens = 0
         context_window = components.get("context_window") or detect_context_window()[0]
         for key in components:

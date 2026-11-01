@@ -100,8 +100,14 @@ MUTATIONS = [
     ("stored re-read rows keep a pricing bug after it is fixed",
      ["tests/test_golden_user.py"],
      MEASURE,
+     # Two protections: the one-time repricer and the summary's refusal to
+     # trust dollars stored without current price evidence. Break both.
      [("def _reprice_counted_rows_once(conn):\n",
-       "def _reprice_counted_rows_once(conn):\n    return\n")]),
+       "def _reprice_counted_rows_once(conn):\n    return\n"),
+      ("        current = (detail.get(\"version\") == _COUNTED_PRICING_VERSION",
+       "        current = True or (detail.get(\"version\") == _COUNTED_PRICING_VERSION"),
+      ("                out[key] += detail[key]\n",
+       "                out[key] += detail.get(key, 0)\n")]),
     ("a thinner history silently shrinks the frozen baseline",
      ["tests/test_baseline_safety.py"],
      MEASURE,

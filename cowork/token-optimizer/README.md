@@ -311,22 +311,22 @@ Per-turn token breakdowns, cost across four pricing tiers, cache analysis with T
 
 ## What It Saves
 
-**About $598.49 in all-in API-rate-equivalent value, a priced subtotal for the 30-day snapshot ending 2026-11-01.** The components keep their evidence labels:
+**About $597.72 in all-in API-rate-equivalent value, a priced subtotal for the 30-day snapshot ending 2026-11-01.** The components keep their evidence labels:
 
-- **Logged actions: $79.06.** Metered token changes across 4,974 events, valued at API rates.
-- **Model routing: $422.56.** Estimated comparison using a frozen pre-tool mix and fixed reference model cards.
-- **Repeat reads avoided: $61.21.** Modeled from observed turns until the next real compaction, using known per-turn rates.
-- **Other estimates: $35.66.** All eight estimate categories are listed in the [methodology](BENCHMARK.md), including zero-valued categories.
+- **Logged actions: $78.59.** Metered token changes across 4,945 events, valued at API rates.
+- **Model routing: $422.88.** Estimated comparison using a frozen pre-tool mix and fixed reference model cards.
+- **Repeat reads avoided: $60.69.** Modeled from observed turns until the next real compaction, using known per-turn rates.
+- **Other estimates: $35.56.** All eight estimate categories are listed in the [methodology](BENCHMARK.md), including zero-valued categories.
 
 **Pricing is incomplete.** Unpriced repeat-read credits and debits are excluded; the complete net dollar value is unavailable. The four components add up to the total.
 
-The same snapshot's token card shows **24.83M tokens saved** (9,866,280 metered + 14,966,284 estimated), about **8% of spent + saved**: 285.93M spent + 24.83M saved = 310.77M. Its scope is logged tokens plus MCP caps, hint-served reads, verbosity nudges and lean resumes. Modeled repeat-read tokens and routing are outside that token-card total; the dollar subtotal has the broader scope above.
+The same snapshot's token card shows **24.80M tokens saved** (9,831,072 metered + 14,966,284 estimated), about **8% of spent + saved**: 286.22M spent + 24.80M saved = 311.02M. Its scope is logged tokens plus MCP caps, hint-served reads, verbosity nudges and lean resumes. Modeled repeat-read tokens and routing are outside that token-card total; the dollar subtotal has the broader scope above.
 
 <p align="center">
-  <img src="skills/token-optimizer/assets/real-savings.svg" alt="Snapshot 2026-11-01: $598.49 priced API-rate-equivalent subtotal with incomplete pricing; 24.83M tokens saved, about 8% of spent plus saved. Logged actions $79.06, estimated routing $422.56, modeled rereads $61.21, other estimates $35.66." width="900">
+  <img src="skills/token-optimizer/assets/real-savings.svg" alt="Snapshot 2026-11-01: $597.72 priced API-rate-equivalent subtotal with incomplete pricing; 24.80M tokens saved, about 8% of spent plus saved. Logged actions $78.59, estimated routing $422.88, modeled rereads $60.69, other estimates $35.56." width="900">
 </p>
 
-Based on 1,640 main work sessions and 3 delegated sessions. Your dashboard computes the report from your own history; results differ. [Full methodology →](BENCHMARK.md)
+Based on 1,644 main work sessions and 3 delegated sessions. Your dashboard computes the report from your own history; results differ. [Full methodology →](BENCHMARK.md)
 
 <p align="center">
   <img src="skills/token-optimizer/assets/user-profiles.svg" alt="What happens inside a 1M session" width="800">

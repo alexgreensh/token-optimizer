@@ -50914,6 +50914,10 @@ _RUNWAY_SAVED_SQL = _counted_sql(
     "savings_events",
     "SELECT event_type, COALESCE(SUM(tokens_saved),0) FROM {table} "
     "WHERE timestamp >= ? AND event_type != 'verbosity_steer' GROUP BY event_type")
+_RUNWAY_COMPRESSED_TOTAL_SQL = _counted_sql(
+    "compression_events",
+    "SELECT COALESCE(SUM(original_tokens-compressed_tokens),0) "
+    "FROM {table} WHERE timestamp >= ? AND (tier IS NULL OR tier = 'measured')")
 _RUNWAY_COMPRESSED_SQL = _counted_sql(
     "compression_events",
     "SELECT feature, COALESCE(SUM(original_tokens-compressed_tokens),0) "
@@ -50954,9 +50958,7 @@ def _runway_saved_tokens(conn, cutoff, include_estimated=False):
     if "feature" not in {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}:
         # An install old enough to log no feature name cannot be split by owner.
         return saved + int(conn.execute(
-            "SELECT COALESCE(SUM(original_tokens-compressed_tokens),0) FROM " + table
-            + " WHERE timestamp >= ? AND (tier IS NULL OR tier = 'measured')",
-            (cutoff,)).fetchone()[0] or 0)
+            _RUNWAY_COMPRESSED_TOTAL_SQL[table], (cutoff,)).fetchone()[0] or 0)
     for feature, tokens in conn.execute(_RUNWAY_COMPRESSED_SQL[table], (cutoff,)):
         if feature in _V5_COMPRESSION_CATEGORIES and feature not in by_event:
             saved += int(tokens or 0)

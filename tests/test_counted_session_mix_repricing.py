@@ -40,9 +40,13 @@ def test_legacy_reread_priced_at_recorded_model_cache_read_rate(m, tmp_path, mon
     assert out["reread_unpriced_tokens"] == 0
     assert out["reread_prices_available"] is True
     assert "recorded" in out["reread_pricing_note"]
-    # The one-time part and the stored dollars of an unverified row are never reused.
-    assert out["oneshot_usd"] == 0
-    assert out["oneshot_unpriced_credit_tokens"] == 1000
+    # The stored dollars of an unverified row are never reused. Its initial
+    # removal is priced at the same models' input rate, the disclosed floor.
+    floor = 1000 * (0.6 * cards["opus_5_5"]["input"] + 0.4 * cards["fable_5_1"]["input"]) / 1e6
+    assert out["oneshot_usd"] == pytest.approx(floor, rel=1e-9)
+    assert out["oneshot_floor_events"] == 1 and out["oneshot_floor_tokens"] == 1000
+    assert out["oneshot_unpriced_credit_tokens"] == 0
+    assert "input rate, a minimum" in out["oneshot_floor_note"]
 
 
 def test_unknown_model_share_stays_unpriced_and_is_not_borrowed(m, tmp_path, monkeypatch):
@@ -112,3 +116,15 @@ def test_summary_and_period_carry_the_session_mix_price(m, tmp_path, monkeypatch
     assert summary["reread_session_mix_priced_tokens"] == 3_000_000
     month = summary["monthly_coverage"]["2026-10"]
     assert month["reread_usd"] == summary["reread_usd"]
+
+
+def test_legacy_initial_removal_floor_leaves_unknown_share_unpriced(m, tmp_path, monkeypatch):
+    db = _db(m, tmp_path, monkeypatch)
+    cards = m.PRICING_TIERS["anthropic"]["claude_models"]
+    with sqlite3.connect(db) as conn:
+        _session(conn, {"claude-opus-5-5": _parts(600), "vendor/mystery-model": _parts(400)})
+        _legacy_row(conn, "se:1", 0, tokens=10_000)
+        out = m._counted_rollup_rows(m._counted_stored_rows(conn).values(), conn)
+    assert out["oneshot_usd"] == pytest.approx(6_000 * cards["opus_5_5"]["input"] / 1e6, rel=1e-9)
+    assert out["oneshot_floor_tokens"] == 6_000
+    assert out["oneshot_unpriced_credit_tokens"] == 4_000

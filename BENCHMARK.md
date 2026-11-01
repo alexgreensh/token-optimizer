@@ -1,6 +1,6 @@
 # Token Optimizer: Benchmark Report
 
-This observational report uses one **30-day snapshot ending 2026-10-31**, generated on 2026-10-31. It reports an all-in **priced subtotal of about $516.38** and **24.85M tokens saved**. Pricing is incomplete: unpriced repeat-read credits and debits are excluded, and the complete net dollar value is unavailable. Your results will differ.
+This observational report uses one **30-day snapshot ending 2026-11-01** (2026-10-02 to 2026-11-01), generated on 2026-11-01. It reports an all-in **priced subtotal of about $569.69** and **24.83M tokens saved**. Pricing is incomplete: unpriced repeat-read credits and debits are excluded, and the complete net dollar value is unavailable. Your results will differ.
 
 The independent **Terminal-Bench floor** (the full 81-task Terminal-Bench 2 suite, plugin on versus off, multiple trials with confidence intervals) and [controlled A/B](CONTROLLED-A-B-BENCHMARK.md) remain separate studies. Their results are not added to this snapshot. [All three reports](https://token-optimizer.dev/reference/benchmarks/).
 
@@ -8,26 +8,26 @@ The independent **Terminal-Bench floor** (the full 81-task Terminal-Bench 2 suit
 
 | Component | API-rate-equivalent value | Evidence |
 |---|---:|---|
-| Logged actions | **$39.84** | Metered token changes, valued at API rates; 4,984 events. |
-| Model routing | **$393.29** | Estimated reference-card comparison; all of this component is estimated. |
-| Repeat reads avoided | **$47.72** | Modeled from observed turns and known per-turn rates; priced contributions only. |
-| Other estimates | **$35.52** | Eight selected estimate categories, listed below. |
-| **All-in priced subtotal** | **≈ $516.38** | **Pricing is incomplete; the full net dollar value is unavailable.** |
+| Logged actions | **$79.06** | Metered token changes, valued at API rates; 4,974 events. |
+| Model routing | **$393.98** | Estimated reference-card comparison; all of this component is estimated. |
+| Repeat reads avoided | **$61.14** | Modeled from observed turns and known per-turn rates; priced contributions only. |
+| Other estimates | **$35.51** | Eight selected estimate categories, listed below. |
+| **All-in priced subtotal** | **≈ $569.69** | **Pricing is incomplete; the full net dollar value is unavailable.** |
 
-Amounts are rounded independently. Unpriced repeat-read credits and debits are excluded, so this subtotal is not a lower bound. It is an API-rate equivalent, not a subscription refund.
+The four components add up to the subtotal to the cent. Unpriced repeat-read credits and debits are excluded, so this subtotal is not a lower bound. It is an API-rate equivalent, not a subscription refund.
 
 ## The same snapshot's token card
 
 | Token-card component | Tokens | Share of spent + saved |
 |---|---:|---:|
 | Spent, provider-stats-compatible | 283,349,584 | 91.94% |
-| Saved, metered | 9,879,355 | 3.21% |
+| Saved, metered | 9,866,280 | 3.20% |
 | Saved, estimated | 14,966,284 | 4.86% |
-| **Spent + saved** | **308,195,223** | **100%** |
+| **Spent + saved** | **308,182,148** | **100%** |
 
-Percentage shares are rounded independently.
+Percentage shares are rounded to two decimals and add up to 100%.
 
-The token card reports **24,845,639 saved tokens (24.85M)**, or **8.06%**, displayed as **8%** on the dashboard. The formula is `saved / (spent + saved)`, not `saved / spent`.
+The token card reports **24,832,564 saved tokens (24.83M)**, or **8.06%**, displayed as **8%** on the dashboard. The formula is `saved / (spent + saved)`, not `saved / spent`.
 
 Its estimated slice is 14,946,284 lean-resume tokens, 15,000 MCP-cap tokens, 5,000 hint-served tokens and 0 verbosity-nudge tokens. Modeled reread tokens and routing are outside this token-card total. The dollar subtotal includes their priced contributions and the other estimates below; the two headlines have different scopes.
 
@@ -35,64 +35,64 @@ Its estimated slice is 14,946,284 lean-resume tokens, 15,000 MCP-cap tokens, 5,0
 
 | Mechanism | Events | Tokens | Priced value |
 |---|---:|---:|---:|
-| Observed post-nudge output change | 654 | 2,670,237 | $12.8794 |
+| Observed post-nudge output change | 648 | 2,659,960 | $52.2794 |
 | Tool-output archive | 399 | 39,058 | $0.0000 |
-| Checkpoint restores | 209 | 167,674 | $0.8128 |
-| Structure maps | 1 | 5,939 | $0.0297 |
+| Checkpoint restores | 208 | 166,371 | $0.6481 |
+| Structure maps | 1 | 5,939 | $0.0238 |
 | Quality nudges | 57 | 694,535 | $1.3891 |
-| Bash pipeline compression | 3,419 | 5,986,956 | $23.6997 |
+| Bash pipeline compression | 3,418 | 5,986,663 | $23.6986 |
 | Git output compression | 40 | 214,135 | $0.7257 |
-| Loop detection | 100 | 72,009 | $0.2922 |
+| Loop detection | 98 | 70,807 | $0.2862 |
 | Build output compression | 104 | 28,709 | $0.0061 |
 | Cross-turn dedup | 1 | 103 | $0.0004 |
-| **Total** | **4,984** | **9,879,355** | **$39.8352** |
+| **Total** | **4,974** | **9,866,280** | **$79.0574** |
 
-These are recorded token changes, not proof of causal attribution. In particular, a post-nudge output change is an observed before/after comparison. Dollar cells contain the recorded priced amount; a zero dollar cell does not establish a free or known-zero-rate event. Rounded category values can differ slightly from the independently rounded total.
+These are recorded token changes, not proof of causal attribution. In particular, a post-nudge output change is an observed before/after comparison. Dollar cells contain the recorded priced amount; a zero dollar cell does not establish a free or known-zero-rate event. The four-decimal category values add up to the total.
 
 ## Model routing
 
-The **$393.29 routing component is entirely estimated**. It compares the frozen pre-tool model mix with current usage using fixed generation reference cards and token classes. It does not treat a change in a model's published price as a routing saving, and it does not establish that the optimizer caused every model choice. Unpriced token classes do not acquire a fallback family price. Routing is included once in the all-in subtotal.
+The **$393.98 routing component is entirely estimated**. It compares the frozen pre-tool model mix with current usage using fixed generation reference cards and token classes. It does not treat a change in a model's published price as a routing saving, and it does not establish that the optimizer caused every model choice. Unpriced token classes do not acquire a fallback family price. Routing is included once in the all-in subtotal.
 
 ## Modeled repeat reads and pricing coverage
 
 | Removal-cohort measure | Value |
 |---|---:|
-| Stored removal events | 4,371 |
-| Net tokens removed at the time | 6,415,396 |
-| Stored modeled reread tokens, signed | 317,088,507 |
-| Priced reread contribution | $47.724884 |
-| Unpriced reread credits | 77,845,092 tokens |
-| Unpriced reread debits | 3,015,144 tokens |
-| Historical events with unverifiable prices | 335 |
+| Stored removal events | 4,369 |
+| Net tokens removed at the time | 6,413,800 |
+| Stored modeled reread tokens, signed | 316,973,944 |
+| Priced reread contribution | $61.140212 |
+| Unpriced reread credits | 7,925,835 tokens |
+| Unpriced reread debits | 2,039,102 tokens |
+| Historical events with unverifiable prices | 4,369 |
 | Eligible events with unmeasured trajectories | 103 |
 | Known removal credits in unmeasured events | 27,178 tokens |
 | Known removal debits in unmeasured events | 0 tokens |
 
-The absolute unpriced coverage is **80,860,236 tokens**; credits and debits do not cancel that uncertainty. The 335 incomplete historical refreshes are retained, not deleted or treated as priced zero. Only known contributions enter the subtotal.
+The absolute unpriced coverage is **9,964,937 tokens**; credits and debits do not cancel that uncertainty. The 334 incomplete historical refreshes are retained, not deleted or treated as priced zero. Only known contributions enter the subtotal.
 
 The 103 events with unmeasured trajectories have known removal amounts, but their reread counts and dollar values are unavailable. Those removal tokens are not added to the unpriced reread count or valued as zero.
 
-Rereads start at the second post-removal call and stop at the next real compaction, with the observed trajectory held fixed. Known model and prompt-class cards price each turn. The first call's one-shot removal value is not added again to logged actions. This is a removal cohort: its boundaries are **2026-10-01 10:56:32 UTC to 2026-10-31 10:56:32 UTC**, and later rereads remain attributed to their removal date. It is not a claim that every reread occurred inside that exact time window.
+Rereads start at the second post-removal call and stop at the next real compaction, with the observed trajectory held fixed. Known model and prompt-class cards price each turn. The first call's one-shot removal value is not added again to logged actions. This is a removal cohort: its boundaries are **2026-10-01 23:58:20 UTC to 2026-10-31 23:58:20 UTC**, and later rereads remain attributed to their removal date. It is not a claim that every reread occurred inside that exact time window.
 
 ## Other estimates, all eight categories
 
 | Estimate | Recorded volume | Estimated tokens | Value |
 |---|---:|---:|---:|
 | Lean session resumes | 64 resumes | 14,946,284 | $27.9481 |
-| Sub-agent runtime compression | 1,515 dispatches | 1,338,114 | $6.6906 |
-| Loops prevented | 100 events | 72,009 | $0.3600 |
-| MCP output caps | 3 caps | 15,000 | $0.0750 |
+| Sub-agent runtime compression | 1,515 dispatches | 1,339,304 | $6.6965 |
+| Loops prevented | 98 events | 70,807 | $0.3540 |
+| MCP output caps | 3 caps | 15,000 | $0.0600 |
 | Contamination exit | 1 heeded session | 0 | $0.0000 |
-| Handover reruns avoided | 72 restored sessions | 88,111 | $0.4406 |
+| Handover reruns avoided | 72 restored sessions | 88,595 | $0.4430 |
 | Hint-served reads | 1 hint used | 5,000 | $0.0100 |
-| Verbosity nudges | 1,065 nudges | 0 | $0.0000 |
-| **Total** | | | **$35.5243** |
+| Verbosity nudges | 1,059 nudges | 0 | $0.0000 |
+| **Total** | | | **$35.5116** |
 
 All eight selected categories are included, including the two zero-valued estimates. Hint-served reads are selected because a hint event exists; the alternative retrieval-serve estimate is not added. These token columns are not summed into the token-card headline, which includes only its four named estimate pools.
 
 ## Scope and measurement
 
-The snapshot contains **1,632 main work sessions and 3 delegated sessions**, 1,635 in total, from Claude Code. The token card's provider-stats-compatible spent denominator is fresh input plus reported streamed assistant output from top-level sessions, without streaming deduplication. Request-deduplicated usage is a different metric. Some action token counts use text-length proxies; dollars are API-rate equivalents, not subscription cash savings.
+The snapshot contains **1,624 main work sessions and 3 delegated sessions**, 1,627 in total, from Claude Code. The token card's provider-stats-compatible spent denominator is fresh input plus reported streamed assistant output from top-level sessions, without streaming deduplication. Request-deduplicated usage is a different metric. Some action token counts use text-length proxies; dollars are API-rate equivalents, not subscription cash savings.
 
 Measured token changes, modeled rereads and estimated routing/behavior remain distinguishable within the all-in subtotal. Missing prices stay unpriced. New verified history survives transcript rotation; unverifiable legacy prices stay quarantined while their stored token evidence remains available.
 

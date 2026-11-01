@@ -23898,7 +23898,7 @@ def _counted_coverage_totals(out):
     floor_events = int(out.get("oneshot_floor_events", 0))
     out["oneshot_floor_note"] = (
         f"{floor_events:,} initial removals ({int(out.get('oneshot_floor_tokens', 0)):,} tokens) are "
-        "priced at the input rate, a minimum: the next call shows no cache-write class for them."
+        "priced at the input rate, a minimum: their billed token class is not on record."
         if floor_events else "")
     return out
 
@@ -24594,15 +24594,19 @@ def _counted_backfill_all(conn, quiet=True):
     return stats
 
 
-def _counted_session_cache_mix(conn, session_uuid, tier_data, memo):
+def _counted_session_cache_mix(conn, session_uuid, tier_data, memo, rate_key="cache_read"):
     """[(cache_read_tokens, usd_per_mtok or None)] for one stored session.
+
+    `rate_key` picks the card rate (cache_read by default, input for the
+    initial-removal floor); weights are the same either way.
 
     Weights come from the session's recorded per-model cache-read tokens. A
     model without an exact rate card, or whose card depends on the size of each
     request, has no rate here and its share stays unpriced. None when the
     session has no usable per-model record."""
-    if session_uuid in memo:
-        return memo[session_uuid]
+    memo_key = (session_uuid, rate_key)
+    if memo_key in memo:
+        return memo[memo_key]
     mix = None
     try:
         row = conn.execute(
@@ -24618,13 +24622,13 @@ def _counted_session_cache_mix(conn, session_uuid, tier_data, memo):
             if not isinstance(weight, int) or isinstance(weight, bool) or weight <= 0:
                 continue
             card = _counted_exact_card(model, tier_data)
-            rate = (card or {}).get("cache_read")
+            rate = (card or {}).get(rate_key)
             if not (isinstance(rate, (int, float)) and math.isfinite(rate) and rate >= 0):
                 rate = None
             terms.append((weight, rate))
         if any(rate is not None for _, rate in terms):
             mix = terms
-    memo[session_uuid] = mix
+    memo[memo_key] = mix
     return mix
 
 
@@ -24634,7 +24638,9 @@ def _counted_rollup_rows(rows, conn=None):
     A stored row without a current per-turn price keeps its signed repeat-read
     token count. With `conn`, that count is priced at the cache-read rate of the
     models its session recorded (token-weighted, exact cards only) and reported
-    separately from per-turn prices; any share without a rate stays unpriced."""
+    separately from per-turn prices; its initial removal is priced at the same
+    models' input rate, the disclosed floor used when the billed class is not
+    known. Any share without a rate stays unpriced."""
     out = dict.fromkeys(_COUNTED_COVERAGE_KEYS, 0)
     out.update(events=0, removed_tokens=0, reread_tokens=0, oneshot_usd=0.0,
                oneshot_class_premium_usd=0.0, reread_usd=0.0, legacy_unverified_events=0,
@@ -24661,7 +24667,21 @@ def _counted_rollup_rows(rows, conn=None):
             out["legacy_unverified_events"] += 1
             mix = (_counted_session_cache_mix(conn, row.get("session_uuid"), tier_data, mix_memo)
                    if conn is not None and rereads else None)
+            input_mix = (_counted_session_cache_mix(conn, row.get("session_uuid"), tier_data,
+                                                    mix_memo, rate_key="input")
+                         if conn is not None and tokens else None)
             for kind, amount in (("oneshot", tokens), ("reread", rereads)):
+                if kind == "oneshot" and input_mix:
+                    total_weight = sum(weight for weight, _ in input_mix)
+                    rated = [(weight, rate) for weight, rate in input_mix if rate is not None]
+                    rated_weight = sum(weight for weight, _ in rated)
+                    priced = round(abs(amount) * rated_weight / total_weight)
+                    out["oneshot_usd"] += (math.copysign(1, amount) * abs(amount)
+                                           * sum(weight * rate for weight, rate in rated)
+                                           / total_weight / 1e6)
+                    out["oneshot_floor_events"] += 1
+                    out["oneshot_floor_tokens"] += priced
+                    amount = int(math.copysign(abs(amount) - priced, amount))
                 if kind == "reread" and mix:
                     total_weight = sum(weight for weight, _ in mix)
                     rated = [(weight, rate) for weight, rate in mix if rate is not None]

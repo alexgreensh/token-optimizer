@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 900" width="1000" height="900" role="img" aria-labelledby="title desc">
-  <title id="title">Token Optimizer: 30-day snapshot ending 2026-10-31</title>
-  <desc id="desc">$516.38 all-in API-rate-equivalent priced subtotal: $39.84 logged actions, $393.29 estimated routing, $47.72 modeled repeat reads, and $35.52 other estimates. Unpriced reread credits and debits are excluded; the full net dollar value is unavailable. Token card: 24,845,639 saved, including 9,879,355 metered and 14,966,284 estimated; 283,349,584 spent; saved divided by spent plus saved is about 8 percent. Token and dollar scopes differ.</desc>
+  <title id="title">Token Optimizer: 30-day snapshot ending 2026-11-01</title>
+  <desc id="desc">$569.69 all-in API-rate-equivalent priced subtotal: $79.06 logged actions, $393.98 estimated routing, $61.14 modeled repeat reads, and $35.51 other estimates. The four parts add up to the total. Unpriced reread credits and debits are excluded; the full net dollar value is unavailable. Token card: 24,832,564 saved, including 9,866,280 metered and 14,966,284 estimated; 283,349,584 spent; saved divided by spent plus saved is about 8 percent. Token and dollar scopes differ.</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0%" stop-color="#18181b"/>
@@ -31,67 +31,67 @@
   <rect width="1000" height="900" rx="24" fill="url(#bg)"/>
   <rect x="0.5" y="0.5" width="999" height="899" rx="24" fill="none" stroke="#27272a"/>
   <g class="rise sans">
-    <text x="60" y="64" class="eyebrow">Token Optimizer · snapshot 2026-10-31</text>
+    <text x="60" y="64" class="eyebrow">Token Optimizer · snapshot 2026-11-01</text>
     <text x="60" y="110" class="ink" font-size="40" font-weight="600">30-Day Savings Report</text>
-    <text x="60" y="142" class="soft" font-size="17">1,632 main work sessions + 3 delegated sessions · one person's observed workload</text>
+    <text x="60" y="142" class="soft" font-size="17">1,624 main work sessions + 3 delegated sessions · one person's observed workload</text>
   </g>
   <g class="rise d1">
-    <text x="60" y="235" class="mono accent" font-size="64" font-weight="600">$516.38</text>
+    <text x="60" y="235" class="mono accent" font-size="64" font-weight="600">$569.69</text>
     <text x="60" y="266" class="sans soft" font-size="16">API-rate equivalent · priced subtotal</text>
   </g>
   <line x1="500" y1="180" x2="500" y2="280" stroke="#27272a"/>
   <g class="rise d2">
-    <text x="540" y="235" class="mono ink" font-size="64" font-weight="600">24.85M</text>
+    <text x="540" y="235" class="mono ink" font-size="64" font-weight="600">24.83M</text>
     <text x="540" y="266" class="sans soft" font-size="16">tokens saved · ≈8% of spent + saved</text>
   </g>
   <g class="rise d2 sans soft" font-size="15">
     <text x="60" y="302">Unpriced reread credits and debits excluded. Full net dollar value unavailable.</text>
   </g>
-  <text x="60" y="344" class="sans eyebrow">Four dollar components · amounts rounded independently</text>
+  <text x="60" y="344" class="sans eyebrow">Four dollar components · parts add up to the total</text>
   <g class="rise d3">
     <text x="60" y="382" class="sans ink" font-size="17" font-weight="600">Logged actions</text>
     <text x="300" y="382" class="mono muted" font-size="11">METERED TOKENS</text>
-    <text x="940" y="382" class="mono ink" font-size="22" font-weight="600" text-anchor="end">$39.84</text>
+    <text x="940" y="382" class="mono ink" font-size="22" font-weight="600" text-anchor="end">$79.06</text>
     <rect x="60" y="394" width="880" height="12" rx="3" fill="#27272a"/>
-    <rect class="grow g1" x="60" y="394" width="67.886626" height="12" rx="3" fill="#e85329"/>
+    <rect class="grow g1" x="60" y="394" width="122.120351" height="12" rx="3" fill="#e85329"/>
   </g>
   <g class="rise d4">
     <text x="60" y="447" class="sans ink" font-size="17" font-weight="600">Model routing</text>
     <text x="300" y="447" class="mono muted" font-size="11">ESTIMATED</text>
-    <text x="940" y="447" class="mono ink" font-size="22" font-weight="600" text-anchor="end">$393.29</text>
+    <text x="940" y="447" class="mono ink" font-size="22" font-weight="600" text-anchor="end">$393.98</text>
     <rect x="60" y="459" width="880" height="12" rx="3" fill="#27272a"/>
-    <rect class="grow g2" x="60" y="459" width="670.241204" height="12" rx="3" fill="url(#hatch)"/>
+    <rect class="grow g2" x="60" y="459" width="608.581125" height="12" rx="3" fill="url(#hatch)"/>
   </g>
   <g class="rise d5">
     <text x="60" y="512" class="sans ink" font-size="17" font-weight="600">Repeat reads avoided</text>
     <text x="300" y="512" class="mono muted" font-size="11">MODELED · PRICED PART</text>
-    <text x="940" y="512" class="mono ink" font-size="22" font-weight="600" text-anchor="end">$47.72</text>
+    <text x="940" y="512" class="mono ink" font-size="22" font-weight="600" text-anchor="end">$61.14</text>
     <rect x="60" y="524" width="880" height="12" rx="3" fill="#27272a"/>
-    <rect class="grow g3" x="60" y="524" width="81.332123" height="12" rx="3" fill="url(#hatch)"/>
+    <rect class="grow g3" x="60" y="524" width="94.443583" height="12" rx="3" fill="url(#hatch)"/>
   </g>
   <g class="rise d6">
     <text x="60" y="577" class="sans ink" font-size="17" font-weight="600">Other estimates</text>
     <text x="300" y="577" class="mono muted" font-size="11">ESTIMATED</text>
-    <text x="940" y="577" class="mono ink" font-size="22" font-weight="600" text-anchor="end">$35.52</text>
+    <text x="940" y="577" class="mono ink" font-size="22" font-weight="600" text-anchor="end">$35.51</text>
     <rect x="60" y="589" width="880" height="12" rx="3" fill="#27272a"/>
-    <rect class="grow g4" x="60" y="589" width="60.540047" height="12" rx="3" fill="url(#hatch)"/>
+    <rect class="grow g4" x="60" y="589" width="54.854941" height="12" rx="3" fill="url(#hatch)"/>
   </g>
   <g class="rise d6">
     <text x="60" y="652" class="sans eyebrow">Token card · same snapshot, narrower scope</text>
-    <rect x="60.000000" y="674" width="809.057426" height="16" fill="#3f3f46"/>
-    <rect x="869.057426" y="674" width="28.208849" height="16" fill="#e85329"/>
-    <rect x="897.266275" y="674" width="42.733725" height="16" fill="url(#hatch)"/>
+    <rect x="60.000000" y="674" width="809.091752" height="16" fill="#3f3f46"/>
+    <rect x="869.091752" y="674" width="28.172710" height="16" fill="#e85329"/>
+    <rect x="897.264462" y="674" width="42.735538" height="16" fill="url(#hatch)"/>
     <rect x="60" y="712" width="12" height="12" rx="2" fill="#3f3f46"/>
     <text x="80" y="723" class="sans soft" font-size="15">283.35M spent</text>
     <rect x="350" y="712" width="12" height="12" rx="2" fill="#e85329"/>
-    <text x="370" y="723" class="sans soft" font-size="15">9.88M saved, metered</text>
+    <text x="370" y="723" class="sans soft" font-size="15">9,866,280 saved, metered</text>
     <rect x="650" y="712" width="12" height="12" rx="2" fill="url(#hatch)"/>
-    <text x="670" y="723" class="sans soft" font-size="15">14.97M saved, estimated</text>
-    <text x="60" y="760" class="sans soft" font-size="15">24.85M saved ÷ (283.35M spent + 24.85M saved) ≈ 8%</text>
+    <text x="670" y="723" class="sans soft" font-size="15">14,966,284 saved, estimated</text>
+    <text x="60" y="760" class="sans soft" font-size="15">24.83M saved ÷ (283.35M spent + 24.83M saved) ≈ 8%</text>
   </g>
   <g class="rise d6 sans muted" font-size="13">
     <text x="60" y="804">Token scope: logged + MCP caps, hints, verbosity nudges and lean resumes.</text>
     <text x="60" y="826">Modeled reread tokens and routing are outside this token total; dollars include their priced value.</text>
-    <text x="60" y="858">30-day snapshot ending 2026-10-31. Measured, modeled and estimated parts stay labelled. Your results will differ.</text>
+    <text x="60" y="858">30-day snapshot ending 2026-11-01. Measured, modeled and estimated parts stay labelled. Your results will differ.</text>
   </g>
 </svg>

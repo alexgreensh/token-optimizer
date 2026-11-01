@@ -13963,6 +13963,24 @@ def _counted_view_statements():
 _COUNTED_VIEW_SQL = _counted_view_statements()
 
 
+def _counted_media_candidate_statement():
+    """Media archive events that pass every other counted-view rule."""
+    media = " OR ".join(f"e.detail GLOB {_sql_quote(g)}" for g in _MEDIA_TOOL_GLOBS)
+    se_twin = _counted_twin_sql(
+        "e", "savings_events", "event_type",
+        "p.tokens_saved = e.tokens_saved AND COALESCE(p.detail, '') = COALESCE(e.detail, '')")
+    return (
+        "SELECT 'md:'||e.id, e.session_uuid, e.timestamp, 0, NULL, e.model "
+        "FROM main.savings_events e WHERE e.event_type = 'tool_archive' AND e.timestamp >= ? "
+        f"AND e.detail IS NOT NULL AND ({media}) "
+        f"AND NOT {_fixture_session_sql('e.session_id')} "
+        f"AND NOT (e.tokens_saved > 0 AND COALESCE(e.session_id, '') != '' AND {se_twin})"
+    )
+
+
+_COUNTED_MEDIA_CANDIDATE_SQL = _counted_media_candidate_statement()
+
+
 def _ensure_counted_views(conn):
     """Create the per-connection counted views (idempotent, TEMP, read-only).
 
@@ -23822,6 +23840,116 @@ def _counted_walk_transcript(path, collect_markers=False):
     return turns, compacts, markers
 
 
+_COUNTED_MEDIA_BLOCK_TYPES = ("image", "document", "audio", "video")
+_COUNTED_MEDIA_DIMS_RX = re.compile(r"\b(\d{2,5})x(\d{2,5})\b")
+_COUNTED_MEDIA_TOOL_RX = re.compile(r"^replaced (\S+) \(")
+# Seconds between an archive event and the tool result it replaced.
+_COUNTED_MEDIA_MATCH_SECONDS = 10.0
+
+
+def _claude_image_tokens(width, height):
+    """Image input tokens on Claude: about width*height/750, after the API
+    scales the image so its long edge is at most 1568 px and its area at most
+    about 1.15 megapixels. Some newer models accept larger images at more
+    tokens; the standard limits give the smaller count, a minimum."""
+    try:
+        w, h = float(width), float(height)
+    except (TypeError, ValueError):
+        return 0
+    if w <= 0 or h <= 0:
+        return 0
+    scale = min(1.0, 1568.0 / max(w, h), math.sqrt(1_150_000.0 / (w * h)))
+    return int((w * scale) * (h * scale) / 750)
+
+
+def _counted_media_results(path):
+    """Media tool results in a transcript, oldest first.
+
+    Returns [(utc-naive datetime, tool name, still holds a media block,
+    text chars, (width, height) or None, holds an archive marker)] for tool
+    results of the tools _MEDIA_TOOL_GLOBS names. Never raises."""
+    import fnmatch
+    names, results = {}, []
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if '"tool_use"' not in line and '"tool_result"' not in line:
+                    continue
+                try:
+                    d = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                msg = d.get("message") if isinstance(d, dict) else None
+                content = msg.get("content") if isinstance(msg, dict) else None
+                if not isinstance(content, list):
+                    continue
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    if block.get("type") == "tool_use":
+                        name = str(block.get("name") or "")
+                        if any(fnmatch.fnmatchcase(name, g) for g in _MEDIA_TOOL_GLOBS):
+                            names[block.get("id")] = name
+                        continue
+                    if block.get("type") != "tool_result" or block.get("tool_use_id") not in names:
+                        continue
+                    try:
+                        dt = datetime.strptime(str(d.get("timestamp"))[:19], "%Y-%m-%dT%H:%M:%S")
+                    except (ValueError, TypeError):
+                        continue
+                    body = block.get("content")
+                    parts = body if isinstance(body, list) else [body]
+                    has_media, text = False, []
+                    for part in parts:
+                        if isinstance(part, str):
+                            text.append(part)
+                        elif isinstance(part, dict):
+                            if part.get("type") in _COUNTED_MEDIA_BLOCK_TYPES:
+                                has_media = True
+                            elif isinstance(part.get("text"), str):
+                                text.append(part["text"])
+                    joined = "".join(text)
+                    dims = _COUNTED_MEDIA_DIMS_RX.search(joined)
+                    results.append((dt, names[block.get("tool_use_id")], has_media, len(joined),
+                                    (int(dims.group(1)), int(dims.group(2))) if dims else None,
+                                    "Full result archived" in joined))
+    except (OSError, PermissionError):
+        return []
+    results.sort(key=lambda r: r[0])
+    return results
+
+
+def _counted_media_net_tokens(results, used, ev_dt, detail):
+    """(net tokens, basis) a media archive removed from context.
+
+    The event is matched to the nearest unused result of the same tool within
+    _COUNTED_MEDIA_MATCH_SECONDS. It counts only when that result no longer
+    holds the media block and carries the archive marker: the saving is the
+    image's token cost (_claude_image_tokens on the size the result text
+    states) minus the text left in its place, taken at 2 characters per token
+    because the marker keeps base64-like text, which tokenizes densely. Any
+    other case (image still in context, no size stated, no match) is 0."""
+    match = _COUNTED_MEDIA_TOOL_RX.match(str(detail or ""))
+    tool = match.group(1) if match else None
+    best = None
+    for index, result in enumerate(results):
+        if index in used or (tool and result[1] != tool):
+            continue
+        gap = abs((result[0] - ev_dt).total_seconds())
+        if gap <= _COUNTED_MEDIA_MATCH_SECONDS and (best is None or gap < best[0]):
+            best = (gap, index)
+    if best is None:
+        return 0, "media_unmatched"
+    used.add(best[1])
+    _dt, _tool, has_media, text_chars, dims, archived = results[best[1]]
+    if has_media or not archived:
+        return 0, "media_kept_in_context"
+    if dims is None:
+        return 0, "media_size_unknown"
+    net = _claude_image_tokens(*dims) - (text_chars + 1) // 2
+    return (net, "media_image_net") if net > 0 else (0, "media_image_net")
+
+
 def _counted_exact_card(model, tier_data, prompt_tokens=None):
     """Resolve a supported id or dated/provider alias, never a nearby family."""
     if not isinstance(model, str) or not model:
@@ -23964,8 +24092,11 @@ def _counted_oneshot_rate(card, cache_class):
     return rate, "floor"
 
 
-def _counted_score_detail(turns, compacts, ev_dt, tokens, tier_data):
-    """Price each observed turn independently and retain unknown token classes."""
+def _counted_score_detail(turns, compacts, ev_dt, tokens, tier_data, oneshot_floor_only=False):
+    """Price each observed turn independently and retain unknown token classes.
+
+    With oneshot_floor_only the initial removal is priced at the input rate (a
+    minimum) even when the next call's cache-write class is on record."""
     import bisect as _bisect
     import math
     out = dict.fromkeys(_COUNTED_COVERAGE_KEYS, 0)
@@ -23984,6 +24115,8 @@ def _counted_score_detail(turns, compacts, ev_dt, tokens, tier_data):
         if kind == "oneshot":
             cache_class = turns[i][3] if len(turns[i]) > 3 else None
             rate, basis = _counted_oneshot_rate(card, cache_class)
+            if oneshot_floor_only and basis == "class":
+                rate, basis = card["input"], "floor"
         else:
             rate = (card or {}).get("cache_read")
             out["reread_tokens"] += tokens
@@ -24099,6 +24232,16 @@ def _counted_candidate_events(conn):
         (*_COUNTED_SE_EVENT_TYPES, _COUNTED_LEDGER_ERA_START,
          *_COUNTED_CE_EXCLUDED_FEATURES, _COUNTED_LEDGER_ERA_START),
     ).fetchall()
+    # Media archives (screenshots and other image results) are left out of the
+    # counted views because their logged size is base64 length. They count
+    # here under their own key with a size of 0: the collect pass sets the real
+    # size from the transcript (see _counted_media_net_tokens). Only when the
+    # counted views exist, since the raw-table fallback already includes them.
+    if _counted_table(conn, "savings_events") == "counted_savings_events":
+        try:
+            rows += conn.execute(_COUNTED_MEDIA_CANDIDATE_SQL, (_COUNTED_LEDGER_ERA_START,)).fetchall()
+        except sqlite3.Error:
+            pass
     return rows
 
 
@@ -24374,18 +24517,33 @@ def _update_counted_cumulative(conn, max_sessions=_COUNTED_MAX_SESSIONS_PER_PASS
                         _counted_mark_incomplete(conn, key, _counted_pricing_detail(stored[key].get("pricing_detail")), proof)
                 stats["pending_sessions"] -= 1
                 continue
-            for key, ts, tok, cost, model in evs:
+            media_results, media_used, media_details = None, set(), {}
+            if any(key.startswith("md:") for key, *_ in evs):
+                media_results = _counted_media_results(path)
+                ids = [int(key[3:]) for key, *_ in evs if key.startswith("md:")]
+                for chunk in range(0, len(ids), 500):
+                    part = ids[chunk:chunk + 500]
+                    media_details.update(conn.execute(
+                        "SELECT id, detail FROM savings_events WHERE id IN (%s)"
+                        % ",".join("?" * len(part)), part).fetchall())
+            for key, ts, tok, cost, model in sorted(evs, key=lambda e: str(e[1])):
                 ev_dt = _counted_event_utc(ts)
                 if ev_dt is None or not turns:
                     if key in stored:
                         _counted_mark_incomplete(conn, key, _counted_pricing_detail(stored[key].get("pricing_detail")), proof)
                     stats["unmeasured_events"] += 1
                     continue
+                basis = "metered"
+                if key.startswith("md:"):
+                    tok, basis = _counted_media_net_tokens(
+                        media_results, media_used, ev_dt, media_details.get(int(key[3:])))
                 score = _counted_score_detail(
-                    turns, compacts, ev_dt, int(tok or 0), tier_data)
+                    turns, compacts, ev_dt, int(tok or 0), tier_data,
+                    oneshot_floor_only=key.startswith("md:"))
                 if not _counted_store_score(conn, key, key.split(":", 1)[0], uuid,
                                              ts, int(tok or 0), score, mtime, proof,
                                              old=stored.get(key), allow_unobserved=True,
+                                             magnitude_basis=basis,
                                              append_check=lambda old, _ev=ev_dt, _tok=int(tok or 0): (
                                                  _counted_legacy_append_continuous(
                                                      old, turns, compacts, _ev, _tok, tier_data))):
@@ -24394,6 +24552,9 @@ def _update_counted_cumulative(conn, max_sessions=_COUNTED_MAX_SESSIONS_PER_PASS
                 stats["rows_written"] += 1
             stats["sessions_walked"] += 1
             stats["pending_sessions"] -= 1
+            # Commit each session so a long drain never holds the write lock
+            # that a concurrent hook collect is waiting on.
+            conn.commit()
         conn.commit()
         if not quiet and stats["rows_written"]:
             print(f"[Token Optimizer] counted-cumulative: walked "
@@ -24708,6 +24869,14 @@ def _counted_rollup_rows(rows, conn=None):
     return _counted_coverage_totals(out)
 
 
+def _counted_row_awaits_rescore(row):
+    """True for a stored row priced under an older version that no pass has
+    yet attempted to re-score under the current one."""
+    detail = _counted_pricing_detail(row.get("pricing_detail"))
+    return (detail.get("version") != _COUNTED_PRICING_VERSION
+            and detail.get("attempted_version") != _COUNTED_PRICING_VERSION)
+
+
 def _counted_cumulative_summary(days=None, now=None):
     """Cheap SELECT-only rollup of counted_reread for the Counted-to-date card.
 
@@ -24756,7 +24925,9 @@ def _counted_cumulative_summary(days=None, now=None):
                 rows.append(row)
             missing_by_month = {}
             for key, _uuid, ts, tokens, _cost, _model in _counted_candidate_events(conn):
-                if key in stored:
+                # A media archive without a row has no measured size yet; it
+                # adds nothing until the collect pass sizes it from its transcript.
+                if key in stored or key.startswith("md:"):
                     continue
                 value = _counted_event_utc(ts)
                 if start is not None and (value is None or not start.timestamp() <=
@@ -24774,6 +24945,25 @@ def _counted_cumulative_summary(days=None, now=None):
 
             totals = add_missing(_counted_rollup_rows(rows, conn),
                                  [n for values in missing_by_month.values() for n in values])
+            # Rows stored under an older pricing version that the collect pass
+            # has not yet tried to re-score. Their price in the subtotal is
+            # provisional, so the card reports re-measurement instead of a final
+            # figure. Rows with no session can never be re-scored and are left
+            # to the coverage notes.
+            awaiting = [row for row in rows if row.get("session_uuid")
+                        and _counted_row_awaits_rescore(row)]
+            remeasuring_sessions = len({row["session_uuid"] for row in awaiting})
+            media_rows = [row for row in rows if row["source"] == "md"]
+            media_priced = [row for row in media_rows if int(row["tokens"] or 0) > 0]
+            media_note = ""
+            if media_rows:
+                media_note = (
+                    f"{len(media_priced):,} of {len(media_rows):,} screenshot and image archives "
+                    "removed their image from context; each is valued at the image's token cost "
+                    "(width x height / 750) minus the text left in its place, with the initial "
+                    "removal at the input rate. The other "
+                    f"{len(media_rows) - len(media_priced):,} left the image in context or stated "
+                    "no image size, so they count $0.")
             by_month = {}
             for row in rows:
                 by_month.setdefault(row["event_month"], []).append(row)
@@ -24804,6 +24994,13 @@ def _counted_cumulative_summary(days=None, now=None):
             "monthly_coverage": monthly_coverage,
             "marker_backfill_done": bool(done and done[0] == "1"),
             "computed_at": computed_at,
+            "remeasuring": remeasuring_sessions > 0,
+            "remeasuring_sessions": remeasuring_sessions,
+            "remeasuring_events": len(awaiting),
+            "media_archive_events": len(media_rows),
+            "media_priced_events": len(media_priced),
+            "media_removed_tokens": sum(int(row["tokens"] or 0) for row in media_priced),
+            "media_note": media_note,
             # Same construction as the estimated tiers: the method is counted,
             # the one modeling choice (trajectory held fixed) is disclosed on
             # the card.
@@ -27563,6 +27760,172 @@ def _dedupe_session_rows(conn):
     return len(losers)
 
 
+# Per-pass budgets for collect_sessions, by drain mode:
+#   None     hook path: the per-pass caps every flush has always used.
+#   "inline" a user-run collect (dashboard skill, terminal): no session-count
+#            caps, each stage stopped by a wall-clock budget instead.
+#   "full"   the detached upgrade drain: no caps at all, commits often so
+#            hook collects running at the same time are never locked out.
+_COLLECT_DRAIN_BUDGETS = {
+    None: {"count_capped": True, "parse_seconds": None, "commit_batch": None,
+           "daily_seconds": 10.0, "counted_sessions": _COUNTED_MAX_SESSIONS_PER_PASS,
+           "counted_seconds": _COUNTED_PASS_DEADLINE_SECONDS},
+    "inline": {"count_capped": False, "parse_seconds": 15.0, "commit_batch": 20,
+               "daily_seconds": 15.0, "counted_sessions": 10**9, "counted_seconds": 30.0},
+    "full": {"count_capped": False, "parse_seconds": None, "commit_batch": 20,
+             "daily_seconds": 3600.0, "counted_sessions": 10**9, "counted_seconds": None},
+}
+_UPGRADE_DRAIN_META = "upgrade_drain_done"
+_UPGRADE_DRAIN_ATTEMPTS_META = "upgrade_drain_attempts"
+_UPGRADE_DRAIN_MAX_ATTEMPTS = 3
+_UPGRADE_DRAIN_LOCK_NAME = "upgrade-drain.lock"
+# A drain re-parses the whole history once; a lock older than this belongs to
+# a child that died, so the next pass may start another.
+_UPGRADE_DRAIN_LOCK_STALE_SECONDS = 1800
+
+
+def _collect_drain_mode():
+    """"full" inside the detached upgrade drain, "inline" for a user-run
+    collect, None on the hook path (and under pytest, where a test opts in by
+    patching this function)."""
+    if os.environ.get("TOKEN_OPTIMIZER_UPGRADE_DRAIN", "").strip() == "1":
+        return "full"
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return None
+    try:
+        return None if _running_under_hook() else "inline"
+    except Exception:
+        return None
+
+
+def _upgrade_drain_key():
+    """One drain per counted-pricing version and usage-parser version."""
+    return f"counted{_COUNTED_PRICING_VERSION}-usage{_USAGE_PARSER_VERSION}"
+
+
+def _upgrade_meta_get(conn, key):
+    try:
+        conn.execute("CREATE TABLE IF NOT EXISTS token_optimizer_meta "
+                     "(key TEXT PRIMARY KEY, value TEXT)")
+        row = conn.execute("SELECT value FROM token_optimizer_meta WHERE key = ?", (key,)).fetchone()
+        return row[0] if row else None
+    except sqlite3.Error:
+        return None
+
+
+def _upgrade_meta_set(conn, key, value):
+    try:
+        conn.execute("CREATE TABLE IF NOT EXISTS token_optimizer_meta "
+                     "(key TEXT PRIMARY KEY, value TEXT)")
+        conn.execute("INSERT OR REPLACE INTO token_optimizer_meta (key, value) VALUES (?, ?)",
+                     (key, str(value)))
+        conn.commit()
+    except sqlite3.Error:
+        pass
+
+
+def _upgrade_drain_mark_done(conn):
+    _upgrade_meta_set(conn, _UPGRADE_DRAIN_META, _upgrade_drain_key())
+
+
+def _upgrade_drain_after_pass(conn, backlog):
+    """After a bounded collect pass: once per version, hand any re-scoring
+    backlog to a detached drain. A pass with no backlog records the version as
+    drained. Returns True when a drain child was started. Never raises."""
+    try:
+        key = _upgrade_drain_key()
+        if _upgrade_meta_get(conn, _UPGRADE_DRAIN_META) == key:
+            return False
+        if not backlog:
+            _upgrade_drain_mark_done(conn)
+            return False
+        # Under pytest the child would run against the real ~/.claude.
+        if os.environ.get("PYTEST_CURRENT_TEST") and not os.environ.get(
+                "TOKEN_OPTIMIZER_TEST_ALLOW_DRAIN_SPAWN"):
+            return False
+        raw = _upgrade_meta_get(conn, _UPGRADE_DRAIN_ATTEMPTS_META) or ""
+        attempts = int(raw.split(":", 1)[1]) if raw.startswith(key + ":") else 0
+        if attempts >= _UPGRADE_DRAIN_MAX_ATTEMPTS:
+            return False
+        if not _upgrade_drain_claim_lock():
+            return False
+        if _spawn_upgrade_drain():
+            _upgrade_meta_set(conn, _UPGRADE_DRAIN_ATTEMPTS_META, f"{key}:{attempts + 1}")
+            return True
+        _upgrade_drain_release_lock()
+        return False
+    except Exception:
+        return False
+
+
+def _upgrade_drain_claim_lock():
+    """Claim the drain lock file (O_EXCL); reclaim one left by a dead child."""
+    marker = SNAPSHOT_DIR / _UPGRADE_DRAIN_LOCK_NAME
+    try:
+        SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            fd = os.open(str(marker), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            if time.time() - marker.stat().st_mtime <= _UPGRADE_DRAIN_LOCK_STALE_SECONDS:
+                return False
+            os.unlink(str(marker))
+            fd = os.open(str(marker), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(fd, "w") as handle:
+            handle.write(str(os.getpid()))
+        return True
+    except OSError:
+        return False
+
+
+def _upgrade_drain_release_lock():
+    try:
+        (SNAPSHOT_DIR / _UPGRADE_DRAIN_LOCK_NAME).unlink()
+    except OSError:
+        pass
+
+
+def _spawn_upgrade_drain():
+    """Start `measure.py upgrade-drain` fully detached (POSIX new session,
+    Windows DETACHED_PROCESS with no console window). Never raises."""
+    try:
+        env = dict(os.environ)
+        env["TOKEN_OPTIMIZER_UPGRADE_DRAIN"] = "1"
+        env["TOKEN_OPTIMIZER_INTERACTIVE"] = "1"
+        env.pop("TOKEN_OPTIMIZER_HOOK", None)
+        popen_kw = {} if os.name == "nt" else {"start_new_session": True}
+        child = subprocess.Popen(
+            [sys.executable, os.path.abspath(__file__), "upgrade-drain", "--quiet"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            env=env,
+            creationflags=(getattr(subprocess, "DETACHED_PROCESS", 0) | _NO_WINDOW),
+            **popen_kw,
+        )
+        try:
+            (SNAPSHOT_DIR / _UPGRADE_DRAIN_LOCK_NAME).write_text(str(child.pid))
+        except OSError:
+            pass
+        return True
+    except Exception as exc:
+        try:
+            _log_spawn_failure("upgrade drain spawn failed: %s: %s" % (type(exc).__name__, exc))
+        except Exception:
+            pass
+        return False
+
+
+def _run_upgrade_drain(days=90, quiet=True):
+    """Body of `measure.py upgrade-drain`: one uncapped collect (usage re-parse,
+    per-day usage, counted ledger and markers), then release the lock."""
+    os.environ["TOKEN_OPTIMIZER_UPGRADE_DRAIN"] = "1"
+    try:
+        return collect_sessions(days=days, quiet=quiet)
+    finally:
+        _upgrade_drain_release_lock()
+
+
 def collect_sessions(days=90, quiet=False, rebuild=False):
     """Parse new JSONL files and insert into SQLite. Zero token cost.
 
@@ -27641,6 +28004,12 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
     new_count = 0
     live_owners = _live_usage_owners(conn)
     stale_usage_rows = _stale_usage_row_paths(conn)
+    drain = _collect_drain_mode()
+    budgets = _COLLECT_DRAIN_BUDGETS.get(drain, _COLLECT_DRAIN_BUDGETS[None])
+    parse_deadline = (time.monotonic() + budgets["parse_seconds"]
+                      if budgets["parse_seconds"] is not None else None)
+    commit_batch = budgets["commit_batch"] or _COLLECT_COMMIT_BATCH
+    parse_truncated = False
     for filepath, mtime, project_name in files:
         if (_is_file_collected(conn, filepath, check_mtime=True)
                 and str(filepath) not in stale_usage_rows):
@@ -27650,7 +28019,14 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
         # sessions in one flush. `files` is newest-first, so recent sessions are always
         # collected and any large backlog drains over subsequent flushes rather than
         # blocking turn-end. (rebuild re-collects everything, so it opts out.)
-        if _COLLECT_MAX_PER_RUN and not rebuild and new_count >= _COLLECT_MAX_PER_RUN:
+        # A drain run (see _collect_drain_mode) has no count cap; an inline drain
+        # stops at its wall-clock budget instead.
+        if (budgets["count_capped"] and _COLLECT_MAX_PER_RUN and not rebuild
+                and new_count >= _COLLECT_MAX_PER_RUN):
+            parse_truncated = True
+            break
+        if parse_deadline is not None and not rebuild and time.monotonic() > parse_deadline:
+            parse_truncated = True
             break
 
         collection_started = datetime.now().isoformat()
@@ -27937,7 +28313,7 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
         # mid-parse) persists what it already collected instead of rolling back the
         # whole transaction. _is_file_collected skips banked files on the next run, so
         # the backfill converges over a few cycles rather than looping forever.
-        if new_count % _COLLECT_COMMIT_BATCH == 0:
+        if new_count % commit_batch == 0:
             try:
                 conn.commit()
             except sqlite3.Error:
@@ -27952,8 +28328,11 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
         _backfill_session_metrics(conn, days=days, limit=50)
     except Exception:
         pass
+    daily_truncated = False
     try:
-        _backfill_daily_usage(conn, days=min(days, 90), budget_seconds=10.0)
+        _daily_started = time.monotonic()
+        _backfill_daily_usage(conn, days=min(days, 90), budget_seconds=budgets["daily_seconds"])
+        daily_truncated = time.monotonic() - _daily_started >= budgets["daily_seconds"]
     except Exception:
         pass
     try:
@@ -27965,9 +28344,28 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
     # collect pass (never at dashboard-regen time). Both helpers carry their
     # own per-pass caps + soft deadline and are fail-open, so a slow transcript
     # can never hold the flush; the backlog converges over passes.
+    counted_pending = 0
     try:
-        _update_counted_cumulative(conn, quiet=quiet)
-        _counted_marker_backfill(conn, quiet=quiet)
+        if drain == "full":
+            counted_pending = int(_counted_backfill_all(conn, quiet=quiet).get("pending_sessions", 0) or 0)
+        else:
+            counted_pending = int(_update_counted_cumulative(
+                conn, max_sessions=budgets["counted_sessions"],
+                deadline_seconds=budgets["counted_seconds"],
+                quiet=quiet).get("pending_sessions", 0) or 0)
+            if drain == "inline":
+                _counted_marker_backfill(conn, max_files=None,
+                                         deadline_seconds=budgets["counted_seconds"], quiet=quiet)
+            else:
+                _counted_marker_backfill(conn, quiet=quiet)
+    except Exception:
+        pass
+    try:
+        if drain == "full":
+            _upgrade_drain_mark_done(conn)
+        elif not rebuild:
+            _upgrade_drain_after_pass(
+                conn, backlog=bool(parse_truncated or daily_truncated or counted_pending))
     except Exception:
         pass
 
@@ -52385,6 +52783,43 @@ def _add_routing_buckets(dst, parts):
     dst["cache_create_5m"] = dst.get("cache_create_5m", 0) + m5
 
 
+def _routing_pending_sessions(days=30, since=None):
+    """Window sessions whose usage collect has not finished re-reading.
+
+    A row counts when its transcript is still on disk and either its per-day
+    usage is missing (the daily-usage backfill rebuilds it) or, for a Claude
+    Code transcript under the projects folder that collect walks, it was parsed
+    by an older usage parser (collect re-parses it). A row whose transcript is
+    gone keeps its stored numbers and never counts. Never raises; 0 on error."""
+    try:
+        if not TRENDS_DB.exists():
+            return 0
+        cutoff = str(since)[:10] if since else (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        conn = _init_trends_db()
+        try:
+            has_version = "usage_parser_version" in {
+                r[1] for r in conn.execute("PRAGMA table_info(session_log)").fetchall()}
+            rows = conn.execute(
+                "SELECT jsonl_path, daily_usage_json IS NULL, "
+                + ("usage_parser_version" if has_version else "NULL")
+                + " FROM session_log WHERE date >= ? AND jsonl_path LIKE '%.jsonl'",
+                (cutoff,)).fetchall()
+        finally:
+            conn.close()
+        projects = os.path.normcase(os.path.abspath(str(CLAUDE_DIR / "projects"))) + os.sep
+        walked = not _use_codex_session_adapter()
+        pending = 0
+        for path, daily_missing, version in rows:
+            stale = (has_version and walked
+                     and (version is None or int(version) < _USAGE_PARSER_VERSION)
+                     and os.path.normcase(os.path.abspath(path)).startswith(projects))
+            if (daily_missing or stale) and os.path.exists(path):
+                pending += 1
+        return pending
+    except (sqlite3.Error, OSError, TypeError, ValueError):
+        return 0
+
+
 def _routing_usage_by_model(days=30, since=None):
     """Token usage per model id and token class over the window.
 
@@ -52647,6 +53082,15 @@ def _compute_model_routing_savings(days=30, since=None):
                 baseline_source = "history"
         if not baseline_shares:
             return zero
+
+        # While collect is still re-reading window sessions (an older usage
+        # parser, or per-day usage not yet rebuilt), their per-class usage is
+        # incomplete and the figure would move pass to pass. Report the count
+        # instead of a number.
+        pending = _routing_pending_sessions(days=days, since=since)
+        if pending:
+            return {**zero, "evidence": "pending", "pending_sessions": pending,
+                    "baseline_source": baseline_source}
 
         # Rows of per-model, per-class usage. When the DB holds none (adapters
         # that only record model totals), the model-daily mix stands in as
@@ -58271,6 +58715,10 @@ def savings_report(days=30, as_json=False):
     # Realized tier — model routing you already did (mix shift vs install baseline).
     routing = summary.get("model_routing") or {}
     routing_realized = float(routing.get("realized_cost_usd", 0.0) or 0.0)
+    routing_pending = int(routing.get("pending_sessions", 0) or 0) if routing.get("evidence") == "pending" else 0
+    if routing_pending:
+        print(f"  + model routing (realized): re-measuring ({routing_pending:,} "
+              f"session{'' if routing_pending == 1 else 's'} left), not in ALL IN yet")
     if routing_realized > 0:
         r_monthly = _money(_cents["routing_measured"] + _cents["routing_estimated"])
         b_share = routing.get("baseline_opus_share", 0.0) * 100
@@ -58384,6 +58832,8 @@ def savings_report(days=30, as_json=False):
               f"({verbosity.get('events', 0)} nudges) [estimated]")
 
     print(f"  = ALL IN: ~${all_in}{per} (measured + modeled + estimated)")
+    if routing_pending:
+        print("  i  ALL IN leaves out model routing until its re-measurement finishes.")
     if summary["action_savings"].get("reread_pricing_complete") is False:
         print("  i  ALL IN is a priced subtotal; unpriced repeat-read credits and debits are not included.")
     if summary["action_savings"]["total_clamped"]:
@@ -62503,6 +62953,10 @@ if __name__ == "__main__":
             print(f"[Error] Unknown v5 subcommand '{sub}'")
             print("  Usage: measure.py v5 [status|enable|disable|welcome|info] [feature]")
             sys.exit(1)
+    elif args[0] == "upgrade-drain":
+        # Detached child started once per version by a collect pass that left
+        # a re-scoring backlog; also safe to run by hand.
+        _run_upgrade_drain(quiet="--quiet" in args)
     elif args[0] == "counted-backfill":
         # Interactively (re)build the full counted-cumulative ledger
         # with no per-pass caps (the collect pass converges incrementally; this

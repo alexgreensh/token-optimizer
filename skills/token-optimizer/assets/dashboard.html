@@ -4822,7 +4822,7 @@ var DB = (function() {
       parts.push('Route routine work to lighter models and keep Opus for the work that needs it. The routing line above shows the size of that assumption.');
     }
     if (cdTokensMo > 0) {
-      parts.push('Resume within the hour, or batch related work before stepping away. ' + (Number(cd.drop_sessions) || 0) + ' of your sessions idled past the cache window and re-wrote the prefix — about ' + cdTokensMo.toLocaleString() + ' tokens' + per + (cdCostMo > 0 ? ', worth about ' + money(cdCostMo) + per + ' at API rates' : '') + '.');
+      parts.push('Resume within the hour, or batch related work before stepping away. ' + (Number(cd.drop_sessions) || 0) + ' of your sessions idled past the cache window and re-wrote the prefix, about ' + cdTokensMo.toLocaleString() + ' tokens' + per + (cdCostMo > 0 ? ', worth about ' + money(cdCostMo) + per + ' at API rates' : '') + '.');
     }
     if ((Number(ow.cost_saved_usd) || 0) > 0) {
       parts.push('Favor targeted Edits over full-file Writes. About ' + (Number(ow.avoidable_writes) || 0) + ' of your Writes could have been Edits, worth about ' + moneyCents(oppCents.output) + per + ' in output.');
@@ -5029,7 +5029,7 @@ var DB = (function() {
           '<div><div style="font-size:12px;color:var(--c-text-dim);" title="' + ((!data.runtime || data.runtime === 'claude') ? 'API/SDK sessions only: a 1-hour cache_control would avoid the repeat writes. Does not apply to Claude Code, which already holds a 1h cache.' : 'Where the provider offers a 1-hour cache, using it would avoid these repeat writes.') + '">Recoverable via 1h cache (API/SDK)</div>' +
             '<div style="font-family:var(--font-mono);font-size:20px;color:var(--c-text-dim);">$' + (Number(ch.would_be_savings_1h_usd) || 0).toFixed(2) + '</div></div>' : '') +
         (Number(ch.avoidable_behavioral_usd) > 0 ?
-          '<div><div style="font-size:12px;color:var(--c-text-dim);" title="' + ((!data.runtime || data.runtime === 'claude') ? 'Claude Code already holds a 1-hour cache. This is avoidable only behaviorally — by resuming within the hour or batching related work. No setting extends it.' : 'Avoidable by resuming before the cache expires or batching related work.') + '">Avoidable by resuming in-hour</div>' +
+          '<div><div style="font-size:12px;color:var(--c-text-dim);" title="' + ((!data.runtime || data.runtime === 'claude') ? 'Claude Code already holds a 1-hour cache. This is avoidable only behaviorally, by resuming within the hour or batching related work. No setting extends it.' : 'Avoidable by resuming before the cache expires or batching related work.') + '">Avoidable by resuming in-hour</div>' +
             '<div style="font-family:var(--font-mono);font-size:20px;color:var(--c-text-dim);">$' + (Number(ch.avoidable_behavioral_usd) || 0).toFixed(2) + '</div></div>' : '') +
       '</div>';
       if (Number(ch.no_cache_economics_sessions) > 0) {

@@ -1331,8 +1331,8 @@ function renderSavings(data) {
         </div>
         <div style="font-size:13px;color:var(--c-text-dim);margin-bottom:var(--s-2)">
           ${runRate
-            ? `This is the <em>metered slice</em> — directly counted tokens removed from context (tool replacements, lean resumes, checkpoint restores). It is smaller and exact. The transformation headline above is the superset estimate that also includes model mix changes; do not add these two together.`
-            : `This is the <em>metered slice</em> — directly counted tokens removed from context (tool replacements, lean resumes, checkpoint restores). It is the same figure shown above. The monthly run-rate estimate — which also includes model mix changes — appears once 30 days of post-baseline history are on record.`}
+            ? `This is the <em>metered slice</em>: directly counted tokens removed from context (tool replacements, lean resumes, checkpoint restores). It is smaller and exact. The transformation headline above is the superset estimate that also includes model mix changes; do not add these two together.`
+            : `This is the <em>metered slice</em>: directly counted tokens removed from context (tool replacements, lean resumes, checkpoint restores). It is the same figure shown above. The monthly run-rate estimate — which also includes model mix changes — appears once 30 days of post-baseline history are on record.`}
         </div>
         <div style="font-size:12px;color:var(--c-text-dim);margin-top:var(--s-2)">${BILLING_CAPTION}</div>
         ${evts.totalCount > 0 ? `<div style="margin-top:var(--s-2)">

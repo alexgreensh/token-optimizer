@@ -387,3 +387,17 @@ def test_dashboard_agreeing_payload_still_shows_the_hero():
     html = render(s)
     assert "savings-transformation" in html
     assert "$2,000" in html
+
+
+def test_flat_band_reads_near_zero_methods_as_no_change():
+    import importlib, sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "skills" / "token-optimizer" / "scripts"))
+    m = importlib.import_module("measure")
+    pool = {"transformation_usd": 54.73, "crosscheck": {"transformation_usd": -704.65}}
+    assert m._crosscheck_flat(pool, 27_820.04) is True
+    big = {"transformation_usd": 1_500.0, "crosscheck": {"transformation_usd": 1_400.0}}
+    assert m._crosscheck_flat(big, 27_820.04) is False
+    split = {"transformation_usd": 54.73, "crosscheck": {"transformation_usd": -3_000.0}}
+    assert m._crosscheck_flat(split, 27_820.04) is False
+    assert m._crosscheck_flat(pool, 0) is False

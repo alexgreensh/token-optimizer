@@ -141,3 +141,12 @@ def test_repeat_read_pricing_note_shows_once_beside_its_figure():
     source = TEMPLATE.read_text()
     assert "counted_pricing.reread_pricing_note" not in source
     assert "cp.reread_pricing_note" in source
+
+
+def test_flat_transformation_shows_plain_no_change_card():
+    s = fixture()
+    s['before_after'] = {'monthly_savings_usd': 0, 'reason': 'flat', 'transformation_state': 'flat',
+                         'actual_monthly_usd': 27767.09, 'counterfactual_monthly_usd': 27820.04}
+    html = render(s)
+    assert 'No measurable change in cost per unit of work' in html
+    assert 'disagree' not in html.lower()

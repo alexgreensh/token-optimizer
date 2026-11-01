@@ -54491,6 +54491,26 @@ def _stable_workload_anchor(before, month):
         return None, month
 
 
+_TRANSFORMATION_FLAT_BAND = 0.05
+
+
+def _crosscheck_flat(weight_pool, counterfactual_usd):
+    """True when both work-unit transformations sit within 5% of spend.
+
+    Figures that close to zero are inside the noise of how work is counted,
+    so the honest reading is "no measurable change", not a disagreement."""
+    try:
+        cf = float(counterfactual_usd)
+        a = float(weight_pool.get("transformation_usd"))
+        b = float((weight_pool.get("crosscheck") or {}).get("transformation_usd"))
+    except (TypeError, ValueError, AttributeError):
+        return False
+    if not all(math.isfinite(x) for x in (cf, a, b)) or cf <= 0:
+        return False
+    band = _TRANSFORMATION_FLAT_BAND * cf
+    return abs(a) <= band and abs(b) <= band
+
+
 def _crosscheck_agrees(primary_usd, crosscheck_usd):
     """Whether the two independent work-unit transformations agree.
 
@@ -55460,6 +55480,13 @@ def _estimate_before_after_savings(days=30, estimated_pools=None):
         # zero), neither figure is trustworthy enough to headline: the card
         # reports both instead of picking one. Same non-headlined shape as
         # net_negative; both disputed figures ride on session_weight_pool.
+        # Both work-unit methods inside a small band of spend means cost per
+        # unit of work did not measurably change: say "flat" rather than show
+        # two near-zero figures as a disagreement.
+        if weight_pool and _crosscheck_flat(weight_pool, combined_cf):
+            return {**not_headlined,
+                    "transformation_state": "flat",
+                    "reason": "flat"}
         if weight_pool and not _crosscheck_verdict(weight_pool):
             return {**not_headlined,
                     "transformation_state": "methods_disagree",
@@ -58115,6 +58142,13 @@ def savings_report(days=30, as_json=False):
               f"${ba.get('counterfactual_monthly_usd', 0):,.0f}/mo at the baseline's cost "
               f"per request), so there is no whole-workload saving to headline. "
               f"The measured savings below are real and counted.")
+    elif ba.get("reason") == "flat":
+        print()
+        print("  YOUR TRANSFORMATION: no measurable change this period")
+        print(f"    Cost per unit of work is about the same as before install "
+              f"(est. ${ba.get('actual_monthly_usd', 0):,.0f}/mo now vs "
+              f"${ba.get('counterfactual_monthly_usd', 0):,.0f}/mo the old way). "
+              f"The savings below are counted action by action.")
     elif ba.get("reason") == "methods_disagree":
         # The two independent work-unit methods could not be reconciled, so the
         # transformation is not headlined. Both figures stay visible.

@@ -4579,6 +4579,13 @@ var DB = (function() {
         '<div class="label" style="margin-bottom:var(--s-2);">At or above your baseline this period</div>' +
         '<div class="lede">Your recent sessions cost about what your frozen baseline would have — est. <strong>' + money(ba.actual_monthly_usd) + '/mo</strong> now vs <strong>' + money(ba.counterfactual_monthly_usd) + '/mo</strong> the old way. There is no net saving to headline this period, so we are not showing one. The figure below is what Token Optimizer counted directly, action by action.</div>' +
       '</div>';
+    } else if (ba.reason === 'flat') {
+      // Both work-unit methods sit within a few percent of spend: no
+      // measurable whole-workload change, so no headline and no scary number.
+      html += '<div class="card wide" style="padding:var(--s-5) var(--s-4);margin-bottom:var(--s-3);">' +
+        '<div class="label" style="margin-bottom:var(--s-2);">No measurable change in cost per unit of work</div>' +
+        '<div class="plain-line">Your recent work costs about the same per request as before install (' + money(ba.actual_monthly_usd) + '/mo now vs ' + money(ba.counterfactual_monthly_usd) + '/mo the old way). The savings below are counted action by action.</div>' +
+      '</div>';
     } else if (ba.reason === 'methods_disagree') {
       // The two independent work-unit methods (per-API-call and per-message)
       // landed more than 10% apart, so neither figure is trustworthy enough to

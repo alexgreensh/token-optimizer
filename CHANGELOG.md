@@ -1,5 +1,14 @@
 # Changelog
 
+## [5.13.63] - 2026-11-01
+
+- One monthly savings number. Logged savings, routing you actually used, repeat reads avoided and estimates are added up once, with nothing counted twice. The CLI and dashboard show the same figure.
+- Your total since install. The dashboard and CLI show everything saved since you installed, using the same four parts as the monthly number. After updating, a one-time background pass re-reads your history; figures say "so far" until it finishes.
+- Usage counted once. A request that streams or replays across sessions is counted a single time, so token totals and costs match what you used.
+- A realistic "money on the table" card. The model-routing "what if" assumes about 20% of Opus work could move to a cheaper model, looks only at new input and output, and sits outside your total. When two ways of estimating disagree, the dashboard says so instead of showing a headline number.
+- Full files after /clear. After /clear or compaction, the first Read returns the full file again (#295).
+- Same rules everywhere: Claude Code, Codex, Cowork, OpenClaw (2.4.25), OpenCode (1.2.1), Hermes (plugin 0.2.2), Pi and the VS Code companion (0.1.18). How every number is measured: `docs/METHODOLOGY.md`.
+
 ## [5.13.62] - 2026-11-01
 
 - Up-to-date model prices: gpt-6-astra-law.

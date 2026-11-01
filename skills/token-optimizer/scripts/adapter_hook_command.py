@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import ntpath
 import os
+import posixpath
 import shlex
 
 
@@ -58,17 +59,21 @@ def parse(command: str, *, runtime: str, events, python_flags: tuple[str, ...] =
         tokens = shlex.split(command, posix=not win)
     except ValueError:
         return None
+    pin = f"TOKEN_OPTIMIZER_RUNTIME={runtime}"
     if win:
         tokens = [t[1:-1] if len(t) >= 2 and t[0] == t[-1] == '"' else t for t in tokens]
+        # Older installs wrote the POSIX shape with Windows paths; still ours.
+        if tokens and tokens[0] == pin:
+            tokens = tokens[1:]
     else:
-        if not tokens or tokens[0] != f"TOKEN_OPTIMIZER_RUNTIME={runtime}":
+        if not tokens or tokens[0] != pin:
             return None
         tokens = tokens[1:]
     n = len(python_flags)
     if len(tokens) != 3 + n or tuple(tokens[1:1 + n]) != tuple(python_flags):
         return None
     py, bridge, event = tokens[0], tokens[1 + n], tokens[2 + n]
-    isabs = ntpath.isabs if win else os.path.isabs
+    isabs = ntpath.isabs if win else posixpath.isabs
     if not isabs(py) or not isabs(bridge) or event not in events:
         return None
     return [py, bridge, event]

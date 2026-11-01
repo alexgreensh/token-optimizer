@@ -61,3 +61,10 @@ def test_windows_path_shells_would_expand_is_refused_with_guidance(bad):
 def test_path_spellings_include_the_path():
     assert ahc.path_spellings(WIN_BRIDGE, windows=True) >= {WIN_BRIDGE}
     assert ahc.path_spellings("/a/b.py", windows=False) == {"/a/b.py"}
+
+
+def test_windows_parse_accepts_the_older_runtime_pinned_shape():
+    cmd = f"TOKEN_OPTIMIZER_RUNTIME=grok {WIN_PY} C:\\x\\grok_hook_bridge.py stop"
+    assert ahc.parse(cmd, runtime="grok", events=EVENTS, windows=True) == [
+        WIN_PY, "C:\\x\\grok_hook_bridge.py", "stop"]
+    assert ahc.parse(cmd.replace("=grok", "=cursor"), runtime="grok", events=EVENTS, windows=True) is None

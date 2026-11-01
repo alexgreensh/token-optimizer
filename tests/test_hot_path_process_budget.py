@@ -454,6 +454,9 @@ def healthy_install(tmp_path, monkeypatch):
     is reachable (a sandboxed HOME answers 'refused' before it)."""
     home = tmp_path / "home"
     home.mkdir()
+    # The runners run `import measure`: make that the module patched here, not
+    # a copy an earlier test left in sys.modules with another CLAUDE_DIR.
+    monkeypatch.setitem(sys.modules, "measure", measure)
     for var in ("TOKEN_OPTIMIZER_ALLOW_FOREIGN_HOME_SCHEDULER", "CLAUDE_CODE_REMOTE",
                 "CLAUDE_CODE_REMOTE_SESSION_ID", "TOKEN_OPTIMIZER_REMOTE_HOST",
                 "TOKEN_OPTIMIZER_CLOUD_KIT_VERSION"):

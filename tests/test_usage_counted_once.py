@@ -561,7 +561,7 @@ def test_a_larger_fork_collected_later_adds_only_the_difference(tmp_path, monkey
     assert sum(r[2] for r in rows) == 1000
     assert sum(r[3] for r in rows) == 1
     # The first session's stored row is history: it is not rewritten.
-    assert dict((r[0].rsplit("/", 1)[1], r[2]) for r in rows)[f"{SID_A}.jsonl"] == 100
+    assert dict((Path(r[0]).name, r[2]) for r in rows)[f"{SID_A}.jsonl"] == 100
 
 
 def test_a_copy_that_grows_after_collect_does_not_double_count(tmp_path, monkeypatch):
@@ -628,7 +628,7 @@ def test_a_partial_share_survives_recollecting_its_session_for_another_reason(
     _write(second[0], [second[1]])
     measure.collect_sessions(days=30, quiet=True)
     assert sum(r[2] for r in _rows(measure)) == 1000
-    by_name = lambda rows: {r[0].rsplit("/", 1)[1]: r for r in rows}   # noqa: E731
+    by_name = lambda rows: {Path(r[0]).name: r for r in rows}   # noqa: E731
     b_before = by_name(_rows(measure))[f"{SID_B}.jsonl"]
 
     # Session A grows by an unrelated request; B is not touched.
@@ -664,7 +664,7 @@ def test_a_session_keeps_its_earlier_share_when_it_is_collected_again(tmp_path, 
 # A transcript that loses records keeps its established history -----------------
 
 def _by_name(rows):
-    return {r[0].rsplit("/", 1)[1]: r for r in rows}
+    return {Path(r[0]).name: r for r in rows}
 
 
 def _rewrite(path, records, seconds_ahead):
@@ -776,7 +776,7 @@ def _usage_state(measure):
                 "SELECT jsonl_path, input_tokens, output_tokens, api_calls, cache_create_1h_tokens, "
                 "cache_create_5m_tokens, daily_usage_json, model_usage_breakdown_json, "
                 "model_usage_json, all_model_usage_json FROM session_log"):
-            sessions[path.rsplit("/", 1)[1]] = {
+            sessions[Path(path).name] = {
                 "in": inp, "out": out, "calls": calls, "c1h": c1h, "c5m": c5m,
                 "daily": json.loads(daily or "{}"), "breakdown": json.loads(breakdown or "{}"),
                 "models": json.loads(models or "{}"), "all_models": json.loads(all_models or "{}")}

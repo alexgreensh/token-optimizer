@@ -198,7 +198,7 @@ def _render(savings):
     script = _HARNESS + _render_fn_source() + "\nrenderSavings();\nprocess.stdout.write(el.innerHTML);\n"
     result = subprocess.run(
         [node, "-", json.dumps(savings)], input=script,
-        capture_output=True, text=True, check=True, timeout=30,
+        capture_output=True, text=True, encoding="utf-8", check=True, timeout=30,
     )
     return result.stdout
 

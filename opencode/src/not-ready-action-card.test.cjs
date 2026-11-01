@@ -19,7 +19,8 @@ module.exports = { Database };
 `);
 const resolve = Module._resolveFilename;
 Module._resolveFilename = function(request, parent, ...rest) {
-  if (request === 'bun:sqlite') return shim;
+  // Under bun the real bun:sqlite is used; the node:sqlite stand-in is for node only.
+  if (request === 'bun:sqlite' && typeof Bun === 'undefined') return shim;
   if (/^\.{1,2}\//.test(request) && request.endsWith('.js') && parent?.filename.endsWith('.ts')) {
     const candidate = path.resolve(path.dirname(parent.filename), request.slice(0, -3) + '.ts');
     if (fs.existsSync(candidate)) return candidate;

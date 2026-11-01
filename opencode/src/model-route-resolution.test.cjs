@@ -3,16 +3,21 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
 const Module = require('node:module');
 const {execFileSync} = require('node:child_process');
-const ts = require(process.env.TEST_TYPESCRIPT_PATH || 'typescript');
-const resolve = Module._resolveFilename;
-Module._resolveFilename = function(request, parent, ...rest) {
-  if (/^\.{1,2}\//.test(request) && request.endsWith('.js') && parent?.filename.endsWith('.ts')) {
-    const candidate = path.resolve(path.dirname(parent.filename), request.slice(0, -3) + '.ts');
-    if (fs.existsSync(candidate)) return candidate;
-  }
-  return resolve.call(this, request, parent, ...rest);
-};
-require.extensions['.ts'] = (module, filename) => module._compile(ts.transpileModule(fs.readFileSync(filename, 'utf8'), {compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText, filename);
+// Under bun, bun's own sqlite and TypeScript loader are used; these hooks
+// are node-only. Bun runs every test file in one process, so a hook
+// installed here would leak into the files that run after this one.
+if (typeof Bun === 'undefined') {
+  const ts = require(process.env.TEST_TYPESCRIPT_PATH || 'typescript');
+  const resolve = Module._resolveFilename;
+  Module._resolveFilename = function(request, parent, ...rest) {
+    if (/^\.{1,2}\//.test(request) && request.endsWith('.js') && parent?.filename.endsWith('.ts')) {
+      const candidate = path.resolve(path.dirname(parent.filename), request.slice(0, -3) + '.ts');
+      if (fs.existsSync(candidate)) return candidate;
+    }
+    return resolve.call(this, request, parent, ...rest);
+  };
+  require.extensions['.ts'] = (module, filename) => module._compile(ts.transpileModule(fs.readFileSync(filename, 'utf8'), {compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText, filename);
+}
 const {knownModelRate} = require('./pricing.ts');
 
 const SCRIPTS = path.resolve(__dirname, '..', '..', 'skills', 'token-optimizer', 'scripts');

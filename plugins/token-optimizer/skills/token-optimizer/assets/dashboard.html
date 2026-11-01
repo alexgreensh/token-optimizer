@@ -4640,6 +4640,9 @@ var DB = (function() {
       (actionPricingIncomplete
         ? '<p class="plain-line">Some older history has no exact price, so this is a priced subtotal.</p>'
         : (!cp.available ? '<p class="plain-line">Repeat reads are not available here. Logged actions are still counted.</p>' : '')) +
+      (mr.evidence === 'pending'
+        ? '<p class="plain-line routing-pending">Model routing: re-measuring (' + Number(mr.pending_sessions || 0).toLocaleString() +
+          ' session' + (Number(mr.pending_sessions) === 1 ? '' : 's') + ' left). It is added to this total when the re-measurement finishes.</p>' : '') +
       fold('Breakdown and method',
         countedList([
           'Includes the later benefit of context removed during this period. Initial removals are counted once.',
@@ -4705,13 +4708,17 @@ var DB = (function() {
     if (Number(cc.total_usd) > 0 || (cc.available && Number(cc.events) > 0)) {
       html += '<div class="card savings-history" style="flex:1;min-width:min(100%,260px);padding:var(--s-4);">' +
         '<div class="label">Context savings &middot; all time</div>' +
-        '<div class="savings-amount">' + (cc.prices_available === false ? 'Unpriced' : money(Math.max(0, Number(cc.total_usd) || 0))) + '</div>' +
+        '<div class="savings-amount">' + (cc.prices_available === false ? 'Unpriced' : money(Math.max(0, Number(cc.total_usd) || 0))) +
+          (cc.remeasuring ? ' <span class="remeasuring-tag" style="font-size:0.45em;color:var(--c-text-dim);">so far</span>' : '') + '</div>' +
+        (cc.remeasuring ? '<p class="plain-line remeasuring">Re-measuring (' + Number(cc.remeasuring_sessions || 0).toLocaleString() +
+          ' session' + (Number(cc.remeasuring_sessions) === 1 ? '' : 's') + ' left). This subtotal is in progress and will change when they finish.</p>' : '') +
         '<p class="plain-line">' + (cp.available ? '<strong>' + (cp.prices_available === false ? 'Unpriced' : money(cp.total_usd)) + '</strong> from removals in the last ' + days + ' days. ' : '') +
           'Overlaps with action savings.</p>' +
         fold('History and coverage',
           countedList([
             'Initial removals + modeled repeat reads.',
             cc.pricing_note ? esc(cc.pricing_note) : '',
+            cc.media_note ? esc(cc.media_note) : '',
             Number(cc.total_usd) < 0 ? 'Signed net: ' + money(cc.total_usd) + '. Savings headline is floored at zero.' : '',
             'Excludes routing, setup and other estimates.'
           ]) +

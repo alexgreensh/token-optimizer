@@ -2,6 +2,8 @@
 
 This observational report uses one **30-day snapshot ending 2026-11-01** (2026-10-02 to 2026-11-01), generated on 2026-11-01. It reports an all-in **priced subtotal of about $598.49** and **24.83M tokens saved**. Pricing is incomplete: unpriced repeat-read credits and debits are excluded, and the complete net dollar value is unavailable. Your results will differ.
 
+Every figure here follows the rules in [the savings methodology](docs/METHODOLOGY.md).
+
 The independent **Terminal-Bench floor** (the full 81-task Terminal-Bench 2 suite, plugin on versus off, multiple trials with confidence intervals) and [controlled A/B](CONTROLLED-A-B-BENCHMARK.md) remain separate studies. Their results are not added to this snapshot. [All three reports](https://token-optimizer.dev/reference/benchmarks/).
 
 ## All-in value, with evidence labels

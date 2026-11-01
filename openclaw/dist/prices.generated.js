@@ -74,6 +74,7 @@ exports.GENERATED_PRICING = {
     "gpt-5.6-sol": { input: 4.0 / 1e6, output: 20.0 / 1e6, cacheRead: 0.4 / 1e6, cacheWrite: 5.0 / 1e6 },
     "gpt-5.6-terra": { input: 2.0 / 1e6, output: 12.0 / 1e6, cacheRead: 0.2 / 1e6, cacheWrite: 2.5 / 1e6 },
     "gpt-6-astra": { input: 10.0 / 1e6, output: 50.0 / 1e6, cacheRead: 1.0 / 1e6, cacheWrite: 12.5 / 1e6 },
+    "gpt-6-astra-law": { input: 10.0 / 1e6, output: 50.0 / 1e6, cacheRead: 1.0 / 1e6, cacheWrite: 0 / 1e6 },
     "gpt-6-luna": { input: 0.1 / 1e6, output: 0.5 / 1e6, cacheRead: 0.01 / 1e6, cacheWrite: 0.125 / 1e6 },
     "gpt-6-rosalind": { input: 15.0 / 1e6, output: 75.0 / 1e6, cacheRead: 1.5 / 1e6, cacheWrite: 18.75 / 1e6 },
     "gpt-6-sol": { input: 2.0 / 1e6, output: 10.0 / 1e6, cacheRead: 0.2 / 1e6, cacheWrite: 2.5 / 1e6 },

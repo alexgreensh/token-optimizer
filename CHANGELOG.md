@@ -1,5 +1,9 @@
 # Changelog
 
+## [5.13.62] - 2026-11-01
+
+- Up-to-date model prices: gpt-6-astra-law.
+
 ## [5.13.61] - 2026-10-31
 
 - Up-to-date model prices: gpt-6-rosalind.

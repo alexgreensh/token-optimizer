@@ -42,10 +42,10 @@ for i in ids:
     out[i] = None if r is None else {"input": r["fresh_input"], "output": r["output"]}
 print(json.dumps(out))
 `;
-const python = (() => { try { execFileSync('python3.14', ['--version'], {stdio: 'pipe'}); return 'python3.14'; } catch { return null; } })();
+const python = (() => { try { execFileSync('python3.14', ['--version'], {stdio: 'pipe', windowsHide: true}); return 'python3.14'; } catch { return null; } })();
 function pythonRates(ids) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'route-res-py-'));
-  return JSON.parse(execFileSync(python, ['-I', '-c', PROBE, SCRIPTS, JSON.stringify(ids)], {
+  return JSON.parse(execFileSync(python, ['-I', '-c', PROBE, SCRIPTS, JSON.stringify(ids)], { windowsHide: true,
     env: {...process.env, HOME: home, TOKEN_OPTIMIZER_SNAPSHOT_DIR: path.join(home, 'snap')}, encoding: 'utf8',
   }));
 }

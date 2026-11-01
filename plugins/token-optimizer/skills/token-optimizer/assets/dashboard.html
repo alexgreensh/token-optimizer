@@ -287,6 +287,9 @@ th, td { padding: 10px !important; }
 }
 .fold__body p { margin: 0 0 var(--s-3); }
 .fold__body p:last-child { margin-bottom: 0; }
+.fold__body ul { margin: 0 0 var(--s-3); padding-left: 1.3em; }
+.fold__body li { margin: 0 0 var(--s-2); }
+.fold__body li:last-child { margin-bottom: 0; }
 .fold__body strong, .fold__body b { color: var(--c-text-main); font-weight: 600; }
 
 /* Visible lead sentence above a fold: sized to read, capped near 62ch so lines
@@ -301,6 +304,12 @@ th, td { padding: 10px !important; }
 }
 .lede + .lede { margin-top: var(--s-3); }
 .lede strong, .lede b { color: var(--c-text-main); font-weight: 500; }
+/* One short readable line under a number: normal text colour, never grey fine print.
+   Anything longer belongs in a .fold. */
+.plain-line {
+  font-size: 15px; line-height: 1.6; color: var(--c-text-main);
+  max-width: 62ch; text-wrap: pretty; margin: var(--s-2) 0 0;
+}
 /* Plain inline note (methodology one-liners under bars/cards). */
 .note {
   font-size: 14px; line-height: 1.75; color: var(--c-text-dim);
@@ -4195,11 +4204,19 @@ var DB = (function() {
         : ((isFinite(Number(rw.extra_work_pct)) && Number(rw.extra_work_pct) > 0)
           ? '<div class="metric-large" style="text-wrap:balance;text-shadow:none;"><em style="font-style:normal;color:var(--c-accent-cyan);">&asymp;' + rw.extra_work_pct + '%</em> more work per token</div>'
           : '<div class="metric-large" style="text-wrap:balance;text-shadow:none;">' + (usdHeadline || '<em style="font-style:normal;color:var(--c-accent-cyan);">more work</em>') + '</div>');
+      // Visible: one short plain line. The technical explanation of how each
+      // figure is built goes to the fold at the bottom of the card.
       var rwEfficiencyDetail = rwHasCostEfficiency
-        ? 'A comparable session fell from <strong>' + rwMoney(rwBeforeCost) + '</strong> to <strong>' + rwMoney(rwAfterCost) + '</strong>' + (rwCostCutDisplay !== null ? ' &middot; ~' + rwCostCutDisplay + '% cheaper/session' : '') + '. This cost-efficiency lens combines lighter context, the cache re-read cascade, and model routing.'
-        : 'lighter context &times;' + rw.context_multiplier + ' &middot; lighter models &times;' + rw.routing_multiplier + '. A per-token throughput multiplier, shown separately from the window headroom and dollar figures below.';
+        ? 'A comparable session fell from <strong>' + rwMoney(rwBeforeCost) + '</strong> to <strong>' + rwMoney(rwAfterCost) + '</strong>' + (rwCostCutDisplay !== null ? ' (about ' + rwCostCutDisplay + '% cheaper)' : '') + '.'
+        : 'Lighter context (&times;' + rw.context_multiplier + ') and lighter models (&times;' + rw.routing_multiplier + ') let each token do more.';
+      var rwEfficiencyMethod = rwHasCostEfficiency
+        ? 'This cost-efficiency lens combines lighter context, the cache re-read cascade, and model routing.'
+        : 'Lighter context &times;' + rw.context_multiplier + ' and lighter models &times;' + rw.routing_multiplier + ' give a per-token throughput multiplier, shown separately from the window headroom and dollar figures.';
       var rwTokenFloorDetail = (rwTokenFloorPct !== null)
-        ? '<div style="margin-top:var(--s-2);font-size:15px;color:var(--c-text-dim);line-height:1.5;text-wrap:pretty;">Separate measured token floor: <strong>' + fn(rwSavedTokens) + '</strong> never sent on <strong>' + fn(rwSpentTokens) + '</strong> <code>/stats</code>-compatible spent &middot; &asymp;' + rwTokenFloorPct + '% of the would-be token load.</div>'
+        ? '<div class="plain-line">About <strong>' + fn(rwSavedTokens) + '</strong> tokens never had to be sent, roughly ' + rwTokenFloorPct + '% of what would have been.</div>'
+        : '';
+      var rwTokenFloorMethod = (rwTokenFloorPct !== null)
+        ? 'Separate measured token floor: ' + fn(rwSavedTokens) + ' never sent on ' + fn(rwSpentTokens) + ' <code>/stats</code>-compatible spent, &asymp;' + rwTokenFloorPct + '% of the would-be token load.'
         : '';
       // Tier chip reflects the USD spine's measured-vs-estimated boundary:
       // context $ is metered, routing $ is an estimated counterfactual.
@@ -4221,13 +4238,13 @@ var DB = (function() {
         // Cost efficiency is the transformation lens; the token floor remains a
         // separate measured line so neither percentage is forced to equal the other.
         rwEfficiencyHeadline +
-        '<div style="margin-top:var(--s-2);font-size:15px;color:var(--c-text-dim);line-height:1.5;text-wrap:pretty;">' + rwEfficiencyDetail + '</div>' +
+        '<div class="plain-line">' + rwEfficiencyDetail + '</div>' +
         rwTokenFloorDetail +
         // Stands alone. An earlier revision opened with "before you hit your usage
         // limits.", a continuation of the headline that reads as a truncated
         // fragment once it wraps to its own line, and the limit panels below
         // already establish which limits are meant.
-        '<p style="margin:0 0 var(--s-4);color:var(--c-text-dim);font-size:17px;line-height:1.6;text-wrap:pretty;">Token Optimizer keeps junk out of context and runs routine turns on lighter models, so more of your plan goes to real work instead of waste.</p>' +
+        '<p style="margin:var(--s-3) 0 var(--s-4);color:var(--c-text-main);font-size:17px;line-height:1.6;text-wrap:pretty;">Token Optimizer keeps junk out of context and runs routine turns on lighter models, so more of your plan goes to real work instead of waste.</p>' +
         // Per-window bars when the meter is fresh enough; otherwise a note so the
         // card degrades instead of vanishing (the multiplier + savings above still
         // stand without the live meter).
@@ -4268,7 +4285,7 @@ var DB = (function() {
           // report. Keep the button (it rebuilds savings/the rest), just stop
           // implying it refreshes the window.
           var staleNote = stale
-            ? ' The window figure updates only while Claude Code is actively running; Regenerate rebuilds the page but will not refresh a stale reading.'
+            ? ' It updates only while Claude Code is running; Regenerate will not refresh it.'
             : '';
           return '<div style="margin-top:var(--s-3);font-size:13px;color:' + col + ';">' +
             (stale ? '⚠ ' : '') + 'Window reading as of ' + esc(whenStr) + ' (' + ageStr + ').' + staleNote +
@@ -4284,16 +4301,20 @@ var DB = (function() {
             // block makes "clicked but nothing happened" impossible to miss.
             '<div id="to-regen-error" hidden style="margin-top:10px;padding:10px 14px;font-size:15px;font-weight:500;color:var(--c-waste);background:rgba(255,95,95,.08);border:1px solid rgba(255,95,95,.35);border-radius:8px;line-height:1.5;text-wrap:pretty;"></div></div>';
         })() +
-        '<div style="margin-top:var(--s-4);padding-top:var(--s-3);border-top:1px solid var(--c-border);font-size:14px;color:var(--c-text-dim);line-height:1.7;text-wrap:pretty;">' +
-          // rw.proxy is now the single source of the measured-vs-estimated boundary
-          // AND the ledger detail (deduped: this used to repeat the ledger sentence
-          // and re-state "usage is measured"). We add only the one fact proxy can't
-          // carry -- the throughput-% is its own unit, not a sum of the dollars --
-          // because it needs the live JS value.
-          esc(rw.proxy) + ' ' +
-          (rwHasCostEfficiency
-            ? 'The &asymp;' + rwEfficiencyMult.toFixed(1) + '&times; figure is the before/after per-session cost ratio, not a sum of the token floor or per-window dollar figures.'
-            : 'The &asymp;' + rw.extra_work_pct + '% is a separate per-token throughput multiplier, not a sum of the per-window dollar figures.') +
+        '<div style="margin-top:var(--s-4);padding-top:var(--s-3);border-top:1px solid var(--c-border);font-size:15px;color:var(--c-text-main);line-height:1.6;text-wrap:pretty;">' +
+          'Your window usage is measured. The savings comparison is an estimate.' +
+          // Technical method lives in a fold. rw.proxy is the single source of the
+          // measured-vs-estimated boundary AND the ledger detail; we add only the
+          // one fact proxy can't carry -- the headline figure is its own unit, not
+          // a sum of the dollars -- because it needs the live JS value.
+          '<details class="fold"><summary>How these numbers are measured</summary><div class="fold__body">' +
+            '<p>' + esc(rw.proxy) + '</p>' +
+            '<p>' + rwEfficiencyMethod + '</p>' +
+            (rwTokenFloorMethod ? '<p>' + rwTokenFloorMethod + '</p>' : '') +
+            '<p>' + (rwHasCostEfficiency
+              ? 'The &asymp;' + rwEfficiencyMult.toFixed(1) + '&times; figure is the before/after per-session cost ratio, not a sum of the token floor or per-window dollar figures.'
+              : 'The &asymp;' + rw.extra_work_pct + '% is a separate per-token throughput multiplier, not a sum of the per-window dollar figures.') + '</p>' +
+          '</div></details>' +
         '</div>' +
       '</div>';
     }
@@ -4362,6 +4383,13 @@ var DB = (function() {
       // markup assembled by the caller from esc()'d data + static tags.
       return '<details class="fold"><summary>' + esc(summary) + '</summary>' +
         '<div class="fold__body">' + bodyHtml + '</div></details>';
+    }
+    // "How this is counted" bullets for a fold. Items are ready HTML (esc()'d by the
+    // caller); falsy items are skipped so callers can pass conditionals inline.
+    function countedList(items) {
+      var li = items.filter(Boolean);
+      return li.length ? '<p><strong>How this is counted</strong></p><ul>' +
+        li.map(function(x) { return '<li>' + x + '</li>'; }).join('') + '</ul>' : '';
     }
 
     // ---- mechanism pillars (structural / runtime / behavioral). Behavioral holds only
@@ -4508,11 +4536,9 @@ var DB = (function() {
         '<p class="lede">Your recent workload compared with your earlier way of working, at the same token prices.</p>' +
         '<div class="savings-split"><span>Now <strong>' + money(nowCost) + '</strong></span>' +
           '<span>Earlier workflow <strong>' + money(oldCost) + '</strong></span></div>' +
-        '<div class="note">Overlaps with the action savings below. Do not add the two totals.</div>' +
-        (ba.savings_capped && ba.savings_cap_note
-          ? '<div class="note" style="margin-top:var(--s-2);">' + esc(ba.savings_cap_note) + '</div>'
-          : '') +
+        '<div class="plain-line">Overlaps with the action savings below. Do not add the two totals.</div>' +
         fold('How this is estimated',
+          countedList([ba.savings_capped && ba.savings_cap_note ? esc(ba.savings_cap_note) : '']) +
           (wp
             ? '<p>Baseline: <strong>' + esc(wp.anchor_month) + '</strong>. We compare cost per ' + wpUnit +
               ' at constant prices, then apply the difference to the <strong>' +
@@ -4589,6 +4615,12 @@ var DB = (function() {
     html += '<div style="display:flex;gap:var(--s-3);flex-wrap:wrap;margin-bottom:var(--s-3);">';
     var periodLabel = runRate ? 'last ' + days + ' days' : trackedDays + ' days tracked';
     var heroAmt = gettingMo;
+    // One plain visible line only when some of the total could not be priced; every
+    // other counting note lives in the card's "Breakdown and method" fold.
+    var actionPricingIncomplete = !!(cp.reread_pricing_note ||
+      (actionSavings && actionSavings.reread_prices_available === false) || cp.reread_prices_available === false ||
+      Number(s.compression_unpriced_tokens) > 0 ||
+      (s.reprice_detail && Number(s.reprice_detail.unpriced_tokens) > 0));
     html += '<div class="card savings-actions" style="flex:2;min-width:min(100%,320px);padding:var(--s-4);">' +
       '<div class="label">Action savings &middot; ' + periodLabel + '</div>' +
       '<div class="savings-amount">' + (exactCents ? moneyCents(exactCents.total) : money(periodValue(heroAmt))) + '<span class="savings-unit"> logged + estimated</span></div>' +
@@ -4598,28 +4630,31 @@ var DB = (function() {
             ((actionSavings && actionSavings.reread_prices_available === false) || cp.reread_prices_available === false ?
               'Unpriced' : '~' + (exactCents ? moneyCents(exactCents.reread) : money(periodValue(rereadMo))))) + '</strong></span>' +
         '<span>Other estimates <strong>~' + (exactCents ? moneyCents(exactCents.other) : money(periodValue(estimatedMo))) + '</strong></span></div>' +
-      '<p class="note">Includes the later benefit of context removed during this period. Initial removals are counted once.</p>' +
-      (cp.reread_pricing_note ? '<p class="note">' + esc(cp.reread_pricing_note) + '</p>' : '') +
-      (actionSavings && actionSavings.total_clamped ? '<p class="note">Signed adjustments give a net total of ' +
-        money(actionSavings.net_total_usd) + '; the headline has a $0 floor.</p>' : '') +
-      (Number(s.compression_unpriced_tokens) > 0 ? '<p class="note">' +
-        Math.round(Number(s.compression_unpriced_tokens)).toLocaleString() +
-        ' compression tokens are counted without a dollar value because their model rate is unavailable' +
-        ((Number(s.compression_unpriced_credit_tokens) > 0 || Number(s.compression_unpriced_debit_tokens) > 0)
-          ? ' (' + Math.round(Number(s.compression_unpriced_credit_tokens) || 0).toLocaleString() + ' credits, ' +
-            Math.round(Number(s.compression_unpriced_debit_tokens) || 0).toLocaleString() + ' debits)' : '') +
-        '.</p>' : '') +
-      (s.reprice_detail && Number(s.reprice_detail.unpriced_tokens) > 0 ? '<p class="note">' +
-        Math.round(Number(s.reprice_detail.unpriced_tokens)).toLocaleString() +
-        ' logged tokens ran on models with no known rate; their dollar value is not included.</p>' : '') +
-      (op.removal_events > 0 ? '<p class="note">Initial removals above are priced at the input rate, a minimum.' +
-        (Number(op.class_premium_usd) >= 0.005
-          ? ' The next call billed new context at a cache-write rate for ' +
-            Math.round(Number(op.class_events) || 0).toLocaleString() + ' removals: about ' +
-            money(Number(op.class_premium_usd)) + ' more, not in the total.' : '') +
-        '</p>' : '') +
-      (!cp.available ? '<p class="note">Repeat-read coverage is unavailable here; logged actions are still included.</p>' : '') +
+      (actionPricingIncomplete
+        ? '<p class="plain-line">Some older history has no exact price, so this is a priced subtotal.</p>'
+        : (!cp.available ? '<p class="plain-line">Repeat reads are not available here. Logged actions are still counted.</p>' : '')) +
       fold('Breakdown and method',
+        countedList([
+          'Includes the later benefit of context removed during this period. Initial removals are counted once.',
+          cp.reread_pricing_note ? esc(cp.reread_pricing_note) : '',
+          actionSavings && actionSavings.total_clamped ? 'Signed adjustments give a net total of ' +
+            money(actionSavings.net_total_usd) + '; the headline has a $0 floor.' : '',
+          Number(s.compression_unpriced_tokens) > 0 ?
+            Math.round(Number(s.compression_unpriced_tokens)).toLocaleString() +
+            ' compression tokens are counted without a dollar value because their model rate is unavailable' +
+            ((Number(s.compression_unpriced_credit_tokens) > 0 || Number(s.compression_unpriced_debit_tokens) > 0)
+              ? ' (' + Math.round(Number(s.compression_unpriced_credit_tokens) || 0).toLocaleString() + ' credits, ' +
+                Math.round(Number(s.compression_unpriced_debit_tokens) || 0).toLocaleString() + ' debits)' : '') + '.' : '',
+          s.reprice_detail && Number(s.reprice_detail.unpriced_tokens) > 0 ?
+            Math.round(Number(s.reprice_detail.unpriced_tokens)).toLocaleString() +
+            ' logged tokens ran on models with no known rate; their dollar value is not included.' : '',
+          op.removal_events > 0 ? 'Initial removals above are priced at the input rate, a minimum.' +
+            (Number(op.class_premium_usd) >= 0.005
+              ? ' The next call billed new context at a cache-write rate for ' +
+                Math.round(Number(op.class_events) || 0).toLocaleString() + ' removals: about ' +
+                money(Number(op.class_premium_usd)) + ' more, not in the total.' : '') : '',
+          !cp.available ? 'Repeat-read coverage is unavailable here; logged actions are still included.' : ''
+        ]) +
         '<p>Logged actions include output trims, context reductions, setup changes and, when your earlier model mix is priced from your own usage, routing savings. ' +
           'Prices may be allocated from each session’s recorded model mix.</p>' +
         '<p>Repeat reads use recorded later turns up to each session’s next compaction. ' +
@@ -4664,12 +4699,15 @@ var DB = (function() {
       html += '<div class="card savings-history" style="flex:1;min-width:min(100%,260px);padding:var(--s-4);">' +
         '<div class="label">Context savings &middot; all time</div>' +
         '<div class="savings-amount">' + (cc.prices_available === false ? 'Unpriced' : money(Math.max(0, Number(cc.total_usd) || 0))) + '</div>' +
-        '<p class="note">Initial removals + modeled repeat reads.</p>' +
-        (cc.pricing_note ? '<p class="note">' + esc(cc.pricing_note) + '</p>' : '') +
-        (Number(cc.total_usd) < 0 ? '<p class="note">Signed net: ' + money(cc.total_usd) + '. Savings headline is floored at zero.</p>' : '') +
-        (cp.available ? '<p class="note"><strong>' + (cp.prices_available === false ? 'Unpriced' : money(cp.total_usd)) + '</strong> from removals in the last ' + days + ' days.</p>' : '') +
-        '<p class="note">Overlaps with action savings. Excludes routing, setup and other estimates.</p>' +
+        '<p class="plain-line">' + (cp.available ? '<strong>' + (cp.prices_available === false ? 'Unpriced' : money(cp.total_usd)) + '</strong> from removals in the last ' + days + ' days. ' : '') +
+          'Overlaps with action savings.</p>' +
         fold('History and coverage',
+          countedList([
+            'Initial removals + modeled repeat reads.',
+            cc.pricing_note ? esc(cc.pricing_note) : '',
+            Number(cc.total_usd) < 0 ? 'Signed net: ' + money(cc.total_usd) + '. Savings headline is floored at zero.' : '',
+            'Excludes routing, setup and other estimates.'
+          ]) +
           '<p>' + (cc.oneshot_prices_available === false ? 'Unpriced' : money(cc.oneshot_usd)) + ' initial removals + ' +
             (cc.reread_prices_available === false ? 'Unpriced' : money(cc.reread_usd)) + ' modeled repeat reads.</p>' +
           '<p>Stored history since ' + esc(prettyDate(cc.window_start)) + '. ' +
@@ -4723,7 +4761,8 @@ var DB = (function() {
           'Cache drops (an opportunity, not a measurement): ' + (Number(cd.drop_sessions) || 0) + ' sessions idled past the cache window and re-wrote ~' + fmtTok(cdTokensMo) + ' tokens' + esc(per) + ' of prefix' +
           (cdCostMo > 0 ? ', about <span style="color:var(--c-amber);">' + money(cdCostMo) + esc(per) + '</span> at API rates' : '') + '.' +
           '</div>';
-        html += '<div class="note" style="margin-top:var(--s-1);">Cache write rate minus the cache read it would have cost, at the models you ran. It is not part of the number above.</div>';
+        html += '<div class="plain-line">Not part of the savings number above.</div>';
+        html += fold('How the cache drop figure is priced', '<p>Cache write rate minus the cache read it would have cost, at the models you ran. It is not part of the number above.</p>');
       }
       if (routingPotentialMo > 0) {
         html += '<div class="routing-assumption" style="margin-top:var(--s-3);font-family:var(--font-mono);font-size:17px;line-height:1.6;color:var(--c-text-main);max-width:820px;">' +
@@ -4731,7 +4770,7 @@ var DB = (function() {
           (mo(mr.potential_unsplit_excluded_tokens) > 0 ? ' (~' + fmtTok(mo(mr.potential_unsplit_excluded_tokens)) + ' Opus tokens' + esc(per) + ' without a class split are left out)' : '') + ', about <span style="color:var(--c-amber);">' + money(routingPotentialMo) + esc(per) + '</span> at API rates.' +
           (routingTokensMo > 0 ? ' ~' + fmtTok(routingTokensMo) + ' tokens' + esc(per) + '.' : '') +
           '</div>';
-        html += '<div class="note" style="margin-top:var(--s-1);">This is an assumption about your own work, not a measured saving, and it is not part of the number above. Some Opus work is worth keeping on Opus.</div>';
+        html += '<div class="plain-line">An assumption about your own work, not a measured saving, and not part of the number above.</div>';
         var classLabels = { fresh_input: 'Fresh input', cache_create_5m: 'Cache writes (5 min)', cache_create_1h: 'Cache writes (1 hour)',
                             cache_read: 'Cache reads', output: 'Output' };
         var byClass = mr.potential_by_class || {};
@@ -4739,11 +4778,14 @@ var DB = (function() {
           .sort(function(a, b) { return (Number(byClass[b].usd) || 0) - (Number(byClass[a].usd) || 0); });
         if (classRows.length) {
           html += fold('How the routing figure is priced',
+            '<p>Some Opus work is worth keeping on Opus.</p>' +
             '<p>Each kind of token is priced at the rate of the model you ran, and the lighter model at the newest Sonnet rates. ' +
               'The figure is the rate difference on about ' + routingFracPct + '% of your remaining Opus tokens.</p>' +
             classRows.map(function(k) {
               return '<p>' + esc(classLabels[k]) + ': ~' + fmtTok(mo(byClass[k].tokens)) + ' tokens' + esc(per) + ', about ' + money(mo(byClass[k].usd)) + ' at API rates.</p>';
             }).join(''));
+        } else {
+          html += fold('About this assumption', '<p>Some Opus work is worth keeping on Opus.</p>');
         }
       }
       html += '<details class="fold"><summary>Ways to save more</summary><div class="fold__body">';
@@ -4789,7 +4831,8 @@ var DB = (function() {
           '<div style="font-family:var(--font-mono);font-weight:300;font-size:48px;line-height:1;color:var(--c-accent-cyan);">' + avgQ + '<span style="font-size:18px;color:var(--c-text-dim);">/100</span></div>' +
           '<div style="flex:1;min-width:220px;">' +
             '<div style="height:8px;border-radius:5px;background:rgba(255,255,255,0.06);overflow:hidden;"><div style="height:100%;width:' + barPct + '%;background:linear-gradient(90deg,var(--c-accent-blue),var(--c-accent-cyan));"></div></div>' +
-            '<div style="margin-top:var(--s-2);font-size:14px;color:var(--c-text-dim);line-height:1.6;">Savings are only half the story. Across your last ' + sessionsCounted + ' sessions, Token Optimizer kept your context averaging ' + avgQ + '/100. Tighter context means sharper answers and fewer compaction interruptions. <em>This is the average across sessions; the Health tab scores your single latest session.</em></div>' +
+            '<div class="plain-line">Across your last ' + sessionsCounted + ' sessions, Token Optimizer kept your context averaging ' + avgQ + '/100.</div>' +
+            fold('What this means', '<p>Savings are only half the story. Tighter context means sharper answers and fewer compaction interruptions.</p><p>This is the average across sessions; the Health tab scores your single latest session.</p>') +
           '</div>' +
         '</div></div>';
     }
@@ -4831,13 +4874,15 @@ var DB = (function() {
         var ready = pr.promotion_ready;
         ccHtml += '<div style="margin-top:var(--s-3);padding-top:var(--s-2);border-top:1px solid rgba(255,255,255,0.08);">' +
           '<div style="font-weight:500;">First-read skeleton — safety check</div>' +
-          '<div style="font-size:13px;color:var(--c-text-dim);line-height:1.6;margin-top:2px;">' +
+          '<div class="plain-line">' + (Number(pr.edits_after_read) || 0) + ' of ' + (Number(pr.shadow_reads) || 0) +
+            ' large files were edited soon after the read (' + (Number(pr.edit_rate_pct) || 0).toFixed(1) + '%). ' +
+            'Currently <strong>' + (ready ? 'ready to promote' : 'still measuring') + '</strong>.</div>' +
+          fold('How this check works', '<p>' +
             'Of ' + (Number(pr.shadow_reads) || 0) + ' large files where a skeleton would have saved tokens, ' +
             (Number(pr.edits_after_read) || 0) + ' were edited soon after the read &mdash; an edit rate of ' +
             '<span style="font-family:var(--font-mono);color:' + (ready ? 'var(--c-accent-cyan)' : 'var(--c-text-main)') + ';">' + (Number(pr.edit_rate_pct) || 0).toFixed(1) + '%</span>. ' +
-            'Skeletons turn on automatically only once this stays under ' + (Number(pr.promotion_gate_pct) || 15) + '% (the model rarely needed the full file). ' +
-            'Currently <strong>' + (ready ? 'ready to promote' : 'still measuring') + '</strong>.' +
-          '</div></div>';
+            'Skeletons turn on automatically only once this stays under ' + (Number(pr.promotion_gate_pct) || 15) + '% (the model rarely needed the full file).</p>') +
+          '</div>';
       }
       // Runtime tripwire: per-cohort LIVE edit-rate + any auto-demotions.
       var tw = cc.cohort_tripwire || {};
@@ -4846,9 +4891,7 @@ var DB = (function() {
       if (twCohorts.length || twDemoted.length) {
         ccHtml += '<div style="margin-top:var(--s-3);padding-top:var(--s-2);border-top:1px solid rgba(255,255,255,0.08);">' +
           '<div style="font-weight:500;">Active cohort tripwire &mdash; live quality guard</div>' +
-          '<div style="font-size:13px;color:var(--c-text-dim);margin-top:2px;margin-bottom:4px;">' +
-            'Each promoted cohort’s live edit-after-skeleton rate. A cohort auto-demotes to measure-only if it crosses 15% (no flapping &mdash; re-promote is manual or by the next backfill).' +
-          '</div>';
+          fold('How the tripwire works', '<p>Each promoted cohort’s live edit-after-skeleton rate. A cohort auto-demotes to measure-only if it crosses 15% (no flapping &mdash; re-promote is manual or by the next backfill).</p>');
         twCohorts.forEach(function(c) {
           var dem = !!c.demoted;
           // T9: interpolated cohorts (promoted on a thin sample via an adjacent

@@ -19,7 +19,7 @@ m._model_mix_shares = lambda days=30, since=None: {"shares": spec["mix"], "total
 m._routing_usage_by_model = lambda days=30, since=None: spec["usage"]
 print(json.dumps(m._compute_model_routing_savings(days=30)))
 `;
-const python = (() => { try { execFileSync('python3.14', ['--version'], {stdio: 'pipe'}); return 'python3.14'; } catch { return null; } })();
+const python = (() => { try { execFileSync('python3.14', ['--version'], {stdio: 'pipe', windowsHide: true}); return 'python3.14'; } catch { return null; } })();
 
 function scenario(beforeModel, afterModel) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'routing-gen-'));
@@ -43,7 +43,7 @@ function pythonRouting(native, afterModel, baselineFamily) {
     usage: {[afterModel]: {fresh_input: 100000 * sessions, output: 10000 * sessions}},
   };
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'routing-gen-py-'));
-  const out = execFileSync(python, ['-I', '-c', PROBE, SCRIPTS, JSON.stringify(spec)], {
+  const out = execFileSync(python, ['-I', '-c', PROBE, SCRIPTS, JSON.stringify(spec)], { windowsHide: true,
     env: {...process.env, HOME: home, TOKEN_OPTIMIZER_SNAPSHOT_DIR: path.join(home, 'snap')}, encoding: 'utf8',
   });
   return JSON.parse(out);

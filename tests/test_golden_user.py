@@ -270,7 +270,9 @@ def test_stored_re_read_rows_are_repriced_after_a_pricing_fix(golden):
     assert unpriced["reread_session_mix_priced_tokens"] == unpriced["reread_tokens"] == 300_000
     assert unpriced["reread_unpriced_tokens"] == 0
     assert unpriced["legacy_unverified_events"] == 1
-    assert unpriced["oneshot_unpriced_tokens"] > 0
+    # The initial removal keeps the input-rate floor of the session's models, disclosed.
+    assert unpriced["oneshot_floor_events"] == 1 and unpriced["oneshot_floor_tokens"] > 0
+    assert unpriced["oneshot_unpriced_tokens"] == 0
     assert unpriced["reread_pricing_complete"] is False
     assert measure._action_savings_components({}, unpriced)["total_usd"] == pytest.approx(REREAD_USD)
     assert conn.execute(history_sql).fetchall() == history

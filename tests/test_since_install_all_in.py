@@ -66,6 +66,8 @@ def test_drain_without_install_date_reads_everything(m):
 
 def test_drain_passes_its_window_to_collect(m, monkeypatch):
     _install(m, 200)
+    # The drain sets this for its own process; register it so it is restored.
+    monkeypatch.setenv("TOKEN_OPTIMIZER_UPGRADE_DRAIN", "0")
     seen = {}
     monkeypatch.setattr(m, "collect_sessions", lambda days=90, quiet=False, rebuild=False: seen.setdefault("days", days))
     monkeypatch.setattr(m, "_upgrade_drain_release_lock", lambda: None)

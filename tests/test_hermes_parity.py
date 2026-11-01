@@ -83,6 +83,11 @@ def plugin(home):
     module = _load_plugin()
     # Deterministic host timeout: no Hermes config is importable here.
     module._hook_timeout_cache["value"] = 30.0
+    # These tests check what the hooks decide, not how fast: a loaded CI
+    # runner can take over 3 s to start the child process, and the hook then
+    # fails open. Timing has its own tests below.
+    module._PRE_TOOL_TIMEOUT_S = 12.0
+    module._POST_TOOL_TIMEOUT_S = 15.0
     yield module
     sys.modules.pop("to_hermes_parity_plugin", None)
 

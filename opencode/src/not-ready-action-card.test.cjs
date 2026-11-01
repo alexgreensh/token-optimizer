@@ -2,32 +2,35 @@ const {test} = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
 const Module = require('node:module');
-const ts = require(process.env.TEST_TYPESCRIPT_PATH || 'typescript');
-// bun:sqlite is stood in for by node:sqlite so the store runs under node.
-const shimDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bun-sqlite-shim-'));
-const shim = path.join(shimDir, 'bun-sqlite.cjs');
-fs.writeFileSync(shim, `const { DatabaseSync } = require('node:sqlite');
-class Database {
-  constructor(file) { this.db = new DatabaseSync(file); }
-  exec(sql) { return this.db.exec(sql); }
-  run(sql, params) { return this.db.prepare(sql).run(...(params ?? [])); }
-  prepare(sql) { return this.db.prepare(sql); }
-  query(sql) { const s = this.db.prepare(sql); return { all: (...p) => s.all(...p), get: (...p) => s.get(...p), run: (...p) => s.run(...p) }; }
-  close() { return this.db.close(); }
-}
-module.exports = { Database };
-`);
-const resolve = Module._resolveFilename;
-Module._resolveFilename = function(request, parent, ...rest) {
-  // Under bun the real bun:sqlite is used; the node:sqlite stand-in is for node only.
-  if (request === 'bun:sqlite' && typeof Bun === 'undefined') return shim;
-  if (/^\.{1,2}\//.test(request) && request.endsWith('.js') && parent?.filename.endsWith('.ts')) {
-    const candidate = path.resolve(path.dirname(parent.filename), request.slice(0, -3) + '.ts');
-    if (fs.existsSync(candidate)) return candidate;
+// Under bun, the real bun:sqlite and bun's own TypeScript loader are used.
+// Under node, bun:sqlite is stood in for by node:sqlite and .ts is transpiled.
+if (typeof Bun === 'undefined') {
+  const ts = require(process.env.TEST_TYPESCRIPT_PATH || 'typescript');
+  // bun:sqlite is stood in for by node:sqlite so the store runs under node.
+  const shimDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bun-sqlite-shim-'));
+  const shim = path.join(shimDir, 'bun-sqlite.cjs');
+  fs.writeFileSync(shim, `const { DatabaseSync } = require('node:sqlite');
+  class Database {
+    constructor(file) { this.db = new DatabaseSync(file); }
+    exec(sql) { return this.db.exec(sql); }
+    run(sql, params) { return this.db.prepare(sql).run(...(params ?? [])); }
+    prepare(sql) { return this.db.prepare(sql); }
+    query(sql) { const s = this.db.prepare(sql); return { all: (...p) => s.all(...p), get: (...p) => s.get(...p), run: (...p) => s.run(...p) }; }
+    close() { return this.db.close(); }
   }
-  return resolve.call(this, request, parent, ...rest);
-};
-require.extensions['.ts'] = (module, filename) => module._compile(ts.transpileModule(fs.readFileSync(filename, 'utf8'), {compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText, filename);
+  module.exports = { Database };
+  `);
+  const resolve = Module._resolveFilename;
+  Module._resolveFilename = function(request, parent, ...rest) {
+    if (request === 'bun:sqlite') return shim;
+    if (/^\.{1,2}\//.test(request) && request.endsWith('.js') && parent?.filename.endsWith('.ts')) {
+      const candidate = path.resolve(path.dirname(parent.filename), request.slice(0, -3) + '.ts');
+      if (fs.existsSync(candidate)) return candidate;
+    }
+    return resolve.call(this, request, parent, ...rest);
+  };
+  require.extensions['.ts'] = (module, filename) => module._compile(ts.transpileModule(fs.readFileSync(filename, 'utf8'), {compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText, filename);
+}
 const {TrendsStore} = require('./storage/trends.ts');
 
 function seededStore() {

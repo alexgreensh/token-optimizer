@@ -131,7 +131,7 @@ def test_dashboard_has_hermes_labels_and_read_only_manage():
     html = (SCRIPTS.parent / "assets" / "dashboard.html").read_text(encoding="utf-8")
     assert "function hermesComponentDetails(c)" in html
     assert "if (data.runtime === 'hermes') return hermesComponentDetails(c);" in html
-    assert "if (!isCodex && !m.read_only) {" in html
+    assert "if (!isCodex && !m.read_only && !isNoInstructionHost(data)) {" in html
     # Runtime-specific text reads the runtime label instead of naming Claude Code.
     assert "It updates only while Claude Code is running" not in html
     assert "Core System is fixed by Claude Code." not in html

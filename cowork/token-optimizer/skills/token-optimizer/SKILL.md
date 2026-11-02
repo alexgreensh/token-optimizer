@@ -50,7 +50,7 @@ fi
 | "Google Antigravity runtime detected." | Stop. Follow `docs/antigravity.md`. |
 | nothing | Continue to b. |
 
-**b. Resolve `$MEASURE_PY` once.** Every later command uses it:
+**b. Resolve `$MEASURE_PY` and `$PY` once.** Every later command uses them. `$MEASURE_PY` is the newest installed measure.py; `$PY` is an interpreter that really runs Python (on Windows the bare `python3` name is often the Store stub, which fails silently under a pipe):
 
 ```bash
 # Resolve measure.py to the NEWEST installed copy across channels so a stale
@@ -70,12 +70,30 @@ done <<EOF
 $(find -L "$HOME/.claude/skills" "$HOME/.claude/plugins/cache" "$HOME/.claude/token-optimizer" "$HOME/.codex/skills" "$HOME/.codex/plugins/cache" "$HOME/.config/opencode/plugins" -type f -name measure.py -path '*token-optimizer*/scripts/measure.py' 2>/dev/null)
 EOF
 if [ -z "$MEASURE_PY" ]; then echo "[Error] measure.py not found. Is Token Optimizer installed?"; exit 1; fi
+
+# Resolve an interpreter that really runs Python. On native-Windows Git Bash
+# `python3` is often the Microsoft Store alias stub, which prints "Python was
+# not found" instead of running -- and a gate piped to `head` then looks like
+# a pass (#301). Probe `python` first there, `python3` first elsewhere, and
+# accept only a clean >=3.9 version reply (same ladder install.sh uses).
+PY=""; _py_candidates="python3 python"
+case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*|CYGWIN*) _py_candidates="python python3" ;; esac
+for _py in $_py_candidates; do
+  command -v "$_py" >/dev/null 2>&1 || continue
+  _py_ver="$("$_py" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null)" || _py_ver=""
+  _py_major="$(echo "$_py_ver" | cut -d. -f1)"; _py_minor="$(echo "$_py_ver" | cut -d. -f2)"
+  [ -n "$_py_major" ] && [ -n "$_py_minor" ] || continue
+  case "$_py_major$_py_minor" in *[!0-9]*) continue ;; esac
+  if [ "$_py_major" -lt 3 ] 2>/dev/null || { [ "$_py_major" -eq 3 ] && [ "$_py_minor" -lt 9 ]; } 2>/dev/null; then continue; fi
+  PY="$_py"; break
+done
+if [ -z "$PY" ]; then echo "[Error] Python 3.9+ not found (the Windows Store python3 stub does not count). Install Python, then retry."; exit 1; fi
 ```
 
 **c. The authoritative gate.** The environment check cannot see an OpenCode started without its variables; this one scans the process tree:
 
 ```bash
-python3 "$MEASURE_PY" report 2>&1 | head -1
+"$PY" "$MEASURE_PY" report 2>&1 | head -1
 ```
 
 Any "... runtime detected." line means stop and follow that runtime's file from the table above. On Codex (`TOKEN_OPTIMIZER_RUNTIME=codex` or a Codex environment) follow `references/codex-workflow.md`. Claude Code continues below.
@@ -93,7 +111,7 @@ Work through these in order and tick each off; a skipped phase stays in the list
 - [ ] 5. Verify and report before/after               references/agent-prompts.md (Verification Agent)
 ```
 
-**0. Setup.** Context window detection, pre-check, backup, the coordination folder (`COORD_PATH`), hook checks, daemon, smart compaction. Then, only when `python3 "$MEASURE_PY" keepwarm-consent-status` returns `should_ask: true`, follow `references/keepwarm-consent.md` exactly; it spends the user's money, so its wording and command order are fixed.
+**0. Setup.** Context window detection, pre-check, backup, the coordination folder (`COORD_PATH`), hook checks, daemon, smart compaction. Then, only when `"$PY" "$MEASURE_PY" keepwarm-consent-status` returns `should_ask: true`, follow `references/keepwarm-consent.md` exactly; it spends the user's money, so its wording and command order are fixed.
 
 **1. Parallel audit.** Dispatch six agents in one message, each with `COORD_PATH` and its prompt from `references/agent-prompts.md`. They gather and count, so they run on the cheapest capable model; the synthesis is where judgement is spent.
 
@@ -112,13 +130,13 @@ A missing output file is a gap to note, not a reason to stop.
 **3. Present.** Generate the dashboard and show the findings as the presentation workflow describes, then wait:
 
 ```bash
-python3 "$MEASURE_PY" dashboard --coord-path "$COORD_PATH"
+"$PY" "$MEASURE_PY" dashboard --coord-path "$COORD_PATH"
 ```
 
 **4. Implement.** Only what the user approved, one change at a time, following the playbook (actions 4A-4P: CLAUDE.md, MEMORY.md, skills, file exclusion, MCP, hooks, cache, rules, settings, descriptions, compact instructions, model routing, smart compaction, quality check, version-aware optimizations, smart routing). Templates are in `examples/`. Also offer, with the measured numbers:
 
-- `python3 "$MEASURE_PY" recommendations`: the daily-measured usage recommendations (compact window, subagent cache lifetime), each with the user's own numbers and the exact command when the state is `recommend`. Relay those lines verbatim; Token Optimizer recommends, it never sets either key.
-- `python3 "$MEASURE_PY" subagent-cache status` / `compact-advice`: the single-measurement detail behind each item. Both are estimates from the user's own history; the user decides.
+- `"$PY" "$MEASURE_PY" recommendations`: the daily-measured usage recommendations (compact window, subagent cache lifetime), each with the user's own numbers and the exact command when the state is `recommend`. Relay those lines verbatim; Token Optimizer recommends, it never sets either key.
+- `"$PY" "$MEASURE_PY" subagent-cache status` / `compact-advice`: the single-measurement detail behind each item. Both are estimates from the user's own history; the user decides.
 - Repeated work a script could do instead of a model: hand over to `token-coach`, goal e.
 
 **5. Verify.** The verification agent re-measures and computes the saving. Show before and after, then the habits that keep it.

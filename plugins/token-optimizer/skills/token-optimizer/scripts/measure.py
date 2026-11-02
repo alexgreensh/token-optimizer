@@ -2460,13 +2460,17 @@ def _project_dir_from_transcript(projects_base, transcript_path):
     return candidate if candidate.is_dir() else None
 
 
-def find_projects_dir(cwd=None, transcript_path=None):
+def find_projects_dir(cwd=None, transcript_path=None, allow_mtime_guess=True):
     """Find the Claude Code projects directory for this session.
 
     Most reliable first: the hook payload's transcript_path (its parent is the
     project dir by construction), then the payload cwd, then the process cwd,
     then $CLAUDE_PROJECT_DIR, each with MSIX paths mapped back to the logical
     AppData path (#265). Only then the most-recently-modified guess.
+
+    allow_mtime_guess=False skips that final guess and returns None instead:
+    callers resolving a file Claude Code only loads from the CURRENT project
+    (MEMORY.md, #301) must not be handed some other project's directory.
     """
     projects_base = CLAUDE_DIR / "projects"
     if not projects_base.exists():
@@ -2499,6 +2503,8 @@ def find_projects_dir(cwd=None, transcript_path=None):
                     return parent_dir
 
     # Last resort: most recently modified (with warning)
+    if not allow_mtime_guess:
+        return None
     dirs = [d for d in projects_base.iterdir() if d.is_dir()]
     if not dirs:
         return None
@@ -2593,7 +2599,16 @@ _MCP_SERVER_DEF_KEYS = ("command", "url", "httpUrl", "type", "args", "transport"
 _MCP_CONNECTORS_NOTE = (
     "Account-level connectors (Gmail, Google Drive, Google Calendar, Notion, ...) "
     "are provisioned server-side at claude.ai and appear in NO local config file. "
-    "They are NOT counted in server_count and NOT estimated."
+    "They are NOT counted in server_count and NOT estimated. Eagerly loaded "
+    "connector tool schemas enter the context the same way and are likewise "
+    "absent from every local file, so they are NOT estimated either."
+)
+
+_MCP_SERVER_INSTRUCTIONS_NOTE = (
+    "Each MCP server can supply an `instructions` block at handshake time "
+    "(Claude Code caps it at 2 KB of text, ~500 tokens). Instructions live in "
+    "the server's runtime response, not in any local config file, so they are "
+    "NOT counted in the MCP estimate. The MCP line is the tool surface only."
 )
 
 
@@ -2653,7 +2668,7 @@ def _mcp_servers_from_blob(blob):
     return [n for n in blob if isinstance(n, str) and n]
 
 
-def _mcp_plugin_config_paths(claude_dir, skipped=None):
+def _mcp_plugin_config_paths(claude_dir, skipped=None, cwd=None):
     """MCP config files shipped by installed (and enabled) plugins.
 
     Reads ~/.claude/plugins/installed_plugins.json for install paths, then
@@ -2662,6 +2677,12 @@ def _mcp_plugin_config_paths(claude_dir, skipped=None):
     used by _scan_plugin_skills_and_commands: when settings.json declares an
     enabledPlugins map, plugins marked false are skipped; when it declares
     none, no filter is applied.
+
+    enabledPlugins merges across the settings chain (user settings.json, then
+    project .claude/settings.json, then project .claude/settings.local.json),
+    closest scope winning per plugin key -- the same precedence Claude Code
+    applies. Before #301 only the user settings.json map was read, so a plugin
+    turned off for one project kept its servers in the report for that project.
     """
     paths = []
     registry = claude_dir / "plugins" / "installed_plugins.json"
@@ -2673,11 +2694,19 @@ def _mcp_plugin_config_paths(claude_dir, skipped=None):
         return paths
 
     enabled_plugins = None
-    settings = _mcp_read_json(claude_dir / "settings.json", skipped)
-    if isinstance(settings, dict):
-        candidate = settings.get("enabledPlugins")
-        if isinstance(candidate, dict):
-            enabled_plugins = candidate
+    settings_chain = [claude_dir / "settings.json"]
+    if cwd is not None:
+        project_claude = Path(cwd) / ".claude"
+        settings_chain.append(project_claude / "settings.json")
+        settings_chain.append(project_claude / "settings.local.json")
+    for settings_path in settings_chain:
+        settings = _mcp_read_json(settings_path, skipped)
+        if isinstance(settings, dict):
+            candidate = settings.get("enabledPlugins")
+            if isinstance(candidate, dict):
+                if enabled_plugins is None:
+                    enabled_plugins = {}
+                enabled_plugins.update(candidate)
 
     seen_install_paths = set()
     for plugin_key, installs in plugins.items():
@@ -2735,7 +2764,7 @@ def get_mcp_config_paths(home=None, claude_dir=None, cwd=None):
         cwd / ".mcp.json",                 # project-scoped servers
         cwd / ".claude" / "settings.json",  # project settings
     ]
-    paths.extend(_mcp_plugin_config_paths(claude_dir))
+    paths.extend(_mcp_plugin_config_paths(claude_dir, cwd=cwd))
 
     ordered = []
     seen = set()
@@ -2779,6 +2808,7 @@ def count_mcp_tools_and_servers(home=None, claude_dir=None, cwd=None):
     # --- Source 1: ~/.claude.json (top-level + every per-project block) ---
     claude_json = home / ".claude.json"
     blob = _mcp_read_json(claude_json, sources_skipped)
+    claude_json_blob = blob  # reused by the per-project disable filter below
     if blob is not None:
         sources_read.append(str(claude_json))
         for name in _mcp_servers_from_blob(blob):
@@ -2812,7 +2842,7 @@ def count_mcp_tools_and_servers(home=None, claude_dir=None, cwd=None):
             _add(name, scope, f"{config_path}:mcpServers")
 
     # --- Source 3: plugin-provided servers ---
-    for config_path in _mcp_plugin_config_paths(claude_dir, sources_skipped):
+    for config_path in _mcp_plugin_config_paths(claude_dir, sources_skipped, cwd=cwd):
         blob = _mcp_read_json(config_path, sources_skipped)
         if blob is None:
             continue
@@ -2822,6 +2852,58 @@ def count_mcp_tools_and_servers(home=None, claude_dir=None, cwd=None):
         sources_read.append(str(config_path))
         for name in names:
             _add(name, "plugin", f"{config_path}:mcpServers")
+
+    # --- Per-project disable filter (#301) ---
+    # ~/.claude.json projects.<path> blocks can carry a disabledMcpServers
+    # list. A server disabled for the project the report runs in is not loaded
+    # in its sessions, so it must not be counted here. Matching walks from cwd
+    # upward (nearest project block wins), the same ancestor walk
+    # find_projects_dir uses; path keys are compared case- and
+    # separator-insensitively so Windows spellings (C:\ vs c:/, Git Bash
+    # /c/...) still match.
+    disabled_for_project = []
+    if isinstance(claude_json_blob, dict):
+        projects = claude_json_blob.get("projects")
+        if isinstance(projects, dict):
+            def _norm_proj_path(text):
+                t = str(text).replace("\\", "/").rstrip("/")
+                # Git Bash spells the same path /c/Users/... -- fold a
+                # single-letter first segment into a drive letter.
+                m = re.match(r"^/([A-Za-z])/(.*)$", t)
+                if m:
+                    t = m.group(1) + ":/" + m.group(2)
+                # Case-fold only drive-lettered (Windows) spellings, so POSIX
+                # projects that differ only by case stay distinct.
+                if sys.platform == "win32" or re.match(r"^[A-Za-z]:/", t):
+                    t = t.lower()
+                return t
+
+            try:
+                cwd_parts = _norm_proj_path(cwd)
+            except Exception:
+                cwd_parts = ""
+            best_key = None
+            best_cfg = None
+            for project_path, project_cfg in projects.items():
+                if not isinstance(project_cfg, dict):
+                    continue
+                norm_key = _norm_proj_path(project_path)
+                if not norm_key or not cwd_parts:
+                    continue
+                if cwd_parts == norm_key or cwd_parts.startswith(norm_key + "/"):
+                    if best_key is None or len(norm_key) > len(best_key):
+                        best_key = norm_key
+                        best_cfg = project_cfg
+            if isinstance(best_cfg, dict):
+                disabled = best_cfg.get("disabledMcpServers")
+                if isinstance(disabled, list):
+                    for name in disabled:
+                        if isinstance(name, str) and name and name in seen_names:
+                            seen_names.discard(name)
+                            server_names.remove(name)
+                            server_scopes.pop(name, None)
+                            server_sources.pop(name, None)
+                            disabled_for_project.append(name)
 
     server_count = len(server_names)
 
@@ -2852,6 +2934,7 @@ def count_mcp_tools_and_servers(home=None, claude_dir=None, cwd=None):
         "server_names": server_names,
         "server_scopes": server_scopes,
         "server_sources": server_sources,
+        "disabled_for_project": disabled_for_project,
         "project_blocks_with_servers": project_blocks_with_servers,
         "sources_read": sources_read,
         "sources_skipped": sources_skipped,
@@ -2860,12 +2943,16 @@ def count_mcp_tools_and_servers(home=None, claude_dir=None, cwd=None):
             "status": "NOT MEASURED",
             "note": _MCP_CONNECTORS_NOTE,
         },
+        "server_instructions": {
+            "status": "NOT MEASURED",
+            "note": _MCP_SERVER_INSTRUCTIONS_NOTE,
+        },
         "tool_count_estimate": tool_count_estimate,
         "tokens": tokens,
         "loading_mode": loading_mode,
         "note": (
-            f"~{tokens_per_tool} tokens/tool ({loading_mode} loading); "
-            "local config only, account connectors NOT MEASURED"
+            f"~{tokens_per_tool} tokens/tool ({loading_mode} loading), tool surface only; "
+            "server instructions and account connectors NOT MEASURED; local config only"
         ),
     }
 
@@ -3162,20 +3249,29 @@ def measure_components():
     #      -- this is what Claude Code actually injects.
     #   2. cwd-matched project dir -- for users who scope memory per
     #      project instead of (or in addition to) HOME.
-    #   3. Scan-all fallback -- last resort, picks the most recently
-    #      modified project dir that has a memory/MEMORY.md.
+    #   Anything beyond those two is a file Claude Code does not inject in
+    #   this session; reporting it charged another project's memory here (#301).
     memory_tokens = 0
     memory_lines = 0
     memory_path_str = ""
     memory_exists = False
 
     projects_base = CLAUDE_DIR / "projects"
-    home_project_name = "-" + str(HOME).replace("/", "-").replace("_", "-").lstrip("-")
+    # Claude Code names project dirs by replacing EVERY non-alphanumeric
+    # character with '-' (_encode_project_dir_name). The old "/"-and-"_"-only
+    # replacement left a Windows HOME (C:\Users\<name>) with its drive colon
+    # and backslashes intact, so the HOME project never matched and resolution
+    # fell through to the scan-all fallback below (#301).
+    home_project_name = _encode_project_dir_name(str(HOME))
     candidate_paths = []
     home_candidate = projects_base / home_project_name / "memory" / "MEMORY.md"
     candidate_paths.append(home_candidate)
 
-    projects_dir = find_projects_dir()
+    # Only a CONFIDENT cwd match may contribute a second candidate: the
+    # mtime guess inside find_projects_dir names some other project, and
+    # charging its memory here is the same cross-project leak as the removed
+    # scan-all fallback (#301).
+    projects_dir = find_projects_dir(allow_mtime_guess=False)
     if projects_dir and projects_dir.name != home_project_name:
         candidate_paths.append(projects_dir / "memory" / "MEMORY.md")
 
@@ -3187,23 +3283,11 @@ def measure_components():
             memory_lines = count_lines(candidate)
             break
 
-    if not memory_exists and projects_base.exists():
-        # Last resort: scan all project dirs, newest first.
-        def _safe_mtime_mem(d):
-            try:
-                return d.stat().st_mtime
-            except OSError:
-                return 0
-        for pdir in sorted(projects_base.iterdir(), key=_safe_mtime_mem, reverse=True):
-            if not pdir.is_dir():
-                continue
-            mp = pdir / "memory" / "MEMORY.md"
-            if mp.exists():
-                memory_path_str = str(mp)
-                memory_exists = True
-                memory_tokens = estimate_tokens_from_file(mp)
-                memory_lines = count_lines(mp)
-                break
+    # No scan-all fallback: when neither the HOME project nor the cwd-matched
+    # project has a memory/MEMORY.md, Claude Code injects nothing, so the
+    # report must say 0. The pre-#301 fallback charged the newest MEMORY.md
+    # found in ANY project -- a file Claude Code never loads in this session --
+    # which is how an unrelated project's memory showed up in the report.
     components["memory_md"] = {
         "path": memory_path_str,
         "exists": memory_exists,
@@ -3384,9 +3468,11 @@ def measure_components():
         "server_names": mcp["server_names"],
         "server_scopes": mcp["server_scopes"],
         "server_sources": mcp["server_sources"],
+        "disabled_for_project": mcp["disabled_for_project"],
         "sources_read": mcp["sources_read"],
         "sources_skipped": mcp["sources_skipped"],
         "account_connectors": mcp["account_connectors"],
+        "server_instructions": mcp["server_instructions"],
         "tool_count_estimate": mcp["tool_count_estimate"],
         "tokens": mcp["tokens"],
         "loading_mode": mcp["loading_mode"],
@@ -6201,11 +6287,16 @@ def print_snapshot_summary(snapshot):
     srv_count = mcp.get("server_count", 0)
     tool_est = mcp.get("tool_count_estimate", 0)
     loading_mode = mcp.get("loading_mode", "deferred")
-    mcp_label = f"MCP tools ({loading_mode})"
-    print(f"  {mcp_label:<35s} {mcp_tokens:>6,} tokens  [{srv_count} servers, ~{tool_est} tools]")
+    mcp_label = f"MCP tools ({loading_mode}, tool surface)"
+    disabled_proj = mcp.get("disabled_for_project") or []
+    disabled_suffix = f", {len(disabled_proj)} disabled for this project" if disabled_proj else ""
+    print(f"  {mcp_label:<35s} {mcp_tokens:>6,} tokens  [{srv_count} servers, ~{tool_est} tools{disabled_suffix}]")
     connectors = mcp.get("account_connectors") or {}
     if connectors.get("status") == "NOT MEASURED":
         print(f"    {'+ Account connectors':<33s} {'NOT MEASURED':>12s}  [server-side at claude.ai, no local config]")
+    instructions = mcp.get("server_instructions") or {}
+    if instructions.get("status") == "NOT MEASURED" and srv_count > 0:
+        print(f"    {'+ Server instructions':<33s} {'NOT MEASURED':>12s}  [runtime-provided, capped 2 KB each, no local copy]")
 
     # Rules
     rules = c.get("rules", {})

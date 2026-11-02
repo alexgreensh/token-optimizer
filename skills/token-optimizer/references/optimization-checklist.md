@@ -468,9 +468,9 @@ See `examples/hooks-starter.json` for a ready-to-use template.
 **What it does**: Captures structured session state before compaction fires, then restores the critical pieces after compaction completes. Decisions, error-fix sequences, agent state, and modified files survive the lossy compaction process.
 
 **Actions**:
-- [ ] Install Smart Compaction hooks: `python3 $MEASURE_PY setup-smart-compact --dry-run` (preview first)
-- [ ] Run `python3 $MEASURE_PY setup-smart-compact` to install
-- [ ] Generate project-specific Compact Instructions: `python3 $MEASURE_PY compact-instructions`
+- [ ] Install Smart Compaction hooks: `"$PY" $MEASURE_PY setup-smart-compact --dry-run` (preview first)
+- [ ] Run `"$PY" $MEASURE_PY setup-smart-compact` to install
+- [ ] Generate project-specific Compact Instructions: `"$PY" $MEASURE_PY compact-instructions`
 - [ ] Add the generated instructions to `.claude/settings.json` under `compactInstructions`
 
 **What the hooks do**:
@@ -490,7 +490,7 @@ See `examples/hooks-starter.json` for a ready-to-use template.
 **What it does**: Analyzes your session JSONL and scores how useful your context content is. A session at 60% with clean, relevant content performs differently from 60% stuffed with stale reads and duplicate injections.
 
 **Actions**:
-- [ ] Run `python3 $MEASURE_PY quality` on your current or recent session
+- [ ] Run `"$PY" $MEASURE_PY quality` on your current or recent session
 - [ ] Check your score: 85+ is excellent, 70-84 good, 50-69 degraded, <50 critical
 - [ ] Act on specific issues: stale reads, bloated results, duplicate reminders
 
@@ -512,16 +512,16 @@ See `examples/hooks-starter.json` for a ready-to-use template.
 
 ```bash
 # Measure current state
-python3 $MEASURE_PY report
+"$PY" $MEASURE_PY report
 
 # Save snapshot before optimizing
-python3 $MEASURE_PY snapshot before
+"$PY" $MEASURE_PY snapshot before
 
 # After optimization
-python3 $MEASURE_PY snapshot after
+"$PY" $MEASURE_PY snapshot after
 
 # Compare
-python3 $MEASURE_PY compare
+"$PY" $MEASURE_PY compare
 ```
 
 Also track with `/cost` at end of each session and `measure.py trends` for historical data. The SessionEnd hook auto-collects usage into a local SQLite database.

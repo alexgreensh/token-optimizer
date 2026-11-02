@@ -33,7 +33,7 @@ A script costs no tokens, takes milliseconds, and returns the same answer every 
 
 ## Finding candidates in the user's own data
 
-`python3 "$MEASURE_PY" coach --json` may include `deterministic_candidates`: tool-call sequences the user repeats across sessions with the same shape, subagents launched again and again from near-identical prompts, and loops that poll or retry. Each entry carries how often it ran and what it cost. Start from those, since they are measured.
+`"$PY" "$MEASURE_PY" coach --json` may include `deterministic_candidates`: tool-call sequences the user repeats across sessions with the same shape, subagents launched again and again from near-identical prompts, and loops that poll or retry. Each entry carries how often it ran and what it cost. Start from those, since they are measured.
 
 When the list is empty or missing, ask the user to describe the workflow as numbered steps, then apply the one test to each. Useful prompts for them:
 

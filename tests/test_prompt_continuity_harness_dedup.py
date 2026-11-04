@@ -3,7 +3,7 @@
 every subagent <task-notification>.
 
 Two guards, both inside ``_continuity_prompt_hint`` so the hook entry, the
-consolidated UserPromptSubmit runner and the Hermes bridge all get them:
+consolidated UserPromptSubmit runner and Codex all get them:
   1. harness-generated prompts (``_HARNESS_TASK_PREFIXES``) never resume anything
   2. an identical resume block is injected once per session; compaction / clear
      re-arms it; a different block still injects; no session id fails open.
@@ -14,7 +14,6 @@ an isolated state dir with an on-disk checkpoint.
 
 from __future__ import annotations
 
-import importlib
 import json
 import os
 import subprocess
@@ -227,8 +226,8 @@ def test_clear_markers_only_touches_own_session(flow):
     assert r.stdout.strip().splitlines()[-1] == "True False True", r.stderr
 
 
-def test_runner_path_dedups(flow, monkeypatch):
-    """The consolidated UserPromptSubmit runner calls the same core function."""
+def test_core_function_dedups_and_gates_harness_prompts(flow):
+    """Direct call of the shared core function (what every caller uses)."""
     env, proj, _ = flow
     code = (
         "import sys, json; sys.path.insert(0, %r); sys.path.insert(0, %r);"
@@ -279,15 +278,17 @@ def test_concurrent_identical_prompts_inject_exactly_once(flow):
 
 
 def test_unwritable_marker_dir_fails_open(flow):
-    """If the marker cannot be written the block is injected as before."""
+    """If the marker cannot be written (its parent is a file, an error on every OS)
+    the block is injected as before."""
     env, proj, cp_dir = flow
     code = (
         "import sys; sys.path.insert(0, %r); import measure as m;"
         "from pathlib import Path;"
-        "m.QUALITY_CACHE_DIR = Path('/proc/nonexistent/x');"
+        "blocker = Path(%r) / 'blocker'; blocker.write_text('x');"
+        "m.QUALITY_CACHE_DIR = blocker / 'sub';"
         "a = m._continuity_prompt_hint(prompt_text='continue last session', session_id=%r, cwd=%r);"
         "b = m._continuity_prompt_hint(prompt_text='continue last session', session_id=%r, cwd=%r);"
-        "print(bool(a), bool(b))" % (str(SCRIPTS), CUR_SID, str(proj), CUR_SID, str(proj))
+        "print(bool(a), bool(b))" % (str(SCRIPTS), str(proj.parent), CUR_SID, str(proj), CUR_SID, str(proj))
     )
     r = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True,
                        text=True, timeout=60)

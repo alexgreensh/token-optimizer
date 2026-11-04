@@ -264,3 +264,55 @@ def test_userpromptsubmit_runner_real_flow(flow):
         assert "Cold-resume lean" not in _runner(env, NOTIFICATION, CUR_SID, proj)
     assert "Cold-resume lean" in _runner(env, "continue last session", CUR_SID, proj)
     assert "Cold-resume lean" not in _runner(env, "continue last session", CUR_SID, proj)
+
+
+def test_concurrent_identical_prompts_inject_exactly_once(flow):
+    """Several subagents finishing at once: O_EXCL claim means one winner."""
+    env, proj, _ = flow
+    payload = json.dumps({"prompt": "continue last session", "session_id": CUR_SID,
+                          "cwd": str(proj)})
+    procs = [subprocess.Popen([sys.executable, str(MEASURE), "prompt-continuity"], env=env,
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, text=True) for _ in range(6)]
+    outs = [p.communicate(payload, timeout=90)[0] for p in procs]
+    assert sum("Cold-resume lean" in o for o in outs) == 1
+
+
+def test_unwritable_marker_dir_fails_open(flow):
+    """If the marker cannot be written the block is injected as before."""
+    env, proj, cp_dir = flow
+    code = (
+        "import sys; sys.path.insert(0, %r); import measure as m;"
+        "from pathlib import Path;"
+        "m.QUALITY_CACHE_DIR = Path('/proc/nonexistent/x');"
+        "a = m._continuity_prompt_hint(prompt_text='continue last session', session_id=%r, cwd=%r);"
+        "b = m._continuity_prompt_hint(prompt_text='continue last session', session_id=%r, cwd=%r);"
+        "print(bool(a), bool(b))" % (str(SCRIPTS), CUR_SID, str(proj), CUR_SID, str(proj))
+    )
+    r = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True,
+                       text=True, timeout=60)
+    assert r.stdout.strip().splitlines()[-1] == "True True", r.stderr
+
+
+@pytest.mark.parametrize("sid", ["", "abc", None, 12345])
+def test_unusable_session_ids_fail_open(flow, sid):
+    env, proj, _ = flow
+    code = (
+        "import sys; sys.path.insert(0, %r); import measure as m;"
+        "a = m._continuity_prompt_hint(prompt_text='continue last session', session_id=%r, cwd=%r);"
+        "b = m._continuity_prompt_hint(prompt_text='continue last session', session_id=%r, cwd=%r);"
+        "print(bool(a), bool(b))" % (str(SCRIPTS), sid, str(proj), sid, str(proj))
+    )
+    r = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True,
+                       text=True, timeout=60)
+    last = r.stdout.strip().splitlines()[-1]
+    # 12345 sanitizes to the unusable sentinel ("unknown"), so it fails open too.
+    assert last == "True True", (last, r.stderr)
+
+
+def test_prefix_gate_is_start_anchored_and_whitespace_tolerant(flow):
+    env, proj, _ = flow
+    assert _hook(env, "\n  " + NOTIFICATION, CUR_SID, proj) == ""
+    # A user prompt that merely mentions the tag mid-text is still the user's.
+    assert "Cold-resume lean" in _hook(
+        env, "continue last session (ignore the <task-notification> noise)", CUR_SID, proj)

@@ -11,6 +11,86 @@ golden = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(golden)
 
 
+@pytest.mark.parametrize('fail_snapshot', [False, True])
+def test_fixture_and_snapshot_close_sqlite_connections(tmp_path, monkeypatch, fail_snapshot):
+    import sqlite3
+    connections = []
+    connect = sqlite3.connect
+    class TrackedConnection(sqlite3.Connection):
+        closed = False
+        def close(self):
+            self.closed = True
+            super().close()
+        def execute(self, sql, *args):
+            if fail_snapshot and sql.startswith('SELECT name FROM sqlite_master'):
+                raise sqlite3.OperationalError('snapshot read failed')
+            return super().execute(sql, *args)
+    def tracked(*args, **kwargs):
+        connection = connect(*args, **kwargs, factory=TrackedConnection)
+        connections.append(connection)
+        return connection
+    monkeypatch.setattr(golden.sqlite3, 'connect', tracked)
+    home, _ = golden.fixture(tmp_path / 'case', 'legacy')
+    output = tmp_path / 'record'
+    output.mkdir()
+    if fail_snapshot:
+        with pytest.raises(sqlite3.OperationalError, match='snapshot read failed'):
+            golden.snapshot(home, output)
+    else:
+        golden.snapshot(home, output)
+    assert connections and all(connection.closed for connection in connections)
+
+
+def test_daemon_authorized_capture_allows_approved_posix_spawn(tmp_path, monkeypatch):
+    """glibc can implement the approved Popen through a second audit event."""
+    import os
+    import uuid
+    if not hasattr(os, 'posix_spawn'):
+        pytest.skip('POSIX spawn backend')
+    site = tmp_path / 'spawn-site'
+    site.mkdir()
+    (site / 'sitecustomize.py').write_text(
+        'import subprocess\n'
+        'subprocess._USE_POSIX_SPAWN = True\n'
+        'class Spawn(subprocess.Popen):\n'
+        '    def __init__(self, *args, **kwargs):\n'
+        '        kwargs["close_fds"] = False\n'
+        '        super().__init__(*args, **kwargs)\n'
+        'subprocess.Popen = Spawn\n', encoding='utf-8')
+    environment = golden.environment
+    def env(*args):
+        return {**environment(*args), 'PYTHONPATH': str(site)}
+    monkeypatch.setattr(golden, 'environment', env)
+    row = next(row for row in json.loads(golden.CASES.read_text())['cases']
+               if row['id'] == 'http-daemon-authorized-seeded-current')
+    work = REPO / '.scratch-u0' / ('posix-spawn-test-' + uuid.uuid4().hex)
+    golden.capture(REPO, work / 'fixed-path', work / 'capture', [row])
+    wire = (work / 'capture' / row['id'] / 'stdout').read_bytes()
+    assert wire.startswith(b'HTTP/1.0 200')
+    payload = json.loads(wire.split(b'\r\n\r\n', 1)[1])
+    assert payload['ok'] is True
+    settings = work / 'fixed-path/case/home é with spaces/.claude/settings.json'
+    assert 'fixture' in json.loads(settings.read_text())['_disabledMcpServers']
+
+
+def test_unapproved_posix_spawn_remains_blocked(tmp_path):
+    import os
+    import uuid
+    if not hasattr(os, 'posix_spawn'):
+        pytest.skip('POSIX spawn backend')
+    source = tmp_path / 'source'
+    scripts = source / 'skills/token-optimizer/scripts'
+    scripts.mkdir(parents=True)
+    (scripts / 'measure.py').write_text(
+        'import os, sys\nos.posix_spawn(sys.executable, '
+        '[sys.executable, "-c", "print(123)"], dict(os.environ))\n', encoding='utf-8')
+    work = REPO / '.scratch-u0' / ('blocked-spawn-test-' + uuid.uuid4().hex)
+    row = {'id': 'blocked', 'entry': 'cli', 'argv': [], 'runtime': 'claude',
+           'fixture': 'synthetic-current', 'stdin_base64': ''}
+    with pytest.raises(RuntimeError, match='golden host boundary: os.posix_spawn'):
+        golden.capture(source, work / 'fixed-path', work / 'capture', [row])
+
+
 @pytest.mark.parametrize('name,before,after', [
     ('json', b'{"field":1}\n', b'{"field":2}\n'),
     ('dollar', b'$1.23456789\n', b'$1.23456788\n'),

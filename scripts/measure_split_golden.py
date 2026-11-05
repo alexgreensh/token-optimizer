@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+from contextlib import closing
 import hashlib
 import json
 import marshal
@@ -89,7 +90,7 @@ def fixture(work, variant='synthetic-current'):
               'ended_at': 1793870400, 'input_tokens': 1000, 'output_tokens': 100,
               'cache_read_tokens': 500, 'cache_write_tokens': 0, 'message_count': 4,
               'api_call_count': 2, 'cost_status': 'unknown'}
-    with sqlite3.connect(home / '.hermes/state.db') as connection:
+    with closing(sqlite3.connect(home / '.hermes/state.db')) as connection, connection:
         connection.execute('CREATE TABLE sessions (id TEXT, model TEXT, started_at REAL, ended_at REAL, input_tokens INTEGER, output_tokens INTEGER, cache_read_tokens INTEGER, cache_write_tokens INTEGER, message_count INTEGER, api_call_count INTEGER, cost_status TEXT)')
         connection.execute('INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?)', tuple(hermes.values()))
         assert connection.total_changes == 1
@@ -129,7 +130,7 @@ def fixture(work, variant='synthetic-current'):
     if variant == 'legacy':
         data = home / 'data'
         data.mkdir()
-        with sqlite3.connect(data / 'trends.db') as connection:
+        with closing(sqlite3.connect(data / 'trends.db')) as connection, connection:
             connection.execute('CREATE TABLE session_log (id INTEGER PRIMARY KEY, jsonl_path TEXT UNIQUE, date TEXT NOT NULL, project TEXT, duration_minutes REAL, input_tokens INTEGER, output_tokens INTEGER, message_count INTEGER, api_calls INTEGER, cache_hit_rate REAL, skills_json TEXT, subagents_json TEXT, tool_calls_json TEXT, model_usage_json TEXT, version TEXT, slug TEXT, topic TEXT, collected_at TEXT)')
             connection.execute("INSERT INTO session_log (jsonl_path,date,input_tokens,output_tokens) VALUES ('missing-fixture.jsonl','2026-11-04',100,10)")
             assert connection.total_changes == 1
@@ -175,7 +176,7 @@ def snapshot(home, output):
             continue
         relative = str(path.relative_to(home))
         if path.suffix in ('.db', '.sqlite', '.sqlite3'):
-            with sqlite3.connect(f'file:{path}?mode=ro', uri=True) as conn:
+            with closing(sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True)) as conn:
                 tables = [row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")]
                 databases[relative] = {'schema': conn.execute("SELECT type,name,sql FROM sqlite_master ORDER BY type,name").fetchall(),
                                        'tables': {name: sorted(conn.execute('SELECT * FROM "' + name.replace('"', '""') + '"').fetchall(), key=repr)

@@ -34,6 +34,7 @@ work = home.parent
 real_popen = subprocess.Popen
 real_getpid = os.getpid
 real_perf_counter = time.perf_counter
+_approved_spawn = threading.local()
 effects_path = Path(effects_path)
 random.seed(0)
 time.time = lambda: 1793870400.0
@@ -143,7 +144,7 @@ def sql_connect(*args, **kwargs):
             values = tuple(_fixed_sql_now if value == 'now' else value for value in values)
             if not values and name != 'strftime':
                 values = (_fixed_sql_now,)
-            with real_connect(':memory:') as engine:
+            with contextlib.closing(real_connect(':memory:')) as engine:
                 return engine.execute('SELECT ' + name + '(' + ','.join('?' for _ in values) + ')', values).fetchone()[0]
         return call
     for name in ('datetime', 'date', 'time', 'strftime', 'julianday', 'unixepoch'):
@@ -217,7 +218,12 @@ def popen(args, *a, **kw):
             child_env = dict(kw.get('env') or os.environ)
             child_env['TOKEN_OPTIMIZER_GOLDEN_CHILD'] = '1'
             kw['env'] = child_env
-            return real_popen(rewritten, *a, **kw)
+            previous = getattr(_approved_spawn, 'argv', None)
+            _approved_spawn.argv = tuple(rewritten)
+            try:
+                return real_popen(rewritten, *a, **kw)
+            finally:
+                _approved_spawn.argv = previous
     return Process(args, *a, **kw)
 
 
@@ -229,9 +235,9 @@ webbrowser.open = lambda *a, **k: effects.append(['browser', clean(a), clean(k)]
 def audit(event, args):
     if event in ('open', 'os.listdir', 'os.scandir', 'sqlite3.connect') and args:
         check_home_read(args[0])
-    if event == 'subprocess.Popen':
+    if event in ('subprocess.Popen', 'os.posix_spawn', 'os.posix_spawnp'):
         argv = args[1]
-        if isinstance(argv, (list, tuple)) and str(Path(__file__).resolve()) in argv:
+        if isinstance(argv, (list, tuple)) and tuple(argv) == getattr(_approved_spawn, 'argv', None):
             return
     if event in ('socket.connect', 'socket.bind', 'os.system', 'os.posix_spawn', 'os.posix_spawnp', 'os.exec', 'subprocess.Popen'):
         effects.append(['blocked', event, clean(args)])

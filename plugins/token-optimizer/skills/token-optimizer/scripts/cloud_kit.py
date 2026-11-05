@@ -37,9 +37,7 @@ Rules this module keeps:
       install-cloud.sh appends to install.log, and exit status 1), and the
       shell wrapper always exits 0, so a cloud session's setup never fails.
 """
-
 from __future__ import annotations
-
 import base64
 import compileall
 import hashlib
@@ -53,7 +51,6 @@ import tempfile
 import urllib.parse
 import urllib.request
 from pathlib import Path
-
 PACKAGE = "@alexgreensh/token-optimizer"
 REGISTRY = "https://registry.npmjs.org"
 CACHE_DIRNAME = "token-optimizer-cloud"
@@ -61,15 +58,11 @@ RUNNER_NAME = "token-optimizer-cloud-run.sh"
 # Every hook command we write contains this (whatever the cache dir is); it is
 # how we, and measure.py's self-heal, recognize our entries and only ours.
 MARKER = "/" + RUNNER_NAME
-
 SCRIPTS_DIR = Path(__file__).resolve().parent
 PLUGIN_ROOT = SCRIPTS_DIR.parents[2]
-
 # Semver with an optional prerelease tag (5.13.50-rc.1). The charset stays
 # shell-safe because the version is rendered into the setup script.
 _VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?$")
-
-
 def _version_key(v: str):
     """Sort key: releases after their prereleases, numeric parts numerically."""
     core, _, pre = v.partition("-")

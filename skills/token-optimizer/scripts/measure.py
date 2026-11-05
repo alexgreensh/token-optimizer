@@ -46155,7 +46155,9 @@ def resume_lean_candidates(limit=15, days=30):
     rows = []
     if TRENDS_DB.exists():
         try:
-            conn = sqlite3.connect(str(TRENDS_DB))
+            # Go through the initializer so an old-schema DB is migrated before
+            # this reader touches the activity-dated columns (review A9).
+            conn = _init_trends_db()
             try:
                 conn.row_factory = sqlite3.Row
                 cur = conn.execute(
@@ -46163,8 +46165,10 @@ def resume_lean_candidates(limit=15, days=30):
                     "       message_count, output_tokens, quality_grade, collected_at "
                     "FROM session_log "
                     "WHERE session_uuid IS NOT NULL AND session_uuid != '' "
-                    "  AND date >= date('now', ?) "
-                    "ORDER BY COALESCE(collected_at, date) DESC, id DESC "
+                    "  AND COALESCE(NULLIF(last_activity_day, ''), NULLIF(date, '')) "
+                    "      >= date('now', ?) "
+                    "ORDER BY COALESCE(NULLIF(last_activity_day, ''), NULLIF(date, '')) DESC, "
+                    "         COALESCE(collected_at, '') DESC, id DESC "
                     "LIMIT ?",
                     (f"-{int(days)} days", int(limit) * 3),
                 )
@@ -52865,30 +52869,49 @@ def _routing_pending_sessions(days=30, since=None):
     usage is missing (the daily-usage backfill rebuilds it) or, for a Claude
     Code transcript under the projects folder that collect walks, it was parsed
     by an older usage parser (collect re-parses it). A row whose transcript is
-    gone keeps its stored numbers and never counts. Never raises; 0 on error."""
+    gone keeps its stored numbers and never counts. Pending is scoped to the
+    requested window: a record whose KNOWN last activity day predates the
+    cutoff holds no in-window work, while a record with no dated evidence at
+    all stays conservatively pending (review A6). Never raises; 0 on error."""
     try:
         if not TRENDS_DB.exists():
             return 0
         cutoff = str(since)[:10] if since else (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
         conn = _init_trends_db()
         try:
-            has_version = "usage_parser_version" in {
-                r[1] for r in conn.execute("PRAGMA table_info(session_log)").fetchall()}
+            columns = {r[1] for r in conn.execute("PRAGMA table_info(session_log)").fetchall()}
+            has_version = "usage_parser_version" in columns
+            last_activity = (
+                "COALESCE(NULLIF(last_activity_day, ''), NULLIF(date, ''))"
+                if "last_activity_day" in columns else "NULLIF(date, '')")
             rows = conn.execute(
-                "SELECT jsonl_path, daily_usage_json IS NULL, "
-                + ("usage_parser_version" if has_version else "NULL")
-                + " FROM session_log WHERE jsonl_path LIKE '%.jsonl'",
+                "SELECT jsonl_path, daily_usage_json, "
+                + ("usage_parser_version" if has_version else "NULL") + "," + last_activity +
+                " FROM session_log WHERE jsonl_path LIKE '%.jsonl'",
                 ()).fetchall()
         finally:
             conn.close()
         projects = os.path.normcase(os.path.abspath(str(CLAUDE_DIR / "projects"))) + os.sep
         walked = not _use_codex_session_adapter()
         pending = 0
-        for path, daily_missing, version in rows:
+        for path, du_raw, version, last_day in rows:
+            daily_missing = du_raw is None
             stale = (has_version and walked
                      and (version is None or int(version) < _USAGE_PARSER_VERSION)
                      and os.path.normcase(os.path.abspath(path)).startswith(projects))
-            if (daily_missing or stale) and os.path.exists(path):
+            if not (daily_missing or stale):
+                continue
+            # Last KNOWN activity day: the repaired bounds first, then the
+            # retained daily-usage keys for rows whose bounds were never
+            # stamped. Unknown coverage stays pending (conservative).
+            last_activity_day = str(last_day or "")[:10] or None
+            if last_activity_day is None and du_raw:
+                usage_days = _activity_days(_safe_json_dict(du_raw))
+                if usage_days:
+                    last_activity_day = usage_days[-1]
+            if last_activity_day is not None and last_activity_day < cutoff:
+                continue
+            if os.path.exists(path):
                 pending += 1
         return pending
     except (sqlite3.Error, OSError, TypeError, ValueError):
@@ -54680,18 +54703,25 @@ def _short_session_pool_savings(cutoff, baseline_opus_share, tier=None,
         conn = _init_trends_db()
         ensure_activity_view(conn)
         try:
+            # Eligibility is SESSION level here too (the exact complement of the
+            # main pool's gates on session_log totals): a session is wholly in
+            # this pool or wholly out, never split across its activity days.
+            # Only the in-window token slices are summed and sessions counted
+            # distinctly (review A3).
             rows = conn.execute(
-                "SELECT model_usage_breakdown_json FROM session_activity "
+                "SELECT model_usage_breakdown_json, id FROM session_activity "
                 "WHERE input_tokens IS NOT NULL AND date >= ? "
                 "AND COALESCE(is_sidechain, 0) = 0 "
-                + _SESSION_QUALITY_FILTER_NEGATED, (cutoff,)
+                "AND id IN (SELECT id FROM session_log "
+                "WHERE COALESCE(is_sidechain, 0) = 0 "
+                + _SESSION_QUALITY_FILTER_NEGATED + ")", (cutoff,)
             ).fetchall()
         finally:
             conn.close()
         if not rows:
             return zero
         by_model = {}
-        for (bdj,) in rows:
+        for bdj, _sid in rows:
             for model, bd in (_safe_json_dict(bdj) or {}).items():
                 if not model or str(model).startswith("<"):
                     continue
@@ -54705,7 +54735,7 @@ def _short_session_pool_savings(cutoff, baseline_opus_share, tier=None,
                 slot["cw5m"] += float(bd.get("cache_create_5m", 0) or 0)
                 slot["out"] += float(bd.get("output", 0) or 0)
         if not by_model:
-            return dict(zero, sessions=len(rows))
+            return dict(zero, sessions=len({r[1] for r in rows}))
         # Counterfactual mix: only a genuinely measured pre-TO baseline may
         # reprice these bundles. Without one (baseline_mix_available False),
         # counterfactual equals actual -- the sessions' real spend still shows
@@ -54728,7 +54758,7 @@ def _short_session_pool_savings(cutoff, baseline_opus_share, tier=None,
                 before_shares, tier)
         return {"actual_usd": round(actual, 2),
                 "counterfactual_usd": round(counterfactual, 2),
-                "sessions": len(rows)}
+                "sessions": len({r[1] for r in rows})}
     except (sqlite3.Error, OSError, ValueError, TypeError, KeyError,
             ArithmeticError):
         return zero
@@ -55607,15 +55637,21 @@ def _estimate_before_after_savings(days=30, estimated_pools=None):
         # anchor — short sessions are priced separately in the short-session pool).
         # But the cache-hit rate (cur_hit) must be computed from ALL sessions, so a
         # separate unfiltered query is used for that below (audit 2026-08-29).
+        # session_activity emits one row per activity DAY, so the quality gates
+        # are applied at SESSION level (session_log totals) and recent_n counts
+        # DISTINCT session ids: a session spanning several qualifying days is
+        # one session, not several (review A3).
         conn = _init_trends_db()
         ensure_activity_view(conn)
         try:
             recent_rows = conn.execute(
                 "SELECT input_tokens, output_tokens, cache_create_5m_tokens, "
-                "cache_create_1h_tokens, cache_hit_rate FROM session_activity "
+                "cache_create_1h_tokens, cache_hit_rate, id FROM session_activity "
                 "WHERE input_tokens IS NOT NULL AND date >= ? "
                 "AND COALESCE(is_sidechain, 0) = 0 "
-                + _SESSION_QUALITY_FILTER, (cutoff,)
+                "AND id IN (SELECT id FROM session_log "
+                "WHERE COALESCE(is_sidechain, 0) = 0 "
+                + _SESSION_QUALITY_FILTER + ")", (cutoff,)
             ).fetchall()
             # Separate unfiltered query for the cache-hit rate: short sessions
             # have real cache patterns that the filter would exclude (audit
@@ -55630,7 +55666,7 @@ def _estimate_before_after_savings(days=30, estimated_pools=None):
             ).fetchall()
         finally:
             conn.close()
-        recent_n = len(recent_rows)
+        recent_n = len({r[5] for r in recent_rows})
         # The session-weight pool is resolved EARLY and on its own population (every
         # parent session, no quality gate), because this guard counts only gate-passing
         # sessions. A user whose workload has shifted to short one-shots -- exactly the

@@ -389,6 +389,16 @@ def test_short_sessions_without_breakdown_contribute_nothing(measure):
                              per_session_input=4_000_000, opus_share=0.30)
     _insert_short_sessions(conn, tmp, n_sessions=50, breakdown=None)
     stamp_activity(conn)
+    # stamp_activity synthesizes dated per-model buckets for every row, which
+    # is what a real collect stores. A row with NO breakdown anywhere must
+    # also lack dated usage evidence: the activity view can only price
+    # per-day model buckets, so undated rows are conservatively excluded
+    # rather than guessed at lifetime scope.
+    conn.execute(
+        "UPDATE session_log SET daily_usage_json=NULL, "
+        "parent_daily_usage_json=NULL, first_activity_day=NULL, "
+        "last_activity_day=NULL, daily_calls_json=NULL "
+        "WHERE jsonl_path LIKE '%/short%'")
     conn.commit()
     conn.close()
     r = mod._estimate_before_after_savings(days=30)

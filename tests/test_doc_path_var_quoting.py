@@ -148,5 +148,5 @@ def test_path_vars_are_quoted_in_commands(path):
 ])
 def test_brace_form_vars_follow_the_same_quote_rules(segment, expected):
     """${VAR} word-splits exactly like $VAR, so the guard must check both
-    forms (gate-2 review 2-4)."""
+    forms."""
     assert _unquoted_vars(segment) == expected

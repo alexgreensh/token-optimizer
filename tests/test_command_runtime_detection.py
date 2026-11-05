@@ -103,8 +103,7 @@ def test_primary_run_uses_resolved_runtime_not_hardcoded_codex(rel):
 # echoes must stay off stdout — a --json command chained in the same Bash call
 # keeps parseable stdout only when the echoes go to stderr — and must be
 # paste-safe (printf %q), because a bare `echo "MEASURE_PY=$MEASURE_PY"` prints
-# a spaced Windows path unquoted and word-splits when the agent reuses it
-# (gate-2 review 2-1 and 2-5).
+# a spaced Windows path unquoted and word-splits when the agent reuses it.
 ECHO_DOCS = [
     "skills/token-dashboard/SKILL.md",
     "skills/token-coach/SKILL.md",

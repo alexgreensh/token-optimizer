@@ -240,7 +240,7 @@ def test_enable_all_closest_scope_wins(tmp_path):
 
 def test_mcpjson_managed_settings_approval_counts(tmp_path, monkeypatch):
     """Enterprise managed-settings.json carries the same approval keys, so a
-    server it approves is not pending (gate-2 review 2-2)."""
+    server it approves is not pending."""
     home, claude_dir, cwd = _rig(tmp_path)
     managed = _write_json(tmp_path / "managed-settings.json",
                           {"enableAllProjectMcpServers": True})
@@ -279,7 +279,7 @@ def test_mcpjson_name_matching_unrelated_project_server_still_gated(tmp_path):
     """A .mcp.json name that collides with a server declared only under an
     UNRELATED project's ~/.claude.json mcpServers block is still a
     .mcp.json-only server here: that block is not loaded in this project, so
-    the approval gate must apply (gate-2 review 2-3)."""
+    the approval gate must apply."""
     home, claude_dir, cwd = _rig(tmp_path, {
         "projects": {"/unrelated/project": {"mcpServers": {"alpha": {"command": "a"}}}},
     })
@@ -330,7 +330,7 @@ def test_tokens_drop_when_server_disabled(tmp_path):
 def test_snapshot_summary_discloses_pending_mcp_approval(capsys):
     """Pending-approval .mcp.json servers leave the counted total; the report
     must say so next to the disabled count instead of silently under-counting
-    (gate-2 review 2-2)."""
+   ."""
     snapshot = {
         "label": "t",
         "timestamp": "2026-01-01T00:00:00",

@@ -204,7 +204,7 @@ def test_fresh_session_nudge_message_marks_estimate(m, monkeypatch, tmp_path):
 
 
 def test_loop_warning_writer_stores_estimated_unverified_row(m, monkeypatch, tmp_path):
-    """F6(d): _maybe_loop_warning itself must write tier='estimated',
+    """_maybe_loop_warning itself must write tier='estimated',
     verified=0 -- the observed loop volume is not a metered saving."""
     monkeypatch.setattr(m, "_is_v5_feature_enabled", lambda name: True)
     msgs = []

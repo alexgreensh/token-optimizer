@@ -38,6 +38,19 @@ export interface SavingsEventsWindow {
  */
 export declare function readSavingsEventsByCategory(openclawDir?: string, window?: SavingsEventsWindow): SavingsEventsSummary;
 export declare function measuredSavingsFromSummary(summary: SavingsEventsSummary): number;
+/**
+ * Counterfactual event credits over the window, grouped by type:
+ * checkpoint_restore (working-set re-reads a restore skipped), resume_lean
+ * (cold-resume rewrite avoided) and hint_followed (searches a followed hint
+ * replaced). Triggers are observed; magnitudes are inferred -- mirrors
+ * measure.py's estimated_volume_pools. The caller reprices to the baseline
+ * INPUT rate and adds them as a separate estimated pool, never inside the
+ * measured total.
+ */
+export declare function estimatedCounterfactualUsd(openclawDir: string, window: SavingsEventsWindow): {
+    total: number;
+    byType: Record<string, number>;
+};
 export interface SavingsBreakdownItem {
     key: string;
     label: string;
@@ -105,6 +118,9 @@ export interface RealizedSavings {
     verbosityMeasuredUsd: number;
     /** Repriced verbosity-steer $ (estimated output reduction at baseline mix). */
     verbosityTransformationUsd: number;
+    /** Repriced counterfactual event credits $ (checkpoint_restore + resume_lean
+     * + hint_followed at the baseline input mix). Estimated tier. */
+    counterfactualEstimatedUsd: number;
     transformationPct: number;
     beforeOpus: number;
     afterOpus: number;

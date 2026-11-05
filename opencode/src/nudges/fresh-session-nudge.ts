@@ -130,8 +130,9 @@ export interface FreshSessionTurnEconomics {
  * Per-turn saving and break-even turns for starting a fresh session now.
  * Mirrors Python _fresh_session_turn_economics. savedTokens is the warm
  * context a continued session keeps re-sending; rebuildTokens is the working
- * set the fresh session must carry (defaults to the lean-block floor --
- * OpenCode has no active-read store to measure it, so the floor is honest).
+ * set the fresh session must carry. OpenCode has no active-read store to
+ * measure it, so the default lean-block floor is a lower bound on rebuild
+ * size: per-turn savings are an upper bound and payback is a lower bound.
  * Counterfactual ESTIMATE, never a meter; no horizon is assumed.
  */
 export function freshSessionTurnEconomics(

@@ -553,7 +553,16 @@ exports.default = definePluginEntry({
                     const nudgeSnapshot = buildRuntimeEventContext(openclawDir, freshContextAudit(), context?.agentId, sessionId, "agent-turn-prepare");
                     if (nudgeSnapshot) {
                         const hasPriorScore = _freshNudgePriorScores.has(sessionId);
-                        const nudgeMsg = (0, quality_1.buildFreshSessionNudgeMessage)(nudgeSnapshot.qualityScore, nudgeSnapshot.fillPct, hasPriorScore, nudgeSnapshot.model, nudgeSnapshot.contextWindow);
+                        // Rebuild working set for the nudge economics: the session's active
+                        // read tokens, floored at the lean block and capped at 200K --
+                        // mirrors Python _checkpoint_restore_recovery_tokens.
+                        let rebuildTokens = quality_1.FRESH_NUDGE_LEAN_BLOCK_TOKENS;
+                        try {
+                            const active = (0, read_cache_1.getActiveReadTokens)(context?.agentId ?? "unknown", sessionId);
+                            rebuildTokens = Math.min(200_000, Math.max(quality_1.FRESH_NUDGE_LEAN_BLOCK_TOKENS, active));
+                        }
+                        catch { /* floor stands */ }
+                        const nudgeMsg = (0, quality_1.buildFreshSessionNudgeMessage)(nudgeSnapshot.qualityScore, nudgeSnapshot.fillPct, hasPriorScore, nudgeSnapshot.model, nudgeSnapshot.contextWindow, rebuildTokens);
                         boundedMapSet(_freshNudgePriorScores, sessionId, nudgeSnapshot.qualityScore);
                         if (nudgeMsg) {
                             boundedSetAdd(_freshNudgeFiredSessions, sessionId);

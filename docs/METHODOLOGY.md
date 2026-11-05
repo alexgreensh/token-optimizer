@@ -152,6 +152,8 @@ against each other.
 Loop-detection warnings log the observed loop volume as a `tier=estimated`
 compression event (it is spend that already happened, not a removal), and it never
 reaches the measured headline; the avoided continuation is `behavioral_estimate`.
+Non-savings warning and advisory features are also omitted from compression
+coverage buckets. Their diagnostic events remain stored.
 
 The fresh-session nudge's dollar figure is a separate counterfactual estimate shown
 in the nudge message itself. It reports the recurring per-turn saving — warm
@@ -163,6 +165,9 @@ break-even turns (`ceil(one_time / per_turn)`), labelled `est.`; no horizon is
 assumed, so no session-total dollar figure is claimed. When the per-turn saving
 is zero or negative the message omits the dollar clause rather than inventing a
 payback period.
+The lean-block floor used by OpenCode is a lower bound on rebuild size, making
+per-turn savings an upper bound and payback turns a lower bound. The Python
+nudge stays within 160 characters and does not claim a checkpoint was saved.
 
 ---
 
@@ -371,6 +376,14 @@ schema v2 (`_QUALITY_SCORE_VERSION`):
   this payload length. This task-state path serves Claude Code, Codex, Cowork and
   Hermes. OpenCode and OpenClaw retain their own checkpoint implementations; this
   task-state change is not ported to them.
+- The latest redacted user message is capped at **4,000 characters** in the
+  active-task field for Claude Code and Codex. Constraint extraction still scans
+  the full message, including constraints after that cap. `make` contributes a
+  verified fact only with an explicit test/check/build/lint/all target and a
+  passing result marker.
+- Each archived output's search index keeps at most **256 KiB** of UTF-8 head
+  and tail text, including its truncation marker. The archive remains the full
+  recovery source; the smaller search copy protects later session-store writes.
 
 - Routing and estimates are estimates. They are labelled and kept separate from
   measured parts. "Measured" covers observed token changes and observed actions

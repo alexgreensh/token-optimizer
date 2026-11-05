@@ -1201,7 +1201,7 @@ def extract_session_state(filepath: str | Path, tail_lines: int = 500, max_files
         "todos": todos,
         "active_plan": active_plan,
         "current_step": {
-            "last_user": last_user_msg,
+            "last_user": last_user_msg[:4000],
             "last_assistant": last_assistant_msg[:500],
         },
         "task_state": task_state,

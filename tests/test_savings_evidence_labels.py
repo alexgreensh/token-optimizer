@@ -116,18 +116,30 @@ def test_loop_detection_is_not_a_measured_saving(m):
     # Measured stays tool_archive + bash_compress_git (checkpoint_restore and
     # hint_followed/resume_lean already live in the estimated tier).
     assert merged["total_tokens"] == 25000
-    # The diagnostic coverage view files both rows under estimated, never measured.
+    # Non-savings warnings stay out of every compression coverage bucket.
     cov = m._get_compression_coverage(days=30)
     measured_feats = {e["feature"] for e in cov["tiers"]["measured"]}
     assert "loop_detection" not in measured_feats
     est_feats = {e["feature"] for e in cov["tiers"]["estimated"]}
-    assert "loop_detection" in est_feats
+    assert "loop_detection" not in est_feats
     # The avoided-continuation estimate still sees both loop rows (it has its
     # own SQL and never filtered on tier): 8000-4 + 6000-4 = 13992 tokens.
     beh = m._estimate_behavioral_savings(days=30)
     assert beh["loop_events"] == 2
     assert beh["tokens_saved"] == 13992
     assert beh["evidence"] == "estimated"
+
+
+def test_coverage_omits_non_savings_advisory_events(m):
+    _seed(m)
+    for feature in ("context_size_advisory", "context_advisory_shadow"):
+        m._log_compression_event(feature=feature, session_id=SID,
+                                 verified=False, tier="estimated")
+    cov = m._get_compression_coverage(days=30)
+    features = {e["feature"] for bucket in cov["tiers"].values() for e in bucket}
+    assert "context_size_advisory" not in features
+    assert "context_advisory_shadow" not in features
+    assert "bash_compress_git" in features
 
 
 def test_hint_followed_stays_estimated(m):

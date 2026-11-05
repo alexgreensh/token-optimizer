@@ -36,6 +36,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.savingsCategoryLabel = savingsCategoryLabel;
 exports.readSavingsEventsByCategory = readSavingsEventsByCategory;
 exports.measuredSavingsFromSummary = measuredSavingsFromSummary;
+exports.estimatedCounterfactualUsd = estimatedCounterfactualUsd;
 exports.allocateCents = allocateCents;
 exports.computeRealizedSavings = computeRealizedSavings;
 /**
@@ -69,14 +70,24 @@ const DAY_MS = 86_400_000;
 const PROXY_MODEL = "sonnet"; // price unpriced/unknown models at this rate card
 // Estimated-tier savings categories: their magnitude is not directly metered, so
 // they are EXCLUDED from the measured compression add-back (mirrors measure.py
-// `_get_savings_summary` relocations of setup_optimization / mcp_cap / hint_followed).
+// `_get_savings_summary` relocations of setup_optimization / mcp_cap /
+// hint_followed / checkpoint_restore / resume_lean). checkpoint_restore credits
+// avoided working-set re-reads that never happened and resume_lean credits an
+// avoided cold reload -- observed triggers, inferred magnitudes.
 const ESTIMATED_TIER_CATEGORIES = new Set([
     "setup_optimization",
     "mcp_cap",
     "hint_followed",
     "verbosity_steer",
     "fresh_session_nudge",
+    "checkpoint_restore",
+    "resume_lean",
 ]);
+// Counterfactual event credits that feed the estimated add-back pool (mirrors
+// measure.py's estimated_volume_pools: hint_followed, resume_lean,
+// checkpoint_restore). mcp_cap and setup_optimization stay out of the headline,
+// exactly like Python.
+const COUNTERFACTUAL_ESTIMATED_TYPES = ["checkpoint_restore", "resume_lean", "hint_followed"];
 const CLASSES = ["fi", "cr", "cw", "out"];
 // --- Storage ----------------------------------------------------------------
 function storageDir(openclawDir) {
@@ -544,9 +555,9 @@ function getOrComputeBaseline(openclawDir, history, now, proxy) {
  * title-case of the raw key.
  */
 const SAVINGS_CATEGORY_LABELS = {
-    resume_lean: "Lean resumes",
-    checkpoint_restore: "Checkpoint restores",
-    hint_followed: "Hints followed",
+    resume_lean: "Lean resumes [est]",
+    checkpoint_restore: "Checkpoint restores [est]",
+    hint_followed: "Hints followed [est]",
     verbosity_steer: "Verbosity steering [est]",
     tool_archive: "Tool replacements",
     structural_savings: "Structural (cumulative)",
@@ -672,7 +683,8 @@ function readSavingsEventsByCategory(openclawDir, window) {
 /**
  * Sum the MEASURED compression / volume-reduction savings (cost_saved_usd) over
  * the window, EXCLUDING estimated-tier categories (setup_optimization, mcp_cap,
- * hint_followed, verbosity_steer) — mirrors measure.py `_get_savings_summary` relocations. This is
+ * hint_followed, verbosity_steer, checkpoint_restore, resume_lean) — mirrors
+ * measure.py `_get_savings_summary` relocations. This is
  * the directly-metered floor of the compression add-back pool (#3); the only
  * estimated step is the reprice to the baseline input mix, applied by the caller.
  *
@@ -721,6 +733,27 @@ function estimatedVerbosityUsd(openclawDir, window) {
         total += cat.costSavedUsd;
     }
     return Math.max(0, total);
+}
+/**
+ * Counterfactual event credits over the window, grouped by type:
+ * checkpoint_restore (working-set re-reads a restore skipped), resume_lean
+ * (cold-resume rewrite avoided) and hint_followed (searches a followed hint
+ * replaced). Triggers are observed; magnitudes are inferred -- mirrors
+ * measure.py's estimated_volume_pools. The caller reprices to the baseline
+ * INPUT rate and adds them as a separate estimated pool, never inside the
+ * measured total.
+ */
+function estimatedCounterfactualUsd(openclawDir, window) {
+    const summary = readSavingsEventsByCategory(openclawDir, window);
+    const byType = {};
+    let total = 0;
+    for (const cat of summary.categories) {
+        if (!COUNTERFACTUAL_ESTIMATED_TYPES.includes(cat.eventType))
+            continue;
+        byType[cat.eventType] = cat.costSavedUsd;
+        total += cat.costSavedUsd;
+    }
+    return { total: Math.max(0, total), byType };
 }
 /**
  * Largest-remainder cent allocation. Rounds `total` to cents once, then
@@ -775,6 +808,7 @@ const NOT_READY = (status) => ({
     compressionMeasuredUsd: 0,
     verbosityMeasuredUsd: 0,
     verbosityTransformationUsd: 0,
+    counterfactualEstimatedUsd: 0,
     transformationPct: 0,
     beforeOpus: 0,
     afterOpus: 0,
@@ -1005,13 +1039,28 @@ function computeRealizedSavings(openclawDir, days = 30, now = Date.now()) {
     const outBefore = pricePool(0, 0, 1_000_000, comparison.before.out, proxy, openclawDir);
     const vsReprice = outAfter > 0 ? outBefore / outAfter : 1;
     const verbosityAddback = Math.max(0, vsMeasured * vsReprice);
+    // COUNTERFACTUAL EVENT ADD-BACK (#5): checkpoint_restore, resume_lean and
+    // hint_followed credits. Triggers observed, magnitudes inferred -- estimated
+    // tier, repriced to the baseline INPUT mix like the compression pool.
+    // Mirrors measure.py's estimated_volume_pools; disclosed per type below.
+    const estCf = estimatedCounterfactualUsd(openclawDir, { days, now });
+    const cfEstimatedAddback = Math.max(0, estCf.total * compReprice);
+    const EST_LABELS = {
+        checkpoint_restore: "Checkpoint restores (estimated)",
+        resume_lean: "Lean resumes (estimated)",
+        hint_followed: "Followed hints (estimated)",
+    };
+    const estLevers = COUNTERFACTUAL_ESTIMATED_TYPES
+        .filter((k) => (estCf.byType[k] ?? 0) !== 0)
+        .map((k) => ({ key: k, label: EST_LABELS[k], monthlyUsd: m(Math.max(0, estCf.byType[k]) * compReprice) }));
     const compressionMonthly = m(compressionAddback);
     const verbosityMonthly = m(verbosityAddback);
+    const cfEstimatedMonthly = m(cfEstimatedAddback);
     // Combined arms (headline spans the main pool + the compression add-back +
     // the verbosity add-back; both add-back pools' actual is 0, so their
     // counterfactual == their contribution).
     const actualMonthly = actualMonthlyMain;
-    const counterfactualMonthly = cfMonthlyMain + compressionMonthly + verbosityMonthly;
+    const counterfactualMonthly = cfMonthlyMain + compressionMonthly + verbosityMonthly + cfEstimatedMonthly;
     // HEADLINE = the honest net of the arms (== counterfactual - actual). Equivalent to
     // mainTransformation + subagent(0) + compression + verbosity, so the per-lever waterfall
     // below decomposes exactly this quantity. Can be <= 0 (efficiency flat / baseline cheaper);
@@ -1032,12 +1081,13 @@ function computeRealizedSavings(openclawDir, days = 30, now = Date.now()) {
     const sRoute = (oldCps - vRouteS) * sessionsPerMonth; // before->after mix (incl. cache-write)
     // Display cents are allocated once off the signed net so the rendered levers
     // always add to the rendered headline; monthlyUsd keeps the exact raw values.
-    const leverDisplay = allocateCents(net, [sRoute, compressionMonthly, verbosityMonthly]);
+    const leverDisplay = allocateCents(net, [sRoute, compressionMonthly, verbosityMonthly, ...estLevers.map((l) => l.monthlyUsd)]);
     const breakdown = [
         { key: "routing", label: "Model mix change (excluding premium choices)", monthlyUsd: sRoute, monthlyUsdDisplay: leverDisplay[0] },
         // Subagent lever omitted (OpenClaw has no sidechains; always 0).
         { key: "context_compression", label: "Lighter context (metered removals)", monthlyUsd: compressionMonthly, monthlyUsdDisplay: leverDisplay[1] },
         { key: "verbosity_steer", label: "Lean output nudges (less output, estimated)", monthlyUsd: verbosityMonthly, monthlyUsdDisplay: leverDisplay[2] },
+        ...estLevers.map((l, i) => ({ key: l.key, label: l.label, monthlyUsd: l.monthlyUsd, monthlyUsdDisplay: leverDisplay[3 + i] })),
     ];
     // Cumulative: apply the per-session transformation rate across every
     // post-baseline session (transformation per current session * total sessions).
@@ -1077,6 +1127,7 @@ function computeRealizedSavings(openclawDir, days = 30, now = Date.now()) {
         compressionMeasuredUsd: round2(compMeasured),
         verbosityTransformationUsd: round2(verbosityMonthly),
         verbosityMeasuredUsd: round2(vsMeasured),
+        counterfactualEstimatedUsd: round2(cfEstimatedMonthly),
         transformationPct: round4(transformationPct),
         beforeOpus: round4(beforeShares.opus ?? 0),
         afterOpus: round4(afterShares.opus ?? 0),

@@ -47,7 +47,7 @@ test('savings events store and honor billed class evidence', () => {
   store.recordSession({sessionId:'s', project:null, model:'claude-opus-5-5', tokensInput:1, tokensOutput:0,
     tokensCacheRead:0, tokensCacheWrite:1e6, costUsd:0, resourceHealth:null, sessionEfficiency:null,
     toolCalls:0, compactions:0, mode:null, durationSeconds:1});
-  store.logSavingsEvent('resume_lean', 1e6, 's', 'lean resume', null, 'cacheWrite');
+  store.logSavingsEvent('tool_archive', 1e6, 's', 'archived output', null, 'cacheWrite');
   const db = new Database(path.join(dir, 'trends.db'));
   assert.equal(db.query('SELECT token_class FROM savings_events').get().token_class, 'cacheWrite');
   const result = store.getCompressionSavings();
@@ -64,8 +64,8 @@ test('class-less priced savings disclose the input-rate floor', () => {
   store.recordSession({sessionId:'s', project:null, model:'claude-opus-5-5', tokensInput:1, tokensOutput:0,
     tokensCacheRead:0, tokensCacheWrite:0, costUsd:0, resourceHealth:null, sessionEfficiency:null,
     toolCalls:0, compactions:0, mode:null, durationSeconds:1});
-  store.logSavingsEvent('checkpoint_restore', 1e6, 's', 'no class', 'claude-opus-5-5');
-  store.logSavingsEvent('resume_lean', 1e6, 's', 'classed', 'claude-opus-5-5', 'cacheWrite');
+  store.logSavingsEvent('tool_archive', 1e6, 's', 'no class', 'claude-opus-5-5');
+  store.logSavingsEvent('delta_read', 1e6, 's', 'classed', 'claude-opus-5-5', 'cacheWrite');
   const result = store.getCompressionSavings();
   assert.ok(Math.abs(result.totalCostSavedUsd - 9) < 1e-9);
   assert.ok(Math.abs(result.inputRateFloorUsd - 4) < 1e-9);
@@ -102,7 +102,7 @@ test('dashboard discloses the input-rate floor beside the measured dollars', () 
   store.recordSession({sessionId:'s', project:null, model:'claude-opus-5-5', tokensInput:1, tokensOutput:0,
     tokensCacheRead:0, tokensCacheWrite:0, costUsd:0, resourceHealth:null, sessionEfficiency:null,
     toolCalls:0, compactions:0, mode:null, durationSeconds:1});
-  store.logSavingsEvent('checkpoint_restore', 1e6, 's', 'no class', 'claude-opus-5-5');
+  store.logSavingsEvent('tool_archive', 1e6, 's', 'no class', 'claude-opus-5-5');
   store.close();
   const {generateDashboard} = require('./dashboard/generator.ts');
   const html = generateDashboard({dataDir:dir});

@@ -331,7 +331,7 @@ def test_search_indexes_beyond_former_50k_cap(tmp_path):
 
 
 def test_large_archive_index_is_bounded_and_marked(tmp_path):
-    """Six 5MB archived bodies must not fill the 50MB session store: the FTS
+    """Thirty 5MB archived bodies must not fill the 50MB session store: the FTS
     index keeps a bounded head+tail copy and later cache writes still land."""
     from session_store import SessionStore
     store = SessionStore(SESSION, snapshot_dir=tmp_path / "snap")
@@ -339,7 +339,7 @@ def test_large_archive_index_is_bounded_and_marked(tmp_path):
         body = ("headmarkerzed " + "x" * 2_500_000 +
                 " midmarkerqqq " + "y" * 2_499_000 +
                 " tailmarkeryd")
-        for i in range(6):
+        for i in range(30):
             store.insert_tool_output(
                 tool_use_id=f"tu-big-{i}",
                 tool_name="mcp__big__fetch",
@@ -354,12 +354,14 @@ def test_large_archive_index_is_bounded_and_marked(tmp_path):
             )
         store.upsert_cached_content("late.txt", "late content", "late-hash")
         assert store.get_cached_content("late.txt") is not None
+        assert store._connect().execute("SELECT COUNT(*) FROM tool_outputs").fetchone()[0] == 30
         row = store._connect().execute(
             "SELECT length(output_text) AS n, index_truncated "
             "FROM tool_outputs WHERE tool_use_id = 'tu-big-0'"
         ).fetchone()
         assert int(row["index_truncated"]) == 1
         assert int(row["n"]) < 2_000_000
+        assert int(row["n"]) <= 256 * 1024
         head_hits = store.search_tool_outputs("headmarkerzed")
         tail_hits = store.search_tool_outputs("tailmarkeryd")
         assert head_hits and tail_hits

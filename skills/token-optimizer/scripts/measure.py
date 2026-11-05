@@ -15806,8 +15806,8 @@ def _get_compression_coverage(days=30):
             followup_cnt += cnt or 0
 
     for feature, tier, cnt, orig, comp, avg_ratio, vcnt in rows:
-        if feature == _FEATURE_FIRST_READ_EDIT_FOLLOWUP:
-            continue  # internal proxy signal — surfaced via first_read_proxy only
+        if feature in _NON_SAVINGS_COMPRESSION_FEATURES:
+            continue
         cnt = cnt or 0
         orig = orig or 0
         comp = comp or 0
@@ -40207,7 +40207,7 @@ def _parse_jsonl_for_quality(filepath):
                     text = _extract_user_text(record)
                     is_substantive = len(text.split()) > 10
                     if not _is_sidechain:
-                        safe_pause = bool(text.strip())
+                        safe_pause = bool(text.strip()) and not record.get("isMeta")
                     messages.append((idx, "user", len(text), is_substantive))
 
                 # Assistant messages
@@ -40216,7 +40216,7 @@ def _parse_jsonl_for_quality(filepath):
                     if not isinstance(msg, dict):
                         msg = {}
                     if not _is_sidechain:
-                        safe_pause = msg.get("stop_reason") == "end_turn"
+                        safe_pause = msg.get("stop_reason") in ("end_turn", "stop_sequence")
                     content = msg.get("content", [])
                     text_length = 0
                     is_substantive = False
@@ -44803,7 +44803,7 @@ def _extract_session_state(filepath, tail_lines=500):
         "todos": todos,
         "active_plan": active_plan,
         "current_step": {
-            "last_user": last_user_msg,
+            "last_user": last_user_msg[:4000],
             "last_assistant": last_assistant_msg[:500],
         },
         "task_state": task_state,
@@ -50768,9 +50768,7 @@ def _maybe_fresh_session_nudge(result, cache_path, quality_data, quiet=False):
     """Suggest starting a fresh session when this one is BOTH long and degraded.
 
     Fires once per session when quality < _FRESH_NUDGE_QUALITY_THRESHOLD AND fill
-    >= _FRESH_NUDGE_MIN_FILL. Confidently reassures the user that Token Optimizer
-    has checkpointed their task/decisions/files/tool-results so a new session picks
-    up exactly where they stopped -- and shows the concrete tokens they'd reclaim
+    >= _FRESH_NUDGE_MIN_FILL. Shows the estimated tokens they'd reclaim
     by starting fresh right now. Returns the systemMessage string or None.
     Takes precedence over the /compact nudge (the caller skips that when this fires).
     """
@@ -50834,7 +50832,7 @@ def _maybe_fresh_session_nudge(result, cache_path, quality_data, quiet=False):
     return (
         f"[Token Optimizer] {int(shown)}% full, quality {score}. "
         f"Fresh session reclaims {saved_str}{cost_str}. "
-        f"Checkpoint saved, say \"continue this\"."
+        f"Say \"continue this\"."
     )
 
 

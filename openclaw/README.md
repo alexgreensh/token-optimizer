@@ -6,7 +6,7 @@ Version: `2.4.21`
 
 *Find the ghost tokens. Survive compaction. Track the quality decay.*
 
-Opus 4.6 drops from 93% to 76% accuracy across a 1M context window. Compaction loses 60-70% of your conversation. Ghost tokens burn through your plan limits on every single message. Token Optimizer tracks the degradation, cuts the waste, checkpoints your decisions before compaction fires, and tells you what to fix.
+Opus 4.6 drops from 93% to 76% accuracy across a 1M context window. Compaction drops detail. Ghost tokens burn through your plan limits on every single message. Token Optimizer tracks the degradation, cuts the waste, checkpoints your decisions before compaction fires, and tracks recovery after.
 
 Native TypeScript plugin for OpenClaw agent systems. Zero Python dependency. Works with any model (Claude, GPT-5, Gemini, DeepSeek, Qwen, Mistral, Grok, local via Ollama). Reads your OpenClaw pricing config for accurate cost tracking, falls back to built-in rates for 30+ models.
 

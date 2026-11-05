@@ -42,7 +42,7 @@ MAX_DB_SIZE_BYTES = 50 * 1024 * 1024  # 50MB cap
 # tool_outputs.output_text is a search index copy, not the recovery source (the
 # archive sidecar keeps the full redacted body). Bound it so a few multi-MB
 # archives cannot fill the 50MB session DB and pause every later write.
-MAX_TOOL_OUTPUT_INDEX_BYTES = 1024 * 1024
+MAX_TOOL_OUTPUT_INDEX_BYTES = 256 * 1024
 _INDEX_TRUNCATED_MARKER = "\n[... index truncated ...]\n"
 CLEANUP_AGE_HOURS = 48
 

@@ -67,7 +67,7 @@ _VERIFY_RE = re.compile(
     r"(?:npm|pnpm|yarn|bun)\s+(?:test|build|lint|check|run\s+(?:test|build|lint|check))|"
     r"(?:npx|pnpm\s+exec|bunx)\s+(?:jest|vitest|eslint|tsc)|"
     r"cargo\s+(?:test|check|build|clippy)|go\s+(?:test|build|vet)|"
-    r"make(?:\s+(?:test|check|build|lint|all))?|mvn\s+(?:test|verify|package)|"
+    r"make\s+(?:test|check|build|lint|all)|mvn\s+(?:test|verify|package)|"
     r"gradle\s+(?:test|check|build)|tsc)(?=\s|$)",
     re.IGNORECASE,
 )

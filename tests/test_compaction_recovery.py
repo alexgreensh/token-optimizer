@@ -721,7 +721,9 @@ def test_advisory_accepts_restorable_checkpoint_sidecar(m):
 @pytest.mark.parametrize("tail,expected", [
     (_row("user", [{"type": "tool_result", "tool_use_id": "x", "content": "ok"}]), False),
     (_row("user", "Continue with the next step"), True),
+    (dict(_row("user", "Injected skill body"), isMeta=True), False),
     ({"type": "assistant", "message": {"content": [{"type": "text", "text": "Done"}], "stop_reason": "end_turn"}}, True),
+    ({"type": "assistant", "message": {"content": [{"type": "text", "text": "Done"}], "stop_reason": "stop_sequence"}}, True),
     (_row("assistant", [{"type": "tool_use", "id": "x", "name": "Bash", "input": {"command": "test"}}]), False),
     ({"type": "tool_result", "tool_use_id": "x", "content": "ok"}, False),
 ])

@@ -74,7 +74,10 @@ process.stdout.write(JSON.stringify(html));
 
 
 def test_published_compaction_examples_do_not_claim_fixed_loss():
+    terms = ["~65%", "88%", "60-70%", "30% remains", "context: lost"]
+    text = (ROOT / "openclaw/README.md").read_text(encoding="utf-8")
+    assert not any(term in text for term in terms), "openclaw/README.md"
     for base in [ROOT / "skills/token-optimizer/assets", ROOT / "docs-site/public/images"]:
         for name in ["quality-example.svg", "status-bar.svg", "hero-terminal.svg", "user-profiles.svg"]:
-            text = (base / name).read_text()
-            assert not any(term in text for term in ["~65%", "88%", "60-70%", "30% remains", "context: lost"]), name
+            text = (base / name).read_text(encoding="utf-8")
+            assert not any(term in text for term in terms), name

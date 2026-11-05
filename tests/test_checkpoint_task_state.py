@@ -173,6 +173,21 @@ def test_late_constraint_cue_survives_a_long_sentence():
     assert any("Never touch the production database." in c["text"] for c in ts["user_constraints"])
 
 
+@pytest.mark.parametrize("host", ["claude", "codex"])
+def test_active_task_is_bounded_without_losing_late_constraints(m, host):
+    mod, _cp, tmp = m
+    prompt = "Investigate the log. " + "log entry. " * 30_000 + "Never touch the production database."
+    if host == "claude":
+        state = mod._extract_session_state(str(_transcript(tmp, [_user(prompt)])))
+    else:
+        import codex_session
+        records = [{"type": "event_msg", "payload": {"type": "user_message", "message": prompt}}]
+        state = codex_session.extract_session_state(_transcript(tmp, records))
+    assert state["current_step"]["last_user"] == prompt[:4000]
+    assert any("Never touch the production database." in c["text"]
+               for c in state["task_state"]["user_constraints"])
+
+
 def test_edit_markers_never_persist_raw_path_credentials(m):
     import session_store
     mod, _cp, tmp = m
@@ -239,6 +254,10 @@ def test_file_not_named_in_todos_has_unknown_dependency(m, monkeypatch, reads):
     ("cargo test", "test result: ok. 12 passed; 0 failed", 0, True),
     ("go test ./...", "ok  example/package 0.2s", 0, True),
     ("make check", "All checks passed", 0, True),
+    ("make deploy", "All checks passed", 0, False),
+    ("make clean", "All checks passed", 0, False),
+    ("make", "All checks passed", 0, False),
+    ("make test", "12 passed", 0, True),
     ("python3 -m pytest -q", "12 passed", 0, True),
     ("npx eslint src", "All checks passed", 0, True),
 ])

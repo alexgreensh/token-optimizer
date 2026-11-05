@@ -20,6 +20,8 @@ from typing import Any
 
 from runtime_env import codex_home
 
+import checkpoint_state
+
 CHARS_PER_TOKEN = 4
 MAX_PARSE_FILE_BYTES = 96 * 1024 * 1024
 LARGE_FILE_TAIL_BYTES = 8 * 1024 * 1024
@@ -964,6 +966,12 @@ def extract_session_state(filepath: str | Path, tail_lines: int = 500, max_files
     last_assistant_msg = ""
     seen_files: set[str] = set()
     recent_errors: list[str] = []
+    # Versioned task-state observations (checkpoint_state.build_task_state) —
+    # same normalized shape the Claude extractor feeds it.
+    user_texts: list[tuple[str, Any]] = []
+    assistant_texts: list[tuple[str, Any]] = []
+    tool_calls: list[dict[str, Any]] = []
+    tool_results: list[dict[str, Any]] = []
 
     records: deque[dict[str, Any]] = deque(maxlen=tail_lines)
     for record in _iter_json_records(filepath):
@@ -988,10 +996,16 @@ def extract_session_state(filepath: str | Path, tail_lines: int = 500, max_files
             if role == "user":
                 if _task_user_text(text):
                     last_user_msg = text
+                    user_texts.append((text, payload.get("id") or payload.get("message_id")))
+                    if len(user_texts) > 80:
+                        user_texts.pop(0)
                 else:
                     continue  # injected context: not a task, not a question
             elif role == "assistant":
                 last_assistant_msg = text
+                assistant_texts.append((text, payload.get("id") or payload.get("message_id")))
+                if len(assistant_texts) > 60:
+                    assistant_texts.pop(0)
                 _append_decisions(text, decisions)
                 if recent_errors and _looks_like_fix(text):
                     error_context.append((recent_errors[-1][:200], text[:200]))
@@ -1002,6 +1016,21 @@ def extract_session_state(filepath: str | Path, tail_lines: int = 500, max_files
         elif payload_type in {"function_call", "custom_tool_call"}:
             name = str(payload.get("name") or "")
             args = _parse_arguments(payload)
+            call_id = payload.get("call_id") or payload.get("id")
+            _target = ""
+            if name == "exec_command":
+                _cmd = args.get("cmd") or args.get("command") or ""
+                _target = (" ".join(str(c) for c in _cmd)
+                           if isinstance(_cmd, list) else str(_cmd))
+            elif name == "apply_patch":
+                _paths = PATCH_FILE_RE.findall(str(args.get("patch") or ""))
+                _target = ", ".join(p.strip() for p in _paths[:3])
+            if call_id:
+                tool_calls.append({
+                    "id": str(call_id), "name": name,
+                    "target": _ingest_redact(_target)[:200]})
+                if len(tool_calls) > 200:
+                    tool_calls.pop(0)
             if name == "exec_command":
                 cmd = str(args.get("cmd") or args.get("command") or "")
                 if READ_CMD_RE.search(cmd):
@@ -1035,14 +1064,68 @@ def extract_session_state(filepath: str | Path, tail_lines: int = 500, max_files
 
         elif payload_type in {"function_call_output", "custom_tool_call_output"}:
             text = _ingest_redact(str(payload.get("output") or ""))
+            _out_id = payload.get("call_id") or payload.get("id")
+            if _out_id:
+                tool_results.append({
+                    "tool_use_id": str(_out_id), "is_error": False,
+                    "text": text[:2000]})
+                if len(tool_results) > 200:
+                    tool_results.pop(0)
             if _looks_like_error_text(text):
                 recent_errors.append(text[:300].strip())
         elif payload_type in {"exec_command_end", "patch_apply_end"}:
             text = _ingest_redact(_event_output_text(payload))
             exit_code = payload.get("exit_code")
             status = str(payload.get("status") or "").lower()
+            _end_id = payload.get("call_id") or payload.get("id")
+            if _end_id:
+                tool_results.append({
+                    "tool_use_id": str(_end_id),
+                    "is_error": bool(exit_code not in (None, 0) or "error" in status),
+                    "exit_code": exit_code,
+                    "text": text[:2000]})
+                if len(tool_results) > 200:
+                    tool_results.pop(0)
             if exit_code not in (None, 0) or "error" in status or _looks_like_error_text(text):
                 recent_errors.append(text[:300].strip())
+
+    # Objective head-scan: the FIRST real user message. The tail deque loses
+    # it on long sessions; _iter_json_records is lazy so this early-exits.
+    objective = None
+    try:
+        for i, record in enumerate(_iter_json_records(filepath)):
+            if i >= 400:
+                break
+            payload = _payload(record)
+            ptype = payload.get("type")
+            if ptype not in {"user_message", "message"}:
+                continue
+            role = payload.get("role")
+            if ptype == "user_message":
+                role = "user"
+            if role != "user":
+                continue
+            text = _extract_text(payload).strip()
+            if not _task_user_text(text):
+                continue
+            objective = {
+                "text": _ingest_redact(text),
+                "source": {"kind": "user_message",
+                           "id": str(payload.get("id") or payload.get("message_id") or "") or None},
+            }
+            break
+    except Exception:
+        objective = None
+
+    task_state = checkpoint_state.build_task_state(
+        user_texts=user_texts,
+        assistant_texts=assistant_texts,
+        tool_calls=tool_calls,
+        tool_results=tool_results,
+        todos=todos,
+        changed_files=[(p, a) for p, a, _r in active_files],
+        objective=objective,
+    )
 
     return {
         "active_files": active_files[-max_files:],
@@ -1057,6 +1140,7 @@ def extract_session_state(filepath: str | Path, tail_lines: int = 500, max_files
             "last_user": last_user_msg[:500],
             "last_assistant": last_assistant_msg[:500],
         },
+        "task_state": task_state,
     }
 
 

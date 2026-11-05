@@ -3,9 +3,10 @@
 
 SessionStart(source=compact) runs quality-cache before compact-restore. With the
 post-compact transcript that refresh can capture a fresh `progressive-20`
-checkpoint whose "Active Task" is the compaction summary. Progressive outranks
-the PreCompact `auto` capture, so the restore injected the summary back as the
-task and dropped the real one the PreCompact hook had just saved.
+checkpoint whose "Active Task" is the compaction summary. Restore therefore
+prefers the LATEST VALID save (gap-checkpoint) and keeps the PreCompact
+eligibility anchor so post-compact captures cannot restore the summary back
+as the task.
 
 Every step is the real hooks.json command (PreCompact compact-capture,
 quality-cache, SessionStart) in a sandboxed HOME; the expected strings are
@@ -104,9 +105,11 @@ def test_compact_restore_brings_back_the_task_from_before_the_compaction(tmp_pat
 
 
 @posix_only
-def test_a_progressive_checkpoint_saved_before_the_compaction_still_wins(tmp_path):
-    """The fix drops only what was saved after the compaction began: an earlier
-    progressive capture of the same session keeps its documented precedence."""
+def test_the_latest_valid_checkpoint_wins_over_an_older_richer_one(tmp_path):
+    """gap-checkpoint: restore prefers the NEWEST save that can actually
+    restore state. The PreCompact `auto` capture postdates the mid-session
+    progressive-20 capture, so the newer (correct) state wins even though the
+    older one was captured at a "richer" fill band."""
     home, project, tpath, log = _session(tmp_path)
     # A mid-session refresh (the quality-cache command hooks.json runs) at 32.6% fill
     # captures band 20 from the full transcript.
@@ -120,7 +123,7 @@ def test_a_progressive_checkpoint_saved_before_the_compaction_still_wins(tmp_pat
     _compact(tpath, project)
     ctx = _restore(home, project, tpath, log)
 
-    assert "Post-compact recovery (progressive-20 checkpoint)" in ctx, ctx[:800]
+    assert "Post-compact recovery (auto checkpoint)" in ctx, ctx[:800]
     assert _active_task(ctx) == TASK, ctx[:800]
 
 

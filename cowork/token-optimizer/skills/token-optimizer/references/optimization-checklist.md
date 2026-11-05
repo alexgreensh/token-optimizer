@@ -498,7 +498,7 @@ See `examples/hooks-starter.json` for a ready-to-use template.
 - Stale read ratio (files read then later edited, making the read content outdated)
 - Tool result bloat (large results never referenced again)
 - Duplicate content (repeated system reminders)
-- Compaction depth (each compaction = information loss)
+- Compaction count (descriptive only; measured post-boundary recovery signals are reported separately)
 - Decision density (ratio of substantive to overhead exchanges)
 - Agent efficiency (dispatch cost vs useful result size)
 

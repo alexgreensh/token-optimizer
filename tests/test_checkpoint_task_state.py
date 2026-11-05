@@ -450,6 +450,16 @@ def test_restore_does_not_prefer_auto_over_newer_valid_state(m):
     assert "stale precompact task" not in out
 
 
+def test_restore_emits_label_recognized_by_compaction_recovery(m):
+    mod, cp_dir, _tmp = m
+    _write_cp(cp_dir, SID, "20261004-120000", "stop",
+              "## Active Task\nFinish the integration fixture\n")
+    out = _restore(mod, SID)
+    label = "[Token Optimizer] Post-compact recovery ("
+    assert label in out
+    assert mod._REC_RESTORE_NOTICE_RE.search(out)
+
+
 def test_restore_never_drops_next_action_over_cap(m):
     mod, cp_dir, _tmp = m
     filler = "\n".join(f"## Section {i}\n" + "z" * 300 for i in range(60))

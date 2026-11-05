@@ -5506,7 +5506,7 @@ def quick_scan(as_json=False):
         compact_at_note = f" ({_cw_res['source']})" if _cw_res.get("user_override") else ""
     except Exception:
         compact_at, compact_at_note = ctx_window, ""
-    print(f"    Auto-compact fires at: ~{compact_at:,}{compact_at_note} (60-70% of context LOST per compaction)")
+    print(f"    Auto-compact fires at: ~{compact_at:,}{compact_at_note} (context is rewritten to a summary; Token Optimizer restores what the summary drops)")
 
     if top_offenders:
         print("\n  TOP OFFENDERS")
@@ -39394,10 +39394,18 @@ CHECKPOINT_EVENT_LOG = _STATE_BASE / "token-optimizer" / "checkpoint-events.json
 # v6 dual-score architecture: ResourceHealth (monotonic warning) + SessionEfficiency (behavioral).
 # ResourceHealth can only worsen within a session (no rolling-window signals).
 # SessionEfficiency uses rolling windows and can rise or fall freely.
+# Score schema version. v2 (COMPACTION-QUALITY.md): compaction count carries
+# zero quality weight -- measured post-boundary recovery signals live in a
+# separate evidence panel instead of the count-only penalty. Consumers must
+# never compare or dampen a v1 score against a v2 score.
+_QUALITY_SCORE_VERSION = 2
+
 _RESOURCE_HEALTH_WEIGHTS = {
-    "context_fill_degradation": 0.50,
-    "compaction_depth": 0.30,
-    "absolute_waste_tokens": 0.20,
+    # Compaction count is descriptive metadata, not a quality signal: the
+    # count-only penalty is replaced by measured recovery evidence
+    # (recovery_status/recovery_evidence). Weights renormalized to 1.0.
+    "context_fill_degradation": 5 / 7,
+    "absolute_waste_tokens": 2 / 7,
 }
 
 _SESSION_EFFICIENCY_WEIGHTS = {
@@ -39794,6 +39802,216 @@ def _quality_cache_throttle_only_state(throttle, force):
     )
 
 
+# ========== Compaction recovery evidence (matched-window event study) ==========
+# Mirrors the retrospective audit in research/arxiv-2611.05306: for every
+# compact_boundary, compare the last <=20 completed tool calls before it with
+# the first <=20 after it, matched on the smaller side and requiring >=10 each.
+# This state is deliberately NEVER reset at a boundary -- unlike the quality
+# accumulators above, which describe only the current post-compaction window.
+# Only call metadata (names, arg hashes, flags) is retained; no result text.
+
+_RECOVERY_WINDOW_CALLS = 20
+_RECOVERY_MIN_MATCHED_CALLS = 10
+_RECOVERY_PENDING_MAX = 100_000
+_RECOVERY_EVENTS_KEPT = 40
+
+_REC_LOOP_NOTICE_RE = re.compile(r"\[Token Optimizer\] (?:Retry loop:|Loop:)")
+_REC_RESTORE_NOTICE_RE = re.compile(r"\[Token Optimizer\] Post-compact recovery \(")
+_REC_CAPTURE_NOTICE_RE = re.compile(r"Captured .{0,70}checkpoint", re.IGNORECASE)
+_REC_EXIT_CODE_RE = re.compile(
+    r"(?:Exit code|exited with (?:code|status)|Process exited with code)\s*:?\s*([1-9]\d*)",
+    re.IGNORECASE)
+_REC_EXPAND_RE = re.compile(
+    r"(?:measure\.py|token.optimizer)[\s\S]{0,150}\bexpand\b|\bexpand\s+(?:toolu_|exec-|[a-f0-9]{12,})")
+_HOOK_TEXT_KEYS = ("text", "content", "stdout", "systemMessage",
+                   "additionalContext", "hookSpecificOutput",
+                   "attachment", "message", "payload")
+
+
+def _hook_payload_text(node, _depth=0):
+    """Recursively pull display text out of a hook attachment payload."""
+    if _depth > 6:
+        return ""
+    if isinstance(node, str):
+        return node
+    if isinstance(node, list):
+        return "\n".join(_hook_payload_text(v, _depth + 1) for v in node)
+    if isinstance(node, dict):
+        return "\n".join(
+            _hook_payload_text(node[k], _depth + 1) for k in _HOOK_TEXT_KEYS if k in node)
+    return ""
+
+
+def _recovery_window_metrics(calls, notices, seg, lo, hi):
+    """Aggregate one matched window of completed calls plus in-range loop
+    notices. Same metric names as the retrospective audit so live evidence
+    and the weekly event study compare like-for-like."""
+    n = len(calls)
+    loops = sum(
+        1 for nt in notices
+        if nt["kind"] == "loop" and nt["seg"] == seg and lo <= nt["line"] <= hi
+    )
+    return {
+        "calls": n,
+        "errors": sum(c["error"] for c in calls),
+        "test_errors_with_edits": sum(bool(c["error"] and c.get("test_error_edited")) for c in calls),
+        "shell_nonzero": sum(c["shell_nonzero"] for c in calls),
+        "repeats": sum(c["repeat"] for c in calls),
+        "repeat_after_error": sum(c["repeat_after_error"] for c in calls),
+        "reads": sum(c["read"] for c in calls),
+        "rereads": sum(c["reread"] for c in calls),
+        "rereads_unchanged": sum(c["reread_unchanged"] for c in calls),
+        "expansions": sum(c["expand"] for c in calls),
+        "loop_notices": loops,
+        "first_line": calls[0]["line"] if calls else lo,
+        "last_line": calls[-1]["line"] if calls else hi,
+    }
+
+
+def _finalize_compaction_boundary(boundary, notices):
+    """Close out one boundary's matched pre/post windows at the next
+    boundary (or EOF). m = min(20, pre calls, post calls); eligible at >=10."""
+    m = min(_RECOVERY_WINDOW_CALLS, boundary["pre_seg_calls"], boundary["post_seg_calls"])
+    boundary["matched_calls"] = m
+    boundary["eligible"] = m >= _RECOVERY_MIN_MATCHED_CALLS
+    boundary["pre"] = None
+    boundary["post"] = None
+    boundary["end_epoch"] = None
+    if m:
+        pc = boundary["pre_tail"][-m:]
+        qc = boundary["post_calls"][:m]
+        boundary["pre"] = _recovery_window_metrics(
+            pc, notices, boundary["pre_seg"], pc[0]["line"], boundary["line"] - 1)
+        post_hi = max(c["result_line"] or c["line"] for c in qc)
+        boundary["post"] = _recovery_window_metrics(
+            qc, notices, boundary["ordinal"], boundary["line"] + 1, post_hi)
+        end_epochs = [
+            _keepwarm_iso_to_epoch(c.get("result_ts")) for c in qc
+        ]
+        end_epochs = [e for e in end_epochs if e is not None]
+        boundary["end_epoch"] = max(end_epochs) if end_epochs else None
+    boundary.pop("pre_tail", None)
+    boundary.pop("post_calls", None)
+    boundary["ts_epoch"] = _keepwarm_iso_to_epoch(boundary.get("ts"))
+
+
+def _recovery_boundary_eval(boundary):
+    """Provisionally score one eligible boundary. Shadow-only thresholds
+    await calibration on held-out labeled
+    failures (COMPACTION-QUALITY.md section 6): they flag only repeated
+    failed actions, repeated retrieval of unchanged artifacts, clear error
+    spikes, observed loops, and capture-without-delivery -- never a bare
+    count, a legitimate re-read, or an unobserved restore."""
+    if (not boundary.get("eligible")
+            or not isinstance(boundary.get("pre"), dict)
+            or not isinstance(boundary.get("post"), dict)):
+        return "unmeasurable", None, []
+    pre, post = boundary["pre"], boundary["post"]
+    flags = []
+    if post["repeat_after_error"] >= 2:
+        flags.append("repeated_failed_action")
+    if (post["rereads_unchanged"] >= 3
+            and post["rereads_unchanged"] > pre["rereads_unchanged"]):
+        flags.append("unchanged_artifact_rereads")
+    if post["calls"] and pre["calls"]:
+        pre_errors = pre["errors"] - pre.get("test_errors_with_edits", 0)
+        post_errors = post["errors"] - post.get("test_errors_with_edits", 0)
+        err_delta = post_errors / post["calls"] - pre_errors / pre["calls"]
+        if post_errors >= 3 and err_delta >= 0.10:
+            flags.append("error_rate_increase")
+    loops = post["loop_notices"] + int(boundary.get("db_loops") or 0)
+    if loops >= 1:
+        flags.append("loop_events")
+    restore_gap = boundary.get("restore_evidence") == "none" and bool(
+        boundary.get("capture_notice"))
+    if restore_gap:
+        flags.append("restore_not_delivered")
+    status = "needs_attention" if flags else "no_concerning_signal_observed"
+    score = 100
+    score -= min(36, post["repeat_after_error"] * 12)
+    score -= min(20, max(0, post["rereads_unchanged"] - pre["rereads_unchanged"]) * 4)
+    score -= min(24, max(0, post["errors"] - pre["errors"]) * 8)
+    score -= min(30, loops * 15)
+    if restore_gap:
+        score -= 15
+    return status, max(0, int(round(score))), flags
+
+
+def _rec_track_tool_use(rec, block, idx, ts, cwd):
+    """Record a tool_use for the recovery tracker (issue-time signals:
+    repeat / re-read / unchanged-re-read / archive expansion)."""
+    tid = block.get("id")
+    if not tid or len(rec["pending"]) >= _RECOVERY_PENDING_MAX:
+        return
+    name = block.get("name") or ""
+    inp = block.get("input")
+    inp = inp if isinstance(inp, dict) else {}
+    sig = hashlib.sha256(
+        (name + json.dumps(inp, sort_keys=True, ensure_ascii=False,
+                           separators=(",", ":"))).encode()
+    ).hexdigest()
+    prev = rec["latest_sig"].get(sig)
+    repeat = sig in rec["recent_sigs"]
+    fp = ""
+    if name in ("Read", "Edit", "Write", "MultiEdit"):
+        fp = inp.get("file_path", inp.get("path", "")) or ""
+    if fp:
+        fp = os.path.normpath(fp if os.path.isabs(fp) else os.path.join(cwd or "", fp))
+    isread = name == "Read" and bool(fp)
+    reread = isread and fp in rec["read_versions"]
+    unchanged = reread and rec["read_versions"][fp] == rec["versions"][fp]
+    if isread:
+        rec["read_versions"][fp] = rec["versions"][fp]
+    if name in ("Edit", "Write", "MultiEdit") and fp:
+        rec["versions"][fp] += 1
+        # Failed tests followed by an edit are ordinary red/green work.
+        for previous in rec["completed"]:
+            if previous.get("test_runner") and previous["error"]:
+                previous["test_error_edited"] = True
+    edit_version = sum(rec["versions"].values())
+    cmd = inp.get("command", "") if name in ("Bash", "bash", "exec_command") else ""
+    call = {
+        "id": tid, "line": idx, "seg": rec["seg"], "ts": ts, "name": name,
+        "sig": sig,
+        "edit_version": edit_version,
+        "test_runner": bool(re.search(
+            r"(?:\bpytest\b|\bunittest\b|\b(?:npm|pnpm|yarn|bun|cargo|go)\s+(?:run\s+)?test\b|\bnode\s+[^\n]*--test\b)", cmd)),
+        "read": int(isread), "reread": int(reread),
+        "reread_unchanged": int(unchanged),
+        "repeat": int(repeat),
+        "repeat_after_error": int(bool(repeat and prev and prev.get("error")
+                                       and prev.get("edit_version") == edit_version)),
+        "expand": int(bool(_REC_EXPAND_RE.search(cmd))),
+        "result_line": None, "result_ts": None,
+        "error": 0, "shell_nonzero": 0,
+    }
+    rec["pending"][tid] = call
+    rec["seg_issued"] += 1
+    rec["recent_sigs"].append(sig)
+    rec["latest_sig"][sig] = call
+
+
+def _rec_track_tool_result(rec, block, idx, ts):
+    """Match a tool_result to its pending call. Calls crossing a boundary
+    are excluded from BOTH windows (they belong to neither side)."""
+    tid = block.get("tool_use_id")
+    call = rec["pending"].pop(tid, None) if tid else None
+    if call is None or call["seg"] != rec["seg"]:
+        return
+    text = _extract_tool_result_text(block)
+    call["result_line"] = idx
+    call["result_ts"] = ts
+    call["error"] = int(bool(block.get("is_error")))
+    call["shell_nonzero"] = int(bool(_REC_EXIT_CODE_RE.search(text[:4000])))
+    rec["completed"].append(call)
+    rec["seg_completed"] += 1
+    open_b = rec["open"]
+    if open_b is not None and call["seg"] == open_b["ordinal"]:
+        open_b["post_seg_calls"] += 1
+        if len(open_b["post_calls"]) < 25:
+            open_b["post_calls"].append(call)
+
+
 def _parse_jsonl_for_quality(filepath):
     """Parse a JSONL session file and extract quality-relevant data.
 
@@ -39822,6 +40040,27 @@ def _parse_jsonl_for_quality(filepath):
     # estimate below misses cached context — the bulk of real token usage).
     context_tokens = None
     current_model = None
+    safe_pause = False
+
+    # Recovery tracker state (see helpers above). NEVER reset at boundaries.
+    _rec = {
+        "pending": {},
+        "completed": deque(maxlen=25),
+        "seg": 0,
+        "seg_completed": 0,
+        "seg_issued": 0,
+        "recent_sigs": deque(maxlen=50),
+        "latest_sig": {},
+        "read_versions": {},
+        "versions": Counter(),
+        "boundaries": [],
+        "open": None,
+        "notices": [],
+        "hookseen": set(),
+    }
+    _rec_first_ts = None
+    _rec_last_ts = None
+    _rec_cwd = ""
 
     idx = 0
     try:
@@ -39843,6 +40082,18 @@ def _parse_jsonl_for_quality(filepath):
                     continue
                 rec_type = record.get("type")
                 ts = record.get("timestamp", "")
+                if rec_type == "tool_result" and not record.get("isSidechain"):
+                    safe_pause = False
+                if ts:
+                    if _rec_first_ts is None or ts < _rec_first_ts:
+                        _rec_first_ts = ts
+                    if _rec_last_ts is None or ts > _rec_last_ts:
+                        _rec_last_ts = ts
+                _is_sidechain = bool(record.get("isSidechain"))
+                if not _is_sidechain and not _rec_cwd:
+                    _cwd_val = record.get("cwd")
+                    if isinstance(_cwd_val, str) and _cwd_val:
+                        _rec_cwd = _cwd_val
 
                 # Detect context-clearing boundaries:
                 # 1. compact_boundary (from /compact or autocompact)
@@ -39860,8 +40111,44 @@ def _parse_jsonl_for_quality(filepath):
                             is_plan_exit = True
                             break
                 if is_compact or is_plan_exit:
+                    if not _is_sidechain:
+                        safe_pause = False
                     if is_compact:
                         compactions += 1
+                        if not _is_sidechain:
+                            # Close the previous boundary's post window, then
+                            # open this one with a snapshot of the pre window.
+                            if _rec["open"] is not None:
+                                _finalize_compaction_boundary(_rec["open"], _rec["notices"])
+                                _rec["boundaries"].append(_rec["open"])
+                                if len(_rec["boundaries"]) > _RECOVERY_EVENTS_KEPT:
+                                    _rec["boundaries"] = _rec["boundaries"][-_RECOVERY_EVENTS_KEPT:]
+                            _md = record.get("compactMetadata")
+                            _md = _md if isinstance(_md, dict) else {}
+                            _pre_seg = _rec["seg"]
+                            _rec["open"] = {
+                                "boundary_id": str(record.get("uuid") or f"line-{idx}"),
+                                "ordinal": compactions,
+                                "line": idx,
+                                "ts": ts,
+                                "trigger": _md.get("trigger"),
+                                "pre_tokens": _md.get("preTokens"),
+                                "post_tokens": _md.get("postTokens"),
+                                "host_version": record.get("version"),
+                                "model": current_model,
+                                "pre_seg": _pre_seg,
+                                "pre_seg_calls": _rec["seg_completed"],
+                                "pre_tail": [c for c in _rec["completed"] if c["seg"] == _pre_seg],
+                                "post_seg_calls": 0,
+                                "post_calls": [],
+                                "restore_transcript": False,
+                                "restore_line": None,
+                                "capture_notice": False,
+                                "window_data": True,
+                            }
+                            _rec["seg"] += 1
+                            _rec["seg_completed"] = 0
+                            _rec["seg_issued"] = 0
                     reads = []
                     writes = []
                     tool_results = []
@@ -39880,6 +40167,34 @@ def _parse_jsonl_for_quality(filepath):
                     idx += 1
                     continue
 
+                # Hook-delivered recovery evidence: restore markers, loop
+                # notices, capture confirmations. The raw-line substring gate
+                # keeps this free on records that cannot carry the markers.
+                if (not _is_sidechain
+                        and rec_type in ("attachment", "system", "progress")
+                        and "[Token Optimizer]" in line):
+                    _hook_text = _hook_payload_text(record)
+                    if _hook_text:
+                        if _REC_LOOP_NOTICE_RE.search(_hook_text):
+                            _hkey = ("loop", _rec["seg"], idx)
+                            if _hkey not in _rec["hookseen"]:
+                                _rec["hookseen"].add(_hkey)
+                                _rec["notices"].append({"seg": _rec["seg"], "kind": "loop", "line": idx})
+                        if _REC_RESTORE_NOTICE_RE.search(_hook_text):
+                            _hkey = ("restore", _rec["seg"])
+                            if _hkey not in _rec["hookseen"]:
+                                _rec["hookseen"].add(_hkey)
+                                _rec["notices"].append({"seg": _rec["seg"], "kind": "restore", "line": idx})
+                            if (_rec["open"] is not None
+                                    and _rec["seg"] == _rec["open"]["ordinal"]
+                                    and _rec["seg_issued"] <= _RECOVERY_WINDOW_CALLS):
+                                _rec["open"]["restore_transcript"] = True
+                                _rec["open"]["restore_line"] = idx
+                        if (_rec["open"] is not None
+                                and _rec["seg"] == _rec["open"]["ordinal"]
+                                and _REC_CAPTURE_NOTICE_RE.search(_hook_text)):
+                            _rec["open"]["capture_notice"] = True
+
                 # System reminders (detect duplicates via content hash)
                 if rec_type == "system":
                     msg_content = str(record.get("message", ""))
@@ -39891,6 +40206,8 @@ def _parse_jsonl_for_quality(filepath):
                 if rec_type == "user":
                     text = _extract_user_text(record)
                     is_substantive = len(text.split()) > 10
+                    if not _is_sidechain:
+                        safe_pause = bool(text.strip())
                     messages.append((idx, "user", len(text), is_substantive))
 
                 # Assistant messages
@@ -39898,6 +40215,8 @@ def _parse_jsonl_for_quality(filepath):
                     msg = record.get("message", {})
                     if not isinstance(msg, dict):
                         msg = {}
+                    if not _is_sidechain:
+                        safe_pause = msg.get("stop_reason") == "end_turn"
                     content = msg.get("content", [])
                     text_length = 0
                     is_substantive = False
@@ -39937,6 +40256,8 @@ def _parse_jsonl_for_quality(filepath):
                                 tool_id = block.get("id", "")
                                 if tool_id:
                                     tool_name_by_id[tool_id] = tool_name
+                                if not _is_sidechain:
+                                    _rec_track_tool_use(_rec, block, idx, ts, _rec_cwd)
                                 inp = block.get("input", {})
 
                                 if tool_name == "Read":
@@ -39967,6 +40288,8 @@ def _parse_jsonl_for_quality(filepath):
                                     result_text = _extract_tool_result_text(block)
                                     tool_id = block.get("tool_use_id", "")
                                     tool_results.append((idx, tool_id, len(result_text), False))
+                                    if not _is_sidechain:
+                                        _rec_track_tool_result(_rec, block, idx, ts)
                                     tool_result_meta.append({
                                         "index": idx,
                                         "tool_id": tool_id,
@@ -39985,6 +40308,12 @@ def _parse_jsonl_for_quality(filepath):
     except (PermissionError, OSError):
         return None
 
+    # Close the last open boundary at EOF: its post window is whatever the
+    # session produced before ending (possibly still filling -> "observing").
+    if _rec["open"] is not None:
+        _finalize_compaction_boundary(_rec["open"], _rec["notices"])
+        _rec["boundaries"].append(_rec["open"])
+
     if not messages:
         return None
 
@@ -39997,11 +40326,15 @@ def _parse_jsonl_for_quality(filepath):
         "messages": messages,
         "compactions": compactions,
         "tool_calls": tool_calls,
+        "safe_pause": safe_pause,
         "agent_dispatches": agent_dispatches,
         "decisions": decisions,
         "total_entries": idx,
         "context_tokens": context_tokens,
         "model": current_model,
+        "compaction_events": _rec["boundaries"],
+        "first_ts": _keepwarm_iso_to_epoch(_rec_first_ts) if _rec_first_ts else None,
+        "last_ts": _keepwarm_iso_to_epoch(_rec_last_ts) if _rec_last_ts else None,
         # Context-window size for THIS session's actual model, not the
         # env/config global that detect_context_window() falls back to.
         # See _context_window_for_model_str() -- fixes fill%/quality scoring
@@ -40196,6 +40529,153 @@ def detect_duplicates(quality_data):
             seen_hashes[content_hash] = ridx
 
     return {"duplicates": duplicates, "estimated_waste_tokens": estimated_waste_tokens}
+
+
+def _session_recovery_db_events(session_id, since_epoch=None):
+    """Best-effort pull of TO lifecycle events for restore/loop evidence.
+
+    Returns [{"kind", "ts"(epoch), "delta"?}] or []. Read-only, bounded,
+    and silent on any failure -- missing telemetry is unknown, not healthy.
+    """
+    try:
+        uuid, _unjoinable = _extract_session_uuid(session_id)
+        if not uuid or not TRENDS_DB.exists():
+            return []
+        conn = sqlite3.connect(f"file:{TRENDS_DB}?mode=ro", uri=True)
+        try:
+            rows = conn.execute(
+                "SELECT timestamp, kind FROM ("
+                "  SELECT timestamp, event_type AS kind FROM savings_events"
+                "   WHERE session_uuid = ? AND event_type IN"
+                "     ('checkpoint_restore','loop_detection','tool_archive_reexpand')"
+                "  UNION ALL"
+                "  SELECT timestamp, feature AS kind FROM compression_events"
+                "   WHERE session_uuid = ? AND feature IN"
+                "     ('checkpoint_restore','loop_detection','tool_archive_reexpand')"
+                ") ORDER BY timestamp DESC LIMIT 2000",
+                (uuid, uuid),
+            ).fetchall()
+        finally:
+            conn.close()
+    except Exception:
+        return []
+    out = []
+    for ts_raw, kind in rows:
+        epoch = _keepwarm_iso_to_epoch(ts_raw)
+        if epoch is None:
+            # DB timestamps are local naive ISO; .timestamp() applies local tz.
+            try:
+                epoch = datetime.fromisoformat(str(ts_raw)).timestamp()
+            except (ValueError, TypeError):
+                continue
+        if since_epoch is not None and epoch < since_epoch - 900:
+            continue
+        out.append({"kind": kind, "ts": epoch})
+    return out
+
+
+def _assess_compaction_recovery(quality_data, session_id=None):
+    """Build the recovery panel for the quality result.
+
+    The public status stays observing while thresholds are calibrated. Raw
+    evidence retains provisional boundary statuses, including unmeasurable.
+    Compaction count carries no weight, and missing evidence stays unknown.
+    """
+    coverage = {
+        "errors": True, "rereads": True, "repeats": True,
+        "loops_transcript": True, "loops_db": False, "restore_db": False,
+        "corrections": False, "state_sections": "not_applicable_v1",
+    }
+    try:
+        compactions = int(quality_data.get("compactions") or 0)
+    except (TypeError, ValueError):
+        compactions = 0
+    events = [e for e in (quality_data.get("compaction_events") or [])
+              if isinstance(e, dict)]
+    if compactions <= 0:
+        return {"status": None, "score": None, "evidence": [], "coverage": coverage}
+    if not events:
+        return {"status": "observing", "score": None, "evidence": [],
+                "coverage": coverage}
+
+    epochs = [e.get("ts_epoch") for e in events if e.get("ts_epoch") is not None]
+    since = min(epochs) if epochs else None
+    db_events = (_session_recovery_db_events(session_id, since_epoch=since)
+                 if session_id else [])
+    if db_events:
+        coverage["loops_db"] = coverage["restore_db"] = True
+    restores = [e for e in db_events if e["kind"] == "checkpoint_restore"]
+    loops = [e for e in db_events if e["kind"] == "loop_detection"]
+
+    # Each restore event belongs to the nearest boundary within -120/+300s.
+    for ev in restores:
+        best, best_d = None, None
+        for b in events:
+            bt = b.get("ts_epoch")
+            if bt is None:
+                continue
+            d = ev["ts"] - bt
+            if -120 <= d <= 300 and (best is None or abs(d) < abs(best_d)):
+                best, best_d = b, d
+        if best is not None:
+            best.setdefault("db_restore_deltas", []).append(round(best_d, 1))
+            best["restore_db"] = True
+
+    for b in events:
+        start, end = b.get("ts_epoch"), b.get("end_epoch")
+        b["db_loops"] = (sum(1 for e in loops if start <= e["ts"] <= end)
+                         if start is not None and end is not None else 0)
+        rt, rd = bool(b.get("restore_transcript")), bool(b.get("restore_db"))
+        b["restore_evidence"] = ("both" if rt and rd else "transcript" if rt
+                                 else "db" if rd else "none")
+        status, score, flags = _recovery_boundary_eval(b)
+        b["status"], b["score"], b["flags"] = status, score, flags
+
+    # The latest boundary with an unfinished window is still being observed;
+    # older truncated windows are simply unmeasurable.
+    last = events[-1]
+    if (last.get("status") == "unmeasurable"
+            and last.get("window_data", True)
+            and int(last.get("post_seg_calls") or 0) < _RECOVERY_MIN_MATCHED_CALLS):
+        last["status"] = "observing"
+        last["score"] = None
+
+    evidence = [{k: v for k, v in b.items() if k not in ("pre_tail", "post_calls")}
+                for b in events[-_RECOVERY_EVENTS_KEPT:]]
+
+    # Thresholds are shadow-only until calibrated. Preserve raw evaluations
+    # in evidence, but never turn them into a public health judgement.
+    return {"status": "observing", "score": None, "evidence": evidence,
+            "coverage": coverage}
+
+
+def _recovery_panel_detail(compactions, recovery):
+    """One-line neutral evidence summary, e.g. '17 compactions; restore
+    delivered; 20 calls observed; 1 tool error; no repeated failed action'."""
+    if compactions <= 0:
+        return "No compactions"
+    status = (recovery or {}).get("status") or "unknown"
+    ev = (recovery or {}).get("evidence") or []
+    latest = ev[-1] if ev else {}
+    post = latest.get("post") or {}
+    restore = latest.get("restore_evidence", "none")
+    restore_label = {
+        "transcript": "restore delivered", "both": "restore delivered",
+        "db": "restore recorded", "none": "no restore observed",
+    }.get(restore, "restore unknown")
+    parts = [f"{compactions} compaction(s)", restore_label]
+    if post.get("calls"):
+        parts.append(f"{post['calls']} calls observed")
+        parts.append(f"{post['errors']} tool error(s)")
+        parts.append("repeated failed action"
+                     if post.get("repeat_after_error") else "no repeated failed action")
+    parts.append({
+        "observing": "observing",
+        "no_concerning_signal_observed": "no concerning signal observed",
+        "needs_attention": "needs attention",
+        "unmeasurable": "unmeasurable",
+    }.get(status, status))
+    return "; ".join(parts)
 
 
 def compute_quality_score(quality_data, session_id=None):
@@ -40429,18 +40909,12 @@ def compute_quality_score(quality_data, session_id=None):
     dup_data = detect_duplicates(quality_data)
     dup_score = max(0, min(100, 100 - dup_data["duplicates"] * 10))
 
-    # 4. Compaction depth: steepened penalties based on research showing
-    # each compaction loses ~65% of remaining information (Factory.ai).
-    # Negations can semantically invert across compression passes.
+    # 4. Compaction count is descriptive metadata only -- it carries NO
+    # quality weight. Measured post-boundary recovery signals are reported
+    # separately in the recovery panel (see _assess_compaction_recovery);
+    # the count-only "~65/88/95% lost" model was unsupported by the paired
+    # event study and is removed (COMPACTION-QUALITY.md).
     compactions = quality_data["compactions"]
-    if compactions == 0:
-        compaction_score = 100
-    elif compactions == 1:
-        compaction_score = 75
-    elif compactions == 2:
-        compaction_score = 45
-    else:
-        compaction_score = 20
 
     # 5. Decision density: rolling window over last N messages.
     all_messages = quality_data["messages"]
@@ -40489,7 +40963,6 @@ def compute_quality_score(quality_data, session_id=None):
         "stale_reads": round(stale_score, 1),
         "bloated_results": round(bloated_score, 1),
         "duplicates": round(dup_score, 1),
-        "compaction_depth": round(compaction_score, 1),
         "decision_density": round(density_score, 1),
         "agent_efficiency": round(agent_score, 1),
     }
@@ -40522,10 +40995,12 @@ def compute_quality_score(quality_data, session_id=None):
         for k in _RESOURCE_HEALTH_WEIGHTS
     }
     top_drag = None
-    # Fill is intrinsic to any conversation: a deficit under ~10 pts (about 22%
-    # fill) is the cost of having talked at all, not a drag worth naming on an
-    # otherwise healthy session. Compactions and waste keep the 3-point floor.
-    _fill_floor = 10.0
+    # Fill is intrinsic to any conversation: a deficit under ~14 pts is the
+    # cost of having talked at all, not a drag worth naming on an otherwise
+    # healthy session. Rescaled from the v1 floor of 10 weighted pts at the
+    # old 0.5 fill weight so the same ~22%-fill boundary applies under the
+    # v2 5/7 weight. Waste keeps the 3-point floor.
+    _fill_floor = 10.0 * (_RESOURCE_HEALTH_WEIGHTS["context_fill_degradation"] / 0.5)
     _nameable = {
         k: pts for k, pts in _drag_deficit.items()
         if pts >= (_fill_floor if k == "context_fill_degradation" else 3.0)
@@ -40546,15 +41021,6 @@ def compute_quality_score(quality_data, session_id=None):
                 "key": "context_fill",
                 "label": (f"{round(model_fill * 100)}% context fill ({round(fill_pct * 100)}% of the way to auto-compact)"
                           if compact_window_reduced else f"{round(fill_pct * 100)}% context fill"),
-                "points": round(_worst_pts, 1),
-            }
-        elif _worst_key == "compaction_depth":
-            _loss = {0: 0, 1: 65, 2: 88}.get(compactions, 95)
-            top_drag = {
-                "key": "compactions",
-                "label": (
-                    f"{compactions} compaction{'s' if compactions != 1 else ''}"
-                    f" (~{_loss}% context loss)"),
                 "points": round(_worst_pts, 1),
             }
         else:  # absolute_waste_tokens — name the dominant waste cause
@@ -40580,15 +41046,6 @@ def compute_quality_score(quality_data, session_id=None):
         for k in _SESSION_EFFICIENCY_WEIGHTS
     )
 
-    # Compaction loss estimate
-    compaction_loss_pct = 0
-    if compactions == 1:
-        compaction_loss_pct = 65  # ~60-70%
-    elif compactions == 2:
-        compaction_loss_pct = 88  # cumulative
-    elif compactions >= 3:
-        compaction_loss_pct = 95  # near-total
-
     # Bands describe retrieval-quality zones, so they follow the model-window
     # fill (model_fill), not the compact-window fill that nudges gate on.
     band_name, _ = _degradation_band(model_fill)
@@ -40600,6 +41057,8 @@ def compute_quality_score(quality_data, session_id=None):
             f"({round(fill_pct * 100)}% of the way to auto-compact), "
             f"{band_name.lower()} ({curve_name})"
         )
+
+    recovery = _assess_compaction_recovery(quality_data, session_id)
 
     breakdown = {
         "context_fill_degradation": {
@@ -40645,14 +41104,15 @@ def compute_quality_score(quality_data, session_id=None):
             "estimated_waste_tokens": dup_data["estimated_waste_tokens"],
             "detail": f"{dup_data['duplicates']} duplicate reminders" if dup_data["duplicates"] else "No duplicates",
         },
-        "compaction_depth": {
-            "score": signals["compaction_depth"],
-            "compactions": compactions,
-            "cumulative_loss_pct": compaction_loss_pct,
-            "detail": (
-                f"{compactions} compaction(s) (~{compaction_loss_pct}% cumulative context loss)"
-                if compactions > 0 else "No compactions"
-            ),
+        "compactions": {
+            "count": compactions,
+            "weighted": False,
+            "detail": f"{compactions} compaction(s)" if compactions > 0 else "No compactions",
+        },
+        "compaction_recovery": {
+            "status": recovery["status"],
+            "score": recovery["score"],
+            "detail": _recovery_panel_detail(compactions, recovery),
         },
         "decision_density": {
             "score": signals["decision_density"],
@@ -40726,10 +41186,16 @@ def compute_quality_score(quality_data, session_id=None):
     return {
         "score": rh_rounded,
         "grade": rh_grade,
+        "score_version": _QUALITY_SCORE_VERSION,
         "resource_health": rh_rounded,
         "resource_health_grade": rh_grade,
         "session_efficiency": se_rounded,
         "session_efficiency_grade": se_grade,
+        "compactions": compactions,
+        "recovery_status": recovery["status"],
+        "recovery_score": recovery["score"],
+        "recovery_evidence": recovery["evidence"],
+        "recovery_coverage": recovery["coverage"],
         "top_drag": top_drag,
         "signals": signals,
         "breakdown": breakdown,
@@ -41003,10 +41469,9 @@ def quality_analyzer(session_id=None, as_json=False):
         dp = bd["duplicates"]
         tokens = dp["estimated_waste_tokens"]
         issues.append(f"  {dp['count']:3d} duplicate reminders ({tokens:,} tokens est.)  repeated system-reminder injections")
-    if bd["compaction_depth"]["compactions"] > 0:
-        cd = bd["compaction_depth"]
-        loss_detail = f" (~{cd.get('cumulative_loss_pct', 0)}% cumulative context loss)" if cd.get("cumulative_loss_pct") else ""
-        issues.append(f"  {cd['compactions']:3d} compaction(s){loss_detail}")
+    if bd["compactions"]["count"] > 0:
+        cd = bd["compactions"]
+        issues.append(f"  {cd['count']:3d} compaction(s)  {bd['compaction_recovery']['detail']}")
 
     if issues:
         print("  Issues found:")
@@ -41024,7 +41489,7 @@ def quality_analyzer(session_id=None, as_json=False):
 
     # Recommendation
     total_waste = bd["total_estimated_waste_tokens"]
-    compactions = bd["compaction_depth"]["compactions"]
+    compactions = bd["compactions"]["count"]
     if total_waste > 0:
         print("  Recommendation:")
         print(f"    /compact would free ~{total_waste:,} tokens of low-value content")
@@ -50126,7 +50591,17 @@ _CARRY_KEYS = (
     "_warn_count",
     "_warn_last_epoch",
     "_warn_last_band",
+    "_context_advisory_fired",
 )
+
+
+def _quality_scores_comparable(prev_result, result):
+    """True when two quality results share a score_version and may be dampened
+    or compared for nudge baselines. Legacy unversioned caches are v1-era and
+    never compare against _QUALITY_SCORE_VERSION."""
+    pv = (prev_result or {}).get("score_version")
+    rv = (result or {}).get("score_version", _QUALITY_SCORE_VERSION)
+    return pv is not None and pv == rv
 
 
 def _check_realtime_loops(quality_data):
@@ -50315,6 +50790,14 @@ def _maybe_fresh_session_nudge(result, cache_path, quality_data, quiet=False):
     if not (score < _FRESH_NUDGE_QUALITY_THRESHOLD and fill_pct >= _FRESH_NUDGE_MIN_FILL):
         return None
 
+    # "Start fresh" is a restart recommendation and shares the same
+    # absolute-token gate as /compact nudges: >=300K current-context tokens
+    # with real telemetry, or nothing fires.
+    _gate_sid = Path(cache_path).stem.replace("quality-cache-", "", 1) if cache_path else None
+    _gate_tel = _absolute_context_tokens(quality_data, _gate_sid)
+    if _gate_tel is None or _gate_tel["tokens"] < _SIZE_NUDGE_MIN_TOKENS:
+        return None
+
     session_id = Path(cache_path).stem.replace("quality-cache-", "", 1) if cache_path else None
     # The flag above lives in the quality cache, which other writes can replace
     # (a lost race, an unreadable transcript). A marker file claimed with
@@ -50399,6 +50882,15 @@ def _maybe_nudge(result, cache_path, quality_data, quiet=False):
     if not should_nudge:
         return None
 
+    # Absolute-token gate: every compaction-recommending nudge requires
+    # >=300K CURRENT live-context tokens backed by real telemetry. A quality
+    # drop at 120K is still reported, but "/compact" is a size remedy and
+    # size remedies are floored at 300K (COMPACTION-QUALITY.md section 1).
+    session_id = Path(cache_path).stem.replace("quality-cache-", "", 1) if cache_path else None
+    telemetry = _absolute_context_tokens(quality_data, session_id)
+    if telemetry is None or telemetry["tokens"] < _SIZE_NUDGE_MIN_TOKENS:
+        return None
+
     # Fire nudge
     result["_nudge_count"] = nudge_count + 1
     result["_nudge_last_epoch"] = now
@@ -50406,7 +50898,6 @@ def _maybe_nudge(result, cache_path, quality_data, quiet=False):
     # Log the nudge as a behavioral intervention. Store fill_pct so
     # PostCompact can measure the actual token recovery if the user
     # compacts after seeing this nudge.
-    session_id = Path(cache_path).stem.replace("quality-cache-", "", 1) if cache_path else None
     fill_pct = result.get("fill_pct", 0)
     result["_nudge_fill_pct_at_fire"] = fill_pct
     # A6: persist an explicit fire timestamp alongside the fill snapshot (written
@@ -50422,6 +50913,243 @@ def _maybe_nudge(result, cache_path, quality_data, quiet=False):
     )
 
     return f"[Token Optimizer] Quality {score} (was {previous_score}). /compact."
+
+
+# --- Absolute-token gate + context-size advisory -------------------------
+# One gate, shared by every compaction/restart-recommending surface: the
+# live context must measure >=300K tokens with real telemetry. Below that a
+# size remedy is never suggested, no matter how bad the score looks.
+_SIZE_NUDGE_MIN_TOKENS = 300_000
+
+# Context-size advisory (COMPACTION-QUALITY.md section 1): once per session,
+# suggest *considering* compaction at a safe pause when current context passes
+# the configured threshold. Eligibility, never an instruction.
+_CONTEXT_ADVISORY_DEFAULT_TOKENS = 350_000
+_CONTEXT_ADVISORY_MIN_TOKENS = 300_000
+_CONTEXT_ADVISORY_MAX_TOKENS = 400_000
+_CONTEXT_ADVISORY_POST_COMPACT_TOKENS = 35_000
+_CONTEXT_ADVISORY_SHADOW_TOKENS = (300_000, 350_000, 400_000)
+_CONTEXT_ADVISORY_TELEMETRY_MAX_AGE_S = 300
+
+
+def _absolute_context_tokens(quality_data, session_id=None):
+    """Current live-context token count, or None when telemetry is missing
+    or contradictory. THE gate every size-based restart/compact
+    recommendation must pass -- no nudge below 300K, and never a guessed
+    window standing in for a measurement.
+
+    Sources, in order:
+      1. host live-fill.json for THIS session, fresh (<5 min): context_tokens
+         cross-checked against the session's own window (or the host's
+         used_percentage as denominator).
+      2. transcript-reported assistant usage (context_tokens) over the
+         session's own model_context_window.
+
+    Returns {"tokens": int, "window": int|None, "source": str} or None.
+    """
+    window = None
+    try:
+        mcw = (quality_data or {}).get("model_context_window")
+        if isinstance(mcw, (int, float)) and mcw > 0:
+            window = int(mcw)
+    except (TypeError, ValueError):
+        window = None
+
+    # 1. Host-reported live fill, same session only.
+    try:
+        live_fill_path = QUALITY_CACHE_DIR / "live-fill.json"
+        if live_fill_path.exists():
+            live = json.loads(live_fill_path.read_text(encoding="utf-8"))
+            ts_ms = live.get("timestamp")
+            age_s = (time.time() - float(ts_ms) / 1000.0) if ts_ms else None
+            live_sid = sanitize_session_id(str(live.get("session_id") or ""))
+            want_sid = sanitize_session_id(str(session_id or ""))
+            tokens = live.get("context_tokens")
+            if (age_s is not None and 0 <= age_s < _CONTEXT_ADVISORY_TELEMETRY_MAX_AGE_S
+                    and want_sid and live_sid == want_sid
+                    and isinstance(tokens, (int, float)) and tokens > 0):
+                w = window
+                pct = live.get("used_percentage")
+                if (not w or w <= 0) and isinstance(pct, (int, float)) and 0 < pct <= 100:
+                    w = int(round(tokens / (pct / 100.0)))
+                # Contradictory telemetry (tokens exceed the measured window)
+                # is unknown, never a nudge.
+                if w and w > 0 and tokens <= w * 1.02:
+                    return {"tokens": int(tokens), "window": int(w), "source": "host-live"}
+                return None
+    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+        pass
+
+    # 2. Transcript usage over the session's own window.
+    try:
+        tokens = (quality_data or {}).get("context_tokens")
+        if (isinstance(tokens, (int, float)) and tokens > 0
+                and window and window > 0):
+            if tokens <= window * 1.02:
+                return {"tokens": int(tokens), "window": window, "source": "transcript"}
+            return None
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
+def _context_advisory_threshold():
+    """Configured context-size advisory threshold, clamped to [300K, 400K].
+
+    The floor is a hard product rule: no size-based nudge below 300K tokens.
+    Out-of-range config is clamped loudly rather than silently honored.
+    """
+    raw = _int_env("TOKEN_OPTIMIZER_CONTEXT_ADVISORY_TOKENS",
+                   _CONTEXT_ADVISORY_DEFAULT_TOKENS)
+    clamped = max(_CONTEXT_ADVISORY_MIN_TOKENS,
+                  min(raw, _CONTEXT_ADVISORY_MAX_TOKENS))
+    if clamped != raw:
+        print(f"[Token Optimizer] Warning: TOKEN_OPTIMIZER_CONTEXT_ADVISORY_TOKENS={raw} "
+              f"outside {_CONTEXT_ADVISORY_MIN_TOKENS}-{_CONTEXT_ADVISORY_MAX_TOKENS}, "
+              f"clamped to {clamped}.", file=sys.stderr)
+    return clamped
+
+
+def _advisory_checkpoint_has_restorable_body(checkpoint):
+    """Use restore eligibility for advisory checkpoints, including sidecars."""
+    return _checkpoint_has_restorable_body(checkpoint.get("path"))
+
+
+def _session_has_current_checkpoint(session_id, quality_data=None):
+    """Require a restorable session checkpoint from the last 30 minutes,
+    saved since the latest compaction. Unknown boundary time fails closed."""
+    try:
+        if not session_id:
+            return False
+        want = {str(session_id), sanitize_session_id(str(session_id))}
+        now = time.time()
+        cutoff = now - 30 * 60
+        qd = quality_data or {}
+        if qd.get("compactions"):
+            events = qd.get("compaction_events") or []
+            if not events:
+                return False
+            latest = events[-1]
+            boundary = latest.get("ts_epoch") or _keepwarm_iso_to_epoch(latest.get("ts"))
+            if boundary is None:
+                return False
+            cutoff = max(cutoff, boundary)
+        for cp in list_checkpoints():
+            if _checkpoint_session(cp["filename"]) not in want:
+                continue
+            if (cutoff <= cp["created"].timestamp() <= now
+                    and _advisory_checkpoint_has_restorable_body(cp)):
+                return True
+        return False
+    except Exception:
+        return False
+
+
+def _advisory_blockers(result, quality_data, session_id):
+    """Eligibility blockers for the context-size advisory, independent of the
+    configured threshold. A threshold is eligibility, not an instruction:
+    require real progress, a safe pause, a valid current checkpoint, and a
+    plausible benefit after summary+retrieval overhead."""
+    blockers = {}
+    tool_calls = int((quality_data or {}).get("tool_calls") or 0)
+    user_turns = sum(
+        1 for m in (quality_data or {}).get("messages", [])
+        if len(m) >= 3 and m[1] == "user" and m[2] > 0)
+    # Progress beyond the initial prompt: real tool work or a follow-up turn.
+    blockers["no_progress"] = not (tool_calls >= 5 or user_turns >= 2)
+    # Parsers distinguish real prompts/end_turn from tool-result records.
+    blockers["mid_turn"] = (quality_data or {}).get("safe_pause") is not True
+    # Valid current checkpoint for THIS session.
+    blockers["no_checkpoint"] = not _session_has_current_checkpoint(session_id, quality_data)
+    return blockers
+
+
+def _log_context_advisory_shadow(session_id, telemetry, result, quality_data):
+    """Hourly-throttled shadow record of what each candidate threshold
+    (300K/350K/400K) would decide. Feeds the advisor evaluation; emits no
+    user-facing output."""
+    try:
+        tokens = int(telemetry.get("tokens") or 0)
+        if tokens < _CONTEXT_ADVISORY_MIN_TOKENS or not session_id:
+            return
+        bucket = int(time.time() // 3600)
+        marker = _once_per_session_marker("context-advisory-shadow", session_id)
+        if marker is None:
+            return
+        try:
+            if json.loads(marker.read_text(encoding="utf-8")).get("bucket") == bucket:
+                return
+        except (OSError, ValueError, TypeError):
+            pass
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(json.dumps({"bucket": bucket}), encoding="utf-8")
+        blockers = _advisory_blockers(result, quality_data, session_id)
+        eval_at = {
+            str(t): {
+                "eligible": tokens >= t and not any(blockers.values()),
+                "below": tokens < t,
+            } for t in _CONTEXT_ADVISORY_SHADOW_TOKENS
+        }
+        _log_compression_event(
+            feature="context_advisory_shadow",
+            tier="estimated",
+            session_id=session_id,
+            detail=json.dumps({
+                "tokens": tokens, "window": telemetry.get("window"),
+                "source": telemetry.get("source"),
+                "thresholds": eval_at,
+                "blockers": {k: v for k, v in blockers.items() if v},
+            }, sort_keys=True),
+            verified=False,
+        )
+    except Exception:
+        pass
+
+
+def _maybe_context_size_advisory(result, cache_path, quality_data, suppressed=False):
+    """Context-size advisory: at >= threshold current tokens, suggest
+    *considering* compaction at the end of the step -- eligibility, not an
+    instruction. Once per session, current telemetry only, never below 300K,
+    silent when telemetry is missing or contradictory. `suppressed` (a
+    stronger fresh-session/quality remedy already fired this turn) skips the
+    fire WITHOUT consuming the once-per-session slot -- the user never saw
+    it, so it must not count as fired. Shadow logging still runs. Returns
+    the systemMessage string or None."""
+    if not _is_v5_feature_enabled("context_size_advisory"):
+        return None
+    session_id = Path(cache_path).stem.replace("quality-cache-", "", 1) if cache_path else None
+    telemetry = _absolute_context_tokens(quality_data, session_id)
+    if telemetry is None:
+        return None
+    # Shadow-evaluate all three candidate thresholds for the weekly eval,
+    # whether or not the configured one fires.
+    _log_context_advisory_shadow(session_id, telemetry, result, quality_data)
+    if suppressed or result.get("_context_advisory_fired"):
+        return None
+    threshold = _context_advisory_threshold()
+    tokens = telemetry["tokens"]
+    if tokens < threshold or tokens < _CONTEXT_ADVISORY_MIN_TOKENS:
+        return None
+    blockers = _advisory_blockers(result, quality_data, session_id)
+    # Plausible benefit after summary + retrieval overhead.
+    benefit = tokens - _CONTEXT_ADVISORY_POST_COMPACT_TOKENS - 10_000
+    if benefit <= 0 or any(blockers.values()):
+        return None
+    if _ran_once_this_session("context-size-advisory", session_id):
+        result["_context_advisory_fired"] = True
+        return None
+    result["_context_advisory_fired"] = True
+    _log_compression_event(
+        feature="context_size_advisory",
+        tier="estimated",
+        session_id=session_id,
+        detail=(f"tokens={tokens} threshold={threshold} "
+                f"window={telemetry.get('window')} source={telemetry.get('source')}"),
+        verified=False,
+    )
+    k = tokens // 1000
+    return (f"[Token Optimizer] {k}K tokens in use. Checkpoint saved recently; "
+            f"consider compacting at the end of this step.")
 
 
 def _maybe_quality_warn(result, warn_threshold):
@@ -50719,12 +51447,16 @@ def quality_cache(throttle_seconds=120, warn_threshold=70, quiet=False, session_
             result = {
                 "score": 100,
                 "grade": "S",
+                "score_version": _QUALITY_SCORE_VERSION,
                 "signals": {},
                 "breakdown": {},
                 "total_messages": 0,
                 "decisions_found": 0,
                 "compactions": _settled_compactions(
                     0, _prev_empty or {}, post_compact and not _recent_compact_boundary(filepath)),
+                "recovery_status": None,
+                "recovery_score": None,
+                "recovery_evidence": [],
                 "turns": 0,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "session_file": Path(filepath).name,
@@ -50738,6 +51470,9 @@ def quality_cache(throttle_seconds=120, warn_threshold=70, quiet=False, session_
             for carry_key in _CARRY_KEYS:
                 if carry_key in (_prev_empty or {}):
                     result[carry_key] = _prev_empty[carry_key]
+            # A legacy/v1 nudge baseline must not seed v2 comparisons.
+            if (_prev_empty or {}).get("score_version") != _QUALITY_SCORE_VERSION:
+                result.pop("_nudge_previous_score", None)
             try:
                 _prev_n = int((_prev_empty or {}).get("compactions", 0) or 0)
             except (TypeError, ValueError, OverflowError):
@@ -50807,14 +51542,22 @@ def quality_cache(throttle_seconds=120, warn_threshold=70, quiet=False, session_
         # Fill_pct fluctuates between measurements (context adds/removes, compaction).
         # Allow recovery but dampen: drops are immediate, recovery moves 30% toward
         # the new value per measurement to prevent wild upward swings.
-        prev_rh = prev_result.get("resource_health")
-        current_rh = result.get("resource_health")
-        if prev_rh is not None and current_rh is not None:
-            if current_rh >= prev_rh:
-                result["resource_health"] = round(prev_rh + (current_rh - prev_rh) * 0.3, 1)
-            result["score"] = result["resource_health"]
-            result["grade"] = score_to_grade(round(result["resource_health"]))
-            result["resource_health_grade"] = result["grade"]
+        # Only within the same score_version: a v1 score mixed in the count-only
+        # compaction penalty, so importing its deficit (or its nudge baseline)
+        # would silently compare apples to oranges (COMPACTION-QUALITY.md).
+        if _quality_scores_comparable(prev_result, result):
+            prev_rh = prev_result.get("resource_health")
+            current_rh = result.get("resource_health")
+            if prev_rh is not None and current_rh is not None:
+                if current_rh >= prev_rh:
+                    result["resource_health"] = round(prev_rh + (current_rh - prev_rh) * 0.3, 1)
+                result["score"] = result["resource_health"]
+                result["grade"] = score_to_grade(round(result["resource_health"]))
+                result["resource_health_grade"] = result["grade"]
+        else:
+            # Version boundary or legacy unversioned cache: reseed the nudge
+            # baseline instead of comparing across score schemes.
+            result.pop("_nudge_previous_score", None)
 
         # Session duration + active agents for statusline (v2.6)
         result["session_start_ts"] = _extract_session_start_ts(filepath)
@@ -50874,13 +51617,22 @@ def quality_cache(throttle_seconds=120, warn_threshold=70, quiet=False, session_
         # "start fresh (context is preserved)" is the stronger remedy than /compact, and
         # firing both would be noise. Only fall back to the /compact nudge if it didn't fire.
         fresh_msg = _maybe_fresh_session_nudge(result, cache_path, quality_data)
+        remedy_fired = bool(fresh_msg)
         if not fresh_msg:
             nudge_msg = _maybe_nudge(result, cache_path, quality_data)
             if nudge_msg:
                 system_messages.append(nudge_msg)
+                remedy_fired = True
         loop_msg = _maybe_loop_warning(result, cache_path, quality_data)
         if loop_msg:
             system_messages.append(loop_msg)
+        # Context-size advisory: eligibility, not an instruction -- at most
+        # once per session, suppressed while a stronger remedy already fired
+        # (suppression does not consume the once-per-session slot).
+        advisory_msg = _maybe_context_size_advisory(
+            result, cache_path, quality_data, suppressed=remedy_fired)
+        if advisory_msg:
+            system_messages.append(advisory_msg)
         # Persist nudge/loop/fresh state (the once-per-session _fresh_nudge_fired flag
         # must survive even if only the fresh nudge fired this turn).
         if system_messages or fresh_msg:
@@ -50935,10 +51687,22 @@ def quality_cache(throttle_seconds=120, warn_threshold=70, quiet=False, session_
             except Exception:
                 pass
             if _emit_warn:
+                # Same absolute-token gate: below 300K live tokens the
+                # score-driven "/compact" recommendation is a size nudge in
+                # disguise, which the product rules forbid. The score still
+                # prints -- only the remedy suggestion is gated.
+                _warn_tel = _absolute_context_tokens(quality_data, _session_id)
+                _size_ok = _warn_tel is not None and _warn_tel["tokens"] >= _SIZE_NUDGE_MIN_TOKENS
                 if result["score"] < 50:
-                    print(f"[Token Optimizer] Quality {result['score']}/100 (critical). /clear with checkpoint.")
+                    if _size_ok:
+                        print(f"[Token Optimizer] Quality {result['score']}/100 (critical). /clear with checkpoint.")
+                    else:
+                        print(f"[Token Optimizer] Quality {result['score']}/100 (critical).")
                 else:
-                    print(f"[Token Optimizer] Quality {result['score']}/100. /compact.")
+                    if _size_ok:
+                        print(f"[Token Optimizer] Quality {result['score']}/100. /compact.")
+                    else:
+                        print(f"[Token Optimizer] Quality {result['score']}/100.")
             _write_quality_cache(cache_path, result)
 
         # Nudge follow-through: if PostCompact triggered this run (force=True)
@@ -51856,6 +52620,19 @@ V5_FEATURES = {
         "risk_level": "none",
         "recommended": True,
     },
+    "context_size_advisory": {
+        "env_var": "TOKEN_OPTIMIZER_CONTEXT_ADVISORY",
+        "config_key": "v5_context_size_advisory",
+        "default": True,
+        "label": "Context-Size Advisory",
+        "what": "Once a session passes ~350K live-context tokens, gently notes that a checkpoint exists and compaction is an option at a safe pause.",
+        "value": "Surfaces the size signal proactively at a measured threshold instead of waiting for quality to degrade. Eligibility, not an instruction: at most once per session.",
+        "impact_pct": 0,
+        "how": "Checks current host/transcript token telemetry (never a guessed window) against the configured threshold (300-400K, default 350K), requires progress beyond the first prompt, a safe pause between turns, and a valid current checkpoint. Silent below 300K and whenever telemetry is missing or contradictory.",
+        "risk": "None. Adds one short advisory at most once per session.",
+        "risk_level": "none",
+        "recommended": True,
+    },
     "loop_detection": {
         "env_var": "TOKEN_OPTIMIZER_LOOP_DETECTION",
         "config_key": "v5_loop_detection",
@@ -52686,6 +53463,7 @@ _V5_COMPRESSION_LABELS = {
 _NON_SAVINGS_COMPRESSION_FEATURES = frozenset({
     "fresh_session_nudge", "cohort_demoted", "first_read_edit_followup",
     "cache_drop_warning", "agent_result_skeleton", "unknown", "loop_detection",
+    "context_advisory_shadow", "context_size_advisory",
 })
 
 # Unified label dict used by the savings-report renderer. Legacy entries

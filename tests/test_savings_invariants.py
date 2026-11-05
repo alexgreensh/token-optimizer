@@ -127,3 +127,11 @@ def test_methodology_discloses_checkpoint_restore_bounds_and_scope():
     assert "6,300" in doc and "4,000" in doc and "1,500" in doc and "800" in doc
     assert "OpenCode and OpenClaw" in doc
     assert "working set" in doc and "checkpoint_restore" in doc
+
+
+def test_methodology_keeps_advisories_out_of_savings(m):
+    doc = METHODOLOGY.read_text(encoding="utf-8")
+    for feature in ("context_advisory_shadow", "context_size_advisory"):
+        assert f"`{feature}`" in doc
+        assert feature in m._NON_SAVINGS_COMPRESSION_FEATURES
+        assert feature not in m._V5_COMPRESSION_CATEGORIES

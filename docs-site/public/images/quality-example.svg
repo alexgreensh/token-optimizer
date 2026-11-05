@@ -44,7 +44,7 @@
     <text font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14">
       <tspan x="28" y="156" fill="#bac2de">Degradation band:    </tspan>
       <tspan fill="#f38ba8" font-weight="bold">SEVERE</tspan>
-      <tspan fill="#585b70"> (2 compactions, ~88% context lost)</tspan>
+      <tspan fill="#585b70"> (2 compactions, observing)</tspan>
     </text>
     <text font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14">
       <tspan x="28" y="178" fill="#bac2de">Messages analyzed:   </tspan>
@@ -81,12 +81,12 @@
       <tspan fill="#585b70">  74 of 88 reads now stale</tspan>
     </text>
 
-    <!-- Compaction depth -->
+    <!-- Recovery status -->
     <text font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">
-      <tspan x="44" y="302" fill="#f38ba8">&#x25CF;</tspan>
-      <tspan fill="#bac2de"> Compaction depth:  </tspan>
-      <tspan fill="#f38ba8">25/100</tspan>
-      <tspan fill="#585b70">  2 compactions (~88% lost)</tspan>
+      <tspan x="44" y="302" fill="#a6adc8">&#x25CF;</tspan>
+      <tspan fill="#bac2de"> Recovery status:  </tspan>
+      <tspan fill="#a6adc8">observing</tspan>
+      <tspan fill="#585b70">  2 compactions</tspan>
     </text>
 
     <!-- Decision density -->
@@ -138,7 +138,7 @@
     <animate attributeName="opacity" values="0;1" dur="0.4s" begin="3.2s" fill="freeze"/>
     <rect x="28" y="454" width="744" height="76" rx="8" fill="#181825" stroke="#89b4fa" stroke-width="1" opacity="0.8"/>
     <text x="48" y="478" fill="#89b4fa" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13" font-weight="bold">This session is running on fumes.</text>
-    <text x="48" y="498" fill="#585b70" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12">708 messages, 2 compactions, 88% of original context gone.</text>
+    <text x="48" y="498" fill="#585b70" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12">708 messages, 2 compactions, recovery observing.</text>
     <text x="48" y="518" fill="#585b70" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12">Before Token Optimizer, you'd have no idea.</text>
   </g>
 
@@ -158,6 +158,6 @@
     <text x="368" y="568" fill="#f38ba8" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12">Q:36</text>
 
     <text x="414" y="568" fill="#313244" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12">|</text>
-    <text x="428" y="568" fill="#f38ba8" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12">Compacts:2(~88% lost)</text>
+    <text x="428" y="568" fill="#a6adc8" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="12">Compacts:2(observing)</text>
   </g>
 </svg>

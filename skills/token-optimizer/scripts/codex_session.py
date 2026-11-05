@@ -749,17 +749,25 @@ def parse_jsonl_for_quality(filepath: str | Path) -> dict[str, Any] | None:
     agent_dispatches: list[tuple[int, int, int]] = []
     decisions: list[tuple[int, str]] = []
     compaction_ratios: list[dict[str, Any]] = []
+    compaction_events: list[dict[str, Any]] = []
     last_usage: dict[str, int] | None = None
     current_model = _UNKNOWN_MODEL
     topics: dict[str, str | None] = {}
     idx = 0
     prev_was_compacted = False
     last_turn_context: int | None = None
+    safe_pause = False
 
     for record in _iter_json_records(filepath):
         payload = _payload(record)
         payload_type = payload.get("type")
         ts = str(record.get("timestamp") or "")
+        if payload_type in {"task_complete", "turn_complete"}:
+            safe_pause = True
+        elif payload_type in {"task_started", "turn_started", "function_call", "custom_tool_call",
+                              "function_call_output", "custom_tool_call_output", "exec_command_end",
+                              "patch_apply_end", "agent_message"}:
+            safe_pause = False
 
         model = _extract_model(payload)
         if model:
@@ -773,8 +781,31 @@ def parse_jsonl_for_quality(filepath: str | Path) -> dict[str, Any] | None:
         # keeps the count==len(ratios) invariant even for back-to-back compactions.
         is_compacted_record = record.get("type") == "compacted"
         if is_compacted_record or payload_type == "context_compacted":
+            safe_pause = False
             if is_compacted_record:
                 compactions += 1
+                # Minimal recovery event for the quality panel: Codex has no
+                # matched pre/post tool-call windows, so window_data=False
+                # keeps every boundary honestly "unmeasurable" rather than
+                # implying healthy recovery.
+                compaction_events.append({
+                    "boundary_id": f"codex-{compactions}",
+                    "ordinal": compactions,
+                    "line": idx,
+                    "ts": ts,
+                    "trigger": "auto",
+                    "pre_tokens": last_turn_context,
+                    "post_tokens": None,
+                    "host_version": None,
+                    "model": current_model if current_model != _UNKNOWN_MODEL else None,
+                    "pre_seg_calls": 0,
+                    "post_seg_calls": 0,
+                    "matched_calls": 0,
+                    "eligible": False,
+                    "window_data": False,
+                    "restore_transcript": False,
+                    "capture_notice": False,
+                })
                 rh = payload.get("replacement_history")
                 # Codex total_token_usage is cumulative (monotonic), so it does
                 # not drop at compaction. The meaningful "before" is the context
@@ -792,6 +823,24 @@ def parse_jsonl_for_quality(filepath: str | Path) -> dict[str, Any] | None:
                 })
             elif not prev_was_compacted:
                 compactions += 1
+                compaction_events.append({
+                    "boundary_id": f"codex-{compactions}",
+                    "ordinal": compactions,
+                    "line": idx,
+                    "ts": ts,
+                    "trigger": "auto",
+                    "pre_tokens": last_turn_context,
+                    "post_tokens": None,
+                    "host_version": None,
+                    "model": current_model if current_model != _UNKNOWN_MODEL else None,
+                    "pre_seg_calls": 0,
+                    "post_seg_calls": 0,
+                    "matched_calls": 0,
+                    "eligible": False,
+                    "window_data": False,
+                    "restore_transcript": False,
+                    "capture_notice": False,
+                })
             prev_was_compacted = is_compacted_record
             reads = []
             writes = []
@@ -821,6 +870,7 @@ def parse_jsonl_for_quality(filepath: str | Path) -> dict[str, Any] | None:
         elif payload_type in {"user_message", "message", "agent_message"}:
             text = _extract_text(payload)
             role = "assistant" if payload_type == "agent_message" else str(payload.get("role") or "user")
+            safe_pause = role == "user" and bool(_task_user_text(text))
             if role == "user" and not topics.get(payload_type):
                 task = _task_user_text(text)
                 if task:
@@ -870,10 +920,12 @@ def parse_jsonl_for_quality(filepath: str | Path) -> dict[str, Any] | None:
         "tool_results": tool_results,
         "system_reminders": system_reminders,
         "messages": messages,
+        "safe_pause": safe_pause,
         "compactions": compactions,
         "agent_dispatches": agent_dispatches,
         "decisions": decisions,
         "compaction_ratios": compaction_ratios,
+        "compaction_events": compaction_events,
         "total_entries": idx,
         "estimated": True,
         "context_tokens": last_turn_context or None,

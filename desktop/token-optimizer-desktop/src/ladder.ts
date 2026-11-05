@@ -18,7 +18,6 @@ export type Sentence = { icon: IconName; tone: Tone; runs: Run[]; action: Action
 /** Quality below grade B (score under 70) is worth a sentence. */
 export const QUALITY_FLOOR = 70
 export const LIMIT_WARN = 90
-export const COMPACT_HEAVY = 3
 
 const say = (icon: IconName, tone: Tone, runs: Run[], action: Action | null = null): Sentence => ({ icon, tone, runs, action })
 const plain = (text: string): Run => ({ text })
@@ -62,12 +61,7 @@ export function sentence(s: Snapshot, opts: FormatOptions = {}): Sentence {
   if (week && week.percentUsed >= LIMIT_WARN) return limitSentence('Weekly', week, s.now, opts)
 
   const q = s.quality
-  if (q && q.compactions >= COMPACT_HEAVY) {
-    return say('compact', 'bad', [plain(`Compacted ${q.compactions} times. Early detail is mostly gone.`)], {
-      id: 'fresh',
-      label: 'Start fresh',
-    })
-  }
+  // Recovery thresholds remain shadow-only, including older cached flags.
   if (q && q.score < QUALITY_FLOOR) {
     return say('slip', 'bad', [plain(`Quality slipped to ${gradeOf(q.score)}.`)], { id: 'clean', label: 'Clean up' })
   }
@@ -94,14 +88,15 @@ export function sentence(s: Snapshot, opts: FormatOptions = {}): Sentence {
     }
   }
 
-  return say('check', 'good', [plain(s.note ?? 'All clear.')])
+  const observing = q && q.compactions > 0 ? `Compacts:${q.compactions} (observing).` : 'All clear.'
+  return say('check', 'good', [plain(s.note ?? observing)])
 }
 
 /** How healthy the session looks, for Clawd's face. */
 export function moodOf(s: Snapshot): Mood {
   const limits = [s.fiveHour, s.week].filter((l): l is Limit => l !== null)
   const q = s.quality
-  if (limits.some((l) => l.percentUsed >= LIMIT_WARN) || (q && q.compactions >= COMPACT_HEAVY)) return 'panic'
+  if (limits.some((l) => l.percentUsed >= LIMIT_WARN)) return 'panic'
   if (q && q.score < QUALITY_FLOOR) return 'worried'
   if (!s.working && (s.cache.state === 'cold' || s.cache.state === 'warning')) return 'worried'
   return 'calm'

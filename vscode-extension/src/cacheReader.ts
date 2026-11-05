@@ -166,16 +166,10 @@ export function buildSnapshot(inputs: RawInputs): Snapshot {
 
     if (typeof q.compactions === 'number') {
       snap.compactions = q.compactions;
-      const lossPct = q.breakdown?.compaction_depth?.cumulative_loss_pct;
-      if (typeof lossPct === 'number' && Number.isFinite(lossPct)) {
-        snap.compactionLossPct = Math.max(0, Math.round(lossPct));
-      } else if (q.compactions >= 3) {
-        snap.compactionLossPct = 95;
-      } else if (q.compactions === 2) {
-        snap.compactionLossPct = 88;
-      } else if (q.compactions === 1) {
-        snap.compactionLossPct = 65;
-      }
+      // Measured recovery status only (score_version >= 2). Compaction count
+      // alone never implies a fixed loss percentage.
+      const rs = q.recovery_status;
+      snap.compactionRecovery = typeof rs === 'string' && rs ? rs : null;
     }
 
     if (cacheMatchesSession && typeof q.session_start_ts === 'number' && q.session_start_ts > 0) {

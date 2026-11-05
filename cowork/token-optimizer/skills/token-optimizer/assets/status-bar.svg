@@ -77,7 +77,7 @@
     <text x="444" y="182" fill="#313244" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">|</text>
     <text x="458" y="182" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">Q:58</text>
     <text x="510" y="182" fill="#313244" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">|</text>
-    <text x="524" y="182" fill="#f9e2af" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">Compacts:1(~65% lost)</text>
+    <text x="524" y="182" fill="#a6adc8" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">Compacts:1(observing)</text>
   </g>
 
   <!-- ═══ State 4: Critical (red) ═══ -->
@@ -100,6 +100,6 @@
     <text x="444" y="228" fill="#313244" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">|</text>
     <text x="458" y="228" fill="#f38ba8" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">Q:34</text>
     <text x="510" y="228" fill="#313244" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">|</text>
-    <text x="524" y="228" fill="#f38ba8" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">Compacts:2(~88% lost)</text>
+    <text x="524" y="228" fill="#a6adc8" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">Compacts:2(observing)</text>
   </g>
 </svg>

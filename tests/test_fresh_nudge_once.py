@@ -45,16 +45,21 @@ def _degraded():
     return {"score": 67.7, "fill_pct": 60.0, "model_context_window": 1_000_000, "_nudge_previous_score": 68.0}
 
 
+def _qd():
+    # Current-context telemetry above the shared 300K absolute-token gate.
+    return {"context_tokens": 400_000, "model_context_window": 1_000_000}
+
+
 def _cache(m, sid):
     return m.QUALITY_CACHE_DIR / f"quality-cache-{sid}.json"
 
 
 def test_shows_once_even_when_the_cache_loses_its_flag(m):
-    first = m._maybe_fresh_session_nudge(_degraded(), _cache(m, SID), {})
+    first = m._maybe_fresh_session_nudge(_degraded(), _cache(m, SID), _qd())
     assert first and "Fresh session reclaims" in first
     # A later write replaced the cache without the fired flag (the reported repeat).
     again = _degraded()
-    assert m._maybe_fresh_session_nudge(again, _cache(m, SID), {}) is None
+    assert m._maybe_fresh_session_nudge(again, _cache(m, SID), _qd()) is None
     assert again["_fresh_nudge_fired"] is True
 
 
@@ -64,7 +69,7 @@ def test_racing_processes_show_it_once(m):
 
     def prompt():
         start.wait()
-        msg = m._maybe_fresh_session_nudge(_degraded(), _cache(m, SID), {})
+        msg = m._maybe_fresh_session_nudge(_degraded(), _cache(m, SID), _qd())
         if msg:
             shown.append(msg)
 
@@ -77,16 +82,18 @@ def test_racing_processes_show_it_once(m):
 
 
 def test_each_session_still_gets_its_own(m):
-    assert m._maybe_fresh_session_nudge(_degraded(), _cache(m, SID), {})
-    assert m._maybe_fresh_session_nudge(_degraded(), _cache(m, OTHER), {})
+    assert m._maybe_fresh_session_nudge(_degraded(), _cache(m, SID), _qd())
+    assert m._maybe_fresh_session_nudge(_degraded(), _cache(m, OTHER), _qd())
 
 
 def test_unreadable_transcript_keeps_nudge_state(m, tmp_path, monkeypatch):
     transcript = tmp_path / f"{SID}.jsonl"
     transcript.write_text('{"type":"user"}\n', encoding="utf-8")
     cache = _cache(m, SID)
-    cache.write_text(json.dumps({"score": 67.7, "_fresh_nudge_fired": True, "_nudge_previous_score": 67.7,
-                                 "_nudge_count": 2}), encoding="utf-8")
+    # score_version 2: a legacy unversioned cache would (correctly) reseed the
+    # nudge baseline instead of carrying a v1 score into v2 comparisons.
+    cache.write_text(json.dumps({"score": 67.7, "score_version": 2, "_fresh_nudge_fired": True,
+                                 "_nudge_previous_score": 67.7, "_nudge_count": 2}), encoding="utf-8")
     # The parser gives up (a very large transcript): the blank cache it writes
     # must not re-arm nudges that already fired.
     monkeypatch.setattr(m, "_parse_jsonl_for_quality", lambda path: None)

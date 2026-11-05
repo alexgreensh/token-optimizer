@@ -307,7 +307,53 @@ them:
 
 ---
 
-## 9. Known limits
+## 9. Quality score (a figure, but not a savings figure)
+
+The 0–100 "quality" number in the CLI, dashboard and status line is a
+**resource-pressure indicator**, not an accuracy measure. Since score
+schema v2 (`_QUALITY_SCORE_VERSION`):
+
+- **ResourceHealth** weights only context fill (5/7) and absolute waste
+  tokens (2/7). Compaction count carries **zero** weight — it is descriptive
+  metadata (`breakdown.compactions.weighted == false`). The earlier
+  count-only penalty and the "~65/88/95% context lost" display were removed:
+  the paired-window audit (research/arxiv-2611.05306) found no support for
+  fixed per-count loss.
+- **Recovery evidence is shadow-only this release.** `recovery_status` is
+  neutral `observing` on every surface after compaction. `recovery_evidence`
+  retains provisional evaluations of observed post-boundary signals — restore
+  delivery, tool errors, re-reads, repeated calls, loop events — from
+  matched ≤20-call windows before/after each compaction
+  (`_assess_compaction_recovery`). Statuses: `observing`,
+  `no_concerning_signal_observed`, `needs_attention`, `unmeasurable`.
+  Missing telemetry is unknown, never healthy. Public recovery scores remain
+  unset until thresholds are calibrated on held-out labels. Repeated failed
+  calls require no observed Edit, Write or MultiEdit in between. Test-runner
+  errors followed by edits remain in the raw counts but do not trigger an
+  error-rate-increase flag. Codex and OpenCode lack matched recovery windows;
+  their evidence stays unmeasurable while the display says `observing`.
+- **Versions never mix.** `score_version` gates cache carry-over,
+  ResourceHealth dampening and nudge baselines; a v1 cache is never
+  compared against a v2 score (`_quality_scores_comparable`).
+- **Size remedies share one gate.** `/compact`, `/clear` and "start fresh"
+  recommendations — including the 300–400K context-size advisory (default
+  350K, once per session, eligibility not instruction) — require ≥300K
+  **current** context tokens from real telemetry (`_absolute_context_tokens`).
+  Missing or contradictory telemetry means no recommendation. The score
+  itself still prints below 300K; only the remedy is gated. On windows of
+  200K or less, including default Sonnet and most Codex/Cursor sessions,
+  compact and fresh-session remedies therefore never appear.
+- **Advisories are bookkeeping, not savings.** `context_advisory_shadow` and
+  `context_size_advisory` belong to `_NON_SAVINGS_COMPRESSION_FEATURES` and
+  log with `tier="estimated"`. Shadow evaluations use one per-session marker
+  holding the latest hourly bucket. The live advisory requires a real user
+  prompt or assistant end-of-turn, plus a restorable checkpoint saved within
+  30 minutes and since the latest compaction boundary. Unknown timing or body
+  validity suppresses the advisory. Checkpoint validity is connected through
+  `_advisory_checkpoint_has_restorable_body`, the merge integration hook for
+  checkpoint-state's `_checkpoint_has_restorable_body`.
+
+## 10. Known limits
 
 - Checkpoint task state is deterministic transcript evidence. Constraints are scanned
   from full redacted user texts and the original objective before sentence caps;

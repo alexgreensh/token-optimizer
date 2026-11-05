@@ -192,7 +192,10 @@ export class StatusPanel {
     if (m.eff) h += row('Efficiency', '<span class="' + gradeClass(m.eff.grade) + '">' + esc(m.eff.grade) + ' (' + m.eff.score + ')</span>');
     if (m.qualityPending) h += row('ContextQ / Eff', '<span class="pending">warming up…</span>');
     if (m.warnings && m.warnings.length) h += row('Warnings', '<span class="warn">' + m.warnings.map(esc).join(', ') + '</span>');
-    if (m.compactions) h += row('Compactions', m.compactions.count + (m.compactions.count > 0 && m.compactions.lossPct != null ? ' (~' + m.compactions.lossPct + '% lost)' : ''));
+    if (m.compactions) {
+      const rec = m.compactions.count > 0 ? ' (observing)' : '';
+      h += row('Compactions', m.compactions.count + rec);
+    }
     if (m.duration) h += row('Duration', esc(m.duration));
     if (m.agents && m.agents.length) h += row('Agents', m.agents.map(esc).join('<br>'));
     if (m.fiveHour) h += row('5-hour limit', usageLimit(m.fiveHour));

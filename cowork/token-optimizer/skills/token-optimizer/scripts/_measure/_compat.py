@@ -11,6 +11,20 @@ def facade():
     return sys.modules['measure']
 
 
+def read_global(module, name):
+    """Exception targets retain Python's global/builtin lookup after cleanup."""
+    values = vars(module)
+    if name in values:
+        return values[name]
+    builtins = values.get('__builtins__', __builtins__)
+    if not isinstance(builtins, dict):
+        builtins = vars(builtins)
+    try:
+        return builtins[name]
+    except KeyError:
+        raise NameError(f"name '{name}' is not defined", name=name) from None
+
+
 def prepare(module):
     """Select the active facade and give this initialization fresh definitions.
 

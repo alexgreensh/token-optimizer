@@ -502,19 +502,22 @@ def _measure_candidates() -> list[Path]:
     return cands
 
 
+def _engine_module_names():
+    return [key for key in sys.modules if key == 'measure' or key == '_measure'
+            or key.startswith('_measure.') or key in ('plugin_env', 'runtime_env')]
+
+
 @contextmanager
 def _measure_import_scope():
     """Keep a collector call's canonical facade separate from its caller's."""
-    names = lambda: [key for key in sys.modules if key == 'measure' or key == '_measure'
-                     or key.startswith('_measure.') or key in ('plugin_env', 'runtime_env')]
-    previous = {key: sys.modules[key] for key in names()}
+    previous = {key: sys.modules[key] for key in _engine_module_names()}
     search = list(sys.path)
     try:
         for key in previous:
             sys.modules.pop(key, None)
         yield
     finally:
-        for key in names():
+        for key in _engine_module_names():
             sys.modules.pop(key, None)
         sys.modules.update(previous)
         sys.path[:] = search
@@ -526,6 +529,8 @@ def _load_measure(measure_path: str | None):
     for cand in cands:
         if not cand.is_file():
             continue
+        for key in _engine_module_names():
+            sys.modules.pop(key, None)
         # measure.py imports siblings (hook_io, codex_session, ...) bare, so its
         # directory must be importable.
         script_dir = str(cand.parent)

@@ -2398,6 +2398,16 @@ function codexMemCardHtml(mr, fn) { return '<div class="card"><div class="card-h
         '<div style="text-align:center;padding:0 0 var(--s-3);font-size:12px;color:var(--c-text-dim);">Measured from Codex state; no file structure audit</div>' +
         '</div>'; }
 function memCountSuffix(mr) { return mr && mr.scan_partial ? '+' : ''; }
+// Cursor and Antigravity have no CLAUDE.md or MEMORY.md and no ~/.claude
+// folder to manage, and the /token-optimizer audit is Claude Code only (see
+// references/cursor-workflow.md), so the Claude-shaped labels, cards and
+// pointers are replaced for them.
+function isNoInstructionHost(data) {
+  return !!data && (data.runtime === 'cursor' || data.runtime === 'antigravity');
+}
+function hostRefreshHtml(data) {
+  return tcliHtml('<span class="update-cmd">TOKEN_OPTIMIZER_RUNTIME=' + esc(data.runtime) + ' python3 measure.py dashboard</span>');
+}
 function hermesComponentDetails(c) {
   function fileSub(x, missing) {
     return (x && x.exists) ? (x.lines || 0) + ' lines loaded every session' : missing;
@@ -2559,6 +2569,13 @@ function getComponentDetails(data) {
       top: [], issues: [], related: []
     }
   ];
+
+  if (isNoInstructionHost(data)) {
+    // Drop the rows that name files and commands this runtime does not have.
+    components = components.filter(function(comp) {
+      return comp.key !== 'claude_md' && comp.key !== 'memory_md' && comp.key !== 'commands';
+    });
+  }
 
   // Override with detailed data if available
   components.forEach(function(comp) {
@@ -3035,7 +3052,7 @@ var DB = (function() {
     var ts = data.generated_at ? new Date(data.generated_at).toLocaleString() : 'unknown';
     var staleMinutes = data.generated_at ? Math.round((Date.now() - new Date(data.generated_at).getTime()) / 60000) : 0;
     var isStale = staleMinutes > 60;
-    var refreshHint = data.runtime === 'codex' ? 'run the Codex dashboard refresh command' : 'run /token-optimizer';
+    var refreshHint = data.runtime === 'codex' ? 'run the Codex dashboard refresh command' : isNoInstructionHost(data) ? 'regenerate the dashboard' : 'run /token-optimizer';
     var staleWarning = isStale ? ' <span style="color:var(--c-warning, #ff9f43);font-weight:500;">(data is ' + (staleMinutes > 1440 ? Math.round(staleMinutes / 1440) + 'd' : Math.round(staleMinutes / 60) + 'h') + ' old — ' + refreshHint + ' to refresh)</span>' : '';
     var headerEl = document.querySelector('#view-overview .header');
     if (headerEl) {
@@ -3047,11 +3064,15 @@ var DB = (function() {
           tsDiv.innerHTML = 'Last updated: ' + esc(ts) + staleWarning +
             (data.runtime === 'codex'
               ? tcliHtml(' &middot; Run <span class="update-cmd">TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py session-end-flush --trigger manual</span> for a fresh Codex audit.')
+              : isNoInstructionHost(data)
+              ? ' &middot; To refresh, run ' + hostRefreshHtml(data) + '.'
               : ' &middot; Run <span class="update-cmd">/token-optimizer</span> for a full audit with recommendations.');
         } else {
           tsDiv.innerHTML = 'Last updated: ' + esc(ts) + staleWarning +
             (data.runtime === 'codex'
               ? tcliHtml(' &middot; To refresh, run <span class="update-cmd">TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py session-end-flush --trigger manual</span>.')
+              : isNoInstructionHost(data)
+              ? ' &middot; To refresh, run ' + hostRefreshHtml(data) + '.'
               : ' &middot; To refresh, run <span class="update-cmd">/token-optimizer</span> again.');
         }
         headerEl.appendChild(tsDiv);
@@ -3064,6 +3085,7 @@ var DB = (function() {
     var c = data.snapshot.components;
     var isCodexOverview = data.runtime === 'codex';
     var isHermesOverview = data.runtime === 'hermes';
+    var isHostOverview = isNoInstructionHost(data);
     var vals = [];
     var ct = 0; for (var k in c) {
       if (!c[k] || !c[k].tokens) continue;
@@ -3100,6 +3122,13 @@ var DB = (function() {
       vals = hc.map(function(x) { return x.tokens || 0; });
       barLabels = hc.map(function(x) { return x.name; });
       memoryExists = !!(c.hermes_memory && c.hermes_memory.exists);
+    }
+    if (isHostOverview) {
+      vals = [(c.skills ? c.skills.tokens : 0) + (c.plugin_skills ? c.plugin_skills.tokens : 0),
+              c.mcp_tools ? c.mcp_tools.tokens : 0,
+              c.core_system ? c.core_system.tokens : 0];
+      barLabels = ['Skills', 'MCP Tools', 'Core System'];
+      memoryExists = true;
     }
     var barsHtml = vals.map(function(v, i) {
       var w = logBar(v);
@@ -3145,7 +3174,7 @@ var DB = (function() {
     } else if (data.standalone) {
       document.getElementById('stat-potential').innerHTML = fn(ctrl) + ' <span class="mini-label">controllable tokens</span>';
       document.getElementById('potential-desc').textContent =
-        fn(ctrl) + ' of your ' + fn(total) + ' tokens are things you can change. ' + (isCodexOverview ? 'Use the Codex dashboard refresh command for a full local audit with specific savings estimates.' : 'Run /token-optimizer for a full audit with specific savings estimates.');
+        fn(ctrl) + ' of your ' + fn(total) + ' tokens are things you can change. ' + (isCodexOverview ? 'Use the Codex dashboard refresh command for a full local audit with specific savings estimates.' : (isHostOverview ? '' : 'Run /token-optimizer for a full audit with specific savings estimates.'));
     } else {
       document.getElementById('stat-potential').innerHTML = fn(ctrl) + ' <span class="mini-label">controllable tokens</span>';
       document.getElementById('potential-desc').textContent =
@@ -3257,11 +3286,11 @@ var DB = (function() {
         ctaEl.innerHTML = '<div class="card-header"><span>Auto-Detected Recommendations</span></div>' +
           '<div class="empty-state" style="text-align:left;color:var(--c-text-dim);font-size:14px;">' +
           'These recommendations are auto-generated from your config. Browse them in the tabs on the left.<br>' +
-          (isCodexOverview ? 'For deeper analysis, refresh the Codex dashboard after a few real turns so quality and continuity signals are available.' : 'For deeper analysis (semantic duplication, content quality), run <code style="color:var(--c-accent-cyan)">/token-optimizer</code> for a full LLM-powered audit.') + '</div>';
+          (isCodexOverview ? 'For deeper analysis, refresh the Codex dashboard after a few real turns so quality and continuity signals are available.' : isHostOverview ? '' : 'For deeper analysis (semantic duplication, content quality), run <code style="color:var(--c-accent-cyan)">/token-optimizer</code> for a full LLM-powered audit.') + '</div>';
       } else {
         ctaEl.innerHTML = '<div class="card-header"><span>Optimization Recommendations</span></div>' +
           '<div class="empty-state">No auto-detected issues. Your setup looks clean.<br>' +
-          (isCodexOverview ? 'Refresh the Codex dashboard after live usage for deeper quality analysis.' : 'Run <code style="color:var(--c-accent-cyan)">/token-optimizer</code> for a full audit with deeper analysis.') + '</div>';
+          (isCodexOverview ? 'Refresh the Codex dashboard after live usage for deeper quality analysis.' : isHostOverview ? '' : 'Run <code style="color:var(--c-accent-cyan)">/token-optimizer</code> for a full audit with deeper analysis.') + '</div>';
       }
       gridEl.parentNode.insertBefore(ctaEl, gridEl.nextSibling);
     }
@@ -3326,20 +3355,20 @@ var DB = (function() {
 
       if (data.auto_plan) {
         html += '<div class="last-updated">Last updated: ' + esc(ts) +
-          (data.runtime === 'codex' ? ' · Auto-detected from Codex local config and logs.</div>' : ' · Auto-detected. Run <span class="update-cmd">/token-optimizer</span> for deeper LLM-powered analysis.</div>');
+          (data.runtime === 'codex' ? ' · Auto-detected from Codex local config and logs.</div>' : (isNoInstructionHost(data) ? ' · Auto-detected from local config and logs.</div>' : ' · Auto-detected. Run <span class="update-cmd">/token-optimizer</span> for deeper LLM-powered analysis.</div>'));
       } else if (data.standalone) {
         html += '<div class="last-updated">Last updated: ' + esc(ts) +
-          (data.runtime === 'codex' ? ' · Optimization data is limited until Codex session logs are collected.</div>' : ' · Optimization data not available in standalone mode. Run <span class="update-cmd">/token-optimizer</span> for a full audit with recommendations.</div>');
+          (data.runtime === 'codex' ? ' · Optimization data is limited until Codex session logs are collected.</div>' : (isNoInstructionHost(data) ? ' · Optimization data is limited in standalone mode.</div>' : ' · Optimization data not available in standalone mode. Run <span class="update-cmd">/token-optimizer</span> for a full audit with recommendations.</div>'));
       } else {
         html += '<div class="last-updated">Last updated: ' + esc(ts) +
-          (data.runtime === 'codex' ? ' · To refresh, use the Codex dashboard refresh command.</div>' : ' · To refresh, run <span class="update-cmd">/token-optimizer</span> again.</div>');
+          (data.runtime === 'codex' ? ' · To refresh, use the Codex dashboard refresh command.</div>' : (isNoInstructionHost(data) ? ' · To refresh, run ' + hostRefreshHtml(data) + '.</div>' : ' · To refresh, run <span class="update-cmd">/token-optimizer</span> again.</div>'));
       }
 
       if (secItems.length === 0) {
         if (!data.plan && !data.auto_plan) {
           html += '<div class="empty-state" style="text-align:center;padding:2rem 1rem;">' +
             '<div style="font-size:1.5rem;margin-bottom:0.5rem;">No optimization plan yet</div>' +
-            '<div style="color:var(--c-text-dim);margin-bottom:1rem;">' + (data.runtime === 'codex' ? 'Use live Codex sessions and refresh the dashboard to generate personalized recommendations with toggle items here.' : 'Run <span class="update-cmd" style="cursor:pointer">/token-optimizer</span> in ' + esc(data.runtime_label || 'Claude Code') + ' to generate personalized recommendations with toggle items here.') + '</div>' +
+            '<div style="color:var(--c-text-dim);margin-bottom:1rem;">' + (data.runtime === 'codex' ? 'Use live Codex sessions and refresh the dashboard to generate personalized recommendations with toggle items here.' : (isNoInstructionHost(data) ? 'Refresh the dashboard to generate recommendations from your ' + esc(data.runtime_label || 'runtime') + ' config here.' : 'Run <span class="update-cmd" style="cursor:pointer">/token-optimizer</span> in ' + esc(data.runtime_label || 'Claude Code') + ' to generate personalized recommendations with toggle items here.')) + '</div>' +
             '</div>';
         } else {
           html += '<div class="empty-state">No items in this category.</div>';
@@ -4966,7 +4995,7 @@ var DB = (function() {
           '<div style="font-size:18px;color:var(--c-text-main);line-height:1.7;max-width:760px;">' + esc(p) + '</div></div>';
       });
       html += '</div>';
-      html += '<div style="margin-top:var(--s-5);padding:var(--s-4);background:rgba(217,164,65,0.07);border:1px solid var(--c-amber);border-radius:10px;font-family:var(--font-mono);font-size:17px;line-height:1.6;color:var(--c-text-main);font-weight:500;">Run <span style="color:var(--c-amber);">/token-optimizer</span> and follow its suggestions to claim the rest &rarr;</div>';
+      if (data.runtime !== 'cursor' && data.runtime !== 'antigravity') html += '<div style="margin-top:var(--s-5);padding:var(--s-4);background:rgba(217,164,65,0.07);border:1px solid var(--c-amber);border-radius:10px;font-family:var(--font-mono);font-size:17px;line-height:1.6;color:var(--c-text-main);font-weight:500;">Run <span style="color:var(--c-amber);">/token-optimizer</span> and follow its suggestions to claim the rest &rarr;</div>';
       html += '</details></div>';
     }
 
@@ -5588,7 +5617,7 @@ var DB = (function() {
 
     // Snapshot summary
     var snap = c.snapshot || {};
-    var instructionLabel = snap.instruction_label || (isCodex ? 'AGENTS.md' : 'CLAUDE.md');
+    var instructionLabel = snap.instruction_label || (isCodex ? 'AGENTS.md' : isNoInstructionHost(data) ? 'agent instructions' : 'CLAUDE.md');
     html += '<div class="dashboard-grid">' +
       '<div class="card"><div class="card-header"><span>Startup Overhead</span></div>' +
       '<div style="font-size:11px;color:var(--c-text-dim);padding:0 0 4px 0;">Tokens loaded before you type. Includes ' + esc(instructionLabel) + ', skills/plugin metadata, MCP tools, and system prompt.</div>' +
@@ -6034,7 +6063,7 @@ var DB = (function() {
           : m && m.read_only
           ? 'Your ' + esc(data.runtime_label || 'runtime') + ' skills and MCP servers, read from its own files. Token Optimizer feature toggles are below.'
           : window.__TOKEN_API_LIVE
-          ? '<span style="color:var(--c-accent-cyan);font-weight:600;">Live mode</span> — toggles apply instantly to settings. <strong>Restart ' + (isCodex ? 'Codex' : 'Claude') + '</strong> to activate changes.'
+          ? '<span style="color:var(--c-accent-cyan);font-weight:600;">Live mode</span> — toggles apply instantly to settings. <strong>Restart ' + (isCodex ? 'Codex' : isNoInstructionHost(data) ? esc(data.runtime_label || 'the runtime') : 'Claude') + '</strong> to activate changes.'
           : tcliHtml('Open in serve mode for live toggles: <code style="background:var(--c-bg);padding:2px 5px;border-radius:4px;">python3 measure.py dashboard --serve</code>')) +
       '</p>' +
       '</div>';
@@ -6043,6 +6072,7 @@ var DB = (function() {
       html += '<div style="padding:12px var(--s-3);margin-bottom:var(--s-2);background:var(--c-bg);border-left:3px solid var(--c-accent-cyan);border-radius:4px;font-size:14px;color:var(--c-text-dim);">' +
         (isCodex
           ? 'Showing default Codex feature state. Run a Codex dashboard refresh to reflect your actual config.'
+          : isNoInstructionHost(data) ? 'Showing default feature state.'
           : 'Showing default feature state. Run <code style="background:var(--c-bg);padding:2px 5px;border-radius:4px;">/token-optimizer</code> once to reflect your actual config and enable live toggles.') +
         '</div>';
     }
@@ -6259,8 +6289,19 @@ var DB = (function() {
         '\'s own skills folder and config.yaml. Change them in ' + esc(roLabel) + '; this list updates on the next refresh.</p>';
     }
 
+    // --- NO SKILL/MCP MANAGEMENT (Cursor, Antigravity) ---
+    // The skill and MCP controls below act on a Claude Code setup, so they are
+    // not shown for runtimes that have no such folder.
+    if (isNoInstructionHost(data)) {
+      html += '<div class="card wide"><div class="card-header"><span>Skills and MCP servers</span></div>' +
+        '<div style="padding:var(--s-3);color:var(--c-text-dim);font-size:14px;line-height:1.6;">' +
+        'Skill and MCP management is not available under ' + esc(data.runtime_label || 'this runtime') +
+        '. It applies to a Claude Code setup, and Token Optimizer does not change ' + esc(data.runtime_label || 'this runtime') + ' skills or servers.' +
+        '</div></div>';
+    }
+
     // --- SKILLS SECTION ---
-    if (!isCodex && !m.read_only) {
+    if (!isCodex && !m.read_only && !isNoInstructionHost(data)) {
     var activeSkills = (m.skills && m.skills.active) || [];
     var archivedSkills = (m.skills && m.skills.archived) || [];
     var totalTokens = activeSkills.reduce(function(s, sk) { return s + (sk.tokens || 100); }, 0);
@@ -6632,7 +6673,7 @@ var DB = (function() {
 
     if (count === 0) {
       if (!data.plan && !data.auto_plan) {
-        listEl.innerHTML = '<div class="empty-state">Run <span class="update-cmd">/token-optimizer</span> to generate optimization items you can toggle here.</div>';
+        listEl.innerHTML = (isNoInstructionHost(data) ? '<div class="empty-state">No optimization items to toggle for ' + esc(data.runtime_label || 'this runtime') + ' yet.</div>' : '<div class="empty-state">Run <span class="update-cmd">/token-optimizer</span> to generate optimization items you can toggle here.</div>');
       } else {
         listEl.innerHTML = '<div class="empty-state">Toggle items in Quick Wins, Medium, or Deep to build your optimization prompt.</div>';
       }

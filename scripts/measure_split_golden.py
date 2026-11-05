@@ -203,7 +203,7 @@ def capture(source, workspace, output, cases, *, compiled_cache=True):
         if (source / folder).is_dir():
             shutil.copytree(source / folder, payload / folder,
                             ignore=shutil.ignore_patterns('__pycache__', '*.pyc', 'node_modules', '.venv'))
-    for name in ('install.sh', 'package.json', 'LICENSE', 'PRIVACY.md'):
+    for name in ('install.sh', 'package.json', 'LICENSE', 'PRIVACY.md', 'README.md'):
         if (source / name).is_file():
             shutil.copyfile(source / name, payload / name)
     for path in payload.rglob('*'):
@@ -282,6 +282,8 @@ def capture(source, workspace, output, cases, *, compiled_cache=True):
         (record / 'stdout').write_bytes(proc.stdout)
         (record / 'stderr').write_bytes(proc.stderr)
         (record / 'exit').write_text(str(proc.returncode) + '\n')
+        if row['entry'] == 'cli' and b'Traceback (most recent call last)' in proc.stderr:
+            raise RuntimeError(row['id'] + ': unexpected traceback in CLI fixture: ' + proc.stderr.decode('utf-8', 'replace'))
         if (work / 'http-console.stdout').exists():
             (record / 'server.stdout').write_bytes((work / 'http-console.stdout').read_bytes())
         if row['entry'] in ('api', 'exports', 'node', 'http') and proc.returncode:

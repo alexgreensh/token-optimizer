@@ -71,6 +71,32 @@ def test_hook_has_deterministic_watchdog_order(variant):
     assert golden.compare(work / 'first', work / 'second') == []
 
 
+@pytest.mark.parametrize('argv', [['devin-doctor', '--json'], ['subagent-cache', 'enable', '--json']])
+def test_normal_cli_fixture_has_required_markers_and_version(argv):
+    import uuid
+    work = REPO / '.scratch-u0' / ('normal-cli-test-' + uuid.uuid4().hex)
+    row = {'id': 'normal', 'entry': 'cli', 'argv': argv, 'runtime': 'claude',
+           'fixture': 'synthetic-current', 'stdin_base64': ''}
+    golden.capture(REPO, work / 'fixed-path', work / 'capture', [row])
+    assert (work / 'fixed-path/payload/README.md').is_file()
+    stderr = (work / 'capture/normal/stderr').read_bytes()
+    assert b'Traceback' not in stderr
+    assert b'bootstrap manifest gate refused' not in stderr
+
+
+def test_unexpected_cli_traceback_rejects_a_fixture(tmp_path):
+    import uuid
+    source = tmp_path / 'source'
+    scripts = source / 'skills/token-optimizer/scripts'
+    scripts.mkdir(parents=True)
+    (scripts / 'measure.py').write_text('raise RuntimeError("invalid fixture")\n')
+    work = REPO / '.scratch-u0' / ('bad-cli-test-' + uuid.uuid4().hex)
+    row = {'id': 'bad', 'entry': 'cli', 'argv': [], 'runtime': 'claude',
+           'fixture': 'synthetic-current', 'stdin_base64': ''}
+    with pytest.raises(RuntimeError, match='unexpected traceback'):
+        golden.capture(source, work / 'fixed-path', work / 'capture', [row])
+
+
 def test_every_dispatch_spelling_has_manifest_rows():
     import sys
     sys.path.insert(0, str(REPO / 'scripts'))

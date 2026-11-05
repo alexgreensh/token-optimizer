@@ -184,9 +184,12 @@ class Process:
         self.text = kw.get('text') or kw.get('universal_newlines') or kw.get('encoding')
         self.stdout = None
         self.stderr = None
+        self.fixture_output = '2.1.318 (Claude Code)\n' if (
+            isinstance(args, (list, tuple)) and len(args) == 2
+            and Path(str(args[0])).name in ('claude', 'claude.exe') and args[1] == '--version') else ''
     def communicate(self, input=None, timeout=None):
         empty = '' if self.text else b''
-        return empty, empty
+        return self.fixture_output if self.text else self.fixture_output.encode(), empty
     def wait(self, timeout=None): return 0
     def poll(self): return 0
     def kill(self): pass

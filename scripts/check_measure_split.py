@@ -23,6 +23,14 @@ def check(root=split.REPO):
         errors.append(f'package files differ: missing={expected_files-actual_files}, extra={actual_files-expected_files}')
     source = (scripts / 'measure.py').read_text(encoding='utf-8')
     facade = ast.parse(source)
+    bootstrap = [node for node in facade.body if isinstance(node, ast.FunctionDef)
+                 and node.name == '_redirect_bytecode_out_of_repo']
+    calls = [node.lineno for node in ast.walk(facade) if isinstance(node, ast.Call)
+             and isinstance(node.func, ast.Name) and node.func.id == '_redirect_bytecode_out_of_repo']
+    compat_imports = [node.lineno for node in facade.body if isinstance(node, ast.ImportFrom)
+                      and node.module == '_measure']
+    if len(bootstrap) != 1 or not calls or not compat_imports or bootstrap[0].end_lineno >= min(calls + compat_imports):
+        errors.append('retained bytecode bootstrap must precede its early call')
     found = {}
     bindings = {}
     if split.resolve_symbol(scripts, '__main__').name == 'measure.py':
@@ -37,7 +45,7 @@ def check(root=split.REPO):
     moved = set()
     for path in sorted(package.glob('*.py')):
         text = path.read_text(encoding='utf-8')
-        limit = 200 if path.name == '_compat.py' else 9000
+        limit = 200 if path.name == '_compat.py' else 1000
         if len(text.splitlines()) > limit:
             errors.append(f'{path.name}: exceeds {limit} lines')
         if path.name.startswith('_'):
@@ -68,6 +76,10 @@ def check(root=split.REPO):
             errors.append(f'{name}: expected one body, found {found.get(name, [])}')
         if name in moved and name not in bindings and name != '__main__':
             errors.append(f'{name}: moved body has no facade binding')
+        if name in bindings:
+            expected = f"_measure_providers[{records[name]['module']!r}].{name}"
+            if bindings[name] != expected:
+                errors.append(f'{name}: wrong facade binding, expected {expected}')
         if name in bindings and name not in moved:
             errors.append(f'{name}: binding has no moved body')
     for name in found.keys() - records.keys():

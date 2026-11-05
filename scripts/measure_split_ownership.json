@@ -1365,7 +1365,9 @@
         1
       ],
       "symbols": [
-        "_init_trends_db"
+        "_get_model_cost",
+        "_init_trends_db",
+        "_safe_int"
       ]
     },
     "tests/test_cowork_committed_plugin.py": {
@@ -2707,6 +2709,11 @@
         "setup_daemon"
       ]
     },
+    "tests/test_measure_split_artifacts.py": {
+      "owner": 0,
+      "lanes": [],
+      "symbols": []
+    },
     "tests/test_measure_split_compat.py": {
       "owner": 0,
       "lanes": [
@@ -2755,6 +2762,7 @@
       ],
       "symbols": [
         "_normalize_model_name",
+        "_redirect_bytecode_out_of_repo",
         "_safe_int"
       ]
     },
@@ -4769,17 +4777,6 @@
       ],
       "symbols": [
         {
-          "name": "_redirect_bytecode_out_of_repo",
-          "module": "runtime",
-          "lane": 1,
-          "start": 111,
-          "end": 147,
-          "kind": "FunctionDef",
-          "signature": "def _redirect_bytecode_out_of_repo():",
-          "global_declarations": [],
-          "sha256": "c287d9779c0bef1c503cdee66243915c19eb01ab2e1456364ab4dbede8acd826"
-        },
-        {
           "name": "_windows_stdio_kwargs",
           "module": "runtime",
           "lane": 1,
@@ -6759,6 +6756,19 @@
           "sha256": "43e9a8c1496248c1c6405d0dd7aaefeba77e36dde7361861782d5d7e40214d3f"
         }
       ],
+      "retained_symbols": [
+        {
+          "name": "_redirect_bytecode_out_of_repo",
+          "module": "runtime",
+          "lane": 1,
+          "start": 111,
+          "end": 147,
+          "kind": "FunctionDef",
+          "signature": "def _redirect_bytecode_out_of_repo():",
+          "global_declarations": [],
+          "sha256": "c287d9779c0bef1c503cdee66243915c19eb01ab2e1456364ab4dbede8acd826"
+        }
+      ],
       "dispatch": null,
       "inherited_canaries": [
         "_bundled_prices_path",
@@ -7887,6 +7897,7 @@
           "sha256": "58d94cd181ec29acc9591e25e87684b63b2a19227e242ba031f444e16840400f"
         }
       ],
+      "retained_symbols": [],
       "dispatch": {
         "module": "cli",
         "lane": 2,
@@ -9395,6 +9406,7 @@
           "sha256": "6ff7e15c4cb9dd50a9979e829048cd57b52bf4d51c749a346aaeb2991844ffa7"
         }
       ],
+      "retained_symbols": [],
       "dispatch": null,
       "inherited_canaries": [],
       "owned_existing_tests": [
@@ -11420,6 +11432,7 @@
           "sha256": "9ea95fdaa30a778a78e4ee366af96b016891955085d3c849d592a78e158efe8a"
         }
       ],
+      "retained_symbols": [],
       "dispatch": null,
       "inherited_canaries": [],
       "owned_existing_tests": [],
@@ -12414,6 +12427,7 @@
           "sha256": "90c0f2e1759cf3bbbace665af812125da18cb88ac37f01ef110d9b4cb65dac22"
         }
       ],
+      "retained_symbols": [],
       "dispatch": null,
       "inherited_canaries": [
         "_read_codex_config"
@@ -15145,6 +15159,7 @@
           "sha256": "7324187a6ea9fc436d9646375b5685350df8b32692a245d0adfb8254c220c8ad"
         }
       ],
+      "retained_symbols": [],
       "dispatch": null,
       "inherited_canaries": [],
       "owned_existing_tests": [
@@ -16580,6 +16595,7 @@
           "sha256": "edf461640d32578f78e3a3089b4d6c0a02ca97c0e75edfad9f5831aaedaf29b5"
         }
       ],
+      "retained_symbols": [],
       "dispatch": null,
       "inherited_canaries": [],
       "owned_existing_tests": [
@@ -18857,6 +18873,7 @@
           "sha256": "95b840b4814072165fc91ea501843021ec2ba02ba0ca765952de80fd91ca7f65"
         }
       ],
+      "retained_symbols": [],
       "dispatch": null,
       "inherited_canaries": [
         "_settings_lock"
@@ -19091,17 +19108,17 @@
     },
     {
       "file": "tests/test_measure_split_golden.py",
-      "line": 79,
+      "line": 274,
       "helper": "measure_source"
     },
     {
       "file": "tests/test_measure_split_golden.py",
-      "line": 90,
+      "line": 285,
       "helper": "measure_source"
     },
     {
       "file": "tests/test_measure_split_tooling.py",
-      "line": 200,
+      "line": 299,
       "helper": "measure_source"
     },
     {
@@ -19413,7 +19430,7 @@
     },
     {
       "file": "tests/test_cold_compile_gate.py",
-      "line": 439,
+      "line": 444,
       "helper": "exec_source_module"
     },
     {

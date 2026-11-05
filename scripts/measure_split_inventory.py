@@ -273,7 +273,8 @@ def ownership(manifest, root):
     for lane in range(1, 9):
         lanes[str(lane)] = {
             'modules': [name for name, owner in split.LANES.items() if owner == lane],
-            'symbols': [row for row in manifest['symbols'] if row['lane'] == lane],
+            'symbols': [row for row in manifest['symbols'] if row['lane'] == lane and row['name'] not in split.RETAINED],
+            'retained_symbols': [row for row in manifest['symbols'] if row['lane'] == lane and row['name'] in split.RETAINED],
             'dispatch': manifest['dispatch'] if lane == 2 else None,
             'inherited_canaries': sorted(name for name in canaries if symbols[name]['lane'] == lane),
             'owned_existing_tests': [path for path, record in tests.items() if record['owner'] == lane],

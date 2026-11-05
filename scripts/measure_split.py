@@ -23,6 +23,7 @@ LANES = {'runtime': 1, 'pricing': 1, 'trends': 1, 'sessions': 2, 'cli': 2,
          'savings': 3, 'cache_policy': 4, 'audit': 5, 'quality_archive': 6,
          'continuity': 6, 'daemon': 7, 'dashboard': 8, 'lifecycle': 8}
 DEFINITION = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+RETAINED = frozenset({'_redirect_bytecode_out_of_repo'})
 HEADER = '"""Definition-only implementations; mutable state belongs to measure."""\nfrom __future__ import annotations\nfrom . import _compat\n'
 
 
@@ -62,7 +63,7 @@ def _dispatch_moved(path, mtime_ns, size):
 
 class Qualifier(ast.NodeVisitor):
     """Use CPython's symbol tables; retain all untouched text byte for byte."""
-    def __init__(self, source, table, globals_):
+    def __init__(self, source, table, globals_, *, tree=None):
         self.source = source
         self.lines = source.splitlines(keepends=True)
         self.offsets = [0]
@@ -77,6 +78,8 @@ class Qualifier(ast.NodeVisitor):
         self.class_comprehension = False
         self.root = None
         self.import_counter = 0
+        self.exception_targets = {node.name for node in ast.walk(tree or ast.parse(source))
+                                  if isinstance(node, ast.ExceptHandler) and node.name}
 
     def offset(self, line, column):
         # AST columns count UTF-8 bytes, string slicing counts characters.
@@ -113,7 +116,10 @@ class Qualifier(ast.NodeVisitor):
         class_comp = self.in_comprehension and class_scope
         if (symbol.is_global() or class_comp) and node.id in self.globals:
             prefix = '_compat.facade().' if class_scope else '_measure_facade.'
-            self.replace(node, prefix + node.id)
+            if isinstance(node.ctx, ast.Load) and node.id in self.exception_targets:
+                self.replace(node, f'_compat.read_global({prefix[:-1]}, {node.id!r})')
+            else:
+                self.replace(node, prefix + node.id)
 
     def visit_Global(self, node):
         remaining = [name for name in node.names if name not in self.globals]
@@ -125,6 +131,41 @@ class Qualifier(ast.NodeVisitor):
             self.replace(node, '_measure_facade.__dict__')
         else:
             self.generic_visit(node)
+
+    def visit_ExceptHandler(self, node):
+        self.generic_visit(node)
+        if not node.name or not self.table.lookup(node.name).is_global():
+            return
+        start = self.offset(node.lineno, node.col_offset)
+        end = self.offset(node.end_lineno, node.end_col_offset)
+        body = self.source[start:end]
+        contained = [edit for edit in self.edits if start <= edit[0] <= edit[1] <= end]
+        for left, right, replacement in sorted(contained, reverse=True):
+            body = body[:left-start] + replacement + body[right-start:]
+        indent = ' ' * node.col_offset
+        prefix = 'if True:\n' if indent else ''
+        wrapper = ast.parse(prefix + indent + 'try:\n' + indent + '    pass\n' + indent + body).body[0]
+        if indent:
+            wrapper = wrapper.body[0]
+        handler = wrapper.handlers[0]
+        temporary = '_measure_exception_' + str(self.import_counter)
+        while temporary in self.source:
+            self.import_counter += 1
+            temporary = '_measure_exception_' + str(self.import_counter)
+        self.import_counter += 1
+        handler.name = temporary
+        target = ('_compat.facade().' if self.table.get_type() == 'class' else '_measure_facade.') + node.name
+        # Python clears an exception target even when the suite exits early
+        # or deletes the target itself. Keep that cleanup on the facade.
+        handler.body = [*ast.parse(target + ' = ' + temporary).body,
+                        ast.Try(body=handler.body, handlers=[], orelse=[],
+                                finalbody=ast.parse(target + ' = None\ndel ' + target).body)]
+        rendered = ast.unparse(ast.fix_missing_locations(handler))
+        if isinstance(wrapper, ast.TryStar):
+            rendered = rendered.replace('except ', 'except* ', 1)
+        rendered = rendered.replace('\n', '\n' + ' ' * node.col_offset)
+        self.edits = [edit for edit in self.edits if edit not in contained]
+        self.edits.append((start, end, rendered))
 
     def visit_FunctionDef(self, node):
         parent = self.table
@@ -237,13 +278,15 @@ class Qualifier(ast.NodeVisitor):
 
 
 def extract_definition(source, name, module, *, tree=None, table=None):
+    if name in RETAINED:
+        raise ValueError('retained facade definition: ' + name)
     tree = tree or ast.parse(source)
     node = next(n for n in tree.body if isinstance(n, DEFINITION) and n.name == name)
     top = table or symtable.symtable(source, 'measure.py', 'exec')
     qualifier = Qualifier(source, top, {s.get_name() for s in top.get_symbols()
                                       if s.is_assigned() or s.is_imported()} |
                           {name for statement in ast.walk(tree) if isinstance(statement, ast.Global)
-                           for name in statement.names})
+                           for name in statement.names}, tree=tree)
     import copy
     node = copy.deepcopy(node)
     qualifier.root = node
@@ -279,6 +322,8 @@ def extract_definition(source, name, module, *, tree=None, table=None):
 
 
 def move(scripts, names):
+    if RETAINED.intersection(names):
+        raise ValueError('retained facade definitions: ' + ', '.join(sorted(RETAINED.intersection(names))))
     scripts = Path(scripts)
     path = scripts / 'measure.py'
     source = path.read_text(encoding='utf-8')
@@ -309,7 +354,7 @@ def move_cli(scripts):
     tree = ast.parse(source)
     guard = next(n for n in tree.body if isinstance(n, ast.If) and ast.unparse(n.test) == "__name__ == '__main__'")
     top = symtable.symtable(source, str(path), 'exec')
-    qualifier = Qualifier(source, top, {s.get_name() for s in top.get_symbols() if s.is_assigned() or s.is_imported()})
+    qualifier = Qualifier(source, top, {s.get_name() for s in top.get_symbols() if s.is_assigned() or s.is_imported()}, tree=tree)
     for statement in guard.body:
         qualifier.visit(statement)
     start = qualifier.offsets[guard.lineno]

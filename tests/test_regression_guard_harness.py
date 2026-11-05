@@ -33,7 +33,10 @@ def test_every_registered_mutation_is_well_formed_and_still_applies():
     muts = guards.collect()
     assert len(muts) >= 12
     for name, _tests, relpath, edits, origin in muts:
-        guards.plant((REPO / relpath).read_text(encoding="utf-8"), edits)  # raises if stale
+        try:
+            guards.plant((REPO / relpath).read_text(encoding="utf-8"), edits)
+        except guards.MutationError as exc:
+            pytest.fail(f"{origin}: {name}: {exc}")
 
 
 def test_stale_mutation_fails_loudly(mutations_dir, capsys):

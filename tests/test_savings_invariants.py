@@ -120,3 +120,10 @@ def test_dated_consumption_windows_are_monotone_without_ingestion_fallback(m):
     assert [m._dashboard_spent_token_basis(conn, days)["tokens"] for days in (30, 60, 90)] == [110, 320, 630]
     assert m._dashboard_spent_token_basis(conn, 30)["complete"] is False
     conn.close()
+
+
+def test_methodology_discloses_checkpoint_restore_bounds_and_scope():
+    doc = METHODOLOGY.read_text(encoding="utf-8")
+    assert "6,300" in doc and "4,000" in doc and "1,500" in doc and "800" in doc
+    assert "OpenCode and OpenClaw" in doc
+    assert "working set" in doc and "checkpoint_restore" in doc

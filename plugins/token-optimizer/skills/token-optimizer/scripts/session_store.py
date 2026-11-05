@@ -24,6 +24,7 @@ Configuration:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sqlite3
@@ -878,6 +879,15 @@ class SessionStore:
             (key, value),
         )
         conn.commit()
+
+    def record_file_edit(self, file_path: str) -> None:
+        """Keep edit evidence without persisting credential-shaped path text."""
+        fingerprint = hashlib.sha256(file_path.encode("utf-8")).hexdigest()
+        self.set_meta("checkpoint_edit:" + fingerprint, "1")
+
+    def was_file_edited(self, file_path: str) -> bool:
+        fingerprint = hashlib.sha256(file_path.encode("utf-8")).hexdigest()
+        return self.get_meta("checkpoint_edit:" + fingerprint) == "1"
 
     # ----- context_intel_events -----
 

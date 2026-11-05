@@ -2211,6 +2211,13 @@ def handle_invalidate(hook_input: dict[str, Any], quiet: bool) -> None:
     if store is None:
         return
 
+    # Checkpoints can predate this edit. Preserve its path independently of
+    # cache entries, including edits to files that have never been read.
+    try:
+        store.record_file_edit(file_path)
+    except Exception:
+        pass
+
     # U5: resolve the first-read shadow quality proxy (edit-after-shadow-read).
     _resolve_first_read_shadow_on_edit(
         file_path, detect_structure_language(file_path), session_id, store

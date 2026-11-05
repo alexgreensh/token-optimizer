@@ -1,0 +1,114 @@
+[
+  {
+    "mutation": "fill phrase leads with the auto-compact share again",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "        return (f\"{model_fill:.0f}% of {_format_window_size(model_window)} window \"",
+    "new": "        return (f\"{fill_pct:.0f}% of {_format_window_size(model_window)} window \"",
+    "symbol": "_format_context_fill"
+  },
+  {
+    "mutation": "verbosity nudge hand-builds the fill number from fill_pct",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "f\"[Token Optimizer] Context {_format_context_fill(fill_pct, cached)}, resource health",
+    "new": "f\"[Token Optimizer] Context {fill_pct:.0f}%{window_note}, resource health",
+    "symbol": "_verbosity_nudge_text"
+  },
+  {
+    "mutation": "quality detail leads with the compact-window share",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "            f\"{round(model_fill * 100)}% of model window \"\n            f\"({round(fill_pct * 100)}% of the way to auto-compact), \"",
+    "new": "            f\"{round(fill_pct * 100)}% of compact window \"\n            f\"({round(model_fill * 100)}% of model window), \"",
+    "symbol": "compute_quality_score"
+  },
+  {
+    "mutation": "checkpoint header shows the compact-window share",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "    if result.get(\"compact_window_reduced\") and isinstance(result.get(\"model_fill_pct\"), (int, float)):\n        return result[\"model_fill_pct\"]",
+    "new": "    if False:\n        return result[\"model_fill_pct\"]",
+    "symbol": "_model_window_fill"
+  },
+  {
+    "mutation": "#249 compact-window % labelled with the model window",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "    if not cached.get(\"compact_window_reduced\"):\n        return \"\"\n",
+    "new": "    return \"\"\n",
+    "symbol": "_format_reduced_window_note"
+  },
+  {
+    "mutation": "checkpoint git label follows git's auto-lengthened --short",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "r = subprocess.run([\"git\", \"rev-parse\", \"HEAD\", \"--abbrev-ref\", \"HEAD\"]",
+    "new": "r = subprocess.run([\"git\", \"rev-parse\", \"--short\", \"HEAD\", \"--abbrev-ref\", \"HEAD\"]",
+    "symbol": "_capture_git_state"
+  },
+  {
+    "mutation": "checkpoint git label follows git's auto-lengthened --short",
+    "edit": 1,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "return out[1].strip() or None, out[0].strip()[:7] or None",
+    "new": "return out[1].strip() or None, out[0].strip() or None",
+    "symbol": "_capture_git_state"
+  },
+  {
+    "mutation": "post-compact restore picks a checkpoint saved after the compaction",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "                session_checkpoints = [(r, cp) for r, cp in session_checkpoints if cp[\"created\"] <= anchor]\n",
+    "new": "                pass\n",
+    "symbol": "compact_restore"
+  },
+  {
+    "mutation": "post-compact restore fences on a stale PreCompact capture",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "            if (now - anchor).total_seconds() <= _COMPACT_RESTORE_ANCHOR_MAX_AGE_S:\n",
+    "new": "            if True:\n",
+    "symbol": "compact_restore"
+  },
+  {
+    "mutation": "post-compact restore always prefers the PreCompact capture",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "            session_checkpoints.sort(key=lambda x: (x[0], -x[1][\"created\"].timestamp()))\n            best_cp = session_checkpoints[0][1]\n",
+    "new": "            session_checkpoints.sort(key=lambda x: (x[1].get(\"trigger\", \"auto\") != \"auto\", x[0], -x[1][\"created\"].timestamp()))\n            best_cp = session_checkpoints[0][1]\n",
+    "symbol": "compact_restore"
+  },
+  {
+    "mutation": "#246 module-level threshold call raises a NameError the fallback swallows",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "    return _TOOL_CALL_WARN_THRESHOLDS\n\n# Configurable via env vars\n",
+    "new": "    return _TOOL_CALL_WARN_THRESHOLDS\n\n_TOOL_CALL_WARN, _TOOL_CALL_CRITICAL = _scaled_tool_call_thresholds()\n\n# Configurable via env vars\n",
+    "symbol": "_tool_call_warn_thresholds"
+  },
+  {
+    "mutation": "#278 Codex Stop writes a 'No transcript data available' placeholder",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "        if _use_codex_session_adapter(transcript_path or None):\n",
+    "new": "        if not session_id and _use_codex_session_adapter():\n",
+    "symbol": "compact_capture"
+  },
+  {
+    "mutation": "purge --force on Windows asks POSIX ps and never stops the daemon",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "            if os.name == \"nt\":\n                # No `ps` on Windows",
+    "new": "            if False:\n                # No `ps` on Windows",
+    "symbol": "_purge_all_data"
+  },
+  {
+    "mutation": "#253 compact-capture exits 0 without writing the checkpoint",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "    if not _write_checkpoint_atomic(checkpoint_path, checkpoint_content):\n        return None",
+    "new": "    if True:\n        return None",
+    "symbol": "compact_capture"
+  }
+]

@@ -1,0 +1,23 @@
+[
+  {
+    "mutation": "#192 Claude Desktop WSL 2 ccd-cli launcher not recognised as a session",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "_CCD_CLI_LAUNCHER_SEGMENT = \"/.claude/remote/ccd-cli/\"",
+    "new": "_CCD_CLI_LAUNCHER_SEGMENT = \"/.claude/remote/ccd-cli-unknown/\""
+  },
+  {
+    "mutation": "#118 Windows SessionEnd hook uses a cmd NUL redirect under Git Bash",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "        f\" >/dev/null 2>&1\"\n    )\nelse:",
+    "new": "        f\" >NUL 2>&1\"\n    )\nelse:"
+  },
+  {
+    "mutation": "#118 Windows SessionEnd hook keeps backslash paths",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "    _py = shlex.quote(str(sys.executable).replace(\"\\\\\", \"/\"))\n    _mp = shlex.quote(str(MEASURE_PY_PATH).replace(\"\\\\\", \"/\"))",
+    "new": "    _py = shlex.quote(str(sys.executable))\n    _mp = shlex.quote(str(MEASURE_PY_PATH))"
+  }
+]

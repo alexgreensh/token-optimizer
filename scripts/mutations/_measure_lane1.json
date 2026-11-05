@@ -1,0 +1,66 @@
+[
+  {
+    "mutation": "cwd/project mismatch warning printed to stdout (model context, broken hook JSON)",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "Using most recent: {result.name}\",\n          file=sys.stderr)",
+    "new": "Using most recent: {result.name}\")",
+    "symbol": "find_projects_dir"
+  },
+  {
+    "mutation": "Claude Code cloud runs the desktop-only daemon / settings / welcome work",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "            return False\n        return is_claude_code_cloud()\n",
+    "new": "            return False\n        return False\n",
+    "symbol": "_remote_lean_profile"
+  },
+  {
+    "mutation": "cloud VM runs the desktop-only daemon / scheduler work",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "            return False\n        return is_claude_code_cloud()\n",
+    "new": "            return False\n        return False\n",
+    "symbol": "_remote_lean_profile"
+  },
+  {
+    "mutation": "MSIX physical path is not mapped back to AppData",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "    m = _MSIX_REDIRECT_RE.match(text)\n    if not m:",
+    "new": "    m = None\n    if not m:",
+    "symbol": "_unvirtualize_msix_path"
+  },
+  {
+    "mutation": "hook transcript_path is ignored",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "    if from_transcript is not None:\n        return from_transcript\n",
+    "new": "    if False:\n        return from_transcript\n",
+    "symbol": "find_projects_dir"
+  },
+  {
+    "mutation": "payload cwd is ignored",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "    if cwd:\n        bases.append(cwd)\n",
+    "new": "    if False:\n        bases.append(cwd)\n",
+    "symbol": "find_projects_dir"
+  },
+  {
+    "mutation": "session model read through the cwd guess instead of the session's own file",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "            candidate = next(iter(sorted((CLAUDE_DIR / \"projects\").glob(f\"*/{session_id}.jsonl\"))), None)",
+    "new": "            candidate = None",
+    "symbol": "_resolve_session_model"
+  },
+  {
+    "mutation": "a scheduler job whose paths are all gone counts as another install (REVIEW-2 MED-2)",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "            if live:\n                answer = \"%s -> %s\" % (artifact, live[0])",
+    "new": "            if paths:\n                answer = \"%s -> %s\" % (artifact, (live or paths)[0])",
+    "symbol": "_scheduler_job_points_elsewhere"
+  }
+]

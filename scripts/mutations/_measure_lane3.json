@@ -1,0 +1,154 @@
+[
+  {
+    "mutation": "baseline slides onto post-install months",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "            pinned = _pinned_workload_anchor()\n",
+    "new": "            pinned = None\n",
+    "symbol": "_session_weight_pool_savings"
+  },
+  {
+    "mutation": "baseline slides onto post-install months",
+    "edit": 1,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "str(frozen.get(\"month\") or \"\") <= month",
+    "new": "str(frozen.get(\"month\") or \"\") == month",
+    "symbol": "_stable_workload_anchor"
+  },
+  {
+    "mutation": "re-reads priced at the family card, not the exact model",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "key = value.replace(\"-\", \"_\").replace(\".\", \"_\")",
+    "new": "key = _normalize_model_name(value)",
+    "symbol": "_counted_exact_card"
+  },
+  {
+    "mutation": "savings report leaves out avoided re-reads",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "    summary[\"reread_avoided\"] = summary[\"counted_period\"]\n",
+    "new": "    summary[\"reread_avoided\"] = {}\n",
+    "symbol": "savings_report"
+  },
+  {
+    "mutation": "a flat whole-workload week hides the measured savings",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "return value if float((value or {}).get(\"saved_usd\") or 0.0) > 0 else None",
+    "new": "return value",
+    "symbol": "_positive_full_value"
+  },
+  {
+    "mutation": "a flat whole-workload week hides the measured savings",
+    "edit": 1,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "if wdays == 7 and weekly_full and float(weekly_full.get(\"saved_usd\") or 0.0) > ctx + rt:",
+    "new": "if wdays == 7 and weekly_full:",
+    "symbol": "runway_snapshot"
+  },
+  {
+    "mutation": "stored re-read rows keep a pricing bug after it is fixed",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "def _reprice_counted_rows_once(conn):\n",
+    "new": "def _reprice_counted_rows_once(conn):\n    return\n",
+    "symbol": "_reprice_counted_rows_once"
+  },
+  {
+    "mutation": "stored re-read rows keep a pricing bug after it is fixed",
+    "edit": 1,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "        current = (detail.get(\"version\") == _COUNTED_PRICING_VERSION",
+    "new": "        current = True or (detail.get(\"version\") == _COUNTED_PRICING_VERSION",
+    "symbol": "_counted_rollup_rows"
+  },
+  {
+    "mutation": "stored re-read rows keep a pricing bug after it is fixed",
+    "edit": 2,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "                out[key] += detail[key]\n",
+    "new": "                out[key] += detail.get(key, 0)\n",
+    "symbol": "_counted_rollup_rows"
+  },
+  {
+    "mutation": "a thinner history silently shrinks the frozen baseline",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "def _baseline_shrink_is_material(incumbent, candidate):",
+    "new": "def _baseline_shrink_is_material(incumbent, candidate):\n    return False\n\n\ndef _unused_shrink(incumbent, candidate):",
+    "symbol": "_baseline_shrink_is_material"
+  },
+  {
+    "mutation": "session-cost breakdown prices input at the family card",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "        c_in = _get_model_cost(model, fi, 0, 0, 0, tier=tier)",
+    "new": "        c_in = _get_model_cost(_normalize_model_name(model), fi, 0, 0, 0, tier=tier)",
+    "symbol": "_session_cost_components"
+  },
+  {
+    "mutation": "subagent cost added on top of a total that already holds it",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "    total = float(priced[\"total_cost\"])\n",
+    "new": "    total = float(priced[\"total_cost\"]) + max(0.0, float(priced[\"total_cost\"]) - float(priced[\"main_cost\"]))\n",
+    "symbol": "_session_cost_entry"
+  },
+  {
+    "mutation": "a session stored under two paths is counted twice",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "        key = _session_cost_row_id(r)\n        rank = _session_rank(",
+    "new": "        key = (_session_cost_row_id(r), r[\"id\"])\n        rank = _session_rank(",
+    "symbol": "session_cost_query"
+  },
+  {
+    "mutation": "session-cost reads the legacy ~/.claude/token-optimizer/trends.db",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "    if not TRENDS_DB.exists():\n        out[\"error\"] = (\"No Token Optimizer history yet",
+    "new": "    TRENDS_DB = RUNTIME_DIR / \"token-optimizer\" / \"trends.db\"\n    if not TRENDS_DB.exists():\n        out[\"error\"] = (\"No Token Optimizer history yet",
+    "symbol": "session_cost_query"
+  },
+  {
+    "mutation": "session-cost reads the legacy ~/.claude/token-optimizer/trends.db",
+    "edit": 1,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "        \"db\": str(TRENDS_DB),\n        \"basis\": SESSION_COST_BASIS",
+    "new": "        \"db\": str(RUNTIME_DIR / \"token-optimizer\" / \"trends.db\"),\n        \"basis\": SESSION_COST_BASIS",
+    "symbol": "session_cost_query"
+  },
+  {
+    "mutation": "session-cost opens trends.db through the collector's opener (schema, migrations, backfills)",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "    conn, mode = _session_cost_open_db(TRENDS_DB)\n",
+    "new": "    conn, mode = _init_trends_db(), \"read-only\"\n    conn.row_factory = sqlite3.Row\n",
+    "symbol": "session_cost_query"
+  },
+  {
+    "mutation": "short words match inside longer ones ('tr' in 'trends')",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "        if (w in tokens) if len(w) <= 3 else (w in hay):",
+    "new": "        if w in hay:",
+    "symbol": "_session_cost_word_hits"
+  },
+  {
+    "mutation": "any one word is enough to match a session",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "    matched = [r for r in scoped if not words or _session_cost_word_hits(words, r) == len(words)]",
+    "new": "    matched = [r for r in scoped if not words or _session_cost_word_hits(words, r) > 0]",
+    "symbol": "session_cost_query"
+  },
+  {
+    "mutation": "a multi-day session's 'yesterday' share is the whole session",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "            sum(sl[1] for sl in priced[\"slices\"] if sl[0] == date_filter), 4)",
+    "new": "            sum(sl[1] for sl in priced[\"slices\"]), 4)",
+    "symbol": "_session_cost_entry"
+  }
+]

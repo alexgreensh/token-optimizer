@@ -1,0 +1,162 @@
+[
+  {
+    "mutation": "Stop flush outcome never recorded",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "        _record_hook_status(\"stop_flush\", _flush_result)\n",
+    "new": "",
+    "symbol": "_run_session_end_flush_worker"
+  },
+  {
+    "mutation": "every cached plugin version counted",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "                    and newest_version.get((rel.parts[0], rel.parts[1])) != rel.parts[2]):",
+    "new": "                    and False):",
+    "symbol": "_collect_codex_skill_inventory"
+  },
+  {
+    "mutation": "Codex plugin users get the Claude Code '/plugin -> Marketplaces' first-run tip",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "                and detect_runtime() == \"claude\"\n                and _is_running_from_plugin_cache()",
+    "new": "                and _is_running_from_plugin_cache()",
+    "symbol": "run_ensure_health"
+  },
+  {
+    "mutation": "Bug 1 repair: a script install keeps a statusLine that runs the Codex plugin cache's copy",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "        if Path(old_path).expanduser().is_file() and not in_codex:",
+    "new": "        if Path(old_path).expanduser().is_file():",
+    "symbol": "_heal_dangling_statusline"
+  },
+  {
+    "mutation": "Bug 1 repair: ensure-health never calls the dangling-statusLine heal",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "            if _heal_dangling_statusline():",
+    "new": "            if False:",
+    "symbol": "run_ensure_health"
+  },
+  {
+    "mutation": "Bug 1 repair overreaches: an existing dev-clone statusline.js gets re-pointed",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "        if Path(old_path).expanduser().is_file() and not in_codex:\n            return False\n",
+    "new": "",
+    "symbol": "_heal_dangling_statusline"
+  },
+  {
+    "mutation": "Bug 1 repair overreaches: another tool's missing statusline.js gets taken over",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "        if not _statusline_cmd_is_ours(cmd):\n            return False\n        found = _statusline_js_in_command(cmd)",
+    "new": "        if \"statusline.js\" not in cmd:\n            return False\n        found = _statusline_js_in_command(cmd)",
+    "symbol": "_heal_dangling_statusline"
+  },
+  {
+    "mutation": "keep-warm plist heal queries the Windows scheduler on every SessionStart",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "once a stale plist exists and needs a rewrite.\n    if _daemon_snapshot_sandboxed():\n        return False\n",
+    "new": "once a stale plist exists and needs a rewrite.\n    if _scheduler_install_refused():\n        return False\n",
+    "symbol": "_heal_keepwarm_plist_path"
+  },
+  {
+    "mutation": "#144 dashboard writer calls os.fchmod unguarded (absent on Windows)",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "            try:\n                if hasattr(os, \"fchmod\"):  # POSIX only (os.fchmod is absent on Windows)\n                    os.fchmod(tmp_fd, 0o600)\n                with os.fdopen(tmp_fd, \"w\", encoding=\"utf-8\") as f:\n                    f.write(injected)",
+    "new": "            try:\n                os.fchmod(tmp_fd, 0o600)\n                with os.fdopen(tmp_fd, \"w\", encoding=\"utf-8\") as f:\n                    f.write(injected)",
+    "symbol": "generate_standalone_dashboard"
+  },
+  {
+    "mutation": "Stop starts the session-end flush worker twice",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "            close_fds=True,\n        )\n        if _proc is None:\n            _log_spawn_failure(\"session-end flush spawn failed\")",
+    "new": "            close_fds=True,\n        )\n        spawn_detached(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,\n                       stderr=subprocess.DEVNULL, cwd=str(Path.cwd()), env=env)\n        if _proc is None:\n            _log_spawn_failure(\"session-end flush spawn failed\")",
+    "symbol": "_defer_session_end_flush"
+  },
+  {
+    "mutation": "post-flush extension read is no longer capped at 1 MB",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "            read_size = min(st.st_size if st.st_size > 0 else 1_048_576,\n                            1_048_576)",
+    "new": "            read_size = st.st_size if st.st_size > 0 else 1_048_576",
+    "symbol": "_run_post_flush_extensions"
+  },
+  {
+    "mutation": "post-flush extension loader accepts a FIFO or device",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "            if not stat.S_ISREG(st.st_mode):\n                sys.stderr.write(\n                    f\"[Token Optimizer] post-flush extension refused at \"",
+    "new": "            if False:\n                sys.stderr.write(\n                    f\"[Token Optimizer] post-flush extension refused at \"",
+    "symbol": "_run_post_flush_extensions"
+  },
+  {
+    "mutation": "a foreign status line counts as ours when its folder path mentions token-optimizer",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "    if not found:\n        return True\n    parts = ",
+    "new": "    return True\n    parts = ",
+    "symbol": "_statusline_cmd_is_ours"
+  },
+  {
+    "mutation": "#226 doctor does not recognise the shipped hook runners",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "    return bool(re.search(r\"(?:^|[\\s\\\"'/\\\\])\" + name + r\"\\.py(?:$|[\\s\\\"';])\", cmd))\n",
+    "new": "    return False\n",
+    "symbol": "_is_compaction_runner"
+  },
+  {
+    "mutation": "settings self-heal raises on an unreadable or malformed file",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "        if not ok or not isinstance(data, dict):\n            return  # unreadable or malformed: fail open\n",
+    "new": "        if not ok or not isinstance(data, dict):\n            raise ValueError(\"planted: unreadable settings\")\n",
+    "symbol": "_maybe_self_heal_settings"
+  },
+  {
+    "mutation": "settings self-heal raises on an unreadable or malformed file",
+    "edit": 1,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "    except Exception:\n        # Fail open, always. A heal that breaks a session is a worse bug\n",
+    "new": "    except OSError:\n        # Fail open, always. A heal that breaks a session is a worse bug\n",
+    "symbol": "_maybe_self_heal_settings"
+  },
+  {
+    "mutation": "Windows liveness probe sends CTRL_C_EVENT via os.kill(pid, 0)",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "    if os.name == \"nt\":\n        return _win_pid_is_running(pid)\n",
+    "new": "",
+    "symbol": "_pid_is_running"
+  },
+  {
+    "mutation": "Windows settings.json hooks call bare python3 (missing or the Store stub in Git Bash)",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "    if sys.platform == \"win32\":\n        return (shlex.quote(str(sys.executable)",
+    "new": "    if False:\n        return (shlex.quote(str(sys.executable)",
+    "symbol": "_settings_hook_python_and_script"
+  },
+  {
+    "mutation": "status line command breaks on an apostrophe in the path",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "if \"'\" not in str(sl_path)",
+    "new": "if True",
+    "symbol": "setup_quality_bar"
+  },
+  {
+    "mutation": "resolver $(...) collapses every hook to one dedup identity (setup_all_hooks/cleanup)",
+    "edit": 0,
+    "file": "skills/token-optimizer/scripts/measure.py",
+    "old": "    if 'D=\"$(ls -d ' in cmd:",
+    "new": "    if False:",
+    "symbol": "_hook_command_identity"
+  }
+]

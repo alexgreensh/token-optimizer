@@ -133,18 +133,48 @@ _COLD_COMPILE_LOCK = ".token-optimizer-compile.lock"
 _COLD_COMPILE_FAILED = ".token-optimizer-compile.failed"
 _COLD_COMPILE_TAG = "token-optimizer-bytecode-warmup"
 
-# The detached compiler, run as `python -c`. It compiles measure.py first and
-# drops the lock as soon as that one is written (the hooks only wait for it),
-# then warms the consolidated runners and the plugin's other scripts. A
-# failure on measure.py leaves a marker keyed to the source's mtime and size,
+# This closed set matches _measure.RUNTIME_SOURCES. No recursive repo scan.
+_MEASURE_PACKAGE_SOURCES = (
+    '__init__.py', '_compat.py', 'runtime.py', 'pricing.py', 'audit.py',
+    'dashboard.py', 'lifecycle.py', 'sessions.py', 'trends.py', 'cache_policy.py',
+    'daemon.py', 'quality_archive.py', 'continuity.py', 'savings.py', 'cli.py',
+)
+
+
+def _runtime_sources(measure_src):
+    package = os.path.join(os.path.dirname(measure_src), '_measure')
+    sources = (measure_src,)
+    if os.path.isdir(package):
+        sources += tuple(os.path.join(package, name) for name in _MEASURE_PACKAGE_SOURCES)
+    return sources
+
+
+def _source_set_key(measure_src):
+    import hashlib
+    records = []
+    for source in _runtime_sources(measure_src):
+        try:
+            st = os.stat(source)
+            records.append(f'{source}:{st.st_mtime_ns}:{st.st_size}')
+        except OSError:
+            records.append(f'{source}:missing')
+    if len(records) == 1:
+        st = os.stat(measure_src)
+        return f'{st.st_mtime_ns}:{st.st_size}'
+    return hashlib.sha256('\n'.join(records).encode('utf-8')).hexdigest()
+
+# The detached compiler warms the entire eager runtime before dropping its
+# lock, then warms the consolidated runners and the other flat scripts. A
+# failure leaves a marker keyed to every required source's mtime and size,
 # so hooks stop deferring to a compile that cannot succeed and compile inline
 # as before.
 _COMPILER_SOURCE = r'''
 import sys
 sys.path[:] = [p for p in sys.path if p not in ("", ".")]
 sys.dont_write_bytecode = False
-import os, importlib.util, py_compile
+import os, importlib.util, py_compile, json
 _tag, lock, failed, prefix, opt, measure_src, hooks_dir, scripts_dir = sys.argv[1:9]
+sources, source_key = json.loads(sys.argv[9]), sys.argv[10]
 sys.pycache_prefix = prefix or None
 opt = int(opt)
 mode = py_compile.PycInvalidationMode.TIMESTAMP
@@ -169,12 +199,12 @@ def _compile(src):
         py_compile.compile(src, cfile=cfile, doraise=True, optimize=opt, invalidation_mode=mode)
 
 try:
-    _compile(measure_src)
+    for source in sources:
+        _compile(source)
 except BaseException:
     try:
-        st = os.stat(measure_src)
         with open(failed, "w", encoding="utf-8") as fh:
-            fh.write("%d:%d" % (st.st_mtime_ns, st.st_size))
+            fh.write(source_key)
     except OSError:
         pass
 finally:
@@ -232,9 +262,8 @@ def _bytecode_fresh(source: str, cache: str) -> bool:
 def _compile_failed_for(marker: str, source: str) -> bool:
     """The background compile already failed on this exact source."""
     try:
-        st = os.stat(source)
         with open(marker, encoding="utf-8") as fh:
-            return fh.read(64).strip() == f"{st.st_mtime_ns}:{st.st_size}"
+            return fh.read(128).strip() == _source_set_key(source)
     except (OSError, ValueError):
         return False
 
@@ -277,11 +306,13 @@ def _start_background_compile(lock, failed, measure_src, plugin_scripts):
     """Start the one detached compiler. Returns its Popen, or None (the lock is
     then released again and the caller compiles inline)."""
     import subprocess
+    import json
 
     hooks_dir = os.path.dirname(os.path.abspath(__file__))
     argv = [sys.executable, "-c", _COMPILER_SOURCE, _COLD_COMPILE_TAG, lock, failed,
             getattr(sys, "pycache_prefix", None) or "", str(sys.flags.optimize),
-            measure_src, hooks_dir, plugin_scripts]
+            measure_src, hooks_dir, plugin_scripts,
+            json.dumps(_runtime_sources(measure_src)), _source_set_key(measure_src)]
     proc = None
     try:
         from spawn_utils import spawn_detached
@@ -315,7 +346,11 @@ def _measure_bytecode_ready(plugin_scripts: str, wait_s: float) -> bool:
         cache = _bytecode_path(measure_src)
     except Exception:
         return True
-    if _bytecode_fresh(measure_src, cache):
+    def ready():
+        return all(_bytecode_fresh(source, _bytecode_path(source))
+                   for source in _runtime_sources(measure_src))
+
+    if ready():
         return True
     if not os.path.isfile(measure_src):
         return True
@@ -329,7 +364,7 @@ def _measure_bytecode_ready(plugin_scripts: str, wait_s: float) -> bool:
     end = time.monotonic() + max(0.0, wait_s)
     child = None
     while True:
-        if _bytecode_fresh(measure_src, cache):
+        if ready():
             return True
         if _compile_failed_for(failed, measure_src):
             return True
@@ -452,9 +487,14 @@ def main() -> int:
             deadline = HookDeadline(110).start()
     except Exception:
         deadline = None
+    previous_measure = sys.modules.get('measure')
     try:
         runpy.run_module(module_name, run_name="__main__", alter_sys=True)
     finally:
+        if previous_measure is None and module_name == 'measure':
+            sys.modules.pop('measure', None)
+        elif previous_measure is not None:
+            sys.modules['measure'] = previous_measure
         if deadline is not None:
             try:
                 deadline.cancel()

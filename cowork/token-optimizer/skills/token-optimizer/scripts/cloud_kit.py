@@ -491,7 +491,13 @@ def render_run_sh(root: Path, pycache: Path, version: str) -> str:
 # extracted tarball (package.json, README, LICENSE files) is copied too; this
 # list is what must exist for a usable install.
 _REQUIRED = ("hooks/hooks.json", "hooks/python-launcher.sh", "hooks/run.py",
-             "skills/token-optimizer/scripts/measure.py")
+             "skills/token-optimizer/scripts/measure.py") + tuple(
+    "skills/token-optimizer/scripts/_measure/" + name for name in (
+        '__init__.py', '_compat.py', 'runtime.py', 'pricing.py', 'audit.py',
+        'dashboard.py', 'lifecycle.py', 'sessions.py', 'trends.py', 'cache_policy.py',
+        'daemon.py', 'quality_archive.py', 'continuity.py', 'savings.py', 'cli.py',
+    )
+)
 
 
 # Written into the cache dir on install. Uninstall only removes the shared

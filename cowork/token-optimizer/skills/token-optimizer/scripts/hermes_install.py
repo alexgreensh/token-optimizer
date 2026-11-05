@@ -90,6 +90,16 @@ _CONFIG_FALLBACK = "config.yml"
 _ENABLE_SNIPPET = "plugins:\n  enabled:\n    - token-optimizer\n"
 
 
+# Completeness is separate from the legacy healthy-output counts.
+_MEASURE_PACKAGE_FILES = (
+    "_measure/__init__.py", "_measure/_compat.py", "_measure/runtime.py",
+    "_measure/pricing.py", "_measure/audit.py", "_measure/dashboard.py",
+    "_measure/lifecycle.py", "_measure/sessions.py", "_measure/trends.py",
+    "_measure/cache_policy.py", "_measure/daemon.py", "_measure/quality_archive.py",
+    "_measure/continuity.py", "_measure/savings.py", "_measure/cli.py",
+)
+
+
 def _scripts_dir() -> Path:
     """Return the scripts/ dir that contains this installer and the runtime modules."""
     return Path(__file__).resolve().parent
@@ -435,6 +445,7 @@ def install(
             )
         runtime_srcs.append(src)
     missing_engines = [name for name in _ENGINE_SCRIPTS if not (scripts_dir / name).is_file()]
+    missing_engines += [name for name in _MEASURE_PACKAGE_FILES if not (scripts_dir / name).is_file()]
     if missing_engines:
         raise ValueError(
             f"Token Optimizer engine scripts missing from {scripts_dir}: "

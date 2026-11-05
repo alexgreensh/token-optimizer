@@ -58,7 +58,7 @@ def test_migration_journals_old_dates_and_backs_up_aggregates(m):
     conn = m._init_trends_db()
     journal = conn.execute(
         "SELECT old_date, old_first_activity_day, old_last_activity_day "
-        "FROM activity_dating_v1_journal j JOIN session_log s ON s.id = j.session_id "
+        "FROM activity_dating_v1_journal j JOIN session_log s ON s.jsonl_path = j.jsonl_path "
         "WHERE s.jsonl_path='legacy.jsonl'").fetchone()
     assert journal is not None
     assert journal[0] == wrong
@@ -132,6 +132,89 @@ def test_failed_prestate_snapshot_rolls_back_and_retries(m, monkeypatch):
     conn = m._init_trends_db()
     assert _session_date(conn) == day
     assert _marker(conn) is not None
+    conn.close()
+
+
+def test_write_lock_during_repair_returns_usable_connection_and_retries(m, monkeypatch):
+    wrong, day = _seed_repairable(m)
+    blocker = sqlite3.connect(str(m.TRENDS_DB))
+    real = m.repair_activity_dates
+    errors = []
+
+    def locked_repair(conn):
+        conn.execute("PRAGMA busy_timeout=1")
+        blocker.execute("BEGIN IMMEDIATE")
+        return real(conn)
+
+    monkeypatch.setattr(m, "repair_activity_dates", locked_repair)
+    monkeypatch.setattr(m, "_log_migration_error", lambda name, exc: errors.append((name, str(exc))))
+    try:
+        conn = m._init_trends_db()
+        try:
+            assert _session_date(conn) == wrong
+            assert _marker(conn) is None
+            assert not conn.in_transaction
+        finally:
+            conn.close()
+    finally:
+        blocker.rollback()
+        blocker.close()
+    assert any(name == "activity_dating_v1 migration" and "locked" in error
+               for name, error in errors)
+    monkeypatch.setattr(m, "repair_activity_dates", real)
+    conn = m._init_trends_db()
+    assert _session_date(conn) == day
+    assert _marker(conn) is not None
+    conn.close()
+
+
+@pytest.mark.parametrize("invalid", [{"bad-date": {}}, {"undated": {}},
+                                     {"2026-02-30": {}}, {"2026-01-01": 5}])
+def test_invalid_usage_bucket_keeps_lifetime_calls_unknown(m, invalid):
+    _seed_repairable(m)
+    conn = sqlite3.connect(str(m.TRENDS_DB))
+    day = _noon(40).date().isoformat()
+    usage = {day: {"claude-opus-4-8": {"fresh_input": 100}}, **invalid}
+    changed = conn.execute(
+        "UPDATE session_log SET api_calls=12,daily_usage_json=? WHERE jsonl_path='legacy.jsonl'",
+        (json.dumps(usage),)).rowcount
+    assert changed == 1
+    conn.commit()
+    conn.close()
+    conn = m._init_trends_db()
+    assert conn.execute("SELECT daily_calls_json FROM session_log").fetchone()[0] is None
+    conn.close()
+
+
+@pytest.mark.parametrize("original_calls", [None, '{"2020-01-01": 3}'])
+def test_rollback_restores_call_evidence(m, original_calls):
+    wrong, day = _seed_repairable(m)
+    conn = sqlite3.connect(str(m.TRENDS_DB))
+    assert conn.execute("UPDATE session_log SET api_calls=12,daily_calls_json=?",
+                        (original_calls,)).rowcount == 1
+    conn.commit()
+    conn.close()
+    conn = m._init_trends_db()
+    migrated = conn.execute("SELECT daily_calls_json FROM session_log").fetchone()[0]
+    assert migrated == (original_calls if original_calls is not None else json.dumps({day: 12}))
+    assert m.rollback_activity_dating(conn) is True
+    assert conn.execute("SELECT date,daily_calls_json FROM session_log").fetchone() == (wrong, original_calls)
+    conn.close()
+
+
+def test_rollback_never_restores_a_deleted_sessions_reused_id(m):
+    _seed_repairable(m)
+    conn = m._init_trends_db()
+    sid = conn.execute("SELECT id FROM session_log").fetchone()[0]
+    assert conn.execute("DELETE FROM session_log WHERE id=?", (sid,)).rowcount == 1
+    # Explicit reuse also exercises imported legacy DBs without AUTOINCREMENT.
+    conn.execute("INSERT INTO session_log (id,jsonl_path,date,daily_calls_json) VALUES (?,?,?,?)",
+                 (sid, "replacement.jsonl", "2026-01-02", '{"2026-01-02": 4}'))
+    assert conn.execute("SELECT id FROM session_log").fetchone()[0] == sid
+    conn.commit()
+    assert m.rollback_activity_dating(conn) is True
+    assert conn.execute("SELECT jsonl_path,date,daily_calls_json FROM session_log").fetchone() == (
+        "replacement.jsonl", "2026-01-02", '{"2026-01-02": 4}')
     conn.close()
 
 

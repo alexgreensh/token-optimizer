@@ -2,9 +2,8 @@
 
 The dashboard prices every session row it scans. On large histories that is
 the dominant cost, so the row scan is restricted to sessions whose activity
-bounds reach the window (NULL bounds always stay: they cover missing/empty
-per-day JSON that can still fall back to parent_daily_usage_json, and rows
-carrying parent evidence). This test builds a fixture exercising every
+bounds reach the window (NULL bounds always stay for legacy or unknown
+coverage). Bounds include parent evidence. This test builds a fixture exercising every
 boundary case and asserts the filtered and unfiltered paths return identical
 results.
 """
@@ -91,8 +90,8 @@ def _fixture_rows():
         _session(path="/fake/old.jsonl", date=_day(50),
                  daily_usage_json=json.dumps(usage(_day(60), _day(50))),
                  first_activity_day=_day(60), last_activity_day=_day(50)),
-        # No combined map, parent evidence in-window, bounds NULL (the shape
-        # _collect_trends_from_jsonl leaves): must stay in the scan.
+        # No combined map, parent evidence in-window, legacy NULL bounds:
+        # must stay in the scan.
         _session(path="/fake/parent.jsonl", date=_day(3),
                  daily_usage_json=None,
                  parent_daily_usage_json=json.dumps(usage(_day(3))),
@@ -102,8 +101,8 @@ def _fixture_rows():
                  daily_usage_json="{}",
                  parent_daily_usage_json=json.dumps(usage(_day(4))),
                  first_activity_day=None, last_activity_day=None),
-        # Parent evidence entirely old: kept by the parent clause, contributes
-        # no window slices.
+        # Parent evidence entirely old with legacy NULL bounds: kept, but
+        # contributes no window slices.
         _session(path="/fake/parent-old.jsonl", date=_day(70),
                  daily_usage_json=None,
                  parent_daily_usage_json=json.dumps(usage(_day(70))),
@@ -122,7 +121,7 @@ def _fixture_rows():
         _session(path="/fake/undated.jsonl", date="",
                  daily_usage_json=None, first_activity_day=None,
                  last_activity_day=None),
-        # Bounds never stamped (jsonl-fallback shape) but usage is in-window.
+        # Legacy bounds never stamped but usage is in-window.
         _session(path="/fake/unstamped.jsonl", date=_day(6),
                  daily_usage_json=json.dumps(usage(_day(6))),
                  first_activity_day=None, last_activity_day=None),
@@ -176,4 +175,16 @@ def test_activity_window_filter_preserves_trends_results(m, monkeypatch):
     assert filtered == unfiltered
     assert filtered["session_count"] > 0
     assert filtered["daily"]
+    conn.close()
+
+
+@pytest.mark.parametrize("parent", ["{}", json.dumps(_usage(_day(70)))])
+def test_old_rows_with_parent_json_are_filtered(m, parent):
+    conn = m._init_trends_db()
+    _insert(conn, [_session(path="/fake/recollected-old.jsonl", date=_day(70),
+                           daily_usage_json=json.dumps(_usage(_day(70))),
+                           parent_daily_usage_json=parent,
+                           first_activity_day=_day(70), last_activity_day=_day(70))])
+    pred, params = m._activity_window_predicate(conn, _day(30))
+    assert conn.execute("SELECT jsonl_path FROM session_log WHERE 1=1" + pred, params).fetchall() == []
     conn.close()

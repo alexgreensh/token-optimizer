@@ -168,6 +168,10 @@ recorded session.
   only its in-window requests. `model_daily` and `daily_stats` use those same
   slices. `session_log.date` means last known activity day, with separate
   `first_activity_day`, `last_activity_day`, `transcript_mtime` and `collected_at`.
+  Every writer bounds the union of combined usage, parent usage and metadata
+  days, including the DB-free JSONL fallback. The trends prefilter keeps NULL
+  bounds and rows whose last activity reaches the window; an empty parent map
+  does not exempt an old row from filtering.
   File modification time and collection time never supply missing activity dates.
   The projection unions billing days with `daily_metrics_json` days: a day with
   dated user/tool/skill activity but no billed usage still emits a row carrying
@@ -183,7 +187,8 @@ recorded session.
   never recorded the day contributes NULL, not a measured zero, and the
   projection's `api_calls_known` flag exposes the gap. The migration allocates a
   session's whole call count to its day only when the session has exactly one
-  proven activity day and no undated bucket; multi-day sessions keep unknown.
+  proven activity day and all retained usage/metadata buckets have valid dates
+  and object values; invalid buckets and multi-day sessions keep unknown.
   Work-unit figures (`_price_parent_window`, the structural compounding formula)
   disclose `api_calls_unknown` sessions, and the api_call work unit is only used
   when both eras have complete call evidence — otherwise the unit falls back to
@@ -196,10 +201,17 @@ recorded session.
   request dates or proven single-day activity remain incomplete.
 - The one-time `activity_dating_v1` migration repairs stored dates backward as
   well as forward and rebuilds all four aggregate tables. Before rewriting it
-  journals the old `session_log` dates in `activity_dating_v1_journal` and copies
+  journals the old `session_log` dates and `daily_calls_json`, keyed by
+  `jsonl_path`, in `activity_dating_v1_journal` and copies
   the four aggregate tables to `*_pre_activity_v1` inside the same transaction;
-  `rollback_activity_dating` restores both and clears the marker, and any
-  failure rolls the transaction back and retries on the next init. Old derived
+  `rollback_activity_dating` restores those fields and aggregates and clears
+  the marker. This is a **developer-only safety net**, with no CLI, for checking
+  a migration on a database copy before any recollection or new writes. It
+  restores snapshot dates even for recollected rows and discards subsequent
+  aggregate days, so it is not a supported downgrade or live recovery path.
+  A migration failure, including a write lock at `BEGIN IMMEDIATE`, rolls back,
+  logs the error and returns a usable unmigrated connection for retry on the
+  next init. Old derived
   baselines, workload anchors and weekly caches always leave their live names —
   a taken `.pre-activity-v1` archive moves the active copy to the next free
   `.pre-activity-v1.N`, so a stale file cannot survive — and rebuilt anchors

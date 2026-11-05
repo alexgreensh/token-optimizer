@@ -32,6 +32,77 @@ def collect(m):
     m.collect_sessions(days=120, quiet=True)
 
 
+def _assert_activity_bounds(conn, m):
+    rows = conn.execute(
+        "SELECT first_activity_day,last_activity_day,date,daily_usage_json,"
+        "parent_daily_usage_json,daily_metrics_json FROM session_log").fetchall()
+    assert rows
+    for first, last, activity_date, *maps in rows:
+        days = sorted({day for raw in maps for day in m._activity_days(m._safe_json_dict(raw))})
+        if days:
+            assert first is not None and first <= days[0]
+            assert last is not None and last >= days[-1]
+            assert activity_date == last
+
+
+@pytest.mark.parametrize("writer", ["collect", "backfill", "migration", "adapter", "fallback"])
+@pytest.mark.parametrize("latest_source", ["parent", "metrics"])
+def test_every_writer_bounds_combined_parent_and_metadata_days(m, monkeypatch, writer, latest_source):
+    old, parent_day, metric_day = [_noon(n).date().isoformat() for n in (70, 5, 1)]
+    path = transcript(m)
+    _write(path, [_chunk(_noon(5), req="parent", inp=1000, out=100)])
+    parsed = m._parse_session_jsonl(path)
+    monkeypatch.setattr(m, "_parse_session_jsonl", lambda *a, **k: parsed)
+    monkeypatch.setattr(m, "_find_all_jsonl_files",
+                        lambda days: [(path, path.stat().st_mtime, "sample")])
+    combined = {old: {"claude-opus-4-8": {"fresh_input": 100, "output": 10}}}
+    parent = {parent_day: {"claude-opus-4-8": {"fresh_input": 1000, "output": 100}}}
+    # Each source must widen bounds independently, without another source
+    # hiding its omission.
+    metrics = {metric_day if latest_source == "metrics" else old: {"message_count": 1}}
+    monkeypatch.setattr(m, "_daily_usage_from_merged", lambda merged: combined)
+    monkeypatch.setattr(m, "_session_daily_metrics", lambda *a, **k: metrics)
+    if writer == "fallback":
+        real_query = m._query_trends_db
+        checked = []
+
+        def check(conn, days):
+            _assert_activity_bounds(conn, m)
+            checked.append(True)
+            return real_query(conn, days)
+
+        monkeypatch.setattr(m, "_query_trends_db", check)
+        m._collect_trends_from_jsonl(30)
+        assert checked
+        return
+    if writer == "collect":
+        collect(m)
+        conn = m._init_trends_db()
+    else:
+        conn = m._init_trends_db()
+        conn.execute(
+            "INSERT INTO session_log (jsonl_path,date,input_tokens,output_tokens,daily_usage_json,"
+            "parent_daily_usage_json,daily_metrics_json) VALUES (?,?,?,?,?,?,?)",
+            (str(path), old, 1000, 100, None if writer == "backfill" else json.dumps(combined),
+             json.dumps(parent), json.dumps(metrics)))
+        conn.commit()
+        if writer == "backfill":
+            assert m._backfill_daily_usage(conn, budget_seconds=5) == 1
+        elif writer == "migration":
+            conn.execute("DELETE FROM schema_migrations WHERE name='activity_dating_v1'")
+            conn.commit()
+            conn.close()
+            conn = m._init_trends_db()
+        else:
+            parsed = m._parse_session_jsonl(path)
+            assert m._store_adapter_activity(conn, str(path), parsed) == 1
+            conn.commit()
+    try:
+        _assert_activity_bounds(conn, m)
+    finally:
+        conn.close()
+
+
 def test_touched_old_session_does_not_enter_volume_window(m):
     path = transcript(m)
     _write(path, [_chunk(_noon(70), req="old", inp=1000, out=100)])

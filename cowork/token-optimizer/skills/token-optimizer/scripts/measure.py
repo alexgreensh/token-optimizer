@@ -265,7 +265,7 @@ def _detached_python_exe():
 import antigravity_session
 import codex_io
 import codex_session
-from session_activity import activity_days as _activity_days, activity_coverage, ensure_activity_schema, ensure_activity_view, repair_activity_dates
+from session_activity import activity_days as _activity_days, activity_bounds as _activity_bounds, activity_coverage, ensure_activity_schema, ensure_activity_view, repair_activity_dates
 import deterministic_candidates
 import codex_state
 import copilot_session
@@ -14321,20 +14321,20 @@ def _connect_trends_db():
 
 
 def _snapshot_activity_dating_prestate(conn, old_rows):
-    """Journal pre-migration session dates and copy the four aggregate tables
+    """Journal pre-migration session dates/calls and copy the aggregate tables
     aside, inside the caller's open transaction. ``old_rows`` holds
-    ``(id, date, first_activity_day, last_activity_day)`` read before
+    ``(jsonl_path, date, first_activity_day, last_activity_day, daily_calls_json)`` read before
     ``repair_activity_dates`` rewrote the dates, so rollback restores the
     values the migration replaced rather than the repaired ones."""
     conn.execute(f"DROP TABLE IF EXISTS {_ACTIVITY_DATING_JOURNAL}")
     conn.execute(
         f"CREATE TABLE {_ACTIVITY_DATING_JOURNAL} ("
-        "session_id INTEGER PRIMARY KEY, old_date TEXT, "
-        "old_first_activity_day TEXT, old_last_activity_day TEXT)")
+        "jsonl_path TEXT PRIMARY KEY, old_date TEXT, "
+        "old_first_activity_day TEXT, old_last_activity_day TEXT, old_daily_calls_json TEXT)")
     conn.executemany(
         f"INSERT INTO {_ACTIVITY_DATING_JOURNAL} "
-        "(session_id, old_date, old_first_activity_day, old_last_activity_day) "
-        "VALUES (?, ?, ?, ?)", old_rows)
+        "(jsonl_path, old_date, old_first_activity_day, old_last_activity_day, old_daily_calls_json) "
+        "VALUES (?, ?, ?, ?, ?)", old_rows)
     for table in _ACTIVITY_AGGREGATE_TABLES:
         backup = f"{table}_pre_activity_v1"
         conn.execute(f"DROP TABLE IF EXISTS {backup}")
@@ -14369,9 +14369,12 @@ def _archive_pre_activity_state_files():
 
 
 def rollback_activity_dating(conn):
-    """Reverse the ``activity_dating_v1`` migration.
+    """Developer-only safety net for immediately checking a migration on a copy.
 
-    Restores the session dates journaled before the rewrite, copies the
+    No CLI is exposed. Use before any recollection or new writes: this restores
+    snapshot dates/calls and aggregates, so later changes would be overwritten
+    or lost. It is not a downgrade or live-database recovery mechanism.
+    Restores the session dates/calls journaled by jsonl_path before the rewrite, copies the
     ``*_pre_activity_v1`` aggregate backups back over the rebuilt tables and
     clears the migration marker, so the next ``_init_trends_db`` re-runs the
     migration. The ``.pre-activity-v1`` JSON archives are left in place: they
@@ -14396,13 +14399,13 @@ def rollback_activity_dating(conn):
     try:
         if journal:
             rows = conn.execute(
-                f"SELECT session_id, old_date, old_first_activity_day, "
-                f"old_last_activity_day FROM {_ACTIVITY_DATING_JOURNAL}").fetchall()
+                f"SELECT jsonl_path, old_date, old_first_activity_day, "
+                f"old_last_activity_day, old_daily_calls_json FROM {_ACTIVITY_DATING_JOURNAL}").fetchall()
             conn.executemany(
                 "UPDATE session_log SET date=?, first_activity_day=?, "
-                "last_activity_day=? WHERE id=?",
-                [(old_date, first, last, sid)
-                 for sid, old_date, first, last in rows])
+                "last_activity_day=?, daily_calls_json=? WHERE jsonl_path=?",
+                [(old_date, first, last, calls, path)
+                 for path, old_date, first, last, calls in rows])
         for table in backups:
             backup = f"{table}_pre_activity_v1"
             live_cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
@@ -14828,9 +14831,9 @@ def _init_trends_db():
     if not conn.execute(
             "SELECT 1 FROM schema_migrations WHERE name='activity_dating_v1'").fetchone():
         pre_activity_rows = conn.execute(
-            "SELECT id,date,first_activity_day,last_activity_day FROM session_log").fetchall()
-    if repair_activity_dates(conn):
-        try:
+            "SELECT jsonl_path,date,first_activity_day,last_activity_day,daily_calls_json FROM session_log").fetchall()
+    try:
+        if repair_activity_dates(conn):
             _snapshot_activity_dating_prestate(conn, pre_activity_rows)
             _rebuild_aggregate_tables(conn)
             # Keep original evidence recoverable. These derived comparisons used
@@ -14838,18 +14841,15 @@ def _init_trends_db():
             _archive_pre_activity_state_files()
             conn.execute("INSERT INTO schema_migrations(name) VALUES ('activity_dating_v1')")
             conn.commit()
-        except Exception as _e:
-            # The date repair, journal, backups and marker share one
-            # transaction, so rollback restores the pre-migration DB state;
-            # the connection is closed deterministically and a fresh one is
-            # returned so callers keep a usable handle. The migration retries
-            # on the next _init_trends_db.
-            try:
-                conn.rollback()
-            finally:
-                conn.close()
-            _log_migration_error("activity_dating_v1 migration", _e)
-            return _connect_trends_db()
+    except Exception as _e:
+        # Includes BEGIN IMMEDIATE lock failures. Roll back any partial work
+        # and return a fresh, usable connection; retry migration on next init.
+        try:
+            conn.rollback()
+        finally:
+            conn.close()
+        _log_migration_error("activity_dating_v1 migration", _e)
+        return _connect_trends_db()
     return conn
 
 
@@ -25764,8 +25764,8 @@ def _store_adapter_activity(conn, dedup_key, parsed):
     Multi-day sessions without daily usage remain incomplete, never spread or
     assigned wholesale to the collector's date.
     """
-    row = conn.execute("SELECT input_tokens,output_tokens FROM session_log WHERE jsonl_path=?", (dedup_key,)).fetchone()
-    if row is None or tuple(row) != (parsed.get("total_input_tokens"), parsed.get("total_output_tokens")):
+    row = conn.execute("SELECT input_tokens,output_tokens,daily_metrics_json FROM session_log WHERE jsonl_path=?", (dedup_key,)).fetchone()
+    if row is None or tuple(row[:2]) != (parsed.get("total_input_tokens"), parsed.get("total_output_tokens")):
         return 0
     bounds = sorted(filter(None, (_request_local_day(parsed.get("first_ts")),
                                  _request_local_day(parsed.get("last_ts")))))
@@ -25774,7 +25774,9 @@ def _store_adapter_activity(conn, dedup_key, parsed):
     if usage is None and len(bounds) == 2 and bounds[0] == bounds[1]:
         usage = {bounds[0]: parsed.get("model_usage_breakdown") or {}}
         calls = {bounds[0]: parsed.get("api_calls", 0)}
-    days = _activity_days(usage or {})
+    # The adapter writes the same map as combined and parent evidence; retained
+    # metadata can still extend beyond either its usage or parsed timestamps.
+    days = _activity_bounds(usage, _safe_json_dict(row[2]))
     first = min(bounds + days) if bounds or days else None
     last = max(bounds + days) if bounds or days else None
     raw = json.dumps(usage) if usage is not None else None
@@ -28084,7 +28086,7 @@ def _session_activity_evidence(filepath, parsed=None, subagent_files=None, conn=
     parent+delegated map deduplicated by request id; `parent_usage` is the
     parent file's own buckets after the same claim netting collect applies, so
     a backfilled row carries the same provenance a fresh collect would write.
-    `bounds` is the sorted union of usage and metadata activity days, matching
+    `bounds` is the sorted union of combined, parent and metadata days, matching
     the collector's first/last activity derivation.
     """
     parsed = parsed if parsed is not None else _parse_session_jsonl(filepath)
@@ -28126,7 +28128,7 @@ def _session_activity_evidence(filepath, parsed=None, subagent_files=None, conn=
         if not u.get("advisor") and u.get("n", 1) and u.get("day"):
             day = u["day"]
             calls[day] = calls.get(day, 0) + 1
-    bounds = sorted(set(_activity_days(daily_usage)) | set(_activity_days(metrics)))
+    bounds = _activity_bounds(daily_usage, parent_parsed.get("daily_usage"), metrics)
     return {"daily_usage": daily_usage,
             "parent_usage": parent_parsed.get("daily_usage") or {},
             "calls": calls, "metrics": metrics, "bounds": bounds}
@@ -28668,8 +28670,8 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
                     all_model_usage[model_id] = all_model_usage.get(model_id, 0) + (
                         int(u.get("inp") or 0) + int(u.get("cc") or 0) + int(u.get("out") or 0))
 
-        dated = _activity_days(daily_usage)
-        activity_bounds = sorted(set(dated + _activity_days(session_daily_metrics)))
+        parent_daily = parsed.get("daily_usage") or {}
+        activity_bounds = _activity_bounds(daily_usage, parent_daily, session_daily_metrics)
         date = activity_bounds[-1] if activity_bounds else ""
         skills_used = parsed["skills_used"]
         subagents_used = parsed["subagents_used"]
@@ -28829,7 +28831,6 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
         )
         if cur.rowcount != 1:
             continue
-        parent_daily = parsed.get("daily_usage") or {}
         calls = dict(parsed.get("daily_calls") or {})
         for u in (merged or parsed.get("request_usage") or {}).values():
             if not u.get("advisor") and u.get("n", 1) and u.get("day"):
@@ -29682,20 +29683,16 @@ def _activity_window_predicate(conn, cutoff):
     are unavailable (pre-migration shapes), keeping the unfiltered scan.
 
     last_activity_day is maintained by every daily_usage_json writer (collect,
-    _backfill_daily_usage, _store_adapter_activity, repair_activity_dates) and
-    is NULL for rows with no dated usage -- including rows whose per-day JSON
-    is missing or empty and could still fall back to parent_daily_usage_json.
-    Rows carrying parent evidence are always kept: the spent-token basis and
-    the reported model mix prefer parent_daily_usage_json over the combined
-    map, and parent days are not bounded by the combined map's activity days.
+    _backfill_daily_usage, _store_adapter_activity, repair_activity_dates and
+    _collect_trends_from_jsonl). Bounds cover the union of combined usage,
+    parent usage and metadata days. NULL bounds keep rows with no dated evidence.
     The fragment is a superset of "has an in-window slice", never a subset:
     metrics-only days can only widen last_activity_day, so filtering on it can
     keep extra rows but can never drop a row that contributes window slices."""
     columns = {r[1] for r in conn.execute("PRAGMA table_info(session_log)")}
-    if "last_activity_day" not in columns or "parent_daily_usage_json" not in columns:
+    if "last_activity_day" not in columns:
         return "", ()
-    return (" AND (last_activity_day IS NULL OR last_activity_day >= ? "
-            "OR parent_daily_usage_json IS NOT NULL)", (cutoff,))
+    return " AND (last_activity_day IS NULL OR last_activity_day >= ?)", (cutoff,)
 
 
 def _query_trends_db(conn, days):
@@ -30128,9 +30125,9 @@ def _collect_trends_from_jsonl(days=30):
                                              subagent_files=subagent_files)
                 calls = dict(original.get("daily_calls") or {})
             daily_metrics = _session_daily_metrics(parsed, subagent_files)
-            # Same bounds rule as collect_sessions: usage days union dated
+            # Same bounds rule as collect_sessions: combined/parent usage and
             # metadata days, never the file's ingestion timestamp.
-            bounds = sorted(set(_activity_days(daily) + _activity_days(daily_metrics)))
+            bounds = _activity_bounds(daily, parsed.get("daily_usage"), daily_metrics)
             quality = score_session_quality(parsed)
             values = {
                 "jsonl_path": str(filepath), "date": bounds[-1] if bounds else "",

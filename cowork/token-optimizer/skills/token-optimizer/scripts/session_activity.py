@@ -15,6 +15,12 @@ def activity_days(usage):
     return sorted(days)
 
 
+def activity_bounds(*maps):
+    """Bound every retained source of dated usage or metadata."""
+    return sorted({day for usage in maps if isinstance(usage, dict)
+                   for day in activity_days(usage)})
+
+
 def activity_coverage(conn):
     columns = {r[1] for r in conn.execute("PRAGMA table_info(session_log)")}
     if "daily_usage_json" not in columns:
@@ -130,31 +136,32 @@ def repair_activity_dates(conn):
         return False
     columns = {r[1] for r in conn.execute("PRAGMA table_info(session_log)")}
     metrics_col = "daily_metrics_json" if "daily_metrics_json" in columns else "NULL"
+    parent_col = "parent_daily_usage_json" if "parent_daily_usage_json" in columns else "NULL"
     calls_col = "daily_calls_json" if "daily_calls_json" in columns else "NULL"
     api_col = "api_calls" if "api_calls" in columns else "NULL"
     updates = []
     call_updates = []
-    for sid, raw, metrics_raw, api_calls, calls_raw in conn.execute(
-            f"SELECT id,daily_usage_json,{metrics_col},{api_col},{calls_col} FROM session_log"):
-        try:
-            usage = json.loads(raw or "{}")
-        except (ValueError, TypeError):
-            usage = {}
-        try:
-            metrics = json.loads(metrics_raw or "{}")
-        except (ValueError, TypeError):
-            metrics = {}
-        usage = usage if isinstance(usage, dict) else {}
-        metrics = metrics if isinstance(metrics, dict) else {}
-        days = sorted(set(activity_days(usage)) | set(activity_days(metrics)))
+    for sid, raw, parent_raw, metrics_raw, api_calls, calls_raw in conn.execute(
+            f"SELECT id,daily_usage_json,{parent_col},{metrics_col},{api_col},{calls_col} FROM session_log"):
+        maps = []
+        fully_dated = True
+        for source in (raw, parent_raw, metrics_raw):
+            try:
+                usage = json.loads(source or "{}")
+            except (ValueError, TypeError):
+                usage = None
+            if not isinstance(usage, dict) or len(activity_days(usage)) != len(usage):
+                fully_dated = False
+            maps.append(usage)
+        days = activity_bounds(*maps)
         updates.append((days[0] if days else None, days[-1] if days else None,
                         days[-1] if days else "", sid))
         # A session with exactly one proven activity day can carry its whole call
         # count on that day (the same allocation the adapter path uses). Sessions
-        # with an undated bucket or several activity days keep NULL: per-day call
+        # with any invalid bucket or several activity days keep NULL: per-day call
         # evidence that was never recorded stays unknown, never zero or split.
         if (calls_raw is None and len(days) == 1
-                and isinstance(api_calls, (int, float)) and "undated" not in usage):
+                and isinstance(api_calls, (int, float)) and fully_dated):
             call_updates.append((json.dumps({days[0]: int(api_calls)}), sid))
     conn.executemany("UPDATE session_log SET first_activity_day=?,last_activity_day=?,date=? WHERE id=?", updates)
     if call_updates:

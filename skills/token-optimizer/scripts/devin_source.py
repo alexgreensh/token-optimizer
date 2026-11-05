@@ -34,8 +34,7 @@ REPO_MODULES = frozenset((
     'outline', 'pipeline_analyzer', 'plugin_env', 'py_trust', 'quality_cache_gate',
     'read_cache', 'recovery_output', 'refetch_fingerprint', 'refetch_guard', 'routing_advisor',
     'runtime_env', 'session_store', 'spawn_utils', 'structure_map', 'structure_map_ts',
-    'structure_replay', 'thrash_guard', 'token_estimate', 'tool_search_diagnostic', 'utf8_io',
-))
+    'structure_replay', 'thrash_guard', 'token_estimate', 'tool_search_diagnostic', 'utf8_io', 'checkpoint_state',))
 
 class SourceOnly(importlib.abc.MetaPathFinder, importlib.abc.Loader):
     def __init__(self, root):

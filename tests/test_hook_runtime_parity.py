@@ -2,6 +2,7 @@
 """Cross-platform behavioral contract for hook deadlines and lease locks."""
 
 from __future__ import annotations
+from helpers.measure_split import measure_source as _split_measure_source
 
 import importlib
 import json
@@ -744,7 +745,7 @@ def test_throttle_only_windows_preserves_available_session_identity(
 
 
 def test_all_three_user_prompt_handlers_install_and_clear_budgets():
-    source = MEASURE.read_text(encoding="utf-8")
+    source = _split_measure_source(MEASURE)
     names = ["prompt-continuity", "verbosity-steer", "quality-cache"]
     blocks = []
     for index, name in enumerate(names):

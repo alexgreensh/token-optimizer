@@ -12,6 +12,7 @@ and holds for runtimes with legitimately smaller windows (Codex, Hermes) too.
 
 Run: python3 -m pytest tests/test_context_window_contradiction.py -v
 """
+from helpers.measure_split import measure_source as _split_measure_source
 
 import sys
 from pathlib import Path
@@ -21,7 +22,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 import measure  # noqa: E402
 
-SRC = (SCRIPTS / "measure.py").read_text(encoding="utf-8")
+SRC = _split_measure_source(SCRIPTS / "measure.py")
 
 
 def test_contradiction_is_detected_before_the_clamp():

@@ -32,6 +32,7 @@ Run: python3 -m pytest tests/test_posttooluse_runner.py -q
 """
 
 from __future__ import annotations
+from helpers.measure_split import exec_source_module as _split_exec_module
 
 import importlib.util
 import json
@@ -80,7 +81,7 @@ def _load_runner(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
     spec = importlib.util.spec_from_file_location("ptu_runner_under_test", RUNNER)
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    _split_exec_module(mod)
     return mod
 
 
@@ -683,7 +684,7 @@ def test_stdin_is_read_once_with_the_largest_of_the_six_caps():
 
     spec = importlib.util.spec_from_file_location("ptu_cap_check", RUNNER)
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    _split_exec_module(mod)
 
     assert mod._STDIN_MAX_BYTES >= archive_result._STDIN_MAX_BYTES
     # bash_compress_hook.main() reads 5 MB.

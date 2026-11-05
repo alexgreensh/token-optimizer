@@ -21,6 +21,7 @@ it as "not due" and exits 0 without importing measure.py at all.
 """
 
 from __future__ import annotations
+from helpers.measure_split import exec_source_module as _split_exec_module
 
 import json
 import os
@@ -382,7 +383,7 @@ def test_runner_delegates_to_real_gate_module(monkeypatch, tmp_path):
         "ptu_runner_gate_test", HOOKS / "posttooluse_runner.py"
     )
     runner = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(runner)
+    _split_exec_module(runner)
 
     # Don't arm a real watchdog
     monkeypatch.setattr(runner, "_install_runner_deadline", lambda total_seconds=None: None)

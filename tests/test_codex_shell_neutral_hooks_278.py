@@ -6,6 +6,7 @@ Codex runs a command hook through the session shell (``powershell -NoProfile
 so under PowerShell every hook exited 1 before Token Optimizer started. The
 Stop hook also lost the session identity on its way to the deferred worker.
 """
+from helpers.measure_split import exec_source_module as _split_exec_module
 
 import importlib.util
 import json
@@ -28,7 +29,7 @@ def _load(monkeypatch, platform="win32"):
     spec = importlib.util.spec_from_file_location(
         "codex_install_278", SCRIPTS / "codex_install.py")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    _split_exec_module(module)
     monkeypatch.setattr(module.sys, "platform", platform)
     return module
 
@@ -444,7 +445,7 @@ def _stop_runner(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
     spec = importlib.util.spec_from_file_location("stop_runner_278", REPO / "hooks" / "stop_runner.py")
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    _split_exec_module(mod)
     return mod
 
 

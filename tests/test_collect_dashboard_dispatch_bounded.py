@@ -1,6 +1,7 @@
 """collect and dashboard CLI dispatches must install a HookDeadline."""
 
 from __future__ import annotations
+from helpers.measure_split import measure_source as _split_measure_source
 
 import sys
 from pathlib import Path
@@ -63,7 +64,7 @@ def test_collect_dispatch_installs_hook_budget(measure_mod, monkeypatch):
     if hasattr(measure_mod, "_dispatch_collect"):
         measure_mod._dispatch_collect(["collect", "--quiet"])
     else:
-        src = Path(measure_mod.__file__).read_text(encoding="utf-8")
+        src = _split_measure_source(Path(measure_mod.__file__))
         collect_idx = src.find('elif args[0] == "collect":')
         assert collect_idx != -1
         window = src[collect_idx:collect_idx + 800]
@@ -94,7 +95,7 @@ def test_dashboard_dispatch_installs_hook_budget(measure_mod, monkeypatch):
             measure_mod._dispatch_dashboard(["dashboard", "--quiet"])
         assert exited.value.code in (0, 1)
     else:
-        src = Path(measure_mod.__file__).read_text(encoding="utf-8")
+        src = _split_measure_source(Path(measure_mod.__file__))
         dash_idx = src.find('elif args[0] == "dashboard":')
         assert dash_idx != -1
         window = src[dash_idx:dash_idx + 1800]

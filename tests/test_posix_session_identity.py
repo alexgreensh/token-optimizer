@@ -17,6 +17,7 @@ be listed as a stale terminal session and be terminated. These tests pin:
   time, same command, still ``terminal_cli``) right before each kill
 - DESKTOP / UNVERIFIED flags and recommendations behave as on Windows
 """
+from helpers.measure_split import exec_source_module as _split_exec_module, measure_source as _split_measure_source
 
 import importlib.util
 import os
@@ -68,7 +69,7 @@ def _load_measure():
         sys.path.insert(0, scripts)
     spec = importlib.util.spec_from_file_location("measure_posix_identity_under_test", MEASURE_PATH)
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    _split_exec_module(module)
     module.os = _PosixOs(module.os)
     return module
 
@@ -1486,7 +1487,7 @@ def test_windows_classifier_does_not_gain_the_orphan_class():
     names = {4: (0, "System"), 500: (4, "claude")}
     detail = {"pid": 500, "ppid": 4, "cmdline": "claude.exe", "path": r"C:\x\claude.exe"}
     assert measure._classify_windows_claude_process("claude.exe", detail, set(), names) == "unknown"
-    source = Path(MEASURE_PATH).read_text(encoding="utf-8")
+    source = _split_measure_source(Path(MEASURE_PATH))
     start = source.index("def _classify_windows_claude_process")
     end = source.index("def _collect_windows_claude_sessions")
     assert "orphan_cli" in source[start:end]  # only the explanatory comment

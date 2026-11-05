@@ -1,6 +1,7 @@
 """Self-tests for tests/_home_guard.py: the sandbox is active and the audit
 guard flags real-home access. Uses nonexistent paths under the real home, so no
 real data is read or written."""
+from helpers.measure_split import exec_source_module as _split_exec_module
 
 import os
 import sys
@@ -144,7 +145,7 @@ def _load_run_py():
     run_py = Path(__file__).resolve().parent.parent / "hooks" / "run.py"
     spec = importlib.util.spec_from_file_location("to_run_py_home_guard", run_py)
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    _split_exec_module(mod)
     return mod
 
 

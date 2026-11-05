@@ -35,6 +35,7 @@ Run: python3 -m pytest tests/test_subagent_cache_ttl.py -q
 """
 
 from __future__ import annotations
+from helpers.measure_split import exec_source_module as _split_exec_module, measure_source as _split_measure_source
 
 import importlib
 import json
@@ -96,7 +97,7 @@ def m(tmp_path, monkeypatch):
     spec = importlib.util.spec_from_file_location("measure", MEASURE)
     mod = importlib.util.module_from_spec(spec)
     sys.modules["measure"] = mod
-    spec.loader.exec_module(mod)
+    _split_exec_module(mod)
     home = tmp_path / "claude"
     home.mkdir(parents=True, exist_ok=True)
     settings = _write_settings(home / "settings.json")
@@ -1475,7 +1476,7 @@ def _no_inline_scan(mod, monkeypatch):
 
 def test_gate_margin_constant_is_named():
     sys.path.insert(0, str(SCRIPTS))
-    src = MEASURE.read_text(encoding="utf-8")
+    src = _split_measure_source(MEASURE)
     assert "_SUBAGENT_CACHE_AUTO_ENABLE_MARGIN = 1.15" in src
 
 
@@ -1790,7 +1791,7 @@ def test_scan_cli_runs_the_worker(m, capsys):
 def test_scan_spawn_goes_through_spawn_detached_only():
     """No console window on Windows: the spawn helper owns the flags."""
     import ast
-    tree = ast.parse(MEASURE.read_text(encoding="utf-8"))
+    tree = ast.parse(_split_measure_source(MEASURE))
     fn = next(n for n in ast.walk(tree)
               if isinstance(n, ast.FunctionDef)
               and n.name == "_subagent_cache_spawn_scan")

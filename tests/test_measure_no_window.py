@@ -36,6 +36,7 @@ Run: python3 -m pytest tests/test_measure_no_window.py -q
 """
 
 from __future__ import annotations
+from helpers.measure_split import measure_source as _split_measure_source
 
 import ast
 import importlib
@@ -69,7 +70,7 @@ _SPAWN_FUNCS = {
 
 
 def _measure_source() -> str:
-    return MEASURE_PY.read_text(encoding="utf-8")
+    return _split_measure_source(MEASURE_PY)
 
 
 def _spawn_sites(source: str):

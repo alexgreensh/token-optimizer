@@ -11,6 +11,7 @@ The counting is gated so nothing else leaks into skill stats:
   - only names that resolve to an installed skill count, so built-in/non-skill
     commands (/clear, /compact, ...) never pollute the "Skills Used" surfaces.
 """
+from helpers.measure_split import measure_source as _split_measure_source
 
 import json
 import sys
@@ -127,7 +128,7 @@ def test_plain_user_turn_adds_no_phantom_skill():
 def test_primary_recommendation_text_says_not_invoked():
     """The primary rule-engine strings, the quick-win action, and the CLI summary
     line must describe skills as 'not invoked', never assert 'unused'/'never used'."""
-    src = (SCRIPTS / "measure.py").read_text(encoding="utf-8")
+    src = _split_measure_source(SCRIPTS / "measure.py")
     assert "Archive {len(never_used)} unused skills" not in src
     assert "never used in {days} days" not in src
     assert "skills were never used in 30 days" not in src
@@ -141,8 +142,8 @@ def test_dashboard_card_relabeled():
 
 
 def test_both_trees_identical():
-    a = (SCRIPTS / "measure.py").read_text(encoding="utf-8")
-    b = (ROOT / "plugins" / "token-optimizer" / "skills" / "token-optimizer" / "scripts" / "measure.py").read_text(encoding="utf-8")
+    a = _split_measure_source(SCRIPTS / "measure.py")
+    b = _split_measure_source(ROOT / "plugins" / "token-optimizer" / "skills" / "token-optimizer" / "scripts" / "measure.py")
     assert a == b, "measure.py drifted between install trees"
     da = (ROOT / "skills" / "token-optimizer" / "assets" / "dashboard.html").read_text(encoding="utf-8")
     db = (ROOT / "plugins" / "token-optimizer" / "skills" / "token-optimizer" / "assets" / "dashboard.html").read_text(encoding="utf-8")

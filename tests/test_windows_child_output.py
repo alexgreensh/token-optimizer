@@ -5,6 +5,7 @@ output went to a hidden console or NULL handles. The fix hands it the parent's s
 through the same guard hooks/run.py uses. Not provable without Windows: these tests pin
 the arguments given to subprocess.
 """
+from helpers.measure_split import exec_source_module as _split_exec_module, measure_source as _split_measure_source
 
 import importlib.util
 import io
@@ -25,7 +26,7 @@ def _load_measure():
         sys.path.insert(0, scripts)
     spec = importlib.util.spec_from_file_location("measure_r3d_under_test", MEASURE_PATH)
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    _split_exec_module(module)
     return module
 
 
@@ -126,14 +127,14 @@ def _cli_source_block(measure_src, command):
 
 @pytest.mark.parametrize("command", ["read-cache-clear", "read-cache-stats"])
 def test_cli_branches_use_the_shared_child_launcher(command):
-    src = MEASURE_PATH.read_text(encoding="utf-8")
+    src = _split_measure_source(MEASURE_PATH)
     block = _cli_source_block(src, command)
     assert "_run_script_child(" in block, block
     assert "subprocess.run(" not in block, block
 
 
 def test_structure_proof_branch_uses_the_shared_child_launcher():
-    src = MEASURE_PATH.read_text(encoding="utf-8")
+    src = _split_measure_source(MEASURE_PATH)
     start = src.index('elif args[0] == "structure-proof":')
     block = src[start:src.index("    else:\n        print(\"Usage:\")", start)]
     assert "_run_script_child(" in block, block

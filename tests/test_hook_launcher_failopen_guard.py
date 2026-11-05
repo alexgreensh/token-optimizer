@@ -9,6 +9,7 @@ trailing `exit 0` never runs because exec already replaced the shell).
 
 Fix: every launcher command guards with `[ -r "$L" ] || exit 0` before exec.
 """
+from helpers.measure_split import measure_source as _split_measure_source
 import json
 import subprocess
 import sys
@@ -143,7 +144,7 @@ def test_setup_all_hooks_retrofits_guard_on_stable_root():
     Source-guard (mirrors test_setup_all_hooks_containment_is_separator_normalized):
     the `guard_stale` predicate must exist and gate the skip condition.
     """
-    src = (REPO / "skills" / "token-optimizer" / "scripts" / "measure.py").read_text(encoding="utf-8")
+    src = _split_measure_source(REPO / "skills" / "token-optimizer" / "scripts" / "measure.py")
     assert 'guard_stale = (' in src, "guard-retrofit staleness predicate missing"
     assert '"[ -r " in resolved_cmd and "[ -r " not in existing_cmd' in src, (
         "guard_stale must fire when the new template is guarded and the existing command is not"

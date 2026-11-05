@@ -9,6 +9,7 @@ under test (which checkpoint, when).
 """
 
 from __future__ import annotations
+from helpers.measure_split import exec_source_module as _split_exec_module, measure_source as _split_measure_source
 
 import importlib.util
 import json
@@ -74,7 +75,7 @@ def _load_plugin(path: Path = HERMES_PAYLOAD / "__init__.py", name: str = "to_he
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
-    spec.loader.exec_module(module)
+    _split_exec_module(module)
     return module
 
 
@@ -672,7 +673,7 @@ def test_skill_loads_are_counted_and_sent_with_the_rollup(plugin, recorder):
 
 
 def test_rollup_skill_argument_is_validated():
-    src = (SCRIPTS / "measure.py").read_text(encoding="utf-8")
+    src = _split_measure_source(SCRIPTS / "measure.py")
     start = src.index("_HERMES_SKILLS_MAX = 200")
     end = src.index("def _parse_hermes_rollup_context(args):")
     ns: dict = {"json": json}
@@ -926,7 +927,7 @@ def test_hermes_messages_translate_to_checkpoint_records():
 
 
 def _measure_constant(name: str):
-    text = (SCRIPTS / "measure.py").read_text(encoding="utf-8")
+    text = _split_measure_source(SCRIPTS / "measure.py")
     m = re.search(rf"^{name} = (.+)$", text, re.MULTILINE)
     assert m, name
     raw = m.group(1)

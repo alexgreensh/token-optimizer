@@ -12,6 +12,7 @@ pre-filters by image name and never touches window titles. These tests pin:
 - SessionId 0 (services session) still means "no terminal"
 - an empty StartTime (access denied) falls back to the per-PID lookup
 """
+from helpers.measure_split import exec_source_module as _split_exec_module, measure_source as _split_measure_source
 
 import importlib.util
 import subprocess
@@ -31,7 +32,7 @@ def _load_measure():
         sys.path.insert(0, scripts)  # measure.py imports sibling modules (hook_io, ...)
     spec = importlib.util.spec_from_file_location("measure_under_test", MEASURE_PATH)
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    _split_exec_module(module)
     return module
 
 
@@ -148,7 +149,7 @@ def test_windows_sessions_spawn_hardening_flags(monkeypatch):
 def test_self_check_probes_get_process_not_tasklist():
     """The Windows self-check probe (measure.py self-check) must exercise the
     new enumeration command, not the retired tasklist probe."""
-    src = MEASURE_PATH.read_text(encoding="utf-8")
+    src = _split_measure_source(MEASURE_PATH)
     assert '"tasklist", "/v"' not in src, "tasklist /v spawn still present in measure.py"
     assert "Get-Process" in src
 

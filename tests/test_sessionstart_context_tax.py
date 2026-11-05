@@ -23,6 +23,7 @@ Run: python3 -m pytest tests/test_sessionstart_context_tax.py -q
 """
 
 from __future__ import annotations
+from helpers.measure_split import exec_source_module as _split_exec_module
 
 import importlib
 import importlib.util
@@ -92,7 +93,7 @@ def _load_runner(monkeypatch, tmp_path):
     monkeypatch.setenv("TOKEN_OPTIMIZER_SNAPSHOT_DIR", str(tmp_path / "state"))
     spec = importlib.util.spec_from_file_location("ss_runner_ctx_tax", RUNNER)
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    _split_exec_module(mod)
     return mod
 
 

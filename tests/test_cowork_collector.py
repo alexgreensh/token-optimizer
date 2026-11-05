@@ -5,6 +5,7 @@ Covers the data-correctness fixes from the fable council review, all exercised
 through the public `--db <tmp>` seam against a temp DB and synthetic OTLP
 capture files. The real trends.db is never touched.
 """
+from helpers.measure_split import exec_source_module as _split_exec_module
 
 from _activity_fixtures import stamp_activity
 import importlib.util
@@ -57,7 +58,7 @@ def _load(name: str, path: Path):
     sys.path.insert(0, str(path.parent))
     spec = importlib.util.spec_from_file_location(name, str(path))
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    _split_exec_module(mod)
     return mod
 
 

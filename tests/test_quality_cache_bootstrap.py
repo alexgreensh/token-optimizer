@@ -23,6 +23,7 @@ these tests exist to make sure the ContextQ fix never buys itself by breaking it
 
 Run: python3 -m pytest tests/test_quality_cache_bootstrap.py -v
 """
+from helpers.measure_split import measure_source as _split_measure_source
 import sys
 import tempfile
 from pathlib import Path
@@ -53,7 +54,7 @@ def m(monkeypatch):
 
 def test_hot_path_still_refuses_to_bootstrap(m):
     """The ContextQ fix must not be paid for out of PostToolUse latency."""
-    src = (SCRIPTS / "measure.py").read_text(encoding="utf-8")
+    src = _split_measure_source(SCRIPTS / "measure.py")
     idx = src.index("if pure_time_throttle and not force and not cache_path.exists():")
     block = src[idx:idx + 400]
     assert "return None" in block.split("\n")[1], (
@@ -103,7 +104,7 @@ def test_no_orphan_bootstrap_marker_files_are_created(m):
     It bought recovery at the cost of the hot-path invariant, and left a new
     class of file behind. Nothing should create `quality-bootstrap-*` any more.
     """
-    src = (SCRIPTS / "measure.py").read_text(encoding="utf-8")
+    src = _split_measure_source(SCRIPTS / "measure.py")
     assert "quality-bootstrap-" not in src, (
         "the marker-file approach was abandoned; it must not leave residue"
     )

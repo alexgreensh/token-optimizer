@@ -42,6 +42,7 @@ Run: python3 -m pytest tests/test_settings_never_clobbered.py -q
 """
 
 from __future__ import annotations
+from helpers.measure_split import exec_source_module as _split_exec_module, measure_source as _split_measure_source
 
 import ast
 import hashlib
@@ -98,7 +99,7 @@ def measure(tmp_path, monkeypatch):
     spec = importlib.util.spec_from_file_location("measure", SCRIPTS / "measure.py")
     mod = importlib.util.module_from_spec(spec)
     sys.modules["measure"] = mod
-    spec.loader.exec_module(mod)
+    _split_exec_module(mod)
 
     home = tmp_path / "claude"
     (home / "plugins").mkdir(parents=True, exist_ok=True)
@@ -515,7 +516,7 @@ def test_cleanup_period_and_statusline_writers_merge_stale_reads(measure):
 
 def test_every_atomic_settings_write_consumes_its_result():
     """No caller may report or assume success after a refused write."""
-    src = (SCRIPTS / "measure.py").read_text(encoding="utf-8")
+    src = _split_measure_source(SCRIPTS / "measure.py")
     tree = ast.parse(src)
     parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
     offenders = []
@@ -536,7 +537,7 @@ def test_no_write_site_uses_the_lossy_reader(measure):
     Every ``_write_settings_atomic`` call site must have a CHECKED or
     write-oriented read nearby, never the lossy ``_read_settings_json()``.
     """
-    src = (SCRIPTS / "measure.py").read_text(encoding="utf-8").split("\n")
+    src = _split_measure_source(SCRIPTS / "measure.py").split("\n")
     offenders = []
     for i, line in enumerate(src, 1):
         if "_write_settings_atomic" not in line:

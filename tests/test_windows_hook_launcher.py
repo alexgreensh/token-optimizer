@@ -6,6 +6,7 @@ via ``%COMSPEC% /C`` (cmd.exe), so codex_install.py uses native Windows
 quoting and an auditable Python launcher file at a stable path next to the
 versioned marketplace installs.
 """
+from helpers.measure_split import exec_source_module as _split_exec_module, measure_source as _split_measure_source, definition_nodes as _split_definition_nodes
 
 import importlib.util
 import ast
@@ -41,22 +42,19 @@ HOOKS_JSON_TEMPLATE = (
 
 
 def _load_measure_hook_resolver(platform):
-    tree = ast.parse(MEASURE_PATH.read_text(encoding="utf-8"))
     wanted = {"_resolve_hook_command", "_windows_hook_command_is_stale"}
-    nodes = [node for node in tree.body
-             if isinstance(node, ast.FunctionDef) and node.name in wanted]
     namespace = {
         "Path": Path, "re": re, "shlex": shlex, "subprocess": subprocess,
         "sys": sys,
         "platform": type("Platform", (), {"system": staticmethod(lambda: platform)}),
     }
-    exec(compile(ast.Module(body=nodes, type_ignores=[]), str(MEASURE_PATH), "exec"), namespace)
+    exec(compile(_split_definition_nodes(wanted, namespace, MEASURE_PATH), str(MEASURE_PATH), "exec"), namespace)
     return namespace
 
 
 def _load_measure_hook_command():
     """Exec the module-level win32 HOOK_COMMAND assignment."""
-    tree = ast.parse(MEASURE_PATH.read_text(encoding="utf-8"))
+    tree = ast.parse(_split_measure_source(MEASURE_PATH))
     node = None
     for candidate in tree.body:
         if not isinstance(candidate, ast.If):
@@ -80,7 +78,7 @@ def _load_codex_install(monkeypatch, platform):
     monkeypatch.syspath_prepend(str(MODULE_PATH.parent))
     spec = importlib.util.spec_from_file_location("codex_install_under_test", MODULE_PATH)
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    _split_exec_module(module)
     monkeypatch.setattr(module.sys, "platform", platform)
     return module
 
@@ -666,7 +664,7 @@ def test_measure_py_has_no_cmd_null_redirect_anywhere():
     """Source-grep guard: the cmd.exe null redirect must never reappear in
     measure.py. (codex_install.py is exempt: Codex spawns hooks via
     %COMSPEC% /C, so cmd syntax is correct there.)"""
-    src = MEASURE_PATH.read_text(encoding="utf-8")
+    src = _split_measure_source(MEASURE_PATH)
 
     assert _CMD_NUL_RE.search(src) is None, (
         "cmd.exe null redirect found in measure.py; Claude Code runs hooks "
@@ -709,7 +707,7 @@ def _load_full_measure():
         sys.path.insert(0, scripts)
     spec = importlib.util.spec_from_file_location("measure_hookcurrent_uut", MEASURE_PATH)
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    _split_exec_module(module)
     return module
 
 
@@ -765,7 +763,7 @@ def test_setup_all_hooks_containment_is_separator_normalized():
     settings.json rewrite on Windows (forward-slash resolved root never
     contains the native-backslash plugin_root_str) — this test fails on that
     revert."""
-    src = MEASURE_PATH.read_text(encoding="utf-8")
+    src = _split_measure_source(MEASURE_PATH)
     # The buggy raw predicate must NOT be the active containment test.
     assert "plugin_root_str in existing_cmd" not in src, (
         "raw (un-normalized) containment reintroduces the F2 rewrite loop"

@@ -25,6 +25,7 @@ Run: python3 -m pytest tests/test_ensure_health_daemon_revive_first.py -v
 """
 
 from __future__ import annotations
+from helpers.measure_split import measure_source as _split_measure_source
 
 import importlib
 import re
@@ -104,7 +105,7 @@ def test_dispatch_source_calls_revive_first_before_budget():
     ``_ensure_health_daemon_revive_first()`` must appear BEFORE
     ``_install_hook_budget(8)`` and ``run_ensure_health()`` so a future edit
     cannot put the (now detached) daemon recovery behind the health budget."""
-    src = (SCRIPTS / "measure.py").read_text(encoding="utf-8")
+    src = _split_measure_source(SCRIPTS / "measure.py")
     mm = re.search(
         r'elif args\[0\] == "ensure-health":(?P<body>.*?)(?=\n    elif args\[0\] ==)',
         src,

@@ -22,6 +22,7 @@ Run: python3 -m pytest tests/test_parity_5138_behavioral.py -q
 """
 
 from __future__ import annotations
+from helpers.measure_split import exec_source_module as _split_exec_module
 
 import json
 import os
@@ -240,7 +241,7 @@ def _load_ups_runner(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
     spec = importlib.util.spec_from_file_location("ups_parity_test", HOOKS / "userpromptsubmit_runner.py")
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    _split_exec_module(mod)
     return mod
 
 

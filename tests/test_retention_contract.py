@@ -1,6 +1,7 @@
 """Regression coverage for the documented local-data retention contract."""
 
 from __future__ import annotations
+from helpers.measure_split import exec_source_module as _split_exec_module, measure_source as _split_measure_source
 
 import importlib.util
 import json
@@ -25,12 +26,12 @@ def _load_archive_result(monkeypatch: pytest.MonkeyPatch, snapshot_dir: Path):
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     monkeypatch.setitem(sys.modules, "archive_result", module)
-    spec.loader.exec_module(module)
+    _split_exec_module(module)
     return module
 
 
 def test_quality_cache_default_matches_seven_day_docs():
-    source = (SCRIPTS / "measure.py").read_text(encoding="utf-8")
+    source = _split_measure_source(SCRIPTS / "measure.py")
     assert (
         '_int_env("TOKEN_OPTIMIZER_QUALITY_CACHE_RETENTION_DAYS", 7)'
         in source
@@ -226,7 +227,7 @@ def test_archive_hot_path_does_not_scan_tree_before_each_write(monkeypatch, tmp_
 
 def test_hot_path_and_session_end_both_run_configured_cleanup():
     archiver = (SCRIPTS / "archive_result.py").read_text(encoding="utf-8")
-    measure = (SCRIPTS / "measure.py").read_text(encoding="utf-8")
+    measure = _split_measure_source(SCRIPTS / "measure.py")
     hot_path = archiver[archiver.index("def archive_result(") :]
     worker = measure[
         measure.index("def _run_session_end_flush_worker(") :

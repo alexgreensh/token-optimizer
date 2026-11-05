@@ -5,6 +5,7 @@ preview that kills nothing) under a label that promised a kill, and every printe
 hint said ``python3 measure.py ...`` with no path, which only works from inside
 the scripts directory. Other notices already print the resolved script path.
 """
+from helpers.measure_split import exec_source_module as _split_exec_module, measure_source as _split_measure_source
 
 import importlib.util
 import os
@@ -25,7 +26,7 @@ def _load_measure():
         sys.path.insert(0, scripts)
     spec = importlib.util.spec_from_file_location("measure_kill_stale_hints_under_test", MEASURE_PATH)
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    _split_exec_module(module)
     return module
 
 
@@ -64,7 +65,7 @@ def test_health_data_hands_the_dashboard_the_resolved_command(monkeypatch):
 
 
 def test_no_kill_stale_hint_prints_the_bare_script_name():
-    src = MEASURE_PATH.read_text(encoding="utf-8")
+    src = _split_measure_source(MEASURE_PATH)
     bare = [ln.strip() for ln in src.splitlines() if "python3 measure.py kill-stale" in ln]
     assert not bare, bare
 

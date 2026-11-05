@@ -15,6 +15,7 @@ never be enough to terminate a process. These tests pin:
 - prompt text in arguments is never mistaken for a switch
 - a session is re-verified right before it is terminated
 """
+from helpers.measure_split import exec_source_module as _split_exec_module, measure_source as _split_measure_source
 
 import importlib.util
 import subprocess
@@ -41,7 +42,7 @@ def _load_measure():
         sys.path.insert(0, scripts)
     spec = importlib.util.spec_from_file_location("measure_identity_under_test", MEASURE_PATH)
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    _split_exec_module(module)
     return module
 
 
@@ -915,7 +916,7 @@ def test_every_custom_powershell_date_format_names_the_invariant_culture():
     formatted with InvariantCulture (or use the 'o' round-trip specifier)."""
     import re
 
-    src = MEASURE_PATH.read_text(encoding="utf-8")
+    src = _split_measure_source(MEASURE_PATH)
     custom = re.findall(r"ToString\('(yyyy[^']*)'([^)]*)\)", src)
     assert len(custom) >= 2, "expected the two Windows collectors' date columns"
     for pattern, rest in custom:

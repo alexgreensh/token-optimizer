@@ -21,6 +21,7 @@ Run: python3 -m pytest tests/test_cloud_parity.py -q
 """
 
 from __future__ import annotations
+from helpers.measure_split import exec_source_module as _split_exec_module
 
 import importlib
 import json
@@ -373,7 +374,7 @@ def test_inline_flush_respects_the_stop_runners_fair_share(lean, monkeypatch, tm
 
     spec = _ilu.spec_from_file_location("to_stop_runner_cloud", HOOKS / "stop_runner.py")
     runner = _ilu.module_from_spec(spec)
-    spec.loader.exec_module(runner)
+    _split_exec_module(runner)
     seen = {}
     monkeypatch.setattr(runner.measure, "_remote_lean_profile", lambda: True)
     monkeypatch.setattr(runner.measure, "_run_session_end_flush_worker",
@@ -404,7 +405,7 @@ def test_inline_flush_respects_the_stop_runners_fair_share(lean, monkeypatch, tm
 def _load_run_py():
     spec = importlib.util.spec_from_file_location("to_run_py_cloud", HOOKS / "run.py")
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    _split_exec_module(mod)
     return mod
 
 

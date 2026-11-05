@@ -1,6 +1,7 @@
 """CLAUDE_PLUGIN_DATA identity leak + 2 robustness fixes."""
 
 from __future__ import annotations
+from helpers.measure_split import exec_source_module as _split_exec_module
 
 import importlib
 import importlib.util
@@ -22,7 +23,7 @@ def _load_run_py():
     """Load hooks/run.py as an isolated module (it is a script, not a package)."""
     spec = importlib.util.spec_from_file_location("run_py_under_test_identity_review", HOOKS / "run.py")
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    _split_exec_module(mod)
     return mod
 
 

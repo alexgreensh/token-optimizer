@@ -30,6 +30,7 @@ systemMessage.
 
 Run: pytest tests/test_verbosity_diet_guard.py -v
 """
+from helpers.measure_split import measure_source as _split_measure_source
 import ast
 import re
 import sys
@@ -186,7 +187,7 @@ class _StringCollector(ast.NodeVisitor):
 
 def _collect_strings():
     """Parse measure.py and return all context-injected [Token Optimizer] strings."""
-    src = MEASURE.read_text(encoding="utf-8")
+    src = _split_measure_source(MEASURE)
     tree = ast.parse(src)
     collector = _StringCollector()
     collector.visit(tree)

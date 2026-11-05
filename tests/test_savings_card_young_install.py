@@ -26,6 +26,7 @@ there is no JS harness) — the established pattern of test_runway_card_wiring.
 """
 
 from __future__ import annotations
+from helpers.measure_split import exec_source_module as _split_exec_module, measure_source as _split_measure_source
 
 import importlib.util
 import re
@@ -51,7 +52,7 @@ def measure(tmp_path, monkeypatch):
     spec = importlib.util.spec_from_file_location("measure", SCRIPTS / "measure.py")
     mod = importlib.util.module_from_spec(spec)
     sys.modules["measure"] = mod
-    spec.loader.exec_module(mod)
+    _split_exec_module(mod)
     yield mod
     sys.modules.pop("measure", None)
 
@@ -197,7 +198,7 @@ def test_live_payload_carries_billing_mode(measure):
 
 
 def test_both_generators_plumb_billing_mode():
-    src = (SCRIPTS / "measure.py").read_text(encoding="utf-8")
+    src = _split_measure_source(SCRIPTS / "measure.py")
     hits = re.findall(
         r'savings_data\["billing_mode"\] = keepwarm_billing_mode\(\)', src
     )

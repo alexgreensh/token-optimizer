@@ -19,6 +19,7 @@ Each test fails on the pre-fix code (verified by temporary revert).
 """
 
 from __future__ import annotations
+from helpers.measure_split import exec_source_module as _split_exec_module
 
 import importlib.util
 import os
@@ -293,7 +294,7 @@ def _load_keepwarm():
         "keepwarm_experiment", REPO / "scripts" / "keepwarm-experiment.py"
     )
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    _split_exec_module(mod)
     return mod
 
 

@@ -9,6 +9,7 @@ Never an estimate, never a negative saving. Advances R5.
 """
 
 from __future__ import annotations
+from helpers.measure_split import measure_source as _split_measure_source
 
 import importlib
 import json
@@ -169,8 +170,7 @@ def test_real_nudge_path_settles_prior_nudge_with_measured_delta(m, monkeypatch,
 def test_no_assumed_constant_remains_in_source():
     """The hardcoded 0.10/0.15 x 800 assumed figure must be gone from the
     verbosity nudge path."""
-    src = (REPO / "skills" / "token-optimizer" / "scripts" / "measure.py").read_text(
-        encoding="utf-8")
+    src = _split_measure_source(REPO / "skills" / "token-optimizer" / "scripts" / "measure.py")
     # Pinpoint the verbosity nudge block, not any unrelated 0.10/0.15 literal.
     # The old code: _est_output_reduction = 0.10 if fill_pct < 75 else 0.15
     assert "_est_output_reduction" not in src, (

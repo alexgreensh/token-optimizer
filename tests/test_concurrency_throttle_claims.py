@@ -14,6 +14,7 @@ would do duplicate work, not corrupt state.
 
 Run: python3 -m pytest tests/test_concurrency_throttle_claims.py -v
 """
+from helpers.measure_split import measure_source as _split_measure_source
 
 import importlib
 import os
@@ -111,7 +112,7 @@ def test_throttle_not_concurrently_reachable_via_worker(tmp_path, monkeypatch):
     causes an early return before the throttle is reached.
     """
     mod = _load_measure(tmp_path, monkeypatch)
-    src = Path(SCRIPTS, "measure.py").read_text(encoding="utf-8")
+    src = _split_measure_source(Path(SCRIPTS, "measure.py"))
     worker = src[src.index("def _run_session_end_flush_worker("):]
     worker = worker[:worker.index("\n\ndef ")]
 
@@ -135,7 +136,7 @@ def test_backfill_counter_is_behind_lock(tmp_path, monkeypatch):
     before the counter code is reached.
     """
     mod = _load_measure(tmp_path, monkeypatch)
-    src = Path(SCRIPTS, "measure.py").read_text(encoding="utf-8")
+    src = _split_measure_source(Path(SCRIPTS, "measure.py"))
     worker = src[src.index("def _run_session_end_flush_worker("):]
     worker = worker[:worker.index("\n\ndef ")]
 
@@ -156,7 +157,7 @@ def test_collect_sessions_skips_already_collected_files(tmp_path, monkeypatch):
     rebuild=False checks _is_file_collected for each file and continues.
     """
     mod = _load_measure(tmp_path, monkeypatch)
-    src = Path(SCRIPTS, "measure.py").read_text(encoding="utf-8")
+    src = _split_measure_source(Path(SCRIPTS, "measure.py"))
     collect_src = src[src.index("def collect_sessions("):]
     collect_src = collect_src[:collect_src.index("\n\ndef ")]
 
@@ -180,7 +181,7 @@ def test_backfill_counter_non_atomic_in_isolation(tmp_path, monkeypatch):
     the mkdir lock makes this pattern unreachable by concurrent processes.
     """
     mod = _load_measure(tmp_path, monkeypatch)
-    src = Path(SCRIPTS, "measure.py").read_text(encoding="utf-8")
+    src = _split_measure_source(Path(SCRIPTS, "measure.py"))
     worker = src[src.index("def _run_session_end_flush_worker("):]
     worker = worker[:worker.index("\n\ndef ")]
 

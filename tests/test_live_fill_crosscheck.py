@@ -16,6 +16,7 @@ contradiction guards still stand on their own.
 
 Run: python3 -m pytest tests/test_live_fill_crosscheck.py -v
 """
+from helpers.measure_split import measure_source as _split_measure_source
 
 import sys
 from pathlib import Path
@@ -23,7 +24,7 @@ from pathlib import Path
 SCRIPTS = Path(__file__).resolve().parent.parent / "skills" / "token-optimizer" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-SRC = (SCRIPTS / "measure.py").read_text(encoding="utf-8")
+SRC = _split_measure_source(SCRIPTS / "measure.py")
 
 
 def test_host_value_is_still_preferred():

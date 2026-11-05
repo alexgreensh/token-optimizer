@@ -1,6 +1,7 @@
 """the per-pid Windows start-time fallback uses ToString('o'),
 which has seven fractional digits. datetime.fromisoformat rejects that on Python 3.9/3.10.
 """
+from helpers.measure_split import exec_source_module as _split_exec_module
 
 import importlib.util
 import re
@@ -20,7 +21,7 @@ def _load_measure():
         sys.path.insert(0, scripts)
     spec = importlib.util.spec_from_file_location("measure_r3d_under_test", MEASURE_PATH)
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    _split_exec_module(module)
     return module
 
 

@@ -15,6 +15,7 @@ the cumulative tally stays available for cost/usage reporting.
 """
 
 from __future__ import annotations
+from helpers.measure_split import exec_source_module as _split_exec_module
 
 import importlib.util
 import shutil
@@ -37,7 +38,7 @@ def plugin():
     spec = importlib.util.spec_from_file_location("to_hermes_init_under_test", HERMES_INIT)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
+    _split_exec_module(module)
 
     # Deterministic window: the real resolver reads a model catalog we do not want to couple to.
     module._context_window = lambda model: WINDOW  # noqa: SLF001 — deliberate test seam
@@ -206,7 +207,7 @@ def _load_unpatched_plugin():
     spec = importlib.util.spec_from_file_location("to_hermes_policy_under_test", HERMES_INIT)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
+    _split_exec_module(module)
     return module
 
 
@@ -290,7 +291,7 @@ def test_health_probe_loads_sibling_state_module_by_path(tmp_path, monkeypatch):
     )
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
+    _split_exec_module(module)
 
     state = module._import_state()
     assert state is not foreign

@@ -10,6 +10,7 @@ installers), ``tcli()`` in the dashboard. This test greps for the bare form.
 from __future__ import annotations
 
 import ast
+from helpers.measure_split import measure_source
 import re
 import shlex
 import sys
@@ -30,7 +31,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 
 def _bare_hint_sites(path: Path) -> list[str]:
-    tree = ast.parse(path.read_text(encoding="utf-8"))
+    tree = ast.parse(measure_source(path) if path.name == 'measure.py' else path.read_text(encoding="utf-8"))
     parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
     doc_nodes = set()
     for node in ast.walk(tree):

@@ -1,4 +1,5 @@
 """Read-only tool-search diagnosis uses effective config, never guessed bills."""
+from helpers.measure_split import measure_source as _split_measure_source
 import sys
 from pathlib import Path
 import pytest
@@ -84,7 +85,7 @@ def test_doctor_contains_diagnostic_integration():
     # The pure classifier has no filesystem/network dependency. Doctor must
     # actually call it, not leave a tested but unused utility in the package.
     import ast
-    tree = ast.parse((SCRIPTS / 'measure.py').read_text(encoding='utf-8'))
+    tree = ast.parse(_split_measure_source(SCRIPTS / 'measure.py'))
     doctor = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'doctor')
     assert any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
                and n.func.id == 'diagnose_tool_search' for n in ast.walk(doctor))

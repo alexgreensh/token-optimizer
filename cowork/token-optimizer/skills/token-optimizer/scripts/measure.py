@@ -14301,12 +14301,12 @@ def _counted_sql(table, template):
     return {name: sql for (name,), sql in variants.items()}
 
 
-def _init_trends_db():
-    """Initialize the trends SQLite DB. Returns a connection.
-    
-    Uses Total Recall's DB-lock pattern: WAL mode + 5s busy_timeout + retry.
-    """
-    SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+_ACTIVITY_DATING_JOURNAL = "activity_dating_v1_journal"
+_ACTIVITY_AGGREGATE_TABLES = ("daily_stats", "model_daily", "skill_daily", "subagent_daily")
+
+
+def _connect_trends_db():
+    """Open the trends DB with the standard pragmas (no migrations run)."""
     conn = sqlite3.connect(str(TRENDS_DB))
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
@@ -14317,6 +14317,120 @@ def _init_trends_db():
     # post-checkpoint WAL closer to the 64 MiB journal_size_limit.
     conn.execute("PRAGMA wal_autocheckpoint=100")
     conn.execute("PRAGMA journal_size_limit=67108864")
+    return conn
+
+
+def _snapshot_activity_dating_prestate(conn, old_rows):
+    """Journal pre-migration session dates and copy the four aggregate tables
+    aside, inside the caller's open transaction. ``old_rows`` holds
+    ``(id, date, first_activity_day, last_activity_day)`` read before
+    ``repair_activity_dates`` rewrote the dates, so rollback restores the
+    values the migration replaced rather than the repaired ones."""
+    conn.execute(f"DROP TABLE IF EXISTS {_ACTIVITY_DATING_JOURNAL}")
+    conn.execute(
+        f"CREATE TABLE {_ACTIVITY_DATING_JOURNAL} ("
+        "session_id INTEGER PRIMARY KEY, old_date TEXT, "
+        "old_first_activity_day TEXT, old_last_activity_day TEXT)")
+    conn.executemany(
+        f"INSERT INTO {_ACTIVITY_DATING_JOURNAL} "
+        "(session_id, old_date, old_first_activity_day, old_last_activity_day) "
+        "VALUES (?, ?, ?, ?)", old_rows)
+    for table in _ACTIVITY_AGGREGATE_TABLES:
+        backup = f"{table}_pre_activity_v1"
+        conn.execute(f"DROP TABLE IF EXISTS {backup}")
+        conn.execute(f"CREATE TABLE {backup} AS SELECT * FROM {table}")
+
+
+def _archive_pre_activity_state_files():
+    """Move every pre-activity derived state file off its live name.
+
+    The first archive keeps the ``.pre-activity-v1`` suffix; when that name is
+    already taken (an interrupted earlier run, a restored backup) the active
+    copy moves to the next free ``.pre-activity-v1.N`` instead. The stale file
+    therefore always leaves its live name — it cannot keep serving as an
+    anchor — and no earlier archive is overwritten. Files already stamped
+    ``activity_basis == 1`` were rebuilt under activity dating and stay."""
+    for name in ("baseline_state.json", "workload_anchor.json", "workload_anchor_pretool.json",
+                 "weekly_full_value.json", "subagent_pool.json", "compact_advice_cache.json"):
+        path = SNAPSHOT_DIR / name
+        if not path.exists():
+            continue
+        try:
+            if json.loads(path.read_text()).get("activity_basis") == 1:
+                continue
+        except (OSError, ValueError, AttributeError):
+            pass
+        retained = path.with_name(path.name + ".pre-activity-v1")
+        suffix = 2
+        while retained.exists():
+            retained = path.with_name(f"{path.name}.pre-activity-v1.{suffix}")
+            suffix += 1
+        path.rename(retained)
+
+
+def rollback_activity_dating(conn):
+    """Reverse the ``activity_dating_v1`` migration.
+
+    Restores the session dates journaled before the rewrite, copies the
+    ``*_pre_activity_v1`` aggregate backups back over the rebuilt tables and
+    clears the migration marker, so the next ``_init_trends_db`` re-runs the
+    migration. The ``.pre-activity-v1`` JSON archives are left in place: they
+    are retained evidence, and derived files regenerate on their own. Returns
+    True when pre-migration state was restored, False when there was nothing
+    to undo. Caller owns the connection; this commits on success.
+    """
+    # Only a committed migration is reversible: without the marker the journal
+    # and backups (if any) belong to an earlier run or a rolled-back attempt,
+    # and restoring them could overwrite newer state with stale snapshots.
+    if not conn.execute(
+            "SELECT 1 FROM schema_migrations WHERE name='activity_dating_v1'").fetchone():
+        return False
+    tables = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    journal = _ACTIVITY_DATING_JOURNAL in tables
+    backups = [t for t in _ACTIVITY_AGGREGATE_TABLES
+               if f"{t}_pre_activity_v1" in tables]
+    if not journal and not backups:
+        return False
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if journal:
+            rows = conn.execute(
+                f"SELECT session_id, old_date, old_first_activity_day, "
+                f"old_last_activity_day FROM {_ACTIVITY_DATING_JOURNAL}").fetchall()
+            conn.executemany(
+                "UPDATE session_log SET date=?, first_activity_day=?, "
+                "last_activity_day=? WHERE id=?",
+                [(old_date, first, last, sid)
+                 for sid, old_date, first, last in rows])
+        for table in backups:
+            backup = f"{table}_pre_activity_v1"
+            live_cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
+            backup_cols = {r[1] for r in conn.execute(f"PRAGMA table_info({backup})")}
+            cols = [c for c in live_cols if c in backup_cols]
+            if cols:
+                conn.execute(f"DELETE FROM {table}")
+                conn.execute(
+                    f"INSERT INTO {table} ({', '.join(cols)}) "
+                    f"SELECT {', '.join(cols)} FROM {backup}")
+            conn.execute(f"DROP TABLE {backup}")
+        if journal:
+            conn.execute(f"DROP TABLE {_ACTIVITY_DATING_JOURNAL}")
+        conn.execute("DELETE FROM schema_migrations WHERE name='activity_dating_v1'")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return True
+
+
+def _init_trends_db():
+    """Initialize the trends SQLite DB. Returns a connection.
+
+    Uses Total Recall's DB-lock pattern: WAL mode + 5s busy_timeout + retry.
+    """
+    SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    conn = _connect_trends_db()
     conn.executescript(_SCHEMA)
     # Migrate existing DBs: add slug/topic columns if missing
     try:
@@ -14707,23 +14821,35 @@ def _init_trends_db():
     except (sqlite3.Error, OSError) as _e:
         _log_migration_error("compression_events uuid backfill", _e)
     conn.commit()
+    # Journal the pre-rewrite dates before repair_activity_dates opens its
+    # transaction; the journal, aggregate backups, rebuild, archives and
+    # marker then commit or roll back together.
+    pre_activity_rows = []
+    if not conn.execute(
+            "SELECT 1 FROM schema_migrations WHERE name='activity_dating_v1'").fetchone():
+        pre_activity_rows = conn.execute(
+            "SELECT id,date,first_activity_day,last_activity_day FROM session_log").fetchall()
     if repair_activity_dates(conn):
-        _rebuild_aggregate_tables(conn)
-        # Keep original evidence recoverable. These derived comparisons used
-        # session-date windows and must be rebuilt against dated activity.
-        for name in ("baseline_state.json", "workload_anchor.json", "workload_anchor_pretool.json",
-                     "weekly_full_value.json", "subagent_pool.json", "compact_advice_cache.json"):
-            path = SNAPSHOT_DIR / name
-            retained = path.with_name(path.name + ".pre-activity-v1")
-            if path.exists() and not retained.exists():
-                try:
-                    if json.loads(path.read_text()).get("activity_basis") == 1:
-                        continue
-                except (OSError, ValueError, AttributeError):
-                    pass
-                path.rename(retained)
-        conn.execute("INSERT INTO schema_migrations(name) VALUES ('activity_dating_v1')")
-        conn.commit()
+        try:
+            _snapshot_activity_dating_prestate(conn, pre_activity_rows)
+            _rebuild_aggregate_tables(conn)
+            # Keep original evidence recoverable. These derived comparisons used
+            # session-date windows and must be rebuilt against dated activity.
+            _archive_pre_activity_state_files()
+            conn.execute("INSERT INTO schema_migrations(name) VALUES ('activity_dating_v1')")
+            conn.commit()
+        except Exception as _e:
+            # The date repair, journal, backups and marker share one
+            # transaction, so rollback restores the pre-migration DB state;
+            # the connection is closed deterministically and a fresh one is
+            # returned so callers keep a usable handle. The migration retries
+            # on the next _init_trends_db.
+            try:
+                conn.rollback()
+            finally:
+                conn.close()
+            _log_migration_error("activity_dating_v1 migration", _e)
+            return _connect_trends_db()
     return conn
 
 
@@ -29882,30 +30008,44 @@ def _collect_trends_from_jsonl(days=30):
             if key not in best or rank > best[key][0]:
                 best[key] = (rank, filepath, mtime, project, parsed)
         for _, filepath, mtime, project, original in best.values():
-            merged = _session_merged_requests(filepath, original, _session_subagent_files(filepath))
+            subagent_files = _session_subagent_files(filepath)
+            merged = _session_merged_requests(filepath, original, subagent_files)
             if merged is not None:
                 net, counted = _net_and_record(merged, ledger)
                 parsed = _parsed_net_of_counted(original, counted)
                 daily = _daily_usage_from_merged(net)
-                calls = {}
+                calls = dict(parsed.get("daily_calls") or {})
                 for u in net.values():
                     if not u.get("advisor") and u.get("n", 1) and u.get("day"):
-                        calls[u["day"]] = calls.get(u["day"], 0) + 1
+                        day = u["day"]
+                        calls[day] = calls.get(day, 0) + 1
             else:
-                parsed, daily, calls = original, original.get("daily_usage") or {}, {}
-            dated = _activity_days(daily)
+                parsed = original
+                daily = _session_daily_usage(filepath, parsed=original,
+                                             subagent_files=subagent_files)
+                calls = dict(original.get("daily_calls") or {})
+            daily_metrics = _session_daily_metrics(parsed, subagent_files)
+            # Same bounds rule as collect_sessions: usage days union dated
+            # metadata days, never the file's ingestion timestamp.
+            bounds = sorted(set(_activity_days(daily) + _activity_days(daily_metrics)))
             quality = score_session_quality(parsed)
             values = {
-                "jsonl_path": str(filepath), "date": dated[-1] if dated else "", "project": project,
+                "jsonl_path": str(filepath), "date": bounds[-1] if bounds else "",
+                "first_activity_day": bounds[0] if bounds else None,
+                "last_activity_day": bounds[-1] if bounds else None,
+                "project": project,
                 "duration_minutes": parsed.get("duration_minutes"), "input_tokens": parsed.get("total_input_tokens"),
                 "output_tokens": parsed.get("total_output_tokens"), "message_count": parsed.get("message_count"),
                 "api_calls": parsed.get("api_calls"), "cache_hit_rate": parsed.get("cache_hit_rate"),
                 "cache_create_1h_tokens": parsed.get("total_cache_create_1h", 0),
                 "cache_create_5m_tokens": parsed.get("total_cache_create_5m", 0),
+                "avg_call_gap_seconds": parsed.get("avg_call_gap_seconds"),
+                "max_call_gap_seconds": parsed.get("max_call_gap_seconds"),
+                "p95_call_gap_seconds": parsed.get("p95_call_gap_seconds"),
                 "model_usage_json": json.dumps(parsed.get("model_usage") or {}),
                 "model_usage_breakdown_json": json.dumps(parsed.get("model_usage_breakdown") or {}),
                 "daily_usage_json": json.dumps(daily), "parent_daily_usage_json": json.dumps(parsed.get("daily_usage") or {}),
-                "daily_calls_json": json.dumps(calls), "daily_metrics_json": json.dumps(_session_daily_metrics(parsed, _session_subagent_files(filepath))),
+                "daily_calls_json": json.dumps(calls), "daily_metrics_json": json.dumps(daily_metrics),
                 "skills_json": json.dumps(parsed.get("skills_used") or {}),
                 "subagents_json": json.dumps(parsed.get("subagents_used") or {}),
                 "tool_calls_json": json.dumps(parsed.get("tool_calls") or {}),
@@ -54886,7 +55026,8 @@ def _pinned_workload_anchor():
             return None
         data = json.loads(path.read_text(encoding="utf-8"))
         m = data.get("metrics") if isinstance(data, dict) else None
-        if (data.get("status") == "pinned" and isinstance(m, dict)
+        if (data.get("status") == "pinned" and data.get("activity_basis") == 1
+                and isinstance(m, dict)
                 and data.get("rates") == _WEIGHT_POOL_FLAT_RATES
                 and all(isinstance(m.get(k), (int, float)) and math.isfinite(m[k]) and m[k] >= 0
                         for k in ("sessions", "usd", "tokens", "flat_usd", "api_calls", "messages"))
@@ -54924,7 +55065,9 @@ def _pretool_anchor_step(budget_seconds=5.0, tier=None):
     path = SNAPSHOT_DIR / _PRETOOL_ANCHOR_FILE
     try:
         state = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-        if not isinstance(state, dict):
+        if not isinstance(state, dict) or state.get("activity_basis") != 1:
+            # State written before activity dating (or surviving an archive
+            # collision) was computed on session-date windows; rebuild it.
             state = {}
         if state.get("status") in ("pinned", "unavailable"):
             return state["status"]
@@ -54936,7 +55079,7 @@ def _pretool_anchor_step(budget_seconds=5.0, tier=None):
         start, end = window
         if state.get("window") != [start, end] or state.get("rates") != _WEIGHT_POOL_FLAT_RATES:
             state = {"status": "building", "window": [start, end], "rates": _WEIGHT_POOL_FLAT_RATES,
-                     "cursor": 0, "seen": [],
+                     "activity_basis": 1, "cursor": 0, "seen": [],
                      "metrics": {"sessions": 0, "usd": 0.0, "tokens": 0.0, "flat_usd": 0.0,
                                  "api_calls": 0, "messages": 0}}
         files = sorted(str(f) for f, _mtime, _proj in _find_all_jsonl_files(None))
@@ -54960,7 +55103,7 @@ def _pretool_anchor_step(budget_seconds=5.0, tier=None):
             m = state["metrics"]
             ok = m["sessions"] >= _SESSION_WEIGHT_MIN_ANCHOR_SESSIONS and m["api_calls"] > 0 and m["flat_usd"] > 0
             state = {"status": "pinned" if ok else "unavailable", "window": [start, end],
-                     "rates": _WEIGHT_POOL_FLAT_RATES, "metrics": m,
+                     "rates": _WEIGHT_POOL_FLAT_RATES, "activity_basis": 1, "metrics": m,
                      "label": f"your pre-install baseline ({start} to {end})",
                      "pinned_at": datetime.now().isoformat()}
         _write_baseline_state(path, state)
@@ -55002,6 +55145,7 @@ def _stable_workload_anchor(before, month):
             # EARLIER than the frozen one (a history backfill) re-anchors.
             if (isinstance(metrics, dict) and str(frozen.get("month") or "") <= month
                     and frozen.get("rates") == _WEIGHT_POOL_FLAT_RATES
+                    and frozen.get("activity_basis") == 1
                     and all(isinstance(metrics.get(k), (int, float))
                             and math.isfinite(metrics[k]) and metrics[k] >= 0
                             for k in ("sessions", "usd", "tokens", "flat_usd", "api_calls", "messages"))
@@ -55012,6 +55156,7 @@ def _stable_workload_anchor(before, month):
                 and before["api_calls"] > 0 and before["flat_usd"] > 0):
             _write_baseline_state(path, {"month": month, "metrics": before,
                                         "rates": _WEIGHT_POOL_FLAT_RATES,
+                                        "activity_basis": 1,
                                         "captured_at": datetime.now().isoformat()})
         return before, month
     except (OSError, ValueError, TypeError):
@@ -55352,6 +55497,7 @@ def _weekly_full_savings(resets_at=None, now=None):
                 age = end.timestamp() - float(cached["computed_at"])
                 if (0 <= age < 60 and cached["start"] == start.isoformat()
                         and cached["anchor_stamp"] == anchor_stamp
+                        and cached.get("activity_basis") == 1
                         and cached["version"] == TOKEN_OPTIMIZER_VERSION):
                     return _positive_full_value(cached["value"])
             except (OSError, ValueError, TypeError, KeyError):
@@ -55378,6 +55524,7 @@ def _weekly_full_savings(resets_at=None, now=None):
                 _write_baseline_state(cache_path, {
                     "computed_at": end.timestamp(), "start": start.isoformat(),
                     "anchor_stamp": anchor_path.stat().st_mtime_ns if anchor_path.exists() else None,
+                    "activity_basis": 1,
                     "version": TOKEN_OPTIMIZER_VERSION, "value": value})
             except OSError:
                 pass

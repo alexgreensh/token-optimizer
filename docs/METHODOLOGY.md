@@ -175,12 +175,19 @@ recorded session.
   still supply dated history from retained daily buckets. Adapter totals without
   request dates or proven single-day activity remain incomplete.
 - The one-time `activity_dating_v1` migration repairs stored dates backward as
-  well as forward and rebuilds all four aggregate tables. Old derived baselines,
-  workload anchors and weekly caches are retained as `.pre-activity-v1` files and
-  rebuilt. Older snapshot model mixes cannot serve as activity-based evidence;
-  explicit user model-mix settings and raw savings/compression event dates stay
-  intact. Retention follows ingestion time, so repairing an old activity date
-  does not itself evict the session.
+  well as forward and rebuilds all four aggregate tables. Before rewriting it
+  journals the old `session_log` dates in `activity_dating_v1_journal` and copies
+  the four aggregate tables to `*_pre_activity_v1` inside the same transaction;
+  `rollback_activity_dating` restores both and clears the marker, and any
+  failure rolls the transaction back and retries on the next init. Old derived
+  baselines, workload anchors and weekly caches always leave their live names —
+  a taken `.pre-activity-v1` archive moves the active copy to the next free
+  `.pre-activity-v1.N`, so a stale file cannot survive — and rebuilt anchors
+  carry an `activity_basis` marker their readers enforce. Older snapshot model
+  mixes cannot serve as activity-based evidence; explicit user model-mix
+  settings and raw savings/compression event dates stay intact. Retention
+  follows ingestion time, so repairing an old activity date does not itself
+  evict the session.
 - OpenCode retains recording time as metadata and stores model buckets by UTC
   activity day. Its dashboard and savings windows use those slices; unknown
   timestamps remain incomplete. Python uses local calendar days. Baseline and

@@ -202,16 +202,14 @@ test('frozen before cost per session is unchanged by current session volume', ()
 test('native writer and historical rows use their session pricing and report missing coverage', () => {
   const fs=require('node:fs'),path=require('node:path');
   const dir=fs.mkdtempSync(path.join(os.tmpdir(), 'to-parity-events-'));
-  const oldHome=process.env.HOME; process.env.HOME=dir;
   const {logSavingsEvent}=require('./read-cache.ts');
-  process.env.HOME=oldHome;
   const {readSavingsEventsByCategory,measuredSavingsFromSummary}=require('./savings.ts');
   const state=path.join(dir,'token-optimizer');fs.mkdirSync(state);
   fs.writeFileSync(path.join(state,'session-history.json'),JSON.stringify([{sessionId:'known',model:'opus-5-5',input:100000,output:10,cacheRead:0,cacheWrite:0},{sessionId:'mixed',model:'opus-5-5',modelTokenBuckets:{'opus-5-5':{input:100},'unpriced-model':{input:100}}}]));
-  logSavingsEvent('checkpoint_restore',1000000,'known','new',{openclawDir:dir});
-  fs.appendFileSync(path.join(state,'savings-events.jsonl'),JSON.stringify({timestamp:'2026-10-01T00:00:00Z',session_id:'known',event_type:'checkpoint_restore',tokens_saved:1000000,detail:'old'})+'\n');
-  fs.appendFileSync(path.join(state,'savings-events.jsonl'),JSON.stringify({timestamp:'2026-10-01T00:00:00Z',session_id:'mixed',event_type:'checkpoint_restore',tokens_saved:1000000,detail:'mixed'})+'\n');
-  fs.appendFileSync(path.join(state,'savings-events.jsonl'),JSON.stringify({timestamp:'2026-10-01T00:00:00Z',session_id:'missing',event_type:'checkpoint_restore',tokens_saved:1000000,detail:'unknown'})+'\n');
+  logSavingsEvent('delta_read',1000000,'known','new',{openclawDir:dir});
+  fs.appendFileSync(path.join(state,'savings-events.jsonl'),JSON.stringify({timestamp:'2026-10-01T00:00:00Z',session_id:'known',event_type:'delta_read',tokens_saved:1000000,detail:'old'})+'\n');
+  fs.appendFileSync(path.join(state,'savings-events.jsonl'),JSON.stringify({timestamp:'2026-10-01T00:00:00Z',session_id:'mixed',event_type:'delta_read',tokens_saved:1000000,detail:'mixed'})+'\n');
+  fs.appendFileSync(path.join(state,'savings-events.jsonl'),JSON.stringify({timestamp:'2026-10-01T00:00:00Z',session_id:'missing',event_type:'delta_read',tokens_saved:1000000,detail:'unknown'})+'\n');
   const result=readSavingsEventsByCategory(dir);
   assert.equal(result.totalTokensSaved,4000000);
   assert.equal(result.totalCostSavedUsd,10);

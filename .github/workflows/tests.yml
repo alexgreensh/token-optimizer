@@ -93,7 +93,7 @@ jobs:
       - name: Install pinned adapter dependencies
         run: npm ci --ignore-scripts
       - name: Build and test OpenClaw
-        run: npm run build && bun test
+        run: npm run build && bun test src
 
   pi-native:
     runs-on: ubuntu-latest

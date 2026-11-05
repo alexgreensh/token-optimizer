@@ -1,13 +1,22 @@
-const { test } = require('node:test');
+const { test, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
 const Module = require('node:module');
+const { withFreshSourceModules } = require('./test-module-cache.cjs');
+const originalEnv = Object.fromEntries(['HOME', 'USERPROFILE', 'TOKEN_OPTIMIZER_CHECKPOINT_ROOT'].map(key => [key, process.env[key]]));
 // Every store this plugin writes lives under HOME, so point it at a temp folder before loading anything.
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'restore-credit-home-'));
 process.env.HOME = home;
 process.env.USERPROFILE = home;
 process.env.TOKEN_OPTIMIZER_CHECKPOINT_ROOT = path.join(home, 'checkpoints');
+after(() => {
+  for (const [key, value] of Object.entries(originalEnv)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+});
 const ts = require(process.env.TEST_TYPESCRIPT_PATH || 'typescript');
+const originalTsLoader = require.extensions['.ts'];
 require.extensions['.ts'] = (module, filename) => module._compile(ts.transpileModule(fs.readFileSync(filename, 'utf8'), {compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText, filename);
 const resolve = Module._resolveFilename;
 Module._resolveFilename = function(request, parent, ...rest) {
@@ -17,7 +26,14 @@ Module._resolveFilename = function(request, parent, ...rest) {
   }
   return resolve.call(this, request, parent, ...rest);
 };
-const plugin = require('./index.ts').default;
+let plugin;
+try {
+  plugin = withFreshSourceModules(() => require('./index.ts').default);
+} finally {
+  Module._resolveFilename = resolve;
+  if (originalTsLoader === undefined) delete require.extensions['.ts'];
+  else require.extensions['.ts'] = originalTsLoader;
+}
 
 const cacheDir = path.join(home, '.openclaw', 'token-optimizer', 'read-cache');
 function readCacheFile(agent, session, tokens) {

@@ -11,6 +11,8 @@ const concrete = {...routing[0], wasteType:'concrete_test', monthlyWasteUsd:7, r
 
 test('public audit and generateDashboard exclude both routing values from subtotal', () => {
   assert.equal(routing.length,2);
+  // A preceding test may have loaded the real entry point already.
+  require('./index.ts');
   let captured;
   const stubs = {
     './session-parser': {findOpenClawDir:()=>'/virtual',scanAllSessions:()=>runs,classifyCronRuns:()=>{},extractCostlyPrompts:()=>[]},
@@ -22,6 +24,8 @@ test('public audit and generateDashboard exclude both routing values from subtot
     './savings': {computeRealizedSavings:()=>null},
   };
   const original = Module._load;
+  const entry = require.resolve('./index.ts');
+  delete require.cache[entry];
   Module._load = function(request, parent, isMain) {
     if (parent?.filename.endsWith('/openclaw/src/index.ts')) {
       if (request === 'fs') return {...fs, existsSync:()=>false};
@@ -36,7 +40,11 @@ test('public audit and generateDashboard exclude both routing values from subtot
     assert.equal(index.generateDashboard(30), '/virtual/dashboard.html');
     assert.equal(captured.monthlySavingsUsd, 7);
     assert.equal(captured.findings.length, 3);
-  } finally { Module._load = original; }
+  } finally {
+    Module._load = original;
+    delete require.cache[entry];
+  }
+  assert.equal(require.cache[entry], undefined);
 });
 
 test('actual dashboard renders both complete routing assumption labels', () => {

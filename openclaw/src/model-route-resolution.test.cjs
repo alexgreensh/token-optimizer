@@ -5,6 +5,7 @@ const {execFileSync} = require('node:child_process');
 const ts = require(process.env.TEST_TYPESCRIPT_PATH || 'typescript');
 const Module = require('node:module');
 const resolve = Module._resolveFilename;
+const originalTsLoader = require.extensions['.ts'];
 Module._resolveFilename = function(request, parent, ...rest) {
   if (/^\.{1,2}\//.test(request) && parent?.filename.endsWith('.ts')) {
     const candidate = path.resolve(path.dirname(parent.filename), request) + '.ts';
@@ -13,8 +14,15 @@ Module._resolveFilename = function(request, parent, ...rest) {
   return resolve.call(this, request, parent, ...rest);
 };
 require.extensions['.ts'] = (module, filename) => module._compile(ts.transpileModule(fs.readFileSync(filename, 'utf8'), {compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText, filename);
-const {resolvePricedModel} = require('./event-pricing.ts');
-const {getPricing} = require('./pricing.ts');
+let resolvePricedModel, getPricing;
+try {
+  ({resolvePricedModel} = require('./event-pricing.ts'));
+  ({getPricing} = require('./pricing.ts'));
+} finally {
+  Module._resolveFilename = resolve;
+  if (originalTsLoader === undefined) delete require.extensions['.ts'];
+  else require.extensions['.ts'] = originalTsLoader;
+}
 
 const SCRIPTS = path.resolve(__dirname, '..', '..', 'skills', 'token-optimizer', 'scripts');
 const PRICED = [

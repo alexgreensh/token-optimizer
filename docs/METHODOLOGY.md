@@ -188,8 +188,8 @@ recorded session.
   midnight cannot manufacture extra sessions.
 
 Regression coverage: `test_activity_dating.py`, `test_usage_counted_once.py`,
-`test_dashboard_data.py`, `test_session_cost.py`, `test_savings_invariants.py` and
-OpenCode's `trends.activity-dating.test.ts`.
+`test_dashboard_data.py`, `test_session_cost.py`, `test_savings_invariants.py`,
+`test_trends_window_filter.py` and OpenCode's `trends.activity-dating.test.ts`.
 
 ---
 

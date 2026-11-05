@@ -41,6 +41,32 @@ def test_fixture_and_snapshot_close_sqlite_connections(tmp_path, monkeypatch, fa
     assert connections and all(connection.closed for connection in connections)
 
 
+def test_busy_fixture_closes_the_connection_when_lock_setup_fails(monkeypatch):
+    import sqlite3
+    import uuid
+    connections = []
+    connect = sqlite3.connect
+    class TrackedConnection(sqlite3.Connection):
+        closed = False
+        def close(self):
+            self.closed = True
+            super().close()
+        def execute(self, sql, *args):
+            if sql == 'BEGIN EXCLUSIVE':
+                raise sqlite3.OperationalError('lock setup failed')
+            return super().execute(sql, *args)
+    def tracked(*args, **kwargs):
+        connection = connect(*args, **kwargs, factory=TrackedConnection)
+        connections.append(connection)
+        return connection
+    monkeypatch.setattr(golden.sqlite3, 'connect', tracked)
+    row = next(row for row in json.loads(golden.CASES.read_text())['cases'] if row['fixture'] == 'busy-db')
+    work = REPO / '.scratch-u0' / ('busy-setup-test-' + uuid.uuid4().hex)
+    with pytest.raises(sqlite3.OperationalError, match='lock setup failed'):
+        golden.capture(REPO, work / 'fixed-path', work / 'capture', [row])
+    assert connections and all(connection.closed for connection in connections)
+
+
 def test_daemon_authorized_capture_allows_approved_posix_spawn(tmp_path, monkeypatch):
     """glibc can implement the approved Popen through a second audit event."""
     import os

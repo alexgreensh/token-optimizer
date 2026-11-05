@@ -272,14 +272,17 @@ def capture(source, workspace, output, cases, *, compiled_cache=True):
         busy = None
         if row.get('fixture') == 'busy-db':
             busy = sqlite3.connect(home / 'data/trends.db')
-            busy.execute('BEGIN EXCLUSIVE')
         try:
+            if busy is not None:
+                busy.execute('BEGIN EXCLUSIVE')
             proc = subprocess.run(argv, input=stdin, cwd=project,
                                   env=env, capture_output=True, timeout=row.get('timeout', 30))
         finally:
             if busy is not None:
-                busy.rollback()
-                busy.close()
+                try:
+                    busy.rollback()
+                finally:
+                    busy.close()
         (record / 'stdout').write_bytes(proc.stdout)
         (record / 'stderr').write_bytes(proc.stderr)
         (record / 'exit').write_text(str(proc.returncode) + '\n')

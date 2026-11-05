@@ -19108,12 +19108,12 @@
     },
     {
       "file": "tests/test_measure_split_golden.py",
-      "line": 274,
+      "line": 300,
       "helper": "measure_source"
     },
     {
       "file": "tests/test_measure_split_golden.py",
-      "line": 285,
+      "line": 311,
       "helper": "measure_source"
     },
     {

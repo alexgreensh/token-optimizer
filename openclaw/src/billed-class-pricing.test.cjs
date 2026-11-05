@@ -2,6 +2,7 @@ const {test} = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
 const ts = require(process.env.TEST_TYPESCRIPT_PATH || 'typescript');
+const { withFreshSourceModules } = require('./test-module-cache.cjs');
 require.extensions['.ts'] = (module, filename) => module._compile(ts.transpileModule(fs.readFileSync(filename, 'utf8'), {compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText, filename);
 const {priceSavingsEvent} = require('./event-pricing.ts');
 const {readSavingsEventsByCategory, allocateCents, computeRealizedSavings} = require('./savings.ts');
@@ -47,10 +48,10 @@ test('class-less priced savings disclose the input-rate floor', () => {
   const state = path.join(dir, 'token-optimizer'); fs.mkdirSync(state);
   fs.writeFileSync(path.join(state, 'session-history.json'), JSON.stringify([{sessionId:'s',model:'sonnet'}]));
   const rows = [
-    {timestamp:'2026-10-01T00:00:00Z', session_id:'s', event_type:'checkpoint_restore', tokens_saved:1e6, cost_saved_usd:2, detail:'stored'},
+    {timestamp:'2026-10-01T00:00:00Z', session_id:'s', event_type:'delta_read', tokens_saved:1e6, cost_saved_usd:2, detail:'stored'},
     {timestamp:'2026-10-01T00:00:01Z', session_id:'s', event_type:'tool_archive', tokens_saved:1e6, detail:'new'},
     {timestamp:'2026-10-01T00:00:02Z', session_id:'s', event_type:'verbosity_steer', tokens_saved:1e6, cost_saved_usd:10, detail:'out'},
-    {timestamp:'2026-10-01T00:00:03Z', session_id:'s', event_type:'checkpoint_restore', tokens_saved:1e6, cost_saved_usd:2.5, token_class:'cacheWrite', detail:'classed'},
+    {timestamp:'2026-10-01T00:00:03Z', session_id:'s', event_type:'delta_read', tokens_saved:1e6, cost_saved_usd:2.5, token_class:'cacheWrite', detail:'classed'},
   ];
   fs.writeFileSync(path.join(state, 'savings-events.jsonl'), rows.map(JSON.stringify).join('\n'));
   const result = readSavingsEventsByCategory(dir);
@@ -97,8 +98,13 @@ test('lean resume credits the avoided reload at the cache-write class', () => {
   const oldHome = process.env.HOME;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'to-native-lean-'));
   process.env.HOME = dir;
-  const {logResumeLeanSavings} = require('./continuity.ts');
-  process.env.HOME = oldHome;
+  let logResumeLeanSavings;
+  try {
+    ({logResumeLeanSavings} = withFreshSourceModules(() => require('./continuity.ts')));
+  } finally {
+    if (oldHome === undefined) delete process.env.HOME;
+    else process.env.HOME = oldHome;
+  }
   const cp = path.join(dir, 'checkpoint.md');
   fs.writeFileSync(cp, 'x'.repeat(3300));
   const calls = [];

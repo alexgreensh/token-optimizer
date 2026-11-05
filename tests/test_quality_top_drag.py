@@ -81,19 +81,20 @@ def test_fill_is_the_drag_when_fill_dominates(m):
     assert drag["key"] == "context_fill"
     assert "context fill" in drag["label"]
     assert "80%" in drag["label"]
-    # 0.5 weight on a fill_score of ~9 = ~45pt deficit — it must beat the
-    # (zero) waste and compaction deficits.
+    # 5/7 weight on a fill_score of ~9 = ~64pt deficit — it must beat the
+    # (zero) waste deficit.
     assert drag["points"] > 40
 
 
-def test_compactions_are_the_drag_when_they_dominate(m):
-    """3 compactions on a nearly-empty context: compaction depth drags."""
+def test_compactions_alone_are_never_the_drag(m):
+    """3 compactions on a nearly-empty context: the count carries no quality
+    weight (COMPACTION-QUALITY.md). Recovery friction, not the count, is what
+    gets reported — and only as measured evidence, never as a drag."""
     mod, _ = m
     result = mod.compute_quality_score(_qdata(compactions=3))
-    drag = result["top_drag"]
-    assert drag is not None
-    assert drag["key"] == "compactions"
-    assert "3 compactions" in drag["label"]
+    assert result["top_drag"] is None
+    assert result["recovery_status"] in ("unmeasurable", "no_concerning_signal_observed", "observing")
+    assert result["breakdown"]["compactions"]["weighted"] is False
 
 
 def test_waste_is_the_drag_when_waste_dominates(m, monkeypatch):
@@ -164,11 +165,23 @@ def test_reread_waste_is_never_named_as_the_drag(m, monkeypatch):
 
 
 def test_mild_fill_on_a_grade_s_session_names_no_drag(m):
-    """20% fill still scores S (>= 90); naming a 'drag' there is noise."""
+    """10% fill still scores S (>= 90) under the v2 5/7 fill weight; naming a
+    'drag' there is noise. (At ~20% fill the heavier fill weight legitimately
+    crosses the rescaled drag floor — that is resource pressure, not noise.)"""
     mod, _ = m
-    result = mod.compute_quality_score(_qdata(context_tokens=200_000))
+    result = mod.compute_quality_score(_qdata(context_tokens=100_000))
     assert result["score"] >= 90
     assert result["top_drag"] is None
+
+
+def test_fill_past_the_rescaled_floor_is_named(m):
+    """~30% fill on a clean session: fill is the drag once its weighted
+    deficit passes the rescaled v2 floor."""
+    mod, _ = m
+    result = mod.compute_quality_score(_qdata(context_tokens=300_000))
+    drag = result["top_drag"]
+    assert drag is not None
+    assert drag["key"] == "context_fill"
 
 
 def test_contradicted_window_is_labelled_a_window_problem_not_full_fill(m, monkeypatch):

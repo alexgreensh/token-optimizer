@@ -22,7 +22,8 @@ METRICS = {"sessions": 200, "usd": 900.0, "tokens": 1e9, "flat_usd": 1000.0,
 
 def _freeze(measure, month):
     (measure.SNAPSHOT_DIR / "workload_anchor.json").write_text(json.dumps({
-        "month": month, "metrics": METRICS, "rates": measure._WEIGHT_POOL_FLAT_RATES}))
+        "month": month, "metrics": METRICS, "rates": measure._WEIGHT_POOL_FLAT_RATES,
+        "activity_basis": 1}))
 
 
 def test_frozen_anchor_does_not_slide_to_a_later_month(tmp_path, monkeypatch):

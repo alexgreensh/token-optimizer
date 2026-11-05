@@ -333,9 +333,13 @@ DEFAULT_MODE = "soft_block"
 MIN_STRUCTURE_CONFIDENCE = 0.75
 MAX_CONSECUTIVE_DENIALS = 3
 REASON_ONLY_TOKENS_EST = 10
-# U-G3: conservative avoided-search credit when a proactive hint sends the agent
-# straight to a file (~2 exploratory reads of ~2500 tokens it didn't have to do
-# to locate it). Deliberately small -- lean understated, observed-once per file.
+# U-G3: conservative avoided-search ESTIMATE credited when a proactive hint
+# sends the agent straight to a file (~2 exploratory reads of ~2500 tokens it
+# plausibly did not have to do to locate it). The hint->read trigger is
+# observed; whether a search would otherwise have run is not, so the magnitude
+# is a fixed estimate and _get_savings_summary files the event in the
+# estimated tier, never the measured total. Deliberately small -- lean
+# understated, claimed once per file.
 _HINT_FOLLOW_AVOIDED_TOKENS = 5000
 STRICT_CONTEXT_CAPS = {
     "signatures": 350,
@@ -1126,7 +1130,7 @@ def _first_read_compress(
                 source_file_path=_safe_path,
                 language=language,
                 archived_from="first_read_skeleton",
-                output_text=_safe_skel[:50000],
+                output_text=_safe_skel,
             )
         except Exception:
             pass
@@ -1467,9 +1471,11 @@ def handle_read(hook_input: dict[str, Any], mode: str, quiet: bool) -> None:
         return
 
     # U-G3: if a proactive prior-session hint surfaced this exact file to this
-    # session, the agent reading it is observed evidence the hint spared an
-    # exploratory search to locate it. Credit once (claim_hint_follow flips the
-    # credited flag) with a conservative avoided-search estimate. Best-effort.
+    # session, the agent reading it is observed evidence the hint was followed.
+    # Whether it spared an exploratory search is counterfactual -- we see the
+    # read, not the search that did not happen -- so the credit is a fixed
+    # avoided-search ESTIMATE (claimed once: claim_hint_follow flips the flag),
+    # filed in the estimated tier downstream. Best-effort.
     try:
         if store.claim_hint_follow(file_path):
             _log_savings_event(
@@ -2204,6 +2210,13 @@ def handle_invalidate(hook_input: dict[str, Any], quiet: bool) -> None:
     store = _make_store(session_id)
     if store is None:
         return
+
+    # Checkpoints can predate this edit. Preserve its path independently of
+    # cache entries, including edits to files that have never been read.
+    try:
+        store.record_file_edit(file_path)
+    except Exception:
+        pass
 
     # U5: resolve the first-read shadow quality proxy (edit-after-shadow-read).
     _resolve_first_read_shadow_on_edit(

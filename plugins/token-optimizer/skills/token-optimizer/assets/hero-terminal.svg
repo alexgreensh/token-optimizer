@@ -41,7 +41,7 @@
   </g>
   <g opacity="0"><animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.1176;0.1279;0.3118;0.3250;1" dur="34s" repeatCount="indefinite"/>
     <text font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14" fill="#a6adc8" xml:space="preserve"><tspan x="44" y="290">Danger zone:       </tspan><tspan fill="#f9e2af">500K (50%, quality starts dropping)</tspan></text>
-    <text font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14" fill="#a6adc8" xml:space="preserve"><tspan x="44" y="310">Auto-compact:      </tspan><tspan fill="#f38ba8">60-70% of context lost each time</tspan></text>
+    <text font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14" fill="#a6adc8" xml:space="preserve"><tspan x="44" y="310">Auto-compact:      </tspan><tspan fill="#f38ba8">Recovery evidence: observing</tspan></text>
   </g>
   <g opacity="0"><animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.1471;0.1574;0.3118;0.3250;1" dur="34s" repeatCount="indefinite"/>
     <text x="28" y="344" fill="#a6e3a1" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14" font-weight="bold" xml:space="preserve">TOP OFFENDERS</text>

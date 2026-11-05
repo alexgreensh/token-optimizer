@@ -18,6 +18,7 @@ filter is the deliberate complement that defines the short-session pool.
 
 Run: python3 -m pytest tests/test_quality_filter_audit.py -v
 """
+from _activity_fixtures import stamp_activity
 import importlib
 import json
 import sqlite3
@@ -129,6 +130,7 @@ def _seed_db(tmp, sessions, baseline=None):
                 json.dumps(s.get("subagents_json", {})),
             ),
         )
+    stamp_activity(conn)
     conn.commit()
     conn.close()
     return snap
@@ -449,6 +451,7 @@ def test_site8_cache_hit_uses_unfiltered_rows(measure):
         ))
     _seed_db(tmp, sessions, baseline={
         "version": 4,
+        "activity_basis": 1,
         "typical_session": {
             "fresh_input": 400000, "cache_write": 0,
             "cache_read": 3600000, "output": 50000,

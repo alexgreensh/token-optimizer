@@ -30,6 +30,7 @@ an allocation, not a measurement.
 
 Run: python3 -m pytest tests/test_savings_model_mix_reprice.py -v
 """
+from _activity_fixtures import stamp_activity
 import importlib
 import json
 import sqlite3
@@ -110,6 +111,7 @@ def _ledger_db(m, tmp_path, monkeypatch, events, sessions):
             "INSERT INTO savings_events(timestamp,event_type,tokens_saved,"
             "cost_saved_usd,model,session_uuid) VALUES(?,?,?,?,?,?)",
             ((now - timedelta(hours=1)).isoformat(), et, tok, cost, model, uuid))
+    stamp_activity(conn)
     conn.commit()
     conn.close()
     monkeypatch.setattr(m, "TRENDS_DB", dbp)
@@ -208,6 +210,7 @@ def test_missing_session_uuid_column_degrades_instead_of_zeroing_the_summary(m, 
     """)
     conn.execute("INSERT INTO savings_events(timestamp,event_type,tokens_saved,cost_saved_usd)"
                  " VALUES(?,?,?,?)", (datetime.now().isoformat(), "tool_archive", 1_000_000, 3.0))
+    stamp_activity(conn)
     conn.commit()
     conn.close()
     monkeypatch.setattr(m, "TRENDS_DB", dbp)
@@ -242,9 +245,11 @@ def test_no_double_count_with_routing(m, tmp_path, monkeypatch):
     # The routed session is untouched...
     assert s["by_category"]["tool_archive"]["cost_saved_usd"] == pytest.approx(
         tokens * sonnet / 1e6, rel=1e-6)
-    # ...while the Opus session in the SAME window IS corrected. Both assertions
+    # ...while the Opus session in the SAME window IS corrected -- and the
+    # correction survives relocation: checkpoint_restore is popped to the
+    # estimated tier, carrying its repriced dollars with it. Both assertions
     # must hold together: only the second one fails pre-change.
-    assert s["by_category"]["checkpoint_restore"]["cost_saved_usd"] == pytest.approx(
+    assert s["checkpoint_restore_estimated"]["cost_saved_usd"] == pytest.approx(
         tokens * opus / 1e6, rel=1e-6)
 
 
@@ -299,6 +304,7 @@ def _temp_runway_db(m, tmp_path, monkeypatch):
                  (datetime.now().date().isoformat(), 1_000_000, 200_000))
     conn.execute("INSERT INTO savings_events(timestamp,event_type,tokens_saved) VALUES(?,?,?)",
                  (datetime.now().isoformat(), "archive", 50_000))
+    stamp_activity(conn)
     conn.commit()
     conn.close()
     monkeypatch.setattr(m, "TRENDS_DB", dbp)
@@ -315,7 +321,7 @@ def test_repriced_context_is_labelled_estimated_not_measured(m, tmp_path, monkey
     dollars the tier must read 'estimated', on the per-window line and on the
     top-level spine alike."""
     _temp_runway_db(m, tmp_path, monkeypatch)
-    monkeypatch.setattr(m, "_input_rate_mix_ratio", lambda days=30: 1.4)
+    monkeypatch.setattr(m, "_runway_routing_lever", lambda days=30: {"state": "estimated", "factor": 1.4})
     monkeypatch.setattr(m, "_keepwarm_read_meters", _fresh_meters())
     monkeypatch.setattr(m, "_get_merged_savings", lambda days=30, since=None: {
         "total_cost_usd": 120.0,
@@ -342,7 +348,7 @@ def test_weekly_spine_survives_the_overage_cache_hit(m, tmp_path, monkeypatch):
     ledger must be consulted exactly ONCE for the weekly key (proving the hit),
     the card must render, and the flag must survive the cache round-trip."""
     _temp_runway_db(m, tmp_path, monkeypatch)
-    monkeypatch.setattr(m, "_input_rate_mix_ratio", lambda days=30: 1.4)
+    monkeypatch.setattr(m, "_runway_routing_lever", lambda days=30: {"state": "estimated", "factor": 1.4})
     monkeypatch.setattr(m, "_keepwarm_read_meters", _fresh_meters())
     calls = []
 
@@ -366,7 +372,7 @@ def test_tier_stays_measured_when_nothing_was_repriced(m, tmp_path, monkeypatch)
     """The repair running and finding nothing to change leaves a pure event-time
     meter, which is honestly 'measured'. No gratuitous downgrade."""
     _temp_runway_db(m, tmp_path, monkeypatch)
-    monkeypatch.setattr(m, "_input_rate_mix_ratio", lambda days=30: 1.4)
+    monkeypatch.setattr(m, "_runway_routing_lever", lambda days=30: {"state": "estimated", "factor": 1.4})
     monkeypatch.setattr(m, "_keepwarm_read_meters", _fresh_meters())
     monkeypatch.setattr(m, "_get_merged_savings", lambda days=30, since=None: {
         "total_cost_usd": 120.0,

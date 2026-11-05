@@ -77,7 +77,7 @@ def test_estimated_multiplier_keeps_estimated_tiers_while_floor_stays_measured(m
     monkeypatch.setattr(measure, "_init_trends_db", lambda: sqlite3.connect(tmp_path / "t.db"))
     monkeypatch.setattr(measure, "_dashboard_spent_token_basis",
                         lambda conn, days=30: {"tokens": 1_000_000, "basis": "test", "complete": True})
-    monkeypatch.setattr(measure, "_input_rate_mix_ratio", lambda days=30: 1.0)
+    monkeypatch.setattr(measure, "_runway_routing_lever", lambda days=30: {"state": "estimated", "factor": 1.0})
     monkeypatch.setattr(measure, "_keepwarm_read_meters", lambda now=None: {
         "available": False, "stale": True, "age_s": None, "ts": None,
         "five_hour_pct": None, "seven_day_pct": None, "seven_day_resets_at": None})

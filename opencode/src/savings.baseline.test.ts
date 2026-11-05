@@ -18,6 +18,7 @@ const NOW = T0 + 200 * DAY; // well past the 31-day early window
 function row(tsMs: number, model: string, fi: number, cr: number, cw: number, out: number) {
   return {
     created_at: Math.floor(tsMs / 1000),
+    date: new Date(tsMs).toISOString(),
     model,
     tokens_input: fi,
     tokens_cache_read: cr,

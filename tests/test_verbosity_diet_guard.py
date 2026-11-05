@@ -262,7 +262,9 @@ def test_session_start_strings_within_budget(collected_strings):
     )
 
 
-def test_fresh_session_nudge_is_diet_compliant():
+@pytest.mark.parametrize("breakeven", [1, 10, 100])
+@pytest.mark.parametrize("context_tokens", [600_000, 999_000])
+def test_fresh_session_nudge_is_diet_compliant(monkeypatch, breakeven, context_tokens):
     """The headline failure: the fresh-session nudge must stay lean.
 
     Before the diet it was ~95 tokens (380 chars). After, it must be under
@@ -279,14 +281,25 @@ def test_fresh_session_nudge_is_diet_compliant():
     # Build a fake result that triggers the nudge
     result = {
         "score": 49,
-        "fill_pct": 100.0,
-        "model_context_window": 257000,
+        "fill_pct": context_tokens / 10_000,
+        "model_context_window": 1_000_000,
         "_fresh_nudge_fired": False,
         "_nudge_previous_score": 80,
     }
     # Bypass the feature flag and once-per-session gate
-    measure._is_v5_feature_enabled = lambda f: True
-    nudge = measure._maybe_fresh_session_nudge(result, None, {})
+    monkeypatch.setattr(measure, "_is_v5_feature_enabled", lambda f: True)
+    monkeypatch.setattr(measure, "_ran_once_this_session", lambda *a: False)
+    monkeypatch.setattr(measure, "_log_compression_event", lambda **kw: None)
+    monkeypatch.setattr(measure, "_fresh_session_turn_economics", lambda *a: {
+        "per_turn_usd": 0.12, "one_time_usd": 0.12 * breakeven,
+        "breakeven_turns": breakeven,
+    })
+    nudge = measure._maybe_fresh_session_nudge(result, None, {
+        "context_tokens": context_tokens, "model_context_window": 1_000_000,
+    })
+    assert nudge is not None
+    assert "Checkpoint saved" not in nudge
+    assert f"~{breakeven} turn" in nudge
     if nudge:
         assert len(nudge) <= MODEL_EVERY_TURN_BUDGET_CHARS, (
             f"Fresh-session nudge is {len(nudge)} chars "

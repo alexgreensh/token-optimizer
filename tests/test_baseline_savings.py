@@ -7,6 +7,7 @@ moves only with prices. The "now / session" figure must move only with EFFICIENC
 
 Run: python3 -m pytest tests/test_baseline_savings.py -v
 """
+from _activity_fixtures import stamp_activity
 import importlib
 import json
 import os
@@ -26,6 +27,7 @@ SONNET = "claude-sonnet-4-6"
 # A frozen typical pre-TO session (mirrors the real baseline_state.json shape).
 FROZEN_BASELINE = {
     "version": 4,
+    "activity_basis": 1,
     "typical_session": {
         "fresh_input": 30000.0, "cache_write": 487000.0,
         "cache_read": 13500000.0, "output": 51000.0,
@@ -91,6 +93,7 @@ def _build_env(tmp, *, n_sessions, per_session_input, opus_share, hit=_BASE_HIT)
             (f"/s/{tmp}/{i}.jsonl", today, per_session_input, out_per, hit,
              cw_per, 0, json.dumps({OPUS: opus_tok, SONNET: sonnet_tok})),
         )
+    stamp_activity(conn)
     conn.commit()
     conn.close()
     return snap
@@ -185,6 +188,7 @@ def test_premium_sidechain_mix_does_not_raise_main_work_actual_cost(measure):
         ("/s/premium-sidechain.jsonl", today, 100_000_000, 1_000_000, _BASE_HIT,
          json.dumps({"claude-opus-4-7": 101_000_000}), 1.0),
     )
+    stamp_activity(conn)
     conn.commit()
     conn.close()
     with_premium_delegation = mod._estimate_before_after_savings(days=30)

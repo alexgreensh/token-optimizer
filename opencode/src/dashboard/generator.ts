@@ -12,8 +12,8 @@ import { computeRealizedSavings, allocateCents } from "../savings.js";
 // release (source of truth: opencode/package.json `version`). They are
 // intentionally independent: the adapter ships at its own cadence and is NOT
 // required to match the core number.
-const CORE_VERSION = "5.13.63";
-const ADAPTER_VERSION = "1.2.1";
+const CORE_VERSION = "5.13.64";
+const ADAPTER_VERSION = "1.2.2";
 
 export interface DashboardOptions {
   dataDir: string;
@@ -54,9 +54,11 @@ export function generateDashboard(opts: DashboardOptions): string {
 
   let sessions: Array<Record<string, unknown>> = [];
   let dailyStats: Array<Record<string, unknown>> = [];
+  let activityCoverage = { complete: true, undatedSessions: 0 };
   try {
     sessions = store.getRecentSessions(days);
     dailyStats = store.getDailyStats(days);
+    activityCoverage = store.getActivityCoverage();
   } finally {
     store.close();
   }
@@ -97,8 +99,7 @@ export function generateDashboard(opts: DashboardOptions): string {
   //   already excludes estimated-tier categories and nets re-expansions, so
   //   this IS the full measured token total for opencode (no separate
   //   compression_events table exists, unlike canonical/openclaw).
-  // SPENT = BILLABLE total across ALL logged sessions (fresh_input +
-  //   cache_create + output, EXCLUDES cache_read) — the SAME figure the
+  // SPENT = deduplicated fresh input + output on actual activity days — the SAME figure the
   //   dashboard's own tokens summary uses, NOT the sum of the per-model mix.
   //   model_mix only covers model-attributed rows; tokens billed without a
   //   model tag would be dropped, making the card contradict the tokens
@@ -124,13 +125,12 @@ export function generateDashboard(opts: DashboardOptions): string {
   const modelTokenCounts: Record<string, number> = {};
   let spentTokens = 0;
   for (const r of sessions) {
-    const model = String(r.model ?? "unknown");
-    // Billable basis: fresh_input + cache_create + output, EXCLUDES cache_read.
-    // Matches canonical model_mix (measure.py: billable = u["inp"] + u["cc"] + u["out"]).
-    const t = num(r.tokens_input) + num(r.tokens_cache_write) + num(r.tokens_output);
-    if (!(t > 0)) continue;
-    modelTokenCounts[model] = (modelTokenCounts[model] ?? 0) + t;
-    spentTokens += t;
+    const buckets = JSON.parse(String(r.model_token_buckets ?? "{}")) as Record<string, { input: number; output: number }>;
+    for (const [model, bucket] of Object.entries(buckets)) {
+      const tokens = num(bucket.input) + num(bucket.output);
+      modelTokenCounts[model] = (modelTokenCounts[model] ?? 0) + tokens;
+      spentTokens += tokens;
+    }
   }
   const tsTotal = spentTokens + savedTokens;
   const tsSavedPct = tsTotal > 0 ? Math.round((savedTokens / tsTotal) * 100) : 0;
@@ -320,6 +320,7 @@ tr:hover td { background: var(--bg-hover); }
 </head>
 <body>
 <div class="container">
+${activityCoverage.complete ? "" : `<p class="sub">Usage coverage incomplete: ${activityCoverage.undatedSessions} sessions have missing activity dates. Undated usage is excluded from period totals.</p>`}
   <div class="header">
     <div>
       <h1>Token Optimizer</h1>
@@ -422,7 +423,7 @@ tr:hover td { background: var(--bg-hover); }
     ${(() => {
       // Cents are allocated once so the shown parts add to the shown total.
       const logged = Math.max(0, savings.compressionMeasuredWindowUsd);
-      const other = Math.max(0, savings.verbosityMeasuredWindowUsd);
+      const other = Math.max(0, savings.verbosityMeasuredWindowUsd + savings.counterfactualEstimatedWindowUsd);
       if (savings.ready || logged + other < 0.005) return "";
       const [loggedDisplay, otherDisplay] = allocateCents(logged + other, [logged, other]);
       return `
@@ -544,7 +545,7 @@ tr:hover td { background: var(--bg-hover); }
     <!-- Selected-period savings_events: raw window sums, measured + estimated. -->
     ${(() => {
       const measuredWindow = Math.max(0, savings.compressionMeasuredWindowUsd);
-      const estimatedWindow = Math.max(0, savings.verbosityMeasuredWindowUsd);
+      const estimatedWindow = Math.max(0, savings.verbosityMeasuredWindowUsd + savings.counterfactualEstimatedWindowUsd);
       const actionTotal = measuredWindow + estimatedWindow;
       // Display cents are allocated once so the shown parts add to the shown total.
       const [measuredDisplay, estimatedDisplay] = allocateCents(actionTotal, [measuredWindow, estimatedWindow]);
@@ -568,7 +569,7 @@ tr:hover td { background: var(--bg-hover); }
       <div style="font-size:12px;color:var(--text-dim);line-height:1.6;">
         Context removals logged during this period (tool archives, delta reads, structure maps), counted once at removal time.
         Repeat-read coverage is unavailable on OpenCode; logged actions are still included.
-        ${estimatedWindow > 0 ? "Other estimates are lean-output nudges (trigger observed, magnitude estimated)." : ""}
+        ${estimatedWindow > 0 ? "Other estimates are counterfactual credits and nudges (triggers observed, magnitudes estimated)." : ""}
         ${savings.inputRateFloorWindowUsd > 0 ? `${fmtCost(savings.inputRateFloorWindowUsd)} of logged actions is priced at the input rate, a minimum &mdash; the billed token class was not recorded for those events.` : ""}
       </div>
       <div style="font-size:12px;color:var(--text-dim);margin-top:var(--s-2);">${BILLING_CAPTION}</div>

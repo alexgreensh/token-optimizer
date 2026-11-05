@@ -5,7 +5,7 @@ Keep-Warm pings the prompt cache before it expires so a paused session resumes w
 ## 1. Check whether to ask
 
 ```bash
-python3 "$MEASURE_PY" keepwarm-consent-status   # JSON: {billing_mode, consent, should_ask}
+"$PY" "$MEASURE_PY" keepwarm-consent-status   # JSON: {billing_mode, consent, should_ask}
 ```
 
 `should_ask` false: say nothing. True (API-billed, not yet asked): continue.
@@ -13,7 +13,7 @@ python3 "$MEASURE_PY" keepwarm-consent-status   # JSON: {billing_mode, consent, 
 ## 2. Compute the user's own projection
 
 ```bash
-python3 "$MEASURE_PY" keepwarm-backfill --json --no-fence   # read modes."probe-only".net_usd
+"$PY" "$MEASURE_PY" keepwarm-backfill --json --no-fence   # read modes."probe-only".net_usd
 ```
 
 ## 3. Pitch
@@ -28,21 +28,21 @@ When a session pauses past its cache window and resumes, the whole prefix is wri
 Recording the answer before anything else means an interrupted run never leaves an "asked" marker with no answer.
 
 ```bash
-python3 "$MEASURE_PY" keepwarm-enable     # yes: records consent and installs the scheduler (macOS)
-python3 "$MEASURE_PY" keepwarm-disable    # no
+"$PY" "$MEASURE_PY" keepwarm-enable     # yes: records consent and installs the scheduler (macOS)
+"$PY" "$MEASURE_PY" keepwarm-disable    # no
 ```
 
 Both are final, so the user is not asked again. Only when the user neither accepts nor declines:
 
 ```bash
-python3 "$MEASURE_PY" keepwarm-consent-asked   # marks the question as shown
+"$PY" "$MEASURE_PY" keepwarm-consent-asked   # marks the question as shown
 ```
 
 ## 5. Confirm it is armed (after a yes)
 
 ```bash
-python3 "$MEASURE_PY" keepwarm-scheduler status   # installed and loaded state (macOS)
-python3 "$MEASURE_PY" keepwarm-tick --dry-run     # what the next tick would decide
+"$PY" "$MEASURE_PY" keepwarm-scheduler status   # installed and loaded state (macOS)
+"$PY" "$MEASURE_PY" keepwarm-tick --dry-run     # what the next tick would decide
 ```
 
 On Linux and Windows the scheduler is not shipped yet: Keep-Warm runs watchdog-only until the user wires `keepwarm-tick` to their own cron or timer. Tell them that plainly.

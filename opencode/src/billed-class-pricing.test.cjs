@@ -47,7 +47,7 @@ test('savings events store and honor billed class evidence', () => {
   store.recordSession({sessionId:'s', project:null, model:'claude-opus-5-5', tokensInput:1, tokensOutput:0,
     tokensCacheRead:0, tokensCacheWrite:1e6, costUsd:0, resourceHealth:null, sessionEfficiency:null,
     toolCalls:0, compactions:0, mode:null, durationSeconds:1});
-  store.logSavingsEvent('resume_lean', 1e6, 's', 'lean resume', null, 'cacheWrite');
+  store.logSavingsEvent('tool_archive', 1e6, 's', 'archived output', null, 'cacheWrite');
   const db = new Database(path.join(dir, 'trends.db'));
   assert.equal(db.query('SELECT token_class FROM savings_events').get().token_class, 'cacheWrite');
   const result = store.getCompressionSavings();
@@ -64,8 +64,8 @@ test('class-less priced savings disclose the input-rate floor', () => {
   store.recordSession({sessionId:'s', project:null, model:'claude-opus-5-5', tokensInput:1, tokensOutput:0,
     tokensCacheRead:0, tokensCacheWrite:0, costUsd:0, resourceHealth:null, sessionEfficiency:null,
     toolCalls:0, compactions:0, mode:null, durationSeconds:1});
-  store.logSavingsEvent('checkpoint_restore', 1e6, 's', 'no class', 'claude-opus-5-5');
-  store.logSavingsEvent('resume_lean', 1e6, 's', 'classed', 'claude-opus-5-5', 'cacheWrite');
+  store.logSavingsEvent('tool_archive', 1e6, 's', 'no class', 'claude-opus-5-5');
+  store.logSavingsEvent('delta_read', 1e6, 's', 'classed', 'claude-opus-5-5', 'cacheWrite');
   const result = store.getCompressionSavings();
   assert.ok(Math.abs(result.totalCostSavedUsd - 9) < 1e-9);
   assert.ok(Math.abs(result.inputRateFloorUsd - 4) < 1e-9);
@@ -76,7 +76,7 @@ test('class-less priced savings disclose the input-rate floor', () => {
 test('displayed levers add to the displayed headline while raw values stay exact', () => {
   const dir = mkdir('cents-');
   const day = 86400, t = 1750000000, now = t + 60 * day;
-  const row = (id, ts, model) => ({session_id:id, created_at:ts, date:'2026-01-01', model, tokens_input:100000,
+  const row = (id, ts, model) => ({session_id:id, created_at:ts, date:new Date(ts * 1000).toISOString(), model, tokens_input:100000,
     tokens_output:10000, tokens_cache_read:0, tokens_cache_write:0, cost_usd:0, duration_seconds:300});
   const rows = [row('install', t, 'opus')];
   for (let i = 0; i < 35; i++) rows.push(row('before'+i, t + (2 + i / 2) * day, 'opus'));
@@ -102,7 +102,7 @@ test('dashboard discloses the input-rate floor beside the measured dollars', () 
   store.recordSession({sessionId:'s', project:null, model:'claude-opus-5-5', tokensInput:1, tokensOutput:0,
     tokensCacheRead:0, tokensCacheWrite:0, costUsd:0, resourceHealth:null, sessionEfficiency:null,
     toolCalls:0, compactions:0, mode:null, durationSeconds:1});
-  store.logSavingsEvent('checkpoint_restore', 1e6, 's', 'no class', 'claude-opus-5-5');
+  store.logSavingsEvent('tool_archive', 1e6, 's', 'no class', 'claude-opus-5-5');
   store.close();
   const {generateDashboard} = require('./dashboard/generator.ts');
   const html = generateDashboard({dataDir:dir});

@@ -12,6 +12,7 @@ Two fixes are locked here:
    Below `_MIN_OVERAGE_USD_SHOWN` the window carries no dollar line (saved_usd
    None) and the top-level spine reads zero.
 """
+from _activity_fixtures import stamp_activity
 import importlib
 import sqlite3
 import sys
@@ -59,6 +60,7 @@ def _temp_trends(m, tmp_path, monkeypatch):
                  (today, 1_000_000, 200_000))
     conn.execute("INSERT INTO savings_events(timestamp,event_type,tokens_saved) VALUES(?,?,?)",
                  (now_iso, "archive", 50_000))
+    stamp_activity(conn)
     conn.commit()
     conn.close()
     monkeypatch.setattr(m, "TRENDS_DB", dbp)
@@ -85,7 +87,7 @@ def _ledger(context_usd, routing_usd):
 def test_immaterial_weekly_dollar_is_suppressed(m, tmp_path, monkeypatch):
     """A sub-$10 weekly overage carries no dollar line and a zeroed spine."""
     _temp_trends(m, tmp_path, monkeypatch)
-    monkeypatch.setattr(m, "_input_rate_mix_ratio", lambda days=30: 1.4)
+    monkeypatch.setattr(m, "_runway_routing_lever", lambda days=30: {"state": "estimated", "factor": 1.4})
     monkeypatch.setattr(m, "_keepwarm_read_meters", _fresh_meters())
     monkeypatch.setattr(m, "_get_merged_savings", _ledger(context_usd=0.30, routing_usd=0.0))
 
@@ -101,7 +103,7 @@ def test_immaterial_weekly_dollar_is_suppressed(m, tmp_path, monkeypatch):
 def test_material_weekly_dollar_is_shown(m, tmp_path, monkeypatch):
     """At/above the $10 floor the weekly dollar renders unchanged."""
     _temp_trends(m, tmp_path, monkeypatch)
-    monkeypatch.setattr(m, "_input_rate_mix_ratio", lambda days=30: 1.4)
+    monkeypatch.setattr(m, "_runway_routing_lever", lambda days=30: {"state": "estimated", "factor": 1.4})
     monkeypatch.setattr(m, "_keepwarm_read_meters", _fresh_meters())
     monkeypatch.setattr(m, "_get_merged_savings", _ledger(context_usd=12.0, routing_usd=0.0))
 
@@ -132,6 +134,7 @@ def test_model_mix_shares_scopes_to_since(m, tmp_path, monkeypatch):
     today = datetime.now().date().isoformat()                            # in-window
     conn.execute("INSERT INTO model_daily VALUES(?,?,?)", (old_day, "claude-opus", 900_000))
     conn.execute("INSERT INTO model_daily VALUES(?,?,?)", (today, "claude-haiku", 100_000))
+    stamp_activity(conn)
     conn.commit()
     conn.close()
     monkeypatch.setattr(m, "TRENDS_DB", dbp)

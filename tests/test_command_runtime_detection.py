@@ -97,3 +97,42 @@ def test_primary_run_uses_resolved_runtime_not_hardcoded_codex(rel):
         f"{rel}: expected the resolved-runtime run form "
         'TOKEN_OPTIMIZER_RUNTIME="$RUNTIME".'
     )
+
+
+# Docs whose resolver block echoes resolved values for later commands. The
+# echoes must stay off stdout — a --json command chained in the same Bash call
+# keeps parseable stdout only when the echoes go to stderr — and must be
+# paste-safe (printf %q), because a bare `echo "MEASURE_PY=$MEASURE_PY"` prints
+# a spaced Windows path unquoted and word-splits when the agent reuses it.
+ECHO_DOCS = [
+    "skills/token-dashboard/SKILL.md",
+    "skills/token-coach/SKILL.md",
+    "skills/token-optimizer/SKILL.md",
+    "skills/fleet-auditor/SKILL.md",
+    "skills/token-optimizer/references/codex-workflow.md",
+]
+_RESOLVED_VAR_RE = re.compile(
+    r"\$(?:MEASURE_PY|PY|COACH_DIR|FLEET_PY|RUNTIME|COORD_PATH|TO_LAUNCHER|PULL_PY|BACKUP_DIR)\b")
+
+
+@pytest.mark.parametrize("rel", ECHO_DOCS)
+def test_resolver_echoes_stay_off_stdout_and_paste_safe(rel):
+    for lineno, line in enumerate(_read(rel).splitlines(), 1):
+        s = line.strip()
+        m = re.search(r"\b(?:echo|printf)\b", s)
+        if not m:
+            continue
+        # Only the echo/printf tail matters: a resolved var inside the
+        # `[ -z "$VAR" ]` guard or an earlier command on the line is not
+        # something the echo prints.
+        emitted = s[m.start():]
+        if not _RESOLVED_VAR_RE.search(emitted):
+            continue
+        assert ">&2" in emitted, (
+            f"{rel}:{lineno}: resolver echo writes to stdout — a --json command "
+            f"chained in the same Bash call becomes unparseable: {s}"
+        )
+        assert not re.match(r'echo "[A-Z_]+=[$]', emitted), (
+            f"{rel}:{lineno}: bare VAR=value echo is not paste-safe on spaced "
+            f"paths; use printf 'NAME=%q\\n' \"$VAR\" >&2: {s}"
+        )

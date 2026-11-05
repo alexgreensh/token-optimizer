@@ -6,6 +6,7 @@ from datetime import datetime, timezone, timedelta
 
 import pytest
 from test_runway_resume_lean_addback import measure, _wire
+from _activity_fixtures import stamp_activity
 
 
 def _turn(rid, ts, output=10, input_tokens=1000):
@@ -91,6 +92,7 @@ def test_full_week_uses_shared_baseline_and_real_activity(measure, monkeypatch, 
             (str(tmp_path/f'anchor{i}'),'2026-06-01',10000,10,1,0,'{"opus":10010}'))
     c.execute('INSERT INTO session_log (jsonl_path,date,input_tokens,output_tokens,api_calls) VALUES (?,?,?,?,?)',
         (str(p),'2026-09-01',1,0,1))
+    stamp_activity(c)
     c.commit();c.close()
     # Baseline source files may have been archived; only current-period gaps
     # make activity coverage incomplete.
@@ -104,7 +106,7 @@ def test_full_week_uses_shared_baseline_and_real_activity(measure, monkeypatch, 
 
 def test_full_savings_survives_flat_throughput_multiplier(measure, monkeypatch):
     _wire(measure, monkeypatch, resume_lean_usd=0)
-    monkeypatch.setattr(measure, '_input_rate_mix_ratio', lambda days=30: 1.0)
+    monkeypatch.setattr(measure, "_runway_routing_lever", lambda days=30: {"state": "estimated", "factor": 1.0})
     monkeypatch.setattr(measure, '_weekly_full_savings', lambda **kw: {'saved_usd': 200.62})
     snap=measure.runway_snapshot()
     assert snap is not None

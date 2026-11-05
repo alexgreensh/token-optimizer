@@ -14,6 +14,7 @@ card vanished -- the "this section doesn't update" report. The fix:
 
 Run: python3 -m pytest tests/test_runway_meter_freshness.py -v
 """
+from _activity_fixtures import stamp_activity
 import importlib
 import sqlite3
 import sys
@@ -59,11 +60,12 @@ def _temp_trends(m, tmp_path, monkeypatch):
                  (today, 1_000_000, 200_000))
     conn.execute("INSERT INTO savings_events(timestamp,event_type,tokens_saved) VALUES(?,?,?)",
                  (now_iso, "archive", 50_000))
+    stamp_activity(conn)
     conn.commit()
     conn.close()
     monkeypatch.setattr(m, "TRENDS_DB", dbp)
     monkeypatch.setattr(m, "_init_trends_db", lambda: sqlite3.connect(str(dbp)))
-    monkeypatch.setattr(m, "_input_rate_mix_ratio", lambda days=30: 1.4)
+    monkeypatch.setattr(m, "_runway_routing_lever", lambda days=30: {"state": "estimated", "factor": 1.4})
 
 
 def test_fresh_meter_renders_and_is_not_flagged_stale(m, tmp_path, monkeypatch):

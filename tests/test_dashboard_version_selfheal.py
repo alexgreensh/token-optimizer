@@ -27,6 +27,7 @@ test_runway_card_wiring.py / test_dashboard_regen_retry.py take).
 
 Run: python3 -m pytest tests/test_dashboard_version_selfheal.py -v
 """
+from _activity_fixtures import stamp_activity
 import importlib
 import inspect
 import sqlite3
@@ -251,10 +252,11 @@ def _temp_trends(m, monkeypatch):
                  (today, 1_000_000, 200_000))
     conn.execute("INSERT INTO savings_events(timestamp,event_type,tokens_saved) VALUES(?,?,?)",
                  (now_iso, "archive", 50_000))
+    stamp_activity(conn)
     conn.commit()
     conn.close()
     monkeypatch.setattr(m, "_init_trends_db", lambda: sqlite3.connect(str(dbp)))
-    monkeypatch.setattr(m, "_input_rate_mix_ratio", lambda days=30: 1.4)
+    monkeypatch.setattr(m, "_runway_routing_lever", lambda days=30: {"state": "estimated", "factor": 1.4})
 
 
 def test_healthy_meter_fills_runway_windows(m, monkeypatch):

@@ -469,3 +469,36 @@ def test_dashboard_and_cli_disclose_unsplit_tokens_left_out_of_routing(measure, 
     routing_line = next(l for l in out.splitlines() if "Routing" in l)
     assert "(~2,000,000 Opus tokens/mo without a class split are left out)" in routing_line
     assert "priced as input" not in routing_line
+
+
+def test_unsplit_usage_is_disclosed_on_both_routing_surfaces(measure, monkeypatch, capsys):
+    """Usage without a token-class split (Cursor totals, model-daily-only
+    history, legacy rows) leaves realized routing unmeasured or partially
+    covered; the Savings tab and the CLI say so in plain words instead of
+    silently showing $0."""
+    s = _savings()
+    s["model_routing"].update({"evidence": "unavailable", "unsplit_tokens": 4_000_000})
+    text = _text(_render(s))
+    assert "4,000,000 tokens without a token-class split are left out of model routing" in text
+    out = _cli_out(measure, monkeypatch, capsys,
+                   _cli_summary({"evidence": "unavailable", "realized_cost_usd": 0.0,
+                                 "unsplit_tokens": 4_000_000}))
+    assert "4,000,000 tokens without a token-class split are left out of model routing" in out
+    # Partial coverage discloses the same exclusion.
+    s2 = _savings()
+    s2["model_routing"].update({"evidence": "estimated", "realized_cost_usd": 3.0,
+                                "unsplit_tokens": 1_500_000})
+    assert "1,500,000 tokens without a token-class split are left out of model routing" in _text(_render(s2))
+    # No unsplit usage, no line.
+    assert "without a token-class split are left out of model routing" not in _text(_render(_savings()))
+
+
+def test_since_install_discloses_unsplit_tokens_left_out_of_routing(measure, monkeypatch):
+    long_ago = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+    monkeypatch.setattr(measure, "_install_date", lambda: long_ago)
+    monkeypatch.setattr(measure, "_get_merged_savings", lambda days=30: {
+        "total_cost_usd": 10.0,
+        "model_routing": {"realized_cost_usd": 0.0, "evidence": "unavailable",
+                          "unsplit_tokens": 4_000_000}})
+    since = measure._savings_since_install()
+    assert since["all_in"]["routing_unsplit_tokens"] == 4_000_000

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Model routing is priced per token class at each model's own generation card.
 
-Realized routing prices each token class separately. Potential routing covers
-fresh input and output, or unsplit usage priced at the input rate.
+Realized routing prices each observed token class separately. Potential routing
+covers fresh input and output. Unsplit usage stays outside both comparisons.
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ class _Db:
             """
             CREATE TABLE session_log (id INTEGER PRIMARY KEY, date TEXT,
                 daily_usage_json TEXT, model_usage_breakdown_json TEXT,
-                all_model_usage_json TEXT, model_usage_json TEXT);
+                all_model_usage_json TEXT, model_usage_json TEXT, first_activity_day TEXT, last_activity_day TEXT);
             CREATE TABLE model_daily (date TEXT, model TEXT, total_tokens INTEGER,
                 PRIMARY KEY (date, model));
             """
@@ -69,12 +69,12 @@ class _Db:
     def session(self, daily=None, breakdown=None, totals=None, date=None):
         self.conn.execute(
             "INSERT INTO session_log (date, daily_usage_json, model_usage_breakdown_json, "
-            "all_model_usage_json, model_usage_json) VALUES (?,?,?,?,?)",
+            "all_model_usage_json, model_usage_json, first_activity_day, last_activity_day) VALUES (?,?,?,?,?,?,?)",
             (date or self.day(0),
              json.dumps(daily) if daily is not None else None,
              json.dumps(breakdown) if breakdown is not None else None,
              json.dumps(totals) if totals is not None else None,
-             None),
+             None, date or self.day(0), date or self.day(0)),
         )
         self.conn.commit()
 
@@ -202,6 +202,9 @@ def test_rows_without_a_class_split_stay_out_of_the_routing_potential(m, db):
     assert "unsplit" not in r["potential_by_class"]
     assert r["potential_cost_usd"] == 0
     assert r["potential_unsplit_excluded_tokens"] == 4_000_000
+    assert r["evidence"] == "unavailable"
+    assert r["compared_share"] == 0.0
+    assert r["standardized_baseline_cost_usd"] == r["standardized_actual_cost_usd"] == 0
 
 
 def test_breakdown_rows_keep_their_split_and_flag_the_rest(m, db):
@@ -217,6 +220,8 @@ def test_breakdown_rows_keep_their_split_and_flag_the_rest(m, db):
     assert r["potential_by_class"]["output"]["tokens"] == 300_000
     assert "unsplit" not in r["potential_by_class"]
     assert r["potential_unsplit_excluded_tokens"] == 2_000_000
+    assert r["compared_share"] == pytest.approx(1 / 3, abs=1e-4)
+    assert r["standardized_actual_cost_usd"] == pytest.approx(_cards(m)["opus_5_5"]["output"])
 
 
 def test_split_rows_report_no_unsplit_tokens(m, db):
@@ -234,6 +239,9 @@ def test_no_session_rows_falls_back_to_the_model_mix(m, db):
     assert r["potential_tokens"] == 0
     assert r["potential_cost_usd"] == 0
     assert r["potential_unsplit_excluded_tokens"] == 4_000_000
+    assert r["evidence"] == "unavailable"
+    assert r["compared_share"] == 0.0
+    assert r["standardized_baseline_cost_usd"] == r["standardized_actual_cost_usd"] == 0
 
 
 # ------------------------------------------------------------ realized

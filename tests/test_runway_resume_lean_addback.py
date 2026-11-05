@@ -58,7 +58,7 @@ def _wire(measure, monkeypatch, resume_lean_usd):
     monkeypatch.setattr(measure, "_dashboard_spent_token_basis",
                         lambda conn, days=30: {"tokens": 1_000_000,
                                                "basis": "test", "complete": True})
-    monkeypatch.setattr(measure, "_input_rate_mix_ratio", lambda days=30: 1.5)
+    monkeypatch.setattr(measure, "_runway_routing_lever", lambda days=30: {"state": "estimated", "factor": 1.5})
 
     rl = {"cost_saved_usd": resume_lean_usd, "tokens_saved": 1, "events": 9} \
         if resume_lean_usd else None

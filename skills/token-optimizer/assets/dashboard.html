@@ -2398,6 +2398,16 @@ function codexMemCardHtml(mr, fn) { return '<div class="card"><div class="card-h
         '<div style="text-align:center;padding:0 0 var(--s-3);font-size:12px;color:var(--c-text-dim);">Measured from Codex state; no file structure audit</div>' +
         '</div>'; }
 function memCountSuffix(mr) { return mr && mr.scan_partial ? '+' : ''; }
+// Cursor and Antigravity have no CLAUDE.md or MEMORY.md and no ~/.claude
+// folder to manage, and the /token-optimizer audit is Claude Code only (see
+// references/cursor-workflow.md), so the Claude-shaped labels, cards and
+// pointers are replaced for them.
+function isNoInstructionHost(data) {
+  return !!data && (data.runtime === 'cursor' || data.runtime === 'antigravity');
+}
+function hostRefreshHtml(data) {
+  return tcliHtml('<span class="update-cmd">TOKEN_OPTIMIZER_RUNTIME=' + esc(data.runtime) + ' python3 measure.py dashboard</span>');
+}
 function hermesComponentDetails(c) {
   function fileSub(x, missing) {
     return (x && x.exists) ? (x.lines || 0) + ' lines loaded every session' : missing;
@@ -2529,7 +2539,16 @@ function getComponentDetails(data) {
     {
       key: 'mcp_tools', name: 'MCP Tools',
       tokens: c.mcp_tools ? c.mcp_tools.tokens : 0,
-      sub: (c.mcp_tools ? c.mcp_tools.server_count : '?') + ' servers, ~' + (c.mcp_tools ? c.mcp_tools.tool_count_estimate : '?') + ' tools',
+      sub: (function() {
+        var m = c.mcp_tools;
+        var s = (m ? m.server_count : '?') + ' servers, ~' + (m ? m.tool_count_estimate : '?') + ' tools';
+        if (m) {
+          var dis = m.disabled_for_project || [], pen = m.pending_project_approval || [];
+          if (dis.length) s += ', ' + dis.length + ' disabled for this project';
+          if (pen.length) s += ', ' + pen.length + ' pending approval';
+        }
+        return s;
+      })(),
       what: isCodex
         ? 'Codex MCP servers can expand the active tool surface with names, descriptions, and schemas. The dashboard counts configured servers and uses conservative metadata estimates when exact schemas are not exposed.'
         : "MCP server tool definitions are loaded when servers connect. Each tool's name, description, and parameter schema contribute to token cost.",
@@ -2550,6 +2569,13 @@ function getComponentDetails(data) {
       top: [], issues: [], related: []
     }
   ];
+
+  if (isNoInstructionHost(data)) {
+    // Drop the rows that name files and commands this runtime does not have.
+    components = components.filter(function(comp) {
+      return comp.key !== 'claude_md' && comp.key !== 'memory_md' && comp.key !== 'commands';
+    });
+  }
 
   // Override with detailed data if available
   components.forEach(function(comp) {
@@ -3026,7 +3052,7 @@ var DB = (function() {
     var ts = data.generated_at ? new Date(data.generated_at).toLocaleString() : 'unknown';
     var staleMinutes = data.generated_at ? Math.round((Date.now() - new Date(data.generated_at).getTime()) / 60000) : 0;
     var isStale = staleMinutes > 60;
-    var refreshHint = data.runtime === 'codex' ? 'run the Codex dashboard refresh command' : 'run /token-optimizer';
+    var refreshHint = data.runtime === 'codex' ? 'run the Codex dashboard refresh command' : isNoInstructionHost(data) ? 'regenerate the dashboard' : 'run /token-optimizer';
     var staleWarning = isStale ? ' <span style="color:var(--c-warning, #ff9f43);font-weight:500;">(data is ' + (staleMinutes > 1440 ? Math.round(staleMinutes / 1440) + 'd' : Math.round(staleMinutes / 60) + 'h') + ' old — ' + refreshHint + ' to refresh)</span>' : '';
     var headerEl = document.querySelector('#view-overview .header');
     if (headerEl) {
@@ -3038,11 +3064,15 @@ var DB = (function() {
           tsDiv.innerHTML = 'Last updated: ' + esc(ts) + staleWarning +
             (data.runtime === 'codex'
               ? tcliHtml(' &middot; Run <span class="update-cmd">TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py session-end-flush --trigger manual</span> for a fresh Codex audit.')
+              : isNoInstructionHost(data)
+              ? ' &middot; To refresh, run ' + hostRefreshHtml(data) + '.'
               : ' &middot; Run <span class="update-cmd">/token-optimizer</span> for a full audit with recommendations.');
         } else {
           tsDiv.innerHTML = 'Last updated: ' + esc(ts) + staleWarning +
             (data.runtime === 'codex'
               ? tcliHtml(' &middot; To refresh, run <span class="update-cmd">TOKEN_OPTIMIZER_RUNTIME=codex python3 measure.py session-end-flush --trigger manual</span>.')
+              : isNoInstructionHost(data)
+              ? ' &middot; To refresh, run ' + hostRefreshHtml(data) + '.'
               : ' &middot; To refresh, run <span class="update-cmd">/token-optimizer</span> again.');
         }
         headerEl.appendChild(tsDiv);
@@ -3055,6 +3085,7 @@ var DB = (function() {
     var c = data.snapshot.components;
     var isCodexOverview = data.runtime === 'codex';
     var isHermesOverview = data.runtime === 'hermes';
+    var isHostOverview = isNoInstructionHost(data);
     var vals = [];
     var ct = 0; for (var k in c) {
       if (!c[k] || !c[k].tokens) continue;
@@ -3091,6 +3122,13 @@ var DB = (function() {
       vals = hc.map(function(x) { return x.tokens || 0; });
       barLabels = hc.map(function(x) { return x.name; });
       memoryExists = !!(c.hermes_memory && c.hermes_memory.exists);
+    }
+    if (isHostOverview) {
+      vals = [(c.skills ? c.skills.tokens : 0) + (c.plugin_skills ? c.plugin_skills.tokens : 0),
+              c.mcp_tools ? c.mcp_tools.tokens : 0,
+              c.core_system ? c.core_system.tokens : 0];
+      barLabels = ['Skills', 'MCP Tools', 'Core System'];
+      memoryExists = true;
     }
     var barsHtml = vals.map(function(v, i) {
       var w = logBar(v);
@@ -3136,7 +3174,7 @@ var DB = (function() {
     } else if (data.standalone) {
       document.getElementById('stat-potential').innerHTML = fn(ctrl) + ' <span class="mini-label">controllable tokens</span>';
       document.getElementById('potential-desc').textContent =
-        fn(ctrl) + ' of your ' + fn(total) + ' tokens are things you can change. ' + (isCodexOverview ? 'Use the Codex dashboard refresh command for a full local audit with specific savings estimates.' : 'Run /token-optimizer for a full audit with specific savings estimates.');
+        fn(ctrl) + ' of your ' + fn(total) + ' tokens are things you can change. ' + (isCodexOverview ? 'Use the Codex dashboard refresh command for a full local audit with specific savings estimates.' : (isHostOverview ? '' : 'Run /token-optimizer for a full audit with specific savings estimates.'));
     } else {
       document.getElementById('stat-potential').innerHTML = fn(ctrl) + ' <span class="mini-label">controllable tokens</span>';
       document.getElementById('potential-desc').textContent =
@@ -3248,11 +3286,11 @@ var DB = (function() {
         ctaEl.innerHTML = '<div class="card-header"><span>Auto-Detected Recommendations</span></div>' +
           '<div class="empty-state" style="text-align:left;color:var(--c-text-dim);font-size:14px;">' +
           'These recommendations are auto-generated from your config. Browse them in the tabs on the left.<br>' +
-          (isCodexOverview ? 'For deeper analysis, refresh the Codex dashboard after a few real turns so quality and continuity signals are available.' : 'For deeper analysis (semantic duplication, content quality), run <code style="color:var(--c-accent-cyan)">/token-optimizer</code> for a full LLM-powered audit.') + '</div>';
+          (isCodexOverview ? 'For deeper analysis, refresh the Codex dashboard after a few real turns so quality and continuity signals are available.' : isHostOverview ? '' : 'For deeper analysis (semantic duplication, content quality), run <code style="color:var(--c-accent-cyan)">/token-optimizer</code> for a full LLM-powered audit.') + '</div>';
       } else {
         ctaEl.innerHTML = '<div class="card-header"><span>Optimization Recommendations</span></div>' +
           '<div class="empty-state">No auto-detected issues. Your setup looks clean.<br>' +
-          (isCodexOverview ? 'Refresh the Codex dashboard after live usage for deeper quality analysis.' : 'Run <code style="color:var(--c-accent-cyan)">/token-optimizer</code> for a full audit with deeper analysis.') + '</div>';
+          (isCodexOverview ? 'Refresh the Codex dashboard after live usage for deeper quality analysis.' : isHostOverview ? '' : 'Run <code style="color:var(--c-accent-cyan)">/token-optimizer</code> for a full audit with deeper analysis.') + '</div>';
       }
       gridEl.parentNode.insertBefore(ctaEl, gridEl.nextSibling);
     }
@@ -3317,20 +3355,20 @@ var DB = (function() {
 
       if (data.auto_plan) {
         html += '<div class="last-updated">Last updated: ' + esc(ts) +
-          (data.runtime === 'codex' ? ' · Auto-detected from Codex local config and logs.</div>' : ' · Auto-detected. Run <span class="update-cmd">/token-optimizer</span> for deeper LLM-powered analysis.</div>');
+          (data.runtime === 'codex' ? ' · Auto-detected from Codex local config and logs.</div>' : (isNoInstructionHost(data) ? ' · Auto-detected from local config and logs.</div>' : ' · Auto-detected. Run <span class="update-cmd">/token-optimizer</span> for deeper LLM-powered analysis.</div>'));
       } else if (data.standalone) {
         html += '<div class="last-updated">Last updated: ' + esc(ts) +
-          (data.runtime === 'codex' ? ' · Optimization data is limited until Codex session logs are collected.</div>' : ' · Optimization data not available in standalone mode. Run <span class="update-cmd">/token-optimizer</span> for a full audit with recommendations.</div>');
+          (data.runtime === 'codex' ? ' · Optimization data is limited until Codex session logs are collected.</div>' : (isNoInstructionHost(data) ? ' · Optimization data is limited in standalone mode.</div>' : ' · Optimization data not available in standalone mode. Run <span class="update-cmd">/token-optimizer</span> for a full audit with recommendations.</div>'));
       } else {
         html += '<div class="last-updated">Last updated: ' + esc(ts) +
-          (data.runtime === 'codex' ? ' · To refresh, use the Codex dashboard refresh command.</div>' : ' · To refresh, run <span class="update-cmd">/token-optimizer</span> again.</div>');
+          (data.runtime === 'codex' ? ' · To refresh, use the Codex dashboard refresh command.</div>' : (isNoInstructionHost(data) ? ' · To refresh, run ' + hostRefreshHtml(data) + '.</div>' : ' · To refresh, run <span class="update-cmd">/token-optimizer</span> again.</div>'));
       }
 
       if (secItems.length === 0) {
         if (!data.plan && !data.auto_plan) {
           html += '<div class="empty-state" style="text-align:center;padding:2rem 1rem;">' +
             '<div style="font-size:1.5rem;margin-bottom:0.5rem;">No optimization plan yet</div>' +
-            '<div style="color:var(--c-text-dim);margin-bottom:1rem;">' + (data.runtime === 'codex' ? 'Use live Codex sessions and refresh the dashboard to generate personalized recommendations with toggle items here.' : 'Run <span class="update-cmd" style="cursor:pointer">/token-optimizer</span> in ' + esc(data.runtime_label || 'Claude Code') + ' to generate personalized recommendations with toggle items here.') + '</div>' +
+            '<div style="color:var(--c-text-dim);margin-bottom:1rem;">' + (data.runtime === 'codex' ? 'Use live Codex sessions and refresh the dashboard to generate personalized recommendations with toggle items here.' : (isNoInstructionHost(data) ? 'Refresh the dashboard to generate recommendations from your ' + esc(data.runtime_label || 'runtime') + ' config here.' : 'Run <span class="update-cmd" style="cursor:pointer">/token-optimizer</span> in ' + esc(data.runtime_label || 'Claude Code') + ' to generate personalized recommendations with toggle items here.')) + '</div>' +
             '</div>';
         } else {
           html += '<div class="empty-state">No items in this category.</div>';
@@ -3490,34 +3528,23 @@ var DB = (function() {
   // renderSavings render it identically without duplicating the body logic.
   // Reads trends data from the global `data`; the savings object is passed as
   // `savings` (data.savings in renderTrends, the in-scope `s` in renderSavings).
-  // SPENT = data.trends.total_tokens on the Claude /stats-compatible basis:
-  // fresh input + every streamed assistant output record from top-level
-  // transcripts, with cache read/write classes excluded. NOT sum(model_mix):
+  // SPENT = deduplicated fresh input + output on actual activity days.
+  // Cache reads and writes are excluded. NOT sum(model_mix):
   // model_mix can omit unattributed tokens. Fail-open to that sum rather than 0.
-  // SAVED = savings.total_tokens. Fail-open: SAVED ≤ 0 → return '' (omit card
-  // entirely); SAVED > 0 but SPENT missing/zero → render hero + footer only.
+  // SAVED = savings.total_tokens. Fail-open: measured AND estimated both ≤ 0 →
+  // return '' (omit card entirely); either > 0 → render (estimates still show
+  // when the measured floor is zero). SAVED > 0 but SPENT missing/zero →
+  // render hero + footer only.
   // The model-mix "where the spent went" bar reconciles to SPENT via a trailing
   // "untracked" segment for SPENT - sum(model_mix) (tokens billed without a
   // model tag). Returns '' when the card should not render.
   function tokensSavedCardHtml(savings) {
     var s = savings || {};
     var tsSavedTokens = Number(s.total_tokens) || 0;
-    if (tsSavedTokens <= 0) return '';
-    var tsTrends = data.trends || {};
-    var tsSpentBasis = tsTrends.spent_token_basis || {};
-    var tsModelMix = tsTrends.model_mix || {};
-    var tsModelTotal = 0;
-    for (var tsMk in tsModelMix) { tsModelTotal += tsModelMix[tsMk]; }
-    var tsIsCodex = data.runtime === 'codex';
-    var tsPeriodDays = Number(tsTrends.period_days) || Number(s.period_days) || 30;
-    // SPENT = provider-stats-compatible total, fail-open to sum(model_mix).
-    var tsReportedTotal = Number(tsTrends.total_tokens) || 0;
-    var tsSpentTokens = tsReportedTotal > 0 ? tsReportedTotal : tsModelTotal;
-    // (tsWouldSendTotal / percentages are computed below, AFTER the estimated
-    // tier is summed: the card headlines the FULL saved total in every state.)
     // Estimated-tier tokens (kept OUT of the measured SAVED total by
-    // _get_savings_summary). Surfaced only in the footer as "not included
-    // here", labelled with whichever estimated categories are present.
+    // _get_savings_summary). Surfaced in the footer as the estimated slice,
+    // labelled with whichever estimated categories are present, and they keep
+    // the card alive when the measured floor is zero.
     // Field names match _get_merged_savings' re-export: mcp_cap_estimated
     // keeps its suffix; hint_followed and verbosity_steer drop the _estimated
     // suffix (the summary's *_estimated locals are re-keyed without it).
@@ -3540,8 +3567,25 @@ var DB = (function() {
       var tk = Number(obj && obj.tokens_saved) || 0;
       if (tk > 0) tsEstItems.push({ label: label, tokens: tk });
     })(s.resume_lean_estimated, 'lean resumes');
+    (function pushEst(obj, label) {
+      var tk = Number(obj && obj.tokens_saved) || 0;
+      if (tk > 0) tsEstItems.push({ label: label, tokens: tk });
+    })(s.checkpoint_restore_estimated, 'checkpoint restores');
     var tsEstTokens = tsEstItems.reduce(function(a, b) { return a + b.tokens; }, 0);
     var tsEstLabelList = tsEstItems.map(function(it) { return it.label; }).join(', ');
+    if (tsSavedTokens <= 0 && tsEstTokens <= 0) return '';
+    var tsTrends = data.trends || {};
+    var tsSpentBasis = tsTrends.spent_token_basis || {};
+    var tsModelMix = tsTrends.model_mix || {};
+    var tsModelTotal = 0;
+    for (var tsMk in tsModelMix) { tsModelTotal += tsModelMix[tsMk]; }
+    var tsIsCodex = data.runtime === 'codex';
+    var tsPeriodDays = Number(tsTrends.period_days) || Number(s.period_days) || 30;
+    // Missing dated coverage must not be replaced by lifetime model totals.
+    var tsReportedTotal = Number(tsTrends.total_tokens) || 0;
+    var tsSpentTokens = Object.prototype.hasOwnProperty.call(tsTrends, 'total_tokens') ? Math.max(0, tsReportedTotal) : tsModelTotal;
+    // (tsWouldSendTotal / percentages are computed below, AFTER the estimated
+    // tier is summed: the card headlines the FULL saved total in every state.)
     // FULL saved total = measured floor + estimated tier. The headline is
     // ALWAYS the full number, never the floor alone; the measured-vs-estimated
     // split stays visible right under it so the honesty travels with the size,
@@ -3612,6 +3656,10 @@ var DB = (function() {
       html += '<div class="empty-state">No trends data yet. ' + collectNote + '</div>';
       el.innerHTML = html;
       return;
+    }
+
+    if (t.activity_coverage && t.activity_coverage.complete === false) {
+      html += '<div class="empty-state">Usage coverage incomplete: ' + fn(t.activity_coverage.undated_sessions || 0) + ' sessions have missing activity dates. Undated usage is excluded from period totals.</div>';
     }
 
     // Pricing tier display
@@ -3703,7 +3751,7 @@ var DB = (function() {
     // hoisted tokensSavedCardHtml + modelMixBodyHtml helpers). Replaces the
     // former standalone Model Mix card — the model-mix-as-usage section is
     // now inside the Tokens Saved card, reconciled to the billable SPENT.
-    // Fail-open: returns '' when SAVED ≤ 0 (no measured savings to show).
+    // Fail-open: returns '' only when measured AND estimated are both ≤ 0.
     html += tokensSavedCardHtml(data.savings || {});
 
     // Daily breakdown with date navigation
@@ -4247,12 +4295,57 @@ var DB = (function() {
           : '<div class="metric-large" style="text-wrap:balance;text-shadow:none;">' + (usdHeadline || '<em style="font-style:normal;color:var(--c-accent-cyan);">more work</em>') + '</div>');
       // Visible: one short plain line. The technical explanation of how each
       // figure is built goes to the fold at the bottom of the card.
+      // Lever copy follows each factor's own value: a routing factor below 1 is
+      // a heavier mix and is never called lighter; pending or unavailable
+      // routing is stated instead of shown as a number.
+      var rwContextMult = Number(rw.context_multiplier);
+      var rwContextLighter = isFinite(rwContextMult) && rwContextMult > 1;
+      var rwContextText = rwContextLighter
+        ? 'Lighter context (&times;' + rw.context_multiplier + ')'
+        : 'Context is unchanged (&times;1)';
+      var rwRoutingMult = rw.routing_multiplier == null ? NaN : Number(rw.routing_multiplier);
+      var rwRoutingKnown = isFinite(rwRoutingMult) && rwRoutingMult > 0;
+      var rwPendingSessions = Number(rw.routing_pending_sessions);
+      var rwRoutingMissing = rw.routing_state === 'pending'
+        ? 'model routing is pending while ' + (rwPendingSessions > 0 ? rwPendingSessions + ' sessions are' : 'sessions are') + ' re-measured, so it is not included yet'
+        : 'model routing could not be measured, so it is not included';
+      var rwLeverDetail;
+      if (rwRoutingKnown && rwRoutingMult > 1) {
+        rwLeverDetail = rwContextText + (rwContextLighter
+          ? ' and a lighter model mix (&times;' + rwRoutingMult + ') let each token do more.'
+          : '; a lighter model mix (&times;' + rwRoutingMult + ') lets each token do more.');
+      } else if (rwRoutingKnown && rwRoutingMult < 1) {
+        rwLeverDetail = rwContextText + (rwContextLighter ? ' lets each token do more; a' : '; a') + ' heavier model mix (&times;' + rwRoutingMult + ') means each token uses more of your plan.';
+      } else if (rwRoutingKnown) {
+        rwLeverDetail = rwContextText + (rwContextLighter ? ' lets each token do more;' : ';') + ' the model mix is unchanged (&times;1).';
+      } else {
+        rwLeverDetail = rwContextText + (rwContextLighter ? ' lets each token do more;' : ';') + ' ' + rwRoutingMissing + '.';
+      }
+      var rwRoutingMethod = rwRoutingKnown
+        ? 'model mix &times;' + rwRoutingMult + ' (above 1 lighter, below 1 heavier, from the routing estimate on the Savings tab)'
+        : 'no model-mix factor (' + (rw.routing_state === 'pending' ? 'routing pending' : 'routing unavailable') + ')';
+      var rwRoutingCoverage = Number(rw.routing_coverage);
+      var rwRoutingExcluded = rw.routing_excluded_models || {};
+      var rwRoutingOut = [].concat(rwRoutingExcluded.premium || [], rwRoutingExcluded.unpriced || [], rwRoutingExcluded.free || []);
+      // The coverage line names the window the snapshot actually computed over
+      // (routing_window_days); payloads from before the field fall back to 30.
+      var rwRoutingDays = Number(rw.routing_window_days);
+      if (!isFinite(rwRoutingDays) || rwRoutingDays <= 0) rwRoutingDays = 30;
+      var rwRoutingWindowTxt = 'the last ' + rwRoutingDays + (rwRoutingDays === 1 ? ' day&rsquo;s' : ' days&rsquo;');
+      var rwRoutingScope = (rwRoutingKnown && isFinite(rwRoutingCoverage) && rwRoutingCoverage > 0)
+        ? ' The model mix compares ' + Math.round(rwRoutingCoverage * 100) + '% of ' + rwRoutingWindowTxt + ' tokens' + (rwRoutingOut.length ? '; left out: ' + esc(rwRoutingOut.join(', ')) : '') + '.'
+        : '';
+      var rwRoutingUnsplit = Number(rw.routing_unsplit_tokens);
+      if (rwRoutingUnsplit > 0) {
+        rwRoutingScope += ' Left out of the model-mix comparison: ' + fn(rwRoutingUnsplit) + ' tokens without a token-class split.';
+      }
       var rwEfficiencyDetail = rwHasCostEfficiency
         ? 'A comparable session fell from <strong>' + rwMoney(rwBeforeCost) + '</strong> to <strong>' + rwMoney(rwAfterCost) + '</strong>' + (rwCostCutDisplay !== null ? ' (about ' + rwCostCutDisplay + '% cheaper)' : '') + '.'
-        : 'Lighter context (&times;' + rw.context_multiplier + ') and lighter models (&times;' + rw.routing_multiplier + ') let each token do more.';
+        : rwLeverDetail;
       var rwEfficiencyMethod = rwHasCostEfficiency
         ? 'This cost-efficiency lens combines lighter context, the cache re-read cascade, and model routing.'
-        : 'Lighter context &times;' + rw.context_multiplier + ' and lighter models &times;' + rw.routing_multiplier + ' give a per-token throughput multiplier, shown separately from the window headroom and dollar figures.';
+        : 'Context &times;' + rw.context_multiplier + ' and ' + rwRoutingMethod + ' give a per-token throughput multiplier, shown separately from the window headroom and dollar figures.';
+      rwEfficiencyMethod += rwRoutingScope;
       var rwTokenFloorDetail = (rwTokenFloorPct !== null)
         ? '<div class="plain-line">About <strong>' + fn(rwSavedTokens) + '</strong> tokens never had to be sent, roughly ' + rwTokenFloorPct + '% of what would have been.</div>'
         : '';
@@ -4285,7 +4378,7 @@ var DB = (function() {
         // limits.", a continuation of the headline that reads as a truncated
         // fragment once it wraps to its own line, and the limit panels below
         // already establish which limits are meant.
-        '<p style="margin:var(--s-3) 0 var(--s-4);color:var(--c-text-main);font-size:17px;line-height:1.6;text-wrap:pretty;">Token Optimizer keeps junk out of context and runs routine turns on lighter models, so more of your plan goes to real work instead of waste.</p>' +
+        '<p style="margin:var(--s-3) 0 var(--s-4);color:var(--c-text-main);font-size:17px;line-height:1.6;text-wrap:pretty;">Token Optimizer keeps junk out of context' + (rwRoutingKnown && rwRoutingMult > 1 ? ' and runs routine turns on lighter models' : '') + ', so more of your plan goes to real work instead of waste.</p>' +
         // Per-window bars when the meter is fresh enough; otherwise a note so the
         // card degrades instead of vanishing (the multiplier + savings above still
         // stand without the live meter).
@@ -4354,7 +4447,9 @@ var DB = (function() {
             (rwTokenFloorMethod ? '<p>' + rwTokenFloorMethod + '</p>' : '') +
             '<p>' + (rwHasCostEfficiency
               ? 'The &asymp;' + rwEfficiencyMult.toFixed(1) + '&times; figure is the before/after per-session cost ratio, not a sum of the token floor or per-window dollar figures.'
-              : 'The &asymp;' + rw.extra_work_pct + '% is a separate per-token throughput multiplier, not a sum of the per-window dollar figures.') + '</p>' +
+              : (rwHasLegacyMultiplier
+                ? 'The &asymp;' + rw.extra_work_pct + '% is a separate per-token throughput multiplier, not a sum of the per-window dollar figures.'
+                : 'The per-token throughput multiplier is separate from the per-window dollar figures.')) + '</p>' +
           '</div></details>' +
         '</div>' +
       '</div>';
@@ -4440,11 +4535,13 @@ var DB = (function() {
     var rs = s.retrieval_serve || {};
     var rle = s.resume_lean_estimated || {};
     var vs = s.verbosity_steer || {};
+    var cr = s.checkpoint_restore_estimated || {};
     var cp = s.counted_period || {};
     var rereadMo = cp.available ? mo(cp.reread_usd) : 0;
     var hf = s.hint_followed || {};
-    // Avoided-search: prefer the deterministic observed hint->read measure
-    // (hint_followed); fall back to the cohort estimate only before any hint has
+    // Avoided-search: prefer the hint->read estimate (hint_followed; the
+    // hint->read pair is observed, the avoided-search magnitude is a fixed
+    // estimate); fall back to the cohort estimate only before any hint has
     // fired, so the two are never summed (no double-count).
     var hfHasData = (Number(hf.events) || 0) > 0;
     var avoidedSearchMo = hfHasData ? mo(hf.cost_saved_usd) : mo(rs.cost_saved_usd);
@@ -4457,7 +4554,7 @@ var DB = (function() {
     // always reconcile exactly to gettingMo (measured + estimated). Every estItems
     // entry maps to exactly one pillar: loops/sub-agent/mcp_cap -> runtime;
     // heeded/handover/avoided-search/lean-resumes -> behavioral.
-    var behavMo   = mo(mr.realized_cost_usd) + mo(beh.cost_saved_usd) + mo(ce.cost_saved_usd) + mo(hr.cost_saved_usd) + avoidedSearchMo + mo(rle.cost_saved_usd) + mo(vs.cost_saved_usd);
+    var behavMo   = mo(mr.realized_cost_usd) + mo(beh.cost_saved_usd) + mo(ce.cost_saved_usd) + mo(hr.cost_saved_usd) + avoidedSearchMo + mo(rle.cost_saved_usd) + mo(vs.cost_saved_usd) + mo(cr.cost_saved_usd);
     // ---- trust tiers: measured / estimated / opportunity. Opportunity NEVER folds into the headline. ----
     // Measured = billable events we metered (runtime compression + realized model routing).
     // Routing joins the measured tier only when its valuation is measured; the
@@ -4473,8 +4570,9 @@ var DB = (function() {
       { key: 'mcp_cap_estimated', label: 'MCP output cap',                 amt: mo(mce.cost_saved_usd), n: Number(mce.events) || 0,             unit: 'capped results' },
       { key: 'contamination_exit', label: 'avoided rework (heeded nudges)', amt: mo(ce.cost_saved_usd),  n: Number(ce.heeded_sessions) || 0,     unit: 'heeded', conf: ce.confidence },
       { key: 'handover_rerun', label: 'continuity handover',            amt: mo(hr.cost_saved_usd),  n: Number(hr.restored_sessions) || 0,    unit: 'restored', conf: hr.confidence },
-      { key: 'avoided_search', label: 'avoided search (hints)',         amt: avoidedSearchMo,        n: avoidedSearchN,                       unit: avoidedSearchUnit, conf: hfHasData ? 'observed' : rs.confidence },
+      { key: 'avoided_search', label: 'avoided search (hints)',         amt: avoidedSearchMo,        n: avoidedSearchN,                       unit: avoidedSearchUnit, conf: hfHasData ? 'trigger observed, size estimated' : rs.confidence },
       { key: 'resume_lean_estimated', label: 'lean resumes (cold reload avoided)', amt: mo(rle.cost_saved_usd), n: Number(rle.events) || 0,           unit: 'resumes' },
+      { key: 'checkpoint_restore_estimated', label: 'checkpoint restores (working-set re-reads)', amt: mo(cr.cost_saved_usd), n: Number(cr.events) || 0, unit: 'restores' },
       { key: 'verbosity_steer', label: 'concise output nudges', amt: mo(vs.cost_saved_usd), n: Number(vs.events) || 0, unit: 'nudges' }
     ].filter(function(it){ return it.amt > 0 || it.conf; });
     var estimatedMo = estItems.reduce(function(a, b){ return a + b.amt; }, 0);
@@ -4570,6 +4668,14 @@ var DB = (function() {
       // larger, uncapped percentage implied by the counterfactual arms.
       var shownSaving = Number(ba.monthly_savings_usd) || 0;
       var costCut = oldCost > 0 ? Math.max(0, shownSaving / oldCost * 100) : 0;
+      // A neutral add-back reprice (routing pending or unavailable) shrinks the
+      // transformation figure without any visible reason -- say why, plainly.
+      var baRepriceBasis = ba.compression_reprice_basis;
+      var baRepriceNote = (baRepriceBasis === 'routing_pending')
+        ? 'Model-mix repricing is paused while sessions finish re-measuring, so the add-backs in this estimate show their measured value.'
+        : (baRepriceBasis === 'routing_unavailable'
+          ? 'Model-mix repricing could not be measured, so the add-backs in this estimate show their measured value.'
+          : '');
       html += '<div class="card wide savings-transformation" style="padding:var(--s-4);margin-bottom:var(--s-3);">' +
         '<div class="label">Transformation &middot; last ' + days + ' days &middot; estimated</div>' +
         '<div class="savings-amount">' + money(ba.monthly_savings_usd) +
@@ -4578,6 +4684,7 @@ var DB = (function() {
         '<div class="savings-split"><span>Now <strong>' + money(nowCost) + '</strong></span>' +
           '<span>Earlier workflow <strong>' + money(oldCost) + '</strong></span></div>' +
         '<div class="plain-line">Overlaps with the action savings below. Do not add the two totals.</div>' +
+        (baRepriceNote ? '<div class="plain-line">' + baRepriceNote + '</div>' : '') +
         fold('How this is estimated',
           countedList([ba.savings_capped && ba.savings_cap_note ? esc(ba.savings_cap_note) : '']) +
           (wp
@@ -4684,6 +4791,12 @@ var DB = (function() {
       (mr.evidence === 'pending'
         ? '<p class="plain-line routing-pending">Model routing: re-measuring (' + Number(mr.pending_sessions || 0).toLocaleString() +
           ' session' + (Number(mr.pending_sessions) === 1 ? '' : 's') + ' left). It is added to this total when the re-measurement finishes.</p>' : '') +
+      // Usage without a token-class split (Cursor totals, model-daily-only
+      // history, legacy rows) sits outside both routing arms. Say so instead of
+      // letting an empty or partial routing figure read as complete coverage.
+      (Number(mr.unsplit_tokens) > 0
+        ? '<p class="plain-line">' + Number(mr.unsplit_tokens).toLocaleString() +
+          ' tokens without a token-class split are left out of model routing.</p>' : '') +
       fold('Breakdown and method',
         countedList([
           'Includes the later benefit of context removed during this period. Initial removals are counted once.',
@@ -4761,6 +4874,9 @@ var DB = (function() {
         '<p class="plain-line">Same four parts as the monthly total, added up since install.</p>' +
         fold('Breakdown and history',
           '<p>Model routing: <strong>' + money(siaRouting) + '</strong> (estimated).</p>' +
+          (Number(sia.routing_unsplit_tokens) > 0
+            ? '<p>' + Number(sia.routing_unsplit_tokens).toLocaleString() +
+              ' tokens without a token-class split are left out of model routing.</p>' : '') +
           '<p>Repeat reads avoided: <strong>' + money(siaParts.reread) + '</strong> (modeled).</p>' +
           '<p>Logged actions: <strong>' + money(siaParts.logged) + '</strong>.</p>' +
           '<p>Other estimates: <strong>' + money(sia.estimated_usd) + '</strong>.</p>' +
@@ -4879,7 +4995,7 @@ var DB = (function() {
           '<div style="font-size:18px;color:var(--c-text-main);line-height:1.7;max-width:760px;">' + esc(p) + '</div></div>';
       });
       html += '</div>';
-      html += '<div style="margin-top:var(--s-5);padding:var(--s-4);background:rgba(217,164,65,0.07);border:1px solid var(--c-amber);border-radius:10px;font-family:var(--font-mono);font-size:17px;line-height:1.6;color:var(--c-text-main);font-weight:500;">Run <span style="color:var(--c-amber);">/token-optimizer</span> and follow its suggestions to claim the rest &rarr;</div>';
+      if (data.runtime !== 'cursor' && data.runtime !== 'antigravity') html += '<div style="margin-top:var(--s-5);padding:var(--s-4);background:rgba(217,164,65,0.07);border:1px solid var(--c-amber);border-radius:10px;font-family:var(--font-mono);font-size:17px;line-height:1.6;color:var(--c-text-main);font-weight:500;">Run <span style="color:var(--c-amber);">/token-optimizer</span> and follow its suggestions to claim the rest &rarr;</div>';
       html += '</details></div>';
     }
 
@@ -5320,11 +5436,19 @@ var DB = (function() {
         { key: 'stale_reads', label: 'Stale Reads', icon: '\uD83D\uDCC4', tip: 'Files read earlier that have since changed. The model may be working with outdated content.' },
         { key: 'bloated_results', label: 'Bloated Results', icon: '\uD83D\uDCE6', tip: 'Tool outputs sitting in context that were never referenced. Wasted space.' },
         { key: 'duplicates', label: 'Duplicates', icon: '\uD83D\uDD04', tip: 'Same system reminders or content injected multiple times. Pure waste.' },
-        { key: 'compaction_depth', label: 'Compactions', icon: '\uD83D\uDDDC', tip: 'Each compaction loses 60-70% of conversation. After 2: ~88% gone.' },
         { key: 'decision_density', label: 'Decision Density', icon: '\uD83C\uDFAF', tip: 'Ratio of actual decisions and work vs overhead and boilerplate.' },
         { key: 'agent_efficiency', label: 'Agent Efficiency', icon: '\u2699\uFE0F', tip: 'Whether dispatched agents produced useful output relative to their token cost.' }
       ];
       html += '<div style="padding:0 var(--s-3) var(--s-3);">';
+      // Compactions are metadata, with no health bar or fixed loss claim.
+      var compactData = bd.compactions || bd.compaction_depth;
+      var recoveryData = bd.compaction_recovery;
+      if (compactData || recoveryData) {
+        var compactCount = compactData ? (compactData.count != null ? compactData.count : compactData.compactions) : q.compactions;
+        html += '<div style="display:flex;flex-wrap:wrap;gap:var(--s-2);margin-bottom:10px;font-size:15px;color:var(--c-text-dim);">' +
+          '<span>Compactions: ' + esc(compactCount == null ? 'unknown' : compactCount + ' compactions') + '</span>' +
+          '<span>Recovery: ' + (compactCount === 0 ? 'no compactions' : 'observing') + '</span></div>';
+      }
       signals.forEach(function(sig) {
         var d = bd[sig.key];
         if (!d) return;
@@ -5493,7 +5617,7 @@ var DB = (function() {
 
     // Snapshot summary
     var snap = c.snapshot || {};
-    var instructionLabel = snap.instruction_label || (isCodex ? 'AGENTS.md' : 'CLAUDE.md');
+    var instructionLabel = snap.instruction_label || (isCodex ? 'AGENTS.md' : isNoInstructionHost(data) ? 'agent instructions' : 'CLAUDE.md');
     html += '<div class="dashboard-grid">' +
       '<div class="card"><div class="card-header"><span>Startup Overhead</span></div>' +
       '<div style="font-size:11px;color:var(--c-text-dim);padding:0 0 4px 0;">Tokens loaded before you type. Includes ' + esc(instructionLabel) + ', skills/plugin metadata, MCP tools, and system prompt.</div>' +
@@ -5939,7 +6063,7 @@ var DB = (function() {
           : m && m.read_only
           ? 'Your ' + esc(data.runtime_label || 'runtime') + ' skills and MCP servers, read from its own files. Token Optimizer feature toggles are below.'
           : window.__TOKEN_API_LIVE
-          ? '<span style="color:var(--c-accent-cyan);font-weight:600;">Live mode</span> — toggles apply instantly to settings. <strong>Restart ' + (isCodex ? 'Codex' : 'Claude') + '</strong> to activate changes.'
+          ? '<span style="color:var(--c-accent-cyan);font-weight:600;">Live mode</span> — toggles apply instantly to settings. <strong>Restart ' + (isCodex ? 'Codex' : isNoInstructionHost(data) ? esc(data.runtime_label || 'the runtime') : 'Claude') + '</strong> to activate changes.'
           : tcliHtml('Open in serve mode for live toggles: <code style="background:var(--c-bg);padding:2px 5px;border-radius:4px;">python3 measure.py dashboard --serve</code>')) +
       '</p>' +
       '</div>';
@@ -5948,6 +6072,7 @@ var DB = (function() {
       html += '<div style="padding:12px var(--s-3);margin-bottom:var(--s-2);background:var(--c-bg);border-left:3px solid var(--c-accent-cyan);border-radius:4px;font-size:14px;color:var(--c-text-dim);">' +
         (isCodex
           ? 'Showing default Codex feature state. Run a Codex dashboard refresh to reflect your actual config.'
+          : isNoInstructionHost(data) ? 'Showing default feature state.'
           : 'Showing default feature state. Run <code style="background:var(--c-bg);padding:2px 5px;border-radius:4px;">/token-optimizer</code> once to reflect your actual config and enable live toggles.') +
         '</div>';
     }
@@ -6164,8 +6289,19 @@ var DB = (function() {
         '\'s own skills folder and config.yaml. Change them in ' + esc(roLabel) + '; this list updates on the next refresh.</p>';
     }
 
+    // --- NO SKILL/MCP MANAGEMENT (Cursor, Antigravity) ---
+    // The skill and MCP controls below act on a Claude Code setup, so they are
+    // not shown for runtimes that have no such folder.
+    if (isNoInstructionHost(data)) {
+      html += '<div class="card wide"><div class="card-header"><span>Skills and MCP servers</span></div>' +
+        '<div style="padding:var(--s-3);color:var(--c-text-dim);font-size:14px;line-height:1.6;">' +
+        'Skill and MCP management is not available under ' + esc(data.runtime_label || 'this runtime') +
+        '. It applies to a Claude Code setup, and Token Optimizer does not change ' + esc(data.runtime_label || 'this runtime') + ' skills or servers.' +
+        '</div></div>';
+    }
+
     // --- SKILLS SECTION ---
-    if (!isCodex && !m.read_only) {
+    if (!isCodex && !m.read_only && !isNoInstructionHost(data)) {
     var activeSkills = (m.skills && m.skills.active) || [];
     var archivedSkills = (m.skills && m.skills.archived) || [];
     var totalTokens = activeSkills.reduce(function(s, sk) { return s + (sk.tokens || 100); }, 0);
@@ -6537,7 +6673,7 @@ var DB = (function() {
 
     if (count === 0) {
       if (!data.plan && !data.auto_plan) {
-        listEl.innerHTML = '<div class="empty-state">Run <span class="update-cmd">/token-optimizer</span> to generate optimization items you can toggle here.</div>';
+        listEl.innerHTML = (isNoInstructionHost(data) ? '<div class="empty-state">No optimization items to toggle for ' + esc(data.runtime_label || 'this runtime') + ' yet.</div>' : '<div class="empty-state">Run <span class="update-cmd">/token-optimizer</span> to generate optimization items you can toggle here.</div>');
       } else {
         listEl.innerHTML = '<div class="empty-state">Toggle items in Quick Wins, Medium, or Deep to build your optimization prompt.</div>';
       }

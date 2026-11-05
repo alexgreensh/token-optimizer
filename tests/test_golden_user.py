@@ -21,6 +21,7 @@ Re-reads: the archived 50k tokens stay out of calls 5..10 (6 calls) at the
 Fable 5.1 cache-read rate: 6 * 50k * $0.25/MTok = $0.075.
 """
 
+from _activity_fixtures import stamp_activity
 import json
 import os
 import sqlite3
@@ -65,7 +66,7 @@ def build_golden_user(tmp_path, monkeypatch):
     install = now - timedelta(days=70)
     (snap / "snapshot_before.json").write_text(json.dumps({"timestamp": install.isoformat()}))
     win_start, win_end = install - timedelta(days=35), install - timedelta(days=6)
-    (snap / "baseline_state.json").write_text(json.dumps({"window": {
+    (snap / "baseline_state.json").write_text(json.dumps({"activity_basis": 1, "window": {
         "start": win_start.strftime("%Y-%m-%d"), "end": win_end.strftime("%Y-%m-%d")}}))
     projects = tmp_path / "claude_home" / "projects"
 
@@ -95,6 +96,7 @@ def build_golden_user(tmp_path, monkeypatch):
         "INSERT INTO savings_events (timestamp, event_type, tokens_saved, cost_saved_usd, "
         "session_id, session_uuid, model) VALUES (?, 'tool_archive', 50000, 0.25, ?, ?, ?)",
         (ev_local.isoformat(), fable_path.stem, fable_path.stem, "claude-fable-5-1"))
+    stamp_activity(conn)
     conn.commit()
     conn.close()
     return {"measure": measure, "now": now, "install": install, "post": post,
@@ -148,6 +150,7 @@ def test_aging_history_never_moves_the_baseline(golden):
     conn = sqlite3.connect(str(measure.TRENDS_DB))
     cut = (golden["now"] - timedelta(days=40)).strftime("%Y-%m-%d")
     conn.execute("DELETE FROM session_log WHERE date < ?", (cut,))
+    stamp_activity(conn)
     conn.commit()
     conn.close()
     later = _pool(measure, golden["now"])
@@ -259,6 +262,7 @@ def test_stored_re_read_rows_are_repriced_after_a_pricing_fix(golden):
     changed = conn.execute("UPDATE counted_reread SET reread_usd = reread_usd * 4, pricing_detail = NULL")
     assert changed.rowcount == len(history)
     conn.execute("DELETE FROM token_optimizer_meta WHERE key = ?", (measure._COUNTED_META_PRICING,))
+    stamp_activity(conn)
     conn.commit()
     assert conn.execute("SELECT SUM(reread_usd) FROM counted_reread").fetchone()[0] == pytest.approx(4 * REREAD_USD)
     pending = measure._update_counted_cumulative(conn, max_sessions=0, deadline_seconds=None)

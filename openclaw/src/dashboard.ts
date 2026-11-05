@@ -26,13 +26,13 @@ import { CoachData } from "./coach";
  * manifest is absent (skill-only install, test sandbox), falls back to the
  * compiled-in constant so the label is never blank.
  */
-const CORE_VERSION_FALLBACK = "5.13.63";
+const CORE_VERSION_FALLBACK = "5.13.64";
 
 /**
  * OpenClaw adapter version. Source of truth is `openclaw/package.json`; the
  * fallback covers test sandboxes where the manifest is not reachable.
  */
-const ADAPTER_VERSION_FALLBACK = "2.4.25";
+const ADAPTER_VERSION_FALLBACK = "2.4.26";
 
 function readManifestVersion(manifestPath: string, fallback: string): string {
   try {
@@ -773,12 +773,14 @@ function renderTokensSavedCard(data: DashboardData): string {
   try {
     const windowed = readSavingsEventsByCategory(undefined, { days, now: Date.now() });
     // Exclude estimated-tier categories (setup_optimization, mcp_cap,
-    // hint_followed, verbosity_steer) — mirrors measure.py relocations.
+    // hint_followed, verbosity_steer, checkpoint_restore, resume_lean) —
+    // mirrors measure.py relocations.
     // Also net tool_archive_reexpand against tool_archive (B6).
     const byType = new Map<string, number>();
     for (const cat of windowed.categories) {
       if (cat.eventType === "setup_optimization" || cat.eventType === "mcp_cap" ||
           cat.eventType === "hint_followed" || cat.eventType === "verbosity_steer" ||
+          cat.eventType === "checkpoint_restore" || cat.eventType === "resume_lean" ||
           cat.eventType === "fresh_session_nudge") continue;
       byType.set(cat.eventType, cat.tokensSaved);
     }
@@ -1414,7 +1416,8 @@ function renderSavings(data: DashboardData): string {
           &mdash; eligible volume held constant on both sides
         </div>`
           : `<div style="font-size:13px;color:var(--c-text-dim);margin-bottom:var(--s-2)">
-          Counted directly from metered context removals (tool replacements, lean resumes, checkpoint restores).
+          Counted directly from metered context removals (tool replacements).
+          Counterfactual credits (lean resumes, checkpoint restores, followed hints) are estimated, not counted here.
           The monthly run-rate estimate appears once 30 days of post-baseline history are on record.
         </div>`}
         <div class="savings-beforeafter">
@@ -1482,8 +1485,8 @@ function renderSavings(data: DashboardData): string {
         </div>
         <div style="font-size:13px;color:var(--c-text-dim);margin-bottom:var(--s-2)">
           ${runRate
-            ? `This is the <em>metered slice</em>: directly counted tokens removed from context (tool replacements, lean resumes, checkpoint restores). It is smaller and exact. The transformation headline above is the superset estimate that also includes model mix changes; do not add these two together.`
-            : `This is the <em>metered slice</em>: directly counted tokens removed from context (tool replacements, lean resumes, checkpoint restores). It is the same figure shown above. The monthly run-rate estimate — which also includes model mix changes — appears once 30 days of post-baseline history are on record.`}
+            ? `This is the <em>metered slice</em>: directly counted tokens removed from context (tool replacements). It is smaller and exact. The transformation headline above is the superset estimate that also includes model mix changes and estimated counterfactual credits (lean resumes, checkpoint restores, followed hints); do not add these two together.`
+            : `This is the <em>metered slice</em>: directly counted tokens removed from context (tool replacements). It is the same figure shown above. The monthly run-rate estimate — which also includes model mix changes and estimated counterfactual credits — appears once 30 days of post-baseline history are on record.`}
         </div>
         <div style="font-size:12px;color:var(--c-text-dim);margin-top:var(--s-2)">${BILLING_CAPTION}</div>
         ${evts.totalCount > 0 ? `<div style="margin-top:var(--s-2)">

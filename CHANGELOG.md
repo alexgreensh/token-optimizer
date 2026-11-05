@@ -1,5 +1,20 @@
 # Changelog
 
+## [Unreleased]
+
+## [5.13.64] - 2026-11-05
+
+- A truer "more work per token" figure. Usage is now dated by the day it actually happened, not by when a session file was last touched, so old sessions no longer pile into this month and drag the number down. Upgrading re-dates your history once; the change is reversible and figures are labelled as estimates.
+- One routing number everywhere. The plan card, Savings tab and "Your transformation" all use the same model-routing math, and say plainly when part of your usage can't be compared (Cursor totals, older history).
+- Measured means measured. Checkpoint restores, lean resumes, loop warnings and hint-follow credits are shown as estimates on every surface, including OpenCode and OpenClaw, whose totals now add these estimates and can read higher. Fresh-session nudges show savings per turn and when they pay back.
+- Compactions no longer cost you quality points. Long sessions that compact normally stay green; recovery after a compaction is tracked quietly while it is calibrated. Size suggestions only appear above 300K tokens of live context, so 200K windows never see them.
+- Richer checkpoints. Each checkpoint keeps your goal, constraints, files changed, checks run, dead ends and the next step, and resume picks the latest valid one instead of an older, longer one.
+- Read just the part you need. `expand` takes line ranges, character ranges and search matches with surrounding context, prints the command for the next window, and only charges what it returns. Search now covers the whole archived output.
+- Windows: MEMORY.md is charged to the right project, skill docs use a Windows-safe Python, and the MCP estimate includes server instructions and honours enabled/disabled project servers (#301).
+- No more repeated resume block on every subagent notification: harness prompts are ignored and an identical block is injected once per session (#303).
+- Cursor and Antigravity dashboards no longer show Claude-only rows or controls (#300).
+- Same rules everywhere: Claude Code, Codex, Cowork, OpenClaw (2.4.26), OpenCode (1.2.2) and the VS Code companion (0.1.19). How every number is measured: `docs/METHODOLOGY.md`.
+
 ## [5.13.63] - 2026-11-01
 
 - One monthly savings number. Logged savings, routing you actually used, repeat reads avoided and estimates are added up once, with nothing counted twice. The CLI and dashboard show the same figure.

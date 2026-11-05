@@ -367,7 +367,8 @@ Most Claude Code users are on Max subscriptions ($100-200/month), not per-token 
    35K overhead = 18% of 200K (3.5% of 1M). Compaction arrives that much sooner.
 
 2. MORE COMPACTION CYCLES
-   Each compaction is lossy. More compactions = more context lost.
+   Each compaction rewrites context to a summary; recovery quality is measured
+   per boundary, not assumed. More compactions still means more summary passes.
    A session with 35K overhead compacts ~2x more often than 20K.
 
 3. QUALITY DEGRADATION

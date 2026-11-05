@@ -109,14 +109,24 @@ export declare function freshSessionSavingsEstimate(fillPct: number, model?: str
     savedTokens: number;
     contextWindow: number;
 };
+export interface FreshSessionTurnEconomics {
+    /** Recurring per-turn saving: warm context re-sent at the cache-read rate,
+     * minus the working set the fresh session carries anyway. */
+    perTurnUsd: number;
+    /** One-time cost: lean block cache-write handover + rebuild re-reads at input. */
+    oneTimeUsd: number;
+    /** ceil(oneTime / perTurn); null when perTurn <= 0 (no fabricated N). */
+    breakevenTurns: number | null;
+}
 /**
- * Compute the API-equivalent dollar value of the reclaimed tokens.
- *
- * Uses the model's input rate from DEFAULT_PRICING. Returns 0 on any error
- * or unknown model. Best-effort, never throws.
- * Mirrors Python _fresh_session_savings_usd().
+ * Per-turn saving and break-even turns for starting a fresh session now.
+ * Mirrors Python _fresh_session_turn_economics. savedTokens is the warm
+ * context a continued session keeps re-sending; rebuildTokens is the working
+ * set the fresh session must carry (the caller passes the capped active-read
+ * estimate, floored at the lean block). Counterfactual ESTIMATE, never a
+ * meter; no horizon is assumed. Best-effort -> zeroed dict on any error.
  */
-export declare function freshSessionSavingsUsd(savedTokens: number, model?: string): number;
+export declare function freshSessionTurnEconomics(savedTokens: number, model?: string, rebuildTokens?: number): FreshSessionTurnEconomics;
 /**
  * Build the fresh-session nudge message string.
  *
@@ -139,5 +149,5 @@ export declare function freshSessionSavingsUsd(savedTokens: number, model?: stri
  * on a 1M session when a 200K fallback was used). Falls back to model detection
  * only when the session window is genuinely unavailable.
  */
-export declare function buildFreshSessionNudgeMessage(qualityScore: number, fillPct: number, hasPriorScore: boolean, model?: string, sessionContextWindow?: number): string | null;
+export declare function buildFreshSessionNudgeMessage(qualityScore: number, fillPct: number, hasPriorScore: boolean, model?: string, sessionContextWindow?: number, rebuildTokens?: number): string | null;
 //# sourceMappingURL=quality.d.ts.map

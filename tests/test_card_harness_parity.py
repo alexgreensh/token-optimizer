@@ -36,6 +36,7 @@ Run: python3 -m pytest tests/test_card_harness_parity.py -v
 """
 from __future__ import annotations
 
+from _activity_fixtures import stamp_activity
 import json
 import os
 import sqlite3
@@ -74,6 +75,7 @@ def _make_baseline(snapshot_dir: Path, *, bfi, bcr, bcw, bout, opus_share=0.95):
     """Write a baseline_state.json with a frozen typical session."""
     baseline = {
         "version": _get_baseline_version(),
+        "activity_basis": 1,
         "typical_session": {
             "fresh_input": bfi,
             "cache_read": bcr,
@@ -133,6 +135,7 @@ def _build_db(m, rows, *, runtime="claude"):
     try:
         for i, r in enumerate(rows):
             _insert_session(conn, session_idx=i, **r)
+        stamp_activity(conn)
         conn.commit()
     finally:
         conn.close()

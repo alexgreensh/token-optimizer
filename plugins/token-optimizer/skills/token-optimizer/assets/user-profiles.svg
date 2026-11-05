@@ -75,17 +75,12 @@
     <animate attributeName="opacity" values="0;1" dur="0.4s" begin="2.1s" fill="freeze"/>
 
     <text x="60" y="346" fill="#cdd6f4" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="15" font-weight="bold">After Auto-Compact</text>
-    <text x="310" y="346" fill="#f38ba8" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14" font-weight="bold">60-70% of your conversation: gone.</text>
+    <text x="310" y="346" fill="#a6adc8" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14" font-weight="bold">Recovery after compaction: observing.</text>
 
     <rect x="60" y="358" width="680" height="32" rx="6" fill="#313244"/>
-    <line x1="400" y1="358" x2="400" y2="390" stroke="#45475a" stroke-width="1.5" stroke-dasharray="4,4"/>
-    <line x1="536" y1="358" x2="536" y2="390" stroke="#45475a" stroke-width="1.5" stroke-dasharray="4,4"/>
-    <line x1="604" y1="358" x2="604" y2="390" stroke="#45475a" stroke-width="1.5" stroke-dasharray="4,4"/>
-    <!-- Fill: 30% = 204px (shrunken after compact) -->
-    <rect x="60" y="358" width="204" height="32" rx="6" fill="#45475a" opacity="0.7"/>
 
-    <text x="274" y="379" fill="#bac2de" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14" font-weight="bold">30% remains</text>
-    <text x="430" y="379" fill="#a6adc8" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">Decisions, errors, context: lost</text>
+    <text x="80" y="379" fill="#bac2de" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14" font-weight="bold">Summary + checkpoint</text>
+    <text x="430" y="379" fill="#a6adc8" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="13">Retention varies by session</text>
   </g>
 
   <!-- ═══ Legend ═══ -->

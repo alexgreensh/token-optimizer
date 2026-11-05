@@ -2,7 +2,7 @@
 // Token Optimizer - Claude Code Status Line (two-row layout)
 //
 // Row 1: model | effort | project | context bar used% | ContextQ:grade(score)
-// Row 2: Eff:grade(score) | warnings | Compacts:N(loss) | duration | Agents
+// Row 2: Eff:grade(score) | warnings | Compacts:N(observing) | duration | Agents
 //
 // Install: python3 measure.py setup-quality-bar
 // The quality score is updated by a UserPromptSubmit hook every ~2 minutes.
@@ -555,15 +555,13 @@ process.stdin.on('end', () => {
       }
     }
 
-    // Compaction count
+    // Recovery thresholds remain shadow-only until calibrated.
     if (q) {
       const c = q.compactions;
       if (c != null) {
         if (c > 0) {
-          const lossPct = q.breakdown?.compaction_depth?.cumulative_loss_pct;
-          const loss = lossPct ? `~${Math.round(lossPct)}%` : (c >= 3 ? '~95%' : c >= 2 ? '~88%' : '~65%');
-          const color = c <= 2 ? '\x1b[33m' : '\x1b[31m';
-          row2Parts.push(`${color}Compacts:${c}(${loss} lost)${RESET}`);
+          // Recovery evidence is shadow-only, even for older cached flags.
+          row2Parts.push(`${DIM}Compacts:${c}(observing)${RESET}`);
         } else {
           row2Parts.push(`\x1b[32mCompacts:0${RESET}`);
         }

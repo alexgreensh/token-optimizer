@@ -9,7 +9,7 @@ Answers what a session cost from the user's own words, and opens an up-to-date d
 
 ## Instructions
 
-1. **Resolve runtime and measure.py path**:
+1. **Resolve runtime and measure.py path** (each Bash call is a fresh shell, so env vars do not persist: the block echoes the resolved values, and every later command must use them verbatim):
 ```bash
 RUNTIME="${TOKEN_OPTIMIZER_RUNTIME:-}"
 if [ -z "$RUNTIME" ]; then
@@ -59,12 +59,36 @@ done <<EOF
 $(find -L "$HOME/.claude/skills" "$HOME/.claude/plugins/cache" "$HOME/.claude/token-optimizer" "$HOME/.codex/skills" "$HOME/.codex/plugins/cache" "$HOME/.config/opencode/plugins/cache" "$HOME/.config/opencode/plugins" -type f -name measure.py -path '*token-optimizer*/scripts/measure.py' 2>/dev/null)
 EOF
 if [ -z "$MEASURE_PY" ]; then echo "[Error] measure.py not found. Is Token Optimizer installed?"; exit 1; fi
+
+# Resolve an interpreter that really runs Python. On native-Windows Git Bash
+# `python3` is often the Microsoft Store alias stub, which prints "Python was
+# not found" instead of running -- and a gate piped to `head` then looks like
+# a pass (#301). Probe `python` first there, `python3` first elsewhere, and
+# accept only a clean >=3.9 version reply (same ladder install.sh uses).
+PY=""; _py_candidates="python3 python"
+case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*|CYGWIN*) _py_candidates="python python3" ;; esac
+for _py in $_py_candidates; do
+  command -v "$_py" >/dev/null 2>&1 || continue
+  _py_ver="$("$_py" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null)" || _py_ver=""
+  _py_major="$(echo "$_py_ver" | cut -d. -f1)"; _py_minor="$(echo "$_py_ver" | cut -d. -f2)"
+  [ -n "$_py_major" ] && [ -n "$_py_minor" ] || continue
+  case "$_py_major$_py_minor" in *[!0-9]*) continue ;; esac
+  if [ "$_py_major" -lt 3 ] 2>/dev/null || { [ "$_py_major" -eq 3 ] && [ "$_py_minor" -lt 9 ]; } 2>/dev/null; then continue; fi
+  PY="$_py"; break
+done
+if [ -z "$PY" ]; then echo "[Error] Python 3.9+ not found (the Windows Store python3 stub does not count). Install Python, then retry."; exit 1; fi
 export TOKEN_OPTIMIZER_RUNTIME="$RUNTIME"
+
+# Separate Bash calls do not share shell state: copy these into every later command.
+# They print to stderr so a --json command chained in the same call keeps stdout parseable.
+printf 'RUNTIME=%q\n' "$RUNTIME" >&2
+printf 'MEASURE_PY=%q\n' "$MEASURE_PY" >&2
+printf 'PY=%q\n' "$PY" >&2
 ```
 
 2. **A cost question** ("what did the Garden session yesterday cost?", "how much were my TR sync sessions?", "cost of session <id>"): run this instead of steps 3-4.
 ```bash
-python3 "$MEASURE_PY" session-cost <the user's words> --json
+"$PY" "$MEASURE_PY" session-cost <the user's words> --json
 ```
    - Pass the user's own words (`garden yesterday`, `tr sync`, an id or its first 8 characters). Names match topic, slug and project, case-insensitively, and all of them must match; `today`, `yesterday` and `YYYY-MM-DD` set the day. Add `--days N` for "this week" (default 30), `--limit N` to list more.
    - Answer from `sessions[]`: date, topic, `cost_usd.total`, the main-thread and subagent split when subagents ran, `cost_usd.on_date` when a day was asked and the session ran over several days, and `partial_reason` when set. Several matches: give `total_cost_usd` and list them, asking which one only when it changes the answer.
@@ -77,16 +101,16 @@ python3 "$MEASURE_PY" session-cost <the user's words> --json
 # TOKEN_OPTIMIZER_INTERACTIVE=1 marks this as a user-initiated open, so the 20s
 # hook budget does not cut off a heavy rebuild on a large history. The user is
 # waiting for this open, so it runs unbounded.
-TOKEN_OPTIMIZER_INTERACTIVE=1 python3 "$MEASURE_PY" collect --quiet && \
-  TOKEN_OPTIMIZER_INTERACTIVE=1 python3 "$MEASURE_PY" dashboard
+TOKEN_OPTIMIZER_INTERACTIVE=1 "$PY" "$MEASURE_PY" collect --quiet && \
+  TOKEN_OPTIMIZER_INTERACTIVE=1 "$PY" "$MEASURE_PY" dashboard
 ```
 
 This collects the latest session data into the trends database, regenerates the dashboard HTML, and opens it in your default browser.
 
 4. **Tell the user** the dashboard is open. Probe the daemon before mentioning any URL:
-   - Probe daemon: `python3 "$MEASURE_PY" daemon-status 2>/dev/null`
+   - Probe daemon: `"$PY" "$MEASURE_PY" daemon-status 2>/dev/null`
    - If DAEMON_RUNNING: lead with `URL: http://localhost:24842/token-optimizer` (bookmarkable, auto-updates), then mention the file fallback.
-   - If DAEMON_NOT_RUNNING: do not print the `localhost:24842` URL. Tell the user the dashboard opened as a file, and suggest `python3 $MEASURE_PY setup-daemon` (macOS and Windows) if they want a bookmarkable URL.
+   - If DAEMON_NOT_RUNNING: do not print the `localhost:24842` URL. Tell the user the dashboard opened as a file, and suggest `"$PY" "$MEASURE_PY" setup-daemon` (macOS and Windows) if they want a bookmarkable URL.
    - File path: never hardcode it. It is install-dependent. Cite the `  Dashboard: ` line from the step-3 output.
    - For Codex when DAEMON_NOT_RUNNING: do not imply the Claude daemon is required; the generated file works, and Stop hooks refresh it when balanced hooks are installed.
 

@@ -20,6 +20,8 @@ from typing import Any
 
 from runtime_env import codex_home
 
+import checkpoint_state
+
 CHARS_PER_TOKEN = 4
 MAX_PARSE_FILE_BYTES = 96 * 1024 * 1024
 LARGE_FILE_TAIL_BYTES = 8 * 1024 * 1024
@@ -457,6 +459,8 @@ def _parse_session_records(records, incomplete=False, sampled=False):
     previous_usage: dict[str, int] | None = None
     current_model = _UNKNOWN_MODEL
     per_model_usage: dict[str, dict[str, int]] = {}
+    daily_usage: dict[str, dict[str, dict[str, int]]] = {}
+    daily_calls: dict[str, int] = {}
     rate_limits_latest: dict[str, Any] | None = None
     effort_counts: dict[str, int] = {}
     tool_durations_ms: list[float] = []
@@ -532,6 +536,14 @@ def _parse_session_records(records, incomplete=False, sampled=False):
                 bucket["fresh_input"] += max(0, turn_usage["input_tokens"] - turn_usage["cached_input_tokens"])
                 bucket["cache_read"] += max(0, turn_usage["cached_input_tokens"])
                 bucket["output"] += max(0, turn_usage["output_tokens"])
+                day = ts.astimezone().date().isoformat() if ts else "undated"
+                day_bucket = daily_usage.setdefault(day, {}).setdefault(model_key, {
+                    "fresh_input": 0, "cache_read": 0, "cache_create": 0, "output": 0})
+                day_bucket["fresh_input"] += max(0, turn_usage["input_tokens"] - turn_usage["cached_input_tokens"])
+                day_bucket["cache_read"] += max(0, turn_usage["cached_input_tokens"])
+                day_bucket["output"] += max(0, turn_usage["output_tokens"])
+                if turn_usage['input_tokens'] or turn_usage['output_tokens']:
+                    daily_calls[day] = daily_calls.get(day, 0) + 1
                 if turn_usage['input_tokens'] or turn_usage['output_tokens']:
                     bucket.setdefault('requests', []).append({
                         'fresh_input': max(0, turn_usage['input_tokens'] - turn_usage['cached_input_tokens']),
@@ -652,6 +664,8 @@ def _parse_session_records(records, incomplete=False, sampled=False):
         "p95_call_gap_seconds": None,
         "model_usage": model_usage,
         "model_usage_breakdown": model_usage_breakdown,
+        "daily_usage": daily_usage,
+        "daily_calls": daily_calls,
         "skills_used": skills_used,
         "subagents_used": subagents_used,
         "tool_calls": tool_calls,
@@ -735,17 +749,25 @@ def parse_jsonl_for_quality(filepath: str | Path) -> dict[str, Any] | None:
     agent_dispatches: list[tuple[int, int, int]] = []
     decisions: list[tuple[int, str]] = []
     compaction_ratios: list[dict[str, Any]] = []
+    compaction_events: list[dict[str, Any]] = []
     last_usage: dict[str, int] | None = None
     current_model = _UNKNOWN_MODEL
     topics: dict[str, str | None] = {}
     idx = 0
     prev_was_compacted = False
     last_turn_context: int | None = None
+    safe_pause = False
 
     for record in _iter_json_records(filepath):
         payload = _payload(record)
         payload_type = payload.get("type")
         ts = str(record.get("timestamp") or "")
+        if payload_type in {"task_complete", "turn_complete"}:
+            safe_pause = True
+        elif payload_type in {"task_started", "turn_started", "function_call", "custom_tool_call",
+                              "function_call_output", "custom_tool_call_output", "exec_command_end",
+                              "patch_apply_end", "agent_message"}:
+            safe_pause = False
 
         model = _extract_model(payload)
         if model:
@@ -759,8 +781,31 @@ def parse_jsonl_for_quality(filepath: str | Path) -> dict[str, Any] | None:
         # keeps the count==len(ratios) invariant even for back-to-back compactions.
         is_compacted_record = record.get("type") == "compacted"
         if is_compacted_record or payload_type == "context_compacted":
+            safe_pause = False
             if is_compacted_record:
                 compactions += 1
+                # Minimal recovery event for the quality panel: Codex has no
+                # matched pre/post tool-call windows, so window_data=False
+                # keeps every boundary honestly "unmeasurable" rather than
+                # implying healthy recovery.
+                compaction_events.append({
+                    "boundary_id": f"codex-{compactions}",
+                    "ordinal": compactions,
+                    "line": idx,
+                    "ts": ts,
+                    "trigger": "auto",
+                    "pre_tokens": last_turn_context,
+                    "post_tokens": None,
+                    "host_version": None,
+                    "model": current_model if current_model != _UNKNOWN_MODEL else None,
+                    "pre_seg_calls": 0,
+                    "post_seg_calls": 0,
+                    "matched_calls": 0,
+                    "eligible": False,
+                    "window_data": False,
+                    "restore_transcript": False,
+                    "capture_notice": False,
+                })
                 rh = payload.get("replacement_history")
                 # Codex total_token_usage is cumulative (monotonic), so it does
                 # not drop at compaction. The meaningful "before" is the context
@@ -778,6 +823,24 @@ def parse_jsonl_for_quality(filepath: str | Path) -> dict[str, Any] | None:
                 })
             elif not prev_was_compacted:
                 compactions += 1
+                compaction_events.append({
+                    "boundary_id": f"codex-{compactions}",
+                    "ordinal": compactions,
+                    "line": idx,
+                    "ts": ts,
+                    "trigger": "auto",
+                    "pre_tokens": last_turn_context,
+                    "post_tokens": None,
+                    "host_version": None,
+                    "model": current_model if current_model != _UNKNOWN_MODEL else None,
+                    "pre_seg_calls": 0,
+                    "post_seg_calls": 0,
+                    "matched_calls": 0,
+                    "eligible": False,
+                    "window_data": False,
+                    "restore_transcript": False,
+                    "capture_notice": False,
+                })
             prev_was_compacted = is_compacted_record
             reads = []
             writes = []
@@ -807,6 +870,7 @@ def parse_jsonl_for_quality(filepath: str | Path) -> dict[str, Any] | None:
         elif payload_type in {"user_message", "message", "agent_message"}:
             text = _extract_text(payload)
             role = "assistant" if payload_type == "agent_message" else str(payload.get("role") or "user")
+            safe_pause = role == "user" and bool(_task_user_text(text))
             if role == "user" and not topics.get(payload_type):
                 task = _task_user_text(text)
                 if task:
@@ -856,10 +920,12 @@ def parse_jsonl_for_quality(filepath: str | Path) -> dict[str, Any] | None:
         "tool_results": tool_results,
         "system_reminders": system_reminders,
         "messages": messages,
+        "safe_pause": safe_pause,
         "compactions": compactions,
         "agent_dispatches": agent_dispatches,
         "decisions": decisions,
         "compaction_ratios": compaction_ratios,
+        "compaction_events": compaction_events,
         "total_entries": idx,
         "estimated": True,
         "context_tokens": last_turn_context or None,
@@ -964,6 +1030,12 @@ def extract_session_state(filepath: str | Path, tail_lines: int = 500, max_files
     last_assistant_msg = ""
     seen_files: set[str] = set()
     recent_errors: list[str] = []
+    # Versioned task-state observations (checkpoint_state.build_task_state) —
+    # same normalized shape the Claude extractor feeds it.
+    user_texts: list[tuple[str, Any]] = []
+    assistant_texts: list[tuple[str, Any]] = []
+    tool_calls: list[dict[str, Any]] = []
+    tool_results: list[dict[str, Any]] = []
 
     records: deque[dict[str, Any]] = deque(maxlen=tail_lines)
     for record in _iter_json_records(filepath):
@@ -988,10 +1060,16 @@ def extract_session_state(filepath: str | Path, tail_lines: int = 500, max_files
             if role == "user":
                 if _task_user_text(text):
                     last_user_msg = text
+                    user_texts.append((text, payload.get("id") or payload.get("message_id")))
+                    if len(user_texts) > 80:
+                        user_texts.pop(0)
                 else:
                     continue  # injected context: not a task, not a question
             elif role == "assistant":
                 last_assistant_msg = text
+                assistant_texts.append((text, payload.get("id") or payload.get("message_id")))
+                if len(assistant_texts) > 60:
+                    assistant_texts.pop(0)
                 _append_decisions(text, decisions)
                 if recent_errors and _looks_like_fix(text):
                     error_context.append((recent_errors[-1][:200], text[:200]))
@@ -1002,6 +1080,21 @@ def extract_session_state(filepath: str | Path, tail_lines: int = 500, max_files
         elif payload_type in {"function_call", "custom_tool_call"}:
             name = str(payload.get("name") or "")
             args = _parse_arguments(payload)
+            call_id = payload.get("call_id") or payload.get("id")
+            _target = ""
+            if name == "exec_command":
+                _cmd = args.get("cmd") or args.get("command") or ""
+                _target = (" ".join(str(c) for c in _cmd)
+                           if isinstance(_cmd, list) else str(_cmd))
+            elif name == "apply_patch":
+                _paths = PATCH_FILE_RE.findall(str(args.get("patch") or ""))
+                _target = ", ".join(p.strip() for p in _paths[:3])
+            if call_id:
+                tool_calls.append({
+                    "id": str(call_id), "name": name,
+                    "target": _ingest_redact(_target)[:200]})
+                if len(tool_calls) > 200:
+                    tool_calls.pop(0)
             if name == "exec_command":
                 cmd = str(args.get("cmd") or args.get("command") or "")
                 if READ_CMD_RE.search(cmd):
@@ -1035,14 +1128,68 @@ def extract_session_state(filepath: str | Path, tail_lines: int = 500, max_files
 
         elif payload_type in {"function_call_output", "custom_tool_call_output"}:
             text = _ingest_redact(str(payload.get("output") or ""))
+            _out_id = payload.get("call_id") or payload.get("id")
+            if _out_id:
+                tool_results.append({
+                    "tool_use_id": str(_out_id), "is_error": False,
+                    "text": checkpoint_state.result_excerpt(text)})
+                if len(tool_results) > 200:
+                    tool_results.pop(0)
             if _looks_like_error_text(text):
                 recent_errors.append(text[:300].strip())
         elif payload_type in {"exec_command_end", "patch_apply_end"}:
             text = _ingest_redact(_event_output_text(payload))
             exit_code = payload.get("exit_code")
             status = str(payload.get("status") or "").lower()
+            _end_id = payload.get("call_id") or payload.get("id")
+            if _end_id:
+                tool_results.append({
+                    "tool_use_id": str(_end_id),
+                    "is_error": bool(exit_code not in (None, 0) or "error" in status),
+                    "exit_code": exit_code,
+                    "text": checkpoint_state.result_excerpt(text)})
+                if len(tool_results) > 200:
+                    tool_results.pop(0)
             if exit_code not in (None, 0) or "error" in status or _looks_like_error_text(text):
                 recent_errors.append(text[:300].strip())
+
+    # Objective head-scan: the FIRST real user message. The tail deque loses
+    # it on long sessions; _iter_json_records is lazy so this early-exits.
+    objective = None
+    try:
+        for i, record in enumerate(_iter_json_records(filepath)):
+            if i >= 400:
+                break
+            payload = _payload(record)
+            ptype = payload.get("type")
+            if ptype not in {"user_message", "message"}:
+                continue
+            role = payload.get("role")
+            if ptype == "user_message":
+                role = "user"
+            if role != "user":
+                continue
+            text = _extract_text(payload).strip()
+            if not _task_user_text(text):
+                continue
+            objective = {
+                "text": _ingest_redact(text),
+                "source": {"kind": "user_message",
+                           "id": str(payload.get("id") or payload.get("message_id") or "") or None},
+            }
+            break
+    except Exception:
+        objective = None
+
+    task_state = checkpoint_state.build_task_state(
+        user_texts=user_texts,
+        assistant_texts=assistant_texts,
+        tool_calls=tool_calls,
+        tool_results=tool_results,
+        todos=todos,
+        changed_files=[(p, a) for p, a, _r in active_files],
+        objective=objective,
+    )
 
     return {
         "active_files": active_files[-max_files:],
@@ -1054,9 +1201,10 @@ def extract_session_state(filepath: str | Path, tail_lines: int = 500, max_files
         "todos": todos,
         "active_plan": active_plan,
         "current_step": {
-            "last_user": last_user_msg[:500],
+            "last_user": last_user_msg[:4000],
             "last_assistant": last_assistant_msg[:500],
         },
+        "task_state": task_state,
     }
 
 

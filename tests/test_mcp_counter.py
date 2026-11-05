@@ -138,18 +138,26 @@ def test_counter_is_non_zero_and_prices_tools_when_servers_exist(tmp_path, monke
 
 
 def test_project_scoped_mcp_json_is_read(tmp_path, monkeypatch):
-    """A project's own .mcp.json is a real source too."""
-    home = _make_home(tmp_path)
-    claude_dir = _make_claude_dir(tmp_path)
+    """A project's own .mcp.json is a real source too — once approved.
+
+    .mcp.json servers connect only after approval (interactive choices persist
+    in ~/.claude.json projects.<path>.enabledMcpjsonServers), so an approved
+    server counts with project scope; a pending one does not.
+    """
     cwd = tmp_path / "cwd"
-    cwd.mkdir(parents=True, exist_ok=True)
-    _write_json(cwd / ".mcp.json", {"mcpServers": {"proj-server": {"command": "p"}}})
+    home = _make_home(tmp_path, {
+        "projects": {str(cwd): {"enabledMcpjsonServers": ["proj-server"]}},
+    })
+    claude_dir = _make_claude_dir(tmp_path)
+    _write_json(cwd / ".mcp.json", {"mcpServers": {"proj-server": {"command": "p"},
+                                                "pending-server": {"command": "q"}}})
     _point_measure_at(monkeypatch, home, claude_dir, cwd)
 
     result = measure.count_mcp_tools_and_servers()
 
     assert result["server_names"] == ["proj-server"]
     assert result["server_scopes"]["proj-server"] == "project"
+    assert result["pending_project_approval"] == ["pending-server"]
 
 
 # ---------- source 2: plugin-provided servers ----------

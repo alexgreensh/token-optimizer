@@ -320,7 +320,7 @@ Per-turn token breakdowns, cost across four pricing tiers, cache analysis with T
 
 **Pricing is incomplete.** Unpriced repeat-read credits and debits are excluded; the complete net dollar value is unavailable. The four components add up to the total.
 
-The same snapshot's token card shows **24.80M tokens saved** (9,831,072 metered + 14,966,284 estimated), about **8% of spent + saved**: 286.22M spent + 24.80M saved = 311.02M. Its scope is logged tokens plus MCP caps, hint-served reads, verbosity nudges and lean resumes. Modeled repeat-read tokens and routing are outside that token-card total; the dollar subtotal has the broader scope above.
+The same snapshot's token card shows **24.80M tokens saved** (9,831,072 metered + 14,966,284 estimated), about **8% of spent + saved**: 286.22M spent + 24.80M saved = 311.02M. Its scope is logged tokens plus MCP caps, hint-served reads, verbosity nudges and lean resumes (snapshot taken under v5.13.63 rules; checkpoint restores have since moved to the estimated tier). Modeled repeat-read tokens and routing are outside that token-card total; the dollar subtotal has the broader scope above.
 
 <p align="center">
   <img src="skills/token-optimizer/assets/real-savings.svg" alt="Snapshot 2026-11-01: $597.72 priced API-rate-equivalent subtotal with incomplete pricing; 24.80M tokens saved, about 8% of spent plus saved. Logged actions $78.59, estimated routing $422.88, modeled rereads $60.69, other estimates $35.56." width="900">
@@ -499,12 +499,21 @@ This isn't just storage. The system tracks how many results were archived vs re-
 python3 measure.py expand --list          # List archived tool results
 python3 measure.py expand <tool-use-id>   # Retrieve a specific result
 python3 measure.py expand --search <query>  # Search archived results by keyword/lineage
+python3 measure.py expand <id> --lines 50:120        # Just lines 50-120 of the archive
+python3 measure.py expand <id> --start 4000 --chars 2000  # A 2KB char window
+python3 measure.py expand <id> --match "ERROR" --context 3  # Literal-substring context windows
 ```
 
+`--match` is a literal substring (`grep -F` semantics), not a regex, and line
+numbers count `\n` breaks the way `grep -n`/`sed -n` do.
+
 `expand --search` runs a full-text search (FTS5 with a `LIKE` fallback) over
-archived tool outputs, including the full response body, tool name, command,
-source file path, language, and archive origin. Each match prints the key,
-lineage, and a snippet. Use `expand <key>` to retrieve the full content.
+the entire archived response body — not just a prefix — plus tool name,
+command, source file path, language, and archive origin. Each hit prints the
+key, lineage, capture time, content hash, total length, truncation state, and
+a snippet. `expand <key>` still returns the full stored output; the bounded
+flags above return only the requested window, print a command for the next
+window, and debit re-expansion savings only for the tokens actually returned.
 
 Some MCP tools are *documented* to return large verbatim payloads (source fetchers, doc retrievers) where a metadata preview defeats the point. Allowlist those so their full result reaches context instead of being replaced (it's still archived, so `expand` works). Set a comma-separated list of `fnmatch` globs matched against the full tool name:
 
@@ -522,7 +531,7 @@ When you end a session, Token Optimizer checkpoints your state to SQLite: active
 
 - **Cross-session hints**: relevance-scored checkpoints surface when you start a new session. The hint includes the prior session's task, decisions, files, and branch. All fenced as RECOVERED DATA, never instructions.
 - **Cold-resume-lean**: reopen a stale session without paying the full transcript cost. Token Optimizer reconstructs a lean context from its checkpoint. No LLM call, no full-transcript cold-resume. Token-free reconstruction from SQLite.
-- **Hint-follow measurement**: when a continuity hint surfaces file paths and the model subsequently reads one, Token Optimizer credits an avoided exploratory search. Measured causality, not a guess.
+- **Hint-follow estimate**: when a continuity hint surfaces file paths and the model subsequently reads one, Token Optimizer estimates an avoided exploratory search. The hint->read pair is observed; the avoided-search size is a fixed estimate, reported in the estimated tier, not the measured total.
 
 ```bash
 python3 measure.py resume-lean                    # list reopenable cold sessions
@@ -533,7 +542,7 @@ Compression savings only stick if your session survives compaction. Session cont
 
 ## Smart Compaction
 
-When auto-compact fires, 60-70% of your conversation vanishes. Decisions, error-fix sequences, agent state, all gone.
+Auto-compact rewrites the conversation into a summary. How much useful detail survives depends on the compaction and the restore, not on a fixed percentage: the paired-window event study in `research/arxiv-2611.05306/` measured real sessions and found compaction count alone does not predict recovery quality. What Token Optimizer measures instead is what happens *after* each boundary: whether the restore was delivered, whether tool errors spike, whether the session re-reads unchanged files, repeats failed actions, or falls into loops. This release logs that evidence for calibration and shows a neutral `observing` status on every surface. Missing evidence stays unknown, and compaction count carries no quality penalty.
 
 Token Optimizer checkpoints your session before compaction and restores what the summary dropped, automatically, via hooks. It also injects a **context intel digest**: heuristic summaries of large tool outputs the model already processed (file paths touched, errors seen, line counts). After compaction, the model knows what it saw without re-reading everything.
 
@@ -602,8 +611,9 @@ python3 measure.py setup-quality-bar      # one-time install
 
 | Score | Signals | What it means |
 |--------|--------|----------------|
-| **Resource Health** | Context fill, compaction depth, absolute waste tokens | How close you are to the degradation cliff |
+| **Resource Health** | Context fill, absolute waste tokens | How close you are to the degradation cliff |
 | **Session Efficiency** | Stale reads, bloated results, decision density, agent efficiency | Whether the session is using tokens well right now |
+| **Compaction recovery** | Restore delivery, post-boundary errors, re-reads, repeats, loops (matched 20-call windows) | Whether the session actually recovered after each compaction; count alone carries no weight |
 
 | Grade | Range | Meaning |
 |-------|-------|---------|

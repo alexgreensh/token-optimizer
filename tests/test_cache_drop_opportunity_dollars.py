@@ -1,4 +1,5 @@
 """Cache-drop opportunity carries a dollar value by token class, outside every total."""
+from _activity_fixtures import stamp_activity
 import json
 import re
 import sqlite3
@@ -31,6 +32,7 @@ def _estimate(m, tmp_path, monkeypatch, sessions):
     with sqlite3.connect(db) as conn:
         for i, breakdown in enumerate(sessions):
             _drop_session(conn, i, breakdown)
+        stamp_activity(conn)
     return m._estimate_cache_drop_savings(days=30)
 
 

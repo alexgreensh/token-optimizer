@@ -1,24 +1,23 @@
 ---
 title: The compaction problem
-description: How summarization loses detail, how modeled loss compounds, and what motivates checkpoint capture and restore.
+description: How summarization changes context, how recovery is observed, and what checkpoint capture and restore preserve.
 ---
 
 import { Aside } from '@astrojs/starlight/components';
 
-When auto-compact fires, the agent replaces your conversation with a summary to free space. That summary keeps the gist and drops the detail. The engine models a 60-70% loss for its continuity estimates; this is not a measured guarantee for every compaction or a semantic fact-retention rate. Details at risk include decisions, error-and-fix sequences, agent state, the reasoning behind the code you are looking at.
+When auto-compact fires, the agent replaces your conversation with a summary to free space. That summary keeps the gist and drops the detail. There is no fixed per-compaction loss rate in the quality score. Recovery depends on which details were kept and restored. Details at risk include decisions, error-and-fix sequences, agent state, the reasoning behind the code you are looking at.
 
 Compaction can be a large source of lost detail in long sessions, and it is why compression that does not survive compaction is only half a solution.
 
 ![What happens inside a 1M session: the degradation curve as context fills](/images/user-profiles.svg)
 
-## The loss compounds
+## Observe recovery after the boundary
 
-One compaction costs you most of the conversation. The next one compacts what is left, including the summary of the first. The losses stack.
+Compaction count alone does not establish lost work. Token Optimizer records restore delivery, tool errors, unchanged re-reads, repeated failed calls and loop events in matched windows around each boundary. Normal test/edit cycles are excluded from failure flags.
 
-- Under the modeled 60-70% loss assumption: one compaction retains about 30-40% of the original context.
-- Repeating the same modeled shrink compounds the token-volume reduction, not necessarily loss of every important fact.
+This release keeps those evaluations shadow-only and shows `observing` on every surface while thresholds are calibrated. Missing telemetry stays unknown.
 
-Each compaction also re-sends your structural overhead again: the system prompt, tool definitions, skills, and configs all re-enter the fresh context. So a late, deep compaction is expensive twice, once in lost work and once in re-sent overhead.
+Each compaction also re-sends your structural overhead again: the system prompt, tool definitions, skills, and configs all re-enter the fresh context. Recovery and re-sent overhead are separate costs; neither follows from compaction count alone.
 
 ## Why runtime compression alone does not save you
 

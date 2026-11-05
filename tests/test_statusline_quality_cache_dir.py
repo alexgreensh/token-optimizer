@@ -89,3 +89,17 @@ def test_no_cache_anywhere_degrades_to_placeholder(tmp_path):
     """No cache at all -> the honest '--' placeholder, never a crash."""
     out = _run(tmp_path)
     assert "ContextQ:--" in out, f"expected -- placeholder when no cache:\n{out}"
+
+
+@pytest.mark.skipif(not _has_node(), reason="node not available")
+@pytest.mark.parametrize("status", ["needs_attention", "no_concerning_signal_observed", "unmeasurable", "observing", None])
+def test_recovery_flags_always_render_as_observing(tmp_path, status):
+    cache_dir = tmp_path / ".claude" / "token-optimizer"
+    _write_cache(cache_dir)
+    path = cache_dir / f"quality-cache-{SID}.json"
+    cache = json.loads(path.read_text())
+    cache.update(score_version=2, compactions=3, recovery_status=status)
+    path.write_text(json.dumps(cache))
+    out = _run(tmp_path)
+    assert "Compacts:3(observing)" in out
+    assert "needs attention" not in out and "recovery ok" not in out

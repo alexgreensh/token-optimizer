@@ -96,6 +96,19 @@ def test_transformation_percentage_matches_dollars_and_method_is_folded():
     assert len(re.sub('<[^>]+>', ' ', visible).split()) < 85
 
 
+def test_neutral_reprice_basis_is_disclosed_on_the_card():
+    s = fixture()
+    s['before_after']['compression_reprice_basis'] = 'routing_pending'
+    card = render(s).split('savings-transformation')[1].split('savings-actions')[0]
+    assert 'model-mix repricing is paused' in card.lower()
+    s['before_after']['compression_reprice_basis'] = 'routing_unavailable'
+    card = render(s).split('savings-transformation')[1].split('savings-actions')[0]
+    assert 'model-mix repricing could not be measured' in card.lower()
+    s['before_after']['compression_reprice_basis'] = 'routing_recipe'
+    card = render(s).split('savings-transformation')[1].split('savings-actions')[0]
+    assert 'model-mix repricing' not in card.lower()
+
+
 def test_capped_transformation_percentage_matches_the_capped_dollars():
     s = fixture()
     s['before_after'].update({

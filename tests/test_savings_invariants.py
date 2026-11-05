@@ -105,3 +105,33 @@ def test_every_test_the_methodology_cites_exists():
     assert cited
     missing = sorted(name for name in cited if not (ROOT / "tests" / name).exists())
     assert not missing, missing
+
+
+def test_dated_consumption_windows_are_monotone_without_ingestion_fallback(m):
+    conn = m._init_trends_db()
+    for ago, tokens in ((1, 100), (45, 200), (75, 300)):
+        day = (datetime.now() - timedelta(days=ago)).date().isoformat()
+        usage = {day: {"claude-opus-5-5": {"fresh_input": tokens, "output": 10}}}
+        conn.execute("INSERT INTO session_log(jsonl_path,date,daily_usage_json) VALUES (?,?,?)",
+                     (f"missing-{ago}.jsonl", datetime.now().date().isoformat(), json.dumps(usage)))
+    conn.execute("INSERT INTO session_log(jsonl_path,date,input_tokens,output_tokens) VALUES ('undated.jsonl',?,999999,100)",
+                 (datetime.now().date().isoformat(),))
+    conn.commit()
+    assert [m._dashboard_spent_token_basis(conn, days)["tokens"] for days in (30, 60, 90)] == [110, 320, 630]
+    assert m._dashboard_spent_token_basis(conn, 30)["complete"] is False
+    conn.close()
+
+
+def test_methodology_discloses_checkpoint_restore_bounds_and_scope():
+    doc = METHODOLOGY.read_text(encoding="utf-8")
+    assert "6,300" in doc and "4,000" in doc and "1,500" in doc and "800" in doc
+    assert "OpenCode and OpenClaw" in doc
+    assert "working set" in doc and "checkpoint_restore" in doc
+
+
+def test_methodology_keeps_advisories_out_of_savings(m):
+    doc = METHODOLOGY.read_text(encoding="utf-8")
+    for feature in ("context_advisory_shadow", "context_size_advisory"):
+        assert f"`{feature}`" in doc
+        assert feature in m._NON_SAVINGS_COMPRESSION_FEATURES
+        assert feature not in m._V5_COMPRESSION_CATEGORIES

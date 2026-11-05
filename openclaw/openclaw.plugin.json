@@ -2,7 +2,7 @@
   "id": "token-optimizer-openclaw",
   "name": "Token Optimizer",
   "description": "Find the ghost tokens. Audit your OpenClaw setup, see where context goes, fix it.",
-  "version": "2.4.25",
+  "version": "2.4.26",
   "skills": [
     "skills/token-optimizer"
   ],

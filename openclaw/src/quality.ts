@@ -810,22 +810,56 @@ export function freshSessionSavingsEstimate(
 }
 
 /**
- * Compute the API-equivalent dollar value of the reclaimed tokens.
- *
- * Uses the model's input rate from DEFAULT_PRICING. Returns 0 on any error
- * or unknown model. Best-effort, never throws.
- * Mirrors Python _fresh_session_savings_usd().
+ * Per-token rate ($/token) for a token class on the given model.
+ * Generation first (Opus 5.5 is not priced like Opus 5), then priced prefix.
+ * Cache classes with no card (cacheWrite = 0 on GPT rows) fall back to the
+ * input rate -- same fallback as Python's `rates.get("cache_read") or in_rate`.
  */
-export function freshSessionSavingsUsd(savedTokens: number, model: string = ""): number {
+function modelClassRatePerToken(model: string, klass: "input" | "cacheRead" | "cacheWrite"): number {
+  const key = claudePricingKey(model) ?? pricedPrefixKey(model) ?? normalizeModelName(model);
+  const rates = key ? DEFAULT_PRICING[key] : undefined;
+  const rate = rates?.[klass] ?? 0;
+  if (rate > 0) return rate;
+  return rates?.input ?? 0;
+}
+
+export interface FreshSessionTurnEconomics {
+  /** Recurring per-turn saving: warm context re-sent at the cache-read rate,
+   * minus the working set the fresh session carries anyway. */
+  perTurnUsd: number;
+  /** One-time cost: lean block cache-write handover + rebuild re-reads at input. */
+  oneTimeUsd: number;
+  /** ceil(oneTime / perTurn); null when perTurn <= 0 (no fabricated N). */
+  breakevenTurns: number | null;
+}
+
+/**
+ * Per-turn saving and break-even turns for starting a fresh session now.
+ * Mirrors Python _fresh_session_turn_economics. savedTokens is the warm
+ * context a continued session keeps re-sending; rebuildTokens is the working
+ * set the fresh session must carry (the caller passes the capped active-read
+ * estimate, floored at the lean block). Counterfactual ESTIMATE, never a
+ * meter; no horizon is assumed. Best-effort -> zeroed dict on any error.
+ */
+export function freshSessionTurnEconomics(
+  savedTokens: number,
+  model: string = "",
+  rebuildTokens: number = FRESH_NUDGE_LEAN_BLOCK_TOKENS
+): FreshSessionTurnEconomics {
+  const zero: FreshSessionTurnEconomics = { perTurnUsd: 0, oneTimeUsd: 0, breakevenTurns: null };
   try {
-    // Generation first (Opus 5.5 is not priced like Opus 5), then priced prefix.
-    const key = claudePricingKey(model) ?? pricedPrefixKey(model) ?? normalizeModelName(model);
-    const rates = key ? DEFAULT_PRICING[key] : undefined;
-    const inputRatePerToken = rates?.input ?? 0;
-    if (inputRatePerToken <= 0) return 0;
-    return Math.max(0, savedTokens * inputRatePerToken);
+    const saved = Math.max(0, Math.floor(savedTokens || 0));
+    const rebuild = Math.max(0, Math.floor(rebuildTokens || 0));
+    const cr = modelClassRatePerToken(model, "cacheRead");
+    const cw = modelClassRatePerToken(model, "cacheWrite");
+    const inp = modelClassRatePerToken(model, "input");
+    if (inp <= 0) return zero;
+    const perTurnUsd = Math.max(0, (saved - rebuild) * cr);
+    const oneTimeUsd = FRESH_NUDGE_LEAN_BLOCK_TOKENS * cw + rebuild * inp;
+    const breakevenTurns = perTurnUsd > 0 ? Math.max(1, Math.ceil(oneTimeUsd / perTurnUsd)) : null;
+    return { perTurnUsd, oneTimeUsd, breakevenTurns };
   } catch {
-    return 0;
+    return zero;
   }
 }
 
@@ -856,7 +890,8 @@ export function buildFreshSessionNudgeMessage(
   fillPct: number,
   hasPriorScore: boolean,
   model: string = "",
-  sessionContextWindow?: number
+  sessionContextWindow?: number,
+  rebuildTokens: number = FRESH_NUDGE_LEAN_BLOCK_TOKENS
 ): string | null {
   if (!hasPriorScore) return null;
   if (!(qualityScore < FRESH_NUDGE_QUALITY_THRESHOLD && fillPct >= FRESH_NUDGE_MIN_FILL)) {
@@ -868,8 +903,18 @@ export function buildFreshSessionNudgeMessage(
     ? `~${Math.floor(savedTokens / 1000)}K`
     : `~${savedTokens}`;
 
-  const usd = freshSessionSavingsUsd(savedTokens, model);
-  const costStr = usd >= 0.01 ? `, about $${usd.toFixed(2)} in API-equivalent cost` : "";
+  const econ = freshSessionTurnEconomics(savedTokens, model, rebuildTokens);
+  // Per-turn saving + break-even is a counterfactual estimate; no horizon is
+  // assumed, so the message never claims a session-total. When the per-turn
+  // saving is negligible the dollar clause is omitted rather than inventing
+  // a payback period.
+  let costStr = "";
+  if (econ.perTurnUsd >= 0.001) {
+    const perStr = econ.perTurnUsd >= 0.01 ? `$${econ.perTurnUsd.toFixed(2)}` : "<$0.01";
+    const be = econ.breakevenTurns;
+    const beStr = be ? `, pays back after ~${be} turn${be === 1 ? "" : "s"}` : "";
+    costStr = ` (saves ~${perStr} per turn${beStr}, est.)`;
+  }
 
   return (
     `[Token Optimizer] This session is long (${Math.round(fillPct)}% full) and context ` +
@@ -877,6 +922,6 @@ export function buildFreshSessionNudgeMessage(
     `${savedStr} tokens (~${Math.round(fillPct)}% of your window)${costStr}. You won't lose your ` +
     `place: Token Optimizer has checkpointed your active task, key decisions, ` +
     `files, and tool results, so a new session picks up exactly where you ` +
-    `stopped. Just open one and say "continue this" -- the context is rebuilt for free.`
+    `stopped. Just open one and say "continue this".`
   );
 }

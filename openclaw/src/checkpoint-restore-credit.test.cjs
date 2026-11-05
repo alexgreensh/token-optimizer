@@ -1,23 +1,23 @@
-const { test } = require('node:test');
+const { test, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
-const Module = require('node:module');
+const { loadSource } = require('./test-source-loader.cjs');
+const originalEnv = Object.fromEntries(['HOME', 'USERPROFILE', 'TOKEN_OPTIMIZER_CHECKPOINT_ROOT'].map(key => [key, process.env[key]]));
 // Every store this plugin writes lives under HOME, so point it at a temp folder before loading anything.
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'restore-credit-home-'));
 process.env.HOME = home;
 process.env.USERPROFILE = home;
 process.env.TOKEN_OPTIMIZER_CHECKPOINT_ROOT = path.join(home, 'checkpoints');
-const ts = require(process.env.TEST_TYPESCRIPT_PATH || 'typescript');
-require.extensions['.ts'] = (module, filename) => module._compile(ts.transpileModule(fs.readFileSync(filename, 'utf8'), {compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText, filename);
-const resolve = Module._resolveFilename;
-Module._resolveFilename = function(request, parent, ...rest) {
-  if (/^\.{1,2}\//.test(request) && parent?.filename.endsWith('.ts')) {
-    const candidate = path.resolve(path.dirname(parent.filename), request) + '.ts';
-    if (fs.existsSync(candidate)) return candidate;
+after(() => {
+  for (const [key, value] of Object.entries(originalEnv)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
   }
-  return resolve.call(this, request, parent, ...rest);
-};
-const plugin = require('./index.ts').default;
+});
+// Bun may cache os.homedir() before HOME changes. Keep every dependency on the fixture home.
+const plugin = loadSource('./index.ts', request =>
+  request === 'os' || request === 'node:os' ? { ...os, homedir: () => home } : undefined
+).default;
 
 const cacheDir = path.join(home, '.openclaw', 'token-optimizer', 'read-cache');
 function readCacheFile(agent, session, tokens) {

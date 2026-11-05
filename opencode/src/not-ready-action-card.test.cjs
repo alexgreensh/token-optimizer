@@ -46,7 +46,7 @@ const cents = (text) => Math.round(parseFloat(text.replace('$', '')) * 100);
 test('the not-ready action card parts add up to its total', () => {
   const {dir, store} = seededStore();
   // Opus 5.5: fresh input $4/MTok and output $20/MTok, so each event is worth half a cent.
-  store.logSavingsEvent('checkpoint_restore', 1250, 's', 'logged', 'claude-opus-5-5');
+  store.logSavingsEvent('tool_archive', 1250, 's', 'logged', 'claude-opus-5-5');
   store.logSavingsEvent('verbosity_steer', 250, 's', 'estimated', 'claude-opus-5-5');
   store.close();
   const {generateDashboard} = require('./dashboard/generator.ts');
@@ -59,10 +59,25 @@ test('the not-ready action card parts add up to its total', () => {
 
 test('the not-ready action card keeps whole-cent parts unchanged', () => {
   const {dir, store} = seededStore();
-  store.logSavingsEvent('checkpoint_restore', 2500000, 's', 'logged', 'claude-opus-5-5');
+  store.logSavingsEvent('tool_archive', 2500000, 's', 'logged', 'claude-opus-5-5');
   store.logSavingsEvent('verbosity_steer', 500000, 's', 'estimated', 'claude-opus-5-5');
   store.close();
   const {generateDashboard} = require('./dashboard/generator.ts');
   const card = /data-card="action-savings"[\s\S]*?<strong>(\$[\d.]+)<\/strong>\s*<div>Logged actions (\$[\d.]+) &middot; Other estimates (\$[\d.]+)<\/div>/.exec(generateDashboard({dataDir: dir}));
   assert.deepEqual(card.slice(1), ['$20.00', '$10.00', '$10.00']);
+});
+
+test('restore and resume credits appear only in Other estimates', () => {
+  const {dir, store} = seededStore();
+  store.logSavingsEvent('checkpoint_restore', 1000000, 's', 'restore', 'claude-opus-5-5');
+  store.logSavingsEvent('resume_lean', 1000000, 's', 'resume', 'claude-opus-5-5');
+  const savings = store.getCompressionSavings();
+  assert.equal(savings.totalCostSavedUsd, 0);
+  store.close();
+  const {computeRealizedSavings} = require('./savings.ts');
+  assert.equal(computeRealizedSavings(dir).counterfactualEstimatedWindowUsd, 8);
+  const {generateDashboard} = require('./dashboard/generator.ts');
+  const card = /data-card="action-savings"[\s\S]*?<strong>(\$[\d.]+)<\/strong>\s*<div>Logged actions (\$[\d.]+) &middot; Other estimates (\$[\d.]+)<\/div>/.exec(generateDashboard({dataDir: dir}));
+  assert.ok(card);
+  assert.deepEqual(card.slice(1), ['$8.00', '$0.00', '$8.00']);
 });

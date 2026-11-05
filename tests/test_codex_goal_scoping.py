@@ -31,11 +31,9 @@ import sqlite3
 import sys
 import tempfile
 from pathlib import Path
-
 REPO = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO / "skills" / "token-optimizer" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
-
 import codex_session  # noqa: E402
 import codex_state  # noqa: E402
 import measure  # noqa: E402

@@ -27,11 +27,9 @@ Contract:
 
 Run: python3 -m pytest tests/test_usage_recommendations.py -q
 """
-
 from __future__ import annotations
 from helpers.measure_split import inspect_source as _split_inspect_source
 from helpers.measure_split import exec_source_module as _split_exec_module
-
 import inspect
 import importlib
 import json
@@ -41,7 +39,6 @@ import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
-
 import pytest
 
 REPO = Path(__file__).resolve().parent.parent

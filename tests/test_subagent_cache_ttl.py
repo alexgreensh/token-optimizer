@@ -33,10 +33,8 @@ Contract:
 
 Run: python3 -m pytest tests/test_subagent_cache_ttl.py -q
 """
-
 from __future__ import annotations
 from helpers.measure_split import exec_source_module as _split_exec_module, measure_source as _split_measure_source
-
 import importlib
 import json
 import os

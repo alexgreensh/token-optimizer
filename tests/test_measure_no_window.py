@@ -34,10 +34,8 @@ hole:
 
 Run: python3 -m pytest tests/test_measure_no_window.py -q
 """
-
 from __future__ import annotations
 from helpers.measure_split import measure_source as _split_measure_source
-
 import ast
 import importlib
 import os

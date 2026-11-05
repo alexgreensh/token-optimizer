@@ -19,10 +19,8 @@ showed up. Each test pins one fix:
 
 Run: python3 -m pytest tests/test_cloud_parity.py -q
 """
-
 from __future__ import annotations
 from helpers.measure_split import exec_source_module as _split_exec_module
-
 import importlib
 import json
 import os

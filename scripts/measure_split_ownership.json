@@ -18896,12 +18896,12 @@
     },
     {
       "file": "tests/test_codex_goal_scoping.py",
-      "line": 840,
+      "line": 838,
       "helper": "measure_source"
     },
     {
       "file": "tests/test_codex_goal_scoping.py",
-      "line": 1110,
+      "line": 1108,
       "helper": "measure_source"
     },
     {
@@ -19016,12 +19016,12 @@
     },
     {
       "file": "tests/test_hermes_parity.py",
-      "line": 676,
+      "line": 674,
       "helper": "measure_source"
     },
     {
       "file": "tests/test_hermes_parity.py",
-      "line": 930,
+      "line": 928,
       "helper": "measure_source"
     },
     {
@@ -19076,7 +19076,7 @@
     },
     {
       "file": "tests/test_measure_no_window.py",
-      "line": 73,
+      "line": 71,
       "helper": "measure_source"
     },
     {
@@ -19091,17 +19091,17 @@
     },
     {
       "file": "tests/test_measure_split_golden.py",
-      "line": 63,
+      "line": 79,
       "helper": "measure_source"
     },
     {
       "file": "tests/test_measure_split_golden.py",
-      "line": 74,
+      "line": 90,
       "helper": "measure_source"
     },
     {
       "file": "tests/test_measure_split_tooling.py",
-      "line": 199,
+      "line": 200,
       "helper": "measure_source"
     },
     {
@@ -19111,7 +19111,7 @@
     },
     {
       "file": "tests/test_posix_session_identity.py",
-      "line": 1490,
+      "line": 1488,
       "helper": "measure_source"
     },
     {
@@ -19256,12 +19256,12 @@
     },
     {
       "file": "tests/test_subagent_cache_ttl.py",
-      "line": 1479,
+      "line": 1477,
       "helper": "measure_source"
     },
     {
       "file": "tests/test_subagent_cache_ttl.py",
-      "line": 1794,
+      "line": 1792,
       "helper": "measure_source"
     },
     {
@@ -19276,7 +19276,7 @@
     },
     {
       "file": "tests/test_usage_recommendations.py",
-      "line": 714,
+      "line": 711,
       "helper": "inspect_source"
     },
     {
@@ -19383,12 +19383,12 @@
     },
     {
       "file": "tests/test_cloud_parity.py",
-      "line": 377,
+      "line": 375,
       "helper": "exec_source_module"
     },
     {
       "file": "tests/test_cloud_parity.py",
-      "line": 408,
+      "line": 406,
       "helper": "exec_source_module"
     },
     {
@@ -19488,7 +19488,7 @@
     },
     {
       "file": "tests/test_hermes_parity.py",
-      "line": 78,
+      "line": 76,
       "helper": "exec_source_module"
     },
     {
@@ -19563,17 +19563,17 @@
     },
     {
       "file": "tests/test_posix_session_identity.py",
-      "line": 72,
+      "line": 70,
       "helper": "exec_source_module"
     },
     {
       "file": "tests/test_posttooluse_runner.py",
-      "line": 84,
+      "line": 82,
       "helper": "exec_source_module"
     },
     {
       "file": "tests/test_posttooluse_runner.py",
-      "line": 687,
+      "line": 685,
       "helper": "exec_source_module"
     },
     {
@@ -19673,32 +19673,32 @@
     },
     {
       "file": "tests/test_subagent_cache_ttl.py",
-      "line": 100,
+      "line": 98,
       "helper": "exec_source_module"
     },
     {
       "file": "tests/test_usage_recommendations.py",
-      "line": 80,
+      "line": 77,
       "helper": "exec_source_module"
     },
     {
       "file": "tests/test_userpromptsubmit_runner.py",
-      "line": 41,
+      "line": 39,
       "helper": "exec_source_module"
     },
     {
       "file": "tests/test_userpromptsubmit_runner.py",
-      "line": 57,
+      "line": 55,
       "helper": "exec_source_module"
     },
     {
       "file": "tests/test_userpromptsubmit_runner.py",
-      "line": 528,
+      "line": 526,
       "helper": "exec_source_module"
     },
     {
       "file": "tests/test_userpromptsubmit_runner.py",
-      "line": 853,
+      "line": 851,
       "helper": "exec_source_module"
     },
     {
@@ -19728,7 +19728,7 @@
     },
     {
       "file": "tests/test_windows_spawn_no_window.py",
-      "line": 770,
+      "line": 768,
       "helper": "exec_source_module"
     },
     {

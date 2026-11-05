@@ -18,13 +18,11 @@ be listed as a stale terminal session and be terminated. These tests pin:
 - DESKTOP / UNVERIFIED flags and recommendations behave as on Windows
 """
 from helpers.measure_split import exec_source_module as _split_exec_module, measure_source as _split_measure_source
-
 import importlib.util
 import os
 import subprocess
 import sys
 from pathlib import Path
-
 import pytest
 
 

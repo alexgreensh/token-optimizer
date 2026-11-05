@@ -18,10 +18,8 @@ These four tests pin the three deliverables:
 
 Run: python3 -m pytest tests/test_userpromptsubmit_runner.py -q
 """
-
 from __future__ import annotations
 from helpers.measure_split import exec_source_module as _split_exec_module
-
 import importlib.util
 import sys
 from pathlib import Path

@@ -15,9 +15,7 @@
 #
 # Copyright (C) 2026 Alex Greenshpun
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-
 set -euo pipefail
-
 GITHUB_REPO="alexgreensh/token-optimizer"
 REPO_HTTPS="https://github.com/${GITHUB_REPO}.git"
 REPO_SSH="git@github.com:${GITHUB_REPO}.git"
@@ -36,9 +34,7 @@ INSTALL_OLD_HEAD=""
 INSTALL_UPDATED=0
 VERIFIED_RELEASE_HEAD=""
 trap 'rm -rf "$TMP_DIR"' EXIT
-
 # ── Colors ────────────────────────────────────────────────────
-
 if [ -t 1 ]; then
     GREEN='\033[0;32m'
     YELLOW='\033[0;33m'
@@ -48,11 +44,9 @@ if [ -t 1 ]; then
 else
     GREEN='' YELLOW='' RED='' BOLD='' NC=''
 fi
-
 info()  { printf "${GREEN}>${NC} %s\n" "$1"; }
 warn()  { printf "${YELLOW}!${NC} %s\n" "$1"; }
 fail()  { printf "${RED}x${NC} %s\n" "$1"; exit 1; }
-
 # Materialize sparse-checkout paths from the commit this checkout is AT, never
 # from a moving branch. A `git pull` here would let a moved/compromised
 # upstream deliver arbitrary code into the plugin dir, executed on every hook.
@@ -71,14 +65,12 @@ _materialize_from_pin() {
         git -C "$script_dir" checkout "$pin_sha" -- "$@" 2>/dev/null || true
     fi
 }
-
 # ── OpenCode local-dir install (no npm) ───────────────────────
 # `install.sh --opencode` builds the TypeScript plugin and drops a single
 # bundled file into ~/.config/opencode/plugins/, which OpenCode auto-loads
 # at startup. This is the offline / no-npm fallback to:
 #     opencode plugin token-optimizer-opencode
 # It needs bun (OpenCode's own runtime) and a checkout of this repo.
-
 install_opencode() {
     command -v bun &>/dev/null || fail "bun not found. OpenCode runs on bun; install it first: https://bun.sh"
 

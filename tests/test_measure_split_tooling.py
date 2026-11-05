@@ -57,6 +57,10 @@ def test_cli_exception_target_is_global_and_deleted_after_handler(tmp_path, body
     assert active.missing_type == before['missing_type'] == 'NameError'
     assert active.deleted == before['deleted'] is True
     assert not hasattr(active, 'exc')
+    from helpers.measure_split import _inspection_text
+    inspected = _inspection_text((package / 'cli.py').read_text(encoding='utf-8'))
+    assert '_measure_exception_' not in inspected
+    assert '_compat.read_global' not in inspected
 
 
 def test_scope_rewrite_keeps_locals_strings_and_comprehension_iterable():

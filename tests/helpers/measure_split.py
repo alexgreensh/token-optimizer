@@ -142,6 +142,36 @@ def _inspection_text(text):
         def position(line, column):
             return offsets[line-1] + len(lines[line-1].encode('utf-8')[:column].decode('utf-8'))
         return lines, offsets, position
+    while True:
+        tree = ast.parse(code)
+        restored = None
+        for handler in ast.walk(tree):
+            if not (isinstance(handler, ast.ExceptHandler) and handler.name
+                    and handler.name.startswith('_measure_exception_') and len(handler.body) == 2):
+                continue
+            binding, guarded = handler.body
+            if not (isinstance(binding, ast.Assign) and len(binding.targets) == 1
+                    and isinstance(binding.targets[0], ast.Attribute) and isinstance(binding.value, ast.Name)
+                    and binding.value.id == handler.name and isinstance(guarded, ast.Try)
+                    and not guarded.handlers and not guarded.orelse and len(guarded.finalbody) == 2):
+                continue
+            target = binding.targets[0]
+            rendered_target = ast.unparse(target)
+            if ast.unparse(target.value) not in ('_measure_facade', '_compat.facade()'):
+                continue
+            if [ast.unparse(n) for n in guarded.finalbody] != [rendered_target + ' = None', 'del ' + rendered_target]:
+                continue
+            restored = ast.ExceptHandler(type=handler.type, name=target.attr, body=guarded.body)
+            rendered = ast.unparse(ast.fix_missing_locations(restored))
+            if any(isinstance(parent, ast.TryStar) and handler in parent.handlers for parent in ast.walk(tree)):
+                rendered = rendered.replace('except ', 'except* ', 1)
+            rendered = rendered.replace('\n', '\n' + ' ' * handler.col_offset)
+            _, _, position = positions(code)
+            code = (code[:position(handler.lineno, handler.col_offset)] + rendered
+                    + code[position(handler.end_lineno, handler.end_col_offset):])
+            break
+        if restored is None:
+            break
     # Remove only the tuple wrapper the mover adds to lambda invocations.
     while True:
         tree = ast.parse(code)
@@ -158,7 +188,13 @@ def _inspection_text(text):
     lines, offsets, position = positions(code)
     edits = []
     for node in ast.walk(ast.parse(code)):
-        if isinstance(node, ast.Attribute):
+        if (isinstance(node, ast.Call) and ast.unparse(node.func) == '_compat.read_global'
+                and len(node.args) == 2 and ast.unparse(node.args[0]) in ('_measure_facade', '_compat.facade()')
+                and isinstance(node.args[1], ast.Constant) and isinstance(node.args[1].value, str)
+                and node.args[1].value.isidentifier()):
+            edits.append((position(node.lineno, node.col_offset), position(node.end_lineno, node.end_col_offset),
+                          node.args[1].value))
+        elif isinstance(node, ast.Attribute):
             value = node.value
             if isinstance(value, ast.Name) and value.id == '_measure_facade' and node.attr == '__dict__':
                 edits.append((position(node.lineno, node.col_offset), position(node.end_lineno, node.end_col_offset), 'globals()'))

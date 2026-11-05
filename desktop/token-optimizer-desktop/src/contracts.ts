@@ -47,6 +47,8 @@ export type Quality = {
   drag: string | null
   toolCalls: number | null
   compactions: number
+  /** Measured post-compaction recovery status (score_version >= 2); null when unknown. */
+  recoveryStatus?: string | null
   checkpointEpoch: number | null
   sessionStartEpoch: number | null
   /** Token Optimizer's own context fill, %; known right after a compact, before the next reply. */

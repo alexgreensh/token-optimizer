@@ -183,7 +183,36 @@ them:
 
 ---
 
-## 9. Known limits
+## 9. Quality score (a figure, but not a savings figure)
+
+The 0–100 "quality" number in the CLI, dashboard and status line is a
+**resource-pressure indicator**, not an accuracy measure. Since score
+schema v2 (`_QUALITY_SCORE_VERSION`):
+
+- **ResourceHealth** weights only context fill (5/7) and absolute waste
+  tokens (2/7). Compaction count carries **zero** weight — it is descriptive
+  metadata (`breakdown.compactions.weighted == false`). The earlier
+  count-only penalty and the "~65/88/95% context lost" display were removed:
+  the paired-window audit (research/arxiv-2611.05306) found no support for
+  fixed per-count loss.
+- **Recovery is measured, not assumed.** `recovery_status` /
+  `recovery_evidence` report observed post-boundary signals — restore
+  delivery, tool errors, re-reads, repeated calls, loop events — from
+  matched ≤20-call windows before/after each compaction
+  (`_assess_compaction_recovery`). Statuses: `observing`,
+  `no_concerning_signal_observed`, `needs_attention`, `unmeasurable`.
+  Missing telemetry is unknown, never healthy.
+- **Versions never mix.** `score_version` gates cache carry-over,
+  ResourceHealth dampening and nudge baselines; a v1 cache is never
+  compared against a v2 score (`_quality_scores_comparable`).
+- **Size remedies share one gate.** `/compact`, `/clear` and "start fresh"
+  recommendations — including the 300–400K context-size advisory (default
+  350K, once per session, eligibility not instruction) — require ≥300K
+  **current** context tokens from real telemetry (`_absolute_context_tokens`).
+  Missing or contradictory telemetry means no recommendation. The score
+  itself still prints below 300K; only the remedy is gated.
+
+## 10. Known limits
 
 - Routing and estimates are estimates. They are labelled and kept separate from
   measured parts.

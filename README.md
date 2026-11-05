@@ -533,7 +533,7 @@ Compression savings only stick if your session survives compaction. Session cont
 
 ## Smart Compaction
 
-When auto-compact fires, 60-70% of your conversation vanishes. Decisions, error-fix sequences, agent state, all gone.
+Auto-compact rewrites the conversation into a summary. How much useful detail survives depends on the compaction and the restore, not on a fixed percentage: the paired-window event study in `research/arxiv-2611.05306/` measured real sessions and found compaction count alone does not predict recovery quality. What Token Optimizer measures instead is what happens *after* each boundary: whether the restore was delivered, whether tool errors spike, whether the session re-reads unchanged files, repeats failed actions, or falls into loops. That evidence drives the recovery status you see (`observing`, `no concerning signal observed`, `needs attention`, `unmeasurable`), never a guessed loss figure.
 
 Token Optimizer checkpoints your session before compaction and restores what the summary dropped, automatically, via hooks. It also injects a **context intel digest**: heuristic summaries of large tool outputs the model already processed (file paths touched, errors seen, line counts). After compaction, the model knows what it saw without re-reading everything.
 
@@ -602,8 +602,9 @@ python3 measure.py setup-quality-bar      # one-time install
 
 | Score | Signals | What it means |
 |--------|--------|----------------|
-| **Resource Health** | Context fill, compaction depth, absolute waste tokens | How close you are to the degradation cliff |
+| **Resource Health** | Context fill, absolute waste tokens | How close you are to the degradation cliff |
 | **Session Efficiency** | Stale reads, bloated results, decision density, agent efficiency | Whether the session is using tokens well right now |
+| **Compaction recovery** | Restore delivery, post-boundary errors, re-reads, repeats, loops (matched 20-call windows) | Whether the session actually recovered after each compaction; count alone carries no weight |
 
 | Grade | Range | Meaning |
 |-------|-------|---------|

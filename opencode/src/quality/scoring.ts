@@ -10,9 +10,11 @@ import {
 import type { TokenOptimizerConfig } from "../util/env.js";
 
 const RESOURCE_HEALTH_WEIGHTS = {
-  context_fill_degradation: 0.5,
-  compaction_depth: 0.3,
-  absolute_waste_tokens: 0.2,
+  // Compaction count carries zero quality weight (COMPACTION-QUALITY.md):
+  // measured post-boundary recovery evidence lives in a separate panel.
+  // Weights renormalized to 1.0.
+  context_fill_degradation: 5 / 7,
+  absolute_waste_tokens: 2 / 7,
 } as const;
 
 const SESSION_EFFICIENCY_WEIGHTS = {
@@ -41,6 +43,9 @@ export interface QualityResult {
   regimeChange: RegimeChange | null;
   toolCalls: number;
   fillPct: number;
+  compactions: number;
+  recoveryStatus: string | null;
+  scoreVersion: number;
 }
 
 export interface SignalBreakdown {
@@ -108,13 +113,11 @@ export function computeQualityScore(
     bloatedScore = 100;
   }
 
-  // Signal 3: Compaction depth
+  // Signal 3: Compaction count is descriptive metadata only -- it carries NO
+  // quality weight. OpenCode resets signal accumulators at each boundary, so
+  // matched pre/post recovery windows are not measurable here; recovery is
+  // reported as unmeasurable rather than implying healthy recovery.
   const compactions = store.getCompactionCount();
-  let compactionScore: number;
-  if (compactions === 0) compactionScore = 100;
-  else if (compactions === 1) compactionScore = 75;
-  else if (compactions === 2) compactionScore = 45;
-  else compactionScore = 20;
 
   // Signal 4: Decision density (rolling window)
   const densityData = computeDecisionDensity(store, window);
@@ -133,7 +136,6 @@ export function computeQualityScore(
     context_fill_degradation: round1(fillScore),
     stale_reads: round1(staleScore),
     bloated_results: round1(bloatedScore),
-    compaction_depth: round1(compactionScore),
     decision_density: round1(densityScore),
     agent_efficiency: round1(agentScore),
     absolute_waste_tokens: round1(wasteScore),
@@ -142,7 +144,6 @@ export function computeQualityScore(
   // Dual composite
   const resourceHealth =
     signals.context_fill_degradation * RESOURCE_HEALTH_WEIGHTS.context_fill_degradation +
-    signals.compaction_depth * RESOURCE_HEALTH_WEIGHTS.compaction_depth +
     signals.absolute_waste_tokens * RESOURCE_HEALTH_WEIGHTS.absolute_waste_tokens;
 
   const sessionEfficiency =
@@ -150,12 +151,6 @@ export function computeQualityScore(
     signals.bloated_results * SESSION_EFFICIENCY_WEIGHTS.bloated_results +
     signals.decision_density * SESSION_EFFICIENCY_WEIGHTS.decision_density +
     signals.agent_efficiency * SESSION_EFFICIENCY_WEIGHTS.agent_efficiency;
-
-  // Compaction loss estimate
-  let compactionLossPct = 0;
-  if (compactions === 1) compactionLossPct = 65;
-  else if (compactions === 2) compactionLossPct = 88;
-  else if (compactions >= 3) compactionLossPct = 95;
 
   const bandName = degradationBand(fillPct);
 
@@ -188,12 +183,16 @@ export function computeQualityScore(
         ? `${bloatedData.count} bloated results (${recentResults.length} in window)`
         : "No bloated results",
     },
-    compaction_depth: {
-      score: signals.compaction_depth,
-      compactions,
-      cumulativeLossPct: compactionLossPct,
+    compactions: {
+      count: compactions,
+      weighted: false,
+      detail: compactions > 0 ? `${compactions} compaction(s)` : "No compactions",
+    },
+    compaction_recovery: {
+      status: compactions > 0 ? "unmeasurable" : null,
+      score: null,
       detail: compactions > 0
-        ? `${compactions} compaction(s) (~${compactionLossPct}% cumulative context loss)`
+        ? `${compactions} compaction(s); recovery unmeasurable (no matched windows)`
         : "No compactions",
     },
     decision_density: {
@@ -277,6 +276,9 @@ export function computeQualityScore(
     regimeChange,
     toolCalls,
     fillPct,
+    compactions,
+    recoveryStatus: compactions > 0 ? "unmeasurable" : null,
+    scoreVersion: 2,
   };
 }
 

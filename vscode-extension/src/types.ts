@@ -56,7 +56,8 @@ export interface Snapshot {
   fillWarning: Warning | null;
   toolWarning: Warning | null;
   compactions: number | null;
-  compactionLossPct: number | null;
+  /** Measured post-compaction recovery status (score_version >= 2); null when unknown. */
+  compactionRecovery: string | null;
   durationSec: number | null;
   agents: AgentInfo[];
   rateLimits: RateLimits | null;
@@ -77,7 +78,7 @@ export function emptySnapshot(): Snapshot {
     fillWarning: null,
     toolWarning: null,
     compactions: null,
-    compactionLossPct: null,
+    compactionRecovery: null,
     durationSec: null,
     agents: [],
     rateLimits: null,

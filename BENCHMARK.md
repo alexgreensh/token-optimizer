@@ -144,7 +144,7 @@ Reproduce from the repository checkout: `python3 skills/token-optimizer/scripts/
 
 Large code files can be served as a recoverable skeleton only after a cohort meets its history gates: edit-within-five-turns below 15%, at least 20 reads and at least five sessions. A live tripwire demotes an active cohort when its edit rate exceeds 15%. Markdown stays measure-only by policy. The requested file is served in full; related-file skeletons use an archived original and fail open when archiving fails. Current cohort statistics are available from `measure.py cohorts status --json`; they are not included in this savings total.
 
-Session quality uses context fill, stale reads, bloated results, compaction depth, decision density, agent efficiency and waste signals. Signals vary by platform. This snapshot does not supply a grade histogram or a new historical skeleton-corpus valuation, so neither is presented as a current result.
+Session quality uses context fill, stale reads, bloated results, decision density, agent efficiency and waste signals; compaction count is descriptive metadata and measured post-boundary recovery evidence is reported separately (score schema v2). Signals vary by platform. This snapshot does not supply a grade histogram or a new historical skeleton-corpus valuation, so neither is presented as a current result.
 
 ## Reproduce on your own data
 

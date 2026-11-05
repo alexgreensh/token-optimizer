@@ -27,6 +27,9 @@ import { createTokenStatusTool } from "./tools/token-status.js";
 import { createDashboardTool } from "./tools/dashboard.js";
 
 const QUALITY_THROTTLE_MS = 2 * 60 * 1000;
+// Absolute-token floor shared by every compaction/fresh-session recommendation
+// (parity with measure.py _SIZE_NUDGE_MIN_TOKENS, COMPACTION-QUALITY.md).
+const SIZE_NUDGE_MIN_TOKENS = 300_000;
 const MAX_RECENT_MESSAGES = 20;
 // Bound the number of live per-session states so a long-lived process whose
 // session.deleted events never arrive can't grow the map without limit.
@@ -233,6 +236,21 @@ export const TokenOptimizerPlugin: Plugin = async (
         store.getCompactionCount(),
       );
 
+      // Persist the recovery panel fields alongside whatever `data` blob the
+      // checkpoint path already uses (decisions etc.) -- merge, never clobber.
+      let qualityDataJson: string | null = cache?.data ?? null;
+      try {
+        const prevData = cache?.data ? JSON.parse(cache.data) : {};
+        qualityDataJson = JSON.stringify({
+          ...(prevData && typeof prevData === "object" ? prevData : {}),
+          score_version: enforced.scoreVersion,
+          recovery_status: enforced.recoveryStatus,
+          compactions: enforced.compactions,
+        });
+      } catch {
+        // keep prior blob on any parse failure
+      }
+
       store.writeQualityCache({
         resource_health: enforced.resourceHealth,
         session_efficiency: enforced.sessionEfficiency,
@@ -241,7 +259,7 @@ export const TokenOptimizerPlugin: Plugin = async (
         tool_calls: store.getToolCallCount(),
         last_nudge_time: cache?.last_nudge_time ?? 0,
         nudge_count: cache?.nudge_count ?? 0,
-        data: cache?.data ?? null,
+        data: qualityDataJson,
       });
 
       // Capture the score from BEFORE this computation so the nudge can detect a
@@ -265,26 +283,35 @@ export const TokenOptimizerPlugin: Plugin = async (
 
     if (config.features.qualityNudges) {
       const cache = store.getQualityCache();
+      // Absolute-token gate (parity with measure.py): no compaction or
+      // fresh-session recommendation below 300K current-context tokens.
+      // fillPct x contextWindow is this harness's current-context telemetry;
+      // a missing window yields 0 and stays gated.
+      const absoluteTokens = state.lastQuality
+        ? state.lastQuality.fillPct * (state.lastContextWindow || 0)
+        : 0;
       // Fresh-session nudge takes precedence: when a session is BOTH long AND degraded,
       // "start fresh (context is preserved)" is the stronger remedy than /compact.
       // Only fall back to the ordinary quality nudge if the fresh-session nudge did not fire.
       const fillPctPct = Math.round(state.lastQuality.fillPct * 100);
-      const freshNudge = checkFreshSessionNudge(
-        state.lastQuality.resourceHealth,
-        fillPctPct,
-        state.previousResourceHealth,
-        state.freshNudgeFired,
-        config.features.qualityNudges,
-        config.features.continuity,
-        state.currentModel,
-        state.lastContextWindow || undefined,
-        config.freshNudgeQualityThreshold,
-        config.freshNudgeMinFillPct,
-      );
+      const freshNudge = absoluteTokens >= SIZE_NUDGE_MIN_TOKENS
+        ? checkFreshSessionNudge(
+            state.lastQuality.resourceHealth,
+            fillPctPct,
+            state.previousResourceHealth,
+            state.freshNudgeFired,
+            config.features.qualityNudges,
+            config.features.continuity,
+            state.currentModel,
+            state.lastContextWindow || undefined,
+            config.freshNudgeQualityThreshold,
+            config.freshNudgeMinFillPct,
+          )
+        : { shouldNudge: false, message: null };
       if (freshNudge.shouldNudge && freshNudge.message) {
         state.freshNudgeFired = true;
         warnings.push(freshNudge.message);
-      } else {
+      } else if (absoluteTokens >= SIZE_NUDGE_MIN_TOKENS) {
         const nudge = checkQualityNudge(store, state.lastQuality.resourceHealth, state.previousResourceHealth);
         if (nudge.shouldNudge && nudge.message) {
           warnings.push(nudge.message);

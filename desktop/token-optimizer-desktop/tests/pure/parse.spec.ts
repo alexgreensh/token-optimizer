@@ -39,6 +39,7 @@ test('quality: resource health wins over the legacy score, with its own grade', 
     drag: 'bloated tool results',
     toolCalls: 349,
     compactions: 2,
+    recoveryStatus: null,
     checkpointEpoch: 1_790_985_684,
     sessionStartEpoch: 1_790_879_584,
     fillPct: q!.fillPct, // whatever the fixture's fill_pct holds, checked on its own below
@@ -79,6 +80,13 @@ test('quality: the biggest waste signal names the drag', () => {
     NOW,
   )
   assert.equal(q?.drag, 'stale file reads')
+})
+
+test('quality: recovery_status comes through as an optional string', () => {
+  const q = parseQualityCache({ ...QUALITY, recovery_status: 'needs_attention' }, NOW)
+  assert.equal(q?.recoveryStatus, 'needs_attention')
+  const junk = parseQualityCache({ ...QUALITY, recovery_status: 42 }, NOW)
+  assert.equal(junk?.recoveryStatus, null)
 })
 
 test('quality: garbage, half-written or scoreless input reads as nothing', () => {

@@ -159,8 +159,15 @@ export function buildTooltip(s: Snapshot, opts: RenderOptions): string {
 
   if (s.compactions != null) {
     if (s.compactions > 0) {
-      const loss = s.compactionLossPct != null ? ` (~${s.compactionLossPct}% lost)` : '';
-      lines.push(`| Compactions | ${s.compactions}${loss} |`);
+      const recovery =
+        s.compactionRecovery === 'needs_attention'
+          ? ' (recovery: needs attention)'
+          : s.compactionRecovery === 'no_concerning_signal_observed'
+            ? ' (recovery ok)'
+            : s.compactionRecovery === 'observing'
+              ? ' (observing)'
+              : '';
+      lines.push(`| Compactions | ${s.compactions}${recovery} |`);
     } else {
       lines.push(`| Compactions | 0 |`);
     }
@@ -216,7 +223,7 @@ export interface PanelModel {
   eff: { score: number; grade: string } | null;
   qualityPending: boolean;
   warnings: string[];
-  compactions: { count: number; lossPct: number | null } | null;
+  compactions: { count: number; recovery: string | null } | null;
   duration: string;
   agents: string[];
   fiveHour: PanelUsageWindow | null;
@@ -246,7 +253,7 @@ export function buildPanelModel(s: Snapshot, opts: RenderOptions): PanelModel {
     qualityPending: qualityPending(s),
     warnings: warningParts(s),
     compactions:
-      s.compactions != null ? { count: s.compactions, lossPct: s.compactionLossPct } : null,
+      s.compactions != null ? { count: s.compactions, recovery: s.compactionRecovery } : null,
     duration: formatDuration(s.durationSec),
     agents: s.agents.map((a) => `${a.model}:${a.description}${a.elapsed ? ` (${a.elapsed})` : ''}`),
     fiveHour: s.rateLimits?.fiveHour ? panelUsageWindow(s.rateLimits.fiveHour, opts.nowMs, s.rateLimitsStale) : null,

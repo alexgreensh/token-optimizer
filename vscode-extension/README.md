@@ -15,7 +15,7 @@ Two status-bar items, plus a rich hover tooltip:
 - **ContextQ** — resource health grade + score
 - **Eff** — session efficiency grade + score
 - **Warnings** — fill / tool-fatigue / regime-change
-- **Compactions** + estimated context loss
+- **Compactions** + measured recovery status (never a fixed loss estimate)
 - **Session duration** and **active subagents**
 - **5-hour and 7-day usage limits** with reset times
 

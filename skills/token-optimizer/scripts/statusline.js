@@ -555,15 +555,25 @@ process.stdin.on('end', () => {
       }
     }
 
-    // Compaction count
+    // Compaction count + measured recovery status (score_version >= 2).
+    // Ordinary compactions render neutrally: count is descriptive metadata,
+    // recovery status reflects observed post-boundary signals only. The old
+    // "~65/88/95% lost" arithmetic was unsupported and is gone.
     if (q) {
       const c = q.compactions;
       if (c != null) {
         if (c > 0) {
-          const lossPct = q.breakdown?.compaction_depth?.cumulative_loss_pct;
-          const loss = lossPct ? `~${Math.round(lossPct)}%` : (c >= 3 ? '~95%' : c >= 2 ? '~88%' : '~65%');
-          const color = c <= 2 ? '\x1b[33m' : '\x1b[31m';
-          row2Parts.push(`${color}Compacts:${c}(${loss} lost)${RESET}`);
+          const rs = q.recovery_status;
+          if (rs === 'needs_attention') {
+            row2Parts.push(`\x1b[31mCompacts:${c}(recovery:needs attention)${RESET}`);
+          } else if (rs === 'no_concerning_signal_observed') {
+            row2Parts.push(`\x1b[32mCompacts:${c}(recovery ok)${RESET}`);
+          } else if (rs === 'observing') {
+            row2Parts.push(`${DIM}Compacts:${c}(observing)${RESET}`);
+          } else {
+            // unmeasurable / missing telemetry: neutral, never alarming
+            row2Parts.push(`${DIM}Compacts:${c}${RESET}`);
+          }
         } else {
           row2Parts.push(`\x1b[32mCompacts:0${RESET}`);
         }

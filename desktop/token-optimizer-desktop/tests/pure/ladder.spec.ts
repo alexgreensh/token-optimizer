@@ -45,10 +45,24 @@ test('a limit at 100%: limit reached with its renewal, ahead of a 5-hour at 95%'
   assert.equal(text(five), '5-hour limit reached. Renews at 3:20 PM.')
 })
 
-test('compacted 3 times: Start fresh', () => {
-  const s = sentence(withQuality(snap(), { compactions: 3 }), TZ)
-  assert.equal(text(s), 'Compacted 3 times. Early detail is mostly gone.')
-  assert.deepEqual(s.action, { id: 'fresh', label: 'Start fresh' })
+test('compacted 3 times with clean recovery: All clear — count carries no weight', () => {
+  const s = sentence(withQuality(snap(), { compactions: 3, recoveryStatus: 'no_concerning_signal_observed' }), TZ)
+  assert.equal(text(s), 'All clear.')
+  assert.equal(s.action, null)
+})
+
+test('measured recovery trouble after compaction: evidence sentence with Clean up', () => {
+  const s = sentence(withQuality(snap(), { compactions: 3, recoveryStatus: 'needs_attention' }), TZ)
+  assert.equal(text(s), 'After compaction, the session is repeating failed actions or hitting errors.')
+  assert.equal(s.tone, 'caution')
+  assert.deepEqual(s.action, { id: 'clean', label: 'Clean up' })
+})
+
+test('unmeasurable or absent recovery status stays neutral', () => {
+  for (const rs of ['unmeasurable', 'observing', null] as const) {
+    const s = sentence(withQuality(snap(), { compactions: 5, recoveryStatus: rs }), TZ)
+    assert.equal(text(s), 'All clear.', `recoveryStatus=${rs}`)
+  }
 })
 
 test('score 72 (grade B): no quality sentence; score 61: Quality slipped to C with Clean up', () => {
@@ -104,13 +118,13 @@ test('quality missing: the quality rule is skipped', () => {
 })
 
 test('API user with no rate limits: no limit rules, the next rule fires', () => {
-  const s = sentence(withQuality(snap({ fiveHour: null, week: null }), { compactions: 4 }), TZ)
-  assert.equal(text(s), 'Compacted 4 times. Early detail is mostly gone.')
+  const s = sentence(withQuality(snap({ fiveHour: null, week: null }), { compactions: 4, recoveryStatus: 'needs_attention' }), TZ)
+  assert.equal(text(s), 'After compaction, the session is repeating failed actions or hitting errors.')
 })
 
-test('quality beats a cold cache; compaction beats quality', () => {
+test('quality beats a cold cache; measured recovery trouble beats quality', () => {
   assert.equal(sentence(withQuality(snap({ cache: coldCache }), { score: 50 }), TZ).icon, 'slip')
-  assert.equal(sentence(withQuality(snap(), { score: 50, compactions: 3 }), TZ).icon, 'compact')
+  assert.equal(sentence(withQuality(snap(), { score: 50, compactions: 3, recoveryStatus: 'needs_attention' }), TZ).icon, 'compact')
 })
 
 test('busy states lead, with no button', () => {
@@ -147,7 +161,8 @@ test('mood', () => {
   assert.equal(moodOf(snap()), 'calm')
   assert.equal(moodOf(snap({ fiveHour: { percentUsed: 92, resetsAt: null } })), 'panic')
   assert.equal(moodOf(snap({ week: { percentUsed: 100, resetsAt: null } })), 'panic')
-  assert.equal(moodOf(withQuality(snap(), { compactions: 3 })), 'panic')
+  assert.equal(moodOf(withQuality(snap(), { compactions: 3 })), 'calm')
+  assert.equal(moodOf(withQuality(snap(), { compactions: 3, recoveryStatus: 'needs_attention' })), 'worried')
   assert.equal(moodOf(withQuality(snap(), { score: 61 })), 'worried')
   assert.equal(moodOf(snap({ cache: warnCache })), 'worried')
   assert.equal(moodOf(snap({ cache: coldCache, working: true })), 'calm')

@@ -18,7 +18,6 @@ export type Sentence = { icon: IconName; tone: Tone; runs: Run[]; action: Action
 /** Quality below grade B (score under 70) is worth a sentence. */
 export const QUALITY_FLOOR = 70
 export const LIMIT_WARN = 90
-export const COMPACT_HEAVY = 3
 
 const say = (icon: IconName, tone: Tone, runs: Run[], action: Action | null = null): Sentence => ({ icon, tone, runs, action })
 const plain = (text: string): Run => ({ text })
@@ -62,10 +61,14 @@ export function sentence(s: Snapshot, opts: FormatOptions = {}): Sentence {
   if (week && week.percentUsed >= LIMIT_WARN) return limitSentence('Weekly', week, s.now, opts)
 
   const q = s.quality
-  if (q && q.compactions >= COMPACT_HEAVY) {
-    return say('compact', 'bad', [plain(`Compacted ${q.compactions} times. Early detail is mostly gone.`)], {
-      id: 'fresh',
-      label: 'Start fresh',
+  // Compaction count alone never earns a sentence: ordinary compactions are
+  // neutral. Only measured post-boundary recovery trouble surfaces, phrased
+  // as evidence (repeated failed actions, error spikes, loops), never as a
+  // fixed "% lost" claim.
+  if (q && q.recoveryStatus === 'needs_attention') {
+    return say('compact', 'caution', [plain(`After compaction, the session is repeating failed actions or hitting errors.`)], {
+      id: 'clean',
+      label: 'Clean up',
     })
   }
   if (q && q.score < QUALITY_FLOOR) {
@@ -101,7 +104,8 @@ export function sentence(s: Snapshot, opts: FormatOptions = {}): Sentence {
 export function moodOf(s: Snapshot): Mood {
   const limits = [s.fiveHour, s.week].filter((l): l is Limit => l !== null)
   const q = s.quality
-  if (limits.some((l) => l.percentUsed >= LIMIT_WARN) || (q && q.compactions >= COMPACT_HEAVY)) return 'panic'
+  if (limits.some((l) => l.percentUsed >= LIMIT_WARN)) return 'panic'
+  if (q && q.recoveryStatus === 'needs_attention') return 'worried'
   if (q && q.score < QUALITY_FLOOR) return 'worried'
   if (!s.working && (s.cache.state === 'cold' || s.cache.state === 'warning')) return 'worried'
   return 'calm'

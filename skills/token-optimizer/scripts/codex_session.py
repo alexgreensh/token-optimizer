@@ -735,6 +735,7 @@ def parse_jsonl_for_quality(filepath: str | Path) -> dict[str, Any] | None:
     agent_dispatches: list[tuple[int, int, int]] = []
     decisions: list[tuple[int, str]] = []
     compaction_ratios: list[dict[str, Any]] = []
+    compaction_events: list[dict[str, Any]] = []
     last_usage: dict[str, int] | None = None
     current_model = _UNKNOWN_MODEL
     topics: dict[str, str | None] = {}
@@ -761,6 +762,28 @@ def parse_jsonl_for_quality(filepath: str | Path) -> dict[str, Any] | None:
         if is_compacted_record or payload_type == "context_compacted":
             if is_compacted_record:
                 compactions += 1
+                # Minimal recovery event for the quality panel: Codex has no
+                # matched pre/post tool-call windows, so window_data=False
+                # keeps every boundary honestly "unmeasurable" rather than
+                # implying healthy recovery.
+                compaction_events.append({
+                    "boundary_id": f"codex-{compactions}",
+                    "ordinal": compactions,
+                    "line": idx,
+                    "ts": ts,
+                    "trigger": "auto",
+                    "pre_tokens": last_turn_context,
+                    "post_tokens": None,
+                    "host_version": None,
+                    "model": current_model if current_model != _UNKNOWN_MODEL else None,
+                    "pre_seg_calls": 0,
+                    "post_seg_calls": 0,
+                    "matched_calls": 0,
+                    "eligible": False,
+                    "window_data": False,
+                    "restore_transcript": False,
+                    "capture_notice": False,
+                })
                 rh = payload.get("replacement_history")
                 # Codex total_token_usage is cumulative (monotonic), so it does
                 # not drop at compaction. The meaningful "before" is the context
@@ -778,6 +801,24 @@ def parse_jsonl_for_quality(filepath: str | Path) -> dict[str, Any] | None:
                 })
             elif not prev_was_compacted:
                 compactions += 1
+                compaction_events.append({
+                    "boundary_id": f"codex-{compactions}",
+                    "ordinal": compactions,
+                    "line": idx,
+                    "ts": ts,
+                    "trigger": "auto",
+                    "pre_tokens": last_turn_context,
+                    "post_tokens": None,
+                    "host_version": None,
+                    "model": current_model if current_model != _UNKNOWN_MODEL else None,
+                    "pre_seg_calls": 0,
+                    "post_seg_calls": 0,
+                    "matched_calls": 0,
+                    "eligible": False,
+                    "window_data": False,
+                    "restore_transcript": False,
+                    "capture_notice": False,
+                })
             prev_was_compacted = is_compacted_record
             reads = []
             writes = []
@@ -860,6 +901,7 @@ def parse_jsonl_for_quality(filepath: str | Path) -> dict[str, Any] | None:
         "agent_dispatches": agent_dispatches,
         "decisions": decisions,
         "compaction_ratios": compaction_ratios,
+        "compaction_events": compaction_events,
         "total_entries": idx,
         "estimated": True,
         "context_tokens": last_turn_context or None,

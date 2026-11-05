@@ -29070,12 +29070,13 @@ def _price_session_row(sr, pricing_tier):
 
     # Unknown days remain in lifetime pricing but never acquire a window date.
     slices = []  # (date, cost, priced, unpriced, input_tokens, output_tokens)
+    valid_days = frozenset(_activity_days(du))
     if du:
         by_day = {}
         for day, day_mb in du.items():
             if not isinstance(day_mb, dict):
                 continue
-            if day not in _activity_days(du):
+            if day not in valid_days:
                 continue
             _merge_daily_usage(by_day.setdefault(day, {}), {"_": day_mb})
         for day in sorted(by_day):
@@ -29098,7 +29099,7 @@ def _price_session_row(sr, pricing_tier):
         "total_cost": total_cost,
         "slices": slices,
         "has_daily": bool(du),
-        "activity_complete": bool(du) and len(_activity_days(du)) == len(du),
+        "activity_complete": bool(du) and len(valid_days) == len(du),
         "priced_tokens": sum(sl[2] for sl in slices),
         "unpriced_tokens": sum(sl[3] for sl in slices),
         "dom_model": dom_model,
@@ -29675,11 +29676,34 @@ def _collect_trends_from_db(days=30):
         conn.close()
 
 
+def _activity_window_predicate(conn, cutoff):
+    """SQL fragment + params limiting session_log scans to rows that can hold
+    activity inside the window, or ("", ()) when the activity bounds columns
+    are unavailable (pre-migration shapes), keeping the unfiltered scan.
+
+    last_activity_day is maintained by every daily_usage_json writer (collect,
+    _backfill_daily_usage, _store_adapter_activity, repair_activity_dates) and
+    is NULL for rows with no dated usage -- including rows whose per-day JSON
+    is missing or empty and could still fall back to parent_daily_usage_json.
+    Rows carrying parent evidence are always kept: the spent-token basis and
+    the reported model mix prefer parent_daily_usage_json over the combined
+    map, and parent days are not bounded by the combined map's activity days.
+    The fragment is a superset of "has an in-window slice", never a subset:
+    metrics-only days can only widen last_activity_day, so filtering on it can
+    keep extra rows but can never drop a row that contributes window slices."""
+    columns = {r[1] for r in conn.execute("PRAGMA table_info(session_log)")}
+    if "last_activity_day" not in columns or "parent_daily_usage_json" not in columns:
+        return "", ()
+    return (" AND (last_activity_day IS NULL OR last_activity_day >= ? "
+            "OR parent_daily_usage_json IS NOT NULL)", (cutoff,))
+
+
 def _query_trends_db(conn, days):
     """Internal: run all queries against the trends DB. Caller handles errors."""
     cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
 
     ensure_activity_view(conn)
+    window_pred, window_params = _activity_window_predicate(conn, cutoff)
     population_metrics = _query_dashboard_population_metrics(conn, days)
     spent_basis = _dashboard_spent_token_basis(conn, days=days)
     coverage = activity_coverage(conn)
@@ -29754,7 +29778,8 @@ def _query_trends_db(conn, days):
     reported_model_mix = {}
     reported_combined_rows = 0
     for parent_raw, combined_raw in conn.execute(
-            "SELECT parent_daily_usage_json,daily_usage_json FROM session_log WHERE COALESCE(is_sidechain,0)=0"):
+            "SELECT parent_daily_usage_json,daily_usage_json FROM session_log "
+            "WHERE COALESCE(is_sidechain,0)=0" + window_pred, window_params):
         raw, provenance = _spent_daily_usage(parent_raw, combined_raw)
         usage = _safe_json_dict(raw)
         in_window = False
@@ -29839,8 +29864,8 @@ def _query_trends_db(conn, days):
                   subagents_json, model_usage_json, slug, topic, project,
                   model_usage_breakdown_json, daily_usage_json, parent_daily_usage_json,
                   quality_score, quality_grade
-           FROM session_log ORDER BY date DESC""",
-        (),
+           FROM session_log WHERE 1=1""" + window_pred + """ ORDER BY date DESC""",
+        window_params,
     ).fetchall()
 
     def _day_entry(date):
@@ -29861,9 +29886,9 @@ def _query_trends_db(conn, days):
         except (json.JSONDecodeError, TypeError):
             skills = {}
         try:
-            subagents = json.loads(sr["subagents_json"]) if sr["subagents_json"] else {}
+            subagents_meta = json.loads(sr["subagents_json"]) if sr["subagents_json"] else {}
         except (json.JSONDecodeError, TypeError):
-            subagents = {}
+            subagents_meta = {}
 
         # One pricing path for every per-session dollar figure (the dashboard
         # here, `session-cost` for plain-language questions): _price_session_row.
@@ -29907,7 +29932,7 @@ def _query_trends_db(conn, days):
                 "message_count": sr["message_count"] or 0,
                 "api_calls": sr["api_calls"] or 0,
                 "skills": list(skills.keys()),
-                "subagents": list(subagents.keys()),
+                "subagents": list(subagents_meta.keys()),
                 "cache_hit_rate": round(chr_val, 3),
                 "cache_create_1h_tokens": cache_create_1h,
                 "cache_create_5m_tokens": cache_create_5m,

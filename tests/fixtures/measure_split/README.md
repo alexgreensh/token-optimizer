@@ -39,7 +39,7 @@ in-memory transport; their raw response and server console output are separate
 artifacts. Node runs the actual statusline with a fixed clock and process boundary.
 The fake payload includes the source-layout README marker. The Claude version
 probe returns a pinned parseable version, so normal enable paths run normally.
-Registry metadata for 5.13.64 is synthetic with a fixed SHA-512 fixture value;
+Registry metadata for 5.13.64 is synthetic with a fixed, fake SHA-512 digest;
 DNS uses documentation-only addresses. Unexpected URL and resolver requests are
 blocked before they can reach the host network. Watchdogs run at deterministic
 virtual-clock boundaries. SQLite fixture and snapshot handles close explicitly.

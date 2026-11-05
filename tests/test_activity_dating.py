@@ -247,6 +247,95 @@ def test_multi_day_session_does_not_manufacture_baseline_population(m):
     assert m._baseline_progress()["sessions_in_window"] == 1
 
 
+def test_jsonl_fallback_preserves_session_metadata_and_call_units(m, monkeypatch):
+    """The DB-free fallback stores the same schema contract as collect: call-gap
+    stats, cache-write splits, lifetime counts and dated per-day call units."""
+    t0 = _noon(3)
+    rows = [
+        _chunk(t0, req="a", inp=1000, out=100),
+        _chunk(t0 + timedelta(seconds=600), req="b", inp=1000, out=100),
+        _chunk(t0 + timedelta(seconds=1800), req="c", inp=1000, out=100),
+    ]
+    rows[0]["message"]["usage"]["cache_creation_input_tokens"] = 100
+    rows[0]["message"]["usage"]["ephemeral_1h_input_tokens"] = 40
+    rows[0]["message"]["usage"]["ephemeral_5m_input_tokens"] = 60
+    _write(transcript(m), rows)
+    collect(m)
+    conn = m._init_trends_db()
+    db = conn.execute(
+        "SELECT avg_call_gap_seconds,max_call_gap_seconds,p95_call_gap_seconds,"
+        "cache_create_1h_tokens,cache_create_5m_tokens,api_calls,message_count,"
+        "daily_calls_json FROM session_log").fetchone()
+    conn.close()
+    seen = {}
+    real_query = m._query_trends_db
+
+    def spy(conn, days):
+        seen["daily_calls"] = [
+            json.loads(r[0]) for r in conn.execute("SELECT daily_calls_json FROM session_log")]
+        return real_query(conn, days)
+
+    monkeypatch.setattr(m, "_query_trends_db", spy)
+    result = m._collect_trends_from_jsonl(30)
+    details = [sd for d in result["daily"] for sd in d["session_details"]]
+    assert len(details) == 1
+    sd = details[0]
+    assert (sd["avg_call_gap_seconds"], sd["max_call_gap_seconds"],
+            sd["p95_call_gap_seconds"]) == tuple(db[:3])
+    assert (sd["cache_create_1h_tokens"], sd["cache_create_5m_tokens"]) == (db[3], db[4])
+    assert sd["api_calls"] == db[5] and sd["message_count"] == db[6]
+    assert seen["daily_calls"] == [json.loads(db[7])]
+
+
+def test_jsonl_fallback_keeps_adapter_daily_calls(m, monkeypatch):
+    """Adapters with dated call counts but no request map keep daily_calls and
+    the activity bounds in the DB-free fallback."""
+    day = _noon(5).date().isoformat()
+    parsed = {
+        "version": "test", "slug": "s", "topic": None,
+        "duration_minutes": 12.0, "total_input_tokens": 5000,
+        "total_output_tokens": 500, "total_cache_read": 0,
+        "total_cache_create": 0, "total_cache_create_1h": 0,
+        "total_cache_create_5m": 0, "cache_hit_rate": 0.0,
+        "avg_call_gap_seconds": 30.0, "max_call_gap_seconds": 60.0,
+        "p95_call_gap_seconds": 60.0,
+        "model_usage": {"gpt-5.4": 5500},
+        "model_usage_breakdown": {"gpt-5.4": {"fresh_input": 5000, "cache_read": 0,
+                                               "cache_create": 0, "output": 500}},
+        "daily_usage": {day: {"gpt-5.4": {"fresh_input": 5000, "cache_read": 0,
+                                          "cache_create": 0, "output": 500}}},
+        "daily_calls": {day: 4},
+        "daily_metrics": {day: {"message_count": 9, "duration_minutes": 12.0}},
+        "skills_used": {}, "subagents_used": {}, "tool_calls": {},
+        "message_count": 9, "api_calls": 4, "is_sidechain": False,
+    }
+    fake = m.CLAUDE_DIR / "projects" / "sample" / "adapter-session.jsonl"
+    fake.parent.mkdir(parents=True, exist_ok=True)
+    fake.write_text("{}\n")
+    monkeypatch.setattr(m, "_parse_session_jsonl", lambda *a, **k: parsed)
+    monkeypatch.setattr(m, "_find_all_jsonl_files",
+                        lambda days: [(fake, fake.stat().st_mtime, "sample")])
+    seen = {}
+    real_query = m._query_trends_db
+
+    def spy(conn, days):
+        seen["rows"] = conn.execute(
+            "SELECT daily_calls_json, avg_call_gap_seconds, max_call_gap_seconds, "
+            "p95_call_gap_seconds, first_activity_day, last_activity_day "
+            "FROM session_log").fetchall()
+        return real_query(conn, days)
+
+    monkeypatch.setattr(m, "_query_trends_db", spy)
+    result = m._collect_trends_from_jsonl(30)
+    assert result is not None
+    row = seen["rows"][0]
+    assert json.loads(row[0]) == {day: 4}
+    assert tuple(row[1:4]) == (30.0, 60.0, 60.0)
+    assert (row[4], row[5]) == (day, day)
+    details = [sd for d in result["daily"] for sd in d["session_details"]]
+    assert details and details[0]["avg_call_gap_seconds"] == 30.0
+
+
 def test_delegated_skills_keep_the_child_activity_day_and_shared_usage_counts_once(m):
     shared = _chunk(_noon(1), req="shared", inp=1000, out=100)
     _write(transcript(m), [shared])

@@ -250,6 +250,9 @@ def test_every_logged_feature_is_totalled_or_marked_bookkeeping(m):
     known = set(m._V5_COMPRESSION_LABELS) | set(m._NON_SAVINGS_COMPRESSION_FEATURES)
     missing = sorted(f for f in feats if f not in known and f not in m._LEGACY_SAVINGS_LABELS)
     assert missing == [], f"logged but never totalled: {missing}"
+    advisory = {"context_advisory_shadow", "context_size_advisory"}
+    assert advisory <= set(m._NON_SAVINGS_COMPRESSION_FEATURES)
+    assert advisory.isdisjoint(m._V5_COMPRESSION_CATEGORIES)
 
 
 def _counted_se_ids(m):

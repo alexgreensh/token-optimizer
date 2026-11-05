@@ -49,7 +49,8 @@ export interface QualityResult {
 }
 
 export interface SignalBreakdown {
-  score: number;
+  // Descriptive compaction metadata has no numeric health score.
+  score?: number | null;
   detail: string;
   [key: string]: unknown;
 }
@@ -189,10 +190,10 @@ export function computeQualityScore(
       detail: compactions > 0 ? `${compactions} compaction(s)` : "No compactions",
     },
     compaction_recovery: {
-      status: compactions > 0 ? "unmeasurable" : null,
+      status: compactions > 0 ? "observing" : null,
       score: null,
       detail: compactions > 0
-        ? `${compactions} compaction(s); recovery unmeasurable (no matched windows)`
+        ? `${compactions} compaction(s); observing; evidence unmeasurable (no matched windows)`
         : "No compactions",
     },
     decision_density: {
@@ -277,7 +278,7 @@ export function computeQualityScore(
     toolCalls,
     fillPct,
     compactions,
-    recoveryStatus: compactions > 0 ? "unmeasurable" : null,
+    recoveryStatus: compactions > 0 ? "observing" : null,
     scoreVersion: 2,
   };
 }

@@ -16,7 +16,7 @@ With Opus and Sonnet now at 1M context, the overhead feels like breathing room. 
 
 - **Quality degrades as context fills.** Long-context recall drops measurably as the window fills, from roughly 93% to 76% between 256K and 1M on the MRCR benchmark. The model gets quieter about it, but it gets less accurate.
 - **Rate limits hit faster.** Overhead counts toward your plan's usage caps on every message, cached or not. 50K of overhead times 100 messages is 5M tokens spent on nothing.
-- **Compaction is catastrophic.** 60 to 70% of your conversation goes per compaction, and after two or three rounds you have lost 88 to 95%. Each compaction also re-sends all that overhead again. See [The compaction problem](/concepts/compaction-model/).
+- **Compaction changes context.** Recovery depends on what the summary and checkpoint preserve. Compaction count has no quality penalty or fixed loss rate. Each compaction also re-sends structural overhead. See [The compaction problem](/concepts/compaction-model/).
 - **Higher effort burns faster.** More thinking tokens per response means you hit compaction sooner, which means more total tokens across the session.
 - **You cannot fix what you cannot see.** Without per-turn visibility into cache hits, model mix, and subagent spend, every "it feels slow" guess costs money.
 

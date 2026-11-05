@@ -96,11 +96,11 @@
     </text>
     <text fill="#bac2de" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14">
       <tspan x="44" y="308">Auto-compact at:   </tspan>
-      <tspan fill="#f38ba8">~800K (60-70% of context LOST)</tspan>
+      <tspan fill="#f38ba8">Host threshold (varies by model)</tspan>
     </text>
     <text fill="#bac2de" font-family="'SF Mono','Fira Code','Cascadia Code','Consolas',monospace" font-size="14">
       <tspan x="44" y="328">After 2 compacts:  </tspan>
-      <tspan fill="#f38ba8">~88% cumulative context loss</tspan>
+      <tspan fill="#f38ba8">Recovery evidence: observing</tspan>
     </text>
   </g>
 

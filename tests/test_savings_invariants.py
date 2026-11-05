@@ -105,3 +105,11 @@ def test_every_test_the_methodology_cites_exists():
     assert cited
     missing = sorted(name for name in cited if not (ROOT / "tests" / name).exists())
     assert not missing, missing
+
+
+def test_methodology_keeps_advisories_out_of_savings(m):
+    doc = METHODOLOGY.read_text(encoding="utf-8")
+    for feature in ("context_advisory_shadow", "context_size_advisory"):
+        assert f"`{feature}`" in doc
+        assert feature in m._NON_SAVINGS_COMPRESSION_FEATURES
+        assert feature not in m._V5_COMPRESSION_CATEGORIES

@@ -193,11 +193,7 @@ export class StatusPanel {
     if (m.qualityPending) h += row('ContextQ / Eff', '<span class="pending">warming up…</span>');
     if (m.warnings && m.warnings.length) h += row('Warnings', '<span class="warn">' + m.warnings.map(esc).join(', ') + '</span>');
     if (m.compactions) {
-      const rec = m.compactions.count > 0 && m.compactions.recovery
-        ? m.compactions.recovery === 'needs_attention' ? ' (recovery: needs attention)'
-          : m.compactions.recovery === 'no_concerning_signal_observed' ? ' (recovery ok)'
-          : m.compactions.recovery === 'observing' ? ' (observing)' : ''
-        : '';
+      const rec = m.compactions.count > 0 ? ' (observing)' : '';
       h += row('Compactions', m.compactions.count + rec);
     }
     if (m.duration) h += row('Duration', esc(m.duration));

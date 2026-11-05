@@ -5320,11 +5320,19 @@ var DB = (function() {
         { key: 'stale_reads', label: 'Stale Reads', icon: '\uD83D\uDCC4', tip: 'Files read earlier that have since changed. The model may be working with outdated content.' },
         { key: 'bloated_results', label: 'Bloated Results', icon: '\uD83D\uDCE6', tip: 'Tool outputs sitting in context that were never referenced. Wasted space.' },
         { key: 'duplicates', label: 'Duplicates', icon: '\uD83D\uDD04', tip: 'Same system reminders or content injected multiple times. Pure waste.' },
-        { key: 'compaction_depth', label: 'Compactions', icon: '\uD83D\uDDDC', tip: 'Each compaction loses 60-70% of conversation. After 2: ~88% gone.' },
         { key: 'decision_density', label: 'Decision Density', icon: '\uD83C\uDFAF', tip: 'Ratio of actual decisions and work vs overhead and boilerplate.' },
         { key: 'agent_efficiency', label: 'Agent Efficiency', icon: '\u2699\uFE0F', tip: 'Whether dispatched agents produced useful output relative to their token cost.' }
       ];
       html += '<div style="padding:0 var(--s-3) var(--s-3);">';
+      // Compactions are metadata, with no health bar or fixed loss claim.
+      var compactData = bd.compactions || bd.compaction_depth;
+      var recoveryData = bd.compaction_recovery;
+      if (compactData || recoveryData) {
+        var compactCount = compactData ? (compactData.count != null ? compactData.count : compactData.compactions) : q.compactions;
+        html += '<div style="display:flex;flex-wrap:wrap;gap:var(--s-2);margin-bottom:10px;font-size:15px;color:var(--c-text-dim);">' +
+          '<span>Compactions: ' + esc(compactCount == null ? 'unknown' : compactCount + ' compactions') + '</span>' +
+          '<span>Recovery: ' + (compactCount === 0 ? 'no compactions' : 'observing') + '</span></div>';
+      }
       signals.forEach(function(sig) {
         var d = bd[sig.key];
         if (!d) return;

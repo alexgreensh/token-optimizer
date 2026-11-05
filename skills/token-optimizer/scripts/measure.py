@@ -39614,6 +39614,7 @@ def _recovery_window_metrics(calls, notices, seg, lo, hi):
     return {
         "calls": n,
         "errors": sum(c["error"] for c in calls),
+        "test_errors_with_edits": sum(bool(c["error"] and c.get("test_error_edited")) for c in calls),
         "shell_nonzero": sum(c["shell_nonzero"] for c in calls),
         "repeats": sum(c["repeat"] for c in calls),
         "repeat_after_error": sum(c["repeat_after_error"] for c in calls),
@@ -39655,8 +39656,8 @@ def _finalize_compaction_boundary(boundary, notices):
 
 
 def _recovery_boundary_eval(boundary):
-    """Provisionally score one eligible boundary. Live thresholds are
-    deliberately conservative pending calibration on held-out labeled
+    """Provisionally score one eligible boundary. Shadow-only thresholds
+    await calibration on held-out labeled
     failures (COMPACTION-QUALITY.md section 6): they flag only repeated
     failed actions, repeated retrieval of unchanged artifacts, clear error
     spikes, observed loops, and capture-without-delivery -- never a bare
@@ -39673,8 +39674,10 @@ def _recovery_boundary_eval(boundary):
             and post["rereads_unchanged"] > pre["rereads_unchanged"]):
         flags.append("unchanged_artifact_rereads")
     if post["calls"] and pre["calls"]:
-        err_delta = post["errors"] / post["calls"] - pre["errors"] / pre["calls"]
-        if post["errors"] >= 3 and err_delta >= 0.10:
+        pre_errors = pre["errors"] - pre.get("test_errors_with_edits", 0)
+        post_errors = post["errors"] - post.get("test_errors_with_edits", 0)
+        err_delta = post_errors / post["calls"] - pre_errors / pre["calls"]
+        if post_errors >= 3 and err_delta >= 0.10:
             flags.append("error_rate_increase")
     loops = post["loop_notices"] + int(boundary.get("db_loops") or 0)
     if loops >= 1:
@@ -39721,14 +39724,23 @@ def _rec_track_tool_use(rec, block, idx, ts, cwd):
         rec["read_versions"][fp] = rec["versions"][fp]
     if name in ("Edit", "Write", "MultiEdit") and fp:
         rec["versions"][fp] += 1
+        # Failed tests followed by an edit are ordinary red/green work.
+        for previous in rec["completed"]:
+            if previous.get("test_runner") and previous["error"]:
+                previous["test_error_edited"] = True
+    edit_version = sum(rec["versions"].values())
     cmd = inp.get("command", "") if name in ("Bash", "bash", "exec_command") else ""
     call = {
         "id": tid, "line": idx, "seg": rec["seg"], "ts": ts, "name": name,
         "sig": sig,
+        "edit_version": edit_version,
+        "test_runner": bool(re.search(
+            r"(?:\bpytest\b|\bunittest\b|\b(?:npm|pnpm|yarn|bun|cargo|go)\s+(?:run\s+)?test\b|\bnode\s+[^\n]*--test\b)", cmd)),
         "read": int(isread), "reread": int(reread),
         "reread_unchanged": int(unchanged),
         "repeat": int(repeat),
-        "repeat_after_error": int(bool(repeat and prev and prev.get("error"))),
+        "repeat_after_error": int(bool(repeat and prev and prev.get("error")
+                                       and prev.get("edit_version") == edit_version)),
         "expand": int(bool(_REC_EXPAND_RE.search(cmd))),
         "result_line": None, "result_ts": None,
         "error": 0, "shell_nonzero": 0,
@@ -39788,6 +39800,7 @@ def _parse_jsonl_for_quality(filepath):
     # estimate below misses cached context — the bulk of real token usage).
     context_tokens = None
     current_model = None
+    safe_pause = False
 
     # Recovery tracker state (see helpers above). NEVER reset at boundaries.
     _rec = {
@@ -39829,6 +39842,8 @@ def _parse_jsonl_for_quality(filepath):
                     continue
                 rec_type = record.get("type")
                 ts = record.get("timestamp", "")
+                if rec_type == "tool_result" and not record.get("isSidechain"):
+                    safe_pause = False
                 if ts:
                     if _rec_first_ts is None or ts < _rec_first_ts:
                         _rec_first_ts = ts
@@ -39856,6 +39871,8 @@ def _parse_jsonl_for_quality(filepath):
                             is_plan_exit = True
                             break
                 if is_compact or is_plan_exit:
+                    if not _is_sidechain:
+                        safe_pause = False
                     if is_compact:
                         compactions += 1
                         if not _is_sidechain:
@@ -39949,6 +39966,8 @@ def _parse_jsonl_for_quality(filepath):
                 if rec_type == "user":
                     text = _extract_user_text(record)
                     is_substantive = len(text.split()) > 10
+                    if not _is_sidechain:
+                        safe_pause = bool(text.strip())
                     messages.append((idx, "user", len(text), is_substantive))
 
                 # Assistant messages
@@ -39956,6 +39975,8 @@ def _parse_jsonl_for_quality(filepath):
                     msg = record.get("message", {})
                     if not isinstance(msg, dict):
                         msg = {}
+                    if not _is_sidechain:
+                        safe_pause = msg.get("stop_reason") == "end_turn"
                     content = msg.get("content", [])
                     text_length = 0
                     is_substantive = False
@@ -40065,6 +40086,7 @@ def _parse_jsonl_for_quality(filepath):
         "messages": messages,
         "compactions": compactions,
         "tool_calls": tool_calls,
+        "safe_pause": safe_pause,
         "agent_dispatches": agent_dispatches,
         "decisions": decisions,
         "total_entries": idx,
@@ -40315,10 +40337,9 @@ def _session_recovery_db_events(session_id, since_epoch=None):
 def _assess_compaction_recovery(quality_data, session_id=None):
     """Build the recovery panel for the quality result.
 
-    Status values: observing (latest window still filling),
-    no_concerning_signal_observed, needs_attention, unmeasurable. Compaction
-    count itself carries no weight here -- only observed post-boundary
-    signals do, and missing evidence stays unknown rather than healthy.
+    The public status stays observing while thresholds are calibrated. Raw
+    evidence retains provisional boundary statuses, including unmeasurable.
+    Compaction count carries no weight, and missing evidence stays unknown.
     """
     coverage = {
         "errors": True, "rereads": True, "repeats": True,
@@ -40334,7 +40355,7 @@ def _assess_compaction_recovery(quality_data, session_id=None):
     if compactions <= 0:
         return {"status": None, "score": None, "evidence": [], "coverage": coverage}
     if not events:
-        return {"status": "unmeasurable", "score": None, "evidence": [],
+        return {"status": "observing", "score": None, "evidence": [],
                 "coverage": coverage}
 
     epochs = [e.get("ts_epoch") for e in events if e.get("ts_epoch") is not None]
@@ -40382,18 +40403,9 @@ def _assess_compaction_recovery(quality_data, session_id=None):
     evidence = [{k: v for k, v in b.items() if k not in ("pre_tail", "post_calls")}
                 for b in events[-_RECOVERY_EVENTS_KEPT:]]
 
-    # Session status follows the newest window that can say anything; an
-    # unmeasurable edge falls back to the previous evaluated boundary, and a
-    # clean latest window resolves an older needs_attention (no lifetime
-    # penalty for compaction count).
-    status, score = "unmeasurable", None
-    for b in reversed(events):
-        s = b.get("status")
-        if s == "unmeasurable":
-            continue
-        status, score = s, b.get("score")
-        break
-    return {"status": status, "score": score, "evidence": evidence,
+    # Thresholds are shadow-only until calibrated. Preserve raw evaluations
+    # in evidence, but never turn them into a public health judgement.
+    return {"status": "observing", "score": None, "evidence": evidence,
             "coverage": coverage}
 
 
@@ -49767,23 +49779,46 @@ def _context_advisory_threshold():
     return clamped
 
 
-def _session_has_current_checkpoint(session_id):
-    """True when a non-empty checkpoint belonging to this session exists
-    inside the retention window. Best-effort: any error -> False."""
+def _advisory_checkpoint_has_restorable_body(checkpoint):
+    """Checkpoint-validity integration hook for the advisory.
+
+    At merge, delegate to checkpoint-state's _checkpoint_has_restorable_body.
+    Until then, apply the existing restore path's header/body checks here.
+    """
+    path = _safe_checkpoint_file(checkpoint["path"])
+    if path is None:
+        return False
+    content = path.read_text(encoding="utf-8")
+    if "No transcript data available" in content:
+        return False
+    body = "\n".join(content.splitlines()[2:]).strip()
+    return bool(_neutralize_recovered_body(body, limit=4000).strip())
+
+
+def _session_has_current_checkpoint(session_id, quality_data=None):
+    """Require a restorable session checkpoint from the last 30 minutes,
+    saved since the latest compaction. Unknown boundary time fails closed."""
     try:
         if not session_id:
             return False
         want = {str(session_id), sanitize_session_id(str(session_id))}
-        cutoff = datetime.now() - timedelta(days=_CHECKPOINT_RETENTION_DAYS)
+        now = time.time()
+        cutoff = now - 30 * 60
+        qd = quality_data or {}
+        if qd.get("compactions"):
+            events = qd.get("compaction_events") or []
+            if not events:
+                return False
+            latest = events[-1]
+            boundary = latest.get("ts_epoch") or _keepwarm_iso_to_epoch(latest.get("ts"))
+            if boundary is None:
+                return False
+            cutoff = max(cutoff, boundary)
         for cp in list_checkpoints():
             if _checkpoint_session(cp["filename"]) not in want:
                 continue
-            try:
-                if cp["path"].stat().st_size <= 0:
-                    continue
-            except OSError:
-                continue
-            if cp["created"] >= cutoff:
+            if (cutoff <= cp["created"].timestamp() <= now
+                    and _advisory_checkpoint_has_restorable_body(cp)):
                 return True
         return False
     except Exception:
@@ -49799,15 +49834,13 @@ def _advisory_blockers(result, quality_data, session_id):
     tool_calls = int((quality_data or {}).get("tool_calls") or 0)
     user_turns = sum(
         1 for m in (quality_data or {}).get("messages", [])
-        if len(m) >= 2 and m[1] == "user")
+        if len(m) >= 3 and m[1] == "user" and m[2] > 0)
     # Progress beyond the initial prompt: real tool work or a follow-up turn.
     blockers["no_progress"] = not (tool_calls >= 5 or user_turns >= 2)
-    # Safe pause: the latest message is a user turn (between turns, never
-    # mid-tool-operation).
-    msgs = (quality_data or {}).get("messages") or []
-    blockers["mid_turn"] = not (msgs and len(msgs[-1]) >= 2 and msgs[-1][1] == "user")
+    # Parsers distinguish real prompts/end_turn from tool-result records.
+    blockers["mid_turn"] = (quality_data or {}).get("safe_pause") is not True
     # Valid current checkpoint for THIS session.
-    blockers["no_checkpoint"] = not _session_has_current_checkpoint(session_id)
+    blockers["no_checkpoint"] = not _session_has_current_checkpoint(session_id, quality_data)
     return blockers
 
 
@@ -49820,8 +49853,16 @@ def _log_context_advisory_shadow(session_id, telemetry, result, quality_data):
         if tokens < _CONTEXT_ADVISORY_MIN_TOKENS or not session_id:
             return
         bucket = int(time.time() // 3600)
-        if _ran_once_this_session(f"context-advisory-shadow-{bucket}", session_id):
+        marker = _once_per_session_marker("context-advisory-shadow", session_id)
+        if marker is None:
             return
+        try:
+            if json.loads(marker.read_text(encoding="utf-8")).get("bucket") == bucket:
+                return
+        except (OSError, ValueError, TypeError):
+            pass
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(json.dumps({"bucket": bucket}), encoding="utf-8")
         blockers = _advisory_blockers(result, quality_data, session_id)
         eval_at = {
             str(t): {
@@ -49831,6 +49872,7 @@ def _log_context_advisory_shadow(session_id, telemetry, result, quality_data):
         }
         _log_compression_event(
             feature="context_advisory_shadow",
+            tier="estimated",
             session_id=session_id,
             detail=json.dumps({
                 "tokens": tokens, "window": telemetry.get("window"),
@@ -49879,13 +49921,14 @@ def _maybe_context_size_advisory(result, cache_path, quality_data, suppressed=Fa
     result["_context_advisory_fired"] = True
     _log_compression_event(
         feature="context_size_advisory",
+        tier="estimated",
         session_id=session_id,
         detail=(f"tokens={tokens} threshold={threshold} "
                 f"window={telemetry.get('window')} source={telemetry.get('source')}"),
         verified=False,
     )
     k = tokens // 1000
-    return (f"[Token Optimizer] {k}K tokens in use. Current checkpoint verified; "
+    return (f"[Token Optimizer] {k}K tokens in use. Checkpoint saved recently; "
             f"consider compacting at the end of this step.")
 
 
@@ -52187,6 +52230,7 @@ _V5_COMPRESSION_LABELS = {
 _NON_SAVINGS_COMPRESSION_FEATURES = frozenset({
     "fresh_session_nudge", "cohort_demoted", "first_read_edit_followup",
     "cache_drop_warning", "agent_result_skeleton", "unknown",
+    "context_advisory_shadow", "context_size_advisory",
 })
 
 # Unified label dict used by the savings-report renderer. Legacy entries

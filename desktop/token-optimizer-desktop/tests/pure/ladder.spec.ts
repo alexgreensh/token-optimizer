@@ -47,21 +47,21 @@ test('a limit at 100%: limit reached with its renewal, ahead of a 5-hour at 95%'
 
 test('compacted 3 times with clean recovery: All clear — count carries no weight', () => {
   const s = sentence(withQuality(snap(), { compactions: 3, recoveryStatus: 'no_concerning_signal_observed' }), TZ)
-  assert.equal(text(s), 'All clear.')
+  assert.equal(text(s), 'Compacts:3 (observing).')
   assert.equal(s.action, null)
 })
 
-test('measured recovery trouble after compaction: evidence sentence with Clean up', () => {
+test('shadow recovery flags stay neutral', () => {
   const s = sentence(withQuality(snap(), { compactions: 3, recoveryStatus: 'needs_attention' }), TZ)
-  assert.equal(text(s), 'After compaction, the session is repeating failed actions or hitting errors.')
-  assert.equal(s.tone, 'caution')
-  assert.deepEqual(s.action, { id: 'clean', label: 'Clean up' })
+  assert.equal(text(s), 'Compacts:3 (observing).')
+  assert.equal(s.tone, 'good')
+  assert.equal(s.action, null)
 })
 
 test('unmeasurable or absent recovery status stays neutral', () => {
-  for (const rs of ['unmeasurable', 'observing', null] as const) {
+  for (const rs of ['unmeasurable', 'observing', 'needs_attention', null] as const) {
     const s = sentence(withQuality(snap(), { compactions: 5, recoveryStatus: rs }), TZ)
-    assert.equal(text(s), 'All clear.', `recoveryStatus=${rs}`)
+    assert.equal(text(s), 'Compacts:5 (observing).', `recoveryStatus=${rs}`)
   }
 })
 
@@ -119,12 +119,12 @@ test('quality missing: the quality rule is skipped', () => {
 
 test('API user with no rate limits: no limit rules, the next rule fires', () => {
   const s = sentence(withQuality(snap({ fiveHour: null, week: null }), { compactions: 4, recoveryStatus: 'needs_attention' }), TZ)
-  assert.equal(text(s), 'After compaction, the session is repeating failed actions or hitting errors.')
+  assert.equal(text(s), 'Compacts:4 (observing).')
 })
 
-test('quality beats a cold cache; measured recovery trouble beats quality', () => {
+test('quality beats a cold cache and shadow recovery flags', () => {
   assert.equal(sentence(withQuality(snap({ cache: coldCache }), { score: 50 }), TZ).icon, 'slip')
-  assert.equal(sentence(withQuality(snap(), { score: 50, compactions: 3, recoveryStatus: 'needs_attention' }), TZ).icon, 'compact')
+  assert.equal(sentence(withQuality(snap(), { score: 50, compactions: 3, recoveryStatus: 'needs_attention' }), TZ).icon, 'slip')
 })
 
 test('busy states lead, with no button', () => {
@@ -162,7 +162,7 @@ test('mood', () => {
   assert.equal(moodOf(snap({ fiveHour: { percentUsed: 92, resetsAt: null } })), 'panic')
   assert.equal(moodOf(snap({ week: { percentUsed: 100, resetsAt: null } })), 'panic')
   assert.equal(moodOf(withQuality(snap(), { compactions: 3 })), 'calm')
-  assert.equal(moodOf(withQuality(snap(), { compactions: 3, recoveryStatus: 'needs_attention' })), 'worried')
+  assert.equal(moodOf(withQuality(snap(), { compactions: 3, recoveryStatus: 'needs_attention' })), 'calm')
   assert.equal(moodOf(withQuality(snap(), { score: 61 })), 'worried')
   assert.equal(moodOf(snap({ cache: warnCache })), 'worried')
   assert.equal(moodOf(snap({ cache: coldCache, working: true })), 'calm')

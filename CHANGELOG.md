@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Compaction count carries no quality penalty. Recovery evidence is shadow-only this release; displays show neutral “observing” while provisional evaluations are logged. Normal test/edit cycles do not count as repeated failures after compaction.
+- Compaction and fresh-session suggestions require at least 300K current context tokens. On windows of 200K or less, including default Sonnet and most Codex/Cursor sessions, those remedies stay silent while the score remains visible. The optional size advisory defaults to 350K, requires a recent checkpoint and a pause between turns, and never counts as savings.
+
 ## [5.13.63] - 2026-11-01
 
 - One monthly savings number. Logged savings, routing you actually used, repeat reads avoided and estimates are added up once, with nothing counted twice. The CLI and dashboard show the same figure.

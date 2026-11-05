@@ -2,7 +2,7 @@
 // Token Optimizer - Claude Code Status Line (two-row layout)
 //
 // Row 1: model | effort | project | context bar used% | ContextQ:grade(score)
-// Row 2: Eff:grade(score) | warnings | Compacts:N(loss) | duration | Agents
+// Row 2: Eff:grade(score) | warnings | Compacts:N(observing) | duration | Agents
 //
 // Install: python3 measure.py setup-quality-bar
 // The quality score is updated by a UserPromptSubmit hook every ~2 minutes.
@@ -555,25 +555,13 @@ process.stdin.on('end', () => {
       }
     }
 
-    // Compaction count + measured recovery status (score_version >= 2).
-    // Ordinary compactions render neutrally: count is descriptive metadata,
-    // recovery status reflects observed post-boundary signals only. The old
-    // "~65/88/95% lost" arithmetic was unsupported and is gone.
+    // Recovery thresholds remain shadow-only until calibrated.
     if (q) {
       const c = q.compactions;
       if (c != null) {
         if (c > 0) {
-          const rs = q.recovery_status;
-          if (rs === 'needs_attention') {
-            row2Parts.push(`\x1b[31mCompacts:${c}(recovery:needs attention)${RESET}`);
-          } else if (rs === 'no_concerning_signal_observed') {
-            row2Parts.push(`\x1b[32mCompacts:${c}(recovery ok)${RESET}`);
-          } else if (rs === 'observing') {
-            row2Parts.push(`${DIM}Compacts:${c}(observing)${RESET}`);
-          } else {
-            // unmeasurable / missing telemetry: neutral, never alarming
-            row2Parts.push(`${DIM}Compacts:${c}${RESET}`);
-          }
+          // Recovery evidence is shadow-only, even for older cached flags.
+          row2Parts.push(`${DIM}Compacts:${c}(observing)${RESET}`);
         } else {
           row2Parts.push(`\x1b[32mCompacts:0${RESET}`);
         }

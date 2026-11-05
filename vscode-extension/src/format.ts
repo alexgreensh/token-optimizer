@@ -159,15 +159,7 @@ export function buildTooltip(s: Snapshot, opts: RenderOptions): string {
 
   if (s.compactions != null) {
     if (s.compactions > 0) {
-      const recovery =
-        s.compactionRecovery === 'needs_attention'
-          ? ' (recovery: needs attention)'
-          : s.compactionRecovery === 'no_concerning_signal_observed'
-            ? ' (recovery ok)'
-            : s.compactionRecovery === 'observing'
-              ? ' (observing)'
-              : '';
-      lines.push(`| Compactions | ${s.compactions}${recovery} |`);
+      lines.push(`| Compactions | ${s.compactions} (observing) |`);
     } else {
       lines.push(`| Compactions | 0 |`);
     }

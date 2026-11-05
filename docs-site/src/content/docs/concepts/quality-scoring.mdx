@@ -15,7 +15,7 @@ The score reports two composites, because two different things can go wrong in a
 
 | Composite | Signals | What it tells you |
 |---|---|---|
-| Resource Health | Context fill, compaction depth, absolute waste tokens | How close you are to the degradation cliff, and how much hard capacity is already lost. This only moves one direction within a session. |
+| Resource Health | Context fill (5/7), absolute waste tokens (2/7) | How close you are to the degradation cliff, and how much hard capacity is already lost. This only moves one direction within a session. |
 | Session Efficiency | Stale reads, bloated results, decision density, agent efficiency | Whether the session is using its tokens well right now. This can improve or regress as you work. |
 
 A third group of detail signals (duplicate reminders and per-category waste estimates) explains why a score moved, without changing the headline number.
@@ -44,7 +44,7 @@ Quality does not fall in a straight line. It holds, then drops sharply once the 
 - **Orange, 70 to 80%:** quality dropping.
 - **Red, 80% and up:** severe. Consider a clean restart.
 
-The point of measuring the cliff is timing. If you compact or restart while you are still in the green or yellow band, you keep your work and your accuracy. If you wait until red, you have already paid for the degraded turns and you are closer to a compaction. The 60-70% continuity-loss figure is a modeling assumption, not a guarantee about semantic fact loss.
+The point of measuring the cliff is timing. If you compact or restart while you are still in the green or yellow band, you keep your work and your accuracy. If you wait until red, you have already paid for the degraded turns and you are closer to a compaction. Compaction count has no quality weight. Recovery evidence is logged separately, with a neutral `observing` display while thresholds are calibrated. No fixed loss percentage is inferred from the number of compactions.
 
 <Aside type="tip">
 A long session that has crossed into orange or red is often cheaper to restart than to keep grinding. Cold-resume-lean reopens it from its checkpoint for almost nothing. See [Session continuity and cold resume](/features/session-continuity/).

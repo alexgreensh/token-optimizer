@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -161,7 +162,7 @@ def test_breakdown_compactions_is_descriptive_metadata(m):
     assert "compaction_depth" not in bd
     assert bd["compactions"]["count"] == 2
     assert "compaction_recovery" in bd
-    assert res["recovery_status"] == "unmeasurable"
+    assert res["recovery_status"] == "observing"
     assert res["recovery_evidence"] == []
     assert res["recovery_score"] is None
 
@@ -192,8 +193,8 @@ def test_recovery_clean_window_is_no_concerning_signal(m):
     mod, *_ = m
     ev = _event(1, restore="transcript")
     res = mod.compute_quality_score(_qdata(compactions=1, compaction_events=[ev]))
-    assert res["recovery_status"] == "no_concerning_signal_observed"
-    assert res["recovery_score"] == 100
+    assert res["recovery_status"] == "observing"
+    assert res["recovery_score"] is None
     assert res["recovery_evidence"][0]["status"] == "no_concerning_signal_observed"
 
 
@@ -208,7 +209,7 @@ def test_recovery_observing_while_window_fills(m):
 def test_recovery_unmeasurable_without_events(m):
     mod, *_ = m
     res = mod.compute_quality_score(_qdata(compactions=2, compaction_events=[]))
-    assert res["recovery_status"] == "unmeasurable"
+    assert res["recovery_status"] == "observing"
 
 
 def test_recovery_needs_attention_on_repeat_after_error(m):
@@ -216,8 +217,8 @@ def test_recovery_needs_attention_on_repeat_after_error(m):
     post = _metrics(20, rae=3)
     ev = _event(1, post=post, restore="transcript")
     res = mod.compute_quality_score(_qdata(compactions=1, compaction_events=[ev]))
-    assert res["recovery_status"] == "needs_attention"
-    assert res["recovery_score"] < 100
+    assert res["recovery_status"] == "observing"
+    assert res["recovery_score"] is None
     assert "repeated_failed_action" in res["recovery_evidence"][0]["flags"]
 
 
@@ -227,7 +228,7 @@ def test_recovery_needs_attention_on_error_spike(m):
     post = _metrics(20, errors=5)
     ev = _event(1, pre=pre, post=post)
     res = mod.compute_quality_score(_qdata(compactions=1, compaction_events=[ev]))
-    assert res["recovery_status"] == "needs_attention"
+    assert res["recovery_status"] == "observing"
     assert "error_rate_increase" in res["recovery_evidence"][0]["flags"]
 
 
@@ -237,7 +238,7 @@ def test_recovery_unchanged_rereads_flag(m):
     post = _metrics(20, rue=6, rereads=8)
     ev = _event(1, pre=pre, post=post)
     res = mod.compute_quality_score(_qdata(compactions=1, compaction_events=[ev]))
-    assert res["recovery_status"] == "needs_attention"
+    assert res["recovery_status"] == "observing"
     assert "unchanged_artifact_rereads" in res["recovery_evidence"][0]["flags"]
 
 
@@ -249,14 +250,14 @@ def test_recovery_legitimate_rereads_after_edit_not_flagged(m):
     post = _metrics(20, rereads=6)  # rereads but rue stays 0
     ev = _event(1, pre=pre, post=post)
     res = mod.compute_quality_score(_qdata(compactions=1, compaction_events=[ev]))
-    assert res["recovery_status"] == "no_concerning_signal_observed"
+    assert res["recovery_status"] == "observing"
 
 
 def test_recovery_capture_without_delivery_is_structural(m):
     mod, *_ = m
     ev = _event(1, capture=True, restore="none")
     res = mod.compute_quality_score(_qdata(compactions=1, compaction_events=[ev]))
-    assert res["recovery_status"] == "needs_attention"
+    assert res["recovery_status"] == "observing"
     assert "restore_not_delivered" in res["recovery_evidence"][0]["flags"]
 
 
@@ -266,7 +267,7 @@ def test_recovery_no_restore_alone_is_unknown_not_bad(m):
     mod, *_ = m
     ev = _event(1, capture=False, restore="none")
     res = mod.compute_quality_score(_qdata(compactions=1, compaction_events=[ev]))
-    assert res["recovery_status"] == "no_concerning_signal_observed"
+    assert res["recovery_status"] == "observing"
 
 
 def test_recovery_status_uses_latest_window(m):
@@ -278,7 +279,7 @@ def test_recovery_status_uses_latest_window(m):
     good = _event(2, restore="transcript")
     res = mod.compute_quality_score(
         _qdata(compactions=2, compaction_events=[bad, good]))
-    assert res["recovery_status"] == "no_concerning_signal_observed"
+    assert res["recovery_status"] == "observing"
     assert res["recovery_evidence"][0]["status"] == "needs_attention"
     assert res["recovery_evidence"][1]["status"] == "no_concerning_signal_observed"
 
@@ -434,6 +435,7 @@ def _advisory_qdata(tokens=360_000, window=1_000_000, **kw):
     d["messages"] = [(0, "user", 400, True), (1, "assistant", 800, True),
                      (2, "user", 200, True), (3, "assistant", 900, True),
                      (4, "user", 150, True)]
+    d["safe_pause"] = True
     d.update(kw)
     return d
 
@@ -441,7 +443,7 @@ def _advisory_qdata(tokens=360_000, window=1_000_000, **kw):
 def _write_checkpoint(cpdir, sid, name="auto"):
     fn = f"{sid}-20261105-120000-{name}.md"
     p = cpdir / fn
-    p.write_text("# checkpoint\n")
+    p.write_text("# Session State Checkpoint\nGenerated: fixture\n\n## Active Task\nFinish the fixture task.\n")
     return p
 
 
@@ -531,6 +533,7 @@ def test_advisory_mid_turn_no_fire(m):
     qd = _advisory_qdata()
     qd["messages"] = [(0, "user", 400, True), (1, "assistant", 800, True),
                       (2, "assistant", 900, True)]
+    qd["safe_pause"] = False
     assert mod._maybe_context_size_advisory({"score": 80}, cache_path, qd) is None
 
 
@@ -659,3 +662,108 @@ def test_versions_not_comparable_across_score_version(m):
     assert mod._quality_scores_comparable(prev_v2, cur_v2) is True
     # legacy unversioned cache -> not comparable to v2
     assert mod._quality_scores_comparable({}, cur_v2) is False
+
+
+@pytest.mark.parametrize("feature", ["context_advisory_shadow", "context_size_advisory"])
+def test_advisory_events_never_count_as_savings(m, feature):
+    mod, *_ = m
+    assert feature in mod._NON_SAVINGS_COMPRESSION_FEATURES
+
+
+def test_normal_red_green_loop_is_neutral_and_not_a_failed_repeat(m, tmp_path):
+    mod, *_ = m
+    rows = [_row("user", "Implement the fixture")]
+    for i in range(15):
+        _call(rows, f"pre-{i}")
+    _boundary(rows, 1)
+    for i in range(3):
+        _call(rows, f"test-{i}", inp={"command": "python3 -m pytest tests/test_fixture.py"}, err=True)
+        _call(rows, f"edit-{i}", name="Edit", inp={"file_path": "/fixture/code.py", "old_string": str(i), "new_string": str(i + 1)})
+    _call(rows, "green", inp={"command": "python3 -m pytest tests/test_fixture.py"})
+    for i in range(8):
+        _call(rows, f"post-{i}")
+    qd = mod._parse_jsonl_for_quality(_write_jsonl(tmp_path / "tdd.jsonl", rows))
+    result = mod.compute_quality_score(qd)
+    ev = result["recovery_evidence"][0]
+    assert result["recovery_status"] == "observing"
+    assert ev["post"]["repeat_after_error"] == 0
+    assert "error_rate_increase" not in ev["flags"]
+    assert ev["status"] != "needs_attention"
+
+
+@pytest.mark.parametrize("age,boundary,body,expected", [
+    (60, 120, "## Active Task\nFinish fixture", True),
+    (1900, 2000, "## Active Task\nFinish fixture", False),
+    (120, 60, "## Active Task\nFinish fixture", False),
+    (60, 120, "", False),
+    (60, 120, "No transcript data available", False),
+])
+def test_advisory_checkpoint_freshness_and_body(m, age, boundary, body, expected):
+    mod, _qc, _tmp, cpdir = m
+    cp = _write_checkpoint(cpdir, "fixture-current")
+    cp.write_text("# Session State Checkpoint\nGenerated: fixture\n" + body)
+    now = mod.time.time()
+    os.utime(cp, (now - age, now - age))
+    qd = _advisory_qdata(compactions=1, compaction_events=[{"ts_epoch": now - boundary}])
+    assert mod._session_has_current_checkpoint("fixture-current", qd) is expected
+
+
+@pytest.mark.parametrize("tail,expected", [
+    (_row("user", [{"type": "tool_result", "tool_use_id": "x", "content": "ok"}]), False),
+    (_row("user", "Continue with the next step"), True),
+    ({"type": "assistant", "message": {"content": [{"type": "text", "text": "Done"}], "stop_reason": "end_turn"}}, True),
+    (_row("assistant", [{"type": "tool_use", "id": "x", "name": "Bash", "input": {"command": "test"}}]), False),
+    ({"type": "tool_result", "tool_use_id": "x", "content": "ok"}, False),
+])
+def test_parser_safe_pause_requires_real_turn_boundary(m, tmp_path, tail, expected):
+    mod, *_ = m
+    rows = [_row("user", "Start fixture work"), tail]
+    qd = mod._parse_jsonl_for_quality(_write_jsonl(tmp_path / "pause.jsonl", rows))
+    assert qd.get("safe_pause") is expected
+
+
+def test_advisory_shadow_uses_one_hour_bucket_marker(m, monkeypatch):
+    mod, qc, _tmp, cpdir = m
+    sid = "fixture-shadow"
+    _write_checkpoint(cpdir, sid)
+    qd = _advisory_qdata()
+    telemetry = mod._absolute_context_tokens(qd, sid)
+    events = []
+    monkeypatch.setattr(mod, "_log_compression_event", lambda **kw: events.append(kw))
+    start = mod.time.time()
+    for offset in [0, 0, 3600, 7200]:
+        monkeypatch.setattr(mod.time, "time", lambda: start + offset)
+        mod._log_context_advisory_shadow(sid, telemetry, {}, qd)
+    assert len(events) == 3
+    assert all(e.get("tier") == "estimated" for e in events)
+    assert len(list(qc.glob("once-context-advisory-shadow-*.json"))) == 1
+
+
+def test_advisory_row_is_estimated_and_does_not_claim_verified(m, monkeypatch):
+    mod, qc, _tmp, cpdir = m
+    sid = "fixture-tier"
+    _write_checkpoint(cpdir, sid)
+    events = []
+    monkeypatch.setattr(mod, "_log_compression_event", lambda **kw: events.append(kw))
+    msg = mod._maybe_context_size_advisory({}, qc / f"quality-cache-{sid}.json", _advisory_qdata())
+    assert msg and "verified" not in msg
+    assert all(e.get("tier") == "estimated" for e in events)
+
+
+def test_recovery_restore_marker_contract(m):
+    mod, *_ = m
+    assert mod._REC_RESTORE_NOTICE_RE.search("[Token Optimizer] Post-compact recovery (auto checkpoint): fixture")
+
+
+@pytest.mark.parametrize("tail,expected", [
+    ({"type": "event_msg", "payload": {"type": "user_message", "message": "Continue fixture"}}, True),
+    ({"type": "event_msg", "payload": {"type": "task_complete"}}, True),
+    ({"type": "response_item", "payload": {"type": "function_call_output", "call_id": "x", "output": "ok"}}, False),
+    ({"type": "event_msg", "payload": {"type": "agent_message", "message": "Working"}}, False),
+])
+def test_codex_safe_pause_uses_prompt_or_completed_turn(m, tmp_path, tail, expected):
+    mod, *_ = m
+    rows = [{"type": "session_meta", "payload": {"id": "fixture-codex"}},
+            {"type": "event_msg", "payload": {"type": "user_message", "message": "Start fixture"}}, tail]
+    qd = mod.codex_session.parse_jsonl_for_quality(_write_jsonl(tmp_path / "codex.jsonl", rows))
+    assert qd.get("safe_pause") is expected

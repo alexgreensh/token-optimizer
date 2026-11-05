@@ -742,11 +742,18 @@ def parse_jsonl_for_quality(filepath: str | Path) -> dict[str, Any] | None:
     idx = 0
     prev_was_compacted = False
     last_turn_context: int | None = None
+    safe_pause = False
 
     for record in _iter_json_records(filepath):
         payload = _payload(record)
         payload_type = payload.get("type")
         ts = str(record.get("timestamp") or "")
+        if payload_type in {"task_complete", "turn_complete"}:
+            safe_pause = True
+        elif payload_type in {"task_started", "turn_started", "function_call", "custom_tool_call",
+                              "function_call_output", "custom_tool_call_output", "exec_command_end",
+                              "patch_apply_end", "agent_message"}:
+            safe_pause = False
 
         model = _extract_model(payload)
         if model:
@@ -760,6 +767,7 @@ def parse_jsonl_for_quality(filepath: str | Path) -> dict[str, Any] | None:
         # keeps the count==len(ratios) invariant even for back-to-back compactions.
         is_compacted_record = record.get("type") == "compacted"
         if is_compacted_record or payload_type == "context_compacted":
+            safe_pause = False
             if is_compacted_record:
                 compactions += 1
                 # Minimal recovery event for the quality panel: Codex has no
@@ -848,6 +856,7 @@ def parse_jsonl_for_quality(filepath: str | Path) -> dict[str, Any] | None:
         elif payload_type in {"user_message", "message", "agent_message"}:
             text = _extract_text(payload)
             role = "assistant" if payload_type == "agent_message" else str(payload.get("role") or "user")
+            safe_pause = role == "user" and bool(_task_user_text(text))
             if role == "user" and not topics.get(payload_type):
                 task = _task_user_text(text)
                 if task:
@@ -897,6 +906,7 @@ def parse_jsonl_for_quality(filepath: str | Path) -> dict[str, Any] | None:
         "tool_results": tool_results,
         "system_reminders": system_reminders,
         "messages": messages,
+        "safe_pause": safe_pause,
         "compactions": compactions,
         "agent_dispatches": agent_dispatches,
         "decisions": decisions,

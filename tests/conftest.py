@@ -74,6 +74,27 @@ import _home_guard  # noqa: E402
 _home_guard.install_sandbox()
 _home_guard.install_guard()
 
+
+@pytest.fixture(autouse=True)
+def _canonical_measure_fixture(request):
+    """Restore canonical identity even when a legacy fixture pops/reloads it.
+
+    Collection-time imports belong to their test module. Select that module's
+    facade before its tests, while custom fixture loaders select theirs later.
+    """
+    previous = sys.modules.get('measure')
+    namespace = getattr(request.module, '__dict__', {})
+    candidates = [value for value in namespace.values()
+                  if isinstance(value, type(sys)) and
+                  Path(getattr(value, '__file__', '') or '').name == 'measure.py']
+    if len({id(value) for value in candidates}) == 1:
+        sys.modules['measure'] = candidates[0]
+    yield
+    if previous is None:
+        sys.modules.pop('measure', None)
+    else:
+        sys.modules['measure'] = previous
+
 # A hook that finds measure.py's bytecode cold waits for the background compile
 # only as long as the host's hook timeout allows, then exits without output
 # (#264, hooks/module_runner.py). Test sandboxes start cold, and the compile

@@ -1,3 +1,4 @@
+from helpers.measure_split import exec_source_module as _split_exec_module
 from pathlib import Path
 import os,sys,pytest
 pytestmark=pytest.mark.skipif(os.name != "posix", reason="POSIX adapter only")
@@ -157,7 +158,7 @@ def test_allowed_source_open_checks(tmp_path, monkeypatch, kind):
         reason={'symlink':'regular payload source required','oversize':'payload source exceeds bound'}.get(
             kind,'private regular payload source required')
         with pytest.raises((OSError,ImportError),match=reason):
-            spec=loader.find_spec('token_estimate');module=importlib.util.module_from_spec(spec);loader.exec_module(module)
+            spec=loader.find_spec('token_estimate');module=importlib.util.module_from_spec(spec);_split_exec_module(module)
 
 
 def test_real_installed_chain_and_stdlib_after_activation(tmp_path, monkeypatch):
@@ -349,6 +350,7 @@ def test_v3_activation_without_manifest_fails_closed(tmp_path):
 def test_v3_repo_name_policy_covers_current_sources_and_dependencies():
     import ast,devin_source
     repo_names={p.stem for p in SCRIPTS.glob('*.py')}|{p.name for p in SCRIPTS.iterdir() if p.is_dir() and p.name!='__pycache__'}
+    repo_names |= {'_measure.' + p.stem for p in (SCRIPTS / '_measure').glob('*.py') if p.name != '__init__.py'}
     assert repo_names==devin_source.REPO_MODULES
     for name in devin_source.PAYLOAD:
         tree=ast.parse((SCRIPTS/name).read_text())
@@ -454,6 +456,7 @@ def test_v4_renamed_installed_entrypoint_refuses(tmp_path,monkeypatch,entry,mani
 def test_v4_refusal_inventory_includes_packages():
     import devin_source
     repo_names={p.stem for p in SCRIPTS.glob('*.py')}|{p.name for p in SCRIPTS.iterdir() if p.is_dir() and p.name!='__pycache__'}
+    repo_names |= {'_measure.' + p.stem for p in (SCRIPTS / '_measure').glob('*.py') if p.name != '__init__.py'}
     assert repo_names==devin_source.REPO_MODULES
     with pytest.raises(ImportError):devin_source.SourceOnly(SCRIPTS).find_spec('detectors')
 

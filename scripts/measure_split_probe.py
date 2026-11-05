@@ -48,10 +48,8 @@ _deadline_threads = []
 _deadline_dispatching = False
 
 
-def monotonic():
-    global _ticks, _deadline_dispatching
-    _ticks += max(1, int(float(os.environ.get('TO_SPLIT_MONOTONIC_STEP', '0.001')) * 1000))
-    now = 1000.0 + _ticks / 1000.0
+def run_due_deadlines(now):
+    global _deadline_dispatching
     if not _deadline_dispatching:
         for thread in list(_deadline_threads):
             deadline = thread._target.__self__
@@ -64,12 +62,20 @@ def monotonic():
                     thread.run()
                 finally:
                     _deadline_dispatching = False
+
+
+def monotonic():
+    global _ticks
+    _ticks += max(1, int(float(os.environ.get('TO_SPLIT_MONOTONIC_STEP', '0.001')) * 1000))
+    now = 1000.0 + _ticks / 1000.0
+    run_due_deadlines(now)
     return now
 
 
 def sleep(seconds):
     global _ticks
     _ticks += max(1, int(float(seconds) * 1000))
+    run_due_deadlines(1000.0 + _ticks / 1000.0)
 
 
 time.monotonic = monotonic
@@ -77,25 +83,25 @@ time.monotonic_ns = lambda: int(monotonic() * 1_000_000_000)
 time.perf_counter = monotonic
 time.sleep = sleep
 
-# An already-expired virtual deadline must fire at a fixed scheduling point,
-# rather than racing the main thread against a real OS watchdog thread.
-if float(os.environ.get('TO_SPLIT_MONOTONIC_STEP', '0.001')) >= 30:
-    class DeadlineThread(threading.Thread):
-        def start(self):
-            self._fixture_inline = self.name.startswith('token-optimizer-hook-deadline')
-            if self.name == 'token-optimizer-hook-deadline':
-                _deadline_threads.append(self)
-                monotonic()
-            elif self._fixture_inline:
-                self.run()
-            else:
-                super().start()
+# Watchdogs follow the virtual clock, including during synthetic sleeps.
+# Other threads retain their ordinary scheduling.
+class DeadlineThread(threading.Thread):
+    def start(self):
+        self._fixture_inline = self.name.startswith('token-optimizer-hook-deadline')
+        if self.name == 'token-optimizer-hook-deadline':
+            _deadline_threads.append(self)
+            monotonic()
+        elif self._fixture_inline:
+            self.run()
+        else:
+            super().start()
 
-        def join(self, timeout=None):
-            if not getattr(self, '_fixture_inline', False):
-                return super().join(timeout)
+    def join(self, timeout=None):
+        if not getattr(self, '_fixture_inline', False):
+            return super().join(timeout)
 
-    threading.Thread = DeadlineThread
+
+threading.Thread = DeadlineThread
 
 if hasattr(time, 'tzset'):
     time.tzset()

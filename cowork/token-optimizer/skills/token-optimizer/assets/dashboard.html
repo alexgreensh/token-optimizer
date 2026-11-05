@@ -4279,8 +4279,13 @@ var DB = (function() {
       var rwRoutingCoverage = Number(rw.routing_coverage);
       var rwRoutingExcluded = rw.routing_excluded_models || {};
       var rwRoutingOut = [].concat(rwRoutingExcluded.premium || [], rwRoutingExcluded.unpriced || [], rwRoutingExcluded.free || []);
+      // The coverage line names the window the snapshot actually computed over
+      // (routing_window_days); payloads from before the field fall back to 30.
+      var rwRoutingDays = Number(rw.routing_window_days);
+      if (!isFinite(rwRoutingDays) || rwRoutingDays <= 0) rwRoutingDays = 30;
+      var rwRoutingWindowTxt = 'the last ' + rwRoutingDays + (rwRoutingDays === 1 ? ' day&rsquo;s' : ' days&rsquo;');
       var rwRoutingScope = (rwRoutingKnown && isFinite(rwRoutingCoverage) && rwRoutingCoverage > 0)
-        ? ' The model mix compares ' + Math.round(rwRoutingCoverage * 100) + '% of the last 30 days&rsquo; tokens' + (rwRoutingOut.length ? '; left out: ' + esc(rwRoutingOut.join(', ')) : '') + '.'
+        ? ' The model mix compares ' + Math.round(rwRoutingCoverage * 100) + '% of ' + rwRoutingWindowTxt + ' tokens' + (rwRoutingOut.length ? '; left out: ' + esc(rwRoutingOut.join(', ')) : '') + '.'
         : '';
       var rwRoutingUnsplit = Number(rw.routing_unsplit_tokens);
       if (rwRoutingUnsplit > 0) {
@@ -4612,6 +4617,14 @@ var DB = (function() {
       // larger, uncapped percentage implied by the counterfactual arms.
       var shownSaving = Number(ba.monthly_savings_usd) || 0;
       var costCut = oldCost > 0 ? Math.max(0, shownSaving / oldCost * 100) : 0;
+      // A neutral add-back reprice (routing pending or unavailable) shrinks the
+      // transformation figure without any visible reason -- say why, plainly.
+      var baRepriceBasis = ba.compression_reprice_basis;
+      var baRepriceNote = (baRepriceBasis === 'routing_pending')
+        ? 'Model-mix repricing is paused while sessions finish re-measuring, so the add-backs in this estimate show their measured value.'
+        : (baRepriceBasis === 'routing_unavailable'
+          ? 'Model-mix repricing could not be measured, so the add-backs in this estimate show their measured value.'
+          : '');
       html += '<div class="card wide savings-transformation" style="padding:var(--s-4);margin-bottom:var(--s-3);">' +
         '<div class="label">Transformation &middot; last ' + days + ' days &middot; estimated</div>' +
         '<div class="savings-amount">' + money(ba.monthly_savings_usd) +
@@ -4620,6 +4633,7 @@ var DB = (function() {
         '<div class="savings-split"><span>Now <strong>' + money(nowCost) + '</strong></span>' +
           '<span>Earlier workflow <strong>' + money(oldCost) + '</strong></span></div>' +
         '<div class="plain-line">Overlaps with the action savings below. Do not add the two totals.</div>' +
+        (baRepriceNote ? '<div class="plain-line">' + baRepriceNote + '</div>' : '') +
         fold('How this is estimated',
           countedList([ba.savings_capped && ba.savings_cap_note ? esc(ba.savings_cap_note) : '']) +
           (wp

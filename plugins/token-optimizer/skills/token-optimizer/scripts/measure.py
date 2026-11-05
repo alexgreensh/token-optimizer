@@ -51596,7 +51596,7 @@ def _routing_direction(factor):
     return "heavier" if factor < 1 else "unchanged"
 
 
-def _routing_mix_reprice_ratio(model_routing=None, days=30):
+def _routing_mix_reprice_ratio(model_routing=None, days=30, since=None):
     """Baseline/current work-value ratio for the transformation add-backs.
 
     The transformation headline reprices metered compression savings and the
@@ -51607,14 +51607,14 @@ def _routing_mix_reprice_ratio(model_routing=None, days=30):
     it inherits exact-card pricing (no family or default fallback), premium
     (Fable) exclusion, reference cards and the pending gate. `model_routing`
     is the recipe payload the caller already computed (with its own `since`
-    window); when it is None the recipe is resolved here for `days`. Returns
-    1.0 -- a neutral reprice -- whenever routing has no estimated evidence
-    (pending, unavailable, or a degenerate arm). Never raises.
+    window); when it is None the recipe is resolved here for `days`/`since`.
+    Returns 1.0 -- a neutral reprice -- whenever routing has no estimated
+    evidence (pending, unavailable, or a degenerate arm). Never raises.
     """
     try:
         r = model_routing
         if r is None:
-            r = _compute_model_routing_savings(days=days) or {}
+            r = _compute_model_routing_savings(days=days, since=since) or {}
         if not isinstance(r, dict) or r.get("evidence") != "estimated":
             return 1.0
         base = float(r.get("standardized_baseline_cost_usd") or 0.0)
@@ -51624,6 +51624,36 @@ def _routing_mix_reprice_ratio(model_routing=None, days=30):
         return base / actual
     except Exception:
         return 1.0
+
+
+def _routing_reprice_basis(model_routing):
+    """Why the transformation add-back reprice is what it is.
+
+    "routing_recipe"        -- the routing recipe supplied a usable
+                               standardized baseline/actual ratio.
+    "routing_pending"       -- sessions in the window are still being
+                               re-measured; the recipe withholds its ratio
+                               and the reprice is neutral (1.0).
+    "routing_unavailable"   -- no usable recipe (missing payload, non-estimated
+                               evidence, or degenerate arms); the reprice is
+                               neutral (1.0).
+    Surfaces render a plain disclosure line for the two neutral bases so a
+    silently-flattened add-back never reads as a measured figure.
+    """
+    if not isinstance(model_routing, dict):
+        return "routing_unavailable"
+    evidence = model_routing.get("evidence")
+    if evidence == "pending":
+        return "routing_pending"
+    if evidence == "estimated":
+        try:
+            base = float(model_routing.get("standardized_baseline_cost_usd") or 0.0)
+            actual = float(model_routing.get("standardized_actual_cost_usd") or 0.0)
+        except (TypeError, ValueError):
+            base = actual = 0.0
+        if base > 0 and actual > 0:
+            return "routing_recipe"
+    return "routing_unavailable"
 
 
 # Minimum per-window API-credit overage before its dollar line is shown. Below
@@ -52019,6 +52049,10 @@ def runway_snapshot(days=30, now=None):
             "routing_multiplier": round(routing_mult, 3) if routing_mult is not None else None,
             "routing_state": routing_state,
             "routing_direction": _routing_direction(routing_mult),
+            # The window the routing lever (and its mix coverage) was computed
+            # over, so renderers never hard-code "30 days" for a parameterised
+            # snapshot.
+            "routing_window_days": days,
             "routing_pending_sessions": routing.get("pending_sessions", 0),
             "routing_basis": routing.get("basis"),
             "routing_baseline_source": routing.get("baseline_source"),
@@ -55695,7 +55729,7 @@ def _weight_pool_payload(pool):
     }
 
 
-def _estimate_before_after_savings(days=30, estimated_pools=None, model_routing=None):
+def _estimate_before_after_savings(days=30, estimated_pools=None, model_routing=None, since=None):
     """THE headline saving: your FROZEN typical pre-TO session, priced at your PRE-TO
     efficiency (~95% Opus + baseline cache pattern) vs what that same session costs now.
 
@@ -55767,6 +55801,7 @@ def _estimate_before_after_savings(days=30, estimated_pools=None, model_routing=
             "breakdown_caveat": "", "reason": None, "evidence": "estimated",
             "verbosity_transformation_usd": 0.0, "verbosity_measured_usd": 0.0,
             "compression_reprice_ratio": 1.0,
+            "compression_reprice_basis": None,
             "estimated_volume_transformation_usd": 0.0,
             "estimated_volume_pools": {},
             "short_session_transformation_usd": 0.0,
@@ -56057,14 +56092,25 @@ def _estimate_before_after_savings(days=30, estimated_pools=None, model_routing=
         # estimated step and is disclosed. actual for this pool is 0 (the tokens were
         # never billed), so its whole repriced value is transformation. Volume reduction
         # remains in the headline as its own labelled pool.
-        comp = _get_savings_summary(days=days)
+        comp = _get_savings_summary(days=days, since=since)
         comp_measured = float((comp or {}).get("total_cost_usd", 0.0) or 0.0)
         # Reprice add-backs at the routing recipe's standardized baseline/actual
         # ratio -- the factor the plan card publishes, from the recipe that
-        # prices the Savings tab's routing figure.
+        # prices the Savings tab's routing figure. The recipe is resolved ONCE
+        # here (the caller's `model_routing` payload, or one routing pass on the
+        # same `days`/`since` window) so the ratio and its disclosure basis can
+        # never disagree and a direct call never runs the pass twice.
         # The recipe owns exact-card pricing, premium exclusion, reference cards
         # and the pending gate; there is no second routing implementation.
-        comp_reprice = _routing_mix_reprice_ratio(model_routing, days=days)
+        routing_payload = model_routing
+        if routing_payload is None:
+            try:
+                routing_payload = (_compute_model_routing_savings(days=days, since=since)
+                                   or {})
+            except Exception:
+                routing_payload = {}
+        comp_reprice = _routing_mix_reprice_ratio(routing_payload, days=days, since=since)
+        comp_reprice_basis = _routing_reprice_basis(routing_payload)
         compression_addback = max(0.0, comp_measured * comp_reprice)
 
         # Estimated avoided-volume pools that no billed-volume arm can observe.
@@ -56203,6 +56249,7 @@ def _estimate_before_after_savings(days=30, estimated_pools=None, model_routing=
                     "compression_transformation_usd": 0.0,
                     "compression_measured_usd": round(comp_measured, 2),
                     "compression_reprice_ratio": round(comp_reprice, 4),
+                    "compression_reprice_basis": comp_reprice_basis,
                     "estimated_volume_transformation_usd": 0.0,
                     "estimated_volume_pools": estimated_volume_pools,
                     "verbosity_transformation_usd": 0.0,
@@ -56483,6 +56530,7 @@ def _estimate_before_after_savings(days=30, estimated_pools=None, model_routing=
             "compression_transformation_usd": round(compression_addback, 2),
             "compression_measured_usd": round(comp_measured, 2),
             "compression_reprice_ratio": round(comp_reprice, 4),
+            "compression_reprice_basis": comp_reprice_basis,
             "estimated_volume_transformation_usd": round(estimated_volume_addback, 2),
             "estimated_volume_pools": estimated_volume_pools,
             "verbosity_transformation_usd": round(verbosity_addback, 2),
@@ -56871,7 +56919,7 @@ def _get_merged_savings(days=30, since=None):
     model_routing = _compute_model_routing_savings(days=days, since=since)
     output_waste = _estimate_output_waste(days=days)
     cache_drop = _estimate_cache_drop_savings(days=days)
-    before_after = _estimate_before_after_savings(days=days, estimated_pools={
+    before_after = _estimate_before_after_savings(days=days, since=since, estimated_pools={
         "uncaptured_runtime": uncaptured,
         "behavioral_loops": behavioral,
         "hint_followed": savings.get("hint_followed_estimated") or {},
@@ -58885,6 +58933,15 @@ def savings_report(days=30, as_json=False):
             if note:
                 for line in textwrap.wrap(note, width=72):
                     print(f"    {line}")
+        # A neutral add-back reprice (routing pending/unavailable) shrinks the
+        # figure without a visible reason -- disclose it, same as the card.
+        _rb = ba.get("compression_reprice_basis")
+        if _rb == "routing_pending":
+            print("    Note: model-mix repricing is paused while sessions finish "
+                  "re-measuring, so the add-backs show their measured value.")
+        elif _rb == "routing_unavailable":
+            print("    Note: model-mix repricing could not be measured, so the "
+                  "add-backs show their measured value.")
         if wp:
             unit_lbl = "API call" if wp.get("work_unit") == "api_call" else "message"
             print(f"    Each {unit_lbl} now carries less billed context than in "

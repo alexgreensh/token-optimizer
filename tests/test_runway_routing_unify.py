@@ -283,6 +283,20 @@ def test_routing_coverage_names_the_30_day_window():
     assert "of this window" not in text
 
 
+def test_routing_window_days_follows_the_snapshot_window(m, monkeypatch):
+    _workload(m, monkeypatch, {OPUS: {"fresh_input": 1_000_000}, SONNET: {"fresh_input": 1_000_000}},
+              {"opus": 1.0})
+    rw = m.runway_snapshot(days=7)
+    assert rw is not None
+    assert rw["routing_window_days"] == 7
+
+
+def test_routing_coverage_names_the_snapshot_window():
+    text = _card_text(_rw(routing_coverage=0.5, routing_window_days=7)).lower()
+    assert "compares 50% of the last 7 days" in text
+    assert "last 30 days" not in text
+
+
 def test_pending_routing_renders_pending_not_a_number():
     text = _card_text(_rw(routing_multiplier=None, routing_state="pending", routing_direction=None,
                           routing_pending_sessions=4, extra_work_pct=8.0))

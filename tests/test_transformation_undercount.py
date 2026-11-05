@@ -354,14 +354,26 @@ def test_compression_reprice_uses_the_routing_recipe_ratio(measure):
     # its `since` window); a direct call resolves the recipe itself.
     r = mod._estimate_before_after_savings(days=30, model_routing=recipe)
     assert r["compression_reprice_ratio"] == pytest.approx(1.5)
+    assert r["compression_reprice_basis"] == "routing_recipe"
     mod._compute_model_routing_savings = lambda days=30, since=None: recipe
     r = mod._estimate_before_after_savings(days=30)
     assert r["compression_reprice_ratio"] == pytest.approx(1.5)
-    # Pending and unavailable routing reprice neutrally, never guessed.
-    for state in ("pending", "unavailable"):
+    assert r["compression_reprice_basis"] == "routing_recipe"
+    # Pending and unavailable routing reprice neutrally, never guessed, and
+    # the payload says WHY the ratio is 1.0 so the card can disclose it.
+    for state, basis in (("pending", "routing_pending"),
+                         ("unavailable", "routing_unavailable")):
         r = mod._estimate_before_after_savings(
             days=30, model_routing={**recipe, "evidence": state})
         assert r["compression_reprice_ratio"] == 1.0
+        assert r["compression_reprice_basis"] == basis
+    # An estimated recipe with degenerate arms cannot supply a ratio either.
+    r = mod._estimate_before_after_savings(
+        days=30, model_routing={"evidence": "estimated",
+                                "standardized_baseline_cost_usd": 0.0,
+                                "standardized_actual_cost_usd": 8.0})
+    assert r["compression_reprice_ratio"] == 1.0
+    assert r["compression_reprice_basis"] == "routing_unavailable"
 
 
 def test_transformation_reprice_has_no_second_routing_implementation(measure):
@@ -382,6 +394,55 @@ def test_transformation_reprice_has_no_second_routing_implementation(measure):
     assert mod._routing_mix_reprice_ratio(
         {"evidence": "estimated", "standardized_baseline_cost_usd": 0.0,
          "standardized_actual_cost_usd": 3.0}) == 1.0
+
+
+def test_merged_savings_shares_one_recipe_and_one_window(measure):
+    """_get_merged_savings computes the routing recipe once, on the caller's
+    window, and hands it to _estimate_before_after_savings. Dropping the
+    `model_routing=` kwarg would silently re-run the whole routing pass on the
+    rolling `days` window; dropping `since` would price the compression dollars
+    on a different window than the ratio that multiplies them."""
+    mod, tmp = measure
+    conn = _fresh_env(tmp)
+    _insert_quality_sessions(conn, tmp, n_sessions=40,
+                             per_session_input=4_000_000, opus_share=0.60)
+    conn.commit()
+    conn.close()
+
+    sentinel_since = "2026-10-01T00:00:00+00:00"
+    recipe = {"evidence": "estimated",
+              "standardized_baseline_cost_usd": 12.0,
+              "standardized_actual_cost_usd": 8.0}
+    routing_calls = []
+
+    def fake_routing(days=30, since=None):
+        routing_calls.append({"days": days, "since": since})
+        return dict(recipe)
+
+    mod._compute_model_routing_savings = fake_routing
+
+    savings_calls = []
+    original_summary = mod._get_savings_summary
+
+    def savings_summary(days=30, since=None):
+        savings_calls.append({"days": days, "since": since})
+        summary = original_summary(days=days, since=since)
+        summary["total_cost_usd"] = 10.0
+        return summary
+
+    mod._get_savings_summary = savings_summary
+
+    merged = mod._get_merged_savings(days=7, since=sentinel_since)
+    # Exactly one routing pass for the whole merged view, on the caller's
+    # window -- the transformation must reuse it, not recompute.
+    assert routing_calls == [{"days": 7, "since": sentinel_since}]
+    # Every savings summary inside the merged view -- including the one that
+    # prices the compression add-back dollars -- sees the same `since` cutoff.
+    assert len(savings_calls) >= 2, savings_calls
+    assert all(c["since"] == sentinel_since for c in savings_calls), savings_calls
+    ba = merged["before_after"]
+    assert ba["compression_reprice_ratio"] == pytest.approx(1.5)
+    assert ba["compression_reprice_basis"] == "routing_recipe"
 
 
 def test_short_sessions_without_breakdown_contribute_nothing(measure):

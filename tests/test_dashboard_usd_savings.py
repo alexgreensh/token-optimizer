@@ -108,7 +108,7 @@ def test_saved_usd_is_real_window_overage(m, tmp_path, monkeypatch):
     window has no honest sub-day figure at the day-granular ledger, so it is None.
     """
     _temp_trends(m, tmp_path, monkeypatch)
-    monkeypatch.setattr(m, "_input_rate_mix_ratio", lambda days=30: 1.4)
+    monkeypatch.setattr(m, "_runway_routing_lever", lambda days=30: {"state": "estimated", "factor": 1.4})
     monkeypatch.setattr(m, "_keepwarm_read_meters", _fresh_meters())
     # days-agnostic ledger: _get_merged_savings(days=7) returns the same 100/50.
     monkeypatch.setattr(m, "_get_merged_savings", _ledger(context_usd=100.0, routing_usd=50.0))
@@ -146,11 +146,11 @@ def test_saved_usd_does_not_derive_from_throughput_multipliers(m, tmp_path, monk
     monkeypatch.setattr(m, "_keepwarm_read_meters", _fresh_meters())
     monkeypatch.setattr(m, "_get_merged_savings", _ledger(context_usd=200.0, routing_usd=75.0))
 
-    monkeypatch.setattr(m, "_input_rate_mix_ratio", lambda days=30: 1.4)
+    monkeypatch.setattr(m, "_runway_routing_lever", lambda days=30: {"state": "estimated", "factor": 1.4})
     r1 = m.runway_snapshot(days=30)
     assert r1 is not None
 
-    monkeypatch.setattr(m, "_input_rate_mix_ratio", lambda days=30: 2.0)
+    monkeypatch.setattr(m, "_runway_routing_lever", lambda days=30: {"state": "estimated", "factor": 2.0})
     r2 = m.runway_snapshot(days=30)
     assert r2 is not None
 
@@ -181,7 +181,7 @@ def test_saved_usd_does_not_derive_from_throughput_multipliers(m, tmp_path, monk
 def test_zero_metered_savings_yields_none_saved_usd(m, tmp_path, monkeypatch):
     """No metered savings -> saved_usd is None, no NaN/$-0."""
     _temp_trends(m, tmp_path, monkeypatch)
-    monkeypatch.setattr(m, "_input_rate_mix_ratio", lambda days=30: 1.4)
+    monkeypatch.setattr(m, "_runway_routing_lever", lambda days=30: {"state": "estimated", "factor": 1.4})
     monkeypatch.setattr(m, "_keepwarm_read_meters", _fresh_meters())
     monkeypatch.setattr(m, "_get_merged_savings", _ledger(context_usd=0.0, routing_usd=0.0))
 
@@ -197,7 +197,7 @@ def test_zero_metered_savings_yields_none_saved_usd(m, tmp_path, monkeypatch):
 def test_saved_usd_tier_estimated_when_routing_contributes(m, tmp_path, monkeypatch):
     """Routing $ is an estimated counterfactual -> tier is 'estimated' when it contributes."""
     _temp_trends(m, tmp_path, monkeypatch)
-    monkeypatch.setattr(m, "_input_rate_mix_ratio", lambda days=30: 1.4)
+    monkeypatch.setattr(m, "_runway_routing_lever", lambda days=30: {"state": "estimated", "factor": 1.4})
     monkeypatch.setattr(m, "_keepwarm_read_meters", _fresh_meters())
     monkeypatch.setattr(m, "_get_merged_savings", _ledger(context_usd=100.0, routing_usd=50.0))
 
@@ -213,7 +213,7 @@ def test_saved_usd_tier_estimated_when_routing_contributes(m, tmp_path, monkeypa
 def test_saved_usd_tier_measured_when_only_context(m, tmp_path, monkeypatch):
     """Context $ is metered -> tier is 'measured' when routing does not contribute."""
     _temp_trends(m, tmp_path, monkeypatch)
-    monkeypatch.setattr(m, "_input_rate_mix_ratio", lambda days=30: 1.4)
+    monkeypatch.setattr(m, "_runway_routing_lever", lambda days=30: {"state": "estimated", "factor": 1.4})
     monkeypatch.setattr(m, "_keepwarm_read_meters", _fresh_meters())
     monkeypatch.setattr(m, "_get_merged_savings", _ledger(context_usd=100.0, routing_usd=0.0))
 
@@ -229,7 +229,7 @@ def test_saved_usd_tier_measured_when_only_context(m, tmp_path, monkeypatch):
 def test_saved_usd_survives_a_dead_ledger(m, tmp_path, monkeypatch):
     """_get_merged_savings raising must not take down the whole card."""
     _temp_trends(m, tmp_path, monkeypatch)
-    monkeypatch.setattr(m, "_input_rate_mix_ratio", lambda days=30: 1.4)
+    monkeypatch.setattr(m, "_runway_routing_lever", lambda days=30: {"state": "estimated", "factor": 1.4})
     monkeypatch.setattr(m, "_keepwarm_read_meters", _fresh_meters())
 
     def boom(days=30):
@@ -249,7 +249,7 @@ def test_saved_usd_survives_a_dead_ledger(m, tmp_path, monkeypatch):
 def test_proxy_disclosure_mentions_ledger_reuse(m, tmp_path, monkeypatch):
     """The honesty boundary must say the dollars reuse the ledger, not the multipliers."""
     _temp_trends(m, tmp_path, monkeypatch)
-    monkeypatch.setattr(m, "_input_rate_mix_ratio", lambda days=30: 1.4)
+    monkeypatch.setattr(m, "_runway_routing_lever", lambda days=30: {"state": "estimated", "factor": 1.4})
     monkeypatch.setattr(m, "_keepwarm_read_meters", _fresh_meters())
     monkeypatch.setattr(m, "_get_merged_savings", _ledger(context_usd=100.0, routing_usd=50.0))
 
@@ -264,7 +264,7 @@ def test_proxy_disclosure_mentions_ledger_reuse(m, tmp_path, monkeypatch):
 def test_extra_work_pct_still_present(m, tmp_path, monkeypatch):
     """The throughput multiplier is present in the snapshot; it drives the headline."""
     _temp_trends(m, tmp_path, monkeypatch)
-    monkeypatch.setattr(m, "_input_rate_mix_ratio", lambda days=30: 1.4)
+    monkeypatch.setattr(m, "_runway_routing_lever", lambda days=30: {"state": "estimated", "factor": 1.4})
     monkeypatch.setattr(m, "_keepwarm_read_meters", _fresh_meters())
     monkeypatch.setattr(m, "_get_merged_savings", _ledger(context_usd=100.0, routing_usd=50.0))
 

@@ -87,7 +87,7 @@ def test_weekly_dollar_uses_resets_at_window_start(m, tmp_path, monkeypatch):
     2. The *since* timestamp matches (resets_at - 7*24*3600).
     """
     _temp_trends(m, tmp_path, monkeypatch)
-    monkeypatch.setattr(m, "_input_rate_mix_ratio", lambda days=30: 1.4)
+    monkeypatch.setattr(m, "_runway_routing_lever", lambda days=30: {"state": "estimated", "factor": 1.4})
 
     # A resets_at 3 days from now (oldest event is 4 days old).
     now = time.time()
@@ -141,7 +141,7 @@ def test_weekly_dollar_window_start_is_correctly_computed(m, tmp_path, monkeypat
     is exactly (resets_at - 7*24*3600) converted to ISO-8601. This verifies
     the window-start math regardless of real DB state."""
     _temp_trends(m, tmp_path, monkeypatch)
-    monkeypatch.setattr(m, "_input_rate_mix_ratio", lambda days=30: 1.4)
+    monkeypatch.setattr(m, "_runway_routing_lever", lambda days=30: {"state": "estimated", "factor": 1.4})
 
     now = time.time()
     # resets_at in 3 days => window_start should be 4 days ago
@@ -199,7 +199,7 @@ def test_weekly_dollar_falls_back_to_rolling_when_resets_at_is_none(m, tmp_path,
     to the rolling 7-day lookback — _get_merged_savings is called without a
     *since* parameter (days=7 only)."""
     _temp_trends(m, tmp_path, monkeypatch)
-    monkeypatch.setattr(m, "_input_rate_mix_ratio", lambda days=30: 1.4)
+    monkeypatch.setattr(m, "_runway_routing_lever", lambda days=30: {"state": "estimated", "factor": 1.4})
 
     # Meter with no resets_at.
     monkeypatch.setattr(m, "_keepwarm_read_meters",
@@ -233,7 +233,7 @@ def test_weekly_dollar_falls_back_to_rolling_when_meter_has_no_resets_at_field(m
     """When the meter dict omits seven_day_resets_at entirely (legacy meter
     format), the weekly dollar falls back to rolling 7-day."""
     _temp_trends(m, tmp_path, monkeypatch)
-    monkeypatch.setattr(m, "_input_rate_mix_ratio", lambda days=30: 1.4)
+    monkeypatch.setattr(m, "_runway_routing_lever", lambda days=30: {"state": "estimated", "factor": 1.4})
 
     # Meter without the seven_day_resets_at key at all (legacy format).
     def _legacy_meters(**k):
@@ -271,7 +271,7 @@ def test_5h_window_never_receives_since_param(m, tmp_path, monkeypatch):
     is available, the 5h window must NOT pass a since parameter (its behaviour
     is unchanged)."""
     _temp_trends(m, tmp_path, monkeypatch)
-    monkeypatch.setattr(m, "_input_rate_mix_ratio", lambda days=30: 1.4)
+    monkeypatch.setattr(m, "_runway_routing_lever", lambda days=30: {"state": "estimated", "factor": 1.4})
 
     resets_at = time.time() + 3 * 24 * 3600
     monkeypatch.setattr(m, "_keepwarm_read_meters",

@@ -256,7 +256,7 @@ def _temp_trends(m, monkeypatch):
     conn.commit()
     conn.close()
     monkeypatch.setattr(m, "_init_trends_db", lambda: sqlite3.connect(str(dbp)))
-    monkeypatch.setattr(m, "_input_rate_mix_ratio", lambda days=30: 1.4)
+    monkeypatch.setattr(m, "_runway_routing_lever", lambda days=30: {"state": "estimated", "factor": 1.4})
 
 
 def test_healthy_meter_fills_runway_windows(m, monkeypatch):

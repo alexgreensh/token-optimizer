@@ -27,7 +27,7 @@ def m(monkeypatch, tmp_path):
         "seven_day_resets_at": time.time() + 3 * 24 * 3600})
     monkeypatch.setattr(mod, "_dashboard_spent_token_basis",
                         lambda conn, days=30: {"tokens": 1_000_000, "basis": "test", "complete": True})
-    monkeypatch.setattr(mod, "_input_rate_mix_ratio", lambda days=30: 1.5)
+    monkeypatch.setattr(mod, "_runway_routing_lever", lambda days=30: {"state": "estimated", "factor": 1.5})
     monkeypatch.setattr(mod, "_get_merged_savings", lambda days=30, since=None: {
         "total_cost_usd": 0.0, "model_routing": {"realized_cost_usd": 0.0},
         "resume_lean_estimated": None, "verbosity_steer_estimated": None,

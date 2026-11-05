@@ -51581,41 +51581,114 @@ def _resolve_structural_baseline(days=30):
     return None
 
 
-def _input_rate_mix_ratio(days=30):
-    """Baseline/current input-rate ratio over the complete current workload.
+def _runway_routing_lever(days=30):
+    """Routing lever of the plan card, read from _compute_model_routing_savings.
 
-    model_daily includes parent and delegated usage, so this is the global model
-    mix ratio used for workload-wide counterfactuals. Main-pool pricing must keep
-    using _mix_from_session_rows because that pool excludes delegated work.
-    Returns None when either mix cannot be priced. Never raises.
+    The factor is the standardized baseline cost over the standardized actual
+    cost of the same work (docs/METHODOLOGY.md section 3.2): class-weighted,
+    one reference card per family, premium/unpriced/free models outside both
+    arms. Above 1 the mix got lighter, below 1 heavier. ``factor`` is None and
+    ``state`` says why ("pending" while sessions are re-measured, else
+    "unavailable") when there is no routing evidence. Never raises.
     """
     try:
-        tier_data = PRICING_TIERS.get(_load_pricing_tier(), PRICING_TIERS["anthropic"])
-        models = tier_data.get("claude_models", {})
-
-        def _burn(mix):
-            if isinstance(mix, dict) and isinstance(mix.get("shares"), dict):
-                mix = mix["shares"]
-            families = {}
-            for model, share in (mix or {}).items():
-                family = _normalize_model_name(str(model)) or "sonnet"
-                families[family] = families.get(family, 0.0) + float(share or 0.0)
-            total = sum(families.values())
-            if total <= 0:
-                return 0.0
-            return sum(
-                share * float(models.get(family, models.get("sonnet", {})).get("input", 3.0))
-                for family, share in families.items()
-            ) / total
-
-        baseline = _pretool_baseline_mix() or _earliest_model_mix()
-        current = (_model_mix_shares(days=days).get("shares") or {})
-        before_rate, current_rate = _burn(baseline), _burn(current)
-        if before_rate <= 0 or current_rate <= 0:
-            return None
-        return before_rate / current_rate
+        r = _compute_model_routing_savings(days=days) or {}
     except Exception:
+        r = {}
+    out = {
+        "state": "unavailable", "factor": None,
+        "basis": r.get("realized_basis"),
+        "baseline_source": r.get("baseline_source"),
+        "excluded_models": {
+            "premium": list(r.get("premium_models") or []),
+            "unpriced": list(r.get("unpriced_models") or []),
+            "free": list(r.get("free_models") or []),
+        },
+        "coverage": r.get("compared_share"),
+        "unsplit_tokens": int(r.get("unsplit_tokens") or 0),
+        "pending_sessions": int(r.get("pending_sessions") or 0),
+        "standardized_baseline_cost_usd": r.get("standardized_baseline_cost_usd"),
+        "standardized_actual_cost_usd": r.get("standardized_actual_cost_usd"),
+    }
+    evidence = r.get("evidence")
+    if evidence == "pending":
+        out["state"] = "pending"
+        return out
+    base = float(r.get("standardized_baseline_cost_usd") or 0.0)
+    actual = float(r.get("standardized_actual_cost_usd") or 0.0)
+    if evidence == "estimated" and base > 0 and actual > 0:
+        out["state"] = "estimated"
+        out["factor"] = base / actual
+    return out
+
+
+def _routing_direction(factor):
+    """"lighter", "heavier" or "unchanged" for a routing factor."""
+    if factor is None:
         return None
+    if factor > 1:
+        return "lighter"
+    return "heavier" if factor < 1 else "unchanged"
+
+
+def _routing_mix_reprice_ratio(model_routing=None, days=30, since=None):
+    """Baseline/current work-value ratio for the transformation add-backs.
+
+    The transformation headline reprices metered compression savings and the
+    estimated avoided-volume pools to what the baseline mix would have paid
+    for the same work. That ratio is the routing recipe's standardized
+    baseline cost over its standardized actual cost -- the factor the plan
+    card publishes and the Savings tab's routing figure is built from -- so
+    it inherits exact-card pricing (no family or default fallback), premium
+    (Fable) exclusion, reference cards and the pending gate. `model_routing`
+    is the recipe payload the caller already computed (with its own `since`
+    window); when it is None the recipe is resolved here for `days`/`since`.
+    Returns 1.0 -- a neutral reprice -- whenever routing has no estimated
+    evidence (pending, unavailable, or a degenerate arm). Never raises.
+    """
+    try:
+        r = model_routing
+        if r is None:
+            r = _compute_model_routing_savings(days=days, since=since) or {}
+        if not isinstance(r, dict) or r.get("evidence") != "estimated":
+            return 1.0
+        base = float(r.get("standardized_baseline_cost_usd") or 0.0)
+        actual = float(r.get("standardized_actual_cost_usd") or 0.0)
+        if base <= 0 or actual <= 0:
+            return 1.0
+        return base / actual
+    except Exception:
+        return 1.0
+
+
+def _routing_reprice_basis(model_routing):
+    """Why the transformation add-back reprice is what it is.
+
+    "routing_recipe"        -- the routing recipe supplied a usable
+                               standardized baseline/actual ratio.
+    "routing_pending"       -- sessions in the window are still being
+                               re-measured; the recipe withholds its ratio
+                               and the reprice is neutral (1.0).
+    "routing_unavailable"   -- no usable recipe (missing payload, non-estimated
+                               evidence, or degenerate arms); the reprice is
+                               neutral (1.0).
+    Surfaces render a plain disclosure line for the two neutral bases so a
+    silently-flattened add-back never reads as a measured figure.
+    """
+    if not isinstance(model_routing, dict):
+        return "routing_unavailable"
+    evidence = model_routing.get("evidence")
+    if evidence == "pending":
+        return "routing_pending"
+    if evidence == "estimated":
+        try:
+            base = float(model_routing.get("standardized_baseline_cost_usd") or 0.0)
+            actual = float(model_routing.get("standardized_actual_cost_usd") or 0.0)
+        except (TypeError, ValueError):
+            base = actual = 0.0
+        if base > 0 and actual > 0:
+            return "routing_recipe"
+    return "routing_unavailable"
 
 
 # Minimum per-window API-credit overage before its dollar line is shown. Below
@@ -51695,18 +51768,21 @@ def runway_snapshot(days=30, now=None):
       context : tokens never sent at all (archive, skeletons, blocked reads).
                 Directly metered from savings_events + compression_events;
                 estimated tiers are not included.
-      routing : a lighter model mix burns less of the window per token.
-                Derived from THIS user's own baseline vs current mix -- never a
-                constant. A user who never left Opus correctly sees ~1.0x.
+      routing : the model-routing recipe's standardized baseline cost over its
+                standardized actual cost (_runway_routing_lever). Above 1 the
+                mix got lighter, below 1 heavier; a user who never left Opus
+                sees 1.0x. None, with routing_state "pending"/"unavailable",
+                when there is no routing evidence.
 
     HONESTY BOUNDARY: the routing lever needs to know how the provider weights
     models inside the 5h/7d windows. That weighting is not published, so this
-    uses the public input-rate ratios as a documented stand-in and labels the
-    result estimated. `proxy` in the returned dict says so out loud; any surface
-    rendering this MUST carry that through rather than printing a bare number.
+    uses public per-class API rates (one reference card per family) as a
+    documented stand-in and labels the result estimated. `proxy` in the
+    returned dict says so out loud; any surface rendering this MUST carry that
+    through rather than printing a bare number.
 
     Returns None when there is nothing trustworthy to say: no meter reading at
-    all, or no measurable routing shift. A stale-but-present meter is NOT dropped
+    all, or no measurable throughput shift. A stale-but-present meter is NOT dropped
     -- this is the ONLY caller of the meter for the dashboard, which is viewed at
     arbitrary times (the statusline only refreshes the meter while you are
     actively working, so by the time you open the dashboard the reading is
@@ -51755,14 +51831,14 @@ def runway_snapshot(days=30, now=None):
             return None
         context_mult = (consumed + context_saved) / consumed if consumed > 0 else 1.0
 
-        # --- routing lever: this user's own shift, priced by input rates ---
-        routing_mult = _input_rate_mix_ratio(days=days)
-        if routing_mult is None or routing_mult <= 0:
-            if not weekly_full:
-                return None
-            routing_mult = 1.0
+        # --- routing lever: the model-routing recipe's own standardized ratio ---
+        # Pending or unavailable routing is left out of the product and the
+        # state is returned, never replaced by a silent 1.0.
+        routing = _runway_routing_lever(days=days)
+        routing_state = routing.get("state")
+        routing_mult = routing.get("factor")
 
-        mult = context_mult * routing_mult
+        mult = context_mult * (routing_mult if routing_mult is not None else 1.0)
         # Below ~1.02 there is no story worth telling and rounding noise would
         # dominate; say nothing rather than dress up a rounding artefact.
         if mult < 1.02 and not weekly_full:
@@ -52005,7 +52081,21 @@ def runway_snapshot(days=30, now=None):
             "tier": "estimated",
             "multiplier": round(mult, 2),
             "context_multiplier": round(context_mult, 4),
-            "routing_multiplier": round(routing_mult, 3),
+            "routing_multiplier": round(routing_mult, 3) if routing_mult is not None else None,
+            "routing_state": routing_state,
+            "routing_direction": _routing_direction(routing_mult),
+            # The window the routing lever (and its mix coverage) was computed
+            # over, so renderers never hard-code "30 days" for a parameterised
+            # snapshot.
+            "routing_window_days": days,
+            "routing_pending_sessions": routing.get("pending_sessions", 0),
+            "routing_basis": routing.get("basis"),
+            "routing_baseline_source": routing.get("baseline_source"),
+            "routing_excluded_models": routing.get("excluded_models"),
+            "routing_coverage": routing.get("coverage"),
+            "routing_unsplit_tokens": routing.get("unsplit_tokens", 0),
+            "routing_standardized_baseline_cost_usd": routing.get("standardized_baseline_cost_usd"),
+            "routing_standardized_actual_cost_usd": routing.get("standardized_actual_cost_usd"),
             "extra_work_pct": round((mult - 1) * 100, 1),
             "tokens_consumed": int(consumed),
             "tokens_consumed_basis": spent_basis["basis"] if spent_basis else None,
@@ -52049,7 +52139,7 @@ def runway_snapshot(days=30, now=None):
                       "30 days; window comparisons are estimates." if weekly_full else ("Your window usage is measured; the “without” "
                       "comparison and routing dollars are estimated (the provider "
                       "does not publish how it weights models inside a window, so "
-                      "public input-rate ratios stand in). Per-window dollars reuse "
+                      "public per-class API rates stand in). Per-window dollars reuse "
                       "the metered savings ledger (context tokens never sent, priced "
                       "at input rates, plus a routing estimate) and are not derived "
                       "from the throughput multipliers.")),
@@ -52946,6 +53036,9 @@ def _session_output_fraction(days=30):
         return 0.0
 
 
+# Token classes routing is priced by. cache_read is billed at the cache-read rate,
+# cache_create at the 5-minute or 1-hour write rate, and "unsplit" holds tokens
+# from rows that never stored a class split (excluded from comparison).
 _ROUTING_CLASSES = ("fresh_input", "cache_create_5m", "cache_create_1h",
                     "cache_read", "output", "unsplit")
 
@@ -53357,11 +53450,11 @@ def _compute_model_routing_savings(days=30, since=None):
     while routine subagent work carries its own smaller context. The result is
     shown separately from concrete opportunities.
 
-    Realized routing prices fresh input, cache creation, cache reads, output and
-    unsplit usage by class. Input, cache write, cache read and output use their
-    respective rates; unsplit usage uses the input rate and is reported as
-    `unsplit_tokens`. Potential uses the model's own generation card for fresh
-    input and output, and the newest Sonnet card for its target.
+    Realized routing prices fresh input, cache creation, cache reads and output
+    by class. Usage without a class split stays outside both comparisons and
+    their coverage, and is reported as `unsplit_tokens`. Potential uses the model's
+    own generation card for fresh input and output, and the newest Sonnet card
+    for its target.
     The class split comes from per-day, per-model session usage.
 
     Realized routing is a standardized family comparison: the remaining work's
@@ -53384,7 +53477,7 @@ def _compute_model_routing_savings(days=30, since=None):
     # `zero` is returned only on no-data / error paths (no current mix, no
     # baseline, or an exception). Label it "unavailable" so a $0 here reads as
     # "couldn't compute" rather than a measured zero -- the success return below
-    # sets its own evidence="measured".
+    # sets its own evidence="estimated" when comparable work remains.
     zero = {
         "realized_cost_usd": 0.0, "potential_cost_usd": 0.0,
         "potential_tokens": 0, "potential_tokens_monthly": 0,
@@ -53393,6 +53486,7 @@ def _compute_model_routing_savings(days=30, since=None):
         "premium_models": [], "premium_share": 0.0, "premium_cost_usd": 0.0,
         "unpriced_models": [], "unpriced_tokens": 0, "unpriced_share": 0.0,
         "free_models": [], "free_tokens": 0,
+        "compared_share": 0.0,
         "baseline_rate_basis": {}, "baseline_reference_priced": [],
         "standardized_baseline_cost_usd": 0.0, "standardized_actual_cost_usd": 0.0,
         "actual_cost_usd": 0.0, "generation_price_delta_usd": 0.0,
@@ -53445,7 +53539,7 @@ def _compute_model_routing_savings(days=30, since=None):
 
         # Rows of per-model, per-class usage. When the DB holds none (adapters
         # that only record model totals), the model-daily mix stands in as
-        # unsplit tokens priced at the input rate.
+        # unsplit tokens, reported outside comparison coverage.
         usage = _routing_usage_by_model(days=days, since=since)
         from_rows = bool(usage)
         if not from_rows:
@@ -53467,11 +53561,18 @@ def _compute_model_routing_savings(days=30, since=None):
         priced_usage = {}
         unpriced_by_model = {}
         free_by_model = {}
+        unsplit_tokens = 0.0
+        potential_unsplit_excluded = 0.0
         for m, classes in usage.items():
             if not fam_of[m]:
                 continue
             if _rates(m) is not None:
-                priced_usage[m] = classes
+                unsplit_tokens += classes.get("unsplit", 0)
+                if fam_of[m] == "opus":
+                    potential_unsplit_excluded += classes.get("unsplit", 0)
+                split = {k: v for k, v in classes.items() if k != "unsplit"}
+                if sum(split.values()) > 0:
+                    priced_usage[m] = split
                 continue
             tokens = sum(classes.get(k, 0) for k in _ROUTING_CLASSES)
             bucket = free_by_model if _routing_model_status(m) == "free" else unpriced_by_model
@@ -53489,9 +53590,6 @@ def _compute_model_routing_savings(days=30, since=None):
                     dst[k] += priced_usage[m].get(k, 0)
                     class_totals[k] += priced_usage[m].get(k, 0)
         pooled = sum(class_totals.values())
-        window_billable = sum(
-            sum(c.get(k, 0) for k in _ROUTING_BILLABLE_CLASSES) for c in priced_usage.values()
-        )
 
         def _unpriced_report():
             return [mid for mid, _t in sorted(unpriced_by_model.items(), key=lambda kv: -kv[1])]
@@ -53503,14 +53601,17 @@ def _compute_model_routing_savings(days=30, since=None):
         free_tokens = int(sum(free_by_model.values()))
 
         def _coverage_fields():
-            total = unpriced_tokens + free_tokens + pooled
+            total = unpriced_tokens + free_tokens + pooled + unsplit_tokens
             return {
                 "unpriced_models": _unpriced_report(), "unpriced_tokens": unpriced_tokens,
                 "unpriced_share": round(unpriced_tokens / total, 4) if total > 0 else 0.0,
                 "free_models": _free_report(), "free_tokens": free_tokens,
+                "unsplit_tokens": int(round(unsplit_tokens)),
+                "potential_unsplit_excluded_tokens": int(round(potential_unsplit_excluded)),
+                "baseline_source": baseline_source,
             }
 
-        if window_billable <= 0:
+        if pooled <= 0:
             return {**zero, **_coverage_fields()}
 
         # STANDARDIZED ROUTING VALUATION. Realized routing measures a shift of work
@@ -53602,6 +53703,8 @@ def _compute_model_routing_savings(days=30, since=None):
             priced_usage[m].get(k, 0) * _rates(m)[k] for m in kept_models for k in _ROUTING_CLASSES
         ) / 1_000_000
         realized_cost = max(0.0, standardized_baseline - standardized_actual) if base_priced and kept_models else 0.0
+        compared_tokens = sum(kept_totals.values())
+        window_tokens = unpriced_tokens + free_tokens + pooled + unsplit_tokens
 
         # POTENTIAL: a fixed share of remaining Opus fresh input and output, priced
         # at each Opus model's own card minus the current Sonnet card. It is
@@ -53612,11 +53715,9 @@ def _compute_model_routing_savings(days=30, since=None):
         target = _routing_target_model()
         target_rates = _rates(target)
         by_class = {k: {"tokens": 0, "usd": 0.0} for k in _ROUTING_CLASSES}
-        unsplit_excluded = 0.0
         for m, classes in priced_usage.items():
             if fam_of[m] != "opus":
                 continue
-            unsplit_excluded += classes.get("unsplit", 0)
             if target_rates is None:
                 continue
             m_rates = _rates(m)
@@ -53629,15 +53730,13 @@ def _compute_model_routing_savings(days=30, since=None):
         potential_tokens = int(round(sum(v["tokens"] for v in by_class.values())))
         potential_tokens_monthly = int(round(potential_tokens / max(days, 1) * 30))
         potential_billable_tokens = int(round(sum(by_class[k]["tokens"] for k in _ROUTING_BILLABLE_CLASSES)))
-        unsplit_tokens = int(round(class_totals["unsplit"]))
-        potential_unsplit_excluded = int(round(unsplit_excluded))
         opus_share = cur_shares.get("opus", 0.0)
 
         return {
             "activity_coverage": zero["activity_coverage"],
             "realized_cost_usd": round(realized_cost, 4),
             "potential_cost_usd": round(potential_cost, 4),
-            # Routable tokens cover fresh input, output, and usage without a class split.
+            # Routable tokens cover observed fresh input and output only.
             "potential_tokens": potential_tokens,
             "potential_tokens_monthly": potential_tokens_monthly,
             "potential_billable_tokens": potential_billable_tokens,
@@ -53649,9 +53748,6 @@ def _compute_model_routing_savings(days=30, since=None):
             "potential_basis": "api_rate_equivalent",
             "target_model": target,
             "pricing_basis": "per_token_class_generation_card",
-            "unsplit_tokens": unsplit_tokens,
-            # Opus tokens without a class split, left out of the potential above.
-            "potential_unsplit_excluded_tokens": potential_unsplit_excluded,
             # Premium models (priced above the baseline's costliest model) are the
             # user's own choice: excluded from realized routing, shown here.
             "premium_models": premium,
@@ -53677,7 +53773,10 @@ def _compute_model_routing_savings(days=30, since=None):
             "standardized_actual_cost_usd": round(standardized_actual, 4),
             "actual_cost_usd": round(actual_cost, 4),
             "generation_price_delta_usd": round(actual_cost - standardized_actual, 4),
-            "evidence": "estimated",
+            # Share of the window's class tokens inside both arms (premium,
+            # unpriced and free models, and unsplit tokens are outside).
+            "compared_share": round(compared_tokens / window_tokens, 4) if window_tokens > 0 else 0.0,
+            "evidence": "estimated" if compared_tokens > 0 and base_priced else "unavailable",
         }
     except Exception:
         return zero
@@ -55769,7 +55868,7 @@ def _weight_pool_payload(pool):
     }
 
 
-def _estimate_before_after_savings(days=30, estimated_pools=None):
+def _estimate_before_after_savings(days=30, estimated_pools=None, model_routing=None, since=None):
     """THE headline saving: your FROZEN typical pre-TO session, priced at your PRE-TO
     efficiency (~95% Opus + baseline cache pattern) vs what that same session costs now.
 
@@ -55841,6 +55940,7 @@ def _estimate_before_after_savings(days=30, estimated_pools=None):
             "breakdown_caveat": "", "reason": None, "evidence": "estimated",
             "verbosity_transformation_usd": 0.0, "verbosity_measured_usd": 0.0,
             "compression_reprice_ratio": 1.0,
+            "compression_reprice_basis": None,
             "estimated_volume_transformation_usd": 0.0,
             "estimated_volume_pools": {},
             "short_session_transformation_usd": 0.0,
@@ -56132,18 +56232,31 @@ def _estimate_before_after_savings(days=30, estimated_pools=None):
         # before billing), so this pool is DISJOINT from the main pool AND from the caching
         # lever (which only redistributes BILLED fresh+cache_read tokens). We take the
         # directly-METERED removed-token dollars (savings_events) and reprice them to the
-        # baseline input mix: the ~95% Opus "old way" would have paid even more per re-read
+        # baseline mix: the ~95% Opus "old way" would have paid even more per re-read
         # than today's mix did. The measured figure is the proven floor of this lever; the
-        # reprice (baseline_input_rate / current_input_rate) is the only estimated step and
-        # is disclosed. actual for this pool is 0 (the tokens were never billed), so its
-        # whole repriced value is transformation. Volume reduction remains in the
-        # headline as its own labelled pool.
-        comp = _get_savings_summary(days=days)
+        # reprice (the routing recipe's standardized baseline/actual ratio) is the only
+        # estimated step and is disclosed. actual for this pool is 0 (the tokens were
+        # never billed), so its whole repriced value is transformation. Volume reduction
+        # remains in the headline as its own labelled pool.
+        comp = _get_savings_summary(days=days, since=since)
         comp_measured = float((comp or {}).get("total_cost_usd", 0.0) or 0.0)
-        # Use the same complete-workload input-rate ratio as subscription runway.
-        # The main pool's after_shares intentionally excludes delegated work, so
-        # using it here measured a different population and understated this reprice.
-        comp_reprice = _input_rate_mix_ratio(days=days) or 1.0
+        # Reprice add-backs at the routing recipe's standardized baseline/actual
+        # ratio -- the factor the plan card publishes, from the recipe that
+        # prices the Savings tab's routing figure. The recipe is resolved ONCE
+        # here (the caller's `model_routing` payload, or one routing pass on the
+        # same `days`/`since` window) so the ratio and its disclosure basis can
+        # never disagree and a direct call never runs the pass twice.
+        # The recipe owns exact-card pricing, premium exclusion, reference cards
+        # and the pending gate; there is no second routing implementation.
+        routing_payload = model_routing
+        if routing_payload is None:
+            try:
+                routing_payload = (_compute_model_routing_savings(days=days, since=since)
+                                   or {})
+            except Exception:
+                routing_payload = {}
+        comp_reprice = _routing_mix_reprice_ratio(routing_payload, days=days, since=since)
+        comp_reprice_basis = _routing_reprice_basis(routing_payload)
         compression_addback = max(0.0, comp_measured * comp_reprice)
 
         # Estimated avoided-volume pools that no billed-volume arm can observe.
@@ -56282,6 +56395,7 @@ def _estimate_before_after_savings(days=30, estimated_pools=None):
                     "compression_transformation_usd": 0.0,
                     "compression_measured_usd": round(comp_measured, 2),
                     "compression_reprice_ratio": round(comp_reprice, 4),
+                    "compression_reprice_basis": comp_reprice_basis,
                     "estimated_volume_transformation_usd": 0.0,
                     "estimated_volume_pools": estimated_volume_pools,
                     "verbosity_transformation_usd": 0.0,
@@ -56562,6 +56676,7 @@ def _estimate_before_after_savings(days=30, estimated_pools=None):
             "compression_transformation_usd": round(compression_addback, 2),
             "compression_measured_usd": round(comp_measured, 2),
             "compression_reprice_ratio": round(comp_reprice, 4),
+            "compression_reprice_basis": comp_reprice_basis,
             "estimated_volume_transformation_usd": round(estimated_volume_addback, 2),
             "estimated_volume_pools": estimated_volume_pools,
             "verbosity_transformation_usd": round(verbosity_addback, 2),
@@ -56950,14 +57065,14 @@ def _get_merged_savings(days=30, since=None):
     model_routing = _compute_model_routing_savings(days=days, since=since)
     output_waste = _estimate_output_waste(days=days)
     cache_drop = _estimate_cache_drop_savings(days=days)
-    before_after = _estimate_before_after_savings(days=days, estimated_pools={
+    before_after = _estimate_before_after_savings(days=days, since=since, estimated_pools={
         "uncaptured_runtime": uncaptured,
         "behavioral_loops": behavioral,
         "hint_followed": savings.get("hint_followed_estimated") or {},
         "handover_rerun": handover_rerun,
         "retrieval_serve": retrieval_serve,
         "resume_lean": savings.get("resume_lean_estimated") or {},
-    })
+    }, model_routing=model_routing)
     stale_reads_reclaimable = _estimate_stale_reads_reclaimable(days=days)
 
     return {
@@ -58756,6 +58871,7 @@ def _savings_since_install():
                 "estimated_usd": round(sum(components["display"]["estimates_usd"].values()), 2),
                 "routing_pending": full_routing.get("evidence") == "pending",
                 "routing_pending_sessions": int(full_routing.get("pending_sessions") or 0),
+                "routing_unsplit_tokens": int(full_routing.get("unsplit_tokens") or 0),
                 "remeasuring": bool(counted.get("remeasuring")),
                 "remeasuring_sessions": int(counted.get("remeasuring_sessions") or 0),
             }
@@ -58964,6 +59080,15 @@ def savings_report(days=30, as_json=False):
             if note:
                 for line in textwrap.wrap(note, width=72):
                     print(f"    {line}")
+        # A neutral add-back reprice (routing pending/unavailable) shrinks the
+        # figure without a visible reason -- disclose it, same as the card.
+        _rb = ba.get("compression_reprice_basis")
+        if _rb == "routing_pending":
+            print("    Note: model-mix repricing is paused while sessions finish "
+                  "re-measuring, so the add-backs show their measured value.")
+        elif _rb == "routing_unavailable":
+            print("    Note: model-mix repricing could not be measured, so the "
+                  "add-backs show their measured value.")
         if wp:
             unit_lbl = "API call" if wp.get("work_unit") == "api_call" else "message"
             print(f"    Each {unit_lbl} now carries less billed context than in "
@@ -59192,6 +59317,13 @@ def savings_report(days=30, as_json=False):
         print(f"  i  models without a known price ({shown}; "
               f"{int(routing.get('unpriced_tokens', 0) or 0) + int(routing.get('free_tokens', 0) or 0):,} tokens) "
               f"are left out of the routing comparison, not counted as free")
+    unsplit_routing = int(routing.get("unsplit_tokens", 0) or 0)
+    if unsplit_routing > 0:
+        # Usage without a token-class split (Cursor totals, model-daily-only
+        # history, legacy rows) sits outside both routing arms; say so instead
+        # of letting an empty or partial routing figure read as $0 coverage.
+        print(f"  i  {unsplit_routing:,} tokens without a token-class split are "
+              f"left out of model routing")
     all_in = _money(_shown["total_cents"])
     if rr_usd != 0:
         print(f"  + repeat reads avoided: ~${_money(_cents['reread'])}{per} "

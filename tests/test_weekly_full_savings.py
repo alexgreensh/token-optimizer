@@ -106,7 +106,7 @@ def test_full_week_uses_shared_baseline_and_real_activity(measure, monkeypatch, 
 
 def test_full_savings_survives_flat_throughput_multiplier(measure, monkeypatch):
     _wire(measure, monkeypatch, resume_lean_usd=0)
-    monkeypatch.setattr(measure, '_input_rate_mix_ratio', lambda days=30: 1.0)
+    monkeypatch.setattr(measure, "_runway_routing_lever", lambda days=30: {"state": "estimated", "factor": 1.0})
     monkeypatch.setattr(measure, '_weekly_full_savings', lambda **kw: {'saved_usd': 200.62})
     snap=measure.runway_snapshot()
     assert snap is not None

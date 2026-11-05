@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Model routing is priced per token class at each model's own generation card.
 
-Realized routing prices each token class separately. Potential routing covers
-fresh input and output, or unsplit usage priced at the input rate.
+Realized routing prices each observed token class separately. Potential routing
+covers fresh input and output. Unsplit usage stays outside both comparisons.
 """
 
 from __future__ import annotations
@@ -202,6 +202,9 @@ def test_rows_without_a_class_split_stay_out_of_the_routing_potential(m, db):
     assert "unsplit" not in r["potential_by_class"]
     assert r["potential_cost_usd"] == 0
     assert r["potential_unsplit_excluded_tokens"] == 4_000_000
+    assert r["evidence"] == "unavailable"
+    assert r["compared_share"] == 0.0
+    assert r["standardized_baseline_cost_usd"] == r["standardized_actual_cost_usd"] == 0
 
 
 def test_breakdown_rows_keep_their_split_and_flag_the_rest(m, db):
@@ -217,6 +220,8 @@ def test_breakdown_rows_keep_their_split_and_flag_the_rest(m, db):
     assert r["potential_by_class"]["output"]["tokens"] == 300_000
     assert "unsplit" not in r["potential_by_class"]
     assert r["potential_unsplit_excluded_tokens"] == 2_000_000
+    assert r["compared_share"] == pytest.approx(1 / 3, abs=1e-4)
+    assert r["standardized_actual_cost_usd"] == pytest.approx(_cards(m)["opus_5_5"]["output"])
 
 
 def test_split_rows_report_no_unsplit_tokens(m, db):
@@ -234,6 +239,9 @@ def test_no_session_rows_falls_back_to_the_model_mix(m, db):
     assert r["potential_tokens"] == 0
     assert r["potential_cost_usd"] == 0
     assert r["potential_unsplit_excluded_tokens"] == 4_000_000
+    assert r["evidence"] == "unavailable"
+    assert r["compared_share"] == 0.0
+    assert r["standardized_baseline_cost_usd"] == r["standardized_actual_cost_usd"] == 0
 
 
 # ------------------------------------------------------------ realized

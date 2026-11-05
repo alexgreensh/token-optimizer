@@ -20,6 +20,7 @@ Run: python3 -m pytest tests/test_transformation_undercount.py -v
 """
 from _activity_fixtures import stamp_activity
 import importlib
+import inspect
 import json
 import sqlite3
 import sys
@@ -332,8 +333,13 @@ def test_estimated_avoided_volume_pools_join_headline_separately(measure):
         + r["estimated_volume_transformation_usd"], abs=0.05)
 
 
-def test_compression_reprice_and_runway_use_same_complete_mix_ratio(measure):
-    """The global input-rate ratio includes delegated usage on both surfaces."""
+def test_compression_reprice_uses_the_routing_recipe_ratio(measure):
+    """The add-back reprice is the routing recipe's standardized baseline/actual
+    ratio -- the same factor the Savings tab and the plan card publish. It
+    inherits exact-card pricing (no family or default fallback), premium
+    exclusion, reference cards and the pending gate; it is NOT a second
+    input-rate mix (the retired path priced unknown models as Sonnet, let
+    premium burn into the current side and had no pending gate)."""
     mod, tmp = measure
     conn = _fresh_env(tmp)
     _insert_quality_sessions(conn, tmp, n_sessions=40,
@@ -342,16 +348,8 @@ def test_compression_reprice_and_runway_use_same_complete_mix_ratio(measure):
     conn.commit()
     conn.close()
 
-    baseline = {"opus": 0.95, "sonnet": 0.05}
-    complete_current = {OPUS: 0.20, SONNET: 0.80}
-    main_only_current = {OPUS: 0.60, SONNET: 0.40}
-    mod._pretool_baseline_mix = lambda: dict(baseline)
-    mod._model_mix_shares = lambda **kw: {
-        "shares": dict(complete_current), "total_tokens": 1_000_000, "days": 30}
-    mod._mix_from_session_rows = lambda cutoff: dict(main_only_current)
-    mod._keepwarm_read_meters = lambda **kw: {
-        "available": True, "stale": False, "five_hour_pct": 10.0,
-        "seven_day_pct": 20.0, "age_s": 1.0}
+    mod._pretool_baseline_mix = lambda: {"opus": 0.95, "sonnet": 0.05}
+    mod._mix_from_session_rows = lambda cutoff: {OPUS: 0.60, SONNET: 0.40}
     original_summary = mod._get_savings_summary
 
     def savings_summary(**kw):
@@ -360,24 +358,102 @@ def test_compression_reprice_and_runway_use_same_complete_mix_ratio(measure):
         return summary
 
     mod._get_savings_summary = savings_summary
-    transformation = mod._estimate_before_after_savings(days=30)
-    runway = mod.runway_snapshot(days=30)
+    recipe = {"evidence": "estimated",
+              "standardized_baseline_cost_usd": 12.0,
+              "standardized_actual_cost_usd": 8.0}
+    # The published caller hands the recipe result it already computed (with
+    # its `since` window); a direct call resolves the recipe itself.
+    r = mod._estimate_before_after_savings(days=30, model_routing=recipe)
+    assert r["compression_reprice_ratio"] == pytest.approx(1.5)
+    assert r["compression_reprice_basis"] == "routing_recipe"
+    mod._compute_model_routing_savings = lambda days=30, since=None: recipe
+    r = mod._estimate_before_after_savings(days=30)
+    assert r["compression_reprice_ratio"] == pytest.approx(1.5)
+    assert r["compression_reprice_basis"] == "routing_recipe"
+    # Pending and unavailable routing reprice neutrally, never guessed, and
+    # the payload says WHY the ratio is 1.0 so the card can disclose it.
+    for state, basis in (("pending", "routing_pending"),
+                         ("unavailable", "routing_unavailable")):
+        r = mod._estimate_before_after_savings(
+            days=30, model_routing={**recipe, "evidence": state})
+        assert r["compression_reprice_ratio"] == 1.0
+        assert r["compression_reprice_basis"] == basis
+    # An estimated recipe with degenerate arms cannot supply a ratio either.
+    r = mod._estimate_before_after_savings(
+        days=30, model_routing={"evidence": "estimated",
+                                "standardized_baseline_cost_usd": 0.0,
+                                "standardized_actual_cost_usd": 8.0})
+    assert r["compression_reprice_ratio"] == 1.0
+    assert r["compression_reprice_basis"] == "routing_unavailable"
 
-    rates = mod.PRICING_TIERS[mod._load_pricing_tier()]["claude_models"]
-    # The BASELINE mix is keyed by the generic family name "sonnet" (current card, $2/MTok);
-    # the CURRENT mixes are keyed by the concrete id `claude-sonnet-4-6`, which since
-    # 2026-08-29 resolves to the `sonnet_legacy` card ($3/MTok) because Sonnet 4.6 and
-    # Sonnet 5 do not share a price. Each side of the ratio must use the card its own
-    # model ids actually resolve to, or this test asserts against a rate nothing is billed at.
-    base_sonnet = rates[mod._normalize_model_name("sonnet")]["input"]
-    cur_sonnet = rates[mod._normalize_model_name(SONNET)]["input"]
-    expected = ((0.95 * rates["opus"]["input"] + 0.05 * base_sonnet)
-                / (0.20 * rates["opus"]["input"] + 0.80 * cur_sonnet))
-    main_only = ((0.95 * rates["opus"]["input"] + 0.05 * base_sonnet)
-                 / (0.60 * rates["opus"]["input"] + 0.40 * cur_sonnet))
-    assert transformation["compression_reprice_ratio"] == pytest.approx(expected, rel=1e-4)
-    assert runway["routing_multiplier"] == pytest.approx(expected, abs=0.001)
-    assert transformation["compression_reprice_ratio"] != pytest.approx(main_only, rel=1e-4)
+
+def test_transformation_reprice_has_no_second_routing_implementation(measure):
+    """Guard: a published figure must not grow a private routing-price path
+    again. `_input_rate_mix_ratio` priced unknown models at the Sonnet card,
+    counted premium models in the current burn, used bare family cards and had
+    no pending gate -- every defect docs/METHODOLOGY.md section 3.2 forbids."""
+    mod, tmp = measure
+    assert not hasattr(mod, "_input_rate_mix_ratio")
+    src = inspect.getsource(mod._estimate_before_after_savings)
+    assert "_input_rate_mix_ratio" not in src
+    # The reprice helper answers only from the shared recipe payload.
+    assert mod._routing_mix_reprice_ratio(None) == 1.0
+    assert mod._routing_mix_reprice_ratio({"evidence": "pending"}) == 1.0
+    assert mod._routing_mix_reprice_ratio(
+        {"evidence": "estimated", "standardized_baseline_cost_usd": 9.0,
+         "standardized_actual_cost_usd": 3.0}) == pytest.approx(3.0)
+    assert mod._routing_mix_reprice_ratio(
+        {"evidence": "estimated", "standardized_baseline_cost_usd": 0.0,
+         "standardized_actual_cost_usd": 3.0}) == 1.0
+
+
+def test_merged_savings_shares_one_recipe_and_one_window(measure):
+    """_get_merged_savings computes the routing recipe once, on the caller's
+    window, and hands it to _estimate_before_after_savings. Dropping the
+    `model_routing=` kwarg would silently re-run the whole routing pass on the
+    rolling `days` window; dropping `since` would price the compression dollars
+    on a different window than the ratio that multiplies them."""
+    mod, tmp = measure
+    conn = _fresh_env(tmp)
+    _insert_quality_sessions(conn, tmp, n_sessions=40,
+                             per_session_input=4_000_000, opus_share=0.60)
+    conn.commit()
+    conn.close()
+
+    sentinel_since = "2026-10-01T00:00:00+00:00"
+    recipe = {"evidence": "estimated",
+              "standardized_baseline_cost_usd": 12.0,
+              "standardized_actual_cost_usd": 8.0}
+    routing_calls = []
+
+    def fake_routing(days=30, since=None):
+        routing_calls.append({"days": days, "since": since})
+        return dict(recipe)
+
+    mod._compute_model_routing_savings = fake_routing
+
+    savings_calls = []
+    original_summary = mod._get_savings_summary
+
+    def savings_summary(days=30, since=None):
+        savings_calls.append({"days": days, "since": since})
+        summary = original_summary(days=days, since=since)
+        summary["total_cost_usd"] = 10.0
+        return summary
+
+    mod._get_savings_summary = savings_summary
+
+    merged = mod._get_merged_savings(days=7, since=sentinel_since)
+    # Exactly one routing pass for the whole merged view, on the caller's
+    # window -- the transformation must reuse it, not recompute.
+    assert routing_calls == [{"days": 7, "since": sentinel_since}]
+    # Every savings summary inside the merged view -- including the one that
+    # prices the compression add-back dollars -- sees the same `since` cutoff.
+    assert len(savings_calls) >= 2, savings_calls
+    assert all(c["since"] == sentinel_since for c in savings_calls), savings_calls
+    ba = merged["before_after"]
+    assert ba["compression_reprice_ratio"] == pytest.approx(1.5)
+    assert ba["compression_reprice_basis"] == "routing_recipe"
 
 
 def test_short_sessions_without_breakdown_contribute_nothing(measure):

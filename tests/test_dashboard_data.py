@@ -92,7 +92,7 @@ def test_runway_denominator_excludes_cache_read_and_cache_write(measure, tmp_pat
     monkeypatch.setattr(measure, "TRENDS_DB", db)
     monkeypatch.setattr(measure, "_init_trends_db", lambda: sqlite3.connect(db))
     monkeypatch.setattr(measure, "_keepwarm_read_meters", lambda **_: {"available": False})
-    monkeypatch.setattr(measure, "_input_rate_mix_ratio", lambda days=30: 1.0)
+    monkeypatch.setattr(measure, "_runway_routing_lever", lambda days=30: {"state": "estimated", "factor": 1.0})
     monkeypatch.setattr(measure, "_get_merged_savings", lambda **_: {
         "total_cost_usd": 0.0,
         "model_routing": {"realized_cost_usd": 0.0},

@@ -315,7 +315,7 @@ def test_repriced_context_is_labelled_estimated_not_measured(m, tmp_path, monkey
     dollars the tier must read 'estimated', on the per-window line and on the
     top-level spine alike."""
     _temp_runway_db(m, tmp_path, monkeypatch)
-    monkeypatch.setattr(m, "_input_rate_mix_ratio", lambda days=30: 1.4)
+    monkeypatch.setattr(m, "_runway_routing_lever", lambda days=30: {"state": "estimated", "factor": 1.4})
     monkeypatch.setattr(m, "_keepwarm_read_meters", _fresh_meters())
     monkeypatch.setattr(m, "_get_merged_savings", lambda days=30, since=None: {
         "total_cost_usd": 120.0,
@@ -342,7 +342,7 @@ def test_weekly_spine_survives_the_overage_cache_hit(m, tmp_path, monkeypatch):
     ledger must be consulted exactly ONCE for the weekly key (proving the hit),
     the card must render, and the flag must survive the cache round-trip."""
     _temp_runway_db(m, tmp_path, monkeypatch)
-    monkeypatch.setattr(m, "_input_rate_mix_ratio", lambda days=30: 1.4)
+    monkeypatch.setattr(m, "_runway_routing_lever", lambda days=30: {"state": "estimated", "factor": 1.4})
     monkeypatch.setattr(m, "_keepwarm_read_meters", _fresh_meters())
     calls = []
 
@@ -366,7 +366,7 @@ def test_tier_stays_measured_when_nothing_was_repriced(m, tmp_path, monkeypatch)
     """The repair running and finding nothing to change leaves a pure event-time
     meter, which is honestly 'measured'. No gratuitous downgrade."""
     _temp_runway_db(m, tmp_path, monkeypatch)
-    monkeypatch.setattr(m, "_input_rate_mix_ratio", lambda days=30: 1.4)
+    monkeypatch.setattr(m, "_runway_routing_lever", lambda days=30: {"state": "estimated", "factor": 1.4})
     monkeypatch.setattr(m, "_keepwarm_read_meters", _fresh_meters())
     monkeypatch.setattr(m, "_get_merged_savings", lambda days=30, since=None: {
         "total_cost_usd": 120.0,

@@ -322,8 +322,10 @@ def test_estimated_avoided_volume_pools_join_headline_separately(measure):
         + r["estimated_volume_transformation_usd"], abs=0.05)
 
 
-def test_compression_reprice_and_runway_use_same_complete_mix_ratio(measure):
-    """The global input-rate ratio includes delegated usage on both surfaces."""
+def test_compression_reprice_uses_the_complete_mix_ratio(measure):
+    """The global input-rate ratio includes delegated usage. (The plan card no
+    longer shares it: its routing factor comes from the routing recipe, see
+    test_runway_routing_unify.py.)"""
     mod, tmp = measure
     conn = _fresh_env(tmp)
     _insert_quality_sessions(conn, tmp, n_sessions=40,
@@ -338,9 +340,6 @@ def test_compression_reprice_and_runway_use_same_complete_mix_ratio(measure):
     mod._model_mix_shares = lambda **kw: {
         "shares": dict(complete_current), "total_tokens": 1_000_000, "days": 30}
     mod._mix_from_session_rows = lambda cutoff: dict(main_only_current)
-    mod._keepwarm_read_meters = lambda **kw: {
-        "available": True, "stale": False, "five_hour_pct": 10.0,
-        "seven_day_pct": 20.0, "age_s": 1.0}
     original_summary = mod._get_savings_summary
 
     def savings_summary(**kw):
@@ -350,7 +349,6 @@ def test_compression_reprice_and_runway_use_same_complete_mix_ratio(measure):
 
     mod._get_savings_summary = savings_summary
     transformation = mod._estimate_before_after_savings(days=30)
-    runway = mod.runway_snapshot(days=30)
 
     rates = mod.PRICING_TIERS[mod._load_pricing_tier()]["claude_models"]
     # The BASELINE mix is keyed by the generic family name "sonnet" (current card, $2/MTok);
@@ -365,7 +363,6 @@ def test_compression_reprice_and_runway_use_same_complete_mix_ratio(measure):
     main_only = ((0.95 * rates["opus"]["input"] + 0.05 * base_sonnet)
                  / (0.60 * rates["opus"]["input"] + 0.40 * cur_sonnet))
     assert transformation["compression_reprice_ratio"] == pytest.approx(expected, rel=1e-4)
-    assert runway["routing_multiplier"] == pytest.approx(expected, abs=0.001)
     assert transformation["compression_reprice_ratio"] != pytest.approx(main_only, rel=1e-4)
 
 

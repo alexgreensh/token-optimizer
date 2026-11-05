@@ -63,7 +63,7 @@ def _temp_trends(m, tmp_path, monkeypatch):
     conn.close()
     monkeypatch.setattr(m, "TRENDS_DB", dbp)
     monkeypatch.setattr(m, "_init_trends_db", lambda: sqlite3.connect(str(dbp)))
-    monkeypatch.setattr(m, "_input_rate_mix_ratio", lambda days=30: 1.4)
+    monkeypatch.setattr(m, "_runway_routing_lever", lambda days=30: {"state": "estimated", "factor": 1.4})
 
 
 def test_fresh_meter_renders_and_is_not_flagged_stale(m, tmp_path, monkeypatch):

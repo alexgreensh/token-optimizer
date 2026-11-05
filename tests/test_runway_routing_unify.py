@@ -147,6 +147,9 @@ def test_card_factor_reconciles_with_the_routing_recipe(m, monkeypatch):
 def test_heavier_mix_reports_heavier_direction(m, monkeypatch):
     _workload(m, monkeypatch, {OPUS: {"fresh_input": 9_000_000}, SONNET: {"fresh_input": 1_000_000}},
               {"opus": 0.5, "sonnet": 0.5})
+    # A net factor below 1.02 hides the card unless weekly savings keep it up.
+    monkeypatch.setattr(m, "_weekly_full_savings", lambda **kw: {
+        "saved_usd": 20.0, "start": datetime.now().isoformat()})
     rw = m.runway_snapshot(days=30)
     assert rw["routing_multiplier"] < 1.0
     assert rw["routing_direction"] == "heavier"

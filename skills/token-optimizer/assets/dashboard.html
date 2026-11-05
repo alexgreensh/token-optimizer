@@ -4247,12 +4247,45 @@ var DB = (function() {
           : '<div class="metric-large" style="text-wrap:balance;text-shadow:none;">' + (usdHeadline || '<em style="font-style:normal;color:var(--c-accent-cyan);">more work</em>') + '</div>');
       // Visible: one short plain line. The technical explanation of how each
       // figure is built goes to the fold at the bottom of the card.
+      // Lever copy follows each factor's own value: a routing factor below 1 is
+      // a heavier mix and is never called lighter; pending or unavailable
+      // routing is stated instead of shown as a number.
+      var rwContextMult = Number(rw.context_multiplier);
+      var rwContextLighter = isFinite(rwContextMult) && rwContextMult > 1;
+      var rwContextText = rwContextLighter
+        ? 'Lighter context (&times;' + rw.context_multiplier + ')'
+        : 'Context is unchanged (&times;1)';
+      var rwRoutingMult = rw.routing_multiplier == null ? NaN : Number(rw.routing_multiplier);
+      var rwRoutingKnown = isFinite(rwRoutingMult) && rwRoutingMult > 0;
+      var rwPendingSessions = Number(rw.routing_pending_sessions);
+      var rwRoutingMissing = rw.routing_state === 'pending'
+        ? 'model routing is pending while ' + (rwPendingSessions > 0 ? rwPendingSessions + ' sessions are' : 'sessions are') + ' re-measured, so it is not included yet'
+        : 'model routing could not be measured, so it is not included';
+      var rwLeverDetail;
+      if (rwRoutingKnown && rwRoutingMult > 1) {
+        rwLeverDetail = rwContextText + (rwContextLighter ? ' and a' : '; a') + ' lighter model mix (&times;' + rwRoutingMult + ') let each token do more.';
+      } else if (rwRoutingKnown && rwRoutingMult < 1) {
+        rwLeverDetail = rwContextText + (rwContextLighter ? ' lets each token do more; a' : '; a') + ' heavier model mix (&times;' + rwRoutingMult + ') uses more of each token.';
+      } else if (rwRoutingKnown) {
+        rwLeverDetail = rwContextText + (rwContextLighter ? ' lets each token do more;' : ';') + ' the model mix is unchanged (&times;1).';
+      } else {
+        rwLeverDetail = rwContextText + (rwContextLighter ? ' lets each token do more;' : ';') + ' ' + rwRoutingMissing + '.';
+      }
+      var rwRoutingMethod = rwRoutingKnown
+        ? 'model mix &times;' + rwRoutingMult + ' (above 1 lighter, below 1 heavier, from the routing estimate on the Savings tab)'
+        : 'no model-mix factor (' + (rw.routing_state === 'pending' ? 'routing pending' : 'routing unavailable') + ')';
+      var rwRoutingCoverage = Number(rw.routing_coverage);
+      var rwRoutingExcluded = rw.routing_excluded_models || {};
+      var rwRoutingOut = [].concat(rwRoutingExcluded.premium || [], rwRoutingExcluded.unpriced || [], rwRoutingExcluded.free || []);
+      var rwRoutingScope = (rwRoutingKnown && isFinite(rwRoutingCoverage) && rwRoutingCoverage > 0)
+        ? ' The model mix compares ' + Math.round(rwRoutingCoverage * 100) + '% of this window&rsquo;s tokens' + (rwRoutingOut.length ? '; left out: ' + esc(rwRoutingOut.join(', ')) : '') + '.'
+        : '';
       var rwEfficiencyDetail = rwHasCostEfficiency
         ? 'A comparable session fell from <strong>' + rwMoney(rwBeforeCost) + '</strong> to <strong>' + rwMoney(rwAfterCost) + '</strong>' + (rwCostCutDisplay !== null ? ' (about ' + rwCostCutDisplay + '% cheaper)' : '') + '.'
-        : 'Lighter context (&times;' + rw.context_multiplier + ') and lighter models (&times;' + rw.routing_multiplier + ') let each token do more.';
+        : rwLeverDetail;
       var rwEfficiencyMethod = rwHasCostEfficiency
         ? 'This cost-efficiency lens combines lighter context, the cache re-read cascade, and model routing.'
-        : 'Lighter context &times;' + rw.context_multiplier + ' and lighter models &times;' + rw.routing_multiplier + ' give a per-token throughput multiplier, shown separately from the window headroom and dollar figures.';
+        : 'Context &times;' + rw.context_multiplier + ' and ' + rwRoutingMethod + ' give a per-token throughput multiplier, shown separately from the window headroom and dollar figures.' + rwRoutingScope;
       var rwTokenFloorDetail = (rwTokenFloorPct !== null)
         ? '<div class="plain-line">About <strong>' + fn(rwSavedTokens) + '</strong> tokens never had to be sent, roughly ' + rwTokenFloorPct + '% of what would have been.</div>'
         : '';
@@ -4285,7 +4318,7 @@ var DB = (function() {
         // limits.", a continuation of the headline that reads as a truncated
         // fragment once it wraps to its own line, and the limit panels below
         // already establish which limits are meant.
-        '<p style="margin:var(--s-3) 0 var(--s-4);color:var(--c-text-main);font-size:17px;line-height:1.6;text-wrap:pretty;">Token Optimizer keeps junk out of context and runs routine turns on lighter models, so more of your plan goes to real work instead of waste.</p>' +
+        '<p style="margin:var(--s-3) 0 var(--s-4);color:var(--c-text-main);font-size:17px;line-height:1.6;text-wrap:pretty;">Token Optimizer keeps junk out of context' + (rwRoutingKnown && rwRoutingMult > 1 ? ' and runs routine turns on lighter models' : '') + ', so more of your plan goes to real work instead of waste.</p>' +
         // Per-window bars when the meter is fresh enough; otherwise a note so the
         // card degrades instead of vanishing (the multiplier + savings above still
         // stand without the live meter).
@@ -4354,7 +4387,9 @@ var DB = (function() {
             (rwTokenFloorMethod ? '<p>' + rwTokenFloorMethod + '</p>' : '') +
             '<p>' + (rwHasCostEfficiency
               ? 'The &asymp;' + rwEfficiencyMult.toFixed(1) + '&times; figure is the before/after per-session cost ratio, not a sum of the token floor or per-window dollar figures.'
-              : 'The &asymp;' + rw.extra_work_pct + '% is a separate per-token throughput multiplier, not a sum of the per-window dollar figures.') + '</p>' +
+              : (rwHasLegacyMultiplier
+                ? 'The &asymp;' + rw.extra_work_pct + '% is a separate per-token throughput multiplier, not a sum of the per-window dollar figures.'
+                : 'The per-token throughput multiplier is separate from the per-window dollar figures.')) + '</p>' +
           '</div></details>' +
         '</div>' +
       '</div>';

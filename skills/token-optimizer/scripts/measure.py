@@ -51583,6 +51583,55 @@ def _input_rate_mix_ratio(days=30):
         return None
 
 
+def _runway_routing_lever(days=30):
+    """Routing lever of the plan card, read from _compute_model_routing_savings.
+
+    The factor is the standardized baseline cost over the standardized actual
+    cost of the same work (docs/METHODOLOGY.md section 3.2): class-weighted,
+    one reference card per family, premium/unpriced/free models outside both
+    arms. Above 1 the mix got lighter, below 1 heavier. ``factor`` is None and
+    ``state`` says why ("pending" while sessions are re-measured, else
+    "unavailable") when there is no routing evidence. Never raises.
+    """
+    try:
+        r = _compute_model_routing_savings(days=days) or {}
+    except Exception:
+        r = {}
+    out = {
+        "state": "unavailable", "factor": None,
+        "basis": r.get("realized_basis"),
+        "baseline_source": r.get("baseline_source"),
+        "excluded_models": {
+            "premium": list(r.get("premium_models") or []),
+            "unpriced": list(r.get("unpriced_models") or []),
+            "free": list(r.get("free_models") or []),
+        },
+        "coverage": r.get("compared_share"),
+        "pending_sessions": int(r.get("pending_sessions") or 0),
+        "standardized_baseline_cost_usd": r.get("standardized_baseline_cost_usd"),
+        "standardized_actual_cost_usd": r.get("standardized_actual_cost_usd"),
+    }
+    evidence = r.get("evidence")
+    if evidence == "pending":
+        out["state"] = "pending"
+        return out
+    base = float(r.get("standardized_baseline_cost_usd") or 0.0)
+    actual = float(r.get("standardized_actual_cost_usd") or 0.0)
+    if evidence == "estimated" and base > 0 and actual > 0:
+        out["state"] = "estimated"
+        out["factor"] = base / actual
+    return out
+
+
+def _routing_direction(factor):
+    """"lighter", "heavier" or "unchanged" for a rounded routing factor."""
+    if factor is None:
+        return None
+    if factor > 1:
+        return "lighter"
+    return "heavier" if factor < 1 else "unchanged"
+
+
 # Minimum per-window API-credit overage before its dollar line is shown. Below
 # this the figure is immaterial (e.g. a freshly reset weekly window worth a few
 # cents) and reads as noise, so the window shows only its headroom bars.
@@ -51660,14 +51709,16 @@ def runway_snapshot(days=30, now=None):
       context : tokens never sent at all (archive, skeletons, blocked reads).
                 Directly metered from savings_events + compression_events;
                 estimated tiers are not included.
-      routing : a lighter model mix burns less of the window per token.
-                Derived from THIS user's own baseline vs current mix -- never a
-                constant. A user who never left Opus correctly sees ~1.0x.
+      routing : the model-routing recipe's standardized baseline cost over its
+                standardized actual cost (_runway_routing_lever). Above 1 the
+                mix got lighter, below 1 heavier; a user who never left Opus
+                sees 1.0x. None, with routing_state "pending"/"unavailable",
+                when there is no routing evidence.
 
     HONESTY BOUNDARY: the routing lever needs to know how the provider weights
     models inside the 5h/7d windows. That weighting is not published, so this
-    uses the public input-rate ratios as a documented stand-in and labels the
-    result estimated. `proxy` in the returned dict says so out loud; any surface
+    uses public per-class API rates (one reference card per family) as a
+    documented stand-in and labels the result estimated. `proxy` in the returned dict says so out loud; any surface
     rendering this MUST carry that through rather than printing a bare number.
 
     Returns None when there is nothing trustworthy to say: no meter reading at
@@ -51720,14 +51771,14 @@ def runway_snapshot(days=30, now=None):
             return None
         context_mult = (consumed + context_saved) / consumed if consumed > 0 else 1.0
 
-        # --- routing lever: this user's own shift, priced by input rates ---
-        routing_mult = _input_rate_mix_ratio(days=days)
-        if routing_mult is None or routing_mult <= 0:
-            if not weekly_full:
-                return None
-            routing_mult = 1.0
+        # --- routing lever: the model-routing recipe's own standardized ratio ---
+        # Pending or unavailable routing is left out of the product and the
+        # state is returned, never replaced by a silent 1.0.
+        routing = _runway_routing_lever(days=days)
+        routing_state = routing.get("state")
+        routing_mult = round(routing["factor"], 3) if routing.get("factor") else None
 
-        mult = context_mult * routing_mult
+        mult = context_mult * (routing_mult if routing_mult is not None else 1.0)
         # Below ~1.02 there is no story worth telling and rounding noise would
         # dominate; say nothing rather than dress up a rounding artefact.
         if mult < 1.02 and not weekly_full:
@@ -51970,7 +52021,16 @@ def runway_snapshot(days=30, now=None):
             "tier": "estimated",
             "multiplier": round(mult, 2),
             "context_multiplier": round(context_mult, 4),
-            "routing_multiplier": round(routing_mult, 3),
+            "routing_multiplier": routing_mult,
+            "routing_state": routing_state,
+            "routing_direction": _routing_direction(routing_mult),
+            "routing_pending_sessions": routing.get("pending_sessions", 0),
+            "routing_basis": routing.get("basis"),
+            "routing_baseline_source": routing.get("baseline_source"),
+            "routing_excluded_models": routing.get("excluded_models"),
+            "routing_coverage": routing.get("coverage"),
+            "routing_standardized_baseline_cost_usd": routing.get("standardized_baseline_cost_usd"),
+            "routing_standardized_actual_cost_usd": routing.get("standardized_actual_cost_usd"),
             "extra_work_pct": round((mult - 1) * 100, 1),
             "tokens_consumed": int(consumed),
             "tokens_consumed_basis": spent_basis["basis"] if spent_basis else None,
@@ -52014,7 +52074,7 @@ def runway_snapshot(days=30, now=None):
                       "30 days; window comparisons are estimates." if weekly_full else ("Your window usage is measured; the “without” "
                       "comparison and routing dollars are estimated (the provider "
                       "does not publish how it weights models inside a window, so "
-                      "public input-rate ratios stand in). Per-window dollars reuse "
+                      "public per-class API rates stand in). Per-window dollars reuse "
                       "the metered savings ledger (context tokens never sent, priced "
                       "at input rates, plus a routing estimate) and are not derived "
                       "from the throughput multipliers.")),
@@ -53532,6 +53592,8 @@ def _compute_model_routing_savings(days=30, since=None):
             priced_usage[m].get(k, 0) * _rates(m)[k] for m in kept_models for k in _ROUTING_CLASSES
         ) / 1_000_000
         realized_cost = max(0.0, standardized_baseline - standardized_actual) if base_priced and kept_models else 0.0
+        compared_tokens = sum(kept_totals.values())
+        window_tokens = unpriced_tokens + free_tokens + pooled
 
         # POTENTIAL: a fixed share of remaining Opus fresh input and output, priced
         # at each Opus model's own card minus the current Sonnet card. It is
@@ -53606,6 +53668,9 @@ def _compute_model_routing_savings(days=30, since=None):
             "standardized_actual_cost_usd": round(standardized_actual, 4),
             "actual_cost_usd": round(actual_cost, 4),
             "generation_price_delta_usd": round(actual_cost - standardized_actual, 4),
+            # Share of the window's class tokens inside both arms (premium,
+            # unpriced and free models are outside).
+            "compared_share": round(compared_tokens / window_tokens, 4) if window_tokens > 0 else 0.0,
             "evidence": "estimated",
         }
     except Exception:

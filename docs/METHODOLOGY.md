@@ -141,7 +141,7 @@ recorded session.
 | Routing what-if | If about 20% of Opus work ran on the current Sonnet: fresh input and output only (`_ROUTABLE_OPUS_FRACTION`) | Assumption, never added |
 | Your transformation | Cost per unit of work now vs the old way. Within ±5% it reads "no measurable change" (`_TRANSFORMATION_FLAT_BAND`) | Cross-check, never the headline |
 | Token card | Metered tokens plus four estimate pools (MCP caps, hints, verbosity, lean resumes). Repeat reads and routing are not in it | Its own scope, labelled |
-| Plan card | Extra work per token from saved context, against your live rate-limit windows. Hidden below a 2% change | Its own scope, labelled |
+| Plan card | Extra work per token: saved context times the model-mix factor, against your live rate-limit windows. The model-mix factor is section 3.2's standardized baseline cost divided by its standardized actual cost (`_runway_routing_lever`): same baseline, reference cards, class weights and exclusions. Above 1 the mix got lighter, below 1 heavier. While routing is pending or unavailable the card says so and leaves it out of the factor. Hidden below a 2% change | Its own scope, labelled |
 
 ---
 

@@ -184,7 +184,7 @@ def test_runway_window_keeps_disjoint_logged_savings(measure, tmp_path, monkeypa
     monkeypatch.setattr(measure, "_dashboard_spent_token_basis",
                         lambda conn, days=30: {"tokens": 100_000_000,
                                                "basis": "test", "complete": True})
-    monkeypatch.setattr(measure, "_input_rate_mix_ratio", lambda days=30: 1.4)
+    monkeypatch.setattr(measure, "_runway_routing_lever", lambda days=30: {"state": "estimated", "factor": 1.4})
     monkeypatch.setattr(measure, "_keepwarm_read_meters", lambda **_: {
         "available": True, "stale": False, "five_hour_pct": 10.0,
         "seven_day_pct": 10.0, "seven_day_resets_at": None,

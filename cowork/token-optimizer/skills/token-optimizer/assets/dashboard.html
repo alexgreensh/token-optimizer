@@ -4263,9 +4263,11 @@ var DB = (function() {
         : 'model routing could not be measured, so it is not included';
       var rwLeverDetail;
       if (rwRoutingKnown && rwRoutingMult > 1) {
-        rwLeverDetail = rwContextText + (rwContextLighter ? ' and a' : '; a') + ' lighter model mix (&times;' + rwRoutingMult + ') let each token do more.';
+        rwLeverDetail = rwContextText + (rwContextLighter
+          ? ' and a lighter model mix (&times;' + rwRoutingMult + ') let each token do more.'
+          : '; a lighter model mix (&times;' + rwRoutingMult + ') lets each token do more.');
       } else if (rwRoutingKnown && rwRoutingMult < 1) {
-        rwLeverDetail = rwContextText + (rwContextLighter ? ' lets each token do more; a' : '; a') + ' heavier model mix (&times;' + rwRoutingMult + ') uses more of each token.';
+        rwLeverDetail = rwContextText + (rwContextLighter ? ' lets each token do more; a' : '; a') + ' heavier model mix (&times;' + rwRoutingMult + ') means each token uses more of your plan.';
       } else if (rwRoutingKnown) {
         rwLeverDetail = rwContextText + (rwContextLighter ? ' lets each token do more;' : ';') + ' the model mix is unchanged (&times;1).';
       } else {
@@ -4278,7 +4280,7 @@ var DB = (function() {
       var rwRoutingExcluded = rw.routing_excluded_models || {};
       var rwRoutingOut = [].concat(rwRoutingExcluded.premium || [], rwRoutingExcluded.unpriced || [], rwRoutingExcluded.free || []);
       var rwRoutingScope = (rwRoutingKnown && isFinite(rwRoutingCoverage) && rwRoutingCoverage > 0)
-        ? ' The model mix compares ' + Math.round(rwRoutingCoverage * 100) + '% of this window&rsquo;s tokens' + (rwRoutingOut.length ? '; left out: ' + esc(rwRoutingOut.join(', ')) : '') + '.'
+        ? ' The model mix compares ' + Math.round(rwRoutingCoverage * 100) + '% of the last 30 days&rsquo; tokens' + (rwRoutingOut.length ? '; left out: ' + esc(rwRoutingOut.join(', ')) : '') + '.'
         : '';
       var rwRoutingUnsplit = Number(rw.routing_unsplit_tokens);
       if (rwRoutingUnsplit > 0) {
@@ -4724,6 +4726,12 @@ var DB = (function() {
       (mr.evidence === 'pending'
         ? '<p class="plain-line routing-pending">Model routing: re-measuring (' + Number(mr.pending_sessions || 0).toLocaleString() +
           ' session' + (Number(mr.pending_sessions) === 1 ? '' : 's') + ' left). It is added to this total when the re-measurement finishes.</p>' : '') +
+      // Usage without a token-class split (Cursor totals, model-daily-only
+      // history, legacy rows) sits outside both routing arms. Say so instead of
+      // letting an empty or partial routing figure read as complete coverage.
+      (Number(mr.unsplit_tokens) > 0
+        ? '<p class="plain-line">' + Number(mr.unsplit_tokens).toLocaleString() +
+          ' tokens without a token-class split are left out of model routing.</p>' : '') +
       fold('Breakdown and method',
         countedList([
           'Includes the later benefit of context removed during this period. Initial removals are counted once.',
@@ -4801,6 +4809,9 @@ var DB = (function() {
         '<p class="plain-line">Same four parts as the monthly total, added up since install.</p>' +
         fold('Breakdown and history',
           '<p>Model routing: <strong>' + money(siaRouting) + '</strong> (estimated).</p>' +
+          (Number(sia.routing_unsplit_tokens) > 0
+            ? '<p>' + Number(sia.routing_unsplit_tokens).toLocaleString() +
+              ' tokens without a token-class split are left out of model routing.</p>' : '') +
           '<p>Repeat reads avoided: <strong>' + money(siaParts.reread) + '</strong> (modeled).</p>' +
           '<p>Logged actions: <strong>' + money(siaParts.logged) + '</strong>.</p>' +
           '<p>Other estimates: <strong>' + money(sia.estimated_usd) + '</strong>.</p>' +

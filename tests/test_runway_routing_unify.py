@@ -259,6 +259,30 @@ def test_factor_above_one_renders_lighter():
     assert "lighter model mix" in text.lower()
 
 
+def test_lighter_mix_verb_agrees_with_its_subject():
+    # Context unchanged: the mix alone is the subject, so the verb is "lets".
+    text = _card_text(_rw(context_multiplier=1.0, routing_multiplier=1.04,
+                          routing_direction="lighter")).lower()
+    assert "lets each token do more" in text
+    assert "let each token do more" not in text
+    # Lighter context AND a lighter mix: a compound subject takes "let".
+    text = _card_text(_rw(context_multiplier=1.08, routing_multiplier=1.04,
+                          routing_direction="lighter")).lower()
+    assert "let each token do more" in text
+
+
+def test_heavier_mix_names_the_plan_cost():
+    text = _card_text(_rw()).lower()
+    assert "means each token uses more of your plan" in text
+    assert "uses more of each token" not in text
+
+
+def test_routing_coverage_names_the_30_day_window():
+    text = _card_text(_rw(routing_coverage=0.5)).lower()
+    assert "compares 50% of the last 30 days" in text
+    assert "of this window" not in text
+
+
 def test_pending_routing_renders_pending_not_a_number():
     text = _card_text(_rw(routing_multiplier=None, routing_state="pending", routing_direction=None,
                           routing_pending_sessions=4, extra_work_pct=8.0))

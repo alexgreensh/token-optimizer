@@ -82,8 +82,9 @@ What moving work off premium models saved, compared with your own mix before ins
 - **Left out:** premium models you chose (for example Fable), models with no known price,
   and usage without a token-class split.
 - **Coverage:** unsplit usage is reported separately and stays outside comparison
-  coverage. With no comparable workload, routing is unavailable. The plan card
-  discloses the excluded unsplit token count, including when routing is unavailable.
+  coverage. With no comparable workload, routing is unavailable. The plan card,
+  the Savings tab, the since-install card and the CLI report disclose the excluded
+  unsplit token count, including when routing is unavailable.
 - **Pending:** while sessions in the window still need re-measuring, routing shows
   "pending" and is not added (R13).
 
@@ -142,7 +143,7 @@ recorded session.
 | Could save | Full-file writes that could be edits, stale re-reads | Opportunity, never added |
 | Cache drops | Sessions idle past the cache window that re-wrote the prefix | Opportunity, never added |
 | Routing what-if | If about 20% of Opus work ran on the current Sonnet: fresh input and output only (`_ROUTABLE_OPUS_FRACTION`) | Assumption, never added |
-| Your transformation | Cost per unit of work now vs the old way. Within ±5% it reads "no measurable change" (`_TRANSFORMATION_FLAT_BAND`) | Cross-check, never the headline |
+| Your transformation | Cost per unit of work now vs the old way. Its removed-token and estimated-volume add-backs reprice at section 3.2's standardized baseline-to-actual ratio (`_routing_mix_reprice_ratio`), the same factor the Savings surfaces publish; pending or unavailable routing reprices neutrally. Within ±5% it reads "no measurable change" (`_TRANSFORMATION_FLAT_BAND`) | Cross-check, never the headline |
 | Token card | Metered tokens plus four estimate pools (MCP caps, hints, verbosity, lean resumes). Repeat reads and routing are not in it | Its own scope, labelled |
 | Plan card | Extra work per token: saved context times the model-mix factor, against your live rate-limit windows. The model-mix factor is section 3.2's standardized baseline cost divided by its standardized actual cost (`_runway_routing_lever`): same baseline, reference cards, class weights and exclusions. Above 1 the mix got lighter, below 1 heavier. While routing is pending or unavailable the card says so and leaves it out of the factor. Hidden below a 2% change | Its own scope, labelled |
 

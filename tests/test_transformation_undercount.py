@@ -19,6 +19,7 @@ window's real spend:
 Run: python3 -m pytest tests/test_transformation_undercount.py -v
 """
 import importlib
+import inspect
 import json
 import sqlite3
 import sys
@@ -322,10 +323,13 @@ def test_estimated_avoided_volume_pools_join_headline_separately(measure):
         + r["estimated_volume_transformation_usd"], abs=0.05)
 
 
-def test_compression_reprice_uses_the_complete_mix_ratio(measure):
-    """The global input-rate ratio includes delegated usage. (The plan card no
-    longer shares it: its routing factor comes from the routing recipe, see
-    test_runway_routing_unify.py.)"""
+def test_compression_reprice_uses_the_routing_recipe_ratio(measure):
+    """The add-back reprice is the routing recipe's standardized baseline/actual
+    ratio -- the same factor the Savings tab and the plan card publish. It
+    inherits exact-card pricing (no family or default fallback), premium
+    exclusion, reference cards and the pending gate; it is NOT a second
+    input-rate mix (the retired path priced unknown models as Sonnet, let
+    premium burn into the current side and had no pending gate)."""
     mod, tmp = measure
     conn = _fresh_env(tmp)
     _insert_quality_sessions(conn, tmp, n_sessions=40,
@@ -333,13 +337,8 @@ def test_compression_reprice_uses_the_complete_mix_ratio(measure):
     conn.commit()
     conn.close()
 
-    baseline = {"opus": 0.95, "sonnet": 0.05}
-    complete_current = {OPUS: 0.20, SONNET: 0.80}
-    main_only_current = {OPUS: 0.60, SONNET: 0.40}
-    mod._pretool_baseline_mix = lambda: dict(baseline)
-    mod._model_mix_shares = lambda **kw: {
-        "shares": dict(complete_current), "total_tokens": 1_000_000, "days": 30}
-    mod._mix_from_session_rows = lambda cutoff: dict(main_only_current)
+    mod._pretool_baseline_mix = lambda: {"opus": 0.95, "sonnet": 0.05}
+    mod._mix_from_session_rows = lambda cutoff: {OPUS: 0.60, SONNET: 0.40}
     original_summary = mod._get_savings_summary
 
     def savings_summary(**kw):
@@ -348,22 +347,41 @@ def test_compression_reprice_uses_the_complete_mix_ratio(measure):
         return summary
 
     mod._get_savings_summary = savings_summary
-    transformation = mod._estimate_before_after_savings(days=30)
+    recipe = {"evidence": "estimated",
+              "standardized_baseline_cost_usd": 12.0,
+              "standardized_actual_cost_usd": 8.0}
+    # The published caller hands the recipe result it already computed (with
+    # its `since` window); a direct call resolves the recipe itself.
+    r = mod._estimate_before_after_savings(days=30, model_routing=recipe)
+    assert r["compression_reprice_ratio"] == pytest.approx(1.5)
+    mod._compute_model_routing_savings = lambda days=30, since=None: recipe
+    r = mod._estimate_before_after_savings(days=30)
+    assert r["compression_reprice_ratio"] == pytest.approx(1.5)
+    # Pending and unavailable routing reprice neutrally, never guessed.
+    for state in ("pending", "unavailable"):
+        r = mod._estimate_before_after_savings(
+            days=30, model_routing={**recipe, "evidence": state})
+        assert r["compression_reprice_ratio"] == 1.0
 
-    rates = mod.PRICING_TIERS[mod._load_pricing_tier()]["claude_models"]
-    # The BASELINE mix is keyed by the generic family name "sonnet" (current card, $2/MTok);
-    # the CURRENT mixes are keyed by the concrete id `claude-sonnet-4-6`, which since
-    # 2026-08-29 resolves to the `sonnet_legacy` card ($3/MTok) because Sonnet 4.6 and
-    # Sonnet 5 do not share a price. Each side of the ratio must use the card its own
-    # model ids actually resolve to, or this test asserts against a rate nothing is billed at.
-    base_sonnet = rates[mod._normalize_model_name("sonnet")]["input"]
-    cur_sonnet = rates[mod._normalize_model_name(SONNET)]["input"]
-    expected = ((0.95 * rates["opus"]["input"] + 0.05 * base_sonnet)
-                / (0.20 * rates["opus"]["input"] + 0.80 * cur_sonnet))
-    main_only = ((0.95 * rates["opus"]["input"] + 0.05 * base_sonnet)
-                 / (0.60 * rates["opus"]["input"] + 0.40 * cur_sonnet))
-    assert transformation["compression_reprice_ratio"] == pytest.approx(expected, rel=1e-4)
-    assert transformation["compression_reprice_ratio"] != pytest.approx(main_only, rel=1e-4)
+
+def test_transformation_reprice_has_no_second_routing_implementation(measure):
+    """Guard: a published figure must not grow a private routing-price path
+    again. `_input_rate_mix_ratio` priced unknown models at the Sonnet card,
+    counted premium models in the current burn, used bare family cards and had
+    no pending gate -- every defect docs/METHODOLOGY.md section 3.2 forbids."""
+    mod, tmp = measure
+    assert not hasattr(mod, "_input_rate_mix_ratio")
+    src = inspect.getsource(mod._estimate_before_after_savings)
+    assert "_input_rate_mix_ratio" not in src
+    # The reprice helper answers only from the shared recipe payload.
+    assert mod._routing_mix_reprice_ratio(None) == 1.0
+    assert mod._routing_mix_reprice_ratio({"evidence": "pending"}) == 1.0
+    assert mod._routing_mix_reprice_ratio(
+        {"evidence": "estimated", "standardized_baseline_cost_usd": 9.0,
+         "standardized_actual_cost_usd": 3.0}) == pytest.approx(3.0)
+    assert mod._routing_mix_reprice_ratio(
+        {"evidence": "estimated", "standardized_baseline_cost_usd": 0.0,
+         "standardized_actual_cost_usd": 3.0}) == 1.0
 
 
 def test_short_sessions_without_breakdown_contribute_nothing(measure):

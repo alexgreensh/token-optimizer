@@ -93,7 +93,15 @@ jobs:
       - name: Install pinned adapter dependencies
         run: npm ci --ignore-scripts
       - name: Build and test OpenClaw
-        run: npm run build && bun test src
+        # One process per test file: several suites stub Module._load or HOME at
+        # load time, and Bun's shared process leaks that state across files.
+        run: |
+          npm run build
+          fail=0
+          for f in $(find src -name '*.test.*' | sort); do
+            bun test "./$f" || { echo "::error file=openclaw/$f::bun test failed"; fail=1; }
+          done
+          exit $fail
 
   pi-native:
     runs-on: ubuntu-latest

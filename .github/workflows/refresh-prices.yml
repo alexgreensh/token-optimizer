@@ -84,7 +84,7 @@ jobs:
           set -euo pipefail
           python -m pip install --quiet pytest
           python -m pytest tests/ -q
-          (cd openclaw && bun test src)
+          (cd openclaw && for f in $(find src -name '*.test.*' | sort); do bun test "./$f"; done)
           (cd opencode && bun install --frozen-lockfile --ignore-scripts && bun test)
 
       - name: Release the new prices

@@ -37,6 +37,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  measure-split:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify split, candidate npm payload, and raw golden bytes
+        run: python scripts/measure_split_ci.py --work .scratch-u0/ci --shard ${{ matrix.shard }}/4
+
   pytest:
     runs-on: ubuntu-latest
     # A hung test must fail the job, not hold a runner for the 6 hour default.

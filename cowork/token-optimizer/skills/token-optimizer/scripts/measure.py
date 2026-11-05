@@ -14890,8 +14890,9 @@ def _backfill_daily_usage(conn, days=30, budget_seconds=20.0):
             break
         if not (jsonl_path and str(jsonl_path).endswith(".jsonl")):
             # A hook-rollup adapter row has no transcript to split by day:
-            # settle it now so it is never rescanned.
-            updates.append(("{}", None, None, None, "", jsonl_path))
+            # settle it now so it is never rescanned. The other daily fields
+            # stay NULL: no evidence was produced, so nothing is claimed.
+            updates.append(("{}", None, None, None, "", None, None, None, jsonl_path))
             continue
         if not os.path.exists(jsonl_path):
             # Transcript missing, maybe only for now (a synced folder not yet
@@ -14899,13 +14900,22 @@ def _backfill_daily_usage(conn, days=30, budget_seconds=20.0):
             # file returns, even with an old mtime that collect would skip.
             continue
         try:
-            usage = _session_daily_usage(jsonl_path, conn=conn, live_owners=live_owners)
+            evidence = _session_activity_evidence(jsonl_path, conn=conn, live_owners=live_owners)
         except Exception:
-            usage = {}
-        dated = _activity_days(usage)
-        last_day = max(dated) if dated else None
-        updates.append((json.dumps(usage), _canonical_session_uuid(jsonl_path) if jsonl_path else None,
-                        dated[0] if dated else None, last_day, last_day or "", jsonl_path))
+            evidence = None
+        if evidence is None:
+            updates.append(("{}", _canonical_session_uuid(jsonl_path) if jsonl_path else None,
+                            None, None, "", None, None, None, jsonl_path))
+            continue
+        bounds = evidence["bounds"]
+        updates.append((json.dumps(evidence["daily_usage"]),
+                        _canonical_session_uuid(jsonl_path) if jsonl_path else None,
+                        bounds[0] if bounds else None, bounds[-1] if bounds else None,
+                        bounds[-1] or "",
+                        json.dumps(evidence["parent_usage"]),
+                        json.dumps(evidence["calls"]),
+                        json.dumps(evidence["metrics"]),
+                        jsonl_path))
     if not updates:
         return 0
 
@@ -14914,7 +14924,9 @@ def _backfill_daily_usage(conn, days=30, budget_seconds=20.0):
             """UPDATE session_log
                SET daily_usage_json = ?,
                    session_uuid = COALESCE(session_uuid, ?),
-                   first_activity_day = ?, last_activity_day = ?, date = ?
+                   first_activity_day = ?, last_activity_day = ?, date = ?,
+                   parent_daily_usage_json = ?, daily_calls_json = ?,
+                   daily_metrics_json = ?
                WHERE jsonl_path = ?""",
             updates,
         )
@@ -27938,6 +27950,62 @@ def _session_daily_usage(filepath, parsed=None, subagent_files=None, conn=None, 
     return _daily_usage_from_merged(merged)
 
 
+def _session_activity_evidence(filepath, parsed=None, subagent_files=None, conn=None, live_owners=None):
+    """Every dated per-day field collect would store for one transcript.
+
+    Returns {"daily_usage", "parent_usage", "calls", "metrics", "bounds"} or
+    None when the transcript cannot be parsed. `daily_usage` is the combined
+    parent+delegated map deduplicated by request id; `parent_usage` is the
+    parent file's own buckets after the same claim netting collect applies, so
+    a backfilled row carries the same provenance a fresh collect would write.
+    `bounds` is the sorted union of usage and metadata activity days, matching
+    the collector's first/last activity derivation.
+    """
+    parsed = parsed if parsed is not None else _parse_session_jsonl(filepath)
+    if parsed is None:
+        return None
+    if subagent_files is None:
+        subagent_files = _session_subagent_files(filepath)
+    metrics = _session_daily_metrics(parsed, subagent_files)
+    merged = _session_merged_requests(filepath, parsed, subagent_files)
+    parent_parsed = parsed
+    if merged is None:
+        # Adapter output without per-request detail: sum the per-file buckets.
+        daily_usage = {}
+        for p in [parsed] + [_parse_session_jsonl(sub_jf) for sub_jf in subagent_files]:
+            _merge_daily_usage(daily_usage, (p or {}).get("daily_usage") or {})
+        call_requests = parsed.get("request_usage") or {}
+    else:
+        net_merged = merged
+        call_requests = merged
+        if conn is not None:
+            if live_owners is None:
+                live_owners = _live_usage_owners(conn)
+            owner_id = _usage_owner_id(filepath)
+            counted, own = _claim_state(conn, owner_id, merged, live_owners)
+            if counted or own:
+                net_merged = _net_of_counted(merged, counted, own)
+                parent_parsed = _parsed_net_of_counted(parsed, counted, own)
+            if _stable_hash63(owner_id) in live_owners:
+                retained = _retained_requests(conn, owner_id, merged)
+                if retained:
+                    net_merged = {**net_merged, **retained}
+                    parent_parsed = _parsed_with_requests(
+                        parent_parsed,
+                        {**(parent_parsed.get("request_usage") or {}), **retained})
+        daily_usage = _daily_usage_from_merged(net_merged)
+        call_requests = net_merged
+    calls = dict(parent_parsed.get("daily_calls") or {})
+    for u in call_requests.values():
+        if not u.get("advisor") and u.get("n", 1) and u.get("day"):
+            day = u["day"]
+            calls[day] = calls.get(day, 0) + 1
+    bounds = sorted(set(_activity_days(daily_usage)) | set(_activity_days(metrics)))
+    return {"daily_usage": daily_usage,
+            "parent_usage": parent_parsed.get("daily_usage") or {},
+            "calls": calls, "metrics": metrics, "bounds": bounds}
+
+
 def _session_rank(message_count, input_tokens, output_tokens):
     """How complete a copy of a session is. Copies are prefixes of the live file,
     so the larger one is the superset. Shared by both dedupe paths so they always
@@ -28381,7 +28449,10 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
         # Single pass over subagent files to avoid duplicate glob. Includes
         # subagents stored under other copies of this session (worktrees).
         subagent_files = _session_subagent_files(filepath)
-        parsed["daily_metrics"] = _session_daily_metrics(parsed, subagent_files)
+        # Keep parsed["daily_metrics"] parent-only: _session_daily_metrics merges
+        # subagent days into a copy, and mutating the memoized parse result would
+        # double-count subagent metrics on any later pass over the same file.
+        session_daily_metrics = _session_daily_metrics(parsed, subagent_files)
         for sub_jf in subagent_files:
             sub_skills, sub_agents = _extract_skills_and_agents_from_subagent(sub_jf)
             for sk, cnt in sub_skills.items():
@@ -28472,7 +28543,7 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
                         int(u.get("inp") or 0) + int(u.get("cc") or 0) + int(u.get("out") or 0))
 
         dated = _activity_days(daily_usage)
-        activity_bounds = sorted(set(dated + _activity_days(parsed.get("daily_metrics") or {})))
+        activity_bounds = sorted(set(dated + _activity_days(session_daily_metrics)))
         date = activity_bounds[-1] if activity_bounds else ""
         skills_used = parsed["skills_used"]
         subagents_used = parsed["subagents_used"]
@@ -28642,7 +28713,7 @@ def collect_sessions(days=90, quiet=False, rebuild=False):
             "UPDATE session_log SET first_activity_day=?, last_activity_day=?, transcript_mtime=?, "
             "parent_daily_usage_json=?, daily_calls_json=?, daily_metrics_json=? WHERE jsonl_path=?",
             (activity_bounds[0] if activity_bounds else None, activity_bounds[-1] if activity_bounds else None, mtime,
-             json.dumps(parent_daily), json.dumps(calls), json.dumps(parsed.get("daily_metrics") or {}), str(filepath)))
+             json.dumps(parent_daily), json.dumps(calls), json.dumps(session_daily_metrics), str(filepath)))
         if merged is not None:
             _claim_requests(conn, owner_id, merged)
             live_owners.add(_stable_hash63(owner_id))
@@ -29555,16 +29626,22 @@ def _query_trends_db(conn, days):
     ).fetchall()
     billable_model_mix = {r["model"]: r["tot"] for r in model_rows}
     reported_model_mix = {}
+    reported_combined_rows = 0
     for parent_raw, combined_raw in conn.execute(
             "SELECT parent_daily_usage_json,daily_usage_json FROM session_log WHERE COALESCE(is_sidechain,0)=0"):
-        usage = _safe_json_dict(parent_raw if parent_raw is not None else combined_raw)
+        raw, provenance = _spent_daily_usage(parent_raw, combined_raw)
+        usage = _safe_json_dict(raw)
+        in_window = False
         for day in _activity_days(usage):
             if day < cutoff:
                 continue
+            in_window = True
             for model, bucket in usage[day].items():
                 normalized = _normalize_model_name(model)
                 if normalized and isinstance(bucket, dict):
                     reported_model_mix[normalized] = reported_model_mix.get(normalized, 0) + _bucket_int(bucket.get("fresh_input")) + _bucket_int(bucket.get("output"))
+        if provenance == "combined" and in_window:
+            reported_combined_rows += 1
     model_mix = reported_model_mix or billable_model_mix
 
     # Subagents
@@ -29815,6 +29892,7 @@ def _query_trends_db(conn, days):
         "subagents": subagents,
         "model_mix": model_mix,
         "billable_model_mix": billable_model_mix,
+        "model_mix_combined_fallback_rows": reported_combined_rows,
         "tool_calls": total_tools,
         "trajectory": {
             "snapshots": snapshots,
@@ -51964,7 +52042,9 @@ def _compound_structural(s, days, fallback_prefix):
     try:
         row = conn.execute(
             "SELECT COALESCE(SUM(api_calls),0), COALESCE(SUM(cache_create_1h_tokens),0), "
-            "COALESCE(SUM(cache_create_5m_tokens),0) FROM session_activity WHERE date >= ?",
+            "COALESCE(SUM(cache_create_5m_tokens),0), "
+            "COALESCE(SUM(CASE WHEN COALESCE(api_calls_known,0)=0 THEN 1 ELSE 0 END),0) "
+            "FROM session_activity WHERE date >= ?",
             (cutoff,),
         ).fetchone()
     finally:
@@ -51972,6 +52052,7 @@ def _compound_structural(s, days, fallback_prefix):
     sum_api_calls = int(row[0] or 0)
     sum_cc_1h = int(row[1] or 0)
     sum_cc_5m = int(row[2] or 0)
+    api_calls_unknown_days = int(row[3] or 0)
 
     per_session_prefix = _per_session_prefix_tokens(fallback=fallback_prefix)
     # Blended by the window's model mix, NOT the reporting session's model:
@@ -51988,6 +52069,11 @@ def _compound_structural(s, days, fallback_prefix):
     write_5m_savings = write_fraction * sum_cc_5m * write_5m_rate / 1_000_000
     return {
         "events": sum_api_calls,
+        # api_calls is a lower bound when any activity day lacks dated call
+        # evidence (daily_calls_json was never recorded): those days contribute
+        # NULL, not a measured zero, and are disclosed here.
+        "api_calls_complete": api_calls_unknown_days == 0,
+        "api_calls_unknown_days": api_calls_unknown_days,
         "tokens_saved": int(s * sum_api_calls + write_fraction * (sum_cc_1h + sum_cc_5m)),
         "read_savings_usd": round(read_savings, 4),
         "write_1h_savings_usd": round(write_1h_savings, 4),
@@ -53714,6 +53800,27 @@ def _session_token_vector(row):
 _DASHBOARD_SPENT_TOKEN_BASIS = (
     "deduplicated fresh_input + output by activity day (top-level)"
 )
+_DASHBOARD_SPENT_COMBINED_BASIS = (
+    "deduplicated fresh_input + output by activity day "
+    "(parent+delegated combined; top-level provenance incomplete)"
+)
+
+
+def _spent_daily_usage(parent_raw, combined_raw):
+    """Pick the daily-usage map behind a top-level (parent-only) figure.
+
+    parent_daily_usage_json is the parent transcript's own per-day buckets;
+    daily_usage_json merges delegated subagent requests too. Rows collected
+    before parent provenance existed fall back to the combined map, which must
+    be labelled rather than certified as top-level. Returns
+    (raw, provenance) with provenance in {"parent", "combined", "none"}; the
+    caller parses and validates `raw` itself.
+    """
+    if parent_raw is not None:
+        return parent_raw, "parent"
+    if combined_raw is not None:
+        return combined_raw, "combined"
+    return None, "none"
 
 
 def _dashboard_spent_token_basis(conn, days=30):
@@ -53721,6 +53828,8 @@ def _dashboard_spent_token_basis(conn, days=30):
 
     Unknown dates have no invented window placement. Report incomplete coverage
     even if an undated row's ingestion happens to fall outside this window.
+    Rows without parent provenance contribute their combined parent+delegated
+    usage but are counted and labelled, never silently certified top-level.
     """
     cutoff = (datetime.now() - timedelta(days=days)).date().isoformat()
     columns = {r[1] for r in conn.execute("PRAGMA table_info(session_log)")}
@@ -53728,9 +53837,9 @@ def _dashboard_spent_token_basis(conn, days=30):
     daily = "daily_usage_json" if "daily_usage_json" in columns else "NULL"
     side = "COALESCE(is_sidechain,0)" if "is_sidechain" in columns else "0"
     rows = conn.execute(f"SELECT {parent}, {daily} FROM session_log WHERE {side}=0").fetchall()
-    total, incomplete = 0, 0
+    total, incomplete, combined_rows = 0, 0, 0
     for parent_raw, combined_raw in rows:
-        raw = parent_raw if parent_raw is not None else combined_raw
+        raw, provenance = _spent_daily_usage(parent_raw, combined_raw)
         try:
             usage = json.loads(raw) if raw is not None else None
         except (TypeError, ValueError):
@@ -53738,16 +53847,23 @@ def _dashboard_spent_token_basis(conn, days=30):
         valid = isinstance(usage, dict)
         usage = usage if valid else {}
         dated = _activity_days(usage)
-        if not valid or (not usage and parent_raw is None) or any(day not in dated for day in usage):
+        if not valid or (not usage and provenance != "parent") or any(day not in dated for day in usage):
             incomplete += 1
+        in_window = False
         for day in dated:
             if day < cutoff:
                 continue
+            in_window = True
             for bucket in usage[day].values():
                 if isinstance(bucket, dict):
                     total += _bucket_int(bucket.get("fresh_input")) + _bucket_int(bucket.get("output"))
-    return {"tokens": int(total), "basis": _DASHBOARD_SPENT_TOKEN_BASIS,
-            "complete": incomplete == 0, "fallback_rows": incomplete}
+        if provenance == "combined" and in_window:
+            combined_rows += 1
+    return {"tokens": int(total),
+            "basis": _DASHBOARD_SPENT_COMBINED_BASIS if combined_rows else _DASHBOARD_SPENT_TOKEN_BASIS,
+            "complete": incomplete == 0 and combined_rows == 0,
+            "fallback_rows": incomplete,
+            "combined_fallback_rows": combined_rows}
 
 
 def _winsorized_mean_session(rows, cap_pct=_BASELINE_WINSOR_PCT):
@@ -54822,7 +54938,11 @@ def _price_parent_window(conn, where, params, tier):
         "FROM session_activity WHERE input_tokens IS NOT NULL "
         "AND COALESCE(is_sidechain, 0) = 0 " + where, params
     ).fetchall()
-    result = _price_parent_rows(rows, tier)
+    api_calls_unknown = conn.execute(
+        "SELECT COUNT(DISTINCT id) FROM session_activity WHERE input_tokens IS NOT NULL "
+        "AND COALESCE(is_sidechain,0)=0 AND COALESCE(api_calls_known,0)=0 " + where, params
+    ).fetchone()[0]
+    result = _price_parent_rows(rows, tier, api_calls_unknown=api_calls_unknown)
     if result:
         result["sessions"] = conn.execute(
             "SELECT COUNT(DISTINCT id) FROM session_activity WHERE input_tokens IS NOT NULL "
@@ -54830,7 +54950,7 @@ def _price_parent_window(conn, where, params, tier):
     return result
 
 
-def _price_parent_rows(rows, tier):
+def _price_parent_rows(rows, tier, api_calls_unknown=0):
     if not rows:
         return None
     default_model = _default_model_for_runtime()
@@ -54868,7 +54988,10 @@ def _price_parent_rows(rows, tier):
                                    tier=tier)
         usd += cost
     return {"sessions": len(rows), "usd": usd, "tokens": tokens,
-            "flat_usd": flat_usd, "api_calls": api_calls, "messages": messages}
+            "flat_usd": flat_usd, "api_calls": api_calls, "messages": messages,
+            # Sessions whose dated per-day call evidence was never recorded.
+            # api_calls is then a lower bound, not a measured total.
+            "api_calls_unknown": int(api_calls_unknown or 0)}
 
 
 _PRETOOL_ANCHOR_FILE = "workload_anchor_pretool.json"
@@ -55189,7 +55312,14 @@ def _session_weight_pool_savings(cutoff, days=30, tier=None, activity_window=Non
         # variant (which includes that drift) is disclosed separately below.
         b_calls, n_calls = before["api_calls"], now["api_calls"]
         b_msgs, n_msgs = before["messages"], now["messages"]
-        if b_calls > 0 and n_calls > 0:
+        # api_calls is only a trustworthy work unit when every session in the
+        # window has dated per-day call evidence; rows collected before
+        # daily_calls_json existed contribute a lower bound, not a measured
+        # total, so the unit falls back to messages rather than pretending.
+        b_calls_ok = not before.get("api_calls_unknown")
+        n_calls_ok = not now.get("api_calls_unknown")
+        calls_complete = b_calls_ok and n_calls_ok
+        if b_calls > 0 and n_calls > 0 and calls_complete:
             unit, b_units, n_units = "api_call", b_calls, n_calls
         elif b_msgs > 0 and n_msgs > 0:
             unit, b_units, n_units = "message", b_msgs, n_msgs
@@ -55212,7 +55342,7 @@ def _session_weight_pool_savings(cutoff, days=30, tier=None, activity_window=Non
         if unit == "api_call" and b_msgs > 0 and n_msgs > 0:
             crosscheck = {"unit": "message",
                           "transformation_usd": (b_flat / b_msgs - n_flat / n_msgs) * n_msgs}
-        elif unit == "message" and b_calls > 0 and n_calls > 0:
+        elif unit == "message" and b_calls > 0 and n_calls > 0 and calls_complete:
             crosscheck = {"unit": "api_call",
                           "transformation_usd": (b_flat / b_calls - n_flat / n_calls) * n_calls}
         if crosscheck is not None:
@@ -55265,6 +55395,12 @@ def _session_weight_pool_savings(cutoff, days=30, tier=None, activity_window=Non
             "engine_priced_actual_usd": n_usd,
             "price_mix_drift_usd": price_mix_drift,
             "capacity_assumption": capacity_note,
+            # Sessions in each window whose dated per-day call evidence was never
+            # recorded; api_calls above is a lower bound when either is nonzero.
+            "api_calls_unknown_sessions": {
+                "anchor": int(before.get("api_calls_unknown") or 0),
+                "current": int(now.get("api_calls_unknown") or 0),
+            },
         }
     except (sqlite3.Error, OSError, ValueError, TypeError, ZeroDivisionError):
         return None

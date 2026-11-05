@@ -156,18 +156,38 @@ recorded session.
   output from top-level requests, sliced by the calendar day of activity. Cache
   reads and writes are excluded. The separate `reported_*` fields retain the raw
   `/stats` observation count for explicitly labelled diagnostics only.
+  Top-level means the parent transcript's own requests: `parent_daily_usage_json`
+  supplies it directly. Rows collected before parent provenance existed fall back
+  to the combined parent+delegated map; those rows are counted in
+  `combined_fallback_rows`, the basis string says "combined", and `complete` is
+  false — legacy combined usage is never certified as top-level. The reported
+  model mix uses the same parent-then-combined selection and reports its own
+  `model_mix_combined_fallback_rows`.
 - **Every volume window** uses `session_activity`, a projection of the stored
   per-day, per-model billing classes. A session crossing a cutoff contributes
   only its in-window requests. `model_daily` and `daily_stats` use those same
   slices. `session_log.date` means last known activity day, with separate
   `first_activity_day`, `last_activity_day`, `transcript_mtime` and `collected_at`.
   File modification time and collection time never supply missing activity dates.
+  The projection unions billing days with `daily_metrics_json` days: a day with
+  dated user/tool/skill activity but no billed usage still emits a row carrying
+  its dated metadata and zero tokens, so metadata-only activity never disappears
+  from windows or rebuilt aggregates.
 - Messages, tools, skills and dispatches use dated records when available.
   Historical metadata without dated records uses a **lifetime session cohort**
   on the last known activity day. Duration, quality, stale-waste and historical
   gap statistics are cohort properties, not measurements of work performed that
   day. Daily session details label lifetime metadata separately from dated tokens
   and dollars. Cache-drop and stale-waste opportunities inherit this cohort limit.
+- Per-day API-call counts come from `daily_calls_json`. When that evidence was
+  never recorded the day contributes NULL, not a measured zero, and the
+  projection's `api_calls_known` flag exposes the gap. The migration allocates a
+  session's whole call count to its day only when the session has exactly one
+  proven activity day and no undated bucket; multi-day sessions keep unknown.
+  Work-unit figures (`_price_parent_window`, the structural compounding formula)
+  disclose `api_calls_unknown` sessions, and the api_call work unit is only used
+  when both eras have complete call evidence — otherwise the unit falls back to
+  messages rather than pricing a lower bound as measured.
 - Missing or invalid dates remain **incomplete coverage** and contribute no
   invented volume to a period. Lifetime session-cost queries still show retained
   estimates. Date queries sum only `on_date`; recent queries sum `in_window`, while

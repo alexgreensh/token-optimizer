@@ -69,6 +69,10 @@ def ensure_activity_view(conn):
         "model_usage_breakdown_json": "d.value",
         "daily_usage_json": "json_object(d.key, json(d.value))",
         "api_calls": f"json_extract({source('daily_calls_json')}, '$.\"' || d.key || '\"')",
+        # 1 only when dated per-day call evidence exists at all; a NULL
+        # api_calls then means a measured zero for that day, not missing data.
+        "api_calls_known": (f"CASE WHEN {source('daily_calls_json')} IS NOT NULL "
+                            f"AND json_valid({source('daily_calls_json')}) THEN 1 ELSE 0 END"),
     }
     cohort_defaults = {
         "message_count": "0", "duration_minutes": "0", "skills_json": "'{}'",
@@ -85,13 +89,35 @@ def ensure_activity_view(conn):
     # this view. Their migrations can fail or be retried independently.
     for name in ("id", "jsonl_path", "project", "is_sidechain", "session_uuid", "slug", "topic", "collected_at", "version"):
         overrides[name] = source(name, "s.rowid" if name == "id" else "NULL")
-    projection = ", ".join(f'{expr} AS "{name}"' for name, expr in overrides.items())
+    # Metadata-only activity days (user/tool activity with no billed usage that
+    # day) still belong to the projection: they carry message/tool/skill counts
+    # and hold the cohort fields on the session's last activity day. Token and
+    # model columns stay zero/empty rather than inventing billed volume.
+    metric_overrides = dict(overrides)
+    metric_overrides.update({
+        "input_tokens": "0", "output_tokens": "0", "cache_hit_rate": "0",
+        "cache_create_1h_tokens": "0", "cache_create_5m_tokens": "0",
+        "model_usage_json": "'{}'", "all_model_usage_json": "'{}'",
+        "model_usage_breakdown_json": "'{}'", "daily_usage_json": "'{}'",
+    })
+    usage_projection = ", ".join(f'{expr} AS "{name}"' for name, expr in overrides.items())
+    metric_projection = ", ".join(f'{expr} AS "{name}"' for name, expr in metric_overrides.items())
     usage = f"COALESCE({source('daily_usage_json')},{source('parent_daily_usage_json')})"
-    conn.execute(f"""CREATE TEMP VIEW session_activity AS SELECT {projection}
+    metrics = source("daily_metrics_json")
+    day_ok = ("length(d.key)=10 AND d.key GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' "
+              "AND date(d.key)=d.key AND d.type='object'")
+    conn.execute(f"""CREATE TEMP VIEW session_activity AS
+        SELECT {usage_projection}
         FROM main.session_log s, json_each(CASE WHEN json_valid({usage})
              THEN {usage} ELSE '{{}}' END) d
-        WHERE length(d.key)=10 AND d.key GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
-          AND date(d.key)=d.key AND d.type='object'""")
+        WHERE {day_ok}
+        UNION ALL
+        SELECT {metric_projection}
+        FROM main.session_log s, json_each(CASE WHEN json_valid({metrics})
+             THEN {metrics} ELSE '{{}}' END) d
+        WHERE {day_ok}
+          AND CASE WHEN json_valid({usage})
+               THEN json_extract({usage}, '$.\"' || d.key || '\"') END IS NULL""")
 
 
 def repair_activity_dates(conn):
@@ -102,14 +128,35 @@ def repair_activity_dates(conn):
     if conn.execute("SELECT 1 FROM schema_migrations WHERE name='activity_dating_v1'").fetchone():
         conn.commit()
         return False
+    columns = {r[1] for r in conn.execute("PRAGMA table_info(session_log)")}
+    metrics_col = "daily_metrics_json" if "daily_metrics_json" in columns else "NULL"
+    calls_col = "daily_calls_json" if "daily_calls_json" in columns else "NULL"
+    api_col = "api_calls" if "api_calls" in columns else "NULL"
     updates = []
-    for sid, raw in conn.execute("SELECT id,daily_usage_json FROM session_log"):
+    call_updates = []
+    for sid, raw, metrics_raw, api_calls, calls_raw in conn.execute(
+            f"SELECT id,daily_usage_json,{metrics_col},{api_col},{calls_col} FROM session_log"):
         try:
             usage = json.loads(raw or "{}")
         except (ValueError, TypeError):
             usage = {}
-        days = activity_days(usage) if isinstance(usage, dict) else []
+        try:
+            metrics = json.loads(metrics_raw or "{}")
+        except (ValueError, TypeError):
+            metrics = {}
+        usage = usage if isinstance(usage, dict) else {}
+        metrics = metrics if isinstance(metrics, dict) else {}
+        days = sorted(set(activity_days(usage)) | set(activity_days(metrics)))
         updates.append((days[0] if days else None, days[-1] if days else None,
                         days[-1] if days else "", sid))
+        # A session with exactly one proven activity day can carry its whole call
+        # count on that day (the same allocation the adapter path uses). Sessions
+        # with an undated bucket or several activity days keep NULL: per-day call
+        # evidence that was never recorded stays unknown, never zero or split.
+        if (calls_raw is None and len(days) == 1
+                and isinstance(api_calls, (int, float)) and "undated" not in usage):
+            call_updates.append((json.dumps({days[0]: int(api_calls)}), sid))
     conn.executemany("UPDATE session_log SET first_activity_day=?,last_activity_day=?,date=? WHERE id=?", updates)
+    if call_updates:
+        conn.executemany("UPDATE session_log SET daily_calls_json=? WHERE id=?", call_updates)
     return True

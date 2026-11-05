@@ -259,3 +259,118 @@ def test_delegated_skills_keep_the_child_activity_day_and_shared_usage_counts_on
     conn = m._init_trends_db()
     assert conn.execute("SELECT date,invocations FROM skill_daily WHERE skill='sample-old'").fetchall() == [(_noon(70).date().isoformat(), 1)]
     conn.close()
+
+
+def test_legacy_combined_usage_is_labelled_not_certified_top_level(m):
+    conn = m._init_trends_db()
+    day = _noon(1).date().isoformat()
+    model = "claude-opus-4-8"
+    # daily_usage_json merges parent + delegated requests; the parent-only map a
+    # reparsed transcript stores in parent_daily_usage_json is much smaller.
+    combined = {day: {model: {"fresh_input": 1000, "output": 100}}}
+    parent = {day: {model: {"fresh_input": 100, "output": 10}}}
+    conn.execute("INSERT INTO session_log (jsonl_path,date,daily_usage_json) VALUES ('legacy.jsonl',?,?)",
+                 (day, json.dumps(combined)))
+    conn.execute("INSERT INTO session_log (jsonl_path,date,daily_usage_json,parent_daily_usage_json) VALUES ('reparsed.jsonl',?,?,?)",
+                 (day, json.dumps(combined), json.dumps(parent)))
+    conn.commit()
+    basis = m._dashboard_spent_token_basis(conn, 30)
+    assert basis["tokens"] == 1210
+    assert basis["fallback_rows"] == 0
+    assert basis["combined_fallback_rows"] == 1
+    assert basis["complete"] is False
+    assert basis["basis"] != m._DASHBOARD_SPENT_TOKEN_BASIS
+    conn.row_factory = sqlite3.Row
+    trends = m._query_trends_db(conn, 30)
+    assert trends["spent_token_basis"]["combined_fallback_rows"] == 1
+    conn.execute("DELETE FROM session_log WHERE jsonl_path='legacy.jsonl'")
+    conn.commit()
+    basis = m._dashboard_spent_token_basis(conn, 30)
+    assert basis["tokens"] == 110
+    assert basis["complete"] is True
+    assert basis["combined_fallback_rows"] == 0
+    conn.close()
+
+
+def test_missing_dated_call_evidence_is_unknown_not_measured_zero(m):
+    conn = m._init_trends_db()
+    day1 = _noon(5).date().isoformat()
+    day2 = _noon(1).date().isoformat()
+    model = "claude-opus-4-8"
+    single = {day1: {model: {"fresh_input": 100, "output": 10}}}
+    multi = {day1: {model: {"fresh_input": 200, "output": 20}},
+             day2: {model: {"fresh_input": 300, "output": 30}}}
+    conn.execute("INSERT INTO session_log (jsonl_path,date,api_calls,daily_usage_json) VALUES ('single.jsonl',?,3,?)",
+                 (day1, json.dumps(single)))
+    conn.execute("INSERT INTO session_log (jsonl_path,date,api_calls,daily_usage_json) VALUES ('multi.jsonl',?,9,?)",
+                 (day2, json.dumps(multi)))
+    conn.execute("DELETE FROM schema_migrations WHERE name='activity_dating_v1'")
+    conn.commit()
+    conn.close()
+    conn = m._init_trends_db()
+    calls = {r[0]: r[1] for r in conn.execute("SELECT jsonl_path,daily_calls_json FROM session_log")}
+    assert json.loads(calls["single.jsonl"]) == {day1: 3}
+    assert calls["multi.jsonl"] is None
+    m.ensure_activity_view(conn)
+    rows = conn.execute(
+        "SELECT jsonl_path,date,api_calls,api_calls_known FROM session_activity "
+        "ORDER BY jsonl_path,date").fetchall()
+    assert [(r[0], r[2], r[3]) for r in rows] == [
+        ("multi.jsonl", None, 0), ("multi.jsonl", None, 0), ("single.jsonl", 3, 1)]
+    result = m._price_parent_window(conn, "AND date >= ?", (_noon(30).date().isoformat(),), "anthropic")
+    assert result["api_calls"] == 3
+    assert result["api_calls_unknown"] == 1
+    terms = m._compound_structural(100, 30, fallback_prefix=1000)
+    assert terms["api_calls_complete"] is False
+    assert terms["api_calls_unknown_days"] == 2
+    conn.execute("DELETE FROM session_log WHERE jsonl_path='multi.jsonl'")
+    conn.execute("DELETE FROM schema_migrations WHERE name='activity_dating_v1'")
+    conn.commit()
+    conn.close()
+    conn = m._init_trends_db()
+    result = m._price_parent_window(conn, "AND date >= ?", (_noon(30).date().isoformat(),), "anthropic")
+    assert result["api_calls"] == 3
+    assert result["api_calls_unknown"] == 0
+    terms = m._compound_structural(100, 30, fallback_prefix=1000)
+    assert terms["api_calls_complete"] is True
+    conn.close()
+
+
+def test_metadata_only_activity_day_survives_the_projection(m):
+    conn = m._init_trends_db()
+    day_use = _noon(5).date().isoformat()
+    day_meta = _noon(1).date().isoformat()
+    model = "claude-opus-4-8"
+    usage = {day_use: {model: {"fresh_input": 100, "output": 10}}}
+    metrics = {
+        day_use: {"message_count": 2, "duration_minutes": 3.0,
+                  "skills": {"sample": 1}, "subagents": {}, "tool_calls": {"Read": 1}},
+        day_meta: {"message_count": 4, "duration_minutes": 1.5,
+                   "skills": {"sample": 2}, "subagents": {"research": 1},
+                   "tool_calls": {"Write": 2, "Read": 1}},
+    }
+    conn.execute(
+        "INSERT INTO session_log (jsonl_path,date,first_activity_day,last_activity_day,"
+        "daily_usage_json,daily_metrics_json,quality_score,quality_grade) "
+        "VALUES ('meta.jsonl',?,?,?,?,?,?,?)",
+        (day_meta, day_use, day_meta, json.dumps(usage), json.dumps(metrics), 0.9, "A"))
+    conn.execute("DELETE FROM schema_migrations WHERE name='activity_dating_v1'")
+    conn.commit()
+    conn.close()
+    conn = m._init_trends_db()
+    m.ensure_activity_view(conn)
+    conn.row_factory = sqlite3.Row
+    rows = {r["date"]: r for r in conn.execute(
+        "SELECT date,input_tokens,output_tokens,message_count,tool_calls_json,"
+        "skills_json,subagents_json,quality_score,quality_grade FROM session_activity")}
+    assert set(rows) == {day_use, day_meta}
+    meta = rows[day_meta]
+    assert meta["input_tokens"] == 0 and meta["output_tokens"] == 0
+    assert meta["message_count"] == 4
+    assert json.loads(meta["tool_calls_json"]) == {"Write": 2, "Read": 1}
+    assert json.loads(meta["skills_json"]) == {"sample": 2}
+    assert json.loads(meta["subagents_json"]) == {"research": 1}
+    assert meta["quality_score"] == 0.9 and meta["quality_grade"] == "A"
+    for table in ("daily_stats", "skill_daily", "subagent_daily"):
+        assert day_meta in {r[0] for r in conn.execute(f"SELECT date FROM {table}")}
+    conn.close()

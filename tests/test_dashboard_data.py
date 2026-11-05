@@ -113,13 +113,16 @@ def test_spent_basis_uses_deduplicated_activity_usage(measure, tmp_path):
             date TEXT, input_tokens INTEGER, output_tokens INTEGER,
             cache_create_5m_tokens INTEGER, cache_create_1h_tokens INTEGER,
             cache_hit_rate REAL, reported_input_tokens INTEGER,
-            reported_output_tokens INTEGER, daily_usage_json TEXT
+            reported_output_tokens INTEGER, daily_usage_json TEXT,
+            parent_daily_usage_json TEXT
         );
         """
     )
+    day = datetime.now().date().isoformat()
+    usage = json.dumps({day: {"claude-opus-5-5": {"fresh_input": 5_000_000, "output": 52_400_000}}})
     conn.execute(
-        "INSERT INTO session_log VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (datetime.now().date().isoformat(), 405_000_000, 65_000_000, 334_000_000, 0, 0.999, 5_000_000, 157_200_000, json.dumps({datetime.now().date().isoformat(): {"claude-opus-5-5": {"fresh_input": 5_000_000, "output": 52_400_000}}})),
+        "INSERT INTO session_log VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (day, 405_000_000, 65_000_000, 334_000_000, 0, 0.999, 5_000_000, 157_200_000, usage, usage),
     )
     conn.commit()
 

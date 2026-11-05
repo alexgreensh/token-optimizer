@@ -380,6 +380,10 @@ test("action-savings card: absent when baseline is still building (not ready)", 
   for (let i = 0; i < 5; i++) {
     insertSession.run(...Object.values(beforeRow(anchorTs + DAY + i * DAY)));
   }
+  // Same single-day activity evidence seed() stamps: activity-based reads
+  // omit rows without dated usage buckets.
+  db.run(`UPDATE session_log SET daily_usage_json = json_object(date, json_object(model, json_object(
+    'input',tokens_input,'output',tokens_output,'cacheRead',tokens_cache_read,'cacheWrite',tokens_cache_write,'cost',cost_usd)))`);
   db.close();
 
   const html = generateDashboard({ dataDir: dir });
@@ -435,6 +439,8 @@ test("computeRealizedSavings: verbosityMeasuredWindowUsd is 0 when not ready", (
   for (let i = 0; i < 5; i++) {
     insertSession.run(...Object.values(beforeRow(anchorTs + DAY + i * DAY)));
   }
+  db.run(`UPDATE session_log SET daily_usage_json = json_object(date, json_object(model, json_object(
+    'input',tokens_input,'output',tokens_output,'cacheRead',tokens_cache_read,'cacheWrite',tokens_cache_write,'cost',cost_usd)))`);
   db.close();
 
   const savings = computeRealizedSavings(dir, 30, now);

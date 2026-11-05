@@ -51718,11 +51718,12 @@ def runway_snapshot(days=30, now=None):
     HONESTY BOUNDARY: the routing lever needs to know how the provider weights
     models inside the 5h/7d windows. That weighting is not published, so this
     uses public per-class API rates (one reference card per family) as a
-    documented stand-in and labels the result estimated. `proxy` in the returned dict says so out loud; any surface
-    rendering this MUST carry that through rather than printing a bare number.
+    documented stand-in and labels the result estimated. `proxy` in the
+    returned dict says so out loud; any surface rendering this MUST carry that
+    through rather than printing a bare number.
 
     Returns None when there is nothing trustworthy to say: no meter reading at
-    all, or no measurable routing shift. A stale-but-present meter is NOT dropped
+    all, or no measurable throughput shift. A stale-but-present meter is NOT dropped
     -- this is the ONLY caller of the meter for the dashboard, which is viewed at
     arbitrary times (the statusline only refreshes the meter while you are
     actively working, so by the time you open the dashboard the reading is

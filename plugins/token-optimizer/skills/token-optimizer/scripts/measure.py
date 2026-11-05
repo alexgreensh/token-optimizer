@@ -15729,6 +15729,10 @@ _COVERAGE_FEATURE_LABELS = {
     # Agent-result pool, measure-only opportunity (harm proxy failed the
     # gate). NOT a headline category; surfaces the pool in coverage only.
     "agent_result_skeleton": _AGENT_RESULT_LABEL,
+    # Loop warnings: observed signal, counterfactual value. Kept out of
+    # _V5_COMPRESSION_LABELS so NULL-tier legacy rows cannot read as measured;
+    # the coverage view still shows the observed loop volume here.
+    "loop_detection": "Loop detection (warning)",
 }
 
 # First-read shadow promotion gate: a cohort graduates from shadow to active
@@ -24289,13 +24293,15 @@ def _session_model_reprice(conn, cutoff, session_uuid=None, by_day=False, unpric
 # magnitudes only: the counted card may only
 # compound removals whose token count was measured. Deliberately absent:
 #   * resume_lean -- estimated tier; the avoided reload is a counterfactual;
+#   * checkpoint_restore -- estimated tier; the credit is the working set the
+#     resume WOULD have re-read, inferred from session reads, never observed;
 #   * mcp_cap / hint_followed -- estimated-MAGNITUDE (fixed 5,000/event and
 #     conservative-guess sizes; _get_savings_summary relocates both to the
 #     estimated tier, so a counted annuity here would cross tiers);
 #   * verbosity_* -- output trims: generated once, never re-read.
 _COUNTED_SE_EVENT_TYPES = (
     "tool_archive", "tool_archive_reexpand", "tool_archive_refetch_block",
-    "structure_map", "checkpoint_restore", "delta_read",
+    "structure_map", "delta_read",
 )
 # compression_events features that are bookkeeping, not removals.
 _COUNTED_CE_EXCLUDED_FEATURES = (
@@ -25664,7 +25670,8 @@ def _net_realized_savings(rows, reprice_deltas):
     Returns (by_category, total_tokens, total_cost, total_events, popped,
     repriced_to_session_mix) where *popped* holds the entries relocated out of
     the realized total (setup_optimization, mcp_cap, hint_followed,
-    verbosity_steer, resume_lean), each an entry dict or None.
+    verbosity_steer, resume_lean, checkpoint_restore), each an entry dict or
+    None.
     """
     by_category = {}
     total_tokens = 0
@@ -25752,6 +25759,18 @@ def _net_realized_savings(rows, reprice_deltas):
         total_cost -= float(resume_lean_est.get("cost_saved_usd", 0.0) or 0.0)
         total_events -= int(resume_lean_est.get("events", 0) or 0)
 
+    # checkpoint_restore credits the working set the resumed session SKIPS
+    # re-reading (_checkpoint_restore_recovery_tokens). That re-read never
+    # happens, so nothing was metered: the magnitude is inferred from this
+    # session's own read history, not observed avoided usage. Same class as
+    # resume_lean -- counterfactual credit, estimated tier. Relocate it out of
+    # the realized total; the pop IS the tier=estimated stamp.
+    checkpoint_restore_est = by_category.pop("checkpoint_restore", None)
+    if checkpoint_restore_est:
+        total_tokens -= int(checkpoint_restore_est.get("tokens_saved", 0) or 0)
+        total_cost -= float(checkpoint_restore_est.get("cost_saved_usd", 0.0) or 0.0)
+        total_events -= int(checkpoint_restore_est.get("events", 0) or 0)
+
     # B6: net tool-archive re-expansions out of the tool_archive credit. A
     # re-popped result didn't stay collapsed, so its eager credit is reversed
     # (floored at 0). tool_archive_reexpand is a DEBIT, never its own savings
@@ -25782,6 +25801,7 @@ def _net_realized_savings(rows, reprice_deltas):
         "hint_followed": hint_followed_est,
         "verbosity_steer": verbosity_steer_est,
         "resume_lean": resume_lean_est,
+        "checkpoint_restore": checkpoint_restore_est,
     }
     return (by_category, total_tokens, total_cost, total_events, popped,
             repriced_to_session_mix)
@@ -25824,6 +25844,7 @@ def _get_savings_summary(days=30, since=None):
         hint_followed_est = popped["hint_followed"]
         verbosity_steer_est = popped["verbosity_steer"]
         resume_lean_est = popped["resume_lean"]
+        checkpoint_restore_est = popped["checkpoint_restore"]
 
         daily_avg = total_cost / days if days > 0 else 0.0
 
@@ -25847,9 +25868,15 @@ def _get_savings_summary(days=30, since=None):
             # _estimate_before_after_savings can add it to the transformation
             # headline as a separate estimated addback.
             "verbosity_steer_estimated": verbosity_steer_est,
-            # Cold-resume avoided (counterfactual trigger, measured
-            # magnitude since v5.13.1). Estimated tier, never in the realized total.
+            # Cold-resume avoided (counterfactual trigger AND inferred
+            # magnitude from the target's last-turn context). Estimated
+            # tier, never in the realized total.
             "resume_lean_estimated": resume_lean_est,
+            # Checkpoint-restore avoided re-reads: the trigger (a restore
+            # happened) is observed, but the credited working set is inferred
+            # from this session's reads -- the avoided re-read never happened,
+            # so nothing was metered. Estimated tier, never realized.
+            "checkpoint_restore_estimated": checkpoint_restore_est,
             # True when at least one event's dollars moved because its event-time
             # model stamp disagreed with its own session's recorded model mix. The
             # figure is then a rate ALLOCATION, not a pure event-time meter, so
@@ -25880,6 +25907,7 @@ def _get_savings_summary(days=30, since=None):
             "hint_followed_estimated": None,
             "verbosity_steer_estimated": None,
             "resume_lean_estimated": None,
+            "checkpoint_restore_estimated": None,
             "repriced_to_session_mix": False,
             "reprice_detail": None,
         }
@@ -45067,9 +45095,11 @@ def compact_restore(session_id=None, cwd=None, is_compact=False, new_session_onl
             label = f"[Token Optimizer] Post-compact recovery ({trigger_label} checkpoint):"
             _print_checkpoint_body(best_cp["path"], label)
             _print_intel_digest(sid_safe)
-            # Log savings: credit the avoided reconstruction (the active working
-            # set the resume skips re-reading), floored at the legacy
-            # checkpoint-file-size estimate so we never regress.
+            # Log the restore as an ESTIMATED credit: the working set the
+            # resumed session skips re-reading, floored at the legacy
+            # checkpoint-file-size estimate so we never regress. The re-read
+            # never happens, so nothing is metered -- _get_savings_summary
+            # files checkpoint_restore in the estimated tier.
             try:
                 cp_size = best_cp["path"].stat().st_size
                 # Calibrated floor (U-F: ~3.3 chars/tok), consistent with the TS
@@ -49265,19 +49295,51 @@ def _fresh_session_savings_estimate(fill_pct, window=None):
     return saved, window
 
 
-def _fresh_session_savings_usd(saved_tokens, session_id=None):
-    """API-equivalent dollar value of the reclaimed tokens, priced at the session's
-    own model input rate. Best-effort -> 0.0 on any error."""
+def _fresh_session_turn_economics(saved_tokens, session_id=None):
+    """Per-turn saving and break-even turns for starting a fresh session now.
+
+    saved_tokens is the warm context (current fill minus the lean block) a
+    continued session keeps re-sending. The restart is not free, so the
+    figure reports the RECURRING per-turn benefit and the turns needed to
+    repay the one-time costs -- a counterfactual ESTIMATE, never a meter,
+    and no horizon is assumed:
+
+      per_turn   = max(0, saved - rebuild) * cache_read
+                   -- warm context the continued session re-sends each
+                      turn, minus the working set the fresh session carries
+                      anyway (same estimate the checkpoint-restore credit
+                      uses);
+      one_time   = lean block * cache_write + rebuild * input
+                   -- the checkpoint/lean block written once so the new
+                      session can pick up, plus first reads that are
+                      uncached;
+      breakeven  = ceil(one_time / per_turn) turns, None when per_turn <= 0.
+
+    Priced at the session's own model rates. Best-effort -> zeroed dict on
+    any error.
+    """
+    zero = {"per_turn_usd": 0.0, "one_time_usd": 0.0, "breakeven_turns": None}
     try:
         tier = _load_pricing_tier()
         tier_data = PRICING_TIERS.get(tier, PRICING_TIERS["anthropic"])
         model = _resolve_session_model(session_id)
         rates = tier_data["claude_models"].get(
             model, tier_data["claude_models"].get("sonnet", {}))
-        cost_per_mtok = rates.get("input", 3.0)
-        return max(0.0, int(saved_tokens or 0) * cost_per_mtok / 1_000_000)
+        in_rate = float(rates.get("input", 3.0))
+        cr_rate = float(rates.get("cache_read") or in_rate)
+        cw_rate = float(rates.get("cache_write") or in_rate)
+        saved = max(0, int(saved_tokens or 0))
+        rebuild = _checkpoint_restore_recovery_tokens(
+            session_id, _FRESH_NUDGE_LEAN_BLOCK_TOKENS)
+        per_turn = max(0.0, (saved - rebuild) * cr_rate / 1_000_000)
+        one_time = (_FRESH_NUDGE_LEAN_BLOCK_TOKENS * cw_rate
+                    + rebuild * in_rate) / 1_000_000
+        breakeven = (max(1, math.ceil(one_time / per_turn))
+                     if per_turn > 0 else None)
+        return {"per_turn_usd": per_turn, "one_time_usd": one_time,
+                "breakeven_turns": breakeven}
     except Exception:
-        return 0.0
+        return dict(zero)
 
 
 def _maybe_fresh_session_nudge(result, cache_path, quality_data, quiet=False):
@@ -49324,8 +49386,18 @@ def _maybe_fresh_session_nudge(result, cache_path, quality_data, quiet=False):
         verified=False,
     )
     saved_str = f"~{saved // 1000}K" if saved >= 1000 else f"~{saved}"
-    usd = _fresh_session_savings_usd(saved, session_id)
-    cost_str = f" (~${usd:.2f})" if usd >= 0.01 else ""
+    econ = _fresh_session_turn_economics(saved, session_id)
+    per_turn = econ["per_turn_usd"]
+    # The dollar figure is a counterfactual estimate: the recurring per-turn
+    # saving plus the turns that repay the one-time handover/rebuild cost.
+    # No horizon is assumed, so the message never claims a session-total.
+    cost_str = ""
+    if per_turn >= 0.001:
+        per_str = f"${per_turn:.2f}" if per_turn >= 0.01 else "<$0.01"
+        breakeven = econ["breakeven_turns"]
+        be_str = (f", pays back after ~{breakeven} turn"
+                  f"{'s' if breakeven != 1 else ''}" if breakeven else "")
+        cost_str = f" (saves ~{per_str} per turn{be_str}, est.)"
     # Share of the model window: what the user's meter shows (see _format_context_fill).
     shown = _model_window_fill(result)
     shown = shown if isinstance(shown, (int, float)) else fill_pct
@@ -49472,11 +49544,15 @@ def _maybe_loop_warning(result, cache_path, quality_data, quiet=False):
 
     result["_loop_warning_count"] = loop_count + 1
 
-    # Measure token waste from the actual loop turns.
-    # quality_data.messages has (idx, role, text_length, is_substantive).
-    # Sum the text_length of the looping turns as measured content, then
-    # estimate tokens at chars/4. This is measured from the session, not
-    # a made-up constant.
+    # Record the OBSERVED loop volume: the chars of the turns that actually
+    # repeated. quality_data.messages has (idx, role, text_length,
+    # is_substantive); sum the looping turns' text_length, then estimate tokens
+    # at chars/4. This measures spend that already happened -- it is NOT a
+    # saving: the warning compresses nothing and the avoided continuation is
+    # counterfactual, so the row is tier=estimated, verified=False, and the
+    # feature sits outside _V5_COMPRESSION_CATEGORIES (see
+    # _NON_SAVINGS_COMPRESSION_FEATURES). The dollar value of what the warning
+    # prevents lives only in _estimate_behavioral_savings, labelled estimated.
     try:
         loop_count_n = max(1, int(best.get("count", 2)))
     except (TypeError, ValueError):
@@ -49486,16 +49562,17 @@ def _maybe_loop_warning(result, cache_path, quality_data, quiet=False):
     if messages:
         recent = messages[-loop_count_n * 2:]  # user+assistant pairs
         loop_turn_chars = sum(int(m[2] or 0) for m in recent)
-    measured_loop_tokens = int(max(loop_turn_chars / CHARS_PER_TOKEN, 500))
+    observed_loop_tokens = int(max(loop_turn_chars / CHARS_PER_TOKEN, 500))
 
     session_id = Path(cache_path).stem.replace("quality-cache-", "", 1) if cache_path else None
     _log_compression_event(
         feature="loop_detection",
-        original_text=" " * (measured_loop_tokens * 4),
+        original_text=" " * (observed_loop_tokens * 4),
         compressed_text=f"loop:{best['type']}",
         session_id=session_id,
-        detail=f"type={best['type']} confidence={best['confidence']:.2f} count={loop_count_n} measured_chars={loop_turn_chars} measured_tokens={measured_loop_tokens}",
-        verified=True,
+        detail=f"type={best['type']} confidence={best['confidence']:.2f} count={loop_count_n} observed_chars={loop_turn_chars} observed_tokens={observed_loop_tokens}",
+        verified=False,
+        tier="estimated",
     )
 
     if best["type"] == "message_loop":
@@ -51559,11 +51636,15 @@ _LEGACY_SAVINGS_LABELS = {
     # tool_digest removed: phantom label from v3.0.0 — no code ever logged a
     # tool_digest event. The row showed "0 events" forever, making a
     # never-implemented feature look broken. Removed to stop the confusion.
-    "checkpoint_restore": "Checkpoint restores",
+    # Checkpoint restores: ESTIMATED. The restore itself is observed, but the
+    # credited working set is inferred from the session's own read history --
+    # the avoided re-read never happened, so nothing was metered.
+    # _get_savings_summary relocates the event_type to the estimated tier.
+    "checkpoint_restore": "Checkpoint restores [est]",
     # resume_lean: cold-resume-lean reopens a forgotten session by reconstructing
     # a lean context from its checkpoint instead of `claude --resume` re-writing
-    # the full transcript cold. Realized + in the measured total, same tier as
-    # checkpoint_restore.
+    # the full transcript cold. Counterfactual trigger -> estimated tier
+    # (popped from the measured total in _get_savings_summary).
     "resume_lean": "Lean resumes",
     "tool_archive": "Tool replacements",
     "structure_map": "Structure maps",
@@ -51601,7 +51682,6 @@ _LEGACY_SAVINGS_LABELS = {
 _V5_COMPRESSION_LABELS = {
     "delta_read": "Delta reads",
     "quality_nudge": "Quality nudges",
-    "loop_detection": "Loop detection",
     # v5.0 bash compression handlers
     "bash_compress_git": "Bash compress (git)",
     "bash_compress_pytest": "Bash compress (pytest)",
@@ -51647,13 +51727,18 @@ _V5_COMPRESSION_LABELS = {
     "codex_command_compress": "Command output (Codex)",
 }
 
-# compression_events features that are bookkeeping or shadow measurement, not
-# savings. Every feature a hook logs must be in _V5_COMPRESSION_LABELS or here
-# (enforced by tests), so a new saving can never be logged and left out of the
-# totals by accident.
+# compression_events features that are bookkeeping, shadow measurement, or a
+# counterfactual signal rather than metered savings. Every feature a hook logs
+# must be in _V5_COMPRESSION_LABELS or here (enforced by tests), so a new saving
+# can never be logged and left out of the totals by accident.
+# loop_detection: the loop turns are observed spend, but the logged
+# original-compressed delta is the loop's own volume, not tokens removed from
+# context -- the warning changes future behavior, it compresses nothing.
+# Legacy NULL-tier rows would otherwise read as measured; the avoided-
+# continuation value lives only in _estimate_behavioral_savings (estimated).
 _NON_SAVINGS_COMPRESSION_FEATURES = frozenset({
     "fresh_session_nudge", "cohort_demoted", "first_read_edit_followup",
-    "cache_drop_warning", "agent_result_skeleton", "unknown",
+    "cache_drop_warning", "agent_result_skeleton", "unknown", "loop_detection",
 })
 
 # Unified label dict used by the savings-report renderer. Legacy entries
@@ -51890,10 +51975,11 @@ _RUNWAY_COMPRESSED_SQL = _counted_sql(
 
 
 # Events the savings report moves out of its measured total (one-time setup
-# trim, capped MCP output, followed hints, cold resumes). The runway figure is
-# the measured floor, so it leaves them out too.
+# trim, capped MCP output, followed hints, cold resumes, checkpoint restores).
+# The runway figure is the measured floor, so it leaves them out too.
 _RUNWAY_ESTIMATED_EVENT_TYPES = frozenset(
-    {"setup_optimization", "mcp_cap", "hint_followed", "resume_lean"})
+    {"setup_optimization", "mcp_cap", "hint_followed", "resume_lean",
+     "checkpoint_restore"})
 
 
 def _runway_saved_tokens(conn, cutoff, include_estimated=False):
@@ -51902,7 +51988,7 @@ def _runway_saved_tokens(conn, cutoff, include_estimated=False):
     This is the counted floor behind the window card's "measured token floor":
     the same events the savings report keeps in its measured total, so the
     estimated tiers (setup trim, MCP cap, followed hints, lean resumes,
-    verbosity steering) are left out. Archive re-expansions are subtracted from
+    checkpoint restores, verbosity steering) are left out. Archive re-expansions are subtracted from
     the archive credit (never below zero) and are not savings of their own. A
     compression feature that savings_events also logs (delta_read,
     structure_map) is counted once, from savings_events. With
@@ -56403,9 +56489,11 @@ def _estimate_before_after_savings(days=30, estimated_pools=None, model_routing=
         counterfactual_monthly = old_cps * recent_n
 
         # COMPRESSION ADD-BACK: the VOLUME-REDUCTION lever. Token Optimizer REMOVES
-        # tokens from context (tool_archive, structure_map skeletons, resume_lean,
-        # checkpoint_restore, delta_read). Those tokens are real volume the OLD way would
-        # have kept re-reading and paying for. They are NOT in session_log (already removed
+        # tokens from context (tool_archive, structure_map skeletons, delta_read).
+        # Those tokens are real volume the OLD way would
+        # have kept re-reading and paying for. resume_lean and checkpoint_restore
+        # are counterfactual credits (estimated tier, popped before this total),
+        # so they ride as labelled estimated pools below instead of here. They are NOT in session_log (already removed
         # before billing), so this pool is DISJOINT from the main pool AND from the caching
         # lever (which only redistributes BILLED fresh+cache_read tokens). We take the
         # directly-METERED removed-token dollars (savings_events) and reprice them to the
@@ -56448,6 +56536,7 @@ def _estimate_before_after_savings(days=30, estimated_pools=None, model_routing=
                 "handover_rerun": _estimate_handover_rerun_savings(days=days),
                 "retrieval_serve": _estimate_retrieval_serve_savings(days=days),
                 "resume_lean": (comp or {}).get("resume_lean_estimated") or {},
+                "checkpoint_restore": (comp or {}).get("checkpoint_restore_estimated") or {},
             }
         pool_labels = {
             "uncaptured_runtime": "Compressed subagent context (estimated)",
@@ -56456,6 +56545,7 @@ def _estimate_before_after_savings(days=30, estimated_pools=None, model_routing=
             "handover_rerun": "Continuity handovers (estimated)",
             "retrieval_serve": "Direct context retrieval (estimated)",
             "resume_lean": "Lean session resumes (estimated)",
+            "checkpoint_restore": "Checkpoint restores (estimated)",
         }
         estimated_volume_pools = {}
         for key, label in pool_labels.items():
@@ -57136,7 +57226,7 @@ def _action_savings_components(summary, reread=None):
         for key in (
             "behavioral_estimate", "uncaptured_runtime", "mcp_cap_estimated",
             "contamination_exit", "handover_rerun", "resume_lean_estimated",
-            "verbosity_steer",
+            "checkpoint_restore_estimated", "verbosity_steer",
         )
     }
     hints = summary.get("hint_followed") or {}
@@ -57249,6 +57339,7 @@ def _get_merged_savings(days=30, since=None):
         "handover_rerun": handover_rerun,
         "retrieval_serve": retrieval_serve,
         "resume_lean": savings.get("resume_lean_estimated") or {},
+        "checkpoint_restore": savings.get("checkpoint_restore_estimated") or {},
     }, model_routing=model_routing)
     stale_reads_reclaimable = _estimate_stale_reads_reclaimable(days=days)
 
@@ -57324,6 +57415,10 @@ def _get_merged_savings(days=30, since=None):
         # magnitude (target's real last-turn context at cache-read / 1h-write
         # rates). Estimated tier, never in the realized total.
         "resume_lean_estimated": savings.get("resume_lean_estimated"),
+        # Checkpoint-restore avoided re-reads. The restore is observed but the
+        # credited working set is inferred -- counterfactual, estimated tier,
+        # never in the realized total.
+        "checkpoint_restore_estimated": savings.get("checkpoint_restore_estimated"),
     }
 
 
@@ -57550,10 +57645,12 @@ def _dashboard_saved_tokens(summary):
     estimated = (tok(s.get("mcp_cap_estimated"))
                  + tok(s.get("hint_followed") or s.get("hint_followed_estimated"))
                  + tok(s.get("verbosity_steer") or s.get("verbosity_steer_estimated"))
-                 + tok(s.get("resume_lean_estimated")))
+                 + tok(s.get("resume_lean_estimated"))
+                 + tok(s.get("checkpoint_restore_estimated")))
     measured = num(s.get("total_tokens", 0))
-    # The dashboard draws no Tokens Saved card at all when nothing was measured.
-    return (measured + estimated if measured > 0 else 0), measured
+    # The dashboard draws no Tokens Saved card only when nothing was measured
+    # AND nothing estimated exists -- estimates still surface on their own.
+    return measured + estimated, measured
 
 
 def _status_bar_savings_or_reason(session_id, _retried=False):
@@ -59008,7 +59105,7 @@ def _savings_since_install():
         routing_is_estimate = full_routing.get("evidence") == "estimated"
         if not routing_is_estimate:
             measured += full_routing_usd
-        # Estimated = genuine TO-realized counterfactuals only — the same six
+        # Estimated = genuine TO-realized counterfactuals only — the same
         # categories the dashboard's estimated tier (estItems) sums, so the two
         # cards agree about what "estimated" contains. cache_drop and
         # output_waste are OPPORTUNITY (avoidable waste TO does not yet prevent),
@@ -59021,11 +59118,13 @@ def _savings_since_install():
             float((full.get(k) or {}).get("cost_saved_usd", 0) or 0)
             for k in (
                 "behavioral_estimate", "uncaptured_runtime", "mcp_cap_estimated",
-                "contamination_exit", "handover_rerun", "resume_lean_estimated", "verbosity_steer",
+                "contamination_exit", "handover_rerun", "resume_lean_estimated",
+                "checkpoint_restore_estimated", "verbosity_steer",
             )
         )
-        # Avoided-search: prefer the deterministic observed hint->read measure
-        # (hint_followed); fall back to the cohort estimate (retrieval_serve)
+        # Avoided-search: prefer the hint->read estimate (hint_followed; the
+        # trigger is observed, the avoided-search magnitude is not metered);
+        # fall back to the cohort estimate (retrieval_serve)
         # only before any hint has fired, so the two are never summed — the
         # exact dedup rule the dashboard applies (dashboard.html renderSavings).
         hf = full.get("hint_followed") or {}
@@ -59385,16 +59484,18 @@ def savings_report(days=30, as_json=False):
     by_cat = summary.get("by_category", {})
 
     # Relocated keys are not realized: setup_optimization is a one-time line,
-    # mcp_cap is an estimate, and verbosity_steer is a deterministic-trigger /
-    # estimated-magnitude event (popped from by_category in _get_savings_summary
-    # to avoid double-counting with the transformation card's "Lean output
-    # nudges" line). They are reported in their own tiers below, never in this
+    # mcp_cap is an estimate, verbosity_steer is a deterministic-trigger /
+    # estimated-magnitude event, resume_lean and checkpoint_restore are
+    # counterfactual credits (popped from by_category in _get_savings_summary
+    # to avoid double-counting with the transformation card's estimated pools).
+    # They are reported in their own tiers below, never in this
     # measured table (that was the A1/A3 double-count). Without verbosity_steer
     # here, the row shows "0 events" in the measured table even though the
     # feature fires thousands of times/month — the raw nudge injection count is
     # an estimated-tier metric, and the measured output reduction shows as
     # verbosity_steer_measured below.
-    _RELOCATED = {"setup_optimization", "mcp_cap", "verbosity_steer", "resume_lean"}
+    _RELOCATED = {"setup_optimization", "mcp_cap", "verbosity_steer", "resume_lean",
+                  "checkpoint_restore"}
 
     # Known measured categories (even if zero), then any unknown ones in the data.
     table_rows = [(label, by_cat.get(key, {}))
@@ -59548,6 +59649,15 @@ def savings_report(days=30, as_json=False):
         rle_monthly = _money(_est_cents["resume_lean_estimated"])
         print(f"  + est. lean resumes: ~${rle_monthly}{per} "
               f"({rl_est.get('events', 0)} cold-resume reloads avoided) [estimated]")
+
+    # Estimated tier — checkpoint restores (avoided working-set re-reads; the
+    # restore is observed, the credited re-read is inferred, never metered).
+    cr_est = summary.get("checkpoint_restore_estimated") or {}
+    cre_cost = float(cr_est.get("cost_saved_usd", 0.0) or 0.0)
+    if cre_cost > 0:
+        cre_monthly = _money(_est_cents["checkpoint_restore_estimated"])
+        print(f"  + est. checkpoint restores: ~${cre_monthly}{per} "
+              f"({cr_est.get('events', 0)} restores, inferred working-set re-reads) [estimated]")
 
     # Estimated tier — FLAGSHIP: contamination-exit avoided rework (cohort).
     ce = summary.get("contamination_exit") or {}

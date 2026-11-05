@@ -267,7 +267,8 @@ export class TrendsStore {
    *
    * Mirrors Python's `_get_savings_summary`: the returned `totalCostSavedUsd` is
    * the MEASURED compression floor with estimated-tier categories relocated OUT
-   * (setup_optimization, mcp_cap, hint_followed) and tool_archive re-expansions
+   * (setup_optimization, mcp_cap, hint_followed, verbosity_steer,
+   * checkpoint_restore, resume_lean) and tool_archive re-expansions
    * NETTED against tool_archive (a re-popped result didn't stay collapsed, so its
    * eager credit is reversed, floored at 0). What remains is the directly-metered
    * removed-token dollars the old way would have re-read.
@@ -323,8 +324,12 @@ export class TrendsStore {
       // in measure.py: setup_optimization is a one-time trim double-counted by
       // structural_savings; mcp_cap and hint_followed are observed-trigger but
       // estimated-magnitude; verbosity_steer output reduction is estimated not
-      // metered). They never belong in the measured realized total.
-      for (const k of ["setup_optimization", "mcp_cap", "hint_followed", "verbosity_steer"]) {
+      // metered; checkpoint_restore credits avoided working-set re-reads that
+      // never happened, and resume_lean credits an avoided cold reload -- both
+      // inferred magnitudes, never observed removals). They never belong in
+      // the measured realized total; the counterfactual three are surfaced via
+      // getEstimatedCounterfactualSavings instead.
+      for (const k of ["setup_optimization", "mcp_cap", "hint_followed", "verbosity_steer", "checkpoint_restore", "resume_lean"]) {
         byCategory.delete(k);
       }
 
@@ -403,6 +408,63 @@ export class TrendsStore {
       return { costUsd: Math.max(0, costUsd), unpricedTokens, unpricedEvents };
     } catch {
       return { costUsd: 0, unpricedTokens: 0, unpricedEvents: 0 };
+    }
+  }
+
+  /**
+   * Sum the ESTIMATED counterfactual event credits over the window, grouped by
+   * event type: checkpoint_restore (working-set re-reads a restore skipped),
+   * resume_lean (cold-resume rewrite avoided) and hint_followed (searches a
+   * followed hint replaced). Triggers are observed; magnitudes are inferred --
+   * mirrors measure.py `_get_savings_summary` relocations that feed
+   * `_estimate_before_after_savings`' estimated_volume_pools. The caller
+   * reprices to the baseline INPUT rate and adds them as a separate estimated
+   * pool, never inside the measured total.
+   *
+   * Best-effort: returns zeros on any error (never throws). `now` injectable.
+   */
+  getEstimatedCounterfactualSavings(days: number = 30, now: number = Date.now()): {
+    totalTokensSaved: number;
+    totalCostSavedUsd: number;
+    totalEvents: number;
+    byType: Record<string, { tokens: number; cost: number; events: number }>;
+    unpricedTokens: number;
+    unpricedEvents: number;
+  } {
+    const empty = { totalTokensSaved: 0, totalCostSavedUsd: 0, totalEvents: 0, byType: {} as Record<string, { tokens: number; cost: number; events: number }>, unpricedTokens: 0, unpricedEvents: 0 };
+    try {
+      const db = this.connect();
+      const cutoff = new Date(now - days * 86_400_000).toISOString();
+      const rows = db
+        .query(
+          `SELECT e.event_type, e.tokens_saved, e.cost_saved_usd, e.model, e.token_class, s.model AS session_model, s.model_token_buckets
+           FROM counted_savings_events e LEFT JOIN session_log s ON s.session_id = e.session_id
+           WHERE e.timestamp >= ? AND e.event_type IN ('checkpoint_restore', 'resume_lean', 'hint_followed')`,
+        )
+        .all(cutoff) as Array<{ event_type: string; tokens_saved: number; cost_saved_usd: number; model: string | null; token_class: string | null; session_model: string | null; model_token_buckets: string | null }>;
+      const byType: Record<string, { tokens: number; cost: number; events: number }> = {};
+      let unpricedTokens = 0, unpricedEvents = 0;
+      for (const r of rows) {
+        const item = byType[r.event_type] ?? { tokens: 0, cost: 0, events: 0 };
+        const klass = savingsEventClass(r.token_class) ?? "input";
+        const unknown = !r.model || knownModelRate(r.model, klass) === null;
+        const rate = unknown ? sessionRate(r.session_model, r.model_token_buckets, klass) : { rate: 0, coverage: 1 };
+        item.events++;
+        item.tokens += r.tokens_saved ?? 0;
+        item.cost += unknown ? (r.tokens_saved ?? 0) * rate.rate : (r.cost_saved_usd ?? 0);
+        unpricedTokens += Math.abs(r.tokens_saved ?? 0) * (1 - rate.coverage);
+        if (rate.coverage < 1 && r.tokens_saved !== 0) unpricedEvents++;
+        byType[r.event_type] = item;
+      }
+      let totalTokensSaved = 0, totalCostSavedUsd = 0, totalEvents = 0;
+      for (const v of Object.values(byType)) {
+        totalTokensSaved += v.tokens;
+        totalCostSavedUsd += v.cost;
+        totalEvents += v.events;
+      }
+      return { totalTokensSaved, totalCostSavedUsd, totalEvents, byType, unpricedTokens, unpricedEvents };
+    } catch {
+      return empty;
     }
   }
 

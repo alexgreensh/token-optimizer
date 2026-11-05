@@ -25,13 +25,19 @@
  *      sidechains (no is_sidechain column, no subagent transcripts), so this
  *      pool is 0. DOCUMENTED GAP.
  *   3. Compression add-back — tokens TO removed from context (tool_archive,
- *      structure_map, resume_lean, checkpoint_restore, delta_read). Real volume
- *      the old way would have re-read. Directly-metered (savings_events),
- *      repriced to the baseline input mix. Disjoint from the billed pool.
+ *      structure_map, delta_read). Real volume the old way would have
+ *      re-read. Directly-metered (savings_events), repriced to the baseline
+ *      input mix. Disjoint from the billed pool. checkpoint_restore and
+ *      resume_lean are NOT here: their triggers are observed but the avoided
+ *      re-reads never happened, so they are estimated, not metered.
  *   4. Verbosity-steer add-back — estimated output tokens never produced due
  *      to lean-output conciseness nudges, repriced at the baseline output mix. The
  *      main counterfactual holds output volume constant, so this is a separate
  *      lever. Estimated tier (trigger observed, magnitude not metered).
+ *   5. Counterfactual event add-back — checkpoint_restore, resume_lean and
+ *      hint_followed credits repriced to the baseline input mix. Estimated
+ *      tier: observed triggers, inferred magnitudes. Mirrors measure.py's
+ *      estimated_volume_pools.
  *
  * BASELINE = the frozen EARLY-window mix + pool cache-hit, used ONLY for
  * efficiency anchors (never volume). NO 95% Opus floor: OpenCode is a
@@ -290,6 +296,15 @@ export interface RealizedSavings {
   verbosityMeasuredWindowUsd: number;
   /** Repriced verbosity-steer $ (estimated output reduction at baseline mix). */
   verbosityTransformationUsd: number;
+  /** Repriced counterfactual event credits $ (checkpoint_restore + resume_lean
+   * + hint_followed at the baseline input mix). Estimated tier. */
+  counterfactualEstimatedUsd: number;
+  /**
+   * RAW counterfactual event credits $ over the lookback window, BEFORE the
+   * baseline-mix reprice and the 30/days monthly scaling. The dashboard's
+   * action-savings card renders this inside "Other estimates".
+   */
+  counterfactualEstimatedWindowUsd: number;
   savingsPerSession: number;
   beforeCostPerSession: number;
   afterCostPerSession: number;
@@ -349,6 +364,8 @@ const NOT_READY = (status: string): RealizedSavings => ({
   verbosityMeasuredUsd: 0,
   verbosityMeasuredWindowUsd: 0,
   verbosityTransformationUsd: 0,
+  counterfactualEstimatedUsd: 0,
+  counterfactualEstimatedWindowUsd: 0,
   savingsPerSession: 0,
   beforeCostPerSession: 0,
   afterCostPerSession: 0,
@@ -386,6 +403,8 @@ export function computeRealizedSavings(
   let measuredCompression = compressionOverride ?? 0;
   let measuredCompressionTokens = compressionTokensOverride ?? 0;
   let measuredVerbosity = 0;
+  let estimatedCounterfactual = 0;
+  let estimatedCounterfactualByType: Record<string, number> = {};
   let unpricedEventTokens = 0;
   let unpricedEventCount = 0;
   let archivePricedNetUsd: number | null = null;
@@ -411,11 +430,22 @@ export function computeRealizedSavings(
       measuredVerbosity = verbosity.costUsd;
       unpricedEventTokens += verbosity.unpricedTokens;
       unpricedEventCount += verbosity.unpricedEvents;
+      // Counterfactual event credits (pool #5): checkpoint_restore,
+      // resume_lean, hint_followed -- observed triggers, inferred magnitudes.
+      const estCf = store.getEstimatedCounterfactualSavings(days, now);
+      estimatedCounterfactual = estCf.totalCostSavedUsd;
+      estimatedCounterfactualByType = Object.fromEntries(
+        Object.entries(estCf.byType).map(([k, v]) => [k, v.cost]),
+      );
+      unpricedEventTokens += estCf.unpricedTokens;
+      unpricedEventCount += estCf.unpricedEvents;
     } catch {
       rows = [];
       measuredCompression = 0;
       measuredCompressionTokens = 0;
       measuredVerbosity = 0;
+      estimatedCounterfactual = 0;
+      estimatedCounterfactualByType = {};
     } finally {
       store.close();
     }
@@ -426,6 +456,7 @@ export function computeRealizedSavings(
     result.compressionMeasuredWindowUsd = Math.max(0, measuredCompression);
     result.compressionMeasuredWindowTokens = Math.max(0, measuredCompressionTokens);
     result.verbosityMeasuredWindowUsd = Math.max(0, measuredVerbosity);
+    result.counterfactualEstimatedWindowUsd = Math.max(0, estimatedCounterfactual);
     result.unpricedEventTokens = unpricedEventTokens;
     result.unpricedEventCount = unpricedEventCount;
     result.archivePricedNetUsd = archivePricedNetUsd;
@@ -644,12 +675,30 @@ export function computeRealizedSavings(
   const vsReprice = outAfter > 0 ? outBefore / outAfter : 1;
   const verbosityAddbackWindow = Math.max(0, measuredVerbosity * vsReprice);
 
+  // COUNTERFACTUAL EVENT ADD-BACK (#5): checkpoint_restore, resume_lean and
+  // hint_followed credits. The triggers are observed but the credited token
+  // magnitudes are inferred (the avoided re-read/reload never happened), so
+  // this pool is estimated tier -- repriced to the baseline INPUT mix like the
+  // compression pool, disclosed per type in the breakdown, never inside the
+  // measured floor. Mirrors measure.py's estimated_volume_pools.
+  const cfEstimatedAddbackWindow = Math.max(0, estimatedCounterfactual * compReprice);
+
   // Monthly arms. Main arms come from the frozen per-session anchors x session count;
   // the add-back pools are still window sums scaled to monthly via m().
   const actualMonthly = actualMonthlyMain;
   const counterfactualMonthly = cfMonthlyMain;
   const compressionAddback = m(compressionAddbackWindow);
   const verbosityAddback = m(verbosityAddbackWindow);
+  const cfEstimatedAddback = m(cfEstimatedAddbackWindow);
+  // Per-type monthly levers, in a stable display order.
+  const EST_LABELS: Record<string, string> = {
+    checkpoint_restore: "Checkpoint restores (estimated)",
+    resume_lean: "Lean resumes (estimated)",
+    hint_followed: "Followed hints (estimated)",
+  };
+  const estLevers = Object.keys(EST_LABELS)
+    .filter((k) => (estimatedCounterfactualByType[k] ?? 0) !== 0)
+    .map((k) => ({ key: k, label: EST_LABELS[k], monthlyUsd: m(Math.max(0, estimatedCounterfactualByType[k]) * compReprice) }));
 
   // MAIN transformation = counterfactual − actual, UNCLAMPED, monthly. A net-negative main
   // pool (now marginally costlier than the frozen baseline this period) is carried honestly
@@ -667,7 +716,7 @@ export function computeRealizedSavings(
   // is this net, but never negative in the public contract: when net <= 0 it reads 0 and the
   // dashboard hides the hero (mirrors measure.py's net_negative path). When shown (> 0) it
   // EQUALS counterfactual - actual exactly, so the top line and the arms can never disagree.
-  const net = mainTransformation + subagentTransformation + compressionAddback + verbosityAddback;
+  const net = mainTransformation + subagentTransformation + compressionAddback + verbosityAddback + cfEstimatedAddback;
   const transformation = Math.max(0, net);
 
   // Per-session keys (dashboard reads them) = the FROZEN typical-session anchors
@@ -695,12 +744,14 @@ export function computeRealizedSavings(
 
   // Display cents are allocated once off the signed net so the rendered levers
   // always add to the rendered headline; monthlyUsd keeps the exact raw values.
-  const leverDisplay = allocateCents(net, [sRoute, subagentTransformation, compressionAddback, verbosityAddback]);
+  const leverParts = [sRoute, subagentTransformation, compressionAddback, verbosityAddback, ...estLevers.map((l) => l.monthlyUsd)];
+  const leverDisplay = allocateCents(net, leverParts);
   const breakdown: SavingsBreakdownItem[] = [
     { key: "routing", label: "Eligible model mix change", monthlyUsd: sRoute, monthlyUsdDisplay: leverDisplay[0] },
     { key: "subagent_routing", label: "Cheaper subagents (no sidechains on OpenCode)", monthlyUsd: subagentTransformation, monthlyUsdDisplay: leverDisplay[1] },
     { key: "context_compression", label: "Lighter context (fewer re-reads, metered)", monthlyUsd: compressionAddback, monthlyUsdDisplay: leverDisplay[2] },
     { key: "verbosity_steer", label: "Lean output nudges (less output, estimated)", monthlyUsd: verbosityAddback, monthlyUsdDisplay: leverDisplay[3] },
+    ...estLevers.map((l, i) => ({ key: l.key, label: l.label, monthlyUsd: l.monthlyUsd, monthlyUsdDisplay: leverDisplay[4 + i] })),
   ]
     .filter((b) => b.key !== "subagent_routing" || b.monthlyUsd !== 0) // drop the always-0 sidechain lever
     .sort((a, b) => Math.abs(b.monthlyUsdDisplay) - Math.abs(a.monthlyUsdDisplay));
@@ -709,7 +760,7 @@ export function computeRealizedSavings(
   // The combined counterfactual = main cf + compression add-back + verbosity
   // add-back (both add-back pools' actual is 0, so their cf == their contribution).
   // Clamped [0,1].
-  const combinedCf = counterfactualMonthly + compressionAddback + verbosityAddback;
+  const combinedCf = counterfactualMonthly + compressionAddback + verbosityAddback + cfEstimatedAddback;
   const transformationPct = combinedCf > 0
     ? Math.max(0, Math.min(1, transformation / combinedCf))
     : 0;
@@ -730,6 +781,9 @@ export function computeRealizedSavings(
   // total. This is the actual selected-period savings_events sum, never a
   // monthly run-rate or lifetime figure mislabeled as the lookback window.
   const verbosityMeasuredWindowUsd = Math.max(0, measuredVerbosity);
+  // counterfactualEstimated*: the RAW window sum (pre-reprice, pre-scale) for
+  // the action-savings card's "Other estimates" bucket.
+  const counterfactualEstimatedWindowUsd = Math.max(0, estimatedCounterfactual);
 
   return {
     ready: true,
@@ -756,6 +810,8 @@ export function computeRealizedSavings(
     verbosityMeasuredUsd,
     verbosityMeasuredWindowUsd,
     verbosityTransformationUsd: verbosityAddback,
+    counterfactualEstimatedUsd: cfEstimatedAddback,
+    counterfactualEstimatedWindowUsd,
     savingsPerSession: beforeCps - afterCps,
     beforeCostPerSession: beforeCps,
     afterCostPerSession: afterCps,

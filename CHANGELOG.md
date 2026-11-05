@@ -5,6 +5,7 @@
 - Model routing says what it left out. Usage without a token-class split (Cursor totals, model-daily-only history, legacy rows) is excluded from the routing comparison; the Savings tab, the since-install card and the CLI now state the excluded token count instead of showing a silent $0. On affected installs the routing line can read lower than before because previously unpriced usage no longer counts.
 - Routing copy fixes on the plan card: the lighter-mix sentence agrees with its subject, a heavier mix is described as each token using more of your plan, and mix coverage names the window it is computed over.
 - The "Your transformation" cross-check reprices its add-backs with the same routing factor the Savings surfaces publish, instead of a separate input-rate estimate. While routing is still re-measuring your sessions, or cannot be measured, the add-backs show their measured value and the card says so.
+- Savings labels, round 2: checkpoint restores and lean resumes now sit in the estimated tier on every surface (they were still counted as measured in the OpenCode and OpenClaw ports). The counted card no longer compounds their inferred size into repeat-read dollars, so `counted_cumulative` can visibly drop for installs that used restores — the credit moved tiers, it was not deleted. The fresh-session nudge now says what it saves per turn and after how many turns it pays back, instead of one net dollar figure.
 
 ## [5.13.63] - 2026-11-01
 

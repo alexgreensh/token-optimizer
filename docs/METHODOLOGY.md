@@ -56,8 +56,14 @@ the CLI as `ALL IN` and on the dashboard as the hero number.
 ### 3.1 Logged actions (measured)
 
 Token changes Token Optimizer metered itself: compressed command output, archived tool
-results that stayed collapsed, checkpoint restores, structure maps, quality and
-verbosity nudges with an observed before/after, loop detection, cross-turn dedup.
+results that stayed collapsed, structure maps, quality and
+verbosity nudges with an observed before/after, cross-turn dedup.
+
+"Measured" means observed token changes and observed actions only. A mechanism whose
+trigger was seen but whose token value is inferred — the working set a checkpoint
+restore would have re-read, the continuation a loop warning would have prevented, the
+search a followed hint would have replaced, the context a fresh session would have
+carried — is an estimate, and lives in section 3.4, never here.
 
 - Source: `savings_events` and `compression_events`, read through the counted views
   (`counted_savings_events`, `counted_compression_events`).
@@ -101,6 +107,15 @@ Removed context that the next calls would otherwise have re-read from cache.
 - Attribution is by removal date: a removal on day D counts in D's window even if the
   re-reads it avoided happened later.
 - The first call's removal is already in logged actions and is not added again.
+- The counted card (`counted_cumulative`) only follows removal classes whose
+  magnitude was metered (`_COUNTED_SE_EVENT_TYPES`). Counterfactual classes are
+  deliberately excluded so an inferred size never compounds into repeat-read
+  dollars: `resume_lean`, `checkpoint_restore`, `mcp_cap` and `hint_followed`
+  (plus the output-side `verbosity_*` nudges, which are generated once and never
+  re-read). Their estimated-tier values still appear in section 3.4; they just do
+  not ride the counted annuity. Removing `checkpoint_restore` from the counted
+  set is why `counted_cumulative` / `reread_usd` can visibly drop for installs
+  that used restores — the credit moved tiers, it was not deleted.
 
 ### 3.4 Other estimates (estimated)
 
@@ -110,16 +125,40 @@ Each key below is one line in the report. All are priced at the window's input-r
 | Key | What it estimates |
 |---|---|
 | `resume_lean_estimated` | Cold resumes avoided by a lean restore (priced like its logged event) |
+| `checkpoint_restore_estimated` | Working-set re-reads a checkpoint restore let the session skip. The restore is observed; the avoided re-read is inferred from the session's own read history and capped, never metered |
 | `uncaptured_runtime` | Compression inside sub-agent runs that is never logged as an event |
 | `behavioral_estimate` | One more loop span avoided per caught loop |
 | `mcp_cap_estimated` | Large MCP results capped (priced like its logged event) |
 | `handover_rerun` | Re-work avoided by a continuity handover, from your own session cohorts |
 | `contamination_exit` | Sessions that heeded a fresh-session nudge, from your own cohorts |
 | `verbosity_steer` | Output shortened by a concise-output nudge, before an observed measurement exists |
-| `hint_followed` | Searches avoided by a followed context hint (used once any hint fires) |
+| `hint_followed` | Searches avoided by a followed context hint. The hint->read pair is observed; the avoided-search size is a fixed estimate (used once any hint fires) |
 | `retrieval_serve` | Cohort estimate for avoided searches, used only before any hint fires |
 
 `hint_followed` and `retrieval_serve` are never both counted.
+
+Overlap note: `handover_rerun` (B7) estimates re-work avoided *beyond* a
+continuity handover's restored context — stale re-reads of material the
+handover did not carry — while `checkpoint_restore_estimated` estimates the
+working-set re-reads a checkpoint restore let the session skip. On installs
+that use both mechanisms the two pools can describe adjacent slices of the
+same avoided re-read; they are summed as separate estimates and are not netted
+against each other.
+
+Loop-detection warnings log the observed loop volume as a `tier=estimated`
+compression event (it is spend that already happened, not a removal), and it never
+reaches the measured headline; the avoided continuation is `behavioral_estimate`.
+
+The fresh-session nudge's dollar figure is a separate counterfactual estimate shown
+in the nudge message itself. It reports the recurring per-turn saving — warm
+context the continued session would keep re-sending at the cache-read rate,
+minus the working set the fresh session must carry anyway — against the one-time
+costs of starting fresh (the lean block's cache-write handover plus rebuild
+re-reads at the input rate). The message states the per-turn saving and the
+break-even turns (`ceil(one_time / per_turn)`), labelled `est.`; no horizon is
+assumed, so no session-total dollar figure is claimed. When the per-turn saving
+is zero or negative the message omits the dollar clause rather than inventing a
+payback period.
 
 ---
 
@@ -144,7 +183,7 @@ recorded session.
 | Cache drops | Sessions idle past the cache window that re-wrote the prefix | Opportunity, never added |
 | Routing what-if | If about 20% of Opus work ran on the current Sonnet: fresh input and output only (`_ROUTABLE_OPUS_FRACTION`) | Assumption, never added |
 | Your transformation | Cost per unit of work now vs the old way. Its removed-token and estimated-volume add-backs reprice at section 3.2's standardized baseline-to-actual ratio (`_routing_mix_reprice_ratio`), the same factor the Savings surfaces publish, computed over the same window (days or since-reset) as the dollars it multiplies; pending or unavailable routing reprices neutrally and the card discloses the neutral basis (`compression_reprice_basis`). Within ±5% it reads "no measurable change" (`_TRANSFORMATION_FLAT_BAND`) | Cross-check, never the headline |
-| Token card | Metered tokens plus four estimate pools (MCP caps, hints, verbosity, lean resumes). Repeat reads and routing are not in it | Its own scope, labelled |
+| Token card | Metered tokens plus five estimate pools (MCP caps, hints, verbosity, lean resumes, checkpoint restores). Repeat reads and routing are not in it | Its own scope, labelled |
 | Plan card | Extra work per token: saved context times the model-mix factor, against your live rate-limit windows. The model-mix factor is section 3.2's standardized baseline cost divided by its standardized actual cost (`_runway_routing_lever`): same baseline, reference cards, class weights and exclusions. Above 1 the mix got lighter, below 1 heavier. While routing is pending or unavailable the card says so and leaves it out of the factor. Hidden below a 2% change. The mix-coverage line names the window the snapshot computed over (`routing_window_days`) | Its own scope, labelled |
 
 ---
@@ -267,7 +306,8 @@ them:
 ## 9. Known limits
 
 - Routing and estimates are estimates. They are labelled and kept separate from
-  measured parts.
+  measured parts. "Measured" covers observed token changes and observed actions
+  only: an observed trigger does not make a counterfactual magnitude measured.
 - Rows from before per-turn evidence was recorded use session-mix or input-rate floors,
   disclosed in the report.
 - Rows with no known price stay unpriced, so totals are priced subtotals.

@@ -103,7 +103,7 @@ def test_component_helper_is_pure_and_counts_only_rereads(measure):
     assert set(components["estimates_usd"]) == {
         "behavioral_estimate", "uncaptured_runtime", "mcp_cap_estimated",
         "contamination_exit", "handover_rerun", "resume_lean_estimated",
-        "verbosity_steer", "hint_followed",
+        "checkpoint_restore_estimated", "verbosity_steer", "hint_followed",
     }
     assert sum(components["estimates_usd"].values()) == 255
     assert measure._action_savings_components({})["total_usd"] == 0
